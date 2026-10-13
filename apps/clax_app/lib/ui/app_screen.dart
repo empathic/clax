@@ -9,12 +9,13 @@ import '../agent/timings.dart';
 import '../agent/worker.dart';
 import '../clax/api.dart';
 import '../daemon/clock.dart';
+import '../platform/app_notice.dart';
 import '../platform/settings_store.dart';
 import '../platform/voice.dart';
 import 'app_menu.dart';
 import 'app_surface.dart';
 import 'change_tracker.dart';
-import 'comment_button.dart';
+import 'comment_bar.dart';
 import 'host_protocol.dart';
 import 'swipe.dart';
 import 'thread_detail.dart';
@@ -35,20 +36,38 @@ import 'working_chip.dart';
 ///   WebView sends no click after the hold, and a cancel (the OS took the
 ///   touch back) ends that press. A mouse's are not: the WebView reports
 ///   its moves to the shell itself.
-/// - **Comment button** ([CommentButton]). Over the page once it is ready,
-///   hidden while a composer is open, while the comment bar is up, and
-///   under the panel on a narrow screen. A tap turns comment mode on and
-///   puts the [CommentBar] under the page (the page shrinks above it, so
-///   none of it is covered): Whole app (`composeArtifact`), Threads (the
-///   panel) and ✕ (comment mode off); back, Escape and ⌘K end it too,
-///   closing the panel first when it is open over the bar. While the panel
-///   is open (beside it, on a wide screen) a tap closes the panel and
-///   comment mode. A long-press opens the panel. A composer the bar led to
-///   opens the panel's peek in the bar's place, at the bar's height, and
-///   closing it goes back to the bar.
-/// - **Panel.** A two-finger swipe left, the edge handle, the comment
-///   button's long-press, or (macOS)
-///   App › Comments (⌘K) opens it and turns comment mode on; a swipe
+/// - **No Clax control over the app.** Outside comment mode nothing of
+///   Clax's is drawn over the page but the Working chip during a change,
+///   the brief toasts below and the first-run hint. The ways in are the
+///   app's [AppScreen.actions]: Comment and Threads on the open app's
+///   notice ([AppScreen.notice], Android) or App › Comment (⇧⌘K) and App ›
+///   Threads (⌘K) ([AppScreen.comments], macOS), and the two-finger swipe.
+/// - **Notice.** While the screen is in front (the app resumed or
+///   inactive, and its route on top) it shows the notice named after the
+///   app, and clears it as it leaves, goes under another route or the app
+///   goes to the background. Each time it comes to the front it asks
+///   whether notifications are allowed; when they are not, a thin handle
+///   on the right edge opens the panel instead.
+/// - **Comment mode.** Comment turns it on and puts the [CommentBar] under
+///   the page (the page shrinks above it, so none of it is covered): Whole
+///   app (`composeArtifact`), Threads (the panel) with the open count,
+///   Voice (whether a pick starts dictation, reported to
+///   [AppScreen.onDictateChanged]) and ✕ (comment mode off); back, Escape
+///   and the menu's Comment end it too, closing the panel first when it is
+///   open over the bar. Comment while the panel is open puts the bar in its
+///   place. A composer the bar led to opens the panel's peek in the bar's
+///   place, at the bar's height, and closing it goes back to the bar.
+/// - **Toasts.** A reply from the agent for this app, or a new question
+///   from it, shows a snack bar that fades on its own, while the screen is
+///   in front: View opens the reply's thread (the panel when the change had
+///   several) or the shell's questions.
+/// - **First-run hint.** With [AppScreen.firstRunHint] and a notice, a
+///   card over the page once it is ready says where Comment and Threads are
+///   (on the notice, or on the edge handle when notifications are off),
+///   until it is dismissed or an action is used; [AppScreen.onHintShown] is
+///   called as it first shows.
+/// - **Panel.** A two-finger swipe left, Threads, the edge handle, or
+///   (macOS) App › Threads (⌘K) opens it and turns comment mode on; a swipe
 ///   right, back, Escape or ⌘K closes it and turns comment mode off (left
 ///   on while the comment bar is up, which the panel then shows again). While
 ///   the shell's composer is open comment mode is the shell's: opening or
@@ -58,7 +77,8 @@ import 'working_chip.dart';
 ///   360 px side panel. While a composer is open it shrinks to a peek with
 ///   the mic and Send.
 /// - **Dictation.** A pick (the composer opening) starts dictation when
-///   [AppSettings.dictateComments] is on; heard words replace what
+///   [AppSettings.dictateComments] is on (or Voice turned it on); heard
+///   words replace what
 ///   dictation added to the composer's text.
 /// - **Working chip and timing** ([ChangeTracker], [WorkingChip]). Each
 ///   change is kept by its thread, from the shell's `sent` or the worker's
@@ -96,8 +116,12 @@ class AppScreen extends StatefulWidget {
     this.clock = const SystemClock(),
     this.onReady,
     this.comments,
-    this.commentButtonDy,
-    this.onCommentButtonMoved,
+    this.notice,
+    this.actions,
+    this.initialAction,
+    this.firstRunHint = false,
+    this.onHintShown,
+    this.onDictateChanged,
     this.onRetry,
   });
 
@@ -121,18 +145,31 @@ class AppScreen extends StatefulWidget {
   /// first).
   final ValueChanged<Ready>? onReady;
 
-  /// The app's App › Comments command, which the screen registers its
-  /// panel toggle with while it is shown. Without it, the screen installs
-  /// its own macOS menu bar ([ClaxMenuBar]).
+  /// The app's App › Comment and App › Threads commands, which the screen
+  /// registers its toggles with while it is shown. Without it, the screen
+  /// installs its own macOS menu bar ([ClaxMenuBar]).
   final CommentsCommand? comments;
 
-  /// Where the comment button starts: its bottom edge's height above the
-  /// page's bottom; null for [CommentButton.defaultDy].
-  final double? commentButtonDy;
+  /// The open app's notice, shown while the screen is in front; null where
+  /// there is none (macOS), and then no edge handle is shown either.
+  final AppNoticeSlot? notice;
 
-  /// The comment button was dragged to this height, for the caller to
-  /// keep.
-  final ValueChanged<double>? onCommentButtonMoved;
+  /// Comment and Threads asked for this app (the notice's actions).
+  final Stream<AppAction>? actions;
+
+  /// An action to take as the screen opens (a notice's, for an app that
+  /// was not on screen).
+  final AppAction? initialAction;
+
+  /// Whether to show the first-run hint.
+  final bool firstRunHint;
+
+  /// The first-run hint showed, for the caller to keep.
+  final VoidCallback? onHintShown;
+
+  /// Voice in the comment bar changed whether a pick starts dictation, for
+  /// the caller to keep.
+  final ValueChanged<bool>? onDictateChanged;
 
   /// Runs the failed change of thread `tid` of app `aid` again, posting
   /// nothing, and answers whether a change was queued; null when the app
@@ -173,7 +210,20 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   // was up (closing the composer then closes the panel again).
   var _bar = false;
   var _peekFromBar = false;
-  late double _buttonDy;
+
+  /// Whether a pick starts dictation (Voice).
+  late bool _dictate = widget.settings.dictateComments;
+
+  // The notice: whether it can be seen (null until asked), the app's title
+  // it shows, and the first-run hint.
+  bool? _noticeAllowed;
+  Future<String>? _title;
+  var _hint = false;
+  var _hintAsked = false;
+  var _hintReported = false;
+
+  /// The open questions the shell last counted; null before its first.
+  int? _questions;
 
   // The panel.
   var _open = false;
@@ -198,9 +248,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       artifact: widget.aid,
       now: widget.clock.now,
     );
-    _buttonDy = widget.commentButtonDy ?? CommentButton.defaultDy;
     _comments = widget.comments ?? (_ownComments = CommentsCommand());
-    _comments.register(_toggleOpen);
+    _comments.register(_toggleOpen, comment: _toggleComment);
     _swipe = TwoFingerSwipe(
       left: () => _setOpen(true),
       right: () => _setOpen(false),
@@ -210,6 +259,10 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       ..add(widget.surface.messages.listen(_onMessage))
       ..add(widget.surface.faults.listen(_onFault))
       ..add(widget.worker.listen(_onWorker));
+    if (widget.actions case final actions?) _subs.add(actions.listen(_act));
+    if (widget.initialAction case final a?) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _act(a));
+    }
     WidgetsBinding.instance.addObserver(this);
     _lifecycleShown = _shownIn(WidgetsBinding.instance.lifecycleState);
     unawaited(widget.surface.load(AppScreen.appUrl(widget.base, widget.aid)));
@@ -250,6 +303,41 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     if (visible == _toldVisible) return;
     _toldVisible = visible;
     widget.surface.setVisible(visible);
+    if (visible) {
+      unawaited(_showNotice());
+    } else {
+      widget.notice?.clear(this);
+    }
+  }
+
+  /// Asks whether the notice can be seen, and shows it when it can and
+  /// the screen is still in front.
+  Future<void> _showNotice() async {
+    final notice = widget.notice;
+    if (notice == null) return;
+    final allowed = await notice.allowed();
+    if (!mounted) return;
+    setState(() {
+      _noticeAllowed = allowed;
+      if (widget.firstRunHint && !_hintAsked) {
+        _hintAsked = true;
+        _hint = true;
+      }
+    });
+    if (!allowed || _toldVisible != true) return;
+    final title = await (_title ??= _loadTitle());
+    if (!mounted || _toldVisible != true) return;
+    notice.show(this, widget.aid, title);
+  }
+
+  Future<String> _loadTitle() async {
+    try {
+      final t = (await widget.api.getArtifact(widget.aid)).artifact.title;
+      if (t.trim().isNotEmpty) return t;
+    } on Object {
+      // The notice names it generically.
+    }
+    return 'Your app';
   }
 
   late final CommentsCommand _comments;
@@ -258,9 +346,37 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   /// it none.
   CommentsCommand? _ownComments;
 
-  /// App › Comments (⌘K): ends comment mode when the panel or the bar is
+  /// App › Threads (⌘K): ends comment mode when the panel or the bar is
   /// up, else opens the panel.
   void _toggleOpen() => _wantComment ? _closeTop() : _setOpen(true);
+
+  /// App › Comment (⇧⌘K): ends comment mode when the panel or the bar is
+  /// up, else turns it on with the bar.
+  void _toggleComment() {
+    if (_wantComment) {
+      _setBar(false);
+      _setOpen(false);
+    } else {
+      _setBar(true);
+    }
+  }
+
+  /// Comment or Threads, from the notice: comment mode on with the bar (in
+  /// the panel's place unless a composer is open), or the threads panel.
+  void _act(AppAction a) {
+    if (!mounted) return;
+    if (_hint) setState(() => _hint = false);
+    switch (a) {
+      case AppAction.comment:
+        _setBar(true);
+        if (_draft == null) _setOpen(false);
+      case AppAction.threads:
+        setState(() => _tab = PanelTab.threads);
+        _setOpen(true);
+      case AppAction.open:
+        break;
+    }
+  }
 
   /// Closes what is on top: the panel, else the comment bar.
   void _closeTop() => _open ? _setOpen(false) : _setBar(false);
@@ -268,6 +384,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    widget.notice?.clear(this);
     _comments.unregister(_toggleOpen);
     _ownComments?.dispose();
     for (final s in _subs) {
@@ -322,7 +439,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
             _peekFromBar = false;
           }
         });
-        if (picked && widget.settings.dictateComments) {
+        if (picked && _dictate) {
           unawaited(_startDictation());
         }
         if (closed) unawaited(_stopDictation());
@@ -343,9 +460,16 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         setState(() => _changes.sendFailed(thread, text));
       case Notice():
         _snack(m.text);
-      case QuestionsMsg() || InspectionMsg():
-        // Questions are shown by the shell's own sheet, and an app view is
-        // never inspected.
+      case QuestionsMsg(:final open):
+        // The shell shows the questions in its own sheet; one that lands
+        // while the app is open is told in a toast.
+        final before = _questions;
+        _questions = open;
+        if (before != null && open > before) {
+          _toast('Clax has a question', () => _call(const OpenQuestions()));
+        }
+      case InspectionMsg():
+        // An app view is never inspected.
         break;
     }
   }
@@ -385,7 +509,21 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
           );
         }
       case WorkerReplied():
-        setState(_changes.workerReplied);
+        // The chip ends with its change; the reply is told in a toast.
+        final threads = _changes.running;
+        setState(() {
+          _changes.workerReplied();
+          _changes.dismiss();
+        });
+        _toast(
+          'Clax replied',
+          threads.length == 1
+              ? () => _openThread(threads.single)
+              : () {
+                  setState(() => _tab = PanelTab.threads);
+                  _setOpen(true);
+                },
+        );
       case WorkerFailed(:final reason):
         setState(() => _changes.workerFailed(reason));
       case WorkerCancelled():
@@ -433,7 +571,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
             aid: widget.aid,
             tid: id,
             voice: widget.voice,
-            autoDictate: widget.settings.dictateComments,
+            autoDictate: _dictate,
             label: label,
             onPreview: (n) {
               Navigator.of(route).pop();
@@ -450,6 +588,28 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     ScaffoldMessenger.maybeOf(context)
       ?..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text(text), action: action));
+  }
+
+  /// How long a toast stays before it fades.
+  static const toastFor = Duration(seconds: 4);
+
+  /// A toast about something that landed for this app, with View; only
+  /// while the screen is in front.
+  void _toast(String text, VoidCallback view) {
+    if (_toldVisible != true) return;
+    ScaffoldMessenger.maybeOf(context)
+      ?..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          key: const ValueKey('app-toast'),
+          content: Text(text),
+          duration: toastFor,
+          // A snack bar with an action stays until dismissed by default.
+          persist: false,
+          behavior: SnackBarBehavior.floating,
+          action: SnackBarAction(label: 'View', onPressed: view),
+        ),
+      );
   }
 
   // --- the panel ---
@@ -478,23 +638,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     }
   }
 
-  // --- the comment button and bar ---
-
-  void _onButtonTap() {
-    unawaited(HapticFeedback.selectionClick());
-    if (_wantComment) {
-      _setBar(false);
-      _setOpen(false);
-    } else {
-      _setBar(true);
-    }
-  }
-
-  void _onButtonLongPress() {
-    unawaited(HapticFeedback.mediumImpact());
-    setState(() => _tab = PanelTab.threads);
-    _setOpen(true);
-  }
+  // --- the comment bar ---
 
   void _setBar(bool on) {
     if (!mounted || on == _bar) return;
@@ -504,9 +648,9 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     }
   }
 
-  void _onButtonMoved(double dy) {
-    setState(() => _buttonDy = dy);
-    widget.onCommentButtonMoved?.call(dy);
+  void _toggleDictate() {
+    setState(() => _dictate = !_dictate);
+    widget.onDictateChanged?.call(_dictate);
   }
 
   int get _openThreads => _threads.where((t) => t.status == 'open').length;
@@ -668,9 +812,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
 
   Widget _page(BuildContext context, bool wide) {
     final scheme = Theme.of(context).colorScheme;
-    final underPanel = _open && !wide;
     final bar = _bar && !_open && _draft == null && !_covered;
-    final button = !_covered && _draft == null && !underPanel && !bar;
     return KeyedSubtree(
       key: _pageKey,
       child: ColoredBox(
@@ -684,7 +826,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
                 // inset.
                 bottom: !bar && (!_open || wide),
                 right: !_open || !wide,
-                child: _pageStack(context, button: button),
+                child: _pageStack(context),
               ),
             ),
             if (bar)
@@ -695,6 +837,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
                   setState(() => _tab = PanelTab.threads);
                   _setOpen(true);
                 },
+                dictate: _dictate,
+                onVoice: _toggleDictate,
                 onClose: () => _setBar(false),
               ),
           ],
@@ -703,7 +847,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     );
   }
 
-  Widget _pageStack(BuildContext context, {required bool button}) => Stack(
+  Widget _pageStack(BuildContext context) => Stack(
     fit: StackFit.expand,
     children: [
       Listener(
@@ -748,26 +892,66 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
             ),
           ),
         ),
-      if (!_open && !_covered)
+      // Only where the notice cannot be seen: the way in then.
+      if (!_open && !_covered && _noticeAllowed == false)
         Positioned(
           right: 0,
           top: 0,
           bottom: 0,
           child: Center(child: _handle(context)),
         ),
-      if (button)
-        Positioned.fill(
-          child: CommentButton(
-            commenting: _wantComment,
-            threadCount: _openThreads,
-            onTap: _onButtonTap,
-            onLongPress: _onButtonLongPress,
-            dy: _buttonDy,
-            onMoved: _onButtonMoved,
-          ),
-        ),
+      if (_hint && !_covered)
+        Positioned(left: 16, right: 16, bottom: 16, child: _hintCard(context)),
     ],
   );
+
+  Widget _hintCard(BuildContext context) {
+    if (!_hintReported) {
+      _hintReported = true;
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => widget.onHintShown?.call(),
+      );
+    }
+    final theme = Theme.of(context);
+    final text = _noticeAllowed == false
+        ? 'Notifications are off for Clax, so tap the handle on the right '
+              'edge to comment on this app or see its threads. Allow '
+              'notifications to use Clax’s notification instead.'
+        : 'Pull down your notifications and tap Comment or Threads to '
+              'comment on this app or see its threads.';
+    return Material(
+      key: const ValueKey('first-run-hint'),
+      color: theme.colorScheme.inverseSurface,
+      elevation: 6,
+      borderRadius: BorderRadius.circular(12),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              text,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.onInverseSurface,
+              ),
+            ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                key: const ValueKey('hint-dismiss'),
+                style: TextButton.styleFrom(
+                  foregroundColor: theme.colorScheme.inversePrimary,
+                ),
+                onPressed: () => setState(() => _hint = false),
+                child: const Text('Got it'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   Widget _cover(BuildContext context) {
     final theme = Theme.of(context);

@@ -12,6 +12,7 @@ import 'package:clax_app/app.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/daemon/supervisor.dart';
+import 'package:clax_app/platform/app_notice.dart';
 import 'package:clax_app/platform/secure_key.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/app_screen.dart';
@@ -24,6 +25,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'agent/loop_support.dart';
+import 'support/fake_app_notice.dart';
 import 'support/fake_supervisor.dart';
 import 'support/fake_surface.dart';
 import 'support/fake_voice.dart';
@@ -48,6 +50,7 @@ class _Rig {
     AppSettings? settings,
     this.cliSupported = false,
     this.webInspector = false,
+    this.notice,
   }) : dir = Directory.systemTemp.createTempSync('app-test-'),
        key = _Key(key) {
     if (settings != null) {
@@ -60,6 +63,9 @@ class _Rig {
   final Directory dir;
   final _Key key;
   final bool cliSupported;
+
+  /// The open app's notice; none (as on macOS) when null.
+  final FakeAppNotice? notice;
 
   /// Whether the app gets a [WebViewInspector] over fake surfaces
   /// ([inspectorSurfaces]).
@@ -111,6 +117,7 @@ class _Rig {
     supportDir: dir.path,
     prompts: PromptBuilder(rootBundle),
     cliSupported: cliSupported,
+    notice: notice,
     inspector: webInspector
         ? WebViewInspector(
             surface: (_) {
@@ -401,7 +408,7 @@ void main() {
   });
 
   testWidgets(
-    'on macOS the app owns the menu bar; App > Comments works only with an '
+    'on macOS the app owns the menu bar; App > Threads works only with an '
     'app open',
     (tester) async {
       final menus = <Object?>[];
@@ -420,11 +427,11 @@ void main() {
       );
       await pumpApp(tester, _Rig(key: 'sk-ant-x'));
       await up(tester);
-      expect(_findItem(menus.last, 'Comments')!['enabled'], isFalse);
+      expect(_findItem(menus.last, 'Threads')!['enabled'], isFalse);
 
       final aid = rig.api.seedArtifact('Runs', {'index.html': _page});
       await openApp(tester, aid);
-      final item = _findItem(menus.last, 'Comments')!;
+      final item = _findItem(menus.last, 'Threads')!;
       expect(item['enabled'], isTrue);
       await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
         'flutter/menu',
@@ -442,7 +449,7 @@ void main() {
       await tester.binding.handlePopRoute();
       await tester.pumpAndSettle();
       expect(find.byType(AppScreen), findsNothing);
-      expect(_findItem(menus.last, 'Comments')!['enabled'], isFalse);
+      expect(_findItem(menus.last, 'Threads')!['enabled'], isFalse);
     },
     variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );
@@ -523,29 +530,106 @@ void main() {
     expect(again.js, contains(const LoadVersion(1).toJs()));
   });
 
-  testWidgets("the comment button's place is kept for later app screens and "
-      'launches', (tester) async {
-    final r = _Rig(key: 'sk-ant-x');
-    File('${r.dir.path}/settings.json')
-        .writeAsStringSync('{"comment_button_dy": 140}');
+  testWidgets('the first app screen of an install shows the hint, once; '
+      "the bar's Voice is kept", (tester) async {
+    final r = _Rig(key: 'sk-ant-x', notice: FakeAppNotice());
     await pumpApp(tester, r);
     await up(tester);
     final aid = rig.api.seedArtifact('Runs', {'index.html': _page});
     await openApp(tester, aid);
     var screen = tester.widget<AppScreen>(find.byType(AppScreen));
-    expect(screen.commentButtonDy, 140);
-    screen.onCommentButtonMoved!(260);
+    expect(screen.firstRunHint, isTrue);
+    expect(screen.notice, isNotNull);
+    screen.onHintShown!();
+    screen.onDictateChanged!(false);
     await tester.pump();
     await tester.binding.handlePopRoute();
     await pumpRoute(tester);
     await tester.tap(find.text('Runs'));
     await pumpRoute(tester);
     screen = tester.widget<AppScreen>(find.byType(AppScreen));
-    expect(screen.commentButtonDy, 260);
-    expect(
-      jsonDecode(File('${r.dir.path}/settings.json').readAsStringSync()),
-      containsPair('comment_button_dy', 260),
+    expect(screen.firstRunHint, isFalse);
+    final saved = jsonDecode(
+      File('${r.dir.path}/settings.json').readAsStringSync(),
     );
+    expect(saved, containsPair('app_hint_seen', true));
+    expect(saved, containsPair('dictate_comments', false));
+  });
+
+  testWidgets('without a notice (macOS) there is no hint', (tester) async {
+    await pumpApp(tester, _Rig(key: 'sk-ant-x'));
+    await up(tester);
+    final aid = rig.api.seedArtifact('Runs', {'index.html': _page});
+    await openApp(tester, aid);
+    final screen = tester.widget<AppScreen>(find.byType(AppScreen));
+    expect(screen.firstRunHint, isFalse);
+    expect(screen.notice, isNull);
+  });
+
+  testWidgets("the notice's actions reach the app on top; another app's open "
+      'it first; the body brings its app back to the top', (tester) async {
+    final notice = FakeAppNotice();
+    await pumpApp(tester, _Rig(key: 'sk-ant-x', notice: notice));
+    await up(tester);
+    final runs = rig.api.seedArtifact('Runs', {'index.html': _page});
+    final notes = rig.api.seedArtifact('Notes', {'index.html': _page});
+    await openApp(tester, runs);
+    expect(notice.shown, '$runs Runs');
+
+    notice.tap(runs, AppAction.threads);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('app-panel')), findsOneWidget);
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+
+    notice.tap(notes, AppAction.comment);
+    await pumpRoute(tester);
+    final top = tester
+        .widgetList<AppScreen>(find.byType(AppScreen, skipOffstage: false))
+        .last;
+    expect(top.aid, notes);
+    expect(top.initialAction, AppAction.comment);
+    rig.surfaces.last.push(
+      Ready(artifact: notes, version: 1, latest: 1, file: 'index.html'),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('comment-bar')), findsOneWidget);
+    expect(notice.shown, '$notes Notes');
+
+    // A page over the app: the notice's body brings the app back.
+    unawaited(
+      tester
+          .state<NavigatorState>(find.byType(Navigator))
+          .push(MaterialPageRoute<void>(builder: (_) => const Text('over'))),
+    );
+    await tester.pumpAndSettle();
+    expect(notice.shown, isNull);
+    notice.tap(notes, AppAction.open);
+    await tester.pumpAndSettle();
+    expect(find.text('over'), findsNothing);
+    expect(notice.shown, '$notes Notes');
+    expect(
+      tester.widgetList(find.byType(AppScreen, skipOffstage: false)),
+      hasLength(2),
+      reason: 'not opened again',
+    );
+  });
+
+  testWidgets('a notice tap that launched Clax acts once the daemon is up', (
+    tester,
+  ) async {
+    final notice = FakeAppNotice();
+    final r = _Rig(key: 'sk-ant-x', notice: notice);
+    final aid = r.api.seedArtifact('Runs', {'index.html': _page});
+    notice.launch = AppNoticeTap(aid, AppAction.threads);
+    await pumpApp(tester, r);
+    expect(find.byType(AppScreen), findsNothing);
+    // The app opens as the daemon comes up; its cover spins meanwhile.
+    rig.supervisor.set(Up(endpoint(port: 7999, pid: 100)));
+    await pumpRoute(tester);
+    final screen = tester.widget<AppScreen>(find.byType(AppScreen));
+    expect(screen.aid, aid);
+    expect(screen.initialAction, AppAction.threads);
   });
 
   testWidgets('a WebViewInspector is kept in the root, under the app, and '

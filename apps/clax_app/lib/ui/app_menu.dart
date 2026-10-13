@@ -3,29 +3,36 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
-/// What App › Comments (⌘K) runs: the open app screen registers its panel
-/// toggle here, and the menu item is disabled while none is registered.
+/// What App › Threads (⌘K) and App › Comment (⇧⌘K) run: the open app
+/// screen registers its panel toggle and its comment-mode toggle here, and
+/// the menu items are disabled while none is registered.
 ///
 /// Listeners hear of a change in a microtask, never synchronously, because
 /// the app screen registers while it is being built and unregisters while
 /// it is being disposed, when the menu bar above it cannot rebuild.
 class CommentsCommand extends ChangeNotifier {
   VoidCallback? _toggle;
+  VoidCallback? _comment;
   var _disposed = false;
 
-  /// The registered toggle, or null.
+  /// The registered panel toggle (Threads), or null.
   VoidCallback? get toggle => _toggle;
 
-  /// Makes [toggle] the command, replacing any other.
-  void register(VoidCallback toggle) {
+  /// The registered comment-mode toggle (Comment), or null.
+  VoidCallback? get comment => _comment;
+
+  /// Makes [toggle] and [comment] the commands, replacing any others.
+  void register(VoidCallback toggle, {VoidCallback? comment}) {
     _toggle = toggle;
+    _comment = comment;
     _notifyLater();
   }
 
-  /// Clears the command when it is still [toggle].
+  /// Clears the commands when [toggle] is still registered.
   void unregister(VoidCallback toggle) {
     if (_toggle != toggle) return;
     _toggle = null;
+    _comment = null;
     _notifyLater();
   }
 
@@ -41,7 +48,9 @@ class CommentsCommand extends ChangeNotifier {
 }
 
 /// The macOS menu bar: the app menu (About, Services, Hide, Quit, as the
-/// platform provides them) and App › Comments (⌘K) running [comments].
+/// platform provides them), App › Comment (⇧⌘K) and App › Threads (⌘K)
+/// running [comments]. They are the macOS way into comment mode and the
+/// threads panel, since nothing of Clax's is drawn over an app.
 /// Flutter allows one menu bar at a time, so the app installs one, above
 /// every screen. The key equivalent works while the WebView has the
 /// keyboard focus, where Flutter's shortcuts do not reach.
@@ -85,7 +94,16 @@ class ClaxMenuBar extends StatelessWidget {
           label: 'App',
           menus: [
             PlatformMenuItem(
-              label: 'Comments',
+              label: 'Comment',
+              shortcut: const SingleActivator(
+                LogicalKeyboardKey.keyK,
+                meta: true,
+                shift: true,
+              ),
+              onSelected: comments.comment,
+            ),
+            PlatformMenuItem(
+              label: 'Threads',
               shortcut: const SingleActivator(
                 LogicalKeyboardKey.keyK,
                 meta: true,
