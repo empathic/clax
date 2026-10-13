@@ -1,8 +1,9 @@
 // Per-viewer, per-artifact permission state (permissions.d.ts). Grants persist
 // in localStorage under `clax.grants.v1:<aid>:<viewer public ID>`, except
-// `sample`'s, which lasts for the view (sample.d.ts: the first call in a view
-// asks); a denial or a dismissed prompt lasts for the page load only. One
-// dialog at a time.
+// `sample`'s, which the daemon keeps per app until the owner revokes it
+// (caps/sample.ts reads and saves it), so here it lasts for the view; a
+// denial or a dismissed prompt lasts for the page load only. One dialog at a
+// time.
 import { CAPABILITIES, type Declared, type Served, consentGated, isAvailable } from "./availability";
 
 export type PermissionState = "granted" | "prompt" | "denied" | "unavailable";
@@ -19,8 +20,8 @@ const ASKS: Record<string, string> = {
 /** The dialog of a capability asked on its own. */
 const ALONE: Record<string, Prompt> = {
   sample: {
-    title: "Let this page ask Claude?",
-    body: "Each request this page sends to Claude is paid for by this machine's Anthropic API key. Clax asks again the next time this page loads.",
+    title: "Let this app ask Claude?",
+    body: "Each request this app sends to Claude is paid for by this machine's Anthropic API key, within a daily spending cap for the app. Clax keeps your answer for this app until you revoke it.",
     allow: "Allow",
     deny: "Don't allow",
   },
@@ -78,6 +79,17 @@ export class Grants {
       if (s !== "unavailable") out[n] = s;
     }
     return out;
+  }
+
+  /** Marks `name` granted for this view without asking (a grant kept
+   * elsewhere, such as the daemon's for `sample`); never stored here. */
+  allow(name: string): void {
+    this.granted.add(name);
+  }
+
+  /** Drops this view's grant of `name`, so its next use asks again. */
+  forget(name: string): void {
+    this.granted.delete(name);
   }
 
   /** Why a consent-gated write cannot go ahead: `forbidden` after "Don't
