@@ -29,6 +29,14 @@ describe("the bridge outside the inspect view", () => {
     expect(console.error).toBe(pageConsoleError);
   });
 
+  it("runs no tests", async () => {
+    send({ type: "clax:test", requestId: "t1", files: [] });
+    send({ type: "clax:inspect", requestId: "u0", settleMs: 0 });
+    await vi.waitFor(() => expect(posted.filter(m => m.type === "clax:inspection")).toHaveLength(1), { timeout: 3000 });
+    expect(posted.filter(m => m.type === "clax:tests")).toEqual([]);
+    posted.length = 0;
+  });
+
   it("still answers an inspection, with no errors kept", async () => {
     console.error("not kept");
     send({ type: "clax:inspect", requestId: "u1", settleMs: 0 });

@@ -59,6 +59,9 @@
 //   request, and only in the shape below (the page shares the bridge's
 //   window, so it can answer in the bridge's place: it can describe only
 //   itself). Anywhere else `inspect` answers an error and asks nothing.
+//   `runTests({files, testMs, totalMs})` asks the bridge to run the draft's
+//   test files (`bridge/src/harness.ts`) and posts the results as `tests`,
+//   under the same rules.
 // - Questions (spec 2026-10-12-flutter-app-round2-design R§10.2): the
 //   owner's open agent questions about the artifact are the shell's own
 //   question cards (`q/QuestionCard.svelte`), which a browser shows at the
@@ -121,6 +124,11 @@ export type HostMessage =
    * why there is none. */
   | { type: "inspection"; png: string; errors: InspectError[]; failed: string[]; text: string; title: string; height: number }
   | { type: "inspection"; error: string }
+  /** The inspect view's answer to `runTests`: how many tests `passed`, each
+   * that `failed` (or test file that did not load) with why, how many were
+   * `skipped` for lack of time. Or `error`, why there was no run. */
+  | { type: "tests"; passed: number; failed: { name: string; error: string }[]; skipped: number }
+  | { type: "tests"; error: string }
   /** How many of the owner's questions about the artifact are `open`, and
    * whether the questions sheet is `showing`, posted whenever either
    * changes (see Questions above). */
@@ -172,6 +180,11 @@ export type ClaxHost = {
    * absent), its screenshot at most `maxBytes` (`INSPECT_MAX_BYTES`):
    * `inspection` answers. A later call replaces an earlier one. */
   inspect(p: { settleMs?: number; maxBytes?: number }): void;
+  /** In the inspect view, asks the page to run the draft's test `files`
+   * (`tests/<name>.test.js`, at most `TEST_FILES`) with the bridge's harness,
+   * each test for at most `testMs`, the run for at most `totalMs`: `tests`
+   * answers. A later call replaces an earlier one. */
+  runTests(p: { files: string[]; testMs?: number; totalMs?: number }): void;
   /** Shows the questions sheet. With `question` (an ID), shows it with that
    * question's card in focus as soon as the shell knows it open: the app may
    * hear of a question before the shell's own feed does, so the request
@@ -200,6 +213,13 @@ const INSPECT_ERROR_CHARS = 501;
 const INSPECT_TEXT_CHARS = 3072;
 const INSPECT_TITLE_CHARS = 200;
 const INSPECT_KINDS = new Set(["error", "unhandledrejection", "console"]);
+/** `runTests`' bounds, and what its answer carries at most. */
+export const TEST_FILES = 50;
+const TEST_FILE = /^tests\/[A-Za-z0-9_\-./]{1,200}\.test\.js$/;
+const TEST_MS_MAX = 30_000;
+const TEST_TOTAL_MS_MAX = 120_000;
+const TEST_FAILED = 50;
+const TEST_NAME_CHARS = 201;
 /** What the composer calls the whole artifact in the app, and says of its
  * screenshot (as `view/whole-comment.ts` does in a browser). */
 const WHOLE_APP = "The whole app";
@@ -262,6 +282,22 @@ function inspected(m: Record<string, unknown>, maxBytes: number): HostMessage {
   const failed = (Array.isArray(m.failed) ? m.failed : []).filter((u): u is string => typeof u === "string").slice(-INSPECT_ERRORS).map(u => u.slice(0, INSPECT_ERROR_CHARS));
   const height = typeof m.height === "number" && Number.isFinite(m.height) && m.height >= 0 ? m.height : 0;
   return { type: "inspection", png: base64(png), errors, failed, text: str(m.text, INSPECT_TEXT_CHARS), title: str(m.title, INSPECT_TITLE_CHARS), height };
+}
+
+const count = (v: unknown) => (typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null);
+
+/** The host message for the page's answer `m` to a test run: only the fields
+ * and sizes `tests` names, whatever else the page sent. */
+export function testsMessage(m: Record<string, unknown>): HostMessage {
+  if (typeof m.error === "string") return { type: "tests", error: m.error.slice(0, INSPECT_ERROR_CHARS) || "the test run failed" };
+  const passed = count(m.passed);
+  const skipped = count(m.skipped);
+  if (passed === null || skipped === null || !Array.isArray(m.failed)) return { type: "tests", error: "the page sent no test results" };
+  const failed = m.failed
+    .filter((f): f is { name: string; error: string } => !!f && typeof f === "object" && typeof f.name === "string" && typeof f.error === "string")
+    .slice(0, TEST_FAILED)
+    .map(f => ({ name: f.name.slice(0, TEST_NAME_CHARS), error: f.error.slice(0, INSPECT_ERROR_CHARS) }));
+  return { type: "tests", passed, failed, skipped };
 }
 
 /** Installs `window.claxHost` over `ctl`, and, from `init` on, posts every
@@ -442,6 +478,12 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       post(inspected(m as unknown as Record<string, unknown>, maxBytes));
       return;
     }
+    if (m?.type === "clax:tests") {
+      if (testRun === null || m.requestId !== testRun) return;
+      testRun = null;
+      post(testsMessage(m as unknown as Record<string, unknown>));
+      return;
+    }
     if (m?.type === "clax:pick-start" && typeof m.pickId === "string" && m.desc) {
       picked.clear();
       picked.set(m.pickId, m.desc);
@@ -453,6 +495,8 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   // The inspection asked of the page, until it answers.
   let inspection: { requestId: string; maxBytes: number } | null = null;
   let inspections = 0;
+  // The test run asked of the page, until it answers.
+  let testRun: string | null = null;
   // The shell's own trusted presses and releases, where and when.
   let shellPresses: { x: number; y: number; at: number }[] = [];
   const onPress = (e: Event) => {
@@ -703,6 +747,18 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       const maxBytes = bounded(p?.maxBytes, 1, INSPECT_MAX_BYTES_MAX, INSPECT_MAX_BYTES);
       inspection = { requestId: `inspect-${++inspections}`, maxBytes };
       ctl.send({ type: "clax:inspect", requestId: inspection.requestId, settleMs, maxBytes });
+    },
+    runTests: p => {
+      if (nonce === null) return;
+      if (!inspecting) { post({ type: "tests", error: "this view is not the inspect view" }); return; }
+      const files = p?.files;
+      if (!Array.isArray(files) || !files.length || files.length > TEST_FILES || !files.every(f => typeof f === "string" && TEST_FILE.test(f) && !f.split("/").includes(".."))) {
+        post({ type: "tests", error: `files is a list of 1 to ${TEST_FILES} paths tests/<name>.test.js` });
+        return;
+      }
+      if (!ctl.gate.open) { post({ type: "tests", error: "the page has not loaded" }); return; }
+      testRun = `test-${++inspections}`;
+      ctl.send({ type: "clax:test", requestId: testRun, files: [...files], testMs: bounded(p.testMs, 1, TEST_MS_MAX, 5000), totalMs: bounded(p.totalMs, 1, TEST_TOTAL_MS_MAX, 30_000) });
     },
     openQuestions: p => {
       if (!dock) return;
