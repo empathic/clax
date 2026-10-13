@@ -91,54 +91,51 @@ class AskTool implements Tool {
     'ask',
     'Ask the person one to four questions in Clax and wait for the answers '
         '(up to timeout_s; at most ${askWaitNewApp.inSeconds} s for a new '
-        'app, ${askWaitChange.inSeconds} s for a change; null: the most). '
+        'app, ${askWaitChange.inSeconds} s for a change; omitted: the most). '
         'Each question has a short header (at most 12 characters) and two to '
         'four options (label, optional description, preview text, '
-        'recommended) or null options for a free-text answer; multi_select '
+        'recommended), or no options for a free-text answer; multi_select '
         'allows several; other (default true) lets the person type an Other '
         'answer. Ask at most once a run. If the result says call_again, call '
         'ask again with only question_id to keep waiting, or with cancel '
         'true to withdraw it. The answers come back in reply, in the '
         "person's own words.",
     objectSchema({
-      'questions': {
-        'anyOf': [
-          {'type': 'array', 'items': _questionSchema},
-          {'type': 'null'},
-        ],
-        'description': 'One to four questions; null with question_id.',
-      },
-      'question_id': nullable(
+      'questions': Optional({
+        'type': 'array',
+        'items': _questionSchema,
+        'description': 'One to four questions; omitted with question_id.',
+      }),
+      'question_id': optional(
         'string',
         description: 'Keep waiting on the question this run asked.',
       ),
-      'timeout_s': nullable('integer', description: 'Seconds to wait.'),
-      'cancel': nullable(
+      'timeout_s': optional('integer', description: 'Seconds to wait.'),
+      'cancel': optional(
         'boolean',
         description: 'With question_id: withdraw the question.',
       ),
     }),
+    // Not strict: its questions alone would take most of the request's
+    // optional-property cap (strictLimits). call checks its arguments and
+    // the daemon checks the questions.
+    strict: false,
   );
 
   static final _questionSchema = objectSchema({
     'question': {'type': 'string'},
     'header': {'type': 'string'},
-    'options': {
-      'anyOf': [
-        {
-          'type': 'array',
-          'items': objectSchema({
-            'label': {'type': 'string'},
-            'description': nullable('string'),
-            'preview': nullable('string'),
-            'recommended': nullable('boolean'),
-          }),
-        },
-        {'type': 'null'},
-      ],
-    },
-    'multi_select': nullable('boolean'),
-    'other': nullable('boolean'),
+    'options': Optional({
+      'type': 'array',
+      'items': objectSchema({
+        'label': {'type': 'string'},
+        'description': optional('string'),
+        'preview': optional('string'),
+        'recommended': optional('boolean'),
+      }),
+    }),
+    'multi_select': optional('boolean'),
+    'other': optional('boolean'),
   });
 
   @override

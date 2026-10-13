@@ -25,7 +25,10 @@ const toolOrder = [
 ///
 /// A [strict] tool's input is validated by the API against [inputSchema];
 /// its schema sets `additionalProperties: false` and requires every
-/// property (an optional one is `anyOf` its type and `null`). An [eager]
+/// property except those made with [optional], which may be left out. A
+/// strict schema has no `anyOf` and no `null` type: the API caps union
+/// types and optional properties across a request's strict tools
+/// ([strictLimits]). An [eager]
 /// tool's input streams before it is whole (`eager_input_streaming`); the
 /// API cannot validate such input, so an eager tool is never strict and
 /// checks its own input.
@@ -62,19 +65,37 @@ class ToolSpec {
   };
 }
 
-/// An object schema with [properties], all required and no others.
+/// An object schema with [properties], all required except those wrapped
+/// in [optional], and no others.
 Map<String, Object?> objectSchema(Map<String, Object?> properties) => {
   'type': 'object',
-  'properties': properties,
-  'required': properties.keys.toList(),
+  'properties': {
+    for (final e in properties.entries)
+      e.key: switch (e.value) {
+        final Optional o => o.schema,
+        final v => v,
+      },
+  },
+  'required': [
+    for (final e in properties.entries)
+      if (e.value is! Optional) e.key,
+  ],
   'additionalProperties': false,
 };
 
-/// A property of JSON type [type] that may also be null.
-Map<String, Object?> nullable(String type, {String? description}) => {
-  'anyOf': [
-    {'type': type},
-    {'type': 'null'},
-  ],
-  'description': ?description,
-};
+/// A property [objectSchema] leaves out of `required`; the tool reads a
+/// missing key as null.
+final class Optional {
+  const Optional(this.schema);
+
+  final Map<String, Object?> schema;
+}
+
+/// An optional property of JSON type [type].
+Optional optional(String type, {String? description}) =>
+    Optional({'type': type, 'description': ?description});
+
+/// The Messages API's caps across the strict tools of one request: the
+/// count of strict tools, of optional properties and of properties with
+/// union types (`anyOf` or a list of types).
+const strictLimits = (tools: 20, optional: 24, unions: 16);

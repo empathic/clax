@@ -60,9 +60,9 @@ class RenderTool implements Tool {
         'db_write ops, over a copy of the app\'s documents) and loads it '
         'as the person would. Returns a screenshot of the first screen, '
         'console_errors, failed_requests, and a text outline of what is '
-        'visible. file: a page other than index.html, or null. Render '
+        'visible. file: a page other than index.html, or omitted. Render '
         'after your writes and before finish; a run has only a few renders.',
-    objectSchema({'file': nullable('string')}),
+    objectSchema({'file': optional('string')}),
   );
 
   RunState? _state;

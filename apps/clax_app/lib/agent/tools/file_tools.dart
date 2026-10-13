@@ -69,12 +69,12 @@ class ReadFileTool implements Tool {
   final spec = ToolSpec(
     'read_file',
     "Reads lines of a draft file. from_line is 1-based (null: 1); at most "
-        '$maxReadLines lines or 64 KiB a call (null max_lines: as many as '
+        '$maxReadLines lines or 64 KiB a call (no max_lines: as many as '
         'fit); truncated says more lines follow.',
     objectSchema({
       'path': {'type': 'string'},
-      'from_line': nullable('integer'),
-      'max_lines': nullable('integer'),
+      'from_line': optional('integer'),
+      'max_lines': optional('integer'),
     }),
   );
 
@@ -253,8 +253,8 @@ class SetMetaTool implements Tool {
         'capabilities_json is the full declaration as a JSON object, as '
         "publish's capabilities; null keeps the current value of either.",
     objectSchema({
-      'title': nullable('string'),
-      'capabilities_json': nullable('string'),
+      'title': optional('string'),
+      'capabilities_json': optional('string'),
     }),
   );
 
