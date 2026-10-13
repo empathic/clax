@@ -74,11 +74,21 @@
 //   module has told any). The question module loads only in an owner's
 //   browser, after the first paint: until it has told a change, no
 //   `questions` message is posted. The inspect view has no sheet.
+// - Device capabilities (`caps/device-link.ts`): outside the inspect view the
+//   host links itself as the way to the app for `notify`, `share`, `files`,
+//   `camera` and `location`. Each call the page makes is posted as `device
+//   {id, cap, method, args}` (calls made before `init` wait for it), and the
+//   app answers with `deviceResult({id, ok, value})` or `deviceResult({id,
+//   ok: false, error: {code, message}})`. The inspect view links nothing, so
+//   there `use()` resolves null for them.
+// - `openRoute(hash)` moves the page to a fragment (`#route`), as a
+//   notification's tap asks.
 // Its styles go in with it: the shell links no stylesheet a lazy chunk
 // imports (`vite.shell.config.ts`, `inlineCss`).
 import appCss from "./app.css?inline";
 import { getArtifact } from "../api";
 import { acceptFromFrame } from "../bridge-link";
+import { type DeviceCall, answerDevice, linkDevice } from "../caps/device-link";
 import { hostArrival } from "../caps/gesture";
 import { visibility } from "../visibility";
 import { now } from "../clock";
@@ -114,7 +124,10 @@ export type HostMessage =
   /** How many of the owner's questions about the artifact are `open`, and
    * whether the questions sheet is `showing`, posted whenever either
    * changes (see Questions above). */
-  | { type: "questions"; open: number; showing: boolean };
+  | { type: "questions"; open: number; showing: boolean }
+  /** A device capability call of the page, for the app to make and answer
+   * with `deviceResult` (see Device capabilities above). */
+  | ({ type: "device" } & DeviceCall);
 /** What goes on the channel: a `HostMessage` with this load's nonce. */
 export type Posted = HostMessage & { nonce: string };
 
@@ -169,6 +182,11 @@ export type ClaxHost = {
   openQuestions(p?: { question?: string }): void;
   /** Closes the questions sheet, and drops a waiting `openQuestions`. */
   closeQuestions(): void;
+  /** The app's answer to a `device` message: `{id, ok: true, value}` or
+   * `{id, ok: false, error: {code, message}}`. */
+  deviceResult(a: unknown): void;
+  /** Moves the page to fragment `hash` (`#` and at most 512 characters). */
+  openRoute(hash: string): void;
 };
 
 /** `inspect`'s defaults and bounds (`bridge/src/inspect.ts` has the same). */
@@ -265,6 +283,12 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     const ch = w.ClaxHost;
     if (nonce !== null && ch && typeof ch.postMessage === "function") ch.postMessage(JSON.stringify({ ...m, nonce } satisfies Posted));
   };
+  // Device calls made before `init`, posted by it.
+  const deviceQueue: DeviceCall[] = [];
+  const unlinkDevice = inspecting ? () => {} : linkDevice(c => {
+    if (nonce === null) deviceQueue.push(c);
+    else post({ type: "device", ...c });
+  });
   const s = () => ctl.state.get();
 
   // The page's last reported scroll position, per page.
@@ -611,6 +635,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       if (ready) post(ready);
       lastQuestions = "";
       postQuestions();
+      for (const c of deviceQueue.splice(0)) post({ type: "device", ...c });
     },
     enterCommentMode: () => { if (!inspecting && !s().commenting) ctl.toggleComment(); },
     exitCommentMode: () => { if (s().commenting) ctl.toggleComment(); },
@@ -691,11 +716,17 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       else awaited = id;
     },
     closeQuestions: () => { if (dock) dismissQuestions(); },
+    deviceResult: a => answerDevice(a),
+    openRoute: hash => {
+      if (typeof hash !== "string" || !hash.startsWith("#") || hash.length > 512) return;
+      win.location.hash = hash;
+    },
   };
   Object.defineProperty(w, "claxHost", { value: host, configurable: true });
 
   return () => {
     unsubscribe();
+    unlinkDevice();
     win.removeEventListener("input", onInput);
     win.removeEventListener("message", onMessage);
     win.removeEventListener("pointerdown", onPress, true);
