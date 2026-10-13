@@ -18,6 +18,7 @@ import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/inspector_surface.dart';
 import 'package:clax_app/ui/launcher.dart';
+import 'package:clax_app/ui/making_screen.dart' show sayFirstOutput;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -287,7 +288,7 @@ void main() {
     rig.backend.gate = Completer<void>();
     await submit(tester, 'a tracker for my runs');
     await tester.pump(const Duration(milliseconds: 400));
-    expect(rig.timings.started, [sayUsable]);
+    expect(rig.timings.started, [sayFirstOutput, sayUsable]);
     expect(find.text('Writing your app'), findsOneWidget);
 
     rig.backend.gate!.complete();

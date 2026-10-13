@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'dart:async';
 import 'dart:convert';
 
@@ -343,6 +344,9 @@ class _Rig {
   /// Whether the screen makes its own (platform) preview.
   var webView = false;
 
+  /// Given to the screen as its onMade.
+  void Function(BuildContext context, String aid, Uint8List? lastFrame)? onMade;
+
   Future<void> pump(WidgetTester tester) async {
     await tester.binding.setSurfaceSize(const Size(400, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -365,6 +369,7 @@ class _Rig {
                             },
                       timings: timings,
                       clock: clock,
+                      onMade: onMade,
                     ),
                   ),
                 ),
@@ -500,6 +505,28 @@ void _screen() {
     expect(rig.make.calls, 2);
     expect(rig.results, hasLength(2));
     expect(rig.results.last, isA<Made>().having((m) => m.aid, 'aid', 'a1'));
+  });
+
+  testWidgets('with onMade the made app goes to it, with the last render, '
+      'in place of the pop', (tester) async {
+    final rig = _Rig();
+    final handed = <(String, Uint8List?)>[];
+    rig.onMade = (context, aid, frame) {
+      handed.add((aid, frame));
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute<void>(builder: (_) => const Text('the app')),
+        result: Made(aid),
+      );
+    };
+    await rig.pump(tester);
+    rig.progress(const PartialFile('index.html', '<p>hi'));
+    rig.progress(Inspected(_png, 0));
+    await tester.pump();
+    rig.make.result.complete('a1');
+    await _settle(tester);
+    expect(handed, [('a1', _png)]);
+    expect(find.text('the app'), findsOneWidget);
+    expect(rig.results.single, isA<Made>().having((m) => m.aid, 'aid', 'a1'));
   });
 
   testWidgets('Retry starts a fresh attempt: no old preview, the timing '

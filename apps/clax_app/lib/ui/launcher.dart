@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
+import '../agent/timings.dart';
 import '../clax/api.dart';
 import '../platform/voice.dart';
 import 'inbox_screen.dart';
@@ -13,7 +15,9 @@ import 'new_sheet.dart';
 ///
 /// New opens the New sheet (listening at once when dictation is available);
 /// a submitted request goes to [make] behind the making screen, and the
-/// artifact ID it returns goes to [open]. A request the person has not
+/// artifact ID it returns goes to [handOver] (which puts the app's route in
+/// the making screen's place), else to [open] once the making screen has
+/// closed. A request the person has not
 /// made yet (the sheet closed, Cancel, or Edit after a failure) is kept for
 /// the next New.
 ///
@@ -41,6 +45,8 @@ class Launcher extends StatefulWidget {
     this.onOpenTarget,
     this.onOpenQuestion,
     this.stream,
+    this.timings,
+    this.handOver,
     this.retryDelay,
   });
 
@@ -63,6 +69,17 @@ class Launcher extends StatefulWidget {
   /// Shows question [qid] for an answer, from the inbox. When null, a
   /// question about an app opens that app through [onOpenTarget].
   final void Function(String qid)? onOpenQuestion;
+
+  /// Where the making screen records say→first-output; null records
+  /// nothing.
+  final Timings? timings;
+
+  /// Opens the new app [aid] in the making screen's place, from that
+  /// screen's [context], with the last render's screenshot ([lastFrame])
+  /// to show until the app's page is up (`MakingScreen.onMade`). When null,
+  /// the making screen closes and [open] opens the app.
+  final void Function(BuildContext context, String aid, Uint8List? lastFrame)?
+  handOver;
 
   /// The app's shared stream; when null the launcher opens its own and
   /// closes it as it goes.
@@ -255,6 +272,8 @@ class _LauncherState extends State<Launcher> {
           request: request,
           make: widget.make,
           openSettings: widget.openSettings,
+          timings: widget.timings,
+          onMade: widget.handOver,
         ),
       ),
     );
@@ -262,7 +281,7 @@ class _LauncherState extends State<Launcher> {
     switch (result) {
       case Made(:final aid):
         _draft = '';
-        widget.open(aid);
+        if (widget.handOver == null) widget.open(aid);
       case EditRequest():
         await _newApp();
       case null:
