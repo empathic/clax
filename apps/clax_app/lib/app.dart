@@ -661,7 +661,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   Future<String> _make(
     String request,
     Future<void> cancelled,
-    void Function(MakeStage stage) stage,
+    void Function(MakeUpdate update) stage,
   ) async {
     final settings = _settings;
     final backend = _s.backend(settings, _s.key);
@@ -679,6 +679,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     // event, publishing once it calls finish; the notification shows the
     // latest step.
     void progress(AgentProgress p) {
+      stage(MakeProgress(p));
       if (p case ToolStarted(name: 'finish')) {
         stage(MakeStage.publishing);
       } else if (p is AttemptStarted || p is ToolStarted || p is Narration) {
@@ -768,10 +769,12 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           request: request,
           make: _make,
           openSettings: () => unawaited(_openSettings()),
+          timings: _s.timings,
+          onMade: _handOver,
         ),
       ),
     );
-    if (result case Made(:final aid)) _open(aid);
+    if (result case Made()) return;
   }
 
   /// The title of [aid], or [fallback] when the daemon cannot say.
@@ -875,43 +878,62 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   }
 
   void _open(String aid, {String? thread, int? version}) {
-    final settings = _settings;
     final nav = _nav.currentState;
     if (nav == null) return;
-    _openAids.add(aid);
+    unawaited(nav.push(_appRoute(aid, thread: thread, version: version)));
+  }
+
+  /// Puts new app [aid] in the place of the making screen whose [context]
+  /// this is, so nothing between them shows; [lastFrame], the making
+  /// screen's last render, covers the app until its page is up.
+  void _handOver(BuildContext context, String aid, Uint8List? lastFrame) {
     unawaited(
-      nav
-          .push(
-            MaterialPageRoute<void>(
-              builder: (_) => _AppPage(
-                endpoint: _endpoint,
-                surface: (base) => _aimed(
-                  _s.surface(base),
-                  aid,
-                  thread: thread,
-                  version: version,
-                ),
-                screen: (base, surface) => AppScreen(
-                  key: ValueKey(base),
-                  aid: aid,
-                  base: base,
-                  api: _api,
-                  surface: surface,
-                  voice: _s.voice,
-                  settings: settings,
-                  timings: _s.timings,
-                  worker: _runtime.worker.events,
-                  onRetry: _runtime.worker.retry,
-                  onReady: (r) => _onReady(aid, r),
-                  comments: _comments,
-                  commentButtonDy: settings.commentButtonDy,
-                  onCommentButtonMoved: (dy) => unawaited(_keepButtonDy(dy)),
-                ),
-              ),
-            ),
-          )
-          .whenComplete(() => _openAids.removeAt(_openAids.lastIndexOf(aid))),
+      Navigator.of(context)
+          .pushReplacement(_appRoute(aid, cover: lastFrame), result: Made(aid)),
     );
+  }
+
+  /// The route of app [aid]'s screen (see [_open], [_handOver]); it counts
+  /// in [_openAids] while it is pushed.
+  Route<void> _appRoute(
+    String aid, {
+    String? thread,
+    int? version,
+    Uint8List? cover,
+  }) {
+    final settings = _settings;
+    _openAids.add(aid);
+    final route = MaterialPageRoute<void>(
+      builder: (_) => _AppPage(
+        aid: aid,
+        cover: cover,
+        endpoint: _endpoint,
+        surface: (base) =>
+            _aimed(_s.surface(base), aid, thread: thread, version: version),
+        screen: (base, surface) => AppScreen(
+          key: ValueKey(base),
+          aid: aid,
+          base: base,
+          api: _api,
+          surface: surface,
+          voice: _s.voice,
+          settings: settings,
+          timings: _s.timings,
+          worker: _runtime.worker.events,
+          onRetry: _runtime.worker.retry,
+          onReady: (r) => _onReady(aid, r),
+          comments: _comments,
+          commentButtonDy: settings.commentButtonDy,
+          onCommentButtonMoved: (dy) => unawaited(_keepButtonDy(dy)),
+        ),
+      ),
+    );
+    unawaited(
+      route.popped.whenComplete(
+        () => _openAids.removeAt(_openAids.lastIndexOf(aid)),
+      ),
+    );
+    return route;
   }
 
   /// [surface], which once [aid]'s page is up selects [thread] (when the
@@ -965,6 +987,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       api: _api,
       open: _open,
       make: _make,
+      timings: _s.timings,
+      handOver: _handOver,
       voice: _s.voice,
       openSettings: () => unawaited(_openSettings()),
       needsKey: _needsKey,
@@ -1003,14 +1027,20 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
 
 /// The open app's page: a surface for the daemon's address, loaded again
 /// when the daemon is restarted on that address, and replaced (with the
-/// screen) when the address changes.
+/// screen) when the address changes. A [cover] (the making screen's last
+/// render) is shown over it until the shell's first `ready` for [aid], or
+/// until the page fails to load.
 class _AppPage extends StatefulWidget {
   const _AppPage({
+    required this.aid,
+    this.cover,
     required this.endpoint,
     required this.surface,
     required this.screen,
   });
 
+  final String aid;
+  final Uint8List? cover;
   final ValueListenable<DaemonEndpoint?> endpoint;
   final AppSurface Function(Uri base) surface;
   final Widget Function(Uri base, AppSurface surface) screen;
@@ -1023,6 +1053,8 @@ class _AppPageState extends State<_AppPage> {
   late Uri _base;
   late int _pid;
   late AppSurface _surface;
+  Uint8List? _cover;
+  final _watch = <StreamSubscription<Object?>>[];
 
   @override
   void initState() {
@@ -1030,14 +1062,44 @@ class _AppPageState extends State<_AppPage> {
     final e = widget.endpoint.value!;
     _base = e.base;
     _pid = e.pid;
-    _surface = widget.surface(_base);
+    _cover = widget.cover;
+    _surface = _watched(widget.surface(_base));
     widget.endpoint.addListener(_onEndpoint);
   }
 
   @override
   void dispose() {
     widget.endpoint.removeListener(_onEndpoint);
+    _unwatch();
     super.dispose();
+  }
+
+  /// Watches [s] for the end of the cover.
+  AppSurface _watched(AppSurface s) {
+    _unwatch();
+    if (_cover == null) return s;
+    void uncover() {
+      _unwatch();
+      if (mounted) setState(() => _cover = null);
+    }
+
+    _watch
+      ..add(
+        s.messages.listen((m) {
+          if (m case Ready(:final artifact) when artifact == widget.aid) {
+            uncover();
+          }
+        }),
+      )
+      ..add(s.faults.listen((_) => uncover()));
+    return s;
+  }
+
+  void _unwatch() {
+    for (final w in _watch) {
+      unawaited(w.cancel());
+    }
+    _watch.clear();
   }
 
   void _onEndpoint() {
@@ -1048,7 +1110,7 @@ class _AppPageState extends State<_AppPage> {
       setState(() {
         _base = e.base;
         _pid = e.pid;
-        _surface = widget.surface(_base);
+        _surface = _watched(widget.surface(_base));
       });
     } else {
       _pid = e.pid;
@@ -1057,7 +1119,30 @@ class _AppPageState extends State<_AppPage> {
   }
 
   @override
-  Widget build(BuildContext context) => widget.screen(_base, _surface);
+  Widget build(BuildContext context) {
+    final screen = widget.screen(_base, _surface);
+    final cover = _cover;
+    if (cover == null) return screen;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        screen,
+        ColoredBox(
+          key: const ValueKey('made-cover'),
+          color: Theme.of(context).colorScheme.surface,
+          child: SafeArea(
+            child: Image.memory(
+              cover,
+              fit: BoxFit.fitWidth,
+              alignment: Alignment.topCenter,
+              gaplessPlayback: true,
+              errorBuilder: (_, _, _) => const SizedBox.shrink(),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 }
 
 class _Splash extends StatelessWidget {

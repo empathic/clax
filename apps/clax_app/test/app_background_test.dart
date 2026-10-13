@@ -18,6 +18,8 @@ import 'package:clax_app/platform/pending_make.dart';
 import 'package:clax_app/platform/secure_key.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/app_screen.dart';
+import 'package:clax_app/ui/host_protocol.dart' show Ready;
+import 'package:clax_app/ui/making_screen.dart' show MakingScreen;
 import 'package:clax_app/ui/read_consent_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -581,6 +583,52 @@ void main() {
       final created = api.calls.singleWhere((c) => c.name == 'createArtifact');
       expect((created.args['request']! as PublishRequest).title, 'Runs');
       expect(await api.listDrafts(), isEmpty);
+    });
+
+    testWidgets('a make streams to the making screen, which hands over to '
+        'the new app in its place, covered by the last render until ready', (
+      tester,
+    ) async {
+      turns = _Turns();
+      await pumpApp(tester);
+      final gate = Completer<void>();
+      turns!.steps
+        ..add((r) async {
+          r.onProgress?.call(const Narration('Laying out the tracker'));
+          await gate.future;
+          return _calls(make);
+        })
+        ..add((_) async => _calls(done));
+      await submit(tester, 'a tracker for my runs');
+      await pumpRoute(tester);
+      final making = tester.state<State<MakingScreen>>(
+        find.byType(MakingScreen),
+      );
+      expect(
+        find.text('Laying out the tracker'),
+        findsOneWidget,
+        reason: "the run's progress reaches the making screen",
+      );
+      final makingRoute = ModalRoute.of(making.context)!;
+      gate.complete();
+      await pumpUntil(tester, () => work.calls.contains('stop'));
+      await pumpRoute(tester);
+      expect(find.byType(MakingScreen), findsNothing);
+      expect(find.byType(AppScreen), findsOneWidget);
+      expect(makingRoute.isActive, isFalse);
+      // The app's route took the making route's place: one pop goes home.
+      final cover = find.byKey(const ValueKey('made-cover'));
+      expect(cover, findsOneWidget);
+      final aid = (await api.listArtifacts()).single.id;
+      surfaces.last.push(
+        Ready(artifact: aid, version: 1, latest: 1, file: 'index.html'),
+      );
+      await tester.pump();
+      expect(cover, findsNothing);
+      await tester.binding.handlePopRoute();
+      await pumpRoute(tester);
+      expect(find.byType(AppScreen), findsNothing);
+      expect(find.text('New app'), findsOneWidget);
     });
 
     testWidgets('a turn cut by the background network block waits for the app '

@@ -240,7 +240,8 @@ class MakingLog {
 /// Runs [make] for [request] while showing [makingTitle], what the run is
 /// doing ([MakingLog.line] and the steps before it), the seconds elapsed
 /// (with "Usually under a minute" after [slowAfter]) and Cancel. Pops
-/// [Made] with the new artifact's ID.
+/// [Made] with the new artifact's ID, or, with [onMade], hands the new app
+/// to it instead (which replaces this route, completing it with [Made]).
 ///
 /// - **Preview.** While `index.html` is written, a [PreviewView] from
 ///   [preview] shows it, loaded at most four times a second
@@ -264,6 +265,7 @@ class MakingScreen extends StatefulWidget {
     this.openSettings,
     this.preview,
     this.timings,
+    this.onMade,
     this.clock = const SystemClock(),
   });
 
@@ -277,6 +279,13 @@ class MakingScreen extends StatefulWidget {
 
   /// Where [sayFirstOutput] is recorded; null records nothing.
   final Timings? timings;
+
+  /// Takes the new app [aid] in place of the pop, with the screen's
+  /// context and the last render's screenshot ([MakingLog.png]; null when
+  /// none), to put the app's route in this one's place
+  /// (`pushReplacement(…, result: Made(aid))`).
+  final void Function(BuildContext context, String aid, Uint8List? lastFrame)?
+  onMade;
 
   /// Spaces the preview's loads.
   final Clock clock;
@@ -383,7 +392,11 @@ class _MakingScreenState extends State<MakingScreen> {
       if (!mounted || !identical(_cancel, cancel)) return;
       _tick?.cancel();
       _cancel = null;
-      Navigator.of(context).pop(Made(aid));
+      if (widget.onMade case final onMade?) {
+        onMade(context, aid, _log.png);
+      } else {
+        Navigator.of(context).pop(Made(aid));
+      }
     } catch (e) {
       if (!current()) return;
       _tick?.cancel();

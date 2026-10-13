@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:clax_app/agent/backend.dart';
+import 'package:clax_app/agent/timings.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/ui/inbox_screen.dart';
@@ -140,6 +141,49 @@ void main() {
     expect(asked, ['a tracker for my runs']);
     expect(opened, ['made123']);
     expect(find.textContaining('Making'), findsNothing);
+  });
+
+  testWidgets('with handOver the made app goes to it, not to open, and the '
+      'making screen records on the timings', (tester) async {
+    final api = _api();
+    final handed = <String>[];
+    final timings = _NoTimings();
+    final made = Completer<String>();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Launcher(
+          api: api,
+          open: opened.add,
+          make: (r, cancelled, stage) => made.future,
+          voice: FakeVoice.unsupported('No speech here'),
+          timings: timings,
+          handOver: (context, aid, frame) {
+            handed.add(aid);
+            Navigator.of(context).pushReplacement(
+              MaterialPageRoute<void>(builder: (_) => const Text('the app')),
+              result: Made(aid),
+            );
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('New app'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'a timer');
+    await tester.pump();
+    await tester.tap(find.text('Make it'));
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pump(const Duration(seconds: 1));
+    expect(
+      tester.widget<MakingScreen>(find.byType(MakingScreen)).timings,
+      same(timings),
+    );
+    made.complete('made123');
+    await tester.pumpAndSettle();
+    expect(handed, ['made123']);
+    expect(opened, isEmpty);
+    expect(find.text('the app'), findsOneWidget);
   });
 
   testWidgets('making shows the request, the seconds, and Cancel', (
@@ -801,4 +845,10 @@ void main() {
       );
     });
   });
+}
+
+/// Timings that keep nothing.
+class _NoTimings implements Timings {
+  @override
+  void noSuchMethod(Invocation i) {}
 }
