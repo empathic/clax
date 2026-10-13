@@ -151,12 +151,13 @@ const raiseOf = (c: Cap, loc: string): Access =>
   A(c.type, [c.action], c.type === "clax-ask" ? undefined : [loc], c.type === "clax-db" && c.action === "write" ? "interact" : undefined);
 const placeOf = (c: Cap, loc: string) => (c.type === "clax-ask" ? null : loc);
 
-/** The capabilities a creator may raise an agent with at artifact `aid`,
- * given what they hold there (`holds`) and their own elevation of it now
- * (`mine`): `on` where `mine` raises it there. Creating and asking are not
- * at an artifact, so no creator raises them. */
+/** The capabilities a creator may raise an agent with at artifact `aid`:
+ * those `holds` (what they may give there, as the daemon answers it) grants
+ * there, which never include creating or asking, neither of which is at an
+ * artifact; `on` where their own elevation of it now (`mine`) raises it
+ * there. */
 export const creatorCaps = (holds: Rights, mine: Rights | null, aid: string) =>
-  CAPS.filter(c => c.type !== "clax-ask" && c.action !== "create" && narrowerOrEqual([raiseOf(c, aid)], holds))
+  CAPS.filter(c => narrowerOrEqual([raiseOf(c, aid)], holds))
     .map(c => ({ ...c, on: raisedIn(mine, c).includes(aid) }));
 
 /** Every capability for the owner's raising of agent `a` at `loc` (`*`,
