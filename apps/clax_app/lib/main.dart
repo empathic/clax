@@ -78,6 +78,8 @@ Future<AppServices> platformServices() async {
   final scratch = Directory('${cache.path}/claude-cli');
   final script = await _agentScript();
   final scripted = switch (script) {
+    // A runner script is a list too; it is the tool loop's, below.
+    List<List<ScriptedCall>>() => null,
     final List<Object> results => ScriptedBackend(results),
     _ => null,
   };
