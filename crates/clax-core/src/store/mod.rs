@@ -69,6 +69,7 @@ pub mod people;
 #[cfg(test)]
 mod plans;
 pub mod questions;
+pub mod sample_grants;
 pub mod sessions;
 pub mod site;
 pub mod threads;
