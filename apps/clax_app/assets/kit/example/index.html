@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pocket Budget</title>
+<link rel="stylesheet" href="./kit/kit.css">
+<style>
+  :root { --k-accent: #0c8f6c; --k-accent-2: #1fb5a0; --k-chart-1: #0c8f6c; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --k-accent: #3ddbb0; --k-accent-2: #2bb6c9; --k-chart-1: #3ddbb0; }
+  }
+  :root[data-theme="dark"] { --k-accent: #3ddbb0; --k-accent-2: #2bb6c9; --k-chart-1: #3ddbb0; }
+  body { background: var(--k-bg); color: var(--k-fg); }
+</style>
+</head>
+<body>
+<script type="module">
+import { html, render, useState } from './kit/preact.js';
+import {
+  App, AppBar, Icon, Section, List, ListItem, Card, Button, IconButton, Field, Sheet, Dialog,
+  Empty, Stat, Chips, SegmentedControl, Fab, Markup, Progress, Badge, toast, useCollection, useDoc, fmt, go,
+} from './kit/kit.js';
+import { area, donut, bar, sparkline } from './kit/chart.js';
+import dayjs from './kit/dates.js';
+
+const CATS = [
+  { value: 'food', label: 'Food', icon: 'utensils', color: '#f08c00' },
+  { value: 'home', label: 'Home', icon: 'home', color: '#4263eb' },
+  { value: 'travel', label: 'Travel', icon: 'plane', color: '#ae3ec9' },
+  { value: 'fun', label: 'Fun', icon: 'sparkles', color: '#e64980' },
+];
+const cat = (v) => CATS.find((c) => c.value === v) || CATS[0];
+
+const seed = [
+  ['Groceries', 'food', 64.2, 0], ['Coffee', 'food', 4.5, 0], ['Rent', 'home', 1200, 3], ['Train', 'travel', 18, 1],
+  ['Cinema', 'fun', 24, 2], ['Dinner', 'food', 52, 4], ['Flight', 'travel', 240, 6], ['Lamp', 'home', 39, 5],
+];
+
+function useSpending() {
+  const col = useCollection('spends', { orderBy: 'at', dir: 'desc' });
+  const [seeded, setSeeded] = useState(false);
+  if (col.ready && !seeded && col.items.length === 0) {
+    setSeeded(true);
+    seed.forEach(([title, c, amount, d]) => col.add({ title, cat: c, amount, at: dayjs().subtract(d, 'day').subtract(d * 3, 'hour').toISOString() }));
+  }
+  return col;
+}
+
+function Home() {
+  const { items } = useSpending();
+  const [budget] = useDoc('settings/main', { budget: 2000 });
+  const [adding, setAdding] = useState(false);
+  const total = items.reduce((a, s) => a + s.amount, 0);
+  const days = [...Array(7)].map((_, i) => dayjs().subtract(6 - i, 'day'));
+  const perDay = days.map((d) => items.filter((s) => dayjs(s.at).isSame(d, 'day')).reduce((a, s) => a + s.amount, 0));
+  return html`
+    <${AppBar} title="Budget" large subtitle=${dayjs().format('MMMM YYYY')}
+      actions=${html`<${IconButton} icon="settings" label="Settings" onClick=${() => go('/settings')} />`} />
+    <div class="k-section" style="margin-top:8px">
+      <${Card} hero>
+        <div class="k-spread">
+          <${Stat} label="Spent this month" value=${fmt.money(total)} />
+          <${Markup} html=${sparkline(perDay, { color: '#fff' })} />
+        </div>
+        <div style="margin-top:14px"><${Progress} value=${total} max=${budget.budget} color="#fff" /></div>
+        <p class="k-footnote k-muted" style="margin-top:8px">${fmt.money(Math.max(0, budget.budget - total))} left of ${fmt.money(budget.budget)}</p>
+      <//>
+    </div>
+    <${Section} title="Last 7 days">
+      <${Card}><${Markup} html=${area({ labels: days.map((d) => d.format('dd')), values: perDay }, { height: 160 })} /><//>
+    <//>
+    <${List} header="Recent">
+      ${items.slice(0, 5).map((s) => html`<${ListItem} key=${s.id} title=${s.title} subtitle=${dayjs(s.at).fromNow()}
+        lead=${cat(s.cat).icon} leadColor=${cat(s.cat).color} trail=${html`<span class="k-num">${fmt.money(s.amount)}</span>`}
+        onClick=${() => go(`/spend/${s.id}`)} />`)}
+    <//>
+    <${Fab} label="Add" onClick=${() => setAdding(true)} />
+    <${AddSheet} open=${adding} onClose=${() => setAdding(false)} />`;
+}
+
+function AddSheet({ open, onClose }) {
+  const { add } = useCollection('spends');
+  const [title, setTitle] = useState('');
+  const [amount, setAmount] = useState(null);
+  const [c, setC] = useState('food');
+  const save = async () => {
+    await add({ title, cat: c, amount, at: new Date().toISOString() });
+    toast(`Added ${title}`, { tone: 'success' });
+    setTitle(''); setAmount(null); onClose();
+  };
+  return html`<${Sheet} open=${open} onClose=${onClose} title="New expense"
+      action=${{ label: 'Add', onClick: save, disabled: !title || !amount }}>
+    <div class="k-stack">
+      <${Field} label="What" value=${title} onChange=${setTitle} placeholder="Coffee" />
+      <${Field} label="Amount" type="number" value=${amount} onChange=${setAmount} placeholder="0.00" />
+      <${Chips} options=${CATS} value=${c} onChange=${(v) => v && setC(v)} wrap />
+    </div>
+  <//>`;
+}
+
+function Activity() {
+  const { items } = useSpending();
+  const [filter, setFilter] = useState(null);
+  const shown = items.filter((s) => !filter || s.cat === filter);
+  return html`
+    <${AppBar} title="Activity" large />
+    <div class="k-section" style="margin:4px 0 0"><${Chips} options=${CATS} value=${filter} onChange=${setFilter} /></div>
+    ${shown.length ? html`<${List}>
+      ${shown.map((s) => html`<${ListItem} key=${s.id} title=${s.title} subtitle=${dayjs(s.at).format('ddd D MMM, HH:mm')}
+        lead=${cat(s.cat).icon} leadColor=${cat(s.cat).color} trail=${fmt.money(s.amount)} onClick=${() => go(`/spend/${s.id}`)} />`)}
+    <//>` : html`<${Empty} icon="wallet" title="No expenses" body="Nothing in this category yet." />`}`;
+}
+
+function Insights() {
+  const { items } = useSpending();
+  const [range, setRange] = useState('month');
+  const by = CATS.map((c) => ({ label: c.label, color: c.color, value: items.filter((s) => s.cat === c.value).reduce((a, s) => a + s.amount, 0) }));
+  const total = by.reduce((a, b) => a + b.value, 0);
+  return html`
+    <${AppBar} title="Insights" large />
+    <div class="k-section" style="margin-top:4px"><${SegmentedControl} options=${[{ value: 'week', label: 'Week' }, { value: 'month', label: 'Month' }, { value: 'year', label: 'Year' }]}
+      value=${range} onChange=${setRange} /></div>
+    <div class="k-section k-grid-2">
+      <${Card}><${Stat} label="Average a day" value=${fmt.money(total / 30)} delta=${-8} deltaLabel="8% vs last" invert /><//>
+      <${Card}><${Stat} label="Biggest" icon="flame" value=${by.slice().sort((a, b) => b.value - a.value)[0].label} /><//>
+    </div>
+    <${Section} title="By category">
+      <${Card}><${Markup} html=${donut({ items: by }, { center: fmt.money(total), centerSub: 'total' })} /><//>
+    <//>
+    <${Section} title="Weekly">
+      <${Card}><${Markup} html=${bar({ labels: ['W1', 'W2', 'W3', 'W4'], series: [{ name: 'Needs', values: [420, 380, 510, 300] }, { name: 'Wants', values: [120, 210, 90, 160], color: 'var(--k-chart-4)' }] }, { stacked: true })} /><//>
+    <//>`;
+}
+
+function Detail({ params }) {
+  const { items, remove } = useCollection('spends');
+  const [confirm, setConfirm] = useState(false);
+  const s = items.find((x) => x.id === params.id);
+  if (!s) return html`<${AppBar} title="Expense" back=${true} /><${Empty} title="Not found" />`;
+  return html`
+    <${AppBar} title=${s.title} back=${true} actions=${html`<${IconButton} icon="share" label="Share" />`} />
+    <div class="k-section" style="text-align:center;margin-top:28px">
+      <div class="k-item-lead" style=${`display:grid;width:64px;height:64px;border-radius:20px;margin:0 auto 12px;background:${cat(s.cat).color}`}>
+        <${Icon} name=${cat(s.cat).icon} size=${30} /></div>
+      <h2 class="k-large k-num">${fmt.money(s.amount)}</h2>
+      <p class="k-subhead k-muted">${s.title} · <${Badge}>${cat(s.cat).label}<//></p>
+    </div>
+    <${List}>
+      <${ListItem} title="Date" trail=${dayjs(s.at).format('D MMM YYYY')} lead="calendar" leadColor="none" />
+      <${ListItem} title="When" trail=${dayjs(s.at).fromNow()} lead="clock" leadColor="none" />
+    <//>
+    <${List}><${ListItem} title="Delete expense" destructive onClick=${() => setConfirm(true)} chevron=${false} /><//>
+    <${Dialog} open=${confirm} onClose=${() => setConfirm(false)} title="Delete this expense?" body="This cannot be undone."
+      actions=${[{ label: 'Cancel' }, { label: 'Delete', variant: 'danger', onClick: async () => { await remove(s.id); toast('Deleted'); go('/activity'); } }]} />`;
+}
+
+function Settings() {
+  const [s, save] = useDoc('settings/main', { budget: 2000, alerts: true, currency: 'USD' });
+  return html`
+    <${AppBar} title="Settings" back=${true} />
+    <div class="k-section k-stack">
+      <${Field} label="Monthly budget" type="number" value=${s.budget} onChange=${(v) => save({ ...s, budget: v || 0 })} hint="Resets on the 1st." />
+      <${Field} label="Currency" type="select" value=${s.currency} options=${['USD', 'EUR', 'GBP']} onChange=${(v) => save({ ...s, currency: v })} />
+      <${Field} label="Overspend alerts" type="toggle" value=${s.alerts} onChange=${(v) => save({ ...s, alerts: v })} />
+      <${Button} block variant="gradient" icon="check" onClick=${() => toast('Settings saved', { tone: 'success' })}>Save<//>
+      <${Button} block variant="tonal" onClick=${() => document.documentElement.setAttribute('data-theme', document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark')}>Toggle theme<//>
+    </div>`;
+}
+
+const tabs = [
+  { path: '/', label: 'Home', icon: 'home' },
+  { path: '/activity', label: 'Activity', icon: 'list' },
+  { path: '/insights', label: 'Insights', icon: 'pieChart' },
+];
+
+render(html`<${App} tabs=${tabs} routes=${{
+  '/': Home, '/activity': Activity, '/insights': Insights, '/spend/:id': Detail, '/settings': Settings,
+}} />`, document.body);
+</script>
+</body>
+</html>
