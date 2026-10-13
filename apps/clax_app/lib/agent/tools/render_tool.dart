@@ -54,9 +54,12 @@ const _untitled = 'New app';
 /// deleted after it, so the tests write neither the person's documents nor
 /// the draft's. The run takes at most [testLimit] (each test
 /// [perTestLimit]) and never past the run's wall clock; its result is the
-/// render's `tests`, `{passed, failed: [{name, error}], skipped}`, a run
-/// that could not happen being one failure that says why. Without test
-/// files there is no second load.
+/// render's `tests`, `{passed, failed: [{name, error}], skipped}`, or
+/// `{not_run: why}` when the run could not happen or end (the run's time,
+/// the daemon, a harness that did not answer), which counts as no test
+/// failure. The scratch draft is made while the page is inspected, and
+/// deleted unused when the page check fails. Without test files there is
+/// no second load.
 ///
 /// Each render records the snapshot it uploaded with
 /// [Draft.markRendered]: a render whose page logs uncaught errors, does
@@ -89,7 +92,8 @@ class RenderTool implements Tool {
         'Tests: files tests/<name>.test.js (never loaded by index.html) run '
         'after a clean page check, in a fresh load of index.html over a '
         'scratch copy of the documents, and render returns tests: {passed, '
-        'failed: [{name, error}], skipped}. They use the globals test(name, '
+        'failed: [{name, error}], skipped} (or {not_run: why}). They use '
+        'the globals test(name, '
         'fn), expect(v) (toBe, toEqual, toBeTruthy, toContain, '
         'toBeGreaterThan) and ui (await click(selectorOrText), await '
         'type(selector, text), text(selector?), exists(selector), await '
@@ -160,6 +164,11 @@ class RenderTool implements Tool {
     }
     if (_stopped) return _cancelled();
 
+    // The scratch draft for the tests is made while the page is inspected.
+    final testFiles = [...snap.files.keys.where(_testFile.hasMatch)]..sort();
+    final scratch = testFiles.isEmpty ? null : _makeScratch(s, snap);
+    scratch?.ignore();
+
     // The inspection ends at the first of the run's cancel, the end of its
     // wall clock and [inspectLimit], whether or not the inspector honours
     // the signal it is given.
@@ -195,6 +204,10 @@ class RenderTool implements Tool {
         )
         .then<Object>((i) => i, onError: (Object e) => e);
     final seen = await Future.any<Object>([inspecting, deadline.future]);
+    final uncaught = seen is Inspection ? seen.uncaught.length : -1;
+    if (scratch != null && (uncaught != 0 || _stopped)) {
+      unawaited(scratch.then(_forget, onError: (Object _) {}));
+    }
     if (_stopped) return _cancelled();
     if (seen is! Inspection) {
       s.draft.markRendered(snap, errors: true);
@@ -208,19 +221,15 @@ class RenderTool implements Tool {
     }
     end('inspected');
 
-    final uncaught = seen.uncaught.length;
-    final testFiles = uncaught > 0
-        ? const <String>[]
-        : ([...snap.files.keys.where(_testFile.hasMatch)]..sort());
-    TestRun? tests;
-    if (testFiles.isNotEmpty) {
-      tests = await _runTests(s, snap, testFiles);
+    Object? tests;
+    if (scratch != null && uncaught == 0) {
+      tests = await _runTests(s, scratch, testFiles);
       if (_stopped) return _cancelled();
     }
     s.draft.markRendered(
       snap,
       errors: uncaught > 0,
-      testsFailed: tests != null && tests.failed.isNotEmpty,
+      testsFailed: tests is TestRun && tests.failed.isNotEmpty,
     );
     s.progress?.call(Inspected(seen.png, uncaught));
     return ToolOk({
@@ -235,19 +244,32 @@ class RenderTool implements Tool {
       'docs_copied': _docsCopied,
       'docs_truncated': _docsTruncated,
       if (refusedDocs.isNotEmpty) 'db_refused': refusedDocs,
-      'tests': ?tests?.toJson(),
+      if (tests is TestRun) 'tests': tests.toJson(),
+      if (tests is String) 'tests': {'not_run': tests},
     }, png: seen.png);
   }
 
-  /// Runs [files] on a scratch draft artifact of [snap] (see the class
-  /// comment), deleted after.
-  Future<TestRun> _runTests(
+  /// Makes the scratch draft artifact of [snap] (see the class comment)
+  /// with the staged writes applied; its ID.
+  Future<String> _makeScratch(RunState s, DraftSnapshot snap) async {
+    final info = await api.createDraft(
+      of: s.ctx.artifactId,
+      title: _titleOf(snap, s),
+      capabilities: snap.capabilities,
+      files: snap.files,
+    );
+    _testDraft = info.id;
+    await _writeOps(info.id, snap.stagedDb, []);
+    return info.id;
+  }
+
+  /// Runs [files] on the [scratch] draft, deleted after: the [TestRun], or
+  /// why the tests did not run (a [String]), which is no test failure.
+  Future<Object> _runTests(
     RunState s,
-    DraftSnapshot snap,
+    Future<String> scratch,
     List<String> files,
   ) async {
-    TestRun noRun(String why) =>
-        TestRun(passed: 0, failed: [(name: 'tests', error: why)], skipped: 0);
     String? id;
     final deadline = Completer<String>();
     void end(String why) {
@@ -255,33 +277,24 @@ class RenderTool implements Tool {
     }
 
     try {
-      if (_stopped) return noRun('The run was cancelled.');
-      final info = await api.createDraft(
-        of: s.ctx.artifactId,
-        title: _titleOf(snap, s),
-        capabilities: snap.capabilities,
-        files: snap.files,
-      );
-      id = _testDraft = info.id;
-      await _writeOps(id, snap.stagedDb, []);
-      if (_stopped) return noRun('The run was cancelled.');
-
+      id = await scratch;
+      if (_stopped) return 'The run was cancelled.';
       final all = testLimit + _testSlack;
-      final limit = s.budget.remaining < all ? s.budget.remaining : all;
-      _cancel!.whenCancelled.then((_) => end('The run was cancelled.'));
-      s.budget.whenTimeUp.then(
-        (_) => end(
+      final short = s.budget.remaining < all;
+      final outOfTime =
           'The run is out of time '
           '(${s.budget.caps.wallClock.inSeconds} seconds) before the tests '
-          'ended.',
-        ),
-      );
+          'ended.';
+      _cancel!.whenCancelled.then((_) => end('The run was cancelled.'));
+      s.budget.whenTimeUp.then((_) => end(outOfTime));
       s.budget.clock
-          .delay(limit)
+          .delay(short ? s.budget.remaining : all)
           .then(
             (_) => end(
-              'The tests did not end within ${all.inSeconds} seconds. Look '
-              'for a test or a page script that never ends.',
+              short
+                  ? outOfTime
+                  : 'The tests did not end within ${all.inSeconds} seconds. '
+                        'Look for a test or a page script that never ends.',
             ),
           );
       final running = inspector
@@ -294,14 +307,16 @@ class RenderTool implements Tool {
           )
           .then<Object>((r) => r, onError: (Object e) => e);
       final got = await Future.any<Object>([running, deadline.future]);
+      // A run the deadline stopped answers with the deadline's reason.
+      if (got is! TestRun && deadline.isCompleted) return await deadline.future;
       return switch (got) {
         final TestRun r => r,
-        final String why => noRun(why),
-        final InspectorError e => noRun('The tests did not run: ${e.message}.'),
-        final e => noRun('The tests did not run: $e.'),
+        final String why => why,
+        final InspectorError e => 'The tests did not run: ${e.message}.',
+        final e => 'The tests did not run: $e.',
       };
     } on ClaxApiError catch (e) {
-      return noRun('The tests could not be served: ${e.message}.');
+      return 'The tests could not be served: ${e.message}.';
     } finally {
       end('done');
       if (id != null) {

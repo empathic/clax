@@ -512,7 +512,8 @@ void main() {
       expect(r.draft.lastClean, isNotNull);
     });
 
-    test('a page with uncaught errors runs no tests', () async {
+    test('a page with uncaught errors runs no tests, and the scratch draft '
+        'made meanwhile is deleted', () async {
       final r = Rig(
         files: {'index.html': '<p>a</p>', 'tests/a.test.js': 'test()'},
       );
@@ -523,25 +524,49 @@ void main() {
       expect(out.containsKey('tests'), isFalse);
       expect(r.inspector.testCalls, isEmpty);
       expect(r.draft.lastRenderHadErrors, isTrue);
+      await pumpEventQueue();
+      final drafts = r.named('createDraft').toList();
+      expect(drafts, hasLength(2));
+      expect(r.named('deleteDraft'), hasLength(1));
+      expect(
+        r.named('deleteDraft').single.args['draftId'],
+        isNot(r.draft.draftArtifactId),
+      );
     });
 
-    test('a test run that did not happen is one failure saying why', () async {
+    test('a test run cut by the wall clock is not run and leaves the render '
+        'clean', () async {
+      final r = Rig(
+        files: {'index.html': '<p>a</p>', 'tests/a.test.js': 'test()'},
+      ); // a change: 45 seconds
+      r.clock.advance(const Duration(seconds: 40));
+      r.inspector.hangTests();
+      final out = r.renderNow();
+      await pumpEventQueue();
+      expect(r.inspector.testCalls, hasLength(1));
+      r.clock.advance(const Duration(seconds: 5));
+      final json = okJson(await out);
+      expect(
+        (json['tests']! as Map)['not_run'],
+        contains('out of time (45 seconds)'),
+      );
+      expect(r.draft.lastRenderFailedTests, isFalse);
+      expect(r.draft.lastClean, isNotNull);
+    });
+
+    test('a test run that did not happen is not run, says why, and is no '
+        'test failure', () async {
       final r = Rig(
         files: {'index.html': '<p>a</p>', 'tests/a.test.js': 'test()'},
       );
       r.inspector.failTests(const InspectorError('the page has not loaded'));
       final out = okJson(await r.renderNow());
       expect(out['tests'], {
-        'passed': 0,
-        'failed': [
-          {
-            'name': 'tests',
-            'error': 'The tests did not run: the page has not loaded.',
-          },
-        ],
-        'skipped': 0,
+        'not_run': 'The tests did not run: the page has not loaded.',
       });
-      expect(r.draft.lastRenderFailedTests, isTrue);
+      expect(r.draft.lastRenderFailedTests, isFalse);
+      expect(r.draft.renderedClean, isTrue);
+      expect(r.draft.lastClean, isNotNull);
       expect(r.named('deleteDraft'), hasLength(1));
     });
   });

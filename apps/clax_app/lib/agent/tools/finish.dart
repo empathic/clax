@@ -66,8 +66,8 @@ final class _Ended extends _Step {
 /// capabilities or a staged document write) is published only when its
 /// latest revision rendered without uncaught errors and without failing
 /// tests ([Draft.renderedClean]); a cap stop publishes the last such
-/// render ([Draft.cleanOnBase]); a new app also needs a title and
-/// `index.html`. A refused gate answers the model and the run goes on.
+/// render ([Draft.cleanOnBase]), else the last without uncaught errors;
+/// a new app also needs a title and `index.html`. A refused gate answers the model and the run goes on.
 ///
 /// For a change, in order:
 ///
@@ -249,7 +249,10 @@ class FinishTool implements Tool {
   /// Ends the run at the hard cap [cap] ("6 turns", "45 seconds", …): with
   /// a clean draft on the current base ([Draft.cleanOnBase]) that differs
   /// from the app, publishes that snapshot as `finish` would, with
-  /// [stoppedEarlyReply] and no resolve, so the threads stay open; else
+  /// [stoppedEarlyReply] and no resolve, so the threads stay open; when no
+  /// such render passed its tests, the last render without uncaught errors
+  /// ([Draft.pageCleanOnBase]), its reply adding that some checks failed;
+  /// else
   /// publishes nothing and replies "Couldn't make that change: it ran out
   /// of time (`<cap>`)." [attach] makes it the Toolbox's cap handler.
   Future<RunOutcome> capStop(String cap, {String? narration}) async {
@@ -257,17 +260,20 @@ class FinishTool implements Tool {
     if (s.outcome case final o?) return o;
     await Future<void>.value();
     if (_cancel!.isCancelled) return _set(s, await _cancelled(s));
-    final clean = s.draft.cleanOnBase;
-    final usable =
-        clean != null &&
-        clean.files.containsKey('index.html') &&
+    bool usable(DraftSnapshot? c) =>
+        c != null &&
+        c.files.containsKey('index.html') &&
         (s.ctx.kind == RequestKind.newApp ||
-            clean.changedFrom(_baseFiles!, title: _baseTitle, caps: _baseCaps));
-    if (!usable) {
+            c.changedFrom(_baseFiles!, title: _baseTitle, caps: _baseCaps));
+    final passed = s.draft.cleanOnBase;
+    final clean = usable(passed) ? passed : s.draft.pageCleanOnBase;
+    if (!usable(clean)) {
       return _set(s, await _fail(s, 'it ran out of time ($cap).'));
     }
-    final src = _sourceOfSnapshot(clean);
-    final reply = stoppedEarlyReply(narration, cap);
+    final src = _sourceOfSnapshot(clean!);
+    final reply = identical(clean, passed)
+        ? stoppedEarlyReply(narration, cap)
+        : '${stoppedEarlyReply(narration, cap)} Some of its checks failed.';
     final step = s.ctx.kind == RequestKind.newApp
         ? await _create(s, src, reply, fallbackTitle: true)
         : await _change(s, src, reply, false, canReset: false);
