@@ -69,9 +69,15 @@
   const creatorRaise = (e: PeopleElevation) =>
     CAPS.flatMap(c => e.access.filter(x => x.type === c.type && x.actions.includes(c.action)).flatMap(x => (x.locations ?? ["*"]).map(loc => `${c.label} on ${where(loc)}`)));
   const byName = (g: PeopleElevation["granter"]) => (g.owner ? "the owner" : g.name);
-  /** The note on a raised capability, in its person's view: who raised it, where. */
-  const raisedNote = (by: { who: PeopleElevation["granter"]; at: string[] }[]) =>
-    `Raised by ${by.map(r => `${byName(r.who)}${r.at.includes("*") ? "" : ` on ${r.at.map(where).join(", ")}`}`).join("; by ")} until this session ends`;
+  /** The note on a raised capability, in its person's view: who raised it,
+   * where, and, where the agent's own checkbox still decides the rest, that
+   * turning it off leaves the raises (a raise is added after a narrowing). */
+  const raisedNote = (c: { by: { who: PeopleElevation["granter"]; at: string[] }[]; on: boolean; locked: boolean }) => {
+    const names = c.by.map(r => `${byName(r.who)}${r.at.includes("*") ? "" : ` on ${r.at.map(where).join(", ")}`}`).join("; by ");
+    if (c.locked) return `Raised by ${names} until this session ends`;
+    return c.on ? `Raised by ${names} until this session ends; turning this off leaves the raise on there`
+      : `Off, but still on where raised: by ${names}, until this session ends`;
+  };
   /** The heading of the section event `e`'s control is in: where the
    * keyboard's focus goes when that control goes. */
   const heading = (e: Event) => (e.currentTarget as Element).closest("section")?.querySelector("h4") ?? null;
@@ -191,7 +197,7 @@
             <p class="note">{MACHINE_BOUNDARY}</p>
             <div class="caps">
               {#each agentCaps(who.rights, g, a) as c (c.key)}
-                <label title={c.machineOff && !c.locked ? "Off for the whole machine" : undefined}><input type="checkbox" checked={c.on} disabled={c.locked || c.machineOff} onchange={e => toggle(e, on => api.narrowAgent(a.handle, narrowAgent(who.rights, g, a, c.key, on)))} /> <span>{c.label}{#if c.by.length}<span class="raised">{raisedNote(c.by)}</span>{/if}</span></label>
+                <label title={c.machineOff && !c.locked ? "Off for the whole machine" : undefined}><input type="checkbox" checked={c.on} disabled={c.locked || c.machineOff} onchange={e => toggle(e, on => api.narrowAgent(a.handle, narrowAgent(who.rights, g, a, c.key, on)))} /> <span>{c.label}{#if c.by.length}<span class="raised">{raisedNote(c)}</span>{/if}</span></label>
               {/each}
             </div>
           </details>
