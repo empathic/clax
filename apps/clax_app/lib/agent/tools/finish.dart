@@ -346,7 +346,7 @@ class FinishTool implements Tool {
     String? docsRefused;
     if (src.stagedDb.isNotEmpty) {
       try {
-        docsRefused = await _writeDocs(api, aid, src.stagedDb, src.pins);
+        docsRefused = await writeStagedDocs(api, aid, src.stagedDb, src.pins);
       } on Object catch (e) {
         // An unanswered batch may have run; recovery cannot tell for a new
         // app, so it is reported as not written.
@@ -494,7 +494,7 @@ class FinishTool implements Tool {
         // undoes it: the page never stays live without its data.
         final String? refused;
         try {
-          refused = await _writeDocs(api, aid, src.stagedDb, src.pins);
+          refused = await writeStagedDocs(api, aid, src.stagedDb, src.pins);
         } on ClaxApiError catch (e) {
           if (e.status == 0) rethrow;
           if (e.isNotFound && e.code == 'not_found' && e.body['path'] == null) {
@@ -871,7 +871,7 @@ Future<Set<String>> newerComments(
 /// call that got no answer (status 0) or found no app (404 `not_found`
 /// without a document path); a re-read's other errors are thrown as
 /// they come.
-Future<String?> _writeDocs(
+Future<String?> writeStagedDocs(
   ClaxApi api,
   String aid,
   List<DbOp> ops,
@@ -909,7 +909,7 @@ Future<String?> _writeDocs(
         final doc = now[i];
         if (doc?.version == pins[_path(o)]) {
           next.add(o);
-        } else if (!_holds(doc, o)) {
+        } else if (!holdsWrite(doc, o)) {
           return '${_path(o)} was changed while I worked, and I did not '
               'write over it';
         }
@@ -921,7 +921,7 @@ Future<String?> _writeDocs(
 
 /// Whether [doc] (null: absent) already holds [o]'s write as the daemon
 /// would store it.
-bool _holds(Doc? doc, DbOp o) => switch (o.op) {
+bool holdsWrite(Doc? doc, DbOp o) => switch (o.op) {
   'delete' => doc == null,
   'set' => doc != null && _jsonEquals(doc.data, o.data ?? const {}),
   _ =>

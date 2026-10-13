@@ -154,8 +154,11 @@ typedef _Ran = ({
 /// edit misses ([EditMiss]), or that writes an existing document the
 /// prompt did not show, is asked for once more, naming the failure and
 /// asking for whole files; a publish conflict re-reads the latest version
-/// and runs the change once more; a document conflict after the publish
-/// re-reads those documents and writes once more. A backend [AgentError]
+/// and runs the change once more. Document writes follow `finish`'s rule
+/// ([writeStagedDocs]): after a conflict a write the document already
+/// holds is dropped, and a document someone else changed meanwhile is
+/// never written over: the version before the change is restored and the
+/// change fails. A backend [AgentError]
 /// is never resent, whatever its `retryable` says: backends retry their
 /// own transport failures.
 ///
@@ -404,7 +407,7 @@ class AgentLoop {
       if (r.db.isNotEmpty) {
         String? refused;
         try {
-          refused = await _writeDocs(aid, r.db, const {});
+          refused = await writeStagedDocs(_api, aid, r.db, const {});
         } on ClaxApiError catch (e) {
           refused = e.message;
         }
@@ -1027,7 +1030,7 @@ class AgentLoop {
         }
 
         if (r.db.isNotEmpty) {
-          final refused = await _writeDocs(aid, r.db, shown);
+          final refused = await writeStagedDocs(_api, aid, r.db, shown);
           if (refused != null) {
             if (landed != null) {
               try {
@@ -1180,27 +1183,14 @@ class AgentLoop {
     return (answered: answered, replied: replied, undone: undone);
   }
 
-  /// Whether the documents hold [ops]' writes: a set's document holds its
-  /// data, an update's holds each of its fields, a delete's is gone.
+  /// Whether the documents hold [ops]' writes, as finish judges it
+  /// ([holdsWrite]: an update merged as the daemon merges it).
   Future<bool> _written(String aid, List<DbOp> ops) async {
     final docs = await Future.wait([
       for (final o in ops) _api.getDoc(aid, '${o.collection}/${o.docId}'),
     ]);
     for (var i = 0; i < ops.length; i++) {
-      final o = ops[i];
-      final d = docs[i];
-      final ok = switch (o.op) {
-        'delete' => d == null,
-        'set' => d != null && _jsonEquals(d.data, o.data ?? const {}),
-        _ =>
-          d != null &&
-              (o.data ?? const {}).entries.every(
-                (e) =>
-                    d.data.containsKey(e.key) &&
-                    _jsonEquals(d.data[e.key], e.value),
-              ),
-      };
-      if (!ok) return false;
+      if (!holdsWrite(docs[i], ops[i])) return false;
     }
     return true;
   }
@@ -1283,47 +1273,6 @@ class AgentLoop {
           'was not shown; write only documents shown in the prompt, or new '
           'ones',
         );
-      }
-    }
-  }
-
-  /// Writes [ops] in one batch, each pinned to its version in [versions]
-  /// (none for a document not listed). A conflict re-reads the documents
-  /// and writes once more. Returns null when written, or why the batch
-  /// was refused. Throws the [ClaxApiError] of a batch that got no answer
-  /// (status 0), whose writes may or may not have run.
-  Future<String?> _writeDocs(
-    String aid,
-    List<DbOp> ops,
-    Map<String, int> versions,
-  ) async {
-    var pinned = <String, int?>{
-      for (final o in ops)
-        '${o.collection}/${o.docId}': versions['${o.collection}/${o.docId}'],
-    };
-    for (var attempt = 0; ; attempt++) {
-      try {
-        await _api.batchDocs(aid, [
-          for (final o in ops)
-            DocWrite(
-              op: o.op,
-              collection: o.collection,
-              docId: o.docId,
-              data: o.data,
-              ifVersion: pinned['${o.collection}/${o.docId}'],
-            ),
-        ]);
-        return null;
-      } on ClaxApiError catch (e) {
-        if (e.status == 0) rethrow;
-        if (!e.isConflict || attempt > 0) return e.message;
-        final paths = pinned.keys.toList();
-        final now = await Future.wait([
-          for (final p in paths) _api.getDoc(aid, p),
-        ]);
-        pinned = {
-          for (var i = 0; i < paths.length; i++) paths[i]: now[i]?.version,
-        };
       }
     }
   }
@@ -1491,24 +1440,6 @@ class _Ending implements Tool {
       ended();
     }
   }
-}
-
-bool _jsonEquals(Object? a, Object? b) {
-  if (a is Map && b is Map) {
-    return a.length == b.length &&
-        a.entries.every(
-          (e) => b.containsKey(e.key) && _jsonEquals(e.value, b[e.key]),
-        );
-  }
-  if (a is List && b is List) {
-    if (a.length != b.length) return false;
-    for (var i = 0; i < a.length; i++) {
-      if (!_jsonEquals(a[i], b[i])) return false;
-    }
-    return true;
-  }
-  if (a is num && b is num) return a == b;
-  return a == b;
 }
 
 /// The viewer comments of [t] after its last agent comment: the ones no

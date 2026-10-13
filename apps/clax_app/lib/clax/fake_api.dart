@@ -646,14 +646,22 @@ class FakeClaxApi implements ClaxApi {
           'document ${w.path} exists at version ${have.version}',
         );
       }
-      if (w.op == 'update' && have == null) throw _notFound();
+      if (w.op == 'update' && have == null) {
+        // The daemon's DocNotFound names the document, unlike an app's 404.
+        throw ClaxApiError(
+          status: 404,
+          code: 'not_found',
+          message: 'no document ${w.path}',
+          body: {'code': 'not_found', 'path': w.path},
+        );
+      }
     }
     for (final w in writes) {
       switch (w.op) {
         case 'delete':
           a.docs.remove(w.path);
         case 'update':
-          putDoc(aid, w.path, {...a.docs[w.path]!.data, ...?w.data});
+          putDoc(aid, w.path, _mergePatch(a.docs[w.path]!.data, w.data));
         case 'set':
           putDoc(aid, w.path, w.data ?? const {});
       }
@@ -1938,4 +1946,38 @@ class FakeClaxStream implements ClaxStream {
       );
     }
   }
+}
+
+bool _isDeleteMarker(Object? v) =>
+    v is Map && v.length == 1 && v['__delete__'] == true;
+
+/// [patch] merged into [base] as the daemon's `merged` does
+/// (crates/clax-core/src/store/docs.rs): nested objects merge field by
+/// field, `{"__delete__": true}` removes its field, anything else (arrays
+/// included) replaces it, with markers inside it dropped.
+Map<String, Object?> _mergePatch(
+  Map<String, Object?> base,
+  Map<String, Object?>? patch,
+) {
+  Object? strip(Object? v) => v is Map
+      ? {
+          for (final e in v.entries)
+            if (!_isDeleteMarker(e.value)) '${e.key}': strip(e.value),
+        }
+      : v;
+  final out = Map<String, Object?>.of(base);
+  for (final e in (patch ?? const <String, Object?>{}).entries) {
+    final v = e.value;
+    if (_isDeleteMarker(v)) {
+      out.remove(e.key);
+    } else if (out[e.key] is Map && v is Map) {
+      out[e.key] = _mergePatch(
+        (out[e.key]! as Map).cast<String, Object?>(),
+        v.cast<String, Object?>(),
+      );
+    } else {
+      out[e.key] = strip(v);
+    }
+  }
+  return out;
 }

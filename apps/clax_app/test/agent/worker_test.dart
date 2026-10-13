@@ -653,6 +653,50 @@ void main() {
     expect((await api.getDoc(aid, 'runs/a'))!.data, {'km': 1});
   });
 
+  test('a batch with a nested update and a delete marker that ran but lost '
+      'its answer is found written by recovery', () async {
+    final lossy = LostAnswerApi();
+    api = lossy;
+    final aid = api.seedArtifact('Runs', {'index.html': page});
+    api.putDoc(aid, 'runs/a', {
+      'km': 5,
+      'meta': {'src': 'gps'},
+      'old': 1,
+    });
+    workerWith([
+      changeCalls(
+        reply: 'Keep.',
+        edits: [('Save', 'Keep')],
+        db: const [
+          DbOp(
+            op: 'update',
+            collection: 'runs',
+            docId: 'a',
+            data: {
+              'meta': {'unit': 'km'},
+              'old': {'__delete__': true},
+            },
+          ),
+        ],
+      ),
+    ]).start();
+    await idle();
+    lossy.loseNextBatch = true;
+    final item = api.sendComment(aid, 'Say Keep');
+    await until(
+      () => api.threadOf(aid, item.threadId).comments.length == 2,
+      reason: 'the reply',
+    );
+    await idle();
+    expect(api.callNames, isNot(contains('restoreVersion')));
+    expect(api.currentVersion(aid), 2);
+    expect(api.threadOf(aid, item.threadId).comments.last.body, 'Keep.');
+    expect((await api.getDoc(aid, 'runs/a'))!.data, {
+      'km': 5,
+      'meta': {'src': 'gps', 'unit': 'km'},
+    });
+  });
+
   test('a batch whose pin conflicts with other content fails the change '
       'with the thread open', () async {
     final lossy = LostAnswerApi();
