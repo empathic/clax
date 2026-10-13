@@ -7,7 +7,8 @@ import type { Access, PeopleAgent, PeopleGrant, PeopleInvite, Rights } from "../
 
 /** The line beside per-agent controls: what narrowing one agent of a
  * connected machine does and does not bound. */
-export const MACHINE_BOUNDARY = "Agents on the same machine share its access: the machine is the boundary.";
+export const MACHINE_BOUNDARY =
+  "Each agent has its own credential, so its limits hold against other agents' mistakes. Agents on one machine share its user account, though: the machine is the hard boundary.";
 
 /** One action of one type, as People offers it. */
 export type Cap = { key: string; type: string; action: string; label: string };
