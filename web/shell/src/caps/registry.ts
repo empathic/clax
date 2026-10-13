@@ -21,6 +21,7 @@ export const REGISTRY: Record<string, HandlerFactory> = {
   camera: deviceHandler("camera"),
   location: deviceHandler("location"),
   downloads: downloadsHandler,
+  net: lazyHandler(() => import("./net").then(m => m.netHandler)),
   permissions: permissionsHandler,
   room: lazyHandler(() => import("./room").then(m => m.roomHandler)),
   sample: lazyHandler(() => import("./sample").then(m => m.sampleHandler)),
