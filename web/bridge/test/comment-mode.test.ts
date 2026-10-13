@@ -53,6 +53,22 @@ describe("CommentMode", () => {
     expect(outline().style.display).toBe("block");
   });
 
+  it("drops the outline and the pin, and reports nothing hovered, when the pointer leaves the page", async () => {
+    mode.set(true);
+    fire(document.querySelector("h2")!, "mousemove");
+    await nextFrame();
+    expect(outline().style.display).toBe("block");
+    document.querySelector("h2")!.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: null }));
+    expect(outline().style.display).toBe("none");
+    expect(document.querySelector("clax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".pin")!.style.display).toBe("none");
+    expect(hooks.hover).toHaveBeenLastCalledWith(null);
+    // Moving within the page is not leaving it.
+    fire(document.querySelector("h2")!, "mousemove");
+    await nextFrame();
+    document.querySelector("h2")!.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.querySelector("p") }));
+    expect(outline().style.display).toBe("block");
+  });
+
   it("moves an overlay created before <body> to the end of the document when the mode turns on and when the pin shows", () => {
     const root = document.documentElement;
     const overlay = document.querySelector("clax-overlay")!;
@@ -304,6 +320,45 @@ describe("drawing areas", () => {
     expect(areaBox().style.display).toBe("none");
     at(img, "mouseup", 120, 70);
     expect(hooks.pickArea).not.toHaveBeenCalled();
+  });
+
+  it("drops a drag when the pointer leaves the page with the button up, or the page loses focus", () => {
+    mode.set(true);
+    const img = document.querySelector("#i")!;
+    const leave = (buttons: number) => document.body.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: null, buttons }));
+    at(img, "mousedown", 10, 10);
+    at(img, "mousemove", 110, 60);
+    // Leaving with the button held keeps drawing (the rectangle is clamped to the viewport).
+    leave(1);
+    expect(areaBox().style.display).toBe("block");
+    leave(0);
+    expect(areaBox().style.display).toBe("none");
+    at(img, "mousedown", 10, 10);
+    at(img, "mousemove", 110, 60);
+    window.dispatchEvent(new FocusEvent("blur"));
+    expect(areaBox().style.display).toBe("none");
+    // A release that reaches the page later picks nothing.
+    at(img, "mouseup", 120, 70);
+    expect(hooks.pickArea).not.toHaveBeenCalled();
+  });
+
+  it("ends the capture when a pick hook throws, so the rectangle goes and the next pick starts", () => {
+    hooks.pickArea.mockImplementationOnce(() => { throw new Error("no anchor"); });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      mode.set(true);
+      const img = document.querySelector("#i")!;
+      at(img, "mousedown", 10, 10);
+      at(img, "mousemove", 110, 60);
+      at(img, "mouseup", 110, 60);
+      expect(areaBox().style.display).toBe("none");
+      expect(areaBox().classList.contains("capturing")).toBe(false);
+      at(img, "mousedown", 10, 10);
+      at(img, "mousemove", 110, 60);
+      at(img, "mouseup", 110, 60);
+      expect(hooks.pickArea).toHaveBeenCalledTimes(2);
+      expect(areaBox().classList.contains("capturing")).toBe(true);
+    } finally { warn.mockRestore(); }
   });
 
   it("treats a drag narrower or shorter than 8 px as a click", () => {
