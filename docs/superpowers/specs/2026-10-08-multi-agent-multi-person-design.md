@@ -1252,6 +1252,12 @@ commenting from a browser or script that is not signed in as them." with a
 switch, on by default. Off revokes the approval; on makes a new one. It is
 shown again beside the first invite. In every payload and view an agent
 gets, author lines for unconnected viewers read `<name> (not connected)`.
+That includes history whose author was never recorded, which the filter
+counts as `*unconnected` (§5.2, §8.2): comments from before viewers had
+public IDs (migration 12), comments from a browser identity never claimed
+for the owner, and batches from before senders were recorded (migration
+25), even when the owner wrote them. Matching a name to the owner would let
+any viewer who typed it pass as the owner (§21.2).
 Display names may use any script, and any mix of scripts. Protected names
 are the owner's, each connected person's and each live agent's. A display
 name is 409 `name_taken` when it looks like a protected name other than its
@@ -1578,7 +1584,10 @@ nothing else:
    `withheld` (absent or null), `rights` in `status`.
 7. **`(not connected)` author lines** (§9.6): in every payload and view an
    agent gets, an unconnected LAN viewer's name reads `<name> (not
-   connected)`.
+   connected)`, and so does the name on unattributed history (comments
+   from before migration 12, or from a browser identity never claimed for
+   the owner, and batches from before migration 25), the owner's own
+   included.
 8. **Reserved display names** (§9.6): a LAN viewer cannot take a name that
    looks like the owner's, or a name that looks like a live agent's while
    that agent is live (409 `name_taken`); the owner cannot take a name that
@@ -2053,3 +2062,12 @@ agents not to.
     per person.
   - §18: a person's inbox and question views are not filtered, never name
     a live page, and show `project` only as §13 allows.
+- **Amendment** (2026-10-12, plan Task 17 and its review):
+  - §7.4: narrowing and elevation are refused for this machine's agents
+    (400 `token_agent`), which act with the daemon token that rights do
+    not limit (§21 trusts an owner agent with a shell at the owner's
+    level); People offers neither for them. The coordinator ruled this
+    (record 44f6b8e8). `DELETE /api/agents/<handle>` ends one agent.
+  - §9.6 and §19 item 7: unattributed history is marked `(not connected)`
+    too, the owner's own included (the owner's decision, 2026-10-12: "Keep
+    the mark", record 7fdbaaf5).
