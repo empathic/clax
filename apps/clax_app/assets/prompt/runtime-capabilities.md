@@ -48,6 +48,14 @@ capability first and light features up when it resolves.
   the person's own browser: everywhere else, and when no key is configured,
   `use("sample")` resolves `null`. The first call in each view asks the
   person to allow it.
+- `net` (Clax's own): `fetch(url, {method, headers, body})` resolves
+  `{status, ok, url, headers, text(), json()}`, made by the daemon (the
+  page itself cannot connect). Declare every host,
+  `{"net": {"hosts": ["api.example.com"]}}`; only `https` URLs on those
+  hosts are fetched, at most 5 MB each way and 20 s. The person is asked
+  once per app for its host list. Only the person's own views get it:
+  elsewhere `use("net")` resolves `null`. Types:
+  `ClaxExtensions.Net` in `clax-extensions.d.ts`.
 - `permissions`: `state()` and `request()`; the only prompt is the consent
   to the first page-written comment.
 
