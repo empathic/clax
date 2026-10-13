@@ -39,6 +39,7 @@ import 'platform/pending_make.dart';
 import 'platform/secure_key.dart';
 import 'platform/settings_store.dart';
 import 'platform/voice.dart';
+import 'ui/app_icon.dart';
 import 'ui/app_menu.dart';
 import 'ui/app_inspector_permissions.dart';
 import 'ui/app_screen.dart';
@@ -486,6 +487,12 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     pending: _s.pendingMake,
     onMade: _madeAway,
     onFailed: _failedAway,
+  );
+
+  /// The apps' icons, kept under the support directory between launches.
+  late final _icons = AppIcons(
+    _api,
+    store: FileIconStore(Directory('${_s.supportDir}/app-icons')),
   );
 
   /// The app the last Make made, until its first `ready`.
@@ -1227,6 +1234,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       stream: _stream,
       onOpenTarget: _openTarget,
       makes: _makes,
+      icons: _icons,
       inspectorPermissions: [
         AgentReadPermissions(_consentMemory),
         if (_device case final d?) DevicePermissions(d),
