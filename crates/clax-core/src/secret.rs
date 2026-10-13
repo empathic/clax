@@ -1,6 +1,6 @@
-//! Secrets the daemon mints for people and their machines (spec §6.2–§6.5):
-//! invite codes, user codes, access, manage and continuation tokens, and
-//! browser-link codes.
+//! Secrets the daemon mints for people and their machines (spec §6.2–§6.5,
+//! §6.8): invite codes, user codes, access, manage and continuation tokens,
+//! browser-link codes, and agent sessions' secrets.
 //!
 //! A [`Secret`] is shown to its holder once and never otherwise: its `Debug`
 //! prints `Secret(…)`, and it has no `Display` or `Serialize`, so a log line,
@@ -18,6 +18,8 @@ pub const ACCESS_PREFIX: &str = "cxg_";
 pub const MANAGE_PREFIX: &str = "cxm_";
 /// Prefix of a continuation token.
 pub const CONTINUE_PREFIX: &str = "cxc_";
+/// Prefix of an agent session's secret (spec 2026-10-08 §6.8).
+pub const SESSION_PREFIX: &str = "cxs_";
 
 /// Crockford base32, uppercase, without I, L, O and U.
 const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";

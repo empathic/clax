@@ -77,7 +77,7 @@ pub use store::attention::{
 pub use store::audit::AuditRow;
 pub use store::feedback::{SendTarget, TakeFeedback, Taken};
 pub use store::sessions::{
-    EndReason, EndedSession, JoinSession, NameSource, Reaped, RegisterSession, Restored,
-    RosterAgent,
+    EndReason, EndedSession, JoinSession, NameSource, Proved, Reaped, RegisterSession, Registered,
+    Restored, RosterAgent,
 };
 pub use store::threads::{NewComment, NewThread, ThreadExtras};

@@ -1,6 +1,11 @@
 use crate::client::Client;
 use clax_core::Home;
 use clax_core::gitctx::{self, GitField};
+use clax_core::remote::{
+    CredentialUnreadable, SESSION_SECRET_HEADER, SessionCredential, SessionFiles, SessionKey,
+    keys_of_row,
+};
+use clax_core::secret::Secret;
 use clax_hooks::ask::{self, Asked, Budget};
 use clax_hooks::events::{self, Daemon};
 use clax_hooks::input::HookInput;
@@ -59,6 +64,14 @@ const ASKED_DEADLINE: Duration = Duration::from_secs(2);
 const ASKED_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
 /// How many ancestors above the hook's parent are reported for session joining.
 const MAX_ANCESTORS: usize = 6;
+/// How long a remote `SessionStart` join that needs a proof it lacks waits
+/// for the session's credential file, which the shim registering at the
+/// same moment writes (spec 2026-10-08 §6.8).
+const CREDENTIAL_WAIT: Duration = Duration::from_secs(1);
+/// How often that wait looks for the file.
+const CREDENTIAL_LOOK: Duration = Duration::from_millis(50);
+/// The join route, whose answer may issue the session's secret.
+const JOIN_PATH: &str = "/api/sessions/join";
 
 /// The parent of `pid`, if it can be determined.
 fn parent_of(pid: u32) -> Option<u32> {
@@ -248,20 +261,178 @@ impl HookGit {
     }
 }
 
+/// A remote hook's agent session (spec 2026-10-08 §6.8): the credential
+/// it proves its session with, found in the machine's session files by
+/// the harness session ID of its input, else by its parent's and
+/// ancestors' PIDs, as join matches.
+struct RemoteSession {
+    files: SessionFiles,
+    harness: &'static str,
+    hsid: Option<String>,
+    parent_pid: u32,
+    /// The parent's ancestors, found when first needed.
+    ancestors: OnceLock<Vec<u32>>,
+    cred: Mutex<Option<SessionCredential>>,
+    /// Whether the files were looked in yet.
+    looked: Mutex<bool>,
+}
+
+impl RemoteSession {
+    fn new(
+        files: SessionFiles,
+        harness: &'static str,
+        input: &HookInput,
+        parent_pid: u32,
+    ) -> RemoteSession {
+        RemoteSession {
+            files,
+            harness,
+            hsid: input.session_id.clone().filter(|s| !s.is_empty()),
+            parent_pid,
+            ancestors: OnceLock::new(),
+            cred: Mutex::new(None),
+            looked: Mutex::new(false),
+        }
+    }
+
+    /// The names this hook's session may be found by, in join's order.
+    fn keys(&self) -> Vec<SessionKey<'_>> {
+        let ancestors = self.ancestors.get_or_init(|| ancestors(self.parent_pid));
+        let mut keys = Vec::new();
+        if let Some(id) = &self.hsid {
+            keys.push(SessionKey::Harness {
+                harness: self.harness,
+                id,
+            });
+        }
+        for pid in std::iter::once(&self.parent_pid).chain(ancestors) {
+            keys.push(SessionKey::Parent {
+                harness: self.harness,
+                pid: *pid,
+            });
+        }
+        keys
+    }
+
+    /// The first credential file found by [`RemoteSession::keys`].
+    fn find(&self) -> Result<Option<SessionCredential>, CredentialUnreadable> {
+        let hsid_key = self.hsid.as_deref().map(|id| SessionKey::Harness {
+            harness: self.harness,
+            id,
+        });
+        // The harness session ID's file first: finding it needs no `ps`.
+        if let Some(k) = hsid_key
+            && let Some(c) = self.files.read(&k)?
+        {
+            return Ok(Some(c));
+        }
+        self.files.find(&self.keys())
+    }
+
+    /// The credential held, read from the files on first use.
+    fn current(&self) -> Result<Option<SessionCredential>, CredentialUnreadable> {
+        let mut looked = self.looked.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cred = self.cred.lock().unwrap_or_else(|e| e.into_inner());
+        if !*looked {
+            *cred = self.find()?;
+            *looked = true;
+        }
+        Ok(cred.clone())
+    }
+
+    fn set(&self, c: Option<SessionCredential>) {
+        *self.cred.lock().unwrap_or_else(|e| e.into_inner()) = c;
+        *self.looked.lock().unwrap_or_else(|e| e.into_inner()) = true;
+    }
+
+    /// The error of a hook that must act as its session but has no
+    /// credential for it.
+    fn missing(&self) -> anyhow::Error {
+        let names: Vec<String> = self
+            .keys()
+            .iter()
+            .filter_map(SessionKey::file_name)
+            .collect();
+        anyhow::anyhow!(
+            "session_credential_missing: no credential for this {} session in {} (looked for {}): its session has not registered with the remote Clax, or has ended",
+            self.harness,
+            self.files.dir().display(),
+            names.join(", ")
+        )
+    }
+
+    /// Keeps the credential a join answered (`v`): the new secret it
+    /// issued, else the one it proved, written to the files of every name
+    /// the session's row has and of this hook's harness session ID.
+    fn absorb(&self, v: &serde_json::Value, proved: Option<&SessionCredential>) {
+        let Some(sid) = v["session"]["id"].as_str() else {
+            return;
+        };
+        let cred = match v["session_secret"].as_str() {
+            Some(s) => Some(SessionCredential {
+                session: sid.to_string(),
+                secret: Secret::new(s.to_string()),
+            }),
+            None => proved.filter(|c| c.session == sid).cloned(),
+        };
+        let Some(cred) = cred else { return };
+        let harness = v["session"]["harness"].as_str().unwrap_or(self.harness);
+        let parent = v["session"]["parent_pid"]
+            .as_u64()
+            .and_then(|p| u32::try_from(p).ok());
+        let mut keys = keys_of_row(harness, v["session"]["harness_session_id"].as_str(), parent);
+        if let Some(id) = &self.hsid {
+            keys.push(SessionKey::Harness {
+                harness: self.harness,
+                id,
+            });
+        }
+        // A hook that cannot keep the file still acts this run; the next
+        // one says what is missing.
+        let _ = self.files.write(&keys, &cred);
+        self.set(Some(cred));
+    }
+
+    /// Removes this session's files once it has ended.
+    fn forget(&self) {
+        if let Ok(Some(c)) = self.current() {
+            self.files.remove(&self.keys(), Some(&c.session));
+        }
+    }
+}
+
+/// Whether `e` is a 401 `invalid_session_proof`.
+fn proof_refused(e: &anyhow::Error) -> bool {
+    e.to_string().starts_with("invalid_session_proof:")
+}
+
 /// The daemon as a hook talks to it: every request names the `hook`
 /// channel, and, for an event that captures git, carries `x-clax-git`.
 /// Every request but a `GET` waits for the capture; a `GET` carries it
-/// once it is there.
+/// once it is there. On a remote daemon every request names the hook's
+/// session with its secret (spec 2026-10-08 §6.8); a hook with no
+/// credential for its session fails, saying which files it looked for,
+/// except the join, which makes the session when none is live.
 struct HookDaemon<'a> {
     client: &'a Client,
     git: Option<HookGit>,
+    remote: Option<RemoteSession>,
 }
 
 impl<'a> HookDaemon<'a> {
-    fn new(client: &'a Client, event: Event, input: &HookInput) -> HookDaemon<'a> {
+    fn new(
+        client: &'a Client,
+        event: Event,
+        input: &HookInput,
+        agent: Agent,
+        parent_pid: u32,
+    ) -> HookDaemon<'a> {
         HookDaemon {
             client,
             git: captures_git(event).then(|| HookGit::new(input.cwd.as_deref())),
+            remote: client.remote().map(|r| {
+                RemoteSession::new(r.sessions.clone(), agent.harness(), input, parent_pid)
+            }),
         }
     }
 
@@ -272,6 +443,50 @@ impl<'a> HookDaemon<'a> {
         body: Option<&serde_json::Value>,
         timeout: Option<Duration>,
     ) -> anyhow::Result<serde_json::Value> {
+        let Some(remote) = &self.remote else {
+            return self.send_as(method, path, body, timeout, None);
+        };
+        let cred = remote.current()?;
+        if path != JOIN_PATH {
+            let cred = cred.ok_or_else(|| remote.missing())?;
+            return self.send_as(method, path, body, timeout, Some(&cred));
+        }
+        // The join: with the credential found, else without one; a stale
+        // credential (its session ended) is dropped, and a live row this
+        // hook cannot prove yet waits briefly for its file.
+        let mut tried = Vec::new();
+        let mut next = cred;
+        loop {
+            match self.send_as(method.clone(), path, body, timeout, next.as_ref()) {
+                Ok(v) => {
+                    remote.absorb(&v, next.as_ref());
+                    return Ok(v);
+                }
+                Err(e) if proof_refused(&e) => {
+                    let was = next.take();
+                    let gave_none = was.is_none();
+                    tried.extend(was);
+                    if !gave_none {
+                        continue;
+                    }
+                    match wait_for_credential(remote, &tried) {
+                        Some(c) => next = Some(c),
+                        None => return Err(e),
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    fn send_as(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&serde_json::Value>,
+        timeout: Option<Duration>,
+        cred: Option<&SessionCredential>,
+    ) -> anyhow::Result<serde_json::Value> {
         let git = self.git.as_ref().and_then(|g| {
             if method == reqwest::Method::GET {
                 g.now()
@@ -280,13 +495,45 @@ impl<'a> HookDaemon<'a> {
             }
         });
         let header = git.and_then(gitctx::encode_header);
-        let headers: Vec<(&str, &str)> = header
+        let mut headers: Vec<(&str, &str)> = header
             .as_deref()
             .map(|h| ("x-clax-git", h))
             .into_iter()
             .collect();
+        if let Some(c) = cred {
+            headers.push(("x-clax-session", &c.session));
+            headers.push((SESSION_SECRET_HEADER, c.secret.expose()));
+        }
         self.client
             .request_with(method, path, body, timeout, &headers)
+    }
+
+    /// Removes a remote session's credential files: its session has ended.
+    fn forget_session(&self) {
+        if let Some(r) = &self.remote {
+            r.forget();
+        }
+    }
+}
+
+/// A credential for `remote`'s session that is none of `tried`, looked for
+/// every [`CREDENTIAL_LOOK`] for up to [`CREDENTIAL_WAIT`]: the file the
+/// shim writes when it made the row this join needs a proof for.
+fn wait_for_credential(
+    remote: &RemoteSession,
+    tried: &[SessionCredential],
+) -> Option<SessionCredential> {
+    let until = Instant::now() + CREDENTIAL_WAIT;
+    loop {
+        if let Ok(Some(c)) = remote.find()
+            && !tried.iter().any(|t| t.same_as(&c))
+        {
+            return Some(c);
+        }
+        if Instant::now() >= until {
+            return None;
+        }
+        std::thread::sleep(CREDENTIAL_LOOK);
     }
 }
 
@@ -606,7 +853,7 @@ fn handle(
         .agent_channel()
         .with_timeout(budget(agent, event).1)
         .with_via(VIA);
-    let client = HookDaemon::new(&client, event, &input);
+    let client = HookDaemon::new(&client, event, &input, agent, parent_pid);
     // Codex's `codex queue` finds its app-server socket under CODEX_HOME, which
     // the daemon's own environment may lack.
     let codex_home = std::env::var("CODEX_HOME")
@@ -630,6 +877,9 @@ fn handle(
         ),
         Event::SessionEnd => {
             let out = events::session_end(agent.harness(), &input, &client);
+            // A remote session's credential goes with it (spec 2026-10-08
+            // §6.8).
+            client.forget_session();
             if let Some(sid) = input.session_id.as_deref().filter(|s| {
                 !s.is_empty()
                     && s.chars()
@@ -765,7 +1015,13 @@ fn ask_worker(agent: Agent, home: &Home, tx: mpsc::Sender<AskMsg>) -> AskMsg {
         .agent_channel()
         .with_timeout(ASK_REQUEST_TIMEOUT)
         .with_via(VIA);
-    let client = HookDaemon::new(&client, Event::Ask, &input);
+    let client = HookDaemon::new(
+        &client,
+        Event::Ask,
+        &input,
+        agent,
+        std::os::unix::process::parent_id(),
+    );
     let daemon = Reporting {
         client: &client,
         tx,

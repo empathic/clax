@@ -1405,6 +1405,9 @@ pub struct Call<'a> {
     pub sent_host: Option<String>,
     /// Send another body than the one signed.
     pub sent_body: Option<Vec<u8>>,
+    /// Send `X-Clax-Session` without the secret the client holds for that
+    /// session, which is otherwise added (spec 2026-10-08 §6.8).
+    pub bare_session: bool,
 }
 
 /// The tokens a [`TestClient`] holds.
@@ -1431,6 +1434,9 @@ pub struct TestClient {
     held: std::sync::Mutex<Held>,
     /// The LAN address it speaks from ([`LAN_PEER`] unless set).
     peer: Option<IpAddr>,
+    /// Each session's secret, as its registration or join answered it
+    /// (spec 2026-10-08 §6.8).
+    secrets: std::sync::Mutex<std::collections::HashMap<String, String>>,
 }
 
 impl TestClient {
@@ -1454,6 +1460,7 @@ impl TestClient {
             key,
             held: Default::default(),
             peer: None,
+            secrets: Default::default(),
         }
     }
 
@@ -1530,7 +1537,19 @@ impl TestClient {
             req = req.header("authorization", a);
         }
         let body = c.sent_body.unwrap_or(body);
-        let headers = c.sent_headers.unwrap_or(c.headers);
+        let mut headers = c.sent_headers.unwrap_or(c.headers);
+        // The secret of the session the request names, as an agent side
+        // sends it (spec 2026-10-08 §6.8).
+        let names = |k: &str| headers.iter().any(|(h, _)| h.eq_ignore_ascii_case(k));
+        if !c.bare_session && !names(clax_core::remote::SESSION_SECRET_HEADER) {
+            let named = headers
+                .iter()
+                .find(|(h, _)| h.eq_ignore_ascii_case("x-clax-session"))
+                .and_then(|(_, sid)| self.secret_of(sid));
+            if let Some(secret) = named {
+                headers.push((clax_core::remote::SESSION_SECRET_HEADER, secret));
+            }
+        }
         // JSON unless the call names its own type (a multipart form).
         if !body.is_empty()
             && !headers
@@ -1682,8 +1701,31 @@ impl TestClient {
         h.to_string()
     }
 
+    /// The secret of session `sid` this machine was answered, if any.
+    pub fn secret_of(&self, sid: &str) -> Option<String> {
+        self.secrets.lock().unwrap().get(sid).cloned()
+    }
+
+    /// Keeps `secret` as session `sid`'s.
+    pub fn keep_secret(&self, sid: &str, secret: &str) {
+        self.secrets
+            .lock()
+            .unwrap()
+            .insert(sid.to_string(), secret.to_string());
+    }
+
+    /// Keeps the session secret a registration or join answer `v` carries.
+    pub fn keep_session(&self, v: &serde_json::Value) {
+        if let (Some(sid), Some(secret)) =
+            (v["session"]["id"].as_str(), v["session_secret"].as_str())
+        {
+            self.keep_secret(sid, secret);
+        }
+    }
+
     /// A signed agent request with the access token (`Clax-Grant`),
-    /// naming `session` in `X-Clax-Session`, with JSON `body`.
+    /// naming `session` in `X-Clax-Session` with the secret this machine
+    /// holds for it, with JSON `body`.
     pub async fn agent(
         &self,
         method: &str,
@@ -1691,16 +1733,36 @@ impl TestClient {
         session: Option<&str>,
         body: Option<serde_json::Value>,
     ) -> reqwest::Response {
+        let secret = session.and_then(|s| self.secret_of(s));
+        self.agent_proving(method, path, session, secret.as_deref(), body)
+            .await
+    }
+
+    /// [`TestClient::agent`] proving `session` with `secret` (none:
+    /// no `X-Clax-Session-Secret`).
+    pub async fn agent_proving(
+        &self,
+        method: &str,
+        path: &str,
+        session: Option<&str>,
+        secret: Option<&str>,
+        body: Option<serde_json::Value>,
+    ) -> reqwest::Response {
         let mut headers = Vec::new();
         if let Some(s) = session {
             headers.push(("x-clax-session", s.to_string()));
         }
+        if let Some(s) = secret {
+            headers.push((clax_core::remote::SESSION_SECRET_HEADER, s.to_string()));
+        }
+        let bare_session = secret.is_none();
         self.call(Call {
             method,
             path,
             authorization: Some(format!("Clax-Grant {}", self.access())),
             body: body.map(|b| serde_json::to_vec(&b).unwrap()),
             headers,
+            bare_session,
             ..Default::default()
         })
         .await
@@ -1718,6 +1780,7 @@ impl TestClient {
         let status = res.status();
         let v: serde_json::Value = res.json().await.unwrap();
         assert_eq!(status, 201, "{v}");
+        self.keep_session(&v);
         v["session"].clone()
     }
 
@@ -1746,11 +1809,15 @@ impl TestClient {
         method: &str,
         path: &str,
     ) -> reqwest::Response {
+        let mut headers = vec![("x-clax-session", sid.to_string())];
+        if let Some(s) = self.secret_of(sid) {
+            headers.push((clax_core::remote::SESSION_SECRET_HEADER, s));
+        }
         self.call(Call {
             method,
             path,
             authorization: Some(format!("Clax-Grant {}", self.access())),
-            headers: vec![("x-clax-session", sid.to_string())],
+            headers,
             corrupt: true,
             ..Default::default()
         })

@@ -10,6 +10,10 @@
 //! `stale_request` with the clock offset the daemon's `Date` gives, and on
 //! `limit_reached` and `busy` with backoff, re-signing every attempt.
 //!
+//! Each agent session proves itself with a secret of its own (spec
+//! 2026-10-08 §6.8): the shim keeps it in memory, and [`SessionFiles`]
+//! keeps it on disk for the hooks and the CLI, which run as new processes.
+//!
 //! Tokens are [`Secret`]s and the key is a [`KeyPair`]: neither prints in
 //! `Debug`. Nothing here logs.
 
@@ -20,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::net::IpAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
@@ -692,11 +696,243 @@ pub fn daemon_offset(date: &str, local: i64) -> Option<i64> {
     Some(t.timestamp() - local)
 }
 
-/// A connected machine: `remote.json` and the signer of `remote.key`.
+/// The header that carries a session's secret on a request naming that
+/// session (spec 2026-10-08 §6.8).
+pub const SESSION_SECRET_HEADER: &str = "x-clax-session-secret";
+
+/// One agent session's credential on the remote daemon: its ID and its
+/// secret (spec 2026-10-08 §6.8). Its `Debug` never prints the secret.
+#[derive(Clone, Debug)]
+pub struct SessionCredential {
+    pub session: String,
+    pub secret: Secret,
+}
+
+impl SessionCredential {
+    /// Whether `other` is the same session with the same secret.
+    pub fn same_as(&self, other: &SessionCredential) -> bool {
+        self.session == other.session
+            && crate::secret::constant_time_eq(
+                self.secret.expose().as_bytes(),
+                other.secret.expose().as_bytes(),
+            )
+    }
+}
+
+/// What a session credential's file holds.
+#[derive(Serialize, Deserialize)]
+struct CredentialFile {
+    session: String,
+    secret: String,
+}
+
+/// A name a session's credential file is found by (spec 2026-10-08 §6.8).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionKey<'a> {
+    /// The harness's own session ID.
+    Harness { harness: &'a str, id: &'a str },
+    /// The harness process, for a client that knows it but not its session
+    /// ID (Codex's shim).
+    Parent { harness: &'a str, pid: u32 },
+}
+
+impl SessionKey<'_> {
+    /// The file name: `<harness>-<harness session ID>.json` for an ID of
+    /// 1–128 characters of `[A-Za-z0-9._-]` not starting with `.`, else
+    /// `<harness>-h<the first 32 hex characters of its SHA-256>.json`;
+    /// `<harness>-ppid-<pid>.json` for a parent PID. `None` for a harness
+    /// name that is not a plain word.
+    pub fn file_name(&self) -> Option<String> {
+        let plain =
+            |h: &str| !h.is_empty() && h.len() <= 32 && h.bytes().all(|b| b.is_ascii_lowercase());
+        match *self {
+            SessionKey::Harness { harness, id } if plain(harness) && !id.is_empty() => {
+                let safe = id.len() <= 128
+                    && !id.starts_with('.')
+                    && id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
+                Some(if safe {
+                    format!("{harness}-{id}.json")
+                } else {
+                    let h = crate::secret::sha256_hex(id);
+                    format!("{harness}-h{}.json", &h[..32])
+                })
+            }
+            SessionKey::Parent { harness, pid } if plain(harness) && pid > 1 => {
+                Some(format!("{harness}-ppid-{pid}.json"))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Why a session's credential file could not be used.
+#[derive(Debug)]
+pub struct CredentialUnreadable {
+    pub path: PathBuf,
+    pub why: String,
+}
+
+impl std::fmt::Display for CredentialUnreadable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "session_credential_unreadable: {}: {}",
+            self.path.display(),
+            self.why
+        )
+    }
+}
+
+impl std::error::Error for CredentialUnreadable {}
+
+/// The agent sessions' credential files of a connected machine,
+/// `<home>/remote-sessions/` (spec 2026-10-08 §6.8): the directory 0700,
+/// each file 0600, written whole and renamed into place
+/// ([`write_private`]).
+#[derive(Clone, Debug)]
+pub struct SessionFiles {
+    dir: PathBuf,
+}
+
+impl SessionFiles {
+    /// The files of `home`.
+    pub fn of(home: &Home) -> SessionFiles {
+        SessionFiles {
+            dir: home.remote_sessions(),
+        }
+    }
+
+    /// The files in `dir`.
+    pub fn at(dir: PathBuf) -> SessionFiles {
+        SessionFiles { dir }
+    }
+
+    /// The directory the files are in.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// The file of `key`; `None` for a key with no file name.
+    pub fn path(&self, key: &SessionKey<'_>) -> Option<PathBuf> {
+        key.file_name().map(|n| self.dir.join(n))
+    }
+
+    /// The credential in `key`'s file: `None` when there is no such file.
+    ///
+    /// # Errors
+    /// [`CredentialUnreadable`], naming the file, when it exists but
+    /// cannot be read or is not a credential.
+    pub fn read(
+        &self,
+        key: &SessionKey<'_>,
+    ) -> Result<Option<SessionCredential>, CredentialUnreadable> {
+        let Some(path) = self.path(key) else {
+            return Ok(None);
+        };
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => {
+                return Err(CredentialUnreadable {
+                    path,
+                    why: e.to_string(),
+                });
+            }
+        };
+        let f: CredentialFile =
+            serde_json::from_slice(&bytes).map_err(|_| CredentialUnreadable {
+                path: path.clone(),
+                why: "not a session credential".into(),
+            })?;
+        if f.session.is_empty() || !f.secret.starts_with(crate::secret::SESSION_PREFIX) {
+            return Err(CredentialUnreadable {
+                path,
+                why: "not a session credential".into(),
+            });
+        }
+        Ok(Some(SessionCredential {
+            session: f.session,
+            secret: Secret::new(f.secret),
+        }))
+    }
+
+    /// The first credential found by `keys`, in order, with the file it
+    /// was read from; `None` when none of them has a file.
+    ///
+    /// # Errors
+    /// [`CredentialUnreadable`] for the first file that exists but cannot
+    /// be used.
+    pub fn find(
+        &self,
+        keys: &[SessionKey<'_>],
+    ) -> Result<Option<SessionCredential>, CredentialUnreadable> {
+        for k in keys {
+            if let Some(c) = self.read(k)? {
+                return Ok(Some(c));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Writes `cred` under every one of `keys`.
+    ///
+    /// # Errors
+    /// The first I/O error.
+    pub fn write(&self, keys: &[SessionKey<'_>], cred: &SessionCredential) -> std::io::Result<()> {
+        let mut bytes = serde_json::to_vec(&CredentialFile {
+            session: cred.session.clone(),
+            secret: cred.secret.expose().to_string(),
+        })
+        .expect("a credential serializes");
+        bytes.push(b'\n');
+        for path in keys.iter().filter_map(|k| self.path(k)) {
+            write_private(&path, &bytes)?;
+        }
+        Ok(())
+    }
+
+    /// Removes every one of `keys`' files that holds session `session`
+    /// (all of them for `None`), leaving another session's file alone.
+    pub fn remove(&self, keys: &[SessionKey<'_>], session: Option<&str>) {
+        for k in keys {
+            let Some(path) = self.path(k) else { continue };
+            let held = match self.read(k) {
+                Ok(Some(c)) => Some(c.session),
+                _ => None,
+            };
+            if session.is_none() || held.as_deref() == session {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+}
+
+/// The names a session row is found by: its harness session ID, when it
+/// has one, and its parent PID, when it has one.
+pub fn keys_of_row<'a>(
+    harness: &'a str,
+    harness_session_id: Option<&'a str>,
+    parent_pid: Option<u32>,
+) -> Vec<SessionKey<'a>> {
+    let mut keys = Vec::new();
+    if let Some(id) = harness_session_id.filter(|s| !s.is_empty()) {
+        keys.push(SessionKey::Harness { harness, id });
+    }
+    if let Some(pid) = parent_pid {
+        keys.push(SessionKey::Parent { harness, pid });
+    }
+    keys
+}
+
+/// A connected machine: `remote.json`, the signer of `remote.key`, and its
+/// agent sessions' credential files.
 #[derive(Debug)]
 pub struct Remote {
     pub config: RemoteConfig,
     pub signer: Arc<Signer>,
+    pub sessions: SessionFiles,
 }
 
 impl Remote {
@@ -713,6 +949,7 @@ impl Remote {
         Ok(Some(Remote {
             config,
             signer: Arc::new(signer),
+            sessions: SessionFiles::of(home),
         }))
     }
 
