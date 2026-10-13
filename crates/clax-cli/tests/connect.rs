@@ -1013,8 +1013,40 @@ impl Machine {
     /// Runs `clax hook --agent <agent> <event>` with `input` on stdin, to
     /// its end, off the test's runtime.
     async fn hook(&self, agent: &str, event: &str, input: &Value) -> Output {
+        self.hook_with(agent, event, input, &[], false).await
+    }
+
+    /// [`Machine::hook`] with more environment `env`, and through a wrapper
+    /// shell when `via_shell` (the hook is then a grandchild of this test,
+    /// as when a harness runs its hooks through `sh -c`).
+    async fn hook_with(
+        &self,
+        agent: &str,
+        event: &str,
+        input: &Value,
+        env: &[(&str, &str)],
+        via_shell: bool,
+    ) -> Output {
         use std::io::Write;
         let mut c = self.cmd(&["hook", "--agent", agent, event]);
+        if via_shell {
+            let bin = bin();
+            let mut sh = Command::new("/bin/sh");
+            for (k, v) in c.get_envs() {
+                match v {
+                    Some(v) => sh.env(k, v),
+                    None => sh.env_remove(k),
+                };
+            }
+            // Not `exec`: the shell stays the hook's parent.
+            sh.args(["-c", "\"$0\" \"$@\"; exit $?"])
+                .arg(bin)
+                .args(["hook", "--agent", agent, event]);
+            c = sh;
+        }
+        for (k, v) in env {
+            c.env(k, v);
+        }
         c.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -1184,9 +1216,17 @@ async fn a_nested_agents_hook_never_becomes_its_parents_session() {
         (b_row.harness_session_id, b_row.parent_pid, None)
     );
     assert_eq!(m.credential_json("claude-s-b-h.json"), b);
-    // The nested agent ends: B's session stays live.
+    // B's parent-PID file stays B's: another session of the same process
+    // never replaces it, and its end never removes it.
+    let b_ppid = m.credential_json(&format!("claude-p-{}.json", std::process::id()));
+    assert_eq!(b_ppid["session"], json!(b_sid));
+    // The nested agent ends: B's session stays live, with its files.
     let out = m.hook("claude", "session-end", &c_input).await;
     assert!(out.stderr.is_empty(), "{}", text(&out));
+    assert_eq!(
+        m.credential_json(&format!("claude-p-{}.json", std::process::id()))["session"],
+        json!(b_sid)
+    );
     assert!(
         ts.store
             .get_session(&b_sid)
@@ -1238,7 +1278,17 @@ async fn a_codex_hook_finds_its_shims_session_by_its_parent_and_never_by_a_reuse
         )
         .unwrap();
     let input = json!({"session_id": "x-1", "cwd": "/w"});
-    let out = m.hook("codex", "session-start", &input).await;
+    // The hook's environment differs from the test's in locale and time
+    // zone: the parent's start time it compares does not depend on them.
+    let foreign = [
+        ("LANG", "de_DE.UTF-8"),
+        ("LC_TIME", "de_DE.UTF-8"),
+        ("LC_ALL", "de_DE.UTF-8"),
+        ("TZ", "Asia/Tokyo"),
+    ];
+    let out = m
+        .hook_with("codex", "session-start", &input, &foreign, false)
+        .await;
     assert!(out.stderr.is_empty(), "{}", text(&out));
     assert_eq!(
         m.credential_json("codex-s-x-1.json")["session"],
@@ -1264,7 +1314,7 @@ async fn a_codex_hook_finds_its_shims_session_by_its_parent_and_never_by_a_reuse
     v["session"] = json!(other.session.id);
     v["secret"] = json!(other.secret.unwrap().expose());
     v["harness_session_id"] = Value::Null;
-    v["parent_started"] = json!("Thu Jan  1 00:00:00 1970");
+    v["parent_started_us"] = json!(1);
     std::fs::write(&ppid, v.to_string()).unwrap();
     let input = json!({"session_id": "x-2", "cwd": "/w"});
     let out = m.hook("codex", "stop", &input).await;
@@ -1272,5 +1322,61 @@ async fn a_codex_hook_finds_its_shims_session_by_its_parent_and_never_by_a_reuse
         text(&out).contains("session_credential_missing"),
         "{}",
         text(&out)
+    );
+}
+
+/// Spec 2026-10-08 §6.8: a hook run through a wrapper shell is a grandchild
+/// of the harness. It finds the shim's credential under its grandparent's
+/// PID, as join matches a row by the hook's ancestors.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hook_behind_a_wrapper_shell_finds_its_shims_session_by_an_ancestor() {
+    use clax_core::remote::{SessionCredential, SessionFiles};
+    let ts = lan_server().await;
+    let m = connected(&ts, "Sam").await;
+    let gid = m.remote_json()["grant_id"].as_str().unwrap().to_string();
+    let me = std::process::id();
+    let reg = ts
+        .store
+        .register_session_proved(
+            &clax_core::audit::AuditCtx::DAEMON,
+            clax_core::RegisterSession {
+                harness: "codex".into(),
+                cwd: "/w".into(),
+                parent_pid: Some(me),
+                grant_id: Some(gid),
+                ..Default::default()
+            },
+            clax_core::Proved::Unchecked,
+        )
+        .unwrap();
+    SessionFiles::of(&Home::at(m.home()))
+        .write(
+            "codex",
+            None,
+            Some(me),
+            None,
+            &SessionCredential {
+                session: reg.session.id.clone(),
+                secret: reg.secret.clone().unwrap(),
+            },
+        )
+        .unwrap();
+    let input = json!({"session_id": "w-1", "cwd": "/w"});
+    let out = m
+        .hook_with("codex", "session-start", &input, &[], true)
+        .await;
+    assert!(out.stderr.is_empty(), "{}", text(&out));
+    assert_eq!(
+        m.credential_json("codex-s-w-1.json")["session"],
+        json!(reg.session.id)
+    );
+    assert_eq!(
+        ts.store
+            .get_session(&reg.session.id)
+            .unwrap()
+            .unwrap()
+            .harness_session_id
+            .as_deref(),
+        Some("w-1")
     );
 }
