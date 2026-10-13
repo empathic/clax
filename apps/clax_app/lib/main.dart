@@ -70,7 +70,8 @@ Future<AppServices> platformServices() async {
   final home = Directory('${support.path}/clax-home')
     ..createSync(recursive: true);
   final android = Platform.isAndroid;
-  final secureKey = FlutterSecureKey();
+  // One cached key for every reader: the keychain is read once a process.
+  final secureKey = CachedSecureKey(FlutterSecureKey());
   final supervisor = DaemonSupervisor(
     exe: android ? const AndroidExeLocator() : const MacExeLocator(),
     home: home.path,
