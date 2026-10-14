@@ -2167,8 +2167,9 @@ The Clax app (`apps/clax_app`, Android and macOS) runs `clax serve
 full screen in a WebView at `/a/<id>?app=1`: the artifact view without
 chrome, driven by the app. `/a/<id>/v/<n>?app=1` and the page forms
 (`/a/<id>/<file>?app=1`) work the same way. Of the shell URL's query only
-`app=1` is carried as the view moves from page to page; any other query
-stays where it was given. The source of truth for this protocol is the
+`app=1` (with `inspect=1`, and `migrate=1`, in the inspect and migration
+views below) is carried as the view moves from page to page; any other
+query stays where it was given. The source of truth for this protocol is the
 header of `web/shell/src/app/host.ts`.
 
 **The view.** With `app=1` in its query, the top-level shell document at an
@@ -2217,6 +2218,7 @@ shell in subdomain mode and an opaque origin in sandbox mode):
 | `closeQuestions()` | Closes the questions sheet and drops a waiting `openQuestions`. |
 | `inspect({settleMs?, maxBytes?})` | In the inspect view only: asks the page for an inspection, answered by `inspection` (see "The inspect view" below). |
 | `runTests({files, testMs?, totalMs?})` | In the inspect view only: runs the draft's test files, answered by `tests`. |
+| `runMigration({file, from, to, totalMs?})` | In the migration view only: runs a shared app's migration, answered by `migration` (see "The migration view" below). |
 | `deviceResult({id, ok, value})` / `deviceResult({id, ok: false, error: {code, message}})` | The app's answer to a `device` message; an ID no call waits on is dropped. |
 | `openRoute(hash)` | Moves the page to fragment `hash` (`#` and at most 511 more characters), as a tapped reminder asks. |
 
@@ -2237,6 +2239,7 @@ drops them. Every message carries `nonce`:
 | `questions` | `open`, `showing` | How many of the owner's open questions are about the artifact, and whether the questions sheet shows; posted whenever either changes. |
 | `inspection` | `png`, `errors`, `failed`, `text`, `title`, `height`; or `error` | The answer to `inspect`. |
 | `tests` | `passed`, `failed: [{name, error}]`, `skipped`; or `error` | The answer to `runTests`. |
+| `migration` | `ok: true`; or `ok: false`, `error` | The answer to `runMigration`. |
 
 **The channel and its nonce.** The WebView injects `ClaxHost` into every
 frame, the artifact's page included, so the page can post on it too. The
@@ -2299,6 +2302,39 @@ request, and only in these shapes; the page shares the bridge's window, so
 it could answer in its place, but it can describe only itself. Outside the
 inspect view both answer an error and ask nothing.
 
+**The migration view.** With `migrate=1` beside `app=1` and `inspect=1`
+(`/a/<id>?app=1&inspect=1&migrate=1`; the first `app`, `inspect` and
+`migrate` of the query count) the inspect view is the migration view, in
+which the app runs a shared app's `migrate.js` (see "Sharing apps" below),
+on an update's draft or on the app itself. Everything the inspect view
+does holds there too. Its content frame is named `clax-migrate`, by the
+shell (`web/shell/src/view/frame-host.ts`) and by the daemon's boot
+(`frame_name` in `crates/clax-server/src/boot.rs`) alike; in the inspect
+view it is `clax-inspect`, elsewhere unnamed. In a framed document named
+`clax-migrate` that is still parsing, the bridge, the page's first
+script, writes `<plaintext hidden>`: the rest of the document parses as
+hidden text, so none of the page's own markup or scripts run, and only
+the migration writes its documents. The page still greets (`ready`).
+`runMigration({file, from, to, totalMs})` asks the bridge
+(`web/bridge/src/harness.ts`) to import `file` as a module, relative to
+the page, and call its default export with the page's
+`window.claude.use("db")` and `{from, to}`; the whole run, the load
+included, takes at most `totalMs` (30,000 by default, at most 120,000).
+`file` is a path in the app of at most 200 characters ending in `.js`,
+with no empty, `.` or `..` segment; `from` and `to` are integers of at
+least 1. It posts `migration`: `{ok: true}` once the call returns or its
+promise resolves, or `{ok: false, error}` (cut to 501 characters) when the file
+did not load, has no default export function, the page's `db` was not
+available, the call threw or rejected, or time ran out. Outside the
+migration view, with arguments of another shape, or before the page has
+greeted, it posts `{ok: false, error}` and asks nothing. The answer is
+taken as `tests` is: only from the content frame, only for the latest
+request, only in this shape. The bridge runs a migration only in a frame
+named `clax-migrate`. The app's `Inspector.runMigration` loads the
+view, calls `runMigration`, and on every outcome (an answer, its time
+running out, a cancel) loads the view once more and waits for its
+`ready` before it returns, so no code of the run still writes.
+
 **Drafts.** The app's agent works on a **draft**: an ordinary artifact,
 published, rendered and read like any other, but hidden. All of its routes
 need the token:
@@ -2359,6 +2395,224 @@ the viewer's latest input to the shell counts. The attestations arrive by
 finds no counted arrival while an attested press awaits its release waits
 briefly for that release and is judged again. The other conditions of "The
 viewer's gesture" still hold, and outside app mode no attestation exists.
+
+### Sharing apps
+
+The Clax app sends an app to another Clax install as one file, a
+**bundle** (`<slug>.clax`, MIME `application/vnd.empathic.clax+zip`), and
+installs and updates apps from such files. All of it is the app's own
+(`apps/clax_app/lib/bundle/`): the daemon adds no route for it, and a
+bundle's app is published, drafted, inspected and tested through the
+routes and views above. No server, directory or update check is involved:
+a bundle travels as a file, and an update is a later bundle the person
+opens.
+
+**What a bundle holds.** A zip (PKWARE APPNOTE 6.3: no zip64, encryption,
+directory entries, extra fields or comments; each entry `stored` or
+`deflate`d, every timestamp 1980-01-01 00:00) of exactly these entries, in
+this order:
+
+| Entry | Content |
+|---|---|
+| `manifest.json` | The manifest, UTF-8 JSON without a byte order mark. |
+| `manifest.sig` | The signature: 86 base64url characters, no padding, no newline. |
+| `files/<path>` | Each file of the app's live version, `index.html` included, in byte order of path. |
+| `seed.jsonl` | The sender's documents, only when they chose to include them. |
+
+The manifest's keys, all present, none other: `format` (1); `lineage`
+(`l_` and 16 random bytes in lower-case base32, 26 characters, fixed at
+the app's first export); `version` (an integer from 1); `title` (1 to 200
+characters); `icon` (`{svg, word}`: `svg` is `"icon.svg"` when the bundle
+carries that file, else null; `word` an icon word or null);
+`capabilities` (the version's declaration, as the daemon takes it);
+`kit` (the content hash of the files under `kit/`, or null; recorded
+only, since the kit travels as the app's own files); `files` (path to
+`{sha256, size, type}`, 1 to 512 files, each at most 16 MiB and 64 MiB in
+all, paths unique ignoring case); `content_sha256`; `seed` (null, or
+`{sha256, size, docs}` of `seed.jsonl`); `author` (`{key, name}`: the raw
+Ed25519 public key in base64url, and the sender's name for themselves or
+null, at most 64 characters); and `forked_from` (null, or `{lineage,
+version, key}` of the app a fork was made from). A path is relative and
+`/`-separated, at most 200 characters of ASCII letters, digits and `_ . -
+/`, starts with a letter, digit or `_`, and has no empty, `.` or `..`
+segment. The title and the name may hold no control or bidirectional
+characters.
+
+`content_sha256` is the version's content hash as the daemon reports it
+("Versions, seen marks and attention"): `sha256:` and the hex SHA-256 of
+one line `<path>\0<sha256 hex>\0<size>\n` per file in byte order of path.
+The signature is Ed25519 (RFC 8032, pure) by the author key over the 14
+bytes `clax-bundle/1\n` followed by the exact bytes of the `manifest.json`
+entry; the manifest holds every file's hash and the seed's, so it covers
+them all. `seed.jsonl` is one line per document, sorted by path in byte
+order, each `{"path": "<collection>/<doc>[/…]", "data": {…}}`: the
+app's documents at the owner's level, never under `data/users/`, at most
+2,000 documents and 8 MiB.
+
+A bundle never carries the person's API key, the bundle key, owner
+grants, comment threads, versions other than the live one, or another
+app's data. Cross-app reads are not shared: export removes `read` and
+`share` from the `db` declaration (the author's own app keeps them), and
+a bundle whose `db` declares either is refused. A page that calls
+`db.artifact(id)` then gets `not_declared` on the recipient's install.
+
+**Reading a bundle.** Nothing is written to disk while a bundle is read;
+checks run in this order, and the first that fails refuses the file with
+its code:
+
+1. The file is at most 32 MiB (`too_large`) and a zip of at most 515
+   entries of the names above, none repeated, each `stored` or `deflate`d,
+   with matching local and central headers and no bytes outside them
+   (`not_a_bundle`).
+2. `manifest.json` inflates to at most 256 KiB and follows the rules
+   above (`bad_manifest`); a `format` above 1 is `too_new`; a `db`
+   declaring `read` or `share` is `not_shareable`.
+3. `manifest.sig` is the author key's signature, verified strictly: a key
+   of small order, a non-canonical `S` or a non-canonical point encoding
+   fails (`bad_signature`).
+4. Each `files/<path>` entry is present for every manifest path and no
+   other, inflates to exactly its `size` (inflating stops past it,
+   whatever the zip header says), and matches its hash; the files' content
+   hash matches `content_sha256` (`bad_file`).
+5. `seed.jsonl` is present exactly when `seed` is not null, matches its
+   size, hash and line count, and each line is `{path, data}` with `data`
+   an object and a unique document path not under `data/users/`
+   (`bad_seed`).
+
+An `icon.svg` that cannot be drawn is shown as the app's tile face rather
+than refused.
+
+**Identity and trust.** Each install has its own Ed25519 key, made from
+a secure random seed at its first export and kept in the platform's
+secure storage (`bundle_signing_seed`); it never reaches the daemon, a
+WebView or a bundle. Its **fingerprint** is the first 10 bytes of the
+SHA-256 of the public key, in upper-case base32, as four groups of four
+(`7KQ2-M9XD-4FTA-QW3B`). Trust is first use per lineage: the key of the
+first bundle of a lineage an install takes is the only key that may update
+that app, and the sender's name is shown only beside the fingerprint, as
+their own claim. A bundle opened in Clax is answered by the first of these
+that applies:
+
+| Case | Answer |
+|---|---|
+| An app this install authors has the lineage, under the bundle's key | `own`: "This is your app <title>.", Open. |
+| An installed app has the lineage and key, and the bundle's version is higher | `update` (below). |
+| The same lineage and key at the same version, with the same content hash, title and capabilities | `current`: "You already have v<N>.", Open. |
+| The same version, any of those differing | `conflict`: not installed. |
+| The same lineage and key, the bundle's version lower | `older`: not installed; Versions goes back instead. |
+| A fork made here names the lineage and key as its original | `forked`: offered as a separate app. |
+| A local app has the lineage under another key | `foreign`: offered as a separate app. |
+| None of these | `install`. |
+
+A separate install is a new app with its own record of the bundle's
+lineage and key, so that key's later bundles update it; two local apps
+may then share a lineage under different keys. Deleting an app forgets
+its record, its kept bundle and any document snapshot (on the
+`artifact_deleted` event).
+
+**Installing.** The install sheet shows the icon, the title, `v<N>`,
+"From <name> · <fingerprint>" (or "From <fingerprint>", or "From you"
+for this install's own key), each declared capability in words with
+`net`'s hosts by name, and "Comes with <d> documents" when seeded. Install
+creates the app with the app session, so the recipient's agent can
+change it later, with the bundle's title, icon word, capabilities and
+files (each with its manifest type), labelled `v<N> from <who>`. The
+published version must report the manifest's `content_sha256`, else the
+app is deleted and the install fails. Seed documents are then written in
+`docs:batch` calls of 50. A failure at any step deletes the app. A 400
+`invalid_capabilities` (a capability this Clax does not know) is "This
+app needs a newer Clax". No check runs on a first install. Installing and
+using an app needs no API key; changing it, or `sample`, does.
+
+**Updating.** An installed app is **unmodified** when its live version's
+content hash is one this lineage released here and its capabilities equal
+the latest release's; restoring an earlier release keeps it unmodified,
+and any other change makes it modified. An unmodified app asks "Update
+<title> to v<N>?", listing what the new declaration adds (new
+capabilities, new `net` hosts); a modified one, or one whose updates were
+stopped, asks **Update (replaces your changes)** or **Keep mine (stop
+updates for this app)**, and a later bundle asks again, saying when the
+changes were kept. An update is refused while the app's agent is changing
+it, and runs these steps:
+
+1. A draft of the app with the update's files and a copy of the person's
+   documents (`POST /api/drafts`).
+2. When the bundle has `migrate.js`: the migration view runs it on the
+   draft with `from` the installed lineage version and `to` the bundle's,
+   for at most 30 s.
+3. The draft's page is inspected; any uncaught error fails.
+4. When the bundle has `tests/*.test.js`: they run on the draft; a failed
+   test fails, and so does one left unrun.
+5. The draft is deleted, pass or fail. On a failure nothing is
+   published: "v<N> didn't pass its checks on your data: <reason>. Your
+   app is unchanged.", with Details.
+6. When the bundle has `migrate.js`, every document of the app at the
+   owner's level is snapshotted to a file. The update is published over
+   the live version (`if_version`), with a `null` entry for each live file
+   the bundle lacks, labelled `Update v<N>`; a 409 is "<title> changed
+   while the update was checked".
+7. `migrate.js` runs once more, on the app itself, in the migration view.
+   If it fails, the documents are put back from the snapshot (each
+   snapshot document `set`, each document the snapshot lacks deleted) and
+   the version before the update is restored: "<title> is back on v<M>
+   with your data as it was". A snapshot still present when the app
+   starts (it ended during the run) is restored then, and the person told
+   once.
+
+The person's documents stay through an update; seed documents in an
+update bundle are ignored. The earlier versions stay in Versions. A
+capability already allowed stays allowed; an added one asks at its first
+use, as any capability does.
+
+**`migrate.js`.** An app file at the root that `index.html` never loads,
+written by the agent when a change alters the shape of stored documents:
+
+```js
+export default async function migrate(db, { from, to }) {
+  // db is window.claude.use("db"). Upgrade documents of any earlier shape.
+}
+```
+
+Each run starts from documents no run has changed (the draft's fresh
+copy, or the live documents a failed run was rolled back from), so it
+need not be idempotent. In the migration view none of the page's own
+markup runs, so only the migration writes.
+
+**Sharing, re-sharing and forking.** Share app (on a phone, through the
+share sheet) or Export… (on the Mac, to a file) is on a tile's long press
+and on the inspector's Overview. For an app made here it shows the
+version the export carries, how many files and bytes go, and **Include my
+data** (off; disabled past the seed's caps). The first export mints the
+lineage at version 1; a later one carries the same version while the live
+content hash, title and capabilities are those last exported, else the
+next. An app installed from a bundle re-shares the bundle it came in, byte
+for byte, with its author's signature and seed choice and no data switch.
+A modified installed app offers that, or **Share my version as a new
+app**: a fork, with a new lineage under this install's key at version 1
+and `forked_from` naming the original. The fork no longer takes the
+original's updates; a later bundle of the original installs separately.
+
+**What the agent is told.** The app's agent is told that apps may be
+shared: it never writes the person's own data into an app's files (it
+keeps it in `db`), and it writes `migrate.js` when a change alters the
+shape of stored documents. For an app installed from someone else's
+bundle (or a fork of one) the agent sees no summaries of the person's
+other apps, and its data tools refuse to read another app ("This app came
+from someone else; it cannot read your other apps").
+
+**Opening files.** On Android an invisible activity takes `VIEW`
+(`content:` URIs) and `SEND` (the file in `EXTRA_STREAM`) intents of
+`application/vnd.empathic.clax+zip`, `application/zip` and
+`application/octet-stream`, refuses `file:` URIs and Clax's own
+providers, and hands the URI with its read grant to Clax's one main
+activity in its own task; the file is copied into Clax's cache (refused
+past 32 MiB) and read from there. On macOS the app declares the
+`dev.empathic.clax.bundle` type (extension `clax`, conforming to
+`public.data` and `public.zip-archive`) as its owner, and receives each
+opened file's path. Both platforms deliver files on the channel
+`dev.empathic.clax/bundles` (`initial`, then `opened` events), and the
+launcher's Import app… opens a file the person picks. A file that is not
+a bundle is refused by the reader.
 
 ### Tools
 
@@ -6808,7 +7062,11 @@ it with Ajv (draft 2020-12, formats asserted;
   (`/api/artifacts/<id>/versions/<n>/files/...`) carry
   `Content-Security-Policy: sandbox`, so opening any of them as a top-level
   page cannot reach the API same-origin. Content on an artifact's own origin
-  carries no CSP; the origin is the boundary. Supporting files and blobs are
+  carries `Content-Security-Policy: frame-ancestors 'self'
+  http://localhost<:port> http://127.0.0.1<:port>` (the request's port), so
+  only the artifact's own pages and the shell may frame it, and no sandbox:
+  the origin is the boundary. A live page's snapshot carries, on either
+  origin, a second policy that runs no script but Clax's own. Supporting files and blobs are
   sent with `X-Content-Type-Options: nosniff`. Content, on either origin, and
   blobs carry `Referrer-Policy: no-referrer`, so what a page loads from
   another host names neither its artifact ID nor the daemon's port.

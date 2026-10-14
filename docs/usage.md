@@ -497,11 +497,13 @@ on the device, with a home of its own under the app's support directory
 WebView, and runs its own agent: the Claude API with your key, or, in a
 desktop debug build, Claude Code. Its design is
 `docs/superpowers/specs/2026-10-12-flutter-app-design.md`, with
-`2026-10-12-flutter-app-round2-design.md` and
-`2026-10-12-flutter-real-apps-design.md` beside it; what it relies on from
-the daemon and the shell is in `docs/contract.md` ("The Clax app's agent",
-"The Clax app", "Device capabilities in the Clax app", "Reading another
-app's documents", "Fetching from the network", "Security model").
+`2026-10-12-flutter-app-round2-design.md`,
+`2026-10-12-flutter-real-apps-design.md` and
+`2026-10-13-flutter-app-bundles-design.md` beside it; what it relies on
+from the daemon and the shell is in `docs/contract.md` ("The Clax app's
+agent", "The Clax app", "Sharing apps", "Device capabilities in the Clax
+app", "Reading another app's documents", "Fetching from the network",
+"Security model").
 
 **Toolchains.** Flutter (stable; 3.47 is what it is built with), Xcode for
 macOS, and for Android a JDK 17, the Android SDK (platform 36, build tools,
@@ -681,6 +683,45 @@ same signature and do not ask.
   (read-only), Data (collections and documents as JSON), Permissions
   (reads of other apps, the agent's remembered read consents, device
   capabilities, network hosts and AI use, each revocable) and Plan.
+- **Sharing an app.** Share app (Export… on the Mac) on a tile's long
+  press or on the inspector's Overview makes the app a `.clax` file and
+  hands it to the share sheet (on the Mac, a save panel). The sheet says
+  which version goes and how many files; **Include my data** (off by
+  default, and unavailable past 2,000 documents or 8 MiB) adds the app's
+  documents, so the other person starts with them. Never in the file: your
+  API key, your other apps or their data, comment threads, earlier
+  versions, or the permissions you granted. The first share of an app
+  makes your sharing key and calls it v1; sharing again after a change
+  makes the next version, and sharing an unchanged app again sends the
+  same version. Settings › Sharing holds **Your name**, shown to the
+  people you share with, and, once you have shared, your sharing key's
+  fingerprint (`7KQ2-M9XD-4FTA-QW3B`).
+- **Installing one.** Open a `.clax` file in Clax: from Files or a
+  message on Android (Open with, or Share to Clax), by double-clicking it
+  in Finder on the Mac, or with Import app… in the launcher's overflow
+  menu on either. The install sheet shows the app, who it is from (their
+  name as they gave it, which anyone can claim, beside their key's
+  fingerprint: check the fingerprint with them another way when it
+  matters), what it can ask for (each capability in words, the internet
+  hosts by name) and whether it comes with documents. Install, and the
+  app opens. It needs no API key to install or use; changing it, or an
+  app that uses Claude, does. A file that was damaged or changed after it
+  was signed, or that is not a Clax app, is refused with one sentence.
+- **Updates.** An update is a later file of the same app from the same
+  sender; there are no automatic checks. Opening it offers Update (with
+  what the new version also asks for), and the update is checked before it
+  lands: Clax runs it against a copy of your data (its data upgrade, its
+  page and its tests), and only when all pass does it become the app's
+  next version, with your documents kept and the earlier versions still
+  in Versions. When the check fails, "Your app is unchanged", and Details
+  says why. If you changed the app yourself, choose **Update (replaces
+  your changes)** or **Keep mine (stop updates for this app)**. A file of
+  an older or the same version is not installed; the same app signed by
+  someone else's key, or the original of an app you made your own,
+  installs as a separate app beside yours. Sharing an app you installed
+  sends the sender's file as you received it; if you changed it, you may
+  instead share **your version as a new app**, which you then update
+  yourself.
 - **Back on macOS.** Esc goes back a screen (in a text field it only
   leaves the field), as do ⌘[ and App › Back to Apps; while an app's page
   has the keyboard, only ⌘[ does.
@@ -688,8 +729,14 @@ same signature and do not ask.
 The app keeps its own records in its application support directory
 (inside `~/Library/Containers/dev.empathic.clax` for the sandboxed macOS
 build): `settings.json`, `timings.jsonl` (say → usable and long-press →
-landed times, also listed in Settings), `agent-timings.jsonl`, and
-`clax-home/`, the daemon's home. It never touches `~/.clax` or port 7480.
+landed times, also listed in Settings), `agent-timings.jsonl`,
+`lineages.json` (which apps were shared or installed as files, and under
+which key), `bundles/<ID>.clax` (each installed app's file as received,
+for sharing it on), `snapshots/` (an app's documents while an update
+upgrades them, put back if it fails or Clax ends part way), and
+`clax-home/`, the daemon's home. The sharing key is in the platform's
+secure storage beside the API key; uninstalling Clax loses it, and your
+later files then install on others' devices as separate apps. It never touches `~/.clax` or port 7480.
 
 ## Releasing
 
