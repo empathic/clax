@@ -513,7 +513,7 @@ pub fn apply(ctx: &FeedbackCtx, st: &Store, touched: &Touched) {
 
 /// The thread as routes return it: the stored fields plus `clip_url`,
 /// `clip_path` (only when `with_path`, that is the caller presented the
-/// token), `feedback_state`, and `resolved_by_name`: the current display name
+/// token, and the clip is a file on this machine), `feedback_state`, and `resolved_by_name`: the current display name
 /// of the viewer named by `resolved_by` (not the name at the resolve), or
 /// `null` when that viewer has none or the thread was not resolved by a
 /// viewer; and `addressed_pending`, `{harness, at}` while an agent's address
@@ -522,7 +522,8 @@ pub fn apply(ctx: &FeedbackCtx, st: &Store, touched: &Touched) {
 /// its page's, unless a merge rule mapped it there), `page_url` (the origin,
 /// that path and the thread's route), `moves` (its moves between pages,
 /// oldest first) and `snapshot_path` (its version's `index.html` on disk,
-/// only when `with_path`, else `null`).
+/// only when `with_path` and the version is kept in files on this machine,
+/// else `null`).
 pub fn thread_view(
     st: &Store,
     t: &Thread,
@@ -656,11 +657,13 @@ fn views_and_senders(
             } else {
                 Value::Null
             };
-            v["clip_path"] = if t.has_clip && with_path {
-                let id = ArtifactId::parse(&t.artifact_id)?;
-                json!(st.home().clip_path(&id, &t.id).to_string_lossy())
-            } else {
-                Value::Null
+            let id = ArtifactId::parse(&t.artifact_id)?;
+            v["clip_path"] = match (t.has_clip && with_path)
+                .then(|| st.local_clip(&id, &t.id))
+                .flatten()
+            {
+                Some(path) => json!(path.to_string_lossy()),
+                None => Value::Null,
             };
             v["feedback_state"] = json!(x.feedback_state);
             v["addressed_in"] = json!(x.addressed_in);
@@ -685,16 +688,15 @@ fn views_and_senders(
                     t.anchor.route.as_deref().unwrap_or("")
                 ));
                 v["moves"] = json!(x.moves);
-                v["snapshot_path"] = if with_path {
-                    let id = ArtifactId::parse(&t.artifact_id)?;
-                    json!(
-                        st.home()
-                            .version_dir(&id, t.version_n)
-                            .join(clax_core::publish::INDEX)
-                            .to_string_lossy()
-                    )
-                } else {
-                    Value::Null
+                v["snapshot_path"] = match with_path
+                    .then(|| {
+                        st.content()
+                            .local_file(&id, t.version_n, clax_core::publish::INDEX)
+                    })
+                    .flatten()
+                {
+                    Some(path) => json!(path.to_string_lossy()),
+                    None => Value::Null,
                 };
             }
             Ok(v)

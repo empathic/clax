@@ -8,14 +8,12 @@ use super::threads::threads_of_many;
 use super::watches::{Cause, Wrote};
 use crate::anchor::Anchor;
 use crate::audit::{AuditCtx, AuditKind, AuditRecord, content_manifest_sha256, sha256_hex};
-use crate::content::wait;
 use crate::live::{PageKey, PathPattern, winning_rule};
 use crate::model::{FileMeta, Thread, Version};
 use crate::{ArtifactId, CoreError, Result, new_ulid};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::PathBuf;
 
 /// Merge rules one origin may hold.
 pub const MAX_RULES: usize = 64;
@@ -260,27 +258,6 @@ struct Plan {
     route: Option<String>,
 }
 
-/// A file copied ahead of a transaction; unless kept, removed on
-/// drop.
-struct Pending {
-    path: PathBuf,
-    keep: bool,
-}
-
-impl Pending {
-    fn keep(mut self) {
-        self.keep = true;
-    }
-}
-
-impl Drop for Pending {
-    fn drop(&mut self) {
-        if !self.keep {
-            let _ = std::fs::remove_file(&self.path);
-        }
-    }
-}
-
 /// The files of version `n` of artifact `aid`, as its `files_json` and
 /// parsed.
 fn version_files(
@@ -467,7 +444,7 @@ fn paths_of(json: &str) -> Result<Vec<String>> {
 /// onto a page, with each file's hash and the content hash (a file
 /// recorded without a hash is hashed from its bytes, and the copy's
 /// `files_json` records that hash).
-fn stage_copy(
+async fn stage_copy(
     st: &Store,
     (src, n): (&str, u32),
     json: &str,
@@ -482,7 +459,10 @@ fn stage_copy(
         })?;
     for (path, meta) in &mut files {
         if meta.sha256.is_none() {
-            let bytes = wait(st.content.read_file(&src_id, n, path))?
+            let bytes = st
+                .content
+                .read_file(&src_id, n, path)
+                .await?
                 .ok_or_else(|| crate::content::missing(&src_id, n, path))?;
             meta.sha256 = Some(sha256_hex(&bytes));
         }
@@ -500,23 +480,33 @@ fn stage_copy(
 /// versions the page already holds, and the copies of the rest, then (when
 /// copies were made onto a page that existed) of its current version, so
 /// what it showed stays current.
-fn stage_group(st: &Store, to: &LivePage, plans: &[&Plan], fresh: &[String]) -> Result<GroupStage> {
+async fn stage_group(
+    st: &Store,
+    to: &LivePage,
+    plans: &[&Plan],
+    fresh: &[String],
+) -> Result<GroupStage> {
     let meta = st.with_read(|c| stage_meta(c, to, plans))?;
     let to_id = ArtifactId::parse(&to.artifact_id)?;
     let mut reuse = HashMap::new();
     let mut copies = Vec::new();
     for ((src, n), json) in &meta.needed {
-        let same = meta
-            .versions
-            .iter()
-            .filter(|(_, j, _)| j == json)
-            .map(|(m, _, _)| *m)
-            .find(|m| same_bytes(st, (src, *n), (&to_id, *m), json).unwrap_or(false));
+        let mut same = None;
+        for (m, j, _) in &meta.versions {
+            if j == json
+                && same_bytes(st, (src, *n), (&to_id, *m), json)
+                    .await
+                    .unwrap_or(false)
+            {
+                same = Some(*m);
+                break;
+            }
+        }
         match same {
             Some(m) => {
                 reuse.insert((src.clone(), *n), m);
             }
-            None => copies.push(stage_copy(st, (src, *n), json, Some(MOVED_NOTE.into()))?),
+            None => copies.push(stage_copy(st, (src, *n), json, Some(MOVED_NOTE.into())).await?),
         }
     }
     let shown = meta.versions.iter().find(|(m, _, _)| *m == meta.current);
@@ -524,12 +514,7 @@ fn stage_group(st: &Store, to: &LivePage, plans: &[&Plan], fresh: &[String]) -> 
         && !fresh.contains(&to.artifact_id)
         && let Some((_, json, note)) = shown
     {
-        copies.push(stage_copy(
-            st,
-            (&to.artifact_id, meta.current),
-            json,
-            note.clone(),
-        )?);
+        copies.push(stage_copy(st, (&to.artifact_id, meta.current), json, note.clone()).await?);
     }
     Ok(GroupStage {
         to: to.clone(),
@@ -542,7 +527,7 @@ fn stage_group(st: &Store, to: &LivePage, plans: &[&Plan], fresh: &[String]) -> 
 
 /// Whether version `n` of `src` and version `m` of `to`, both with files
 /// `json`, hold the same bytes.
-fn same_bytes(
+async fn same_bytes(
     st: &Store,
     (src, n): (&str, u32),
     (to, m): (&ArtifactId, u32),
@@ -550,8 +535,8 @@ fn same_bytes(
 ) -> Result<bool> {
     let src = ArtifactId::parse(src)?;
     for path in paths_of(json)? {
-        let a = wait(st.content.read_file(&src, n, &path))?;
-        let b = wait(st.content.read_file(to, m, &path))?;
+        let a = st.content.read_file(&src, n, &path).await?;
+        let b = st.content.read_file(to, m, &path).await?;
         if a.is_none() || a != b {
             return Ok(false);
         }
@@ -1181,10 +1166,11 @@ impl Store {
     /// showed stays current.
     ///
     /// Comparing files happens before the writer is taken, and copying them
-    /// too, under the target pages' content locks, as each version write does
-    /// (see the content module's Ordering); the writer is held only to check
-    /// that nothing changed and insert the rows, and a failure removes the
-    /// copies written.
+    /// (and the threads' clips) too, under the target pages' content locks,
+    /// as each version write does (see the content module's Ordering); the
+    /// writer is held only to check that nothing changed and insert the
+    /// rows, and a failure removes the copies written. A moved thread's clip
+    /// leaves its old page once the re-filing commits.
     /// The source versions one call stages are bounded by
     /// [`MAX_STAGE_BYTES`]: past them, the remaining threads are left as
     /// they are and counted in [`Refiled::deferred`] (at least one thread is
@@ -1200,6 +1186,17 @@ impl Store {
     /// transaction, as `live.snapshot` under `ctx`, with the source's
     /// addresses and a `source` naming the version it copies.
     pub fn refile_threads(
+        &self,
+        ctx: &AuditCtx,
+        moves: &[(String, Refile)],
+        how: &MoveBy,
+        fresh: &[String],
+    ) -> Result<Refiled> {
+        self.block_on(self.refile_threads_async(ctx, moves, how, fresh))
+    }
+
+    /// [`Store::refile_threads`], awaiting its content store.
+    pub async fn refile_threads_async(
         &self,
         ctx: &AuditCtx,
         moves: &[(String, Refile)],
@@ -1235,29 +1232,7 @@ impl Store {
                     .iter()
                     .filter(|q| q.to.artifact_id == p.to.artifact_id)
                     .collect();
-                stages.push(stage_group(self, &p.to, &group, fresh)?);
-            }
-            let mut clips = Vec::new();
-            for p in plans
-                .iter()
-                .filter(|p| p.has_clip && p.from != p.to.artifact_id)
-            {
-                let to = ArtifactId::parse(&p.to.artifact_id)?;
-                let src = self.home.clip_path(&ArtifactId::parse(&p.from)?, &p.tid);
-                let dest = self.home.clip_path(&to, &p.tid);
-                std::fs::create_dir_all(self.home.clips_dir(&to))?;
-                let _ = std::fs::remove_file(&dest);
-                match std::fs::copy(&src, &dest).map(|_| ()) {
-                    Ok(()) => clips.push((
-                        Pending {
-                            path: dest,
-                            keep: false,
-                        },
-                        src,
-                    )),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(e.into()),
-                }
+                stages.push(stage_group(self, &p.to, &group, fresh).await?);
             }
             #[cfg(test)]
             if let Some(hook) = staged_hook(&self.home.db_path()) {
@@ -1267,18 +1242,32 @@ impl Store {
                 .iter()
                 .map(|g| ArtifactId::parse(&g.to.artifact_id))
                 .collect::<Result<_>>()?;
-            let _locks = wait(self.lock_contents(&pages.iter().collect::<Vec<_>>()));
-            let placed = match self.place_copies(&stages) {
+            let _locks = self
+                .lock_contents(&pages.iter().collect::<Vec<_>>())
+                .await?;
+            let clips = self.copy_clips(&plans).await?;
+            let placed = match self.place_copies(&stages).await {
                 Ok(placed) => placed,
-                Err(CoreError::Conflict { .. }) => continue,
-                Err(e) => return Err(e),
+                Err(e) => {
+                    self.remove_clips(&clips).await;
+                    match e {
+                        CoreError::Conflict { .. } => continue,
+                        e => return Err(e),
+                    }
+                }
             };
             let result = self.with_tx(|tx| commit_refile(tx, self, ctx, &plans, &mut stages, how));
             match result {
                 Ok(written) => {
-                    for (copy, src) in clips {
-                        copy.keep();
-                        let _ = std::fs::remove_file(src);
+                    for (from, _, tid) in &clips {
+                        if let Err(e) = self.content.delete_clip(from, tid).await {
+                            tracing::warn!(
+                                artifact = from.as_str(),
+                                thread = tid,
+                                error = %e,
+                                "could not remove a moved thread's old clip"
+                            );
+                        }
                     }
                     let mut versions = Vec::new();
                     for (aid, n) in written {
@@ -1301,8 +1290,9 @@ impl Store {
                     });
                 }
                 Err(e) => {
-                    // Nothing committed: the versions written go too.
-                    self.remove_placed(&placed);
+                    // Nothing committed: the versions and clips written go too.
+                    self.remove_placed(&placed).await;
+                    self.remove_clips(&clips).await;
                     if !matches!(e, CoreError::Conflict { .. }) {
                         return Err(e);
                     }
@@ -1317,32 +1307,83 @@ impl Store {
     /// the pages' content locks held by the caller; returns the versions
     /// written. `Conflict` when a page has moved since staging. On any
     /// error nothing stays written.
-    fn place_copies(&self, stages: &[GroupStage]) -> Result<Vec<(ArtifactId, u32)>> {
+    async fn place_copies(&self, stages: &[GroupStage]) -> Result<Vec<(ArtifactId, u32)>> {
         let mut placed = Vec::new();
-        let written = (|| {
-            for g in stages.iter().filter(|g| !g.copies.is_empty()) {
-                let to = ArtifactId::parse(&g.to.artifact_id)?;
-                if let Some(current) = self.current_version_of(&to)?
-                    && current != g.current
-                {
-                    return Err(CoreError::Conflict { current });
-                }
-                let mut n = g.current;
-                for copy in &g.copies {
-                    n += 1;
-                    let src = ArtifactId::parse(&copy.src.0)?;
-                    let paths: Vec<&str> = copy.paths.iter().map(String::as_str).collect();
-                    wait(self.content.copy_version(&src, copy.src.1, &paths, &to, n))?;
-                    placed.push((to.clone(), n));
-                }
-            }
-            Ok(())
-        })();
-        match written {
+        match self.place_copies_into(stages, &mut placed).await {
             Ok(()) => Ok(placed),
             Err(e) => {
-                self.remove_placed(&placed);
+                self.remove_placed(&placed).await;
                 Err(e)
+            }
+        }
+    }
+
+    /// [`Store::place_copies`], pushing each version written to `placed`.
+    async fn place_copies_into(
+        &self,
+        stages: &[GroupStage],
+        placed: &mut Vec<(ArtifactId, u32)>,
+    ) -> Result<()> {
+        for g in stages.iter().filter(|g| !g.copies.is_empty()) {
+            let to = ArtifactId::parse(&g.to.artifact_id)?;
+            if let Some(current) = self.current_version_of(&to)?
+                && current != g.current
+            {
+                return Err(CoreError::Conflict { current });
+            }
+            let mut n = g.current;
+            for copy in &g.copies {
+                n += 1;
+                let src = ArtifactId::parse(&copy.src.0)?;
+                let paths: Vec<&str> = copy.paths.iter().map(String::as_str).collect();
+                self.content
+                    .copy_version(&src, copy.src.1, &paths, &to, n)
+                    .await?;
+                placed.push((to.clone(), n));
+            }
+        }
+        Ok(())
+    }
+
+    /// Copies the clip of each of `plans`' threads changing page onto its
+    /// new page, with the pages' content locks held by the caller; returns
+    /// each copied as `(old page, new page, thread ID)`. A thread whose
+    /// clip bytes are missing has none copied. On any error nothing stays
+    /// copied.
+    async fn copy_clips(&self, plans: &[Plan]) -> Result<Vec<(ArtifactId, ArtifactId, String)>> {
+        let mut copied = Vec::new();
+        for p in plans
+            .iter()
+            .filter(|p| p.has_clip && p.from != p.to.artifact_id)
+        {
+            let copy = async {
+                let from = ArtifactId::parse(&p.from)?;
+                let to = ArtifactId::parse(&p.to.artifact_id)?;
+                if let Some(bytes) = self.content.read_clip(&from, &p.tid).await? {
+                    self.content.put_clip(&to, &p.tid, &bytes).await?;
+                    copied.push((from, to, p.tid.clone()));
+                }
+                Ok::<(), CoreError>(())
+            };
+            if let Err(e) = copy.await {
+                self.remove_clips(&copied).await;
+                return Err(e);
+            }
+        }
+        Ok(copied)
+    }
+
+    /// Removes the clips [`Store::copy_clips`] copied onto their new pages;
+    /// one that cannot be removed is logged.
+    async fn remove_clips(&self, copied: &[(ArtifactId, ArtifactId, String)]) {
+        for (_, to, tid) in copied {
+            if let Err(e) = self.content.delete_clip(to, tid).await {
+                tracing::warn!(
+                    artifact = to.as_str(),
+                    thread = tid,
+                    error = %e,
+                    "could not remove a clip copied for a re-filing that failed"
+                );
             }
         }
     }
@@ -1351,9 +1392,9 @@ impl Store {
     /// records, newest first (a content store removes only an artifact's
     /// newest version); one that cannot be removed is logged and left
     /// unrecorded.
-    fn remove_placed(&self, placed: &[(ArtifactId, u32)]) {
+    async fn remove_placed(&self, placed: &[(ArtifactId, u32)]) {
         for (id, n) in placed.iter().rev() {
-            if let Err(e) = wait(self.content.remove_version(id, *n)) {
+            if let Err(e) = self.content.remove_version(id, *n).await {
                 tracing::warn!(
                     artifact = id.as_str(),
                     n,
@@ -1496,7 +1537,7 @@ mod tests {
     }
 
     fn index(st: &Store, id: &ArtifactId, n: u32) -> String {
-        std::fs::read_to_string(st.home().version_dir(id, n).join(INDEX)).unwrap()
+        String::from_utf8(crate::store::test_util::content_file(st, id, n, INDEX).unwrap()).unwrap()
     }
 
     fn to(id: &ArtifactId, tid: &str) -> (String, Refile) {
@@ -1563,7 +1604,10 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        let old_clip = st.home().clip_path(&a, &t.id);
+        assert_eq!(
+            crate::store::test_util::content_clip(&st, &a, &t.id).unwrap(),
+            PNG
+        );
         let before = st
             .events_after(0, 1000)
             .unwrap()
@@ -1681,8 +1725,12 @@ mod tests {
                 "move"
             )
         );
-        assert!(!old_clip.exists());
-        assert_eq!(std::fs::read(st.home().clip_path(&b, &t.id)).unwrap(), PNG);
+        assert_eq!(crate::store::test_util::content_clip(&st, &a, &t.id), None);
+        assert_eq!(
+            crate::store::test_util::content_clip(&st, &b, &t.id).unwrap(),
+            PNG
+        );
+        assert_eq!(st.read_clip(&b, &t.id).unwrap().unwrap(), PNG);
         let mut want = vec![watcher.clone(), target.clone()];
         want.sort();
         assert_eq!(watchers(&st, &b), want, "its agents follow it");
@@ -1784,8 +1832,8 @@ mod tests {
         let b = page(&st, "/b", "<p>b");
         let t1 = thread(&st, &a, None);
         let t2 = thread(&st, &c, None);
-        // /c's snapshot is gone from disk: its link fails mid-way.
-        std::fs::remove_file(st.home().version_dir(&c, 1).join(INDEX)).unwrap();
+        // /c's snapshot is gone from the content store: its link fails mid-way.
+        crate::content::wait(st.content().remove_version(&c, 1)).unwrap();
         let err = st.refile_threads(
             DAEMON,
             &[to(&b, &t1.id), to(&b, &t2.id)],
@@ -1795,10 +1843,12 @@ mod tests {
         assert!(err.is_err());
         assert_eq!(st.get_artifact(&b).unwrap().unwrap().current_version, 1);
         assert_eq!(st.list_versions(&b).unwrap().len(), 1);
-        let dirs = std::fs::read_dir(st.home().artifact_dir(&b).join("versions"))
-            .unwrap()
-            .count();
-        assert_eq!(dirs, 1, "no version directory left behind");
+        for n in 2..=4 {
+            assert!(
+                !crate::store::test_util::content_version_exists(&st, &b, n),
+                "no version {n} left behind"
+            );
+        }
         assert_eq!(
             st.get_thread(&t1.id).unwrap().unwrap().artifact_id,
             a.as_str()

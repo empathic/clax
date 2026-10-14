@@ -20,6 +20,7 @@ pub async fn run(c: &dyn ContentStore) {
     a_fork_makes_version_one_of_a_new_artifact(c).await;
     deleting_an_artifact_removes_only_its_content(c).await;
     assets_are_stored_read_and_deleted(c).await;
+    clips_are_stored_replaced_read_and_deleted(c).await;
 }
 
 fn file<'a>(path: &'a str, bytes: &'a [u8]) -> NewFile<'a> {
@@ -380,4 +381,31 @@ pub async fn assets_are_stored_read_and_deleted(c: &dyn ContentStore) {
         .await
         .unwrap();
     assert_eq!(read(c, &id, 1, &format!("{}.woff2", other.id)).await, None);
+}
+
+pub async fn clips_are_stored_replaced_read_and_deleted(c: &dyn ContentStore) {
+    let id = ArtifactId::generate();
+    let other = ArtifactId::generate();
+    let tid = crate::new_ulid();
+    assert_eq!(c.read_clip(&id, &tid).await.unwrap(), None);
+    c.put_clip(&id, &tid, b"png1").await.unwrap();
+    assert_eq!(c.read_clip(&id, &tid).await.unwrap().unwrap(), b"png1");
+    assert_eq!(
+        c.read_clip(&other, &tid).await.unwrap(),
+        None,
+        "per artifact"
+    );
+    c.put_clip(&id, &tid, b"png2").await.unwrap();
+    assert_eq!(c.read_clip(&id, &tid).await.unwrap().unwrap(), b"png2");
+    c.delete_clip(&id, &tid).await.unwrap();
+    assert_eq!(c.read_clip(&id, &tid).await.unwrap(), None);
+    c.delete_clip(&id, &tid).await.unwrap();
+    // A clip goes with its artifact, and is in no version.
+    c.put_clip(&id, &tid, b"png3").await.unwrap();
+    c.write_version(&id, 1, &puts(&[("index.html", b"<p>1")]))
+        .await
+        .unwrap();
+    assert_eq!(read(c, &id, 1, &format!("{tid}.png")).await, None);
+    c.delete_artifact(&id).await.unwrap();
+    assert_eq!(c.read_clip(&id, &tid).await.unwrap(), None);
 }

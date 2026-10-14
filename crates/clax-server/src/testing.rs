@@ -93,6 +93,155 @@ async fn as_lan(
     next.run(req).await
 }
 
+/// Set to `deferred` to run every [`TestServer`] that keeps content in the
+/// home's files on one connection with [`Deferred`] content instead.
+pub const CONTENT_MODE_VAR: &str = "CLAX_TEST_SERVER_CONTENT";
+
+/// Whether this run's test daemons keep content in [`Deferred`]
+/// ([`CONTENT_MODE_VAR`]).
+pub fn deferred_content() -> bool {
+    std::env::var(CONTENT_MODE_VAR).as_deref() == Ok("deferred")
+}
+
+/// Content kept in memory ([`MemContent`]) whose every operation completes
+/// only when awaited by an executor, as a Durable Object's content store
+/// waits on JavaScript promises: it says so
+/// ([`clax_core::content::ContentStore::needs_executor`]), so the store's
+/// synchronous methods refuse it at once; it yields once before doing its
+/// work; and when polled by a synchronous driver anyway
+/// ([`clax_core::content::driven_synchronously`], such as
+/// [`clax_core::content::wait`]) it fails with
+/// [`clax_core::CoreError::WouldBlock`]. A server path that calls a
+/// synchronous store method for content fails on it; one that awaits the
+/// `async` twins works.
+///
+/// [`MemContent`]: clax_core::content::memory::MemContent
+#[derive(Default)]
+pub struct Deferred {
+    inner: clax_core::content::memory::MemContent,
+}
+
+impl Deferred {
+    pub fn new() -> Deferred {
+        Deferred::default()
+    }
+
+    /// Fails inside a synchronous store method; otherwise yields once.
+    async fn executor() -> clax_core::Result<()> {
+        if clax_core::content::driven_synchronously() {
+            return Err(clax_core::CoreError::WouldBlock {
+                what: "content I/O that needs an executor",
+            });
+        }
+        let mut yielded = false;
+        std::future::poll_fn(|cx| {
+            if yielded {
+                return std::task::Poll::Ready(());
+            }
+            yielded = true;
+            cx.waker().wake_by_ref();
+            std::task::Poll::Pending
+        })
+        .await;
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl clax_core::content::ContentStore for Deferred {
+    async fn read_file(
+        &self,
+        id: &clax_core::ArtifactId,
+        n: u32,
+        path: &str,
+    ) -> clax_core::Result<Option<Vec<u8>>> {
+        Self::executor().await?;
+        self.inner.read_file(id, n, path).await
+    }
+
+    async fn write_version(
+        &self,
+        id: &clax_core::ArtifactId,
+        n: u32,
+        write: &clax_core::content::VersionWrite<'_>,
+    ) -> clax_core::Result<()> {
+        Self::executor().await?;
+        self.inner.write_version(id, n, write).await
+    }
+
+    async fn copy_version(
+        &self,
+        from: &clax_core::ArtifactId,
+        from_n: u32,
+        paths: &[&str],
+        to: &clax_core::ArtifactId,
+        to_n: u32,
+    ) -> clax_core::Result<()> {
+        Self::executor().await?;
+        self.inner.copy_version(from, from_n, paths, to, to_n).await
+    }
+
+    async fn remove_version(&self, id: &clax_core::ArtifactId, n: u32) -> clax_core::Result<()> {
+        Self::executor().await?;
+        self.inner.remove_version(id, n).await
+    }
+
+    async fn delete_artifact(&self, id: &clax_core::ArtifactId) -> clax_core::Result<()> {
+        Self::executor().await?;
+        self.inner.delete_artifact(id).await
+    }
+
+    async fn put_asset(
+        &self,
+        key: &clax_core::content::AssetKey,
+        bytes: &[u8],
+    ) -> clax_core::Result<()> {
+        Self::executor().await?;
+        self.inner.put_asset(key, bytes).await
+    }
+
+    async fn read_asset(
+        &self,
+        key: &clax_core::content::AssetKey,
+    ) -> clax_core::Result<Option<Vec<u8>>> {
+        Self::executor().await?;
+        self.inner.read_asset(key).await
+    }
+
+    async fn delete_asset(&self, key: &clax_core::content::AssetKey) -> clax_core::Result<()> {
+        Self::executor().await?;
+        self.inner.delete_asset(key).await
+    }
+
+    async fn put_clip(
+        &self,
+        id: &clax_core::ArtifactId,
+        thread: &str,
+        bytes: &[u8],
+    ) -> clax_core::Result<()> {
+        Self::executor().await?;
+        self.inner.put_clip(id, thread, bytes).await
+    }
+
+    async fn read_clip(
+        &self,
+        id: &clax_core::ArtifactId,
+        thread: &str,
+    ) -> clax_core::Result<Option<Vec<u8>>> {
+        Self::executor().await?;
+        self.inner.read_clip(id, thread).await
+    }
+
+    async fn delete_clip(&self, id: &clax_core::ArtifactId, thread: &str) -> clax_core::Result<()> {
+        Self::executor().await?;
+        self.inner.delete_clip(id, thread).await
+    }
+
+    fn needs_executor(&self) -> bool {
+        true
+    }
+}
+
 /// A running test daemon with its own temporary home and the fixed token `test-token`.
 pub struct TestServer {
     pub base: String,
@@ -139,14 +288,14 @@ impl TestServer {
     /// same-family loopback when `bind` is unspecified.
     pub async fn spawn_on(bind: IpAddr, f: impl FnOnce(&mut AppState)) -> TestServer {
         let dir = tempfile::tempdir().unwrap();
-        Self::start(dir, bind, Arc::new(SystemClock), f, false).await
+        Self::start(dir, bind, Arc::new(SystemClock), f, false, None).await
     }
 
     /// [`TestServer::spawn_on`] with the shutdown route
     /// (`POST /api/admin/shutdown`) the daemon serves.
     pub async fn spawn_on_with_shutdown(bind: IpAddr) -> TestServer {
         let dir = tempfile::tempdir().unwrap();
-        Self::start(dir, bind, Arc::new(SystemClock), |_| {}, true).await
+        Self::start(dir, bind, Arc::new(SystemClock), |_| {}, true, None).await
     }
 
     /// A test daemon listening on every interface (it may invite people)
@@ -178,7 +327,7 @@ impl TestServer {
     /// one that may invite people: its invites name [`LAN_LOCAL`]).
     pub async fn spawn_on_with_clock(bind: IpAddr, clock: Arc<ManualClock>) -> TestServer {
         let dir = tempfile::tempdir().unwrap();
-        Self::start(dir, bind, clock, |_| {}, false).await
+        Self::start(dir, bind, clock, |_| {}, false, None).await
     }
 
     /// A test daemon on a fresh copy of fixture `name` (a file of this
@@ -197,19 +346,60 @@ impl TestServer {
         let dir = tempfile::tempdir().unwrap();
         load_fixture(&Home::at(dir.path().join("ax")), &sql);
         let clock = Arc::new(ManualClock::at(at));
-        Self::start(dir, IpAddr::V4(Ipv4Addr::LOCALHOST), clock, |_| {}, false).await
+        Self::start(
+            dir,
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            clock,
+            |_| {},
+            false,
+            None,
+        )
+        .await
     }
 
-    /// Serves the home `ax` under `dir` on `bind`, every time read from `clock`.
+    /// A test daemon whose store runs on one connection
+    /// ([`Store::open_on`], as a Durable Object's does), keeping version
+    /// files, assets and clips in `content`.
+    pub async fn spawn_on_one_connection(
+        content: Arc<dyn clax_core::content::ContentStore>,
+    ) -> TestServer {
+        let dir = tempfile::tempdir().unwrap();
+        let bind = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        Self::start(
+            dir,
+            bind,
+            Arc::new(SystemClock),
+            |_| {},
+            false,
+            Some(content),
+        )
+        .await
+    }
+
+    /// Serves the home `ax` under `dir` on `bind`, every time read from
+    /// `clock`: on the store's pool and the home's files, or with `content`
+    /// on one connection ([`TestServer::spawn_on_one_connection`]).
     async fn start(
         dir: tempfile::TempDir,
         bind: IpAddr,
         clock: Arc<dyn Clock>,
         f: impl FnOnce(&mut AppState),
         shutdown: bool,
+        content: Option<Arc<dyn clax_core::content::ContentStore>>,
     ) -> TestServer {
         let home = Home::at(dir.path().join("ax"));
-        let store = Arc::new(Store::open_with_clock(&home, clock.clone()).unwrap());
+        let content = content.or_else(|| {
+            deferred_content()
+                .then(|| Arc::new(Deferred::new()) as Arc<dyn clax_core::content::ContentStore>)
+        });
+        let store = Arc::new(match content {
+            None => Store::open_with_clock(&home, clock.clone()).unwrap(),
+            Some(content) => {
+                home.ensure_dirs().unwrap();
+                let conn = rusqlite::Connection::open(home.db_path()).unwrap();
+                Store::open_on(&home, conn, clock.clone(), content).unwrap()
+            }
+        });
         let token = "test-token".to_string();
         let listener = tokio::net::TcpListener::bind(SocketAddr::new(bind, 0))
             .await

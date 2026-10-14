@@ -452,7 +452,19 @@ impl Store {
         title: &str,
         snapshot: Option<&[u8]>,
     ) -> Result<EnsuredPage> {
-        self.ensure_live_page_linking(ctx, key, title, snapshot, &[])
+        self.block_on(self.ensure_live_page_linking_async(ctx, key, title, snapshot, &[]))
+    }
+
+    /// [`Store::ensure_live_page`], awaiting its content store.
+    pub async fn ensure_live_page_async(
+        &self,
+        ctx: &AuditCtx,
+        key: &PageKey,
+        title: &str,
+        snapshot: Option<&[u8]>,
+    ) -> Result<EnsuredPage> {
+        self.ensure_live_page_linking_async(ctx, key, title, snapshot, &[])
+            .await
     }
 
     /// [`Store::ensure_live_page`] that, when it writes a version, links to
@@ -460,6 +472,18 @@ impl Store {
     /// version's transaction (spec L11, as ruled 2026-10-05: a snapshot names
     /// the pending threads it covers); other pending addresses stay pending.
     pub fn ensure_live_page_linking(
+        &self,
+        ctx: &AuditCtx,
+        key: &PageKey,
+        title: &str,
+        snapshot: Option<&[u8]>,
+        pending: &[String],
+    ) -> Result<EnsuredPage> {
+        self.block_on(self.ensure_live_page_linking_async(ctx, key, title, snapshot, pending))
+    }
+
+    /// [`Store::ensure_live_page_linking`], awaiting its content store.
+    pub async fn ensure_live_page_linking_async(
         &self,
         ctx: &AuditCtx,
         key: &PageKey,
@@ -525,17 +549,24 @@ impl Store {
             let html = snapshot
                 .map(<[u8]>::to_vec)
                 .unwrap_or_else(|| placeholder_html(key).into_bytes());
-            match self.write_snapshot(ctx, &id, 0, title, &html, pending) {
+            match self
+                .write_snapshot_async(ctx, &id, 0, title, &html, pending)
+                .await
+            {
                 Ok((v, linked)) => (v, true, linked),
                 // Another first call wrote version 1 meanwhile: build on it.
                 Err(CoreError::Conflict { .. }) => match snapshot {
-                    Some(s) => self.snapshot_linking(ctx, &id, title, s, false, pending)?,
+                    Some(s) => {
+                        self.snapshot_linking_async(ctx, &id, title, s, false, pending)
+                            .await?
+                    }
                     None => unchanged(1)?,
                 },
                 Err(e) => return Err(e),
             }
         } else if let Some(s) = snapshot {
-            self.snapshot_linking(ctx, &id, title, s, false, pending)?
+            self.snapshot_linking_async(ctx, &id, title, s, false, pending)
+                .await?
         } else {
             unchanged(current)?
         };
@@ -570,14 +601,27 @@ impl Store {
         html: &[u8],
         force: bool,
     ) -> Result<(Version, bool)> {
-        self.snapshot_linking(ctx, id, title, html, force, &[])
+        self.block_on(self.store_snapshot_async(ctx, id, title, html, force))
+    }
+
+    /// [`Store::store_snapshot`], awaiting its content store.
+    pub async fn store_snapshot_async(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        title: &str,
+        html: &[u8],
+        force: bool,
+    ) -> Result<(Version, bool)> {
+        self.snapshot_linking_async(ctx, id, title, html, force, &[])
+            .await
             .map(|(v, new, _)| (v, new))
     }
 
-    /// [`Store::store_snapshot`], linking to a version it writes the threads
-    /// of `pending` still pending on the page, in the version's transaction;
-    /// also returns the linked thread IDs.
-    fn snapshot_linking(
+    /// [`Store::store_snapshot_async`], linking to a version it writes the
+    /// threads of `pending` still pending on the page, in the version's
+    /// transaction; also returns the linked thread IDs.
+    async fn snapshot_linking_async(
         &self,
         ctx: &AuditCtx,
         id: &ArtifactId,
@@ -596,10 +640,12 @@ impl Store {
                 ));
             }
             if !force {
-                let current =
-                    crate::content::wait(self.content.read_file(id, a.current_version, INDEX))
-                        .ok()
-                        .flatten();
+                let current = self
+                    .content
+                    .read_file(id, a.current_version, INDEX)
+                    .await
+                    .ok()
+                    .flatten();
                 if current.as_deref() == Some(html) {
                     return Ok((
                         self.get_version(id, a.current_version)?
@@ -609,7 +655,10 @@ impl Store {
                     ));
                 }
             }
-            match self.write_snapshot(ctx, id, a.current_version, title, html, pending) {
+            match self
+                .write_snapshot_async(ctx, id, a.current_version, title, html, pending)
+                .await
+            {
                 Ok((v, linked)) => return Ok((v, true, linked)),
                 // Another snapshot took this version number: build on it.
                 Err(CoreError::Conflict { .. }) if attempt < SNAPSHOT_ATTEMPTS => attempt += 1,
@@ -666,6 +715,18 @@ impl Store {
         html: &[u8],
         pending: &[String],
     ) -> Result<Option<(Version, Vec<String>)>> {
+        self.block_on(self.snapshot_pending_async(ctx, id, title, html, pending))
+    }
+
+    /// [`Store::snapshot_pending`], awaiting its content store.
+    pub async fn snapshot_pending_async(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        title: &str,
+        html: &[u8],
+        pending: &[String],
+    ) -> Result<Option<(Version, Vec<String>)>> {
         const NONE_PENDING: &str = "nothing_pending";
         if !self.with_read(|c| any_pending(c, id, pending))? {
             return Ok(None);
@@ -680,22 +741,24 @@ impl Store {
                 ));
             }
             let p = snapshot_publish(a.current_version, title, html)?;
-            let written = self.write_version_then(
-                ctx,
-                id,
-                a.current_version,
-                &p,
-                &BTreeMap::new(),
-                None,
-                |tx, n| {
-                    let linked = link_pending_in(tx, id, n, Some(pending), &self.now())?;
-                    if linked.is_empty() {
-                        // Rolls the version back: nothing named is pending now.
-                        return Err(CoreError::invalid(NONE_PENDING, "nothing pending"));
-                    }
-                    Ok(linked)
-                },
-            );
+            let written = self
+                .write_version_then_async(
+                    ctx,
+                    id,
+                    a.current_version,
+                    &p,
+                    &BTreeMap::new(),
+                    None,
+                    |tx, n| {
+                        let linked = link_pending_in(tx, id, n, Some(pending), &self.now())?;
+                        if linked.is_empty() {
+                            // Rolls the version back: nothing named is pending now.
+                            return Err(CoreError::invalid(NONE_PENDING, "nothing pending"));
+                        }
+                        Ok(linked)
+                    },
+                )
+                .await;
             match written {
                 Ok((_, v, linked)) => return Ok(Some((v, linked))),
                 Err(CoreError::Invalid { code, .. }) if code == NONE_PENDING => return Ok(None),
@@ -758,7 +821,7 @@ impl Store {
         t: NewThread,
         pick: &str,
     ) -> Result<Option<Thread>> {
-        self.create_live_thread(ctx, id, t, Some(pick), None)
+        self.block_on(self.create_picked_thread_async(ctx, id, t, pick))
     }
 
     /// [`Store::create_thread`] on the live page `id`, as
@@ -777,55 +840,81 @@ impl Store {
         pick: Option<&str>,
         live_path: Option<&str>,
     ) -> Result<Option<Thread>> {
-        let taken = std::cell::Cell::new(false);
-        let made = self.create_thread_then(ctx, id, t, |tx, tid| {
-            let mut after = Vec::new();
-            if let Some(path) = live_path {
-                tx.execute(
-                    "UPDATE threads SET live_path = ?2 WHERE id = ?1",
-                    params![tid, path],
-                )?;
-                // Scope watches covering the path now cover the page.
-                if let Some(p) = live_page_of_conn(tx, id.as_str())? {
-                    let key = PageKey {
-                        origin: p.origin,
-                        path: path.to_string(),
-                    };
-                    // Recorded after the thread that caused them.
-                    let watching = materialize(tx, id.as_str(), &key, &self.now())?;
-                    after = page_watch_records(
-                        tx,
-                        &self.now(),
-                        id.as_str(),
-                        &watching,
-                        "scope",
-                        Some(Cause::Scope),
+        self.block_on(self.create_live_thread_async(ctx, id, t, pick, live_path))
+    }
+
+    /// [`Store::create_picked_thread`], awaiting its content store.
+    pub async fn create_picked_thread_async(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        t: NewThread,
+        pick: &str,
+    ) -> Result<Option<Thread>> {
+        self.create_live_thread_async(ctx, id, t, Some(pick), None)
+            .await
+    }
+
+    /// [`Store::create_live_thread`], awaiting its content store.
+    pub async fn create_live_thread_async(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        t: NewThread,
+        pick: Option<&str>,
+        live_path: Option<&str>,
+    ) -> Result<Option<Thread>> {
+        let taken = std::sync::atomic::AtomicBool::new(false);
+        let made = self
+            .create_thread_then_async(ctx, id, t, |tx, tid| {
+                let mut after = Vec::new();
+                if let Some(path) = live_path {
+                    tx.execute(
+                        "UPDATE threads SET live_path = ?2 WHERE id = ?1",
+                        params![tid, path],
                     )?;
+                    // Scope watches covering the path now cover the page.
+                    if let Some(p) = live_page_of_conn(tx, id.as_str())? {
+                        let key = PageKey {
+                            origin: p.origin,
+                            path: path.to_string(),
+                        };
+                        // Recorded after the thread that caused them.
+                        let watching = materialize(tx, id.as_str(), &key, &self.now())?;
+                        after = page_watch_records(
+                            tx,
+                            &self.now(),
+                            id.as_str(),
+                            &watching,
+                            "scope",
+                            Some(Cause::Scope),
+                        )?;
+                    }
                 }
-            }
-            let set = live_path.map(str::to_string);
-            let Some(pick) = pick else {
-                return Ok((set, after));
-            };
-            tx.execute(
-                "DELETE FROM live_picks WHERE created_at < ?1
+                let set = live_path.map(str::to_string);
+                let Some(pick) = pick else {
+                    return Ok((set, after));
+                };
+                tx.execute(
+                    "DELETE FROM live_picks WHERE created_at < ?1
                     OR (artifact_id = ?2 AND pick_id = ?3
                         AND NOT EXISTS(SELECT 1 FROM threads WHERE id = live_picks.thread_id))",
-                params![pick_cutoff(self.now_utc()), id.as_str(), pick],
-            )?;
-            let n = tx.execute(
-                "INSERT OR IGNORE INTO live_picks (artifact_id, pick_id, thread_id, created_at)
+                    params![pick_cutoff(self.now_utc()), id.as_str(), pick],
+                )?;
+                let n = tx.execute(
+                    "INSERT OR IGNORE INTO live_picks (artifact_id, pick_id, thread_id, created_at)
                  VALUES (?1, ?2, ?3, ?4)",
-                params![id.as_str(), pick, tid, self.now()],
-            )?;
-            if n == 0 {
-                taken.set(true);
-                return Err(CoreError::Conflict { current: 0 });
-            }
-            Ok((set, after))
-        });
+                    params![id.as_str(), pick, tid, self.now()],
+                )?;
+                if n == 0 {
+                    taken.store(true, std::sync::atomic::Ordering::Relaxed);
+                    return Err(CoreError::Conflict { current: 0 });
+                }
+                Ok((set, after))
+            })
+            .await;
         match made {
-            Err(_) if taken.get() => Ok(None),
+            Err(_) if taken.load(std::sync::atomic::Ordering::Relaxed) => Ok(None),
             r => r.map(Some),
         }
     }
@@ -1069,7 +1158,7 @@ impl Store {
     /// Writes `html` as version `expected + 1` (its only file), noted
     /// `snapshot`, linking to it, in its transaction, the threads of
     /// `pending` still pending on the page; returns them with the version.
-    fn write_snapshot(
+    async fn write_snapshot_async(
         &self,
         ctx: &AuditCtx,
         id: &ArtifactId,
@@ -1079,10 +1168,11 @@ impl Store {
         pending: &[String],
     ) -> Result<(Version, Vec<String>)> {
         let p = snapshot_publish(expected, title, html)?;
-        let (_, v, linked) =
-            self.write_version_then(ctx, id, expected, &p, &BTreeMap::new(), None, |tx, n| {
+        let (_, v, linked) = self
+            .write_version_then_async(ctx, id, expected, &p, &BTreeMap::new(), None, |tx, n| {
                 link_pending_in(tx, id, n, Some(pending), &self.now())
-            })?;
+            })
+            .await?;
         Ok((v, linked))
     }
 }
@@ -1101,7 +1191,8 @@ mod tests {
         }
     }
     fn index(st: &Store, id: &ArtifactId, n: u32) -> String {
-        std::fs::read_to_string(st.home().version_dir(id, n).join("index.html")).unwrap()
+        let bytes = crate::store::test_util::content_file(st, id, n, "index.html").unwrap();
+        String::from_utf8(bytes).unwrap()
     }
 
     #[test]

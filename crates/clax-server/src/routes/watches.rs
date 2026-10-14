@@ -133,7 +133,8 @@ pub async fn live_put(
     let events = s.events.clone();
     let live_ids = s.live_ids.clone();
     let (w, page, artifact, covered, site) = s
-        .store_call(move |st| {
+        .store_call_async(move |st| async move {
+            let st = &*st;
             // The page is made before the scope watch is written, so a
             // failure leaves no watch behind; an unknown session makes no page.
             if st.get_session(&sid)?.is_none_or(|x| x.ended_at.is_some()) {
@@ -147,7 +148,9 @@ pub async fn live_put(
             let title = page_url
                 .split_once("://")
                 .map_or(page_url.as_str(), |(_, rest)| rest);
-            let e = live_ids.ensure_page(st, &audit, &pu.key, title, None, &[])?;
+            let e = live_ids
+                .ensure_page(st, &audit, &pu.key, title, None, &[])
+                .await?;
             if e.new_version {
                 events.publish(Event::Version {
                     artifact_id: e.artifact.id.clone(),

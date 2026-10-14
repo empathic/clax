@@ -1229,7 +1229,9 @@ impl Store {
                 let withheld = withheld.filter(|w| !w.is_empty());
                 let shown = withheld.as_ref();
                 let clip_path = (p.has_clip && !shown.is_some_and(|w| w.clip))
-                    .then(|| self.home.clip_path(&aid, &p.thread_id).to_string_lossy().into_owned());
+                    .then(|| self.content.local_clip(&aid, &p.thread_id))
+                    .flatten()
+                    .map(|path| path.to_string_lossy().into_owned());
                 if let Some(w) = shown {
                     if w.title.is_some() {
                         p.title = crate::visibility::placeholder::title_by(
@@ -1264,11 +1266,9 @@ impl Store {
                         }
                     ),
                     snapshot_path: self
-                        .home
-                        .version_dir(&aid, p.version_n)
-                        .join(crate::publish::INDEX)
-                        .to_string_lossy()
-                        .into_owned(),
+                        .content
+                        .local_file(&aid, p.version_n, crate::publish::INDEX)
+                        .map(|path| path.to_string_lossy().into_owned()),
                 });
                 good.push((p, anchor_shown.then_some(anchor), clip_path, live, withheld));
             }
@@ -3061,11 +3061,19 @@ mod tests {
             .items;
         assert_eq!(items.len(), 1);
         assert!(crate::feedback::render_item(&items[0]).contains("\nViewer: \"one\"\n"));
-        let clip = items[0].clip_path.clone().unwrap();
-        assert!(
-            std::path::Path::new(&clip).is_absolute() && std::path::Path::new(&clip).exists(),
-            "{clip}"
-        );
+        // A clip's path when the content store keeps clips in files, and
+        // none when it keeps them elsewhere.
+        match st.local_clip(&a1, &t1.id) {
+            Some(_) => {
+                let clip = items[0].clip_path.clone().unwrap();
+                assert!(
+                    std::path::Path::new(&clip).is_absolute()
+                        && std::path::Path::new(&clip).exists(),
+                    "{clip}"
+                );
+            }
+            None => assert_eq!(items[0].clip_path, None),
+        }
         assert_eq!(take(&st, &owner, Tier::Wait)[0].body, "two");
     }
 }

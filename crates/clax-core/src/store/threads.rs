@@ -707,48 +707,18 @@ fn insert_mentions(tx: &Connection, comment_id: &str, body: &str) -> Result<()> 
     Ok(())
 }
 
-/// A clip image written ahead of its thread's transaction; unless kept, its
-/// file is removed on drop.
-struct PendingClip {
-    path: std::path::PathBuf,
-    keep: bool,
-}
-
-impl PendingClip {
-    /// Writes `bytes` to `path` via a temporary file in `dir`, creating `dir`.
-    fn write(dir: &std::path::Path, path: &std::path::Path, bytes: &[u8]) -> Result<PendingClip> {
-        std::fs::create_dir_all(dir)?;
-        let tmp = path.with_extension("png.tmp");
-        if let Err(e) = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path)) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(e.into());
-        }
-        Ok(PendingClip {
-            path: path.to_path_buf(),
-            keep: false,
-        })
-    }
-}
-
-impl Drop for PendingClip {
-    fn drop(&mut self) {
-        if self.keep {
-            return;
-        }
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
 impl Store {
     /// Creates a thread on version `t.version_n` of the live artifact `id` with
     /// its first (viewer) comment. Liveness, the version and the anchor are
-    /// checked, the clip file written, and the rows inserted in one
-    /// transaction, so a delete of the artifact either comes first (nothing
-    /// is written, not even the clips directory) or comes after and removes
-    /// the clip with the artifact's files. When anything fails, no rows
-    /// remain and no clip file is left behind. Callers check the clip with
-    /// [`clip_problem`] first. Records `thread.open` and the first comment's
-    /// `comment.add` under `ctx`, in the same transaction.
+    /// checked and the rows inserted in one transaction. A clip is written
+    /// to the content store first, under the artifact's content lock (which
+    /// a delete of the artifact holds too) and once the artifact is seen
+    /// live, so a delete either comes first (nothing is written) or comes
+    /// after and removes the clip with the artifact's content. When
+    /// anything fails, no rows remain and the clip is removed. Callers
+    /// check the clip with [`clip_problem`] first. Records `thread.open`
+    /// and the first comment's `comment.add` under `ctx`, in the same
+    /// transaction.
     ///
     /// # Errors
     /// `NotFound` for a missing or deleted artifact; `invalid_anchor` (also
@@ -756,7 +726,18 @@ impl Store {
     /// names none and is stored with its `file` emptied), `invalid_comment`,
     /// or `unknown_version` for bad input.
     pub fn create_thread(&self, ctx: &AuditCtx, id: &ArtifactId, t: NewThread) -> Result<Thread> {
-        self.create_thread_then(ctx, id, t, |_, _| Ok((None, Vec::new())))
+        self.block_on(self.create_thread_async(ctx, id, t))
+    }
+
+    /// [`Store::create_thread`], awaiting its content store.
+    pub async fn create_thread_async(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        t: NewThread,
+    ) -> Result<Thread> {
+        self.create_thread_inner(ctx, id, t, &[], |_, _| Ok((None, Vec::new())))
+            .await
     }
 
     /// [`Store::create_thread`] for a creator who may not see the files
@@ -774,15 +755,27 @@ impl Store {
         t: NewThread,
         hidden: &[String],
     ) -> Result<Thread> {
-        self.create_thread_inner(ctx, id, t, hidden, |_, _| Ok((None, Vec::new())))
+        self.block_on(self.create_thread_hiding_async(ctx, id, t, hidden))
     }
 
-    /// [`Store::create_thread`], running `then` with the new thread's ID in
-    /// the transaction that writes it: an error from `then` rolls the thread
-    /// back. `then` answers the `live_path` it set, which `thread.open`
-    /// records, and the events of what else it changed, recorded under `ctx`
-    /// after the thread's own.
-    pub(crate) fn create_thread_then(
+    /// [`Store::create_thread_hiding`], awaiting its content store.
+    pub async fn create_thread_hiding_async(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        t: NewThread,
+        hidden: &[String],
+    ) -> Result<Thread> {
+        self.create_thread_inner(ctx, id, t, hidden, |_, _| Ok((None, Vec::new())))
+            .await
+    }
+
+    /// [`Store::create_thread_async`], running `then` with the new thread's
+    /// ID in the transaction that writes it: an error from `then` rolls the
+    /// thread back. `then` answers the `live_path` it set, which
+    /// `thread.open` records, and the events of what else it changed,
+    /// recorded under `ctx` after the thread's own.
+    pub(crate) async fn create_thread_then_async(
         &self,
         ctx: &AuditCtx,
         id: &ArtifactId,
@@ -792,12 +785,13 @@ impl Store {
             &str,
         ) -> Result<(Option<String>, Vec<crate::audit::AuditRecord>)>,
     ) -> Result<Thread> {
-        self.create_thread_inner(ctx, id, t, &[], then)
+        self.create_thread_inner(ctx, id, t, &[], then).await
     }
 
-    /// [`Store::create_thread_then`], an anchor on any of `hidden` refused
-    /// as one on a file the version lacks ([`Store::create_thread_hiding`]).
-    fn create_thread_inner(
+    /// [`Store::create_thread_then_async`], an anchor on any of `hidden`
+    /// refused as one on a file the version lacks
+    /// ([`Store::create_thread_hiding`]).
+    async fn create_thread_inner(
         &self,
         ctx: &AuditCtx,
         id: &ArtifactId,
@@ -814,10 +808,21 @@ impl Store {
         check_body(&t.body)?;
         let tid = new_ulid();
         let now = self.now();
-        let clip_path = self.home.clip_path(id, &tid);
         let anchor_json = serde_json::to_string(&t.anchor).expect("anchors serialise");
-        let clips_dir = self.home.clips_dir(id);
-        let clip = self.with_tx(|tx| {
+        // The clip goes first, under the lock a delete holds across its
+        // transaction and the content's removal.
+        let _lock = match &t.clip {
+            Some(bytes) => {
+                let lock = self.lock_content(id).await?;
+                if !self.with_read(|c| artifact_live(c, id.as_str()))? {
+                    return Err(CoreError::NotFound);
+                }
+                self.content.put_clip(id, &tid, bytes).await?;
+                Some(lock)
+            }
+            None => None,
+        };
+        let made = self.with_tx(|tx| {
             if !artifact_live(tx, id.as_str())? {
                 return Err(CoreError::NotFound);
             }
@@ -867,12 +872,6 @@ impl Store {
                 ));
             }
 
-            // Written while the transaction holds the write lock, after the
-            // liveness check: a concurrent delete cannot slip in between.
-            let clip = match &t.clip {
-                Some(bytes) => Some(PendingClip::write(&clips_dir, &clip_path, bytes)?),
-                None => None,
-            };
             tx.execute(
                 "INSERT INTO threads (id, artifact_id, version_n, anchor_json, status, sent_to_agent, has_clip, created_at)
                  VALUES (?1, ?2, ?3, ?4, 'open', 0, ?5, ?6)",
@@ -922,12 +921,55 @@ impl Store {
             for rec in after {
                 self.record_audit(tx, ctx, rec)?;
             }
-            Ok(clip)
-        })?;
-        if let Some(mut clip) = clip {
-            clip.keep = true;
+            Ok(())
+        });
+        if let Err(e) = made {
+            if t.clip.is_some()
+                && let Err(gone) = self.content.delete_clip(id, &tid).await
+            {
+                tracing::warn!(
+                    artifact = id.as_str(),
+                    thread = tid,
+                    error = %gone,
+                    "could not remove the clip of a thread not made"
+                );
+            }
+            return Err(e);
         }
         self.get_thread(&tid)?.ok_or(CoreError::NotFound)
+    }
+
+    /// The clip image of thread `tid` of `id`, read from the content store;
+    /// `None` when the thread has none, or its bytes are missing.
+    ///
+    /// # Errors
+    /// Database or content errors.
+    pub fn read_clip(&self, id: &ArtifactId, tid: &str) -> Result<Option<Vec<u8>>> {
+        self.block_on(self.read_clip_async(id, tid))
+    }
+
+    /// [`Store::read_clip`], awaiting its content store.
+    pub async fn read_clip_async(&self, id: &ArtifactId, tid: &str) -> Result<Option<Vec<u8>>> {
+        let has: Option<bool> = self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT has_clip FROM threads WHERE id = ?1 AND artifact_id = ?2",
+                params![tid, id.as_str()],
+                |r| r.get(0),
+            )
+            .optional()?)
+        })?;
+        if has != Some(true) {
+            return Ok(None);
+        }
+        self.content.read_clip(id, tid).await
+    }
+
+    /// The file on this machine holding the clip of thread `tid` of `id`,
+    /// when the content store keeps clips in files
+    /// ([`crate::content::ContentStore::local_clip`]), for an agent on the
+    /// same machine.
+    pub fn local_clip(&self, id: &ArtifactId, tid: &str) -> Option<std::path::PathBuf> {
+        self.content.local_clip(id, tid)
     }
 
     /// Adds a comment. A viewer comment on a resolved thread reopens it; an
@@ -1586,6 +1628,33 @@ impl Store {
         self.delete_thread_touched(ctx, thread_id).map(|(t, _)| t)
     }
 
+    /// [`Store::delete_thread_touched`], awaiting its content store.
+    pub async fn delete_thread_touched_async(
+        &self,
+        ctx: &AuditCtx,
+        thread_id: &str,
+    ) -> Result<(Thread, crate::feedback::Touched)> {
+        let (t, targets) = self.delete_thread_rows(ctx, thread_id)?;
+        if t.has_clip {
+            let id = ArtifactId::parse(&t.artifact_id)?;
+            if let Err(e) = self.content.delete_clip(&id, &t.id).await {
+                tracing::warn!(
+                    artifact = id.as_str(),
+                    thread = t.id,
+                    error = %e,
+                    "could not remove a deleted thread's clip"
+                );
+            }
+        }
+        Ok((
+            t,
+            crate::feedback::Touched {
+                targets,
+                ..Default::default()
+            },
+        ))
+    }
+
     /// [`Store::delete_thread`], also returning what it changed: `targets`
     /// are the sessions that held undelivered rows of the thread (their
     /// waits and pushes learn the rows are gone); `threads` is empty, since a
@@ -1596,7 +1665,18 @@ impl Store {
         ctx: &AuditCtx,
         thread_id: &str,
     ) -> Result<(Thread, crate::feedback::Touched)> {
-        let (t, targets) = self.with_tx(|tx| {
+        self.block_on(self.delete_thread_touched_async(ctx, thread_id))
+    }
+
+    /// Deletes thread `thread_id`'s rows, recording `thread.delete`; returns
+    /// the thread as it was and the sessions that held undelivered rows of
+    /// it.
+    fn delete_thread_rows(
+        &self,
+        ctx: &AuditCtx,
+        thread_id: &str,
+    ) -> Result<(Thread, std::collections::BTreeSet<String>)> {
+        self.with_tx(|tx| {
             let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
             let targets = {
                 let mut stmt = tx.prepare(
@@ -1629,27 +1709,7 @@ impl Store {
             self.record_audit(tx, ctx, rec)?;
             super::approvals::withdraw_thread_in(self, tx, ctx, thread_id, "thread_deleted", &now)?;
             Ok((t, targets))
-        })?;
-        if t.has_clip {
-            let id = ArtifactId::parse(&t.artifact_id)?;
-            let path = self.home.clip_path(&id, &t.id);
-            match std::fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => tracing::warn!(
-                    path = %path.display(),
-                    error = %e,
-                    "could not remove a deleted thread's clip"
-                ),
-            }
-        }
-        Ok((
-            t,
-            crate::feedback::Touched {
-                targets,
-                ..Default::default()
-            },
-        ))
+        })
     }
 }
 
@@ -1811,10 +1871,7 @@ mod tests {
         assert_eq!(t.comments.len(), 1);
         assert_eq!(t.comments[0].author_kind, AUTHOR_VIEWER);
         assert_eq!(t.comments[0].author_name, "Alex");
-        assert_eq!(
-            std::fs::read(st.home().clip_path(&aid, &t.id)).unwrap(),
-            PNG
-        );
+        assert_eq!(st.read_clip(&aid, &t.id).unwrap().unwrap(), PNG);
         assert_eq!(st.get_thread(&t.id).unwrap().unwrap(), t);
     }
 
@@ -2176,7 +2233,9 @@ mod tests {
 
     #[test]
     fn unwritable_clip_leaves_no_thread() {
-        let (_d, st) = store();
+        // The home's files, where a file in the clips directory's place
+        // makes the clip's write fail.
+        let (_d, st) = crate::store::test_util::pool_store();
         let aid = artifact(&st, None);
         std::fs::write(st.home().clips_dir(&aid), b"not a directory").unwrap();
         assert!(matches!(
@@ -2277,12 +2336,12 @@ mod tests {
             "reopening an open thread changes nothing"
         );
         st.send_to_agent(DAEMON, &t.id).unwrap();
-        let clip = st.home().clip_path(&id, &t.id);
-        assert!(clip.exists());
+        let clip = || crate::store::test_util::content_clip(&st, &id, &t.id);
+        assert!(clip().is_some());
         let gone = st.delete_thread(DAEMON, &t.id).unwrap();
         assert_eq!(gone.id, t.id);
         assert_eq!(st.get_thread(&t.id).unwrap(), None);
-        assert!(!clip.exists());
+        assert!(clip().is_none());
         let left: i64 = st
             .with_read(|c| {
                 Ok(c.query_row(

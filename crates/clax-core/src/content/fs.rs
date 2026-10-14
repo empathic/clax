@@ -7,10 +7,11 @@
 //! - `versions/.tmp-<ULID>/`: a version being written, renamed to
 //!   `versions/<n>` once whole (a leftover one is an interrupted write);
 //! - `assets/<asset ID>.<ext>`: an asset, written as `<…>.<ext>.tmp` and
-//!   renamed into place.
+//!   renamed into place;
+//! - `clips/<thread ID>.png`: a thread's clip image, written as
+//!   `<…>.png.tmp` and renamed into place.
 //!
-//! Deleting an artifact removes its whole directory, with anything else
-//! kept there (its threads' clip images).
+//! Deleting an artifact removes its whole directory.
 
 use super::{AssetKey, ContentStore, VersionWrite, missing, present, superseded};
 use crate::publish::INDEX;
@@ -236,11 +237,42 @@ impl ContentStore for FsContent {
     }
 
     async fn delete_asset(&self, key: &AssetKey) -> Result<()> {
-        match std::fs::remove_file(asset_path(&self.home, key)) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e.into()),
+        remove_file_if_present(&asset_path(&self.home, key))
+    }
+
+    async fn put_clip(&self, id: &ArtifactId, thread: &str, bytes: &[u8]) -> Result<()> {
+        std::fs::create_dir_all(self.home.clips_dir(id))?;
+        let path = self.home.clip_path(id, thread);
+        let tmp = path.with_extension("png.tmp");
+        if let Err(e) = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, &path)) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e.into());
         }
+        Ok(())
+    }
+
+    async fn read_clip(&self, id: &ArtifactId, thread: &str) -> Result<Option<Vec<u8>>> {
+        read_if_present(&self.home.clip_path(id, thread))
+    }
+
+    async fn delete_clip(&self, id: &ArtifactId, thread: &str) -> Result<()> {
+        remove_file_if_present(&self.home.clip_path(id, thread))
+    }
+
+    fn local_file(&self, id: &ArtifactId, n: u32, path: &str) -> Option<PathBuf> {
+        Some(file_path(&self.home, id, n, path))
+    }
+
+    fn local_clip(&self, id: &ArtifactId, thread: &str) -> Option<PathBuf> {
+        Some(self.home.clip_path(id, thread))
+    }
+}
+
+fn remove_file_if_present(p: &Path) -> Result<()> {
+    match std::fs::remove_file(p) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
     }
 }
 

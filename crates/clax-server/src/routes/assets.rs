@@ -82,15 +82,18 @@ pub async fn upload(
         };
         let vf = vf.clone();
         let asset = s
-            .store_call(move |st| {
-                let asset = st.add_asset_by(
-                    &audit,
-                    &id,
-                    &content_type,
-                    &bytes,
-                    person.as_deref(),
-                    via_page,
-                )?;
+            .store_call_async(move |st| async move {
+                let st = &*st;
+                let asset = st
+                    .add_asset_async(
+                        &audit,
+                        &id,
+                        &content_type,
+                        &bytes,
+                        person.as_deref(),
+                        via_page,
+                    )
+                    .await?;
                 let vis = vf.build(st)?;
                 Ok(vis.filter_assets(std::slice::from_ref(&asset)).remove(0))
             })
@@ -138,16 +141,21 @@ pub async fn delete(
     crate::agent::person_agent_session(&a.0.caller)?;
     let (aid, asset_id) = path(params)?;
     let id = parse_id(&aid)?;
-    s.store_call(move |st| match st.get_asset(&asset_id)? {
-        Some(a) if a.artifact_id == id.as_str() => st.delete_asset(&audit, &asset_id),
-        _ => Err(CoreError::NotFound),
+    s.store_call_async(move |st| async move {
+        match st.get_asset(&asset_id)? {
+            Some(a) if a.artifact_id == id.as_str() => {
+                st.delete_asset_async(&audit, &asset_id).await
+            }
+            _ => Err(CoreError::NotFound),
+        }
     })
     .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// The asset's bytes. An asset of a live page answers 404 to a caller that
-/// may not see live pages ([`SeesLive`]), as a missing one does.
+/// may not see live pages ([`SeesLive`]), as a missing one does, checked on
+/// the asset's row before any of its bytes are read.
 pub async fn blob(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -157,10 +165,20 @@ pub async fn blob(
     // An asset's bytes serve browsers (spec §7.5): agents read through the routes the filter covers.
     d.refuse_agents()?;
     let asset_id = path(asset_id)?;
+    let live_ids = s.live_ids.clone();
     let (asset, bytes) = s
-        .store_call(move |st| st.read_asset(&asset_id)?.ok_or(CoreError::NotFound))
+        .store_call_async(move |st| async move {
+            let asset = st.get_asset(&asset_id)?.ok_or(CoreError::NotFound)?;
+            if sees.check(&live_ids, &asset.artifact_id).is_err() {
+                return Err(CoreError::NotFound);
+            }
+            let bytes = st
+                .asset_bytes_async(&asset)
+                .await?
+                .ok_or(CoreError::NotFound)?;
+            Ok((asset, bytes))
+        })
         .await?;
-    sees.check(&s.live_ids, &asset.artifact_id)?;
     let len = bytes.len().to_string();
     Ok((
         [

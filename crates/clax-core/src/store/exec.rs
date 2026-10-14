@@ -89,6 +89,15 @@ enum Job {
     Write,
 }
 
+impl Job {
+    fn name(self) -> &'static str {
+        match self {
+            Job::Read => "read",
+            Job::Write => "write",
+        }
+    }
+}
+
 /// One connection that every job runs on, inline on the caller's thread:
 /// a read in one read transaction under `PRAGMA query_only`, a write as the
 /// caller runs it (the store's [`Store::with_tx`] in an `IMMEDIATE`
@@ -96,9 +105,11 @@ enum Job {
 ///
 /// There is no read limit: no deadline is checked, since a Worker has no
 /// monotonic clock in `std` and its host bounds a request's time itself.
-/// Every job starting another on the same thread is refused with a panic,
-/// as the pool refuses a write job starting a write or a read: the one
-/// connection is busy with the outer job.
+/// Every job starting another on the same thread is refused with
+/// [`CoreError::NestedJob`], where the pool runs a read inside a read and a
+/// write inside a read (and panics on a write inside a write): the one
+/// connection is busy with the outer job. An error, not a panic, since on
+/// `wasm32` a panic aborts the instance.
 pub(crate) struct Single {
     conn: Mutex<Connection>,
     /// The thread running a job on `conn`, and the job.
@@ -138,32 +149,30 @@ impl Single {
 
     /// The connection for a `job`, once no other thread's job holds it.
     ///
-    /// # Panics
-    /// When this thread is already running a job on it.
-    fn hold(&self, job: Job) -> Hold<'_> {
+    /// # Errors
+    /// [`CoreError::NestedJob`] when this thread is already running a job
+    /// on it.
+    fn hold(&self, job: Job) -> Result<Hold<'_>> {
         let me = thread::current().id();
         if let Some((t, outer)) = *lock(&self.running)
             && t == me
         {
-            match outer {
-                Job::Write if job == Job::Write => {
-                    panic!("a write job may not start another write job")
-                }
-                Job::Write => panic!("a write job may not start a read job on the one connection"),
-                Job::Read => panic!("a read job may not start another job on the one connection"),
-            }
+            return Err(CoreError::NestedJob {
+                outer: outer.name(),
+                inner: job.name(),
+            });
         }
         let conn = lock(&self.conn);
         *lock(&self.running) = Some((me, job));
-        Hold {
+        Ok(Hold {
             single: self,
             conn,
             job,
-        }
+        })
     }
 
     fn read<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
-        let hold = self.hold(Job::Read);
+        let hold = self.hold(Job::Read)?;
         let c = &*hold.conn;
         let mut out = c
             .execute_batch("PRAGMA query_only=ON; BEGIN")
@@ -182,7 +191,7 @@ impl Single {
     }
 
     fn write<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
-        let mut hold = self.hold(Job::Write);
+        let mut hold = self.hold(Job::Write)?;
         f(&mut hold.conn)
     }
 }
@@ -876,6 +885,53 @@ impl Store {
         F: FnOnce(&Store) -> Result<T> + Send + 'static,
     {
         self.call_in(Lane::Bulk, f).await
+    }
+
+    /// [`Store::call`] for a job written against the store's `async`
+    /// methods (the twins of every method that does content I/O; see the
+    /// store module's Content): `f` makes the job's future from the store.
+    ///
+    /// - On the pool the future runs as a [`Store::call`] job, in the
+    ///   interactive lane on a worker thread, driven there as a
+    ///   synchronous method drives its twin ([`Store::block_on`]): the
+    ///   same threads, queue and waits as `call` with the synchronous
+    ///   methods, so content I/O never stalls the caller's runtime.
+    /// - On one connection ([`Store::open_on`]), and so always on
+    ///   `wasm32`, and on a content store that needs an executor
+    ///   ([`crate::content::ContentStore::needs_executor`]) whatever the
+    ///   connections, the future is awaited inline on the caller's task, so
+    ///   content I/O that needs an executor (a Durable Object's JavaScript
+    ///   promises) completes, where a synchronous method would fail with
+    ///   [`CoreError::WouldBlock`]. Dropping the returned future drops the
+    ///   job wherever it is.
+    ///
+    /// A panic in the job and a call after [`Store::shutdown`] fail with
+    /// [`CoreError::TaskFailed`], as with `call`.
+    pub async fn call_async<T, F, Fut>(self: &Arc<Self>, f: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(Arc<Store>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<T>> + 'static,
+    {
+        if self.shut_down.load(Ordering::SeqCst) {
+            return Err(CoreError::TaskFailed);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if matches!(self.exec, Exec::Pool { .. }) && !self.content.needs_executor() {
+            let store = Arc::clone(self);
+            return self
+                .call_on_worker(Lane::Interactive, move |st| st.block_on(f(store)))
+                .await;
+        }
+        let store = Arc::clone(self);
+        let job = AssertUnwindSafe(async move { f(store).await });
+        match futures_util::FutureExt::catch_unwind(job).await {
+            Ok(out) => out,
+            Err(panic) => {
+                task_panicked(&*panic);
+                Err(CoreError::TaskFailed)
+            }
+        }
     }
 
     async fn call_in<T, F>(self: &Arc<Self>, lane: Lane, f: F) -> Result<T>
@@ -1606,25 +1662,70 @@ mod tests {
         assert_eq!(st.integrity_check().unwrap(), "ok");
     }
 
+    /// `inner` run inside `outer` on one connection fails that call with
+    /// `NestedJob`, rolls the outer job back, and leaves the connection
+    /// serving the next job.
+    fn refused_inside(
+        outer: Job,
+        inner: Job,
+        run: impl FnOnce(&Store, &dyn Fn(&Store) -> Result<()>) -> Result<()>,
+    ) {
+        let (_d, st) = single_store();
+        let nested = |st: &Store| match inner {
+            Job::Read => st.with_read(|_| Ok(())),
+            Job::Write => st.with_tx(|tx| Ok(tx.execute(INSERT_VIEWER, []).map(|_| ())?)),
+        };
+        let e = run(&st, &nested).unwrap_err();
+        assert!(
+            matches!(e, CoreError::NestedJob { outer: o, inner: i } if o == outer.name() && i == inner.name()),
+            "{e:?}"
+        );
+        assert_eq!(viewers(&st), 0, "nothing of either job was kept");
+        assert!(!query_only(&st));
+        st.with_tx(|tx| Ok(tx.execute(INSERT_VIEWER, [])?)).unwrap();
+        assert_eq!(viewers(&st), 1);
+    }
+
     #[test]
-    #[should_panic(expected = "may not start another write job")]
     fn one_connection_refuses_a_write_inside_a_write() {
-        let (_d, st) = single_store();
-        let _ = st.with_tx(|_| st.with_write(|_| Ok(())));
+        refused_inside(Job::Write, Job::Write, |st, nested| {
+            st.with_tx(|tx| {
+                tx.execute(INSERT_VIEWER, [])?;
+                nested(st)
+            })
+        });
     }
 
     #[test]
-    #[should_panic(expected = "a write job may not start a read job")]
     fn one_connection_refuses_a_read_inside_a_write() {
-        let (_d, st) = single_store();
-        let _ = st.with_tx(|_| st.with_read(|_| Ok(())));
+        refused_inside(Job::Write, Job::Read, |st, nested| {
+            st.with_tx(|_| nested(st))
+        });
     }
 
     #[test]
-    #[should_panic(expected = "a read job may not start another job")]
     fn one_connection_refuses_a_write_inside_a_read() {
-        let (_d, st) = single_store();
-        let _ = st.with_read(|_| st.with_tx(|_| Ok(())));
+        refused_inside(Job::Read, Job::Write, |st, nested| {
+            st.with_read(|_| nested(st))
+        });
+    }
+
+    #[test]
+    fn one_connection_refuses_a_read_inside_a_read() {
+        refused_inside(Job::Read, Job::Read, |st, nested| {
+            st.with_read(|_| nested(st))
+        });
+    }
+
+    #[test]
+    fn the_pool_runs_a_read_and_a_write_inside_a_read() {
+        let (_d, st) = store();
+        st.with_read(|_| {
+            st.with_read(|_| Ok(()))?;
+            st.with_tx(|tx| Ok(tx.execute(INSERT_VIEWER, []).map(|_| ())?))
+        })
+        .unwrap();
+        assert_eq!(viewers(&st), 1);
     }
 
     #[test]

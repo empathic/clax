@@ -150,7 +150,7 @@ fn announce_site(s: &AppState, st: &Store, key: &str) -> clax_core::Result<()> {
 /// emptied pages merged away (kept whole); once none is left, the site's merge rules applied
 /// across it ([`KIND_MERGE`]). Returns the re-filed thread IDs and how many
 /// threads are left for the next request.
-fn join_batch(
+async fn join_batch(
     st: &Store,
     rc: &RefileCtx,
     s: &AppState,
@@ -165,7 +165,7 @@ fn join_batch(
             kind: KIND_JOIN,
             rule_id: None,
         };
-        let done = rc.refile(st, &moves, &how, &[])?;
+        let done = rc.refile(st, &moves, &how, &[]).await?;
         remaining += done.deferred;
         moved.extend(done.moved.into_iter().map(|m| m.thread_id));
     }
@@ -201,7 +201,8 @@ fn join_batch(
             &rc.feedback.events,
             &canonical,
             &title,
-        )?;
+        )
+        .await?;
         let how = MoveBy {
             by: mover(st, who)?,
             kind: KIND_MERGE,
@@ -209,7 +210,7 @@ fn join_batch(
         };
         let moves: Vec<(String, Refile)> = refiles.into_iter().map(|r| (to.clone(), r)).collect();
         let fresh: Vec<String> = made.then(|| to.clone()).into_iter().collect();
-        let done = rc.refile(st, &moves, &how, &fresh)?;
+        let done = rc.refile(st, &moves, &how, &fresh).await?;
         remaining += rest + done.deferred;
         moved.extend(done.moved.into_iter().map(|m| m.thread_id));
     }
@@ -247,7 +248,8 @@ pub async fn join(
     let rc = RefileCtx::of(&s, audit.clone());
     let st2 = s.clone();
     let (site, joined, moved, remaining) = s
-        .store_call(move |st| {
+        .store_call_async(move |st| async move {
+            let st = &*st;
             let j = st.join_origins(&audit, &origin, &with)?;
             if j.changed {
                 st2.live_ids.rekey(&j.rekeyed, &j.site.key);
@@ -258,7 +260,7 @@ pub async fn join(
                     left: Vec::new(),
                 });
             }
-            let (moved, remaining) = join_batch(st, &rc, &st2, &who, &j.site.key)?;
+            let (moved, remaining) = join_batch(st, &rc, &st2, &who, &j.site.key).await?;
             Ok((st.joined_site(&j.site.key)?, j.changed, moved, remaining))
         })
         .await?;

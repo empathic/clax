@@ -555,7 +555,8 @@ async fn an_unfinished_join_is_listed_and_holds_off_other_joins_and_splits_until
         rule_id: None,
     };
     store
-        .refile_threads(&clax_core::audit::AuditCtx::DAEMON, &moves, &how, &[])
+        .refile_threads_async(&clax_core::audit::AuditCtx::DAEMON, &moves, &how, &[])
+        .await
         .unwrap();
     // Its pending page is listed, marked, with what is left.
     let listing = site(&ts, A).await;

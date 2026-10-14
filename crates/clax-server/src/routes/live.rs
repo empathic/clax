@@ -403,7 +403,8 @@ pub async fn thread(
     let live_ids = s.live_ids.clone();
     let key = pu.key;
     let a = s
-        .store_call(move |st| {
+        .store_call_async(move |st| async move {
+            let st = &*st;
             touch(&live_ids, st, &key.origin);
             let path = key.path.clone();
             let resolved = st.resolve_live_key(&key)?;
@@ -417,7 +418,9 @@ pub async fn thread(
             // A snapshot of this path settles only addresses of threads
             // made at it (a merged page holds others).
             let pending = st.pending_at_path(&pending, &key.origin, &path)?;
-            let e = live_ids.ensure_page(st, &audit, &key, &title, Some(&snapshot), &pending)?;
+            let e = live_ids
+                .ensure_page(st, &audit, &key, &title, Some(&snapshot), &pending)
+                .await?;
             let id = ArtifactId::parse(&e.artifact.id)?;
             if e.new_version {
                 events.publish(Event::Version {
@@ -443,13 +446,15 @@ pub async fn thread(
                 clip,
                 via_page: false,
             };
-            let made = st.create_live_thread(
-                &audit,
-                &id,
-                t,
-                pick.as_deref(),
-                resolved.live_path.as_deref(),
-            )?;
+            let made = st
+                .create_live_thread_async(
+                    &audit,
+                    &id,
+                    t,
+                    pick.as_deref(),
+                    resolved.live_path.as_deref(),
+                )
+                .await?;
             let thread = match (made, &pick) {
                 (Some(thread), _) => thread,
                 (None, Some(pick)) => {
@@ -581,7 +586,8 @@ pub async fn snapshot(
     let events = s.events.clone();
     let key = pu.key;
     let done = s
-        .store_call(move |st| {
+        .store_call_async(move |st| async move {
+            let st = &*st;
             let path = key.path.clone();
             let resolved = st.resolve_live_key(&key)?;
             let Some(p) = st.find_live_page(&resolved.key)? else {
@@ -590,8 +596,9 @@ pub async fn snapshot(
             let id = ArtifactId::parse(&p.artifact_id)?;
             // Only addresses of threads made at this path (see `thread`).
             let pending = st.pending_at_path(&f.pending, &p.origin, &path)?;
-            let Some((v, linked)) =
-                st.snapshot_pending(&audit, &id, &title, &f.snapshot, &pending)?
+            let Some((v, linked)) = st
+                .snapshot_pending_async(&audit, &id, &title, &f.snapshot, &pending)
+                .await?
             else {
                 return Ok(None);
             };
@@ -812,21 +819,24 @@ impl RefileCtx {
 
     /// [`Store::refile_threads`], announcing what it did; when it fails, the
     /// pages of `fresh` (made for it) that hold no thread are deleted again.
-    pub(crate) fn refile(
+    pub(crate) async fn refile(
         &self,
         st: &Store,
         moves: &[(String, Refile)],
         how: &MoveBy,
         fresh: &[String],
     ) -> clax_core::Result<Refiled> {
-        match st.refile_threads(&self.audit, moves, how, fresh) {
+        match st
+            .refile_threads_async(&self.audit, moves, how, fresh)
+            .await
+        {
             Ok(done) => {
                 announce_refiled(st, &self.feedback, &done)?;
                 Ok(done)
             }
             Err(e) => {
                 for aid in fresh {
-                    if let Err(e) = self.discard_if_empty(st, aid) {
+                    if let Err(e) = self.discard_if_empty(st, aid).await {
                         tracing::warn!(error = %e, artifact_id = aid.as_str(), "could not delete an empty live page");
                     }
                 }
@@ -835,12 +845,12 @@ impl RefileCtx {
         }
     }
 
-    pub(crate) fn discard_if_empty(&self, st: &Store, aid: &str) -> clax_core::Result<()> {
+    pub(crate) async fn discard_if_empty(&self, st: &Store, aid: &str) -> clax_core::Result<()> {
         let id = ArtifactId::parse(aid)?;
         if !st.list_threads(&id, true, None, 1)?.0.is_empty() {
             return Ok(());
         }
-        st.delete_artifact(&self.audit, &id)?;
+        st.delete_artifact_async(&self.audit, &id).await?;
         self.cache.remove_artifact(aid);
         self.feedback.events.publish(Event::ArtifactDeleted {
             artifact_id: aid.to_string(),
@@ -897,7 +907,7 @@ fn announce_refiled(
 
 /// Finds or makes the live page `key` (titled `title` when made) and
 /// announces a version it wrote; `fresh` when this call made it.
-pub(crate) fn target_page(
+pub(crate) async fn target_page(
     st: &Store,
     audit: &AuditCtx,
     live_ids: &crate::live::LiveIds,
@@ -905,7 +915,9 @@ pub(crate) fn target_page(
     key: &PageKey,
     title: &str,
 ) -> clax_core::Result<(String, bool)> {
-    let e = live_ids.ensure_page(st, audit, key, title, None, &[])?;
+    let e = live_ids
+        .ensure_page(st, audit, key, title, None, &[])
+        .await?;
     if e.new_version {
         events.publish(Event::Version {
             artifact_id: e.artifact.id.clone(),
@@ -966,7 +978,8 @@ pub async fn move_thread(
     let rc = RefileCtx::of(&s, audit);
     let with_path = who.token;
     let (view, page, artifact, rule, moved) = s
-        .store_call(move |st| {
+        .store_call_async(move |st| async move {
+            let st = &*st;
             let t = st.get_thread(&tid)?.ok_or(CoreError::NotFound)?;
             let Some(origin) = rc.live_ids.origin_of(&t.artifact_id) else {
                 return Err(CoreError::NotFound);
@@ -987,7 +1000,8 @@ pub async fn move_thread(
                 &rc.feedback.events,
                 &r.key,
                 &title,
-            )?;
+            )
+            .await?;
             let refile = Refile {
                 thread_id: tid.clone(),
                 live_path: r.live_path,
@@ -999,7 +1013,7 @@ pub async fn move_thread(
                 rule_id: None,
             };
             let fresh: Vec<String> = made.then(|| to.clone()).into_iter().collect();
-            let done = rc.refile(st, &[(to.clone(), refile)], &how, &fresh)?;
+            let done = rc.refile(st, &[(to.clone(), refile)], &how, &fresh).await?;
             let t = st.get_thread(&tid)?.ok_or(CoreError::NotFound)?;
             let (page, artifact) = page_of(st, &to)?;
             let view = thread_view(st, &t, rc.feedback.codex_push(), with_path)?;
@@ -1073,7 +1087,8 @@ pub async fn add_rule(
     }
     let rc = RefileCtx::of(&s, audit);
     let (rule, created, page, moved, remaining) = s
-        .store_call(move |st| {
+        .store_call_async(move |st| async move {
+            let st = &*st;
             let (rule, created) = st.add_live_rule(&rc.audit, &origin, &pattern)?;
             let (refiles, remaining) = st.merge_candidates(&rule, MAX_REFILE)?;
             if refiles.is_empty() {
@@ -1091,7 +1106,8 @@ pub async fn add_rule(
                 &rc.feedback.events,
                 &canonical.key,
                 &title,
-            )?;
+            )
+            .await?;
             let how = MoveBy {
                 by: mover(st, &who)?,
                 kind: KIND_MERGE,
@@ -1100,7 +1116,7 @@ pub async fn add_rule(
             let moves: Vec<(String, Refile)> =
                 refiles.into_iter().map(|r| (to.clone(), r)).collect();
             let fresh: Vec<String> = made.then(|| to.clone()).into_iter().collect();
-            let done = rc.refile(st, &moves, &how, &fresh)?;
+            let done = rc.refile(st, &moves, &how, &fresh).await?;
             let remaining = remaining + done.deferred;
             let moved = done.moved.into_iter().map(|m| m.thread_id).collect();
             Ok((rule, created, Some(page_of(st, &to)?), moved, remaining))
@@ -1142,7 +1158,8 @@ pub async fn delete_rule(
     let id = super::artifacts::path(p)?;
     let rc = RefileCtx::of(&s, audit);
     let (rule, moved, remaining, deleting) = s
-        .store_call(move |st| {
+        .store_call_async(move |st| async move {
+            let st = &*st;
             let rule = st
                 .mark_rule_deleted(&rc.audit, &id)?
                 .ok_or(CoreError::NotFound)?;
@@ -1158,12 +1175,13 @@ pub async fn delete_rule(
                     &rc.feedback.events,
                     &key,
                     &title,
-                );
+                )
+                .await;
                 let (to, made) = match made {
                     Ok(m) => m,
                     Err(e) => {
                         for aid in &fresh {
-                            let _ = rc.discard_if_empty(st, aid);
+                            let _ = rc.discard_if_empty(st, aid).await;
                         }
                         return Err(e);
                     }
@@ -1178,11 +1196,11 @@ pub async fn delete_rule(
                 kind: KIND_UNMERGE,
                 rule_id: Some(rule.id.clone()),
             };
-            let done = rc.refile(st, &moves, &how, &fresh)?;
+            let done = rc.refile(st, &moves, &how, &fresh).await?;
             // Pages made for threads left for the next request stay only
             // once they hold one.
             for aid in &fresh {
-                rc.discard_if_empty(st, aid)?;
+                rc.discard_if_empty(st, aid).await?;
             }
             let remaining = remaining + done.deferred;
             let deleting = remaining > 0;
