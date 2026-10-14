@@ -375,9 +375,12 @@ on the device, with a home of its own under the app's support directory
 (`clax-home/`) on a free loopback port, shows each app full screen in a
 WebView, and runs its own agent: the Claude API with your key, or, in a
 desktop debug build, Claude Code. Its design is
-`docs/superpowers/specs/2026-10-12-flutter-app-design.md`; what it relies on
-from the daemon and the shell is in `docs/contract.md` ("The Clax app's
-agent", "The Clax app", "Reading another app's documents").
+`docs/superpowers/specs/2026-10-12-flutter-app-design.md`, with
+`2026-10-12-flutter-app-round2-design.md` and
+`2026-10-12-flutter-real-apps-design.md` beside it; what it relies on from
+the daemon and the shell is in `docs/contract.md` ("The Clax app's agent",
+"The Clax app", "Device capabilities in the Clax app", "Reading another
+app's documents", "Fetching from the network", "Security model").
 
 **Toolchains.** Flutter (stable; 3.47 is what it is built with), Xcode for
 macOS, and for Android a JDK 17, the Android SDK (platform 36, build tools,
@@ -413,7 +416,20 @@ flutter doctor
   definitions. After changing either section, run
   `scripts/sync-app-prompt.sh` and commit the assets with it.
 - `just app-integration` builds the macOS `clax` and runs the integration
-  tests on macOS (`flutter test integration_test -d macos`).
+  tests on macOS, one `flutter test <file> -d macos` per file of
+  `integration_test/`: the full loop (a scripted agent making and changing
+  an app on the real daemon and inspector) and the credential-gated daemon.
+  Run it in the background; it builds into `apps/clax_app/build/macos`.
+- `just app-eval [--model ID] [--prompts a,b] [--max-spend USD] [--run
+  NAME]` is the live build eval, run by hand and never by a gate: each
+  prompt of `apps/clax_app/tool/eval/prompts.json` is built by the app's
+  own agent on the Messages API, against a scratch daemon, to the end of
+  its build. It needs `ANTHROPIC_API_KEY` and spends real money: up to $6 a
+  build, refused before anything runs when that times the prompts is over
+  `--max-spend` ($30 by default). Each run's files, screenshots, plan,
+  per-run costs and a results table go to `target/flutter-app/eval/<run>/`.
+  It builds the macOS debug app, so do not run it beside another macOS
+  build or `just app-integration`.
 - `just app-apk` builds the Android binaries and a release APK, at
   `apps/clax_app/build/app/outputs/flutter-apk/app-release.apk`. It is
   signed with the debug key, which is enough to install it on your own
@@ -444,10 +460,12 @@ binaries. The app needs Android 10 (API 29) or later on an arm64 or x86_64
 device. Open it, tap Settings on the launcher (a banner says so while no
 key is set), and paste a Claude API key into "Claude API key"; it is kept in
 the phone's Keystore-backed secure storage and sent only to the Claude API.
-Pick a model there too (Haiku 5.5 by default). Then New: say or type what
+Pick a model there too (Sonnet 5.5 by default; Haiku 5.5 is faster,
+Opus 5.5 stronger). Then New: say or type what
 you want. The app's daemon, its documents and every version stay on the
-phone; only the model call leaves it. Its port is reachable by other apps
-on the phone (see "Security model" in `docs/contract.md`).
+phone; only the model call leaves it. Other apps on the phone can reach
+its port, but the daemon answers only the app's own WebViews and agent,
+which hold its token (see "Security model" in `docs/contract.md`).
 
 **On a Mac, with Claude Code instead of a key.** A sandboxed app cannot
 start `claude`, so the Claude Code backend is offered only in a debug
@@ -486,6 +504,65 @@ stay ad hoc. On the first launch of a signed build the keychain asks once
 more, since the saved item still lists only the ad-hoc build: click Always
 Allow (or save the key again in Settings). After that, rebuilds keep the
 same signature and do not ask.
+
+**Using the app.**
+
+- **Home.** Your apps in a grid, each with the icon its agent designed;
+  the inbox button with its unread count; Settings; and New. A long press
+  on a tile offers Open, Inspect and, while its plan has features left,
+  Resume build.
+- **Making an app.** New, then say or type what you want. The build view
+  shows the plan as a live checklist, what the agent is doing, and a live
+  preview of the page as it is written and rendered. Add, edit, drop or
+  reorder features while it builds. Open app is offered as soon as the
+  first version lands; the agent goes on building the rest of the plan,
+  a version at a time, until it is done, the build has spent $6, or you
+  Stop it (Resume carries on). Back to apps (Android's back, or Esc and
+  ⌘[ on macOS) leaves a make running: up to three run at once, each a
+  tile with its progress until it lands, and a tap shows its build view
+  again. While a make or a change runs with Clax in the background,
+  Android keeps a progress notification up, then posts "<title> is ready"
+  (or that it changed, or couldn't); its tap opens the app.
+- **Commenting.** Nothing of Clax's is drawn over an open app. On Android,
+  a silent notification named after the app stays up while it is open,
+  with **Comment** and **Threads**; on macOS, App › Comment (⇧⌘K) and App ›
+  Threads (⌘K). A two-finger swipe left opens the threads too, and when
+  notifications are off, or you swiped the notice away, a thin handle on
+  the right edge does. A first-run hint says where these are. Comment
+  mode puts a bar under the page: Whole app, Threads (with the open
+  count), Voice (whether a pick starts dictation) and ✕. Hold a finger on
+  what you want changed and lift it to comment there; hold, then drag, to
+  select text or draw an area. Dictate or type, then Send. The page stays
+  usable while the change runs: the Working chip narrates it and folds
+  into a small pill, and a tap opens the change in progress (its
+  comments, steps and latest render, Stop, and Open thread). The change
+  lands in place with your data kept. A toast says when Clax replied, and
+  View opens the thread at its reply; a thread's page takes replies, shows
+  Retry on a failed change and opens the version that addressed it.
+- **Questions.** When the agent asks you something while its app is on
+  screen, the question docks in a sheet at the bottom, with a light tap
+  (back or Esc closes it before anything else). Over another app a toast
+  says so, and View shows it; on the home screen, the build view or the
+  inbox it opens in a sheet; with Clax in the background a notification
+  "<title> has a question" shows it when tapped. A second question waits
+  for the first to close.
+- **Inbox.** Replies, new versions, new apps, questions and finished work
+  across your apps, newest first and live: Unread or All, filters by kind,
+  search, Mark all read; a tap opens the thread, version, app or
+  question.
+- **Versions.** The threads panel's Versions tab lists every version:
+  tap one to preview it, Restore (or Undo) to make an earlier one current
+  again. A version's page shows the threads it addressed and the files it
+  changed, with a line diff against the version before, or against the
+  current one with Compare with current.
+- **Inspector.** Inspect on a tile's long press shows what an app is made
+  of: Overview (title, ID, versions, size, capabilities, history), Files
+  (read-only), Data (collections and documents as JSON), Permissions
+  (reads of other apps, the agent's remembered read consents, device
+  capabilities, network hosts and AI use, each revocable) and Plan.
+- **Back on macOS.** Esc goes back a screen (in a text field it only
+  leaves the field), as do ⌘[ and App › Back to Apps; while an app's page
+  has the keyboard, only ⌘[ does.
 
 The app keeps its own records in its application support directory
 (inside `~/Library/Containers/dev.empathic.clax` for the sandboxed macOS

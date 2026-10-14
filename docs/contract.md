@@ -990,6 +990,81 @@ working and acknowledges with the session routes the shim uses. People
 see this agent as "Clax app", and its Toolpath steps carry the harness
 "Clax app" (company `anthropic`).
 
+**Runs.** The agent is a tool loop over the Claude API's Messages API, on
+the model chosen in the app's settings (Sonnet 5.5, `claude-sonnet-5-5`,
+on a new install). A new app's **first** run sets a plan and publishes a
+usable first version; **continue** runs then build the plan's remaining
+features in order, a few a run, each publishing a version, until none is
+left to build, the build has spent $6, or the person stops it. A comment
+sent to the app's session starts a **change** run. Up to three apps run at
+once, one run at a time per app. Each run has caps:
+
+| | First | Continue | Change |
+|---|---|---|---|
+| Model turns | 14 | 18 | 10 |
+| `render` calls | 4 | 5 | 3 |
+| Output tokens (also the task budget sent with each turn) | 48,000 | 64,000 | 32,000 |
+| Wall clock, not counting a question's wait | 150 s | 240 s | 120 s |
+| Cost | $1.50 | $1.50 | $1.50 |
+
+Once two turns or fewer remain, or 60% of the clock, the tokens or the cost
+is spent, the next tool results end with "Time is nearly up: call finish
+now with what works." At a cap the run stops calling the model: it
+publishes its last draft that rendered clean, replying that it stopped
+early and leaving the threads open, or, without one, publishes nothing and
+replies "Couldn't make that change: …", and the app offers Retry. On macOS
+without an API key, a debug build can instead make each change with one
+`claude -p` call (tools off) that returns the whole edit, without the
+tools, plan or caps below.
+
+**Tools**, declared in this order every turn: `plan_set`, `plan_mark`,
+`list_files`, `read_file`, `write_file`, `str_replace`, `delete_file`,
+`set_meta`, `add_kit`, `db_collections`, `db_list`, `db_get`, `db_query`,
+`db_write`, `render`, `ask`, `finish`, `give_up`. A refused call answers
+the model with the reason and the run goes on.
+
+- `plan_set` (the whole feature list) and `plan_mark` (`{id, status}`,
+  `todo`, `doing`, `done` or `dropped`) keep the app's plan, which the app
+  stores and the person edits while the build goes. The agent never
+  removes a feature the person added, nor takes up one they dropped.
+- The file tools and `set_meta` (title and capabilities) edit a **draft**
+  of the app, never the live version (see "Drafts" under "The Clax app").
+  `add_kit` copies parts of the vendored kit into the draft under `kit/`:
+  `preact` (Preact, its hooks and htm), `kit` (components and `kit.css`;
+  brings `preact` and `icons`), `chart`, `dates` and `icons`, which pages
+  import by relative path (`./kit/preact.js`).
+- `icon.svg` among an app's files is its launcher icon: a square
+  `viewBox`, at most 32 KB, in a subset of SVG (shapes, paths, groups,
+  gradients, clip paths, masks, references within the file, and a single
+  glyph of `text`; no script, image, style, filter or animation).
+  `write_file` refuses one outside it. A first run writes one after its
+  first clean render; later runs change it only when asked.
+- `db_collections`, `db_list`, `db_get` and `db_query` read this app's
+  documents, or another app's by ID, at the owner's level with private
+  `data/users/<id>/` documents left out. The first message lists the other
+  apps that declare `db` by ID and title only, and the agent reads one
+  only once the owner has
+  allowed it (once, or always for that pair of apps), a consent separate
+  from any page's grant. `db_write` stages writes to this app alone: they
+  are applied to the draft's documents for rendering and to the app at
+  `finish`, each pinned to the version the run read.
+- `render` serves the draft and loads it in the app's hidden inspect view
+  (`?app=1&inspect=1`), then answers with a screenshot, the page's
+  uncaught errors and failed loads, an outline of its text, its title and
+  height. When that load is clean and the draft has tests
+  (`tests/<name>.test.js`, which `index.html` never loads), the tests then
+  run in a second load against a scratch copy of the documents (5 s a
+  test, 30 s in all), and the result adds `tests: {passed, failed:
+  [{name, error}], skipped}`.
+- `ask` is Clax's `ask` (see "Agent questions"), once per run.
+- `finish` is the only write to the live app: it publishes the draft
+  (`if_version` the run's base, `addresses` the threads), writes the staged
+  documents in one batch, replies on the threads (resolving them when
+  asked) and deletes the draft. It refuses a draft changed since its last
+  render, one whose last render had uncaught errors or failing tests, and
+  a new app without a title or `index.html`. `give_up` publishes nothing
+  and replies "Couldn't make that change: <reason>".
+
 ### No session
 
 The daemon's `/mcp` endpoint has no session: publishes have no owner,
@@ -1189,9 +1264,25 @@ because the browser grants user activation on `touchend`, not while a finger
 rests. The click the browser sends after the release picks, as a tap's does;
 when none comes within 400 ms (after a long-press on Android, say), comment
 mode moves focus into the page, as an area drag's press does, and picks what
-is under the finger itself. Moving beyond 10 px, a second finger, or
-`touchcancel` abandons the hold; a release before 450 ms is an ordinary tap.
-Only the viewer's own touches count. While a finger is held in comment mode,
+is under the finger itself. Moving beyond 10 px before the 450 ms, a second
+finger, or `touchcancel` abandons the hold (the page scrolls as usual); a
+release before 450 ms is an ordinary tap. Only the viewer's own touches
+count.
+
+A held finger that then moves beyond 10 px **drags**, and the page does
+not scroll while it does. When text was under the finger as the hold
+armed, the drag selects from that point to the text under the finger
+(shown in the outline's tint) and the release picks the range as a mouse
+selection is picked; from anywhere else it draws an area rectangle, as a
+mouse drag does, and the release picks the area. A drag whose range is
+empty, or whose area is too small to be one, picks what a tap at the
+arming point would. A second finger or `touchcancel` drops the drag, its
+selection and its rectangle. In a browser the release brings no click, so
+the shell would see no arrival of the finger on the frame: the release
+therefore keeps the selection, rectangle or outline with a **Comment**
+chip beside it, whose tap picks, and a touch elsewhere, a scroll or comment
+mode going off drops it. In the Clax app the app attests the finger (see
+"The viewer's gesture in the Clax app"), and the release picks at once. While a finger is held in comment mode,
 `selectstart` and `contextmenu` are cancelled, so a long-press neither
 selects text nor opens a menu, and while comment mode is on the page gets
 `-webkit-touch-callout: none`, so it opens no link callout. A mouse or pen
@@ -1732,8 +1823,9 @@ entry of the shell's own; copy link includes it.
 
 ### The Clax app
 
-The Clax app (`apps/clax_app`, Android and macOS) runs `clax serve` on the
-device, on `127.0.0.1` with a home of its own, and shows each artifact
+The Clax app (`apps/clax_app`, Android and macOS) runs `clax serve
+--require-credential` on the device, on `127.0.0.1` with a home of its own
+(see "Security model" for the key cookie its WebViews carry), and shows each artifact
 full screen in a WebView at `/a/<id>?app=1`: the artifact view without
 chrome, driven by the app. `/a/<id>/v/<n>?app=1` and the page forms
 (`/a/<id>/<file>?app=1`) work the same way. Of the shell URL's query only
@@ -1770,17 +1862,23 @@ shell in subdomain mode and an opaque origin in sandbox mode):
 
 | Method | Effect |
 |---|---|
-| `init({nonce})` | Starts the channel with this load's nonce (16 to 128 characters of `A-Z a-z 0-9 _ -`); only the first valid call in a document counts. It posts the current `state` and `threads` at once, and `ready` when a page has greeted. |
+| `init({nonce})` | Starts the channel with this load's nonce (16 to 128 characters of `A-Z a-z 0-9 _ -`); only the first valid call in a document counts. It posts the current `state` and `threads` at once, `ready` when a page has greeted, and the latest `questions` when the question module has told any. |
+| `setVisible(visible)` | Whether the app shows this view (see "Visibility" below). |
 | `enterCommentMode()` / `exitCommentMode()` | Turns comment mode on or off; nothing when it already is. |
 | `loadVersion(n)` | Shows version `n`, or the latest for `null`. |
 | `reloadLatest()` | Loads the latest version in place, keeping page, fragment and scroll, pinned or not, composer or not. |
 | `setDraftText(text)` | Replaces the open composer's text (dictation); nothing without a composer. |
 | `submitDraft()` | Presses Send on the open composer, waiting for its screenshot as Send does. |
 | `cancelDraft()` | Closes the composer. |
+| `composeArtifact()` | Opens the composer on the whole app (an `artifact` anchor, labelled "The whole app", no screenshot), unless one holding typed text is open. |
 | `openThread(id)` | Selects the thread and brings it into view. |
 | `focusThread(id)` | The app's own thread view opened on thread `id`: its area stays outlined while the view is open, until `focusThread(null)` (the view closed) or comment mode ends. An ID of no listed thread clears it. |
 | `resend(id)` | Sends an open thread that is not yet sent (after `sendFailed`), as Send does. |
-| `attestPointer({pointer, phase, x, y})` | A real finger press (`down`) or release (`up`) the app saw reach the WebView, at CSS pixels in its viewport (see "The viewer's gesture in the Clax app" below). |
+| `attestPointer({pointer, phase, x, y})` | A real finger press (`down`), release (`up`) or cancelled touch (`cancel`, the system took it back) the app saw reach the WebView, at CSS pixels in its viewport (see "The viewer's gesture in the Clax app" below). |
+| `openQuestions({question?})` | Shows the questions sheet (see "Questions" below). With `question` (an ID), with that question's card in focus as soon as the shell knows it open, waiting until it shows, closes, or the sheet is closed; without, the cards there are, the first in focus. |
+| `closeQuestions()` | Closes the questions sheet and drops a waiting `openQuestions`. |
+| `inspect({settleMs?, maxBytes?})` | In the inspect view only: asks the page for an inspection, answered by `inspection` (see "The inspect view" below). |
+| `runTests({files, testMs?, totalMs?})` | In the inspect view only: runs the draft's test files, answered by `tests`. |
 | `deviceResult({id, ok, value})` / `deviceResult({id, ok: false, error: {code, message}})` | The app's answer to a `device` message; an ID no call waits on is dropped. |
 | `openRoute(hash)` | Moves the page to fragment `hash` (`#` and at most 511 more characters), as a tapped reminder asks. |
 
@@ -1798,6 +1896,9 @@ drops them. Every message carries `nonce`:
 | `landed` | `version` | The page of a version auto-follow loaded has greeted. |
 | `notice` | `text` | A shell notice (a failed post, a failed follow, …). |
 | `device` | `id`, `cap`, `method`, `args` | The page called a device capability (see "Device capabilities in the Clax app" below). Calls made before `init` are posted by it. Not in the inspect view. |
+| `questions` | `open`, `showing` | How many of the owner's open questions are about the artifact, and whether the questions sheet shows; posted whenever either changes. |
+| `inspection` | `png`, `errors`, `failed`, `text`, `title`, `height`; or `error` | The answer to `inspect`. |
+| `tests` | `passed`, `failed: [{name, error}]`, `skipped`; or `error` | The answer to `runTests`. |
 
 **The channel and its nonce.** The WebView injects `ClaxHost` into every
 frame, the artifact's page included, so the page can post on it too. The
@@ -1807,6 +1908,94 @@ in the main frame. Before `init` the shell posts nothing; from then on every
 message carries the nonce, and a second `init` in the same document is
 ignored. The app drops every message without this load's nonce, and every
 message before its `init`. The shell never posts the nonce to the frame.
+
+**Visibility.** A WebView may report the shell's document hidden while the
+app shows it (macOS's does from load on), and a page hidden for 30 s stops
+following its artifact, so no change would land. From `init` on, the shell
+counts itself visible unless the app says otherwise with
+`setVisible(false)` (the app paused or hidden, or its screen not shown);
+`setVisible(true)` follows the artifact's events again and fetches what it
+missed. Before `init` the document's own visibility applies.
+
+**Questions.** The owner's open agent questions about the artifact are the
+shell's own question cards (see "Agent questions"), which a browser shows
+in the sidebar. App mode has no sidebar, so the cards dock in a sheet at
+the bottom, over the composer, closed until `openQuestions`. The person
+closes it (its Close button, Escape), the app does (`closeQuestions`, on
+Android's back before anything else), and it closes by itself once no
+card is left. The shell posts `questions {open, showing}` whenever either
+changes, from `init` on; until the question module has loaded (after the
+first paint, in the owner's view only) none is posted. A question about
+no artifact, or about another app, the app shows in its own question
+sheet: a WebView of the shell's inbox at that one question
+(`/inbox?q=<question ID>`), whose top level may be only that inbox, which
+closes once the question is answered, declined or withdrawn.
+
+**The inspect view.** With `inspect=1` beside `app=1`
+(`/a/<id>?app=1&inspect=1`), the app loads a draft (see "Drafts" below)
+in a WebView the person never sees, to check what its agent made. The view
+shows no comment UI (no comment mode, composer or pins), follows no events
+and no newer version, answers every consent prompt "Don't allow" without
+showing it, offers no device capability and no questions sheet.
+`inspect({settleMs, maxBytes})` asks the page's bridge for an inspection
+once the page's DOM has been still for 300 ms, or after `settleMs` (3,000
+by default, at most 10,000), and posts it as `inspection`: `png`, the
+viewport (a base64 PNG of at most `maxBytes`, 1 MiB by default, at most
+16 MiB); `errors`, the page's newest 20 uncaught errors, unhandled
+rejections and `console.error` calls since its first script, each
+`{kind, text}` (`kind` `error`, `unhandledrejection` or `console`) cut to
+501 characters; `failed`, the URLs that failed
+to load; `text`, an outline of what it shows (at most 3 KiB); `title`;
+and `height`, its scroll height in CSS pixels. Or `{error}` when there is
+none. `runTests({files, testMs, totalMs})` runs the draft's test files
+(`tests/<name>.test.js`, at most 50) with the bridge's harness, each test
+for at most `testMs` (at most 30 s) and the run for at most `totalMs` (at
+most 120 s), and posts `tests`: how many `passed`, each that `failed` (or
+file that did not load) with its error, and how many were `skipped` for
+lack of time. The harness gives tests `test(name, fn)`, `expect(v)` with
+`toBe`, `toEqual`, `toBeTruthy`, `toContain` and `toBeGreaterThan`, and
+`ui` with `click(selectorOrText)`, `type(selector, text)`,
+`text(selector?)`, `exists(selector)`, `waitFor(fn, ms)` and `go(hash)`.
+The answers are taken only from the content frame, only for the latest
+request, and only in these shapes; the page shares the bridge's window, so
+it could answer in its place, but it can describe only itself. Outside the
+inspect view both answer an error and ask nothing.
+
+**Drafts.** The app's agent works on a **draft**: an ordinary artifact,
+published, rendered and read like any other, but hidden. All of its routes
+need the token:
+
+- `POST /api/drafts` with `{of, title, capabilities, files}` (`of` the
+  app's ID, absent or `null` for a new app; each file a string or a
+  publish's `{content, encoding, content_type}`) answers 201 `{draft: {id,
+  of, version, docs_copied, docs_truncated}}`: its version 1 holds
+  `files`, and it starts with a copy of `of`'s documents as the owner reads
+  them, private `data/users/<id>/` subtrees left out, up to 2,000 documents
+  or 8 MiB (`docs_truncated` says the copy stopped, or that `of`'s rules
+  did not parse and nothing was copied). Writes its page makes land in the
+  copy only. 404 when `of` is missing, 400 `invalid_args` when `of` is a
+  draft, and a publish's validation errors otherwise.
+- Later versions are published as to any artifact (`POST
+  /api/artifacts/<draft>/versions`), without a session: one naming a
+  session is 403 `draft`.
+- `GET /api/drafts` answers `{drafts: [{id, of, created_at}]}`, oldest
+  first; `DELETE /api/drafts/<id>` removes a draft, its versions' files and
+  its documents for good (`{deleted: true}`; 404 when `id` is no draft).
+  The daemon deletes drafts older than an hour at start and hourly, and
+  the app deletes the ones an earlier run of it left when its agent first
+  registers.
+
+A draft is left out of `GET /api/artifacts`, the `gallery` topic, the
+`list` tool, inbox items, sessions' watches and feedback; `/api/events`
+carries its events only to a request with the token that names it in
+`artifact=`, and its `/api/stream` topics need the token or the events
+cookie (404 otherwise). A thread on it is 403 `draft`. Its documents are a
+copy of the app's at the owner's level, so whatever rules the draft
+declares, reading, listing or writing them without the token is 404, and
+no app reads a draft through `X-Clax-Reader`. A draft reads no other app's
+documents either, whatever its app may read (403 `not_granted`): what a
+render reads reaches the agent, and an app's grant is not the owner's
+consent to that.
 
 **Navigation.** The app lets the top level of its WebView be only the
 shell's app view on the daemon's own origin: the path `/a/<id>[/v/<n>][/<file>]`
@@ -1823,9 +2012,14 @@ refuse the pick. In app mode the app attests each real finger press and
 release over the WebView (`attestPointer`). A press that lands on the frame
 itself (not on a shell control over it, and not within 24 px of a press the
 shell itself saw within the last second) counts as the pointer's arrival on the
-frame for one second (`ATTEST_MS`), and so does that finger's release; a
-release whose press did not count never does. Only an attestation made after
-the viewer's latest input to the shell counts. The other conditions of "The
+frame while that finger stays down (at most 30 s, `HELD_MAX_MS`), so a hold
+that then drags for seconds still picks, and its release counts for one second
+after it (`ATTEST_MS`); a release whose press did not count never does, and a
+`cancel` ends the press and counts as nothing. Only an attestation made after
+the viewer's latest input to the shell counts. The attestations arrive by
+`runJavaScript`, in no fixed order with the frame's messages, so a pick that
+finds no counted arrival while an attested press awaits its release waits
+briefly for that release and is judged again. The other conditions of "The
 viewer's gesture" still hold, and outside app mode no attestation exists.
 
 ### Tools
@@ -4213,8 +4407,12 @@ token:
 
 Each is 404 for an unknown or deleted artifact and 400 `invalid_args` when
 A and B are one. A grant and its removal are recorded as `artifact.update`
-of A. A grant stays while A's declaration drops B, counting again when it
-lists B again; deleting either artifact removes its grants.
+of A. A grant follows A's declaration: a publish or `PATCH` whose
+capabilities drop B from A's `db.read` (or do not parse) removes A's grant
+for B, recorded as its revoke, so a declaration that lists B again asks the
+owner again. Deleting either artifact removes its grants. A draft (see
+"Drafts" under "The Clax app") reads no other artifact, whatever grants or
+shares name it or its app.
 
 **Reading over HTTP.** B's document reads, `GET
 /api/artifacts/<B>/docs` and `GET /api/artifacts/<B>/docs/<path>`, take
@@ -5301,6 +5499,9 @@ ID>`. An artifact URL whose `#` fragment is neither is the artifact.
   limit (at most 1,048,576) when it starts, and logs both values; it turns
   off Nagle's delay on every connection and sends TCP keep-alive probes
   after a minute idle, so a peer that vanished frees its connection.
+  `clax serve --foreground --require-credential` answers only callers that
+  hold the token or a cookie carrying it (see "Security model"); the Clax
+  app starts its daemon so.
 - `scripts/perf-clients.sh` (a quality gate) opens 1,000 `/api/stream`
   clients on a scratch release daemon, writes versions and comments at a
   steady rate, and judges delivery latency, cheap requests under that load,
@@ -5946,7 +6147,9 @@ it with Ajv (draft 2020-12, formats asserted;
   `Content-Security-Policy: sandbox`, so opening any of them as a top-level
   page cannot reach the API same-origin. Content on an artifact's own origin
   carries no CSP; the origin is the boundary. Supporting files and blobs are
-  sent with `X-Content-Type-Options: nosniff`.
+  sent with `X-Content-Type-Options: nosniff`. Content, on either origin, and
+  blobs carry `Referrer-Policy: no-referrer`, so what a page loads from
+  another host names neither its artifact ID nor the daemon's port.
 - The viewer routes (creating a thread, commenting, sending to the agent,
   resolving, reopening, deleting, `GET`/`PUT /api/viewers/me`, `GET`/`PUT
   /api/viewers/me/seen`, `GET /api/viewers/me/attention` and `PUT
@@ -6034,16 +6237,32 @@ it with Ajv (draft 2020-12, formats asserted;
   Without the header, B's documents are read at the caller's own level, so
   the web shell's `db.artifact(id)`, which always sends it with the page's
   own artifact, is the boundary a page meets.
-- The Clax app's daemon binds `127.0.0.1` on the device. On Android,
-  loopback is shared by every app on the device: another app can reach the
-  port, read what needs no token (artifacts, content, `view`-level
-  documents), and, because `GET /api/token` answers any loopback request
-  with a local `Host` and `Sec-Fetch-Site: same-origin`, which a client
-  other than a browser can send, fetch the token. The app accepts this on
-  its owner's own phone. Its Claude API key lives only in the platform's
-  secure storage (Keychain on macOS, Keystore-backed storage on Android)
-  and is sent only to the Claude API, never to logs, the daemon, its home
-  or the WebView.
+- `clax serve --foreground --require-credential` serves only callers that
+  hold a credential, for a daemon on a loopback other programs share. Every
+  request without one answers 401 `unauthorized`, `GET /api/token`
+  included, so a program that can only reach the port never gets the
+  token. A credential is the bearer token, the owner or events cookie that
+  `GET /api/token` sets, or the **key cookie** `clax_key_<port>` (the port
+  from the request's `Host`), whose value is the token itself, compared in
+  constant time. No response sets the key cookie: the program that starts
+  the daemon puts it in its own browser's cookie store. Open without a
+  credential: `/healthz`, the web UI's static files (`/_clax/...`), and
+  content addressed by artifact ID (`/c/...`, artifact origins, and
+  `/_blob/...`), since a content frame on `<id>.localhost` is cross-site to
+  the shell and an Android WebView sends it no cookie; artifact and asset
+  IDs are random, and every route that lists or names them needs a
+  credential. A daemon started without the option is unchanged.
+- The Clax app's daemon binds `127.0.0.1` on the device, where (on Android)
+  every app on the device shares loopback, so the app starts it with
+  `--require-credential` and sets the key cookie in its WebView cookie
+  store before every load of a daemon page (the app view, the inspect view
+  and the question sheet), again on each daemon start. Another app on the
+  device can still reach the port and load content by an artifact or asset
+  ID it learned. Its Claude API key lives in the platform's secure storage
+  (Keychain on macOS, Keystore-backed storage on Android) and is sent to the
+  Claude API and to the daemon the app starts (as `ANTHROPIC_API_KEY` in its
+  environment, for `sample`), never to logs, the daemon's home or the
+  WebView.
 - `artifact.publish` goes through the shell with the token, so only the
   owner's browser on this machine can republish a page, and only from the
   viewer's own gesture in the page (see "Runtime capabilities").
