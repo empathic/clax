@@ -5135,7 +5135,10 @@ capability first and light features up when it resolves.
   `{}` (not `{"composer_only": true}`) the page may also `create`, `reply`,
   `resolve`, `delete`, and `sendToClaude` as the viewer after one consent;
   `{"customAnchors": true}` lets a canvas-like page place pins itself.
-- `assets`: `upload`, `list`, `delete`, in the person's browser only.
+- `assets`: `upload`, `list`, `delete`, in the person's browser only. Use
+  an asset's `url` as given; to show an asset whose ID a page stored,
+  `claude.assetUrl(id)` (any viewer), never `"/_blob/" + id`: assets are
+  served per app, and a page loads only its own.
 - `room`: `emit`, `on`, `presence`, `peers`, `onPeers`, `join`, `connected`,
   and `onConnection` reach every view of the artifact that is open now;
   nothing is stored. Presence works for every viewer. A topic declared
@@ -5267,10 +5270,12 @@ plan for:
 - `downloads`: `too_large` and `extension_not_enabled` are never returned.
 - `assets`: asset IDs are 26-character ULIDs, not 32 characters. An
   asset's `url` is `/_blob/<artifact ID>/<asset ID>`, served only for the
-  artifact that owns it; a page loads no other app's assets. On the
-  artifact's own origin `"/_blob/" + id` is the same asset; in a sandboxed
-  frame (the main origin) the content policy refuses it, so a page there
-  rebuilds the URL as `"/_blob/<artifact ID>/" + id`. SVG is
+  artifact that owns it; a page loads no other app's assets. A page
+  rebuilds a stored asset's URL with `claude.assetUrl(id)` (Clax's
+  addition, `clax-extensions.d.ts`), as `assets.d.ts` says; the
+  root-relative `"/_blob/" + id` of older pages still resolves to the
+  app's own asset on its own origin, but not in a sandboxed frame (the
+  main origin), where the content policy refuses it. SVG is
   checked to be an SVG document but not sanitised: it is stored as uploaded
   and served with `Content-Security-Policy: sandbox`. There is no quota, so
   `usage.maxFiles` and `usage.maxBytes` are `Number.MAX_SAFE_INTEGER`.
