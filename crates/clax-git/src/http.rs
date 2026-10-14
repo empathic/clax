@@ -2,9 +2,10 @@
 //! data: the caller moves them over its own transport (reqwest natively,
 //! `fetch` in a Worker).
 
-#![allow(async_fn_in_trait)]
+use std::future::Future;
 
 use crate::error::Result;
+use crate::repo::{MaybeSend, MaybeSendSync};
 
 /// An HTTP request to send.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,7 +46,7 @@ impl HttpResponse {
 
 /// Sends a request and reads the whole response. A failure to reach the
 /// remote is `repo_unavailable`; an HTTP error status is a response, not an
-/// error.
-pub trait Transport {
-    async fn send(&self, request: HttpRequest) -> Result<HttpResponse>;
+/// error. Its future is `Send` natively, as [`crate::repo::Repo`]'s are.
+pub trait Transport: MaybeSendSync {
+    fn send(&self, request: HttpRequest) -> impl Future<Output = Result<HttpResponse>> + MaybeSend;
 }

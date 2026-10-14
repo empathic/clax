@@ -4,7 +4,7 @@ use super::Store;
 use super::changelog::{fill_addresses, link_version};
 use super::live::{LivePage, live_page_of_conn};
 use clax_core::audit::{AuditCtx, AuditKind, AuditRecord, content_manifest_sha256, sha256_hex};
-use clax_core::content::{NewFile, VersionWrite, wait};
+use clax_core::content::{NewFile, VersionMeta, VersionWrite, wait};
 use clax_core::live::KIND_LIVE;
 use clax_core::model::ARTIFACT_TEXT_FIELDS;
 use clax_core::model::{
@@ -1138,6 +1138,7 @@ impl Store {
         let write = VersionWrite {
             carry: carried.iter().map(|p| p.as_str()).collect(),
             put,
+            meta: self.version_meta(p, session_id)?,
         };
         if let Err(e) = self.content.write_version(id, n, &write).await {
             // Another process may have written `n` and recorded it.
@@ -1259,6 +1260,54 @@ impl Store {
             );
         }
         result
+    }
+
+    /// Who publishes `p` from `session_id`, for the content store: the
+    /// person [`version_authors`] records (`p.person`, else the session's,
+    /// else the owner's public ID) with their display name, the session's
+    /// agent name (its name, else its harness), and the note.
+    fn version_meta(&self, p: &ValidatedPublish, session_id: Option<&str>) -> Result<VersionMeta> {
+        self.with_read(|c| {
+            let session: Option<(Option<String>, Option<String>, String)> = match session_id {
+                Some(sid) => c
+                    .query_row(
+                        "SELECT person, name, harness FROM sessions WHERE id = ?1",
+                        params![sid],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                    .optional()?,
+                None => None,
+            };
+            let person = p
+                .person
+                .clone()
+                .or_else(|| session.as_ref().and_then(|s| s.0.clone()))
+                .filter(|person| person != OWNER);
+            let viewer: Option<(String, Option<String>)> = match &person {
+                Some(public_id) => c
+                    .query_row(
+                        "SELECT public_id, display_name FROM viewers WHERE public_id = ?1",
+                        params![public_id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()?
+                    .or_else(|| Some((public_id.clone(), None))),
+                None => c
+                    .query_row(
+                        "SELECT public_id, display_name FROM viewers WHERE owner = 1",
+                        [],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()?,
+            };
+            let (person, person_name) = viewer.map_or((None, None), |(id, name)| (Some(id), name));
+            Ok(VersionMeta {
+                person,
+                person_name: person_name.filter(|n| !n.trim().is_empty()),
+                agent: session.map(|(_, name, harness)| name.unwrap_or(harness)),
+                note: p.note.clone().filter(|n| !n.trim().is_empty()),
+            })
+        })
     }
 
     /// The artifact's `current_version`, deleted or not; `None` when there
@@ -2210,6 +2259,118 @@ mod tests {
         assert_eq!(content.asset_count(), 0);
         store.delete_artifact(DAEMON, &id).unwrap();
         assert!(content.versions().is_empty());
+    }
+
+    /// A content store in memory that keeps the metadata of each write.
+    #[derive(Default)]
+    struct Recording {
+        inner: clax_core::content::memory::MemContent,
+        metas: std::sync::Mutex<Vec<(u32, clax_core::content::VersionMeta)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl clax_core::content::ContentStore for Recording {
+        async fn read_file(
+            &self,
+            id: &clax_core::ArtifactId,
+            n: u32,
+            path: &str,
+        ) -> clax_core::Result<Option<Vec<u8>>> {
+            self.inner.read_file(id, n, path).await
+        }
+        async fn write_version(
+            &self,
+            id: &clax_core::ArtifactId,
+            n: u32,
+            write: &clax_core::content::VersionWrite<'_>,
+        ) -> clax_core::Result<()> {
+            self.metas.lock().unwrap().push((n, write.meta.clone()));
+            self.inner.write_version(id, n, write).await
+        }
+        async fn remove_version(&self, id: &clax_core::ArtifactId, n: u32) -> clax_core::Result<()> {
+            self.inner.remove_version(id, n).await
+        }
+        async fn delete_artifact(&self, id: &clax_core::ArtifactId) -> clax_core::Result<()> {
+            self.inner.delete_artifact(id).await
+        }
+        async fn put_asset(
+            &self,
+            key: &clax_core::content::AssetKey,
+            bytes: &[u8],
+        ) -> clax_core::Result<()> {
+            self.inner.put_asset(key, bytes).await
+        }
+        async fn read_asset(
+            &self,
+            key: &clax_core::content::AssetKey,
+        ) -> clax_core::Result<Option<Vec<u8>>> {
+            self.inner.read_asset(key).await
+        }
+        async fn delete_asset(&self, key: &clax_core::content::AssetKey) -> clax_core::Result<()> {
+            self.inner.delete_asset(key).await
+        }
+    }
+
+    #[test]
+    fn a_version_write_names_its_publisher_agent_and_note() {
+        use clax_core::content::VersionMeta;
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let content = std::sync::Arc::new(Recording::default());
+        let store = Store::open(&home).unwrap().with_content(content.clone());
+        // The owner, before they have an identity: no person.
+        let (a, _) = store
+            .create_artifact(DAEMON, publish(&[("index.html", Some("v1"))], None), None)
+            .unwrap();
+        let id = clax_core::ArtifactId::parse(&a.id).unwrap();
+        let owner = store.set_owner_name("Alex", false).unwrap();
+        let session = store
+            .register_session(
+                DAEMON,
+                crate::RegisterSession {
+                    harness: "claude".into(),
+                    cwd: "/w/web".into(),
+                    repo: Some("web".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let mut p = publish(&[("index.html", Some("v2"))], Some(1));
+        p.note = Some("Tighter layout".into());
+        store
+            .publish_version(DAEMON, &id, p, Some(&session.id))
+            .unwrap();
+        let rae = store
+            .upsert_viewer(&clax_core::new_ulid(), Some("Rae"))
+            .unwrap();
+        let mut p = publish(&[("index.html", Some("v3"))], Some(2));
+        p.person = Some(rae.public_id.clone());
+        store.publish_version(DAEMON, &id, p, None).unwrap();
+        assert_eq!(
+            *content.metas.lock().unwrap(),
+            [
+                (1, VersionMeta::default()),
+                (
+                    2,
+                    VersionMeta {
+                        person: Some(owner.public_id.clone()),
+                        person_name: Some("Alex".into()),
+                        agent: session.name.clone(),
+                        note: Some("Tighter layout".into()),
+                    }
+                ),
+                (
+                    3,
+                    VersionMeta {
+                        person: Some(rae.public_id.clone()),
+                        person_name: Some("Rae".into()),
+                        agent: None,
+                        note: None,
+                    }
+                ),
+            ]
+        );
+        assert!(session.name.is_some(), "a registered agent is named");
     }
 
     fn one_version(store: &Store) -> clax_core::ArtifactId {

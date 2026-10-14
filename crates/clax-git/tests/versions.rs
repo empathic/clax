@@ -515,3 +515,107 @@ fn futures_over_the_memory_host_are_send() {
         ));
     }
 }
+
+/// Over any host, natively: the traits' futures are `Send`, so generic
+/// code (a content store over a host chosen later) is `Send` too.
+#[test]
+fn futures_over_any_host_are_send() {
+    fn send<T: Send>(_: T) {}
+    fn generic<H: clax_git::RepoHost>(v: &GitVersions<H>, p: &Publish) {
+        send(v.publish(A, p));
+        send(v.read_file(A, &Rev::Version(1), "a"));
+        send(v.log(A, None, None));
+    }
+    let p = Publish {
+        version: 1,
+        parent: None,
+        changes: Changes::new(),
+        meta: meta(0, None),
+    };
+    generic(&GitVersions::new(MemoryHost::new()), &p);
+}
+
+/// A host whose repositories answer commits only as metadata, as the
+/// Cloudflare Artifacts binding does: `read_object` has no commits.
+#[derive(Clone)]
+struct MetaOnlyHost(MemoryHost);
+
+struct MetaOnly(clax_git::memory::MemoryRepo);
+
+impl Repo for MetaOnly {
+    async fn read_object(&self, id: &ObjectId) -> clax_git::Result<Option<clax_git::Object>> {
+        Ok(self
+            .0
+            .read_object(id)
+            .await?
+            .filter(|o| o.kind != clax_git::ObjectKind::Commit))
+    }
+    async fn read_commit_meta(
+        &self,
+        id: &ObjectId,
+    ) -> clax_git::Result<Option<clax_git::versions::CommitMeta>> {
+        self.0.read_commit_meta(id).await
+    }
+    async fn refs(&self) -> clax_git::Result<BTreeMap<String, ObjectId>> {
+        self.0.refs().await
+    }
+    async fn apply(
+        &self,
+        objects: Vec<clax_git::Object>,
+        updates: &[clax_git::RefUpdate],
+        atomic: bool,
+    ) -> clax_git::Result<Vec<clax_git::RefStatus>> {
+        self.0.apply(objects, updates, atomic).await
+    }
+}
+
+impl clax_git::RepoHost for MetaOnlyHost {
+    type Repo = MetaOnly;
+    async fn open(&self, name: &str) -> clax_git::Result<Option<MetaOnly>> {
+        Ok(self.0.repo(name).map(MetaOnly))
+    }
+    async fn create(&self, name: &str) -> clax_git::Result<()> {
+        self.0.create(name).await
+    }
+    async fn fork(&self, from: &str, to: &str) -> clax_git::Result<()> {
+        self.0.fork(from, to).await
+    }
+    async fn delete(&self, name: &str) -> clax_git::Result<()> {
+        self.0.delete(name).await
+    }
+}
+
+#[tokio::test]
+async fn versions_read_commits_through_the_metadata_path() {
+    let v = GitVersions::new(MetaOnlyHost(MemoryHost::new()));
+    v.create(A).await.unwrap();
+    let mut p = Publish {
+        version: 1,
+        parent: None,
+        changes: changes(&[("index.html", Some("one")), ("a.js", Some("a"))]),
+        meta: meta(1_000, None),
+    };
+    let c1 = v.publish(A, &p).await.unwrap().commit;
+    p.version = 2;
+    p.parent = Some(c1);
+    p.changes = changes(&[("index.html", Some("two"))]);
+    let c2 = v.publish(A, &p).await.unwrap().commit;
+    let (r1, r2) = (Rev::Version(1), Rev::Version(2));
+    let read = |r, path| v.read_file(A, r, path);
+    assert_eq!(read(&r2, "a.js").await.unwrap().unwrap(), b"a");
+    assert_eq!(read(&r2, "index.html").await.unwrap().unwrap(), b"two");
+    assert_eq!(read(&r1, "index.html").await.unwrap().unwrap(), b"one");
+    assert_eq!(v.list_files(A, &Rev::Version(2)).await.unwrap().len(), 2);
+    let log = v.log(A, None, None).await.unwrap();
+    assert_eq!(log.iter().map(|c| c.commit).collect::<Vec<_>>(), [c2, c1]);
+    assert_eq!(log[0].trailer("Clax-Version"), Some("2"));
+    let f = v.fork(A, B, &Rev::Version(1), 1, &meta(2_000, None)).await;
+    assert_eq!(
+        v.read_file(B, &Rev::Version(1), "index.html")
+            .await
+            .unwrap()
+            .unwrap(),
+        b"one",
+        "{f:?}"
+    );
+}
