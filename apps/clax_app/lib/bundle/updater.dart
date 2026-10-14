@@ -304,10 +304,10 @@ class Updater {
     }
 
     // 8: the lineage.
-    await store.put(
+    await store.update(
       aid,
-      entry
-          .withRelease(
+      (now) async => now
+          ?.withRelease(
             ReleaseState(
               contentSha256: m.contentSha256,
               title: m.title,
