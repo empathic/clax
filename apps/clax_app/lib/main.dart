@@ -23,6 +23,8 @@ import 'daemon/process.dart';
 import 'daemon/supervisor.dart';
 import 'platform/app_notice.dart';
 import 'platform/background_work.dart';
+import 'platform/bundle_intake.dart';
+import 'platform/bundle_key.dart';
 import 'platform/device/device_grants.dart';
 import 'platform/device/device_host.dart';
 import 'platform/device/device_plugins.dart';
@@ -174,6 +176,8 @@ Future<AppServices> platformServices() async {
       location: PluginLocation(),
     ),
     pendingMake: PendingMake(File('${support.path}/pending-make.json')),
+    bundleKey: BundleKey(FlutterBundleSeedStorage()),
+    bundleIntake: ChannelBundleIntake(),
   );
 }
 
