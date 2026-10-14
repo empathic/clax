@@ -420,6 +420,7 @@ impl Readers {
         }
     }
 
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn max(&self) -> usize {
         self.max
     }
@@ -557,7 +558,8 @@ struct Queue {
     /// Worker threads running.
     threads: usize,
     /// Of those, the ones inside a write: waiting for the write turn or
-    /// holding it.
+    /// holding it, or waiting for an artifact's content lock, which a write
+    /// holds until its transaction ends ([`WriteLane::waiting`]).
     writing: usize,
     /// Names the next worker thread.
     spawned: usize,
@@ -622,9 +624,18 @@ impl Shared {
 /// as writing, and the pool starts another worker if fewer than its base
 /// count would otherwise be free, so jobs waiting on the writer never hold
 /// every worker and reads keep running behind a slow write.
-struct WriteLane(Option<Arc<Shared>>);
+pub(crate) struct WriteLane(Option<Arc<Shared>>);
 
 impl WriteLane {
+    /// The calling thread's wait for something only another write's end
+    /// releases (an artifact's content lock, held from its content write to
+    /// the end of the transaction recording it), counted as writing until
+    /// dropped. Off a worker thread, or when no worker can be started,
+    /// nothing is counted.
+    pub(crate) fn waiting() -> WriteLane {
+        WriteLane::enter().unwrap_or(WriteLane(None))
+    }
+
     fn enter() -> Result<WriteLane> {
         let Some(shared) = WORKER.with(|w| w.borrow().clone()) else {
             return Ok(WriteLane(None));
@@ -660,6 +671,8 @@ impl Drop for WriteLane {
 /// with the pool; a job that writes may add more (see [`WriteLane`]), and an
 /// extra worker idle for [`SPARE_IDLE`] exits. Started on the first call;
 /// stopped by [`Store::shutdown`], or when the store drops.
+// Unused on wasm32, where `Store::call` never leaves the calling thread.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) struct Workers {
     shared: Arc<Shared>,
     /// Interactive slots.
@@ -670,6 +683,7 @@ pub(crate) struct Workers {
     checkpointer: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 impl Workers {
     pub(crate) fn start(base: usize, db: &Path) -> Result<Workers> {
         let shared = Arc::new(Shared {
@@ -812,6 +826,7 @@ fn work(shared: Arc<Shared>) {
 /// Runs a `PASSIVE` checkpoint every [`CHECKPOINT_INTERVAL`] on its own
 /// `query_only` connection (a checkpoint copies committed pages into the
 /// database file; it changes no content), until `stop` closes.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn checkpoints(db: &Path, stop: &mpsc::Receiver<()>) {
     let conn = match open_reader(db) {
         Ok(c) => c,
@@ -871,16 +886,28 @@ impl Store {
         if self.shut_down.load(Ordering::SeqCst) {
             return Err(CoreError::TaskFailed);
         }
+        // On wasm32 the store is not `Send` (its content store need not be),
+        // so no job can move to a worker thread: every call runs inline.
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = lane;
+            run_inline(self, f)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        self.call_on_worker(lane, f).await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn call_on_worker<T, F>(self: &Arc<Self>, lane: Lane, f: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Store) -> Result<T> + Send + 'static,
+    {
         let (readers, workers) = match &self.exec {
             Exec::Pool {
                 readers, workers, ..
             } => (readers, workers),
-            Exec::Single(_) => {
-                return catch_unwind(AssertUnwindSafe(|| f(self))).unwrap_or_else(|panic| {
-                    task_panicked(&*panic);
-                    Err(CoreError::TaskFailed)
-                });
-            }
+            Exec::Single(_) => return run_inline(self, f),
         };
         let workers = match workers.get() {
             Some(w) => w,
@@ -943,6 +970,15 @@ impl Store {
 }
 
 /// Logs the panic a store job ended in.
+/// Runs `f` on the calling thread, a panic in it returned as
+/// [`CoreError::TaskFailed`].
+fn run_inline<T>(store: &Store, f: impl FnOnce(&Store) -> Result<T>) -> Result<T> {
+    catch_unwind(AssertUnwindSafe(|| f(store))).unwrap_or_else(|panic| {
+        task_panicked(&*panic);
+        Err(CoreError::TaskFailed)
+    })
+}
+
 fn task_panicked(panic: &(dyn std::any::Any + Send)) {
     let msg = panic
         .downcast_ref::<&str>()
@@ -1651,7 +1687,9 @@ mod tests {
         let home = st.home().clone();
         drop(st);
         let conn = Connection::open(home.db_path()).unwrap();
-        let one = Store::open_on(&home, conn, Arc::new(crate::working::SystemClock)).unwrap();
+        let content = Arc::new(crate::content::fs::FsContent::new(home.clone()));
+        let one =
+            Store::open_on(&home, conn, Arc::new(crate::working::SystemClock), content).unwrap();
         assert_eq!(viewers(&one), 1);
         let fk: bool = one
             .with_read(|c| Ok(c.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?))

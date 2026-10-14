@@ -5,6 +5,7 @@ pub mod audit;
 pub mod capabilities;
 pub mod changelog;
 pub mod config;
+pub mod content;
 pub mod db;
 pub mod error;
 pub mod events;

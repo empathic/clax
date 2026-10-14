@@ -139,7 +139,7 @@ pub async fn delete(
     let (aid, asset_id) = path(params)?;
     let id = parse_id(&aid)?;
     s.store_call(move |st| match st.get_asset(&asset_id)? {
-        Some((a, _)) if a.artifact_id == id.as_str() => st.delete_asset(&audit, &asset_id),
+        Some(a) if a.artifact_id == id.as_str() => st.delete_asset(&audit, &asset_id),
         _ => Err(CoreError::NotFound),
     })
     .await?;
@@ -157,15 +157,11 @@ pub async fn blob(
     // An asset's bytes serve browsers (spec §7.5): agents read through the routes the filter covers.
     d.refuse_agents()?;
     let asset_id = path(asset_id)?;
-    let (asset, path) = s
-        .store_call(move |st| st.get_asset(&asset_id)?.ok_or(CoreError::NotFound))
+    let (asset, bytes) = s
+        .store_call(move |st| st.read_asset(&asset_id)?.ok_or(CoreError::NotFound))
         .await?;
     sees.check(&s.live_ids, &asset.artifact_id)?;
-    let file = tokio::fs::File::open(&path)
-        .await
-        .map_err(|_| ApiError::not_found())?;
-    let len = asset.size.to_string();
-    let stream = tokio_util::io::ReaderStream::new(file);
+    let len = bytes.len().to_string();
     Ok((
         [
             (header::CONTENT_TYPE, asset.content_type.as_str()),
@@ -175,7 +171,7 @@ pub async fn blob(
             (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
             (header::CONTENT_SECURITY_POLICY, "sandbox"),
         ],
-        Body::from_stream(stream),
+        Body::from(bytes),
     )
         .into_response())
 }

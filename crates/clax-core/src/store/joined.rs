@@ -1166,8 +1166,8 @@ mod tests {
         // Merged away, not deleted: its artifact and every snapshot stay,
         // out of the site's pages and no longer a key.
         assert!(st.get_artifact(&b).unwrap().is_some());
-        let (file, _) = st.file_path(&b, 2, "index.html").unwrap().unwrap();
-        assert_eq!(std::fs::read(file).unwrap(), b"<p>only B's");
+        let (bytes, _) = st.read_file(&b, 2, "index.html").unwrap().unwrap();
+        assert_eq!(bytes, b"<p>only B's");
         assert!(st.live_page_of(&b).unwrap().is_none());
         assert_eq!(st.site_pages(B).unwrap().len(), 1);
         assert!(st.live_sites().unwrap().iter().all(|x| x.pages == 1));

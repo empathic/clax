@@ -8,14 +8,14 @@ use super::threads::threads_of_many;
 use super::watches::{Cause, Wrote};
 use crate::anchor::Anchor;
 use crate::audit::{AuditCtx, AuditKind, AuditRecord, content_manifest_sha256, sha256_hex};
+use crate::content::wait;
 use crate::live::{PageKey, PathPattern, winning_rule};
 use crate::model::{FileMeta, Thread, Version};
-use crate::publish::INDEX;
 use crate::{ArtifactId, CoreError, Result, new_ulid};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Merge rules one origin may hold.
 pub const MAX_RULES: usize = 64;
@@ -281,24 +281,6 @@ impl Drop for Pending {
     }
 }
 
-/// A staging directory, removed on drop unless renamed away.
-struct Staging(PathBuf);
-
-impl Drop for Staging {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-/// The on-disk path of `path` in a version directory.
-fn version_file(dir: &Path, path: &str) -> PathBuf {
-    if path == INDEX {
-        dir.join(INDEX)
-    } else {
-        dir.join("files").join(path)
-    }
-}
-
 /// The files of version `n` of artifact `aid`, as its `files_json` and
 /// parsed.
 fn version_files(
@@ -386,12 +368,13 @@ fn plan_refile(
     Ok(out)
 }
 
-/// A version's files copied, outside the writer, into a staging directory
-/// of its new page, ready to be renamed into place: what `src`'s version
-/// `n` becomes (the page's own restore when `src` is the page).
+/// A version's copy onto its new page, planned outside the writer: what
+/// `src`'s version `n` becomes (the page's own restore when `src` is the
+/// page), written to the content store just before the writer is taken.
 struct StagedCopy {
     src: (String, u32),
-    dir: Staging,
+    /// The paths copied.
+    paths: Vec<String>,
     /// The source's files, each with its hash.
     files_json: String,
     /// The copy's content hash: the same files, so the source's manifest.
@@ -480,21 +463,17 @@ fn paths_of(json: &str) -> Result<Vec<String>> {
     Ok(files.into_keys().collect())
 }
 
-/// Copies the files of version `n` of `src` (whose `files_json` is
-/// `json`) into a staging directory of page `to`, with each file's hash
-/// and the content hash (a file recorded without a hash is hashed from its
-/// bytes, and the copy's `files_json` records that hash).
+/// Plans the copy of version `n` of `src` (whose `files_json` is `json`)
+/// onto a page, with each file's hash and the content hash (a file
+/// recorded without a hash is hashed from its bytes, and the copy's
+/// `files_json` records that hash).
 fn stage_copy(
     st: &Store,
     (src, n): (&str, u32),
     json: &str,
-    to: &ArtifactId,
     note: Option<String>,
 ) -> Result<StagedCopy> {
-    let versions = st.home.artifact_dir(to).join("versions");
-    let dir = Staging(versions.join(format!(".tmp-{}", new_ulid())));
-    std::fs::create_dir_all(dir.0.join("files"))?;
-    let src_dir = st.home.version_dir(&ArtifactId::parse(src)?, n);
+    let src_id = ArtifactId::parse(src)?;
     let mut files: BTreeMap<String, FileMeta> =
         serde_json::from_str(json).map_err(|_| CoreError::Corrupt {
             artifact_id: src.to_string(),
@@ -502,22 +481,15 @@ fn stage_copy(
             version: Some(n),
         })?;
     for (path, meta) in &mut files {
-        let dest = version_file(&dir.0, path);
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let from = version_file(&src_dir, path);
-        if meta.sha256.is_some() {
-            std::fs::copy(from, &dest)?;
-        } else {
-            let bytes = std::fs::read(from)?;
+        if meta.sha256.is_none() {
+            let bytes = wait(st.content.read_file(&src_id, n, path))?
+                .ok_or_else(|| crate::content::missing(&src_id, n, path))?;
             meta.sha256 = Some(sha256_hex(&bytes));
-            std::fs::write(&dest, bytes)?;
         }
     }
     Ok(StagedCopy {
         src: (src.to_string(), n),
-        dir,
+        paths: files.keys().cloned().collect(),
         files_json: serde_json::to_string(&files).expect("serialisable map"),
         content_sha256: content_manifest_sha256(&files),
         note,
@@ -544,13 +516,7 @@ fn stage_group(st: &Store, to: &LivePage, plans: &[&Plan], fresh: &[String]) -> 
             Some(m) => {
                 reuse.insert((src.clone(), *n), m);
             }
-            None => copies.push(stage_copy(
-                st,
-                (src, *n),
-                json,
-                &to_id,
-                Some(MOVED_NOTE.into()),
-            )?),
+            None => copies.push(stage_copy(st, (src, *n), json, Some(MOVED_NOTE.into()))?),
         }
     }
     let shown = meta.versions.iter().find(|(m, _, _)| *m == meta.current);
@@ -562,7 +528,6 @@ fn stage_group(st: &Store, to: &LivePage, plans: &[&Plan], fresh: &[String]) -> 
             st,
             (&to.artifact_id, meta.current),
             json,
-            &to_id,
             note.clone(),
         )?);
     }
@@ -583,10 +548,11 @@ fn same_bytes(
     (to, m): (&ArtifactId, u32),
     json: &str,
 ) -> Result<bool> {
-    let a = st.home.version_dir(&ArtifactId::parse(src)?, n);
-    let b = st.home.version_dir(to, m);
+    let src = ArtifactId::parse(src)?;
     for path in paths_of(json)? {
-        if std::fs::read(version_file(&a, &path))? != std::fs::read(version_file(&b, &path))? {
+        let a = wait(st.content.read_file(&src, n, &path))?;
+        let b = wait(st.content.read_file(to, m, &path))?;
+        if a.is_none() || a != b {
             return Ok(false);
         }
     }
@@ -636,8 +602,9 @@ fn record_copy(
 /// Re-files the planned threads, in one transaction on the writer, with the
 /// work staged beforehand: each page must still be at the version staging
 /// saw and each thread on its page with the links staging saw (else
-/// `Conflict`, and the caller stages again); the staged copies are numbered
-/// from there, their rows inserted and directories renamed into place; then
+/// `Conflict`, and the caller stages again); the staged copies, already
+/// written as the versions numbered from there ([`Store::place_copies`]),
+/// have their rows inserted; then
 /// each thread names its versions, takes its pending address, pick and
 /// watchers along, and its move is recorded.
 fn commit_refile(
@@ -647,14 +614,12 @@ fn commit_refile(
     plans: &[Plan],
     stages: &mut [GroupStage],
     how: &MoveBy,
-    renamed: &mut Vec<PathBuf>,
 ) -> Result<Vec<(String, u32)>> {
     let now = st.now();
     let conflict = || CoreError::Conflict { current: 0 };
     let mut written = Vec::new();
     for g in stages.iter_mut() {
         let to = g.to.clone();
-        let to_id = ArtifactId::parse(&to.artifact_id)?;
         let current: u32 = tx.query_row(
             "SELECT current_version FROM artifacts WHERE id = ?1",
             params![to.artifact_id],
@@ -707,9 +672,6 @@ fn commit_refile(
             if let Some(a) = &page {
                 record_copy(tx, st, ctx, a, &to, n, &copy.src)?;
             }
-            let vdir = st.home.version_dir(&to_id, n);
-            std::fs::rename(&copy.dir.0, &vdir)?;
-            renamed.push(vdir);
             if copy.src.0 != to.artifact_id {
                 map.insert(copy.src, n);
             }
@@ -1218,9 +1180,11 @@ impl Store {
     /// is written once more on top, with its own note, so what the page
     /// showed stays current.
     ///
-    /// Comparing and copying files happens before the writer is taken; the
-    /// writer is held only to check that nothing changed, insert the rows
-    /// and rename the staged directories (as [`Store::write_version`] does).
+    /// Comparing files happens before the writer is taken, and copying them
+    /// too, under the target pages' content locks, as each version write does
+    /// (see the content module's Ordering); the writer is held only to check
+    /// that nothing changed and insert the rows, and a failure removes the
+    /// copies written.
     /// The source versions one call stages are bounded by
     /// [`MAX_STAGE_BYTES`]: past them, the remaining threads are left as
     /// they are and counted in [`Refiled::deferred`] (at least one thread is
@@ -1299,9 +1263,17 @@ impl Store {
             if let Some(hook) = staged_hook(&self.home.db_path()) {
                 hook();
             }
-            let mut renamed = Vec::new();
-            let result = self
-                .with_tx(|tx| commit_refile(tx, self, ctx, &plans, &mut stages, how, &mut renamed));
+            let pages: Vec<ArtifactId> = stages
+                .iter()
+                .map(|g| ArtifactId::parse(&g.to.artifact_id))
+                .collect::<Result<_>>()?;
+            let _locks = wait(self.lock_contents(&pages.iter().collect::<Vec<_>>()));
+            let placed = match self.place_copies(&stages) {
+                Ok(placed) => placed,
+                Err(CoreError::Conflict { .. }) => continue,
+                Err(e) => return Err(e),
+            };
+            let result = self.with_tx(|tx| commit_refile(tx, self, ctx, &plans, &mut stages, how));
             match result {
                 Ok(written) => {
                     for (copy, src) in clips {
@@ -1329,10 +1301,8 @@ impl Store {
                     });
                 }
                 Err(e) => {
-                    // Nothing committed: the versions put in place go too.
-                    for d in renamed {
-                        let _ = std::fs::remove_dir_all(d);
-                    }
+                    // Nothing committed: the versions written go too.
+                    self.remove_placed(&placed);
                     if !matches!(e, CoreError::Conflict { .. }) {
                         return Err(e);
                     }
@@ -1340,6 +1310,56 @@ impl Store {
             }
         }
         Err(CoreError::Conflict { current: 0 })
+    }
+
+    /// Writes each group's staged copies to the content store as the
+    /// versions numbered from the page's current version at staging, with
+    /// the pages' content locks held by the caller; returns the versions
+    /// written. `Conflict` when a page has moved since staging. On any
+    /// error nothing stays written.
+    fn place_copies(&self, stages: &[GroupStage]) -> Result<Vec<(ArtifactId, u32)>> {
+        let mut placed = Vec::new();
+        let written = (|| {
+            for g in stages.iter().filter(|g| !g.copies.is_empty()) {
+                let to = ArtifactId::parse(&g.to.artifact_id)?;
+                if let Some(current) = self.current_version_of(&to)?
+                    && current != g.current
+                {
+                    return Err(CoreError::Conflict { current });
+                }
+                let mut n = g.current;
+                for copy in &g.copies {
+                    n += 1;
+                    let src = ArtifactId::parse(&copy.src.0)?;
+                    let paths: Vec<&str> = copy.paths.iter().map(String::as_str).collect();
+                    wait(self.content.copy_version(&src, copy.src.1, &paths, &to, n))?;
+                    placed.push((to.clone(), n));
+                }
+            }
+            Ok(())
+        })();
+        match written {
+            Ok(()) => Ok(placed),
+            Err(e) => {
+                self.remove_placed(&placed);
+                Err(e)
+            }
+        }
+    }
+
+    /// Removes the versions [`Store::place_copies`] wrote, which no row
+    /// records; one that cannot be removed is logged and left unrecorded.
+    fn remove_placed(&self, placed: &[(ArtifactId, u32)]) {
+        for (id, n) in placed {
+            if let Err(e) = wait(self.content.remove_version(id, *n)) {
+                tracing::warn!(
+                    artifact = id.as_str(),
+                    n,
+                    error = %e,
+                    "could not remove an unrecorded version's files"
+                );
+            }
+        }
     }
 }
 
@@ -1431,6 +1451,7 @@ pub fn resolve_with(rules: &[LiveRule], key: &PageKey) -> Resolved {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::publish::INDEX;
     use crate::store::test_util::DAEMON;
     use crate::store::test_util::{anchor, session, store};
     use crate::store::threads::NewThread;

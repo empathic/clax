@@ -511,12 +511,11 @@ fn doctor_fix_clears_asset_problems() {
         .add_asset(&AuditCtx::DAEMON, &gone, "image/png", &[9])
         .unwrap();
     store.delete_artifact(&AuditCtx::DAEMON, &gone).unwrap();
-    std::fs::remove_file(store.get_asset(&missing.id).unwrap().unwrap().1).unwrap();
-    std::fs::write(
-        store.get_asset(&wrong.id).unwrap().unwrap().1,
-        b"longer than recorded",
-    )
-    .unwrap();
+    let path_of = |a: &clax_core::model::Asset| {
+        clax_core::content::fs::asset_path(&home, &clax_core::content::AssetKey::of(a).unwrap())
+    };
+    std::fs::remove_file(path_of(&missing)).unwrap();
+    std::fs::write(path_of(&wrong), b"longer than recorded").unwrap();
     let tmp = home.assets_dir(&live).join("X.png.tmp");
     std::fs::write(&tmp, b"x").unwrap();
     drop(store);
