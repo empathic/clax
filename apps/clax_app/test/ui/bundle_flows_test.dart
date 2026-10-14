@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:clax_app/bundle/bundle_reader.dart';
 import 'package:clax_app/bundle/lineage_store.dart';
+import 'package:clax_app/bundle/updater.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/bundle_sheets.dart';
@@ -148,6 +149,33 @@ void main() {
     expect(opened, [aid]);
   });
 
+  testWidgets('an updater that throws ends the progress sheet with a '
+      'failure', (tester) async {
+    late Uint8List v2;
+    await tester.runAsync(() async {
+      await me.ready();
+      final v1 = await makeBundle(lineage: lineageA);
+      await me.installer.install(await me.installer.open(v1.bytes));
+      v2 = (await makeBundle(
+        lineage: lineageA,
+        version: 2,
+        files: {'index.html': '<p>v2</p>'},
+      )).bytes;
+    });
+    flows = BundleFlows(
+      exporter: me.exporter,
+      installer: me.installer,
+      updater: _ThrowingUpdater(me),
+      files: files,
+      settings: settings,
+      open: opened.add,
+    );
+    await run(tester, (c) => flows.openBytes(c, v2));
+    await tester.tap(find.text('Update'));
+    await settle(tester);
+    expect(find.text('The update could not finish.'), findsOneWidget);
+  });
+
   testWidgets('a modified copy: Keep mine stops updates', (tester) async {
     late String aid;
     late Uint8List v2;
@@ -205,4 +233,23 @@ Future<void> settle(WidgetTester tester) async {
     await tester.pump(const Duration(milliseconds: 50));
   }
   await tester.pumpAndSettle();
+}
+
+/// An [Updater] whose update throws.
+class _ThrowingUpdater extends Updater {
+  _ThrowingUpdater(Install me)
+    : super(
+        api: me.api,
+        store: me.store,
+        inspector: me.inspector,
+        baseUrl: () => Uri.parse('http://127.0.0.1:9/'),
+        snapshots: me.snapshots,
+      );
+
+  @override
+  Future<UpdateOutcome> update(
+    String aid,
+    Bundle bundle, {
+    void Function(UpdateStep step)? onStep,
+  }) async => throw StateError('broken');
 }

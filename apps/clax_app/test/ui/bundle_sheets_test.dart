@@ -503,6 +503,23 @@ void main() {
     });
   });
 
+  testWidgets('KeptUpdateSheet: Restore pops true, Discard false', (
+    tester,
+  ) async {
+    var answers = await _show(
+      tester,
+      const KeptUpdateSheet(title: 'Plant log'),
+    );
+    expect(find.textContaining("Plant log's update did not finish"), findsOne);
+    await tester.tap(find.text('Restore'));
+    await tester.pumpAndSettle();
+    expect(answers, [true]);
+    answers = await _show(tester, const KeptUpdateSheet(title: 'Plant log'));
+    await tester.tap(find.text('Discard'));
+    await tester.pumpAndSettle();
+    expect(answers, [false]);
+  });
+
   testWidgets('every sheet fits a small phone and a desktop window', (
     tester,
   ) async {
