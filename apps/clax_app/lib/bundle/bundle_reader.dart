@@ -3,6 +3,7 @@
 library;
 
 import 'dart:convert';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart'
@@ -57,9 +58,23 @@ class Bundle {
   final String? iconSvg;
 }
 
+/// Files larger than this are read on a background isolate.
+const inlineReadBytes = 16 * 1024;
+
 abstract final class BundleReader {
   /// Reads and verifies [bytes] in §6.2's order, or throws [BundleError].
-  static Future<Bundle> read(Uint8List bytes) async {
+  ///
+  /// A file over [inlineReadBytes] is read on a background isolate
+  /// (`Isolate.run`), so a costly file never blocks the caller's isolate;
+  /// a smaller one is read in place, its work bounded by its size.
+  static Future<Bundle> read(Uint8List bytes) {
+    if (bytes.length > inlineReadBytes) {
+      return Isolate.run(() => _read(bytes));
+    }
+    return _read(bytes);
+  }
+
+  static Future<Bundle> _read(Uint8List bytes) async {
     // 1. The file and its zip structure.
     if (bytes.length > maxBundleBytes) {
       throw const BundleError('too_large', 'The file is over 32 MiB');
@@ -153,14 +168,26 @@ abstract final class BundleReader {
   }
 }
 
+/// The most deflate blocks an entry of [max] bytes may have: two, and one
+/// per 8 KiB. Encoders (zlib, `archive`'s `Deflate`) close a block only
+/// after 16,384 symbols, at least 16 KiB of output, so only the last block
+/// of a real stream is short; a stream of many small or empty blocks is
+/// refused before it costs more than its size allows.
+int maxDeflateBlocks(int max) => 2 + max ~/ 8192;
+
 /// [data], a raw deflate stream, inflated: null when it holds more than
-/// [max] bytes (inflating stops one byte past [max], whatever any header
-/// says) or is not valid deflate.
+/// [max] bytes (inflating stops before it would pass [max], whatever any
+/// header says), more than [maxDeflateBlocks] blocks, or is not valid
+/// deflate.
 Uint8List? inflateAtMost(Uint8List data, int max) {
   final out = _CappedOutput(max);
   try {
     final inflate = Inflate.lazy(InputMemoryStream(data), output: out);
-    while (inflate.inflateBlock()) {}
+    var blocks = 1;
+    final most = maxDeflateBlocks(max);
+    while (inflate.inflateBlock()) {
+      if (++blocks > most) return null;
+    }
   } on _Overflow {
     return null;
   } on Object {
@@ -229,8 +256,11 @@ class _Entry {
   final int dataStart;
   final int compressedSize;
 
-  /// The entry's bytes, or null past [max] bytes or when damaged.
+  /// The entry's bytes, or null past [max] bytes, when its compressed
+  /// size is over [max] plus 1 KiB (deflate never needs more for data it
+  /// shrinks), or when damaged.
   Uint8List? inflate(Uint8List zip, int max) {
+    if (compressedSize > max + 1024) return null;
     final raw = Uint8List.sublistView(
       zip,
       dataStart,
@@ -283,6 +313,10 @@ Map<String, _Entry> _entries(Uint8List z) {
 
   final out = <String, _Entry>{};
   var p = cdOffset;
+  // Entries sit end to end from offset 0, in central-directory order, and
+  // the last one ends where the central directory starts: no bytes
+  // before, between or after them.
+  var next = 0;
   for (var i = 0; i < count; i++) {
     if (p + 46 > eocd || u32(p) != 0x02014b50) {
       throw _notBundle('its central directory is damaged');
@@ -325,6 +359,9 @@ Map<String, _Entry> _entries(Uint8List z) {
     final lNameLen = u16(local + 26);
     final lExtraLen = u16(local + 28);
     final dataStart = local + 30 + lNameLen + lExtraLen;
+    if (local != next || lExtraLen != 0) {
+      throw _notBundle('it has bytes outside its entries before $name');
+    }
     if (lNameLen != nameLen ||
         u16(local + 6) != flags ||
         u16(local + 8) != method ||
@@ -337,7 +374,11 @@ Map<String, _Entry> _entries(Uint8List z) {
       }
     }
     out[name] = _Entry(method, dataStart, csize);
+    next = dataStart + csize;
     p += 46 + nameLen;
+  }
+  if (next != cdOffset || p != eocd) {
+    throw _notBundle('it has bytes outside its entries');
   }
   return out;
 }
@@ -375,6 +416,11 @@ List<SeedDoc> _seedDocs(Uint8List data, int docs) {
     final value = json['data'];
     if (path is! String || value is! Map<String, Object?>) {
       throw _badSeed('seed.jsonl line ${i + 1} is not {path, data}');
+    }
+    if (!withinJsonDepth(value)) {
+      throw _badSeed(
+        'seed.jsonl line ${i + 1} nests deeper than $maxJsonDepth levels',
+      );
     }
     if (!isSeedPath(path)) {
       throw _badSeed(

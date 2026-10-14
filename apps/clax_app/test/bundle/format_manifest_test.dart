@@ -205,4 +205,27 @@ void main() {
     expect(base32(utf8.encode('foobar'), upper: true), 'MZXW6YTBOI');
     expect(base32(utf8.encode('f')), 'my');
   });
+
+  test('title and author name refuse hidden and direction characters', () {
+    for (final t in [
+      'Bank\u202Egnp.exe', 'a\nb', 'a\u0000', 'a\u0085', 'a\u200Bb',
+      'a\u2066b', 'a\u061Cb', 'a\uFEFF', 'a\u2028b', //
+    ]) {
+      _refused(_ok()..['title'] = t, 'bad_manifest');
+      _refused(
+        _ok()..['author'] = {'key': 'A' * 43, 'name': t},
+        'bad_manifest',
+      );
+    }
+    // Joiners inside emoji and scripts stay allowed.
+    final family = '\u{1F468}\u200D\u{1F469}\u200D\u{1F467} m\u200Cn';
+    final m = Manifest.parse(
+      _enc(
+        _ok()
+          ..['title'] = family
+          ..['author'] = {'key': 'A' * 43, 'name': 'Zoë'},
+      ),
+    );
+    expect(m.title, family);
+  });
 }

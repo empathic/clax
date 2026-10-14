@@ -314,6 +314,9 @@ Manifest _checkJson(Object? json) {
   if (caps is! Map<String, Object?>) {
     throw _bad('capabilities is not an object');
   }
+  if (!withinJsonDepth(caps)) {
+    throw _bad('capabilities nests deeper than $maxJsonDepth levels');
+  }
   if (caps['db'] case final Map<String, Object?> db
       when db.containsKey('read') || db.containsKey('share')) {
     throw const BundleError(
@@ -365,7 +368,10 @@ Manifest _checkJson(Object? json) {
   final a = _object(m['author'], 'author', const ['key', 'name']);
   final author = ManifestAuthor(
     key: _string(a['key'], 'author.key', re: _keyRe),
-    name: _stringOrNull(a['name'], 'author.name', min: 1, max: 64),
+    name: _shown(
+      _stringOrNull(a['name'], 'author.name', min: 1, max: 64),
+      'author.name',
+    ),
   );
 
   ForkedFrom? forkedFrom;
@@ -383,7 +389,7 @@ Manifest _checkJson(Object? json) {
   return Manifest._(
     _string(m['lineage'], 'lineage', re: _lineageRe),
     _int(m['version'], 'version', 1, 2147483647),
-    _string(m['title'], 'title', min: 1, max: 200),
+    _shown(_string(m['title'], 'title', min: 1, max: 200), 'title')!,
     icon,
     caps,
     _stringOrNull(m['kit'], 'kit', re: _prefixedHashRe),
@@ -393,6 +399,53 @@ Manifest _checkJson(Object? json) {
     author,
     forkedFrom,
   );
+}
+
+/// The deepest nesting of objects and arrays a manifest's `capabilities`
+/// or a seed document's `data` may have; the value itself is level 1.
+const maxJsonDepth = 64;
+
+/// Whether [v] nests objects and arrays at most [maxJsonDepth] deep.
+bool withinJsonDepth(Object? v, [int depth = 1]) {
+  if (v is Map) {
+    if (depth > maxJsonDepth) return false;
+    return v.values.every((e) => withinJsonDepth(e, depth + 1));
+  }
+  if (v is List) {
+    if (depth > maxJsonDepth) return false;
+    return v.every((e) => withinJsonDepth(e, depth + 1));
+  }
+  return true;
+}
+
+/// Whether [s] holds a character that would make a shown name or title
+/// render as something else: a control character (C0, DEL, C1), a line
+/// or paragraph separator, a bidirectional mark, embedding, override or
+/// isolate, or an invisible zero-width space, word joiner or BOM.
+/// Joiners used inside emoji and scripts (U+200C, U+200D) are allowed.
+bool hasHiddenCharacters(String s) {
+  for (final c in s.runes) {
+    if (c < 0x20 ||
+        (c >= 0x7f && c <= 0x9f) ||
+        c == 0x061c ||
+        c == 0x200b ||
+        c == 0x200e ||
+        c == 0x200f ||
+        (c >= 0x2028 && c <= 0x202e) ||
+        c == 0x2060 ||
+        (c >= 0x2066 && c <= 0x2069) ||
+        c == 0xfeff) {
+      return true;
+    }
+  }
+  return false;
+}
+
+String? _shown(String? v, String what) {
+  if (v != null && hasHiddenCharacters(v)) {
+    throw _bad('$what holds control or bidirectional characters');
+  }
+  return v;
 }
 
 /// A new lineage ID: `l_` and 16 random bytes in lower-case base32.
