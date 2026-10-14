@@ -37,7 +37,8 @@ export function waitingLabel(s: FeedbackState | null, now: Date): string | null 
     case "sent":
       return `sent, waiting for the agent · ${elapsed(s.since, now)} · waiting on ${WAITING_ON[s.tier ?? "piggyback"]}`;
     case "withheld":
-      return `waiting for ${s.approver ?? "their person"}'s approval`;
+      // Whose approval only for the people concerned (spec 2026-10-08 §18).
+      return s.approver ? `waiting for ${s.approver}'s approval` : "waiting for approval";
     case "delivered":
       if (s.exhausted) return "delivered, not acknowledged";
       return `delivered via ${DELIVERED_VIA[s.tier ?? "piggyback"]} · ${elapsed(s.since, now)} ago · not yet acknowledged${s.resends === 1 ? " · resent once" : s.resends ? ` · resent ${s.resends} times` : ""}`;

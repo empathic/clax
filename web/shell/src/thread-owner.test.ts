@@ -98,6 +98,12 @@ describe("a thread's owner and delivery state", () => {
     expect(card.querySelector(".waiting")!.textContent).toBe("waiting for your approval");
   });
 
+  it("lets the person on another person's agent's chip stay whole, the agent's name giving way", () => {
+    const m = render([thread({ owner: { name: "clax-multi-person-agent-strip-ab", person: "u_sam", person_name: "Sam", live: true } })], { me: OWNER });
+    expect(chip(m.root)!.querySelector(".on")!.textContent).toBe("clax-multi-person-agent-strip-ab");
+    expect(chip(m.root)!.querySelector(".op")!.textContent).toBe(" · Sam");
+  });
+
   it("asks for no approval card where the host shows none (the extension's panel), for a thread never sent, or in a browser with no inbox", async () => {
     const f = vi.fn(async () => new Response("{}"));
     vi.stubGlobal("fetch", f);
@@ -132,7 +138,10 @@ describe("the Send target (spec 2026-10-08 §10, §11)", () => {
     const onSend = vi.fn();
     const m = render([unsent], { me: OWNER, agents: [sams], sendTo: null, onSend, onSendUnsent: vi.fn() });
     expect(button(m.root).textContent).toBe("Send to …");
-    expect(m.root.querySelector(".send-unsent")).toBeNull();
+    // The unsent bar stays, and opens the menu too.
+    const bar = m.root.querySelector<HTMLButtonElement>(".send-unsent .send > button.primary")!;
+    expect(bar.textContent).toBe("Send 1 unsent to …");
+    expect(bar.getAttribute("aria-haspopup")).toBe("menu");
     flush(() => button(m.root).click());
     await settle();
     expect(onSend).not.toHaveBeenCalled();
@@ -147,5 +156,16 @@ describe("the Send target (spec 2026-10-08 §10, §11)", () => {
     expect(button(m.root).textContent).toBe("Send to codex");
     flush(() => button(m.root).click());
     expect(calls).toEqual(["choose a_cx", `send ${TID}`]);
+  });
+
+  it("never asks who approves first in a browser that may not learn it (a LAN viewer)", async () => {
+    await import("./ui/SendMenu.svelte");
+    const f = vi.fn(async () => new Response("{}"));
+    vi.stubGlobal("fetch", f);
+    const m = render([unsent], { me: LAN, agents: [sams, mine], sendTo: null });
+    flush(() => button(m.root).click());
+    await settle();
+    expect(m.root.querySelector('[role="menu"]')).not.toBeNull();
+    expect(f).not.toHaveBeenCalled();
   });
 });

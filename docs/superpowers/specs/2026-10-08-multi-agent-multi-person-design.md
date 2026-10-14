@@ -1424,12 +1424,27 @@ again.
 ## 10. Routing to another person's agent
 
 - The Send menu lists every live agent that may receive the thread: "Your
-  agents", then each person's ("Sam's agents"). An agent of another person
-  who has not approved this thread's authors is listed with "Sam approves
-  first".
+  agents", then each person's ("Sam's agents"), each of another person's
+  agents naming its person. An agent whose person has not approved this
+  thread's authors is listed with "Sam approves first", as far as the
+  viewer may learn it (owner decision, 2026-10-13: "Only about their
+  content"): the owner's browser learns it for every person; a connected
+  person P learns it for P's own agents whatever the authors, and for
+  another person's agents (the owner's included) only about content P
+  wrote there (P's comments, or a page P published), never another
+  person's approval of a third author. LAN viewers, anonymous callers and
+  agents learn none of it, and the shell does not ask
+  (`GET /api/artifacts/{aid}/approves-first`, 403 for them).
+- The one-press Send goes to the agent the viewer chose, else to the
+  viewer's own most recent live agent; with only other people's agents
+  live there is none, and Send opens the menu.
 - Sending to it (button, `to`, `@name`) stores the send and makes the
   routing request (§9.2). The thread's delivery state reads "waiting for
-  Sam's approval".
+  Sam's approval" while any of its comments is held under an open request
+  or told of and not declined; whose approval, only to the owner, the
+  approver and the thread's own authors (and their agents): LAN viewers,
+  anonymous callers and the artifact's events read "waiting for
+  approval".
 - A send to an agent that may not `read` the artifact is 400
   `agent_cannot_read`.
 - A page's `@name` sends nothing (as its `@agent` sends nothing today); a
@@ -1701,7 +1716,7 @@ The route table (§7.5) is the agents' contract. New routes:
 | Gallery, artifacts, threads | all | filtered for the owner | all | filtered for the person | all |
 | Live pages | yes (local) | yes (local) | never | never | never |
 | Inbox, questions | own | own questions | own | own questions | none |
-| People, approvals | everyone; changes in the browser | none | self; changes in the browser | none | none |
+| People, approvals | everyone; changes in the browser | none | self, and who approves first only about their own content (§10); changes in the browser | none | none |
 | Agents roster | every agent | own (`status`) | own agents; others' names and states | own (`status`) | names on threads |
 
 A person's inbox and question views are not filtered by Visibility; they
@@ -2276,3 +2291,11 @@ task, with recommendations; the owner took every recommendation
 - **Amendment** (2026-10-13, ruling): the parent process's start is read
   through `sysinfo`, to the second, rather than `libproc`, whose build
   needs libclang and the Command Line Tools SDK on every macOS build.
+- **Amendment** (2026-10-13, owner decision "Only about their content",
+  and rulings on the agent strip's re-review): §10, §18: who approves first
+  is asked of the daemon as the Send menu opens, and a connected person
+  learns it only for their own agents and, for others' agents, only about
+  content they wrote; the one-press Send goes to the viewer's own agent; a
+  thread waits for approval while a comment is held under an open request
+  or told of and not declined, and names whose approval only to the owner,
+  the approver and the thread's authors.

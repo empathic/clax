@@ -531,14 +531,67 @@ pub fn thread_view(
     )
 }
 
-/// [`thread_view`] of each of `threads`, in order, read in one store call.
+/// [`thread_view`] of each of `threads`, in order, read in one store call,
+/// as anyone may read them: a `withheld` state never names its approver
+/// (spec 2026-10-08 §18; [`thread_views_for`] names them to the callers
+/// concerned). For events, and for agents' and the owner's views on this
+/// machine that carry it otherwise.
 pub fn thread_views(
     st: &Store,
     threads: &[Thread],
     codex_push: bool,
     with_path: bool,
 ) -> clax_core::Result<Vec<Value>> {
-    Ok(views_and_senders(st, threads, codex_push, with_path)?.0)
+    thread_views_for(st, threads, codex_push, with_path, &Handles::None)
+}
+
+/// [`thread_views`] as a caller whose handles are `handles` reads them:
+/// a `withheld` state names its approver ([`keep_approvers`]) to the owner
+/// and the owner's agents, and to the people concerned, the approver and
+/// the thread's own authors, and their agents (spec 2026-10-08 §18,
+/// ruling on record 8bc18379); LAN viewers and anonymous callers never.
+pub fn thread_views_for(
+    st: &Store,
+    threads: &[Thread],
+    codex_push: bool,
+    with_path: bool,
+    handles: &Handles,
+) -> clax_core::Result<Vec<Value>> {
+    let (mut views, _, _, approvers) = views_and_senders(st, threads, codex_push, with_path)?;
+    keep_approvers(&mut views, threads, &approvers, handles);
+    Ok(views)
+}
+
+/// Each thread view's `withheld` approver's public ID (`Some(None)`: the
+/// owner), when its state names one.
+type Approvers = Vec<Option<Option<String>>>;
+
+/// Leaves `approver` in each view's `feedback_state` only for a caller
+/// with `handles` the approver concerns: everyone's (the owner), the
+/// owner's agents', or the person's who is the approver or wrote one of
+/// the thread's comments (and their agents').
+fn keep_approvers(
+    views: &mut [Value],
+    threads: &[Thread],
+    approvers: &Approvers,
+    handles: &Handles,
+) {
+    for ((view, t), approver) in views.iter_mut().zip(threads).zip(approvers) {
+        let Some(approver) = approver else { continue };
+        let keep = match handles {
+            Handles::All | Handles::Of(None) => true,
+            Handles::Of(Some(p)) => {
+                approver.as_deref() == Some(p.as_str())
+                    || t.comments
+                        .iter()
+                        .any(|c| c.author_public_id.as_deref() == Some(p.as_str()))
+            }
+            Handles::None => false,
+        };
+        if !keep && let Some(s) = view["feedback_state"].as_object_mut() {
+            s.remove("approver");
+        }
+    }
 }
 
 /// Each thread view's batch senders, in `sends` order
@@ -554,8 +607,17 @@ fn views_and_senders(
     threads: &[Thread],
     codex_push: bool,
     with_path: bool,
-) -> clax_core::Result<(Vec<Value>, Senders, Owners)> {
+) -> clax_core::Result<(Vec<Value>, Senders, Owners, Approvers)> {
     let extras = st.thread_extras(threads, codex_push)?;
+    let approvers: Approvers = extras
+        .iter()
+        .map(|x| {
+            x.feedback_state
+                .as_ref()
+                .filter(|f| f.approver.is_some())
+                .map(|f| f.approver_person.clone())
+        })
+        .collect();
     let senders: Senders = extras
         .iter()
         .map(|x| x.sends.iter().map(|b| b.sender.clone()).collect())
@@ -633,7 +695,7 @@ fn views_and_senders(
             Ok(v)
         })
         .collect::<clax_core::Result<Vec<Value>>>()
-        .map(|views| (views, senders, owners))
+        .map(|views| (views, senders, owners, approvers))
 }
 
 /// Comment `c`'s view `view` as an agent reads it: a viewer's name says
@@ -832,7 +894,9 @@ impl Vis {
         codex_push: bool,
         with_path: bool,
     ) -> clax_core::Result<Vec<Value>> {
-        let (mut views, senders, owners) = views_and_senders(st, threads, codex_push, with_path)?;
+        let (mut views, senders, owners, approvers) =
+            views_and_senders(st, threads, codex_push, with_path)?;
+        keep_approvers(&mut views, threads, &approvers, &self.handles);
         for (view, owner) in views.iter_mut().zip(&owners) {
             if let Some(o) = owner
                 && self.handles.shows(&o.person)

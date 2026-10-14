@@ -4,7 +4,6 @@
 //! markers the shell build keeps; no template engine.
 
 use crate::error::ApiError;
-use crate::feedback::thread_views;
 use crate::routes::artifacts::with_owner;
 use crate::shell_route::ShellRoute;
 use crate::state::AppState;
@@ -186,17 +185,28 @@ pub async fn assemble(
                 Some(sid) => st.get_session(sid)?,
                 None => None,
             };
+            // Whose approval a withheld thread waits for, as this browser
+            // may read it (`thread_views_for`).
+            let viewer = who.browser_viewer(st)?;
+            let handles = match &viewer {
+                _ if owner_browser => crate::feedback::Handles::All,
+                Some(v) if v.person && v.person_revoked_at.is_none() => {
+                    crate::feedback::Handles::Of(Some(v.public_id.clone()))
+                }
+                _ => crate::feedback::Handles::None,
+            };
             let mut threads = Vec::new();
             let mut cursor: Option<String> = None;
             loop {
                 let (page, next) = st.list_threads(&lookup, true, cursor.as_deref(), 200)?;
-                threads.extend(thread_views(st, &page, codex, false)?);
+                threads.extend(crate::feedback::thread_views_for(
+                    st, &page, codex, false, &handles,
+                )?);
                 match next {
                     Some(c) => cursor = Some(c),
                     None => break,
                 }
             }
-            let viewer = who.browser_viewer(st)?;
             let attention = match &viewer {
                 Some(v) => Some(st.attention(&v.id, &lookup)?),
                 None => None,

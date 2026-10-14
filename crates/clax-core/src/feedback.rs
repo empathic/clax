@@ -81,6 +81,11 @@ pub struct FeedbackState {
     pub exhausted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approver: Option<String>,
+    /// For `withheld`, the approver's public ID (`None`: the owner); never
+    /// served: views keep `approver` only for the callers concerned (spec
+    /// 2026-10-08 §18).
+    #[serde(skip)]
+    pub approver_person: Option<String>,
 }
 
 /// One forwarded comment as an agent receives it: its body always, and each
