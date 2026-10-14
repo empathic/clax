@@ -210,6 +210,8 @@ describe("runMigration", () => {
     vexpect(await runMigration(window, "migrate.js", { from: 1, to: 2 }, missing.d)).toEqual({ ok: false, error: vexpect.stringContaining("migrate.js did not load: TypeError: Failed to fetch") });
     const none = mdeps({ "migrate.js": { migrate: () => {} } });
     vexpect(await runMigration(window, "migrate.js", { from: 1, to: 2 }, none.d)).toEqual({ ok: false, error: "migrate.js has no default export function" });
+    const odd = mdeps({ "migrate.js": { default: () => { throw { toString() { throw new Error("no"); } }; } } });
+    vexpect(await runMigration(window, "migrate.js", { from: 1, to: 2 }, odd.d)).toEqual({ ok: false, error: "the migration failed: a value that cannot be shown" });
     const noDb = mdeps({ "migrate.js": { default: () => {} } }, async () => { throw new Error("not_declared"); });
     vexpect(await runMigration(window, "migrate.js", { from: 1, to: 2 }, noDb.d)).toEqual({ ok: false, error: "the page's db is not available: not_declared" });
   });

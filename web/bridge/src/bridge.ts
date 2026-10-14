@@ -31,8 +31,10 @@
  * page's errors from before its first script (`inspect.ts`); it answers the
  * app's inspect view's `clax:inspect` with the clip part's inspection
  * (`clax:inspection`), and there only, its `clax:test` with the test part's
- * run of the draft's test files (`clax:tests`) and its `clax:migrate` with
- * the test part's run of an app bundle's migration (`clax:migration`).
+ * run of the draft's test files (`clax:tests`). In a frame named
+ * `MIGRATE_FRAME` it ends the page's markup before any of it runs, and
+ * answers `clax:migrate` with the test part's run of an app bundle's
+ * migration (`clax:migration`).
  * The daemon serves it right after the doctype (first in the skeleton's
  * `<head>` for a fragment), and only the document's first bridge tag runs, so
  * `window.claude` exists before any page script; shell
@@ -62,7 +64,7 @@ import { followInPlace, linkToHandOver } from "./nav";
 import type { CommentPart, Parts } from "./parts/types";
 import { type Clock, retrying } from "./part-loader";
 import { PickFlow } from "./pick";
-import { type Anchor, type AnchorResult, type Box, type BridgeToShell, INSPECT_FRAME } from "./protocol";
+import { type Anchor, type AnchorResult, type Box, type BridgeToShell, INSPECT_FRAME, MIGRATE_FRAME } from "./protocol";
 import { Rpc } from "./rpc";
 import { whenParsed } from "./parsed";
 import { makeUse } from "./use";
@@ -85,6 +87,11 @@ type PartName = keyof Parts;
   // (a copy the page carried in, or a second injection) stands down.
   const script = document.currentScript as HTMLScriptElement | null;
   if (!isFirstBridge(script)) return;
+  // In the app's migration view the page runs none of its own markup: the
+  // bridge, its first script, turns the rest of the document into hidden
+  // text before the parser reaches any of it, so only the migration writes.
+  const migrateFrame = window.parent !== window && window.name === MIGRATE_FRAME;
+  if (migrateFrame && document.readyState === "loading") document.write("<plaintext hidden>");
   const meta = readMeta(script);
   (window as any).__clax = meta;
   commentsContext.version = meta.version;
@@ -362,8 +369,9 @@ type PartName = keyof Parts;
         const requestId = m.requestId;
         void parts.test().then(t => t.test(window, m, post, clock), err => post({ type: "clax:tests", requestId, error: `the test harness did not load: ${err instanceof Error ? err.message : String(err)}` }));
       } break;
-      // And an app bundle's migration (`harness.ts`), the same way.
-      case "clax:migrate": if (inspectFrame && typeof m.requestId === "string") {
+      // And, only in the migration view's frame, an app bundle's migration
+      // (`harness.ts`), the same way.
+      case "clax:migrate": if (migrateFrame && typeof m.requestId === "string") {
         const requestId = m.requestId;
         void parts.test().then(t => t.migrate(window, m, post, clock), err => post({ type: "clax:migration", requestId, ok: false, error: `the test harness did not load: ${err instanceof Error ? err.message : String(err)}` }));
       } break;

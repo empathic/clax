@@ -95,6 +95,10 @@ pub fn page_src(id: &str, n: u64, origin: Option<&str>, file: &str) -> String {
 /// (`INSPECT_FRAME` in `web/bridge/src/protocol.ts`): the page's bridge keeps
 /// its errors from its first script only in a frame so named.
 pub const INSPECT_FRAME: &str = "clax-inspect";
+/// The name the Clax app's migration view gives its content frame
+/// (`MIGRATE_FRAME` in `web/bridge/src/protocol.ts`): the page's bridge ends
+/// the page's markup before any of it runs only in a frame so named.
+pub const MIGRATE_FRAME: &str = "clax-migrate";
 
 /// Whether a shell URL's query asks for the Clax app's inspect view, as the
 /// shell reads it (`inspectQuery` in `web/shell/src/route.ts`): the first
@@ -109,20 +113,39 @@ pub fn inspect_query(query: Option<&str>) -> bool {
     first("app").as_deref() == Some("1") && first("inspect").as_deref() == Some("1")
 }
 
+/// The content frame's name for a shell URL's query, as `frameName` in
+/// `web/shell/src/view/frame-host.ts` gives it: [`MIGRATE_FRAME`] in the
+/// migration view (the inspect view's query with the first `migrate` `1`),
+/// [`INSPECT_FRAME`] in the inspect view, none elsewhere.
+pub fn frame_name(query: Option<&str>) -> Option<&'static str> {
+    if !inspect_query(query) {
+        return None;
+    }
+    let migrate = query.and_then(|q| {
+        url::form_urlencoded::parse(q.as_bytes())
+            .find(|(k, _)| k == "migrate")
+            .map(|(_, v)| v.into_owned())
+    });
+    Some(if migrate.as_deref() == Some("1") {
+        MIGRATE_FRAME
+    } else {
+        INSPECT_FRAME
+    })
+}
+
 /// The content frame's markup, with the attributes `FrameHost.show` in
 /// `web/shell/src/view/frame-host.ts` gives it: sandboxed exactly when there
-/// is no artifact origin, and named [`INSPECT_FRAME`] in the inspect view
-/// (`inspect`), so the shell adopts it there too.
-pub fn frame_html(src: &str, sandboxed: bool, inspect: bool) -> String {
+/// is no artifact origin, and named `name` ([`frame_name`]), so the shell
+/// adopts it in the inspect and migration views too.
+pub fn frame_html(src: &str, sandboxed: bool, name: Option<&str>) -> String {
     let sandbox = if sandboxed {
         format!(" sandbox=\"{FRAME_SANDBOX}\"")
     } else {
         String::new()
     };
-    let name = if inspect {
-        format!(" name=\"{INSPECT_FRAME}\"")
-    } else {
-        String::new()
+    let name = match name {
+        Some(n) => format!(" name=\"{}\"", html_escape(n)),
+        None => String::new(),
     };
     format!(
         "<iframe class=\"frame\"{name} title=\"artifact content\" src=\"{}\" allow=\"clipboard-write; fullscreen\"{sandbox}></iframe>",
@@ -258,7 +281,7 @@ pub async fn assemble(
         Some(origin) if holds => {
             let src = page_src(id.as_str(), n, origin.as_deref(), &file);
             (
-                Some(frame_html(&src, origin.is_none(), inspect_query(query))),
+                Some(frame_html(&src, origin.is_none(), frame_name(query))),
                 json!({"mode": if origin.is_some() { "subdomain" } else { "sandbox" }, "src": src}),
             )
         }
@@ -362,29 +385,43 @@ mod tests {
             assert!(host.contains(attr), "frame-host.ts no longer sets: {attr}");
         }
         assert_eq!(
-            frame_html("/c/x/v/1/\"><b>", true, false),
+            frame_html("/c/x/v/1/\"><b>", true, None),
             format!(
                 "<iframe class=\"frame\" title=\"artifact content\" src=\"/c/x/v/1/&quot;&gt;&lt;b&gt;\" allow=\"clipboard-write; fullscreen\" sandbox=\"{FRAME_SANDBOX}\"></iframe>"
             )
         );
-        assert!(!frame_html("http://x.localhost:1/v/1/", false, false).contains("sandbox"));
+        assert!(!frame_html("http://x.localhost:1/v/1/", false, None).contains("sandbox"));
     }
 
     #[test]
     fn the_inspect_views_frame_is_named_as_frame_host_names_it() {
         let host = include_str!("../../../web/shell/src/view/frame-host.ts");
-        assert!(host.contains("if (inspecting()) el.name = INSPECT_FRAME;"));
+        assert!(host.contains(
+            "migrateQuery(location.search) ? MIGRATE_FRAME : inspecting() ? INSPECT_FRAME : null"
+        ));
         let proto = include_str!("../../../web/bridge/src/protocol.ts");
         assert!(proto.contains(&format!(
             "export const INSPECT_FRAME = \"{INSPECT_FRAME}\";"
         )));
+        assert!(proto.contains(&format!(
+            "export const MIGRATE_FRAME = \"{MIGRATE_FRAME}\";"
+        )));
         assert_eq!(
-            frame_html("/c/x/v/1/", true, true),
+            frame_html("/c/x/v/1/", true, frame_name(Some("app=1&inspect=1"))),
             format!(
                 "<iframe class=\"frame\" name=\"clax-inspect\" title=\"artifact content\" src=\"/c/x/v/1/\" allow=\"clipboard-write; fullscreen\" sandbox=\"{FRAME_SANDBOX}\"></iframe>"
             )
         );
-        assert!(!frame_html("/c/x/v/1/", true, false).contains("name="));
+        assert!(!frame_html("/c/x/v/1/", true, frame_name(Some("app=1"))).contains("name="));
+        for (q, want) in [
+            (Some("app=1&inspect=1&migrate=1"), Some(MIGRATE_FRAME)),
+            (Some("migrate=1&inspect=1&app=1"), Some(MIGRATE_FRAME)),
+            (Some("app=1&inspect=1&migrate=0"), Some(INSPECT_FRAME)),
+            (Some("app=1&migrate=1"), None),
+            (None, None),
+        ] {
+            assert_eq!(frame_name(q), want, "{q:?}");
+        }
     }
 
     #[test]

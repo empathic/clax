@@ -1053,6 +1053,7 @@ describe("app mode's inspect view", { timeout: MOUNT_TIMEOUT_MS }, () => {
     latest = 1;
   });
   const INSPECT = "?app=1&inspect=1";
+  const MIGRATE = "?app=1&inspect=1&migrate=1";
   const shot = new Uint8Array([137, 80, 78, 71, 1, 2, 3]);
   const b64 = btoa(String.fromCharCode(...shot));
   const answer = (requestId: string, over: Record<string, unknown> = {}) => ({
@@ -1171,8 +1172,9 @@ describe("app mode's inspect view", { timeout: MOUNT_TIMEOUT_MS }, () => {
   });
 
   it("runMigration asks the page to run the migration and posts its checked answer", async () => {
-    const { frame, host } = await appView({ query: INSPECT });
+    const { frame, host } = await appView({ query: MIGRATE });
     const framed = framePosts(frame);
+    expect(frame.name).toBe("clax-migrate");
     hello(frame, 1);
     host.runMigration({ file: "migrate.js", from: 2, to: 3 });
     const ask = framed.find(m => m.type === "clax:migrate")!;
@@ -1202,8 +1204,8 @@ describe("app mode's inspect view", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(ofType("migration").at(-1)).toEqual({ type: "migration", ok: true });
   });
 
-  it("runMigration refuses a bad order, before the page greets, and outside the inspect view", async () => {
-    const { frame, host } = await appView({ query: INSPECT });
+  it("runMigration refuses a bad order, before the page greets, and outside the migration view", async () => {
+    const { frame, host } = await appView({ query: MIGRATE });
     const framed = framePosts(frame);
     host.runMigration({ file: "migrate.js", from: 1, to: 2 });
     expect(ofType("migration")).toEqual([{ type: "migration", ok: false, error: "the page has not loaded" }]);
@@ -1222,11 +1224,13 @@ describe("app mode's inspect view", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(ofType("migration")).toHaveLength(1 + bad.length);
     expect(ofType("migration").slice(1).every(m => !m.ok && /^file is a path/.test(m.error))).toBe(true);
     expect(framed.filter(m => m.type === "clax:migrate")).toEqual([]);
-    const other = await appView();
-    hello(other.frame, 1);
-    toHost = [];
-    other.host.runMigration({ file: "migrate.js", from: 1, to: 2 });
-    expect(ofType("migration")).toEqual([{ type: "migration", ok: false, error: "this view is not the inspect view" }]);
+    for (const query of [INSPECT, undefined]) {
+      const other = await appView({ query });
+      hello(other.frame, 1);
+      toHost = [];
+      other.host.runMigration({ file: "migrate.js", from: 1, to: 2 });
+      expect(ofType("migration")).toEqual([{ type: "migration", ok: false, error: "this view is not the migration view" }]);
+    }
   });
 
   it("shows no comment UI: comment mode, a whole-app composer and a page's composer stay closed", async () => {
@@ -1263,12 +1267,17 @@ describe("app mode's inspect view", { timeout: MOUNT_TIMEOUT_MS }, () => {
   });
 
   it("keeps inspect=1 only with app=1, and carries it from page to page", async () => {
-    const { appQuery, inspectQuery } = await import("../route");
+    const { appQuery, inspectQuery, migrateQuery } = await import("../route");
     expect(appQuery("?app=1&inspect=1&x=2")).toBe("?app=1&inspect=1");
     expect(appQuery("?inspect=1")).toBe("");
     expect(inspectQuery("?inspect=1")).toBe(false);
     expect(inspectQuery("?app=1")).toBe(false);
     expect(inspectQuery("?inspect=1&app=1")).toBe(true);
+    expect(appQuery("?migrate=1&app=1&inspect=1&x=2")).toBe("?app=1&inspect=1&migrate=1");
+    expect(appQuery("?app=1&migrate=1")).toBe("?app=1");
+    expect(inspectQuery("?app=1&inspect=1&migrate=1")).toBe(true);
+    expect(migrateQuery("?app=1&inspect=1&migrate=1")).toBe(true);
+    expect(migrateQuery("?app=1&inspect=1")).toBe(false);
   });
 });
 

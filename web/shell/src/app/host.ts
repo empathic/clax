@@ -61,11 +61,15 @@
 //   itself). Anywhere else `inspect` answers an error and asks nothing.
 //   `runTests({files, testMs, totalMs})` asks the bridge to run the draft's
 //   test files (`bridge/src/harness.ts`) and posts the results as `tests`,
-//   under the same rules. `runMigration({file, from, to, totalMs})` asks the
-//   bridge to run an app bundle's migration (spec 2026-10-13-flutter-app-
-//   bundles-design §8.3): import `file` in the page's frame and call its
-//   default export with the page's `db` and `{from, to}`; it posts
-//   `migration` `{ok: true}` or `{ok: false, error}`, under the same rules.
+//   under the same rules.
+// - The migration view (`?app=1&inspect=1&migrate=1`) is the inspect view
+//   whose frame is named `MIGRATE_FRAME`: the page's bridge ends the page's
+//   markup before any of it runs. There only, `runMigration({file, from,
+//   to, totalMs})` asks the bridge to run an app bundle's migration (spec
+//   2026-10-13-flutter-app-bundles-design §8.3): import `file` in the page's
+//   frame and call its default export with the page's `db` and `{from,
+//   to}`; it posts `migration` `{ok: true}` or `{ok: false, error}`, under
+//   the same rules as `tests`.
 // - Questions (spec 2026-10-12-flutter-app-round2-design R§10.2): the
 //   owner's open agent questions about the artifact are the shell's own
 //   question cards (`q/QuestionCard.svelte`), which a browser shows at the
@@ -105,7 +109,7 @@ import { type Thread, sendToAgent, upsert } from "../threads";
 import { INDEX_FILE, type InspectError, type PickDesc } from "../../../bridge/src/protocol";
 import type { ArtifactController, ViewState } from "../view/artifact-controller";
 import { anchorLabel } from "./label";
-import { appQuery, inspectQuery, parseShellPath } from "../route";
+import { appQuery, inspectQuery, migrateQuery, parseShellPath } from "../route";
 import { setUrl } from "../view/url";
 
 export type HostMessage =
@@ -199,7 +203,7 @@ export type ClaxHost = {
    * each test for at most `testMs`, the run for at most `totalMs`: `tests`
    * answers. A later call replaces an earlier one. */
   runTests(p: { files: string[]; testMs?: number; totalMs?: number }): void;
-  /** In the inspect view, asks the page to run the migration `file` (a
+  /** In the migration view, asks the page to run the migration `file` (a
    * `.js` path in the app, `migrate.js` for a bundle) with the page's `db`
    * and `{from, to}` (versions, at least 1), the run for at most `totalMs`
    * (`MIGRATE_MS` when absent): `migration` answers. A later call replaces
@@ -342,6 +346,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   if (win.top !== win || parseShellPath(win.location.pathname).kind !== "artifact" || !appQuery(win.location.search)) return () => {};
   const doc = win.document;
   const inspecting = inspectQuery(win.location.search);
+  const migrating = migrateQuery(win.location.search);
   doc.documentElement.classList.add("app");
   if (inspecting) doc.documentElement.classList.add("inspect");
   const style = doc.createElement("style");
@@ -816,7 +821,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     runMigration: p => {
       if (nonce === null) return;
       const refuse = (error: string) => post({ type: "migration", ok: false, error });
-      if (!inspecting) { refuse("this view is not the inspect view"); return; }
+      if (!migrating) { refuse("this view is not the migration view"); return; }
       const { file, from, to, totalMs } = (p && typeof p === "object" ? p : {}) as Partial<Record<"file" | "from" | "to" | "totalMs", unknown>>;
       if (typeof file !== "string" || !MIGRATE_FILE.test(file) || file.split("/").some(seg => seg === "" || seg === "." || seg === "..") || !isVersion(from) || !isVersion(to)) {
         refuse("file is a path <name>.js in the app, from and to are versions");

@@ -3,7 +3,8 @@
 // inspect view, whose `claxHost.runTests` has the bridge's harness
 // (`bridge/src/harness.ts`) import the files as modules, drive the page with
 // `ui`, write its documents, and answer `tests`, in both frame modes; and
-// `claxHost.runMigration`, where the harness imports an app bundle's
+// `claxHost.runMigration` in the migration view (`&migrate=1`), where the
+// page's own markup never runs and the harness imports an app bundle's
 // `migrate.js` and calls it with the page's `db` (spec 2026-10-13-flutter-
 // app-bundles-design §8.3). The app's side is ./app-host.ts.
 import type { Page } from "@playwright/test";
@@ -59,13 +60,27 @@ async function draft(files: Record<string, string>): Promise<string> {
 const MIGRATE = `export default async function migrate(db, { from, to }) {
   const d = db.doc("counts/main");
   const n = (await d.get()).data()?.n ?? 0;
-  await d.set({ count: n, migrated: [from, to] });
+  const booted = (await db.doc("boot/seen").get()).data() ?? null;
+  await d.set({ count: n, migrated: [from, to], booted });
 }`;
 
-async function runTests(page: Page, id: string, mode: "subdomain" | "sandbox", call: string, answer = "tests"): Promise<Tests> {
+// A page that writes a document as it loads: the migration view never runs it.
+const WRITES_ON_LOAD = `<!doctype html><html><head><title>Boot</title>
+<script type="module">const db = await window.claude.use("db"); await db.doc("boot/seen").set({ at: 1 });</script>
+<script>document.title = "ran";</script></head><body><button id="add">Add one</button></body></html>`;
+
+// A migration that keeps writing until its document goes away.
+const TICKS = `export default async function migrate(db) {
+  for (let i = 1; ; i++) { await db.doc("ticks/t").set({ i }); await new Promise(r => setTimeout(r, 20)); }
+}`;
+
+const MIGRATE_VIEW = "?app=1&inspect=1&migrate=1";
+const ticks = async (id: string) => ((await api(d.base, d.token, `/api/artifacts/${id}/docs/ticks/t`)) as { doc: { data: { i: number }; version: number } }).doc;
+
+async function runTests(page: Page, id: string, mode: "subdomain" | "sandbox", call: string, answer = "tests", query = "?app=1&inspect=1"): Promise<Tests> {
   if (mode === "sandbox") await page.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch { /* storage unavailable */ } });
   await hostChannel(page);
-  await page.goto(`${d.base}/a/${id}?app=1&inspect=1`);
+  await page.goto(`${d.base}/a/${id}${query}`);
   await contentFrame(page, id, 1);
   await initHost(page);
   await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
@@ -81,18 +96,44 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(r).toEqual({ type: "tests", passed: 4, failed: [], skipped: 0 });
   });
 
-  test(`${mode}: runMigration imports migrate.js and runs it on the page's db`, async ({ page }) => {
-    const id = await draft({ "index.html": PAGE, "migrate.js": MIGRATE });
+  test(`${mode}: runMigration imports migrate.js and runs it on the page's db, in a page whose own markup never runs`, async ({ page }) => {
+    const id = await draft({ "index.html": WRITES_ON_LOAD, "migrate.js": MIGRATE });
     await api(d.base, d.token, `/api/artifacts/${id}/docs/counts/main`, { method: "PUT", body: JSON.stringify({ data: { n: 4 }, lww: true }) });
-    const r = await runTests(page, id, mode, `runMigration({ file: "migrate.js", from: 2, to: 3 })`, "migration");
+    const r = await runTests(page, id, mode, `runMigration({ file: "migrate.js", from: 2, to: 3 })`, "migration", MIGRATE_VIEW);
     expect(r).toEqual({ type: "migration", ok: true });
     const { doc } = await api(d.base, d.token, `/api/artifacts/${id}/docs/counts/main`) as { doc: { data: unknown } };
-    expect(doc.data).toEqual({ count: 4, migrated: [2, 3] });
+    expect(doc.data).toEqual({ count: 4, migrated: [2, 3], booted: null });
+    const frame = await contentFrame(page, id, 1);
+    expect(await frame.evaluate(() => [document.title, document.querySelectorAll("button").length, window.name])).toEqual(["", 0, "clax-migrate"]);
+  });
+
+  test(`${mode}: runMigration is refused in the inspect view`, async ({ page }) => {
+    const id = await draft({ "index.html": PAGE, "migrate.js": MIGRATE });
+    const r = await runTests(page, id, mode, `runMigration({ file: "migrate.js", from: 1, to: 2 })`, "migration");
+    expect(r).toEqual({ type: "migration", ok: false, error: "this view is not the migration view" });
+  });
+
+  test(`${mode}: a migration over its time is reported, and stops writing once its view is loaded again`, async ({ page }) => {
+    const id = await draft({ "index.html": PAGE, "migrate.js": TICKS });
+    const r = await runTests(page, id, mode, `runMigration({ file: "migrate.js", from: 1, to: 2, totalMs: 300 })`, "migration", MIGRATE_VIEW);
+    expect(r).toEqual({ type: "migration", ok: false, error: "it took longer than 300 ms" });
+    // Past its time it still writes: the bridge cannot stop it.
+    const late = (await ticks(id)).version;
+    await expect.poll(async () => (await ticks(id)).version).toBeGreaterThan(late);
+    // The app loads the view again, as WebViewInspector.runMigration does.
+    await page.goto(`${d.base}/a/${id}${MIGRATE_VIEW}`);
+    await contentFrame(page, id, 1);
+    await initHost(page);
+    await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
+    const after = (await ticks(id)).version;
+    // A run still going would write every 20 ms; none comes in ten times that.
+    await page.waitForTimeout(200);
+    expect((await ticks(id)).version).toBe(after);
   });
 
   test(`${mode}: a migration that throws answers its error`, async ({ page }) => {
     const id = await draft({ "index.html": PAGE, "migrate.js": `export default async () => { throw new TypeError("old shape"); }` });
-    const r = await runTests(page, id, mode, `runMigration({ file: "migrate.js", from: 1, to: 2 })`, "migration");
+    const r = await runTests(page, id, mode, `runMigration({ file: "migrate.js", from: 1, to: 2 })`, "migration", MIGRATE_VIEW);
     expect(r).toEqual({ type: "migration", ok: false, error: "the migration failed: TypeError: old shape" });
   });
 
