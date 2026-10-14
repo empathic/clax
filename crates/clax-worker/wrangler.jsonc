@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "clax-worker",
+  "main": "build/index.js",
+  "compatibility_date": "2026-09-25",
+
+  // worker-build compiles the crate to wasm32-unknown-unknown and writes the
+  // JS shim and wasm module to build/.
+  "build": { "command": "./build.sh" },
+
+  "durable_objects": {
+    "bindings": [{ "name": "CLAX_DB", "class_name": "ClaxDb" }]
+  },
+  // SQLite-backed storage: synchronous ctx.storage.sql and transactionSync.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ClaxDb"] }]
+}

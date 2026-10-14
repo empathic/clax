@@ -1,0 +1,42 @@
+[package]
+name = "clax-worker"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "A Cloudflare Worker with a Rust Durable Object that keeps a rusqlite database in its own storage"
+
+# A workspace of its own, outside the Clax workspace: the Worker builds only
+# for wasm32-unknown-unknown, and its rusqlite 0.40 cannot share a lockfile
+# with the Clax workspace's rusqlite 0.32 (both link a native `sqlite3`).
+[workspace]
+resolver = "2"
+members = [".", "vfs"]
+# `cargo test` here runs the VFS's tests too.
+default-members = [".", "vfs"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[lints.rust]
+unsafe_code = "deny"
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["json", "query"] }
+clax-do-vfs = { path = "vfs" }
+console_error_panic_hook = "0.1"
+js-sys = "0.3"
+rusqlite = { version = "0.40", features = ["bundled", "hooks"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tower-service = "0.3"
+wasm-bindgen = "0.2"
+worker = { version = "0.8.7", features = ["http", "axum"] }
+
+# No `strip`: wasm-bindgen reads the module's `target_features` section to
+# find reference types, and fails ("externref table required for catch
+# wrappers") without it. wasm-opt, run by worker-build, shrinks the result.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
