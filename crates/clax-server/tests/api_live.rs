@@ -365,6 +365,8 @@ async fn snapshots_are_served_with_a_policy_that_runs_only_claxs_scripts() {
             "{path}: {p:?}"
         );
         assert!(p.len() >= 2, "{path}: both policies apply: {p:?}");
+        // A snapshot still loads its site's styles, images and fonts.
+        assert!(!p.iter().any(|p| p.contains("default-src")), "{p:?}");
     }
     // On the artifact's own host too.
     let ahost = format!("{aid}.localhost:{}", ts.addr.port());
@@ -383,7 +385,8 @@ async fn snapshots_are_served_with_a_policy_that_runs_only_claxs_scripts() {
         "{:?}",
         policies(&res)
     );
-    // An HTML artifact has no such policy.
+    // An HTML artifact has no such policy: its one policy keeps it to its
+    // own files.
     let a = ts.publish("T", &[("index.html", "<p>")]).await;
     let res = ts
         .get(&format!(
@@ -391,7 +394,9 @@ async fn snapshots_are_served_with_a_policy_that_runs_only_claxs_scripts() {
             a["artifact"]["id"].as_str().unwrap()
         ))
         .await;
-    assert!(!policies(&res).iter().any(|v| v.contains("script-src")));
+    let p = policies(&res);
+    assert_eq!(p.len(), 1, "{p:?}");
+    assert!(!p[0].contains("/_clax/;"), "{p:?}");
 }
 
 #[tokio::test]

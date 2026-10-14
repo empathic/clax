@@ -23,7 +23,9 @@ use std::sync::Arc;
 /// Content served on the main origin must not run same-origin with the API.
 const SANDBOX: &str = "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads";
 
-/// The `Content-Security-Policy` of a content response.
+/// The `Content-Security-Policy` of a content response: who may frame it,
+/// and, for an artifact's own content (`lockdown`: its ID; not a live page's
+/// snapshot), what it may load. `own` is the daemon's host.
 ///
 /// - On the main origin (sandbox mode): the sandbox, and no
 ///   `frame-ancestors`. A sandboxed page has an opaque origin, which no
@@ -38,21 +40,94 @@ const SANDBOX: &str = "sandbox allow-scripts allow-forms allow-modals allow-popu
 ///
 /// The policy is a separate one: a page's own `<meta>` policy still applies
 /// in full beside it, and cannot set `frame-ancestors` itself.
-fn content_policy(origin: &Option<Extension<OnArtifactOrigin>>, req: &HeaderMap) -> HeaderValue {
-    if origin.is_none() {
-        return HeaderValue::from_static(SANDBOX);
-    }
-    // The rewrite accepted this host only with a numeric port, or none.
-    let port = req
-        .get(header::HOST)
-        .and_then(|h| h.to_str().ok())
-        .and_then(|h| h.split_once(':'))
+fn content_policy(
+    origin: &Option<Extension<OnArtifactOrigin>>,
+    req: &HeaderMap,
+    own: &str,
+    lockdown: Option<&str>,
+) -> HeaderValue {
+    // The rewrite accepted an artifact host only with a numeric port, or none;
+    // on the main origin a `Host` that is not plain is the daemon's own.
+    let host = plain_host(req, own);
+    let port = host
+        .rsplit_once(':')
+        .filter(|(_, p)| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
         .map(|(_, p)| format!(":{p}"))
         .unwrap_or_default();
-    HeaderValue::from_str(&format!(
-        "frame-ancestors 'self' http://localhost{port} http://127.0.0.1{port}"
-    ))
-    .unwrap_or_else(|_| HeaderValue::from_static("frame-ancestors 'self'"))
+    let frame = if origin.is_none() {
+        SANDBOX.to_string()
+    } else {
+        format!("frame-ancestors 'self' http://localhost{port} http://127.0.0.1{port}")
+    };
+    let policy = match lockdown {
+        Some(id) => {
+            let fetchable = if origin.is_some() {
+                "'self'".to_string()
+            } else {
+                format!(
+                    "http://{host}/c/{id}/ http://{host}/_clax/bridge.js http://{host}/_clax/bridge/"
+                )
+            };
+            format!(
+                "{frame}; {}",
+                load_policy(&fetchable, &blob_sources(host, own, &port))
+            )
+        }
+        None => frame,
+    };
+    HeaderValue::from_str(&policy).unwrap_or_else(|_| HeaderValue::from_static("sandbox"))
+}
+
+/// What an artifact's page may load: its own files (`own`, source
+/// expressions), assets under `/_blob/` on the daemon's hosts (`blobs`), and
+/// `data:` and `blob:` URLs. It connects nowhere (`fetch`, XHR, WebSocket,
+/// EventSource, beacons): the network is the `net` capability's, through the
+/// shell. No plugins, base URL or form posts. Inline and evaluated scripts
+/// and inline styles run, being the page's own.
+fn load_policy(own: &str, blobs: &str) -> String {
+    format!(
+        "default-src {own} {blobs} data: blob:; \
+         script-src {own} 'unsafe-inline' 'unsafe-eval' data: blob:; \
+         style-src {own} 'unsafe-inline' data: blob:; \
+         connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    )
+}
+
+/// `/_blob/` on each host an asset URL may name: the request's (when plain),
+/// the daemon's browser base, and `localhost` and `127.0.0.1` on the
+/// request's port.
+fn blob_sources(host: &str, own: &str, port: &str) -> String {
+    let mut hosts: Vec<String> = Vec::new();
+    for h in [
+        host.to_string(),
+        own.to_string(),
+        format!("localhost{port}"),
+        format!("127.0.0.1{port}"),
+    ] {
+        if !hosts.contains(&h) {
+            hosts.push(h);
+        }
+    }
+    hosts
+        .iter()
+        .map(|h| format!("http://{h}/_blob/"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The request's `Host` when it is a plain host and port (letters, digits,
+/// `.`, `-`, `:`, `[`, `]`), else `fallback` (the daemon's own host): a
+/// crafted `Host` never reaches a policy.
+fn plain_host<'a>(req: &'a HeaderMap, fallback: &'a str) -> &'a str {
+    let plain = |h: &str| {
+        !h.is_empty()
+            && h.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b".-:[]".contains(&b))
+    };
+    req.get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .filter(|h| plain(h))
+        .unwrap_or(fallback)
 }
 
 /// The host and port in the daemon's browser base URL.
@@ -71,44 +146,39 @@ fn own_host(s: &AppState) -> String {
 /// that is not a plain host and port (letters, digits, `.`, `-`, `:`, `[`,
 /// `]`) is not trusted: `fallback` (the daemon's own host) is used instead.
 fn snapshot_policy(req: &HeaderMap, fallback: &str) -> HeaderValue {
-    let plain = |h: &str| {
-        !h.is_empty()
-            && h.bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b".-:[]".contains(&b))
-    };
-    let host = req
-        .get(header::HOST)
-        .and_then(|h| h.to_str().ok())
-        .filter(|h| plain(h))
-        .unwrap_or(fallback);
+    let host = plain_host(req, fallback);
     HeaderValue::from_str(&format!(
         "script-src http://{host}/_clax/; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; connect-src 'none'; worker-src 'none'"
     ))
     .unwrap_or_else(|_| HeaderValue::from_static("script-src 'none'"))
 }
 
-/// Sets the content policy on `res`, and for a live page's content (`live`:
-/// the daemon's host, the policy's fallback) appends [`snapshot_policy`]:
-/// both apply. `Referrer-Policy: no-referrer` keeps the page's URL, which
+/// Sets the content policy of artifact `id`'s content on `res` (`own`: the
+/// daemon's host): one that frames it and keeps it to its own files; or, for
+/// a `live` page's content, the framing policy and [`snapshot_policy`]
+/// beside it, both applying, so a snapshot still loads styles, images and
+/// fonts from its site. `Referrer-Policy: no-referrer` keeps the page's URL, which
 /// names its artifact ID and the daemon's port, out of the `Referer` of
 /// every request the page makes.
 fn framed_by_shell(
     mut res: Response,
     origin: &Option<Extension<OnArtifactOrigin>>,
     req: &HeaderMap,
-    live: Option<&str>,
+    (id, own): (&str, &str),
+    live: bool,
 ) -> Response {
-    res.headers_mut()
-        .insert(header::CONTENT_SECURITY_POLICY, content_policy(origin, req));
+    let lockdown = (!live).then_some(id);
+    res.headers_mut().insert(
+        header::CONTENT_SECURITY_POLICY,
+        content_policy(origin, req, own, lockdown),
+    );
     res.headers_mut().insert(
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),
     );
-    if let Some(fallback) = live {
-        res.headers_mut().append(
-            header::CONTENT_SECURITY_POLICY,
-            snapshot_policy(req, fallback),
-        );
+    if live {
+        res.headers_mut()
+            .append(header::CONTENT_SECURITY_POLICY, snapshot_policy(req, own));
     }
     res
 }
@@ -134,12 +204,15 @@ pub async fn index(
     let (aid, n) = path(p)?;
     let id = parse_id(&aid)?;
     let own = own_host(&s);
-    let live = s.live_ids.contains(id.as_str()).then_some(own.as_str());
+    let live = s.live_ids.contains(id.as_str());
+    let aid = id.as_str().to_string();
+    let app = (aid.as_str(), own.as_str());
     match lookup(&s, id, n, INDEX.to_string(), true).await? {
         Served::Page(html) => Ok(framed_by_shell(
             http_cache::html(&req, &html),
             &origin,
             &req,
+            app,
             live,
         )),
         Served::Raw(..) => Err(ApiError::from(CoreError::Io(std::io::Error::new(
@@ -225,13 +298,16 @@ pub async fn file(
     }
     let tag_source = format!("{aid}/{n}/{rel}");
     let own = own_host(&s);
-    let live = s.live_ids.contains(id.as_str()).then_some(own.as_str());
+    let live = s.live_ids.contains(id.as_str());
+    let aid = id.as_str().to_string();
+    let app = (aid.as_str(), own.as_str());
     let (disk, meta) = match lookup(&s, id, n, rel, false).await? {
         Served::Page(html) => {
             return Ok(framed_by_shell(
                 http_cache::html(&req, &html),
                 &origin,
                 &req,
+                app,
                 live,
             ));
         }
@@ -258,7 +334,7 @@ pub async fn file(
             )
                 .into_response()
         });
-        return Ok(framed_by_shell(res, &origin, &req, live));
+        return Ok(framed_by_shell(res, &origin, &req, app, live));
     }
     let cache_control = http_cache::IMMUTABLE;
     let res = (
@@ -272,7 +348,7 @@ pub async fn file(
         body,
     )
         .into_response();
-    Ok(framed_by_shell(res, &origin, &req, live))
+    Ok(framed_by_shell(res, &origin, &req, app, live))
 }
 
 /// `GET /api/artifacts/<id>/versions/<n>/files/<path>`: a file's stored bytes,
@@ -369,6 +445,24 @@ mod tests {
                 .to_str()
                 .unwrap()
                 .contains("http://localhost:7480/_clax/")
+        );
+    }
+
+    #[test]
+    fn the_content_policy_names_a_plain_host_and_never_a_crafted_one() {
+        let mut h = HeaderMap::new();
+        h.insert(header::HOST, HeaderValue::from_static("x;script-src *:80"));
+        let p = content_policy(&None, &h, "localhost:7480", Some("7q3k9mzx2b4t"));
+        let p = p.to_str().unwrap();
+        assert!(p.contains("http://localhost:7480/c/7q3k9mzx2b4t/ "), "{p}");
+        assert!(!p.contains('*') && !p.contains("x;"), "{p}");
+        assert!(p.contains("http://127.0.0.1:7480/_blob/"), "{p}");
+        // Without the lockdown (a live page), the framing policy alone.
+        assert_eq!(
+            content_policy(&None, &h, "localhost:7480", None)
+                .to_str()
+                .unwrap(),
+            SANDBOX
         );
     }
 }
