@@ -1172,6 +1172,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// open (one it withdrew while the stream was away, as at its start),
   /// so it is never presented. A failed check keeps them.
   Future<void> _recheckQuestions() async {
+    // Only the questions held when the request went out: one that lands
+    // while it is in flight is missing from the answer but still open.
+    final asked = [..._openQuestions.keys];
     final List<QuestionView> open;
     try {
       open = await _api.questions();
@@ -1179,7 +1182,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       return;
     }
     final ids = {for (final q in open) q.id};
-    for (final qid in [..._openQuestions.keys]) {
+    for (final qid in asked) {
       if (ids.contains(qid)) continue;
       _seenQuestions.add(qid);
       _openQuestions.remove(qid);
