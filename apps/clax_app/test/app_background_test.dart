@@ -20,6 +20,7 @@ import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/host_protocol.dart' show Ready;
 import 'package:clax_app/ui/making_screen.dart' show MakingScreen;
+import 'package:clax_app/ui/question_sheet.dart';
 import 'package:clax_app/ui/read_consent_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -113,6 +114,22 @@ ModelTurn _calls(List<(String, Map<String, Object?>)> calls) => ModelTurn(
   usage: const Usage(input: 100, output: 50),
 );
 
+/// A [QuestionPage] that adds what it loads to [loads].
+class _QuestionPage implements QuestionPage {
+  _QuestionPage(this.loads);
+
+  final List<Uri> loads;
+
+  @override
+  Widget build(BuildContext context) => const SizedBox.expand();
+
+  @override
+  Future<void> load(Uri url) async => loads.add(url);
+
+  @override
+  void dispose() {}
+}
+
 /// Records every [BackgroundWork] call as `method(args…)`, and plays the
 /// platform's launch artifact and taps.
 class _Work implements BackgroundWork {
@@ -138,9 +155,14 @@ class _Work implements BackgroundWork {
   @override
   Future<void> stop() async => calls.add('stop');
 
+  /// What each news notification opens when tapped.
+  final targets = <String>[];
+
   @override
-  Future<void> ready(String title, String text, String artifactId) async =>
-      calls.add('ready($title, $text)');
+  Future<void> ready(String title, String text, String artifactId) async {
+    calls.add('ready($title, $text)');
+    targets.add(artifactId);
+  }
 
   @override
   Future<void> failed(
@@ -169,6 +191,7 @@ void main() {
   late _Agent agent;
   late _Work work;
   late List<FakeAppSurface> surfaces;
+  late List<Uri> questionLoads;
   _Turns? turns;
 
   setUp(() {
@@ -179,6 +202,7 @@ void main() {
     agent = _Agent();
     work = _Work();
     surfaces = [];
+    questionLoads = [];
   });
   tearDown(() => dir.deleteSync(recursive: true));
 
@@ -199,6 +223,7 @@ void main() {
             surfaces.add(s);
             return s;
           },
+          questionPage: (_) => _QuestionPage(questionLoads),
           installId: 'install',
           supportDir: dir.path,
           prompts: PromptBuilder(rootBundle),
@@ -397,6 +422,101 @@ void main() {
     expect(surfaces, hasLength(2));
   });
 
+  testWidgets('a question asked in the background is posted; its tap shows '
+      'the question sheet', (tester) async {
+    final aid = api.seedArtifact('Runs', {'index.html': _page});
+    await pumpApp(tester);
+    leave(tester);
+    final session = await api.registerAppSession(installId: 'i', pid: 1);
+    final asked = await api.askQuestion(session.id, [
+      {
+        'question': 'Which unit should distances use?',
+        'header': 'Units',
+        'options': [
+          {'label': 'km', 'description': ''},
+          {'label': 'mi', 'description': ''},
+        ],
+      },
+    ], artifactId: aid);
+    await pumpUntil(tester, () => work.targets.isNotEmpty);
+    expect(work.calls, [
+      'ready(Runs has a question, Which unit should distances use?)',
+    ]);
+    expect(find.byType(QuestionWebSheet), findsNothing);
+    comeBack(tester);
+    work.tap(work.targets.single);
+    await pumpRoute(tester);
+    expect(find.byType(QuestionWebSheet), findsOneWidget);
+    expect(surfaces, isEmpty, reason: 'the sheet, not the app');
+    expect(work.targets.single, 'question:${asked.question.id}');
+  });
+
+  testWidgets('coming back without tapping the notification shows a question '
+      'still open in the sheet; one answered meanwhile is not shown', (
+    tester,
+  ) async {
+    await pumpApp(tester);
+    leave(tester);
+    final session = await api.registerAppSession(installId: 'i', pid: 1);
+    Future<String> ask() async => (await api.askQuestion(session.id, [
+      {
+        'question': 'Which unit should distances use?',
+        'header': 'Units',
+        'options': [
+          {'label': 'km', 'description': ''},
+          {'label': 'mi', 'description': ''},
+        ],
+      },
+    ])).question.id;
+    final answered = await ask();
+    final open = await ask();
+    await pumpUntil(tester, () => work.targets.length == 2);
+    await api.answerQuestion(answered, [
+      const QuestionAnswer(selected: ['km']).toJson(),
+    ]);
+    await tester.pump();
+    expect(find.byType(QuestionWebSheet), findsNothing);
+    comeBack(tester);
+    await pumpRoute(tester);
+    expect(find.byType(QuestionWebSheet), findsOneWidget);
+    expect(questionLoads.single.queryParameters['q'], open);
+    // The notification's tap names the question on show: no second sheet.
+    work.tap(work.targets.last);
+    await pumpRoute(tester);
+    expect(questionLoads, hasLength(1));
+    await tester.tap(find.byTooltip('Close'));
+    await pumpRoute(tester);
+    expect(find.byType(QuestionWebSheet), findsNothing);
+    expect(questionLoads, hasLength(1));
+  });
+
+  testWidgets('a background question about another app is told in a toast '
+      'on return, not a sheet over the app', (tester) async {
+    final aid = api.seedArtifact('Runs', {'index.html': _page});
+    final other = api.seedArtifact('Log', {'index.html': _page});
+    await pumpApp(tester);
+    work.tap(aid);
+    await pumpRoute(tester);
+    expect(find.byType(AppScreen), findsOneWidget);
+    leave(tester);
+    final session = await api.registerAppSession(installId: 'i', pid: 1);
+    await api.askQuestion(session.id, [
+      {
+        'question': 'Which unit should distances use?',
+        'header': 'Units',
+        'options': [
+          {'label': 'km', 'description': ''},
+          {'label': 'mi', 'description': ''},
+        ],
+      },
+    ], artifactId: other);
+    await pumpUntil(tester, () => work.targets.isNotEmpty);
+    comeBack(tester);
+    await tester.pump();
+    expect(find.byType(QuestionWebSheet), findsNothing);
+    expect(find.text('Log has a question'), findsOneWidget);
+  });
+
   testWidgets('a change that lands in the background says so', (tester) async {
     final aid = api.seedArtifact('Runs', {'index.html': _page});
     await pumpApp(tester);
@@ -507,15 +627,24 @@ void main() {
     expect(work.calls.where((c) => c.startsWith('failed')), isEmpty);
   });
 
-  testWidgets('a make the last run never finished is offered again at '
-      'launch', (tester) async {
+  testWidgets('a make the last run never finished is an interrupted tile; '
+      'Make it again runs it', (tester) async {
     // Seeded synchronously: real file futures do not settle in a widget
     // test's body.
     File('${dir.path}/pending-make.json')
         .writeAsStringSync('{"request": "a tracker for my runs"}');
     agent.steps.add((_) async => _made);
     await pumpApp(tester);
-    await pumpUntilShown(tester, 'Make it again?');
+    await pumpUntilShown(tester, 'Interrupted');
+    expect(find.text('Make it again?'), findsNothing, reason: 'no dialog');
+    await settleFiles(tester);
+    expect(
+      File('${dir.path}/pending-make.json').existsSync(),
+      isTrue,
+      reason: 'kept until the person chooses',
+    );
+    await tester.tap(find.text('a tracker for my runs'));
+    await pumpUntilShown(tester, 'Make it again');
     expect(
       find.text('Clax closed before it finished “a tracker for my runs”.'),
       findsOneWidget,
@@ -529,14 +658,23 @@ void main() {
     expect(File('${dir.path}/pending-make.json').existsSync(), isFalse);
   });
 
-  testWidgets('Not now forgets the lost make', (tester) async {
+  testWidgets('Discard forgets the lost make; closing the question keeps it', (
+    tester,
+  ) async {
     File('${dir.path}/pending-make.json')
         .writeAsStringSync('{"request": "laps"}');
     await pumpApp(tester);
-    await pumpUntilShown(tester, 'Not now');
-    await tester.tap(find.text('Not now'));
+    await pumpUntilShown(tester, 'Interrupted');
+    await tester.tap(find.text('laps'));
+    await pumpUntilShown(tester, 'Discard');
+    await tester.tapAt(const Offset(4, 4));
     await pumpRoute(tester);
-    expect(find.text('Make it again?'), findsNothing);
+    expect(find.text('Interrupted'), findsOneWidget);
+    await tester.tap(find.text('laps'));
+    await pumpUntilShown(tester, 'Discard');
+    await tester.tap(find.text('Discard'));
+    await pumpRoute(tester);
+    expect(find.text('Interrupted'), findsNothing);
     expect(agent.runs, 0);
     await settleFiles(tester);
     expect(File('${dir.path}/pending-make.json').existsSync(), isFalse);
