@@ -50,6 +50,9 @@ const GROK_END_REQUEST_TIMEOUT: Duration = Duration::from_millis(1000);
 /// deadline; past it the hook prints nothing and the terminal dialog opens.
 /// The long poll that follows has its own timeout (see [`ask::Budget`]).
 const ASK_SETUP_DEADLINE: Duration = Duration::from_secs(2);
+/// Time kept back from a hook's deadline when it fetches a remote
+/// daemon's clips, for rewriting and printing what it took.
+const CLIP_MARGIN: Duration = Duration::from_millis(750);
 /// Each `ask` daemon request other than the long poll is abandoned after this long.
 const ASK_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
 /// After the setup, `ask` gives up waiting on its worker this long after the
@@ -476,6 +479,8 @@ fn join_attempts<T>(
 /// except the join, which makes the session when none is live.
 struct HookDaemon<'a> {
     client: &'a Client,
+    /// When the hook must have printed what it took.
+    deadline: Instant,
     git: Option<HookGit>,
     remote: Option<RemoteSession>,
 }
@@ -487,9 +492,11 @@ impl<'a> HookDaemon<'a> {
         input: &HookInput,
         agent: Agent,
         parent_pid: u32,
+        deadline: Instant,
     ) -> HookDaemon<'a> {
         HookDaemon {
             client,
+            deadline,
             git: captures_git(event).then(|| HookGit::new(input.cwd.as_deref())),
             remote: client.remote().map(|r| {
                 RemoteSession::new(r.sessions.clone(), agent.harness(), input, parent_pid)
@@ -553,28 +560,63 @@ impl<'a> HookDaemon<'a> {
     /// For a remote daemon, `text` with each clip it names by reference
     /// fetched (signed, as the hook's session) into
     /// `<home>/remote-cache/clips/` and its `Clip:` line rewritten (spec
-    /// §16); the local daemon's text as it is.
+    /// §16); the local daemon's text as it is. The comments were taken
+    /// already, so a clip never costs them: each distinct clip is fetched
+    /// at once, all within what is left before the hook's deadline less
+    /// [`CLIP_MARGIN`], and one not back by then reads `Clip: unavailable
+    /// (timed out)` ([`clax_core::clips::fetch_within`]).
     fn remote_text(&self, text: String) -> String {
         let (Some(remote), Some(r)) = (self.client.remote(), &self.remote) else {
             return text;
         };
+        let refs = clax_core::clips::references_in(&text);
+        if refs.is_empty() {
+            return clax_core::clips::rewrite_text(&text, &mut |_, _| Err("none".into()));
+        }
         let cred = r.current().ok().flatten();
         let dir = remote.clip_cache();
+        let remote = remote.clone();
+        let fetch: std::sync::Arc<clax_core::clips::Fetch> =
+            std::sync::Arc::new(move |aid: &str, tid: &str, left: Duration| {
+                let client = Client::for_remote(remote.clone())
+                    .agent_channel()
+                    .with_timeout(left)
+                    .with_via(VIA);
+                let mut headers: Vec<(&str, &str)> = Vec::new();
+                if let Some(c) = &cred {
+                    headers.push(("x-clax-session", &c.session));
+                    headers.push((SESSION_SECRET_HEADER, c.secret.expose()));
+                }
+                let (ct, bytes) = client
+                    .get_bytes_with(
+                        &format!("/api/artifacts/{aid}/threads/{tid}/clip"),
+                        &headers,
+                        clax_core::clips::MAX_BYTES,
+                    )
+                    .map_err(|e| {
+                        let timed_out = e.chain().any(|c| {
+                            c.downcast_ref::<reqwest::Error>()
+                                .is_some_and(reqwest::Error::is_timeout)
+                        });
+                        if timed_out {
+                            clax_core::clips::TIMED_OUT.to_string()
+                        } else {
+                            error_code(&format!("{e:#}"))
+                        }
+                    })?;
+                clax_core::clips::check(ct.as_deref(), &bytes)?;
+                clax_core::clips::store(&dir, aid, tid, &bytes)
+                    .map_err(|e| format!("could not be cached: {e}"))
+            });
+        let within = self
+            .deadline
+            .saturating_duration_since(Instant::now())
+            .saturating_sub(CLIP_MARGIN);
+        let got = clax_core::clips::fetch_within(&refs, within, fetch);
         clax_core::clips::rewrite_text(&text, &mut |aid, tid| {
-            let mut headers: Vec<(&str, &str)> = Vec::new();
-            if let Some(c) = &cred {
-                headers.push(("x-clax-session", &c.session));
-                headers.push((SESSION_SECRET_HEADER, c.secret.expose()));
-            }
-            let bytes = self
-                .client
-                .get_bytes_with(
-                    &format!("/api/artifacts/{aid}/threads/{tid}/clip"),
-                    &headers,
-                )
-                .map_err(|e| error_code(&format!("{e:#}")))?;
-            clax_core::clips::store(&dir, aid, tid, &bytes)
-                .map_err(|e| format!("could not be cached: {e}"))
+            got.get(&(aid.to_string(), tid.to_string()))
+                .cloned()
+                .unwrap_or_else(|| Err(clax_core::clips::TIMED_OUT.into()))
         })
     }
 
@@ -683,7 +725,13 @@ pub fn run(_cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     let worker_home = home.clone();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(handle(agent, event, parent_pid, &worker_home));
+        let _ = tx.send(handle(
+            agent,
+            event,
+            parent_pid,
+            &worker_home,
+            started + deadline,
+        ));
     });
     let (out, error) = match rx.recv_timeout(deadline) {
         // Stood down: logged by `handle`, nothing to print or log here.
@@ -905,6 +953,7 @@ fn handle(
     event: Event,
     parent_pid: u32,
     home: &Home,
+    deadline: Instant,
 ) -> anyhow::Result<Option<HookOutput>> {
     let mut stdin = String::new();
     let _ = std::io::stdin().read_to_string(&mut stdin);
@@ -928,7 +977,7 @@ fn handle(
         .agent_channel()
         .with_timeout(budget(agent, event).1)
         .with_via(VIA);
-    let client = HookDaemon::new(&client, event, &input, agent, parent_pid);
+    let client = HookDaemon::new(&client, event, &input, agent, parent_pid, deadline);
     // Codex's `codex queue` finds its app-server socket under CODEX_HOME, which
     // the daemon's own environment may lack.
     let codex_home = std::env::var("CODEX_HOME")
@@ -1096,6 +1145,7 @@ fn ask_worker(agent: Agent, home: &Home, tx: mpsc::Sender<AskMsg>) -> AskMsg {
         &input,
         agent,
         std::os::unix::process::parent_id(),
+        Instant::now() + ASK_SETUP_DEADLINE,
     );
     let daemon = Reporting {
         client: &client,

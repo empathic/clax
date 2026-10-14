@@ -9,8 +9,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { claxExtension } from "../src/clax.ts";
+import { sendRemote } from "../src/client.ts";
 import { repoAndBranch } from "../src/git.ts";
-import { AGENT_HEADERS, canonical, credentialFileName, encodeAgentHeaders, parseClipReference, rewriteClipText } from "../src/remote.ts";
+import { AGENT_HEADERS, canonical, credentialFileName, encodeAgentHeaders, loadRemote, parseClipReference, rewriteClipText } from "../src/remote.ts";
 import { FakePi, fakeContext } from "./fake-api.ts";
 
 let scratch: string;
@@ -18,6 +19,8 @@ beforeAll(() => { scratch = mkdtempSync(join(tmpdir(), "clax-pi-remote-")); });
 afterAll(() => { rmSync(scratch, { recursive: true, force: true }); });
 
 const sha = (b: Buffer | string) => createHash("sha256").update(b).digest("hex");
+/** A clip's bytes: a PNG's signature, then anything. */
+const PNG = Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), Buffer.from("png-bytes")]);
 
 describe("remote mode", () => {
   it("remote mode signs with the same canonical string as Rust", () => {
@@ -148,7 +151,7 @@ describe("remote mode against a daemon of another machine", () => {
         }
         if (req.url === `/api/artifacts/${AID}/threads/${TID}/clip`) {
           res.setHeader("content-type", "image/png");
-          return res.end(Buffer.from("png-bytes"));
+          return res.end(PNG);
         }
         if (req.method === "PATCH") return reply(200, { session: { id: session, harness: "pi", harness_session_id: "pi-remote-1", cwd: "/", pid: null, parent_pid: null, started_at: "", last_seen_at: "", ended_at: "x" } });
         return reply(200, {});
@@ -176,7 +179,7 @@ describe("remote mode against a daemon of another machine", () => {
       // cache, and the agent is handed that file.
       const withClip = await pi.callToolAsPi("clax_list", {}, ctx);
       const cached = join(home, "remote-cache", "clips", `${AID}-${TID}.png`);
-      expect(readFileSync(cached, "utf8")).toBe("png-bytes");
+      expect(readFileSync(cached).equals(PNG)).toBe(true);
       expect(withClip.content.at(-1)!.text).toContain(`\nClip: ${cached}\n`);
       expect(JSON.parse(withClip.content[0]!.text!).feedback[0].clip_path).toBe(cached);
       for (const r of seen) expect(r.signed, r.what).toBe(true);
@@ -225,5 +228,114 @@ describe("withheld content", () => {
       server.closeAllConnections();
       server.close();
     }
+  });
+});
+
+describe("remote clips while feedback is handed over", () => {
+  it("a clip that does not come in time, or is not a PNG, never holds the comments", async () => {
+    const AID = "7q3k9mzx2b4t";
+    const SLOW = "01J9ZZZZZZZZZZZZZZZZZZZZZY";
+    const HTML = "01J9ZZZZZZZZZZZZZZZZZZZZZX";
+    const held: ServerResponse[] = [];
+    let handed = false;
+    const server = createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        const reply = (v: unknown) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify(v)); };
+        if (req.method === "POST" && req.url === "/api/sessions") {
+          return reply({ session: { id: "S1", harness: "pi", harness_session_id: "pi-slow", cwd: "/", pid: null, parent_pid: null, started_at: "", last_seen_at: "", ended_at: null }, session_secret: `cxs_${"b".repeat(43)}` });
+        }
+        if (req.url?.includes("/feedback?tier=wait")) {
+          const text = `[clax] 2 comments sent to you:\nClip: clax-clip:${AID}/${SLOW}\nSam: "FIRST"\n\nClip: clax-clip:${AID}/${HTML}\nSam: "SECOND"`;
+          const once = !handed;
+          handed = true;
+          return reply(once ? { feedback: [{ thread_id: SLOW }, { thread_id: HTML }], answers: [], text, waited_s: 0 } : { feedback: [], answers: [], text: null, waited_s: 0 });
+        }
+        if (req.url === `/api/artifacts/${AID}/threads/${SLOW}/clip`) return void held.push(res);
+        if (req.url === `/api/artifacts/${AID}/threads/${HTML}/clip`) {
+          res.setHeader("content-type", "text/html");
+          return res.end("<html>");
+        }
+        return reply({});
+      });
+    });
+    await new Promise<void>(r => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as { port: number }).port;
+    const { home } = connectedHome(`http://127.0.0.1:${port}`);
+    try {
+      const pi = new FakePi();
+      claxExtension({ home, env: { ...process.env, CLAX_BIN: "/nonexistent" }, clipFetchMs: 200 })(pi.api);
+      const { ctx } = fakeContext(scratch, "pi-slow");
+      const out = await pi.callTool("clax_wait_for_feedback", { timeout_s: 1 }, ctx);
+      const trailing = out.content.at(-1)!.text!;
+      expect(trailing).toContain('Sam: "FIRST"');
+      expect(trailing).toContain('Sam: "SECOND"');
+      expect(trailing).toContain("Clip: unavailable (timed out)");
+      expect(trailing).toContain("Clip: unavailable (not a PNG)");
+    } finally {
+      for (const r of held) r.destroy();
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+});
+
+describe("remote retries", () => {
+  /** A daemon answering each request with `answer(n)` (n from 1). */
+  async function daemonAnswering(answer: (n: number, res: ServerResponse) => void) {
+    let n = 0;
+    const server = createServer((req, res) => { req.resume(); req.on("end", () => answer(++n, res)); });
+    await new Promise<void>(r => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as { port: number }).port;
+    return { url: `http://127.0.0.1:${port}`, count: () => n, close: () => { server.closeAllConnections(); server.close(); } };
+  }
+  const error = (res: ServerResponse, status: number, code: string, date?: string) => {
+    res.statusCode = status;
+    if (date) res.setHeader("date", date);
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ error: { code, message: code } }));
+  };
+
+  it("retries busy and limit_reached three times, after 1, 2 and 4 s with up to a quarter more, then gives up", async () => {
+    for (const [status, code] of [[503, "busy"], [429, "limit_reached"]] as const) {
+      const d = await daemonAnswering((_, res) => error(res, status, code));
+      try {
+        const r = loadRemote(connectedHome(d.url).home)!;
+        const slept: number[] = [];
+        r.sleep = async ms => { slept.push(ms); };
+        const res = await sendRemote(r, "/api/artifacts", { method: "GET" });
+        expect(res.status).toBe(status);
+        expect(d.count()).toBe(4);
+        expect(slept).toHaveLength(3);
+        for (const [i, base] of [1000, 2000, 4000].entries()) {
+          expect(slept[i]).toBeGreaterThanOrEqual(base);
+          expect(slept[i]).toBeLessThanOrEqual(base * 1.25);
+        }
+      } finally {
+        d.close();
+      }
+    }
+  });
+
+  it("retries a stale request once, with the daemon's clock, and only once", async () => {
+    const ahead = new Date(Date.now() + 100_000).toUTCString();
+    const once = await daemonAnswering((n, res) => (n === 1 ? error(res, 401, "stale_request", ahead) : res.end("{}")));
+    const always = await daemonAnswering((_, res) => error(res, 401, "stale_request", ahead));
+    try {
+      const r = loadRemote(connectedHome(once.url).home)!;
+      expect((await sendRemote(r, "/api/artifacts", { method: "GET" })).status).toBe(200);
+      expect(once.count()).toBe(2);
+      expect(Math.abs(r.offset - 100)).toBeLessThanOrEqual(2);
+      const r2 = loadRemote(connectedHome(always.url).home)!;
+      expect((await sendRemote(r2, "/api/artifacts", { method: "GET" })).status).toBe(401);
+      expect(always.count()).toBe(2);
+    } finally {
+      once.close();
+      always.close();
+    }
+  });
+
+  it("counts an agent header's bytes, not its UTF-16 units", () => {
+    expect(encodeAgentHeaders(["é", undefined, undefined, undefined, undefined]).toString()).toBe("+2:é\n-\n-\n-\n-\n");
   });
 });

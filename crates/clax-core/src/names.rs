@@ -74,6 +74,17 @@ pub fn derive(repo: Option<&str>, branch: Option<&str>, harness: &str) -> String
         .unwrap_or_else(|| "agent-session".to_string())
 }
 
+/// Whether `name` is the name derived for a `harness` session from its
+/// harness alone, with no repository (§11): the harness's own (`claude`),
+/// or it numbered (`claude-2`, as [`candidates`] numbers it).
+pub fn named_after_harness(name: &str, harness: &str) -> bool {
+    let base = derive(None, None, harness);
+    name == base
+        || name
+            .strip_prefix(&format!("{base}-"))
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// The candidates for a session's derived name, in order (R3): `base`,
 /// then `<base>-<harness>` (unless `base` is the harness), then
 /// `<base>-2`, `<base>-3`, …; each cut so it fits [`MAX_NAME`].
@@ -330,6 +341,21 @@ mod tests {
         assert_eq!(derive(Some(".hidden"), None, "pi"), "hidden");
         let long = derive(Some(&"ab-".repeat(40)), Some("x"), "claude");
         assert!(is_valid(&long) && long.len() <= MAX_NAME, "{long}");
+    }
+
+    #[test]
+    fn harness_names_are_told_from_repository_names() {
+        for (name, yes) in [
+            ("claude", true),
+            ("claude-2", true),
+            ("claude-12", true),
+            ("claude-", false),
+            ("claude-codex", false),
+            ("web-chart-axis", false),
+            ("web", false),
+        ] {
+            assert_eq!(named_after_harness(name, "claude"), yes, "{name}");
+        }
     }
 
     #[test]
