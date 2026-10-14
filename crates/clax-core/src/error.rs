@@ -64,6 +64,24 @@ pub enum CoreError {
     /// A store job panicked, or the thread that would run it stopped.
     #[error("storage task failed")]
     TaskFailed,
+    /// On a store on one connection ([`crate::Store::open_on`]), a job
+    /// started inside another job on the same thread (`outer` and `inner`
+    /// are `read` or `write`): the connection is busy with the outer one.
+    /// The pool runs a read inside a read and a write inside a read; this
+    /// fails the one call instead of panicking, which on `wasm32` would
+    /// abort the instance.
+    #[error("a store {inner} job started inside a {outer} job on the one connection")]
+    NestedJob {
+        outer: &'static str,
+        inner: &'static str,
+    },
+    /// A synchronous store method on one connection would have had to wait:
+    /// for an artifact's content lock, which another task holds across an
+    /// await, or for content I/O that is not ready when polled. One thread
+    /// cannot wait for either, so the method fails at once; its `async`
+    /// twin waits (see the `store` module's Content).
+    #[error("the store is busy with {what}; retry, or await the async method")]
+    WouldBlock { what: &'static str },
     /// The database's schema (`found`) is newer than this binary knows
     /// (`known`): a newer clax migrated it. Opening it would serve it under
     /// rules that predate it, so the store refuses.

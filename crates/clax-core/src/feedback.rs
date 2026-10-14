@@ -219,8 +219,9 @@ impl Placeholder {
 pub struct LiveRef {
     /// The page's URL with the thread's route.
     pub page_url: String,
-    /// The snapshot's `index.html` on disk.
-    pub snapshot_path: String,
+    /// The snapshot's `index.html` on disk, when the store keeps versions
+    /// in files on this machine.
+    pub snapshot_path: Option<String>,
 }
 
 /// A batch send (several threads sent together): its ID, how many threads it
@@ -392,7 +393,10 @@ pub fn render_item(i: &FeedbackItem) -> String {
             url = i.url,
             tid = i.thread_id,
             v = i.version,
-            snapshot = one_line(&l.snapshot_path),
+            snapshot = match &l.snapshot_path {
+                Some(path) => one_line(path),
+                None => format!("v{} in the Clax view (no file on this machine)", i.version),
+            },
             author = display_name(&i.author),
             by_page = if i.via_page {
                 " (written by the page)"
@@ -585,7 +589,7 @@ mod tests {
         i.anchor.as_mut().unwrap().route = Some("?tab=billing".into());
         i.live = Some(LiveRef {
             page_url: "http://localhost:5173/settings?tab=billing\u{2028}x".into(),
-            snapshot_path: "/h/.clax/artifacts/a/versions/3/index.html".into(),
+            snapshot_path: Some("/h/.clax/artifacts/a/versions/3/index.html".into()),
         });
         let out = render_item(&i);
         assert!(out.contains(

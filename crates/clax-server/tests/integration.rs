@@ -47,6 +47,8 @@ mod api_gateway;
 mod api_grants;
 #[cfg(any(not(clax_split), clax_split = "api_host"))]
 mod api_host;
+#[cfg(any(not(clax_split), clax_split = "api_hosted_content"))]
+mod api_hosted_content;
 #[cfg(any(not(clax_split), clax_split = "api_inbox"))]
 mod api_inbox;
 #[cfg(any(not(clax_split), clax_split = "api_live"))]

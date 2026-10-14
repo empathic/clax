@@ -2,7 +2,7 @@
 
 use super::Store;
 use clax_core::audit::{AuditCtx, AuditKind, AuditRecord, sha256_hex};
-use clax_core::content::{AssetKey, wait};
+use clax_core::content::AssetKey;
 use clax_core::model::Asset;
 use clax_core::{ArtifactId, CoreError, Result, new_ulid};
 use rusqlite::{OptionalExtension, Row, params};
@@ -30,7 +30,15 @@ pub(super) fn read_dir_or_empty(dir: &std::path::Path) -> Result<Vec<PathBuf>> {
         Ok(rd) => Ok(rd
             .map(|e| e.map(|e| e.path()))
             .collect::<std::io::Result<Vec<_>>>()?),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        // Unsupported: a target with no filesystem (wasm32) has no files.
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::Unsupported
+            ) =>
+        {
+            Ok(Vec::new())
+        }
         Err(e) => Err(e.into()),
     }
 }
@@ -140,7 +148,7 @@ impl Store {
         person: Option<&str>,
         via_page: bool,
     ) -> Result<Asset> {
-        wait(self.add_asset_async(ctx, id, content_type, bytes, person, via_page))
+        self.block_on(self.add_asset_async(ctx, id, content_type, bytes, person, via_page))
     }
 
     /// [`Store::add_asset_by`], awaiting its content store.
@@ -226,7 +234,7 @@ impl Store {
     /// `Corrupt` for a row whose artifact ID is not valid, and database or
     /// content errors.
     pub fn read_asset(&self, asset_id: &str) -> Result<Option<(Asset, Vec<u8>)>> {
-        wait(self.read_asset_async(asset_id))
+        self.block_on(self.read_asset_async(asset_id))
     }
 
     /// [`Store::read_asset`], awaiting its content store.
@@ -234,12 +242,26 @@ impl Store {
         let Some(asset) = self.get_asset(asset_id)? else {
             return Ok(None);
         };
-        let key = AssetKey::of(&asset)?;
         Ok(self
-            .content
-            .read_asset(&key)
+            .asset_bytes_async(&asset)
             .await?
             .map(|bytes| (asset, bytes)))
+    }
+
+    /// The bytes of `asset`, a row read with [`Store::get_asset`], from the
+    /// content store; `None` when they are missing. For a caller that
+    /// checks the row before reading its bytes.
+    ///
+    /// # Errors
+    /// `Corrupt` for a row whose artifact ID is not valid, and content
+    /// errors.
+    pub fn asset_bytes(&self, asset: &Asset) -> Result<Option<Vec<u8>>> {
+        self.block_on(self.asset_bytes_async(asset))
+    }
+
+    /// [`Store::asset_bytes`], awaiting its content store.
+    pub async fn asset_bytes_async(&self, asset: &Asset) -> Result<Option<Vec<u8>>> {
+        self.content.read_asset(&AssetKey::of(asset)?).await
     }
 
     /// Lists the assets of artifact `id`, ordered by `created_at` then ID.
@@ -268,7 +290,7 @@ impl Store {
     /// # Errors
     /// `NotFound` when no such asset exists, and I/O or database errors otherwise.
     pub fn delete_asset(&self, ctx: &AuditCtx, asset_id: &str) -> Result<()> {
-        wait(self.delete_asset_async(ctx, asset_id))
+        self.block_on(self.delete_asset_async(ctx, asset_id))
     }
 
     /// [`Store::delete_asset`], awaiting its content store.
@@ -366,12 +388,20 @@ impl Store {
     /// # Errors
     /// I/O or database errors.
     pub fn delete_assets_of_deleted_artifacts(&self) -> Result<usize> {
+        self.block_on(self.delete_assets_of_deleted_artifacts_async())
+    }
+
+    /// [`Store::delete_assets_of_deleted_artifacts`], awaiting its content
+    /// store.
+    pub async fn delete_assets_of_deleted_artifacts_async(&self) -> Result<usize> {
         let mut n = 0;
         for row in self.list_all_asset_rows()? {
             if !row.artifact_deleted {
                 continue;
             }
-            wait(self.content.delete_asset(&AssetKey::of(&row.asset)?))?;
+            self.content
+                .delete_asset(&AssetKey::of(&row.asset)?)
+                .await?;
             self.with_tx(|c| {
                 c.execute(
                     "DELETE FROM page_authors WHERE kind = 'asset' AND id = ?1",
@@ -394,9 +424,17 @@ mod tests {
 
     use crate::test_util::store;
 
+    use crate::test_util::pool_store;
+
     /// Where the home's files keep `a`'s bytes.
     fn path_of(store: &Store, a: &crate::model::Asset) -> std::path::PathBuf {
         crate::content::fs::asset_path(store.home(), &crate::content::AssetKey::of(a).unwrap())
+    }
+
+    /// `a`'s bytes in the store's content store.
+    fn bytes_of(store: &Store, a: &crate::model::Asset) -> Option<Vec<u8>> {
+        let key = crate::content::AssetKey::of(a).unwrap();
+        crate::content::wait(store.content().read_asset(&key)).unwrap()
     }
 
     #[test]
@@ -410,8 +448,7 @@ mod tests {
         assert_eq!(a.size, 3);
         let got = store.get_asset(&a.id).unwrap().unwrap();
         assert_eq!(got, a);
-        let path = path_of(&store, &a);
-        assert_eq!(std::fs::read(&path).unwrap(), vec![1, 2, 3]);
+        assert_eq!(bytes_of(&store, &a).unwrap(), vec![1, 2, 3]);
         assert_eq!(
             store.read_asset(&a.id).unwrap().unwrap(),
             (a.clone(), vec![1, 2, 3])
@@ -419,7 +456,7 @@ mod tests {
         assert_eq!(store.list_assets(&id).unwrap().len(), 1);
         store.delete_asset(DAEMON, &a.id).unwrap();
         assert!(store.get_asset(&a.id).unwrap().is_none());
-        assert!(!path.exists());
+        assert_eq!(bytes_of(&store, &a), None);
         assert!(matches!(
             store.delete_asset(DAEMON, &a.id),
             Err(CoreError::NotFound)
@@ -478,7 +515,8 @@ mod tests {
 
     #[test]
     fn exact_cap_is_accepted_and_no_temp_file_remains() {
-        let (_d, store) = store();
+        // The home's files, which an upload writes through a temporary one.
+        let (_d, store) = pool_store();
         let id = store.insert_artifact_for_test("A", "2026-01-01T00:00:00.000Z");
         let bytes = vec![0u8; super::MAX_ASSET_BYTES as usize];
         store.add_asset(DAEMON, &id, "image/png", &bytes).unwrap();
@@ -494,7 +532,7 @@ mod tests {
 
     #[test]
     fn failed_insert_leaves_no_file_behind() {
-        let (_d, store) = store();
+        let (_d, store) = pool_store();
         let id = store.insert_artifact_for_test("A", "2026-01-01T00:00:00.000Z");
         store
             .with_write(|c| Ok(c.execute_batch("DROP TABLE assets")?))
@@ -516,8 +554,8 @@ mod tests {
         let (_d, store) = store();
         let id = store.insert_artifact_for_test("A", "2026-01-01T00:00:00.000Z");
         let a = store.add_asset(DAEMON, &id, "image/png", &[1]).unwrap();
-        let path = path_of(&store, &a);
-        std::fs::remove_file(&path).unwrap();
+        let key = crate::content::AssetKey::of(&a).unwrap();
+        crate::content::wait(store.content().delete_asset(&key)).unwrap();
         assert!(store.read_asset(&a.id).unwrap().is_none());
         store.delete_asset(DAEMON, &a.id).unwrap();
         assert!(store.get_asset(&a.id).unwrap().is_none());
@@ -525,7 +563,8 @@ mod tests {
 
     #[test]
     fn all_rows_report_owner_state_and_path() {
-        let (_d, store) = store();
+        // `AssetRow::path` names the home's files.
+        let (_d, store) = pool_store();
         let live = store.insert_artifact_for_test("A", "2026-01-01T00:00:00.000Z");
         let gone = store.insert_artifact_for_test("B", "2026-01-01T00:00:00.000Z");
         let a = store.add_asset(DAEMON, &live, "image/png", &[1]).unwrap();
@@ -543,7 +582,7 @@ mod tests {
 
     #[test]
     fn stray_temp_files_are_listed() {
-        let (_d, store) = store();
+        let (_d, store) = pool_store();
         let id = store.insert_artifact_for_test("A", "2026-01-01T00:00:00.000Z");
         assert!(store.stray_asset_temp_files().unwrap().is_empty());
         let a = store.add_asset(DAEMON, &id, "image/png", &[1]).unwrap();
@@ -560,13 +599,12 @@ mod tests {
         let gone = store.insert_artifact_for_test("B", "2026-01-01T00:00:00.000Z");
         let keep = store.add_asset(DAEMON, &live, "image/png", &[1]).unwrap();
         let drop_row = store.add_asset(DAEMON, &gone, "image/png", &[2]).unwrap();
-        let drop_path = path_of(&store, &drop_row);
         store.delete_artifact(DAEMON, &gone).unwrap();
-        // Simulate a directory removal that failed: the file is still there.
-        std::fs::create_dir_all(drop_path.parent().unwrap()).unwrap();
-        std::fs::write(&drop_path, b"x").unwrap();
+        // Simulate a content removal that failed: the bytes are still there.
+        let key = crate::content::AssetKey::of(&drop_row).unwrap();
+        crate::content::wait(store.content().put_asset(&key, b"x")).unwrap();
         assert_eq!(store.delete_assets_of_deleted_artifacts().unwrap(), 1);
-        assert!(!drop_path.exists());
+        assert_eq!(bytes_of(&store, &drop_row), None);
         assert!(store.get_asset(&drop_row.id).unwrap().is_none());
         assert!(store.get_asset(&keep.id).unwrap().is_some());
         assert_eq!(store.delete_assets_of_deleted_artifacts().unwrap(), 0);

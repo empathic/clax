@@ -4,7 +4,7 @@ use super::Store;
 use super::changelog::{fill_addresses, link_version};
 use super::live::{LivePage, live_page_of_conn};
 use clax_core::audit::{AuditCtx, AuditKind, AuditRecord, content_manifest_sha256, sha256_hex};
-use clax_core::content::{NewFile, VersionMeta, VersionWrite, wait};
+use clax_core::content::{NewFile, VersionMeta, VersionWrite};
 use clax_core::live::KIND_LIVE;
 use clax_core::model::ARTIFACT_TEXT_FIELDS;
 use clax_core::model::{
@@ -349,14 +349,14 @@ impl Store {
     /// # Errors
     /// `NotFound` when the artifact does not exist or is already deleted.
     pub fn delete_artifact(&self, ctx: &AuditCtx, id: &ArtifactId) -> Result<()> {
-        wait(self.delete_artifact_async(ctx, id))
+        self.block_on(self.delete_artifact_async(ctx, id))
     }
 
     /// [`Store::delete_artifact`], awaiting its content store: the mark's
     /// transaction commits, then the artifact's content is removed (a
     /// failure there is logged, and leaves only unreferenced content).
     pub async fn delete_artifact_async(&self, ctx: &AuditCtx, id: &ArtifactId) -> Result<()> {
-        let _lock = self.lock_content(id).await;
+        let _lock = self.lock_content(id).await?;
         self.with_tx(|tx| {
             let now = self.now();
             let Some((title, current)) = tx
@@ -551,9 +551,22 @@ impl Store {
     /// # Errors
     /// Database errors, and I/O errors other than a missing directory.
     pub fn delete_zero_version_artifacts(&self) -> Result<usize> {
+        self.block_on(self.delete_zero_version_artifacts_async())
+    }
+
+    /// [`Store::delete_zero_version_artifacts`], awaiting its content
+    /// store. Each artifact's rows go under its content lock, so a version
+    /// 1 being written meanwhile is either recorded first (and the
+    /// artifact kept) or never recorded.
+    pub async fn delete_zero_version_artifacts_async(&self) -> Result<usize> {
         let ids = self.zero_version_artifacts()?;
         let mut n = 0;
         for id in ids {
+            let aid = ArtifactId::parse(&id).ok();
+            let _lock = match &aid {
+                Some(aid) => Some(self.lock_content(aid).await?),
+                None => None,
+            };
             let removed = self.with_tx(|tx| {
                 let zero = "SELECT id FROM artifacts WHERE id = ?1 AND current_version = 0 AND deleted_at IS NULL";
                 // A raise naming it goes with it (spec §14).
@@ -578,8 +591,8 @@ impl Store {
             })?;
             if removed > 0 {
                 n += 1;
-                if let Ok(aid) = ArtifactId::parse(&id) {
-                    wait(self.content.delete_artifact(&aid))?;
+                if let Some(aid) = &aid {
+                    self.content.delete_artifact(aid).await?;
                 }
             }
         }
@@ -943,7 +956,7 @@ impl Store {
         p: ValidatedPublish,
         session_id: Option<&str>,
     ) -> Result<(Artifact, Version)> {
-        wait(self.create_artifact_async(ctx, p, session_id))
+        self.block_on(self.create_artifact_async(ctx, p, session_id))
     }
 
     /// [`Store::create_artifact`], awaiting its content store.
@@ -998,7 +1011,7 @@ impl Store {
         p: ValidatedPublish,
         session_id: Option<&str>,
     ) -> Result<(Artifact, Version)> {
-        wait(self.publish_version_async(ctx, id, p, session_id))
+        self.block_on(self.publish_version_async(ctx, id, p, session_id))
     }
 
     /// [`Store::publish_version`], awaiting its content store.
@@ -1062,6 +1075,7 @@ impl Store {
     /// `then` runs in the version's transaction once the version row and
     /// its links are written, with the new version's number; an error from
     /// `then` rolls the version back.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn write_version_then<T>(
         &self,
@@ -1073,7 +1087,7 @@ impl Store {
         session_id: Option<&str>,
         then: impl FnOnce(&rusqlite::Transaction<'_>, u32) -> Result<T>,
     ) -> Result<(Artifact, Version, T)> {
-        wait(self.write_version_then_async(ctx, id, expected, p, prev, session_id, then))
+        self.block_on(self.write_version_then_async(ctx, id, expected, p, prev, session_id, then))
     }
 
     /// [`Store::write_version_then`], awaiting its content store.
@@ -1097,7 +1111,7 @@ impl Store {
         let carried_paths: Vec<String> = carried.iter().map(|p| (*p).clone()).collect();
         check_collisions(carried.iter().copied().chain(put_paths(p)))?;
 
-        let _lock = self.lock_content(id).await;
+        let _lock = self.lock_content(id).await?;
         if let Some(current) = self.current_version_of(id)?
             && current != expected
         {
@@ -1380,7 +1394,7 @@ impl Store {
         n: u32,
         path: &str,
     ) -> Result<Option<(Vec<u8>, FileMeta)>> {
-        wait(self.read_file_async(id, n, path))
+        self.block_on(self.read_file_async(id, n, path))
     }
 
     /// [`Store::read_file`], awaiting its content store.
@@ -1610,12 +1624,14 @@ mod tests {
     fn delete_hides_from_get_and_list_and_removes_dir() {
         let (_d, store) = store();
         let id = store.insert_artifact_for_test("A", "2026-01-01T00:00:00.000Z");
-        let dir = store.home().artifact_dir(&id);
-        std::fs::create_dir_all(&dir).unwrap();
+        crate::content::wait(store.content().put_clip(&id, "t1", b"png")).unwrap();
         store.delete_artifact(DAEMON, &id).unwrap();
         assert!(store.get_artifact(&id).unwrap().is_none());
         assert!(store.list_artifacts().unwrap().is_empty());
-        assert!(!dir.exists());
+        assert_eq!(
+            crate::test_util::content_clip(&store, &id, "t1"),
+            None
+        );
         assert!(matches!(
             store.delete_artifact(DAEMON, &id),
             Err(clax_core::CoreError::NotFound)
@@ -1694,15 +1710,9 @@ mod tests {
         assert_eq!(v.n, 1);
         assert_eq!(v.files["index.html"].size, 5);
         let id = clax_core::ArtifactId::parse(&a.id).unwrap();
-        let vdir = store.home().version_dir(&id, 1);
-        assert_eq!(
-            std::fs::read_to_string(vdir.join("index.html")).unwrap(),
-            "<p>hi"
-        );
-        assert_eq!(
-            std::fs::read_to_string(vdir.join("files/app.js")).unwrap(),
-            "1"
-        );
+        let file = |p| crate::test_util::content_file(&store, &id, 1, p);
+        assert_eq!(file("index.html").unwrap(), b"<p>hi");
+        assert_eq!(file("app.js").unwrap(), b"1");
         let (bytes, meta) = store.read_file(&id, 1, "app.js").unwrap().unwrap();
         assert_eq!(bytes, b"1");
         assert_eq!(meta.content_type, "text/javascript");
@@ -1749,12 +1759,9 @@ mod tests {
             v2.files.keys().cloned().collect::<Vec<_>>(),
             vec!["a.js", "c.txt", "index.html"]
         );
-        let vdir = store.home().version_dir(&id, 2);
-        assert_eq!(
-            std::fs::read_to_string(vdir.join("files/a.js")).unwrap(),
-            "a"
-        );
-        assert!(!vdir.join("files/b.css").exists());
+        let file = |p| crate::test_util::content_file(&store, &id, 2, p);
+        assert_eq!(file("a.js").unwrap(), b"a");
+        assert_eq!(file("b.css"), None);
         assert_eq!(
             store
                 .list_versions(&id)
@@ -1809,8 +1816,25 @@ mod tests {
         let id = clax_core::ArtifactId::parse(&a.id).unwrap();
         // The carried file's hash comes from version 1's record, not from
         // re-reading its bytes.
-        let v1_app = store.home().version_dir(&id, 1).join("files/app.js");
-        std::fs::write(&v1_app, "changed on disk").unwrap();
+        let c = store.content();
+        crate::content::wait(c.remove_version(&id, 1)).unwrap();
+        let changed = crate::content::VersionWrite {
+            carry: Vec::new(),
+            put: vec![
+                crate::content::NewFile {
+                    path: "index.html",
+                    bytes: b"v1",
+                    content_type: "text/html",
+                },
+                crate::content::NewFile {
+                    path: "app.js",
+                    bytes: b"changed in the content store",
+                    content_type: "text/javascript",
+                },
+            ],
+            meta: crate::content::VersionMeta::default(),
+        };
+        crate::content::wait(c.write_version(&id, 1, &changed)).unwrap();
         let (_, v2) = store
             .publish_version(
                 DAEMON,
@@ -1835,7 +1859,7 @@ mod tests {
                      WHERE artifact_id = ?1 AND n = 2",
                     params![
                         id.as_str(),
-                        r#"{"app.js":{"content_type":"text/javascript","size":15},"index.html":{"content_type":"text/html","size":2}}"#
+                        r#"{"app.js":{"content_type":"text/javascript","size":28},"index.html":{"content_type":"text/html","size":2}}"#
                     ],
                 )?;
                 Ok(())
@@ -1851,7 +1875,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             v3.files["app.js"].sha256.as_deref(),
-            Some(clax_core::audit::sha256_hex(b"changed on disk").as_str())
+            Some(clax_core::audit::sha256_hex(b"changed in the content store").as_str())
         );
         assert_eq!(
             v3.content_sha256,
@@ -2154,7 +2178,8 @@ mod tests {
 
     #[test]
     fn a_stray_version_directory_refuses_the_publish_and_records_nothing() {
-        let (_d, store) = store();
+        // The home's files: a stray directory is theirs.
+        let (_d, store) = crate::test_util::pool_store();
         let (a, _) = store
             .create_artifact(DAEMON, publish(&[("index.html", Some("v1"))], None), None)
             .unwrap();
@@ -2192,7 +2217,9 @@ mod tests {
         let e = store
             .write_version_then(DAEMON, &id, 1, &p, &v1.files, None, |_, n| {
                 // The content is written by the time the transaction runs.
-                assert!(store.home().version_dir(&id, n).join("index.html").exists());
+                assert!(crate::test_util::content_version_exists(
+                    &store, &id, n
+                ));
                 Err::<(), _>(crate::CoreError::invalid("refused", "refused"))
             })
             .unwrap_err();
@@ -2203,7 +2230,9 @@ mod tests {
                 ..
             }
         ));
-        assert!(!store.home().version_dir(&id, 2).exists());
+        assert!(!crate::test_util::content_version_exists(
+            &store, &id, 2
+        ));
         assert_eq!(store.events_after(seq, 100).unwrap(), vec![]);
         // Nothing left blocks the next publish of version 2.
         store.publish_version(DAEMON, &id, p, None).unwrap();

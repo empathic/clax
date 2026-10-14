@@ -60,7 +60,7 @@ impl LiveIds {
         Ok(ids)
     }
 
-    /// [`Store::ensure_live_page_linking`] (a version it writes links the
+    /// [`Store::ensure_live_page_linking_async`] (a version it writes links the
     /// threads of `pending` still pending on the page), recording the page
     /// in this set before anything announces it; the store records the
     /// changes under `ctx`. Every server path that finds or creates a
@@ -68,7 +68,7 @@ impl LiveIds {
     ///
     /// # Errors
     /// The store's.
-    pub fn ensure_page(
+    pub async fn ensure_page(
         &self,
         st: &Store,
         ctx: &AuditCtx,
@@ -77,7 +77,9 @@ impl LiveIds {
         snapshot: Option<&[u8]>,
         pending: &[String],
     ) -> clax_core::Result<EnsuredPage> {
-        let e = st.ensure_live_page_linking(ctx, key, title, snapshot, pending)?;
+        let e = st
+            .ensure_live_page_linking_async(ctx, key, title, snapshot, pending)
+            .await?;
         self.insert(&e.artifact.id, &e.origin);
         Ok(e)
     }
@@ -314,9 +316,15 @@ mod store_tests {
         let dir = tempfile::tempdir().unwrap();
         let st = Store::open(&Home::at(dir.path().join("ax"))).unwrap();
         let ids = LiveIds::default();
-        let e = ids
-            .ensure_page(&st, &AuditCtx::DAEMON, &key("/"), "t", Some(b"<p>"), &[])
-            .unwrap();
+        let e = clax_core::content::wait(ids.ensure_page(
+            &st,
+            &AuditCtx::DAEMON,
+            &key("/"),
+            "t",
+            Some(b"<p>"),
+            &[],
+        ))
+        .unwrap();
         assert!(ids.contains(&e.artifact.id));
     }
 }

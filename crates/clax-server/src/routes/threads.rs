@@ -348,7 +348,8 @@ pub async fn clip(
     let id = parse_id(&aid)?;
     let vf = VisFor::of(&a.caller, &s);
     let bytes = s
-        .store_call(move |st| {
+        .store_call_async(move |st| async move {
+            let st = &*st;
             let vis = vf.build(st)?;
             let t = thread_of(st, &id, &tid)?;
             if !t.has_clip {
@@ -357,7 +358,10 @@ pub async fn clip(
             if let Some(authors) = vis.filter_clip(st, &t)? {
                 return Ok(Err(authors));
             }
-            Ok(Ok(std::fs::read(st.home().clip_path(&id, &t.id))?))
+            Ok(Ok(st
+                .read_clip_async(&id, &t.id)
+                .await?
+                .ok_or(CoreError::NotFound)?))
         })
         .await?;
     let bytes = match bytes {
@@ -523,7 +527,7 @@ pub(crate) fn resolve_named(
 /// `@agent` or a live agent's `@name` (unless the page wrote it), publishes
 /// the `thread` event, and returns the thread and the `@name`s that reached
 /// no agent. Both are recorded under `audit`.
-pub(crate) fn create_thread_now(
+pub(crate) async fn create_thread_now(
     st: &Store,
     ctx: &clax_realtime::feedback::FeedbackCtx,
     audit: &AuditCtx,
@@ -534,7 +538,7 @@ pub(crate) fn create_thread_now(
 ) -> clax_core::Result<(Thread, Vec<String>)> {
     let mention = !t.via_page && mentions_agent(&t.body);
     let named = (!t.via_page).then(|| t.body.clone());
-    let thread = st.create_thread_hiding(audit, id, t, hidden)?;
+    let thread = st.create_thread_hiding_async(audit, id, t, hidden).await?;
     announce_new_thread(st, ctx, audit, thread, mention, named.as_deref(), live_page)
 }
 
@@ -726,7 +730,8 @@ pub async fn create(
     let live_page = s.live_ids.contains(id.as_str());
     let vf = VisFor::of(&a.caller, &s);
     let (view, unresolved) = s
-        .store_call(move |st| {
+        .store_call_async(move |st| async move {
+            let st = &*st;
             let vis = vf.build(st)?;
             let audit = audit.resolve(st)?;
             let (author_name, author_public_id) = author(st, &who)?;
@@ -764,7 +769,8 @@ pub async fn create(
                 },
                 live_page,
                 &hidden,
-            )?;
+            )
+            .await?;
             let view = vis.filter_thread(st, &thread, ctx.codex_push(), with_path)?;
             Ok((view, unresolved))
         })
@@ -1511,7 +1517,8 @@ pub async fn delete(
     let (session, grant) = acting(&a.caller);
     let ctx = s.feedback_ctx();
     let o = s
-        .store_call(move |st| {
+        .store_call_async(move |st| async move {
+            let st = &*st;
             let t = thread_of(st, &id, &tid)?;
             if agent {
                 agent_session(st, &session, grant.as_deref())?;
@@ -1520,7 +1527,7 @@ pub async fn delete(
                 }
             }
             let audit = audit.resolve(st)?;
-            let (_, touched) = st.delete_thread_touched(&audit, &tid)?;
+            let (_, touched) = st.delete_thread_touched_async(&audit, &tid).await?;
             let changed = ctx
                 .working
                 .thread_gone(id.as_str(), &tid, StopReason::Deleted);

@@ -114,11 +114,21 @@
 //! `wasm32` as well). Natively its futures are `Send`; on `wasm32` they need
 //! not be, since a Worker's JavaScript futures are `!Send` and run on one
 //! thread, and an implementation there keeps its JavaScript bindings in a
-//! `SendWrapper` (as the Worker keeps its page store). The store's synchronous entry points
-//! (every caller today) drive the futures with [`wait`], which suits an
+//! `SendWrapper` (as the Worker keeps its page store). The store's
+//! synchronous entry points drive the futures themselves, which suits an
 //! implementation whose futures do their work when first polled, as the
 //! filesystem's and the in-memory one do; an implementation that needs an
-//! executor is driven through the store's `async` methods instead.
+//! executor is driven through the store's `async` methods instead (see the
+//! `store` module's Content for what a synchronous method does when it would
+//! wait).
+//!
+//! # Clips
+//!
+//! A thread's clip image (the screenshot taken with its first comment)
+//! belongs to its artifact, like an asset: not versioned, removed with the
+//! artifact. By default a backend keeps it as an asset ([`clip_key`]);
+//! [`fs::FsContent`] keeps it at `artifacts/<id>/clips/<thread>.png`, where
+//! every home has it.
 
 pub mod fs;
 pub mod memory;
@@ -287,6 +297,63 @@ pub trait ContentStore: Send + Sync {
 
     /// Removes asset `key`. Succeeds when it is not there.
     async fn delete_asset(&self, key: &AssetKey) -> Result<()>;
+
+    /// Stores `bytes` as the clip image of thread `thread` of `id`,
+    /// replacing any it had; visible only once they are all written. The
+    /// default keeps it as the asset [`clip_key`] names, so it goes with
+    /// the artifact's other content.
+    async fn put_clip(&self, id: &ArtifactId, thread: &str, bytes: &[u8]) -> Result<()> {
+        self.put_asset(&clip_key(id, thread), bytes).await
+    }
+
+    /// The clip image of thread `thread` of `id`, or `None` when it has
+    /// none.
+    async fn read_clip(&self, id: &ArtifactId, thread: &str) -> Result<Option<Vec<u8>>> {
+        self.read_asset(&clip_key(id, thread)).await
+    }
+
+    /// Removes the clip image of thread `thread` of `id`. Succeeds when it
+    /// is not there.
+    async fn delete_clip(&self, id: &ArtifactId, thread: &str) -> Result<()> {
+        self.delete_asset(&clip_key(id, thread)).await
+    }
+
+    /// Whether this store's I/O completes only when an executor polls it
+    /// (a Durable Object's, whose bindings are JavaScript promises), not
+    /// when first polled as the filesystem's and the in-memory one do
+    /// (`false`, the default). Then the store's synchronous methods fail at
+    /// once with [`crate::CoreError::WouldBlock`], before any I/O or write,
+    /// rather than start work they could not finish, and
+    /// [`crate::Store::call_async`] awaits its jobs on the caller's task.
+    fn needs_executor(&self) -> bool {
+        false
+    }
+
+    /// The file on this machine that holds `path` of version `n` of `id`,
+    /// for an agent on the same machine to open; `None` (the default) when
+    /// the bytes are not kept in files.
+    fn local_file(&self, id: &ArtifactId, n: u32, path: &str) -> Option<std::path::PathBuf> {
+        let _ = (id, n, path);
+        None
+    }
+
+    /// The file on this machine that holds the clip image of thread
+    /// `thread` of `id`, as [`ContentStore::local_file`]; `None` by default.
+    fn local_clip(&self, id: &ArtifactId, thread: &str) -> Option<std::path::PathBuf> {
+        let _ = (id, thread);
+        None
+    }
+}
+
+/// The asset key the default clip methods keep thread `thread`'s clip
+/// image under: `clip-<thread>.png`. Asset IDs are ULIDs, so no asset has
+/// it.
+pub fn clip_key(id: &ArtifactId, thread: &str) -> AssetKey {
+    AssetKey {
+        artifact: id.clone(),
+        id: format!("clip-{thread}"),
+        ext: "png".into(),
+    }
 }
 
 /// The error for a file a version write or copy expected to find.
@@ -325,6 +392,7 @@ pub fn superseded(id: &ArtifactId, n: u32, above: u32) -> crate::CoreError {
 /// so whatever would wake it (a promise, another request holding a lock)
 /// can never run while this one waits, and parking there returns at once.
 pub fn wait<F: Future>(f: F) -> F::Output {
+    let _sync = SyncDriven::enter();
     let mut f = std::pin::pin!(f);
     let waker = std::task::Waker::from(Arc::new(Unpark(std::thread::current())));
     let mut cx = std::task::Context::from_waker(&waker);
@@ -353,6 +421,72 @@ impl std::task::Wake for Unpark {
     }
 }
 
+std::thread_local! {
+    /// How many synchronous store methods ([`crate::Store`]'s `block_on`)
+    /// this thread is inside.
+    static SYNC_DRIVEN: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Marks this thread as running a synchronous store method until dropped.
+pub(crate) struct SyncDriven;
+
+impl SyncDriven {
+    pub(crate) fn enter() -> SyncDriven {
+        SYNC_DRIVEN.with(|n| n.set(n.get() + 1));
+        SyncDriven
+    }
+}
+
+impl Drop for SyncDriven {
+    fn drop(&mut self) {
+        SYNC_DRIVEN.with(|n| n.set(n.get() - 1));
+    }
+}
+
+/// Whether this thread is inside a synchronous store method or [`wait`],
+/// which drive the content store's futures themselves: natively by parking
+/// the thread until they wake it, on `wasm32` only as far as they go
+/// without waiting ([`ready`]). A content store whose I/O needs an
+/// executor (a runtime's reactor, a JavaScript promise) can fail here with
+/// [`crate::CoreError::WouldBlock`] rather than wait for a wake that no
+/// one may deliver; the store's `async` methods, awaited by the caller,
+/// never run with this set.
+pub fn driven_synchronously() -> bool {
+    SYNC_DRIVEN.with(|n| n.get() > 0)
+}
+
+/// Runs `f` on this thread as far as it goes without waiting: its output
+/// when it completes, polling again each time it wakes itself while
+/// polled; `None`, dropping it, as soon as it is pending with no wake
+/// (it waits on something only another task or an executor can make
+/// ready, such as a lock held across an await or a JavaScript promise).
+/// Never parks the thread, so it suits a host with one thread.
+pub fn ready<F: Future>(f: F) -> Option<F::Output> {
+    let mut f = std::pin::pin!(f);
+    let woken = Arc::new(Woken(std::sync::atomic::AtomicBool::new(false)));
+    let waker = std::task::Waker::from(woken.clone());
+    let mut cx = std::task::Context::from_waker(&waker);
+    loop {
+        match f.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(out) => return Some(out),
+            std::task::Poll::Pending => {
+                if !woken.0.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    return None;
+                }
+            }
+        }
+    }
+}
+
+/// Notes that [`ready`]'s future woke itself.
+struct Woken(std::sync::atomic::AtomicBool);
+
+impl std::task::Wake for Woken {
+    fn wake(self: Arc<Self>) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// One lock per artifact, held from a version write's first check of the
 /// current version to the end of the transaction that records it (see
 /// [Ordering](self#ordering)), so a second writer of the same version waits
@@ -362,6 +496,8 @@ impl std::task::Wake for Unpark {
 #[derive(Default)]
 pub struct ArtifactLocks {
     map: Mutex<HashMap<String, Arc<futures_util::lock::Mutex<()>>>>,
+    /// The thread each held lock was taken on.
+    holders: Mutex<HashMap<String, std::thread::ThreadId>>,
 }
 
 /// An artifact's content lock, held until dropped.
@@ -379,11 +515,29 @@ impl ArtifactLocks {
             map.entry(id.as_str().to_string()).or_default().clone()
         };
         let guard = m.lock_owned().await;
+        self.held(id);
         ArtifactLock {
             locks: self,
             key: id.as_str().to_string(),
             guard: Some(guard),
         }
+    }
+
+    /// Notes that this thread now holds the lock of `id`.
+    fn held(&self, id: &ArtifactId) {
+        self.holders
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id.as_str().to_string(), std::thread::current().id());
+    }
+
+    /// Whether the lock of `id` is held, and was taken on this thread.
+    pub fn held_here(&self, id: &ArtifactId) -> bool {
+        self.holders
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id.as_str())
+            .is_some_and(|t| *t == std::thread::current().id())
     }
 
     /// Holds the lock of `id` when no one else does; `None` otherwise.
@@ -397,6 +551,7 @@ impl ArtifactLocks {
             return None;
         };
         drop(map);
+        self.held(id);
         Some(ArtifactLock {
             locks: self,
             key: id.as_str().to_string(),
@@ -425,6 +580,13 @@ impl ArtifactLocks {
 
 impl Drop for ArtifactLock<'_> {
     fn drop(&mut self) {
+        // Before the guard goes, so the next holder is noted after this
+        // one is forgotten.
+        self.locks
+            .holders
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.key);
         self.guard.take();
         let mut map = self.locks.map.lock().unwrap_or_else(|e| e.into_inner());
         // Only the map's own reference left: no holder and no waiter.
@@ -440,6 +602,20 @@ impl Drop for ArtifactLock<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ready_runs_a_future_that_needs_no_waiting_and_gives_up_on_one_that_does() {
+        let locks = ArtifactLocks::default();
+        let id = ArtifactId::generate();
+        assert!(ready(async { 7 }) == Some(7));
+        let held = ready(locks.lock(&id)).expect("a free lock is ready");
+        assert!(locks.held_here(&id));
+        assert!(ready(locks.lock(&id)).is_none(), "a held lock is not");
+        drop(held);
+        assert!(!locks.held_here(&id));
+        assert_eq!(locks.entries(), 0, "the abandoned wait leaves no entry");
+        assert!(ready(locks.lock(&id)).is_some());
+    }
 
     #[test]
     fn a_lock_entry_goes_once_nobody_holds_it() {

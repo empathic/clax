@@ -16,6 +16,7 @@ clax-sample = { path = "../clax-sample" }
 clax-realtime = { path = "../clax-realtime" }
 clax-http = { path = "../clax-http" }
 clax-fake-exe = { path = "../clax-fake-exe" }
+async-trait = "0.1"
 axum.workspace = true
 futures = "0.3"
 reqwest = { workspace = true, features = ["stream"] }

@@ -52,12 +52,45 @@
 //! read transaction under `PRAGMA query_only`, a write in the same
 //! transactions as above, and [`Store::call`] runs its job at once.
 //!
-//! Version files and asset bytes live in the store's [`ContentStore`]
-//! ([`crate::content`]; the home's files unless [`Store::with_content`] or
-//! [`Store::open_on`] gives another), never in a transaction. Version
-//! writes, deletes, and asset writes combine a transaction with content I/O
-//! done outside it, ordered so that a failure on either side leaves no
-//! half-written state (see the content module's Ordering).
+//! # Content
+//!
+//! Version files, asset bytes and thread clip images live in the store's
+//! [`ContentStore`] ([`crate::content`]; the home's files unless
+//! [`Store::with_content`] or [`Store::open_on`] gives another), never in a
+//! transaction. Version writes, deletes, and asset and clip writes combine
+//! a transaction with content I/O done outside it, ordered so that a
+//! failure on either side leaves no half-written state (see the content
+//! module's Ordering). Every method that does content I/O has an `async`
+//! twin (`publish_version_async`, `refile_threads_async`, …) that awaits
+//! the content store and the artifacts' content locks; the synchronous
+//! method runs its twin on the calling thread ([`Store::block_on`]):
+//!
+//! - It never waits for an artifact's content lock that its own thread
+//!   holds (an `async` method holding it across an await, as a Durable
+//!   Object's request does while its content store awaits a promise):
+//!   that wait would never end natively, and on `wasm32` would abort the
+//!   instance. It fails at once with [`CoreError::WouldBlock`] instead. A
+//!   lock another thread holds is waited for, on the pool or on one
+//!   connection shared by threads.
+//! - On `wasm32` it never waits at all: when the twin would (the content
+//!   store's I/O is not ready when polled) it fails with `WouldBlock`.
+//! - On a content store whose I/O needs an executor
+//!   ([`ContentStore::needs_executor`]: a Durable Object's, whose bindings
+//!   are JavaScript promises) it does nothing at all: it fails with
+//!   `WouldBlock` before its first read or write, so it never leaves work
+//!   half done. A host with such a store awaits the `async` twins
+//!   ([`Store::call_async`]).
+//!
+//! Every method takes its content locks before it writes anything, so
+//! with a content store whose I/O completes when polled (the
+//! filesystem's, the in-memory one) a refused lock leaves nothing behind.
+//!
+//! Local tooling for a home on disk reads the home's files whatever the
+//! content store: the audit backfill of a home that predates the audit
+//! (nothing to do for a fresh database, as on a Durable Object), and the
+//! scans `clax doctor` runs ([`Store::stray_version_dirs`],
+//! [`Store::stray_asset_temp_files`], [`assets::AssetRow::path`]); on a
+//! home with no files they find nothing.
 
 pub mod approvals;
 pub mod artifacts;
@@ -321,22 +354,71 @@ impl Store {
         &self.content
     }
 
+    /// Runs `f`, the `async` twin of a synchronous method, on this thread
+    /// (see [Content](self#content)); fails at once with
+    /// [`CoreError::WouldBlock`], running none of it, when the content
+    /// store needs an executor ([`ContentStore::needs_executor`]). While it runs, a content lock this
+    /// thread already holds is refused rather than waited for
+    /// ([`Store::lock_content`]). Natively the thread otherwise waits as
+    /// long as `f` does; on `wasm32`, where nothing else can run while it
+    /// waits, `f` runs only as far as it goes without waiting, failing with
+    /// [`CoreError::WouldBlock`] where it would wait.
+    pub(crate) fn block_on<T>(&self, f: impl std::future::Future<Output = Result<T>>) -> Result<T> {
+        if self.content.needs_executor() {
+            return Err(CoreError::WouldBlock {
+                what: "content I/O that needs an executor; await the async method",
+            });
+        }
+        let _sync = crate::content::SyncDriven::enter();
+        #[cfg(target_arch = "wasm32")]
+        {
+            crate::content::ready(f).unwrap_or(Err(CoreError::WouldBlock {
+                what: "content I/O that is not ready",
+            }))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::content::wait(f)
+    }
+
     /// Waits for, then holds, the content lock of `id`. A worker thread
     /// that has to wait counts as writing meanwhile
     /// ([`exec::WriteLane::waiting`]), since the holder releases the lock
     /// only once its transaction ends.
-    pub(crate) async fn lock_content(&self, id: &crate::ArtifactId) -> ArtifactLock<'_> {
+    ///
+    /// # Errors
+    /// [`CoreError::WouldBlock`], in a synchronous method
+    /// ([`Store::block_on`]), when this thread holds the lock already (an
+    /// `async` method holding it across an await): waiting would never end.
+    pub(crate) async fn lock_content(&self, id: &crate::ArtifactId) -> Result<ArtifactLock<'_>> {
         if let Some(held) = self.content_locks.try_lock(id) {
-            return held;
+            return Ok(held);
         }
+        self.refuse_held_here(&[id])?;
         let _lane = exec::WriteLane::waiting();
-        self.content_locks.lock(id).await
+        Ok(self.content_locks.lock(id).await)
     }
 
     /// [`Store::lock_content`] for every one of `ids`, taken in ID order.
-    pub(crate) async fn lock_contents(&self, ids: &[&crate::ArtifactId]) -> Vec<ArtifactLock<'_>> {
+    pub(crate) async fn lock_contents(
+        &self,
+        ids: &[&crate::ArtifactId],
+    ) -> Result<Vec<ArtifactLock<'_>>> {
+        self.refuse_held_here(ids)?;
         let _lane = exec::WriteLane::waiting();
-        self.content_locks.lock_all(ids).await
+        Ok(self.content_locks.lock_all(ids).await)
+    }
+
+    /// [`CoreError::WouldBlock`] when a synchronous method runs on this
+    /// thread and this thread holds the content lock of any of `ids`.
+    fn refuse_held_here(&self, ids: &[&crate::ArtifactId]) -> Result<()> {
+        if crate::content::driven_synchronously()
+            && ids.iter().any(|id| self.content_locks.held_here(id))
+        {
+            return Err(CoreError::WouldBlock {
+                what: "an artifact's content lock, held across an await on this thread",
+            });
+        }
+        Ok(())
     }
 
     /// First row of `PRAGMA integrity_check`; "ok" when the database is sound.
@@ -600,7 +682,8 @@ pub(crate) mod test_util {
 
     /// A store on a new home, through [`Store::open_on`] on a connection
     /// opened here in `journal_mode=MEMORY` and `locking_mode=EXCLUSIVE`,
-    /// keeping content in the home's files.
+    /// keeping content in memory ([`MemContent`](crate::content::memory::MemContent)),
+    /// as a Durable Object keeps none in files.
     pub fn single_store() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
         let store = open_single(&Home::at(dir.path().join("ax")), Arc::new(SystemClock));
@@ -614,8 +697,25 @@ pub(crate) mod test_util {
         // and the one connection holds the lock for its life.
         conn.execute_batch("PRAGMA journal_mode=MEMORY; PRAGMA locking_mode=EXCLUSIVE;")
             .unwrap();
-        let content = Arc::new(crate::content::fs::FsContent::new(home.clone()));
+        let content = Arc::new(crate::content::memory::MemContent::new());
         Store::open_on(home, conn, clock, content).unwrap()
+    }
+
+    /// The bytes of `path` in version `n` of `id`, read from `st`'s content
+    /// store; `None` when they are not there.
+    pub fn content_file(st: &Store, id: &ArtifactId, n: u32, path: &str) -> Option<Vec<u8>> {
+        crate::content::wait(st.content().read_file(id, n, path)).unwrap()
+    }
+
+    /// Whether version `n` of `id` has any content in `st`'s content store
+    /// (its `index.html`, which every version has).
+    pub fn content_version_exists(st: &Store, id: &ArtifactId, n: u32) -> bool {
+        content_file(st, id, n, crate::publish::INDEX).is_some()
+    }
+
+    /// The clip of thread `tid` of `id` in `st`'s content store.
+    pub fn content_clip(st: &Store, id: &ArtifactId, tid: &str) -> Option<Vec<u8>> {
+        crate::content::wait(st.content().read_clip(id, tid)).unwrap()
     }
 
     /// A one-version artifact titled "Quarterly Review", owned by `session`.
@@ -722,6 +822,265 @@ mod tests {
             .unwrap_or_else(|| panic!("no test result in:\n{stdout}"));
         // The filter matched the store's tests, not nothing.
         assert!(passed > 300, "{passed} passed:\n{stdout}");
+    }
+
+    /// A content store whose version writes wait until `open`, as a
+    /// Durable Object's wait on a JavaScript promise.
+    struct Gated {
+        inner: crate::content::memory::MemContent,
+        open: std::sync::atomic::AtomicBool,
+        waker: std::sync::Mutex<Option<std::task::Waker>>,
+    }
+
+    impl Gated {
+        fn set_open(&self, open: bool) {
+            self.open.store(open, std::sync::atomic::Ordering::SeqCst);
+            if open && let Some(w) = self.waker.lock().unwrap().take() {
+                w.wake();
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::content::ContentStore for Gated {
+        async fn read_file(
+            &self,
+            id: &crate::ArtifactId,
+            n: u32,
+            path: &str,
+        ) -> crate::Result<Option<Vec<u8>>> {
+            self.inner.read_file(id, n, path).await
+        }
+        async fn write_version(
+            &self,
+            id: &crate::ArtifactId,
+            n: u32,
+            write: &crate::content::VersionWrite<'_>,
+        ) -> crate::Result<()> {
+            std::future::poll_fn(|cx| {
+                if self.open.load(std::sync::atomic::Ordering::SeqCst) {
+                    std::task::Poll::Ready(())
+                } else {
+                    *self.waker.lock().unwrap() = Some(cx.waker().clone());
+                    std::task::Poll::Pending
+                }
+            })
+            .await;
+            self.inner.write_version(id, n, write).await
+        }
+        async fn remove_version(&self, id: &crate::ArtifactId, n: u32) -> crate::Result<()> {
+            self.inner.remove_version(id, n).await
+        }
+        async fn delete_artifact(&self, id: &crate::ArtifactId) -> crate::Result<()> {
+            self.inner.delete_artifact(id).await
+        }
+        async fn put_asset(
+            &self,
+            key: &crate::content::AssetKey,
+            bytes: &[u8],
+        ) -> crate::Result<()> {
+            self.inner.put_asset(key, bytes).await
+        }
+        async fn read_asset(
+            &self,
+            key: &crate::content::AssetKey,
+        ) -> crate::Result<Option<Vec<u8>>> {
+            self.inner.read_asset(key).await
+        }
+        async fn delete_asset(&self, key: &crate::content::AssetKey) -> crate::Result<()> {
+            self.inner.delete_asset(key).await
+        }
+    }
+
+    fn next_version(n: u32, html: &str) -> crate::publish::ValidatedPublish {
+        crate::publish::validate(
+            serde_json::from_value(serde_json::json!({
+                "if_version": n,
+                "files": {"index.html": {"content": html, "encoding": "utf8"}}
+            }))
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn would_block<T: std::fmt::Debug>(r: crate::Result<T>) {
+        let e = r.unwrap_err();
+        assert!(matches!(e, crate::CoreError::WouldBlock { .. }), "{e:?}");
+    }
+
+    /// On one connection, a synchronous method never waits for an
+    /// artifact's content lock that an async method holds across an await
+    /// on the same thread (which would deadlock natively and abort on
+    /// wasm32): it fails with `WouldBlock`, changing nothing, and works
+    /// again once the holder is done.
+    #[test]
+    fn a_sync_method_on_one_connection_fails_rather_than_wait_for_a_content_lock() {
+        use std::future::Future;
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        let conn = rusqlite::Connection::open(home.db_path()).unwrap();
+        let gated = Arc::new(Gated {
+            inner: crate::content::memory::MemContent::new(),
+            open: std::sync::atomic::AtomicBool::new(true),
+            waker: std::sync::Mutex::new(None),
+        });
+        let st = Store::open_on(
+            &home,
+            conn,
+            Arc::new(crate::working::SystemClock),
+            gated.clone(),
+        )
+        .unwrap();
+        let aid = artifact(&st, None);
+        gated.set_open(false);
+
+        // An async publish holds the lock, waiting on its content write.
+        let ctx = &AuditCtx::DAEMON;
+        let mut held =
+            std::pin::pin!(st.publish_version_async(ctx, &aid, next_version(1, "<p>2"), None));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(held.as_mut().poll(&mut cx).is_pending());
+
+        would_block(st.publish_version(ctx, &aid, next_version(1, "<p>x"), None));
+        would_block(st.delete_artifact(ctx, &aid));
+        let clipped = NewThread {
+            author_public_id: None,
+            version_n: 1,
+            anchor: anchor(),
+            author_name: "Alex".into(),
+            body: "Tighten this.".into(),
+            clip: Some(b"png".to_vec()),
+            via_page: false,
+        };
+        would_block(st.create_thread(ctx, &aid, clipped));
+        // Reads go on.
+        assert_eq!(st.get_artifact(&aid).unwrap().unwrap().current_version, 1);
+        assert!(
+            st.list_threads(&aid, true, None, 10).unwrap().0.is_empty(),
+            "no thread was made"
+        );
+
+        gated.set_open(true);
+        let (a, _) = crate::content::wait(held).unwrap();
+        assert_eq!(a.current_version, 2);
+        let (a, _) = st
+            .publish_version(ctx, &aid, next_version(2, "<p>3"), None)
+            .unwrap();
+        assert_eq!(a.current_version, 3);
+    }
+
+    /// In-memory content that says it needs an executor.
+    struct NeedsExecutor(crate::content::memory::MemContent);
+
+    #[async_trait::async_trait]
+    impl crate::content::ContentStore for NeedsExecutor {
+        async fn read_file(
+            &self,
+            id: &crate::ArtifactId,
+            n: u32,
+            path: &str,
+        ) -> crate::Result<Option<Vec<u8>>> {
+            self.0.read_file(id, n, path).await
+        }
+        async fn write_version(
+            &self,
+            id: &crate::ArtifactId,
+            n: u32,
+            write: &crate::content::VersionWrite<'_>,
+        ) -> crate::Result<()> {
+            self.0.write_version(id, n, write).await
+        }
+        async fn remove_version(&self, id: &crate::ArtifactId, n: u32) -> crate::Result<()> {
+            self.0.remove_version(id, n).await
+        }
+        async fn delete_artifact(&self, id: &crate::ArtifactId) -> crate::Result<()> {
+            self.0.delete_artifact(id).await
+        }
+        async fn put_asset(
+            &self,
+            key: &crate::content::AssetKey,
+            bytes: &[u8],
+        ) -> crate::Result<()> {
+            self.0.put_asset(key, bytes).await
+        }
+        async fn read_asset(
+            &self,
+            key: &crate::content::AssetKey,
+        ) -> crate::Result<Option<Vec<u8>>> {
+            self.0.read_asset(key).await
+        }
+        async fn delete_asset(&self, key: &crate::content::AssetKey) -> crate::Result<()> {
+            self.0.delete_asset(key).await
+        }
+        fn needs_executor(&self) -> bool {
+            true
+        }
+    }
+
+    /// On a content store that needs an executor, a synchronous method
+    /// does nothing at all: no row (not even an artifact's zero-version
+    /// one) and no content; its `async` twin, awaited, works.
+    #[test]
+    fn a_sync_method_on_a_content_store_that_needs_an_executor_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        let conn = rusqlite::Connection::open(home.db_path()).unwrap();
+        let content = Arc::new(NeedsExecutor(crate::content::memory::MemContent::new()));
+        let st = Store::open_on(
+            &home,
+            conn,
+            Arc::new(crate::working::SystemClock),
+            content.clone(),
+        )
+        .unwrap();
+        let first = || {
+            crate::publish::validate(
+                serde_json::from_value(serde_json::json!({
+                    "title": "T",
+                    "files": {"index.html": {"content": "<p>1", "encoding": "utf8"}}
+                }))
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let ctx = &AuditCtx::DAEMON;
+        would_block(st.create_artifact(ctx, first(), None));
+        assert!(st.list_artifacts().unwrap().is_empty());
+        assert!(content.0.versions().is_empty());
+        let (a, _) = crate::content::wait(st.create_artifact_async(ctx, first(), None)).unwrap();
+        let aid = crate::ArtifactId::parse(&a.id).unwrap();
+        would_block(st.publish_version(ctx, &aid, next_version(1, "<p>2"), None));
+        would_block(st.read_file(&aid, 1, "index.html"));
+        assert_eq!(st.get_artifact(&aid).unwrap().unwrap().current_version, 1);
+        assert_eq!(content.0.versions().len(), 1);
+    }
+
+    /// A content lock another thread holds is waited for by a synchronous
+    /// method on one connection, as on the pool: only this thread's own
+    /// hold is refused.
+    #[test]
+    fn a_sync_method_waits_for_a_content_lock_another_thread_holds() {
+        let (_d, st) = super::test_util::single_store();
+        let aid = artifact(&st, None);
+        let held = crate::content::wait(st.lock_content(&aid)).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let r = st.publish_version(&AuditCtx::DAEMON, &aid, next_version(1, "<p>2"), None);
+                tx.send(r.map(|(a, _)| a.current_version)).unwrap();
+            });
+            assert!(rx.try_recv().is_err(), "waits while the lock is held");
+            // This thread's own synchronous publish would never get it.
+            would_block(st.publish_version(&AuditCtx::DAEMON, &aid, next_version(1, "<p>x"), None));
+            drop(held);
+            let n = rx
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .unwrap()
+                .unwrap();
+            assert_eq!(n, 2);
+        });
     }
 
     #[test]

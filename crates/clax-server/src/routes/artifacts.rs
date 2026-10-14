@@ -325,9 +325,12 @@ pub async fn create(
     let ctx = s.feedback_ctx();
     let vf = VisFor::of(&a.caller, &s);
     let (artifact, version) = s
-        .store_call(move |st| {
+        .store_call_async(move |st| async move {
+            let st = &*st;
             let session = publishing_session(st, &session, grant.as_deref())?;
-            let (artifact, version) = st.create_artifact(&audit, p, session.as_deref())?;
+            let (artifact, version) = st
+                .create_artifact_async(&audit, p, session.as_deref())
+                .await?;
             if let Some(sid) = &session {
                 let aid = ArtifactId::parse(&artifact.id)?;
                 st.ensure_watch(&audit, sid, &aid)?;
@@ -535,8 +538,9 @@ pub async fn delete(
     let working = s.working.clone();
     let live_ids = s.live_ids.clone();
     let drafts = s.drafts.clone();
-    s.store_call(move |st| {
-        st.delete_artifact(&audit, &id)?;
+    s.store_call_async(move |st| async move {
+        let st = &*st;
+        st.delete_artifact_async(&audit, &id).await?;
         // Its drafts go with it; `artifact_deleted` tells the people.
         drafts.end_artifact(id.as_str());
         let gone = working.artifact_gone(id.as_str());
@@ -615,7 +619,8 @@ pub async fn publish(
     let vf = VisFor::of(&a.caller, &s);
     let drafts = s.drafts.clone();
     let (artifact, version) = s
-        .store_call(move |st| {
+        .store_call_async(move |st| async move {
+            let st = &*st;
             let session = publishing_session(st, &session, grant.as_deref())?;
             // Read before the clear below: the threads this session was
             // working on are linked to the new version.
@@ -631,7 +636,9 @@ pub async fn publish(
             {
                 p.hidden = vis.filter_hidden_files(&prev);
             }
-            let (artifact, version) = st.publish_version(&audit, &id, p, session.as_deref())?;
+            let (artifact, version) = st
+                .publish_version_async(&audit, &id, p, session.as_deref())
+                .await?;
             if let Some(sid) = &session {
                 let aid = ArtifactId::parse(&artifact.id)?;
                 st.ensure_watch(&audit, sid, &aid)?;

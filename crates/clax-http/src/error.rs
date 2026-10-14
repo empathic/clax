@@ -188,6 +188,21 @@ impl From<CoreError> for ApiError {
                 "internal",
                 "storage task failed",
             ),
+            // A defect in the store's caller: logged, and answered as any
+            // failed storage task.
+            e @ CoreError::NestedJob { .. } => {
+                tracing::error!(error = %e, "nested store job");
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "storage task failed",
+                )
+            }
+            // Another request holds the artifact's content: a retry can help.
+            e @ CoreError::WouldBlock { .. } => {
+                tracing::warn!(error = %e, "store busy");
+                ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "busy", e.to_string())
+            }
             CoreError::Db(e) => {
                 tracing::error!(error = %e, "db");
                 ApiError::new(

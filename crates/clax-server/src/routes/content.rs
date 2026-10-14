@@ -8,7 +8,6 @@ use axum::extract::rejection::PathRejection;
 use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
-use clax_core::content::wait;
 use clax_core::model::CONTRACT_VERSION;
 use clax_core::model::FileMeta;
 use clax_core::publish::INDEX;
@@ -183,51 +182,72 @@ async fn lookup(
     // A page wrapped concurrently with a debug rebuild may keep the old
     // `?v=`; a debug build serves every bridge URL revalidated, current bytes.
     cache.follow_bridge(&bridge);
-    s.store_call(move |st| {
+    s.store_call_async(move |st| async move {
         let meta = st.file_meta(&id, n, &file)?.ok_or(CoreError::NotFound)?;
-        let read = || -> clax_core::Result<Vec<u8>> {
-            wait(st.content().read_file(&id, n, &file))?.ok_or(CoreError::NotFound)
-        };
         if !always_wrap && !is_html(&meta.content_type) {
-            return Ok(Served::Raw(read()?, meta));
+            return Ok(Served::Raw(read_bytes(&st, &id, n, &file).await?, meta));
         }
         st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
-        let mut unwrapped = None;
-        let wrapped = cache.get_or_wrap(id.as_str(), n, &file, || {
-            let bytes = read().map_err(|e| match e {
-                CoreError::NotFound => std::io::ErrorKind::NotFound.into(),
-                CoreError::Io(e) => e,
-                e => std::io::Error::other(e.to_string()),
-            })?;
-            Ok(match String::from_utf8(bytes) {
-                Ok(page) => Some(wrap_page(
-                    &page,
-                    id.as_str(),
-                    n,
-                    CONTRACT_VERSION,
-                    &file,
-                    &bridge,
+        // Read ahead of the cache, which wraps synchronously; a page it
+        // holds is not read. One evicted between the check and the wrap is
+        // read on the next pass.
+        let mut bytes = None;
+        loop {
+            if bytes.is_none() && !cache.contains(id.as_str(), n, &file) {
+                bytes = Some(read_bytes(&st, &id, n, &file).await?);
+            }
+            let mut unwrapped = None;
+            let wrapped = cache.get_or_wrap(id.as_str(), n, &file, || {
+                let Some(bytes) = bytes.take() else {
+                    return Err(std::io::Error::other(EVICTED));
+                };
+                Ok(match String::from_utf8(bytes) {
+                    Ok(page) => Some(wrap_page(
+                        &page,
+                        id.as_str(),
+                        n,
+                        CONTRACT_VERSION,
+                        &file,
+                        &bridge,
+                    )),
+                    Err(e) => {
+                        unwrapped = Some(e.into_bytes());
+                        None
+                    }
+                })
+            });
+            return match wrapped {
+                Ok(Some(html)) => Ok(Served::Page(html)),
+                Ok(None) => Ok(Served::Raw(
+                    match unwrapped.or(bytes) {
+                        Some(bytes) => bytes,
+                        None => read_bytes(&st, &id, n, &file).await?,
+                    },
+                    meta,
                 )),
-                Err(e) => {
-                    unwrapped = Some(e.into_bytes());
-                    None
-                }
-            })
-        });
-        match wrapped {
-            Ok(Some(html)) => Ok(Served::Page(html)),
-            Ok(None) => Ok(Served::Raw(
-                match unwrapped {
-                    Some(bytes) => bytes,
-                    None => read()?,
-                },
-                meta,
-            )),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(CoreError::NotFound),
-            Err(e) => Err(CoreError::Io(e)),
+                Err(e) if e.to_string() == EVICTED => continue,
+                Err(e) => Err(CoreError::Io(e)),
+            };
         }
     })
     .await
+}
+
+/// The error a wrap answers when the page it expected cached has gone.
+const EVICTED: &str = "evicted while being read";
+
+/// The bytes of `file` in version `n` of `id`, from the store's content
+/// store; `NotFound` when they are missing.
+async fn read_bytes(
+    st: &clax_store::Store,
+    id: &ArtifactId,
+    n: u32,
+    file: &str,
+) -> clax_core::Result<Vec<u8>> {
+    st.content()
+        .read_file(id, n, file)
+        .await?
+        .ok_or(CoreError::NotFound)
 }
 
 /// A supporting file of a version. A `text/html` file in UTF-8 is served like
@@ -313,7 +333,8 @@ pub async fn raw_file(
     let id = parse_id(&aid)?;
     let vf = clax_http::views::thread::VisFor::of(&a.caller, &s);
     let found = s
-        .store_call(move |st| {
+        .store_call_async(move |st| async move {
+            let st = &*st;
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
             let vis = vf.build(st)?;
             if vis.filters() {
@@ -323,7 +344,8 @@ pub async fn raw_file(
                 }
             }
             Ok(Ok(st
-                .read_file(&id, n, &rel)?
+                .read_file_async(&id, n, &rel)
+                .await?
                 .ok_or(CoreError::NotFound)?))
         })
         .await?;

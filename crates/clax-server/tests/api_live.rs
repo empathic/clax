@@ -1082,6 +1082,52 @@ async fn a_live_page_takes_no_asset_uploads() {
 }
 
 #[tokio::test]
+async fn a_live_pages_blob_is_refused_before_its_bytes_are_read() {
+    let mut store = None;
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |s| {
+        store = Some(s.store.clone());
+    })
+    .await;
+    let store = store.unwrap();
+    let (lc, lan) = ts.lan();
+    let v = ts.viewer(Some("Alex")).await;
+    let body: Value = post_thread(&ts, &v.cookie, "http://localhost:5173/", "<p>")
+        .await
+        .json()
+        .await
+        .unwrap();
+    let aid = body["page"]["artifact_id"].as_str().unwrap();
+    let asset = store
+        .add_asset(
+            &AuditCtx::DAEMON,
+            &clax_core::ArtifactId::parse(aid).unwrap(),
+            "image/png",
+            FAKE_PNG,
+        )
+        .unwrap();
+    // A directory in the bytes' place makes any read of them fail.
+    let path = clax_core::content::fs::asset_path(
+        store.home(),
+        &clax_core::content::AssetKey::of(&asset).unwrap(),
+    );
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    let blob = format!("/_blob/{}", asset.id);
+    assert_eq!(
+        ts.get(&blob).await.status(),
+        500,
+        "loopback reads the bytes"
+    );
+    let st = lc
+        .get(format!("{lan}{blob}"))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(st, 404, "the LAN is refused without a read");
+}
+
+#[tokio::test]
 async fn a_live_pages_blobs_and_snapshots_route_are_hidden_from_the_lan() {
     let mut store = None;
     let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |s| {
