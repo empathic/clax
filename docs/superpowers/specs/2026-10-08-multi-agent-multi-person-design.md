@@ -1063,11 +1063,15 @@ cap(E, B, N)                             = E without every action B allows somew
   would cancel every raise at another's artifact, however little it
   turned off. A location-limited narrowing (made outside People, which
   narrows by whole actions) caps by action only: an action it allows at
-  some artifact stays on for a raise elsewhere.
+  some artifact stays on for a raise elsewhere. The owner confirmed this
+  (2026-10-14, "Remove is enough"): a narrowing caps raises only for the
+  actions the person holds; for anything else the person uses Remove, and
+  People's narrowing panel stays as it is.
 - **Both may remove** (the owner's decision, 2026-10-13): the granter, the
   agent's person and the owner each remove an elevation (§7.4); the
-  granter may raise it again. A creator cannot narrow another person's
-  agent.
+  granter may raise it again. The agent's person also removes a raise the
+  owner gave their agent (the owner's answer, 2026-10-14: "Yes"). A
+  creator cannot narrow another person's agent.
 - `⋂ live session.narrow` is every narrowing of the grant's live sessions
   (§6.8): a request naming no session is never wider than any of them.
 - A session's rights are reached only with its secret (§6.8).
@@ -1098,7 +1102,8 @@ cap(E, B, N)                             = E without every action B allows somew
   `invalid_rights`. `DELETE` removes one granter's elevation of that agent
   (`?granter=<public_id>` or `?granter=owner`; the caller's own when
   absent): the granter removes their own, and the agent's person and the
-  owner remove any granter's ("Both may remove", recorded with `reason`
+  owner remove any granter's, the person the owner's raise included ("Both
+  may remove"; "Yes", 2026-10-14; recorded with `reason`
   `removed_by_person` or `removed_by_owner`); it is 404 `not_raised`,
   recording nothing, when that granter has none or the caller may not
   remove it, alike. Both
@@ -2543,3 +2548,7 @@ task, with recommendations; the owner took every recommendation
   action and db level (`cap`), so a narrowing is the last word for its
   agent. O11 and §3.4 state the answers in place of the interpretation
   that a raise was its granter's alone to remove.
+- **Amendment** (2026-10-14, the owner's confirmations): §7.2: a
+  narrowing caps raises only for the actions the person holds, and
+  anything else is taken away with Remove ("Remove is enough"); §7.2,
+  §7.4: the agent's person may remove a raise the owner gave ("Yes").
