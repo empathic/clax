@@ -69,7 +69,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const { artifact } = await publishAs(d.base, d.token, s.id, `Lapse ${mode}`, { "index.html": PAGE });
     await setWorking(d.base, d.token, s.id, artifact.id, { message: "Tidying" });
     await openArtifact(page, d.base, artifact.id, 1, mode);
-    await expect(page.locator(".who .sum b.l1")).toHaveText("pi: Tidying");
+    await expect(page.locator(".who .sum b.l1")).toHaveText(`${s.name}: Tidying`);
     await skewWorking(d.base, d.token, 121);
     await expect(page.locator(".who .sum b.l1")).toHaveText("Nobody working");
   });

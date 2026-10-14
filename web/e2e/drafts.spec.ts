@@ -35,6 +35,8 @@ async function draftFrame(page: Page, aid: string, token = "[A-Za-z0-9_-]{22}"):
 for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: a viewer sees an agent drafting, shows the draft tinted, goes back, and sees it clear on publish`, async ({ page }) => {
     const s = await registerSession(d.base, d.token, "claude", `draft-${mode}`);
+    // The worker's daemon is shared: other live claude sessions make this one claude-<n>.
+    const who = s.name;
     const { artifact } = await publishAs(d.base, d.token, s.id, `Drafts ${mode}`, { "index.html": PAGE, "style.css": CSS });
     await openArtifact(page, d.base, artifact.id, 1, mode);
     await streamLive(page);
@@ -42,10 +44,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(banner).toHaveCount(0);
 
     await putDraft(s.id, artifact.id, DRAFT, "rewording the plan");
-    await expect(banner).toContainText("claude is drafting…");
+    await expect(banner).toContainText(`${who} is drafting…`);
     await expect(banner).toContainText("rewording the plan");
     // Drafting is working: the top bar does not call the agent idle.
-    await expect(page.locator(".who .sum b.l1")).toHaveText("claude working");
+    await expect(page.locator(".who .sum b.l1")).toHaveText(`${who} working`);
     await expect(page.locator(".who .sum")).not.toContainText("idle");
     // A draft never welcomes an unnamed caller: the listing refuses no credential.
     expect((await fetch(`${d.base}/api/artifacts/${artifact.id}/drafts`)).status).toBe(403);
@@ -60,14 +62,14 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect.poll(() => changed.evaluate(el => getComputedStyle(el).outlineColor)).toBe("rgb(47, 111, 42)");
     expect(await f.locator("h1").evaluate(el => getComputedStyle(el).outlineStyle)).toBe("none");
     expect(await f.locator("h1").evaluate(el => getComputedStyle(el).color)).toBe("rgb(10, 20, 30)");
-    await expect(banner).toContainText("Showing claude’s draft over v1 · 1 change highlighted");
+    await expect(banner).toContainText(`Showing ${who}’s draft over v1 · 1 change highlighted`);
     // Comments go on published versions.
     await expect(page.locator(".topbar button.comment")).toBeDisabled();
 
     await banner.getByRole("button", { name: "Back to v1" }).click();
     const v1 = await contentFrame(page, artifact.id, 1);
     await expect(v1.locator("p").first()).toHaveText("Ship the beta");
-    await expect(banner).toContainText("claude is drafting…");
+    await expect(banner).toContainText(`${who} is drafting…`);
     await expect(page.locator(".topbar button.comment")).toBeEnabled();
 
     // A revision while shown is shown at once.
@@ -95,7 +97,7 @@ test("at phone width in dark mode the banner fits and the draft is tinted in the
   await streamLive(page);
   await putDraft(s.id, artifact.id, DRAFT, "rebuilding the quarterly plan with the new numbers");
   const banner = page.locator(".banner.draft");
-  await expect(banner).toContainText("codex is drafting…");
+  await expect(banner).toContainText(`${s.name} is drafting…`);
   const box = (await banner.boundingBox())!;
   expect(box.x).toBeGreaterThanOrEqual(0);
   expect(box.x + box.width).toBeLessThanOrEqual(390);

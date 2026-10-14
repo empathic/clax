@@ -278,6 +278,7 @@ describe("clax Pi extension", () => {
     const pi = new FakePi();
     claxExtension({ home, env: withBin(join(scratch, "no-such-clax")) })(pi.api);
     const { ctx } = fakeContext(scratch, "pi-unreachable");
+    loaded.push({ pi, ctx });
     await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
     const res = await pi.callTool("clax_status", {}, ctx);
     expect(res.isError).toBe(true);
@@ -294,6 +295,7 @@ describe("clax Pi extension", () => {
     const pi = new FakePi();
     claxExtension({ home, env: withBin(join(scratch, "no-such-clax")) })(pi.api);
     const { ctx } = fakeContext(scratch, "pi-late");
+    loaded.push({ pi, ctx });
     await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
     expect((await sessions()).some(s => s.harness_session_id === "pi-late")).toBe(false);
 
@@ -446,6 +448,7 @@ describe("clax Pi extension", () => {
       // The daemon never answers, so session_start returns only by giving up.
       claxExtension({ home: hung.home, env: withBin(join(scratch, "no-such-clax")), startBudgetMs: 50 })(pi.api);
       const { ctx } = fakeContext(scratch, "pi-hung-start");
+      loaded.push({ pi, ctx });
       await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
       expect(hung.seen).toContain("POST /api/sessions");
     } finally {
@@ -460,6 +463,7 @@ describe("clax Pi extension", () => {
         const pi = new FakePi();
         claxExtension({ home: hung.home, env: withBin(join(scratch, "no-such-clax")) })(pi.api);
         const { ctx } = fakeContext(scratch, id, file);
+        loaded.push({ pi, ctx });
         await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
       }
       expect(hung.registrations).toHaveLength(2);
