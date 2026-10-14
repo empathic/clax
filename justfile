@@ -85,9 +85,10 @@ app-clax *ARGS:
 app-test:
     bin="$(apps/clax_app/tool/test-bin.sh)" && cd apps/clax_app && CLAX_TEST_BIN="$bin" tool/check.sh
 
-# Build the macOS clax and run the Clax app's integration tests on macOS
+# Build the macOS clax and run the Clax app's integration tests on macOS, one
+# file per flutter call (a second file in the same call fails to launch)
 app-integration:
-    ./scripts/build-app-clax.sh macos && cd apps/clax_app && flutter test integration_test -d macos
+    ./scripts/build-app-clax.sh macos && cd apps/clax_app && for f in integration_test/*_test.dart; do flutter test "$f" -d macos || exit 1; done
 
 # Build each eval prompt into an app with the in-app agent on a live model, results in target/flutter-app/eval/<run>/ (needs ANTHROPIC_API_KEY; up to $6 a build, refused over --max-spend, $30 by default): [--model ID] [--prompts a,b] [--max-spend USD] [--run NAME]
 [positional-arguments]
