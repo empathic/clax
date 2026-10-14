@@ -48,7 +48,7 @@ fn may_read(
     reads: &clax_http::agent::ReadRights,
     aid: Option<&str>,
 ) -> clax_core::Result<bool> {
-    let Some(aid) = aid.filter(|_| reads.is_person_agent()) else {
+    let Some(aid) = aid.filter(|_| reads.filters()) else {
         return Ok(true);
     };
     let Ok(id) = clax_core::ArtifactId::parse(aid) else {

@@ -20,6 +20,7 @@ pub mod extension;
 pub mod grant_auth;
 pub mod headers;
 pub mod host;
+pub mod hosted;
 pub mod http_cache;
 pub mod identity;
 pub mod limits;

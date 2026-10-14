@@ -75,12 +75,17 @@ pub fn encode_component(s: &str) -> String {
     out
 }
 
-/// Where the frame shows `file` of version `n`, as `pageSrc` in `web/shell/src/origin.ts`.
-pub fn page_src(id: &str, n: u64, origin: Option<&str>, file: &str) -> String {
-    let root = match origin {
+/// Where the frame shows `file` of version `n`, as `pageSrc` in `web/shell/src/origin.ts`:
+/// under `k/<key>/` when the version has a content key (a hosted daemon's,
+/// [`clax_http::hosted::content_key`]).
+pub fn page_src(id: &str, n: u64, origin: Option<&str>, key: Option<&str>, file: &str) -> String {
+    let mut root = match origin {
         Some(o) => format!("{o}/v/{n}/"),
         None => format!("/c/{id}/v/{n}/"),
     };
+    if let Some(k) = key {
+        root = format!("{root}k/{k}/");
+    }
     if file == "index.html" {
         return root;
     }
@@ -158,19 +163,26 @@ fn without_sessions(artifact: Value, versions: Value) -> Value {
 /// from `GET /api/artifacts/<id>` (less its session IDs),
 /// `GET /api/artifacts/<id>/threads?include_resolved=true` without the token
 /// (no `clip_path`), and `GET /api/viewers/me` for the request's existing
-/// viewer (the owner's for the owner cookie, see [`clax_http::identity`]): never
+/// viewer (the owner's for the owner cookie or a hosted session of the
+/// owner's, see [`clax_http::identity`]): never
 /// the token or a cookie, and no viewer is created (but the owner's row,
 /// made on first use).
 pub async fn assemble(
     s: &AppState,
     route: ShellRoute,
     headers: &HeaderMap,
-    peer: Option<std::net::SocketAddr>,
+    extensions: &axum::http::Extensions,
 ) -> Result<Option<Injected>, ApiError> {
     let ShellRoute::Artifact { id, version, file } = route else {
         return Ok(None);
     };
-    let who = clax_http::identity::Identity::of(headers, &s.token, peer);
+    let who =
+        clax_http::identity::Identity::of(headers, &s.token, clax_http::identity::peer_of(extensions));
+    // A hosted daemon's browser is the viewer its session signs in as.
+    let who = match extensions.get::<clax_http::hosted::HostedRequest>() {
+        Some(h) => h.identity(who),
+        None => who,
+    };
     let owner_browser = who.is_owner();
     let codex = s.feedback_ctx().codex_push();
     let lookup = id.clone();
@@ -231,7 +243,11 @@ pub async fn assemble(
         .is_some_and(|v| file == "index.html" || v.files.contains_key(&file));
     let (frame, frame_json) = match frame_origin(headers, id.as_str()) {
         Some(origin) if holds => {
-            let src = page_src(id.as_str(), n, origin.as_deref(), &file);
+            let key = s
+                .hosted
+                .as_ref()
+                .map(|_| clax_http::hosted::content_key(&s.token, id.as_str(), n));
+            let src = page_src(id.as_str(), n, origin.as_deref(), key.as_deref(), &file);
             (
                 Some(frame_html(&src, origin.is_none())),
                 json!({"mode": if origin.is_some() { "subdomain" } else { "sandbox" }, "src": src}),
@@ -239,10 +255,11 @@ pub async fn assemble(
         }
         _ => (None, Value::Null),
     };
-    let artifact = without_sessions(
+    let mut artifact = without_sessions(
         artifact_json,
         serde_json::to_value(&versions).expect("versions serialise"),
     );
+    clax_http::hosted::stamp_content_keys(s, &mut artifact);
     let mut boot = json!({
         "v": 1,
         "artifact": artifact,
@@ -307,6 +324,7 @@ mod tests {
                 c["id"].as_str().unwrap(),
                 c["n"].as_u64().unwrap(),
                 c["origin"].as_str(),
+                c["key"].as_str(),
                 c["file"].as_str().unwrap(),
             );
             assert_eq!(got, c["src"].as_str().unwrap(), "{c}");

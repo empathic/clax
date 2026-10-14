@@ -204,6 +204,10 @@ pub struct ServeConfig {
     /// The web UI the daemon serves (`clax serve` passes the one the binary
     /// embeds, or a [`clax_core::embedded::DiskTree`] of `--web-dist`).
     pub web: Arc<dyn clax_core::embedded::FileTree>,
+    /// Hosted mode ([`clax_http::hosted`]; `clax serve` uses
+    /// [`clax_http::hosted::Hosted::from_config`] on the home's `[hosted]`), or
+    /// `None` for the local daemon.
+    pub hosted: Option<Arc<clax_http::hosted::Hosted>>,
 }
 
 /// Binds the first port of [`port_range`]`(start)` that no other program
@@ -363,6 +367,7 @@ pub async fn serve(
         vis_gen,
         test_daemon: false,
         web: cfg.web.clone(),
+        hosted: cfg.hosted.clone(),
     };
     state.audit_wake.install(&state.store);
     // The appender recovers the journal and catches it up on its own

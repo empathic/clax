@@ -36,8 +36,29 @@ pub fn run(home: &Home, a: ServeArgs) -> anyhow::Result<()> {
             std::env::var(k).ok()
         })),
         web,
+        hosted: hosted(home)?,
     };
     rt.block_on(serve(cfg, None))
+}
+
+/// Hosted mode as the home's `[hosted]` sets it, or `None` without one. A
+/// bad `[hosted]` stops the daemon: started as a local daemon, it would
+/// serve the internet as a LAN.
+fn hosted(home: &Home) -> anyhow::Result<Option<Arc<clax_http::hosted::Hosted>>> {
+    let Some(c) = clax_core::config::HomeConfig::load(home.root())?.hosted()? else {
+        return Ok(None);
+    };
+    let h = clax_http::hosted::Hosted::from_config(&c).ok_or_else(|| {
+        anyhow::anyhow!("[hosted] public_origin {} is not usable", c.public_origin)
+    })?;
+    if !h.setup_open() {
+        tracing::warn!(
+            env = %c.setup_secret_env,
+            "hosted mode: no setup secret in the environment, so /setup stays closed"
+        );
+    }
+    tracing::info!(origin = %h.origin, "hosted mode");
+    Ok(Some(Arc::new(h)))
 }
 
 /// The daemon outlives whoever started it, so any descriptor it inherits stays

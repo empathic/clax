@@ -309,6 +309,29 @@ impl TestServer {
         Self::start(dir, bind, clock, |_| {}, false, None).await
     }
 
+    /// A hosted test daemon ([`clax_http::hosted`]) whose public origin is
+    /// `http://localhost:<its port>` and whose setup takes `secret` (`None`:
+    /// setup closed), every time read from `clock`.
+    pub async fn spawn_hosted(clock: Arc<ManualClock>, secret: Option<&str>) -> TestServer {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = secret.map(str::to_string);
+        let limits_clock: Arc<dyn clax_core::working::Clock> = clock.clone();
+        let hosted = move |s: &mut AppState| {
+            let origin = format!("http://localhost:{}", s.port);
+            s.hosted = clax_http::hosted::Hosted::new(&origin, secret.as_deref())
+                .map(|h| Arc::new(h.with_clock(limits_clock)));
+        };
+        Self::start(
+            dir,
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            clock,
+            hosted,
+            false,
+            None,
+        )
+        .await
+    }
+
     /// A test daemon on a fresh copy of fixture `name` (a file of
     /// [`fixtures_dir`], loaded by [`load_fixture`]), its clock
     /// ([`TestServer::spawn_with_clock`]) stopped at `at` (RFC 3339). The
@@ -449,6 +472,7 @@ impl TestServer {
             // The checkout's web UI; tests of the shell serve their own
             // with `spawn_with_web`.
             web: web_ui(),
+            hosted: None,
         };
         f(&mut state);
         state.audit_wake.install(&state.store);

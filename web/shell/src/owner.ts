@@ -5,7 +5,8 @@ import { getToken } from "./api";
 import { backoff } from "./lifecycle";
 
 /** Whether this is a browser of the owner's: the daemon serves it the token
- * (`GET /api/token`, to loopback browsers only). A refusal (403) is the
+ * (`GET /api/token`: to loopback browsers only, or on a hosted daemon the
+ * owner's signed-in browser its shell token). A refusal (403) is the
  * answer no; any other failure (the daemon restarting, say) is asked again
  * after a backoff, so it resolves only once it knows, or with false once
  * `signal` aborts (the asker is gone: it asks no more). */

@@ -421,7 +421,13 @@ export class ArtifactController {
 
   /** The "open raw" link: the current page in the shown version. */
   rawHref(s: ViewState = this.s): string {
-    return pageSrc(this.id, this.shown(s), s.origin ?? null, this.pageNow(s));
+    return this.pageAt(this.pageNow(s), s);
+  }
+
+  /** Where the frame shows `file` of the shown version (at its content key
+   * on a hosted daemon). */
+  private pageAt(file: string, s: ViewState = this.s): string {
+    return pageSrc(this.id, this.shown(s), s.origin ?? null, file, this.version(s)?.content_key);
   }
 
   openCount(s: ViewState = this.s): number {
@@ -649,7 +655,7 @@ export class ArtifactController {
     if (!this.frame || !s.data || s.origin === undefined) return;
     if (s.deleted || this.missing()) { this.frame.remove(); return; }
     if (this.drafts?.showIn(this.frame, s)) return;
-    this.frame.show(pageSrc(this.id, this.shown(), s.origin, this.startFile) + this.startHash, s.origin === null, `${this.shown()}-${s.origin ? "o" : "s"}`);
+    this.frame.show(this.pageAt(this.startFile) + this.startHash, s.origin === null, `${this.shown()}-${s.origin ? "o" : "s"}`);
     const fragment = this.frame.takeFragment();
     if (fragment !== null) this.pendingFragment = fragment;
   }
@@ -706,7 +712,7 @@ export class ArtifactController {
     this.leaveDocument();
     this.failedParts.clear();
     this.set({ file: null, resolved: {} });
-    const url = pageSrc(this.id, this.shown(), this.s.origin ?? null, target) + hash;
+    const url = this.pageAt(target) + hash;
     if (replace && frame.contentWindow) {
       try { frame.contentWindow.location.replace(url); return; } catch { /* fall back to src */ }
     }
@@ -1626,6 +1632,9 @@ export class ArtifactController {
       this.set({ selected: thread.id, draft: null, panel: true });
     } catch (e) {
       void report(Promise.reject(e), POST_FAILED, this.noticeFor(POST_FAILED));
+      // A hosted daemon's visitor comments once named (a guest): the people
+      // menu holds the name field.
+      if (e instanceof ApiError && e.code === "guest_name_required") this.set({ menu: "people" });
       throw e;
     }
   }

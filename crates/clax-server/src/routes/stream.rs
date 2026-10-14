@@ -37,7 +37,9 @@ use std::convert::Infallible;
 /// page's topics; it resumes only from a request of the same kind. A stream
 /// is opened for the person the request speaks for (the owner, or a
 /// connected person's browser), whose `questions` and `inbox` topics alone
-/// it may hold; a person's stream ends once the person is revoked. A stream
+/// it may hold; a person's stream, and a hosted daemon's guest's, carries
+/// agents' drafts on its `working` topics; a person's stream ends once the
+/// person is revoked. A stream
 /// opened through the extension gateway is live-only
 /// ([`clax_realtime::stream::live_only_admits`]); only requests with the credential
 /// it was opened with change or resume it, and it ends, delivering nothing
@@ -67,9 +69,15 @@ pub async fn open(
         .get("last-event-id")
         .and_then(|v| v.to_str().ok())
         .and_then(parse_last_event_id);
+    // A hosted daemon's guest is signed in: their stream carries agents'
+    // drafts on the pages the gate lets them follow, as a person's does.
+    let guest = extensions
+        .get::<clax_http::hosted::HostedRequest>()
+        .is_some_and(|h| h.session.as_ref().is_some_and(|v| v.guest));
+    let drafts = person.is_some() || guest;
     let opened = s
         .stream
-        .open_for(caller, local, credential.clone(), resume, person);
+        .open_with(caller, local, credential.clone(), resume, person, drafts);
     let mut conn = Conn::new(
         s.stream.clone(),
         opened,

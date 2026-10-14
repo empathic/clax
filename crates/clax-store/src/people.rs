@@ -140,6 +140,10 @@ pub struct Grant {
     pub last_used_at: Option<String>,
     pub ended_at: Option<String>,
     pub ended_by: Option<String>,
+    /// An agent token a person minted in a hosted daemon's browser
+    /// ([`crate::hosted`]): its token is a bearer, and its key signs
+    /// nothing.
+    pub bearer: bool,
 }
 
 /// What a grant request made.
@@ -259,7 +263,7 @@ pub struct RevokedPerson {
 
 const GRANT_SELECT: &str = "SELECT g.id, g.status, g.via, g.client_key, g.client_name, g.peer_ip,
         v.public_id, v.display_name, COALESCE(v.owner, 0), g.narrow_json, g.wrong_codes,
-        g.created_at, g.decided_at, g.last_used_at, g.ended_at, g.ended_by
+        g.created_at, g.decided_at, g.last_used_at, g.ended_at, g.ended_by, g.bearer
     FROM grants g LEFT JOIN viewers v ON v.id = g.viewer_id";
 
 fn row_to_grant(r: &rusqlite::Row<'_>) -> rusqlite::Result<(Grant, Option<String>)> {
@@ -281,6 +285,7 @@ fn row_to_grant(r: &rusqlite::Row<'_>) -> rusqlite::Result<(Grant, Option<String
             last_used_at: r.get(13)?,
             ended_at: r.get(14)?,
             ended_by: r.get(15)?,
+            bearer: r.get(16)?,
         },
         r.get(9)?,
     ))
@@ -291,7 +296,7 @@ fn with_narrow((mut g, narrow): (Grant, Option<String>)) -> Result<Grant> {
     Ok(g)
 }
 
-fn grant_in(c: &rusqlite::Connection, gid: &str) -> Result<Option<Grant>> {
+pub(super) fn grant_in(c: &rusqlite::Connection, gid: &str) -> Result<Option<Grant>> {
     c.query_row(
         &format!("{GRANT_SELECT} WHERE g.id = ?1"),
         params![gid],
@@ -332,7 +337,7 @@ fn row_to_invite(r: &rusqlite::Row<'_>) -> rusqlite::Result<Invite> {
 }
 
 /// A new grant ID: `g_` and 22 lowercase Crockford base32 characters.
-fn new_grant_id() -> String {
+pub(super) fn new_grant_id() -> String {
     let bytes = secret::random_bytes::<14>();
     let mut n = u128::from_le_bytes({
         let mut b = [0u8; 16];
@@ -410,7 +415,7 @@ pub(super) fn rights_of_row(c: &rusqlite::Connection, viewer_id: &str) -> Result
 
 /// The access a grant of viewer row `viewer_id` holds: the person's rights
 /// within `narrow`.
-fn grant_access(
+pub(super) fn grant_access(
     c: &rusqlite::Connection,
     viewer_id: &str,
     narrow: Option<&Rights>,
@@ -430,7 +435,7 @@ fn narrowing(person: &Rights, access: &Rights) -> Option<Rights> {
 
 /// Checks a client's name: at most [`MAX_CLIENT_NAME_CHARS`] characters, no
 /// control characters. Returns it trimmed.
-fn checked_client_name(name: &str) -> Result<String> {
+pub(super) fn checked_client_name(name: &str) -> Result<String> {
     let n = name.trim();
     if n.chars().any(char::is_control) || n.chars().count() > MAX_CLIENT_NAME_CHARS {
         return Err(CoreError::invalid(
@@ -491,7 +496,7 @@ const EXPIRY: AuditCtx = AuditCtx::system(SystemReason::Expiry);
 
 /// A grant event (spec 2026-10-08-multi-agent-multi-person §20.2) of
 /// `kind` for grant `gid` at `at`.
-fn grant_record(kind: AuditKind, at: &str, gid: &str) -> AuditRecord {
+pub(super) fn grant_record(kind: AuditKind, at: &str, gid: &str) -> AuditRecord {
     AuditRecord::new(kind, at).with("grant_id", gid)
 }
 
@@ -1769,7 +1774,8 @@ impl Store {
 
     /// Every token of every grant whose tokens were issued, by hash, for
     /// the daemon's in-memory index (spec §6.4): access tokens, manage
-    /// tokens and current continuation tokens, each with its grant's key. A
+    /// tokens and current continuation tokens, each with its grant's key;
+    /// never a bearer grant's, whose token is never signed. A
     /// revoked token, and every token of a grant that has ended, is marked
     /// `revoked`. A request that never had tokens issued is not in it: its
     /// continuation is checked against the store
@@ -1779,13 +1785,13 @@ impl Store {
             let mut stmt = c.prepare(
                 "SELECT t.sha256, 'access', g.id, g.client_key,
                         t.revoked_at IS NOT NULL OR g.status <> 'approved'
-                   FROM grant_tokens t JOIN grants g ON g.id = t.grant_id
+                   FROM grant_tokens t JOIN grants g ON g.id = t.grant_id WHERE g.bearer = 0
                  UNION ALL
                  SELECT manage_sha256, 'manage', id, client_key, status <> 'approved'
-                   FROM grants WHERE manage_sha256 IS NOT NULL
+                   FROM grants WHERE manage_sha256 IS NOT NULL AND bearer = 0
                  UNION ALL
                  SELECT continue_sha256, 'continue', id, client_key, status <> 'approved'
-                   FROM grants WHERE manage_sha256 IS NOT NULL",
+                   FROM grants WHERE manage_sha256 IS NOT NULL AND bearer = 0",
             )?;
             let rows = stmt
                 .query_map([], |r| {
@@ -2284,8 +2290,9 @@ const UNFINISHED_STALE: &str = "((status = 'pending' AND created_at < ?1)
 
 /// Returns to plain viewers (and to the default rights) the people, of
 /// `viewer_id` or of every row when `None`, who never held a grant, are
-/// unrevoked, and have no live invite: an invite's person whose invites
-/// were revoked or expired unredeemed. Every elevation one of them gave is
+/// unrevoked, have no live invite and never redeemed one (a hosted
+/// daemon's browser redeems an invite without a grant): an invite's
+/// person whose invites were revoked or expired unredeemed. Every elevation one of them gave is
 /// dropped (`person_released`, under `ctx`). Returns how many it returned.
 fn release_unconnected(
     st: &Store,
@@ -2300,7 +2307,8 @@ fn release_unconnected(
              WHERE person = 1 AND owner = 0 AND person_revoked_at IS NULL AND (?1 IS NULL OR id = ?1)
                AND NOT EXISTS (SELECT 1 FROM grants g WHERE g.viewer_id = viewers.id)
                AND NOT EXISTS (SELECT 1 FROM invites i WHERE i.viewer_id = viewers.id
-                                 AND i.used_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > ?2)
+                                 AND ((i.used_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > ?2)
+                                      OR i.used_at IS NOT NULL))
              RETURNING public_id",
         )?;
         stmt.query_map(params![viewer_id, now], |r| r.get(0))?

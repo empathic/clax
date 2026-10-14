@@ -47,6 +47,8 @@ mod api_gateway;
 mod api_grants;
 #[cfg(any(not(clax_split), clax_split = "api_host"))]
 mod api_host;
+#[cfg(any(not(clax_split), clax_split = "api_hosted"))]
+mod api_hosted;
 #[cfg(any(not(clax_split), clax_split = "api_hosted_content"))]
 mod api_hosted_content;
 #[cfg(any(not(clax_split), clax_split = "api_inbox"))]
@@ -113,6 +115,8 @@ mod daemon;
 mod golden_single_owner;
 #[cfg(any(not(clax_split), clax_split = "harness_ids"))]
 mod harness_ids;
+#[cfg(any(not(clax_split), clax_split = "hosted_pages"))]
+mod hosted_pages;
 #[cfg(any(not(clax_split), clax_split = "sample_anthropic"))]
 mod sample_anthropic;
 #[cfg(any(not(clax_split), clax_split = "shell_boot"))]

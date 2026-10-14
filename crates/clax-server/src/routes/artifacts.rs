@@ -354,6 +354,7 @@ pub async fn create(
     if !a.holds_token() {
         strip_sessions(&mut v);
     }
+    clax_http::hosted::stamp_content_keys(&s, &mut v);
     Ok((StatusCode::CREATED, Json(v)))
 }
 
@@ -415,6 +416,7 @@ pub async fn get(
     if !a.holds_token() {
         strip_sessions(&mut v);
     }
+    clax_http::hosted::stamp_content_keys(&s, &mut v);
     if has_viewer {
         Ok((
             [
@@ -578,6 +580,7 @@ pub async fn list_versions(
     if !a.holds_token() {
         strip_sessions(&mut v);
     }
+    clax_http::hosted::stamp_content_keys(&s, &mut v);
     Ok(Json(v))
 }
 
@@ -677,6 +680,7 @@ pub async fn publish(
     if !a.holds_token() {
         strip_sessions(&mut v);
     }
+    clax_http::hosted::stamp_content_keys(&s, &mut v);
     Ok((StatusCode::CREATED, Json(v)))
 }
 
@@ -704,6 +708,7 @@ pub async fn get_version(
     if !a.holds_token() {
         strip_sessions(&mut v);
     }
+    clax_http::hosted::stamp_content_keys(&s, &mut v);
     Ok(Json(v))
 }
 

@@ -38,6 +38,8 @@ export type Version = {
   content_sha256?: string | null;
   /** The agent's note on what changed; the IDs of the threads this version addresses. */
   note?: string | null; addresses?: string[];
+  /** A hosted daemon's key to the version's content (its frame's `k/<key>/`). */
+  content_key?: string;
 };
 
 /** A non-OK API response; `status` is the HTTP status code, `code` the
@@ -78,7 +80,9 @@ let tokenFailed = false;
 /** Calls `fn` each time a token request answers with the token after an
  * earlier one failed: only then did this page gain the events cookie. */
 export const onToken = (fn: () => void) => { tokenHeard.add(fn); };
-/** The write token, only served to loopback browsers; null on a LAN viewer. */
+/** The write token, only served to loopback browsers (a hosted daemon
+ * serves its owner's signed-in browser a shell token, `cxo_…`, that stands
+ * for it); null on a LAN viewer and anyone else. */
 export function getToken(): Promise<string | null> {
   if (!tokenPromise) {
     const p: Promise<string | null> = fetch("/api/token").then(async r => {
@@ -296,8 +300,10 @@ export type PeopleInvite = {
   id: string; person: { public_id: string | null; display_name: string | null }; owner: boolean;
   created_at: string; expires_at: string; used_at: string | null; grant_id: string | null; revoked_at: string | null;
 };
-/** A new invite: `command` carries its code, shown this once. */
-export type NewInvite = { id: string; command: string; expires_at: string; person: { public_id: string | null; display_name: string | null } };
+/** A new invite: `command` carries its code, shown this once. A hosted
+ * daemon's invite is a link (`url`, which `command` repeats) opened in the
+ * person's browser. */
+export type NewInvite = { id: string; command: string; url?: string; expires_at: string; person: { public_id: string | null; display_name: string | null } };
 /** An approval: `approver`'s agents may see `author`'s content at `scope`;
  * `author.owner` when the author is the owner; `artifact_title` is its
  * page's title while the page is live. */

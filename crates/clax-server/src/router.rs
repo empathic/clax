@@ -632,13 +632,29 @@ pub fn build_router_with_shutdown(
 // whole inner router (mounted as the outer fallback) to influence routing. The
 // `/api` host check runs after the rewrite (the later `layer` is outermost),
 // and the header checks of agent credentials after both, before any route.
+// A hosted daemon ([`clax_http::hosted`]) serves its sign-in routes too, and
+// its gate stands in for the `/api` host check, which admits only this
+// machine's names.
 fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
-    axum::Router::new()
+    let hosted = state.hosted.is_some();
+    let inner = if hosted {
+        inner.merge(clax_http::hosted::router(state.clone()))
+    } else {
+        inner
+    };
+    let r = axum::Router::new()
         .fallback_service(inner)
         .layer(axum::middleware::from_fn_with_state(
-            state,
+            state.clone(),
             agent::authenticate,
+        ));
+    let r = if hosted {
+        r.layer(axum::middleware::from_fn_with_state(
+            state,
+            clax_http::hosted::gate,
         ))
-        .layer(axum::middleware::from_fn(auth::require_api_host))
-        .layer(axum::middleware::from_fn(host::rewrite_artifact_host))
+    } else {
+        r.layer(axum::middleware::from_fn(auth::require_api_host))
+    };
+    r.layer(axum::middleware::from_fn(host::rewrite_artifact_host))
 }

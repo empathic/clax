@@ -111,7 +111,7 @@ describe("contentSrc", () => {
 });
 
 describe("pageSrc and the daemon agree", () => {
-  it.each(srcCases)("$file", ({ id, n, origin, file, src }) => {
-    expect(pageSrc(id, n, origin, file)).toBe(src);
+  it.each(srcCases)("$file", (c: { id: string; n: number; origin: string | null; key?: string; file: string; src: string }) => {
+    expect(pageSrc(c.id, c.n, c.origin, c.file, c.key ?? null)).toBe(c.src);
   });
 });

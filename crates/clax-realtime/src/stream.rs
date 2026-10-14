@@ -160,16 +160,18 @@ impl Topic {
     /// viewer channel, which carries its private documents; `questions`
     /// and `inbox` the channel of `person` (the recipient key of the
     /// person the stream was opened for: empty for the owner), and none
-    /// for a stream opened for no person.
-    fn chans(&self, caller: &Caller, person: Option<&str>) -> Vec<Chan> {
+    /// for a stream opened for no person. A `working` topic joins its
+    /// drafts channel when `drafts`.
+    fn chans(&self, caller: &Caller, person: Option<&str>, drafts: bool) -> Vec<Chan> {
         match self {
             Topic::Gallery => vec![Chan::Gallery],
             Topic::Artifact(a) => vec![Chan::Artifact(a.clone())],
             Topic::Presence(a) => vec![Chan::Presence(a.clone())],
-            // Agents' drafts ride the working topic, to the owner's and
-            // connected people's streams only (hosted spec §16.4).
+            // Agents' drafts ride the working topic, to signed-in people's
+            // streams only: the owner's, connected people's and a hosted
+            // daemon's guests' (hosted spec §16.4).
             Topic::Working(a) => std::iter::once(Chan::Working(a.clone()))
-                .chain(person.map(|_| Chan::Drafts(a.clone())))
+                .chain(drafts.then(|| Chan::Drafts(a.clone())))
                 .collect(),
             Topic::Site(o) => vec![Chan::Site(o.clone())],
             Topic::Questions => person
@@ -347,6 +349,9 @@ struct StreamEntry {
     /// public ID); `None` for anyone else. A person's streams end when the
     /// person is revoked ([`Hub::end_streams_of`]).
     person: Option<String>,
+    /// The stream's `working` topics carry agents' drafts: a person's
+    /// stream, or a hosted daemon's guest's ([`Hub::open_with`]).
+    drafts: bool,
     /// Each topic with the sequence current when it was subscribed.
     topics: BTreeMap<Topic, u64>,
     tx: Option<mpsc::Sender<Arc<Item>>>,
@@ -835,7 +840,11 @@ impl Hub {
             .collect();
         for t in &gone {
             s.topics.remove(t);
-            leave(chans, s.key, &t.chans(&s.caller, s.person.as_deref()));
+            leave(
+                chans,
+                s.key,
+                &t.chans(&s.caller, s.person.as_deref(), s.drafts),
+            );
             if let Some(tx) = &s.tx {
                 let _ = tx.try_send(Arc::new(unseated_item(seq, &t.name(), code)));
             }
@@ -941,7 +950,8 @@ impl Hub {
     /// extension credential of a request through the extension gateway,
     /// which makes the stream live-only; see [`live_only_admits`]) and
     /// `person` (whose `questions` and `inbox` it may hold: the recipient
-    /// key, empty for the owner; `None` for anyone else).
+    /// key, empty for the owner; `None` for anyone else). A person's stream
+    /// carries agents' drafts.
     pub fn open_for(
         &self,
         caller: Caller,
@@ -949,6 +959,22 @@ impl Hub {
         credential: Option<String>,
         resume: Option<(&str, u64)>,
         person: Option<String>,
+    ) -> Opened {
+        let drafts = person.is_some();
+        self.open_with(caller, local, credential, resume, person, drafts)
+    }
+
+    /// [`Hub::open_for`], whose `working` topics carry agents' drafts when
+    /// `drafts` (a hosted daemon's guest's stream, which is no person's);
+    /// a stream resumes only with the same `drafts`.
+    pub fn open_with(
+        &self,
+        caller: Caller,
+        local: bool,
+        credential: Option<String>,
+        resume: Option<(&str, u64)>,
+        person: Option<String>,
+        drafts: bool,
     ) -> Opened {
         let (tx, rx) = mpsc::channel(QUEUE);
         let mut g = self.lock();
@@ -960,6 +986,7 @@ impl Hub {
                     && s.local == local
                     && s.credential == credential
                     && s.person == person
+                    && s.drafts == drafts
             })
         {
             let Inner {
@@ -993,7 +1020,11 @@ impl Hub {
                     .collect();
                 for t in gone {
                     s.topics.remove(&t);
-                    leave(chans, s.key, &t.chans(&s.caller, s.person.as_deref()));
+                    leave(
+                        chans,
+                        s.key,
+                        &t.chans(&s.caller, s.person.as_deref(), s.drafts),
+                    );
                     prelude.push(unseated_frame(&t.name(), clax_core::seats::NO_SEAT_CODE));
                     prelude.push(id_line(id, seq));
                 }
@@ -1001,7 +1032,7 @@ impl Hub {
             let mut replay: Vec<Arc<Item>> = Vec::new();
             for (topic, since) in &s.topics {
                 let from = last.max(*since);
-                let tchans = topic.chans(&s.caller, s.person.as_deref());
+                let tchans = topic.chans(&s.caller, s.person.as_deref(), s.drafts);
                 let gap = tchans
                     .iter()
                     .filter_map(|c| chans.get(c))
@@ -1061,6 +1092,7 @@ impl Hub {
             local,
             credential,
             person,
+            drafts,
             topics: BTreeMap::new(),
             tx: Some(tx),
             shared: shared.clone(),
@@ -1146,7 +1178,11 @@ impl Hub {
             .collect::<Vec<_>>();
         for t in remove {
             if s.topics.remove(t).is_some() {
-                leave(chans, s.key, &t.chans(&s.caller, s.person.as_deref()));
+                leave(
+                    chans,
+                    s.key,
+                    &t.chans(&s.caller, s.person.as_deref(), s.drafts),
+                );
             }
         }
         if let Some(seats) = &g_seats {
@@ -1160,7 +1196,7 @@ impl Hub {
                 continue;
             }
             s.topics.insert(t.clone(), seq);
-            for c in t.chans(&s.caller, s.person.as_deref()) {
+            for c in t.chans(&s.caller, s.person.as_deref(), s.drafts) {
                 let ch = chans.entry(c).or_default();
                 ch.forget_sent(s.person.as_deref());
                 ch.subs.insert(
@@ -1187,7 +1223,7 @@ impl Hub {
             return;
         };
         for t in s.topics.keys().filter(|t| t.name() == topic) {
-            for c in t.chans(&s.caller, s.person.as_deref()) {
+            for c in t.chans(&s.caller, s.person.as_deref(), s.drafts) {
                 if let Some(sub) = chans.get_mut(&c).and_then(|ch| ch.subs.get_mut(&s.key)) {
                     sub.lagged = false;
                 }
@@ -1220,7 +1256,7 @@ impl Hub {
         }
         detached.insert((now, s.key), id.to_string());
         for t in s.topics.keys() {
-            for c in t.chans(&s.caller, s.person.as_deref()) {
+            for c in t.chans(&s.caller, s.person.as_deref(), s.drafts) {
                 if let Some(sub) = chans.get_mut(&c).and_then(|ch| ch.subs.get_mut(&s.key)) {
                     sub.tx = None;
                 }
@@ -1381,7 +1417,7 @@ fn drop_stream(g: &mut Inner, id: &str) {
             leave(
                 &mut g.chans,
                 s.key,
-                &t.chans(&s.caller, s.person.as_deref()),
+                &t.chans(&s.caller, s.person.as_deref(), s.drafts),
             );
         }
     }

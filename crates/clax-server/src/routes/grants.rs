@@ -49,6 +49,29 @@ fn require_browser(caller: &Caller, what: &str) -> Result<(), ApiError> {
     }
 }
 
+/// A grant's view for the owner: never a hash or a code.
+pub fn grant_view(g: &Grant) -> Value {
+    let fingerprint = sig::decode_public(&g.client_key)
+        .map(|k| sig::fingerprint(&k))
+        .ok();
+    json!({
+        "id": g.id,
+        "status": g.status,
+        "via": g.via,
+        "client": {"name": g.client_name, "key": fingerprint.filter(|_| !g.bearer), "peer_ip": g.peer_ip},
+        "bearer": g.bearer,
+        "person": g.person.as_ref().map(|p| json!({"public_id": p, "display_name": g.person_name})),
+        "owner": g.owner,
+        "narrow": g.narrow.as_ref().map(Rights::to_json),
+        "wrong_codes": g.wrong_codes,
+        "created_at": g.created_at,
+        "decided_at": g.decided_at,
+        "last_used_at": g.last_used_at,
+        "ended_at": g.ended_at,
+        "ended_by": g.ended_by,
+    })
+}
+
 fn invite_view(i: &Invite) -> Value {
     json!({
         "id": i.id,
@@ -237,6 +260,12 @@ pub async fn create_invite(
     let target = match (b.name, b.viewer, b.me) {
         (Some(n), None, false) => InvitePerson::New(n),
         (None, Some(v), false) => InvitePerson::Viewer(v),
+        (None, None, true) if s.hosted.is_some() => {
+            return Err(ApiError::bad_request(
+                "invalid_args",
+                "on a hosted Clax, sign in another device of yours with a sign-in link from People",
+            ));
+        }
         (None, None, true) => InvitePerson::Owner,
         _ => {
             return Err(ApiError::bad_request(
@@ -246,10 +275,14 @@ pub async fn create_invite(
         }
     };
     let rights = b.rights.as_ref().map(Rights::parse).transpose()?;
-    let host = lan_address(&s)?;
-    let base = match host {
-        IpAddr::V6(ip) => format!("http://[{ip}]:{}", s.port),
-        IpAddr::V4(ip) => format!("http://{ip}:{}", s.port),
+    // A hosted daemon's invite is redeemed in the browser, at its public
+    // origin (`/join/<code>`); a local one's by `clax connect` on the LAN.
+    let base = match &s.hosted {
+        Some(_) => None,
+        None => Some(match lan_address(&s)? {
+            IpAddr::V6(ip) => format!("http://[{ip}]:{}", s.port),
+            IpAddr::V4(ip) => format!("http://{ip}:{}", s.port),
+        }),
     };
     let state = s.clone();
     let (invite, code) = s
@@ -262,17 +295,24 @@ pub async fn create_invite(
             Ok(made)
         })
         .await?;
+    let mut view = json!({
+        "id": invite.id,
+        "expires_at": invite.expires_at,
+        "person": {"public_id": invite.person, "display_name": invite.person_name},
+    });
+    match (&base, &s.hosted) {
+        (Some(base), _) => {
+            view["command"] = json!(format!("clax connect {base}/i/{}", code.expose()))
+        }
+        (None, Some(h)) => {
+            let url = format!("{}/join/{}", h.origin, code.expose());
+            view["command"] = json!(url);
+            view["url"] = json!(url);
+        }
+        (None, None) => unreachable!("a local daemon's invite has a LAN base"),
+    }
     Ok(no_store(
-        (
-            StatusCode::CREATED,
-            Json(json!({"invite": {
-                "id": invite.id,
-                "command": format!("clax connect {base}/i/{}", code.expose()),
-                "expires_at": invite.expires_at,
-                "person": {"public_id": invite.person, "display_name": invite.person_name},
-            }})),
-        )
-            .into_response(),
+        (StatusCode::CREATED, Json(json!({"invite": view}))).into_response(),
     ))
 }
 

@@ -1,0 +1,294 @@
+// Hosted mode's sign-in in browsers (crates/clax-server/src/hosted.rs): on a
+// daemon whose config.toml has `[hosted]`, the first person sets up with
+// the secret; they invite Sam, who joins in a second browser; Sam signs a
+// third browser in with a one-use link, and makes an agent token whose
+// `claude mcp add` command People shows; the owner shares a page by link,
+// and a fourth browser with nothing but the link gives a name and comments
+// as a guest. No browser here holds the daemon token: every request is the
+// session's (the owner's browser holds its session's shell token). A second
+// test checks the owner's surfaces (the site in the bar, pin, inbox), a
+// person whose rights read one page seeing only it, frames loaded at their
+// content key, and a guest naming themselves on a phone. A third has a
+// guest show an agent's draft in the frame, at its draft URL, which no
+// content key guards. With CLAX_E2E_SHOTS
+// set it writes screenshots to target/hosted-shots/.
+import { createServer } from "node:net";
+import { type Browser, type Page } from "@playwright/test";
+import { NO_KEY_CONFIG, api, expect, publish, publishAs, registerSession, setName, startDaemon, test } from "./fixtures";
+
+const SECRET = "e2e setup secret";
+
+/** A port nothing listens on now. */
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const s = createServer();
+    s.once("error", reject);
+    s.listen(0, "127.0.0.1", () => {
+      const a = s.address();
+      s.close(() => (typeof a === "object" && a ? resolve(a.port) : reject(new Error("no port"))));
+    });
+  });
+}
+
+async function hostedDaemon() {
+  const port = await freePort();
+  const origin = `http://localhost:${port}`;
+  const config = `${NO_KEY_CONFIG}[hosted]\npublic_origin = "${origin}"\nsetup_secret_env = "CLAX_E2E_SETUP_SECRET"\n`;
+  const d = await startDaemon({ config, port, env: { CLAX_E2E_SETUP_SECRET: SECRET } });
+  test.skip(d.port !== port, `the daemon took port ${d.port}, not ${port}: its public origin would not match`);
+  return { d, origin };
+}
+
+async function page(browser: Browser): Promise<Page> {
+  return (await browser.newContext()).newPage();
+}
+
+/** A thread `p`'s browser posts on `aid`, as the shell posts it: its status and error code. */
+async function postThread(p: Page, aid: string, body: string) {
+  return p.evaluate(async ([id, text]) => {
+    const form = new FormData();
+    form.set("anchor", JSON.stringify({ kind: "element", selector: "body > h1", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" }));
+    form.set("body", text);
+    form.set("version", "1");
+    const r = await fetch(`/api/artifacts/${id}/threads`, { method: "POST", body: form });
+    const j = await r.json().catch(() => ({}));
+    return { status: r.status, code: j?.error?.code ?? null };
+  }, [aid, body]);
+}
+
+test("setup, an invite joined in a second browser, a sign-in link for a third, and a guest who names themselves", async ({ browser }) => {
+  const { d, origin } = await hostedDaemon();
+  try {
+    const { artifact } = await publish(d.base, d.token, "Launch plan", { "index.html": "<title>Launch plan</title><h1>Launch plan</h1><p>Draft</p>" });
+
+    // Setup: the secret from the link, gone from the address bar at once.
+    const owner = await page(browser);
+    await owner.goto(`${origin}/setup?secret=${encodeURIComponent(SECRET)}`);
+    await expect(owner.getByRole("heading", { name: "Set up Clax" })).toBeVisible();
+    await expect(owner).toHaveURL(`${origin}/setup`);
+    await expect(owner.getByLabel("Setup secret")).toHaveValue(SECRET);
+    await owner.getByLabel("Your name").fill("Ada");
+    await owner.getByRole("button", { name: "Create the first person" }).click();
+    await owner.waitForURL(`${origin}/`);
+    await expect(owner.locator("a.card")).toContainText("Launch plan");
+    // Setup is done: the page is gone.
+    expect((await owner.request.get(`${origin}/setup`)).status()).toBe(404);
+
+    // The owner invites Sam; the invite is a link.
+    await owner.locator("a.people-link").click();
+    await owner.waitForURL(`${origin}/people`);
+    await expect(owner.locator(".hosted-me")).toContainText("Signed in as Ada (the owner)");
+    await owner.getByRole("button", { name: "Invite a person" }).click();
+    await expect(owner.getByRole("radio", { name: "Me, on another machine" })).toHaveCount(0);
+    await owner.getByRole("textbox", { name: "Name", exact: true }).fill("Sam");
+    await owner.getByRole("button", { name: "Create invite" }).click();
+    const join = (await owner.locator(".invite code").textContent())!;
+    expect(join).toMatch(new RegExp(`^${origin}/join/[0-9A-Z-]+$`));
+    await expect(owner.locator(".invite")).not.toContainText("trusted LAN");
+
+    // Sam joins in a second browser, under the invite's name.
+    const sam = await page(browser);
+    await sam.goto(join);
+    await expect(sam.getByText("You have been invited as Sam.", { exact: false })).toBeVisible();
+    await sam.getByRole("button", { name: "Join as Sam" }).click();
+    await sam.waitForURL(`${origin}/`);
+    await expect(sam.locator("a.card")).toContainText("Launch plan");
+    // The invite is spent.
+    const again = await page(browser);
+    await again.goto(join);
+    await expect(again.getByText("This invite is not valid.")).toBeVisible();
+
+    // Sam signs a third browser in with a one-use link.
+    await sam.goto(`${origin}/people`);
+    await sam.getByRole("button", { name: "Sign in another device" }).click();
+    const link = (await sam.locator(".hosted-me code").textContent())!;
+    expect(link).toMatch(new RegExp(`^${origin}/signin/cxl_`));
+    const phone = await page(browser);
+    await phone.goto(link);
+    await phone.getByRole("button", { name: "Sign in on this device" }).click();
+    await phone.waitForURL(`${origin}/`);
+    await phone.goto(`${origin}/people`);
+    await expect(phone.locator(".hosted-me")).toContainText("Signed in as Sam");
+    const spent = await page(browser);
+    await spent.goto(link);
+    await spent.getByRole("button", { name: "Sign in on this device" }).click();
+    await expect(spent.getByRole("alert")).toBeVisible();
+
+    // An agent token, with the command Claude Code takes.
+    await phone.getByLabel("Machine").fill("sam-laptop");
+    await phone.getByRole("button", { name: "Create token" }).click();
+    await expect(phone.locator(".minted code").first()).toContainText(`claude mcp add --transport http clax ${origin}/mcp --header "Authorization: Bearer cxa_`);
+    await expect(phone.locator(".hosted-tokens .tok")).toContainText("sam-laptop");
+
+    // The owner shares the page by link, for comments.
+    await owner.reload();
+    await owner.getByRole("combobox", { name: "Page to share" }).selectOption({ label: "Launch plan" });
+    await owner.getByRole("combobox", { name: "What its link allows" }).selectOption("commenter");
+    await owner.getByRole("button", { name: "Share by link" }).click();
+    await expect(owner.locator(".hosted-links .line")).toContainText("Launch plan");
+
+    // A fourth browser with the link alone: it reads, and comments once named.
+    const guest = await page(browser);
+    await guest.goto(`${origin}/a/${artifact.id}`);
+    await expect(guest.locator(".topbar h1")).toHaveText("Launch plan");
+    expect(await postThread(guest, artifact.id, "before a name")).toEqual({ status: 401, code: "guest_name_required" });
+    await guest.goto(`${origin}/`);
+    await guest.waitForURL(`${origin}/signin`);
+    await expect(guest.getByText("You are not signed in.")).toBeVisible();
+    await guest.goto(`${origin}/a/${artifact.id}`);
+    await setName(guest, "Mia");
+    await expect.poll(() => postThread(guest, artifact.id, "a guest's comment")).toEqual({ status: 201, code: null });
+    // The owner sees it, by the guest's name.
+    await owner.goto(`${origin}/a/${artifact.id}`);
+    await expect(owner.locator(".thread-card").filter({ hasText: "a guest's comment" })).toContainText("Mia");
+    // The guest sees nothing but shared pages.
+    await guest.goto(`${origin}/signin`);
+    await expect(guest.getByText("You are a guest named Mia.", { exact: false })).toBeVisible();
+
+    // Sam signs the phone out.
+    await phone.goto(`${origin}/people`);
+    await phone.getByRole("button", { name: "Sign out" }).click();
+    await phone.waitForURL(`${origin}/signin`);
+    await expect(phone.getByText("You are not signed in.")).toBeVisible();
+  } finally {
+    await d.stop();
+  }
+});
+
+/** `p` at `width`, in `scheme`, photographed to `target/hosted-shots/<name>-<width>-<scheme>.png`
+ * when CLAX_E2E_SHOTS is set (for looking at, not compared). */
+async function shots(p: Page, name: string) {
+  if (!process.env.CLAX_E2E_SHOTS) return;
+  for (const width of [1280, 390]) {
+    for (const scheme of ["light", "dark"] as const) {
+      await p.setViewportSize({ width, height: width > 600 ? 820 : 844 });
+      await p.emulateMedia({ colorScheme: scheme });
+      await p.screenshot({ path: `../target/hosted-shots/${name}-${width}-${scheme}.png` });
+    }
+  }
+  await p.setViewportSize({ width: 1280, height: 820 });
+  await p.emulateMedia({ colorScheme: "light" });
+}
+
+test("the owner's browser has the owner's surfaces, a person's rights limit theirs, and content frames at its key", async ({ browser }) => {
+  const { d, origin } = await hostedDaemon();
+  try {
+    const plan = (await publish(d.base, d.token, "Plan", { "index.html": "<title>Plan</title><h1>Plan</h1><p>Private</p>" })).artifact;
+    const budget = (await publish(d.base, d.token, "Budget", { "index.html": "<title>Budget</title><h1>Budget</h1><p>Shared with Sam</p>" })).artifact;
+    const owner = await page(browser);
+    await owner.goto(`${origin}/setup?secret=${encodeURIComponent(SECRET)}`);
+    await owner.getByLabel("Your name").fill("Ada");
+    await owner.getByRole("button", { name: "Create the first person" }).click();
+    await owner.waitForURL(`${origin}/`);
+    // The bar names the site; the owner's pin, delete and inbox are there.
+    await expect(owner.locator(".gbar .sub")).toHaveText(`${new URL(origin).host} · seen as Ada`);
+    await expect(owner.getByRole("button", { name: "Pin Plan" })).toBeVisible();
+    await expect(owner.locator("a.inbox-link")).toBeVisible();
+    await shots(owner, "gallery-owner");
+    await owner.getByRole("button", { name: "Pin Plan" }).click();
+    await expect(owner.getByRole("button", { name: "Unpin Plan" })).toBeVisible();
+    // The frame loads the version at its content key.
+    await owner.goto(`${origin}/a/${plan.id}`);
+    await expect(owner.locator("iframe.frame")).toHaveAttribute("src", new RegExp(`/v/1/k/[0-9a-f]{32}/$`));
+    await expect(owner.frameLocator("iframe.frame").locator("h1")).toHaveText("Plan");
+    await shots(owner, "artifact-owner");
+
+    // Sam may read Budget alone.
+    const made = await owner.evaluate(async rights => {
+      const r = await fetch("/api/people/invites", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Sam", rights }) });
+      return (await r.json()).invite.url as string;
+    }, [
+      { type: "clax-artifacts", actions: ["read"], locations: [budget.id] },
+      { type: "clax-comments", actions: ["read", "write", "reply"], locations: [budget.id] },
+    ]);
+    const sam = await page(browser);
+    await sam.goto(made);
+    await sam.getByRole("button", { name: "Join as Sam" }).click();
+    await sam.waitForURL(`${origin}/`);
+    await expect(sam.locator("a.card")).toHaveCount(1);
+    await expect(sam.locator("a.card")).toContainText("Budget");
+    await expect(sam.getByRole("button", { name: "Pin Budget" })).toHaveCount(0);
+    await sam.goto(`${origin}/a/${budget.id}`);
+    await expect(sam.frameLocator("iframe.frame").locator("h1")).toHaveText("Budget");
+    const missing = await sam.goto(`${origin}/a/${plan.id}`);
+    expect(missing?.status()).toBe(404);
+    await sam.goto(`${origin}/people`);
+    await expect(sam.locator(".hosted-me")).toContainText("Signed in as Sam");
+    await shots(sam, "people-person");
+
+    // A guest on a shared page names themselves in the people menu.
+    await owner.goto(`${origin}/people`);
+    await shots(owner, "people-owner");
+    await owner.getByRole("combobox", { name: "Page to share" }).selectOption({ label: "Plan" });
+    await owner.getByRole("button", { name: "Share by link" }).click();
+    await expect(owner.locator(".hosted-links .line")).toContainText("Plan");
+    const guest = await page(browser);
+    await guest.goto(`${origin}/a/${plan.id}`);
+    await expect(guest.frameLocator("iframe.frame").locator("h1")).toHaveText("Plan");
+    await guest.getByRole("button", { name: "People and agents" }).click();
+    await expect(guest.getByRole("dialog", { name: "People and agents" }).getByLabel("Your name")).toBeVisible();
+    await shots(guest, "guest-name");
+    // On a phone, the name field too.
+    const phone = await (await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true })).newPage();
+    await phone.goto(`${origin}/a/${plan.id}`);
+    await phone.getByRole("button", { name: "People and agents" }).click();
+    const field = phone.getByRole("dialog", { name: "People and agents" }).getByLabel("Your name");
+    await expect(field).toBeVisible();
+    await expect.poll(async () => (await field.boundingBox())!.x + (await field.boundingBox())!.width).toBeLessThanOrEqual(390);
+    if (process.env.CLAX_E2E_SHOTS) {
+      // Each scheme from the page's load, as a phone in it would show it.
+      for (const scheme of ["light", "dark"] as const) {
+        const p = await (await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, colorScheme: scheme })).newPage();
+        await p.goto(`${origin}/a/${plan.id}`);
+        await p.getByRole("button", { name: "People and agents" }).click();
+        await expect(p.getByRole("dialog", { name: "People and agents" }).getByLabel("Your name")).toBeVisible();
+        await p.screenshot({ path: `../target/hosted-shots/guest-name-phone-${scheme}.png` });
+        await p.goto(`${origin}/signin`);
+        await p.screenshot({ path: `../target/hosted-shots/signin-phone-${scheme}.png` });
+      }
+    }
+    await field.fill("Mia");
+    await field.press("Enter");
+    await expect.poll(() => postThread(phone, plan.id, "from a phone")).toEqual({ status: 201, code: null });
+    // The page's ID alone, outside the shell, reads nothing.
+    expect((await guest.request.get(`${origin}/c/${plan.id}/v/1/`)).status()).toBe(404);
+  } finally {
+    await d.stop();
+  }
+});
+
+test("a guest on a page shared by link sees an agent drafting and shows the draft at its URL", async ({ browser }) => {
+  const { d, origin } = await hostedDaemon();
+  try {
+    const s = await registerSession(d.base, d.token, "claude", "hosted-draft");
+    const html = "<!doctype html><title>Plan</title><h1>Plan</h1><p>Ship the beta</p>";
+    const { artifact } = await publishAs(d.base, d.token, s.id, "Plan", { "index.html": html });
+    const owner = await page(browser);
+    await owner.goto(`${origin}/setup?secret=${encodeURIComponent(SECRET)}`);
+    await owner.getByLabel("Your name").fill("Ada");
+    await owner.getByRole("button", { name: "Create the first person" }).click();
+    await owner.waitForURL(`${origin}/`);
+    const shared = await owner.evaluate(async id => {
+      const r = await fetch(`/api/hosted/artifacts/${id}/link`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ access: "commenter" }) });
+      return r.status;
+    }, artifact.id);
+    expect(shared).toBe(200);
+
+    const guest = await page(browser);
+    await guest.goto(`${origin}/a/${artifact.id}`);
+    await expect(guest.frameLocator("iframe.frame").locator("h1")).toHaveText("Plan");
+    // Unnamed, no drafts.
+    expect((await guest.request.get(`${origin}/api/artifacts/${artifact.id}/drafts`)).status()).toBe(401);
+    await setName(guest, "Mia");
+    await api(d.base, d.token, `/api/sessions/${s.id}/drafts/${artifact.id}`, { method: "PUT", body: JSON.stringify({ files: { "index.html": { content: html.replace("Ship the beta", "Ship the beta in May"), encoding: "utf8" } } }) });
+    const banner = guest.locator(".banner.draft");
+    await expect(banner).toContainText("claude is drafting…");
+    await banner.getByRole("button", { name: "Show draft" }).click();
+    // On the artifact's own host or under /c/: no content key either way.
+    const url = new RegExp(`(${artifact.id}\\.localhost:\\d+|/c/${artifact.id})/draft/a_[^/]+/[A-Za-z0-9_-]{22}/`);
+    await expect(guest.locator("iframe.frame")).toHaveAttribute("src", url);
+    await expect(guest.frameLocator("iframe.frame").locator("[data-clax-draft-changed]")).toHaveText("Ship the beta in May");
+  } finally {
+    await d.stop();
+  }
+});

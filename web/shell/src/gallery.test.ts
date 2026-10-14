@@ -98,6 +98,24 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(root.querySelector(".gbar .sub")?.textContent).toBe("local artifacts · seen as Ada");
   });
 
+  it("names a hosted daemon's site in the bar, for its owner and for anyone else", async () => {
+    for (const [token, hostedMe] of [[200, false], [403, true]] as const) {
+      vi.resetModules();
+      const calls = stubApi(token);
+      const plain = globalThis.fetch as (u: string, i?: RequestInit) => Promise<Response>;
+      vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+        if (url === "/api/token" && token === 200) return new Response(JSON.stringify({ token: "cxo_shell" }));
+        if (url === "/api/hosted/me" && hostedMe) return new Response(JSON.stringify({ origin: "https://clax.example", setup_open: false, signed_in: true, person: null }));
+        return plain(url, init);
+      }));
+      const root = await mountGallery();
+      await waitFor(() => root.querySelector(".gbar .sub")?.textContent?.startsWith(location.host), `the site in the bar (token ${token})`);
+      expect(root.querySelector(".gbar .sub")?.textContent).toBe(`${location.host} · seen as Ada`);
+      expect(calls.length).toBeGreaterThan(0);
+      unmountGallery?.(); unmountGallery = null; vi.unstubAllGlobals(); document.body.replaceChildren();
+    }
+  });
+
   it("puts the pinned artifact first even when the API lists it second", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
       if (url.endsWith("/api/artifacts")) return new Response(JSON.stringify({ artifacts: [ARTIFACTS[1], ARTIFACTS[0]] }));

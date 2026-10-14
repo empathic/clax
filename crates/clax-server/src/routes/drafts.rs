@@ -5,9 +5,13 @@
 //! Rights map onto the agent model: drafting needs what publishing that
 //! artifact needs (`clax-artifacts` `update`, from a session), and a draft
 //! reaches named people only: the owner and connected people, who read
-//! every artifact the daemon serves them. The listing answers them alone,
-//! the stream sends `drafts` events to their streams alone, and the draft
-//! URL refuses agents; its token reaches no one else.
+//! every artifact the daemon serves them, and on a hosted daemon the
+//! members who may read the artifact and the guests of a page shared by
+//! link (the gate, [`clax_http::hosted`], answers 404 or 401 to anyone else
+//! first). The listing answers them alone, the stream sends `drafts` events
+//! to their streams alone, and the draft URL refuses agents; its token
+//! reaches no one else, so it is the draft's capability, on a hosted daemon
+//! as a version's content key is.
 
 use super::artifacts::{body_within, parse_id, path};
 use clax_http::agent::{DeniedToGrants, TokenOrAgent};
@@ -73,20 +77,21 @@ fn live_session(st: &Store, sid: &str) -> clax_core::Result<clax_core::model::Se
 
 /// The bytes and metadata of `path` in version `n`, read from the content
 /// store; `None` when the version records no such file or its bytes are
-/// gone. The one place drafts read a version's files.
-fn base_file(
+/// gone. The one place drafts read a version's files, awaiting the
+/// content store ([`Store::read_file_async`]).
+async fn base_file(
     st: &Store,
     id: &ArtifactId,
     n: u32,
     path: &str,
 ) -> clax_core::Result<Option<(Vec<u8>, FileMeta)>> {
-    st.read_file(id, n, path)
+    st.read_file_async(id, n, path).await
 }
 
 /// The text of base page `path` of version `n` to compare a draft page
 /// with, while `budget` (bytes, [`MAX_BASE_COMPARED`] a revision) holds
 /// its size: `None` for a missing or non-UTF-8 file, or one past it.
-fn base_text(
+async fn base_text(
     st: &Store,
     id: &ArtifactId,
     n: u32,
@@ -97,7 +102,9 @@ fn base_text(
         Some(meta) if meta.size <= *budget => *budget -= meta.size,
         _ => return Ok(None),
     }
-    Ok(base_file(st, id, n, path)?.and_then(|(b, _)| String::from_utf8(b).ok()))
+    Ok(base_file(st, id, n, path)
+        .await?
+        .and_then(|(b, _)| String::from_utf8(b).ok()))
 }
 
 /// Whether a content type is `text/html` (parameters ignored).
@@ -240,7 +247,8 @@ pub async fn put(
     let vf = VisFor::of(&a.caller, &s);
     let (drafts, events, working) = (s.drafts.clone(), s.events.clone(), s.working.clone());
     let view = s
-        .store_call(move |st| {
+        .store_call_async(move |st| async move {
+            let st = &*st;
             let sess = live_session(st, &sid)?;
             let audit = audit.for_session(st, &sid)?;
             let art = st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
@@ -273,20 +281,24 @@ pub async fn put(
                 let file = match change {
                     FileChange::Remove => DraftFile::Removed,
                     FileChange::Put(f) => {
-                        let page = is_html(&f.content_type)
+                        let text = is_html(&f.content_type)
                             .then(|| std::str::from_utf8(&f.bytes).ok())
-                            .flatten()
-                            .map(|text| {
+                            .flatten();
+                        let page = match text {
+                            Some(text) => {
                                 // Compared only with a base file the drafting
                                 // agent may see; the page gets marks, never base text.
-                                let base_text = (base.files.contains_key(&path)
-                                    && !withheld.contains(&path))
-                                .then(|| base_text(st, &id, n, &path, &mut budget))
-                                .transpose()?
-                                .flatten();
-                                Ok::<_, CoreError>(served_page(text, base_text.as_deref()))
-                            })
-                            .transpose()?;
+                                let base_text = if base.files.contains_key(&path)
+                                    && !withheld.contains(&path)
+                                {
+                                    base_text(st, &id, n, &path, &mut budget).await?
+                                } else {
+                                    None
+                                };
+                                Some(served_page(text, base_text.as_deref()))
+                            }
+                            None => None,
+                        };
                         DraftFile::Bytes {
                             bytes: page.map_or(f.bytes, String::into_bytes).into(),
                             content_type: f.content_type,
@@ -345,20 +357,25 @@ pub async fn delete(
 
 /// `GET /api/artifacts/<aid>/drafts` (named people): `{drafts}`, the live
 /// drafts, oldest revision first, each with its revision's token for the
-/// draft URL. Answers the owner and connected people only: 403
-/// `not_for_agents` to the owner's agents, 403 `forbidden` to a person's
-/// agent, a LAN viewer who is not connected and no credential.
+/// draft URL. Answers the owner, connected people and a hosted daemon's
+/// guests only: 403 `not_for_agents` to the owner's agents, 403
+/// `forbidden` to a person's agent, a LAN viewer who is not connected and
+/// no credential.
 pub async fn list(
     State(s): State<AppState>,
     d: DeniedToGrants,
+    hosted: Option<Extension<clax_http::hosted::HostedRequest>>,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
+    let guest = hosted.is_some_and(|h| h.session.as_ref().is_some_and(|v| v.guest));
     match d.caller(&s).await? {
         Caller::Owner { .. } | Caller::Person { .. } => {}
         Caller::OwnerAgent { .. } | Caller::PersonAgent { .. } => {
             return Err(clax_http::auth::not_for_agents());
         }
+        // The gate let the guest through on the page's link.
+        Caller::Viewer { .. } if guest => {}
         Caller::Viewer { .. } | Caller::Anonymous => {
             return Err(ApiError::forbidden(
                 "forbidden",
@@ -452,7 +469,11 @@ async fn serve(
         } => (Body::from(bytes.to_vec()), content_type),
         Served::Base { n } => {
             let (bytes, meta) = s
-                .store_call(move |st| base_file(st, &id, n, &rel)?.ok_or(CoreError::NotFound))
+                .store_call_async(move |st| async move {
+                    base_file(&st, &id, n, &rel)
+                        .await?
+                        .ok_or(CoreError::NotFound)
+                })
                 .await?;
             (Body::from(bytes), meta.content_type)
         }

@@ -66,6 +66,15 @@ pub fn fetched_from_elsewhere(headers: &HeaderMap) -> bool {
 impl<S: Send + Sync> FromRequestParts<S> for SameOrigin {
     type Rejection = ApiError;
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, ApiError> {
+        // A hosted daemon's own origin is its public one, which the gate
+        // compared the request's `Origin` with ([`crate::hosted::gate`]).
+        if parts
+            .extensions
+            .get::<crate::hosted::HostedRequest>()
+            .is_some_and(|h| h.origin_checked)
+        {
+            return Ok(SameOrigin);
+        }
         let Some(origin) = parts.headers.get(header::ORIGIN) else {
             if fetched_from_elsewhere(&parts.headers) {
                 return Err(ApiError::forbidden(
