@@ -730,4 +730,14 @@ class _StuckInspector implements Inspector {
     Duration total = const Duration(seconds: 30),
     Future<void>? cancelled,
   }) => throw UnimplementedError();
+
+  @override
+  Future<MigrationRun> runMigration(
+    Uri url, {
+    String file = 'migrate.js',
+    required int from,
+    required int to,
+    Duration total = const Duration(seconds: 30),
+    Future<void>? cancelled,
+  }) => throw UnimplementedError();
 }

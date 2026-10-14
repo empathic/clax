@@ -57,6 +57,7 @@ sealed class HostMessage {
         ),
         'inspection' => InspectionMsg.fromJson(m),
         'tests' => TestsMsg.fromJson(m),
+        'migration' => MigrationMsg.fromJson(m),
         'questions' => QuestionsMsg(
           _count(m['open']),
           showing: (m['showing'] ?? false) as bool,
@@ -323,6 +324,26 @@ final class TestsMsg extends HostMessage {
   final String? error;
 }
 
+/// The inspect view's answer to [RunMigration]: the migration finished
+/// ([ok]), or [error], why not (it threw, did not load, ran out of time, or
+/// there was no run).
+final class MigrationMsg extends HostMessage {
+  const MigrationMsg.ok() : ok = true, error = null;
+  const MigrationMsg.failed(String this.error) : ok = false;
+
+  /// The message [m] holds; a [TypeError] for any other shape.
+  factory MigrationMsg.fromJson(Map<String, Object?> m) => m['ok'] == true
+      ? const MigrationMsg.ok()
+      : m['ok'] == false
+      ? MigrationMsg.failed(m['error'] as String)
+      : throw TypeError();
+
+  final bool ok;
+
+  /// Why the migration did not finish, when it did not.
+  final String? error;
+}
+
 /// How many of the owner's questions about this app are [open], and
 /// whether the shell's questions sheet is [showing]; posted whenever either
 /// changes.
@@ -553,6 +574,28 @@ final class RunTests extends HostCall {
   String toJs() =>
       'window.claxHost?.runTests({files:[${files.map(jsString).join(',')}],'
       'testMs:$testMs,totalMs:$totalMs})';
+}
+
+/// In the inspect view, asks the page to run the migration [file] (an app
+/// bundle's `migrate.js`): its default export is called with the page's
+/// `db` and `{from, to}`, the run for at most [totalMs]. A [MigrationMsg]
+/// answers. A later call replaces an earlier one; anywhere else the shell
+/// answers with an error.
+final class RunMigration extends HostCall {
+  const RunMigration({
+    this.file = 'migrate.js',
+    required this.from,
+    required this.to,
+    this.totalMs = 30000,
+  });
+  final String file;
+  final int from;
+  final int to;
+  final int totalMs;
+  @override
+  String toJs() =>
+      'window.claxHost?.runMigration({file:${jsString(file)},from:$from,'
+      'to:$to,totalMs:$totalMs})';
 }
 
 /// The app's answer to [DeviceRequest] [id]: [value] when [code] is null,

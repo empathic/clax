@@ -247,6 +247,23 @@ class RecordingInspector implements Inspector {
   }
 
   @override
+  Future<MigrationRun> runMigration(
+    Uri url, {
+    String file = 'migrate.js',
+    required int from,
+    required int to,
+    Duration total = const Duration(seconds: 30),
+    Future<void>? cancelled,
+  }) => inner.runMigration(
+    url,
+    file: file,
+    from: from,
+    to: to,
+    total: total,
+    cancelled: cancelled,
+  );
+
+  @override
   Future<TestRun> runTests(
     Uri url, {
     required List<String> files,

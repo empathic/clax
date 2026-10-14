@@ -28,7 +28,8 @@ import 'host_protocol.dart';
 /// 4. tells the surface it is hidden again, so the draft's page idles
 ///    until the next inspection replaces it.
 ///
-/// A test run ([runTests]) goes the same way with `claxHost.runTests`.
+/// A test run ([runTests]) goes the same way with `claxHost.runTests`, and
+/// a migration run ([runMigration]) with `claxHost.runMigration`.
 /// Inspections and test runs go one at a time, in the order asked; a later
 /// one waits for the earlier one to end. A cancel ends the call at once with
 /// [InspectorError] `cancelled`. The surface is made on the first
@@ -108,6 +109,34 @@ class WebViewInspector implements Inspector {
     );
     if (m.error case final why?) throw InspectorError(why);
     return TestRun(passed: m.passed, failed: m.failed, skipped: m.skipped);
+  });
+
+  /// Each migration run loads [url] as an inspection does (steps 1, 2 and
+  /// 4), then calls `claxHost.runMigration` and waits for its `migration`,
+  /// at most [total] plus [answerLimit].
+  @override
+  Future<MigrationRun> runMigration(
+    Uri url, {
+    String file = 'migrate.js',
+    required int from,
+    required int to,
+    Duration total = const Duration(seconds: 30),
+    Future<void>? cancelled,
+  }) => _queued(cancelled, () async {
+    final (m, _) = await _ask<MigrationMsg>(
+      url,
+      RunMigration(
+        file: file,
+        from: from,
+        to: to,
+        totalMs: total.inMilliseconds,
+      ),
+      total + answerLimit,
+      cancelled,
+    );
+    return m.ok
+        ? const MigrationRun.passed()
+        : MigrationRun.failed(m.error ?? 'the migration failed');
   });
 
   /// Runs [work] after every call before it has ended; a cancel before its

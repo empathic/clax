@@ -165,6 +165,70 @@ void main() {
     );
   });
 
+  test('a migration run loads the URL, asks runMigration after ready and '
+      'returns ok, or the error the page gave', () async {
+    var f = inspector.runMigration(
+      _url(),
+      from: 2,
+      to: 3,
+      total: const Duration(seconds: 20),
+    );
+    await _settle();
+    final s = surfaces.single;
+    expect(s.loads, [_url()]);
+    s.push(_ready());
+    await _settle();
+    expect(s.js, [const RunMigration(from: 2, to: 3, totalMs: 20000).toJs()]);
+    // Another call's answer is not taken.
+    s.push(const TestsMsg(passed: 1, failed: [], skipped: 0));
+    s.push(const MigrationMsg.ok());
+    final r = await f;
+    expect((r.ok, r.error), (true, null));
+    expect(s.visibility, [true, false]);
+
+    f = inspector.runMigration(_url(), from: 1, to: 2);
+    await _settle();
+    s.push(_ready());
+    await _settle();
+    s.push(const MigrationMsg.failed('the migration failed: boom'));
+    final no = await f;
+    expect((no.ok, no.error), (false, 'the migration failed: boom'));
+  });
+
+  test('a migration run that never answers, or is cancelled, is an '
+      'InspectorError', () async {
+    var f = inspector.runMigration(
+      _url(),
+      from: 1,
+      to: 2,
+      total: const Duration(seconds: 20),
+    );
+    await _settle();
+    surfaces.single.push(_ready());
+    await _settle();
+    clock.advance(const Duration(seconds: 30));
+    await expectLater(
+      f,
+      throwsA(
+        isA<InspectorError>().having(
+          (e) => e.message,
+          'message',
+          contains('did not answer within 30 seconds'),
+        ),
+      ),
+    );
+    final stop = Completer<void>();
+    f = inspector.runMigration(_url(), from: 1, to: 2, cancelled: stop.future);
+    await _settle();
+    stop.complete();
+    await expectLater(
+      f,
+      throwsA(
+        isA<InspectorError>().having((e) => e.message, 'message', 'cancelled'),
+      ),
+    );
+  });
+
   test('every inspection loads a new document in the same surface', () async {
     for (var n = 0; n < 2; n++) {
       final f = inspector.inspect(_url());
