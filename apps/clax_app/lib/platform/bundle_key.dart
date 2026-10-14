@@ -163,7 +163,12 @@ class BundleKey {
 /// not a 32-byte base64url key.
 String? keyFingerprint(String authorKey) {
   if (!RegExp(r'^[A-Za-z0-9_-]{43}$').hasMatch(authorKey)) return null;
-  final raw = base64Url.decode(base64Url.normalize(authorKey));
+  final List<int> raw;
+  try {
+    raw = base64Url.decode(base64Url.normalize(authorKey));
+  } on FormatException {
+    return null;
+  }
   final b32 = base32Upper(Sha256().toSync().hashSync(raw).bytes.sublist(0, 10));
   return [for (var i = 0; i < 16; i += 4) b32.substring(i, i + 4)].join('-');
 }

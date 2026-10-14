@@ -234,16 +234,36 @@ String newLineageId([Random? random]) {
 /// JSON file `<support>/lineages.json` keyed by artifact ID, and each
 /// installed app's original bundle at `<support>/bundles/<aid>.clax`.
 ///
-/// Each write goes to a sibling temporary file renamed into place. Reads
-/// and writes are synchronous inside each call, so two calls in one
-/// isolate never interleave. A missing or unreadable file is an empty
-/// store; an entry that does not parse is left out.
+/// Each write goes to a sibling temporary file renamed into place. The
+/// mutations ([put], [update], [stopUpdates], [forget], [keepBundle]) run
+/// one at a time under one lock and read the file afresh inside it. An
+/// artifact ID once forgotten stays forgotten in this process: a later
+/// [put], [update] or [keepBundle] of it is dropped, so an entry read
+/// before an `artifact_deleted` never brings the app's pin back. Every
+/// user in the process must share one instance.
+///
+/// A missing file is an empty store; an entry that does not parse is left
+/// out of reads and kept in the file. A file that is not a JSON object
+/// reads as empty and sets [damaged]; the next mutation first renames it
+/// to `lineages.json.corrupt-<milliseconds since epoch>` ([setAside]), so
+/// nothing is lost to the rewrite.
 class LineageStore {
   LineageStore(this.support, {DateTime Function()? now})
     : _now = now ?? DateTime.now;
 
   final Directory support;
   final DateTime Function() _now;
+  final _forgotten = <String>{};
+  Future<void> _tail = Future.value();
+
+  /// True when the last read found `lineages.json` unreadable as a JSON
+  /// object; the person's lineages are then missing until it is fixed.
+  bool get damaged => _damaged;
+  var _damaged = false;
+
+  /// Where the last damaged file was moved before a write, or null.
+  File? get setAside => _setAside;
+  File? _setAside;
 
   File get file => File('${support.path}/lineages.json');
 
@@ -260,36 +280,48 @@ class LineageStore {
   Future<LineageEntry?> entry(String aid) async =>
       LineageEntry.fromJson(_readRaw()[aid]);
 
-  /// Saves [entry] as [aid]'s.
-  Future<void> put(String aid, LineageEntry entry) async {
-    final raw = _readRaw();
-    raw[aid] = entry.toJson();
-    _writeRaw(raw);
-  }
+  /// Saves [entry] as [aid]'s (dropped when [aid] was forgotten).
+  Future<void> put(String aid, LineageEntry entry) =>
+      _locked(() async => _put(aid, entry));
+
+  /// Replaces [aid]'s entry by what [change] returns for the entry as it
+  /// is under the lock (null when there is none); a null result leaves it.
+  /// Nothing else writes the store while [change] runs. Dropped when [aid]
+  /// was forgotten.
+  Future<void> update(
+    String aid,
+    Future<LineageEntry?> Function(LineageEntry? current) change,
+  ) => _locked(() async {
+    if (_forgotten.contains(aid)) return;
+    final next = await change(LineageEntry.fromJson(_readRaw()[aid]));
+    if (next != null) _put(aid, next);
+  });
 
   /// Marks [aid]'s lineage `updates: stopped` ("Keep mine"), now.
-  Future<void> stopUpdates(String aid) async {
-    final e = await entry(aid);
-    if (e == null) return;
-    await put(aid, e.copyWith(updatesStopped: true, stoppedAt: _now));
-  }
+  Future<void> stopUpdates(String aid) => update(
+    aid,
+    (e) async => e?.copyWith(updatesStopped: true, stoppedAt: _now),
+  );
 
   /// Removes [aid]'s entry and its kept bundle (on `artifact_deleted`).
-  Future<void> forget(String aid) async {
-    final raw = _readRaw();
+  Future<void> forget(String aid) => _locked(() async {
+    _forgotten.add(aid);
+    final raw = _readForWrite();
     if (raw.remove(aid) != null) _writeRaw(raw);
     final kept = bundleFile(aid);
     if (kept.existsSync()) kept.deleteSync();
-  }
+  });
 
-  /// Keeps [bytes] as [aid]'s original bundle, replacing any kept one.
-  Future<void> keepBundle(String aid, Uint8List bytes) async {
+  /// Keeps [bytes] as [aid]'s original bundle, replacing any kept one
+  /// (dropped when [aid] was forgotten).
+  Future<void> keepBundle(String aid, Uint8List bytes) => _locked(() async {
+    if (_forgotten.contains(aid)) return;
     final target = bundleFile(aid);
     target.parent.createSync(recursive: true);
     final tmp = File('${target.path}.tmp');
     tmp.writeAsBytesSync(bytes, flush: true);
     tmp.renameSync(target.path);
-  }
+  });
 
   /// [aid]'s kept original bundle, byte for byte, or null.
   Future<Uint8List?> keptBundle(String aid) async {
@@ -300,15 +332,59 @@ class LineageStore {
     }
   }
 
-  Map<String, Object?> _readRaw() {
+  Future<T> _locked<T>(Future<T> Function() f) {
+    final run = _tail.then((_) => f());
+    _tail = run.then<void>((_) {}, onError: (Object _) {});
+    return run;
+  }
+
+  void _put(String aid, LineageEntry entry) {
+    if (_forgotten.contains(aid)) return;
+    final raw = _readForWrite();
+    raw[aid] = entry.toJson();
+    _writeRaw(raw);
+  }
+
+  /// The file's map. A file that exists but cannot be read is empty here,
+  /// or throws when [strict].
+  Map<String, Object?> _readRaw({bool strict = false}) {
+    final List<int> bytes;
     try {
-      final j = jsonDecode(file.readAsStringSync());
-      return j is Map<String, Object?> ? j : {};
-    } on FileSystemException {
+      bytes = file.readAsBytesSync();
+    } on PathNotFoundException {
+      _damaged = false;
       return {};
-    } on FormatException {
+    } on FileSystemException {
+      if (strict) rethrow;
       return {};
     }
+    try {
+      final j = jsonDecode(utf8.decode(bytes));
+      if (j is Map<String, Object?>) {
+        _damaged = false;
+        return j;
+      }
+    } on FormatException {
+      // Damaged: below.
+    }
+    _damaged = true;
+    return {};
+  }
+
+  /// The file's map for a mutation: a damaged file is renamed aside first,
+  /// and a file that exists but cannot be read throws rather than being
+  /// overwritten.
+  Map<String, Object?> _readForWrite() {
+    final raw = _readRaw(strict: true);
+    if (_damaged) {
+      final aside = File(
+        '${file.path}.corrupt-${_now().millisecondsSinceEpoch}',
+      );
+      file.renameSync(aside.path);
+      _setAside = aside;
+      _damaged = false;
+    }
+    return raw;
   }
 
   void _writeRaw(Map<String, Object?> raw) {

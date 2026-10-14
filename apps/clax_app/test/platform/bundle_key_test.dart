@@ -142,5 +142,7 @@ void main() {
     expect(base32Upper(utf8.encode('fooba')), 'MZXW6YTB');
     expect(base32Upper(utf8.encode('foobar')), 'MZXW6YTBOI');
     expect(keyFingerprint('short'), isNull);
+    // Non-zero trailing bits are not a canonical 32-byte key.
+    expect(keyFingerprint('${'A' * 42}B'), isNull);
   });
 }
