@@ -62,6 +62,7 @@
     .topbar.working::after { content: ""; position: absolute; left: 0; bottom: -1px; height: 2px; width: 20%; background: var(--agent); animation: sweep 2.4s cubic-bezier(.4,0,.2,1) infinite; }
     @keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(400%); } }
     @media (prefers-reduced-motion: reduce) { .topbar.working::after { animation: none; display: none; } }
-    @media (max-width: 700px) { .who { height: 36px; padding: 0 5px; gap: 0; } .who .sum { display: none; } .who .viewing { padding: 0 5px 0 4px; } }
+    /* At phone width the pill gives way, clipped, before the top bar would scroll sideways. */
+    @media (max-width: 700px) { .who { height: 36px; padding: 0 5px; gap: 0; flex: 0 1 auto; overflow: hidden; } .who .sum { display: none; } .who .viewing { padding: 0 5px 0 4px; } }
   }
 </style>
