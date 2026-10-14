@@ -10,8 +10,11 @@
 // person whose rights read one page seeing only it, frames loaded at their
 // content key, and a guest naming themselves on a phone. A third has a
 // guest show an agent's draft in the frame, at its draft URL, which no
-// content key guards. With CLAX_E2E_SHOTS
-// set it writes screenshots to target/hosted-shots/.
+// content key guards. A fourth has a member's agent token connect over
+// /mcp/json as an MCP client, the owner's Send menu name it as the
+// member's, who approves first, and the member allow the owner from the
+// approval card in their own inbox. With CLAX_E2E_SHOTS set it writes
+// screenshots to target/hosted-shots/.
 import { createServer } from "node:net";
 import { type Browser, type Page } from "@playwright/test";
 import { NO_KEY_CONFIG, api, expect, publish, publishAs, registerSession, setName, startDaemon, test } from "./fixtures";
@@ -163,6 +166,8 @@ async function shots(p: Page, name: string) {
     for (const scheme of ["light", "dark"] as const) {
       await p.setViewportSize({ width, height: width > 600 ? 820 : 844 });
       await p.emulateMedia({ colorScheme: scheme });
+      // The scheme's colours transition in: photographed once they are in.
+      await p.evaluate(() => Promise.all(document.getAnimations().filter(a => a instanceof CSSTransition).map(a => a.finished.catch(() => {}))));
       await p.screenshot({ path: `../target/hosted-shots/${name}-${width}-${scheme}.png` });
     }
   }
@@ -288,6 +293,84 @@ test("a guest on a page shared by link sees an agent drafting and shows the draf
     const url = new RegExp(`(${artifact.id}\\.localhost:\\d+|/c/${artifact.id})/draft/a_[^/]+/[A-Za-z0-9_-]{22}/`);
     await expect(guest.locator("iframe.frame")).toHaveAttribute("src", url);
     await expect(guest.frameLocator("iframe.frame").locator("[data-clax-draft-changed]")).toHaveText("Ship the beta in May");
+  } finally {
+    await d.stop();
+  }
+});
+
+/** An MCP client of agent token `token` on `origin`'s /mcp/json, named `name`: its tool calls, in its session. */
+async function tokenAgent(origin: string, token: string, name: string) {
+  const headers: Record<string, string> = { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${token}` };
+  const rpc = async (id: number, method: string, params: unknown) => {
+    const r = await fetch(`${origin}/mcp/json`, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id, method, params }) });
+    expect(r.status, await r.clone().text()).toBe(200);
+    return r;
+  };
+  const init = await rpc(1, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name, version: "1" } });
+  headers["mcp-session-id"] = init.headers.get("mcp-session-id")!;
+  return {
+    async call(tool: string, args: unknown): Promise<{ isError?: boolean; text: string }> {
+      const r = await (await rpc(2, "tools/call", { name: tool, arguments: args })).json();
+      return { isError: r.result?.isError, text: (r.result?.content ?? []).map((c: { text?: string }) => c.text ?? "").join("") };
+    },
+  };
+}
+
+test("a member's token agent is named in the owner's Send menu, and the member allows the owner from their inbox", async ({ browser }) => {
+  const { d, origin } = await hostedDaemon();
+  try {
+    const budget = (await publish(d.base, d.token, "Budget", { "index.html": "<title>Budget</title><main><h1>Budget</h1><p>Rows</p></main>" })).artifact;
+    const owner = await page(browser);
+    await owner.goto(`${origin}/setup?secret=${encodeURIComponent(SECRET)}`);
+    await owner.getByLabel("Your name").fill("Ada");
+    await owner.getByRole("button", { name: "Create the first person" }).click();
+    await owner.waitForURL(`${origin}/`);
+    const made = await owner.evaluate(async () => {
+      const r = await fetch("/api/people/invites", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Sam" }) });
+      return (await r.json()).invite.url as string;
+    });
+    const sam = await page(browser);
+    await sam.goto(made);
+    await sam.getByRole("button", { name: "Join as Sam" }).click();
+    await sam.waitForURL(`${origin}/`);
+    const token = await sam.evaluate(async () => {
+      const r = await fetch("/api/hosted/agent-tokens", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ label: "sam-laptop" }) });
+      return (await r.json()).token as string;
+    });
+    const agent = await tokenAgent(origin, token, "summary-writer");
+    expect((await agent.call("watch", { url_or_id: budget.id })).isError).toBeFalsy();
+
+    // The owner comments; the Send menu names Sam's agent, and that Sam approves first.
+    await owner.goto(`${origin}/a/${budget.id}`);
+    const tid = await owner.evaluate(async id => {
+      const form = new FormData();
+      form.set("anchor", JSON.stringify({ kind: "element", selector: "main > h1", quote: "Budget", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" }));
+      form.set("body", "Total the rows, please.");
+      form.set("version", "1");
+      const r = await fetch(`/api/artifacts/${id}/threads`, { method: "POST", body: form });
+      return (await r.json()).thread.id as string;
+    }, budget.id);
+    await owner.goto(`${origin}/a/${budget.id}?thread=${tid}`);
+    const card = owner.locator(`.thread-card[data-thread="${tid}"]`);
+    await card.getByRole("button", { name: "Choose the agent" }).click();
+    const menu = card.getByRole("menu");
+    const samItem = menu.getByRole("group", { name: "Sam's agents" }).getByRole("menuitemradio");
+    await expect(samItem.locator(".send-name")).toHaveText("summary-writer");
+    await expect(samItem.locator(".send-first")).toHaveText("Sam approves first");
+    await shots(owner, "send-menu-owner");
+    await samItem.click();
+    await card.getByRole("button", { name: "Send to summary-writer (Sam's)" }).click();
+    await expect(card.locator(".waiting")).toHaveText("waiting for Sam's approval");
+    expect((await agent.call("comments_read", { url_or_id: budget.id, thread_id: tid })).text).not.toContain("Total the rows");
+
+    // Sam's inbox holds the approval card; he allows the owner for the thread.
+    await sam.goto(`${origin}/inbox`);
+    const acard = sam.locator("article.acard", { hasText: "Total the rows, please." });
+    await expect(acard.locator(".agent")).toHaveText("summary-writer");
+    await shots(sam, "inbox-approval-member");
+    await acard.getByRole("button", { name: "Allow this thread, including later replies" }).click();
+    await expect(acard.locator(".outcome")).not.toBeEmpty();
+    await expect.poll(async () => (await agent.call("comments_read", { url_or_id: budget.id, thread_id: tid })).text).toContain("Total the rows, please.");
   } finally {
     await d.stop();
   }

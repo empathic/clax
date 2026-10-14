@@ -10,6 +10,10 @@
 //   second browser, and Sam signs a third browser in with a sign-in link;
 // - Sam mints an agent token in the browser, and an agent with it reaches
 //   `/mcp`, publishes, and is refused what Sam's rights do not allow;
+// - the owner sends a thread to Sam's agent; the approval card reaches
+//   Sam's open inbox live, over the WebSocket stream; Sam allows the
+//   thread there and the agent then reads the comment; Sam narrows the
+//   agent's session and it is refused what the narrowing leaves out;
 // - a page's content is served on the content origin at its keyed URL, and
 //   never on the public origin or without its key;
 // - a guest with the link of a page shared for comments names themselves
@@ -189,6 +193,14 @@ async function postThread(p, aid, body) {
   }, [aid, body]);
 }
 
+/** `p`'s browser's same-origin JSON call: its status and body. */
+async function call(p, method, path, body) {
+  return p.evaluate(async ([m, url, b]) => {
+    const r = await fetch(url, { method: m, headers: { "content-type": "application/json" }, body: b === undefined ? undefined : JSON.stringify(b) });
+    return { status: r.status, body: await r.json().catch(() => null) };
+  }, [method, path, body]);
+}
+
 /** The content frame of `id`'s version `n`, at its key on `content`. */
 async function contentFrame(page, content, id, n) {
   const url = new RegExp(`^${content.replace(/[.]/g, "\\.")}/c/${id}/v/${n}/k/[0-9a-f]{32}/$`);
@@ -324,6 +336,55 @@ async function main() {
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
     });
     check(forged.status === 401, "an unknown agent token is refused", forged.status);
+
+    // An approval, from the member's inbox, for their agent.
+    const { artifact: harbour } = await api(origin, "/api/artifacts", {
+      method: "POST",
+      body: JSON.stringify({ title: "Harbour log", files: { "index.html": { content: "<title>Harbour log</title><main><h2>Harbour log</h2></main>", encoding: "utf8" } } }),
+    });
+    const watched = await tool(origin, token, "watch", { url_or_id: harbour.id });
+    check(!watched.error, "Sam's agent watches the owner's page", watched.text.slice(0, 300));
+    const agents = (await api(origin, `/api/artifacts/${harbour.id}`)).artifact.participants?.agents ?? [];
+    const samAgent = agents.find((a) => a.name === "e2e");
+    check(samAgent?.handle && samAgent.person?.name === "Sam", "the page's participants name the token's agent, as Sam's", agents);
+    await laptop.goto(`${origin}/inbox`);
+    await laptop.locator("main").waitFor({ timeout: LIMIT });
+    await ada.goto(`${origin}/a/${harbour.id}`);
+    const posted = await ada.evaluate(async (hid) => {
+      const form = new FormData();
+      form.set("anchor", JSON.stringify({ kind: "element", selector: "main", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" }));
+      form.set("body", "Log the spring tide.");
+      form.set("version", "1");
+      const r = await fetch(`/api/artifacts/${hid}/threads`, { method: "POST", body: form });
+      return { status: r.status, body: await r.json().catch(() => null) };
+    }, harbour.id);
+    const tid = posted.body?.thread?.id;
+    check(posted.status === 201 && tid, "the owner comments on the page", posted);
+    const firsts = await call(ada, "GET", `/api/artifacts/${harbour.id}/approves-first?threads=${tid}`);
+    check(firsts.status === 200 && firsts.body?.approves_first?.length === 1 && firsts.body.approves_first[0] !== null, "the Send menu is told Sam approves first", firsts);
+    const sent = await call(ada, "POST", `/api/artifacts/${harbour.id}/threads/${tid}/send`, { to: samAgent.handle });
+    check(sent.status === 200, "the owner sends the thread to Sam's agent", sent);
+    const withheld = await tool(origin, token, "comments_read", { url_or_id: harbour.id, thread_id: tid });
+    check(!withheld.text.includes("Log the spring tide."), "the agent reads the owner's comment withheld before Sam decides", withheld.text.slice(0, 300));
+    const card = laptop.locator("article.acard", { hasText: "Log the spring tide." });
+    await card.waitFor({ timeout: LIMIT });
+    check((await card.locator(".agent").textContent()) === "e2e", "the approval card reaches Sam's open inbox live, naming the agent");
+    await shot(laptop, "member-inbox-approval");
+    await card.getByRole("button", { name: "Allow this thread, including later replies" }).click();
+    await card.locator(".outcome").filter({ hasText: /./ }).waitFor({ timeout: LIMIT });
+    const got = await until("the agent reads the comment once Sam allows the thread", async () => {
+      const r = await tool(origin, token, "comments_read", { url_or_id: harbour.id, thread_id: tid });
+      return r.text.includes("Log the spring tide.") && r;
+    });
+    check(!got.error, "the agent receives the comment Sam allowed from the inbox");
+    const narrowed = await call(laptop, "PUT", `/api/agents/${samAgent.handle}/narrow`, {
+      access: [{ type: "clax-comments", actions: ["read"], locations: [harbour.id] }],
+    });
+    check(narrowed.status === 200, "Sam narrows the agent's session to reading comments on one page", narrowed);
+    const refusedRead = await tool(origin, token, "read", { url_or_id: harbour.id });
+    check(refusedRead.error && refusedRead.text.includes("not_permitted"), "the narrowed agent session is refused reading the page", refusedRead.text.slice(0, 300));
+    const stillComments = await tool(origin, token, "comments_read", { url_or_id: harbour.id, thread_id: tid });
+    check(stillComments.text.includes("Log the spring tide."), "the narrowed session still reads the comments its narrowing keeps", stillComments.text.slice(0, 300));
 
     // Content: on the content origin at its key, nowhere else.
     await ada.goto(`${origin}/a/${id}`);
