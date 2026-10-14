@@ -423,13 +423,18 @@ def seed_inbox(port, token, cfg, made, sessions, client):
     and sends it; agents reply on those threads round-robin and publish
     versions of those artifacts addressing them, 20 requests in flight;
     agents ask questions. Replies are spread over many threads because each
-    reply's response carries its whole thread."""
+    reply's response carries its whole thread. A thread's replies and
+    versions come from the session that published its artifact: a sent
+    thread is taken by that agent, and another agent's reply is refused
+    (409 `thread_taken`)."""
     c = Client(port, token)
     st, d, _, _ = c.req("GET", "/api/viewers/me", headers=owner_cookie(port, token), auth=False)
     expect(st == 200, f"no owner viewer: {st} {d[:200]!r}")
     n_threads = cfg["inbox_threads"]
     expect(len(made) >= 10 + n_threads, "too few artifacts for the inbox threads")
     threads = []
+    # Artifact i was published by sessions[i % len(sessions)].
+    owner_of = lambda j: sessions[(10 + j) % len(sessions)]
     for aid, tids in made[10:10 + n_threads]:
         tid = tids[0]
         st, d, _, _ = c.req("POST", f"/api/artifacts/{aid}/threads/{tid}/comments", {"body": "please fix the header"})
@@ -442,7 +447,7 @@ def seed_inbox(port, token, cfg, made, sessions, client):
         aid, tid = threads[k % len(threads)]
         st, d, _, _ = client().req("POST", f"/api/artifacts/{aid}/threads/{tid}/comments",
                                    {"body": f"note {k} about the header", "author_kind": "agent"},
-                                   {"x-clax-session": sessions[k % len(sessions)]})
+                                   {"x-clax-session": owner_of(k % len(threads))})
         expect(st == 201, f"agent reply: {st} {d[:200]!r}")
 
     per = cfg["inbox_versions"] // len(threads)
@@ -455,7 +460,7 @@ def seed_inbox(port, token, cfg, made, sessions, client):
                                  {"if_version": n, "note": f"header pass {n}", "addresses": [tid],
                                   "files": {"index.html": {"content": f"<main><h2>Quarterly goals</h2><p>{n}</p></main>",
                                                            "encoding": "utf8"}}},
-                                 {"x-clax-session": sessions[i % len(sessions)]})
+                                 {"x-clax-session": owner_of(i)})
             expect(st == 201, f"version: {st} {d[:200]!r}")
 
     with ThreadPoolExecutor(20) as ex:
