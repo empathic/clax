@@ -536,7 +536,9 @@ change in progress to land"), from the make service's busy state.
 7. When `migrate.js` exists, the app's documents are snapshotted (§8.4),
    then it runs once more, on the live app at the new version, in the
    migration view (§8.3). If it fails, the documents are restored from the
-   snapshot and the app to `base` (`restoreVersion`), and the sheet says
+   snapshot and the app to `base`: `base`'s files, title, icon and
+   capabilities published again, pinned to the update's version (a
+   `restoreVersion` would keep the update's declaration), and the sheet says
    "The update's data step failed on your data; <title> is back on v<M>
    with your data as it was." (§9, T7). The snapshot is deleted once the
    run passes or the restore completes.
@@ -595,23 +597,38 @@ because a failed live run is rolled back (§8.4).
 - **Taking it.** Every document of the app at the owner's level
   (`docs:collections`, then the paged list of each collection), written as
   `seed.jsonl`-shaped lines (§4.3) to
-  `<support>/snapshots/<aid>.jsonl` through a temporary file renamed into
-  place, before the live run starts. No cap: it is streamed to the file.
-- **Restoring it.** `docs:batch` in calls of 50: `set` each snapshot
-  document with its data, and `delete` each document the app now has that
-  the snapshot lacks (pinned to the version just read, one re-read and
-  retry on a conflict). Document versions move forward; contents return.
+  `<support>/snapshots/<aid>.jsonl` through a temporary file synced and
+  renamed into place, before the live run starts. No cap: it is streamed
+  to the file. Its sidecar `<aid>.json` holds `base`'s version, title,
+  icon and capabilities, the update's content hash and, once written, the
+  version it published and the snapshot's document count; a snapshot whose
+  count is missing or differs is never restored. A kept snapshot is never
+  overwritten: the app takes no update until it is restored or discarded.
+  The person's private `data/users/<id>/` documents are not in it: the
+  token can neither read nor write them (`docs/contract.md`, "The db
+  tools"), so a `migrate.js` that writes them is not undone.
+- **Restoring it.** `docs:batch` in calls of 50: `delete` each document
+  the app now has that the snapshot lacks, then `set` each snapshot
+  document with its data (deletes first, to stay under the 5,000-document
+  quota), each pinned to the version just read, one re-read and retry on
+  a conflict. Document versions move forward; contents return.
 - **Nothing writes meanwhile.** The update sheet is modal over the app,
-  the update is refused while the agent works on the app (§8.2), the
+  the app's page is unloaded for the whole update (its screen shows an
+  "Updating…" cover), the update is refused while the agent works on the
+  app and holds the agent's worker off it until it ends (§8.2), the
   migration view runs none of the app's own scripts, and
   `Inspector.runMigration` returns only once the run's document is gone
   (§8.3), so between the snapshot and the restore only `migrate.js`
   writes, and nothing once the restore starts.
 - **Interrupted.** A snapshot file still present at the app's start (the
   app or the daemon died during the run or the restore) is restored then,
-  with the version restored to the one before the update when the live
-  version is the update's, and the person is told once ("<title>'s update
-  was interrupted; it is back on v<M> with your data as it was").
+  with the version put back to `base` as in §8.2 step 7, only when the
+  sidecar shows the live version is still the one the update published
+  and no restore of it failed before; the person is told once
+  ("<title>'s update was interrupted; it is back on v<M> with your data as
+  it was"). Otherwise documents may have been written since, so the
+  snapshot is kept and the person chooses: **Restore** (documents back to
+  before the update) or **Discard**.
 
 ## 9. Threats
 
