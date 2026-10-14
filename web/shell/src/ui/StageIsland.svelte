@@ -5,30 +5,18 @@
   // and an older one shown are said in the top bar (decided: Q12). Shown
   // once the artifact is loaded and the frame mode decided. A spectator (no
   // live seat free, spec 2026-10-11-clax-dev-hosted-design §16.1) sees a
-  // banner saying so, with Join live once a seat is free.
+  // banner saying so, with Join live once a seat is free. The drafts' banner
+  // and the spectator's are lazy chunks (view/drafts.ts, view/spectator.ts),
+  // loaded the first time there is a draft or the view is a spectator.
   import type { Component } from "svelte";
   import { fromStore } from "svelte/store";
   import { INDEX_FILE } from "../../../bridge/src/protocol";
   import { registerShield } from "../caps/gesture";
   import { shellPath } from "../route";
   import { type ArtifactController, viewReady } from "../view/artifact-controller";
-  import { bannerText } from "../view/draft-model";
-  import { agentNames } from "../view/working-model";
   import Composer from "./Composer.svelte";
-  import DraftBanner from "./DraftBanner.svelte";
   import Pins from "./Pins.svelte";
   import PromptDialog from "./PromptDialog.svelte";
-
-  /** What a spectator is told (spec 2026-10-11-clax-dev-hosted-design
-   * §16.1): a seat released for want of input says so, rather than that
-   * the artifact is full. */
-  const spectatorText = (code: string) => code === "seat_idle"
-    ? "You were away, so live activity is paused."
-    : "Lots of people are here, so you're viewing: comments and live activity are paused.";
-  /** Join live shows always after a seat went idle (the viewer's next input
-   * asks for it anyway), else once a snapshot says a seat this viewer may
-   * take is free. */
-  const offersJoin = (sp: { code: string; joinable: boolean }) => sp.code === "seat_idle" || sp.joinable;
 
   // An island's controller is fixed for its lifetime: the mount passes it once.
   let { ctl }: { ctl: ArtifactController } = $props();
@@ -37,12 +25,9 @@
   const s = $derived(view.current);
   const shown = $derived(ctl.shown(s));
   const missing = $derived(ctl.missing(s));
-  // Agents' drafts (hosted spec §16.4), each named as the working signal names its agent.
-  const draftBanner = $derived.by(() => {
-    if (!s.drafts.length) return null;
-    const names = agentNames(s.working, s.agents);
-    return bannerText(s.drafts, s.showDraft, s.draftChanged, shown, (h, harness) => names.get(h) ?? harness);
-  });
+  // Agents' drafts (hosted spec §16.4): the list names one only once their
+  // code (view/drafts.ts, with the banner) has loaded.
+  const drafts = $derived(s.drafts.length ? ctl.drafts : null);
   // The group's threads, until this viewer looks at one after its version came out.
   const addressed = $derived.by(() => {
     const d = s.decided;
@@ -59,6 +44,9 @@
     loading = true;
     import("./KeysSheet.svelte").then(m => { KeysSheet = m.default; }, () => ctl.sheetFailed()).finally(() => { loading = false; });
   });
+  // A spectator's banner loads with spectator mode, the first time the view is one.
+  let SpectatorBanner: Component<{ code: string; joinable: boolean; onJoin(): void }> | null = $state(null);
+  $effect(() => { if (s.spectator && !SpectatorBanner) import("../view/spectator").then(m => { SpectatorBanner = m.SpectatorBanner; }, () => {}); });
   // The shield is registered while it is shown, and unregistered as it goes.
   const shield = (el: HTMLElement) => {
     registerShield(el);
@@ -79,14 +67,11 @@
        newest-kind last, so no two of them cover each other (theme.css .stage-foot). -->
   <div class="stage-foot">
     {#if s.hint}<p class="gesture-hint" role="status">{s.hint}</p>{/if}
-    {#if draftBanner && !s.deleted}
-      <DraftBanner text={draftBanner} onShow={a => ctl.showDraftOf(a)} onBack={() => ctl.backFromDraft()} />
+    {#if drafts && !s.deleted}
+      <drafts.Banner {s} {shown} onShow={a => ctl.showDraftOf(a)} onBack={() => ctl.backFromDraft()} />
     {/if}
-    {#if s.spectator}
-      <div class="banner spectate" role="status">
-        <span>{spectatorText(s.spectator.code)}</span>
-        {#if offersJoin(s.spectator)}<button class="primary" onclick={() => ctl.joinLive()}>Join live</button>{/if}
-      </div>
+    {#if s.spectator && SpectatorBanner}
+      <SpectatorBanner code={s.spectator.code} joinable={s.spectator.joinable} onJoin={() => ctl.joinLive()} />
     {/if}
   </div>
   {#if !s.deleted && !missing}

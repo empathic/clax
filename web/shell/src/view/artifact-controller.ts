@@ -2,7 +2,8 @@
 // `state` and call the intent methods; the frame is a FrameHost the mount
 // gives it.
 import { type AnchorResult, INDEX_FILE, type ShellToBridge } from "../../../bridge/src/protocol";
-import { ApiError, type Artifact, type Attention, type SampleStatus, type Version, getArtifact, getDrafts, getSampleStatus, getToken, putLooked, putSeen } from "../api";
+import { ApiError, type Artifact, type Attention, type SampleStatus, type Version, getArtifact, getToken } from "../api";
+import { getDrafts, getSampleStatus, putLooked, putSeen } from "./view-api";
 import { acceptByeFromFrame, acceptFromFrame, helloMatches, sendToFrame } from "../bridge-link";
 import type { Declared } from "../caps/availability";
 import { HINT_MS, frameGesture, onShieldPress, pickHintAllowed, setForwardedKeys } from "../caps/gesture";
@@ -37,7 +38,8 @@ import { setUrl, validHash } from "./url";
 import type { SetNotice } from "./viewer-name-model";
 import type { LiveUi, LiveView } from "./live-view";
 import type { AgentView, Working } from "./working-model";
-import { type DraftChanged, type DraftView, draftSrc, oldestFirst, parseDiff, tintOf } from "./draft-model";
+import type { DraftChanged, DraftView } from "./draft-model";
+import type { Drafts } from "./drafts";
 
 /** `file` is the page the frame opens on, from the shell URL (`index.html` when it names none). */
 /** How long a reopen asked of an unnamed viewer waits for its name. */
@@ -200,7 +202,8 @@ export class ArtifactController {
   // (see FrameGate).
   private readonly gate = new FrameGate();
   private readonly anchorIds = new AnchorHandles();
-  private readonly threadLoad: ThreadSync;
+  /** @internal */
+  readonly threadLoad: ThreadSync;
   // The pick whose start arrived with the viewer's gesture in the frame and
   // opened the composer, while its screenshot is still to come, with when
   // the start arrived.
@@ -640,16 +643,12 @@ export class ArtifactController {
   /** The content frame for the shown version and frame mode, opened on the
    * URL's page at its fragment; none once the artifact is deleted or when the
    * version lacks that page. */
-  private showFrame(): void {
+  /** @internal */
+  showFrame(): void {
     const s = this.s;
     if (!this.frame || !s.data || s.origin === undefined) return;
     if (s.deleted || this.missing()) { this.frame.remove(); return; }
-    const d = this.shownDraft();
-    if (d) {
-      // A draft page never greets: the gate stays closed and no pins are drawn over it.
-      this.frame.show(draftSrc(this.id, d, s.origin, this.draftPage ?? this.startFile, this.tint()), s.origin === null, `draft-${d.agent}-${d.token}-${s.origin ? "o" : "s"}`);
-      return;
-    }
+    if (this.drafts?.showIn(this.frame, s)) return;
     this.frame.show(pageSrc(this.id, this.shown(), s.origin, this.startFile) + this.startHash, s.origin === null, `${this.shown()}-${s.origin ? "o" : "s"}`);
     const fragment = this.frame.takeFragment();
     if (fragment !== null) this.pendingFragment = fragment;
@@ -767,7 +766,8 @@ export class ArtifactController {
     this.life.timeout(() => this.openStream(), STREAM_WAIT_MS);
   }
 
-  private loaded(d: Loaded, attention: Attention | null = d.attention ?? null): void {
+  /** @internal */
+  loaded(d: Loaded, attention: Attention | null = d.attention ?? null): void {
     if (this.disposed) return;
     this.latestKnown = Math.max(this.latestKnown, d.artifact.current_version);
     // The stream opens after the load starts: a working delta already heard is newer.
@@ -950,13 +950,6 @@ export class ArtifactController {
   private listen(): void {
     const onMessage = (e: MessageEvent) => this.hear(e);
     addEventListener("message", onMessage);
-    // A draft page's count of what it tinted (the daemon's tint script),
-    // heard only from the frame while it shows a draft.
-    const onDiff = (e: MessageEvent) => {
-      const changed = parseDiff(e.data);
-      if (changed && this.s.showDraft !== null && this.frame?.el && e.source === this.frame.el.contentWindow) this.set({ draftChanged: changed });
-    };
-    addEventListener("message", onDiff);
     // Whether the pointer is over the content frame (the shell sees a
     // mouseover on the iframe element as it enters, and on another element
     // as it leaves).
@@ -1105,7 +1098,6 @@ export class ArtifactController {
     this.life.defer(() => {
       unforward();
       removeEventListener("message", onMessage);
-      removeEventListener("message", onDiff);
       removeEventListener("mouseover", onOver);
       removeEventListener("keydown", onKey);
       removeEventListener("keyup", onKey);
@@ -1377,16 +1369,7 @@ export class ArtifactController {
     let stop: (() => void) | null = null;
     let gone = false;
     this.stopSpectating = () => { gone = true; stop?.(); this.spectating = false; this.stopSpectating = () => {}; };
-    void import("./spectator").then(m => {
-      if (gone || this.disposed) return;
-      stop = m.watchSnapshots({
-        id: this.id,
-        me: () => this.s.me,
-        code: () => this.s.spectator?.code ?? null,
-        takeSnapshot: (snap, joinable) => this.takeSnapshot(snap, joinable),
-        joinLive: () => this.joinLive(),
-      });
-    }, () => {});
+    void import("./spectator").then(m => { if (!gone && !this.disposed) stop = m.spectate(this); }, () => {});
   }
 
   /** @internal The live topics are live: the view holds a seat again. */
@@ -1402,20 +1385,6 @@ export class ArtifactController {
     if (!this.s.spectator) return;
     this.set(s => ({ spectator: s.spectator && { ...s.spectator, joinable: false } }));
     this.stream?.rejoin();
-  }
-
-  /** @internal A spectator's snapshot: its threads, presence and working
-   * replace the view's, and a newer version is swapped in (on a view of
-   * the latest) or offered (on a pinned one). */
-  takeSnapshot(snap: { artifact: Artifact; versions: Version[]; threads: Thread[]; presence: PresenceView[]; viewing?: number }, joinable: boolean): void {
-    const sp = this.s.spectator;
-    if (!sp || snap.artifact.id !== this.id) return;
-    this.threadLoad.begin()(snap.threads);
-    this.set({ presence: snap.presence, working: snap.artifact.working ?? [], spectator: { ...sp, joinable }, ...typeof snap.viewing === "number" && { viewing: snap.viewing } });
-    const n = snap.artifact.current_version;
-    if (n <= this.latestKnown || !this.s.data) return;
-    if (this.pinnedVersion === null) this.loaded({ ...this.s.data, artifact: snap.artifact, versions: snap.versions }, this.s.attention);
-    else { this.latestKnown = n; this.set({ newer: n }); }
   }
 
   /** The `docs` topic, once the stream is open, for a page that declares `db`. */
@@ -1502,49 +1471,30 @@ export class ArtifactController {
   /** The ticket of the latest `drafts` event (see `clock`). */
   /** @internal */
   draftsAt = 0;
-  /** The page the frame showed when a draft was first shown: the draft is shown at it. */
-  private draftPage: string | null = null;
+  /** The drafts' code (view/drafts.ts), once a listing or event named a draft. */
+  /** @internal */
+  drafts: Drafts | null = null;
+  private draftsLoad: Promise<void> | null = null;
+  /** The latest list heard while the drafts' code loads. */
+  private draftsHeld: DraftView[] = [];
 
-  /** The draft the frame shows, while it is live. */
-  shownDraft(s: ViewState = this.s): DraftView | undefined {
-    return s.showDraft === null ? undefined : s.drafts.find(d => d.agent === s.showDraft);
-  }
-
-  /** The agents' colour for a draft's tint: the theme's `--agent`. */
-  private tint(): string {
-    return tintOf(typeof getComputedStyle === "function" ? getComputedStyle(document.documentElement).getPropertyValue("--agent") : "");
-  }
-
-  /** Shows `agent`'s draft in the frame in place of the version, at the
-   * page the frame shows; comment mode ends (comments go on versions). */
-  showDraftOf(agent: string): void {
-    if (!this.s.drafts.some(d => d.agent === agent) || this.s.showDraft === agent) return;
-    if (this.s.showDraft === null) this.draftPage = this.s.file ?? this.startFile;
-    this.set({ showDraft: agent, draftChanged: null, commenting: false });
-    this.showFrame();
-  }
-
+  /** Shows `agent`'s draft in the frame in place of the version. */
+  showDraftOf(agent: string): void { this.drafts?.show(agent); }
   /** Shows the version again. */
-  backFromDraft(): void {
-    if (this.s.showDraft === null) return;
-    this.draftPage = null;
-    this.set({ showDraft: null, draftChanged: null });
-    this.showFrame();
-  }
+  backFromDraft(): void { this.drafts?.back(); }
 
-  /** The live drafts are `list` now. A shown draft that was revised is
-   * shown again at its new revision; one that ended gives way to the
-   * version. */
+  /** The live drafts are `list` now. Their code loads at the first list
+   * that names one; until then, and while it loads, the latest list waits. */
   draftsChanged(list: DraftView[]): void {
-    const before = this.shownDraft();
-    const drafts = oldestFirst(list);
-    const kept = before !== undefined && drafts.some(d => d.agent === before.agent);
-    this.set(s => ({ drafts, showDraft: kept ? s.showDraft : null }));
-    const now = this.shownDraft();
-    if (before === undefined || now?.token === before.token) return;
-    if (!now) this.draftPage = null;
-    this.set({ draftChanged: null });
-    this.showFrame();
+    if (this.drafts) return this.drafts.changed(list);
+    if (!list.length && !this.draftsLoad) return;
+    this.draftsHeld = list;
+    this.draftsLoad ??= import("./drafts").then(m => {
+      if (this.disposed) return;
+      const d = this.drafts = new m.Drafts(this);
+      this.life.defer(() => d.dispose());
+      d.changed(this.draftsHeld);
+    }, () => { this.draftsLoad = null; });
   }
 
   /** Fetches the live drafts; an answer never replaces a later event's list. */
