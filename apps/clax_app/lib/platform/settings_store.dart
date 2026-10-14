@@ -8,12 +8,16 @@ class ModelChoice {
   final String label;
 }
 
-/// The models Settings offers; the first is the default.
+/// The models Settings offers, fastest first.
 const modelChoices = [
   ModelChoice('claude-haiku-5-5', 'Fast (Haiku 5.5)'),
   ModelChoice('claude-sonnet-5-5', 'Balanced (Sonnet 5.5)'),
   ModelChoice('claude-opus-5-5', 'Best (Opus 5.5)'),
 ];
+
+/// The model a new install uses until the person picks another. A saved
+/// choice is kept.
+const defaultModel = 'claude-sonnet-5-5';
 
 /// The Messages API backend's name, as `AgentBackend.name` gives it.
 const backendMessagesApi = 'messages-api';
@@ -32,7 +36,7 @@ class AppSettings {
     this.dictationCues = true,
     this.claudePath,
     this.appHintSeen = false,
-  }) : model = model ?? modelChoices.first.id;
+  }) : model = model ?? defaultModel;
 
   /// [backendMessagesApi] or [backendClaudeCli]. The CLI is used only where
   /// `ClaudeCliBackend.supported` holds; elsewhere this setting is ignored.
