@@ -36,7 +36,9 @@ class AppSettings {
     this.dictationCues = true,
     this.claudePath,
     this.appHintSeen = false,
-  }) : model = model ?? defaultModel;
+    String? authorName,
+  }) : model = model ?? defaultModel,
+       authorName = cleanAuthorName(authorName);
 
   /// [backendMessagesApi] or [backendClaudeCli]. The CLI is used only where
   /// `ClaudeCliBackend.supported` holds; elsewhere this setting is ignored.
@@ -60,6 +62,10 @@ class AppSettings {
   /// Threads are); it shows once per install.
   bool appHintSeen;
 
+  /// The name an exported bundle carries as its author's (`author.name`),
+  /// trimmed, 1 to [maxAuthorName] characters; null for none.
+  String? authorName;
+
   AppSettings copy() => AppSettings(
     backend: backend,
     model: model,
@@ -67,6 +73,7 @@ class AppSettings {
     dictationCues: dictationCues,
     claudePath: claudePath,
     appHintSeen: appHintSeen,
+    authorName: authorName,
   );
 
   Map<String, Object?> toJson() => {
@@ -76,6 +83,7 @@ class AppSettings {
     'dictation_cues': dictationCues,
     'claude_path': claudePath,
     'app_hint_seen': appHintSeen,
+    'author_name': authorName,
   };
 
   /// Reads [j], keeping the default for any value that is missing, of the
@@ -96,8 +104,24 @@ class AppSettings {
     if (path is String && path.trim().isNotEmpty) s.claudePath = path.trim();
     final hint = j['app_hint_seen'];
     if (hint is bool) s.appHintSeen = hint;
+    final name = j['author_name'];
+    if (name is String && name.trim().runes.length <= maxAuthorName) {
+      s.authorName = cleanAuthorName(name);
+    }
     return s;
   }
+}
+
+/// At most this many characters in [AppSettings.authorName], as a
+/// manifest's `author.name` allows.
+const maxAuthorName = 64;
+
+/// [name] trimmed; null when that is empty or longer than [maxAuthorName]
+/// characters.
+String? cleanAuthorName(String? name) {
+  final t = name?.trim();
+  if (t == null || t.isEmpty || t.runes.length > maxAuthorName) return null;
+  return t;
 }
 
 /// Loads and saves [AppSettings] as JSON in one file.
