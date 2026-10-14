@@ -68,12 +68,4 @@ void main() {
       NavigationDecision.navigate,
     );
   });
-
-  test('the key cookie holds the token for the daemon host and every path', () {
-    final c = WebViewAppSurface.keyWebViewCookie(base, 'tok');
-    expect(
-      (c.name, c.value, c.domain, c.path),
-      ('clax_key_7999', 'tok', '127.0.0.1', '/'),
-    );
-  });
 }

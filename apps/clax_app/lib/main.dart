@@ -35,7 +35,9 @@ import 'platform/settings_store.dart';
 import 'platform/timings.dart';
 import 'platform/voice.dart';
 import 'platform/voice_cues.dart';
+import 'ui/daemon_cookie.dart';
 import 'ui/inspector_surface.dart';
+import 'ui/question_sheet.dart';
 import 'ui/read_consent_dialog.dart';
 import 'ui/webview_surface.dart';
 
@@ -90,14 +92,17 @@ Future<AppServices> platformServices() async {
     Up(:final endpoint) => endpoint.token,
     _ => null,
   };
-  // A restarted daemon has a new token: its key cookie replaces the old one
-  // at once, so an open page's next request carries it.
+  // Every daemon WebView awaits the key cookie before it loads. A restarted
+  // daemon has a new token: its cookie replaces the old one at once, and an
+  // open question page loads again with it (an open app page reloads on the
+  // endpoint's new PID).
+  final keyCookie = DaemonKeyCookie(token: token);
   supervisor.states.listen((s) {
     if (s case Up(:final endpoint)) {
       unawaited(
-        WebViewAppSurface.setWebViewCookie(
-          WebViewAppSurface.keyWebViewCookie(endpoint.base, endpoint.token),
-        ).catchError((Object _) {}),
+        keyCookie
+            .refresh(endpoint.base, endpoint.token)
+            .catchError((Object _) {}),
       );
     }
   });
@@ -133,8 +138,13 @@ Future<AppServices> platformServices() async {
     key: DaemonKey(secureKey, onChanged: supervisor.restart),
     timings: FileTimings(File('${support.path}/timings.jsonl')),
     agentTimings: FileTimings(File('${support.path}/agent-timings.jsonl')),
-    surface: (base) =>
-        WebViewAppSurface(base: base, openExternal: links.open, token: token),
+    surface: (base) => WebViewAppSurface(
+      base: base,
+      openExternal: links.open,
+      keyCookie: keyCookie,
+    ),
+    questionPage: (base) =>
+        WebViewQuestionPage(base: base, keyCookie: keyCookie),
     installId: await loadInstallId(support),
     supportDir: support.path,
     prompts: PromptBuilder(rootBundle),
@@ -142,7 +152,7 @@ Future<AppServices> platformServices() async {
     asked: FileAskedQuestions(File('${support.path}/asked.json')),
     plans: PlanStore(file: File('${support.path}/plans.json')),
     inspector: WebViewInspector(
-      surface: (base) => WebViewAppSurface(base: base, token: token),
+      surface: (base) => WebViewAppSurface(base: base, keyCookie: keyCookie),
     ),
     consentMemory: FileConsentMemory(
       File('${support.path}/agent-read-consent.json'),
