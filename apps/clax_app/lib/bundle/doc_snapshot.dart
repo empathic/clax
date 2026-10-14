@@ -5,6 +5,7 @@ library;
 import 'dart:convert';
 import 'dart:io';
 
+import '../agent/inspector.dart' show MigrationWrite;
 import '../clax/api.dart';
 import 'manifest.dart' show SeedDoc;
 
@@ -149,8 +150,58 @@ class DocSnapshots {
 
   File _meta(String aid) => File('${_dir.path}/$aid.json');
 
-  /// Whether a snapshot of [aid] (or its sidecar) is kept.
-  bool has(String aid) => file(aid).existsSync() || _meta(aid).existsSync();
+  /// [aid]'s write journal: one `{path, before}` line per document the live
+  /// migration wrote, each synced before the write went ahead.
+  File journalFile(String aid) => File('${_dir.path}/$aid.writes');
+
+  /// Whether a snapshot of [aid] (its sidecar, or its journal) is kept.
+  bool has(String aid) =>
+      file(aid).existsSync() ||
+      _meta(aid).existsSync() ||
+      journalFile(aid).existsSync();
+
+  /// Appends [w] to [aid]'s write journal and syncs it to disk; the write
+  /// it stands for goes ahead only once this completes.
+  Future<void> journal(String aid, MigrationWrite w) async {
+    _dir.createSync(recursive: true);
+    final out = journalFile(aid).openSync(mode: FileMode.append);
+    try {
+      out.writeStringSync('${jsonEncode(w.toJson())}\n');
+      out.flushSync();
+    } finally {
+      out.closeSync();
+    }
+  }
+
+  /// [aid]'s write journal, in the order it was written. A last line cut
+  /// short (a crash while it was written) is left out: its write never
+  /// went ahead.
+  List<MigrationWrite> journalEntries(String aid) {
+    final String text;
+    try {
+      text = journalFile(aid).readAsStringSync();
+    } on FileSystemException {
+      return const [];
+    }
+    final lines = text.split('\n');
+    final out = <MigrationWrite>[];
+    for (final (i, line) in lines.indexed) {
+      if (line.isEmpty) continue;
+      final last = i == lines.length - 1;
+      try {
+        final w = MigrationWrite.fromJson(jsonDecode(line));
+        if (w != null) {
+          out.add(w);
+          continue;
+        }
+      } on FormatException {
+        if (last) continue;
+        rethrow;
+      }
+      if (!last) throw FormatException('journal line ${i + 1} is not an entry');
+    }
+    return out;
+  }
 
   /// The apps with a snapshot or a sidecar kept, by artifact ID.
   List<String> pending() {
@@ -274,9 +325,9 @@ class DocSnapshots {
     }
   }
 
-  /// Deletes [aid]'s snapshot and its meta.
+  /// Deletes [aid]'s snapshot, its meta and its journal.
   void discard(String aid) {
-    for (final f in [file(aid), _meta(aid)]) {
+    for (final f in [file(aid), _meta(aid), journalFile(aid)]) {
       if (f.existsSync()) f.deleteSync();
     }
   }
