@@ -2198,3 +2198,161 @@ async fn only_the_creator_reads_what_a_raise_could_give_and_reach() {
         );
     }
 }
+
+// ------------------------------- who removes a raise; narrowing caps raises
+
+impl People {
+    /// The actor and body of each `agent.elevate`, oldest first.
+    fn elevate_rows(&self) -> Vec<(Value, Value)> {
+        let db = rusqlite::Connection::open(self.ts.home.db_path()).unwrap();
+        db.busy_timeout(std::time::Duration::from_secs(10)).unwrap();
+        let mut stmt = db
+            .prepare(
+                "SELECT actor, body FROM audit_events WHERE kind = 'agent.elevate' ORDER BY seq",
+            )
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .unwrap()
+            .map(|x| {
+                let (a, b) = x.unwrap();
+                (
+                    serde_json::from_str(&a).unwrap(),
+                    serde_json::from_str(&b).unwrap(),
+                )
+            })
+            .collect()
+    }
+}
+
+/// Spec §7.4 (the owner's decision "Both may remove"): the agent's person
+/// and the owner each remove a creator's raise of it, recorded with who
+/// removed it; the creator may raise it again; a third person may not, and
+/// learns nothing.
+#[tokio::test]
+async fn the_agents_person_and_the_owner_remove_a_creators_raise_and_no_one_else() {
+    let p = people().await;
+    let lee = p.ts.connect_person("Lee", "clax:collaborator").await;
+    let lee_cookie = format!(
+        "clax_viewer={}",
+        p.ts.store.viewer_of_grant(&lee.grant_id()).unwrap().id
+    );
+    let notes = p.sams_notes().await;
+    let mia_h = p.handle(&p.mia_session);
+    let mia_public =
+        p.ts.store
+            .viewer_of_grant(&p.mia.grant_id())
+            .unwrap()
+            .public_id;
+    let path = format!("/api/agents/{mia_h}/elevate");
+    let sams = format!("{path}?granter={}", p.sam_public);
+    let raise = || p.sams_browser("PUT", &path, Some(json!({"access": update_at(&notes)})));
+    assert_eq!(raise().await.0, 200);
+    // Lee, neither its person nor the owner nor the granter: 404, as for a
+    // raise that is not there, nothing recorded, nothing of the agent shown.
+    let before = p.elevate_rows().len();
+    let (status, v) = p
+        .call(Who::Browser(&lee_cookie), "DELETE", &sams, None)
+        .await;
+    assert_eq!((status, code(&v)), (404, "not_raised"), "{v}");
+    assert!(
+        !v.to_string().contains(&mia_h) && !v.to_string().contains("rights"),
+        "{v}"
+    );
+    assert_eq!(p.elevate_rows().len(), before);
+    let (status, _) = p.mia_publishes(&p.mia_session, &notes, 1).await;
+    assert_eq!(status, 201, "Sam's raise stands");
+    // Mia removes it from her agent: recorded as hers, and it is gone.
+    let (status, v) = p.mias_browser("DELETE", &sams, None).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(
+        v["agent"]["elevations"],
+        json!([]),
+        "her own agent's whole view: {v}"
+    );
+    let (actor, body) = p.elevate_rows().last().unwrap().clone();
+    assert_eq!(body["granter"], json!(p.sam_public));
+    assert_eq!(body["reason"], json!("removed_by_person"));
+    assert!(actor.to_string().contains(&mia_public), "{actor}");
+    let (status, _) = p.mia_publishes(&p.mia_session, &notes, 2).await;
+    assert_eq!(status, 403);
+    // Removed again: nothing there, 404.
+    let (status, v) = p.mias_browser("DELETE", &sams, None).await;
+    assert_eq!((status, code(&v)), (404, "not_raised"), "{v}");
+    // Sam raises it again; the owner removes it, recorded as the owner's.
+    assert_eq!(raise().await.0, 200);
+    let (status, v) = p.owner("DELETE", &sams, None).await;
+    assert_eq!(status, 200, "{v}");
+    let (actor, body) = p.elevate_rows().last().unwrap().clone();
+    assert_eq!(body["reason"], json!("removed_by_owner"));
+    assert_eq!(actor["type"], json!("owner"), "{actor}");
+    assert_eq!(p.stored_rights(&p.mia_session), (None, None));
+    // Mia may remove the owner's raise of her agent too.
+    assert_eq!(
+        p.owner("PUT", &path, Some(json!({"access": update_at(&notes)})))
+            .await
+            .0,
+        200
+    );
+    let (status, _) = p
+        .mias_browser("DELETE", &format!("{path}?granter=owner"), None)
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(p.stored_rights(&p.mia_session), (None, None));
+}
+
+/// Spec §7.2 (the owner's decision "Narrowing caps raises"): the agent's
+/// person's narrowing is the last word: read-only, a raised agent publishes
+/// nothing, not even where it was raised; without it, the raise applies
+/// again.
+#[tokio::test]
+async fn a_persons_narrowing_caps_a_creators_raise() {
+    let p = people().await;
+    let notes = p.sams_notes().await;
+    let mia_h = p.handle(&p.mia_session);
+    let (status, _) = p
+        .sams_browser(
+            "PUT",
+            &format!("/api/agents/{mia_h}/elevate"),
+            Some(json!({"access": update_at(&notes)})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    let narrow = format!("/api/agents/{mia_h}/narrow");
+    let (status, v) = p
+        .mias_browser("PUT", &narrow, Some(json!({"access": "clax:reader"})))
+        .await;
+    assert_eq!(status, 200, "{v}");
+    let (status, v) = p.mia_publishes(&p.mia_session, &notes, 1).await;
+    assert_eq!((status, code(&v)), (403, "not_permitted"), "{v}");
+    // A narrowing that leaves publishing on leaves the raise: Mia turns
+    // only deleting off.
+    let no_delete = json!([
+        {"type": "clax-artifacts", "actions": ["read", "create"], "locations": ["*"]},
+        {"type": "clax-artifacts", "actions": ["update"], "locations": ["own"]},
+        {"type": "clax-comments", "actions": ["read", "write", "reply", "resolve", "send", "watch"], "locations": ["*"]},
+        {"type": "clax-db", "actions": ["read", "write"], "level": "interact", "locations": ["*"]},
+        {"type": "clax-ask", "actions": ["ask"]}]);
+    let (status, v) = p
+        .mias_browser("PUT", &narrow, Some(json!({"access": no_delete})))
+        .await;
+    assert_eq!(status, 200, "{v}");
+    let (status, v) = p.mia_publishes(&p.mia_session, &notes, 1).await;
+    assert_eq!(status, 201, "{v}");
+    // Read-only again, then no narrowing: the raise is back.
+    assert_eq!(
+        p.mias_browser("PUT", &narrow, Some(json!({"access": "clax:reader"})))
+            .await
+            .0,
+        200
+    );
+    let (status, _) = p.mia_publishes(&p.mia_session, &notes, 2).await;
+    assert_eq!(status, 403);
+    assert_eq!(
+        p.mias_browser("PUT", &narrow, Some(json!({"access": null})))
+            .await
+            .0,
+        200
+    );
+    let (status, v) = p.mia_publishes(&p.mia_session, &notes, 2).await;
+    assert_eq!(status, 201, "{v}");
+}

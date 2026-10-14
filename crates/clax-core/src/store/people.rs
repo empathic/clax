@@ -3293,6 +3293,15 @@ pub(crate) mod tests {
         .unwrap();
         let c = st.grant_caller(&gid, Some(&s1.id)).unwrap();
         assert_eq!(c.session.as_deref(), Some(s1.id.as_str()));
+        // The machine's read-only narrowing caps the raise (spec §7.2):
+        // what it turned off stays off; what it leaves on, the raise gives
+        // everywhere.
+        assert!(
+            !c.rights
+                .allows(RightType::Artifacts, "delete", Some("x"), &none)
+        );
+        st.narrow_grant(DAEMON, &gid, None).unwrap();
+        let c = st.grant_caller(&gid, Some(&s1.id)).unwrap();
         assert!(
             c.rights
                 .allows(RightType::Artifacts, "delete", Some("x"), &none)
@@ -3369,11 +3378,20 @@ pub(crate) mod tests {
         st.narrow_agent(DAEMON, &s1.id, Some(reader.clone()))
             .unwrap();
         assert_eq!(st.visibility_generation(), g0 + 1);
-        // The owner's elevation goes beyond Sam's rights, for this agent.
+        // The owner's elevation goes beyond Sam's rights, for this agent,
+        // within what its narrowing leaves on (spec §7.2): read-only, it
+        // deletes nothing; with the narrowing gone, it deletes anywhere.
         let a = st
             .elevate_agent(DAEMON, &s1.id, None, Some(full.clone()))
             .unwrap();
         assert_eq!(st.visibility_generation(), g0 + 2);
+        assert!(
+            !a.rights
+                .unwrap()
+                .allows(RightType::Artifacts, "delete", Some("x"), &none)
+        );
+        let a = st.narrow_agent(DAEMON, &s1.id, None).unwrap();
+        assert_eq!(st.visibility_generation(), g0 + 3);
         assert!(
             a.rights
                 .unwrap()

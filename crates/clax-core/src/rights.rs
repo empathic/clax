@@ -743,11 +743,52 @@ pub fn creator_elevation(
         .intersect(&granter.where_own_holds())
 }
 
+/// Raise `raise` capped by narrowing `narrow` of `base` (spec §7.2, owner
+/// decision "Narrowing caps raises"): an action the narrowing turns off,
+/// one `base` allows somewhere and `narrow` allows nowhere, is off for the
+/// raise too, everywhere; where `narrow` allows a db action only at a lower
+/// level than the raise gives, the raise's level drops to it. A narrowing
+/// is stated within `base`, whose locations a raise exists to exceed, so it
+/// caps a raise by action and level, not by location; an action `base`
+/// never allows is not the narrowing's to turn off.
+pub fn cap_raise(raise: &Rights, base: &Rights, narrow: &Rights) -> Rights {
+    let top = |action: &str| {
+        narrow
+            .0
+            .iter()
+            .filter(|n| n.kind == RightType::Db && n.actions.contains(action))
+            .filter_map(|n| n.level)
+            .max()
+    };
+    let mut out = Vec::new();
+    for a in &raise.0 {
+        for action in &a.actions {
+            if base.allows_somewhere(a.kind, action) && !narrow.allows_somewhere(a.kind, action) {
+                continue;
+            }
+            let level = match (a.level, top(action)) {
+                (Some(l), Some(n)) => Some(l.min(n)),
+                (l, _) => l,
+            };
+            out.push(Access {
+                kind: a.kind,
+                actions: std::iter::once(action.clone()).collect(),
+                locations: a.locations.clone(),
+                level,
+            });
+        }
+    }
+    Rights(merge(out))
+}
+
 /// An agent's effective rights (spec §7.2): `(person ∩ grant narrowing ∩
-/// session narrowing) ∪ elevations`, `elevate` the union of the agent's
-/// elevations (the owner's as given, each creator's through
-/// [`creator_elevation`]). A missing narrowing is no narrowing; the
-/// elevation may exceed `person`.
+/// session narrowing) ∪ (elevations capped by each narrowing)`, `elevate`
+/// the union of the agent's elevations (the owner's as given, each
+/// creator's through [`creator_elevation`]). The grant's narrowing caps a
+/// raise as a narrowing of `person`, the session's as one of `person`
+/// within the grant's ([`cap_raise`]): a narrowing is the last word for its
+/// agent. A missing narrowing is no narrowing; a raise may exceed `person`
+/// in what no narrowing turns off.
 pub fn effective(
     person: &Rights,
     grant_narrow: Option<&Rights>,
@@ -755,11 +796,13 @@ pub fn effective(
     elevate: Option<&Rights>,
 ) -> Rights {
     let mut r = person.clone();
+    let mut up = elevate.cloned();
     for n in [grant_narrow, session_narrow].into_iter().flatten() {
+        up = up.map(|e| cap_raise(&e, &r, n));
         r = r.intersect(n);
     }
-    match elevate {
-        Some(e) => r.union(e),
+    match up {
+        Some(e) => r.union(&e),
         None => r,
     }
 }
@@ -878,6 +921,47 @@ mod tests {
         );
         assert!(serde_json::from_value::<Location>(json!("own:abc")).is_err());
         assert!(Rights::full().allows(RightType::Artifacts, "delete", Some("x"), &own));
+    }
+
+    /// Spec §7.2 (owner decision "Narrowing caps raises"): a narrowing that
+    /// turns an action off turns it off for every raise too; one that turns
+    /// off another action leaves the raise; an action the person never had
+    /// is not the narrowing's; a lowered db level lowers the raise's.
+    #[test]
+    fn a_narrowing_caps_raises_by_action_and_level() {
+        let person = Rights::preset(PRESET_COLLABORATOR).unwrap();
+        let raise = Rights::parse(&json!([
+            {"type": "clax-artifacts", "actions": ["update"], "locations": ["notes"]},
+            {"type": "clax-db", "actions": ["write"], "level": "admin", "locations": ["notes"]}]))
+        .unwrap();
+        let none = |_: &str| false;
+        let reader = Rights::preset(PRESET_READER).unwrap();
+        let e = effective(&person, None, Some(&reader), Some(&raise));
+        assert!(
+            !e.allows(RightType::Artifacts, "update", Some("notes"), &none),
+            "read-only caps it"
+        );
+        assert_eq!(e.db_level("notes", "write", &none), None);
+        let e = effective(&person, Some(&reader), None, Some(&raise));
+        assert!(
+            !e.allows(RightType::Artifacts, "update", Some("notes"), &none),
+            "the machine's too"
+        );
+        // Turning off delete leaves the raised update; interact caps admin.
+        let no_delete = Rights::parse(&json!([
+            {"type": "clax-artifacts", "actions": ["read", "create"], "locations": ["*"]},
+            {"type": "clax-artifacts", "actions": ["update"], "locations": ["own"]},
+            {"type": "clax-db", "actions": ["read", "write"], "level": "interact", "locations": ["*"]}]))
+        .unwrap();
+        let e = effective(&person, None, Some(&no_delete), Some(&raise));
+        assert!(e.allows(RightType::Artifacts, "update", Some("notes"), &none));
+        assert_eq!(e.db_level("notes", "write", &none), Some(Level::Interact));
+        // A reader never had update: narrowing a reader leaves a raise of it.
+        let e = effective(&reader, None, Some(&reader), Some(&raise));
+        assert!(e.allows(RightType::Artifacts, "update", Some("notes"), &none));
+        // No narrowing: the raise as given.
+        let e = effective(&person, None, None, Some(&raise));
+        assert_eq!(e.db_level("notes", "write", &none), Some(Level::Admin));
     }
 
     #[test]
@@ -1243,11 +1327,21 @@ mod tests {
                     narrow.to_json()
                 )
             };
+            let base = person.intersect(&grant);
             every_point(|kind, action, artifact, own| {
                 if with.allows(kind, action, artifact, own) {
                     assert!(
                         without.allows(kind, action, artifact, own),
                         "widened\n{}",
+                        ctx()
+                    );
+                }
+                // Narrowing caps raises: an action the narrowing turns off
+                // is off for the agent everywhere, raised or not.
+                if base.allows_somewhere(kind, action) && !narrow.allows_somewhere(kind, action) {
+                    assert!(
+                        !with.allows(kind, action, artifact, own),
+                        "a raise outlived the narrowing of {kind:?} {action}\n{}",
                         ctx()
                     );
                 }
@@ -1281,6 +1375,8 @@ mod tests {
             );
             let both = a.intersect(&b);
             let eff = effective(&a, Some(&b), None, Some(&up));
+            // B narrows A; the raise is what B's narrowing leaves of it.
+            let capped = cap_raise(&up, &a, &b);
             let ctx = || {
                 format!(
                     "round {round}\nA {}\nB {}\nE {}",
@@ -1305,7 +1401,7 @@ mod tests {
                 );
                 assert_eq!(
                     al(&eff),
-                    (al(&a) && al(&b)) || al(&up),
+                    (al(&a) && al(&b)) || al(&capped),
                     "effective allows\n{}",
                     ctx()
                 );
@@ -1319,7 +1415,7 @@ mod tests {
                     );
                     assert_eq!(
                         dl(&eff),
-                        dl(&a).min(dl(&b)).max(dl(&up)),
+                        dl(&a).min(dl(&b)).max(dl(&capped)),
                         "effective level\n{}",
                         ctx()
                     );

@@ -696,11 +696,25 @@ pub async fn elevate_agent(
     set_elevation(s, audit, handle, granter, Some(access)).await
 }
 
-/// `DELETE /api/agents/<handle>/elevate` (the owner's or an artifact
-/// creator's browser) → `{agent}`, as `PUT` answers it: removes the
-/// caller's own elevation of that agent, from its next request on; another
-/// granter's stays. Recorded as `agent.elevate` with `access` null. 404
-/// `not_raised`, recording nothing, when the caller has no elevation of it.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnraiseQuery {
+    /// Whose raise to remove: a granter's public ID, or `owner`; the
+    /// caller's own when absent.
+    #[serde(default)]
+    granter: Option<String>,
+}
+
+/// `DELETE /api/agents/<handle>/elevate[?granter=<public_id>|owner]` (a
+/// browser; spec §7.4, the owner's decision "Both may remove") → `{agent}`,
+/// as `PUT` answers the caller: removes one granter's elevation of that
+/// agent, the caller's own when `granter` is absent, from its next request
+/// on; other granters' stay. The granter removes their own; the agent's
+/// person, and the owner, remove any granter's (recorded with `reason`
+/// `removed_by_person` or `removed_by_owner`); the granter may raise it
+/// again. Recorded as `agent.elevate` with `access` null. 404 `not_raised`,
+/// recording nothing, when that granter has no elevation of it or the
+/// caller may not remove it, alike.
 pub async fn unelevate_agent(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -708,11 +722,39 @@ pub async fn unelevate_agent(
     caller: Caller,
     audit: DeferredAudit,
     handle: Result<Path<String>, PathRejection>,
+    q: Result<axum::extract::Query<UnraiseQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
-    let granter = browser_person(&caller, "removing a raise")?;
+    let me = browser_person(&caller, "removing a raise")?;
     let handle = path(handle)?;
-    set_elevation(s, audit, handle, granter, None).await
+    let q = q
+        .map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?
+        .0;
+    let target = match q.granter {
+        None => me.clone(),
+        Some(g) if g == "owner" => None,
+        Some(g) => Some(g),
+    };
+    if target == me {
+        return set_elevation(s, audit, handle, me, None).await;
+    }
+    let state = s.clone();
+    let agent = s
+        .store_call(move |st| {
+            let session = agent_of(st, &handle, &None, true)?;
+            let reason = match &me {
+                None => "removed_by_owner",
+                Some(_) if session.person == me => "removed_by_person",
+                // Not theirs to remove: answered as a raise that is not there.
+                Some(_) => return Err(clax_core::store::elevations::not_raised()),
+            };
+            let a = st.remove_raise(&audit.resolve(st)?, &session.id, target.as_deref(), reason)?;
+            let view = agent_view(st, &a)?;
+            announce(&state, json!({"what": "agent_elevated", "agent": view}));
+            Ok(granter_answer(me.as_deref(), &a, view))
+        })
+        .await?;
+    Ok(Json(json!({"agent": agent})))
 }
 
 async fn set_elevation(
