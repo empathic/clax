@@ -27,12 +27,19 @@ import 'agent/runner/scripted_runner.dart';
 import 'agent/runner/turn.dart';
 import 'agent/timings.dart';
 import 'agent/worker.dart';
+import 'bundle/doc_snapshot.dart';
+import 'bundle/exporter.dart';
+import 'bundle/installer.dart' show Installer, forgetDeleted, fromBundleOf;
+import 'bundle/lineage_store.dart';
+import 'bundle/updater.dart';
 import 'clax/api.dart';
 import 'clax/shared_stream.dart';
 import 'daemon/clock.dart';
 import 'daemon/supervisor.dart';
 import 'platform/app_notice.dart';
 import 'platform/background_work.dart';
+import 'platform/bundle_intake.dart';
+import 'platform/bundle_key.dart';
 import 'platform/device/device_consent_dialog.dart';
 import 'platform/device/device_host.dart';
 import 'platform/network_pause.dart';
@@ -46,6 +53,7 @@ import 'ui/app_inspector_permissions.dart';
 import 'ui/app_screen.dart';
 import 'ui/build_notices.dart';
 import 'ui/build_plan.dart';
+import 'ui/bundle_sheets.dart';
 import 'ui/app_surface.dart';
 import 'ui/error_screen.dart';
 import 'ui/host_protocol.dart'
@@ -88,6 +96,9 @@ class AppServices {
     this.background = const NoBackgroundWork(),
     this.notice,
     this.device,
+    this.bundleKey,
+    this.bundleIntake,
+    this.bundleFiles,
     PendingMake? pendingMake,
     int? pid,
   }) : questionPage =
@@ -185,6 +196,18 @@ class AppServices {
   /// The make in flight, offered again at the next launch when the app
   /// ended before it did; in memory unless given.
   final PendingMake pendingMake;
+
+  /// The install's bundle signing key; without it apps are neither shared
+  /// nor imported, and Settings shows no fingerprint.
+  final BundleKey? bundleKey;
+
+  /// The `.clax` files the person opens in Clax from outside it; none
+  /// when null.
+  final BundleIntake? bundleIntake;
+
+  /// Where a shared bundle goes and an imported one comes from; the share
+  /// sheet (the save panel on the Mac) and the file picker when null.
+  final BundleFiles? bundleFiles;
 
   /// The app's process ID, given to the daemon with the session.
   final int pid;
@@ -635,6 +658,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     unawaited(_reminderTaps?.cancel());
     unawaited(_deletions?.cancel());
     unawaited(_questionEvents?.cancel());
+    unawaited(_lineageDeletions?.cancel());
+    unawaited(_intake?.cancel());
     unawaited(_questionViews.close());
     for (final o in _openApps) {
       unawaited(o.actions.close());
@@ -680,6 +705,143 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     title: _titleOf,
   );
 
+  /// The lineages of shared and installed apps, and the update
+  /// snapshots, in the support directory.
+  late final _lineages = LineageStore(Directory(_s.supportDir));
+  late final _snapshots = DocSnapshots(_api, Directory(_s.supportDir));
+
+  /// The updater, where an inspector can check an update.
+  late final Updater? _updater = switch (_s.inspector) {
+    final inspector? => Updater(
+      api: _api,
+      store: _lineages,
+      inspector: inspector,
+      baseUrl: () => _currentEndpoint().base,
+      snapshots: _snapshots,
+      busy: _changing,
+      log: (l) => debugPrint('clax bundles: $l'),
+    ),
+    null => null,
+  };
+
+  /// Sharing and opening apps as `.clax` files; null without a key.
+  late final BundleFlows? _bundles = switch (_s.bundleKey) {
+    final key? => BundleFlows(
+      exporter: Exporter(api: _api, store: _lineages, key: key),
+      installer: Installer(api: _api, store: _lineages, key: key),
+      updater: _updater,
+      files:
+          _s.bundleFiles ??
+          PluginBundleFiles(
+            toFile: defaultTargetPlatform == TargetPlatform.macOS,
+          ),
+      settings: _s.settings,
+      open: _open,
+      toFile: defaultTargetPlatform == TargetPlatform.macOS,
+    ),
+    null => null,
+  };
+  StreamSubscription<ClaxEvent>? _lineageDeletions;
+  StreamSubscription<OpenedBundle>? _intake;
+
+  /// The opened bundles' sheets, one after another.
+  Future<void> _bundleQueue = Future.value();
+  var _bundlesStarted = false;
+
+  /// Whether the agent is changing or building app [aid], so an update
+  /// waits.
+  bool _changing(String aid) =>
+      _changes.containsKey(aid) || buildGoing(_runtime.worker.buildOf(aid));
+
+  /// Runs [show] with the screen up at the time, after the sheets before
+  /// it.
+  void _bundleSheet(Future<void> Function(BuildContext context) show) {
+    _bundleQueue = _bundleQueue.then((_) async {
+      final context = _nav.currentContext;
+      if (context == null || !context.mounted) return;
+      try {
+        await show(context);
+      } on Object catch (e) {
+        debugPrint('clax bundles: $e');
+      }
+    });
+  }
+
+  /// Once the daemon is first up: forgets deleted apps' lineages, puts
+  /// back updates an exit interrupted (telling the person once each), says
+  /// when the lineage file was unreadable, and takes the files opened in
+  /// Clax.
+  void _startBundles() {
+    if (_bundlesStarted) return;
+    _bundlesStarted = true;
+    _lineageDeletions = forgetDeleted(
+      _api.events(types: const ['artifact_deleted']),
+      _lineages,
+      snapshots: _snapshots,
+    );
+    _lineageDeletions!.onError((Object _) {});
+    unawaited(_recoverBundles());
+    final bundles = _bundles;
+    final intake = _s.bundleIntake;
+    if (bundles != null && intake != null) {
+      final android = defaultTargetPlatform == TargetPlatform.android;
+      _intake = intake.opened.listen(
+        (o) => _bundleSheet(
+          (context) => bundles.openFile(
+            context,
+            path: o.path,
+            refused: o.refused,
+            // Android hands over Clax's own cache copy; a Mac file is
+            // the person's.
+            delete: android,
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<void> _recoverBundles() async {
+    try {
+      await _lineages.all();
+      if (_lineages.damaged) {
+        _bundleSheet(
+          (context) => showBundleSheet<bool>(
+            context,
+            const BundleNoticeSheet(
+              title: 'Shared apps',
+              message:
+                  "Clax couldn't read which apps you shared or installed "
+                  'from files. A later file of one of them installs as a '
+                  'separate app.',
+            ),
+          ),
+        );
+      }
+    } on Object catch (e) {
+      debugPrint('clax bundles: $e');
+    }
+    final List<RecoveredUpdate> back;
+    try {
+      back = await _updater?.recoverInterrupted() ?? const [];
+    } on Object catch (e) {
+      debugPrint('clax bundles: $e');
+      return;
+    }
+    for (final r in back) {
+      _bundleSheet(
+        (context) => showBundleSheet<bool>(
+          context,
+          BundleNoticeSheet(
+            title: r.title,
+            message:
+                "${r.title}'s update was interrupted; it is back on "
+                'v${r.backOn} with your data as it was.',
+          ),
+        ),
+      );
+    }
+  }
+
   /// A loop whose runs follow the settings at their start: the tool loop
   /// when [usesToolLoop], else the single call, each waiting out a
   /// background network cut ([onPause], [onResume]). A single call's
@@ -704,6 +866,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       baseUrl: () => _currentEndpoint().base,
       readConsent: _consent,
       clock: _s.clock,
+      fromBundle: fromBundleOf(_lineages),
       singleCall: () {
         final b = backend();
         if (tools(b)) return null;
@@ -759,6 +922,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           _pendingOpen = null;
           scheduleMicrotask(() => _openFromNotice(aid, action: action));
         }
+        _startBundles();
         if (!_offeredLostMake) {
           _offeredLostMake = true;
           scheduleMicrotask(() => unawaited(_offerLostMake()));
@@ -847,6 +1011,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           secureKey: _s.key,
           cliSupported: _s.cliSupported,
           timings: _s.timings.recent(10),
+          fingerprint: _s.bundleKey == null
+              ? null
+              : () async => (await _s.bundleKey!.existing())?.fingerprint,
         ),
       ),
     );
@@ -1577,6 +1744,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         AiPermissions(_api),
       ],
       build: _build,
+      bundles: _bundles,
+      lineage: _lineages.entry,
     );
   }
 
