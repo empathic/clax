@@ -62,6 +62,9 @@ pub struct Actor {
     pub harness: String,
     /// The session's opaque agent handle (`a_…`), safe to show anyone.
     pub agent: String,
+    /// The session's agent name (spec 2026-10-08 §11) when the record was
+    /// made.
+    pub name: Option<String>,
 }
 
 /// A record as anyone may read it: never names the session.
@@ -72,6 +75,10 @@ pub struct WorkingView {
     /// The agent's handle: tells two sessions of one harness apart.
     pub agent: String,
     pub harness: String,
+    /// Its session's agent name when the record was made, which it shows
+    /// as.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub message: Option<String>,
     pub thread_ids: Vec<String>,
     pub started_at: String,
@@ -225,6 +232,7 @@ struct Record {
     key: String,
     agent: String,
     harness: String,
+    name: Option<String>,
     message: Option<String>,
     threads: Vec<String>,
     /// The record has named a thread at some point: losing its last one clears it.
@@ -243,6 +251,7 @@ impl Record {
             key: self.key.clone(),
             agent: self.agent.clone(),
             harness: self.harness.clone(),
+            name: self.name.clone(),
             message: self.message.clone(),
             thread_ids: self.threads.clone(),
             started_at: stamp(self.started_at),
@@ -343,6 +352,7 @@ impl Working {
                     key: crate::new_ulid(),
                     agent: who.agent.clone(),
                     harness: who.harness.clone(),
+                    name: who.name.clone(),
                     message: None,
                     threads: Vec::new(),
                     had_threads: false,
@@ -710,6 +720,7 @@ mod tests {
             harness: "claude".into(),
             // Hex of the session ID, so no view text contains the ID itself.
             agent: format!("a_{}", hex(sid)),
+            name: None,
         }
     }
     fn hex(s: &str) -> String {
@@ -894,6 +905,7 @@ mod tests {
                 session_id: "s2".into(),
                 harness: "codex".into(),
                 agent: "a_c0de".into(),
+                name: None,
             },
             "a1",
             &ids(&["t1", "t2"]),
@@ -981,6 +993,7 @@ mod tests {
                 session_id: "s2".into(),
                 harness: "pi".into(),
                 agent: "a_beef".into(),
+                name: None,
             },
             "a1",
             &[],

@@ -83,6 +83,7 @@ pub fn mark_items(
         session_id: sess.id,
         harness: sess.harness,
         agent: sess.agent_handle,
+        name: sess.name,
     };
     let mut by_artifact: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for i in items {

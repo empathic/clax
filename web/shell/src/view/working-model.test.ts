@@ -14,6 +14,15 @@ describe("working-model", () => {
     expect([two.get("a_1111aaaa"), two.get("a_3333cccc")]).toEqual(["claude 1111", "claude 3333"]);
   });
 
+  it("names agents by their agent name where they have one, the working record's for one not listed", () => {
+    const named = [{ handle: "a_1111aaaa", harness: "claude", name: "summary-writer", live: true }, { handle: "a_2222bbbb", harness: "claude", name: "budget-checker", live: true }];
+    const n = agentNames([w({ agent: "a_4444dddd", name: "fact-finder" })], named);
+    expect([n.get("a_1111aaaa"), n.get("a_2222bbbb"), n.get("a_4444dddd")]).toEqual(["summary-writer", "budget-checker", "fact-finder"]);
+    // Two that share a name (an ended one's, reused) are told apart.
+    const dup = agentNames([], [named[0], { handle: "a_5555eeee", harness: "claude", name: "summary-writer", live: false }]);
+    expect(dup.get("a_5555eeee")).toBe("summary-writer 5555");
+  });
+
   it("reads the summary for one agent, all yours, some yours, a message, and nobody", () => {
     const names = agentNames([w({})], agents);
     const base = { names, open: 3, idle: [], addressed: null, published: null, rally: false, now };

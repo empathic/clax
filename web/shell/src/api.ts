@@ -19,10 +19,11 @@ export type Artifact = {
    * recently used first (spec 2026-10-05 §7.2). */
   live?: { origin: string; path: string; page_url: string; origins?: string[]; merged_into?: string; merged_into_url?: string | null } | null;
 };
-/** `agents` is ordered live first, then most recently active; `live` means a send can reach it. */
-/** An artifact's people and agents. An agent carries its name and its
- * person (`owner` for the owner's agents) from daemons that name agents
- * (spec 2026-10-08-multi-agent-multi-person §10, §11). */
+/** An artifact's people and agents. `agents` is ordered live first, then
+ * most recently active; `live` means a send can reach it. An agent carries
+ * its name, which it shows as, and its person (`owner` for the owner's
+ * agents) from daemons that name agents (spec
+ * 2026-10-08-multi-agent-multi-person §10, §11). */
 export type Participants = { people: { public_id: string; display_name: string | null; seen: number | null }[]; agents: { handle: string; harness: string; live: boolean; name?: string | null; person?: CardPerson }[] };
 export type AttentionSummary = { addressed: string[]; addressed_v: number | null; new_replies: string[]; open_in: string[]; seen: number | null };
 export type Attention = AttentionSummary & { looked: Record<string, string> };
