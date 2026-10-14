@@ -8,16 +8,22 @@
 export const INDEX = "index.html";
 
 const INSPECT_QUERY = "?app=1&inspect=1";
+const MIGRATE_QUERY = "?app=1&inspect=1&migrate=1";
 /** The shell URL query a view carries from page to page: `?app=1` for the
  * Clax app's view, `?app=1&inspect=1` for its inspect view (`app/host.ts`),
- * else none (any other query, `inspect=1` without `app=1` included, stays
- * where it was given). */
+ * `?app=1&inspect=1&migrate=1` for its migration view (the inspect view
+ * whose page runs none of its own markup, `MIGRATE_FRAME`), else
+ * none (any other query, `inspect=1` without `app=1` included, stays where
+ * it was given). */
 export const appQuery = (search: string): string => {
   const q = new URLSearchParams(search);
-  return q.get("app") !== "1" ? "" : q.get("inspect") === "1" ? INSPECT_QUERY : "?app=1";
+  return q.get("app") !== "1" ? "" : q.get("inspect") !== "1" ? "?app=1" : q.get("migrate") === "1" ? MIGRATE_QUERY : INSPECT_QUERY;
 };
-/** Whether `search` asks for the Clax app's inspect view: `inspect=1` with `app=1`. */
-export const inspectQuery = (search: string): boolean => appQuery(search) === INSPECT_QUERY;
+/** Whether `search` asks for the Clax app's inspect view (the migration view
+ * included): `inspect=1` with `app=1`. */
+export const inspectQuery = (search: string): boolean => appQuery(search).startsWith(INSPECT_QUERY);
+/** Whether `search` asks for the Clax app's migration view: `migrate=1` too. */
+export const migrateQuery = (search: string): boolean => appQuery(search) === MIGRATE_QUERY;
 const ID = /^[0-9a-hj-km-np-tv-z]{12}$/;
 
 export type ShellRoute =

@@ -137,7 +137,7 @@ export type ShellToBridge =
    * migration (`harness.ts`): import `file` (relative to the page), call its
    * default export with the page's `db` and `{from, to}`, all within
    * `totalMs`; `clax:migration` answers with the same `requestId`.
-   * Honoured only in the frame named `INSPECT_FRAME`. */
+   * Honoured only in the frame named `MIGRATE_FRAME`. */
   | { type: "clax:migrate"; requestId: string; file: string; from: number; to: number; totalMs?: number }
   | UseResult
   | CallResult
@@ -147,6 +147,12 @@ export type ShellToBridge =
  * the bridge keeps the page's errors from its first script only there. A
  * page can name its own frame so; it then only keeps its own errors. */
 export const INSPECT_FRAME = "clax-inspect";
+/** The name the app's migration view (`?app=1&inspect=1&migrate=1`) gives
+ * its content frame: there the bridge, the document's first script, ends
+ * the page's markup before any of it runs (the rest of the document parses
+ * as hidden text), so only an app bundle's migration (`clax:migrate`) runs
+ * against the page's `db`. */
+export const MIGRATE_FRAME = "clax-migrate";
 /** One of a page's errors since its first script (`inspect.ts`): an `error`
  * event, an unhandled promise rejection, or a `console.error` call. */
 export interface InspectError { kind: "error" | "unhandledrejection" | "console"; text: string }

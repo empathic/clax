@@ -50,7 +50,14 @@ export type HarnessDeps = {
 type Test = { name: string; fn: () => unknown };
 
 const cut = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s);
-const message = (e: unknown) => cut(e instanceof Error ? (e.name && e.name !== "Error" ? `${e.name}: ${e.message}` : e.message) : String(e), ERROR_CHARS);
+/** `e` in words; a value that cannot be put in words (its conversion throws) is said to be so. */
+const message = (e: unknown) => {
+  try {
+    return cut(e instanceof Error ? (e.name && e.name !== "Error" ? `${e.name}: ${e.message}` : e.message) : String(e), ERROR_CHARS);
+  } catch {
+    return "a value that cannot be shown";
+  }
+};
 
 /** `v` in words for a failed expectation. */
 function show(v: unknown): string {
