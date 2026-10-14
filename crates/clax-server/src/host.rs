@@ -1,9 +1,11 @@
 //! Per-artifact origins: `<id>.localhost[:port]` serves only that artifact's content.
 
 use crate::error::ApiError;
+use crate::routes::content::{ContentPolicySet, content_policy, own_host};
+use crate::state::AppState;
 use axum::body::Body;
-use axum::extract::Request;
-use axum::http::Uri;
+use axum::extract::{Request, State};
+use axum::http::{HeaderValue, StatusCode, Uri, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use clax_core::ArtifactId;
@@ -28,16 +30,46 @@ pub fn artifact_host(host: &str) -> Option<ArtifactId> {
 #[derive(Clone, Copy)]
 pub struct OnArtifactOrigin;
 
+/// A service worker script for any registration or update on an artifact's
+/// content: it installs, then unregisters itself, and handles no fetch. A
+/// page's own worker script never runs (a worker answers its frames with
+/// documents that carry no policy), and a worker an artifact registered
+/// before is replaced and removed at its next update check.
+pub const SERVICE_WORKER_KILL_SWITCH: &str = "self.addEventListener(\"install\",()=>self.skipWaiting());\
+self.addEventListener(\"activate\",e=>e.waitUntil(self.registration.unregister()));";
+
+/// The artifact a main-origin path is content of: `/c/<id>/...`. `Some(None)`
+/// for a `/c/...` path whose ID does not parse.
+fn content_path(path: &str) -> Option<Option<ArtifactId>> {
+    let rest = path.strip_prefix("/c/")?;
+    let id = rest.split('/').next().unwrap_or("");
+    Some(ArtifactId::parse(id).ok())
+}
+
 /// On an artifact host: `/healthz`, `/_clax/*` and `/_blob/*` pass through, `/v/*` is
 /// rewritten to `/c/<id>/v/*`, everything else is a JSON 404; other hosts are untouched.
-pub async fn rewrite_artifact_host(mut req: Request<Body>, next: Next) -> Response {
+///
+/// Every response on an artifact host, and every response under `/c/` on any
+/// host, carries the artifact's content policy (`content_policy` with its
+/// lockdown) unless the content route set the policy itself
+/// ([`ContentPolicySet`]): a 404, `/healthz`, `/_clax/*`, a redirect or a
+/// refusal framed or opened by the page is held to the page's own rules,
+/// whatever route answers it now or later. A `/c/` path with no valid ID
+/// gets `sandbox; default-src 'none'`. A request for a service worker script
+/// there (`Service-Worker: script`) is answered with
+/// [`SERVICE_WORKER_KILL_SWITCH`].
+pub async fn rewrite_artifact_host(
+    State(s): State<AppState>,
+    mut req: Request<Body>,
+    next: Next,
+) -> Response {
     let host = req
         .headers()
         .get(axum::http::header::HOST)
         .and_then(|h| h.to_str().ok())
         .unwrap_or("")
         .to_string();
-    if let Some(id) = artifact_host(&host) {
+    let (artifact, on_origin) = if let Some(id) = artifact_host(&host) {
         let path = req.uri().path().to_string();
         let query = req
             .uri()
@@ -50,15 +82,71 @@ pub async fn rewrite_artifact_host(mut req: Request<Body>, next: Next) -> Respon
             } else if path.starts_with("/v/") {
                 format!("/c/{}{}", id.as_str(), path)
             } else {
-                return ApiError::not_found().into_response();
+                return locked(
+                    ApiError::not_found().into_response(),
+                    true,
+                    req.headers(),
+                    &own_host(&s),
+                    Some(&id),
+                );
             };
         let uri: Uri = format!("{new_path}{query}")
             .parse()
             .expect("rewritten uri is valid");
         *req.uri_mut() = uri;
         req.extensions_mut().insert(OnArtifactOrigin);
+        (Some(id), true)
+    } else {
+        match content_path(req.uri().path()) {
+            Some(id) => (id, false),
+            None => return next.run(req).await,
+        }
+    };
+    let own = own_host(&s);
+    let headers = req.headers().clone();
+    if headers
+        .get("service-worker")
+        .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"script"))
+    {
+        let res = (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "text/javascript"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            SERVICE_WORKER_KILL_SWITCH,
+        )
+            .into_response();
+        return locked(res, on_origin, &headers, &own, artifact.as_ref());
     }
-    next.run(req).await
+    let res = next.run(req).await;
+    if res.extensions().get::<ContentPolicySet>().is_some() {
+        return res;
+    }
+    locked(res, on_origin, &headers, &own, artifact.as_ref())
+}
+
+/// `res` with artifact `id`'s lockdown policy added beside any policy it
+/// has (policies only narrow), and `Referrer-Policy: no-referrer`; with no
+/// ID, a policy that loads and runs nothing.
+fn locked(
+    mut res: Response,
+    on_origin: bool,
+    req: &axum::http::HeaderMap,
+    own: &str,
+    id: Option<&ArtifactId>,
+) -> Response {
+    let policy = match id {
+        Some(id) => content_policy(on_origin, req, own, Some(id.as_str())),
+        None => HeaderValue::from_static("sandbox; default-src 'none'"),
+    };
+    res.headers_mut()
+        .append(header::CONTENT_SECURITY_POLICY, policy);
+    res.headers_mut().insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    res
 }
 
 #[cfg(test)]

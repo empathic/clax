@@ -59,9 +59,12 @@ fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
             agent::authenticate,
         ))
         .layer(axum::middleware::from_fn_with_state(
-            state,
+            state.clone(),
             auth::require_credential,
         ))
         .layer(axum::middleware::from_fn(auth::require_api_host))
-        .layer(axum::middleware::from_fn(host::rewrite_artifact_host))
+        .layer(axum::middleware::from_fn_with_state(
+            state,
+            host::rewrite_artifact_host,
+        ))
 }
