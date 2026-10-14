@@ -758,11 +758,17 @@ void main() {
       final cover = find.byKey(const ValueKey('made-cover'));
       expect(cover, findsOneWidget);
       final aid = (await api.listArtifacts()).single.id;
-      surfaces.last.push(
+      final screen = tester.state(find.byType(AppScreen));
+      final surface = surfaces.last;
+      surface.push(
         Ready(artifact: aid, version: 1, latest: 1, file: 'index.html'),
       );
       await tester.pump();
       expect(cover, findsNothing);
+      // The same screen and page stay, uncovered by the ready they saw.
+      expect(tester.state(find.byType(AppScreen)), same(screen));
+      expect(surface.disposed, isFalse);
+      expect(find.byKey(const ValueKey('app-cover')), findsNothing);
       await tester.binding.handlePopRoute();
       await pumpRoute(tester);
       expect(find.byType(AppScreen), findsNothing);
