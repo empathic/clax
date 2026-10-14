@@ -20,7 +20,6 @@ import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/host_protocol.dart' show Ready;
 import 'package:clax_app/ui/making_screen.dart' show MakingScreen;
-import 'package:clax_app/ui/question_sheet.dart';
 import 'package:clax_app/ui/read_consent_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -114,17 +113,6 @@ ModelTurn _calls(List<(String, Map<String, Object?>)> calls) => ModelTurn(
   usage: const Usage(input: 100, output: 50),
 );
 
-class _QuestionPage implements QuestionPage {
-  @override
-  Widget build(BuildContext context) => const SizedBox.expand();
-
-  @override
-  Future<void> load(Uri url) async {}
-
-  @override
-  void dispose() {}
-}
-
 /// Records every [BackgroundWork] call as `method(args…)`, and plays the
 /// platform's launch artifact and taps.
 class _Work implements BackgroundWork {
@@ -150,14 +138,9 @@ class _Work implements BackgroundWork {
   @override
   Future<void> stop() async => calls.add('stop');
 
-  /// What each news notification opens when tapped.
-  final targets = <String>[];
-
   @override
-  Future<void> ready(String title, String text, String artifactId) async {
-    calls.add('ready($title, $text)');
-    targets.add(artifactId);
-  }
+  Future<void> ready(String title, String text, String artifactId) async =>
+      calls.add('ready($title, $text)');
 
   @override
   Future<void> failed(
@@ -216,7 +199,6 @@ void main() {
             surfaces.add(s);
             return s;
           },
-          questionPage: (_) => _QuestionPage(),
           installId: 'install',
           supportDir: dir.path,
           prompts: PromptBuilder(rootBundle),
@@ -415,35 +397,6 @@ void main() {
     expect(surfaces, hasLength(2));
   });
 
-  testWidgets('a question asked in the background is posted; its tap shows '
-      'the question sheet', (tester) async {
-    final aid = api.seedArtifact('Runs', {'index.html': _page});
-    await pumpApp(tester);
-    leave(tester);
-    final session = await api.registerAppSession(installId: 'i', pid: 1);
-    final asked = await api.askQuestion(session.id, [
-      {
-        'question': 'Which unit should distances use?',
-        'header': 'Units',
-        'options': [
-          {'label': 'km', 'description': ''},
-          {'label': 'mi', 'description': ''},
-        ],
-      },
-    ], artifactId: aid);
-    await pumpUntil(tester, () => work.targets.isNotEmpty);
-    expect(work.calls, [
-      'ready(Runs has a question, Which unit should distances use?)',
-    ]);
-    expect(find.byType(QuestionWebSheet), findsNothing);
-    comeBack(tester);
-    work.tap(work.targets.single);
-    await pumpRoute(tester);
-    expect(find.byType(QuestionWebSheet), findsOneWidget);
-    expect(surfaces, isEmpty, reason: 'the sheet, not the app');
-    expect(work.targets.single, 'question:${asked.question.id}');
-  });
-
   testWidgets('a change that lands in the background says so', (tester) async {
     final aid = api.seedArtifact('Runs', {'index.html': _page});
     await pumpApp(tester);
@@ -554,24 +507,15 @@ void main() {
     expect(work.calls.where((c) => c.startsWith('failed')), isEmpty);
   });
 
-  testWidgets('a make the last run never finished is an interrupted tile; '
-      'Make it again runs it', (tester) async {
+  testWidgets('a make the last run never finished is offered again at '
+      'launch', (tester) async {
     // Seeded synchronously: real file futures do not settle in a widget
     // test's body.
     File('${dir.path}/pending-make.json')
         .writeAsStringSync('{"request": "a tracker for my runs"}');
     agent.steps.add((_) async => _made);
     await pumpApp(tester);
-    await pumpUntilShown(tester, 'Interrupted');
-    expect(find.text('Make it again?'), findsNothing, reason: 'no dialog');
-    await settleFiles(tester);
-    expect(
-      File('${dir.path}/pending-make.json').existsSync(),
-      isTrue,
-      reason: 'kept until the person chooses',
-    );
-    await tester.tap(find.text('a tracker for my runs'));
-    await pumpUntilShown(tester, 'Make it again');
+    await pumpUntilShown(tester, 'Make it again?');
     expect(
       find.text('Clax closed before it finished “a tracker for my runs”.'),
       findsOneWidget,
@@ -585,23 +529,14 @@ void main() {
     expect(File('${dir.path}/pending-make.json').existsSync(), isFalse);
   });
 
-  testWidgets('Discard forgets the lost make; closing the question keeps it', (
-    tester,
-  ) async {
+  testWidgets('Not now forgets the lost make', (tester) async {
     File('${dir.path}/pending-make.json')
         .writeAsStringSync('{"request": "laps"}');
     await pumpApp(tester);
-    await pumpUntilShown(tester, 'Interrupted');
-    await tester.tap(find.text('laps'));
-    await pumpUntilShown(tester, 'Discard');
-    await tester.tapAt(const Offset(4, 4));
+    await pumpUntilShown(tester, 'Not now');
+    await tester.tap(find.text('Not now'));
     await pumpRoute(tester);
-    expect(find.text('Interrupted'), findsOneWidget);
-    await tester.tap(find.text('laps'));
-    await pumpUntilShown(tester, 'Discard');
-    await tester.tap(find.text('Discard'));
-    await pumpRoute(tester);
-    expect(find.text('Interrupted'), findsNothing);
+    expect(find.text('Make it again?'), findsNothing);
     expect(agent.runs, 0);
     await settleFiles(tester);
     expect(File('${dir.path}/pending-make.json').existsSync(), isFalse);

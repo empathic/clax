@@ -627,6 +627,30 @@ void main() {
       expect(rig.questionPages.single.loads.single.queryParameters['q'], qid);
     });
 
+    testWidgets('questions asked while the sheet shows one wait for it to '
+        'close; one answered meanwhile is skipped', (tester) async {
+      await pumpApp(tester, _Rig(key: 'sk-ant-x'));
+      await up(tester);
+      final a = await ask(tester);
+      final b = await ask(tester);
+      final c = await ask(tester);
+      expect(rig.questionPages, hasLength(1));
+      expect(rig.questionPages.single.loads.single.queryParameters['q'], a);
+      await rig.api.answerQuestion(b, [
+        const QuestionAnswer(selected: ['mi']).toJson(),
+      ]);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Close'));
+      await tester.pumpAndSettle();
+      expect(sheet, findsOneWidget);
+      expect(rig.questionPages, hasLength(2));
+      expect(rig.questionPages.last.loads.single.queryParameters['q'], c);
+      await tester.tap(find.byTooltip('Close'));
+      await tester.pumpAndSettle();
+      expect(sheet, findsNothing);
+      expect(rig.questionPages, hasLength(2));
+    });
+
     testWidgets('a question in the inbox opens the sheet', (tester) async {
       await pumpApp(tester, _Rig(key: 'sk-ant-x'));
       await up(tester);
