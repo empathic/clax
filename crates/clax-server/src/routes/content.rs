@@ -61,16 +61,22 @@ pub(crate) fn content_policy(
     };
     let policy = match lockdown {
         Some(id) => {
-            let fetchable = if origin.is_some() {
-                "'self'".to_string()
+            // An artifact host serves only GET and HEAD, of the artifact's
+            // content, `/_clax/`, `/_blob/` and `/healthz` (`host.rs`): no
+            // API, so `'self'` names nothing but those.
+            let (loadable, files) = if origin.is_some() {
+                ("'self'".to_string(), "'self'".to_string())
             } else {
-                format!(
-                    "http://{host}/c/{id}/ http://{host}/_clax/bridge.js http://{host}/_clax/bridge/"
+                (
+                    format!(
+                        "http://{host}/c/{id}/ http://{host}/_clax/bridge.js http://{host}/_clax/bridge/"
+                    ),
+                    format!("http://{host}/c/{id}/"),
                 )
             };
             format!(
                 "{frame}; {}",
-                load_policy(&fetchable, &blob_sources(host, own, &port))
+                load_policy(&loadable, &files, &blob_sources(host, own, &port))
             )
         }
         None => frame,
@@ -78,18 +84,19 @@ pub(crate) fn content_policy(
     HeaderValue::from_str(&policy).unwrap_or_else(|_| HeaderValue::from_static("sandbox"))
 }
 
-/// What an artifact's page may load: its own files (`own`, source
-/// expressions), assets under `/_blob/` on the daemon's hosts (`blobs`), and
-/// `data:` and `blob:` URLs. It connects nowhere (`fetch`, XHR, WebSocket,
-/// EventSource, beacons): the network is the `net` capability's, through the
+/// What an artifact's page may load: its own files and the bridge (`own`,
+/// source expressions), assets under `/_blob/` on the daemon's hosts
+/// (`blobs`), and `data:` and `blob:` URLs. It fetches (`fetch`, XHR,
+/// WebSocket, EventSource, beacons, JSON modules) only its own files
+/// (`files`) and assets: the network is the `net` capability's, through the
 /// shell. No plugins, base URL or form posts. Inline and evaluated scripts
 /// and inline styles run, being the page's own.
-fn load_policy(own: &str, blobs: &str) -> String {
+fn load_policy(own: &str, files: &str, blobs: &str) -> String {
     format!(
         "default-src {own} {blobs} data: blob:; \
          script-src {own} 'unsafe-inline' 'unsafe-eval' data: blob:; \
          style-src {own} 'unsafe-inline' data: blob:; \
-         connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+         connect-src {files} {blobs}; object-src 'none'; base-uri 'none'; form-action 'none'"
     )
 }
 
@@ -509,6 +516,12 @@ mod tests {
         assert!(p.contains("http://localhost:7480/c/7q3k9mzx2b4t/ "), "{p}");
         assert!(!p.contains('*') && !p.contains("x;"), "{p}");
         assert!(p.contains("http://127.0.0.1:7480/_blob/"), "{p}");
+        assert!(
+            p.contains(
+                "connect-src http://localhost:7480/c/7q3k9mzx2b4t/ http://localhost:7480/_blob/"
+            ),
+            "{p}"
+        );
         // Without the lockdown (a live page), the framing policy alone.
         assert_eq!(
             content_policy(&None, &h, "localhost:7480", None)

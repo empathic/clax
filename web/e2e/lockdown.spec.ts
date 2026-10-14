@@ -1,14 +1,15 @@
-// An artifact's page loads only its own files, its assets, `data:` and
-// `blob:` URLs, and connects nowhere itself (docs/contract.md, "Security
-// model": the content policy): in both frame modes its direct fetch and an
-// image from another host are refused by the policy, while the bridge, the
-// kit's modules, its own files and the `db` capability (through the shell)
-// still work.
+// An artifact's page loads and fetches only its own files, its assets,
+// `data:` and `blob:` URLs (docs/contract.md, "Security model": the content
+// policy): in both frame modes a fetch of another host or of the daemon's
+// API and an image from another host are refused by the policy, while the
+// bridge, the kit's modules, its own files (fetched too) and the `db`
+// capability (through the shell) still work, and a comment clip inlines the
+// page's own image.
 import { readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Frame } from "@playwright/test";
-import { test, expect, type Daemon, api, openArtifact } from "./fixtures";
+import { test, expect, type Daemon, api, colorStats, last, openArtifact, record } from "./fixtures";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -43,7 +44,7 @@ async function elsewhere(): Promise<{ url: string; hits: () => number; close: ()
   return { url: `http://127.0.0.1:${(s.address() as AddressInfo).port}`, hits: () => hits, close: () => s.close() };
 }
 
-const violations = (f: Frame) => f.evaluate(() => (window as unknown as { violations: string[] }).violations);
+const violations = (f: Frame) => f.evaluate(() => (window as unknown as { violations?: string[] }).violations ?? []);
 
 for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: the page loads its own files and the kit, reaches db through the shell, and cannot fetch or load from elsewhere`, async ({ page: p }) => {
@@ -69,15 +70,15 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       await expect.poll(() => f.locator("#own").evaluate(i => (i as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
       await expect.poll(async () => (await violations(f)).some(v => v.startsWith("img-src ") && v.includes(away.url))).toBe(true);
       expect(away.hits()).toBe(0);
-      // A direct fetch is refused by the policy, to another host and to the
-      // daemon alike.
+      // A fetch reaches the page's own files, and is refused by the policy
+      // anywhere else: another host, the daemon's API and its other routes.
       const fetched = await f.evaluate(async ([a, daemon]) => {
         const tryFetch = (u: string) => fetch(u).then(r => `status:${r.status}`, e => `refused:${(e as Error).name}`);
-        return [await tryFetch(`${a}/x.svg`), await tryFetch(`${daemon}/healthz`)];
+        return [await tryFetch("own.js"), await tryFetch(`${a}/x.svg`), await tryFetch(`${daemon}/api/artifacts`), await tryFetch(`${daemon}/healthz`)];
       }, [away.url, d.base] as const);
-      expect(fetched).toEqual(["refused:TypeError", "refused:TypeError"]);
+      expect(fetched).toEqual(["status:200", "refused:TypeError", "refused:TypeError", "refused:TypeError"]);
       const v = await violations(f);
-      expect(v.filter(x => x.startsWith("connect-src ")).length).toBeGreaterThanOrEqual(2);
+      expect(v.filter(x => x.startsWith("connect-src ")).length).toBeGreaterThanOrEqual(3);
       expect(away.hits()).toBe(0);
       // The bridge carries db through the shell.
       const got = await f.evaluate(async () => {
@@ -91,3 +92,29 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     }
   });
 }
+
+// In sandbox mode every image is cross-origin to the page's opaque origin,
+// so its clips carry placeholders for images (web/bridge/src/clip.ts).
+test("subdomain: a comment clip of the page's own image shows the image", async ({ page: p }) => {
+  const { artifact } = await api(d.base, d.token, "/api/artifacts", {
+    method: "POST",
+    body: JSON.stringify({
+      title: "Clip own image",
+      files: {
+        "index.html": { content: `<!doctype html><title>Pic</title><body style="margin:0;background:#fff"><img id="pic" src="dot.svg" width="120" height="120" alt="dot"></body>`, encoding: "utf8" },
+        "dot.svg": { content: DOT, encoding: "utf8" },
+      },
+    }),
+  }) as { artifact: { id: string } };
+  await record(p);
+  const f = await openArtifact(p, d.base, artifact.id, 1, "subdomain");
+  await expect.poll(() => f.locator("#pic").evaluate(i => (i as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+  await p.getByRole("button", { name: "Comment", exact: true }).click();
+  await expect.poll(() => f.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
+  const fb = (await p.locator("iframe.frame").boundingBox())!;
+  await p.mouse.click(fb.x + 60, fb.y + 60);
+  const pick = await last(p, "clax:pick");
+  expect(pick.clipError).toBeUndefined();
+  expect((await colorStats(p, pick.pickId, [255, 0, 0], 30)).count).toBeGreaterThan(1000);
+  expect(await violations(f)).toEqual([]);
+});
