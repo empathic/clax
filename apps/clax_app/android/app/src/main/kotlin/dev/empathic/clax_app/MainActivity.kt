@@ -11,12 +11,14 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     private var background: BackgroundWorkChannel? = null
     private var notice: AppNoticeChannel? = null
+    private var bundles: BundleIntake? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         background = BackgroundWorkChannel(this, flutterEngine.dartExecutor.binaryMessenger)
         notice = AppNoticeChannel(this, flutterEngine.dartExecutor.binaryMessenger)
         CuesChannel(applicationContext, flutterEngine.dartExecutor.binaryMessenger)
+        bundles = BundleIntake(this, flutterEngine.dartExecutor.binaryMessenger)
         // "nativeLibraryDir" answers the directory holding libclax.so, the
         // embedded clax executable. "openAppSettings" opens this app's page
         // in system settings (its permissions among it) and answers true.
@@ -62,6 +64,7 @@ class MainActivity : FlutterActivity() {
         super.onNewIntent(intent)
         background?.onNewIntent(intent)
         notice?.onNewIntent(intent)
+        bundles?.onNewIntent(intent)
     }
 
     override fun onRequestPermissionsResult(
@@ -87,6 +90,7 @@ class MainActivity : FlutterActivity() {
         // The open app's notice belongs to this activity's screen.
         AppNoticeChannel.clear(this)
         notice?.dispose()
+        bundles?.dispose()
         // Without its Dart run, the service has nothing to keep alive.
         if (isFinishing) {
             val stop = Intent(this, BackgroundRunService::class.java)
