@@ -54,6 +54,7 @@ import 'ui/inspector_surface.dart';
 import 'ui/launcher.dart';
 import 'ui/make_service.dart';
 import 'ui/making_screen.dart';
+import 'ui/question_sheet.dart';
 import 'ui/read_consent_dialog.dart';
 import 'ui/settings_screen.dart';
 import 'ui/theme.dart';
@@ -71,6 +72,7 @@ class AppServices {
     required this.timings,
     required this.agentTimings,
     required this.surface,
+    QuestionPage Function(Uri base)? questionPage,
     required this.installId,
     required this.supportDir,
     required this.prompts,
@@ -88,7 +90,9 @@ class AppServices {
     this.device,
     PendingMake? pendingMake,
     int? pid,
-  }) : pid = pid ?? io.pid,
+  }) : questionPage =
+           questionPage ?? ((base) => WebViewQuestionPage(base: base)),
+       pid = pid ?? io.pid,
        pendingMake = pendingMake ?? PendingMake();
 
   /// Starts and watches the embedded daemon.
@@ -117,6 +121,10 @@ class AppServices {
 
   /// A new page surface for the daemon at `base`.
   final AppSurface Function(Uri base) surface;
+
+  /// A new page for the question sheet on the daemon at `base`; a WebView
+  /// unless given.
+  final QuestionPage Function(Uri base) questionPage;
 
   /// This install's ID, which the daemon finds the app session by.
   final String installId;
@@ -414,6 +422,14 @@ class AgentRuntime {
 ///   tap that launched Clax counts too. The first app screen of an install
 ///   shows the first-run hint ([AppSettings.appHintSeen]); the comment
 ///   bar's Voice is kept as [AppSettings.dictateComments].
+/// - **Questions.** The agent's questions come on [_stream]'s `questions`
+///   topic. A new open question posts "`<title>` has a question" while Clax
+///   is in the background (its tap shows the question sheet); in front it
+///   is left to its own app's screen when that is on top (the shell's
+///   questions sheet and a toast), told in a toast whose View shows the
+///   question sheet over another app, and shown in the question sheet
+///   ([showQuestionSheet]) anywhere else: the making screen, the launcher,
+///   the inbox. The inbox's questions open the sheet too.
 /// - **macOS.** The app owns the menu bar ([ClaxMenuBar]); the open app
 ///   screen registers App › Comment and App › Threads.
 class AppRoot extends StatefulWidget {
@@ -441,6 +457,20 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   StreamSubscription<AppNoticeTap>? _taps;
   StreamSubscription<ReminderTap>? _reminderTaps;
   StreamSubscription<StreamEvent>? _deletions;
+  StreamSubscription<StreamEvent>? _questionEvents;
+
+  /// The `questions` topic's views, for the question sheet.
+  final _questionViews = StreamController<QuestionView>.broadcast();
+
+  /// The questions already seen open, each presented once.
+  final _seenQuestions = <String>{};
+
+  /// The question the sheet shows, while it shows one.
+  String? _sheetQuestion;
+
+  /// A question a notification or the inbox asked to show before the
+  /// daemon was up.
+  String? _pendingQuestion;
 
   /// The device capabilities, asking in a dialog over the app.
   late final DeviceHost? _device = _s.device?.call(
@@ -545,10 +575,10 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     _worker = _runtime.worker.events.listen(_onWorker);
     _builds = _runtime.worker.builds.listen(_buildNotices.onBuild);
     _runtime.attach();
-    _opened = _s.background.opened.listen(_openFromNotice);
+    _opened = _s.background.opened.listen(_onNews);
     unawaited(
       _s.background.launchArtifact().then((aid) {
-        if (aid != null && mounted) _openFromNotice(aid);
+        if (aid != null && mounted) _onNews(aid);
       }),
     );
     if (_s.notice case final notice?) {
@@ -580,6 +610,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     unawaited(_taps?.cancel());
     unawaited(_reminderTaps?.cancel());
     unawaited(_deletions?.cancel());
+    unawaited(_questionEvents?.cancel());
+    unawaited(_questionViews.close());
     for (final o in _openApps) {
       unawaited(o.actions.close());
     }
@@ -696,6 +728,11 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
               unawaited(_device?.forget(aid));
             }
           });
+          _questionEvents = stream.events.listen(_onQuestionEvent);
+        }
+        if (_pendingQuestion case final qid?) {
+          _pendingQuestion = null;
+          scheduleMicrotask(() => _openQuestion(qid));
         }
         if (_pendingOpen case (:final aid, :final action)?) {
           _pendingOpen = null;
@@ -1070,6 +1107,91 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     _open(aid, action: action);
   }
 
+  /// What a tapped news notification names: [questionNews] and a question
+  /// ID for a question, else an app's artifact ID.
+  void _onNews(String target) {
+    if (target.startsWith(questionNews)) {
+      _openQuestion(target.substring(questionNews.length));
+    } else {
+      _openFromNotice(target);
+    }
+  }
+
+  /// The prefix of a question notification's target (an artifact ID never
+  /// holds a colon).
+  static const questionNews = 'question:';
+
+  void _onQuestionEvent(StreamEvent e) {
+    if (e.type != 'question') return;
+    final QuestionView q;
+    try {
+      q = QuestionView.fromJson((e.data['question']! as Map).cast());
+    } on Object {
+      return;
+    }
+    _questionViews.add(q);
+    if (q.status == 'open' && _seenQuestions.add(q.id)) _presentQuestion(q);
+  }
+
+  /// A new open question [q]: in the background a notification; in front,
+  /// nothing over its own app (whose screen tells it), a toast over
+  /// another app, and the question sheet anywhere else.
+  void _presentQuestion(QuestionView q) {
+    final title = q.artifactTitle;
+    final heading = title == null || title.isEmpty
+        ? 'Clax has a question'
+        : '$title has a question';
+    if (!_presence.foreground) {
+      final first = q.questions.firstOrNull?.question ?? '';
+      unawaited(_s.background.ready(heading, first, '$questionNews${q.id}'));
+      return;
+    }
+    final top = _openApps.lastOrNull;
+    if (top != null && top.route.isCurrent) {
+      if (top.aid == q.artifactId) return;
+      final context = _nav.currentContext;
+      if (context == null) return;
+      ScaffoldMessenger.maybeOf(context)
+        ?..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(heading),
+            duration: const Duration(seconds: 4),
+            persist: false,
+            behavior: SnackBarBehavior.floating,
+            action: SnackBarAction(
+              label: 'View',
+              onPressed: () => _openQuestion(q.id),
+            ),
+          ),
+        );
+      return;
+    }
+    _openQuestion(q.id);
+  }
+
+  /// Shows question [qid] in the question sheet, over whatever is on top;
+  /// nothing while the sheet shows one already.
+  void _openQuestion(String qid) {
+    final base = _endpoint.value?.base;
+    final nav = _nav.currentState;
+    if (!_wasUp || base == null || nav == null) {
+      _pendingQuestion = qid;
+      return;
+    }
+    if (_sheetQuestion != null) return;
+    _sheetQuestion = qid;
+    unawaited(
+      showQuestionSheet(
+        nav.context,
+        page: _s.questionPage(base),
+        base: base,
+        questionId: qid,
+        updates: _questionViews.stream,
+      ).whenComplete(() => _sheetQuestion = null),
+    );
+  }
+
   void _onReady(String aid, Ready r) {
     final made = _made;
     if (made == null || made.aid != aid || r.artifact != aid) return;
@@ -1258,6 +1380,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       needsKey: _needsKey,
       stream: _stream,
       onOpenTarget: _openTarget,
+      onOpenQuestion: _openQuestion,
       makes: _makes,
       icons: _icons,
       inspectorPermissions: [
