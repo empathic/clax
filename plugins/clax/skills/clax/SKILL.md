@@ -69,12 +69,11 @@ dark mode, and on a phone:
   relative paths, for example `<link rel="stylesheet" href="style.css">`, and
   published under the same relative path in `files`. Do not use absolute
   `/...` paths or hard-coded hosts.
-- A page loads only its own files, its assets, `data:` and `blob:` URLs, and
-  connects nowhere itself: no scripts, styles, fonts or images from CDNs or
-  other sites, and no `fetch`, `XMLHttpRequest`, `WebSocket` or
-  `EventSource`, not even of its own files (keep data in a script module or
-  in `db`). The daemon's content policy refuses the rest. Data from the web
-  comes through the `net` capability.
+- A page loads and fetches only its own files, its assets, `data:` and
+  `blob:` URLs: no scripts, styles, fonts or images from CDNs or other
+  sites, and no `fetch`, `XMLHttpRequest`, `WebSocket` or `EventSource` to
+  anywhere else. The daemon's content policy refuses the rest. Data from
+  the web comes through the `net` capability.
 
 Minimal skeleton:
 
