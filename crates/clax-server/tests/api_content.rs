@@ -197,7 +197,7 @@ async fn only_the_shell_and_the_artifact_frame_content_on_an_artifact_origin() {
         again.headers()["content-security-policy"]
             .to_str()
             .unwrap()
-            .contains("connect-src 'none'")
+            .contains("connect-src 'self' ")
     );
 }
 
@@ -260,7 +260,16 @@ async fn an_artifacts_content_loads_only_its_own_files_and_connects_nowhere() {
             assert!(d["default-src"].contains(&format!("http://127.0.0.1:{port}/_blob/")));
             assert!(d["default-src"].contains(&"data:".to_string()));
             assert!(d["default-src"].contains(&"blob:".to_string()));
-            assert_eq!(d["connect-src"], ["'none'"], "{csp}");
+            // It fetches its own files and assets, never the API.
+            assert_eq!(
+                d["connect-src"][0],
+                format!("http://{host}/c/{id}/"),
+                "{csp}"
+            );
+            assert!(
+                d["connect-src"][1..].iter().all(|s| s.ends_with("/_blob/")),
+                "{csp}"
+            );
             assert_eq!(d["object-src"], ["'none'"]);
             assert_eq!(d["base-uri"], ["'none'"]);
             assert_eq!(d["form-action"], ["'none'"]);
@@ -282,9 +291,56 @@ async fn an_artifacts_content_loads_only_its_own_files_and_connects_nowhere() {
                 ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
                 "{csp}"
             );
-            assert_eq!(d["connect-src"], ["'none'"], "{csp}");
+            assert_eq!(d["connect-src"][0], "'self'", "{csp}");
+            assert!(
+                d["connect-src"][1..].iter().all(|s| s.ends_with("/_blob/")),
+                "{csp}"
+            );
             assert_eq!(d["form-action"], ["'none'"], "{csp}");
             assert!(!csp.contains("sandbox"), "{csp}");
+        }
+    }
+}
+
+/// What a page may fetch on its own files and its artifact's host takes
+/// only GET and HEAD: nothing there accepts a write.
+#[tokio::test]
+async fn an_artifacts_own_files_and_host_refuse_every_write() {
+    let ts = TestServer::spawn().await;
+    let created = ts.publish("R", &[("index.html", "<p>hi</p>")]).await;
+    let id = created["artifact"]["id"].as_str().unwrap();
+    let host = format!("{id}.localhost:{}", ts.addr.port());
+    for (h, path) in [
+        (None, format!("/c/{id}/v/1/")),
+        (None, format!("/c/{id}/v/1/index.html")),
+        (Some(host.as_str()), "/v/1/".to_string()),
+        (Some(host.as_str()), "/_clax/bridge.js".to_string()),
+        (
+            Some(host.as_str()),
+            "/_blob/01K6AB7D2E3F4G5H6J7K8M9N0P".to_string(),
+        ),
+        (Some(host.as_str()), "/healthz".to_string()),
+        (Some(host.as_str()), "/api/artifacts".to_string()),
+        (Some(host.as_str()), format!("/api/artifacts/{id}/docs/a/b")),
+    ] {
+        for method in [
+            reqwest::Method::POST,
+            reqwest::Method::PUT,
+            reqwest::Method::PATCH,
+            reqwest::Method::DELETE,
+        ] {
+            let mut req = ts
+                .client
+                .request(method.clone(), format!("{}{path}", ts.base))
+                .body("{}");
+            if let Some(h) = h {
+                req = req.header("host", h);
+            }
+            let status = req.send().await.unwrap().status().as_u16();
+            assert!(
+                status == 404 || status == 405,
+                "{method} {h:?}{path}: {status}"
+            );
         }
     }
 }
