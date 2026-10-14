@@ -235,6 +235,7 @@ async fn serves_the_tools_and_registers_the_harness_session() {
             "db_str_replace",
             "db_update",
             "delete",
+            "draft",
             "list",
             "open",
             "pin",

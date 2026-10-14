@@ -6,6 +6,7 @@
 //! the routes and their views reach it through the daemon's state.
 
 pub mod call_ids;
+pub mod drafts;
 pub mod feedback;
 pub mod live;
 pub mod presence;

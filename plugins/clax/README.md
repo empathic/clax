@@ -77,10 +77,10 @@ binary differ.
 
 ## What it adds
 
-- The `clax` MCP server (`clax mcp --agent codex`): twenty-five tools,
+- The `clax` MCP server (`clax mcp --agent codex`): twenty-six tools,
   `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
   `asset_upload`, `status`, `comments_read`, `comments_reply`,
-  `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working`, `ask`,
+  `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working`, `draft`, `ask`,
   and the data tools
   `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`,
   `db_str_replace`, `db_batch`, which Codex names `mcp__clax__<tool>`. The first

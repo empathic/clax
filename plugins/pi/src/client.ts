@@ -704,6 +704,16 @@ export class DaemonClient {
     return this.json(() => `${this.sessionPath()}/working/${id}${q}`, { method: "DELETE" });
   }
 
+  /** `PUT /api/sessions/<sid>/drafts/<id>`: `{draft, note_truncated}`. */
+  putDraft(id: string, body: Record<string, unknown>): Promise<any> {
+    return this.json(() => `${this.sessionPath()}/drafts/${id}`, this.jsonBody("PUT", body));
+  }
+
+  /** `DELETE /api/sessions/<sid>/drafts/<id>`: `{ended}`. */
+  deleteDraft(id: string): Promise<any> {
+    return this.json(() => `${this.sessionPath()}/drafts/${id}`, { method: "DELETE" });
+  }
+
   /** `POST /api/sessions/<sid>/working/renew`: `{renewed}`. Never starts a daemon. */
   renewWorking(): Promise<any> {
     return this.json(() => `${this.sessionPath()}/working/renew`, this.jsonBody("POST", {}), this.discoverFn);

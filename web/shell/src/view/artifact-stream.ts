@@ -189,6 +189,7 @@ export function onArtifactEvent(c: ArtifactController, e: ArtifactEvent): void {
   if (e.type === "version" && e.n > c.latestKnown) { c.latestKnown = e.n; c.set({ newer: e.n }); }
   if (e.type === "artifact_deleted") c.set({ deleted: true });
   if (e.type === "working") { c.workingAt = ++c.clock; c.set({ working: e.working }); }
+  if (e.type === "drafts") { c.draftsAt = ++c.clock; c.draftsChanged(e.drafts); }
   // A name set in another view of this viewer (the owner's other browser,
   // the CLI) arrives in presence.
   if (e.type === "presence") { c.set({ presence: e.people }); adoptName(e.people); }
@@ -202,6 +203,7 @@ export function onArtifactEvent(c: ArtifactController, e: ArtifactEvent): void {
   // published between the initial load and the stream opening.
   if (e.type === "resync" || e.type === "ready") {
     c.loadThreads();
+    c.loadDrafts();
     c.reporter?.fetch();
     const t = ++c.clock;
     getArtifact(c.id).then(d => {

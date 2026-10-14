@@ -14,10 +14,10 @@ The implementation is the authority where the two disagree:
 
 ## Tools
 
-Twenty-five tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
+Twenty-six tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
 `asset_upload`, `status`, the comment tools `comments_read`,
 `comments_reply`, `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working` (see
-"Comments and feedback"), `ask` (see "Agent questions"), and the data tools `db_get`, `db_list`,
+"Comments and feedback"), `draft`, `ask` (see "Agent questions"), and the data tools `db_get`, `db_list`,
 `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`,
 `db_batch` (see "Runtime capabilities"). The MCP implementation lives in
 `crates/clax-mcp` and is served two ways:
@@ -38,7 +38,7 @@ Twenty-five tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
   which attributes publishes to no session.
 
 Pi's extension API cannot register an MCP server, so `plugins/pi` implements
-the same twenty-five tools in TypeScript against the daemon's REST API, with the same
+the same twenty-six tools in TypeScript against the daemon's REST API, with the same
 arguments and the same result and error JSON.
 
 Names as the model sees them:

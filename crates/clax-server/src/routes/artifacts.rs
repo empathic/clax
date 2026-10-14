@@ -534,8 +534,11 @@ pub async fn delete(
     let cache = s.wrap_cache.clone();
     let working = s.working.clone();
     let live_ids = s.live_ids.clone();
+    let drafts = s.drafts.clone();
     s.store_call(move |st| {
         st.delete_artifact(&audit, &id)?;
+        // Its drafts go with it; `artifact_deleted` tells the people.
+        drafts.end_artifact(id.as_str());
         let gone = working.artifact_gone(id.as_str());
         clax_realtime::working::settle(st, &audit, &events, &working, &gone);
         cache.remove_artifact(id.as_str());
@@ -610,6 +613,7 @@ pub async fn publish(
     let events = s.events.clone();
     let ctx = s.feedback_ctx();
     let vf = VisFor::of(&a.caller, &s);
+    let drafts = s.drafts.clone();
     let (artifact, version) = s
         .store_call(move |st| {
             let session = publishing_session(st, &session, grant.as_deref())?;
@@ -638,6 +642,8 @@ pub async fn publish(
                     clax_core::working::End::Publish,
                 );
                 clax_realtime::working::settle(st, &audit, &ctx.events, &ctx.working, &changed);
+                // The version lands: the session's draft on it ends.
+                clax_realtime::drafts::end(&events, &drafts, sid, artifact.id.as_str());
                 if retarget {
                     let touched = st.retarget_untargeted(&aid, sid)?;
                     clax_realtime::feedback::apply(&ctx, st, &touched);

@@ -82,6 +82,8 @@ mod l10 {
         ("working::end", AgentPath),
         ("working::put", AgentPath),
         ("working::delete", AgentPath),
+        ("drafts::put", AgentPath),
+        ("drafts::delete", AgentPath),
         ("working::skew", Token),
         ("viewers::lookup", NoArtifact),
         ("viewers::me", NoArtifact),
@@ -207,6 +209,7 @@ mod l10 {
             "grants" => include_str!("grants.rs"),
             "content" => include_str!("content.rs"),
             "docs" => include_str!("docs.rs"),
+            "drafts" => include_str!("drafts.rs"),
             "events" => include_str!("events.rs"),
             "extension" => include_str!("extension.rs"),
             "feedback" => include_str!("feedback.rs"),
@@ -354,6 +357,10 @@ mod l10 {
     /// [`DeferredAudit`](clax_http::audit::DeferredAudit)), and why.
     const UNAUDITED: &[(&str, &str)] = &[
         ("working::renew", "a heartbeat (§6.11)"),
+        (
+            "drafts::delete",
+            "an agent's work in progress, kept in memory and never published (hosted spec §16.4)",
+        ),
         (
             "working::skew",
             "debug builds only; shifts the working clock (the lapses it causes are recorded by the sweep as system:ttl)",
@@ -1042,6 +1049,19 @@ mod agents {
                 "/api/sessions/{id}/working/{aid}",
                 Own,
                 Some((Comments, "watch")),
+            ),
+            // Drafting needs what publishing needs (hosted spec §16.4).
+            (
+                "PUT",
+                "/api/sessions/{id}/drafts/{aid}",
+                Own,
+                Some((Artifacts, "update")),
+            ),
+            (
+                "DELETE",
+                "/api/sessions/{id}/drafts/{aid}",
+                Own,
+                Some((Artifacts, "update")),
             ),
             (
                 "POST",

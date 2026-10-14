@@ -28,8 +28,9 @@ pub fn artifact_host(host: &str) -> Option<ArtifactId> {
 #[derive(Clone, Copy)]
 pub struct OnArtifactOrigin;
 
-/// On an artifact host: `/healthz`, `/_clax/*` and `/_blob/*` pass through, `/v/*` is
-/// rewritten to `/c/<id>/v/*`, everything else is a JSON 404; other hosts are untouched.
+/// On an artifact host: `/healthz`, `/_clax/*` and `/_blob/*` pass through, `/v/*` and
+/// `/draft/*` are rewritten to `/c/<id>/v/*` and `/c/<id>/draft/*`, everything else is a
+/// JSON 404; other hosts are untouched.
 pub async fn rewrite_artifact_host(mut req: Request<Body>, next: Next) -> Response {
     let host = req
         .headers()
@@ -47,7 +48,7 @@ pub async fn rewrite_artifact_host(mut req: Request<Body>, next: Next) -> Respon
         let new_path =
             if path == "/healthz" || path.starts_with("/_clax/") || path.starts_with("/_blob/") {
                 path
-            } else if path.starts_with("/v/") {
+            } else if path.starts_with("/v/") || path.starts_with("/draft/") {
                 format!("/c/{}{}", id.as_str(), path)
             } else {
                 return ApiError::not_found().into_response();

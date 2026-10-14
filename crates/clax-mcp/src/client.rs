@@ -1114,6 +1114,29 @@ impl DaemonClient {
         .await
     }
 
+    /// `PUT /api/sessions/<sid>/drafts/<id>`: `{draft, note_truncated}`.
+    pub async fn put_draft(&self, id: &str, body: &Value) -> Result<Value> {
+        self.json(|c| {
+            c.request(
+                reqwest::Method::PUT,
+                &format!("{}/drafts/{id}", c.session_path()),
+            )
+            .json(body)
+        })
+        .await
+    }
+
+    /// `DELETE /api/sessions/<sid>/drafts/<id>`: `{ended}`.
+    pub async fn delete_draft(&self, id: &str) -> Result<Value> {
+        self.json(|c| {
+            c.request(
+                reqwest::Method::DELETE,
+                &format!("{}/drafts/{id}", c.session_path()),
+            )
+        })
+        .await
+    }
+
     /// `POST /api/sessions/<sid>/working/renew`: `{renewed}`.
     pub async fn renew_working(&self) -> Result<Value> {
         self.json(|c| {

@@ -134,6 +134,7 @@ async fn mcp_lists_the_twenty_five_tools() {
             "db_str_replace",
             "db_update",
             "delete",
+            "draft",
             "list",
             "open",
             "pin",

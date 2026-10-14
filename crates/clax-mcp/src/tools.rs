@@ -314,6 +314,25 @@ pub struct WorkingArgs {
     pub done: Option<bool>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DraftArgs {
+    /// Artifact URL or ID.
+    pub url_or_id: String,
+    /// Local HTML file with the draft of index.html. At most one of `file_path` and `html`.
+    pub file_path: Option<String>,
+    /// The draft of index.html, as HTML. At most one of `file_path` and `html`.
+    pub html: Option<String>,
+    /// Other files the draft changes, by published path; `null` removes a path.
+    pub files: Option<BTreeMap<String, Option<FileArg>>>,
+    /// The version the draft is based on; defaults to the artifact's current version.
+    pub if_version: Option<u32>,
+    /// What you are doing, in a few words, shown with the draft (at most 140 characters).
+    pub note: Option<String>,
+    /// Drop the draft now: people no longer see it.
+    pub done: Option<bool>,
+}
+
 /// An access level `as_level` narrows to.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -1797,6 +1816,93 @@ impl ClaxTools {
         }))
     }
 
+    async fn do_draft(&self, a: DraftArgs) -> Outcome {
+        let id = self.resolve_id(&a.url_or_id).await?;
+        if a.done.unwrap_or(false) {
+            if a.file_path.is_some() || a.html.is_some() || a.files.is_some() {
+                return Err(invalid("done: true takes no files"));
+            }
+            self.require_session().await?;
+            let r = self
+                .client
+                .delete_draft(&id)
+                .await
+                .map_err(|e| self.fail(e))?;
+            return Ok(json!({
+                "artifact_id": id,
+                "url": self.artifact_url(&id),
+                "drafting": false,
+                "ended": r["ended"],
+            }));
+        }
+        let file_paths = a
+            .files
+            .iter()
+            .flatten()
+            .filter_map(|(_, f)| f.as_ref()?.path.as_deref());
+        self.prepare_session(a.file_path.as_deref().into_iter().chain(file_paths))
+            .await;
+        self.require_session().await?;
+        let mut files = Map::new();
+        match (&a.file_path, &a.html) {
+            (Some(p), None) => {
+                files.insert(
+                    clax_core::publish::INDEX.to_string(),
+                    file_entry(&self.local_path(p)?).await?,
+                );
+            }
+            (None, Some(h)) => {
+                files.insert(
+                    clax_core::publish::INDEX.to_string(),
+                    json!({"content": h, "encoding": "utf8"}),
+                );
+            }
+            (None, None) => {}
+            (Some(_), Some(_)) => return Err(invalid("pass at most one of file_path and html")),
+        }
+        for (name, f) in a.files.unwrap_or_default() {
+            if name == clax_core::publish::INDEX {
+                return Err(invalid(
+                    "index.html comes from file_path or html, not files",
+                ));
+            }
+            let entry = match f {
+                Some(f) => self.file_arg(&name, f).await?,
+                None => Value::Null,
+            };
+            files.insert(name, entry);
+        }
+        if files.is_empty() {
+            return Err(invalid(
+                "a draft changes at least one file: pass html, file_path or files (done: true drops it)",
+            ));
+        }
+        let mut body = json!({"files": files});
+        if let Some(n) = &a.note {
+            body["note"] = json!(n);
+        }
+        if let Some(v) = a.if_version {
+            body["if_version"] = json!(v);
+        }
+        let r = match self.client.put_draft(&id, &body).await {
+            Err(e @ ClientError::Api { status: 409, .. }) => {
+                return Err(self.conflict(&id, e).await);
+            }
+            r => r.map_err(|e| self.fail(e))?,
+        };
+        let d = &r["draft"];
+        Ok(json!({
+            "artifact_id": id,
+            "url": self.artifact_url(&id),
+            "drafting": true,
+            "base_version": d["base_version"],
+            "paths": d["paths"],
+            "note": d["note"],
+            "note_truncated": r["note_truncated"],
+            "expires_in_s": clax_core::drafts::DRAFT_IDLE_SECS,
+        }))
+    }
+
     async fn do_ask(&self, a: AskArgs) -> Outcome {
         if a.approval.is_some() || a.approval_id.is_some() {
             return self.do_ask_approval(a).await;
@@ -2569,6 +2675,22 @@ impl ClaxTools {
         Parameters(args): Parameters<WorkingArgs>,
     ) -> Result<CallToolResult, McpError> {
         self.finish(self.do_working(args).await).await
+    }
+
+    #[tool(
+        description = "Show the people viewing an artifact your work in progress before you publish it. Give the files you are changing over its current version as `publish` takes them (`html` or `file_path` for the page, `files` for the others, `null` removing a path), at most 1 MiB in all; each call replaces your previous draft. People see `<harness> is drafting…` and can show the draft, with what changed highlighted; other agents never see it. At most 2 calls a second (more fail with `rate_limited`). It ends when you publish the artifact, call `draft` with `done: true`, or go 2 minutes without a new draft. Needs the right to publish the artifact.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    pub async fn draft(
+        &self,
+        Parameters(args): Parameters<DraftArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.finish(self.do_draft(args).await).await
     }
 
     #[tool(

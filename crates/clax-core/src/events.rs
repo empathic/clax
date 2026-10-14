@@ -84,6 +84,15 @@ pub enum Event {
         artifact_id: String,
         working: Vec<crate::working::WorkingView>,
     },
+    /// The artifact's live drafts changed (spec
+    /// 2026-10-11-clax-dev-hosted-design §16.4): `drafts` is the whole list,
+    /// each with its revision's token. Only the `working:<id>` stream topic
+    /// carries it, and the stream serves people only: no agent receives a
+    /// draft. `/api/events` never does.
+    Drafts {
+        artifact_id: String,
+        drafts: Vec<crate::drafts::DraftView>,
+    },
     /// The artifact's presence changed; `people` is the whole list (spec §10
     /// "Presence"), never carrying a cookie.
     Presence {
@@ -200,6 +209,7 @@ impl Event {
             | Event::ThreadMoved { artifact_id, .. }
             | Event::FeedbackState { artifact_id, .. }
             | Event::Working { artifact_id, .. }
+            | Event::Drafts { artifact_id, .. }
             | Event::Presence { artifact_id, .. }
             | Event::Doc { artifact_id, .. } => artifact_id,
             Event::Site { .. } => "",
@@ -225,6 +235,7 @@ impl Event {
             Event::ThreadMoved { .. } => "thread_moved",
             Event::FeedbackState { .. } => "feedback_state",
             Event::Working { .. } => "working",
+            Event::Drafts { .. } => "drafts",
             Event::Presence { .. } => "presence",
             Event::Doc { .. } => "doc",
             Event::Site { .. } => "site",
@@ -469,6 +480,10 @@ mod tests {
             Event::Working {
                 artifact_id: "a".into(),
                 working: vec![],
+            },
+            Event::Drafts {
+                artifact_id: "a".into(),
+                drafts: vec![],
             },
             Event::Presence {
                 artifact_id: "a".into(),

@@ -14,6 +14,8 @@ pub mod daemon;
 pub mod content;
 pub mod db;
 pub mod embedded;
+pub mod draft_diff;
+pub mod drafts;
 pub mod error;
 pub mod events;
 pub mod extension;

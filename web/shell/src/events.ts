@@ -1,6 +1,7 @@
 import type { FeedbackState, Thread } from "./threads";
 import type { PresenceView } from "./view/presence-model";
 import type { Working } from "./view/working-model";
+import type { DraftView } from "./view/draft-model";
 
 export type ArtifactEvent =
   /** A new version; `by_page` when the page published it (`artifact.publish`). */
@@ -17,6 +18,8 @@ export type ArtifactEvent =
   | { type: "doc"; artifact_id: string; path: string; version: number | null }
   /** Who is working on the artifact now: its whole list, newest first. */
   | { type: "working"; artifact_id: string; working: Working[] }
+  /** Agents' live drafts on the artifact (hosted spec §16.4): its whole list. */
+  | { type: "drafts"; artifact_id: string; drafts: DraftView[] }
   /** An agent that watched the artifact started, ended or was renamed:
    * refetch its agents (the Send menu lists live ones only). Names nothing. */
   | { type: "agents"; artifact_id?: undefined }

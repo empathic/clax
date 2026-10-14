@@ -33,6 +33,8 @@ mod api_changelog;
 mod api_content;
 #[cfg(any(not(clax_split), clax_split = "api_docs"))]
 mod api_docs;
+#[cfg(any(not(clax_split), clax_split = "api_drafts"))]
+mod api_drafts;
 #[cfg(any(not(clax_split), clax_split = "api_events"))]
 mod api_events;
 #[cfg(any(not(clax_split), clax_split = "api_extension"))]

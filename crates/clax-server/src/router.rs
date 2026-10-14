@@ -4,7 +4,7 @@
 //! testkit's delay middleware are here too.
 
 use crate::routes::{
-    approvals, artifacts, assets, connect, content, docs, extension, feedback, grants, health,
+    approvals, artifacts, assets, connect, content, docs, drafts, extension, feedback, grants, health,
     inbox, live, people, perf, questions, sample, sessions, sites, snapshot, stream, threads,
     token, toolpath, viewers, watches, working,
 };
@@ -76,6 +76,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
     let publish_limit = DefaultBodyLimit::max(clax_http::limits::PUBLISH_BODY_LIMIT);
     let asset_limit = DefaultBodyLimit::max(clax_http::limits::UPLOAD_BODY_LIMIT);
     let ask_limit = DefaultBodyLimit::max(clax_http::limits::ASK_BODY_LIMIT);
+    let draft_limit = DefaultBodyLimit::max(drafts::DRAFT_BODY_LIMIT);
     let api_fast = Router::new()
         .route("/api/token", get(token::token))
         .route("/api/artifacts", get(artifacts::list))
@@ -270,6 +271,11 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             "/api/sessions/{id}/working/{aid}",
             axum::routing::put(working::put).delete(working::delete),
         )
+        .route(
+            "/api/sessions/{id}/drafts/{aid}",
+            axum::routing::put(drafts::put.layer(draft_limit)).delete(drafts::delete),
+        )
+        .route("/api/artifacts/{aid}/drafts", get(drafts::list))
         .route("/api/grants", get(grants::list).post(grants::request))
         .route("/api/grants/{gid}", delete(grants::revoke))
         .route(
@@ -441,6 +447,12 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/c/{aid}/v/{n}", get(content::redirect_to_slash))
         .route("/c/{aid}/v/{n}/", get(content::index))
         .route("/c/{aid}/v/{n}/{*path}", get(content::file))
+        .route(
+            "/c/{aid}/draft/{agent}/{token}",
+            get(drafts::redirect_to_slash),
+        )
+        .route("/c/{aid}/draft/{agent}/{token}/", get(drafts::index))
+        .route("/c/{aid}/draft/{agent}/{token}/{*path}", get(drafts::file))
         .route(
             "/api/artifacts/{aid}/versions/{n}/files/{*path}",
             get(content::raw_file),

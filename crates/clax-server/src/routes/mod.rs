@@ -8,6 +8,7 @@ pub mod assets;
 pub mod connect;
 pub mod content;
 pub mod docs;
+pub mod drafts;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod events;
 pub mod extension;

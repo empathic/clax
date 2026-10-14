@@ -35,8 +35,8 @@
   <SampleCount {ctl} />
   {#if Who}<Who {ctl} {s} open={ctl.openCount(s)} />{/if}
   {#if s.newer && !s.deleted}<button class="primary reload" onclick={() => ctl.reloadLatest()}>Reload</button>{/if}
-  <button class="comment" aria-pressed={s.commenting} disabled={s.deleted || !!live || !!s.spectator}
-    title={live ? "Comment on the live page with the Clax extension" : s.spectator ? "Commenting is paused while you're viewing" : undefined}
+  <button class="comment" aria-pressed={s.commenting} disabled={s.deleted || !!live || !!s.spectator || s.showDraft !== null}
+    title={live ? "Comment on the live page with the Clax extension" : s.spectator ? "Commenting is paused while you're viewing" : s.showDraft !== null ? "Comments go on published versions" : undefined}
     onclick={() => ctl.toggleComment()}>Comment <span class="kc" aria-hidden="true">C</span></button>
   <button class="threads hide-sm" aria-pressed={s.panel} onclick={() => ctl.togglePanel()}>Threads <span class="cnt">{ctl.openCount(s)}</span></button>
   <VersionMenu {shown} {latest} live={!!live} dot={s.decided?.dot ?? false} open={s.menu === "versions"} onToggle={() => ctl.openMenu("versions")}
