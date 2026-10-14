@@ -449,6 +449,63 @@ impl Identity {
     }
 }
 
+/// The credentials a socket's stream was opened with, kept beside the
+/// socket so a host that lost its streams (a Durable Object woken from
+/// hibernation) opens the socket a new one as the same caller, checked
+/// against the store again ([`SocketCredentials::identity`]): the viewer
+/// cookie's ULID (which the store's `viewers` table holds too), and, when
+/// the bearer token was presented, a tag of that token
+/// ([`SocketCredentials::token_tag`]), never the token itself. A tag that
+/// is not the current token's (the token was changed since) counts as no
+/// token: a reopened stream never has more rights than a request with the
+/// same cookie and token would get now.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SocketCredentials {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+}
+
+impl SocketCredentials {
+    /// What of `who`, a request to a server whose token is `token`, a
+    /// reopened stream needs.
+    pub fn of(who: &Identity, token: &str) -> SocketCredentials {
+        SocketCredentials {
+            viewer: who.cookie.clone(),
+            token: who.token.then(|| Self::token_tag(token)),
+        }
+    }
+
+    /// The tag of `token` kept in place of it: the first 16 hex digits of
+    /// its SHA-256, enough to tell one token from the next.
+    pub fn token_tag(token: &str) -> String {
+        let mut tag = clax_core::secret::sha256_hex(token);
+        tag.truncate(16);
+        tag
+    }
+
+    /// The credentials of a request carrying these, for a server whose
+    /// token is `token`, as [`Identity::of`] reads them from a request that
+    /// came over no local connection; the token only when the tag is
+    /// `token`'s.
+    pub fn identity(&self, token: &str) -> Identity {
+        let mut h = HeaderMap::new();
+        if let Some(v) = &self.viewer
+            && let Ok(c) = HeaderValue::from_str(&format!("{}={v}", crate::viewer::COOKIE))
+        {
+            h.insert(header::COOKIE, c);
+        }
+        let current = self.token.as_deref().is_some_and(|t| {
+            clax_core::secret::constant_time_eq(t.as_bytes(), Self::token_tag(token).as_bytes())
+        });
+        if current && let Ok(a) = HeaderValue::from_str(&format!("Bearer {token}")) {
+            h.insert(header::AUTHORIZATION, a);
+        }
+        Identity::of(&h, token, None)
+    }
+}
+
 impl Identity {
     /// The verified grant of an agent credential of another machine.
     pub fn verified_grant(&self) -> Option<&str> {
@@ -613,6 +670,44 @@ mod tests {
         std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
         50000,
     ));
+
+    #[test]
+    fn socket_credentials_keep_no_token_and_reopen_with_no_more_than_they_had() {
+        const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+        const ULID: &str = "01J9ZQ3W5X6Y7Z8A9B0C1D2E3F";
+        let owner = Identity::of(
+            &headers(&[("authorization", &format!("Bearer {TOKEN}"))]),
+            TOKEN,
+            None,
+        );
+        let creds = SocketCredentials::of(&owner, TOKEN);
+        let kept = serde_json::to_string(&creds).unwrap();
+        assert!(!kept.contains(TOKEN), "{kept}");
+        assert!(kept.len() < 64, "{kept}");
+        assert!(creds.identity(TOKEN).is_owner());
+        assert!(
+            !creds.identity("another-token").token,
+            "a changed token: the reopened stream is no owner's"
+        );
+        let viewer = Identity::of(
+            &headers(&[("cookie", &format!("clax_viewer={ULID}"))]),
+            TOKEN,
+            None,
+        );
+        let creds = SocketCredentials::of(&viewer, TOKEN);
+        assert_eq!(creds.token, None);
+        let again = creds.identity(TOKEN);
+        assert_eq!(
+            (again.cookie.as_deref(), again.token, again.is_owner()),
+            (Some(ULID), false, false)
+        );
+        // A forged tag of another token never presents the current one.
+        let forged = SocketCredentials {
+            viewer: None,
+            token: Some(SocketCredentials::token_tag("guess")),
+        };
+        assert!(!forged.identity(TOKEN).token);
+    }
 
     #[test]
     fn the_owner_cookie_is_named_for_the_port_and_never_holds_the_token() {

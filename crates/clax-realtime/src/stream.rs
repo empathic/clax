@@ -27,6 +27,12 @@
 //! detaching and sweeping cost the stream's own topics and a log-time index
 //! of detached streams, never a scan of every stream. Sharding the channels
 //! would need an ordering step for resume and is not worth it at that cost.
+//!
+//! What carries a stream's frames is its outlet: natively [`Conn::next`]
+//! makes the SSE body; a host whose connections are not held by a task (a
+//! Durable Object's hibernatable sockets) takes them with [`Conn::drain`]
+//! instead, told by [`Hub::on_queue`] when any stream has frames to take
+//! and by [`Conn::pending`] which ones do.
 
 use bytes::Bytes;
 use clax_core::db::{Caller, Level};
@@ -303,6 +309,16 @@ struct Shared {
     /// Topics that fell behind, with the sequence of the first event dropped.
     lagged: Mutex<Vec<(Arc<str>, u64)>>,
     notify: Notify,
+    /// Set when a frame is queued or a topic falls behind, cleared by
+    /// [`Conn::drain`]: whether the connection has anything to take.
+    pending: std::sync::atomic::AtomicBool,
+}
+
+impl Shared {
+    fn mark_pending(&self) {
+        self.pending
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
 }
 
 struct Sub {
@@ -439,7 +455,12 @@ pub struct Hub {
     inner: Mutex<Inner>,
     /// The live pages, whose gallery events reach only local streams.
     live: Arc<crate::live::LiveIds>,
+    /// Called after a frame is queued for any stream ([`Hub::on_queue`]).
+    queued: Mutex<Option<QueueListener>>,
 }
+
+/// What [`Hub::on_queue`] calls.
+pub type QueueListener = Arc<dyn Fn() + Send + Sync>;
 
 /// Counts for logs and tests.
 #[derive(Debug, PartialEq, Eq)]
@@ -787,7 +808,28 @@ impl Hub {
         Arc::new(Hub {
             inner: Mutex::default(),
             live,
+            queued: Mutex::default(),
         })
+    }
+
+    /// Calls `f`, outside the hub's lock, after each change that queued
+    /// frames for some stream: an event dispatched to a subscriber, a topic
+    /// fallen behind, a stream unseated. A host that drains its streams with
+    /// [`Conn::drain`] wakes its drain from it. Replaces any earlier `f`.
+    pub fn on_queue(&self, f: QueueListener) {
+        *self.queued.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+    }
+
+    /// Calls the [`Hub::on_queue`] listener, if any.
+    fn tell_queued(&self) {
+        let f = self
+            .queued
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(f) = f {
+            f();
+        }
     }
 
     /// Makes `bus` hand every event to this hub. A bus feeds one hub.
@@ -838,6 +880,7 @@ impl Hub {
             .filter(|t| t.is_live() && t.artifact() == Some(aid))
             .cloned()
             .collect();
+        let mut queued = false;
         for t in &gone {
             s.topics.remove(t);
             leave(
@@ -845,12 +888,21 @@ impl Hub {
                 s.key,
                 &t.chans(&s.caller, s.person.as_deref(), s.drafts),
             );
-            if let Some(tx) = &s.tx {
-                let _ = tx.try_send(Arc::new(unseated_item(seq, &t.name(), code)));
+            if let Some(tx) = &s.tx
+                && tx
+                    .try_send(Arc::new(unseated_item(seq, &t.name(), code)))
+                    .is_ok()
+            {
+                s.shared.mark_pending();
+                queued = true;
             }
         }
         if let Some(seats) = seats {
             seats.leave(aid, &seat_conn(id));
+        }
+        drop(g);
+        if queued {
+            self.tell_queued();
         }
     }
 
@@ -890,6 +942,7 @@ impl Hub {
         }
         g.seq += 1;
         let seq = g.seq;
+        let mut queued = false;
         for (chan, gate) in present {
             let topic = chan.topic();
             let ch = g.chans.get_mut(&chan).expect("checked above");
@@ -917,16 +970,29 @@ impl Hub {
                     continue;
                 }
                 let Some(tx) = &sub.tx else { continue };
-                if let Err(mpsc::error::TrySendError::Full(_)) = tx.try_send(item.clone()) {
-                    sub.lagged = true;
-                    sub.shared
-                        .lagged
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .push((item.topic.clone(), seq));
-                    sub.shared.notify.notify_one();
+                match tx.try_send(item.clone()) {
+                    Ok(()) => {
+                        sub.shared.mark_pending();
+                        queued = true;
+                    }
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        sub.lagged = true;
+                        sub.shared
+                            .lagged
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .push((item.topic.clone(), seq));
+                        sub.shared.mark_pending();
+                        sub.shared.notify.notify_one();
+                        queued = true;
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {}
                 }
             }
+        }
+        drop(g);
+        if queued {
+            self.tell_queued();
         }
     }
 
@@ -1365,6 +1431,14 @@ impl Hub {
         sweep_locked(&mut self.lock(), Instant::now());
     }
 
+    /// How long until [`Hub::sweep`] drops the stream detached longest
+    /// (zero once it is due); `None` with no stream detached.
+    pub fn next_drop_in(&self) -> Option<Duration> {
+        let g = self.lock();
+        let (at, _) = g.detached.keys().next()?;
+        Some(GRACE.saturating_sub(Instant::now().saturating_duration_since(*at)))
+    }
+
     /// The caller level of each stream with a connection open, for tests.
     pub fn attached_levels(&self) -> Vec<Level> {
         let g = self.lock();
@@ -1554,6 +1628,83 @@ impl Conn {
         }
     }
 
+    /// Whether [`Conn::drain`] has anything to take: frames queued, a
+    /// topic fallen behind, or the `ready` and prelude not yet taken.
+    pub fn pending(&self) -> bool {
+        !self.out.is_empty()
+            || self
+                .shared
+                .pending
+                .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Takes every frame the connection has now, without waiting: what
+    /// [`Conn::next`] would hand out before it next waits (the `ready` and
+    /// prelude first, then each queued event with its `id:` line, `resync`
+    /// for a topic fallen behind), each frame a whole SSE block ending in a
+    /// blank line. No keep-alive is made: the host keeps its connection
+    /// alive its own way. `None` once the stream has ended (a newer
+    /// connection took it over, or the extension credential it was opened
+    /// with stopped being live): the host closes its connection.
+    pub fn drain(&mut self) -> Option<Vec<Bytes>> {
+        self.shared
+            .pending
+            .store(false, std::sync::atomic::Ordering::Release);
+        let mut frames: Vec<Bytes> = Vec::new();
+        let mut block = Vec::new();
+        let mut ended = false;
+        loop {
+            let lagged = !self
+                .shared
+                .lagged
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty();
+            if lagged {
+                self.take_lagged();
+            }
+            if let Some(b) = self.out.pop_front() {
+                let b = self.deliver(b)?;
+                // An event's frame is followed by its `id:` line; a block
+                // ends with a blank line.
+                block.extend_from_slice(&b);
+                if block.ends_with(b"\n\n") {
+                    frames.push(Bytes::from(std::mem::take(&mut block)));
+                }
+                continue;
+            }
+            if ended {
+                break;
+            }
+            match self.rx.try_recv() {
+                Ok(i) => {
+                    if let Some(d) = self.dropped.get(&i.topic) {
+                        if i.seq <= *d {
+                            continue;
+                        }
+                        self.dropped.remove(&i.topic);
+                    }
+                    self.out.push_back(i.frame.clone());
+                    self.out.push_back(id_line(&self.id, i.seq));
+                }
+                Err(mpsc::error::TryRecvError::Empty) => break,
+                Err(mpsc::error::TryRecvError::Disconnected) => ended = true,
+            }
+        }
+        if !block.is_empty() {
+            frames.push(Bytes::from(block));
+        }
+        if ended && frames.is_empty() {
+            return None;
+        }
+        Some(frames)
+    }
+
+    /// The ID of the stream this connection carries.
+    pub fn stream_id(&self) -> &str {
+        &self.id
+    }
+
     fn take_lagged(&mut self) {
         let lagged =
             std::mem::take(&mut *self.shared.lagged.lock().unwrap_or_else(|e| e.into_inner()));
@@ -1599,6 +1750,42 @@ mod tests {
             out.push((i.seq, String::from_utf8(i.frame.to_vec()).unwrap()));
         }
         out
+    }
+
+    #[tokio::test]
+    async fn a_drained_connection_takes_its_frames_without_waiting_and_ends_with_its_stream() {
+        let hub = Hub::new(Arc::default());
+        let told = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let t = told.clone();
+        hub.on_queue(Arc::new(move || {
+            t.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        let c = viewer(Level::View, None);
+        let o = hub.open(c.clone(), false, None, None);
+        let id = o.id.clone();
+        let (_tx, shutdown) = tokio::sync::watch::channel(false);
+        let mut conn = Conn::new(hub.clone(), o, Duration::from_secs(15), shutdown);
+        assert!(conn.pending(), "the ready frame waits");
+        let ready = conn.drain().unwrap();
+        assert_eq!(ready.len(), 1);
+        assert!(ready[0].starts_with(b"event: ready\n"));
+        assert!(!conn.pending());
+        assert!(conn.drain().unwrap().is_empty());
+        hub.update(&id, &c, &[Topic::Gallery], &[]).unwrap();
+        hub.dispatch(&version(2));
+        hub.dispatch(&version(3));
+        assert_eq!(told.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert!(conn.pending());
+        let frames = conn.drain().unwrap();
+        assert_eq!(frames.len(), 2, "one whole block per event");
+        for (f, seq) in frames.iter().zip([1, 2]) {
+            let f = std::str::from_utf8(f).unwrap();
+            assert!(f.starts_with("event: version\n"), "{f}");
+            assert!(f.ends_with(&format!("id: {id}:{seq}\n\n")), "{f}");
+        }
+        // A newer connection takes the stream over: this one ends.
+        let _newer = hub.open(c.clone(), false, None, Some((&id, 2)));
+        assert_eq!(conn.drain(), None);
     }
 
     #[test]
@@ -2196,7 +2383,13 @@ mod tests {
         let c = viewer(Level::View, None);
         let o = hub.open(c.clone(), true, None, None);
         hub.update(&o.id, &c, &[Topic::Gallery], &[]).unwrap();
+        assert_eq!(hub.next_drop_in(), None, "attached: nothing to drop");
         hub.detach(&o.id, o.epoch);
+        let left = hub.next_drop_in().expect("a detached stream drops");
+        assert!(
+            left <= GRACE && left > GRACE - Duration::from_secs(30),
+            "{left:?}"
+        );
         let now = Instant::now();
         sweep_locked(&mut hub.lock(), now + GRACE - Duration::from_secs(1));
         assert_eq!(hub.stats().streams, 1);

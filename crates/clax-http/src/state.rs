@@ -211,6 +211,152 @@ pub fn sessions_ended(
     sessions_stop(ctx, st, audit, touched, sessions);
 }
 
+/// What a host decides about the state it serves from; [`AppState::assemble`]
+/// makes the rest the same way on every host (the daemon, a Durable Object).
+pub struct StateParts {
+    pub store: Arc<Store>,
+    pub home: Home,
+    /// The owner's bearer token.
+    pub token: String,
+    /// When the server started (the store's clock, RFC 3339).
+    pub started_at: String,
+    pub version: &'static str,
+    pub shutdown: tokio::sync::watch::Receiver<bool>,
+    pub self_base: String,
+    pub browser_base: String,
+    pub codex: clax_realtime::push::CodexPush,
+    pub sample: Arc<clax_sample::Sampler>,
+    /// The clock of working records, presence, live seats and questions.
+    pub clock: Arc<dyn clax_core::working::Clock>,
+    /// The timers of question polls and graces.
+    pub question_sleeper: Arc<dyn clax_realtime::questions::Sleeper>,
+    /// The timer of the agents' request-body gate.
+    pub agent_timer: Arc<dyn crate::agent::Timer>,
+    pub extension_id: String,
+    pub terminal_after_s: u64,
+    pub bind: std::net::IpAddr,
+    pub port: u16,
+    /// Hosted mode ([`crate::hosted`]); `None` for the local daemon.
+    pub hosted: Option<Arc<crate::hosted::Hosted>>,
+    /// The web UI the daemon serves.
+    pub web: Arc<dyn clax_core::embedded::FileTree>,
+}
+
+impl AppState {
+    /// The state for `p`: the daemon's deadlines and caches, empty
+    /// in-memory hubs, and what the store holds loaded (live pages,
+    /// extension credentials, the grant index, the visibility generation).
+    /// Nothing listens yet: [`AppState::start_listeners`] starts that.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn assemble(p: StateParts) -> clax_core::Result<AppState> {
+        let live_ids = Arc::new(clax_realtime::live::LiveIds::load(&p.store)?);
+        let ext_creds = Arc::new(crate::extension::Credentials::load(&p.store)?);
+        let grant_auth = Arc::new(crate::grant_auth::GrantAuth::load(&p.store)?);
+        let vis_gen = VisGen::install(&p.store);
+        Ok(AppState {
+            home: p.home,
+            token: p.token,
+            events: EventBus::new(),
+            started_at: p.started_at,
+            version: p.version,
+            shutdown: p.shutdown,
+            wrap_cache: Arc::new(WrapCache::new(crate::wrap_cache::DEFAULT_MAX_BYTES)),
+            request_timeout: Duration::from_secs(30),
+            publish_timeout: Duration::from_secs(120),
+            sse_keep_alive: Duration::from_secs(15),
+            self_base: p.self_base,
+            browser_base: p.browser_base,
+            feedback_waiters: Arc::new(Default::default()),
+            followers: Arc::new(Default::default()),
+            feedback_states: Arc::new(Default::default()),
+            codex: Arc::new(p.codex),
+            working: Arc::new(clax_core::working::Working::new(p.clock.clone())),
+            drafts: Arc::new(clax_core::drafts::Drafts::new(p.clock.clone())),
+            presence: Arc::new(clax_core::presence::Presence::new(p.clock.clone())),
+            rooms: Arc::new(clax_realtime::room::Rooms::default()),
+            live_layers: Arc::new(clax_realtime::live_layers::LiveLayers::new(p.clock.clone())),
+            sample: p.sample,
+            stream: clax_realtime::stream::Hub::new(live_ids.clone()),
+            seats: crate::seats::LiveSeats::from_env(p.clock.clone()),
+            live_ids,
+            ext_creds,
+            extension_id: p.extension_id,
+            questions: Arc::new(Default::default()),
+            question_grace: Duration::from_secs(5),
+            question_sleeper: p.question_sleeper,
+            question_clock: p.clock,
+            terminal_after_s: p.terminal_after_s,
+            calibration: Arc::default(),
+            verify_times: Arc::default(),
+            audit_wake: crate::audit::AuditWake::new(),
+            journal: crate::audit::JournalStatus::off(None),
+            exports: crate::exports::Exports::new(),
+            call_ids: Arc::new(clax_realtime::call_ids::CallIdWait::new(
+                clax_realtime::call_ids::CALL_ID_GRACE,
+                clax_realtime::call_ids::CALL_ID_CAP,
+            )),
+            bind: p.bind,
+            port: p.port,
+            lan_host: None,
+            grant_auth,
+            agent_gate: Arc::new(crate::agent::Gate::new(p.agent_timer)),
+            vis_gen,
+            hosted: p.hosted,
+            test_daemon: false,
+            web: p.web,
+            store: p.store,
+        })
+    }
+
+    /// The in-memory sweeps, due every [`clax_realtime::working::SWEEP_INTERVAL`]:
+    /// stale working records, presence and idle drafts (announced), streams
+    /// detached past their grace, and live seats gone idle. Live layers
+    /// need none: each flush is a timer its own edit starts. The daemon runs
+    /// it on a loop; a Durable Object from its alarm.
+    pub async fn sweep(&self) {
+        clax_realtime::working::sweep_and_announce(&self.store, &self.working, &self.events).await;
+        clax_realtime::presence::sweep_and_announce(&self.presence, &self.events);
+        clax_realtime::drafts::sweep_and_announce(&self.drafts, &self.events);
+        self.stream.sweep();
+        self.seats.sweep();
+    }
+
+    /// How long until [`AppState::sweep`] next has something to do (zero
+    /// once it is due): the earliest of a working record lapsing, a presence
+    /// report lapsing or a gone viewer dropping, a draft going idle, a
+    /// detached stream's grace ending, and a live seat going idle. `None` when none of them holds
+    /// anything that will need it. A host whose sweeps run from a timer it
+    /// sets itself (a Durable Object's alarm) sets it for then.
+    pub fn next_sweep_in(&self) -> Option<Duration> {
+        let now = self.question_clock.now();
+        let until =
+            |at: chrono::DateTime<chrono::Utc>| (at - now).to_std().unwrap_or(Duration::ZERO);
+        [
+            self.working.next_lapse().map(until),
+            self.presence.next_change().map(until),
+            self.drafts.next_idle().map(until),
+            self.stream.next_drop_in(),
+            self.seats.next_idle_in(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+
+    /// Starts what turns the store's changes and the event bus into the
+    /// streams' events: the stream hub's listener, the live seats' link to
+    /// it, and the inbox, approvals and people listeners.
+    pub fn start_listeners(&self) {
+        self.stream.listen(&self.events);
+        crate::seats::install(self);
+        crate::views::inbox::listen(self);
+        crate::views::approval::listen(self);
+        crate::routes::people::listen(self);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::VisGen;

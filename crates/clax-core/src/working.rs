@@ -609,6 +609,18 @@ impl Working {
         self.prune(&mut self.records.lock().unwrap(), now)
     }
 
+    /// When the next record lapses (from then on [`Working::sweep`] removes
+    /// it); `None` with none held. A host that sweeps on a timer of its own
+    /// choosing sets it for then.
+    pub fn next_lapse(&self) -> Option<DateTime<Utc>> {
+        self.records
+            .lock()
+            .unwrap()
+            .values()
+            .map(|r| r.heartbeat + Duration::seconds(WORKING_TTL_SECS))
+            .min()
+    }
+
     /// The live records on `aid`, newest `started_at` first.
     pub fn for_artifact(&self, aid: &str) -> Vec<WorkingView> {
         let now = self.now();
@@ -705,6 +717,27 @@ mod tests {
     }
     fn ids(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn the_next_lapse_is_the_oldest_renewal_plus_the_ttl() {
+        let (c, w) = fixture();
+        assert_eq!(w.next_lapse(), None);
+        w.mark(&claude("s1"), "a1", &[]);
+        let first = c.now() + Duration::seconds(WORKING_TTL_SECS);
+        c.advance(30);
+        w.mark(&claude("s2"), "a2", &[]);
+        assert_eq!(w.next_lapse(), Some(first));
+        c.advance(WORKING_TTL_SECS - 30);
+        w.sweep();
+        assert_eq!(
+            w.next_lapse(),
+            Some(first + Duration::seconds(30)),
+            "s1's record lapsed at its time and is gone"
+        );
+        c.advance(30);
+        w.sweep();
+        assert_eq!(w.next_lapse(), None);
     }
 
     #[test]

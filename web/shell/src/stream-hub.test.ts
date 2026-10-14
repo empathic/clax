@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CONNECT_MS, Hub, type HubMsg, LINGER_MS, PING_MS } from "./stream-hub";
+import { CONNECT_MS, Hub, type HubMsg, LINGER_MS, PING_MS, SOCKET_PING_MS } from "./stream-hub";
 import { Net } from "./test/fake-net";
 
 const A = "7q3k9mzx2b4t";
@@ -479,5 +479,49 @@ describe("the stream hub", () => {
     hub.receive("t1", { t: "retry", topics: [`artifact:${A}`] });
     await tick();
     expect(net.posts.at(-1)!.body.subscribe).toEqual([`artifact:${A}`]);
+  });
+
+  it("carries the stream over a WebSocket once the server answers the plain request 426, resuming by its parameter", async () => {
+    type Sock = { url: string; sent: string[]; closed: boolean; onmessage: ((m: MessageEvent) => void) | null; onclose: (() => void) | null; onerror: (() => void) | null; send(t: string): void; close(): void };
+    const socks: Sock[] = [];
+    const plain: string[] = [];
+    const fetch426 = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) !== "/api/stream") return net.fetch(input, init);
+      plain.push(String(input));
+      return new Response(JSON.stringify({ error: { code: "websocket_required" } }), { status: 426 });
+    }) as typeof fetch;
+    hub.close();
+    hub = new Hub({
+      fetch: fetch426,
+      send: (ids, msg) => { for (const id of ids) got.set(id, [...(got.get(id) ?? []), msg]); },
+      socket: url => {
+        const s: Sock = { url, sent: [], closed: false, onmessage: null, onclose: null, onerror: null, send(t) { this.sent.push(t); }, close() { this.closed = true; } };
+        socks.push(s);
+        return s as unknown as WebSocket;
+      },
+    });
+    const say = (s: Sock, text: string) => s.onmessage?.({ data: text } as MessageEvent);
+    hub.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
+    await tick();
+    expect(plain).toHaveLength(1);
+    expect(socks).toHaveLength(1);
+    expect(socks[0].url).toMatch(/^(ws:\/\/[^/]+)?\/api\/stream$/);
+    say(socks[0], `event: ready\ndata: ${JSON.stringify({ stream: S1, seq: 0, resumed: false, topics: [] })}\n\n`);
+    await tick();
+    expect(net.posts[0].url).toBe(`/api/stream/${S1}`);
+    expect(of("t1", "live")).toEqual([{ t: "live", topics: [`artifact:${A}`] }]);
+    say(socks[0], `event: version\ndata: ${JSON.stringify({ topic: `artifact:${A}`, artifact_id: A, n: 2 })}\nid: ${S1}:4\n\n`);
+    expect(of("t1", "event")).toEqual([{ t: "event", topic: `artifact:${A}`, name: "version", data: { topic: `artifact:${A}`, artifact_id: A, n: 2 } }]);
+    // Pings stand in for the keep-alive; the answer keeps the stream up.
+    await vi.advanceTimersByTimeAsync(SOCKET_PING_MS);
+    expect(socks[0].sent).toEqual(["ping"]);
+    say(socks[0], "pong");
+    // The socket closes: the next one resumes the stream, and no plain request is made again.
+    socks[0].onclose?.();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(of("t1", "status")).toEqual([{ t: "status", up: false }]);
+    expect(socks).toHaveLength(2);
+    expect(plain).toHaveLength(1);
+    expect(socks[1].url).toMatch(new RegExp(`/api/stream\\?last_event_id=${S1}%3A4$`));
   });
 });

@@ -2,5 +2,5 @@
 channel = "1.94.0"
 components = ["rustfmt", "clippy"]
 # crates/clax-worker builds the Worker for wasm32, and scripts/check-wasm.sh
-# checks the crates a hosted Worker runs for it.
+# checks the crates a hosted Worker runs there.
 targets = ["wasm32-unknown-unknown"]

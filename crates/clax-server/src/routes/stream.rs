@@ -4,10 +4,13 @@
 use super::artifacts::{body, path};
 use clax_http::seats::Subscribe;
 use axum::Json;
+#[cfg(not(target_arch = "wasm32"))]
 use axum::body::Body;
 use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+#[cfg(not(target_arch = "wasm32"))]
+use axum::http::HeaderValue;
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::CoreError;
 use clax_http::error::ApiError;
@@ -17,6 +20,7 @@ use clax_http::viewer::SameOrigin;
 use clax_realtime::stream::{Conn, MAX_TOPICS, SubError, Topic, parse_last_event_id};
 use serde::Deserialize;
 use serde_json::{Value, json};
+#[cfg(not(target_arch = "wasm32"))]
 use std::convert::Infallible;
 
 /// `GET /api/stream`: opens a stream, or resumes the one `Last-Event-ID`
@@ -44,6 +48,7 @@ use std::convert::Infallible;
 /// ([`clax_realtime::stream::live_only_admits`]); only requests with the credential
 /// it was opened with change or resume it, and it ends, delivering nothing
 /// more, once that credential is revoked or expires.
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn open(
     State(s): State<AppState>,
     d: clax_http::agent::DeniedToGrants,
@@ -58,6 +63,45 @@ pub async fn open(
     let credential = extensions
         .get::<clax_http::extension::ExtensionCredential>()
         .map(|c| c.hash().to_string());
+    let resume = headers
+        .get("last-event-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_last_event_id);
+    let guest = hosted_guest(&extensions);
+    let conn = open_stream(&s, who, local, credential, resume, guest).await?;
+    let chunks = futures::stream::unfold(conn, |mut c| async move {
+        c.next().await.map(|b| (Ok::<_, Infallible>(b), c))
+    });
+    let mut res = Body::from_stream(chunks).into_response();
+    let h = res.headers_mut();
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/event-stream"),
+    );
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    h.insert("x-accel-buffering", HeaderValue::from_static("no"));
+    Ok(res)
+}
+
+/// Opens (or, with `resume`, reattaches) the stream of the request whose
+/// credentials are `who`, as [`open`] does for every outlet: the caller and
+/// person resolved once, from the store, and a stream opened through the
+/// extension gateway (`credential`, the hash of its credential) ending once
+/// that credential stops being live. `local`: whether the stream may see
+/// live pages ([`crate::live::sees_live_pages`]). `guest`: whether the
+/// request is a hosted daemon's signed-in guest, whose stream carries
+/// agents' drafts as a person's does ([`hosted_guest`]).
+///
+/// # Errors
+/// The store's.
+pub async fn open_stream(
+    s: &AppState,
+    who: clax_http::identity::Identity,
+    local: bool,
+    credential: Option<String>,
+    resume: Option<(&str, u64)>,
+    guest: bool,
+) -> Result<Conn, ApiError> {
     let token = token_or_cookie(&who);
     let (caller, person) = s
         .store_call(move |st| {
@@ -65,15 +109,6 @@ pub async fn open(
             Ok((caller, person_key(st, &who)))
         })
         .await?;
-    let resume = headers
-        .get("last-event-id")
-        .and_then(|v| v.to_str().ok())
-        .and_then(parse_last_event_id);
-    // A hosted daemon's guest is signed in: their stream carries agents'
-    // drafts on the pages the gate lets them follow, as a person's does.
-    let guest = extensions
-        .get::<clax_http::hosted::HostedRequest>()
-        .is_some_and(|h| h.session.as_ref().is_some_and(|v| v.guest));
     let drafts = person.is_some() || guest;
     let opened = s
         .stream
@@ -88,18 +123,104 @@ pub async fn open(
         let (creds, id) = (s.ext_creds.clone(), s.extension_id.clone());
         conn = conn.checking(move || clax_http::extension::is_live(&creds, &hash, &id));
     }
-    let chunks = futures::stream::unfold(conn, |mut c| async move {
-        c.next().await.map(|b| (Ok::<_, Infallible>(b), c))
+    Ok(conn)
+}
+
+/// Whether a WebSocket upgrade of `/api/stream` may open: browsers send
+/// `Origin` on every WebSocket handshake and apply no CORS to it, so a
+/// page of any other origin (an artifact's `<id>.localhost`, or another
+/// site the viewer's cookie is sent from) could otherwise read the viewer's
+/// stream. Admitted: no `Origin` (a script, curl) unless `Sec-Fetch-Site`
+/// names another origin, or an `Origin` of `http://` or `https://` and the
+/// request's own `Host`, when that host is not an artifact's.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn socket_origin_allowed(headers: &HeaderMap) -> bool {
+    let Some(origin) = headers.get(header::ORIGIN) else {
+        return !clax_http::viewer::fetched_from_elsewhere(headers);
+    };
+    let host = headers.get(header::HOST).and_then(|h| h.to_str().ok());
+    match (origin.to_str().ok(), host) {
+        (Some(o), Some(h)) if !h.is_empty() && clax_http::host::artifact_host(h).is_none() => o
+            .strip_prefix("http://")
+            .or_else(|| o.strip_prefix("https://"))
+            .is_some_and(|rest| rest.eq_ignore_ascii_case(h)),
+        _ => false,
+    }
+}
+
+/// A stream opened for a socket: the response of `GET /api/stream` on
+/// wasm32 carries it as an extension, and the host that upgrades the
+/// request to its own socket takes it (the stream's connection and the
+/// credentials to reopen it with).
+#[derive(Clone)]
+pub struct SocketStream(
+    pub std::sync::Arc<std::sync::Mutex<Option<(Conn, clax_http::identity::SocketCredentials)>>>,
+);
+
+/// `GET /api/stream` on wasm32, where the stream rides a WebSocket the
+/// host (a Durable Object) holds, not a response body. A WebSocket upgrade
+/// request is checked and its stream opened as [`open`] does (resuming the
+/// one its `last_event_id` query parameter names, `<stream>:<seq>`, as
+/// `Last-Event-ID` does), and answered `200` with an empty body and a
+/// [`SocketStream`] extension: the host replaces the response with its
+/// socket, which carries the stream's frames, one SSE block a text
+/// message. Any other request is 426 `websocket_required`, which tells the
+/// shell to use the WebSocket.
+#[cfg(target_arch = "wasm32")]
+pub async fn open_socket(
+    State(s): State<AppState>,
+    d: clax_http::agent::DeniedToGrants,
+    who: clax_http::identity::Identity,
+    extensions: axum::http::Extensions,
+    headers: HeaderMap,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+) -> Result<Response, ApiError> {
+    d.refuse_agents()?;
+    let upgrade = headers
+        .get(header::UPGRADE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
+    if !upgrade {
+        return Err(ApiError::new(
+            StatusCode::UPGRADE_REQUIRED,
+            "websocket_required",
+            "this server carries /api/stream over a WebSocket",
+        ));
+    }
+    if !socket_origin_allowed(&headers) {
+        return Err(ApiError::forbidden(
+            "forbidden_origin",
+            "the stream's WebSocket opens only from the Clax shell's own origin",
+        ));
+    }
+    let local = crate::live::sees_live_pages(&headers, &extensions, &s.token);
+    let credential = extensions
+        .get::<clax_http::extension::ExtensionCredential>()
+        .map(|c| c.hash().to_string());
+    let last = query.as_deref().and_then(|q| {
+        url::form_urlencoded::parse(q.as_bytes())
+            .find(|(k, _)| k == "last_event_id")
+            .map(|(_, v)| v.into_owned())
     });
-    let mut res = Body::from_stream(chunks).into_response();
-    let h = res.headers_mut();
-    h.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("text/event-stream"),
-    );
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-    h.insert("x-accel-buffering", HeaderValue::from_static("no"));
+    let resume = last.as_deref().and_then(parse_last_event_id);
+    let creds = clax_http::identity::SocketCredentials::of(&who, &s.token);
+    let guest = hosted_guest(&extensions);
+    let conn = open_stream(&s, who, local, credential, resume, guest).await?;
+    let mut res = StatusCode::OK.into_response();
+    res.extensions_mut()
+        .insert(SocketStream(std::sync::Arc::new(std::sync::Mutex::new(
+            Some((conn, creds)),
+        ))));
     Ok(res)
+}
+
+/// Whether the request is a hosted daemon's signed-in guest: their stream
+/// carries agents' drafts on the pages the gate lets them follow, as a
+/// person's does.
+fn hosted_guest(extensions: &axum::http::Extensions) -> bool {
+    extensions
+        .get::<clax_http::hosted::HostedRequest>()
+        .is_some_and(|h| h.session.as_ref().is_some_and(|v| v.guest))
 }
 
 /// The recipient key of the person `who` speaks for, whose `questions` and
@@ -321,4 +442,47 @@ fn live_only_refusal() -> ApiError {
         "forbidden",
         "the extension's stream takes live pages' artifact, presence and working topics only",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::socket_origin_allowed;
+    use axum::http::{HeaderMap, HeaderName, HeaderValue};
+
+    fn h(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut m = HeaderMap::new();
+        for (k, v) in pairs {
+            m.insert(
+                HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                HeaderValue::from_str(v).unwrap(),
+            );
+        }
+        m
+    }
+
+    #[test]
+    fn the_streams_websocket_opens_only_from_the_shells_own_origin() {
+        let host = ("host", "localhost:8787");
+        for ok in [
+            h(&[host]),
+            h(&[host, ("origin", "http://localhost:8787")]),
+            h(&[("host", "clax.example"), ("origin", "https://clax.example")]),
+        ] {
+            assert!(socket_origin_allowed(&ok), "{ok:?}");
+        }
+        for refused in [
+            h(&[host, ("origin", "http://7q3k9mzx2b4t.localhost:8787")]),
+            h(&[
+                ("host", "7q3k9mzx2b4t.localhost:8787"),
+                ("origin", "http://7q3k9mzx2b4t.localhost:8787"),
+            ]),
+            h(&[host, ("origin", "https://evil.example")]),
+            h(&[host, ("origin", "http://localhost:8788")]),
+            h(&[host, ("origin", "null")]),
+            h(&[("origin", "http://localhost:8787")]),
+            h(&[host, ("sec-fetch-site", "cross-site")]),
+        ] {
+            assert!(!socket_origin_allowed(&refused), "{refused:?}");
+        }
+    }
 }

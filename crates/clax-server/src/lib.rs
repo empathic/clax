@@ -10,8 +10,8 @@
 //! workers-rs). The code is shared; the target decides what is built, by
 //! `cfg(target_arch = "wasm32")`, with no cargo feature to pick a host: the
 //! wasm32 build is checked by `scripts/check-wasm.sh -p clax-server`. The
-//! Durable Object side (the Worker crate) is not built yet: what this says
-//! of it is the contract it builds on.
+//! Durable Object side is `crates/clax-worker` (its `instance` module),
+//! which builds the state with [`AppState::assemble`](clax_http::state::AppState::assemble) as the daemon does.
 //!
 //! ## What both hosts run
 //!
@@ -90,21 +90,24 @@
 //! - natively, [`Conn`](clax_realtime::stream::Conn) turns it into the SSE body of
 //!   `GET /api/stream`, which holds its connection open;
 //! - on the Worker, the Durable Object owns a hibernatable WebSocket per
-//!   client, outside axum: it opens the client's stream with the same
-//!   [`Hub::open_for`](clax_realtime::stream::Hub::open_for), and changes its subscriptions with
-//!   [`clax_http::seats::subscribe`], which holds the live seats an artifact's live
-//!   topics take, as `POST /api/stream/<id>` does (subscriptions arrive as
-//!   socket messages instead), and
-//!   after each request or alarm it drains every socket's queue without
-//!   waiting (`try_recv`), sending each frame as one text message. An SSE
-//!   stream would keep the object awake for as long as it is open; a
-//!   hibernated socket costs nothing. The stream ID and topics ride in the
-//!   socket's attachment, so an object woken from hibernation reopens each
-//!   socket's stream and sends `resync` for its topics, as a resume past
-//!   the hub's rings does.
+//!   client: `GET /api/stream` (`routes::stream::open_socket`) opens the
+//!   stream through the router, with the same checks, and hands it to the
+//!   object in a response extension; subscriptions stay on `POST
+//!   /api/stream/<id>`. The object takes frames with
+//!   [`Conn::drain`](clax_realtime::stream::Conn::drain), without waiting,
+//!   one SSE block a text message, after each request, socket message and
+//!   alarm and whenever [`Hub::on_queue`](clax_realtime::stream::Hub::on_queue)
+//!   says frames were queued. An SSE stream would keep the object awake for
+//!   as long as it is open; a hibernated socket costs nothing. A socket's
+//!   attachment carries the credentials its stream was opened with
+//!   ([`SocketCredentials`](clax_http::identity::SocketCredentials)), so an
+//!   object woken from hibernation opens each socket a new stream as the
+//!   same caller and sends its `ready`; the client subscribes again and
+//!   refetches, as after a daemon restart.
 //!
-//! Rooms ([`Rooms`](clax_realtime::room::Rooms)) and presence follow the same rule: the hubs are
-//! shared, and only the socket that carries their frames differs.
+//! Rooms ([`Rooms`](clax_realtime::room::Rooms)) are to follow the same rule
+//! (the hubs shared, only the socket that carries their frames different);
+//! the Worker does not carry their socket yet.
 //!
 //! ## MCP on the Worker
 //!
@@ -119,6 +122,10 @@
 //! calls the named tool's method directly (the tools take no request
 //! context). The daemon keeps rmcp's stateful service and the stdio shim
 //! unchanged.
+
+/// The Clax version this server is built at (the workspace's), for a host
+/// that does not take it from the CLI (a Durable Object's `/healthz`).
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod router;
 pub mod routes;

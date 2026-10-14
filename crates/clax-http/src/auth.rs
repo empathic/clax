@@ -279,9 +279,12 @@ pub struct Conn {
 }
 
 /// The connection `extensions`' request arrived on, as its host recorded
-/// it: natively axum's `ConnectInfo<Conn>`, which the daemon serves with;
-/// on wasm32 a [`Conn`] the Durable Object put there, if any. `None` is a
-/// request that came over no connection of this machine's: never loopback.
+/// it: natively axum's `ConnectInfo<Conn>`, which the daemon serves with.
+/// On wasm32 always `None`: no request a Worker receives came over a
+/// connection of the owner's machine, so none gets its loopback or LAN
+/// trust (the token route, the owner and events cookies, live pages, the
+/// bound address as an API host), whatever the request says of its peer.
+/// `None` is a request that came over no connection of this machine's.
 pub fn conn_of(extensions: &axum::http::Extensions) -> Option<Conn> {
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -291,13 +294,14 @@ pub fn conn_of(extensions: &axum::http::Extensions) -> Option<Conn> {
     }
     #[cfg(target_arch = "wasm32")]
     {
-        extensions.get::<Conn>().copied()
+        let _ = extensions;
+        None
     }
 }
 
 /// Extracts the request's [`Conn`] ([`conn_of`]). Natively it is
-/// `ConnectInfo<Conn>`'s extractor, rejecting as it does; on wasm32 a
-/// request without one is refused 403 `not_loopback`.
+/// `ConnectInfo<Conn>`'s extractor, rejecting as it does; on wasm32, where
+/// no request has one, it refuses 403 `not_loopback`.
 pub struct PeerConn(pub Conn);
 
 #[cfg(not(target_arch = "wasm32"))]

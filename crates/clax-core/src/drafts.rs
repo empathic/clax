@@ -329,6 +329,16 @@ impl Drafts {
         Self::prune(&mut g, now)
     }
 
+    /// When the next draft goes idle, for [`Drafts::sweep`] to drop it;
+    /// `None` with no drafts.
+    pub fn next_idle(&self) -> Option<DateTime<Utc>> {
+        let g = self.lock();
+        g.drafts
+            .values()
+            .map(|d| d.updated_at + Duration::seconds(DRAFT_IDLE_SECS))
+            .min()
+    }
+
     /// The live drafts on `aid`, oldest revision first.
     pub fn for_artifact(&self, aid: &str) -> Vec<DraftView> {
         let now = self.clock.now();
@@ -552,6 +562,29 @@ mod tests {
         assert_eq!(d.file("a4", "a_s4", &v.token, "index.html"), None);
         assert_eq!(d.sweep(), ["a4".to_string()].into());
         assert!(d.sweep().is_empty());
+    }
+
+    #[test]
+    fn the_next_idle_is_the_oldest_drafts_lapse() {
+        let (c, d) = registry();
+        let f = || draft(&[("index.html", page("<p>a</p>"))]);
+        assert_eq!(d.next_idle(), None);
+        let start = c.now();
+        d.put(&who("s1"), "a1", f()).unwrap();
+        c.advance(10);
+        d.put(&who("s2"), "a2", f()).unwrap();
+        let lapse = |after: i64| start + Duration::seconds(after);
+        assert_eq!(d.next_idle(), Some(lapse(DRAFT_IDLE_SECS)));
+        // A revision moves its own lapse; the other draft's comes first.
+        c.advance(5);
+        d.put(&who("s1"), "a1", f()).unwrap();
+        assert_eq!(d.next_idle(), Some(lapse(10 + DRAFT_IDLE_SECS)));
+        c.advance(DRAFT_IDLE_SECS - 5);
+        assert_eq!(d.sweep(), ["a2".to_string()].into());
+        assert_eq!(d.next_idle(), Some(lapse(15 + DRAFT_IDLE_SECS)));
+        c.advance(5);
+        assert_eq!(d.sweep(), ["a1".to_string()].into());
+        assert_eq!(d.next_idle(), None);
     }
 
     #[test]

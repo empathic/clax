@@ -40,7 +40,7 @@ fn js_err(e: JsValue) -> StoreError {
 }
 
 /// Runs a statement to completion, discarding any rows.
-fn run(sql: &SqlStorage, query: &str, args: Vec<JsValue>) -> worker::Result<()> {
+pub(crate) fn run(sql: &SqlStorage, query: &str, args: Vec<JsValue>) -> worker::Result<()> {
     for row in sql.exec_raw(query, args)?.raw() {
         row?;
     }
@@ -88,27 +88,27 @@ impl DoPageStore {
     pub fn database_size(&self) -> usize {
         self.sql.database_size()
     }
+}
 
-    /// Runs `f` inside `ctx.storage.transactionSync`: if it fails, the
-    /// storage rolls back every write it made.
-    fn transaction_sync(
-        &self,
-        f: impl FnOnce() -> Result<(), JsValue> + 'static,
-    ) -> Result<(), StoreError> {
-        let raw: &JsValue = self.storage.as_raw();
-        let run_sync: Function = Reflect::get(raw, &"transactionSync".into())
-            .map_err(js_err)?
-            .dyn_into()
-            .map_err(|_| "ctx.storage.transactionSync is not a function".to_owned())?;
-        let mut f = Some(f);
-        let callback = Closure::<dyn FnMut() -> Result<(), JsValue>>::new(move || {
-            f.take().map_or(Ok(()), |f| f())
-        });
-        run_sync
-            .call1(raw, callback.as_ref())
-            .map(drop)
-            .map_err(js_err)
-    }
+/// Runs `f` inside `storage.transactionSync`: if it fails, the storage rolls
+/// back every write it made.
+pub(crate) fn transaction_sync(
+    storage: &Storage,
+    f: impl FnOnce() -> Result<(), JsValue> + 'static,
+) -> Result<(), StoreError> {
+    let raw: &JsValue = storage.as_raw();
+    let run_sync: Function = Reflect::get(raw, &"transactionSync".into())
+        .map_err(js_err)?
+        .dyn_into()
+        .map_err(|_| "ctx.storage.transactionSync is not a function".to_owned())?;
+    let mut f = Some(f);
+    let callback = Closure::<dyn FnMut() -> Result<(), JsValue>>::new(move || {
+        f.take().map_or(Ok(()), |f| f())
+    });
+    run_sync
+        .call1(raw, callback.as_ref())
+        .map(drop)
+        .map_err(js_err)
 }
 
 impl PageStore for DoPageStore {
@@ -166,7 +166,7 @@ impl PageStore for DoPageStore {
         let file = JsValue::from(file);
         let chunks = Rc::clone(chunks);
         let sql = self.sql.clone();
-        self.transaction_sync(move || {
+        transaction_sync(&self.storage, move || {
             let e = |e: worker::Error| JsValue::from(js_sys::Error::new(&e.to_string()));
             for (idx, data) in chunks.iter() {
                 run(
@@ -200,7 +200,7 @@ impl PageStore for DoPageStore {
     fn delete(&self, file: &str) -> Result<(), StoreError> {
         let file = JsValue::from(file);
         let sql = self.sql.clone();
-        self.transaction_sync(move || {
+        transaction_sync(&self.storage, move || {
             let e = |e: worker::Error| JsValue::from(js_sys::Error::new(&e.to_string()));
             run(
                 &sql,

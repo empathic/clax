@@ -13,7 +13,7 @@ use clax_core::daemon::read_daemon_info;
 use clax_core::daemon::remove_daemon_info;
 use clax_core::daemon::write_daemon_info;
 use clax_core::daemon::write_starting_info;
-use clax_core::{EventBus, Home};
+use clax_core::Home;
 use clax_http::state::AppState;
 use clax_store::Store;
 use std::io;
@@ -279,7 +279,6 @@ pub async fn serve(
     };
     let reaper_store = store.clone();
     let optimize_store = store.clone();
-    let sweep_store = store.clone();
     let drain_store = store.clone();
     let token = generate_token();
     let started_at = store.now();
@@ -300,75 +299,27 @@ pub async fn serve(
 
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let events_shutdown = shutdown_tx.subscribe();
-    let live_ids = Arc::new(clax_realtime::live::LiveIds::load(&store)?);
-    let ext_creds = Arc::new(clax_http::extension::Credentials::load(&store)?);
-    let grant_auth = Arc::new(clax_http::grant_auth::GrantAuth::load(&store)?);
-    let vis_gen = clax_http::state::VisGen::install(&store);
-    let state = AppState {
+    let state = AppState::assemble(clax_http::state::StateParts {
         store,
         home: cfg.home.clone(),
         token,
-        events: EventBus::new(),
         started_at,
         version: cfg.version,
         shutdown: events_shutdown,
-        wrap_cache: Arc::new(clax_http::wrap_cache::WrapCache::new(
-            clax_http::wrap_cache::DEFAULT_MAX_BYTES,
-        )),
-        request_timeout: Duration::from_secs(30),
-        publish_timeout: Duration::from_secs(120),
-        sse_keep_alive: Duration::from_secs(15),
         self_base: format!("http://{}:{port}", probe_host(&info.bind)),
         browser_base: format!("http://{}:{port}", browser_host(&info.bind)),
-        feedback_waiters: Arc::new(Default::default()),
-        followers: Arc::new(Default::default()),
-        feedback_states: Arc::new(Default::default()),
-        codex: Arc::new(cfg.codex.clone()),
-        working: Arc::new(clax_core::working::Working::new(Arc::new(
-            clax_core::working::SystemClock,
-        ))),
-        drafts: Arc::new(clax_core::drafts::Drafts::new(Arc::new(
-            clax_core::working::SystemClock,
-        ))),
-        presence: Arc::new(clax_core::presence::Presence::new(Arc::new(
-            clax_core::working::SystemClock,
-        ))),
-        rooms: Arc::new(clax_realtime::room::Rooms::default()),
-        live_layers: Arc::new(clax_realtime::live_layers::LiveLayers::new(Arc::new(
-            clax_core::working::SystemClock,
-        ))),
+        codex: cfg.codex.clone(),
         sample: cfg.sample.clone(),
-        stream: clax_realtime::stream::Hub::new(live_ids.clone()),
-        seats: clax_http::seats::LiveSeats::from_env(Arc::new(clax_core::working::SystemClock)),
-        live_ids,
-        ext_creds,
-        extension_id: clax_core::extension::extension_id_in_effect(cfg.home.root()),
-        questions: Arc::new(Default::default()),
-        question_grace: Duration::from_secs(5),
+        clock: Arc::new(clax_core::working::SystemClock),
         question_sleeper: Arc::new(clax_realtime::questions::TokioSleeper),
-        question_clock: Arc::new(clax_core::working::SystemClock),
+        agent_timer: Arc::new(clax_http::agent::TokioTimer::default()),
+        extension_id: clax_core::extension::extension_id_in_effect(cfg.home.root()),
         terminal_after_s,
-        calibration: Arc::default(),
-        verify_times: Arc::default(),
-        audit_wake: clax_http::audit::AuditWake::new(),
-        journal: clax_http::audit::JournalStatus::off(None),
-        exports: clax_http::exports::Exports::new(),
-        call_ids: Arc::new(clax_realtime::call_ids::CallIdWait::new(
-            clax_realtime::call_ids::CALL_ID_GRACE,
-            clax_realtime::call_ids::CALL_ID_CAP,
-        )),
         bind: cfg.bind,
         port,
-        lan_host: None,
-        grant_auth,
-        agent_gate: Arc::new(clax_http::agent::Gate::new(Arc::new(
-            clax_http::agent::TokioTimer::default(),
-        ))),
-        vis_gen,
-        test_daemon: false,
-        web: cfg.web.clone(),
         hosted: cfg.hosted.clone(),
-    };
+        web: cfg.web.clone(),
+    })?;
     state.audit_wake.install(&state.store);
     // The appender recovers the journal and catches it up on its own
     // thread, so the daemon serves at once.
@@ -400,21 +351,13 @@ pub async fn serve(
             }
         })
     });
-    state.stream.listen(&state.events);
-    clax_http::seats::install(&state);
-    clax_http::views::inbox::listen(&state);
-    clax_http::views::approval::listen(&state);
-    crate::routes::people::listen(&state);
+    state.start_listeners();
     tracing::info!(codex = ?state.codex.bin, source = ?state.codex.source, "codex push");
     tracing::info!(provider = ?state.sample.provider_name(), "sample provider");
     let fctx = state.feedback_ctx();
     let reap_state = state.clone();
     let grant_state = state.clone();
-    let (state_working, state_events) = (state.working.clone(), state.events.clone());
-    let state_presence = state.presence.clone();
-    let state_stream = state.stream.clone();
-    let sweep_seats = state.seats.clone();
-    let state_drafts = state.drafts.clone();
+    let sweep_state = state.clone();
     let app = crate::router::build_router_with_shutdown(state, shutdown_tx.clone());
     if let Some(tx) = ready {
         let _ = tx.send(info.clone());
@@ -507,17 +450,11 @@ pub async fn serve(
         }
     });
 
-    let (sweep_working, sweep_events) = (state_working, state_events);
     let sweeper = tokio::spawn(async move {
         let mut every = tokio::time::interval(clax_realtime::working::SWEEP_INTERVAL);
         loop {
             every.tick().await;
-            clax_realtime::working::sweep_and_announce(&sweep_store, &sweep_working, &sweep_events)
-                .await;
-            clax_realtime::presence::sweep_and_announce(&state_presence, &sweep_events);
-            clax_realtime::drafts::sweep_and_announce(&state_drafts, &sweep_events);
-            state_stream.sweep();
-            sweep_seats.sweep();
+            sweep_state.sweep().await;
         }
     });
 

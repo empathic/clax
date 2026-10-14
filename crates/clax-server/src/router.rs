@@ -479,6 +479,9 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             .route("/api/artifacts/{aid}/live", get(live_layers::live))
             .merge(mcp)
     };
+    // The stream's WebSocket, which the Durable Object upgrades and holds.
+    #[cfg(target_arch = "wasm32")]
+    let r = r.route("/api/stream", get(stream::open_socket));
     let mut r = r;
     if let Some(tx) = shutdown {
         let tx = std::sync::Arc::new(tx);

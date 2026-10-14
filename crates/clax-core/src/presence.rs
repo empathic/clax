@@ -282,6 +282,29 @@ impl Presence {
         });
         changed.into_iter().collect()
     }
+
+    /// When [`Presence::sweep`] next has something to do: the first moment a
+    /// live tab's report has lapsed, or an entry has been gone long enough
+    /// to drop; `None` with no entries. A host that sweeps on a timer of its
+    /// own choosing sets it for then.
+    pub fn next_change(&self) -> Option<DateTime<Utc>> {
+        let now = self.clock.now();
+        // Both rules compare with `>`: the change is due a millisecond after.
+        let tick = Duration::milliseconds(1);
+        let ttl = Duration::seconds(PRESENCE_TTL_SECS);
+        let drop_after = Duration::seconds(PRESENCE_TTL_SECS + GONE_KEEP_SECS);
+        let map = self.entries.lock().unwrap();
+        map.values()
+            .flat_map(|e| {
+                let lapses = e
+                    .tabs
+                    .values()
+                    .filter(|t| !lapsed(t, now))
+                    .map(move |t| t.last_report + ttl + tick);
+                lapses.chain(std::iter::once(last_report(e) + drop_after + tick))
+            })
+            .min()
+    }
     /// The artifact's viewers: here, then away, then gone, each by name.
     pub fn for_artifact(&self, aid: &str) -> Vec<PresenceView> {
         let now = self.clock.now();
@@ -344,6 +367,26 @@ mod tests {
         c.advance(600);
         p.sweep();
         assert!(p.for_artifact("a1").is_empty());
+    }
+
+    #[test]
+    fn the_next_change_is_when_a_report_lapses_then_when_its_entry_drops() {
+        let (c, p) = reg();
+        assert_eq!(p.next_change(), None);
+        let t = c.now();
+        let ms = Duration::milliseconds;
+        p.report("a1", "u_a", Some("Alex"), State::Here, None);
+        let lapse = t + Duration::seconds(PRESENCE_TTL_SECS) + ms(1);
+        assert_eq!(p.next_change(), Some(lapse));
+        c.advance(PRESENCE_TTL_SECS);
+        assert!(p.sweep().is_empty(), "not lapsed at the TTL itself");
+        c.advance(1);
+        assert_eq!(p.sweep(), vec!["a1".to_string()]);
+        let gone = t + Duration::seconds(PRESENCE_TTL_SECS + GONE_KEEP_SECS) + ms(1);
+        assert_eq!(p.next_change(), Some(gone), "lapsed: next, its drop");
+        c.advance(GONE_KEEP_SECS);
+        p.sweep();
+        assert_eq!(p.next_change(), None);
     }
 
     #[test]

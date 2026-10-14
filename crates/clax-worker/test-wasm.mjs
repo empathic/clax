@@ -4,122 +4,21 @@
 // a rollback, a refused journal mode and a transaction past the VFS's cap
 // leave the database as it was, then restarts wrangler on the same state
 // and checks that a fresh isolate sees the same rows, blob digest and page
-// count, and `PRAGMA integrity_check` says ok. Each wrangler is stopped by
+// count, and `PRAGMA integrity_check` says ok. The spike's routes are test
+// routes (`CLAX_TEST_ROUTES` = `1`); a last start with the checked-in
+// `wrangler.jsonc`'s variables checks that they are absent without it, as
+// is the instance's test route. Each wrangler is stopped by
 // the process group it was started in. Prints one line per check and a JSON
 // summary; exits non-zero on the first failure.
 //
 // `node test-wasm.mjs --no-build` skips the build.
 
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { HERE, build, pruneRuns, start, writeConfig } from "./harness.mjs";
 
-const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "target/wasm-test");
 const KEEP_RUNS = 3;
-const START_LIMIT_MS = 60_000;
-const STOP_LIMIT_MS = 10_000;
-
-function freePort() {
-  return new Promise((ok, fail) => {
-    const s = createServer();
-    s.once("error", fail);
-    s.listen(0, "127.0.0.1", () => {
-      const a = s.address();
-      s.close(() => (typeof a === "object" && a !== null ? ok(a.port) : fail(new Error("no port"))));
-    });
-  });
-}
-
-function exited(child) {
-  return new Promise((ok) => {
-    if (child.exitCode !== null || child.signalCode !== null) ok();
-    else child.once("exit", () => ok());
-  });
-}
-
-const timeout = (ms) => new Promise((r) => setTimeout(() => r("timeout"), ms));
-
-/** Removes all but the newest KEEP_RUNS `run-<ms>-<pid>` directories. */
-function pruneRuns() {
-  if (!existsSync(ROOT)) return;
-  const runs = readdirSync(ROOT)
-    .filter((n) => /^run-\d+-\d+$/.test(n))
-    .sort((a, b) => Number(b.split("-")[1]) - Number(a.split("-")[1]));
-  for (const n of runs.slice(KEEP_RUNS - 1)) rmSync(join(ROOT, n), { recursive: true, force: true });
-}
-
-/** wrangler.jsonc without its custom build (this script builds once) and with an absolute `main`. */
-function writeConfig(dir) {
-  const text = readFileSync(join(HERE, "wrangler.jsonc"), "utf8")
-    .split("\n")
-    .filter((l) => !/^\s*\/\//.test(l))
-    .join("\n");
-  const config = JSON.parse(text);
-  delete config.$schema;
-  delete config.build;
-  config.main = join(HERE, config.main);
-  const path = join(dir, "wrangler.json");
-  writeFileSync(path, JSON.stringify(config, null, 2));
-  return path;
-}
-
-/** Starts one wrangler dev on `state`; resolves once it answers HTTP. */
-async function start(dir, config, n) {
-  const [port, inspector] = [await freePort(), await freePort()];
-  const log = join(dir, `wrangler-${n}.log`);
-  const out = openSync(log, "a");
-  const child = spawn(
-    join(HERE, "node_modules/.bin/wrangler"),
-    [
-      "dev",
-      "--local",
-      "--config", config,
-      "--ip", "127.0.0.1",
-      "--port", String(port),
-      "--inspector-port", String(inspector),
-      "--persist-to", join(dir, "state"),
-      "--show-interactive-dev-session=false",
-      "--log-level", "warn",
-    ],
-    { cwd: dir, stdio: ["ignore", out, out], detached: true, env: { ...process.env, WRANGLER_SEND_METRICS: "false" } },
-  );
-  if (child.pid === undefined) throw new Error("wrangler dev did not start");
-  const pid = child.pid;
-  let gone = false;
-  void exited(child).then(() => (gone = true));
-  const stop = async () => {
-    try {
-      process.kill(-pid, "SIGTERM");
-    } catch {
-      return;
-    }
-    if ((await Promise.race([exited(child), timeout(STOP_LIMIT_MS)])) === "timeout") {
-      try {
-        process.kill(-pid, "SIGKILL");
-      } catch {
-        // already gone
-      }
-      await Promise.race([exited(child), timeout(STOP_LIMIT_MS)]);
-    }
-  };
-  const base = `http://127.0.0.1:${port}`;
-  const until = Date.now() + START_LIMIT_MS;
-  try {
-    for (;;) {
-      if (gone) throw new Error(`wrangler dev exited before it was ready; see ${log}:\n${readFileSync(log, "utf8").slice(-2000)}`);
-      if (Date.now() > until) throw new Error(`wrangler dev was not ready within ${START_LIMIT_MS / 1000} s; see ${log}`);
-      if (await fetch(`${base}/`).then(() => true, () => false)) break;
-      await new Promise((r) => setTimeout(r, 200));
-    }
-  } catch (e) {
-    await stop();
-    throw e;
-  }
-  return { base, stop };
-}
 
 function check(ok, what, detail) {
   if (!ok) throw new Error(`FAIL ${what}: ${JSON.stringify(detail)}`);
@@ -147,16 +46,12 @@ async function ok(base, method, path) {
 
 async function main() {
   const t0 = Date.now();
-  if (!process.argv.includes("--no-build")) {
-    const build = spawn(join(HERE, "build.sh"), [], { cwd: HERE, stdio: ["ignore", "inherit", "inherit"] });
-    await exited(build);
-    if (build.exitCode !== 0) throw new Error(`./build.sh failed (${build.exitCode ?? build.signalCode})`);
-  }
+  await build();
   const built = Date.now();
-  pruneRuns();
+  pruneRuns(ROOT, KEEP_RUNS);
   const dir = join(ROOT, `run-${Date.now()}-${process.pid}`);
   mkdirSync(dir, { recursive: true });
-  const config = writeConfig(dir);
+  const config = writeConfig(dir, { CLAX_TEST_ROUTES: "1" });
   const running = new Set();
   const cleanup = () => Promise.all([...running].map((w) => w.stop()));
   for (const sig of ["SIGINT", "SIGTERM"]) process.once(sig, () => void cleanup().then(() => process.exit(130)));
@@ -194,6 +89,28 @@ async function main() {
     check(diff.length === 0, `the restart sees the same ${same.join(", ")}`, { diff, before, after });
     const note = await ok(w.base, "POST", "/notes?body=four");
     check(note.count === 4, "writes go on after the restart", note);
+    await w.stop();
+    running.delete(w);
+
+    // The checked-in configuration: no test routes.
+    const plainDir = join(dir, "plain");
+    mkdirSync(plainDir, { recursive: true });
+    w = await start(dir, writeConfig(plainDir), 3);
+    running.add(w);
+    for (const [method, path] of [["GET", "/stats"], ["POST", "/notes?body=five"], ["POST", "/init"]]) {
+      const r = await call(w.base, method, path);
+      check(r.status === 404 || r.status === 405, `without test routes ${method} /do/wasm-test${path} is not the spike's`, r);
+    }
+    for (const [method, path] of [["GET", "/_worker/alarm"], ["POST", "/_worker/hibernate"]]) {
+      const r = await fetch(`${w.base}${path}`, { method, headers: { authorization: "Bearer any" } });
+      check(r.status === 404 || r.status === 405, `without test routes ${method} ${path} is absent`, r.status);
+    }
+    await w.stop();
+    running.delete(w);
+    w = await start(dir, config, 4);
+    running.add(w);
+    const kept = await ok(w.base, "GET", "/stats?check=1");
+    check(kept.notes === 4 && kept.integrity_check === "ok", "the plain start wrote nothing to the spike", kept);
     await w.stop();
     running.delete(w);
     const summary = {

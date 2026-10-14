@@ -1,8 +1,37 @@
-//! A Cloudflare Worker whose Durable Object, written in Rust, keeps a
-//! rusqlite database in its own storage through the `clax-do-vfs` VFS,
-//! serves an axum `Router`, and holds WebSockets with the hibernation API.
+//! A Cloudflare Worker that runs the Clax server: one Durable Object per
+//! Clax instance ([`instance::InstanceDo`]), the web UI from Workers Static
+//! Assets, and, beside them, the SQLite-on-Durable-Object spike
+//! ([`ClaxDb`]) the VFS was proved with.
 //!
-//! Routes (the Worker forwards `/do/{name}/…` to the object named `name`):
+//! # The Worker
+//!
+//! Every request goes to the Worker first (`run_worker_first`):
+//!
+//! - with `CLAX_TEST_ROUTES` = `1` (`0` in `wrangler.jsonc`), `/do/{name}/…`
+//!   goes to the spike object named `name` (below), whose routes check no
+//!   credential; otherwise `/do/` is a path like any other, the instance's;
+//! - on the app host (any host but an artifact's `<id>.localhost`), `/`,
+//!   `/inbox` and `/people` are the shell's `index.html`, from the static
+//!   assets, with the headers the daemon's `shell::gallery_page` sends (no
+//!   framing, revalidated);
+//! - on any host, `/_clax/<path>` is the web UI's file from the static
+//!   assets with the daemon's caching (`shell::asset_cache`), except the
+//!   bridge and the contract's type definitions, which the server answers;
+//! - everything else (the API, `/a/…` with its first-load data, artifact
+//!   content, the stream's WebSocket) goes to the instance's object, named
+//!   by `CLAX_INSTANCE` (`default` when unset). A file the assets lack goes
+//!   there too.
+//!
+//! Artifact content keeps its own origin as on the daemon: the server
+//! serves `<id>.localhost[:port]` as that artifact's origin (its host
+//! rewrite), and browsers send `*.localhost` to this machine, so under
+//! `wrangler dev` the content origin works unchanged. A deployed Worker
+//! needs a content domain of its own (the hosted prototype's
+//! `CONTENT_ORIGIN`), which the server does not know yet.
+//!
+//! # The spike's routes
+//!
+//! Only with `CLAX_TEST_ROUTES` = `1`, which `test-wasm.mjs` sets:
 //!
 //! - `POST /do/{name}/init`: creates the `notes` and `blobs` tables;
 //! - `POST /do/{name}/notes?body=…`: inserts a note;
@@ -19,11 +48,14 @@
 //!
 //! Build and run from this directory: `npm install`, then `npm run dev`
 //! (`wrangler dev --local --persist-to .wrangler/state`, which runs
-//! `build.sh`); `npm run size` prints the upload size. `cargo test` runs the
-//! VFS's tests natively; `npm run test:wasm` (`test-wasm.mjs`) builds the
-//! Worker and checks these routes under `wrangler dev --local` across a
-//! restart.
+//! `build.sh`; build the web UI first with `scripts/build-web.sh`); `npm
+//! run size` prints the upload size. `cargo test` runs the VFS's tests
+//! natively; `npm run test:wasm` (`test-wasm.mjs`) builds the Worker and
+//! checks the spike's routes under `wrangler dev --local` across a restart,
+//! and `npm run e2e` (`e2e.mjs`) the Clax instance in two browsers.
 
+mod content;
+mod instance;
 mod store;
 
 use std::rc::Rc;
@@ -32,7 +64,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use axum::Json;
 use axum::extract::{Query, State as AxState};
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::routing::{get, post};
 use rusqlite::{Connection, params};
 use serde::Deserialize;
@@ -43,23 +75,95 @@ use worker::{
     WebSocketIncomingMessage, WebSocketPair, durable_object, event,
 };
 
+pub use crate::instance::InstanceDo;
 use crate::store::DoPageStore;
 
-/// The Worker: hands `/do/{name}/…` to the Durable Object named `name`.
+/// The Worker (see the crate docs).
 #[event(fetch)]
 async fn fetch(req: HttpRequest, env: Env, _ctx: worker::Context) -> Result<HttpResponse> {
     console_error_panic_hook::set_once();
     let path = req.uri().path().to_owned();
-    let Some(name) = path
-        .strip_prefix("/do/")
-        .and_then(|rest| rest.split('/').next())
+    // The spike's routes write to its objects unauthenticated: tests only.
+    let spike = env
+        .var("CLAX_TEST_ROUTES")
+        .is_ok_and(|v| v.to_string() == "1");
+    if let Some(rest) = path.strip_prefix("/do/").filter(|_| spike) {
+        let Some(name) = rest.split('/').next().filter(|n| !n.is_empty()) else {
+            return Ok(http_text(404, "routes live under /do/{name}/"));
+        };
+        let stub = env.durable_object("CLAX_DB")?.get_by_name(name)?;
+        let res = stub.fetch_with_request(Request::try_from(req)?).await?;
+        return HttpResponse::try_from(res);
+    }
+    let host = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    let app_host = clax_http::host::artifact_host(host).is_none();
+    if let Some(res) = static_asset(&env, &path, app_host).await? {
+        return Ok(res);
+    }
+    let name = env
+        .var("CLAX_INSTANCE")
+        .map(|v| v.to_string())
+        .ok()
         .filter(|n| !n.is_empty())
-    else {
-        return Ok(http_text(404, "routes live under /do/{name}/"));
-    };
-    let stub = env.durable_object("CLAX_DB")?.get_by_name(name)?;
+        .unwrap_or_else(|| "default".to_string());
+    let stub = env.durable_object("CLAX_INSTANCE_DO")?.get_by_name(&name)?;
     let res = stub.fetch_with_request(Request::try_from(req)?).await?;
     HttpResponse::try_from(res)
+}
+
+/// The web UI's file for `path` from the static assets, with the headers
+/// the daemon serves it with; `None` for a path the server answers, or a
+/// file the assets lack.
+async fn static_asset(env: &Env, path: &str, app_host: bool) -> Result<Option<HttpResponse>> {
+    let (file, cache, any_origin, entry) = match path {
+        "/" | "/inbox" | "/people" if app_host => {
+            ("/index.html".to_string(), "no-cache", false, true)
+        }
+        _ => match path
+            .strip_prefix("/_clax/")
+            .and_then(clax_server::routes::shell::asset_cache)
+        {
+            Some((cache, any)) if !path.split('/').any(|c| c.starts_with('.')) => {
+                (path.to_string(), cache, any, false)
+            }
+            _ => return Ok(None),
+        },
+    };
+    let Ok(assets) = env.assets("ASSETS") else {
+        return Ok(None);
+    };
+    let mut res = assets
+        .fetch(format!("https://assets.invalid{file}"), None)
+        .await?;
+    if !res.status().is_success() {
+        return Ok(None);
+    }
+    let h = res.headers_mut();
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
+    if any_origin {
+        h.insert(
+            header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            HeaderValue::from_static("*"),
+        );
+    }
+    if entry {
+        h.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("frame-ancestors 'none'"),
+        );
+        h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    }
+    if file.ends_with(".js") {
+        h.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/javascript"),
+        );
+    }
+    Ok(Some(res))
 }
 
 fn http_text(status: u16, body: &str) -> HttpResponse {
