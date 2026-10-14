@@ -31,6 +31,7 @@ import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/platform/timings.dart';
 import 'package:clax_app/platform/voice.dart';
 import 'package:clax_app/ui/app_screen.dart';
+import 'package:clax_app/ui/daemon_cookie.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/webview_surface.dart';
 import 'package:flutter/material.dart';
@@ -89,14 +90,19 @@ class Rig {
     this.timingsFile, {
     this.runner,
     this.inspector,
+    this.keyCookie,
   });
 
   /// A rig whose runs take [backend]; with [runner] and [inspector], the
-  /// tool loop on that runner, rendering in that inspector.
+  /// tool loop on that runner, rendering in that inspector. With
+  /// [keyCookie] the daemon is locked as the app runs it
+  /// (`--require-credential`) and the app's pages load with that cookie;
+  /// an [inspector] given then needs it too.
   static Future<Rig> create({
     required AgentBackend backend,
     AgentRunner Function()? runner,
     Inspector? inspector,
+    DaemonKeyCookie? keyCookie,
   }) async {
     final Directory dir;
     if (_scratchParent.isEmpty) {
@@ -118,6 +124,7 @@ class Rig {
       ports: const LoopbackPortPicker(),
       health: HttpHealthProbe(),
       pids: IoPidKiller(),
+      requireCredential: keyCookie != null,
     );
     final rig = Rig._(
       dir,
@@ -126,6 +133,7 @@ class Rig {
       File('${dir.path}/timings.jsonl'),
       runner: runner,
       inspector: inspector,
+      keyCookie: keyCookie,
     );
     rig._lifecycleListener;
     return rig;
@@ -136,6 +144,7 @@ class Rig {
   final AgentBackend backend;
   final AgentRunner Function()? runner;
   final Inspector? inspector;
+  final DaemonKeyCookie? keyCookie;
   final File timingsFile;
 
   /// Every message the shell posted, on every app surface, in order.
@@ -155,6 +164,13 @@ class Rig {
 
   late final api = HttpClaxApi(_endpoint);
 
+  /// The running daemon's token, or null while it is not up: a
+  /// [DaemonKeyCookie]'s source.
+  String? token() => switch (supervisor.state) {
+    Up(:final endpoint) => endpoint.token,
+    _ => null,
+  };
+
   DaemonEndpoint _endpoint() => switch (supervisor.state) {
     Up(:final endpoint) => endpoint,
     final s => throw StateError('the daemon is not up: $s'),
@@ -170,7 +186,7 @@ class Rig {
     timings: FileTimings(timingsFile),
     agentTimings: FileTimings(File('${dir.path}/agent-timings.jsonl')),
     surface: (base) {
-      final s = WebViewAppSurface(base: base);
+      final s = WebViewAppSurface(base: base, keyCookie: keyCookie);
       surface = s;
       _subs.add(s.messages.listen(messages.add));
       return s;
