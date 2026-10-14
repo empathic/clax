@@ -9,7 +9,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { type Browser, type Frame, chromium, webkit } from "@playwright/test";
-import { test, expect, type Daemon, api, colorStats, last, openArtifact, record } from "./fixtures";
+import { test, expect, type Daemon, api, colorStats, last, openArtifact, publish, record } from "./fixtures";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -191,4 +191,46 @@ for (const engine of [chromium, webkit]) {
       }
     });
   }
+}
+
+/** Uploads an SVG asset of `fill` to artifact `id`; its URL as the daemon gives it. */
+async function uploadAsset(id: string, fill: string): Promise<{ id: string; url: string }> {
+  const form = new FormData();
+  form.set("file", new Blob([DOT.replace("red", fill)], { type: "image/svg+xml" }), "dot.svg");
+  const res = await fetch(`${d.base}/api/artifacts/${id}/assets`, { method: "POST", headers: { authorization: `Bearer ${d.token}` }, body: form });
+  if (res.status !== 201) throw new Error(`${res.status} ${await res.text()}`);
+  const body = await res.json() as { asset: { id: string }; url: string };
+  return { id: body.asset.id, url: body.url };
+}
+
+for (const mode of ["subdomain", "sandbox"] as const) {
+  test(`${mode}: a page loads its own assets and not another app's`, async ({ page: p }) => {
+    const mk = async (title: string) => (await publish(d.base, d.token, title, { "index.html": "<p>" })).artifact.id as string;
+    const [a, b] = [await mk(`Mine ${mode}`), await mk(`Theirs ${mode}`)];
+    const mine = await uploadAsset(a, "green");
+    const theirs = await uploadAsset(b, "blue");
+    expect(mine.url).toBe(`/_blob/${a}/${mine.id}`);
+    const imgs = {
+      mineAbs: `${d.base}${mine.url}`,
+      mineRel: mine.url,
+      theirsAbs: `${d.base}${theirs.url}`,
+      theirsUnderMine: `${d.base}/_blob/${a}/${theirs.id}`,
+      theirsOld: `${d.base}/_blob/${theirs.id}`,
+      theirsRel: `/_blob/${theirs.id}`,
+    };
+    const html = `<!doctype html><title>Assets</title>${Object.entries(imgs).map(([k, u]) => `<img id="${k}" src="${u}" alt="">`).join("")}`;
+    await publish(d.base, d.token, `Mine ${mode}`, { "index.html": html }, 1, a);
+    const f = await openArtifact(p, d.base, a, 2, mode);
+    const loaded = (k: string) => f.locator(`#${k}`).evaluate(i => (i as HTMLImageElement).complete ? (i as HTMLImageElement).naturalWidth > 0 : null);
+    await expect.poll(() => loaded("mineAbs")).toBe(true);
+    for (const k of ["theirsAbs", "theirsUnderMine", "theirsOld", "theirsRel"]) await expect.poll(() => loaded(k), { message: k }).toBe(false);
+    // On its own origin a page's root-relative `/_blob/<id>` is its own asset.
+    if (mode === "subdomain") await expect.poll(() => loaded("mineRel")).toBe(true);
+    // Fetching: its own asset, never another's.
+    const got = await f.evaluate(async u => Promise.all(u.map(x => fetch(x).then(r => `status:${r.status}`, () => "refused"))), [imgs.mineAbs, imgs.theirsAbs, imgs.theirsUnderMine]);
+    // Another app's asset is refused by the policy, or under this app's
+    // prefix answers a 404 the page cannot read.
+    expect(got.slice(0, 2)).toEqual(["status:200", "refused"]);
+    expect(got[2]).not.toBe("status:200");
+  });
 }

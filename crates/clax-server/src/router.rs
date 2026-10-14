@@ -510,6 +510,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/_blob/{asset_id}", get(assets::blob))
         .route("/_clip/{aid}/{tid}", get(threads::keyed_clip))
         .route("/connect/b/{code}", get(connect::browser_link))
+        .route("/_blob/{aid}/{asset_id}", get(assets::scoped_blob))
         .route("/c/{aid}/v/{n}", get(content::redirect_to_slash))
         .route("/c/{aid}/v/{n}/", get(content::index))
         .route("/c/{aid}/v/{n}/{*path}", get(content::file))
