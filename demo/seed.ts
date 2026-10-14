@@ -30,7 +30,7 @@ if (values.help === true || values.url === undefined || values.secret === undefi
 }
 
 try {
-  const s = await seed({ url: values.url, secret: values.secret, owner: values.owner, editor: values.editor, invitee: values.invitee, agents: Number(values.agents) });
+  const s = await seed({ url: values.url, secret: values.secret, owner: values.owner, editor: values.editor, invitee: values.invitee, agents: Number(values.agents), mcpPath: values["mcp-path"] });
   if (values.json) {
     const { session: _o, ...owner } = s.owner;
     const { session: _e, ...editor } = s.editor;

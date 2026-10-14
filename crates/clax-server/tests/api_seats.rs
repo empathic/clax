@@ -404,8 +404,7 @@ async fn the_snapshot_is_shared_per_head_version_for_five_seconds() {
     assert_eq!(res.status(), 404);
 }
 
-/// The load check of `hosted/scripts/load-seats.ts` on the native daemon:
-/// 150 people, 100 seats.
+/// A load check on the native daemon: 150 people, 100 seats.
 #[tokio::test]
 async fn load_150_people_on_100_seats() {
     const PEOPLE: usize = 150;

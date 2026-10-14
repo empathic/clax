@@ -4,17 +4,18 @@
 // - the first person, the owner (setup with the setup secret);
 // - "Launch checklist" with three versions, shared by link for comments;
 // - the product brief's outline for the demo agents (lib/brief.ts);
-// - a second person, invited as an editor of both, who comments on the
-//   checklist;
+// - a second person, invited as an editor of both who may also create
+//   artifacts, who comments on the checklist, forks its version 2 into an
+//   artifact of their own and publishes a second version there through an
+//   agent of theirs (an agent token over MCP: a person's API calls do not
+//   publish);
 // - an unused invite for a third person, an editor of the checklist only
 //   (so on the brief they hold no reserved live seat);
 // - an agent token of the owner's, for the demo agents;
 // - a one-use sign-in link for each of the two people.
-//
-// Forks are not seeded: Clax's core has no fork yet.
 
 import { BRIEF_TITLE, SECTIONS, skeleton } from "./brief.ts";
-import { acceptInvite, ClaxApiError, invite, mintAgentToken, setupFirstPerson, signinLink, trimBase, type PersonSession } from "./http.ts";
+import { acceptInvite, ClaxApiError, invite, McpAgent, mintAgentToken, NATIVE_MCP_PATH, setupFirstPerson, signinLink, trimBase, type PersonSession } from "./http.ts";
 
 export interface SeedOptions {
   url: string;
@@ -24,11 +25,15 @@ export interface SeedOptions {
   invitee?: string;
   /** How many sections the brief's outline has, one per demo agent. */
   agents?: number;
+  /** The MCP endpoint's path: `/mcp/json` (the default) on the native daemon, `/mcp` on the Worker. */
+  mcpPath?: string;
 }
 
 export interface Seeded {
   base: string;
   checklist: { id: string; url: string; title: string };
+  /** The editor's fork of the checklist's version 2, with a version of their own on it. */
+  fork: { id: string; url: string; title: string };
   brief: { id: string; url: string; title: string };
   owner: { name: string; public_id: string; signin: string; session: PersonSession };
   editor: { name: string; public_id: string; signin: string; session: PersonSession };
@@ -62,13 +67,20 @@ function page(title: string, items: string[], note: string): string {
 
 const file = (content: string) => ({ "index.html": { content } });
 
-/** An editor's rights on artifacts `ids`: read them, publish versions, and comment, reply, resolve, send and watch there. */
+/** An editor's rights on artifacts `ids` (IDs, or `own`): read them, publish versions, and comment, reply, resolve, send and watch there. */
 export function editorOf(ids: string[]): unknown[] {
   return [
     { type: "clax-artifacts", actions: ["read", "update"], locations: ids },
     { type: "clax-comments", actions: ["read", "write", "reply", "resolve", "send", "watch"], locations: ids },
   ];
 }
+
+/** What a person needs to fork and keep what they make: `create`, and an
+ * editor's rights on the artifacts they created (`own`). */
+export const MAKER: unknown[] = [
+  { type: "clax-artifacts", actions: ["create"], locations: ["*"] },
+  ...editorOf(["own"]),
+];
 
 /** An element anchor on the page's heading, as the shell sends one. */
 export const HEADING_ANCHOR = JSON.stringify({
@@ -114,10 +126,25 @@ export async function seed(o: SeedOptions): Promise<Seeded> {
   });
   const bid = b.artifact.id;
 
-  // The second person, an editor of both, so their comments on the brief can be sent to the owner's agents.
+  // The second person, an editor of both, so their comments on the brief can
+  // be sent to the owner's agents, and a maker of their own artifacts.
   const editorName = o.editor ?? "Mia";
-  const editor = await acceptInvite(base, (await invite(owner, editorName, editorOf([aid, bid]))).url);
+  const editor = await acceptInvite(base, (await invite(owner, editorName, [...editorOf([aid, bid]), ...MAKER])).url);
   await editor.form(`/api/artifacts/${aid}/threads`, { anchor: HEADING_ANCHOR, body: "Can we add a rollback step before the announcement?", version: "3" });
+  // The editor's copy of the checklist as it was at version 2, with a step of their own.
+  const f = await editor.call<Created>("POST", `/api/artifacts/${aid}/fork`, { version: 2 });
+  const fid = f.artifact.id;
+  const mobile = new McpAgent(base, o.mcpPath ?? NATIVE_MCP_PATH, (await mintAgentToken(editor, "mobile copy")).token, "mobile-editor");
+  try {
+    await (await mobile.connect()).ok("publish", {
+      id: fid,
+      html: page(`${title} (mobile)`, [...steps, "Submit the app build for review"], "The mobile team's copy"),
+      if_version: f.version.n,
+      note: "Add the app review step",
+    });
+  } finally {
+    await mobile.close();
+  }
 
   const inviteeName = o.invitee ?? "Jo";
   const unused = await invite(owner, inviteeName, editorOf([aid]));
@@ -126,6 +153,7 @@ export async function seed(o: SeedOptions): Promise<Seeded> {
   return {
     base,
     checklist: { id: aid, url: `${base}/a/${aid}`, title },
+    fork: { id: fid, url: `${base}/a/${fid}`, title: f.artifact.title },
     brief: { id: bid, url: `${base}/a/${bid}`, title: BRIEF_TITLE },
     owner: { name: owner.person.display_name, public_id: owner.person.public_id, signin: ownerLink, session: owner },
     editor: { name: editor.person.display_name, public_id: editor.person.public_id, signin: editorLink, session: editor },
@@ -140,8 +168,8 @@ export function describe(s: Seeded): string {
   return `Seeded ${s.base}
 
 Artifact   ${s.checklist.url}  (${s.checklist.title}, 3 versions, 1 thread, link access: can comment)
+Fork       ${s.fork.url}  (${s.editor.name}'s fork of ${s.checklist.title} v2, 2 versions)
 Brief      ${s.brief.url}  (the outline for the demo agents; ${s.editor.name} is an editor)
-           (no fork is seeded: Clax has no forks yet)
 
 Sign in as ${s.owner.name}:  ${s.owner.signin}
 Sign in as ${s.editor.name}:  ${s.editor.signin}

@@ -18,9 +18,9 @@
 //!   without a name; `<`, `>` and control characters dropped, as git drops
 //!   them), at the clock's time in UTC; a write whose metadata names no
 //!   person is the store's committer's, without `Clax-Publisher`. So
-//!   `git log` shows who made each version, as the hosted prototype's
-//!   commits do. A fork's version 1 is `Forked from <artifact ID>@v<n>`
-//!   with `Clax-Forked-From: <artifact ID>@v<n>` after the trailers of its
+//!   `git log` shows who made each version. A fork's version 1 is `Forked
+//!   from <artifact ID>@v<n>` with `Clax-Forked-From: <artifact ID>@v<n>`
+//!   after the trailers of its
 //!   publisher (the forking person and agent, [`ContentStore::fork`]'s
 //!   metadata), and is signed as a version they published.
 //! - A carried file keeps its blob: the new tree is built from version

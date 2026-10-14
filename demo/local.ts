@@ -1,20 +1,25 @@
 // Runs the whole local demo from one command (`just hosted-demo`):
 //
-//   node demo/local.ts [--port <free port>] [--seats 1] [--agents 3] [--pace 8000] [--no-build] [--worker]
+//   node demo/local.ts [--native] [--port <free port>] [--seats 1] [--agents 3] [--pace 8000] [--no-build]
 //
-// Builds the daemon (and the web UI when it is not built), starts a fresh
-// native daemon in hosted mode (its home under target/demo/, wiped on every
-// run; `[hosted] public_origin = "http://localhost:<port>"`; a random setup
-// secret in its environment; CLAX_LIVE_PEOPLE_SEATS, 1 by default, so the
+// By default the demo runs on the Worker: it builds the web UI and the
+// Worker (crates/clax-worker), and starts `wrangler dev --local` on a free
+// port with fresh state under target/demo-worker/ (wiped on every run) and
+// the hosted vars (lib/worker.ts): the public origin
+// `http://localhost:<port>`, artifact content on `http://127.0.0.1:<port>`,
+// a random setup secret, CLAX_LIVE_PEOPLE_SEATS (1 by default, so the
 // spectator mode shows with one guest: the owner and the people an artifact
-// names hold reserved seats and stay live), seeds it (lib/seed.ts) and prints
-// the links and the steps to try. Enter starts the demo agents on the brief
-// (agents.ts) at a pace a person can watch; Ctrl-C stops everything. The
-// daemon and the agents are stopped by the process groups they were started
-// in.
+// names hold reserved seats and stay live), versions in git in the RepoDO
+// stand-in served at /git/, and its dev routes, from which the demo takes a
+// read token to clone the brief with git or jj. `--native` runs the native
+// daemon in hosted mode instead (its home under target/demo/, the same
+// seats and secret), with no git remote.
 //
-// `--worker` is to run the same demo on the Worker (crates/clax-worker under
-// `wrangler dev --local`, whose MCP endpoint is `/mcp`); it is not wired yet.
+// Either way it seeds the instance (lib/seed.ts) and prints the links and
+// the steps to try. Enter starts the demo agents on the brief (agents.ts,
+// over the MCP endpoint: `/mcp` on the Worker, `/mcp/json` on the daemon) at
+// a pace a person can watch; Ctrl-C stops everything. The server and the
+// agents are stopped by the process groups they were started in.
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -25,11 +30,11 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { NATIVE_MCP_PATH } from "./lib/http.ts";
-import { describe, seed } from "./lib/seed.ts";
+import { describe, seed, type Seeded } from "./lib/seed.ts";
+import { buildWorker, freePort, repoToken, startWorker } from "./lib/worker.ts";
 
 const DEMO = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(DEMO, "..");
-const DIR = join(ROOT, "target/demo");
 
 const { values: opts } = parseArgs({
   options: {
@@ -38,36 +43,48 @@ const { values: opts } = parseArgs({
     agents: { type: "string", default: "3" },
     pace: { type: "string", default: "8000" },
     "no-build": { type: "boolean", default: false },
+    native: { type: "boolean", default: false },
     worker: { type: "boolean", default: false },
     help: { type: "boolean", short: "h" },
   },
 });
 if (opts.help === true) {
-  console.log("usage: just hosted-demo [--port <free port>] [--seats 1] [--agents 3] [--pace 8000] [--no-build] [--worker]");
+  console.log("usage: just hosted-demo [--native] [--port <free port>] [--seats 1] [--agents 3] [--pace 8000] [--no-build]\n  (the Worker under wrangler dev by default; --native for the native daemon)");
   process.exit(0);
 }
 
-/** A target the demo runs on: how to start it, and its MCP endpoint's path. */
+/** A target the demo runs on: its run directory and log, how to start it,
+ * its MCP endpoint's path, and what it adds to the seeded instance's
+ * description (the brief's git clone commands on the Worker). */
 interface Target {
   name: string;
+  dir: string;
+  log: string;
   mcpPath: string;
-  start(port: number, secret: string, seats: string, log: string): Promise<ChildProcess>;
+  start(port: number, secret: string, seats: string): Promise<ChildProcess>;
+  extra(base: string, s: Seeded): Promise<string>;
+}
+
+function build(what: string, cmd: string, args: string[]): Promise<void> {
+  console.log(`Building ${what}…`);
+  return exited(spawn(cmd, args, { cwd: ROOT, stdio: ["ignore", "ignore", "inherit"] })).then(async (code) => {
+    if (code !== 0) await shutdown(1);
+  });
 }
 
 /** The native daemon in hosted mode, on a home of its own. */
 const native: Target = {
   name: "the native daemon",
+  dir: join(ROOT, "target/demo"),
+  log: join(ROOT, "target/demo/server.log"),
   mcpPath: NATIVE_MCP_PATH,
-  async start(port, secret, seats, log) {
+  async start(port, secret, seats) {
+    const log = this.log;
     if (!opts["no-build"]) {
-      console.log("Building the daemon…");
-      if ((await exited(spawn("cargo", ["build", "-p", "clax-cli", "--bin", "clax"], { cwd: ROOT, stdio: ["ignore", "ignore", "inherit"] }))) !== 0) await shutdown(1);
-      if (!existsSync(join(ROOT, "web/dist/index.html"))) {
-        console.log("Building the web UI…");
-        if ((await exited(spawn("just", ["web"], { cwd: ROOT, stdio: ["ignore", "ignore", "inherit"] }))) !== 0) await shutdown(1);
-      }
+      await build("the daemon", "cargo", ["build", "-p", "clax-cli", "--bin", "clax"]);
+      if (!existsSync(join(ROOT, "web/dist/index.html"))) await build("the web UI", "just", ["web"]);
     }
-    const home = join(DIR, "home");
+    const home = join(this.dir, "home");
     mkdirSync(home, { recursive: true });
     writeFileSync(
       join(home, "config.toml"),
@@ -82,30 +99,42 @@ const native: Target = {
       env: { ...process.env, CLAX_HOME: home, CLAX_DEMO_SETUP_SECRET: secret, CLAX_DEMO_UNSET_KEY: "", CLAX_LIVE_PEOPLE_SEATS: seats, CLAX_CODEX_BIN: "", CLAX_NO_OPEN: "1" },
     });
   },
+  extra: () => Promise.resolve(""),
 };
 
-/** The Worker (crates/clax-worker) under `wrangler dev --local`: not wired yet. */
+/** The Worker (crates/clax-worker) under `wrangler dev --local`, hosted (lib/worker.ts). */
 const worker: Target = {
   name: "the Worker",
+  dir: join(ROOT, "target/demo-worker"),
+  log: join(ROOT, "target/demo-worker/wrangler.log"),
   mcpPath: "/mcp",
-  start() {
-    // To do: build the UI, run `wrangler dev --local --port <port>` in
-    // crates/clax-worker with the setup secret, the public origin and the
-    // seats as vars, persisting under target/demo/worker.
-    return Promise.reject(new Error("--worker is not wired yet: run the demo on the native daemon (without --worker)."));
+  async start(port, secret, seats) {
+    if (!opts["no-build"]) {
+      await build("the web UI", join(ROOT, "scripts/build-web.sh"), []);
+      console.log("Building the Worker…");
+      await buildWorker("ignore").catch(async (e: unknown) => {
+        console.error(e instanceof Error ? e.message : e);
+        await shutdown(1);
+      });
+    }
+    console.log(`Starting the Worker (wrangler dev --local) in hosted mode on :${port} (state ${this.dir}/state, log ${this.log})…`);
+    return (await startWorker({ dir: this.dir, port, secret, seats, onSpawn: (c) => children.push(c) })).child;
+  },
+  async extra(base, s) {
+    const t = await repoToken(base, s.brief.id);
+    return `
+
+Clone the Brief's repository once the agents have published: one commit
+per version, each naming its publisher and agent in Clax-Publisher and
+Clax-Agent trailers. The read token is from the RepoDO stand-in's dev route
+(POST /_dev/repos/token, which REPO_DEV_ROUTES=1 serves for this demo only)
+and is good until ${t.expires_at}:
+  ${t.clone_command} brief
+  git -C brief log --format='%h %s%n    %(trailers:key=Clax-Publisher,key=Clax-Agent,separator=%x2C )'
+or with jj:
+  ${t.jj_clone_command} brief-jj`;
   },
 };
-
-function freePort(): Promise<number> {
-  return new Promise((ok, fail) => {
-    const s = createServer();
-    s.once("error", fail);
-    s.listen(0, "127.0.0.1", () => {
-      const a = s.address();
-      s.close(() => (typeof a === "object" && a !== null ? ok(a.port) : fail(new Error("no port"))));
-    });
-  });
-}
 
 function portTaken(port: number): Promise<boolean> {
   return new Promise((ok) => {
@@ -143,33 +172,39 @@ async function stopGroup(child: ChildProcess): Promise<void> {
 
 const children: ChildProcess[] = [];
 let stopping = false;
+/** Stops the children newest first (the agents end their sessions before the server goes), then exits. */
 async function shutdown(code: number): Promise<never> {
+  if (stopping) return new Promise<never>(() => {});
   stopping = true;
-  await Promise.all(children.map(stopGroup));
+  for (const c of [...children].reverse()) await stopGroup(c);
   process.exit(code);
 }
 process.on("SIGINT", () => void shutdown(0));
 process.on("SIGTERM", () => void shutdown(0));
 
-const target = opts.worker ? worker : native;
+if (opts.native && opts.worker) {
+  console.error("Pass --native or --worker, not both.");
+  process.exit(2);
+}
+const target = opts.native ? native : worker;
 const port = opts.port === undefined ? await freePort() : Number(opts.port);
 if (await portTaken(port)) {
   console.error(`Port ${port} is in use. Stop what holds it, or pass --port <free port>.`);
   process.exit(1);
 }
 
-rmSync(DIR, { recursive: true, force: true });
-mkdirSync(DIR, { recursive: true });
-const log = join(DIR, "server.log");
+rmSync(target.dir, { recursive: true, force: true });
+mkdirSync(target.dir, { recursive: true });
+const log = target.log;
 const secret = randomBytes(18).toString("base64url");
 let server: ChildProcess;
 try {
-  server = await target.start(port, secret, opts.seats, log);
+  server = await target.start(port, secret, opts.seats);
 } catch (e) {
   console.error(e instanceof Error ? e.message : e);
   process.exit(2);
 }
-children.push(server);
+if (!children.includes(server)) children.push(server);
 void exited(server).then(() => {
   if (stopping) return;
   console.error(`${target.name} exited; see ${log}:\n${readFileSync(log, "utf8").slice(-2000)}`);
@@ -188,22 +223,31 @@ while (!(await fetch(`${base}/healthz`).then((r) => r.ok, () => false))) {
 
 let seeded;
 try {
-  seeded = await seed({ url: base, secret, agents: Number(opts.agents) });
+  seeded = await seed({ url: base, secret, agents: Number(opts.agents), mcpPath: target.mcpPath });
 } catch (e) {
   console.error(e instanceof Error ? e.message : e);
   await shutdown(1);
 }
 const s = seeded!;
+let extra = "";
+try {
+  extra = await target.extra(base, s);
+} catch (e) {
+  console.error(e instanceof Error ? e.message : e);
+  await shutdown(1);
+}
 const agentsCommand = `node demo/agents.ts --url ${base} --mcp-path ${target.mcpPath} --token ${s.token.token} --id ${s.brief.id} --agents ${s.agents} --pace ${opts.pace}`;
 console.log(`
-${describe(s)}
+Running on ${target.name}.
+
+${describe(s)}${extra}
 
 Run the demo agents again with:
   ${agentsCommand}
 
 Try it (live seats for people: ${opts.seats}; the owner and the people an artifact names always get one):
   1. Open ${s.owner.name}'s and ${s.editor.name}'s sign-in links in two browser profiles, click
-     Sign in, and open the Brief in both: each shows the other here in its
+     Sign in on this device, and open the Brief in both: each shows the other here in its
      people panel, and a pointer moved or text selected in one is drawn over
      the page in the other, in that person's colour.
   2. Press Enter here to start ${s.agents} demo agent(s) on the Brief: watch their
@@ -218,6 +262,8 @@ Try it (live seats for people: ${opts.seats}; the owner and the people an artifa
      private window open the Brief and comment as a guest (it takes the free
      seat); ${s.invite.name} then opens the Brief and gets the read-only view. Close the
      private window, and ${s.invite.name} sees Join live.
+  5. Open the Fork in ${s.editor.name}'s window: under its title, "Forked from
+     ${s.checklist.title} v2" links back to the version it was copied from.
 
 Ctrl-C stops everything; the next run starts fresh.`);
 

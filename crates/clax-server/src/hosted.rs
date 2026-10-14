@@ -39,9 +39,9 @@
 //!   and `/healthz`. The content frame is
 //!   sandboxed, so its requests carry no cookie: the key, which only the
 //!   routes that hand the version to someone who may read it carry, is the
-//!   capability, as the unguessable commit is in the prototype. An ID
-//!   alone reads nothing. An agent's draft revision is served at its draft
-//!   URL (`/c/<aid>/draft/<agent>/<token>/…`), whose token is the
+//!   capability. An ID alone reads nothing. An agent's draft revision is
+//!   served at its draft URL (`/c/<aid>/draft/<agent>/<token>/…`), whose
+//!   token is the
 //!   capability in the same way: minted per revision, it travels only in
 //!   the drafts listing and the `drafts` events, which reach only people
 //!   who may read the artifact ([`crate::routes::drafts`]);
