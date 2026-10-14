@@ -117,7 +117,7 @@ describe("PeoplePanel's raise for the artifact's creator", () => {
 
   it("offers the creator the actions they hold here, on the agents a raise reaches, and sets their own raise", async () => {
     const { v, calls } = open({ creator: true, holds: HOLDS, raisable: ["h_mia"], raises: [
-      { agent: { handle: "h_mia", name: "notes-fix", person: "u_mia", live: true }, access: [{ type: "clax-artifacts", actions: ["update"], locations: ["other"] }] }] });
+      { agent: { handle: "h_mia", name: "notes-fix", person: "u_mia", live: true }, access: [{ type: "clax-artifacts", actions: ["update"], locations: ["other"] }], version: "01V1" }] });
     await settle();
     expect(calls.map(c => c.url)).toContain("/api/people/me/raises?artifact=notes");
     const mia = row(v, "notes-fix");
@@ -140,8 +140,15 @@ describe("PeoplePanel's raise for the artifact's creator", () => {
     const put = calls.find(c => c.method === "PUT")!;
     expect(put.url).toBe("/api/agents/h_mia/elevate");
     // The raise elsewhere is kept; this artifact's is added.
-    expect(put.body).toEqual({ access: [{ type: "clax-artifacts", actions: ["update"], locations: ["other"] }, { type: "clax-artifacts", actions: ["update"], locations: ["notes"] }] });
-    expect(calls.filter(c => c.url.startsWith("/api/people/me/raises")).length).toBe(2);
+    // It names the raise it was built on, so it never brings back one removed since.
+    expect(put.body).toEqual({ access: [{ type: "clax-artifacts", actions: ["update"], locations: ["other"] }, { type: "clax-artifacts", actions: ["update"], locations: ["notes"] }], if_version: "01V1" });
+    const reads = () => calls.filter(c => c.url.startsWith("/api/people/me/raises")).length;
+    expect(reads()).toBeGreaterThanOrEqual(2);
+    // Back on the page, the raises are read again.
+    const before = reads();
+    window.dispatchEvent(new Event("focus"));
+    await settle();
+    expect(reads()).toBe(before + 1);
     v.unmount();
   });
 
@@ -167,5 +174,49 @@ describe("PeoplePanel's raise for the artifact's creator", () => {
       expect(v.root.querySelector(".raise-here")).toBeNull();
       v.unmount();
     }
+  });
+});
+
+describe("PeoplePanel's raise when someone else changed it", () => {
+  afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
+  const settle = async () => { for (let i = 0; i < 12; i++) await new Promise(r => setTimeout(r, 0)); flush(); };
+
+  it("is refused when the raise it was built on was removed since, and then shows the raise as it stands", async () => {
+    const MIA = { public_id: "u_mia", name: "Mia", owner: false };
+    const agents = [{ handle: "h_mia", harness: "codex", live: true, name: "notes-fix", person: MIA }];
+    const HOLDS = [{ type: "clax-artifacts", actions: ["read", "update", "delete"], locations: ["notes"] }];
+    let removed = false;
+    const calls: { url: string; method: string; body: unknown }[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      if (url.startsWith("/api/people/me/raises")) {
+        const raises = removed ? [] : [{ agent: { handle: "h_mia", name: "notes-fix", person: "u_mia", live: true }, access: [{ type: "clax-artifacts", actions: ["update", "delete"], locations: ["notes"] }], version: "01V1" }];
+        return new Response(JSON.stringify({ creator: true, holds: HOLDS, raisable: ["h_mia"], raises }));
+      }
+      if (url === "/api/agents") return new Response(JSON.stringify({ agents: [] }));
+      if (init?.method === "PUT") return new Response(JSON.stringify({ error: { code: "conflict", message: "changed" }, raise: null }), { status: 409 });
+      return new Response("{}");
+    }));
+    const s = view(null) as unknown as Record<string, unknown>;
+    const ctl = { numbers: () => new Map(), forgetReopen: vi.fn(), setNotice: vi.fn(), setMe: vi.fn(), setShareWhere: vi.fn() };
+    const v = mount(PeoplePanel, { ctl: ctl as never, s: { ...s, agents, data: { artifact: { id: "notes", participants: { people: [], agents } }, versions: [] } } as never, onClose: vi.fn() });
+    await settle();
+    const row = v.root.querySelector(".prow.agent")!;
+    await vi.waitFor(() => { flush(); expect(row.querySelector(".raise-here")).not.toBeNull(); });
+    // Mia removed it meanwhile; this panel still shows it, and unchecks Delete.
+    removed = true;
+    const del = [...row.querySelectorAll(".raise-here label")].find(l => l.textContent!.trim() === "Delete artifacts")!.querySelector("input")!;
+    expect(del.checked).toBe(true);
+    del.checked = false;
+    flush(() => { del.dispatchEvent(new Event("change", { bubbles: true })); });
+    await settle();
+    const put = calls.find(c => c.method === "PUT")!;
+    expect((put.body as { if_version: string }).if_version).toBe("01V1");
+    expect(row.querySelector(".rerr")!.textContent).toContain("This raise changed since you opened it");
+    // Read again: nothing is raised, as it stands.
+    const boxes = [...row.querySelectorAll<HTMLInputElement>(".raise-here input")];
+    expect(boxes.every(b => !b.checked)).toBe(true);
+    expect(row.querySelector(".raise-here summary")!.textContent).toBe("Raise on this artifact");
+    v.unmount();
   });
 });

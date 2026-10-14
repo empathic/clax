@@ -64,10 +64,12 @@
   /** An artifact a raise names, by title: "every artifact" for `*`. */
   const where = (loc: string) => (loc === "*" ? "every artifact" : `“${artifacts?.find(x => x.id === loc)?.title ?? loc}”`);
   /** What the owner raised agent `a` with, one line per action and place. */
-  const raises = (a: PeopleAgent) => CAPS.flatMap(c => ownerRaisedAt(a, c).map(loc => `${c.label} on ${where(loc)}`));
+  /** A capability raised at `loc`: asking has no place, so it names none. */
+  const raisedAs = (c: { type: string; label: string }, loc: string) => (c.type === "clax-ask" ? c.label : `${c.label} on ${where(loc)}`);
+  const raises = (a: PeopleAgent) => CAPS.flatMap(c => ownerRaisedAt(a, c).map(loc => raisedAs(c, loc)));
   /** What an artifact's creator raised an agent with, one line per action. */
   const creatorRaise = (e: PeopleElevation) =>
-    CAPS.flatMap(c => e.access.filter(x => x.type === c.type && x.actions.includes(c.action)).flatMap(x => (x.locations ?? ["*"]).map(loc => `${c.label} on ${where(loc)}`)));
+    CAPS.flatMap(c => e.access.filter(x => x.type === c.type && x.actions.includes(c.action)).flatMap(x => (x.locations ?? ["*"]).map(loc => raisedAs(c, loc))));
   const byName = (g: PeopleElevation["granter"]) => (g.owner ? "the owner" : g.name);
   /** The note on a raised capability, in its person's view: who raised it
    * and where. The agent's narrowing caps every raise, so off here it is off
@@ -228,7 +230,7 @@
             </label>
             <div class="caps">
               {#each raiseCaps(who.rights, g, a, loc) as c (c.key)}
-                <label title={c.wider ? "Raised at every artifact" : undefined}><input type="checkbox" checked={c.on} disabled={c.has || c.wider} onchange={e => toggle(e, on => api.elevate(a.handle, elevation(a, c.key, on, loc)))} /> {c.label}</label>
+                <label title={c.wider ? "Raised at every artifact" : undefined}><input type="checkbox" checked={c.on} disabled={c.has || c.wider || (c.capped && !c.on)} onchange={e => toggle(e, on => api.elevate(a.handle, elevation(a, c.key, on, loc)))} /> <span>{c.label}{#if c.capped}<span class="raised">Off by {name}'s narrowing: a raise gives nothing while it is off</span>{/if}</span></label>
               {/each}
             </div>
           </details>

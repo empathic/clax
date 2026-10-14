@@ -594,7 +594,8 @@ pub const MIGRATIONS: &[&str] = &[
         session_id TEXT NOT NULL,
         granter TEXT,
         access_json TEXT NOT NULL,
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        version TEXT NOT NULL DEFAULT ''
     );
     CREATE UNIQUE INDEX session_elevations_key ON session_elevations(session_id, COALESCE(granter, ''));
     CREATE INDEX session_elevations_by_granter ON session_elevations(granter) WHERE granter IS NOT NULL;
