@@ -1,7 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
+import 'package:cryptography/dart.dart' show DartSha256;
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -925,6 +928,189 @@ void main() {
         await sub.cancel();
         await s.close();
         await expectLater(s.subscribe(['inbox']), throwsStateError);
+      },
+    );
+  });
+
+  group('file entries and bytes', () {
+    final png = Uint8List.fromList([0x89, 0x50, 0x4e, 0x47, 0xff, 0x00]);
+    String hex(List<int> b) =>
+        [for (final x in b) x.toRadixString(16).padLeft(2, '0')].join();
+    String sha(List<int> b) => hex(const DartSha256().hashSync(b).bytes);
+    String contentHash(Map<String, List<int>> files) {
+      final paths = files.keys.toList()..sort();
+      final lines = StringBuffer();
+      for (final p in paths) {
+        lines.write('$p\x00${sha(files[p]!)}\x00${files[p]!.length}\n');
+      }
+      return 'sha256:${sha(utf8.encode(lines.toString()))}';
+    }
+
+    test(
+      'a create with entries keeps bytes, types and the daemon hashes',
+      () async {
+        await api.registerAppSession(installId: 'i', pid: 1);
+        final r = await api.createArtifact(
+          PublishRequest(
+            title: 'Plants',
+            icon: 'leaf',
+            files: {'app.js': 'x()'},
+            entries: {
+              'index.html': FileEntry.text('<p>é</p>'),
+              'a.png': FileEntry.bytes(png, type: 'image/png'),
+              'notes.txt': FileEntry.bytes(utf8.encode('hi')),
+            },
+          ),
+        );
+        final aid = r.artifact.id;
+        expect(r.artifact.icon, 'leaf');
+        expect(await api.readFileBytes(aid, 1, 'a.png'), png);
+        expect(
+          await api.readFileBytes(aid, 1, 'index.html'),
+          utf8.encode('<p>é</p>'),
+        );
+        expect(await api.readFileBytes(aid, 1, 'none.png'), isNull);
+        expect(await api.readFileBytes(aid, 9, 'a.png'), isNull);
+        expect(await api.readFileBytes('nope', 1, 'a.png'), isNull);
+        expect(await api.readFiles(aid, 1), {
+          'app.js': 'x()',
+          'index.html': '<p>é</p>',
+          'notes.txt': 'hi',
+        }, reason: 'readFiles holds text files only, as the daemon route does');
+        final v = r.version;
+        expect(v.files['a.png']!.contentType, 'image/png');
+        expect(v.files['index.html']!.size, utf8.encode('<p>é</p>').length);
+        expect(v.files['a.png']!.sha256, sha(png));
+        expect(
+          v.contentSha256,
+          contentHash({
+            'app.js': utf8.encode('x()'),
+            'index.html': utf8.encode('<p>é</p>'),
+            'a.png': png,
+            'notes.txt': utf8.encode('hi'),
+          }),
+        );
+        expect(
+          (await api.getArtifact(aid)).current!.contentSha256,
+          v.contentSha256,
+        );
+      },
+    );
+
+    test('publish carries bytes forward, removes null entries; a restore keeps the hash', () async {
+      await api.registerAppSession(installId: 'i', pid: 1);
+      final aid = (await api.createArtifact(
+        PublishRequest(
+          title: 'Plants',
+          entries: {
+            'index.html': FileEntry.text('<p>1</p>'),
+            'a.png': FileEntry.bytes(png),
+            'b.png': FileEntry.bytes(png),
+          },
+        ),
+      )).artifact.id;
+      final v1 = api.versionOf(aid, 1).contentSha256;
+      final v2 = await api.publish(
+        aid,
+        PublishRequest(
+          ifVersion: 1,
+          entries: {'index.html': FileEntry.text('<p>2</p>'), 'b.png': null},
+        ),
+      );
+      expect(v2.version.files.keys.toSet(), {'index.html', 'a.png'});
+      expect(await api.readFileBytes(aid, 2, 'a.png'), png);
+      expect(v2.version.contentSha256, isNot(v1));
+      final back = await api.restoreVersion(aid, 1, ifVersion: 2);
+      expect(back.version.contentSha256, v1);
+      expect(await api.readFileBytes(aid, 3, 'b.png'), png);
+    });
+
+    test('a publish with index.html only as an entry is accepted', () async {
+      await api.registerAppSession(installId: 'i', pid: 1);
+      final aid = api.seedArtifact('Runs', {'index.html': '1'});
+      await expectLater(
+        api.publish(
+          aid,
+          PublishRequest(ifVersion: 1, entries: {'index.html': null}),
+        ),
+        apiError('missing_index'),
+      );
+      final r = await api.publish(
+        aid,
+        PublishRequest(
+          ifVersion: 1,
+          entries: {'index.html': FileEntry.text('2')},
+        ),
+      );
+      expect(api.filesOf(aid, r.version.n), {'index.html': '2'});
+    });
+
+    test('createDraft takes entries', () async {
+      final aid = api.seedArtifact('Runs', {'index.html': '1'});
+      api.putDoc(aid, 'runs/r1', {'km': 5});
+      final d = await api.createDraft(
+        of: aid,
+        title: 'Runs',
+        entries: {
+          'index.html': FileEntry.text('<p>v2</p>'),
+          'a.png': FileEntry.bytes(png),
+        },
+      );
+      expect(d.docsCopied, 1);
+      expect(await api.readFileBytes(d.id, 1, 'a.png'), png);
+      expect(await api.readFile(d.id, 1, 'index.html'), '<p>v2</p>');
+      await expectLater(
+        api.createDraft(
+          of: aid,
+          title: 'Runs',
+          entries: {'a.png': FileEntry.bytes(png)},
+        ),
+        apiError('missing_index'),
+      );
+    });
+
+    test('deleteArtifact removes the app and sends artifact_deleted', () async {
+      final aid = api.seedArtifact('Runs', {'index.html': '1'});
+      api.putDoc(aid, 'runs/r1', {'km': 5});
+      final events = <ClaxEvent>[];
+      final sub = api.events().listen(events.add);
+      addTearDown(sub.cancel);
+      await api.deleteArtifact(aid);
+      await pumpEventQueue();
+      expect(
+        events.map((e) => (e.type, e.data['artifact_id'])),
+        contains(('artifact_deleted', aid)),
+      );
+      expect(
+        (await api.listArtifacts()).map((a) => a.id),
+        isNot(contains(aid)),
+      );
+      await expectLater(api.getArtifact(aid), apiError('not_found'));
+      await expectLater(api.deleteArtifact(aid), apiError('not_found'));
+    });
+
+    test('contentHashes false leaves the hashes out', () async {
+      api.contentHashes = false;
+      final aid = api.seedArtifact('Runs', {'index.html': '1'});
+      final v = api.versionOf(aid, 1);
+      expect(v.contentSha256, isNull);
+      expect(v.files['index.html']!.sha256, isNull);
+    });
+
+    test(
+      'reportWrongContentHash makes versions misreport their hash',
+      () async {
+        await api.registerAppSession(installId: 'i', pid: 1);
+        final files = {'index.html': utf8.encode('<p>1</p>')};
+        api.reportWrongContentHash = true;
+        final r = await api.createArtifact(
+          PublishRequest(
+            title: 'Runs',
+            entries: {'index.html': FileEntry.bytes(files['index.html']!)},
+          ),
+        );
+        expect(r.version.contentSha256, startsWith('sha256:'));
+        expect(r.version.contentSha256, isNot(contentHash(files)));
       },
     );
   });

@@ -3,6 +3,8 @@ import 'dart:collection';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:cryptography/dart.dart' show DartSha256;
+
 import 'api.dart';
 
 /// One call [FakeClaxApi] received: the method's name and its arguments.
@@ -31,6 +33,12 @@ class FakeCall {
 /// appended to
 /// [calls] before it runs. [failNext] makes the next call of a method
 /// throw instead.
+///
+/// Files keep their bytes and content type (a [FileEntry]'s, else one
+/// from the path's extension), and each version reports the daemon's file
+/// SHA-256s and `content_sha256`; [readFiles] holds the files given as text
+/// and those with a text extension. [deleteArtifact] sends
+/// `artifact_deleted`.
 ///
 /// [pollFeedback] answers at once when a batch is queued; otherwise it
 /// waits for the next [pushFeedback] or [releasePolls], and never for
@@ -85,6 +93,15 @@ class FakeClaxApi implements ClaxApi {
   /// The session agent calls are made as; [registerAppSession] sets it.
   String? sessionId;
 
+  /// When false, versions made from then on carry no `content_sha256` and
+  /// no file `sha256`, as versions written before content hashes do.
+  bool contentHashes = true;
+
+  /// When true, every version made from then on reports a
+  /// `content_sha256` that does not match its files, as a daemon that
+  /// stored other bytes would.
+  bool reportWrongContentHash = false;
+
   /// The owner's display name, which every owner comment is posted with
   /// from then on; a test may change it, as `PUT /api/viewers/me` does.
   String ownerName = 'Alex';
@@ -134,7 +151,7 @@ class FakeClaxApi implements ClaxApi {
       title: title,
       capabilities: Map.of(capabilities),
       ownerSession: ownerSession,
-      versions: [_version(aid, 1, Map.of(files), session: ownerSession)],
+      versions: [_version(aid, 1, _texts(files), session: ownerSession)],
     );
     return aid;
   }
@@ -143,7 +160,7 @@ class FakeClaxApi implements ClaxApi {
   /// would, and returns its number. No event is sent.
   int seedVersion(String aid, Map<String, String> files) {
     final a = _artifact(aid);
-    a.versions.add(_version(aid, a.current + 1, Map.of(files)));
+    a.versions.add(_version(aid, a.current + 1, _texts(files)));
     return a.current;
   }
 
@@ -436,9 +453,35 @@ class FakeClaxApi implements ClaxApi {
   @override
   Future<String?> readFile(String aid, int n, String path) async {
     _call('readFile', {'aid': aid, 'n': n, 'path': path});
+    final f = _file(aid, n, path);
+    return f == null
+        ? null
+        : f.text ?? utf8.decode(f.bytes, allowMalformed: true);
+  }
+
+  @override
+  Future<Uint8List?> readFileBytes(String aid, int n, String path) async {
+    _call('readFileBytes', {'aid': aid, 'n': n, 'path': path});
+    return _file(aid, n, path)?.bytes;
+  }
+
+  _FakeFile? _file(String aid, int n, String path) {
     final a = _artifacts[aid];
     if (a == null || n < 1 || n > a.versions.length) return null;
-    return a.versions[n - 1].files[path];
+    return a.versions[n - 1].blobs[path];
+  }
+
+  @override
+  Future<void> deleteArtifact(String aid) async {
+    _call('deleteArtifact', {'aid': aid});
+    if (_artifacts.remove(aid) == null) throw _notFound();
+    working.remove(aid);
+    emit(
+      ClaxEvent(
+        type: 'artifact_deleted',
+        data: {'type': 'artifact_deleted', 'artifact_id': aid},
+      ),
+    );
   }
 
   @override
@@ -448,7 +491,7 @@ class FakeClaxApi implements ClaxApi {
     final title = r.title?.trim() ?? '';
     if (title.isEmpty) throw _invalid('invalid_args', 'title is required');
     final files = {
-      for (final e in r.files.entries)
+      for (final e in _requestFiles(r).entries)
         if (e.value != null) e.key: e.value!,
     };
     if (!files.containsKey('index.html')) {
@@ -461,7 +504,7 @@ class FakeClaxApi implements ClaxApi {
       capabilities: Map.of(r.capabilities ?? const {}),
       ownerSession: sessionId,
       versions: [],
-    );
+    )..icon = r.icon;
     a.versions.add(
       _version(aid, 1, files, session: sessionId, label: r.label, note: r.note),
     );
@@ -481,8 +524,8 @@ class FakeClaxApi implements ClaxApi {
       }
     }
     _needIndex(r);
-    final files = Map.of(a.versions.last.files);
-    for (final e in r.files.entries) {
+    final files = Map.of(a.versions.last.blobs);
+    for (final e in _requestFiles(r).entries) {
       if (e.value == null) {
         files.remove(e.key);
       } else {
@@ -490,6 +533,7 @@ class FakeClaxApi implements ClaxApi {
       }
     }
     if (r.title != null) a.title = r.title!;
+    if (r.icon != null) a.icon = r.icon;
     if (r.capabilities != null) a.capabilities = Map.of(r.capabilities!);
     a.versions.add(
       _version(
@@ -522,7 +566,7 @@ class FakeClaxApi implements ClaxApi {
       _version(
         aid,
         a.current + 1,
-        Map.of(a.versions[n - 1].files),
+        Map.of(a.versions[n - 1].blobs),
         label: 'Restored v$n',
         note: 'Restored version $n',
       ),
@@ -747,7 +791,7 @@ class FakeClaxApi implements ClaxApi {
             artifactId: a.id,
             title: a.title,
             currentVersion: a.current,
-            files: a.versions.last.files.keys.toList(),
+            files: a.versions.last.blobs.keys.toList(),
             threads: [
               for (final t in a.threads.values)
                 if (includeResolved || t.status == 'open') t.view(a.id),
@@ -795,19 +839,25 @@ class FakeClaxApi implements ClaxApi {
     String? of,
     required String title,
     Map<String, Object?>? capabilities,
-    required Map<String, String> files,
+    Map<String, String> files = const {},
+    Map<String, FileEntry> entries = const {},
   }) async {
     _call('createDraft', {
       'of': of,
       'title': title,
       'capabilities': capabilities,
       'files': Map.of(files),
+      'entries': Map.of(entries),
     });
+    final blobs = {
+      ..._texts(files),
+      for (final e in entries.entries) e.key: _entryFile(e.key, e.value),
+    };
     final app = of == null ? null : _artifact(of);
     if (title.trim().isEmpty) {
       throw _invalid('invalid_args', 'title is required');
     }
-    if (!files.containsKey('index.html')) {
+    if (!blobs.containsKey('index.html')) {
       throw _invalid('missing_index', 'a version must include index.html');
     }
     final id = _newArtifactId();
@@ -815,7 +865,7 @@ class FakeClaxApi implements ClaxApi {
       id: id,
       title: title,
       capabilities: Map.of(capabilities ?? app?.capabilities ?? const {}),
-      versions: [_version(id, 1, Map.of(files))],
+      versions: [_version(id, 1, blobs)],
       draftOf: of,
       hidden: true,
       createdAt: _now(),
@@ -865,8 +915,8 @@ class FakeClaxApi implements ClaxApi {
     }
     _checkVersion(a, r.ifVersion!);
     _needIndex(r);
-    final files = Map.of(a.versions.last.files);
-    for (final e in r.files.entries) {
+    final files = Map.of(a.versions.last.blobs);
+    for (final e in _requestFiles(r).entries) {
       if (e.value == null) {
         files.remove(e.key);
       } else {
@@ -874,6 +924,7 @@ class FakeClaxApi implements ClaxApi {
       }
     }
     if (r.title != null) a.title = r.title!;
+    if (r.icon != null) a.icon = r.icon;
     if (r.capabilities != null) a.capabilities = Map.of(r.capabilities!);
     a.versions.add(
       _version(draftId, a.current + 1, files, label: r.label, note: r.note),
@@ -1737,28 +1788,74 @@ class FakeClaxApi implements ClaxApi {
   _FakeVersion _version(
     String aid,
     int n,
-    Map<String, String> files, {
+    Map<String, _FakeFile> files, {
     String? session,
     String? label,
     String? note,
     List<String> addresses = const [],
-  }) => _FakeVersion(
-    files,
-    VersionInfo(
-      artifactId: aid,
-      n: n,
-      createdAt: _now(),
-      files: {
-        for (final e in files.entries)
-          e.key: FileMeta(contentType: _type(e.key), size: e.value.length),
-      },
-      label: label,
-      note: note,
-      addresses: List.of(addresses),
-      sessionId: session,
-      agentHarness: session == null ? null : 'app',
-    ),
-  );
+  }) {
+    final paths = files.keys.toList()..sort(_byteOrder);
+    final manifest = StringBuffer();
+    for (final p in paths) {
+      final f = files[p]!;
+      manifest.write('$p\x00${f.sha256}\x00${f.bytes.length}\n');
+    }
+    if (reportWrongContentHash) manifest.write('wrong\n');
+    return _FakeVersion(
+      files,
+      VersionInfo(
+        artifactId: aid,
+        n: n,
+        createdAt: _now(),
+        files: {
+          for (final p in paths)
+            p: FileMeta(
+              contentType: files[p]!.type,
+              size: files[p]!.bytes.length,
+              sha256: contentHashes ? files[p]!.sha256 : null,
+            ),
+        },
+        label: label,
+        note: note,
+        addresses: List.of(addresses),
+        sessionId: session,
+        agentHarness: session == null ? null : 'app',
+        contentSha256: contentHashes
+            ? 'sha256:${_sha256(utf8.encode(manifest.toString()))}'
+            : null,
+      ),
+    );
+  }
+
+  /// Compares paths by their UTF-8 bytes, as the daemon orders them.
+  static int _byteOrder(String a, String b) {
+    final x = utf8.encode(a), y = utf8.encode(b);
+    for (var i = 0; i < x.length && i < y.length; i++) {
+      if (x[i] != y[i]) return x[i] - y[i];
+    }
+    return x.length - y.length;
+  }
+
+  static String _sha256(List<int> bytes) => [
+    for (final b in const DartSha256().hashSync(bytes).bytes)
+      b.toRadixString(16).padLeft(2, '0'),
+  ].join();
+
+  static Map<String, _FakeFile> _texts(Map<String, String> files) => {
+    for (final e in files.entries)
+      e.key: _FakeFile(utf8.encode(e.value), _type(e.key), text: e.value),
+  };
+
+  static _FakeFile _entryFile(String path, FileEntry e) =>
+      _FakeFile(e.bytes, e.type ?? _type(path), text: e.text);
+
+  /// A request's files and entries (an entry wins), null for a removal.
+  static Map<String, _FakeFile?> _requestFiles(PublishRequest r) => {
+    for (final e in r.files.entries)
+      e.key: e.value == null ? null : _texts({e.key: e.value!})[e.key],
+    for (final e in r.entries.entries)
+      e.key: e.value == null ? null : _entryFile(e.key, e.value!),
+  };
 
   PublishResult _landed(_FakeArtifact a, List<String> addresses) {
     final v = a.versions.last.info;
@@ -1835,10 +1932,22 @@ class FakeClaxApi implements ClaxApi {
         'js' || 'mjs' => 'text/javascript; charset=utf-8',
         'json' => 'application/json',
         'svg' => 'image/svg+xml',
+        'png' => 'image/png',
+        _ when !_isText(path) => 'application/octet-stream',
         _ => 'text/plain; charset=utf-8',
       };
 
   static const _usersPrefix = 'data/users/';
+
+  static bool _isText(String path) {
+    final slash = path.lastIndexOf('/');
+    final dot = path.lastIndexOf('.');
+    return dot > slash &&
+        const {
+          '.html', '.htm', '.css', '.js', '.mjs', '.json', //
+          '.svg', '.md', '.txt', '.csv', '.xml',
+        }.contains(path.substring(dot).toLowerCase());
+  }
 
   /// Refuses app [reader] a read of [source] as the reader routes do:
   /// without consent (the reader's `db.read` lists [source], and the owner
@@ -1916,7 +2025,7 @@ class FakeClaxApi implements ClaxApi {
   /// The daemon requires `index.html` in every publish request, whatever
   /// the previous version held.
   static void _needIndex(PublishRequest r) {
-    if (r.files['index.html'] == null) {
+    if (!r.hasFile('index.html')) {
       throw _invalid(
         'missing_index',
         'index.html is required on every publish',
@@ -1937,10 +2046,29 @@ class FakeClaxApi implements ClaxApi {
       ClaxApiError(status: 400, code: code, message: message);
 }
 
+class _FakeFile {
+  _FakeFile(this.bytes, this.type, {this.text})
+    : sha256 = FakeClaxApi._sha256(bytes);
+  final Uint8List bytes;
+  final String type;
+
+  /// The text the file was given as, when it was.
+  final String? text;
+  final String sha256;
+}
+
 class _FakeVersion {
-  _FakeVersion(this.files, this.info);
-  final Map<String, String> files;
+  _FakeVersion(this.blobs, this.info);
+  final Map<String, _FakeFile> blobs;
   final VersionInfo info;
+
+  /// The files given as text, and the others with a text extension, as
+  /// text.
+  Map<String, String> get files => {
+    for (final e in blobs.entries)
+      if (e.value.text != null || FakeClaxApi._isText(e.key))
+        e.key: e.value.text ?? utf8.decode(e.value.bytes, allowMalformed: true),
+  };
 }
 
 class _FakeArtifact {
@@ -1962,6 +2090,7 @@ class _FakeArtifact {
   final bool hidden;
   final String? createdAt;
   String title;
+  String? icon;
   Map<String, Object?> capabilities;
   final String? ownerSession;
   final List<_FakeVersion> versions;
@@ -1973,6 +2102,7 @@ class _FakeArtifact {
   ArtifactSummary summary(String now) => ArtifactSummary(
     id: id,
     title: title,
+    icon: icon,
     currentVersion: current,
     updatedAt: now,
     createdAt: now,

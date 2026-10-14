@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/http_api.dart';
 import 'package:clax_app/daemon/supervisor.dart' show DaemonEndpoint, keyCookie;
+import 'package:cryptography/dart.dart' show DartSha256;
 import 'package:flutter_test/flutter_test.dart';
 
 /// [HttpClaxApi] against the real debug `clax` named by `CLAX_TEST_BIN`
@@ -14,6 +16,7 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   final bin = Platform.environment['CLAX_TEST_BIN'];
   _lockedTest(bin);
+  _entriesTest(bin);
 
   test(
     'the app session publishes, takes a sent comment, answers it and writes documents',
@@ -471,6 +474,89 @@ void main() {
     skip: bin == null ? 'CLAX_TEST_BIN is not set' : false,
     timeout: const Timeout(Duration(minutes: 3)),
   );
+}
+
+void _entriesTest(String? bin) => test(
+  'file entries: bytes round-trip, the content hash, drafts and a delete',
+  () async {
+    final d = await _Daemon.start(bin!, requireCredential: true);
+    final api = HttpClaxApi(() => d.endpoint);
+    addTearDown(api.close);
+    await api.registerAppSession(
+      installId: 'install-1',
+      pid: pid,
+      cwd: d.dir.path,
+    );
+    final png = Uint8List.fromList([0x89, 0x50, 0x4e, 0x47, 0xff, 0x00, 0x0a]);
+    final html = utf8.encode('<p>é</p>');
+    final created = await api.createArtifact(
+      PublishRequest(
+        title: 'Plants',
+        icon: 'leaf',
+        entries: {
+          'index.html': FileEntry.text('<p>é</p>', type: 'text/html'),
+          'img/a.png': FileEntry.bytes(png, type: 'image/png'),
+        },
+      ),
+    );
+    final aid = created.artifact.id;
+    expect(await api.readFileBytes(aid, 1, 'img/a.png'), png);
+    expect(await api.readFileBytes(aid, 1, 'index.html'), html);
+    expect(await api.readFileBytes(aid, 1, 'none.png'), isNull);
+    final v = (await api.getArtifact(aid)).current!;
+    expect(v.files['img/a.png']!.contentType, 'image/png');
+    expect(v.files['img/a.png']!.sha256, _sha(png));
+    expect(
+      v.contentSha256,
+      _contentHash({'index.html': html, 'img/a.png': png}),
+      reason: "the daemon's content hash is the bundle formula",
+    );
+
+    final draft = await api.createDraft(
+      of: aid,
+      title: 'Plants',
+      entries: {
+        'index.html': FileEntry.text('<p>v2</p>'),
+        'img/a.png': FileEntry.bytes(png),
+      },
+    );
+    expect(await api.readFileBytes(draft.id, 1, 'img/a.png'), png);
+    await api.deleteDraft(draft.id);
+
+    final v2 = await api.publish(
+      aid,
+      PublishRequest(
+        ifVersion: 1,
+        entries: {'index.html': FileEntry.text('<p>2</p>'), 'img/a.png': null},
+      ),
+    );
+    expect(v2.version.files.keys, ['index.html']);
+
+    await api.deleteArtifact(aid);
+    await expectLater(
+      api.getArtifact(aid),
+      throwsA(isA<ClaxApiError>().having((e) => e.isNotFound, '404', isTrue)),
+    );
+    await expectLater(
+      api.deleteArtifact(aid),
+      throwsA(isA<ClaxApiError>().having((e) => e.isNotFound, '404', isTrue)),
+    );
+  },
+  skip: bin == null ? 'CLAX_TEST_BIN is not set' : false,
+  timeout: const Timeout(Duration(minutes: 3)),
+);
+
+String _sha(List<int> b) => [
+  for (final x in const DartSha256().hashSync(b).bytes)
+    x.toRadixString(16).padLeft(2, '0'),
+].join();
+
+String _contentHash(Map<String, List<int>> files) {
+  final lines = StringBuffer();
+  for (final p in files.keys.toList()..sort()) {
+    lines.write('$p\x00${_sha(files[p]!)}\x00${files[p]!.length}\n');
+  }
+  return 'sha256:${_sha(utf8.encode(lines.toString()))}';
 }
 
 void _lockedTest(String? bin) => test(

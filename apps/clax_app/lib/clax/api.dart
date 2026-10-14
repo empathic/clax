@@ -31,6 +31,15 @@ abstract interface class ClaxApi {
   /// answers each 404.
   Future<String?> readFile(String aid, int n, String path);
 
+  /// Version [n]'s file [path], as bytes; null when it has none (an
+  /// unknown artifact or version is null too, as for [readFile]).
+  Future<Uint8List?> readFileBytes(String aid, int n, String path);
+
+  /// `DELETE /api/artifacts/<aid>` as the owner: removes the artifact, its
+  /// versions, threads and documents, and sends `artifact_deleted`. An
+  /// unknown artifact is [ClaxApiError] 404 `not_found`.
+  Future<void> deleteArtifact(String aid);
+
   /// Creates an artifact as the app session; [r] needs a title and
   /// `index.html`. Without a registered session it throws [StateError]
   /// before any request; an ended one is `unknown_session`.
@@ -119,14 +128,16 @@ abstract interface class ClaxApi {
   // --- drafts (all token only: no session, so no watch and no feedback) ---
 
   /// `POST /api/drafts`: a hidden draft artifact of the app [of] (null for
-  /// a new app) at version 1 with [files] (path → text), carrying a copy
-  /// of [of]'s documents (the owner's, without `data/users/`, up to the
-  /// copy's cap).
+  /// a new app) at version 1 with [files] (path → text) and [entries]
+  /// (text or bytes with a content type; one wins over [files] for the
+  /// same path), carrying a copy of [of]'s documents (the owner's, without
+  /// `data/users/`, up to the copy's cap).
   Future<DraftInfo> createDraft({
     String? of,
     required String title,
     Map<String, Object?>? capabilities,
-    required Map<String, String> files,
+    Map<String, String> files = const {},
+    Map<String, FileEntry> entries = const {},
   });
 
   /// Publishes a new version of draft [draftId] with the token and no

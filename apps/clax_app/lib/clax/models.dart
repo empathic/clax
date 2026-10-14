@@ -5,6 +5,9 @@
 /// `HttpClaxApi` turns those into a `ClaxApiError` with code `bad_response`.
 library;
 
+import 'dart:convert';
+import 'dart:typed_data';
+
 typedef Json = Map<String, Object?>;
 
 Json _map(Object? v) =>
@@ -99,6 +102,7 @@ class VersionInfo {
     this.sessionId,
     this.agent,
     this.agentHarness,
+    this.contentSha256,
   });
 
   factory VersionInfo.fromJson(Json j) => VersionInfo(
@@ -115,6 +119,7 @@ class VersionInfo {
     sessionId: j['session_id'] as String?,
     agent: j['agent'] as String?,
     agentHarness: j['agent_harness'] as String?,
+    contentSha256: j['content_sha256'] as String?,
   );
 
   final String artifactId;
@@ -137,6 +142,11 @@ class VersionInfo {
   /// The publishing session's agent handle and harness.
   final String? agent;
   final String? agentHarness;
+
+  /// `sha256:` and the hex SHA-256 of the file manifest (one
+  /// `<path>\0<sha256 hex>\0<size>\n` line per file, in byte order of
+  /// path); null on a version written before content hashes.
+  final String? contentSha256;
 }
 
 /// `GET /api/artifacts/<aid>`: the artifact and its versions, oldest first.
@@ -162,10 +172,37 @@ class ArtifactDetail {
   }
 }
 
+/// One file of a publish or a draft: text, or bytes sent as base64, with
+/// an optional content type (the daemon infers one from the path's
+/// extension when it is null).
+class FileEntry {
+  FileEntry.text(String s, {this.type}) : text = s, _bytes = null;
+  FileEntry.bytes(Uint8List b, {this.type}) : text = null, _bytes = b;
+
+  /// The file's text, for an entry made by [FileEntry.text].
+  final String? text;
+  final Uint8List? _bytes;
+
+  /// The content type to publish it with.
+  final String? type;
+
+  /// The file's bytes (a text entry's UTF-8 encoding).
+  Uint8List get bytes => _bytes ?? utf8.encode(text!);
+
+  /// The publish body's file object: `{content, encoding, content_type}`.
+  Json toJson() => {
+    'content': text ?? base64Encode(_bytes!),
+    'encoding': text == null ? 'base64' : 'utf8',
+    'content_type': ?type,
+  };
+}
+
 /// A create or publish body. [files] maps a path to its UTF-8 text, or to
 /// null to remove that path from the files the new version carries forward
-/// from the one before. [ifVersion] is required by `publish` (the version
-/// the change was made against) and ignored by a create.
+/// from the one before; [entries] does the same with [FileEntry]s (text or
+/// bytes, with a content type) and wins over [files] for a path in both.
+/// [ifVersion] is required by `publish` (the version the change was made
+/// against) and ignored by a create.
 class PublishRequest {
   PublishRequest({
     this.title,
@@ -175,8 +212,10 @@ class PublishRequest {
     this.ifVersion,
     this.capabilities,
     Map<String, String?>? files,
+    Map<String, FileEntry?>? entries,
     List<String>? addresses,
   }) : files = files ?? {},
+       entries = entries ?? {},
        addresses = addresses ?? [];
 
   String? title;
@@ -188,6 +227,11 @@ class PublishRequest {
   /// The full capability declaration; null keeps the current one.
   Json? capabilities;
   Map<String, String?> files;
+  Map<String, FileEntry?> entries;
+
+  /// Whether [files] or [entries] names a file at [path] (not a removal).
+  bool hasFile(String path) =>
+      entries.containsKey(path) ? entries[path] != null : files[path] != null;
 
   /// The IDs of the threads this version addresses.
   List<String> addresses;
@@ -203,6 +247,7 @@ class PublishRequest {
     'files': {
       for (final e in files.entries)
         e.key: e.value == null ? null : {'content': e.value},
+      for (final e in entries.entries) e.key: e.value?.toJson(),
     },
     if (addresses.isNotEmpty) 'addresses': addresses,
   };
