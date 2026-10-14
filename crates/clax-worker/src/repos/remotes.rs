@@ -58,6 +58,7 @@ fn held_of(t: tokens::HeldToken) -> Option<Held> {
         holder: Holder {
             person: t.person,
             session: t.session,
+            link: t.link,
         },
     })
 }
@@ -78,6 +79,7 @@ where
             let holder = tokens::Holder {
                 person: holder.person.clone(),
                 session: holder.session.clone(),
+                link: holder.link,
             };
             let t = self
                 .tokens

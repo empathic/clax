@@ -108,7 +108,12 @@ impl GitRemotes for FakeRemotes {
             Ok(self
                 .rows()
                 .into_iter()
-                .filter(|r| !r.revoked && (r.holder.person.is_some() || r.holder.session.is_some()))
+                .filter(|r| {
+                    !r.revoked
+                        && (r.holder.person.is_some()
+                            || r.holder.session.is_some()
+                            || r.holder.link)
+                })
                 .map(|r| Held {
                     id: r.id,
                     artifact: r.artifact,
@@ -375,7 +380,8 @@ async fn people_get_tokens_by_their_rights_and_guests_and_no_credential_get_none
         fake.row("cxt_1").holder,
         Holder {
             person: Some(rae.public_id.clone()),
-            session: None
+            session: None,
+            link: false
         }
     );
     let (status, v) = browser(&ts, &owners, "write", Some(&rae_cookie)).await;
@@ -515,7 +521,8 @@ async fn agents_ask_from_their_session_and_never_on_the_browser_route() {
         row.holder,
         Holder {
             person: None,
-            session: Some(sid.clone())
+            session: Some(sid.clone()),
+            link: false
         }
     );
     // The browser route refuses the owner's agents.
@@ -1071,4 +1078,278 @@ async fn a_person_who_may_read_a_fork_but_not_its_source_gets_no_token_for_the_f
         .unwrap();
     let (status, v) = browser(&ts, &fork.id, "read", Some(&rae_cookie)).await;
     assert_eq!(status, 200, "{v}");
+}
+
+// ── Pages shared by link (hosted) ───────────────────────────────────────────
+
+/// A hosted daemon serving git remotes through `fake`, on a stopped clock.
+struct Hosted {
+    ts: TestServer,
+    clock: Arc<clax_core::working::ManualClock>,
+    fake: Arc<FakeRemotes>,
+    host: String,
+    origin: String,
+}
+
+impl Hosted {
+    async fn new() -> Hosted {
+        let clock = Arc::new(clax_core::working::ManualClock::at("2026-10-12T10:00:00Z"));
+        let fake = Arc::new(FakeRemotes::default());
+        let f = fake.clone();
+        let ts = TestServer::spawn_hosted_with(clock.clone(), Some("the secret"), move |s| {
+            s.git_remotes.set(f)
+        })
+        .await;
+        let host = format!("localhost:{}", ts.addr.port());
+        let origin = format!("http://{host}");
+        Hosted {
+            ts,
+            clock,
+            fake,
+            host,
+            origin,
+        }
+    }
+
+    /// A request as a browser at the public origin makes it, with session
+    /// cookie `cookie`.
+    fn req(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        cookie: Option<&str>,
+    ) -> reqwest::RequestBuilder {
+        let mut r = self
+            .ts
+            .client
+            .request(method.clone(), format!("{}{path}", self.ts.base))
+            .header("host", &self.host);
+        if method != reqwest::Method::GET {
+            r = r.header("origin", &self.origin);
+        }
+        if let Some(c) = cookie {
+            r = r.header("cookie", format!("clax_session={c}"));
+        }
+        r
+    }
+
+    async fn send(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        cookie: Option<&str>,
+        body: Option<Value>,
+    ) -> (u16, Value, Option<String>) {
+        let mut r = self.req(method, path, cookie);
+        if let Some(b) = body {
+            r = r.json(&b);
+        }
+        let r = r.send().await.unwrap();
+        let set = r
+            .headers()
+            .get("set-cookie")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|c| c.strip_prefix("clax_session="))
+            .map(|c| c.split(';').next().unwrap().to_string());
+        let status = r.status().as_u16();
+        (status, r.json().await.unwrap_or(Value::Null), set)
+    }
+
+    /// The owner's session cookie, signed in through setup.
+    async fn owner(&self) -> String {
+        let (s, v, c) = self
+            .send(
+                reqwest::Method::POST,
+                "/api/hosted/setup",
+                None,
+                Some(json!({"secret": "the secret", "name": "Ada"})),
+            )
+            .await;
+        assert_eq!(s, 200, "{v}");
+        c.unwrap()
+    }
+
+    /// A guest named `name`'s session cookie.
+    async fn guest(&self, name: &str) -> String {
+        let (s, v, c) = self
+            .send(
+                reqwest::Method::PUT,
+                "/api/viewers/me",
+                None,
+                Some(json!({"display_name": name})),
+            )
+            .await;
+        assert_eq!(s, 200, "{v}");
+        c.unwrap()
+    }
+
+    async fn share(&self, owner: &str, aid: &str, access: Option<&str>) {
+        let (s, v, _) = self
+            .send(
+                reqwest::Method::PUT,
+                &format!("/api/hosted/artifacts/{aid}/link"),
+                Some(owner),
+                Some(json!({"access": access})),
+            )
+            .await;
+        assert_eq!(s, 200, "{v}");
+    }
+
+    async fn options(&self, aid: &str, cookie: Option<&str>) -> (u16, Value) {
+        let (s, v, _) = self
+            .send(
+                reqwest::Method::GET,
+                &format!("/api/artifacts/{aid}/git-token"),
+                cookie,
+                None,
+            )
+            .await;
+        (s, v)
+    }
+
+    async fn mint(&self, aid: &str, scope: &str, cookie: Option<&str>) -> (u16, Value) {
+        let (s, v, _) = self
+            .send(
+                reqwest::Method::POST,
+                &format!("/api/artifacts/{aid}/git-token"),
+                cookie,
+                Some(json!({"scope": scope})),
+            )
+            .await;
+        (s, v)
+    }
+}
+
+fn err(v: &Value) -> Option<&str> {
+    v["error"]["code"].as_str()
+}
+
+#[tokio::test]
+async fn anyone_who_reads_a_page_through_its_link_clones_it_read_only() {
+    let h = Hosted::new().await;
+    let owner = h.owner().await;
+    let aid = aid_of(&h.ts.publish("Plan", &[("index.html", "<p>one</p>")]).await);
+    let other = aid_of(&h.ts.publish("Other", &[("index.html", "<p>two</p>")]).await);
+    // Unshared: the page is not there for a visitor.
+    assert_eq!(h.options(&aid, None).await.0, 404);
+    assert_eq!(h.mint(&aid, "read", None).await.0, 404);
+    h.share(&owner, &aid, Some("viewer")).await;
+    // A visitor who gave no name: read alone, living as short as an agent's.
+    let (s, o) = h.options(&aid, None).await;
+    assert_eq!(s, 200, "{o}");
+    assert_eq!(o["available"], true);
+    assert_eq!(o["scopes"], json!(["read"]));
+    assert_eq!(o["ttl_s"], clax_http::git_remotes::LINK_TTL_S);
+    assert_eq!(o["link"], true);
+    let (s, v) = h.mint(&aid, "read", None).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["scope"], "read");
+    assert!(v["existing_checkout"].get("push_command").is_none(), "{v}");
+    let row = h.fake.rows().pop().unwrap();
+    assert_eq!(row.artifact.as_str(), aid);
+    assert_eq!(row.scope, Scope::Read);
+    assert_eq!(row.ttl_s, clax_http::git_remotes::LINK_TTL_S);
+    assert_eq!(
+        row.holder,
+        Holder {
+            link: true,
+            ..Holder::default()
+        }
+    );
+    // Never write.
+    let (s, v) = h.mint(&aid, "write", None).await;
+    assert_eq!((s, err(&v)), (403, Some("not_permitted")), "{v}");
+    // A named guest: the same, on a commenter's link too.
+    h.share(&owner, &aid, Some("commenter")).await;
+    let gil = h.guest("Gil").await;
+    let (_, o) = h.options(&aid, Some(&gil)).await;
+    assert_eq!(o["scopes"], json!(["read"]));
+    let (s, v) = h.mint(&aid, "read", Some(&gil)).await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = h.mint(&aid, "write", Some(&gil)).await;
+    assert_eq!((s, err(&v)), (403, Some("not_permitted")), "{v}");
+    // That page only.
+    assert_eq!(h.mint(&other, "read", Some(&gil)).await.0, 404);
+    // A browser change still needs the public origin.
+    let r =
+        h.ts.client
+            .post(format!("{}/api/artifacts/{aid}/git-token", h.ts.base))
+            .header("host", &h.host)
+            .json(&json!({"scope": "read"}))
+            .send()
+            .await
+            .unwrap();
+    assert_eq!(r.status(), 403);
+    // Stopping sharing revokes the link's tokens before it answers.
+    let minted: Vec<String> = h
+        .fake
+        .rows()
+        .into_iter()
+        .filter(|r| r.holder.link)
+        .map(|r| r.id)
+        .collect();
+    assert_eq!(minted.len(), 2);
+    h.share(&owner, &aid, None).await;
+    for id in &minted {
+        assert!(h.fake.row(id).revoked, "{id}");
+    }
+    assert_eq!(h.mint(&aid, "read", Some(&gil)).await.0, 404);
+}
+
+#[tokio::test]
+async fn a_link_to_a_fork_does_not_open_its_source() {
+    let h = Hosted::new().await;
+    let owner = h.owner().await;
+    let src = aid_of(
+        &h.ts
+            .publish("Source", &[("index.html", "<p>one</p>")])
+            .await,
+    );
+    let (fork, _) =
+        h.ts.store
+            .fork_artifact(
+                &AuditCtx::DAEMON,
+                &ArtifactId::parse(&src).unwrap(),
+                Some(1),
+                None,
+                None,
+            )
+            .unwrap();
+    let fork = fork.id.as_str().to_string();
+    h.share(&owner, &fork, Some("viewer")).await;
+    let (s, o) = h.options(&fork, None).await;
+    assert_eq!(s, 200, "{o}");
+    assert_eq!(o["scopes"], json!([]));
+    assert_eq!(o["reason"]["code"], "not_permitted");
+    let (s, v) = h.mint(&fork, "read", None).await;
+    assert_eq!((s, err(&v)), (403, Some("not_permitted")), "{v}");
+    assert!(h.fake.rows().is_empty());
+    // With the source shared too, the fork clones; stopping the source's
+    // link revokes the fork's token.
+    h.share(&owner, &src, Some("viewer")).await;
+    let (s, v) = h.mint(&fork, "read", None).await;
+    assert_eq!(s, 200, "{v}");
+    let id = h.fake.rows()[0].id.clone();
+    h.share(&owner, &src, None).await;
+    assert!(h.fake.row(&id).revoked);
+}
+
+#[tokio::test]
+async fn a_links_tokens_are_limited_per_client_on_the_clock() {
+    let h = Hosted::new().await;
+    let owner = h.owner().await;
+    let aid = aid_of(&h.ts.publish("Plan", &[("index.html", "<p>one</p>")]).await);
+    h.share(&owner, &aid, Some("viewer")).await;
+    // A write token, always refused a link, costs no attempt.
+    assert_eq!(h.mint(&aid, "write", None).await.0, 403);
+    for _ in 0..5 {
+        assert_eq!(h.mint(&aid, "read", None).await.0, 200);
+    }
+    let (s, v) = h.mint(&aid, "read", None).await;
+    assert_eq!((s, err(&v)), (429, Some("rate_limited")), "{v}");
+    // What the dialog offers is not counted, and the owner is not limited.
+    assert_eq!(h.options(&aid, None).await.0, 200);
+    assert_eq!(h.mint(&aid, "read", Some(&owner)).await.0, 200);
+    h.clock.advance(120);
+    assert_eq!(h.mint(&aid, "read", None).await.0, 200);
 }

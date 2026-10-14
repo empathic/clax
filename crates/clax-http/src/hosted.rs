@@ -58,8 +58,10 @@
 //!   shared by link ([`guest_need`]), within the page's
 //!   [`LinkAccess::rights`] (a guest's) or its viewer rights (no session);
 //!   a write a guest could make answers 401 `guest_name_required` to no
-//!   session; the gallery pages redirect to `/signin`, and the rest
-//!   answers 401 `sign_in_required`.
+//!   session; either may ask for a read git token of the page
+//!   ([`crate::git_remotes`], rate limited as [`Attempt::GitToken`]); the
+//!   gallery pages redirect to `/signin`, and the rest answers 401
+//!   `sign_in_required`.
 //!
 //! Agent tokens a member mints here are bearer grants (their rights the
 //! person's): `Authorization: Bearer cxa_…` is an agent credential
@@ -139,6 +141,9 @@ pub enum Attempt {
     /// Naming a guest (`PUT /api/viewers/me` with no session, or a
     /// guest's rename): a viewer row and a session each.
     Guest,
+    /// A read git token minted for a page's link (a guest, or no
+    /// session): a token at the repository host each.
+    GitToken,
 }
 
 impl Attempt {
@@ -147,7 +152,7 @@ impl Attempt {
         match self {
             Attempt::Setup => (5.0, 120.0),
             Attempt::SignIn => (10.0, 30.0),
-            Attempt::Guest => (5.0, 120.0),
+            Attempt::Guest | Attempt::GitToken => (5.0, 120.0),
         }
     }
 }
@@ -974,6 +979,12 @@ pub fn guest_need(method: &Method, path: &str, query: Option<&str>) -> GuestNeed
             at(aid, RightType::Artifacts, "read", false)
         }
         ["api", "artifacts", aid, "snapshot"] if get => {
+            at(aid, RightType::Artifacts, "read", false)
+        }
+        // Anyone who reads a page through its link may clone it read-only
+        // (`crate::git_remotes::Asker::Link`): what the Clone dialog offers,
+        // and the token.
+        ["api", "artifacts", aid, "git-token"] if get || post => {
             at(aid, RightType::Artifacts, "read", false)
         }
         // Live layers and agents' drafts reach signed-in people: a guest,
@@ -1892,7 +1903,8 @@ struct LinkBody {
 /// `PUT /api/hosted/artifacts/<aid>/link {access}` (the owner, or the
 /// person who made the artifact): shares it by link as `viewer` or
 /// `commenter`, or stops (`null`). → `{artifact_id, access, url}`. The
-/// artifact's git tokens are rechecked before it answers
+/// artifact's git tokens (on stopping, every held token: a fork's need
+/// read up its lineage) are rechecked before it answers
 /// ([`crate::git_remotes::recheck`]). 400 `invalid_args` for another
 /// access, 404 for no such artifact, 403 `forbidden` for anyone else.
 async fn set_link(
@@ -1934,12 +1946,15 @@ async fn set_link(
         "forbidden" => ApiError::forbidden("forbidden", e.message),
         _ => e,
     })?;
-    // A person whose rights there came from the link loses its git tokens
-    // before this answers; when the host fails, the next settle retries.
-    if let Ok(page) = clax_core::ArtifactId::parse(&id)
-        && crate::git_remotes::recheck(&s, Some(&page)).await.is_err()
-    {
-        s.git_remotes.recheck_soon();
+    // A person whose rights there came from the link, and the link's own
+    // read tokens, lose their git tokens before this answers; when the
+    // host fails, the next settle retries. Stopping sharing rechecks every
+    // token, as a fork's tokens need read at the page too (its lineage).
+    if let Ok(page) = clax_core::ArtifactId::parse(&id) {
+        let only = access.is_some().then_some(&page);
+        if crate::git_remotes::recheck(&s, only).await.is_err() {
+            s.git_remotes.recheck_soon();
+        }
     }
     Ok(no_store(
         Json(json!({

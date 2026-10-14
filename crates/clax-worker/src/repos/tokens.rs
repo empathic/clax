@@ -78,12 +78,15 @@ impl Scope {
 
 /// Whom a token is handed to, as the server knows them when it asks for
 /// one: a connected person's public ID (`None` for the owner) and, for an
-/// agent's token, its session. A push with the token is theirs: its
-/// commits become versions they published.
+/// agent's token, its session; or (`link`) whoever holds the link of a
+/// page shared by link, a read token naming no one. A push with the token
+/// is theirs: its commits become versions they published.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Holder {
     pub person: Option<String>,
     pub session: Option<String>,
+    #[serde(default)]
+    pub link: bool,
 }
 
 /// A token as a host mints it.
@@ -298,10 +301,13 @@ pub struct HeldToken {
     pub expires_ms: i64,
     pub person: Option<String>,
     pub session: Option<String>,
+    /// Handed to a page's link ([`Holder::link`]).
+    #[serde(default)]
+    pub link: bool,
 }
 
-/// Every token live at `now_ms` that was handed to a person or an agent
-/// session ([`db::live_held_tokens`]).
+/// Every token live at `now_ms` that was handed to a person, an agent
+/// session or a page's link ([`db::live_held_tokens`]).
 pub fn held<C: AsConn>(ledger: &LocalHost<C>, now_ms: i64) -> clax_git::Result<Vec<HeldToken>> {
     let rows = ledger.with(|c| db::live_held_tokens(c, now_ms))?;
     Ok(rows
@@ -313,6 +319,7 @@ pub fn held<C: AsConn>(ledger: &LocalHost<C>, now_ms: i64) -> clax_git::Result<V
             expires_ms: r.expires_ms,
             person: r.holder.person,
             session: r.holder.session,
+            link: r.holder.link,
         })
         .collect())
 }

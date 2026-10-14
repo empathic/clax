@@ -1098,7 +1098,8 @@ async fn git_remote_hands_the_session_a_token_with_its_commands_and_says_where_t
         remotes.minted.lock().unwrap()[0],
         clax_http::git_remotes::Holder {
             person: None,
-            session: Some(session.id.clone())
+            session: Some(session.id.clone()),
+            link: false
         },
         "the token is the session's, so its pushes are"
     );

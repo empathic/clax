@@ -334,7 +334,9 @@ impl TestServer {
         (ts, timer)
     }
 
-    async fn spawn_hosted_with(
+    /// [`TestServer::spawn_hosted`], `f` changing the state before it
+    /// serves (a git remotes host, say).
+    pub async fn spawn_hosted_with(
         clock: Arc<ManualClock>,
         secret: Option<&str>,
         f: impl FnOnce(&mut AppState),
