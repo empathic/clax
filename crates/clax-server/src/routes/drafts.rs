@@ -498,7 +498,7 @@ async fn serve(
         .into_response();
     res.headers_mut().insert(
         header::CONTENT_SECURITY_POLICY,
-        super::content::content_policy(origin, req),
+        super::content::content_policy(origin, req, &super::content::own_host(s), None),
     );
     Ok(res)
 }
