@@ -1218,13 +1218,23 @@ pub(crate) mod tests {
         let path = st.home().db_path();
         let (send, recv) = mpsc::channel();
         // The nudge sees the event committed: another connection reads it.
+        // One connection holds the database's lock exclusively, as a
+        // Durable Object's does, so there the nudge reads through the store.
+        let me: Arc<OnceLock<std::sync::Weak<Store>>> = Arc::default();
+        let weak = me.clone();
         st.set_audit_nudge(move || {
-            let c = rusqlite::Connection::open(&path).unwrap();
-            let n: i64 = c
-                .query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))
-                .unwrap();
+            const COUNT: &str = "SELECT COUNT(*) FROM audit_events";
+            let n: i64 = if crate::store::test_util::on_one_connection() {
+                let st = weak.get().and_then(std::sync::Weak::upgrade).unwrap();
+                st.with_read(|c| Ok(c.query_row(COUNT, [], |r| r.get(0))?))
+                    .unwrap()
+            } else {
+                let c = rusqlite::Connection::open(&path).unwrap();
+                c.query_row(COUNT, [], |r| r.get(0)).unwrap()
+            };
             send.send(n).unwrap();
         });
+        me.set(Arc::downgrade(&st)).unwrap();
         let mut seqs = Vec::new();
         for i in 0..3 {
             let seq = st
