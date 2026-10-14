@@ -302,7 +302,7 @@ export type PeopleGrant = {
  * machine, which rights do not limit. */
 /** One granter's elevation of an agent: the owner's, or an artifact
  * creator's on what they created (spec 2026-10-08 §7.2, O11). */
-export type PeopleElevation = { granter: { public_id: string | null; name: string; owner: boolean }; access: Rights; created_at: string };
+export type PeopleElevation = { granter: { public_id: string | null; name: string; owner: boolean }; access: Rights; created_at: string; version?: string };
 /** An agent as People lists it: `elevate` is the owner's elevation,
  * `elevations` every granter's, the owner's first. */
 export type PeopleAgent = {
@@ -321,7 +321,7 @@ export type PeoplePerson = {
  * its agents a raise reaches. */
 export type PeopleRaises = {
   creator: boolean | null; holds: Rights | null; raisable: string[] | null;
-  raises: { agent: { handle: string; name: string; person: string | null; live: boolean }; access: Rights }[];
+  raises: { agent: { handle: string; name: string; person: string | null; live: boolean }; access: Rights; version: string }[];
 };
 /** `GET /api/people/me`: the caller, their machines and their live agents. */
 export type PeopleMe = {

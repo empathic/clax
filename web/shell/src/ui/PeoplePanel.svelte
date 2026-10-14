@@ -56,6 +56,7 @@
   $effect(() => { untrack(loadRaises); });
   /** The viewer's own raise of agent `handle`, as given. */
   const mineOf = (handle: string) => raises?.raises.find(r => r.agent.handle === handle)?.access ?? null;
+  const versionOf = (handle: string) => raises?.raises.find(r => r.agent.handle === handle)?.version ?? null;
   const personOf = (handle: string) => parts.agents.find(a => a.handle === handle)?.person;
   const theirs = (handle: string) => { const p = personOf(handle); return !!p && p.public_id !== me && (!!me || !p.owner); };
   /** What the roster says an agent waits on: its person (you, for yours), since when, and on what. */
@@ -131,7 +132,8 @@
   });
 </script>
 
-<svelte:window onpointerdown={outside} />
+<!-- Back on the page, a creator's raises are read again: someone else may have removed one. -->
+<svelte:window onpointerdown={outside} onfocus={() => { if (raises?.creator) loadRaises(); }} />
 <!-- Escape closes the dialog. -->
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div class="people" role="dialog" aria-label="People and agents" tabindex="-1" bind:this={panel} style:left
@@ -163,7 +165,7 @@
         <p>{idleLine(a.handle)}</p>
       {/if}
       {#if Raise && raises?.holds && raises.raisable?.includes(a.handle)}
-        <Raise aid={s.data.artifact.id} handle={a.handle} {name} holds={raises.holds} mine={mineOf(a.handle)} onChanged={loadRaises} />
+        <Raise aid={s.data.artifact.id} handle={a.handle} {name} holds={raises.holds} mine={mineOf(a.handle)} version={versionOf(a.handle)} onChanged={loadRaises} />
       {/if}
     </div>
   {/each}

@@ -1706,7 +1706,7 @@ async fn a_creator_raises_another_persons_agent_on_their_artifact_only() {
     // Sam reads back his own raise of Mia's agent, and nothing more of it.
     assert_eq!(
         keys(&v["agent"]),
-        ["elevation", "handle", "name", "person"],
+        ["elevation", "handle", "name", "person", "version"],
         "{v}"
     );
     assert_eq!(v["agent"]["handle"], json!(mia_h));
@@ -2122,7 +2122,7 @@ async fn a_raise_answers_a_person_with_their_own_raise_alone() {
     assert_eq!(status, 200, "{v}");
     assert_eq!(
         keys(&v["agent"]),
-        ["elevation", "handle", "name", "person"],
+        ["elevation", "handle", "name", "person", "version"],
         "{v}"
     );
     assert_eq!(leaks(&v), Vec::<String>::new(), "{v}");
@@ -2297,6 +2297,12 @@ async fn the_agents_person_and_the_owner_remove_a_creators_raise_and_no_one_else
         .mias_browser("DELETE", &format!("{path}?granter=owner"), None)
         .await;
     assert_eq!(status, 200);
+    let (actor, body) = p.elevate_rows().last().unwrap().clone();
+    assert_eq!(
+        (body["granter"].clone(), body["reason"].clone()),
+        (Value::Null, json!("removed_by_person"))
+    );
+    assert!(actor.to_string().contains(&mia_public), "{actor}");
     assert_eq!(p.stored_rights(&p.mia_session), (None, None));
 }
 
@@ -2355,4 +2361,114 @@ async fn a_persons_narrowing_caps_a_creators_raise() {
     );
     let (status, v) = p.mia_publishes(&p.mia_session, &notes, 2).await;
     assert_eq!(status, 201, "{v}");
+}
+
+/// Spec §7.4: a creator's change names the raise it was built on
+/// (`if_version`), so a stale panel never brings back a raise that the
+/// agent's person or the owner removed: Mia removes Sam's raise, the owner
+/// removes his next one, and each time Sam's panel, still showing the old
+/// raise, unchecks one box: refused 409 `conflict` with the raise as it
+/// stands, nothing written or recorded.
+#[tokio::test]
+async fn a_stale_creators_change_never_restores_a_removed_raise() {
+    let p = people().await;
+    let notes = p.sams_notes().await;
+    let mia_h = p.handle(&p.mia_session);
+    let path = format!("/api/agents/{mia_h}/elevate");
+    let sams = format!("{path}?granter={}", p.sam_public);
+    let both =
+        json!([{"type": "clax-artifacts", "actions": ["update", "delete"], "locations": [notes]}]);
+    // Sam's panel believed there was no raise: it raises, and reads its version.
+    let (status, v) = p
+        .sams_browser(
+            "PUT",
+            &path,
+            Some(json!({"access": both, "if_version": null})),
+        )
+        .await;
+    assert_eq!(status, 200, "{v}");
+    let v1 = v["agent"]["version"].as_str().unwrap().to_string();
+    // The same panel, built on no raise, cannot raise over the one now there.
+    let (status, v) = p
+        .sams_browser(
+            "PUT",
+            &path,
+            Some(json!({"access": update_at(&notes), "if_version": null})),
+        )
+        .await;
+    assert_eq!((status, code(&v)), (409, "conflict"), "{v}");
+    assert_eq!(v["error"]["raise"]["version"], json!(v1), "{v}");
+    // Mia removes it; Sam's stale panel (built on v1) unchecks Delete.
+    assert_eq!(p.mias_browser("DELETE", &sams, None).await.0, 200);
+    let before = p.audited("agent.elevate").len();
+    let generation = p.ts.store.visibility_generation();
+    let (status, v) = p
+        .sams_browser(
+            "PUT",
+            &path,
+            Some(json!({"access": update_at(&notes), "if_version": v1})),
+        )
+        .await;
+    assert_eq!((status, code(&v)), (409, "conflict"), "{v}");
+    assert_eq!(
+        v["error"]["raise"],
+        Value::Null,
+        "the raise as it stands: none"
+    );
+    assert_eq!(p.audited("agent.elevate").len(), before, "nothing recorded");
+    assert_eq!(
+        p.ts.store.visibility_generation(),
+        generation,
+        "nothing changed"
+    );
+    assert_eq!(p.stored_rights(&p.mia_session), (None, None));
+    let (status, _) = p.mia_publishes(&p.mia_session, &notes, 1).await;
+    assert_eq!(status, 403, "still removed");
+    // Sam, having looked again (no raise), raises deliberately; the owner
+    // removes it; his stale panel's next change is refused the same way.
+    let (status, v) = p
+        .sams_browser(
+            "PUT",
+            &path,
+            Some(json!({"access": both, "if_version": null})),
+        )
+        .await;
+    assert_eq!(status, 200, "{v}");
+    let v2 = v["agent"]["version"].as_str().unwrap().to_string();
+    assert_ne!(v2, v1, "a new raise is a new version");
+    // His panel, now current, changes it: a new version.
+    let (status, v) = p
+        .sams_browser(
+            "PUT",
+            &path,
+            Some(json!({"access": update_at(&notes), "if_version": v2})),
+        )
+        .await;
+    assert_eq!(status, 200, "{v}");
+    let v3 = v["agent"]["version"].as_str().unwrap().to_string();
+    assert_ne!(v3, v2);
+    assert_eq!(p.owner("DELETE", &sams, None).await.0, 200);
+    let (status, v) = p
+        .sams_browser(
+            "PUT",
+            &path,
+            Some(json!({"access": both, "if_version": v3})),
+        )
+        .await;
+    assert_eq!((status, code(&v)), (409, "conflict"), "{v}");
+    assert_eq!(p.stored_rights(&p.mia_session), (None, None));
+    // The raises listing carries each raise's version for the panel.
+    let (status, v) = p
+        .sams_browser(
+            "PUT",
+            &path,
+            Some(json!({"access": update_at(&notes), "if_version": null})),
+        )
+        .await;
+    assert_eq!(status, 200, "{v}");
+    let (_, list) = p.sams_browser("GET", "/api/people/me/raises", None).await;
+    assert_eq!(
+        list["raises"][0]["version"], v["agent"]["version"],
+        "{list}"
+    );
 }

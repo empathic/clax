@@ -22,6 +22,9 @@ pub struct Elevation {
     /// The access the granter gave, as given.
     pub access: Rights,
     pub created_at: String,
+    /// A new value at each change of it (a ULID): what a `PUT` names as
+    /// `if_version` to change only the raise it was built on.
+    pub version: String,
 }
 
 fn read_rights(json: &str) -> Result<Rights> {
@@ -33,7 +36,7 @@ fn read_rights(json: &str) -> Result<Rights> {
 /// Session `sid`'s elevations on `c`, the owner's first, then oldest first.
 pub(super) fn of_session(c: &Connection, sid: &str) -> Result<Vec<Elevation>> {
     let mut stmt = c.prepare_cached(
-        "SELECT granter, access_json, created_at FROM session_elevations
+        "SELECT granter, access_json, created_at, version FROM session_elevations
          WHERE session_id = ?1 ORDER BY granter IS NOT NULL, created_at, granter",
     )?;
     let rows = stmt
@@ -42,15 +45,17 @@ pub(super) fn of_session(c: &Connection, sid: &str) -> Result<Vec<Elevation>> {
                 r.get::<_, Option<String>>(0)?,
                 r.get::<_, String>(1)?,
                 r.get(2)?,
+                r.get(3)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     rows.into_iter()
-        .map(|(granter, json, created_at)| {
+        .map(|(granter, json, created_at, version)| {
             Ok(Elevation {
                 granter,
                 access: read_rights(&json)?,
                 created_at,
+                version,
             })
         })
         .collect()
@@ -152,6 +157,15 @@ fn empty_raise() -> CoreError {
     )
 }
 
+/// 409 `conflict` (`raise_changed` in the store): the elevation changed
+/// since the change was built on it.
+pub fn raise_changed() -> CoreError {
+    CoreError::invalid(
+        "raise_changed",
+        "this raise changed since you saw it (removed or changed elsewhere): look again before raising",
+    )
+}
+
 /// 404 `not_raised`: a removal of an elevation the caller never gave.
 pub fn not_raised() -> CoreError {
     CoreError::invalid(
@@ -214,9 +228,9 @@ fn put_in(
     )?;
     if let Some(j) = &json {
         tx.execute(
-            "INSERT INTO session_elevations (session_id, granter, access_json, created_at)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![sid, granter, j, now],
+            "INSERT INTO session_elevations (session_id, granter, access_json, created_at, version)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![sid, granter, j, now, crate::new_ulid()],
         )?;
     }
     Ok(true)
@@ -340,6 +354,8 @@ pub(super) fn drop_session_in(tx: &Transaction<'_>, sid: &str) -> Result<Vec<Ele
 pub struct Raise {
     pub session: crate::model::Session,
     pub access: Rights,
+    /// Its [`Elevation::version`].
+    pub version: String,
 }
 
 impl Store {
@@ -365,7 +381,27 @@ impl Store {
         granter: Option<&str>,
         access: Option<Rights>,
     ) -> Result<super::people::AgentRights> {
-        self.set_raise(ctx, sid, granter, access, None)
+        self.set_raise(ctx, sid, granter, access, None, None)
+    }
+
+    /// [`Store::elevate_agent`], only while `granter`'s elevation of `sid`
+    /// is the one the caller built its change on (spec §7.4): `if_version`
+    /// its [`Elevation::version`], or `None` when it believed there was
+    /// none. A change made since (a removal by the agent's person or the
+    /// owner, or another of the granter's own) is `raise_changed`, and
+    /// nothing is written or recorded.
+    ///
+    /// # Errors
+    /// As [`Store::elevate_agent`], and `raise_changed`.
+    pub fn elevate_agent_if(
+        &self,
+        ctx: &AuditCtx,
+        sid: &str,
+        granter: Option<&str>,
+        access: Option<Rights>,
+        if_version: Option<&str>,
+    ) -> Result<super::people::AgentRights> {
+        self.set_raise(ctx, sid, granter, access, None, Some(if_version))
     }
 
     /// Removes `granter`'s (`None`: the owner's) elevation of live agent
@@ -385,7 +421,7 @@ impl Store {
         granter: Option<&str>,
         reason: &'static str,
     ) -> Result<super::people::AgentRights> {
-        self.set_raise(ctx, sid, granter, None, Some(reason))
+        self.set_raise(ctx, sid, granter, None, Some(reason), None)
     }
 
     fn set_raise(
@@ -395,9 +431,22 @@ impl Store {
         granter: Option<&str>,
         access: Option<Rights>,
         reason: Option<&str>,
+        if_version: Option<Option<&str>>,
     ) -> Result<super::people::AgentRights> {
         self.with_tx(|tx| {
             super::people::live_grant_of(tx, sid)?;
+            if let Some(expected) = if_version {
+                let current: Option<String> = tx
+                    .query_row(
+                        "SELECT version FROM session_elevations WHERE session_id = ?1 AND granter IS ?2",
+                        params![sid, granter],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if current.as_deref() != expected {
+                    return Err(raise_changed());
+                }
+            }
             if access.as_ref().is_some_and(Rights::is_empty) {
                 return Err(empty_raise());
             }
@@ -422,18 +471,18 @@ impl Store {
     /// first, each with the elevation they gave it.
     pub fn raises_by(&self, granter: Option<&str>) -> Result<Vec<Raise>> {
         self.with_read(|c| {
-            let rows: Vec<(String, String)> = {
+            let rows: Vec<(String, String, String)> = {
                 let mut stmt = c.prepare(
-                    "SELECT e.session_id, e.access_json FROM session_elevations e
+                    "SELECT e.session_id, e.access_json, e.version FROM session_elevations e
                        JOIN sessions s ON s.id = e.session_id
                      WHERE e.granter IS ?1 AND s.ended_at IS NULL
                      ORDER BY e.created_at, e.session_id",
                 )?;
-                stmt.query_map(params![granter], |r| Ok((r.get(0)?, r.get(1)?)))?
+                stmt.query_map(params![granter], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
                     .collect::<rusqlite::Result<_>>()?
             };
             let mut out = Vec::with_capacity(rows.len());
-            for (sid, json) in rows {
+            for (sid, json, version) in rows {
                 let session = c.query_row(
                     &format!("{} WHERE id = ?1", super::sessions::SELECT),
                     params![sid],
@@ -442,6 +491,7 @@ impl Store {
                 out.push(Raise {
                     session,
                     access: read_rights(&json)?,
+                    version,
                 });
             }
             Ok(out)

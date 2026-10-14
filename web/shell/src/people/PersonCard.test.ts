@@ -285,4 +285,17 @@ describe("PersonCard", () => {
     const self = mount(PersonCard, { view: "self", who: { public_id: "p1", display_name: "Sam", revoked_at: null, rights: COLLAB, grants: [grant()], agents: [] }, onChanged: vi.fn() });
     expect(self.root.textContent).not.toContain("Approvals of your content");
   });
+
+  it("marks in the owner's raise panel what the agent's narrowing turns off, and names a raised ask without a place", () => {
+    const n = COLLAB.map(x => ({ ...x, actions: x.actions.filter(y => !(x.type === "clax-artifacts" && y === "delete")) })).filter(x => x.actions.length);
+    const a = agent({ narrow: n, elevate: [{ type: "clax-ask", actions: ["ask"] }], elevations: [
+      { granter: { public_id: null, name: "Alex", owner: true }, access: [{ type: "clax-ask", actions: ["ask"] }], created_at: "x" },
+      { granter: { public_id: "p2", name: "Mia", owner: false }, access: [{ type: "clax-ask", actions: ["ask"] }], created_at: "x" }] });
+    const m = mount(PersonCard, { view: "owner", who: person({ agents: [a] }), onChanged: vi.fn() });
+    const del = [...m.root.querySelectorAll(".raise .caps label")].find(l => l.textContent!.trim().startsWith("Delete artifacts"))!;
+    expect(del.textContent).toContain("Off by Sam's narrowing: a raise gives nothing while it is off");
+    expect(del.querySelector("input")!.disabled).toBe(true);
+    expect(m.root.querySelector(".raises")!.textContent).toBe("Ask questions");
+    expect(m.root.querySelector(".raised-by .note.by")!.textContent).toBe("Raised by Mia until this session ends: Ask questions");
+  });
 });

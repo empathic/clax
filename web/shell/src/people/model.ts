@@ -163,6 +163,8 @@ export const creatorCaps = (holds: Rights, mine: Rights | null, aid: string) =>
     .map(c => ({ ...c, on: raisedIn(mine, c).includes(aid) }));
 
 /** Every capability for the owner's raising of agent `a` at `loc` (`*`,
+ * `capped` when the agent's or its machine's narrowing turns it off, so a
+ * raise of it gives nothing until its person turns it on again;
  * every artifact, or one artifact's ID): `has` when the agent's rights
  * without its elevation already allow it there; `wider` when the
  * elevation raises it at every artifact and `loc` is one; `on` when it has
@@ -171,11 +173,14 @@ export const creatorCaps = (holds: Rights, mine: Rights | null, aid: string) =>
 export const raiseCaps = (person: Rights, g: PeopleGrant | null, a: PeopleAgent, loc = "*") => {
   const base = unraised(person, g, a);
   const up = raisedOf(a.elevate);
+  // What the agent's or its machine's narrowing turns off: a raise of it
+  // gives nothing while it is off (spec §7.2, "Narrowing caps raises").
+  const off = new Set([...offIn(person, g?.narrow ?? null), ...offIn(person, a.narrow)]);
   return CAPS.map(c => {
     const here = up.some(p => isCap(c)(p) && p.loc === placeOf(c, loc));
     const covered = narrowerOrEqual([raiseOf(c, loc)], a.elevate ?? []);
     const has = narrowerOrEqual([raiseOf(c, loc)], base);
-    return { ...c, has, wider: covered && !here, on: has || covered };
+    return { ...c, has, wider: covered && !here, on: has || covered, capped: off.has(c.key) };
   });
 };
 

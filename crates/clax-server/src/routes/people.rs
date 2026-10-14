@@ -312,6 +312,7 @@ fn agent_view(st: &Store, a: &AgentRights) -> clax_core::Result<Value> {
                 "granter": granter_view(st, e.granter.as_deref())?,
                 "access": e.access.to_json(),
                 "created_at": e.created_at,
+                "version": e.version,
             }))
         })
         .collect::<clax_core::Result<Vec<Value>>>()?;
@@ -662,15 +663,19 @@ pub async fn narrow_agent(
     Ok(Json(json!({"agent": agent})))
 }
 
-/// `PUT /api/agents/<handle>/elevate` `{access}` (spec §7.4, M20, O11) →
-/// `{agent}` (the agent's whole view for the owner and for its own person;
-/// for another person, `{handle, name, person, elevation}`, their own raise
-/// alone): sets the caller's own elevation of that agent, from their
-/// browser: the owner's may name any location; a connected person's names
-/// only artifacts they created, with actions they hold there. That agent
-/// alone may also do what it gives, beyond its person's rights, from its
-/// next request on and until its session ends (§14 clears it). Recorded
-/// as `agent.elevate`. 400 `token_agent` for an agent of this machine,
+/// `PUT /api/agents/<handle>/elevate` `{access, if_version?}` (spec §7.4,
+/// M20, O11) → `{agent}` (the agent's whole view for the owner and for its
+/// own person; for another person, `{handle, name, person, elevation,
+/// version}`, their own raise alone): sets the caller's own elevation of
+/// that agent, from their browser: the owner's may name any location; a
+/// connected person's names only artifacts they created, with actions they
+/// hold there. That agent alone may also do what it gives, beyond its
+/// person's rights, from its next request on and until its session ends
+/// (§14 clears it). Recorded as `agent.elevate`. With `if_version` (the
+/// version of the caller's raise the change was built on, `null` for
+/// none), a raise changed since is 409 `conflict` with `raise: {access,
+/// version} | null`, the caller's raise as it stands, and nothing is
+/// written. 400 `token_agent` for an agent of this machine,
 /// `invalid_rights` (an empty access too); 403 `not_creator`,
 /// `beyond_your_rights`; 404 for a
 /// handle that names no live agent.
@@ -681,7 +686,7 @@ pub async fn elevate_agent(
     caller: Caller,
     audit: DeferredAudit,
     handle: Result<Path<String>, PathRejection>,
-    req: Result<Json<AccessBody>, JsonRejection>,
+    req: Result<Json<RaiseBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
     let granter = browser_person(&caller, "raising an agent")?;
@@ -693,7 +698,67 @@ pub async fn elevate_agent(
             "name the access to add; DELETE removes an elevation",
         ));
     };
-    set_elevation(s, audit, handle, granter, Some(access)).await
+    let Some(if_version) = b.if_version else {
+        return set_elevation(s, audit, handle, granter, Some(access)).await;
+    };
+    // Only over the raise the caller saw (spec §7.4): never bring back one
+    // that the agent's person or the owner removed since.
+    let state = s.clone();
+    let answer = s
+        .store_call(move |st| {
+            let session = agent_of(st, &handle, &None, true)?;
+            match st.elevate_agent_if(
+                &audit.resolve(st)?,
+                &session.id,
+                granter.as_deref(),
+                Some(access),
+                if_version.as_deref(),
+            ) {
+                Ok(a) => {
+                    let view = agent_view(st, &a)?;
+                    announce(&state, json!({"what": "agent_elevated", "agent": view}));
+                    Ok(Ok(granter_answer(granter.as_deref(), &a, view)))
+                }
+                Err(CoreError::Invalid {
+                    code: "raise_changed",
+                    message,
+                }) => {
+                    let current = st
+                        .agent_rights(&session.id)?
+                        .and_then(|a| a.elevations.into_iter().find(|e| e.granter == granter))
+                        .map(|e| json!({"access": e.access.to_json(), "version": e.version}));
+                    Ok(Err((message, current)))
+                }
+                Err(e) => Err(e),
+            }
+        })
+        .await?;
+    match answer {
+        Ok(agent) => Ok(Json(json!({"agent": agent}))),
+        Err((message, current)) => {
+            let mut e = ApiError::new(axum::http::StatusCode::CONFLICT, "conflict", message);
+            e.extra
+                .insert("raise".into(), current.unwrap_or(Value::Null));
+            Err(e)
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RaiseBody {
+    /// An access array or a preset name.
+    access: Value,
+    /// The version of the caller's raise the change was built on (`null`:
+    /// none); absent, the raise is replaced whatever it is now.
+    #[serde(default, deserialize_with = "present")]
+    if_version: Option<Option<String>>,
+}
+
+/// A field that may be `null`: present (`Some`, its value or `None`) or
+/// absent (`None` through `default`).
+fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(d).map(Some)
 }
 
 #[derive(Deserialize)]
@@ -791,6 +856,7 @@ fn granter_answer(granter: Option<&str>, a: &AgentRights, view: Value) -> Value 
             "name": a.session.name,
             "person": a.session.person,
             "elevation": a.elevation_by(Some(g)).map(Rights::to_json),
+            "version": a.elevations.iter().find(|e| e.granter.as_deref() == Some(g)).map(|e| &e.version),
         }),
         _ => view,
     }
@@ -859,6 +925,7 @@ pub async fn raises(
                             "live": r.session.ended_at.is_none(),
                         },
                         "access": r.access.to_json(),
+                        "version": r.version,
                     })
                 })
                 .collect();
