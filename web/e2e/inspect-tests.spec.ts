@@ -75,6 +75,36 @@ const TICKS = `export default async function migrate(db) {
 }`;
 
 const MIGRATE_VIEW = "?app=1&inspect=1&migrate=1";
+
+// A viewer's own document and a shared one, before the update.
+const SEED = `export default async function seed(db) {
+  await db.doc("data/users/me/profile").set({ v: 1 });
+  await db.doc("counts/main").set({ n: 1 });
+}`;
+
+// A migration that changes, adds and fails part way.
+const BREAK = `export default async function migrate(db) {
+  await db.doc("data/users/me/profile").set({ v: 2 });
+  await db.doc("data/users/me/extra").set({ x: 1 });
+  await db.doc("counts/main").set({ n: 2 });
+  throw new Error("half way");
+}`;
+
+// What the viewer's documents hold, written where the token can read it.
+const CHECK = `export default async function check(db) {
+  const profile = (await db.doc("data/users/me/profile").get()).data() ?? null;
+  const extra = (await db.doc("data/users/me/extra").get()).exists;
+  const n = (await db.doc("counts/main").get()).data()?.n ?? null;
+  await db.doc("check/out").set({ profile, extra, n });
+}`;
+
+/** Loads the migration view of `id` again, as the app does between runs. */
+async function reopen(page: Page, id: string) {
+  await page.goto(`${d.base}/a/${id}${MIGRATE_VIEW}`);
+  await contentFrame(page, id, 1);
+  await initHost(page);
+  await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
+}
 const ticks = async (id: string) => ((await api(d.base, d.token, `/api/artifacts/${id}/docs/ticks/t`)) as { doc: { data: { i: number }; version: number } }).doc;
 
 async function runTests(page: Page, id: string, mode: "subdomain" | "sandbox", call: string, answer = "tests", query = "?app=1&inspect=1"): Promise<Tests> {
@@ -129,6 +159,44 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     // A run still going would write every 20 ms; none comes in ten times that.
     await page.waitForTimeout(200);
     expect((await ticks(id)).version).toBe(after);
+  });
+
+  test(`${mode}: a journaled migration that fails part way is put back from its journal, the viewer's data/users documents included`, async ({ page }) => {
+    // This browser's viewer, whose private documents the migration writes.
+    await page.goto(`${d.base}/`);
+    const me = await page.evaluate(async () => (await (await fetch("/api/viewers/me")).json()).viewer.public_id as string);
+    const mine = (js: string) => js.replaceAll("data/users/me/", `data/users/${me}/`);
+    const id = await draft({ "index.html": PAGE, "seed.js": mine(SEED), "break.js": mine(BREAK), "check.js": mine(CHECK) });
+    expect(await runTests(page, id, mode, `runMigration({ file: "seed.js", from: 1, to: 2 })`, "migration", MIGRATE_VIEW)).toEqual({ type: "migration", ok: true });
+    // The live run: every write waits for the app to keep its journal entry.
+    await reopen(page, id);
+    await host(page, `runMigration({ file: "break.js", from: 1, to: 2, journal: true })`);
+    const entries: { path: string; before: unknown }[] = [];
+    const acked = new Set<number>();
+    await expect.poll(async () => {
+      for (const j of (await ofType(page, "journal")) as unknown as { seq: number; path: string; before: unknown }[]) {
+        if (acked.has(j.seq)) continue;
+        acked.add(j.seq);
+        entries.push({ path: j.path, before: j.before });
+        await host(page, `journalAck({ seq: ${j.seq}, ok: true })`);
+      }
+      return (await ofType(page, "migration")).length;
+    }, { timeout: 30_000 }).toBeGreaterThan(0);
+    expect((await ofType(page, "migration"))[0]).toEqual({ type: "migration", ok: false, error: "the migration failed: half way" });
+    expect(entries).toEqual([
+      { path: `data/users/${me}/profile`, before: { v: 1 } },
+      { path: `data/users/${me}/extra`, before: null },
+      { path: "counts/main", before: { n: 1 } },
+    ]);
+    // The app loads the view again and replays the journal.
+    await reopen(page, id);
+    await host(page, `restoreJournal(${JSON.stringify({ entries })})`);
+    await expect.poll(async () => ofType(page, "journalRestored"), { timeout: 30_000 }).toEqual([{ type: "journalRestored", ok: true }]);
+    await reopen(page, id);
+    await host(page, `runMigration({ file: "check.js", from: 1, to: 2 })`);
+    await expect.poll(async () => ofType(page, "migration"), { timeout: 30_000 }).toEqual([{ type: "migration", ok: true }]);
+    const { doc } = await api(d.base, d.token, `/api/artifacts/${id}/docs/check/out`) as { doc: { data: unknown } };
+    expect(doc.data).toEqual({ profile: { v: 1 }, extra: false, n: 1 });
   });
 
   test(`${mode}: a migration that throws answers its error`, async ({ page }) => {

@@ -80,7 +80,15 @@ export interface CapEnv {
   sampleStatus?(): Promise<SampleStatus | null>;
   /** The artifact's calls to Claude today, and the cap: the top bar's count. */
   onSampleCalls?(n: number, cap: number | null): void;
+  /** The write journal of an app bundle's live migration (app/host.ts),
+   * while one runs: `db` sends each document's value before the first write
+   * to it, and writes only once the journal has it. */
+  journal?(): DbJournal | null;
 }
+
+/** Keeps `before`, the data of the document at `path` (null when there is
+ * none), before a write to it; rejects when it could not. */
+export type DbJournal = (e: { path: string; before: Record<string, unknown> | null }) => Promise<void>;
 
 export interface Handler {
   call(method: string, args: unknown[]): Promise<unknown>;

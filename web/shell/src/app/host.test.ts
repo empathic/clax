@@ -1204,6 +1204,62 @@ describe("app mode's inspect view", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(ofType("migration").at(-1)).toEqual({ type: "migration", ok: true });
   });
 
+  it("a journaled migration's writes wait for the app's ack, and fail once the run has answered", async () => {
+    const { ctl, frame, host } = await appView({ query: MIGRATE });
+    const framed = framePosts(frame);
+    hello(frame, 1);
+    // A run without the journal (the update's check, on a draft) writes freely.
+    host.runMigration({ file: "migrate.js", from: 1, to: 2 });
+    expect(ctl.dbJournal).toBeNull();
+    host.runMigration({ file: "migrate.js", from: 1, to: 2, journal: true });
+    const journal = ctl.dbJournal!;
+    const settled: string[] = [];
+    const one = journal({ path: "data/users/me/profile", before: { v: 1 } }).then(() => settled.push("one"), () => settled.push("one refused"));
+    const two = journal({ path: "a/2", before: null }).then(() => settled.push("two"), () => settled.push("two refused"));
+    expect(ofType("journal")).toEqual([
+      { type: "journal", seq: 1, path: "data/users/me/profile", before: { v: 1 } },
+      { type: "journal", seq: 2, path: "a/2", before: null },
+    ]);
+    host.journalAck({ seq: 2, ok: false });
+    host.journalAck({ seq: 1, ok: true });
+    host.journalAck({ seq: 1, ok: true });
+    await Promise.all([one, two]);
+    expect(settled).toEqual(["two refused", "one"]);
+    const three = journal({ path: "a/3", before: null });
+    const ask = framed.filter(m => m.type === "clax:migrate").at(-1)!;
+    fromFrame(frame.contentWindow!, { type: "clax:migration", requestId: ask.requestId, ok: false, error: "boom" });
+    await expect(three).rejects.toMatchObject({ code: "unavailable" });
+    await expect(journal({ path: "a/4", before: null })).rejects.toMatchObject({ code: "unavailable" });
+    // Nor in a later run without it: the document stays journaled.
+    host.runMigration({ file: "migrate.js", from: 1, to: 2 });
+    expect(ctl.dbJournal).toBe(journal);
+    await expect(journal({ path: "a/5", before: null })).rejects.toMatchObject({ code: "unavailable" });
+  });
+
+  it("restoreJournal puts the entries back in reverse order, only in the migration view", async () => {
+    const docs = (url: string) => (url.includes("/docs/") ? new Response("{}", { status: url.includes("gone") ? 404 : 200 }) : undefined);
+    const { frame, host } = await appView({ query: MIGRATE, api: docs });
+    hello(frame, 1);
+    requests = [];
+    host.restoreJournal({ entries: [{ path: "data/users/me/profile", before: { v: 1 } }, { path: "a/new", before: null }, { path: "a/gone", before: null }] });
+    await expect.poll(() => ofType("journalRestored")).toEqual([{ type: "journalRestored", ok: true }]);
+    expect(requests.filter(r => r.url.includes("/docs/")).map(r => [r.method, r.url, r.body])).toEqual([
+      ["DELETE", `/api/artifacts/${ID}/docs/a/gone?lww=true`, null],
+      ["DELETE", `/api/artifacts/${ID}/docs/a/new?lww=true`, null],
+      ["PUT", `/api/artifacts/${ID}/docs/data/users/me/profile`, { data: { v: 1 }, lww: true }],
+    ]);
+    host.restoreJournal({ entries: [{ path: "../x", before: null }] });
+    await expect.poll(() => ofType("journalRestored")).toHaveLength(2);
+    expect(ofType("journalRestored")[1]).toMatchObject({ ok: false });
+    host.restoreJournal({ entries: "x" } as never);
+    expect(ofType("journalRestored")[2]).toMatchObject({ ok: false, error: expect.stringMatching(/^entries is a list/) });
+    const other = await appView({ query: INSPECT });
+    hello(other.frame, 1);
+    toHost = [];
+    other.host.restoreJournal({ entries: [] });
+    expect(ofType("journalRestored")).toEqual([{ type: "journalRestored", ok: false, error: "this view is not the migration view" }]);
+  });
+
   it("runMigration refuses a bad order, before the page greets, and outside the migration view", async () => {
     const { frame, host } = await appView({ query: MIGRATE });
     const framed = framePosts(frame);

@@ -69,7 +69,16 @@
 //   2026-10-13-flutter-app-bundles-design §8.3): import `file` in the page's
 //   frame and call its default export with the page's `db` and `{from,
 //   to}`; it posts `migration` `{ok: true}` or `{ok: false, error}`, under
-//   the same rules as `tests`.
+//   the same rules as `tests`. With `journal: true` (the live run of an
+//   update, spec §8.4) every `db` write the page makes, through any handle,
+//   first sends the document's current value as `journal` `{seq, path,
+//   before}` and waits for the app's `journalAck({seq, ok})`, which the app
+//   makes once the entry is on disk; a refused or missing ack fails the
+//   write. Once the run answers, every later write fails, until the view is
+//   loaded again. `restoreJournal({entries})` (the migration view only) puts
+//   such entries back, in reverse order, as this viewer (so the person's
+//   own `data/users/<id>/` documents too), and posts `journalRestored`
+//   `{ok: true}` or `{ok: false, error}`.
 // - Questions (spec 2026-10-12-flutter-app-round2-design R§10.2): the
 //   owner's open agent questions about the artifact are the shell's own
 //   question cards (`q/QuestionCard.svelte`), which a browser shows at the
@@ -97,10 +106,12 @@
 // Its styles go in with it: the shell links no stylesheet a lazy chunk
 // imports (`vite.shell.config.ts`, `inlineCss`).
 import appCss from "./app.css?inline";
-import { getArtifact } from "../api";
+import { getArtifact, getToken } from "../api";
+import { replayJournal } from "../caps/db";
 import { acceptFromFrame } from "../bridge-link";
 import { type DeviceCall, deviceLink } from "../caps/device-link";
 import { CapError } from "../caps/errors";
+import type { DbJournal } from "../caps/host";
 import { hostArrival } from "../caps/gesture";
 import { visibility } from "../visibility";
 import { now } from "../clock";
@@ -143,6 +154,12 @@ export type HostMessage =
    * there was no run). */
   | { type: "migration"; ok: true }
   | { type: "migration"; ok: false; error: string }
+  /** A journaled migration's write is waiting: `before` is the data of the
+   * document at `path` (null when there is none). `journalAck` answers. */
+  | { type: "journal"; seq: number; path: string; before: Record<string, unknown> | null }
+  /** The answer to `restoreJournal`. */
+  | { type: "journalRestored"; ok: true }
+  | { type: "journalRestored"; ok: false; error: string }
   /** How many of the owner's questions about the artifact are `open`, and
    * whether the questions sheet is `showing`, posted whenever either
    * changes (see Questions above). */
@@ -208,7 +225,14 @@ export type ClaxHost = {
    * and `{from, to}` (versions, at least 1), the run for at most `totalMs`
    * (`MIGRATE_MS` when absent): `migration` answers. A later call replaces
    * an earlier one. */
-  runMigration(p: { file: string; from: number; to: number; totalMs?: number }): void;
+  runMigration(p: { file: string; from: number; to: number; totalMs?: number; journal?: boolean }): void;
+  /** The app has journal entry `seq` on disk (`ok`), or could not keep it:
+   * the write waiting on it goes ahead, or fails. */
+  journalAck(p: { seq: number; ok: boolean }): void;
+  /** In the migration view, puts back a journaled migration's `entries`
+   * (`{path, before}`, in the order they were journaled) in reverse order:
+   * `journalRestored` answers. */
+  restoreJournal(p: { entries: { path: string; before: Record<string, unknown> | null }[] }): void;
   /** Shows the questions sheet. With `question` (an ID), shows it with that
    * question's card in focus as soon as the shell knows it open: the app may
    * hear of a question before the shell's own feed does, so the request
@@ -248,6 +272,8 @@ const TEST_NAME_CHARS = 201;
 export const MIGRATE_MS = 30_000;
 const MIGRATE_MS_MAX = 120_000;
 const MIGRATE_FILE = /^[A-Za-z0-9_][A-Za-z0-9_\-./]{0,196}\.js$/;
+/** The most entries one `restoreJournal` takes. */
+const JOURNAL_MAX = 20_000;
 const isVersion = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 1;
 /** What the composer calls the whole artifact in the app, and says of its
  * screenshot (as `view/whole-comment.ts` does in a browser). */
@@ -534,6 +560,10 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     if (m?.type === "clax:migration") {
       if (migrationRun === null || m.requestId !== migrationRun) return;
       migrationRun = null;
+      // The run is over: a write after it (a migration still going) fails.
+      journalOpen = false;
+      for (const wait of journalWaits.values()) wait.reject(new CapError("unavailable", "the migration has ended"));
+      journalWaits.clear();
       post(migrationMessage(m as unknown as Record<string, unknown>));
       return;
     }
@@ -552,6 +582,22 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   let testRun: string | null = null;
   // The migration run asked of the page, until it answers.
   let migrationRun: string | null = null;
+  // The live migration's write journal: open from a journaled run's start
+  // to its answer; the writes waiting for the app's ack, by sequence.
+  let journalOpen = false;
+  let journalSeq = 0;
+  const journalWaits = new Map<number, { resolve(): void; reject(e: CapError): void }>();
+  // Set by the first journaled run, and kept for the document's life: once
+  // that run has answered, every write fails.
+  const journalOf: DbJournal = e => new Promise<void>((resolve, reject) => {
+      if (!journalOpen) {
+        reject(new CapError("unavailable", "writes are closed in this view"));
+        return;
+      }
+      const seq = ++journalSeq;
+      journalWaits.set(seq, { resolve, reject });
+      post({ type: "journal", seq, path: e.path, before: e.before });
+    });
   // The shell's own trusted presses and releases, where and when.
   let shellPresses: { x: number; y: number; at: number }[] = [];
   const onPress = (e: Event) => {
@@ -829,7 +875,34 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       }
       if (!ctl.gate.open) { refuse("the page has not loaded"); return; }
       migrationRun = `migrate-${++inspections}`;
+      if (p?.journal === true) {
+        journalOpen = true;
+        ctl.dbJournal = journalOf;
+      }
       ctl.send({ type: "clax:migrate", requestId: migrationRun, file, from, to, totalMs: bounded(totalMs, 1, MIGRATE_MS_MAX, MIGRATE_MS) });
+    },
+    journalAck: p => {
+      const seq = p?.seq;
+      const wait = typeof seq === "number" ? journalWaits.get(seq) : undefined;
+      if (!wait) return;
+      journalWaits.delete(seq as number);
+      if (p.ok === true) wait.resolve();
+      else wait.reject(new CapError("unavailable", "the update could not keep this document's value"));
+    },
+    restoreJournal: p => {
+      if (nonce === null) return;
+      const fail = (error: string) => post({ type: "journalRestored", ok: false, error });
+      if (!migrating) { fail("this view is not the migration view"); return; }
+      const entries = p?.entries;
+      const isData = (v: unknown) => v === null || (typeof v === "object" && !Array.isArray(v));
+      if (!Array.isArray(entries) || entries.length > JOURNAL_MAX || !entries.every(e => e && typeof e === "object" && typeof e.path === "string" && isData(e.before))) {
+        fail(`entries is a list of at most ${JOURNAL_MAX} {path, before}`);
+        return;
+      }
+      void getToken().then(token => replayJournal(ctl.id, token, entries)).then(
+        () => post({ type: "journalRestored", ok: true }),
+        (e: unknown) => fail(e instanceof Error ? e.message.slice(0, INSPECT_ERROR_CHARS) : String(e)),
+      );
     },
     openQuestions: p => {
       if (!dock) return;

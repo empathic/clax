@@ -37,6 +37,25 @@ describe("db handler", () => {
     expect(lan.requests[0].auth).toBeNull();
   });
 
+  it("with a write journal, sends each document's value before its first write and writes only once it is kept", async () => {
+    const kept: { path: string; before: unknown }[] = [];
+    let refuse = false;
+    const { requests } = setup(null, (m, url) => (m === "GET" && url.endsWith("/new") ? json({ error: { code: "not_found" } }, 404) : json({ doc: doc("tasks/t1", 1) })));
+    const env = {
+      aid: "7q3k9mzx2b4t", token: null, post: () => {},
+      journal: () => async (e: { path: string; before: unknown }) => { if (refuse) throw new Error("full"); kept.push(e); },
+    } as unknown as CapEnv;
+    const h = dbHandler(env, null as never);
+    await h.call("set", ["tasks/t1", { a: 1 }]);
+    await h.call("update", ["tasks/t1", { a: 2 }]);
+    await h.call("delete", ["data/users/me/new"]);
+    expect(kept).toEqual([{ path: "tasks/t1", before: { v: 1 } }, { path: "data/users/me/new", before: null }]);
+    expect(requests.map(r => r.method)).toEqual(["GET", "PUT", "PATCH", "GET", "DELETE"]);
+    refuse = true;
+    await expect(h.call("set", ["tasks/t2", { a: 1 }])).rejects.toThrow("full");
+    expect(requests.at(-1)!.method).toBe("GET");
+  });
+
   it("maps daemon errors to the contract's codes", () => {
     expect(dbError(404, { code: "not_found" }, true).code).toBe("invalid_argument");
     expect(dbError(400, { code: "quota_exceeded" }, true).code).toBe("quota_exceeded");
