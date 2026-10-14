@@ -1788,8 +1788,8 @@ mod tests {
         st.reopen_thread(DAEMON, &t.id).unwrap();
         st.resolve_thread(DAEMON, &t.id, "viewer:anonymous")
             .unwrap();
-        st.writer
-            .run(|c| {
+        st.exec
+            .write(|c| {
                 c.execute("DELETE FROM version_threads", [])?;
                 Ok(())
             })

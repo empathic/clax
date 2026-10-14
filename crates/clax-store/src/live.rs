@@ -1089,14 +1089,10 @@ impl Store {
 mod tests {
     use crate::Store;
     use crate::test_util::DAEMON;
+    use clax_core::ArtifactId;
     use clax_core::live::{KIND_LIVE, PageKey};
-    use clax_core::{ArtifactId, Home};
 
-    fn store() -> (tempfile::TempDir, Store) {
-        let dir = tempfile::tempdir().unwrap();
-        let st = Store::open(&Home::at(dir.path().join("ax"))).unwrap();
-        (dir, st)
-    }
+    use crate::test_util::store;
     fn key(path: &str) -> PageKey {
         PageKey {
             origin: "http://localhost:5173".into(),

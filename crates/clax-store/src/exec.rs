@@ -1,8 +1,15 @@
-//! The connections and threads behind [`Store`]: the only write connection,
-//! lent to one caller at a time in arrival order; a pool of `query_only`
-//! reader connections; worker threads that run [`Store::call`] and
+//! How [`Store`] runs its jobs, in one of two modes ([`Exec`]).
+//!
+//! The pool, which [`Store::open`] makes: the only write connection, lent
+//! to one caller at a time in arrival order; a pool of `query_only` reader
+//! connections; worker threads that run [`Store::call`] and
 //! [`Store::call_bulk`] jobs from two bounded queues; and a background
 //! checkpoint thread. See the `store` module doc for how they fit together.
+//!
+//! One connection, which [`Store::open_on`] makes from a connection its
+//! host opened (a Durable Object's, through its own VFS, where there are no
+//! threads): every job runs inline, on the caller's thread, on that
+//! connection ([`Single`]).
 
 use super::Store;
 use clax_core::{CoreError, Result};
@@ -15,6 +22,170 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
+
+/// How a [`Store`] runs its jobs.
+// One per store, held for its life: the pool's size costs nothing.
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum Exec {
+    /// The write connection, the readers and, from the first
+    /// [`Store::call`], the worker and checkpoint threads.
+    Pool {
+        writer: Writer,
+        readers: Readers,
+        workers: OnceLock<Workers>,
+    },
+    /// One connection, every job inline on it.
+    Single(Single),
+}
+
+impl Exec {
+    /// The pool for the database at `path`, writing through `writer`.
+    pub(crate) fn pool(writer: Connection, path: PathBuf) -> Exec {
+        Exec::Pool {
+            writer: Writer::new(writer),
+            readers: Readers::new(path, reader_count()),
+            workers: OnceLock::new(),
+        }
+    }
+
+    /// Runs `f` in one read transaction on a connection that refuses
+    /// writes, so every statement in `f` sees one snapshot. With `limited`,
+    /// the pool interrupts a read still running after the read limit.
+    pub(crate) fn read<T>(
+        &self,
+        limited: bool,
+        f: impl FnOnce(&Connection) -> Result<T>,
+    ) -> Result<T> {
+        match self {
+            Exec::Pool { readers, .. } => readers.run(limited, f),
+            Exec::Single(s) => s.read(f),
+        }
+    }
+
+    /// Runs `f` with the write connection, after every write that arrived
+    /// before it.
+    pub(crate) fn write<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
+        match self {
+            Exec::Pool { writer, .. } => writer.run(f),
+            Exec::Single(s) => s.write(f),
+        }
+    }
+
+    /// Sets the pool's read limit; `None` lifts it. One connection has
+    /// none.
+    pub(crate) fn set_read_limit(&self, limit: Option<Duration>) {
+        if let Exec::Pool { readers, .. } = self {
+            readers.set_limit(limit);
+        }
+    }
+}
+
+// --- one connection --------------------------------------------------------
+
+/// What a [`Single`] job is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Job {
+    Read,
+    Write,
+}
+
+/// One connection that every job runs on, inline on the caller's thread:
+/// a read in one read transaction under `PRAGMA query_only`, a write as the
+/// caller runs it (the store's [`Store::with_tx`] in an `IMMEDIATE`
+/// transaction). Jobs from several threads take turns on the connection.
+///
+/// There is no read limit: no deadline is checked, since a Worker has no
+/// monotonic clock in `std` and its host bounds a request's time itself.
+/// Every job starting another on the same thread is refused with a panic,
+/// as the pool refuses a write job starting a write or a read: the one
+/// connection is busy with the outer job.
+pub(crate) struct Single {
+    conn: Mutex<Connection>,
+    /// The thread running a job on `conn`, and the job.
+    running: Mutex<Option<(thread::ThreadId, Job)>>,
+}
+
+/// A job's hold on a [`Single`]'s connection; ends on drop, including while
+/// a panic unwinds. A read transaction still open is rolled back and the
+/// connection takes writes again.
+struct Hold<'a> {
+    single: &'a Single,
+    conn: MutexGuard<'a, Connection>,
+    job: Job,
+}
+
+impl Drop for Hold<'_> {
+    fn drop(&mut self) {
+        if self.job == Job::Read {
+            if !self.conn.is_autocommit() {
+                let _ = self.conn.execute_batch("ROLLBACK");
+            }
+            let _ = self.conn.execute_batch("PRAGMA query_only=OFF");
+        }
+        // Cleared while the connection is still held, so the next job's
+        // mark is never overwritten.
+        *lock(&self.single.running) = None;
+    }
+}
+
+impl Single {
+    pub(crate) fn new(conn: Connection) -> Single {
+        Single {
+            conn: Mutex::new(conn),
+            running: Mutex::new(None),
+        }
+    }
+
+    /// The connection for a `job`, once no other thread's job holds it.
+    ///
+    /// # Panics
+    /// When this thread is already running a job on it.
+    fn hold(&self, job: Job) -> Hold<'_> {
+        let me = thread::current().id();
+        if let Some((t, outer)) = *lock(&self.running)
+            && t == me
+        {
+            match outer {
+                Job::Write if job == Job::Write => {
+                    panic!("a write job may not start another write job")
+                }
+                Job::Write => panic!("a write job may not start a read job on the one connection"),
+                Job::Read => panic!("a read job may not start another job on the one connection"),
+            }
+        }
+        let conn = lock(&self.conn);
+        *lock(&self.running) = Some((me, job));
+        Hold {
+            single: self,
+            conn,
+            job,
+        }
+    }
+
+    fn read<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        let hold = self.hold(Job::Read);
+        let c = &*hold.conn;
+        let mut out = c
+            .execute_batch("PRAGMA query_only=ON; BEGIN")
+            .map_err(CoreError::from)
+            .and_then(|()| f(c));
+        if !c.is_autocommit() {
+            let end = if out.is_ok() { "COMMIT" } else { "ROLLBACK" };
+            if let Err(e) = c.execute_batch(end)
+                && out.is_ok()
+            {
+                out = Err(e.into());
+            }
+        }
+        drop(hold);
+        out
+    }
+
+    fn write<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
+        let mut hold = self.hold(Job::Write);
+        f(&mut hold.conn)
+    }
+}
 
 /// How long a connection waits for a lock another process holds (the CLI,
 /// `doctor`, a second daemon) before failing with `SQLITE_BUSY`.
@@ -673,6 +844,10 @@ impl Store {
     /// it is skipped; once started, it runs to completion. A panic in `f` is
     /// logged and returned as [`CoreError::TaskFailed`], as is a call after
     /// [`Store::shutdown`] or one whose worker thread could not start.
+    ///
+    /// On one connection ([`Store::open_on`]) `f` runs at once, inline on
+    /// the caller's thread, with no queue; a panic and a call after
+    /// shutdown fail the same way.
     pub async fn call<T, F>(self: &Arc<Self>, f: F) -> Result<T>
     where
         T: Send + 'static,
@@ -684,7 +859,8 @@ impl Store {
     /// [`Store::call`] in the bulk lane, for reads whose cost grows with the
     /// whole home (the gallery's list and attention, the inbox list): they
     /// start after waiting interactive jobs (at least one in [`BULK_PASS`] +
-    /// 1 starts while both wait), and never take every worker.
+    /// 1 starts while both wait), and never take every worker. On one
+    /// connection it runs inline as [`Store::call`] does.
     pub async fn call_bulk<T, F>(self: &Arc<Self>, f: F) -> Result<T>
     where
         T: Send + 'static,
@@ -701,13 +877,24 @@ impl Store {
         if self.shut_down.load(Ordering::SeqCst) {
             return Err(CoreError::TaskFailed);
         }
-        let workers = match self.workers.get() {
+        let (readers, workers) = match &self.exec {
+            Exec::Pool {
+                readers, workers, ..
+            } => (readers, workers),
+            Exec::Single(_) => {
+                return catch_unwind(AssertUnwindSafe(|| f(self))).unwrap_or_else(|panic| {
+                    task_panicked(&*panic);
+                    Err(CoreError::TaskFailed)
+                });
+            }
+        };
+        let workers = match workers.get() {
             Some(w) => w,
             None => {
-                let w = Workers::start(self.readers.max(), &self.home.db_path())?;
+                let w = Workers::start(readers.max(), &self.home.db_path())?;
                 // A concurrent first call may have won; its pool is kept.
-                let _ = self.workers.set(w);
-                self.workers.get().expect("set above")
+                let _ = workers.set(w);
+                workers.get().expect("set above")
             }
         };
         let slots = match lane {
@@ -738,12 +925,7 @@ impl Store {
         match rx.await {
             Ok(Ok(out)) => out,
             Ok(Err(panic)) => {
-                let msg = panic
-                    .downcast_ref::<&str>()
-                    .map(|s| s.to_string())
-                    .or_else(|| panic.downcast_ref::<String>().cloned())
-                    .unwrap_or_default();
-                tracing::error!(panic = %msg, "store task panicked");
+                task_panicked(&*panic);
                 Err(CoreError::TaskFailed)
             }
             Err(_) => Err(CoreError::TaskFailed),
@@ -754,24 +936,51 @@ impl Store {
     /// [`CoreError::TaskFailed`], every call already queued runs, and the
     /// worker and checkpoint threads are joined. A write in progress, which
     /// runs on a worker, has finished when this returns. Blocks; must not be
-    /// called from inside a [`Store::call`] job.
+    /// called from inside a [`Store::call`] job. On one connection, where
+    /// calls run inline, it only refuses further calls.
     pub fn shutdown(&self) {
         self.shut_down.store(true, Ordering::SeqCst);
-        if let Some(w) = self.workers.get() {
+        if let Exec::Pool { workers, .. } = &self.exec
+            && let Some(w) = workers.get()
+        {
             w.drain();
         }
     }
 }
 
+/// Logs the panic a store job ended in.
+fn task_panicked(panic: &(dyn std::any::Any + Send)) {
+    let msg = panic
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_default();
+    tracing::error!(panic = %msg, "store task panicked");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::store;
+    use crate::test_util::{pool_store as store, single_store};
     use std::sync::Barrier;
     use std::sync::atomic::AtomicBool;
 
     const INSERT_VIEWER: &str = "INSERT INTO viewers (id, public_id, display_name, created_at)
          VALUES ('v1', 'u_00000000000000000000001', 'Ana', '2026-01-01T00:00:00.000Z')";
+
+    fn readers(st: &Store) -> &Readers {
+        match &st.exec {
+            Exec::Pool { readers, .. } => readers,
+            Exec::Single(_) => panic!("a pool store"),
+        }
+    }
+
+    fn workers(st: &Store) -> Option<&Workers> {
+        match &st.exec {
+            Exec::Pool { workers, .. } => workers.get(),
+            Exec::Single(_) => panic!("a pool store"),
+        }
+    }
 
     fn viewers(st: &Store) -> i64 {
         st.with_read(|c| Ok(c.query_row("SELECT COUNT(*) FROM viewers", [], |r| r.get(0))?))
@@ -927,7 +1136,7 @@ mod tests {
     #[test]
     fn a_panicking_read_leaves_no_open_transaction() {
         let (_d, st) = store();
-        for _ in 0..st.readers.max() {
+        for _ in 0..readers(&st).max() {
             let r = std::panic::catch_unwind(AssertUnwindSafe(|| {
                 st.with_read(|c| -> Result<()> {
                     c.query_row("SELECT COUNT(*) FROM viewers", [], |r| r.get::<_, i64>(0))?;
@@ -938,7 +1147,7 @@ mod tests {
         }
         st.with_tx(|tx| Ok(tx.execute(INSERT_VIEWER, [])?)).unwrap();
         // Every reader was handed back with its snapshot released.
-        for _ in 0..st.readers.max() {
+        for _ in 0..readers(&st).max() {
             assert_eq!(viewers(&st), 1);
         }
     }
@@ -970,7 +1179,7 @@ mod tests {
         // it (busy timeout) and the rest wait for their turn.
         let other = Connection::open(st.home().db_path()).unwrap();
         other.execute_batch("BEGIN IMMEDIATE").unwrap();
-        let n = st.readers.max() + 2;
+        let n = readers(&st).max() + 2;
         let started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let writes: Vec<_> = (0..n)
             .map(|i| {
@@ -1019,7 +1228,7 @@ mod tests {
         let st = Arc::new(st);
         let done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let go = Arc::new(AtomicBool::new(false));
-        let n = st.readers.max() * 3;
+        let n = readers(&st).max() * 3;
         let calls: Vec<_> = (0..n)
             .map(|_| {
                 let (st, done, go) = (st.clone(), done.clone(), go.clone());
@@ -1038,11 +1247,7 @@ mod tests {
             .collect();
         // Every call is queued (holds a slot) before the drain starts; none
         // finishes before `go`.
-        let queued = || {
-            st.workers
-                .get()
-                .map_or(0, |w| QUEUE_CAPACITY - w.slots.available_permits())
-        };
+        let queued = || workers(&st).map_or(0, |w| QUEUE_CAPACITY - w.slots.available_permits());
         while queued() < n {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
@@ -1057,7 +1262,7 @@ mod tests {
         }
         let e = st.call(|s| s.integrity_check()).await.unwrap_err();
         assert!(matches!(e, CoreError::TaskFailed), "{e:?}");
-        let threads = lock(&st.workers.get().unwrap().shared.queue).threads;
+        let threads = lock(&workers(&st).unwrap().shared.queue).threads;
         assert_eq!(threads, 0, "every worker exited");
     }
 
@@ -1100,7 +1305,7 @@ mod tests {
     async fn a_call_whose_caller_gave_up_is_skipped() {
         let (_d, st) = store();
         let st = Arc::new(st);
-        let n = st.readers.max();
+        let n = readers(&st).max();
         // Occupy every worker.
         let gate = Arc::new(Barrier::new(n + 1));
         let started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1208,7 +1413,7 @@ mod tests {
     async fn an_interactive_call_runs_while_bulk_calls_fill_their_workers() {
         let (_d, st) = store();
         let st = Arc::new(st);
-        let base = st.readers.max();
+        let base = readers(&st).max();
         let cap = base - 1;
         let gate = Arc::new((Mutex::new(false), Condvar::new()));
         let (started_tx, mut started) = tokio::sync::mpsc::unbounded_channel();
@@ -1251,7 +1456,7 @@ mod tests {
         // A caller has its result just before its worker counts the bulk
         // job as ended; every count comes back down.
         tokio::time::timeout(Duration::from_secs(5), async {
-            while lock(&st.workers.get().unwrap().shared.queue).bulk_running != 0 {
+            while lock(&workers(&st).unwrap().shared.queue).bulk_running != 0 {
                 tokio::task::yield_now().await;
             }
         })
@@ -1263,7 +1468,7 @@ mod tests {
     async fn shutdown_returns_with_bulk_calls_queued_past_their_cap() {
         let (_d, st) = store();
         let st = Arc::new(st);
-        let cap = st.readers.max() - 1;
+        let cap = readers(&st).max() - 1;
         let gate = Arc::new((Mutex::new(false), Condvar::new()));
         let (started_tx, mut started) = tokio::sync::mpsc::unbounded_channel();
         let bulk: Vec<_> = (0..cap + 2)
@@ -1288,11 +1493,8 @@ mod tests {
         for _ in 0..cap {
             started.recv().await.unwrap();
         }
-        let queued = || {
-            st.workers
-                .get()
-                .map_or(0, |w| QUEUE_CAPACITY - w.bulk_slots.available_permits())
-        };
+        let queued =
+            || workers(&st).map_or(0, |w| QUEUE_CAPACITY - w.bulk_slots.available_permits());
         while queued() < cap + 2 {
             tokio::task::yield_now().await;
         }
@@ -1305,7 +1507,7 @@ mod tests {
             let _ = drained_tx.send(());
         });
         // The pool closes while bulk calls still wait past the cap.
-        while !lock(&st.workers.get().unwrap().shared.queue).closed {
+        while !lock(&workers(&st).unwrap().shared.queue).closed {
             tokio::task::yield_now().await;
         }
         let (open, opened) = &*gate;
@@ -1318,6 +1520,152 @@ mod tests {
         for b in bulk {
             assert_eq!(b.await.unwrap().unwrap(), "ok");
         }
-        assert_eq!(lock(&st.workers.get().unwrap().shared.queue).threads, 0);
+        assert_eq!(lock(&workers(&st).unwrap().shared.queue).threads, 0);
+    }
+
+    // --- one connection ----------------------------------------------------
+
+    fn query_only(st: &Store) -> bool {
+        st.with_write(|c| Ok(c.query_row("PRAGMA query_only", [], |r| r.get(0))?))
+            .unwrap()
+    }
+
+    #[test]
+    fn one_connection_refuses_writes_in_a_read_and_takes_them_after() {
+        let (_d, st) = single_store();
+        let e = st
+            .with_read(|c| Ok(c.execute(INSERT_VIEWER, [])?))
+            .unwrap_err();
+        assert!(
+            matches!(&e, CoreError::Db(rusqlite::Error::SqliteFailure(f, _)) if f.code == rusqlite::ErrorCode::ReadOnly),
+            "{e:?}"
+        );
+        assert!(!query_only(&st), "the read gave writes back");
+        st.with_tx(|tx| Ok(tx.execute(INSERT_VIEWER, [])?)).unwrap();
+        assert_eq!(viewers(&st), 1);
+    }
+
+    #[test]
+    fn one_connection_rolls_back_a_failed_or_panicking_job() {
+        let (_d, st) = single_store();
+        let r = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            st.with_read(|c| -> Result<()> {
+                c.query_row("SELECT COUNT(*) FROM viewers", [], |r| r.get::<_, i64>(0))?;
+                panic!("boom")
+            })
+        }));
+        assert!(r.is_err());
+        assert!(!query_only(&st));
+        let e = st
+            .with_tx(|tx| -> Result<()> {
+                tx.execute(INSERT_VIEWER, [])?;
+                Err(CoreError::TaskFailed)
+            })
+            .unwrap_err();
+        assert!(matches!(e, CoreError::TaskFailed), "{e:?}");
+        let r = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            st.with_tx(|tx| -> Result<()> {
+                tx.execute(INSERT_VIEWER, [])?;
+                panic!("boom")
+            })
+        }));
+        assert!(r.is_err());
+        assert_eq!(viewers(&st), 0, "both writes rolled back");
+        st.with_tx(|tx| Ok(tx.execute(INSERT_VIEWER, [])?)).unwrap();
+        assert_eq!(viewers(&st), 1);
+        assert_eq!(st.integrity_check().unwrap(), "ok");
+    }
+
+    #[test]
+    #[should_panic(expected = "may not start another write job")]
+    fn one_connection_refuses_a_write_inside_a_write() {
+        let (_d, st) = single_store();
+        let _ = st.with_tx(|_| st.with_write(|_| Ok(())));
+    }
+
+    #[test]
+    #[should_panic(expected = "a write job may not start a read job")]
+    fn one_connection_refuses_a_read_inside_a_write() {
+        let (_d, st) = single_store();
+        let _ = st.with_tx(|_| st.with_read(|_| Ok(())));
+    }
+
+    #[test]
+    #[should_panic(expected = "a read job may not start another job")]
+    fn one_connection_refuses_a_write_inside_a_read() {
+        let (_d, st) = single_store();
+        let _ = st.with_read(|_| st.with_tx(|_| Ok(())));
+    }
+
+    #[test]
+    fn one_connection_has_no_read_limit() {
+        let (_d, st) = single_store();
+        st.set_read_limit(Duration::from_millis(1));
+        let long = "WITH RECURSIVE r(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM r WHERE x < 200000) SELECT COUNT(*) FROM r";
+        let n = st
+            .with_read(|c| Ok(c.query_row(long, [], |r| r.get::<_, i64>(0))?))
+            .unwrap();
+        assert_eq!(n, 200_000);
+    }
+
+    #[test]
+    fn one_connection_lets_threads_take_turns() {
+        let (_d, st) = single_store();
+        let st = &st;
+        thread::scope(|s| {
+            for t in 0..4 {
+                s.spawn(move || {
+                    for i in 0..25 {
+                        st.with_tx(|tx| {
+                            Ok(tx.execute(
+                                "INSERT INTO viewers (id, public_id, display_name, created_at)
+                                 VALUES (?1, ?2, 'Ana', '2026-01-01T00:00:00.000Z')",
+                                rusqlite::params![format!("v{t}-{i}"), format!("u_{t}{i:022}")],
+                            )?)
+                        })
+                        .unwrap();
+                        assert!(viewers(st) >= 1);
+                    }
+                });
+            }
+        });
+        assert_eq!(viewers(st), 100);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn one_connection_runs_calls_inline_until_shutdown() {
+        let (_d, st) = single_store();
+        let st = Arc::new(st);
+        let caller = thread::current().id();
+        let ran_on = st.call(|_| Ok(thread::current().id())).await.unwrap();
+        assert_eq!(ran_on, caller);
+        assert_eq!(st.call_bulk(|s| s.integrity_check()).await.unwrap(), "ok");
+        let e = st
+            .call(|_| -> Result<()> { panic!("boom") })
+            .await
+            .unwrap_err();
+        assert!(matches!(e, CoreError::TaskFailed), "{e:?}");
+        st.shutdown();
+        let e = st.call(|s| s.integrity_check()).await.unwrap_err();
+        assert!(matches!(e, CoreError::TaskFailed), "{e:?}");
+    }
+
+    #[test]
+    fn one_connection_opens_a_database_the_pool_made_and_the_pool_reopens_it() {
+        let (d, st) = store();
+        st.with_tx(|tx| Ok(tx.execute(INSERT_VIEWER, [])?)).unwrap();
+        let home = st.home().clone();
+        drop(st);
+        let conn = Connection::open(home.db_path()).unwrap();
+        let one = Store::open_on(&home, conn, Arc::new(crate::working::SystemClock)).unwrap();
+        assert_eq!(viewers(&one), 1);
+        let fk: bool = one
+            .with_read(|c| Ok(c.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?))
+            .unwrap();
+        assert!(fk);
+        drop(one);
+        let again = Store::open(&home).unwrap();
+        assert_eq!(viewers(&again), 1);
+        drop(d);
     }
 }

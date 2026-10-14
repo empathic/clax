@@ -116,18 +116,13 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use crate::Store;
-    use clax_core::Home;
     use clax_core::extension::{MAX_CREDENTIALS, credential_hash};
+
     use rusqlite::params;
 
     const EXT: &str = "bhhldgpcjhfhmcfjjnelbbdcefnocaln";
 
-    fn store() -> (tempfile::TempDir, Store) {
-        let dir = tempfile::tempdir().unwrap();
-        let st = Store::open(&Home::at(dir.path().join("ax"))).unwrap();
-        (dir, st)
-    }
+    use crate::test_util::store;
 
     #[test]
     fn minting_past_the_cap_revokes_the_oldest_and_no_credential_carries_a_viewer() {

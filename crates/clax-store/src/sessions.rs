@@ -1720,11 +1720,7 @@ mod tests {
     use crate::test_util::DAEMON;
     use clax_core::Home;
 
-    fn store() -> (tempfile::TempDir, Store) {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(&Home::at(dir.path().join("ax"))).unwrap();
-        (dir, store)
-    }
+    use crate::test_util::store;
 
     fn join(
         harness: &str,
@@ -1766,8 +1762,8 @@ mod tests {
         let s = st
             .register_session(DAEMON, reg(Some("hs-1"), None, None))
             .unwrap();
-        st.writer
-            .run(|c| {
+        st.exec
+            .write(|c| {
                 c.execute(
                     "UPDATE sessions SET transcript_path = '/t/hs-1.jsonl' WHERE id = ?1",
                     params![s.id],
@@ -2189,8 +2185,8 @@ mod tests {
         let idle = st
             .register_session(DAEMON, reg(Some("idle"), None, None))
             .unwrap();
-        st.writer
-            .run(|c| {
+        st.exec
+            .write(|c| {
                 c.execute(
                     "UPDATE sessions SET last_seen_at = '2000-01-01T00:00:00.000Z' WHERE id = ?1",
                     params![idle.id],
@@ -2217,7 +2213,8 @@ mod tests {
 
     #[test]
     fn reaper_ends_only_idle_sessions_with_dead_or_unknown_pids() {
-        let (_d, store) = store();
+        let clock = std::sync::Arc::new(crate::working::ManualClock::at("2026-09-01T10:00:00Z"));
+        let (_d, store) = crate::test_util::store_with_clock(clock.clone());
         let dead = store
             .register_session(DAEMON, reg(Some("dead"), Some(1001), None))
             .unwrap();
@@ -2237,13 +2234,12 @@ mod tests {
                 .len(),
             0
         );
-        std::thread::sleep(Duration::from_millis(300));
+        clock.advance(301);
         let fresh = store
             .register_session(DAEMON, reg(Some("fresh"), Some(1003), None))
             .unwrap();
-        // Wide enough that `fresh` stays unreaped on a loaded test run.
         let reaped = store
-            .reap_sessions(Duration::from_millis(200), &pid_alive)
+            .reap_sessions(Duration::from_secs(300), &pid_alive)
             .unwrap();
         assert_eq!(reaped.ended.len(), 2);
         let ended = |id: &str| store.get_session(id).unwrap().unwrap().ended_at.is_some();

@@ -365,15 +365,10 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use crate::Store;
     use crate::test_util::DAEMON;
-    use clax_core::{CoreError, Home};
+    use clax_core::CoreError;
 
-    fn store() -> (tempfile::TempDir, Store) {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(&Home::at(dir.path().join("ax"))).unwrap();
-        (dir, store)
-    }
+    use crate::test_util::store;
 
     #[test]
     fn add_get_list_delete() {

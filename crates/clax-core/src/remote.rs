@@ -368,31 +368,29 @@ impl PendingConnect {
 }
 
 /// Writes `bytes` to `path` with mode 0600: to a new file beside it, made
-/// 0600 before any byte is written, then renamed over `path`.
+/// 0600 before any byte is written, then renamed over `path`. A missing
+/// directory is made 0700. Off unix there are no modes to set.
 ///
 /// # Errors
 /// The I/O error; the temporary file is removed.
 pub fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::os::unix::fs::OpenOptionsExt;
     let dir = path.parent().unwrap_or(Path::new("."));
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(dir)?;
-    }
+    let mut dirs = std::fs::DirBuilder::new();
+    dirs.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut dirs, 0o700);
+    dirs.create(dir)?;
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let tmp = dir.join(format!(".{name}.{}.tmp", ulid::Ulid::new()));
     let written = (|| {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&tmp)?;
+        let mut open = std::fs::OpenOptions::new();
+        open.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
+        let mut f = open.open(&tmp)?;
         f.write_all(bytes)?;
         f.sync_all()?;
         std::fs::rename(&tmp, path)
@@ -798,8 +796,9 @@ impl SessionKey<'_> {
 /// When process `pid` started, in seconds since the Unix epoch, read from
 /// the kernel and never from text that depends on the locale or the time
 /// zone: on macOS and Linux through the `sysinfo` crate (`proc_pidinfo`;
-/// `/proc/<pid>/stat` and the boot time). Elsewhere, `ps -o lstart=` run
-/// with `LC_ALL=C` and `TZ=UTC0`, parsed. `None` when it cannot be told
+/// `/proc/<pid>/stat` and the boot time). On another Unix, `ps -o lstart=`
+/// run with `LC_ALL=C` and `TZ=UTC0`, parsed; off Unix (a hosted Worker,
+/// which has no processes), never. `None` when it cannot be told
 /// (no such process): a parent-PID credential file is then neither written
 /// nor taken. A parent-PID credential file records it, and is taken only
 /// while the PID still names that process.
@@ -818,7 +817,12 @@ pub fn process_started(pid: u32) -> Option<u64> {
             .map(sysinfo::Process::start_time)
             .filter(|t| *t > 0)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        None
+    }
+    #[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
     {
         let out = std::process::Command::new("ps")
             .args(["-o", "lstart=", "-p", &pid.to_string()])
@@ -837,7 +841,10 @@ pub fn process_started(pid: u32) -> Option<u64> {
 
 /// `ps -o lstart=` output in the C locale and UTC (`Tue Oct 13 07:40:38
 /// 2026`), in seconds since the Unix epoch.
-#[cfg_attr(any(target_os = "macos", target_os = "linux"), allow(dead_code))]
+#[cfg_attr(
+    not(all(unix, not(any(target_os = "macos", target_os = "linux")))),
+    allow(dead_code)
+)]
 fn ps_lstart_utc(s: &str) -> Option<u64> {
     let words: Vec<&str> = s.split_whitespace().collect();
     let t = chrono::NaiveDateTime::parse_from_str(&words.join(" "), "%a %b %d %H:%M:%S %Y").ok()?;
@@ -887,6 +894,7 @@ pub struct SessionFiles {
 }
 
 /// The `O_NOFOLLOW` open flags for a file of the directory.
+#[cfg(unix)]
 fn no_follow() -> nix::fcntl::OFlag {
     use nix::fcntl::OFlag;
     OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC
@@ -917,6 +925,7 @@ impl SessionFiles {
 
     /// The directory, opened without following a symbolic link; `None`
     /// when it does not exist.
+    #[cfg(unix)]
     fn open_dir(&self) -> std::io::Result<Option<std::os::fd::OwnedFd>> {
         use nix::fcntl::OFlag;
         match nix::fcntl::open(
@@ -937,6 +946,17 @@ impl SessionFiles {
     }
 
     /// The file of `key` as written, `None` when there is no such file.
+    /// Off Unix (a hosted Worker) there are no credential files.
+    #[cfg(not(unix))]
+    fn read_file(
+        &self,
+        _key: &SessionKey<'_>,
+    ) -> Result<Option<CredentialFile>, CredentialUnreadable> {
+        Ok(None)
+    }
+
+    /// The file of `key` as written, `None` when there is no such file.
+    #[cfg(unix)]
     fn read_file(
         &self,
         key: &SessionKey<'_>,
@@ -1106,7 +1126,26 @@ impl SessionFiles {
     /// 0700, or set so when it exists.
     ///
     /// # Errors
+    /// The first I/O error; a directory that is a symbolic link. Off Unix
+    /// (a hosted Worker), `Unsupported`: credential files are a connected
+    /// machine's.
+    #[cfg(not(unix))]
+    pub fn write(
+        &self,
+        _harness: &str,
+        _row_hsid: Option<&str>,
+        _parent_pid: Option<u32>,
+        _also: Option<&str>,
+        _cred: &SessionCredential,
+    ) -> std::io::Result<()> {
+        Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+    }
+
+    /// [`SessionFiles::write`] on Unix.
+    ///
+    /// # Errors
     /// The first I/O error; a directory that is a symbolic link.
+    #[cfg(unix)]
     pub fn write(
         &self,
         harness: &str,
@@ -1154,6 +1193,7 @@ impl SessionFiles {
 
     /// The directory, made 0700 or set so through its own handle; refused
     /// when it is a symbolic link or not a directory.
+    #[cfg(unix)]
     fn private_dir(&self) -> std::io::Result<std::os::fd::OwnedFd> {
         use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
         let dir = match self.open_dir()? {
@@ -1274,6 +1314,7 @@ fn parent_pid_of(name: &str) -> Option<u32> {
 
 /// Writes `bytes` to `name` in directory `dir`, 0600: to a new file beside
 /// it (`O_EXCL`, never following a symbolic link), then renamed over it.
+#[cfg(unix)]
 fn write_at(dir: &std::os::fd::OwnedFd, name: &str, bytes: &[u8]) -> std::io::Result<()> {
     use nix::fcntl::OFlag;
     let tmp = format!(".{name}.{}.tmp", ulid::Ulid::new());

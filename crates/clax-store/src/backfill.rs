@@ -73,7 +73,10 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Component, Path};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+// `std`'s, except on wasm32-unknown-unknown, where `std::time::Instant`
+// panics and this is the Worker's `performance.now()`.
+use web_time::Instant;
 
 /// The staging table's name.
 const STAGING: &str = "audit_backfill";

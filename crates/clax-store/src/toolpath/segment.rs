@@ -43,7 +43,9 @@
 //!
 //! All file access goes through [`JournalFs`], which has no link
 //! operation; [`StdFs`] is the real one, [`MemFs`] an in-memory one for
-//! tests that injects failures.
+//! tests that injects failures. `StdFs` is built on unix only: it relies on
+//! `fsync(2)`, positioned reads and file modes, and a hosted build has no
+//! local disk to journal to.
 
 use super::{KIND_URI, Obj, Redaction, RenderEnv, chain_step, clax_uri, step_id};
 use crate::audit::AuditRow;
@@ -993,7 +995,7 @@ fn redaction_of(v: &Value) -> Option<Redaction> {
     Some(r)
 }
 
-/// The real file system. Holds the segment last appended to open, so an
+/// The real file system (unix only). Holds the segment last appended to open, so an
 /// append is one `write_all`, and the file being read back open, so a
 /// recovery opens it once.
 ///
@@ -1005,12 +1007,14 @@ fn redaction_of(v: &Value) -> Option<Redaction> {
 ///
 /// [`JournalFs::rename`] checks for its target and then renames, which
 /// relies on the journal having one writer.
+#[cfg(unix)]
 #[derive(Default)]
 pub struct StdFs {
     open: Option<(PathBuf, std::fs::File)>,
     reading: Option<(PathBuf, std::fs::File)>,
 }
 
+#[cfg(unix)]
 impl StdFs {
     pub fn new() -> StdFs {
         StdFs::default()
@@ -1035,11 +1039,13 @@ impl StdFs {
 }
 
 /// `fsync(2)` on `f`.
+#[cfg(unix)]
 fn fsync(f: &std::fs::File) -> io::Result<()> {
     nix::unistd::fsync(f).map_err(io::Error::from)
 }
 
 /// fsyncs directory `dir`.
+#[cfg(unix)]
 fn sync_dir(dir: &Path) -> io::Result<()> {
     fsync(&std::fs::File::open(dir)?)
 }
@@ -1049,6 +1055,7 @@ fn parent(path: &Path) -> io::Result<&Path> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "a path with no parent"))
 }
 
+#[cfg(unix)]
 impl JournalFs for StdFs {
     fn create_dir_all(&mut self, dir: &Path) -> io::Result<()> {
         use std::os::unix::fs::DirBuilderExt;

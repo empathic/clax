@@ -45,6 +45,12 @@
 //! fewer than one per reader would be free of writes, the pool starts
 //! another. [`Store::shutdown`] drains both queues and joins the threads.
 //!
+//! A store opened on one connection its host opened ([`Store::open_on`],
+//! for a Durable Object, which has no threads) has none of these: every
+//! job runs inline on the caller's thread on that connection, a read in one
+//! read transaction under `PRAGMA query_only`, a write in the same
+//! transactions as above, and [`Store::call`] runs its job at once.
+//!
 //! Version writes, deletes, and asset writes combine a transaction with
 //! file-system work, ordered so that a failure on either side leaves no
 //! half-written state.
@@ -93,11 +99,11 @@ use chrono::{DateTime, Utc};
 use clax_core::time::stamp;
 use clax_core::working::{Clock, SystemClock};
 use clax_core::{CoreError, Home, Result};
-use exec::{Readers, Workers, Writer};
+use exec::{Exec, Single};
 use inbox::InboxChange;
 use rusqlite::Connection;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 /// Rows `ANALYZE` samples per index when `PRAGMA optimize` refreshes statistics.
 pub const ANALYSIS_LIMIT: u32 = 400;
@@ -115,9 +121,8 @@ type AgentsListener = Arc<dyn Fn(Vec<String>) + Send + Sync>;
 
 pub struct Store {
     home: Home,
-    writer: Writer,
-    readers: Readers,
-    workers: OnceLock<Workers>,
+    /// The pool, or one connection.
+    exec: Exec,
     /// Set by [`Store::shutdown`].
     shut_down: AtomicBool,
     /// Changes to `inbox_items` in the write transaction under way, recorded
@@ -183,7 +188,40 @@ impl Store {
     ) -> Result<Store> {
         home.ensure_dirs()?;
         let path = home.db_path();
-        let mut conn = exec::open_writer(&path)?;
+        let conn = exec::open_writer(&path)?;
+        Store::assemble(home, conn, |c| Exec::pool(c, path), clock, report)
+    }
+
+    /// A store on `conn`, one connection its host opened (a Durable
+    /// Object's, through its own VFS), where every job runs inline on the
+    /// caller's thread ([`exec::Single`]): no reader pool, worker threads,
+    /// checkpoints or read limit. Turns on foreign keys, migrates the
+    /// database and records the audit backfill on `conn` as
+    /// [`Store::open_with`] does; the journal mode and the busy timeout are
+    /// the host's. Makes no directories: the files under `home` (version
+    /// and asset bytes) are the host's too ([`Home::ensure_dirs`] makes
+    /// them on a local disk).
+    pub fn open_on(home: &Home, conn: Connection, clock: Arc<dyn Clock>) -> Result<Store> {
+        conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+        Store::assemble(
+            home,
+            conn,
+            |c| Exec::Single(Single::new(c)),
+            clock,
+            &mut |_| {},
+        )
+    }
+
+    /// Migrates the database on `conn`, the write connection, records the
+    /// audit backfill and installs the change hooks, then runs the store's
+    /// jobs on what `exec` makes of `conn`.
+    fn assemble(
+        home: &Home,
+        mut conn: Connection,
+        exec: impl FnOnce(Connection) -> Exec,
+        clock: Arc<dyn Clock>,
+        report: &mut dyn FnMut(&backfill::Progress),
+    ) -> Result<Store> {
         migrate(&mut conn)?;
         backfill::run(&mut conn, home, report)?;
         approvals::record_migration_approval(&mut conn)?;
@@ -218,9 +256,7 @@ impl Store {
         }))?;
         Ok(Store {
             home: home.clone(),
-            writer: Writer::new(conn),
-            readers: Readers::new(path, exec::reader_count()),
-            workers: OnceLock::new(),
+            exec: exec(conn),
             shut_down: AtomicBool::new(false),
             inbox_changes,
             inbox_listener: RwLock::new(None),
@@ -255,22 +291,22 @@ impl Store {
     /// First row of `PRAGMA integrity_check`; "ok" when the database is sound.
     /// Not subject to the read limit.
     pub fn integrity_check(&self) -> Result<String> {
-        self.readers.run(false, |c| {
+        self.exec.read(false, |c| {
             Ok(c.query_row("PRAGMA integrity_check", [], |r| r.get(0))?)
         })
     }
 
     /// Sets how long a read may run before it is interrupted (default
-    /// [`exec::READ_LIMIT`]).
+    /// [`exec::READ_LIMIT`]). One connection has no read limit.
     #[doc(hidden)]
     pub fn set_read_limit(&self, limit: std::time::Duration) {
-        self.readers.set_limit(Some(limit));
+        self.exec.set_read_limit(Some(limit));
     }
 
     /// Lets reads run as long as they take, for offline checks of a whole
     /// home (`clax doctor`) rather than requests.
     pub fn lift_read_limit(&self) {
-        self.readers.set_limit(None);
+        self.exec.set_read_limit(None);
     }
 
     /// The current time by the store's clock, as the store writes times
@@ -297,9 +333,10 @@ impl Store {
         self.resumed_at.lock().unwrap().clone()
     }
 
-    /// Runs `f` on a reader connection, which refuses writes.
+    /// Runs `f` on a reader connection, which refuses writes, in one read
+    /// transaction (one snapshot).
     pub(crate) fn with_read<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
-        self.readers.run(true, f)
+        self.exec.read(true, f)
     }
 
     /// Runs `f` in a transaction on the write connection and commits it when
@@ -323,7 +360,7 @@ impl Store {
         &self,
         f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
-        let (out, changes, requests, recorded, agents) = self.writer.run(|conn| {
+        let (out, changes, requests, recorded, agents) = self.exec.write(|conn| {
             self.inbox_changes.lock().unwrap().clear();
             self.request_changes.lock().unwrap().clear();
             let _job = self.audit.begin();
@@ -409,7 +446,7 @@ impl Store {
     /// Runs `f` on the write connection outside a transaction, for
     /// statements that manage their own (`PRAGMA optimize`).
     pub(crate) fn with_write<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
-        self.writer.run(|conn| f(conn))
+        self.exec.write(|conn| f(conn))
     }
 }
 
@@ -472,12 +509,56 @@ pub(crate) mod test_util {
     use crate::{RegisterSession, Store};
     use clax_core::anchor::{Anchor, AnchorKind};
     use clax_core::publish::{PublishRequest, validate};
+    use clax_core::working::{Clock, SystemClock};
     use clax_core::{ArtifactId, Home};
+    use std::sync::Arc;
 
+    /// Set to `single` in the run of the store's tests on one connection
+    /// ([`super::tests::the_store_tests_pass_on_one_connection`]).
+    pub const STORE_MODE_VAR: &str = "CLAX_TEST_STORE";
+
+    /// Whether this run's [`store`]s are on one connection.
+    pub fn on_one_connection() -> bool {
+        std::env::var(STORE_MODE_VAR).as_deref() == Ok("single")
+    }
+
+    /// A store on a new home: the pool ([`pool_store`]), or one connection
+    /// ([`single_store`]) when [`on_one_connection`].
     pub fn store() -> (tempfile::TempDir, Store) {
+        store_with_clock(Arc::new(SystemClock))
+    }
+
+    /// [`store`], reading the time from `clock`.
+    pub fn store_with_clock(clock: Arc<dyn Clock>) -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let store = if on_one_connection() {
+            open_single(&home, clock)
+        } else {
+            Store::open_with_clock(&home, clock).unwrap()
+        };
+        (dir, store)
+    }
+
+    /// A store on a new home, through [`Store::open`].
+    pub fn pool_store() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&Home::at(dir.path().join("ax"))).unwrap();
         (dir, store)
+    }
+
+    /// A store on a new home, through [`Store::open_on`] on a connection
+    /// opened here.
+    pub fn single_store() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_single(&Home::at(dir.path().join("ax")), Arc::new(SystemClock));
+        (dir, store)
+    }
+
+    fn open_single(home: &Home, clock: Arc<dyn Clock>) -> Store {
+        home.ensure_dirs().unwrap();
+        let conn = rusqlite::Connection::open(home.db_path()).unwrap();
+        Store::open_on(home, conn, clock).unwrap()
     }
 
     /// A one-version artifact titled "Quarterly Review", owned by `session`.
@@ -551,6 +632,40 @@ mod tests {
     use clax_core::audit::AuditCtx;
     use clax_core::working::ManualClock;
     use std::sync::Arc;
+
+    /// The store's tests and the journal's (`toolpath::tests`), which open
+    /// their stores through `test_util::store`, pass on one connection too:
+    /// this test binary runs them again with
+    /// [`STORE_MODE_VAR`](super::test_util::STORE_MODE_VAR) set. The pool's
+    /// own tests (`store::exec::tests`) are left out; they open the pool
+    /// whichever the mode, and its one-connection tests are run here.
+    #[test]
+    fn the_store_tests_pass_on_one_connection() {
+        if super::test_util::on_one_connection() {
+            return;
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "store::",
+                "toolpath::tests::",
+                "--skip",
+                "store::exec::tests::",
+            ])
+            .env(super::test_util::STORE_MODE_VAR, "single")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{stdout}\n{stderr}");
+        let passed: usize = stdout
+            .lines()
+            .find_map(|l| l.strip_prefix("test result: ok. "))
+            .and_then(|l| l.split(' ').next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("no test result in:\n{stdout}"));
+        // The filter matched the store's tests, not nothing.
+        assert!(passed > 300, "{passed} passed:\n{stdout}");
+    }
 
     #[test]
     fn store_time_comes_from_the_injected_clock() {
