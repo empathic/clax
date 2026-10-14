@@ -1583,12 +1583,18 @@ fn withheld_outside_threads(
 
 impl Store {
     /// The people whose agents a send of `threads` (of artifact `aid`)
-    /// naming one of them would ask first (§10, "Sam approves first"):
-    /// each person with a live agent that owns or watches `aid` (the
-    /// agents its Send menu lists) whose agents may not see an author of
-    /// one of the threads' comments that a routing request names (§9.2,
-    /// M18), by public ID (`None`: the owner), in the order their agents
-    /// started. Empty while no viewer is a person (§19).
+    /// naming one of them would ask first (§10, "Sam approves first"),
+    /// as `asker` may learn it (§18, decided 2026-10-13 "Only about their
+    /// content"): among the people with a live agent that owns or watches
+    /// `aid` (the agents its Send menu lists), each whose agents may not
+    /// see an author of one of the threads' comments that a routing
+    /// request names (§9.2, M18). For the owner (`asker` `None`) every
+    /// such person; for a connected person P, P whenever P's agents would
+    /// hold any author, and any other person (the owner included) only
+    /// when their agents would hold content P authored there (P's
+    /// comments, or a page P published): never another person's approval
+    /// of a third author. By public ID (`None`: the owner), in the order
+    /// their agents started. Empty while no viewer is a person (§19).
     ///
     /// # Errors
     /// The store's.
@@ -1596,6 +1602,7 @@ impl Store {
         &self,
         aid: &crate::ArtifactId,
         threads: &[Thread],
+        asker: Option<&str>,
     ) -> Result<Vec<Option<String>>> {
         let mut out = Vec::new();
         let threads: Vec<&Thread> = threads
@@ -1628,10 +1635,15 @@ impl Store {
                 None => Reader::Owner,
             };
             let vis = Visibility::for_reader(self, &reader, generation)?;
-            if threads
-                .iter()
-                .any(|t| !withheld_in_thread(&vis, t, owner.as_deref()).is_empty())
-            {
+            // Whose content this asker may weigh for this person: any
+            // author for the owner and for the asker's own agents, else
+            // the asker's own content alone.
+            let all = asker.is_none() || person.as_deref() == asker;
+            if threads.iter().any(|t| {
+                withheld_in_thread(&vis, t, owner.as_deref())
+                    .iter()
+                    .any(|(author, _)| all || Some(author.as_str()) == asker)
+            }) {
                 out.push(person);
             }
         }
@@ -1944,6 +1956,11 @@ impl Store {
                     )?;
                     super::inbox::approval_closed(tx, rid, &now)?;
                     self.record_audit(tx, ctx, decide_record(&now, &r, decision.as_str()))?;
+                    // Its thread waits for this approval no longer: its
+                    // state is announced again.
+                    if let Some(tid) = &r.thread_id {
+                        touched.threads.insert((r.artifact_id.clone(), tid.clone()));
+                    }
                     None
                 }
             };
@@ -2758,7 +2775,10 @@ mod tests {
             w.st.decide_request(DAEMON, &rid, Some(&w.sam), Decision::Decline, Via::Shell)
                 .unwrap();
         assert_eq!(d.request.status, RequestStatus::Declined);
-        assert!(d.approval.is_none() && d.touched.is_empty());
+        assert!(d.approval.is_none() && d.touched.targets.is_empty());
+        // Its thread's state is announced again: it waits for nothing now.
+        assert_eq!(d.touched.threads.len(), 1);
+        assert!(d.touched.threads.iter().all(|(_, t)| *t == tid));
         assert_eq!(w.st.visibility_generation(), g + 1, "a decision bumps");
         assert_eq!(w.kinds_since(before), ["approval.decide"]);
         let body: serde_json::Value =

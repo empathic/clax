@@ -160,8 +160,10 @@ pub struct FirstsQuery {
 /// their agents asks first (spec 2026-10-08 §10, "Sam approves first";
 /// `null` is the owner), among the people with a live agent on the
 /// artifact ([`Store::approves_first`]), for the Send menu as it opens.
-/// Approval state is the owner's and connected people's to see (§18): a
-/// LAN viewer, an anonymous caller and agents get 403 `forbidden`. A thread
+/// The owner learns every such person; a connected person, only their own
+/// approvals and others' of content they authored (§18, "Only about their
+/// content"). A LAN viewer, an anonymous caller and agents get 403
+/// `forbidden`. A thread
 /// of another artifact or none is 404; more than [`MAX_FIRSTS_THREADS`]
 /// is 400 `invalid_query`. A request with a foreign `Origin` is refused.
 pub async fn approves_first(
@@ -173,7 +175,7 @@ pub async fn approves_first(
     q: Result<Query<FirstsQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
-    crate::inbox::recipient_of(&s, &who).await.map_err(|_| {
+    let asker = crate::inbox::recipient_of(&s, &who).await.map_err(|_| {
         ApiError::forbidden(
             "forbidden",
             "only the owner or a connected person sees who approves first",
@@ -203,7 +205,7 @@ pub async fn approves_first(
                 .iter()
                 .map(|tid| thread_of(st, &id, tid))
                 .collect::<clax_core::Result<Vec<_>>>()?;
-            Ok(json!({"approves_first": st.approves_first(&id, &threads)?}))
+            Ok(json!({"approves_first": st.approves_first(&id, &threads, asker.as_deref())?}))
         })
         .await?;
     Ok(Json(v))

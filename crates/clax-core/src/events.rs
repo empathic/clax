@@ -240,7 +240,9 @@ impl Event {
             since: s.since,
             resends: s.resends,
             exhausted: s.exhausted,
-            approver: s.approver,
+            // Whose approval it waits for is not public: an event reaches
+            // every subscriber of the artifact (spec 2026-10-08 §18).
+            approver: None,
         }
     }
 }
@@ -443,6 +445,7 @@ mod tests {
             resends: 0,
             exhausted: false,
             approver: None,
+            approver_person: None,
         };
         for ev in [
             Event::Thread {

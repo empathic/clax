@@ -8,7 +8,7 @@ import { ApiError, getArtifact, getToken, onToken } from "../api";
 import type { ArtifactEvent } from "../events";
 import { nav } from "../nav";
 import { type StreamEvent, pageStream } from "../stream";
-import { type Thread, getViewer, renamedViewer, upsert } from "../threads";
+import { type FeedbackState, type Thread, getViewer, renamedViewer, upsert } from "../threads";
 import type { ArtifactController } from "./artifact-controller";
 import { holdKeysAcrossLoad } from "./keys";
 import { type ThreadDelta, applyPresence, applyThread } from "./deltas";
@@ -93,7 +93,8 @@ export class ArtifactStream {
       return;
     }
     if (e.type === "thread") {
-      const d = (e as unknown as { thread: ThreadDelta }).thread;
+      const raw = (e as unknown as { thread: ThreadDelta }).thread;
+      const d = "feedback_state" in raw ? { ...raw, feedback_state: keepApprover(v.threads().find(t => t.id === raw.id)?.feedback_state, raw.feedback_state) } : raw;
       const r = applyThread(v.threads(), d);
       v.changeThreads(ts => applyThread(ts, d).threads);
       v.page({ type: "thread", artifact_id: this.id, thread: r.thread });
@@ -150,9 +151,9 @@ export function onArtifactEvent(c: ArtifactController, e: ArtifactEvent): void {
   if (e.type === "presence") { c.set({ presence: e.people }); adoptName(e.people); }
   // An agent may have started or ended: the Send target and the roster follow.
   if (e.type === "working" || e.type === "version" || e.type === "agents") c.refreshAgents();
-  if (e.type === "thread") c.changeThreads(ts => upsert(ts, e.thread));
+  if (e.type === "thread") c.changeThreads(ts => upsert(ts, { ...e.thread, feedback_state: keepApprover(ts.find(t => t.id === e.thread.id)?.feedback_state, e.thread.feedback_state) }));
   if (e.type === "thread_deleted") { c.changeThreads(ts => ts.filter(t => t.id !== e.thread_id)); c.set(s => ({ selected: s.selected === e.thread_id ? null : s.selected })); }
-  if (e.type === "feedback_state") c.changeThreads(ts => ts.map(t => t.id === e.thread_id ? { ...t, feedback_state: { thread_id: e.thread_id, state: e.state, tier: e.tier, since: e.since, resends: e.resends, exhausted: e.exhausted } } : t));
+  if (e.type === "feedback_state") c.changeThreads(ts => ts.map(t => t.id === e.thread_id ? { ...t, feedback_state: keepApprover(t.feedback_state, { thread_id: e.thread_id, state: e.state, tier: e.tier, since: e.since, resends: e.resends, exhausted: e.exhausted }) } : t));
   // A (re)connect may follow a daemon restart that dropped events without a
   // resync; reload like a resync. The first one also covers anything
   // published between the initial load and the stream opening.
@@ -178,4 +179,11 @@ function adoptName(people: PresenceView[]): void {
     const mine = people.find(p => p.public_id === v.public_id);
     if (mine && mine.display_name !== v.display_name) renamedViewer({ ...v, display_name: mine.display_name });
   }, () => {});
+}
+
+/** `next`, keeping the approver `prev` named when both wait for approval:
+ * events never name whose approval a thread waits for (spec 2026-10-08
+ * §18), the views this browser fetched do when it is concerned. */
+export function keepApprover(prev: FeedbackState | null | undefined, next: FeedbackState | null): FeedbackState | null {
+  return next?.state === "withheld" && !next.approver && prev?.state === "withheld" && prev.approver ? { ...next, approver: prev.approver } : next;
 }
