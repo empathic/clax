@@ -1495,6 +1495,9 @@ describe("agents and people", () => {
     const tid = await browserThread(pub.artifact_id, "fix the axis @agent");
     const got = parts(await a.pi.callTool("clax_wait_for_feedback", { timeout_s: 1 }, a.ctx)).json;
     expect(got.feedback[0].thread_id).toBe(tid);
+    const other = json(await a.pi.callTool("clax_publish", { html: "<h2>Other</h2>", title: "Other" }, a.ctx));
+    const wrong = await a.pi.callTool("clax_comments_handoff", { url_or_id: other.artifact_id, thread_id: tid, to: "pi-hand-b" }, a.ctx);
+    expect(JSON.parse(wrong.content[0]!.text!).error.code).toBe("not_found");
     const moved = json(await a.pi.callTool("clax_comments_handoff", { url_or_id: pub.artifact_id, thread_id: tid, to: "pi-hand-b" }, a.ctx));
     expect(moved.thread.owner.name).toBe("pi-hand-b");
     const refused = await a.pi.callTool("clax_comments_handoff", { url_or_id: pub.artifact_id, thread_id: tid }, a.ctx);

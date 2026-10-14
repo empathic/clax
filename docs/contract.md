@@ -53,19 +53,23 @@ Names as the model sees them:
 
 Every MCP tool carries MCP annotations, all with `openWorldHint: false`
 (every tool acts on this machine's Clax home and daemon):
-`readOnlyHint: true` on `read`, `list`, `status`, `comments_read`,
-`wait_for_feedback`, `db_get`, `db_list` and `db_query`; `destructiveHint:
+`readOnlyHint: true` on `read`, `list`, `comments_read`,
+`wait_for_feedback`, `db_get`, `db_list` and `db_query`; `status` is not
+read-only, since with `name` it names the agent (it is
+`destructiveHint: false`, `idempotentHint: true`); `destructiveHint:
 true` on `delete`, `db_set`, `db_update`, `db_delete`, `db_str_replace` and
 `db_batch`, which replace or remove data no version keeps; `destructiveHint:
 false` on the rest, which only add (a publish keeps every earlier version) or
-toggle state (`pin`, `unpin`, `watch`, `comments_resolve`, `working`), or
-open a browser tab (`open`).
-`idempotentHint` is true on `delete`, `db_delete`, `pin`, `unpin`, `watch` and
-`comments_resolve`. The read-only tools acknowledge comments they deliver,
+toggle state (`pin`, `unpin`, `watch`, `comments_resolve`,
+`comments_handoff`, `working`, `status` with `name`), or open a browser tab
+(`open`).
+`idempotentHint` is true on `delete`, `db_delete`, `pin`, `unpin`, `watch`,
+`comments_resolve` and `status`. The read-only tools acknowledge comments they deliver,
 as every tool result does; that is delivery bookkeeping, and no annotation
 could exempt a Clax tool from it. `plugins/pi/test/fixtures/contract.json` lists them and
 `crates/clax-mcp` tests them. Codex's default approval mode (`auto`) runs
-read-only tools, and tools that are neither destructive nor open-world,
+read-only tools, and tools that are neither destructive nor open-world
+(`status` among them),
 without asking, so in Codex only the six destructive tools ask before a call
 until the person approves them (`clax init`, below).
 

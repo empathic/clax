@@ -749,11 +749,16 @@ async fn url_rewrites_the_address_and_keeps_the_grant() {
 
 /// Sam's machine, holding the grant the world connected him with.
 fn sams_machine(w: &World) -> Machine {
+    sams_machine_at(w, &loopback(&w.ts))
+}
+
+/// [`sams_machine`] reaching the daemon at `url`.
+fn sams_machine_at(w: &World, url: &str) -> Machine {
     let m = Machine::new();
     let home = Home::at(m.home());
     let held = w.sam.held();
     RemoteConfig {
-        url: loopback(&w.ts),
+        url: url.to_string(),
         grant_id: held.grant_id.clone().unwrap(),
         access_token: Secret::new(held.access.clone().unwrap()),
         manage_token: Secret::new(held.manage.clone().unwrap()),
@@ -1722,4 +1727,270 @@ async fn remote_follow_names_its_session_with_its_proof() {
         "{}",
         text(&out)
     );
+}
+
+/// A TCP proxy in front of `upstream` that passes requests through until
+/// one asks for a clip (`…/clip HTTP/`): that request is never forwarded,
+/// and its connection is held open unanswered. A daemon whose clips never
+/// come.
+async fn clip_holding_proxy(upstream: String) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((down, _)) = listener.accept().await {
+            let upstream = upstream.clone();
+            tokio::spawn(async move {
+                let Ok(up) = tokio::net::TcpStream::connect(&upstream).await else {
+                    return;
+                };
+                let (mut down_r, mut down_w) = down.into_split();
+                let (mut up_r, mut up_w) = up.into_split();
+                tokio::spawn(async move {
+                    let _ = tokio::io::copy(&mut up_r, &mut down_w).await;
+                    // Held open while the request side holds.
+                    std::future::pending::<()>().await;
+                });
+                let mut buf = vec![0u8; 16384];
+                loop {
+                    let Ok(n) = down_r.read(&mut buf).await else {
+                        return;
+                    };
+                    if n == 0 {
+                        return;
+                    }
+                    if String::from_utf8_lossy(&buf[..n]).contains("/clip HTTP/") {
+                        std::future::pending::<()>().await;
+                    }
+                    if up_w.write_all(&buf[..n]).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    format!("http://127.0.0.1:{port}")
+}
+
+/// Spec §16 with the hook's deadline (I1): a clip that does not come in
+/// time never costs the comments the hook took. Two comments on threads
+/// with clips, through a daemon whose clips never come: the prompt hook
+/// prints both within its deadline, each clip `unavailable (timed out)`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_remote_hook_prints_its_comments_when_clips_do_not_come() {
+    let w = World::two_people().await;
+    let proxy = clip_holding_proxy(format!("127.0.0.1:{}", w.ts.addr.port())).await;
+    let m = sams_machine_at(&w, &proxy);
+    let start = json!({"session_id": "cc-slow", "cwd": "/w", "prompt": "go"});
+    let out = m.hook("claude", "session-start", &start).await;
+    assert!(out.stderr.is_empty(), "{}", text(&out));
+    let cred = m.credential_json("claude-s-cc-slow.json");
+    let (sid, secret) = (
+        cred["session"].as_str().unwrap().to_string(),
+        cred["secret"].as_str().unwrap().to_string(),
+    );
+    let aid =
+        w.ts.publish("Notes", &[("index.html", "<h2>notes</h2>")])
+            .await["artifact"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+    let r = w
+        .sam
+        .agent_proving(
+            "PUT",
+            &format!("/api/sessions/{sid}/watches/{aid}"),
+            Some(&sid),
+            Some(&secret),
+            None,
+        )
+        .await;
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    let sam = w.ts.store.viewer_of_grant(&w.sam.grant_id()).unwrap();
+    let owner = w.ts.store.owner_viewer(false).unwrap();
+    w.ts.store
+        .approve(
+            &clax_core::audit::AuditCtx::DAEMON,
+            Some(&sam.public_id),
+            &owner.public_id,
+            clax_core::store::approvals::Scope::Everywhere,
+            clax_core::store::approvals::Via::Connect,
+        )
+        .unwrap();
+    for body in ["FIRSTCLIP", "SECONDCLIP"] {
+        let form = reqwest::multipart::Form::new()
+            .text("anchor", clax_server::testing::element_anchor().to_string())
+            .text("body", body)
+            .text("version", "1")
+            .part(
+                "clip",
+                reqwest::multipart::Part::bytes(clax_server::testing::FAKE_PNG.to_vec())
+                    .file_name("clip.png")
+                    .mime_str("image/png")
+                    .unwrap(),
+            );
+        let r =
+            w.ts.client
+                .post(format!("{}/api/artifacts/{aid}/threads", w.ts.base))
+                .header("cookie", format!("clax_viewer={}", sam.id))
+                .multipart(form)
+                .send()
+                .await
+                .unwrap();
+        assert_eq!(r.status(), 201);
+        let tid = r.json::<Value>().await.unwrap()["thread"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let r =
+            w.ts.client
+                .post(format!(
+                    "{}/api/artifacts/{aid}/threads/{tid}/send",
+                    w.ts.base
+                ))
+                .header("cookie", format!("clax_viewer={}", sam.id))
+                .send()
+                .await
+                .unwrap();
+        assert_eq!(r.status(), 200);
+    }
+    let out = m.hook("claude", "prompt", &start).await;
+    assert!(out.stderr.is_empty(), "{}", text(&out));
+    let said = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        said.contains("FIRSTCLIP") && said.contains("SECONDCLIP"),
+        "{said}"
+    );
+    assert_eq!(
+        said.matches("Clip: unavailable (timed out)").count(),
+        2,
+        "{said}"
+    );
+}
+
+/// Starts the hook session `hsid` on Sam's machine `m`, watching a page of
+/// the owner's that Sam may read whole; the session, its secret and the
+/// page.
+async fn sams_watching_session(
+    w: &World,
+    m: &Machine,
+    hsid: &str,
+    aid: Option<&str>,
+) -> (String, String, String) {
+    let out = m
+        .hook(
+            "claude",
+            "session-start",
+            &json!({"session_id": hsid, "cwd": "/w"}),
+        )
+        .await;
+    assert!(out.stderr.is_empty(), "{}", text(&out));
+    let cred = m.credential_json(&format!("claude-s-{hsid}.json"));
+    let (sid, secret) = (
+        cred["session"].as_str().unwrap().to_string(),
+        cred["secret"].as_str().unwrap().to_string(),
+    );
+    let aid = match aid {
+        Some(a) => a.to_string(),
+        None => {
+            w.ts.publish("Notes", &[("index.html", "<h2>notes</h2>")])
+                .await["artifact"]["id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        }
+    };
+    let r = w
+        .sam
+        .agent_proving(
+            "PUT",
+            &format!("/api/sessions/{sid}/watches/{aid}"),
+            Some(&sid),
+            Some(&secret),
+            None,
+        )
+        .await;
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    (sid, secret, aid)
+}
+
+/// Sam's own comment on `aid`, sent to his agents; the thread.
+async fn sam_sends(w: &World, aid: &str, body: &str) -> String {
+    let sam = w.ts.store.viewer_of_grant(&w.sam.grant_id()).unwrap();
+    let tid = w.ts.thread_as(aid, &sam.id, body).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r =
+        w.ts.client
+            .post(format!(
+                "{}/api/artifacts/{aid}/threads/{tid}/send",
+                w.ts.base
+            ))
+            .header("cookie", format!("clax_viewer={}", sam.id))
+            .send()
+            .await
+            .unwrap();
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    tid
+}
+
+/// Spec 2026-10-08 §6.8: a follower whose session ended holds a credential
+/// that proves nothing (`invalid_session_proof`): the session is gone, and
+/// a follower of that Clax session exits 0.
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_follow_of_an_ended_session_exits() {
+    let w = World::two_people().await;
+    let m = sams_machine(&w);
+    let (sid, _, _) = sams_watching_session(&w, &m, "cc-gone", None).await;
+    w.ts.store
+        .end_session(&clax_core::audit::AuditCtx::DAEMON, &sid)
+        .unwrap();
+    let out = m
+        .run(&["feedback", "follow", "--session", &sid, "--poll-secs", "1"])
+        .await;
+    assert!(out.status.success(), "{}", text(&out));
+}
+
+/// A follower of a harness session follows it across a restart: its
+/// session ends (its credential then proves nothing) and the harness
+/// session registers again, with a new credential file; the follower takes
+/// the new one and prints the comment sent to the new session.
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_follow_follows_its_harness_session_across_a_restart() {
+    let w = World::two_people().await;
+    let m = sams_machine(&w);
+    let (first, _, aid) = sams_watching_session(&w, &m, "cc-again", None).await;
+    let mut c = m.cmd(&[
+        "feedback",
+        "follow",
+        "--agent",
+        "claude",
+        "--harness-session",
+        "cc-again",
+        "--once",
+        "--poll-secs",
+        "1",
+        "--grace-secs",
+        "60",
+    ]);
+    c.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let child = c.spawn().unwrap();
+    let pid = child.id();
+    let waited = tokio::task::spawn_blocking(move || child.wait_with_output());
+    w.ts.store
+        .end_session(&clax_core::audit::AuditCtx::DAEMON, &first)
+        .unwrap();
+    let (second, _, _) = sams_watching_session(&w, &m, "cc-again", Some(&aid)).await;
+    assert_ne!(second, first);
+    let tid = sam_sends(&w, &aid, "after the restart").await;
+    let out = match tokio::time::timeout(LIMIT, waited).await {
+        Ok(out) => out.unwrap().unwrap(),
+        Err(_) => {
+            let _ = Command::new("kill").arg(pid.to_string()).status();
+            panic!("the follower did not print the comment sent after the restart");
+        }
+    };
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(text(&out).contains(&tid), "{}", text(&out));
 }

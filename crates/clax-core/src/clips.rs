@@ -11,7 +11,100 @@
 //! machine's key.
 
 use crate::ids::{ArtifactId, is_ulid};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+/// The most bytes a clip download may hold: the most a clip may hold
+/// ([`crate::store::threads::MAX_CLIP_BYTES`]). A client reads at most one
+/// byte more, and refuses a body over it.
+pub const MAX_BYTES: usize = crate::store::threads::MAX_CLIP_BYTES;
+
+/// The reason a clip fetch that did not finish in time is written with.
+pub const TIMED_OUT: &str = "timed out";
+
+/// Whether a downloaded clip is one: `Content-Type: image/png` (parameters
+/// ignored), at most [`MAX_BYTES`], and a PNG's signature.
+///
+/// # Errors
+/// Why it is not, for a `Clip: unavailable (…)` line.
+pub fn check(content_type: Option<&str>, bytes: &[u8]) -> Result<(), String> {
+    let ct = content_type
+        .and_then(|c| c.split(';').next())
+        .map(|c| c.trim().to_ascii_lowercase());
+    if ct.as_deref() != Some("image/png") {
+        return Err("not a PNG".into());
+    }
+    if bytes.len() > MAX_BYTES {
+        return Err(format!("over {MAX_BYTES} bytes"));
+    }
+    if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Err("not a PNG".into());
+    }
+    Ok(())
+}
+
+/// The distinct clip references of `text`'s `Clip:` lines, in order.
+pub fn references_in(text: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for r in text
+        .lines()
+        .filter_map(|l| l.strip_prefix("Clip: "))
+        .filter_map(parse_reference)
+    {
+        if !out.contains(&r) {
+            out.push(r);
+        }
+    }
+    out
+}
+
+/// One clip fetch: thread `tid`'s clip on artifact `aid`, given at most
+/// the duration to finish in; the cached file, or why there is none.
+pub type Fetch = dyn Fn(&str, &str, Duration) -> Result<PathBuf, String> + Send + Sync;
+
+/// Fetches each distinct one of `refs` at once, each on a thread of its
+/// own given what is left of `within`, and waits for them no longer than
+/// `within`: a fetch not back by then is [`TIMED_OUT`] (its thread is left
+/// to end on its own bound). So a hook that must print what it took within
+/// its deadline loses no comment to a slow clip.
+pub fn fetch_within(
+    refs: &[(String, String)],
+    within: Duration,
+    fetch: std::sync::Arc<Fetch>,
+) -> HashMap<(String, String), Result<PathBuf, String>> {
+    let until = Instant::now() + within;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut out = HashMap::new();
+    let mut waiting = 0;
+    for r in refs {
+        if out.contains_key(r) {
+            continue;
+        }
+        out.insert(r.clone(), Err(TIMED_OUT.to_string()));
+        let (tx, fetch, r) = (tx.clone(), fetch.clone(), r.clone());
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            continue;
+        }
+        waiting += 1;
+        std::thread::spawn(move || {
+            let got = fetch(&r.0, &r.1, left);
+            let _ = tx.send((r, got));
+        });
+    }
+    while waiting > 0 {
+        let left = until.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            Ok((r, got)) => {
+                out.insert(r, got);
+                waiting -= 1;
+            }
+            Err(_) => break,
+        }
+    }
+    out
+}
 
 /// The scheme of a clip reference.
 pub const SCHEME: &str = "clax-clip:";
@@ -218,6 +311,72 @@ mod tests {
         rewrite_json(&mut v, &mut |_, _| Err("withheld".into()));
         assert!(v["clip_path"].is_null());
         assert_eq!(v["clip_unavailable"], "withheld");
+    }
+
+    #[test]
+    fn a_clip_is_checked_before_it_is_kept() {
+        let png = b"\x89PNG\r\n\x1a\nrest";
+        assert_eq!(check(Some("image/png"), png), Ok(()));
+        assert_eq!(check(Some("Image/PNG; x=1"), png), Ok(()));
+        assert!(check(Some("text/html"), png).is_err());
+        assert!(check(None, png).is_err());
+        assert!(check(Some("image/png"), b"<html>").is_err());
+        let mut big = png.to_vec();
+        big.resize(MAX_BYTES + 1, 0);
+        assert!(
+            check(Some("image/png"), &big)
+                .unwrap_err()
+                .starts_with("over")
+        );
+    }
+
+    /// I1: references are fetched once each, at once; a fetch not back
+    /// within the bound is `timed out`, and the others are kept.
+    #[test]
+    fn fetches_are_deduplicated_concurrent_and_bounded() {
+        use std::sync::{Arc, Mutex};
+        let slow = "01J9ZZZZZZZZZZZZZZZZZZZZZY".to_string();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        // The slow fetch waits on this until the test has its answer.
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let held = Mutex::new(held);
+        let seen = calls.clone();
+        let slow_tid = slow.clone();
+        let fetch: Arc<Fetch> = Arc::new(move |a: &str, t: &str, left: Duration| {
+            seen.lock().unwrap().push((t.to_string(), left));
+            if t == slow_tid {
+                let _ = held.lock().unwrap().recv();
+                return Err("late".into());
+            }
+            Ok(PathBuf::from(format!("/c/{a}-{t}.png")))
+        });
+        let text = format!(
+            "Clip: clax-clip:{AID}/{TID}\nClip: clax-clip:{AID}/{TID}\nClip: clax-clip:{AID}/{slow}"
+        );
+        let refs = references_in(&text);
+        assert_eq!(refs.len(), 2, "deduplicated");
+        let bound = Duration::from_secs(1);
+        let got = fetch_within(&refs, bound, fetch);
+        let _ = release.send(());
+        assert_eq!(
+            got[&(AID.to_string(), TID.to_string())],
+            Ok(PathBuf::from(format!("/c/{AID}-{TID}.png")))
+        );
+        assert_eq!(
+            got[&(AID.to_string(), slow.clone())],
+            Err(TIMED_OUT.to_string())
+        );
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert!(calls.iter().all(|(_, left)| *left <= bound));
+        let out = rewrite_text(&text, &mut |a, t| {
+            got[&(a.to_string(), t.to_string())].clone()
+        });
+        assert!(out.ends_with("Clip: unavailable (timed out)"), "{out}");
+        // Nothing is fetched once the bound is spent.
+        let none: Arc<Fetch> = Arc::new(|_: &str, _: &str, _: Duration| panic!("no fetch"));
+        let got = fetch_within(&refs, Duration::ZERO, none);
+        assert!(got.values().all(|r| r == &Err(TIMED_OUT.to_string())));
     }
 
     #[test]

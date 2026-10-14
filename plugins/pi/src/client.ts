@@ -103,6 +103,8 @@ interface RequestOptions {
   timeoutMs?: number;
   /** Cancels the request; a cancelled request fails `unreachable` and is not retried. */
   signal?: AbortSignal;
+  /** The most bytes the body may hold; a longer one fails `bad_response`. */
+  maxBytes?: number;
 }
 
 /** Sends one request. Transport failures reject with a [`Failure`]: a request
@@ -132,7 +134,17 @@ function send(url: string, opts: RequestOptions): Promise<RawResponse> {
     const target = { protocol: u.protocol, hostname: u.hostname.replace(/^\[|\]$/g, ""), port: u.port, path };
     const req = httpRequest({ ...target, method: opts.method, headers: opts.headers, signal }, res => {
       const chunks: Buffer[] = [];
-      res.on("data", (c: Buffer) => chunks.push(c));
+      let size = 0;
+      res.on("data", (c: Buffer) => {
+        size += c.length;
+        if (opts.maxBytes !== undefined && size > opts.maxBytes) {
+          req.destroy();
+          clearTimeout(connectTimer);
+          reject(new Failure(new ClientError("bad_response", `the body is over ${opts.maxBytes} bytes`), false));
+          return;
+        }
+        chunks.push(c);
+      });
       res.on("error", fail);
       res.on("end", () => {
         if (!res.complete) return fail(new Error("connection closed mid-response"));
@@ -171,7 +183,7 @@ function errorOf(res: RawResponse): Record<string, unknown> {
  * signed anew for each retry: one on `stale_request`, after learning the
  * daemon's clock from its `Date`; three on `limit_reached` (429) and
  * `busy` (503), after 1, 2 and 4 s with up to a quarter more. */
-async function sendRemote(r: Remote, path: string, opts: RequestOptions): Promise<RawResponse> {
+export async function sendRemote(r: Remote, path: string, opts: RequestOptions): Promise<RawResponse> {
   const body = opts.body === undefined ? Buffer.alloc(0) : Buffer.isBuffer(opts.body) ? opts.body : Buffer.from(opts.body, "utf8");
   let staleRetried = false;
   let backoffs = 0;
@@ -187,7 +199,7 @@ async function sendRemote(r: Remote, path: string, opts: RequestOptions): Promis
     }
     if (((res.status === 429 && code === "limit_reached") || (res.status === 503 && code === "busy")) && backoffs < BACKOFF_S.length) {
       const ms = BACKOFF_S[backoffs++]! * 1000;
-      await new Promise(done => setTimeout(done, ms + Math.random() * ms / 4));
+      await (r.sleep ?? (t => new Promise<void>(done => setTimeout(done, t))))(ms + Math.random() * ms / 4);
       continue;
     }
     return res;
@@ -731,8 +743,13 @@ export class DaemonClient {
 
   /** Thread `tid`'s clip on artifact `aid`
    * (`GET /api/artifacts/<aid>/threads/<tid>/clip`), as bytes. */
-  async clipBytes(aid: string, tid: string): Promise<Buffer> {
-    return (await this.request(`/api/artifacts/${aid}/threads/${tid}/clip`, { method: "GET" })).body;
+  /** Thread `tid`'s clip on artifact `aid`
+   * (`GET /api/artifacts/<aid>/threads/<tid>/clip`): its `Content-Type` and
+   * bytes, at most `maxBytes` of them; `signal` cancels it. */
+  async clipBytes(aid: string, tid: string, maxBytes: number, signal?: AbortSignal): Promise<{ contentType: string | undefined; bytes: Buffer }> {
+    const res = await this.request(`/api/artifacts/${aid}/threads/${tid}/clip`, { method: "GET", maxBytes, signal });
+    const ct = res.headers["content-type"];
+    return { contentType: Array.isArray(ct) ? ct[0] : ct, bytes: res.body };
   }
 
   /** `POST /api/sessions/<sid>/questions` with `source: "ask"`: `{question,

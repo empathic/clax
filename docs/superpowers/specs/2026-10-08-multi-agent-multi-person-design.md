@@ -952,7 +952,15 @@ so that narrowing and elevation (§7.4) bind exactly one agent.
   other hook needs its file: a missing or unreadable file fails the hook
   with a message naming the file, logged to `hooks.log`, and never falls
   back to acting without a session. Pi's remote mode (Task 19) keeps the
-  secret in memory and writes the same file.
+  secret in memory and writes the same file, under its harness session ID
+  only (it cannot read its parent's start time without a child process,
+  so it writes no parent-PID file). Node has no `openat`, so Pi checks the
+  directory with `lstat` (refusing a symbolic link or anything but a
+  directory) and then opens the file by path with `O_NOFOLLOW` on its last
+  component: a directory swapped for a link between the two would be
+  followed. Only a process of the same OS user can make that swap, and
+  that user can already read the machine's key and every credential file
+  (the trust limit below), so Pi's form loses nothing the boundary keeps.
 - **The trust limit.** Every agent on a machine runs as the same OS user.
   An agent with a shell can read the machine's key and its siblings'
   credential files, or register a new session of its own, which starts
@@ -1463,7 +1471,13 @@ again.
   `<repo>-<last path segment of the branch>`; lowercased, every character
   other than `[a-z0-9._-]` made `-`, runs of `-` collapsed, cut to 32.
   Taken: `<base>-<harness>`, then `<base>-2`, `-3`, … (R3). No repository:
-  the harness.
+  the harness. A hook's join sends `repo` and `branch` as registration
+  does. A registration or join that matches an existing row renames it
+  only when the row has no process yet (a hook made it), its name is
+  still derived, and that name is the one its harness alone gives (`claude`,
+  `claude-2`, …), and the request carries a repository; a row named from a
+  repository, by its agent or by its person keeps its name. For a grant the
+  matched row is always one the request proved (§6.8).
 - **Task.** The agent sets a name with `status {"name": "fix-chart-axis"}`
   (409 `name_taken`; 400 `invalid_name`, which includes a chosen name
   ending in `.`, `_` or `-`), again later unless its person renamed it
@@ -1620,7 +1634,10 @@ The route table (§7.5) is the agents' contract. New routes:
 ## 16. MCP, CLI and plugins
 
 - **Tools.** `status` gains `name` and reports `name`, `person`, `rights`
-  and `remote`. `ask` gains `approval` and `approval_id`. New
+  and, on a remote daemon only, `remote: true` (a local install's status is
+  otherwise as before, §19). A remote daemon refuses `/healthz` to another
+  machine's agents (§7.5), so remote `status` reports `version: null`.
+  `status` with `name` writes, so it is not read-only. `ask` gains `approval` and `approval_id`. New
   `comments_handoff`. New error codes: `not_permitted` (with the right),
   `withheld`, `thread_taken`, `foreign_session`, `name_taken`,
   `name_locked`, `invalid_name`, `nothing_withheld`, `recently_declined`,
@@ -2299,3 +2316,8 @@ task, with recommendations; the owner took every recommendation
   thread waits for approval while a comment is held under an open request
   or told of and not declined, and names whose approval only to the owner,
   the approver and the thread's authors.
+- **Amendment** (2026-10-13, Task 19 review rulings): §11: a join sends
+  `repo` and `branch`, and a registration or join renames only a hook's row
+  still named after its harness; §6.8: Pi's credential files, checked with
+  `lstat` and opened with `O_NOFOLLOW`, with no parent-PID file; §16:
+  `remote: true` only on a remote daemon, whose `version` is null.

@@ -618,10 +618,15 @@ impl Store {
                     self.record_session(tx, ctx, AuditKind::SessionJoin, &id, &r.harness)?;
                 }
                 // A row without a name, or a hook's row (no process yet)
-                // named from its harness alone, takes the name its shim's
-                // repository gives.
+                // still named from its harness alone, takes the name its
+                // shim's repository gives (§11); a name from a repository,
+                // the agent or its person stays.
                 let hook_row = before.pid.is_none()
                     && before.name_source.as_deref() == Some(NameSource::Derived.as_str())
+                    && before
+                        .name
+                        .as_deref()
+                        .is_some_and(|n| crate::names::named_after_harness(n, &r.harness))
                     && r.repo.is_some();
                 if before.name.is_none() || hook_row {
                     let name = derived_name(
@@ -813,6 +818,10 @@ impl Store {
                     let named = fetch(tx, &id)?;
                     let hook_row = named.pid.is_none()
                         && named.name_source.as_deref() == Some(NameSource::Derived.as_str())
+                        && named
+                            .name
+                            .as_deref()
+                            .is_some_and(|n| crate::names::named_after_harness(n, harness))
                         && repo.is_some();
                     if named.name.is_none() || hook_row {
                         let name = derived_name(tx, repo, branch, harness, Some(&id))?;
@@ -2594,6 +2603,33 @@ mod tests {
             assert_eq!(
                 (again.id.as_str(), again.name.as_deref()),
                 (bare.id.as_str(), Some("api-chart-axis"))
+            );
+            // A row named from a repository keeps its name when a join, or
+            // the shim adopting it, comes from another (§11).
+            let moved = st
+                .join_session(DAEMON, hook("h1", 5, Some("docs")), None)
+                .unwrap();
+            assert_eq!(
+                (moved.id.as_str(), moved.name.as_deref()),
+                (made.id.as_str(), Some("web-chart-axis"))
+            );
+            let adopted = st
+                .register_session(
+                    DAEMON,
+                    RegisterSession {
+                        harness: "claude".into(),
+                        harness_session_id: Some("h1".into()),
+                        cwd: "/w".into(),
+                        pid: Some(11),
+                        parent_pid: Some(5),
+                        repo: Some("docs".into()),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                (adopted.id.as_str(), adopted.name.as_deref()),
+                (made.id.as_str(), Some("web-chart-axis"))
             );
             // The shim's row, named from its own repository, keeps it.
             let shim = st

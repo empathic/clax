@@ -973,19 +973,37 @@ impl Client {
     }
 
     /// A `GET` of `path` with the token and channel and the `headers`
-    /// named: its body's bytes, or an error naming the refusal's code
-    /// (and, for a status other than 403, its message).
-    pub fn get_bytes_with(&self, path: &str, headers: &[(&str, &str)]) -> anyhow::Result<Vec<u8>> {
+    /// named, its body read as it streams and refused past `max` bytes:
+    /// the body's `Content-Type` and bytes, or an error naming the
+    /// refusal's code (and, for a status other than 403, its message).
+    pub fn get_bytes_with(
+        &self,
+        path: &str,
+        headers: &[(&str, &str)],
+        max: usize,
+    ) -> anyhow::Result<(Option<String>, Vec<u8>)> {
+        use std::io::Read;
         let mut req = self.request(reqwest::Method::GET, path);
         for (k, v) in headers {
             req = req.header(*k, *v);
         }
-        let res = self.exec(req)?;
-        if res.status().is_success() {
-            return Ok(res.bytes()?.to_vec());
+        let res = self.exec_with(req, true)?;
+        if !res.status().is_success() {
+            return self
+                .finish(path, res)
+                .and_then(|_| Err(anyhow!("HTTP error reading {path}")));
         }
-        self.finish(path, res)
-            .and_then(|_| Err(anyhow!("HTTP error reading {path}")))
+        let ct = res
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let mut bytes = Vec::new();
+        res.take(max as u64 + 1).read_to_end(&mut bytes)?;
+        if bytes.len() > max {
+            bail!("over {max} bytes");
+        }
+        Ok((ct, bytes))
     }
 
     /// This client with every request bounded by `timeout`.

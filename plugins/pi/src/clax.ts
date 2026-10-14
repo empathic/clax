@@ -13,7 +13,12 @@ import { Type, type Static, type TSchema } from "typebox";
 import { beginCall, currentCall, inCall, type CallScope } from "./calls.ts";
 import { ClientError, DaemonClient, type Endpoint, type Registration } from "./client.ts";
 import { CAPTURE_DEADLINE_MS, captureCwd, repoAndBranch, type GitField } from "./git.ts";
-import { loadRemote, rewriteClipItems, rewriteClipText, storeClip, type ClipFetch, type Remote } from "./remote.ts";
+import { checkClip, CLIP_MAX_BYTES, loadRemote, rewriteClipItems, rewriteClipText, storeClip, type ClipFetch, type Remote } from "./remote.ts";
+
+/** The longest one remote clip fetch may take while feedback is handed
+ * over (spec §16); a clip not fetched by then reads `Clip: unavailable
+ * (timed out)`. */
+export const CLIP_FETCH_MS = 5_000;
 import { binaryVersion, claxHome, discover, endpointOf, ensure, findBinary, logPath, upgradeHeld } from "./daemon.ts";
 
 /** Default cap on the bytes `read` returns. */
@@ -749,6 +754,8 @@ export interface ClaxOptions {
   /** The clock, in milliseconds, by which the injection loop judges whether
    * a long-poll came back within [`INJECT_EARLY_MS`]; `Date.now` when absent. */
   now?: () => number;
+  /** How long one remote clip fetch may take; [`CLIP_FETCH_MS`] when absent. */
+  clipFetchMs?: number;
   /** How long a git capture may run; [`CAPTURE_DEADLINE_MS`] when absent
    * (tests on a loaded machine lengthen it). */
   gitDeadlineMs?: number;
@@ -831,10 +838,17 @@ class Tools {
    * `<home>/remote-cache/clips/` (spec §16). */
   private clipFetch(c: DaemonClient): ClipFetch {
     const home = c.remoteOf()?.home ?? this.home;
+    const ms = this.opts.clipFetchMs ?? CLIP_FETCH_MS;
     return async (aid, tid) => {
+      // A slow clip never holds the feedback it came with.
+      const signal = AbortSignal.timeout(ms);
       try {
-        return { path: storeClip(home, aid, tid, await c.clipBytes(aid, tid)) };
+        const got = await c.clipBytes(aid, tid, CLIP_MAX_BYTES, signal);
+        const why = checkClip(got.contentType, got.bytes);
+        if (why) return { why };
+        return { path: storeClip(home, aid, tid, got.bytes) };
       } catch (e) {
+        if (signal.aborted) return { why: "timed out" };
         if (e instanceof ClientError && e.kind === "api") return { why: String(e.error.code ?? "refused") };
         return { why: e instanceof Error ? e.message : String(e) };
       }
@@ -1193,6 +1207,9 @@ class Tools {
     checkThreadId(a.thread_id);
     if (a.to !== undefined && !a.to.trim()) throw invalid("to names a live agent; leave it out to release the thread");
     await this.call(() => c.ensureSession());
+    // The thread must be the artifact's: a thread of another artifact is
+    // not found there.
+    await this.call(() => c.thread(id, a.thread_id));
     const r = await this.call(() => c.handoff(a.thread_id, a.to));
     const thread = threadSummary(r.thread ?? {});
     if (c.isRemote()) await rewriteClipItems([thread], this.clipFetch(c));

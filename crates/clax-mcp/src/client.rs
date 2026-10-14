@@ -109,6 +109,8 @@ pub struct DaemonClient {
     inner: Arc<Inner>,
     call: Option<Arc<CallScope>>,
     via: Option<&'static str>,
+    /// The longest one remote clip fetch may take ([`CLIP_FETCH_TIME`]).
+    clip_fetch_time: Duration,
 }
 
 struct Inner {
@@ -289,6 +291,7 @@ impl DaemonClient {
             }),
             call: None,
             via: None,
+            clip_fetch_time: CLIP_FETCH_TIME,
         }
     }
 
@@ -325,6 +328,13 @@ impl DaemonClient {
         self.inner.remote.is_some()
     }
 
+    /// This client giving each remote clip fetch at most `t`, instead of
+    /// [`CLIP_FETCH_TIME`].
+    pub fn with_clip_fetch_time(mut self, t: Duration) -> DaemonClient {
+        self.clip_fetch_time = t;
+        self
+    }
+
     /// This client naming channel `via` (`mcp`, `cli`, …) on every request.
     pub fn with_via(mut self, via: &'static str) -> DaemonClient {
         self.via = Some(via);
@@ -355,6 +365,7 @@ impl DaemonClient {
             }),
             call: None,
             via: Some(VIA),
+            clip_fetch_time: CLIP_FETCH_TIME,
         }
     }
 
@@ -378,6 +389,7 @@ impl DaemonClient {
             inner: self.inner.clone(),
             call: Some(call),
             via: self.via,
+            clip_fetch_time: self.clip_fetch_time,
         }
     }
 
@@ -1167,16 +1179,29 @@ impl DaemonClient {
     }
 
     /// Thread `tid`'s clip on artifact `aid`
-    /// (`GET /api/artifacts/<aid>/threads/<tid>/clip`), as bytes.
+    /// (`GET /api/artifacts/<aid>/threads/<tid>/clip`), as bytes, checked
+    /// to be a PNG of at most [`clax_core::clips::MAX_BYTES`]
+    /// ([`clax_core::clips::check`]); a body that is not is
+    /// `BadResponse`.
     pub async fn clip_bytes(&self, aid: &str, tid: &str) -> Result<Vec<u8>> {
         let path = format!("/api/artifacts/{aid}/threads/{tid}/clip");
-        let res = self
+        let mut res = self
             .send(|c| c.request(reqwest::Method::GET, &path))
             .await?;
-        res.bytes()
-            .await
-            .map(|b| b.to_vec())
-            .map_err(|e| transport_error(e).error)
+        let ct = res
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let mut bytes = Vec::new();
+        while let Some(chunk) = res.chunk().await.map_err(|e| transport_error(e).error)? {
+            bytes.extend_from_slice(&chunk);
+            if bytes.len() > clax_core::clips::MAX_BYTES {
+                break;
+            }
+        }
+        clax_core::clips::check(ct.as_deref(), &bytes).map_err(ClientError::BadResponse)?;
+        Ok(bytes)
     }
 
     /// For a remote daemon (spec §16): `text` with its `Clip:` lines
@@ -1184,7 +1209,10 @@ impl DaemonClient {
     /// `<home>/remote-cache/clips/` ([`clax_core::clips::rewrite_text`]).
     /// The local daemon's text as it is.
     pub async fn rewrite_clip_text(&self, text: &str) -> String {
-        let Some(fetched) = self.fetch_clips(&clip_refs_in_text(text)).await else {
+        let Some(fetched) = self
+            .fetch_clips(&clax_core::clips::references_in(text))
+            .await
+        else {
             return text.to_string();
         };
         clax_core::clips::rewrite_text(text, &mut |a, t| lookup(&fetched, a, t))
@@ -1216,20 +1244,38 @@ impl DaemonClient {
     ) -> Option<HashMap<(String, String), std::result::Result<PathBuf, String>>> {
         let remote = self.inner.remote.as_ref()?;
         let dir = remote.clip_cache();
+        // Every distinct clip at once, each given at most CLIP_FETCH_TIME:
+        // a slow clip never holds the feedback it came with.
+        let mut tasks = tokio::task::JoinSet::new();
         let mut out = HashMap::new();
-        for (aid, tid) in refs {
-            if out.contains_key(&(aid.clone(), tid.clone())) {
+        for r in refs {
+            if out.contains_key(r) {
                 continue;
             }
-            let got = match self.clip_bytes(aid, tid).await {
-                Ok(bytes) => clax_core::clips::store(&dir, aid, tid, &bytes)
-                    .map_err(|e| format!("could not be cached: {e}")),
-                Err(ClientError::Api { error, .. }) => {
-                    Err(error["code"].as_str().unwrap_or("refused").to_string())
-                }
-                Err(e) => Err(e.to_string()),
-            };
-            out.insert((aid.clone(), tid.clone()), got);
+            out.insert(r.clone(), Err(clax_core::clips::TIMED_OUT.to_string()));
+            let (client, dir, r) = (self.clone(), dir.clone(), r.clone());
+            tasks.spawn(async move {
+                let t = client.clip_fetch_time;
+                let got = match tokio::time::timeout(t, client.clip_bytes(&r.0, &r.1)).await {
+                    Err(_) => Err(clax_core::clips::TIMED_OUT.to_string()),
+                    Ok(Ok(bytes)) => clax_core::clips::store(&dir, &r.0, &r.1, &bytes)
+                        .map_err(|e| format!("could not be cached: {e}")),
+                    Ok(Err(ClientError::Api { error, .. })) => {
+                        Err(error["code"].as_str().unwrap_or("refused").to_string())
+                    }
+                    Ok(Err(ClientError::BadResponse(why))) => Err(why),
+                    Ok(Err(ClientError::Timeout(_))) => {
+                        Err(clax_core::clips::TIMED_OUT.to_string())
+                    }
+                    Ok(Err(e)) => Err(e.to_string()),
+                };
+                (r, got)
+            });
+        }
+        while let Some(done) = tasks.join_next().await {
+            if let Ok((r, got)) = done {
+                out.insert(r, got);
+            }
         }
         Some(out)
     }
@@ -1423,13 +1469,10 @@ impl DaemonClient {
     }
 }
 
-/// The clip references of `text`'s `Clip:` lines.
-fn clip_refs_in_text(text: &str) -> Vec<(String, String)> {
-    text.lines()
-        .filter_map(|l| l.strip_prefix("Clip: "))
-        .filter_map(clax_core::clips::parse_reference)
-        .collect()
-}
+/// The longest one clip fetch may take while feedback is handed over
+/// (spec §16): a clip not fetched by then reads `Clip: unavailable (timed
+/// out)`.
+pub const CLIP_FETCH_TIME: Duration = Duration::from_secs(5);
 
 /// The fetched clip of `(aid, tid)` in `fetched`, or why there is none.
 fn lookup(

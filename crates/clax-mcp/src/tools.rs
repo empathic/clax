@@ -1606,6 +1606,12 @@ impl ClaxTools {
             ));
         }
         self.require_session().await?;
+        // The thread must be the artifact's: a thread of another artifact
+        // is not found there.
+        self.client
+            .thread(&id, &a.thread_id)
+            .await
+            .map_err(|e| self.fail(e))?;
         let v = self
             .client
             .handoff(&a.thread_id, a.to.as_deref())

@@ -204,8 +204,9 @@ pub(crate) fn live_session(
         .map(str::to_string))
 }
 
-/// The rendered feedback the daemon hands over for `query`, if any. The text
-/// is the daemon's, passed through unchanged.
+/// The rendered feedback the daemon hands over for `query`, if any, as the
+/// agent is handed it ([`Daemon::agent_text`]: a remote daemon's clips
+/// fetched and their lines rewritten; otherwise the daemon's text as it is).
 fn feedback_text(daemon: &dyn Daemon, sid: &str, query: &str) -> anyhow::Result<Option<String>> {
     let res = daemon.get(&format!("/api/sessions/{sid}/feedback?{query}"))?;
     Ok(rendered_text(&res).map(|t| daemon.agent_text(t)))

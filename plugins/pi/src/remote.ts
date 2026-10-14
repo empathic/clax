@@ -43,6 +43,9 @@ export interface Remote {
   home: string;
   /** Seconds the daemon's clock is ahead of this machine's, as learned. */
   offset: number;
+  /** Waits out a retry's backoff; `setTimeout` when absent (tests pass
+   * their own). */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /** Why the connection in `remote.json` cannot be used. */
@@ -323,14 +326,29 @@ function oneLine(s: string): string {
 /** A fetch of one clip: its cached file, or why there is none. */
 export type ClipFetch = (aid: string, tid: string) => Promise<{ path: string } | { why: string }>;
 
-/** Fetches each distinct clip `refs` names once. */
+/** Fetches each distinct clip `refs` names once, all at once (each fetch
+ * bounds itself). */
 async function fetchAll(refs: [string, string][], fetch: ClipFetch): Promise<Map<string, { path: string } | { why: string }>> {
-  const out = new Map<string, { path: string } | { why: string }>();
-  for (const [aid, tid] of refs) {
-    const k = `${aid}/${tid}`;
-    if (!out.has(k)) out.set(k, await fetch(aid, tid));
-  }
-  return out;
+  const keys = [...new Set(refs.map(([aid, tid]) => `${aid}/${tid}`))];
+  const got = await Promise.all(keys.map(k => {
+    const [aid, tid] = k.split("/") as [string, string];
+    return fetch(aid, tid);
+  }));
+  return new Map(keys.map((k, i) => [k, got[i]!]));
+}
+
+/** The most bytes a clip may hold (`clax_core::clips::MAX_BYTES`). */
+export const CLIP_MAX_BYTES = 5 * 1024 * 1024;
+const PNG_SIGNATURE = Buffer.from("89504e470d0a1a0a", "hex");
+
+/** Why a downloaded clip is not one (`clax_core::clips::check`): not
+ * `image/png`, over [`CLIP_MAX_BYTES`], or without a PNG's signature;
+ * `undefined` when it is. */
+export function checkClip(contentType: string | undefined, bytes: Buffer): string | undefined {
+  if ((contentType ?? "").split(";")[0]!.trim().toLowerCase() !== "image/png") return "not a PNG";
+  if (bytes.length > CLIP_MAX_BYTES) return `over ${CLIP_MAX_BYTES} bytes`;
+  if (!bytes.subarray(0, 8).equals(PNG_SIGNATURE)) return "not a PNG";
+  return undefined;
 }
 
 /** A remote daemon's payload `text` with every `Clip:` line rewritten
@@ -390,9 +408,12 @@ export function storeClip(home: string, aid: string, tid: string, bytes: Buffer)
   try {
     writeSync(fd, bytes);
     fsyncSync(fd);
-  } finally {
+  } catch (e) {
     closeSync(fd);
+    try { unlinkSync(tmp); } catch { /* gone */ }
+    throw e;
   }
+  closeSync(fd);
   try {
     renameSync(tmp, path);
   } catch (e) {

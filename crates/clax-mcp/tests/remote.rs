@@ -428,3 +428,104 @@ async fn status_on_a_remote_daemon_reports_the_person_and_rights() {
             .to_json()
     );
 }
+
+/// A TCP proxy in front of `upstream` that passes requests through until
+/// one asks for a clip (`…/clip HTTP/`): that request is never forwarded,
+/// and its connection is held open unanswered. A daemon whose clips never
+/// come.
+async fn clip_holding_proxy(upstream: String) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((down, _)) = listener.accept().await {
+            let upstream = upstream.clone();
+            tokio::spawn(async move {
+                let Ok(up) = tokio::net::TcpStream::connect(&upstream).await else {
+                    return;
+                };
+                let (mut down_r, mut down_w) = down.into_split();
+                let (mut up_r, mut up_w) = up.into_split();
+                tokio::spawn(async move {
+                    let _ = tokio::io::copy(&mut up_r, &mut down_w).await;
+                    // Held open while the request side holds.
+                    std::future::pending::<()>().await;
+                });
+                let mut buf = vec![0u8; 16384];
+                loop {
+                    let Ok(n) = down_r.read(&mut buf).await else {
+                        return;
+                    };
+                    if n == 0 {
+                        return;
+                    }
+                    if String::from_utf8_lossy(&buf[..n]).contains("/clip HTTP/") {
+                        std::future::pending::<()>().await;
+                    }
+                    if up_w.write_all(&buf[..n]).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    format!("http://127.0.0.1:{port}")
+}
+
+/// I1 in the shim: clips that do not come within the fetch bound never hold
+/// the feedback; each reads `Clip: unavailable (timed out)`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_remote_clip_that_does_not_come_never_holds_the_feedback() {
+    use clax_mcp::ClaxTools;
+    use clax_mcp::tools::WaitArgs;
+    use rmcp::handler::server::wrapper::Parameters;
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let sam = ts.connect_person("Sam", "clax:collaborator").await;
+    let dir = tempfile::tempdir().unwrap();
+    let proxy = clip_holding_proxy(format!("127.0.0.1:{}", ts.addr.port())).await;
+    let mut remote = Arc::into_inner(remote_of(&ts, &sam, None, &dir)).unwrap();
+    let key = KeyPair::from_pkcs8(sam.key.pkcs8().expose()).unwrap();
+    remote.config.url = proxy.clone();
+    remote.signer = Arc::new(Signer::new(key, &proxy).unwrap());
+    let client = DaemonClient::managed_remote(Arc::new(remote), registration())
+        .with_clip_fetch_time(std::time::Duration::from_millis(300));
+    let tools = ClaxTools::new(client.clone(), String::new(), None, ts.home.log_path());
+    let made = client
+        .create(&json!({"title": "Sam's notes",
+                        "files": {"index.html": {"content": "<p>notes</p>", "encoding": "utf8"}}}))
+        .await
+        .unwrap();
+    let aid = made["artifact"]["id"].as_str().unwrap().to_string();
+    let cookie = ts.store.viewer_of_grant(&sam.grant_id()).unwrap().id;
+    for body in ["FIRSTCLIP", "SECONDCLIP"] {
+        let tid = thread_with_clip(&ts, &aid, &cookie, body).await;
+        let r = ts
+            .client
+            .post(format!(
+                "{}/api/artifacts/{aid}/threads/{tid}/send",
+                ts.base
+            ))
+            .header("cookie", format!("clax_viewer={cookie}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+    }
+    let r = tools
+        .wait_for_feedback(Parameters(WaitArgs {
+            url_or_id: None,
+            timeout_s: Some(1),
+        }))
+        .await
+        .unwrap();
+    let trailing = r.content[1].as_text().unwrap().text.clone();
+    assert!(
+        trailing.contains("FIRSTCLIP") && trailing.contains("SECONDCLIP"),
+        "{trailing}"
+    );
+    assert_eq!(
+        trailing.matches("Clip: unavailable (timed out)").count(),
+        2,
+        "{trailing}"
+    );
+}

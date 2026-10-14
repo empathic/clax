@@ -251,6 +251,19 @@ async fn comments_handoff_moves_and_releases() {
             to: to.map(str::to_string),
         })
     };
+    // A thread named with another artifact is not found there.
+    let other = ts.publish_as(&sid, "Other", "<h2>Other</h2>").await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let wrong = a
+        .comments_handoff(Parameters(CommentsHandoffArgs {
+            url_or_id: other,
+            thread_id: tid.clone(),
+            to: Some("web-b".into()),
+        }))
+        .await;
+    assert_eq!(code(wrong), "not_found");
     let moved = ok(a.comments_handoff(hand(Some("web-b"))).await);
     assert_eq!(moved["thread"]["owner"]["name"], "web-b", "{moved}");
     assert_eq!(moved["released"], false);
