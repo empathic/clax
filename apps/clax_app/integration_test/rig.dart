@@ -119,7 +119,7 @@ class Rig {
       health: HttpHealthProbe(),
       pids: IoPidKiller(),
     );
-    return Rig._(
+    final rig = Rig._(
       dir,
       supervisor,
       backend,
@@ -127,6 +127,8 @@ class Rig {
       runner: runner,
       inspector: inspector,
     );
+    rig._lifecycleListener;
+    return rig;
   }
 
   final Directory dir;
@@ -138,6 +140,16 @@ class Rig {
 
   /// Every message the shell posted, on every app surface, in order.
   final messages = <HostMessage>[];
+
+  /// The app's lifecycle states since the rig was made, with the seconds
+  /// since then (an occluded macOS window reports `hidden`).
+  final lifecycle = <String>[];
+  final _born = DateTime.now();
+  late final _lifecycleListener = AppLifecycleListener(
+    onStateChange: (s) => lifecycle.add(
+      '${s.name}@${DateTime.now().difference(_born).inMilliseconds / 1000}',
+    ),
+  );
   final _subs = <StreamSubscription<HostMessage>>[];
   WebViewAppSurface? surface;
 
@@ -226,10 +238,47 @@ class Rig {
         };
         fail(
           'timed out waiting for $what; the screen shows $shown, keys $keys; '
+          'covering: ${_covers(tester)}; lifecycle $lifecycle; '
+          'the shell shows '
+          '${await _shellDump()}; '
           'the shell said: ${[for (final m in messages) m.runtimeType]}',
         );
       }
       await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+  }
+
+  /// What covers the screen, for a timeout's report: the app screens, the
+  /// dialogs, the sheets and the modal barriers in the tree.
+  Map<String, int> _covers(WidgetTester tester) => {
+    'AppScreen': find.byType(AppScreen).evaluate().length,
+    'Dialog': find
+        .byWidgetPredicate((w) => w is Dialog || w is AlertDialog)
+        .evaluate()
+        .length,
+    'BottomSheet': find.byType(BottomSheet).evaluate().length,
+    'ModalBarrier': find.byType(ModalBarrier).evaluate().length,
+    'WebView': find.byType(WebViewWidget).evaluate().length,
+  };
+
+  /// The latest surface's shell document, for a timeout's report: its URL,
+  /// whether a prompt dialog is open (and its text), and the body's text.
+  Future<String> _shellDump() async {
+    final s = surface;
+    if (s == null) return 'no surface';
+    try {
+      final raw = await s
+          .evaluate(
+            '(function(){var p=document.querySelector(".prompt");'
+            'return JSON.stringify({url:location.href,'
+            'prompt:p?p.innerText:null,'
+            'frame:!!document.querySelector("iframe.frame"),'
+            'body:document.body.innerText.slice(0,400)})})()',
+          )
+          .timeout(const Duration(seconds: 5));
+      return '$raw';
+    } on Object catch (e) {
+      return 'no answer ($e)';
     }
   }
 
@@ -338,6 +387,22 @@ class Rig {
       'y': web.top + (at['y']! as num).toDouble(),
     });
     expect(hit, isTrue);
+    // A click Allow did not take (disarmed, or a press it does not count)
+    // leaves the dialog open, and the page waits on it.
+    Object? seen;
+    try {
+      await until(tester, 'the consent dialog to close after Allow', () async {
+        seen = await surface!.evaluate(
+          '(function(){var p=document.querySelector(".prompt");'
+          'if(!p)return "closed";var b=p.querySelector("button.primary");'
+          'return JSON.stringify({disabled:b&&b.disabled,'
+          'hint:(p.querySelector(".act-hint")||{}).textContent})})()',
+        );
+        return seen == 'closed';
+      });
+    } on TestFailure catch (e) {
+      throw TestFailure('${e.message} (last seen: $seen)');
+    }
   }
 
   /// `GET /api/artifacts/<aid>/db-grants`: the owner's read grants of [aid].
@@ -373,6 +438,7 @@ class Rig {
   }
 
   Future<void> close() async {
+    _lifecycleListener.dispose();
     for (final s in _subs) {
       await s.cancel();
     }
