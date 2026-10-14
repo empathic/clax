@@ -9,7 +9,7 @@ const reopens: (string | undefined)[] = [];
 vi.mock("../stream", () => ({
   pageStream: () => ({ watch: (_t: string[], f: (e: StreamEvent) => void) => { on = f; return () => { on = null; }; }, reconnect: (c?: string) => { reopens.push(c); } }),
 }));
-const { ArtifactStream, keepApprover } = await import("./artifact-stream");
+const { ArtifactStream, keepHeld } = await import("./artifact-stream");
 const { getToken } = await import("../api");
 
 const A = "7q3k9mzx2b4t";
@@ -86,12 +86,13 @@ describe("the artifact stream", () => {
   });
 });
 
-describe("keepApprover", () => {
+describe("keepHeld", () => {
   const s = (o: Record<string, unknown>) => ({ thread_id: "t", state: "withheld" as const, tier: null, since: "x", resends: 0, exhausted: false, ...o });
-  it("keeps the approver a fetched view named when an event, which never names one, still waits", () => {
-    expect(keepApprover(s({ approver: "Sam" }), s({})) ).toEqual(s({ approver: "Sam" }));
-    expect(keepApprover(s({ approver: "Sam" }), s({ state: "sent", tier: "piggyback" }))).toEqual(s({ state: "sent", tier: "piggyback" }));
-    expect(keepApprover(null, s({}))).toEqual(s({}));
-    expect(keepApprover(s({ approver: "Sam" }), null)).toBeNull();
+  it("keeps a held state this view fetched over an event's plain one, until the thread is fetched again", () => {
+    const plain = s({ state: "sent", tier: "piggyback" });
+    expect(keepHeld(s({ approver: "Sam" }), plain)).toEqual(s({ approver: "Sam" }));
+    expect(keepHeld(s({ state: "declined", approver: "Sam" }), plain)).toEqual(s({ state: "declined", approver: "Sam" }));
+    expect(keepHeld(plain, s({ state: "acknowledged" }))).toEqual(s({ state: "acknowledged" }));
+    expect(keepHeld(null, plain)).toEqual(plain);
   });
 });

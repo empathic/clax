@@ -14,16 +14,13 @@
   import Sidebar from "./Sidebar.svelte";
 
   let { ctl, s }: { ctl: ArtifactController; s: ViewState & { data: Loaded } } = $props();
-  // The threads whose approval card shows above them.
-  let yours = $state<string[]>([]);
   const target = $derived(s.sendTo ?? ownTarget(s.agents, s.me?.public_id));
   const go = (send: () => unknown) => { if (target && target !== s.sendTo) ctl.chooseTarget(target); send(); };
-  const shown = (id: string, on: boolean) => { yours = [...yours.filter(x => x !== id), ...(on ? [id] : [])]; };
 </script>
 
 {#snippet above(t: Thread, now: Date)}
   {#if t.status === "open" && t.sent_to_agent && (s.me?.owner || s.me?.person)}
-    {#await import("./ThreadApproval.svelte") then { default: ThreadApproval }}<ThreadApproval {t} {now} onShown={shown} />{/await}
+    {#await import("./ThreadApproval.svelte") then { default: ThreadApproval }}<ThreadApproval {t} {now} />{/await}
   {/if}
 {/snippet}
 
@@ -36,4 +33,4 @@
   selection={s.selection} batchNote={s.batchNote} batchBusy={s.batchBusy} sendTo={target}
   onToggle={(t, shift, order) => ctl.toggleSelect(t, shift, order)} onClear={() => ctl.clearSelection()} onNote={v => ctl.setBatchNote(v)}
   compose={{ version: ctl.shown(s), host: ctl }}
-  onSendSelection={() => go(() => ctl.sendSelection())} onSendUnsent={() => go(() => ctl.sendUnsent())} onChoose={h => ctl.chooseTarget(h)} {above} {yours} />
+  onSendSelection={() => go(() => ctl.sendSelection())} onSendUnsent={() => go(() => ctl.sendUnsent())} onChoose={h => ctl.chooseTarget(h)} {above} />

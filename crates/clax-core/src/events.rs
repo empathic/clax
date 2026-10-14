@@ -180,6 +180,19 @@ pub enum Event {
         #[serde(skip)]
         artifacts: Vec<String>,
     },
+    /// Thread `thread_id`'s delivery state changed as the people concerned
+    /// read it (spec 2026-10-08 §10, §18): waiting for an approval, declined,
+    /// or no longer. It carries no state: its recipients fetch the thread,
+    /// whose view says as much as they may read. Only the `inbox` stream
+    /// topics of `recipients` carry it (the owner's and each person's
+    /// concerned); `/api/events` never does.
+    HeldState {
+        artifact_id: String,
+        thread_id: String,
+        /// The recipients' keys (empty: the owner); never serialised.
+        #[serde(skip)]
+        recipients: Vec<String>,
+    },
 }
 
 impl Event {
@@ -203,7 +216,8 @@ impl Event {
             | Event::InboxRead { .. }
             | Event::ApprovalRequest { .. }
             | Event::People { .. }
-            | Event::Agents { .. } => "",
+            | Event::Agents { .. }
+            | Event::HeldState { .. } => "",
         }
     }
 
@@ -228,10 +242,14 @@ impl Event {
             Event::ApprovalRequest { .. } => "approval_request",
             Event::People { .. } => "people",
             Event::Agents { .. } => "agents",
+            Event::HeldState { .. } => "held_state",
         }
     }
 
+    /// The `feedback_state` event of `s`: its plain state
+    /// ([`FeedbackState::public`]), which every subscriber may read.
     pub fn feedback_state(artifact_id: String, s: FeedbackState) -> Event {
+        let s = s.public();
         Event::FeedbackState {
             artifact_id,
             thread_id: s.thread_id,
@@ -446,6 +464,7 @@ mod tests {
             exhausted: false,
             approver: None,
             approver_person: None,
+            plain: None,
         };
         for ev in [
             Event::Thread {

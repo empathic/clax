@@ -96,8 +96,6 @@
      * puts this viewer's approval card above a thread waiting for their
      * approval (spec 2026-10-08 §9.5); the extension's panel, nothing. */
     above?: Snippet<[Thread, Date]>;
-    /** The threads whose approval is this viewer's (its card is above them). */
-    yours?: string[];
   };
   let p: Props = $props();
   // Each second while a waiting label counts; otherwise often enough for "N min ago".
@@ -194,7 +192,7 @@
 {#snippet cards(list: Thread[])}
   {#each list as t (t.id)}
     {@render p.above?.(t, clock.now)}
-    <ThreadCard {t} yours={p.yours?.includes(t.id)} n={(p.numbers ?? s.numbers).get(t.id)} now={clock.now} me={p.me} selected={p.selected} file={s.file}
+    <ThreadCard {t} n={(p.numbers ?? s.numbers).get(t.id)} now={clock.now} me={p.me} selected={p.selected} file={s.file}
       history={historyOf(t, p.versions, names(t), { working: t.status === "open" ? threadAgent(p.working ?? [], t.id, agentsByHandle) : null })}
       marker={t.status === "open" ? threadMarker(p.working ?? [], t.id, agentsByHandle) : null} outdated={isOutdated(t, p.resolved[t.id], p.shown)} agent={p.agent} when={relativeTime(t.created_at, clock.now)}
       versions={p.versions} onSeen={p.onSeen} fold={foldOf(t)} clip={p.clip} tools={far(t) ? go : undefined}

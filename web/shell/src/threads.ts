@@ -3,8 +3,11 @@ import { ApiError, getToken } from "./api";
 
 export type Tier = "piggyback" | "stop_hook" | "prompt_hook" | "wait" | "queue" | "inject";
 /** `withheld`: held until `approver` (a display name) approves an author
- * of the thread (spec 2026-10-08-multi-agent-multi-person §10). */
-export type FeedbackState = { thread_id: string; state: "sent" | "withheld" | "delivered" | "acknowledged" | "agent_ended"; tier: Tier | null; since: string; resends: number; exhausted: boolean; approver?: string };
+ * of the thread; `declined`: `approver` declined one (spec 2026-10-08
+ * §10). Only the people concerned read these, with `mine` for the approver
+ * themself; agents read `withheld` without a name; everyone else, the plain
+ * state. */
+export type FeedbackState = { thread_id: string; state: "sent" | "withheld" | "declined" | "delivered" | "acknowledged" | "agent_ended"; tier: Tier | null; since: string; resends: number; exhausted: boolean; approver?: string; mine?: boolean };
 /** `via_page`: the page wrote it through the `comments` capability, as the viewer. */
 export type Comment = { id: string; thread_id: string; author_kind: "viewer" | "agent"; author_name: string; author_public_id?: string | null; via_harness: string | null; via_page?: boolean; body: string; created_at: string };
 export type Thread = {

@@ -1447,12 +1447,40 @@ again.
   viewer's own most recent live agent; with only other people's agents
   live there is none, and Send opens the menu.
 - Sending to it (button, `to`, `@name`) stores the send and makes the
-  routing request (§9.2). The thread's delivery state reads "waiting for
-  Sam's approval" while any of its comments is held under an open request
-  or told of and not declined; whose approval, only to the owner, the
-  approver and the thread's own authors (and their agents): LAN viewers,
-  anonymous callers and the artifact's events read "waiting for
-  approval".
+  routing request (§9.2).
+- **The thread's delivery state** (owner decisions, 2026-10-14). Its
+  rows (one per comment and target session) make three readings:
+  - *Withheld*: a row of any of its comments, undelivered for a live
+    session, is held under an open request of that session's person, or
+    a take told the session of it and no decline of its author is in
+    force: "waiting for Sam's approval".
+  - *Declined*: otherwise, such a row has no open request and a decline
+    of its author there by that person is in force: "declined by Sam".
+    A decline is in force until an approval by that person covering the
+    thread is made or revoked after it; a later comment by the same
+    author stays declined; a handoff deletes the old target's rows and
+    the thread reads as the new target's; when the session ends its rows
+    count no longer and the thread reads "agent session ended".
+  - *Plain*: the delivery state of its newest comment's rows as if
+    nothing were held, where a row a take held and told its session of
+    reads as seen by the agent: "sent" until the agent takes, then "seen
+    by the agent".
+- **Who reads which** (owner decisions, 2026-10-14):
+  - The owner's browser, and the people concerned (the approver or
+    decliner, and the thread's authors, as connected people), read
+    withheld and declined with the person ("declined by Mia", and "you
+    declined" or "waiting for your approval" for that person themself).
+  - Agents, the owner's included, never read an approver: withheld reads
+    "waiting for approval" with no name, and a declined thread reads its
+    plain state.
+  - LAN viewers, anonymous callers and connected people a thread does not
+    concern read the plain state, in views, in the page's boot payload
+    and in events: "sent" until delivery, never withheld or declined.
+  - Events carry the plain state alone, and a decision (approve,
+    decline, revoke) publishes none: it reaches the people concerned as
+    `held_state` on their `inbox` topic, and their views fetch the
+    thread again. So no one else sees a decision as an event or a
+    change of timing.
 - A send to an agent that may not `read` the artifact is 400
   `agent_cannot_read`.
 - A page's `@name` sends nothing (as its `@agent` sends nothing today); a
@@ -1718,8 +1746,9 @@ The route table (§7.5) is the agents' contract. New routes:
   (rename, narrow), approvals and requests.
 - **Inbox:** `approval` and `connection` cards, `ended` rows, the agent
   strip.
-- **Threads:** the owner chip, the `withheld` delivery state, the Send menu
-  by name and person.
+- **Threads:** the owner chip, the `withheld` and `declined` delivery
+  states as §10 says who reads them (plain "sent" to visitors; owner
+  decision 2026-10-14), the Send menu by name and person.
 - **Extension panel:** agent names in its Send menu; approval items link
   to the shell's inbox.
 - Every UI change is verified in a real browser with screenshots, at phone
@@ -1733,7 +1762,7 @@ The route table (§7.5) is the agents' contract. New routes:
 | Gallery, artifacts, threads | all | filtered for the owner | all | filtered for the person | all |
 | Live pages | yes (local) | yes (local) | never | never | never |
 | Inbox, questions | own | own questions | own | own questions | none |
-| People, approvals | everyone; changes in the browser | none | self, and who approves first only about their own content (§10); changes in the browser | none | none |
+| People, approvals | everyone; changes in the browser | none (no approver, ever: §10) | self, and who approves first and whose approval a thread waits for only about their own content or threads (§10); changes in the browser | none | none (plain delivery states: §10) |
 | Agents roster | every agent | own (`status`) | own agents; others' names and states | own (`status`) | names on threads |
 
 A person's inbox and question views are not filtered by Visibility; they
@@ -2321,3 +2350,9 @@ task, with recommendations; the owner took every recommendation
   still named after its harness; §6.8: Pi's credential files, checked with
   `lstat` and opened with `O_NOFOLLOW`, with no parent-PID file; §16:
   `remote: true` only on a remote daemon, whose `version` is null.
+- **Amendment** (2026-10-14, owner decisions "Declined by Mia" for those
+  concerned, plain "sent" for visitors, and "No" for the owner's agents):
+  §10, §17, §18: a declined thread reads "declined by Mia" to the people
+  concerned and its plain state to everyone else; LAN viewers, anonymous
+  callers and events read only plain states, and decisions reach the
+  people concerned alone (`held_state`); agents never read an approver.

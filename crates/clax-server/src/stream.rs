@@ -531,6 +531,10 @@ fn routes(ev: &Event) -> Vec<(Chan, Gate)> {
         Event::People { .. } => vec![(Chan::People, Gate::Any)],
         // An agent started, ended or was renamed: the roster, and the Send
         // menus of the artifacts it watched.
+        Event::HeldState { recipients, .. } => recipients
+            .iter()
+            .map(|r| (Chan::Inbox(r.clone()), Gate::Any))
+            .collect(),
         Event::Agents { artifacts } => artifacts
             .iter()
             .map(|a| (Chan::Artifact(a.clone()), Gate::Any))
