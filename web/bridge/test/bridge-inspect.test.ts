@@ -72,6 +72,12 @@ describe("the bridge's inspection", () => {
     expect(typeof (window as unknown as { test?: unknown }).test).toBe("function");
   });
 
+  it("runs the test part's migration on clax:migrate and answers clax:migration with the requestId", async () => {
+    send({ type: "clax:migrate", requestId: "m1", file: "no-such-migrate.js", from: 1, to: 2, totalMs: 2000 });
+    await vi.waitFor(() => expect(posted.filter(m => m.type === "clax:migration")).toHaveLength(1), { timeout: 3000 });
+    expect(posted.find(m => m.type === "clax:migration")).toEqual({ type: "clax:migration", requestId: "m1", ok: false, error: expect.stringContaining("no-such-migrate.js did not load") });
+  });
+
   it("takes the order only from the shell, and only with a requestId", async () => {
     send({ type: "clax:inspect", requestId: "i3", settleMs: 0 }, page);
     send({ type: "clax:inspect", settleMs: 0 });

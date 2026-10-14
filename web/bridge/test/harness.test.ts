@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect as vexpect, it, vi } from "vitest";
-import { POLL_MS, answerTests, equal, expect as hexpect, makeUi, runTests } from "../src/harness";
+import { POLL_MS, answerMigration, answerTests, equal, expect as hexpect, makeUi, runMigration, runTests } from "../src/harness";
 import type { BridgeToShell } from "../src/protocol";
 
 type Globals = { test(name: string, fn: () => unknown): void; expect: typeof hexpect; ui: ReturnType<typeof makeUi> };
@@ -167,6 +167,72 @@ describe("runTests", () => {
     vexpect(posted).toEqual([
       { type: "clax:tests", requestId: "t1", passed: 1, failed: [], skipped: 0 },
       { type: "clax:tests", requestId: "t2", error: "files is a list of paths" },
+    ]);
+  });
+});
+
+describe("runMigration", () => {
+  afterEach(() => vi.useRealTimers());
+  const db = { name: "the page's db" };
+  /** Deps whose loader answers `modules[path]` as the module's namespace. */
+  function mdeps(modules: Record<string, unknown>, theDb: () => Promise<unknown> = async () => db) {
+    const loaded: string[] = [];
+    return {
+      loaded,
+      d: {
+        timers,
+        now: () => Date.now(),
+        db: theDb,
+        load: async (url: string) => {
+          const path = new URL(url).pathname.replace(/^\//, "");
+          loaded.push(path);
+          if (!(path in modules)) throw new TypeError(`Failed to fetch dynamically imported module: ${url}`);
+          return modules[path];
+        },
+      },
+    };
+  }
+
+  it("imports the file and calls its default export with the page's db and {from, to}", async () => {
+    const calls: unknown[][] = [];
+    const { d, loaded } = mdeps({ "migrate.js": { default: async (...a: unknown[]) => { calls.push(a); await Promise.resolve(); } } });
+    vexpect(await runMigration(window, "migrate.js", { from: 2, to: 3 }, d)).toEqual({ ok: true });
+    vexpect(loaded).toEqual(["migrate.js"]);
+    vexpect(calls).toEqual([[db, { from: 2, to: 3 }]]);
+  });
+
+  it("reports a thrown error, a file that does not load, no default export and a db that fails", async () => {
+    const boom = mdeps({ "migrate.js": { default: () => { throw new TypeError("doc.items is undefined"); } } });
+    vexpect(await runMigration(window, "migrate.js", { from: 1, to: 2 }, boom.d)).toEqual({ ok: false, error: "the migration failed: TypeError: doc.items is undefined" });
+    const rejects = mdeps({ "migrate.js": { default: async () => Promise.reject(new Error("no such doc")) } });
+    vexpect(await runMigration(window, "migrate.js", { from: 1, to: 2 }, rejects.d)).toEqual({ ok: false, error: "the migration failed: no such doc" });
+    const missing = mdeps({});
+    vexpect(await runMigration(window, "migrate.js", { from: 1, to: 2 }, missing.d)).toEqual({ ok: false, error: vexpect.stringContaining("migrate.js did not load: TypeError: Failed to fetch") });
+    const none = mdeps({ "migrate.js": { migrate: () => {} } });
+    vexpect(await runMigration(window, "migrate.js", { from: 1, to: 2 }, none.d)).toEqual({ ok: false, error: "migrate.js has no default export function" });
+    const noDb = mdeps({ "migrate.js": { default: () => {} } }, async () => { throw new Error("not_declared"); });
+    vexpect(await runMigration(window, "migrate.js", { from: 1, to: 2 }, noDb.d)).toEqual({ ok: false, error: "the page's db is not available: not_declared" });
+  });
+
+  it("times out a migration that runs past totalMs", async () => {
+    vi.useFakeTimers();
+    const { d } = mdeps({ "migrate.js": { default: () => new Promise(() => {}) } });
+    const done = runMigration(window, "migrate.js", { from: 1, to: 2, totalMs: 100 }, d);
+    await vi.advanceTimersByTimeAsync(150);
+    vexpect(await done).toEqual({ ok: false, error: "it took longer than 100 ms" });
+  });
+
+  it("answers the order with its request ID, or why there was no run", async () => {
+    const posted: BridgeToShell[] = [];
+    const { d } = mdeps({ "migrate.js": { default: () => {} } });
+    await answerMigration(window, { type: "clax:migrate", requestId: "m1", file: "migrate.js", from: 1, to: 2 }, m => posted.push(m), d);
+    await answerMigration(window, { type: "clax:migrate", requestId: "m2", file: 3 as unknown as string, from: 1, to: 2 }, m => posted.push(m), d);
+    await answerMigration(window, { type: "clax:migrate", requestId: "m3", file: "migrate.js", from: "1" as unknown as number, to: 2 }, m => posted.push(m), d);
+    await answerMigration(window, { type: "clax:migrate", requestId: 5 as unknown as string, file: "migrate.js", from: 1, to: 2 }, m => posted.push(m), d);
+    vexpect(posted).toEqual([
+      { type: "clax:migration", requestId: "m1", ok: true },
+      { type: "clax:migration", requestId: "m2", ok: false, error: "file is a path, from and to are versions" },
+      { type: "clax:migration", requestId: "m3", ok: false, error: "file is a path, from and to are versions" },
     ]);
   });
 });

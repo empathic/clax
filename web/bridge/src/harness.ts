@@ -18,7 +18,13 @@
 // the order registered, each for at most `testMs`, the whole run (loads
 // included) for at most `totalMs`: the tests the run had no time left for are
 // skipped.
-import type { BridgeToShell, ShellToBridge, TestResults } from "./protocol";
+//
+// The same part runs an app bundle's migration (spec 2026-10-13-flutter-app-
+// bundles-design §8.3, `clax:migrate`): the file (`migrate.js`) is imported
+// as a module, and its default export is called with the page's
+// `window.claude.use("db")` and `{from, to}`; the whole run, the load
+// included, takes at most `totalMs`.
+import type { BridgeToShell, MigrationResult, ShellToBridge, TestResults } from "./protocol";
 
 /** How long one test may take, and the whole run, when the order names no limit. */
 export const TEST_MS = 5000;
@@ -202,10 +208,13 @@ export function makeUi(win: Window, deps: Pick<HarnessDeps, "timers" | "now">) {
 
 const bounded = (v: unknown, lo: number, hi: number, dflt: number) => (typeof v === "number" && Number.isFinite(v) ? Math.min(hi, Math.max(lo, Math.round(v))) : dflt);
 
-/** Rejects with `why` after `ms`, else settles as `p` does. */
+/** The error `within` rejects with when time runs out. */
+class Late extends Error {}
+
+/** Rejects with `why` (a `Late`) after `ms`, else settles as `p` does. */
 function within<T>(p: Promise<T>, ms: number, why: string, t: HarnessTimers): Promise<T> {
   let timer: unknown;
-  const late = new Promise<never>((_, reject) => { timer = t.setTimeout(() => reject(new Error(why)), Math.max(0, ms)); });
+  const late = new Promise<never>((_, reject) => { timer = t.setTimeout(() => reject(new Late(why)), Math.max(0, ms)); });
   return Promise.race([p, late]).finally(() => t.clearTimeout(timer));
 }
 
@@ -274,5 +283,62 @@ export async function answerTests(win: Window, m: Extract<ShellToBridge, { type:
     post({ type: "clax:tests", requestId, ...(await runTests(win, m.files, m, deps)) });
   } catch (e) {
     post({ type: "clax:tests", requestId, error: message(e) });
+  }
+}
+
+/** How long a migration run may take when the order names no limit, and at most. */
+export const MIGRATE_MS = 30_000;
+const MIGRATE_MAX_MS = 120_000;
+
+export type MigrationDeps = HarnessDeps & {
+  /** The page's `db` (`window.claude.use("db")`). */
+  db(): Promise<unknown>;
+};
+
+/** Runs the migration `file` (a path relative to the page) in `win`, as the
+ * module comment says. */
+export async function runMigration(win: Window, file: string, opts: { from: number; to: number; totalMs?: number }, deps: MigrationDeps): Promise<MigrationResult> {
+  const totalMs = bounded(opts.totalMs, 1, MIGRATE_MAX_MS, MIGRATE_MS);
+  const start = deps.now();
+  const left = () => totalMs - (deps.now() - start);
+  const late = `it took longer than ${totalMs} ms`;
+  let fn: unknown;
+  try {
+    const mod = await within(deps.load(new URL(file, win.location.href).href), left(), late, deps.timers);
+    fn = (mod as { default?: unknown } | null)?.default;
+  } catch (e) {
+    return { ok: false, error: e instanceof Late ? late : `${file} did not load: ${message(e)}` };
+  }
+  if (typeof fn !== "function") return { ok: false, error: `${file} has no default export function` };
+  let db: unknown;
+  try {
+    db = await within(deps.db(), left(), late, deps.timers);
+  } catch (e) {
+    return { ok: false, error: e instanceof Late ? late : `the page's db is not available: ${message(e)}` };
+  }
+  try {
+    await within(Promise.resolve().then(() => (fn as (db: unknown, v: { from: number; to: number }) => unknown)(db, { from: opts.from, to: opts.to })), left(), late, deps.timers);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Late ? late : `the migration failed: ${message(e)}` };
+  }
+}
+
+const version = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 1;
+
+/** The bridge's `clax:migrate` order, answered: `post` gets `clax:migration`
+ * with the order's `requestId` and whether the run finished, or why not. An
+ * order without a `requestId` gets no run. */
+export async function answerMigration(win: Window, m: Extract<ShellToBridge, { type: "clax:migrate" }>, post: (m: BridgeToShell) => void, deps: MigrationDeps): Promise<void> {
+  const requestId = m.requestId;
+  if (typeof requestId !== "string") return;
+  if (typeof m.file !== "string" || !m.file || !version(m.from) || !version(m.to)) {
+    post({ type: "clax:migration", requestId, ok: false, error: "file is a path, from and to are versions" });
+    return;
+  }
+  try {
+    post({ type: "clax:migration", requestId, ...(await runMigration(win, m.file, m, deps)) });
+  } catch (e) {
+    post({ type: "clax:migration", requestId, ok: false, error: message(e) });
   }
 }

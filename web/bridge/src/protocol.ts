@@ -101,6 +101,12 @@ export type ShellToBridge =
    * `testMs`, the run for at most `totalMs`; `clax:tests` answers with the
    * same `requestId`. Honoured only in the frame named `INSPECT_FRAME`. */
   | { type: "clax:test"; requestId: string; files: string[]; testMs?: number; totalMs?: number }
+  /** The app's inspect view asks the bridge to run an app bundle's
+   * migration (`harness.ts`): import `file` (relative to the page), call its
+   * default export with the page's `db` and `{from, to}`, all within
+   * `totalMs`; `clax:migration` answers with the same `requestId`.
+   * Honoured only in the frame named `INSPECT_FRAME`. */
+  | { type: "clax:migrate"; requestId: string; file: string; from: number; to: number; totalMs?: number }
   | UseResult
   | CallResult
   | CapEvent;
@@ -120,6 +126,8 @@ export interface Inspection { png: ArrayBuffer; errors: InspectError[]; failed: 
  * `failed` (or test file that did not load) with why, and how many were
  * `skipped` because the run's time ran out. */
 export interface TestResults { passed: number; failed: { name: string; error: string }[]; skipped: number }
+/** What a migration run found (`harness.ts`): it finished, or why not. */
+export type MigrationResult = { ok: true } | { ok: false; error: string };
 
 /** What a picked element is, for the app's words about it (`describe.ts`):
  * its tag, its ARIA role and its accessible name, as the page gives them. */
@@ -169,8 +177,12 @@ export type BridgeToShell =
    * can post this too: the shell takes it only for the request it has open
    * and checks its shape. */
   | ({ type: "clax:tests"; requestId: string } & (TestResults | { error: string }))
+  /** The answer to `clax:migrate` (`harness.ts`). The page can post this
+   * too: the shell takes it only for the request it has open and checks its
+   * shape. */
+  | ({ type: "clax:migration"; requestId: string } & MigrationResult)
   | UseRequest
   | CallRequest;
 
-export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:hash", "clax:greet", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:inspect", "clax:test", "clax:use-result", "clax:call-result", "clax:event"]);
-export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:scroll", "clax:inspection", "clax:tests", "clax:use", "clax:call"]);
+export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:hash", "clax:greet", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:inspect", "clax:test", "clax:migrate", "clax:use-result", "clax:call-result", "clax:event"]);
+export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:scroll", "clax:inspection", "clax:tests", "clax:migration", "clax:use", "clax:call"]);
