@@ -140,13 +140,15 @@ class PromptBuilder {
   /// The tool loop's first user message for a build's continue run on the
   /// app [title]: the [plan] (the person may have edited it since the last
   /// run), the files as [firstChange] shows them, the app's own
-  /// [documents] and the [others] by ID and title.
+  /// [documents] and the [others] by ID and title ([others] are left out
+  /// when [fromBundle]).
   List<Map<String, Object?>> firstContinue({
     required String title,
     required Plan plan,
     required Map<String, String> files,
     required List<OtherApp> others,
     required List<AppCollection> documents,
+    bool fromBundle = false,
   }) {
     final b = StringBuffer()
       ..writeln(
@@ -162,7 +164,7 @@ class PromptBuilder {
     b.writeln();
     _writeFiles(b, files);
     _writeOwn(b, documents, toolLoop: true);
-    _writeOtherNames(b, others);
+    _writeOtherApps(b, others, fromBundle, _writeOtherNames);
     b
       ..writeln()
       ..writeln(
@@ -200,7 +202,8 @@ class PromptBuilder {
   /// with [trimDocuments]), the [others] by ID and title; the comments; and [answers], the
   /// daemon's late-answer text for a question this change asked earlier.
   /// The person's words (comments, authors, anchors, answers) go in as
-  /// JSON strings.
+  /// JSON strings. When [fromBundle], [others] are left out and the
+  /// message says why ([fromBundleNote]).
   List<Map<String, Object?>> firstChange({
     required String title,
     required Map<String, String> files,
@@ -209,6 +212,7 @@ class PromptBuilder {
     required List<AppCollection> documents,
     String? answers,
     Plan? plan,
+    bool fromBundle = false,
   }) {
     final b = StringBuffer()
       ..writeln(
@@ -218,7 +222,7 @@ class PromptBuilder {
       ..writeln();
     _writeFiles(b, files);
     _writeOwn(b, documents, toolLoop: true);
-    _writeOtherNames(b, others);
+    _writeOtherApps(b, others, fromBundle, _writeOtherNames);
     if (plan != null) _writePlan(b, plan);
     _writeComments(b, comments);
     if (answers != null) {
@@ -405,7 +409,8 @@ class PromptBuilder {
   /// (trimmed with [trimDocuments]); a db write to an existing document
   /// must name one of them, and is pinned to the version shown.
   /// [retryReason], when set, names why the previous result could not be
-  /// applied, and asks for whole files.
+  /// applied, and asks for whole files. When [fromBundle], [others] are
+  /// left out ([fromBundleNote]).
   String change({
     required String title,
     required Map<String, String> files,
@@ -413,6 +418,7 @@ class PromptBuilder {
     required List<OtherApp> others,
     List<AppCollection> documents = const [],
     String? retryReason,
+    bool fromBundle = false,
   }) {
     final b = StringBuffer()
       ..writeln(
@@ -431,7 +437,7 @@ class PromptBuilder {
     }
     _writeComments(b, comments);
     _writeOwn(b, documents);
-    _writeOthers(b, others);
+    _writeOtherApps(b, others, fromBundle, _writeOthers);
     b.writeln();
     if (retryReason != null) {
       b
@@ -522,6 +528,27 @@ class PromptBuilder {
       }
     }
     return kept;
+  }
+
+  /// What a change to an app that came from a bundle says in place of the
+  /// person's other apps.
+  static const fromBundleNote =
+      'This app came from someone else, as a shared file: you cannot see or '
+      'read the person\'s other apps, and the db tools refuse them.';
+
+  /// [others] through [write], or, when [fromBundle], only
+  /// [fromBundleNote]: the files of an app from a bundle are someone
+  /// else's, and must not steer the agent into the person's other apps.
+  static void _writeOtherApps(
+    StringBuffer b,
+    List<OtherApp> others,
+    bool fromBundle,
+    void Function(StringBuffer, List<OtherApp>) write,
+  ) {
+    if (!fromBundle) return write(b, others);
+    b
+      ..writeln()
+      ..writeln(fromBundleNote);
   }
 
   /// The other apps by ID and title only, at most [maxOthers], each title

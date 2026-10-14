@@ -60,14 +60,23 @@ const _whereOps = [
   'array-contains',
 ];
 
-/// The data tools over [api], in [toolOrder].
-List<Tool> dataTools(ClaxApi api) => [
-  DbCollectionsTool(api),
-  DbListTool(api),
-  DbGetTool(api),
-  DbQueryTool(api),
+/// The data tools over [api], in [toolOrder]. When [fromBundle] (the
+/// run's app came from someone else's bundle), every read of another app
+/// is refused with [fromBundleRefusal], before the owner is asked and
+/// before that app is read: the bundle's files must not steer the agent
+/// into the person's other apps.
+List<Tool> dataTools(ClaxApi api, {bool fromBundle = false}) => [
+  DbCollectionsTool(api, fromBundle: fromBundle),
+  DbListTool(api, fromBundle: fromBundle),
+  DbGetTool(api, fromBundle: fromBundle),
+  DbQueryTool(api, fromBundle: fromBundle),
   DbWriteTool(api),
 ];
+
+/// The refusal of a read of another app by the agent of an app that came
+/// from a bundle.
+const fromBundleRefusal =
+    'This app came from someone else; it cannot read your other apps.';
 
 final _appProperty = optional(
   'string',
@@ -78,9 +87,12 @@ final _appProperty = optional(
 
 /// Lists an app's collections with their document counts.
 class DbCollectionsTool implements Tool {
-  DbCollectionsTool(this._api);
+  DbCollectionsTool(this._api, {this.fromBundle = false});
 
   final ClaxApi _api;
+
+  /// Whether this run's app came from a bundle ([fromBundleRefusal]).
+  final bool fromBundle;
 
   @override
   final spec = ToolSpec(
@@ -92,7 +104,7 @@ class DbCollectionsTool implements Tool {
   @override
   Future<ToolOutput> call(Map<String, Object?> input, RunState s) async {
     _onlyKeys(input, const {'app'});
-    final src = await _source(input, s, _api);
+    final src = await _source(input, s, _api, fromBundle: fromBundle);
     final aid = src.aid;
     if (aid == null) return const ToolOk({'app': null, 'collections': []});
     final all = await _read(src, () => _api.collections(aid));
@@ -111,9 +123,12 @@ class DbCollectionsTool implements Tool {
 
 /// Lists the documents of a collection.
 class DbListTool implements Tool {
-  DbListTool(this._api);
+  DbListTool(this._api, {this.fromBundle = false});
 
   final ClaxApi _api;
+
+  /// Whether this run's app came from a bundle ([fromBundleRefusal]).
+  final bool fromBundle;
 
   @override
   final spec = ToolSpec(
@@ -132,7 +147,7 @@ class DbListTool implements Tool {
     _onlyKeys(input, const {'collection', 'app', 'limit'});
     final collection = _collection(input);
     final limit = _limit(input);
-    final src = await _source(input, s, _api);
+    final src = await _source(input, s, _api, fromBundle: fromBundle);
     if (src.privateCollection(collection)) throw _privateError(collection);
     final aid = src.aid;
     if (aid == null) return _page(const [], limit, src, s);
@@ -146,9 +161,12 @@ class DbListTool implements Tool {
 
 /// Reads one document.
 class DbGetTool implements Tool {
-  DbGetTool(this._api);
+  DbGetTool(this._api, {this.fromBundle = false});
 
   final ClaxApi _api;
+
+  /// Whether this run's app came from a bundle ([fromBundleRefusal]).
+  final bool fromBundle;
 
   @override
   final spec = ToolSpec(
@@ -166,7 +184,7 @@ class DbGetTool implements Tool {
     _onlyKeys(input, const {'path', 'app'});
     final path = _string(input, 'path');
     if (_docPathProblem(path) case final p?) throw ToolInputError(p);
-    final src = await _source(input, s, _api);
+    final src = await _source(input, s, _api, fromBundle: fromBundle);
     if (src.private(path)) throw _privateError(path);
     final aid = src.aid;
     final doc = aid == null
@@ -183,9 +201,12 @@ class DbGetTool implements Tool {
 
 /// Queries a collection with the daemon's filters and order.
 class DbQueryTool implements Tool {
-  DbQueryTool(this._api);
+  DbQueryTool(this._api, {this.fromBundle = false});
 
   final ClaxApi _api;
+
+  /// Whether this run's app came from a bundle ([fromBundleRefusal]).
+  final bool fromBundle;
 
   @override
   final spec = ToolSpec(
@@ -225,7 +246,7 @@ class DbQueryTool implements Tool {
     final limit = _limit(input);
     final where = _where(input['where']);
     final (orderBy, descending) = _orderBy(input['order_by']);
-    final src = await _source(input, s, _api);
+    final src = await _source(input, s, _api, fromBundle: fromBundle);
     if (src.privateCollection(collection)) throw _privateError(collection);
     final aid = src.aid;
     if (aid == null) return _page(const [], limit, src, s);
@@ -389,16 +410,19 @@ class _Source {
 
 /// The app [input] names. Another app is read only once the owner allows
 /// it: asked at most once a run, with the wall clock stopped meanwhile.
+/// When [fromBundle], another app is refused outright.
 Future<_Source> _source(
   Map<String, Object?> input,
   RunState s,
-  ClaxApi api,
-) async {
+  ClaxApi api, {
+  required bool fromBundle,
+}) async {
   final own = s.ctx.artifactId;
   final app = _optString(input, 'app');
   if (app == null || app == own) {
     return _Source(aid: own, app: null, prefixes: _ownPrivatePrefixes(s));
   }
+  if (fromBundle) throw const ToolInputError(fromBundleRefusal);
   final consent = s.readConsent;
   if (consent == null) {
     throw const ToolInputError(
