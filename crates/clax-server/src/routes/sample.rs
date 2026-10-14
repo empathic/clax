@@ -26,14 +26,16 @@ use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
+#[cfg(not(target_arch = "wasm32"))]
+use axum::response::sse::KeepAlive;
+use axum::response::sse::{Event as SseEvent, Sse};
 use axum::response::{IntoResponse, Response};
 use chrono::NaiveDate;
+use clax_rt::wall::Instant;
 use futures::{Stream, StreamExt};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::convert::Infallible;
-use std::time::Instant;
 
 /// Body limit of the call route: five downsized images, base64, with room to spare.
 pub const SAMPLE_BODY_LIMIT: usize = 48 * 1024 * 1024;
@@ -114,6 +116,7 @@ pub async fn status(
 }
 
 /// The SSE response: `start`, then the flight's frames.
+#[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
 pub(crate) fn stream_response(
     s: &AppState,
     start: Value,
@@ -126,13 +129,16 @@ pub(crate) fn stream_response(
         let (name, data) = o.sse();
         Ok::<_, Infallible>(SseEvent::default().event(name).data(data.to_string()))
     });
-    Sse::new(first.chain(rest))
-        .keep_alive(
-            KeepAlive::new()
-                .interval(s.sse_keep_alive)
-                .text("keep-alive"),
-        )
-        .into_response()
+    let sse = Sse::new(first.chain(rest));
+    // axum's keep-alive sleeps on tokio's timer; a Worker's sample stream
+    // lasts one generation and sends none.
+    #[cfg(not(target_arch = "wasm32"))]
+    let sse = sse.keep_alive(
+        KeepAlive::new()
+            .interval(s.sse_keep_alive)
+            .text("keep-alive"),
+    );
+    sse.into_response()
 }
 
 /// `POST /api/artifacts/{aid}/sample`.
@@ -215,7 +221,7 @@ pub async fn sample(
         CachePolicy::Off => Box::new(|_: Option<&Done>| {}),
     };
     let (sampler, id, flight) = (s.sample.clone(), call_id.clone(), f.clone());
-    let task = tokio::spawn(async move {
+    let task = clax_rt::spawn(async move {
         let _running = permit;
         flight::drive(sampler, id, prepared, flight, on_finish).await;
     });

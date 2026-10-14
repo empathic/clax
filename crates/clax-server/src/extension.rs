@@ -396,7 +396,7 @@ pub async fn gateway(State(s): State<AppState>, mut req: Request, next: Next) ->
     if s.ext_creds.due_for_touch(&hash) {
         let store = s.store.clone();
         let hash = hash.clone();
-        tokio::task::spawn_blocking(move || {
+        clax_rt::spawn_blocking(move || {
             if let Err(e) = store.touch_extension_credential(&hash) {
                 tracing::warn!(error = %e, "could not record an extension credential's use");
             }

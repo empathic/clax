@@ -14,10 +14,13 @@ use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use clax_core::audit::ToolCallReport;
+#[cfg(not(target_arch = "wasm32"))]
 use clax_core::toolpath::RenderEnv;
 use clax_core::toolpath::project;
+#[cfg(not(target_arch = "wasm32"))]
+use clax_rt::wall::Instant;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Whether `who` may read the audit history: the owner, by the daemon
 /// token or the owner cookie (spec §8.3). Checked from the credentials
@@ -101,9 +104,11 @@ pub fn export_query(query: &str) -> Result<project::Export, crate::error::ApiErr
 }
 
 /// The size of the chunks an export streams.
+#[cfg(not(target_arch = "wasm32"))]
 const EXPORT_CHUNK: usize = 64 * 1024;
 
 /// How many chunks wait between an export job and its response body.
+#[cfg(not(target_arch = "wasm32"))]
 const EXPORT_QUEUE: usize = 4;
 
 /// What bounds the daemon's exports: how many run at once (each holds a
@@ -134,19 +139,24 @@ impl Exports {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 type Chunk = Result<axum::body::Bytes, std::io::Error>;
 
 /// The writer an export job writes through: chunks of [`EXPORT_CHUNK`]
 /// bytes, handed to the response body over a bounded channel, each waiting
-/// at most the stall limit for room, until the export's deadline.
+/// at most the stall limit for room, until the export's deadline. Native
+/// only: it blocks its thread on the response body's room, and a Worker's
+/// store job runs on the only thread.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct ChunkWriter {
     tx: tokio::sync::mpsc::Sender<Chunk>,
-    rt: tokio::runtime::Handle,
+    rt: clax_rt::Handle,
     buf: Vec<u8>,
     stall: Duration,
     deadline: Instant,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ChunkWriter {
     fn ship(&mut self) -> std::io::Result<()> {
         use std::io::{Error, ErrorKind};
@@ -166,7 +176,7 @@ impl ChunkWriter {
         let (tx, stall) = (self.tx.clone(), self.stall);
         match self
             .rt
-            .block_on(async move { tokio::time::timeout(stall, tx.send(Ok(chunk))).await })
+            .block_on(async move { clax_rt::time::timeout(stall, tx.send(Ok(chunk))).await })
         {
             Ok(Ok(())) => Ok(()),
             Ok(Err(_)) => Err(Error::new(
@@ -181,6 +191,7 @@ impl ChunkWriter {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl std::io::Write for ChunkWriter {
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
         self.buf.extend_from_slice(data);
@@ -204,20 +215,21 @@ impl std::io::Write for ChunkWriter {
 /// the body awaits the job, and anything but success (an error, a reader
 /// that stalled, the time limit, a panic) ends it with an error, which
 /// aborts the transfer. A truncated export never ends like a whole one.
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn stream_export<F>(
     content_type: &'static str,
     limits: &Exports,
     start: F,
 ) -> Result<axum::response::Response, crate::error::ApiError>
 where
-    F: FnOnce(ChunkWriter) -> tokio::task::JoinHandle<clax_core::Result<()>>,
+    F: FnOnce(ChunkWriter) -> clax_rt::JoinHandle<clax_core::Result<()>>,
 {
     use axum::response::IntoResponse;
     use futures::StreamExt;
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Chunk>(EXPORT_QUEUE);
     let w = ChunkWriter {
         tx,
-        rt: tokio::runtime::Handle::current(),
+        rt: clax_rt::Handle::current(),
         buf: Vec::with_capacity(EXPORT_CHUNK),
         stall: limits.stall,
         deadline: Instant::now() + limits.ceiling,
@@ -273,6 +285,7 @@ where
 /// after it aborts the transfer ([`stream_export`]). The history holds
 /// every person's content unfiltered, so the owner's agents get 403
 /// `not_for_agents` (spec 2026-10-08-multi-agent-multi-person §7.5).
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn export(
     axum::extract::State(s): axum::extract::State<AppState>,
     d: crate::agent::DeniedToGrants,
@@ -296,7 +309,7 @@ pub async fn export(
     let (view_base, version) = (s.browser_base.clone(), s.version);
     let store = s.store.clone();
     stream_export(content_type, &s.exports, move |mut w| {
-        tokio::spawn(async move {
+        clax_rt::spawn(async move {
             store
                 .call(move |st| {
                     let _permit = permit;

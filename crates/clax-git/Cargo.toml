@@ -17,10 +17,10 @@ sha1 = "0.10"
 thiserror.workspace = true
 
 [dev-dependencies]
-axum.workspace = true
+axum = { workspace = true, features = ["http1", "tokio"] }
 reqwest.workspace = true
 tempfile.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["full"] }
 
 [[test]]
 name = "integration"

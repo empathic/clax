@@ -8,7 +8,10 @@
 
 use crate::Result;
 use rusqlite::{Connection, params};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+// `std::time::Instant::now` panics on wasm32-unknown-unknown; natively
+// web_time's `Instant` is std's.
+use web_time::Instant;
 
 /// Threads in the calibration database.
 pub const THREADS: usize = 3000;

@@ -275,6 +275,51 @@ pub struct Conn {
     pub local: SocketAddr,
 }
 
+/// The connection `extensions`' request arrived on, as its host recorded
+/// it: natively axum's `ConnectInfo<Conn>`, which the daemon serves with;
+/// on wasm32 a [`Conn`] the Durable Object put there, if any. `None` is a
+/// request that came over no connection of this machine's: never loopback.
+pub fn conn_of(extensions: &axum::http::Extensions) -> Option<Conn> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        extensions
+            .get::<axum::extract::ConnectInfo<Conn>>()
+            .map(|c| c.0)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        extensions.get::<Conn>().copied()
+    }
+}
+
+/// Extracts the request's [`Conn`] ([`conn_of`]). Natively it is
+/// `ConnectInfo<Conn>`'s extractor, rejecting as it does; on wasm32 a
+/// request without one is refused 403 `not_loopback`.
+pub struct PeerConn(pub Conn);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<S: Send + Sync> FromRequestParts<S> for PeerConn {
+    type Rejection = <axum::extract::ConnectInfo<Conn> as FromRequestParts<S>>::Rejection;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        axum::extract::ConnectInfo::<Conn>::from_request_parts(parts, state)
+            .await
+            .map(|c| PeerConn(c.0))
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl<S: Send + Sync> FromRequestParts<S> for PeerConn {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        conn_of(&parts.extensions).map(PeerConn).ok_or_else(|| {
+            ApiError::forbidden("not_loopback", "the request came over no local connection")
+        })
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 impl
     axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, tokio::net::TcpListener>>
     for Conn
@@ -290,8 +335,10 @@ impl
 
 /// The daemon's listener: a TCP listener that sets socket options on each
 /// connection it accepts (see [`crate::daemon::tune_connection`]).
+#[cfg(not(target_arch = "wasm32"))]
 pub struct TunedListener(pub tokio::net::TcpListener);
 
+#[cfg(not(target_arch = "wasm32"))]
 impl axum::serve::Listener for TunedListener {
     type Io = tokio::net::TcpStream;
     type Addr = SocketAddr;
@@ -307,6 +354,7 @@ impl axum::serve::Listener for TunedListener {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, TunedListener>>
     for Conn
 {
@@ -360,9 +408,7 @@ pub fn request_host_allowed(
         .and_then(|h| h.to_str().ok())
         .or_else(|| uri.authority().map(|a| a.as_str()))
         .unwrap_or("");
-    let local = extensions
-        .get::<axum::extract::ConnectInfo<Conn>>()
-        .map(|c| c.0.local);
+    let local = conn_of(extensions).map(|c| c.local);
     api_host_allowed(host, local)
 }
 

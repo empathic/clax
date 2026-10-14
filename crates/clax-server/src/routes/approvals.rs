@@ -34,10 +34,10 @@ use clax_core::store::approvals::{
     AskApproval, Decision, OVERFLOW_BANNER, RequestStatus, Scope, UNCONNECTED, Via,
 };
 use clax_core::{CoreError, Store};
+use clax_rt::time::Instant;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Duration;
-use tokio::time::Instant;
 
 /// Whether a person's agent, whose read rights are `reads`, may read
 /// artifact `aid` (gone artifacts are no one's); every other caller may.

@@ -3,6 +3,7 @@
 
 use super::artifacts::{body, parse_id, path};
 use crate::error::ApiError;
+use crate::seats::Subscribe;
 use crate::state::AppState;
 use crate::stream::{Conn, MAX_TOPICS, SubError, Topic, parse_last_event_id};
 use crate::viewer::SameOrigin;
@@ -274,40 +275,19 @@ pub async fn update(
             Ok((crate::db_caller::caller_of(st, token, &who)?, claims))
         })
         .await?;
-    // Each seat is taken before the topics are added: a stream refused one
-    // for any artifact is refused the whole change, and keeps no seat it
-    // took for it.
-    let conn = crate::stream::seat_conn(&id);
-    let mut taken: Vec<String> = Vec::new();
-    for (aid, c) in &claims {
-        let held = s.stream.holds_live(&id, aid);
-        if !s.seats.take(aid, c, &conn) {
-            for a in &taken {
-                s.seats.leave(a.as_str(), &conn);
-            }
-            return Err(no_seat());
-        }
-        if !held {
-            taken.push(aid.clone());
-        }
-    }
     let credential = via.as_ref().map(|c| c.0.hash());
-    let result = s.stream.update_via(&id, &caller, credential, &add, &remove);
-    if result.is_err() {
-        for a in &taken {
-            s.seats.leave(a.as_str(), &conn);
-        }
-    }
+    let result = crate::seats::subscribe(&s, &id, &caller, credential, &claims, &add, &remove);
     match result {
         Ok((seq, topics)) => Ok(Json(json!({"seq": seq, "topics": topics}))),
-        Err(SubError::UnknownStream) => Err(ApiError::new(
+        Err(Subscribe::NoSeat) => Err(no_seat()),
+        Err(Subscribe::Hub(SubError::UnknownStream)) => Err(ApiError::new(
             StatusCode::NOT_FOUND,
             "unknown_stream",
             "no open stream has that ID for this caller; open /api/stream again",
         )),
-        Err(SubError::Hidden) => Err(CoreError::NotFound.into()),
-        Err(SubError::Forbidden) => Err(live_only_refusal()),
-        Err(SubError::TooMany) => Err(ApiError::new(
+        Err(Subscribe::Hub(SubError::Hidden)) => Err(CoreError::NotFound.into()),
+        Err(Subscribe::Hub(SubError::Forbidden)) => Err(live_only_refusal()),
+        Err(Subscribe::Hub(SubError::TooMany)) => Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "limit_reached",
             format!("a stream holds at most {MAX_TOPICS} topics"),

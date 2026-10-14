@@ -344,6 +344,66 @@ pub fn is_spectator(seats: &LiveSeats, aid: &str, claim: Option<&Claim>) -> bool
     claim.is_some_and(|c| !seats.may_write(aid, c))
 }
 
+/// Why [`subscribe`] refused a subscription change.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Subscribe {
+    /// No live seat was free for the caller on one of the artifacts.
+    NoSeat,
+    /// The stream hub refused the change.
+    Hub(crate::stream::SubError),
+}
+
+/// Subscribes stream `id` to `add` and unsubscribes it from `remove`
+/// ([`crate::stream::Hub::update_via`]), holding the live seat of each
+/// `(artifact ID, claim)` in `claims` ([`claim_for`] of the caller, for each
+/// artifact whose live topics `add` names) under the stream's connection key
+/// ([`crate::stream::seat_conn`]). `POST /api/stream/<id>` calls it, as
+/// does any outlet that receives subscription changes another way (a
+/// Durable Object's socket messages).
+///
+/// Each seat is taken before the topics are added: a change refused a seat
+/// on any artifact is refused whole, and keeps no seat it took for it; a
+/// change the hub refuses releases them too. The hub releases the seat of
+/// an artifact whose last live topic the change removes.
+///
+/// Takes seats, so it must not be called with the hub's lock held (see the
+/// module docs' lock order).
+///
+/// # Errors
+/// [`Subscribe`].
+pub fn subscribe(
+    s: &AppState,
+    id: &str,
+    caller: &clax_core::db::Caller,
+    credential: Option<&str>,
+    claims: &[(String, Claim)],
+    add: &[crate::stream::Topic],
+    remove: &[crate::stream::Topic],
+) -> Result<(u64, Vec<String>), Subscribe> {
+    let conn = crate::stream::seat_conn(id);
+    let mut taken: Vec<&str> = Vec::new();
+    for (aid, c) in claims {
+        let held = s.stream.holds_live(id, aid);
+        if !s.seats.take(aid, c, &conn) {
+            for a in &taken {
+                s.seats.leave(a, &conn);
+            }
+            return Err(Subscribe::NoSeat);
+        }
+        if !held {
+            taken.push(aid);
+        }
+    }
+    s.stream
+        .update_via(id, caller, credential, add, remove)
+        .map_err(|e| {
+            for a in &taken {
+                s.seats.leave(a, &conn);
+            }
+            Subscribe::Hub(e)
+        })
+}
+
 /// Links the daemon's seats to its stream hub: the hub holds and releases
 /// its streams' seats, and unsubscribes a stream whose seat went idle.
 pub fn install(state: &AppState) {

@@ -84,11 +84,13 @@
 //!
 //! # Futures
 //!
-//! The trait is written with `async_trait`. Natively its futures are `Send`
-//! and an implementation `Send + Sync`, so the daemon may hold it in an
-//! `Arc` and run it from any thread; on `wasm32` neither is required, since a
-//! Worker's JavaScript futures are `!Send` and run on one thread. The bound
-//! switches with [`MaybeSendSync`]. The store's synchronous entry points
+//! The trait is written with `async_trait`. An implementation is `Send +
+//! Sync` on every target, so a [`Store`](crate::store::Store) holding it in
+//! an `Arc` is too, as the server's state must be (axum's bounds hold on
+//! `wasm32` as well). Natively its futures are `Send`; on `wasm32` they need
+//! not be, since a Worker's JavaScript futures are `!Send` and run on one
+//! thread, and an implementation there keeps its JavaScript bindings in a
+//! `SendWrapper` (as the Worker keeps its page store). The store's synchronous entry points
 //! (every caller today) drive the futures with [`wait`], which suits an
 //! implementation whose futures do their work when first polled, as the
 //! filesystem's and the in-memory one do; an implementation that needs an
@@ -104,20 +106,6 @@ use crate::{ArtifactId, Result};
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
-
-/// `Send + Sync` natively; nothing on `wasm32`, where a Worker's futures and
-/// bindings are single-threaded.
-#[cfg(not(target_arch = "wasm32"))]
-pub trait MaybeSendSync: Send + Sync {}
-#[cfg(not(target_arch = "wasm32"))]
-impl<T: Send + Sync + ?Sized> MaybeSendSync for T {}
-
-/// `Send + Sync` natively; nothing on `wasm32`, where a Worker's futures and
-/// bindings are single-threaded.
-#[cfg(target_arch = "wasm32")]
-pub trait MaybeSendSync {}
-#[cfg(target_arch = "wasm32")]
-impl<T: ?Sized> MaybeSendSync for T {}
 
 /// A file a new version writes: its path, bytes and recorded content type.
 #[derive(Clone, Copy, Debug)]
@@ -167,7 +155,7 @@ impl AssetKey {
 /// every implementation keeps.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-pub trait ContentStore: MaybeSendSync {
+pub trait ContentStore: Send + Sync {
     /// The bytes of `path` in version `n` of `id`; `None` when the version
     /// or the file is not there.
     async fn read_file(&self, id: &ArtifactId, n: u32, path: &str) -> Result<Option<Vec<u8>>>;

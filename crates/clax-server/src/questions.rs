@@ -23,7 +23,7 @@ pub struct TokioSleeper;
 
 impl Sleeper for TokioSleeper {
     fn sleep(&self, d: std::time::Duration) -> futures::future::BoxFuture<'static, ()> {
-        Box::pin(tokio::time::sleep(d))
+        Box::pin(clax_rt::time::sleep(d))
     }
 }
 
@@ -216,7 +216,7 @@ pub async fn count_until(
             c.await;
         }
     };
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), reached).await;
+    let _ = clax_rt::time::timeout(std::time::Duration::from_secs(5), reached).await;
     count()
 }
 
@@ -296,7 +296,7 @@ pub fn announce_ids(s: &AppState, st: &Store, ids: &[String]) {
 /// poll let go (or from creation, when none has held it).
 pub fn start_grace(s: AppState, qid: String) {
     let generation = s.questions.arm(&qid);
-    tokio::spawn(async move {
+    clax_rt::spawn(async move {
         s.question_sleeper.sleep(s.question_grace).await;
         if !s.questions.due(&qid, generation) {
             return;

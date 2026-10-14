@@ -3,7 +3,7 @@ use crate::error::ApiError;
 use crate::state::AppState;
 use axum::{
     Json,
-    extract::{ConnectInfo, State},
+    extract::State,
     http::{HeaderMap, header},
     response::{IntoResponse, Response},
 };
@@ -27,7 +27,7 @@ use clax_core::store::viewers::Claim;
 pub async fn token(
     State(s): State<AppState>,
     _d: crate::agent::DeniedToGrants,
-    ConnectInfo(Conn { peer: addr, .. }): ConnectInfo<Conn>,
+    crate::auth::PeerConn(Conn { peer: addr, .. }): crate::auth::PeerConn,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let host = headers

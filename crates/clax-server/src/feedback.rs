@@ -342,7 +342,7 @@ impl Drop for ParkGuard {
 #[derive(Default)]
 pub struct Followers {
     active: Mutex<HashMap<String, usize>>,
-    last: Mutex<HashMap<String, std::time::Instant>>,
+    last: Mutex<HashMap<String, clax_rt::wall::Instant>>,
 }
 
 impl Followers {
@@ -399,7 +399,7 @@ impl Drop for FollowGuard {
             .last
             .lock()
             .unwrap()
-            .insert(self.session_id.clone(), std::time::Instant::now());
+            .insert(self.session_id.clone(), clax_rt::wall::Instant::now());
     }
 }
 
@@ -414,7 +414,7 @@ pub struct FeedbackCtx {
     pub codex: Arc<crate::push::CodexPush>,
     pub working: Arc<clax_core::working::Working>,
     /// The runtime `codex queue` runs on; dispatch may be called from blocking threads.
-    pub handle: tokio::runtime::Handle,
+    pub handle: clax_rt::Handle,
 }
 
 impl FeedbackCtx {
@@ -434,7 +434,7 @@ impl AppState {
             store: self.store.clone(),
             codex: self.codex.clone(),
             working: self.working.clone(),
-            handle: tokio::runtime::Handle::current(),
+            handle: clax_rt::Handle::current(),
         }
     }
 }

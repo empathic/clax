@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# check-wasm.sh [CARGO ARGS...]: checks clax-core for wasm32-unknown-unknown,
-# the target a hosted Worker runs, and fails on any error or warning.
+# check-wasm.sh [CARGO ARGS...]: checks the crates a hosted Worker runs
+# (clax-core, clax-rt, clax-mcp, clax-server) for wasm32-unknown-unknown,
+# and fails on any error or warning.
 #
 # SQLite for that target (rusqlite's sqlite-wasm-rs) is C compiled with a
 # clang that has a wasm32 backend; Apple's clang has none. The LLVM is
 # $LLVM_BIN when set, else the first of Homebrew's LLVM (in ~/.local/homebrew,
-# /opt/homebrew or /usr/local) or the clang on PATH that can target wasm32.
-# Extra arguments go to cargo (for example `-p clax-server` to check more).
+# /opt/homebrew or /usr/local), the clang on PATH or a Debian/Ubuntu
+# /usr/lib/llvm-<N> that can target wasm32.
+# Arguments, when given, go to cargo in place of the crate list (for example
+# `-p clax-server`).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -27,6 +30,11 @@ else
   if command -v clang >/dev/null; then
     candidates+=("$(dirname "$(command -v clang)")")
   fi
+  # Debian and Ubuntu install each LLVM under /usr/lib/llvm-<N>/bin, with
+  # only versioned names (llvm-ar-<N>) on PATH: newest first.
+  while IFS= read -r dir; do
+    candidates+=("$dir")
+  done < <(printf '%s\n' /usr/lib/llvm-*/bin | sort -V -r)
   for dir in "${candidates[@]}"; do
     if can_target_wasm "$dir"; then
       llvm="$dir"
@@ -46,7 +54,7 @@ fi
 export CC_wasm32_unknown_unknown="$llvm/clang"
 export AR_wasm32_unknown_unknown="$llvm/llvm-ar"
 if [ "$#" -eq 0 ]; then
-  set -- -p clax-core
+  set -- -p clax-core -p clax-rt -p clax-mcp -p clax-server
 fi
 # A warning fails the check too, as `-D warnings` does in the native gates;
 # cargo reports cached warnings again, so a rerun still sees them.

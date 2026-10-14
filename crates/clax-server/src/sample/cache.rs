@@ -7,9 +7,10 @@
 
 use super::flight::{Done, Flight};
 use super::request::MAX_GC;
+use clax_rt::wall::Instant;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 struct Stored {
     done: Done,

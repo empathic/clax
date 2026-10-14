@@ -32,10 +32,10 @@ use clax_core::audit::AuditCtx;
 use clax_core::questions::{Answer, Question, from_claude, from_claude_answers, validate_ask};
 use clax_core::store::questions::{Close, ListStatus, NewQuestion, Source, Status};
 use clax_core::{CoreError, Store};
+use clax_rt::time::Instant;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::time::Duration;
-use tokio::time::Instant;
 
 /// Longest `wait` of a question poll, in seconds.
 pub const MAX_WAIT_SECS: u64 = 3600;

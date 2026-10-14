@@ -63,4 +63,4 @@ sysinfo = { version = "0.38", default-features = false, features = ["system"] }
 tempfile.workspace = true
 clax-fake-exe = { path = "../clax-fake-exe" }
 nix = { workspace = true, features = ["time", "user"] }
-tokio = { workspace = true, features = ["sync", "macros", "rt"] }
+tokio = { workspace = true, features = ["sync", "macros", "rt", "rt-multi-thread", "time"] }

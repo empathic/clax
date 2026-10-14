@@ -2,9 +2,9 @@
 //! the set of live-page artifact IDs, and the rule that hides them from
 //! callers that are neither on this machine nor hold the token.
 
-use crate::auth::{Conn, has_token, is_loopback};
+use crate::auth::{has_token, is_loopback};
 use crate::error::ApiError;
-use axum::extract::{ConnectInfo, FromRequestParts};
+use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::http::{Extensions, HeaderMap};
 use clax_core::audit::AuditCtx;
@@ -33,7 +33,7 @@ struct Sites {
     /// recently used first.
     origins: HashMap<String, Vec<(String, String)>>,
     /// When each joined origin's use was last written to the store.
-    written: HashMap<String, std::time::Instant>,
+    written: HashMap<String, clax_rt::wall::Instant>,
 }
 
 /// How often a joined origin's use is written to the store at most.
@@ -215,7 +215,7 @@ impl LiveIds {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         g.written
-            .insert(origin.to_string(), std::time::Instant::now());
+            .insert(origin.to_string(), clax_rt::wall::Instant::now());
         if let Some(key) = g.key_of.get(origin).cloned()
             && let Some(list) = g.origins.get_mut(&key)
             && let Some(i) = list.iter().position(|(o, _)| o == origin)
@@ -235,9 +235,7 @@ impl LiveIds {
 pub fn sees_live_pages(headers: &HeaderMap, ext: &Extensions, token: &str) -> bool {
     !crate::auth::is_grant_request(headers)
         && (has_token(headers, token)
-            || ext
-                .get::<ConnectInfo<Conn>>()
-                .is_some_and(|c| is_loopback(c.0.peer)))
+            || crate::auth::conn_of(ext).is_some_and(|c| is_loopback(c.peer)))
 }
 
 /// Whether `path` is one of the live-page routes (`/api/live/…`), which
@@ -354,6 +352,8 @@ pub async fn hide_live_pages(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::Conn;
+    use axum::extract::ConnectInfo;
 
     #[test]
     fn the_artifact_a_path_names() {

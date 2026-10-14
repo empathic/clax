@@ -221,7 +221,7 @@ async fn within(
     limit: std::time::Duration,
     assemble: impl std::future::Future<Output = Result<Option<crate::boot::Injected>, ApiError>>,
 ) -> Option<crate::boot::Injected> {
-    match tokio::time::timeout(limit, assemble).await {
+    match clax_rt::time::timeout(limit, assemble).await {
         Ok(Ok(i)) => i,
         Ok(Err(e)) => {
             tracing::warn!(error = ?e, "artifact page served without its bootstrap");

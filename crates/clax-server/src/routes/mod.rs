@@ -4,6 +4,7 @@ pub mod assets;
 pub mod connect;
 pub mod content;
 pub mod docs;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod events;
 pub mod extension;
 pub mod feedback;
@@ -11,10 +12,12 @@ pub mod grants;
 pub mod health;
 pub mod inbox;
 pub mod live;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod mcp;
 pub mod people;
 pub mod perf;
 pub mod questions;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod room;
 pub mod sample;
 pub mod sessions;
@@ -30,8 +33,10 @@ pub mod watches;
 pub mod working;
 
 use crate::auth::RequireToken;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::error::ApiError;
 use crate::state::AppState;
+#[cfg(not(target_arch = "wasm32"))]
 use axum::error_handling::HandleErrorLayer;
 use axum::{
     Router,
@@ -41,10 +46,13 @@ use axum::{
     routing::{delete, get, post},
 };
 use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
 use tower::ServiceBuilder;
+#[cfg(not(target_arch = "wasm32"))]
 use tower::timeout::TimeoutLayer;
 use tower_http::cors::{Any, CorsLayer};
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn timeout_error(err: tower::BoxError, limit: Duration) -> ApiError {
     if err.is::<tower::timeout::error::Elapsed>() {
         ApiError::new(
@@ -62,12 +70,20 @@ async fn timeout_error(err: tower::BoxError, limit: Duration) -> ApiError {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn with_timeout(router: Router<AppState>, d: Duration) -> Router<AppState> {
     router.layer(
         ServiceBuilder::new()
             .layer(HandleErrorLayer::new(move |e| timeout_error(e, d)))
             .layer(TimeoutLayer::new(d)),
     )
+}
+
+/// No deadline layer on wasm32: tower's timeout sleeps on tokio's timer, and
+/// a Worker's request is bounded by the platform.
+#[cfg(target_arch = "wasm32")]
+fn with_timeout(router: Router<AppState>, _d: Duration) -> Router<AppState> {
+    router
 }
 
 pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -> Router {
@@ -316,7 +332,6 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
     #[cfg(debug_assertions)]
     let api_fast = api_fast
         .route("/api/_test/working/skew", post(working::skew))
-        .route("/api/_test/events/open", get(events::open_streams))
         .route("/api/_test/stream/open", get(stream::open_streams))
         .route(
             "/api/_test/questions/{qid}/waiters",
@@ -352,6 +367,8 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             "/api/_test/grants/index/fail",
             post(grants::test_fail_index),
         );
+    #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+    let api_fast = api_fast.route("/api/_test/events/open", get(events::open_streams));
     #[cfg(feature = "test-routes")]
     let api_fast = api_fast.layer(axum::middleware::from_fn(test_delay));
     let api_fast = api_fast.layer(axum::middleware::from_fn(crate::http_cache::api_etag));
@@ -402,14 +419,8 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .route("/a/{aid}/{*rest}", get(shell::artifact_page))
         .route("/_clax/{*path}", get(shell::static_file))
         .layer(crate::http_cache::compression());
-    let mcp = mcp::router(&state);
-    #[cfg(feature = "test-routes")]
-    let mcp = mcp.layer(axum::middleware::from_fn(test_delay));
-    let mut r = Router::new()
+    let r = Router::new()
         .route("/healthz", get(health::healthz).layer(cors))
-        .route("/api/events", get(events::events))
-        .route("/api/stream", get(stream::open))
-        .route("/api/artifacts/{aid}/room", get(room::room))
         .route(
             "/api/artifacts/{aid}/sample",
             get(sample::status)
@@ -420,9 +431,6 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             post(sample::tool_result),
         )
         .route("/api/sessions/{id}/feedback", get(feedback::poll))
-        // Streams for as long as its reader takes: no request deadline, no
-        // buffering ETag.
-        .route("/api/toolpath/export", get(toolpath::export))
         .route("/api/sessions/{id}/notices", get(feedback::notices))
         // A long-poll: outside the request timeout, as the feedback poll.
         .route("/api/sessions/{id}/questions/{qid}", get(questions::poll))
@@ -438,8 +446,25 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .route(
             "/api/artifacts/{aid}/versions/{n}/files/{*path}",
             get(content::raw_file),
-        )
-        .merge(mcp);
+        );
+    // What holds its connection open: the daemon's. A Durable Object
+    // carries the streams and rooms over its own hibernatable sockets and
+    // serves `/mcp` with the tool set's JSON-RPC adapter (see the crate
+    // documentation).
+    #[cfg(not(target_arch = "wasm32"))]
+    let r = {
+        let mcp = mcp::router(&state);
+        #[cfg(feature = "test-routes")]
+        let mcp = mcp.layer(axum::middleware::from_fn(test_delay));
+        // Streams for as long as its reader takes: no request deadline, no
+        // buffering ETag.
+        r.route("/api/toolpath/export", get(toolpath::export))
+            .route("/api/events", get(events::events))
+            .route("/api/stream", get(stream::open))
+            .route("/api/artifacts/{aid}/room", get(room::room))
+            .merge(mcp)
+    };
+    let mut r = r;
     if let Some(tx) = shutdown {
         let tx = std::sync::Arc::new(tx);
         r = r.route(

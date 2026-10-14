@@ -79,9 +79,7 @@ pub fn set_owner_cookie(host: &str, token: &str, path: &str) -> Option<HeaderVal
 /// The peer a request came from, from the connection info the daemon serves
 /// with; `None` when it is missing (no connection: never local).
 pub fn peer_of(extensions: &axum::http::Extensions) -> Option<std::net::SocketAddr> {
-    extensions
-        .get::<axum::extract::ConnectInfo<crate::auth::Conn>>()
-        .map(|c| c.0.peer)
+    crate::auth::conn_of(extensions).map(|c| c.peer)
 }
 
 /// Whether a request comes from this machine: a loopback `peer` and a `Host`

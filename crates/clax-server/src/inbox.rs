@@ -349,7 +349,7 @@ pub fn listen(s: &AppState) {
         let _ = tx.send(c);
     }));
     let st = s.clone();
-    tokio::spawn(async move {
+    clax_rt::spawn(async move {
         while let Some(changes) = rx.recv().await {
             // Nobody to tell: no view is read or rendered.
             let held = st.stream.inbox_holders();
@@ -389,7 +389,7 @@ pub fn listen(s: &AppState) {
         }
     });
     let st = s.clone();
-    tokio::spawn(async move {
+    clax_rt::spawn(async move {
         let mut seen = st.vis_gen.current();
         loop {
             seen = st.vis_gen.wait_after(seen).await;

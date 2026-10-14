@@ -32,10 +32,11 @@ use axum::body::Bytes;
 use clax_core::db::{Caller, Level};
 use clax_core::presence::PresenceView;
 use clax_core::{ArtifactId, Event};
+use clax_rt::wall::Instant;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::{Notify, mpsc};
 
 /// Events one client may have queued before it counts as behind.
@@ -1318,7 +1319,7 @@ pub struct Conn {
     /// Per topic that fell behind, the first sequence dropped: queued events
     /// of the topic up to it are skipped.
     dropped: HashMap<Arc<str>, u64>,
-    keep_alive: tokio::time::Interval,
+    keep_alive: clax_rt::time::Interval,
     shutdown: tokio::sync::watch::Receiver<bool>,
     shutdown_live: bool,
     /// Whether the stream may still deliver (see [`Conn::checking`]).
@@ -1339,8 +1340,8 @@ impl Conn {
         out.push_back(Bytes::from(format!("event: ready\ndata: {ready}\n\n")));
         out.extend(o.prelude);
         let mut keep_alive =
-            tokio::time::interval_at(tokio::time::Instant::now() + keep_alive, keep_alive);
-        keep_alive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            clax_rt::time::interval_at(clax_rt::time::Instant::now() + keep_alive, keep_alive);
+        keep_alive.set_missed_tick_behavior(clax_rt::time::MissedTickBehavior::Delay);
         Conn {
             hub,
             id: o.id,

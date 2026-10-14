@@ -106,7 +106,7 @@ where
     if !large {
         return work();
     }
-    tokio::task::spawn_blocking(work).await.map_err(|e| {
+    clax_rt::spawn_blocking(work).await.map_err(|e| {
         tracing::error!(error = %e, "parsing a request body failed");
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,

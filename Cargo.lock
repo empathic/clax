@@ -493,7 +493,9 @@ dependencies = [
  "bytes",
  "clax-core",
  "clax-fake-exe",
+ "clax-rt",
  "clax-server",
+ "getrandom 0.4.3",
  "http",
  "reqwest",
  "rmcp",
@@ -505,6 +507,20 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+ "uuid",
+]
+
+[[package]]
+name = "clax-rt"
+version = "0.4.0"
+dependencies = [
+ "futures-channel",
+ "futures-util",
+ "gloo-timers",
+ "send_wrapper",
+ "tokio",
+ "wasm-bindgen-futures",
+ "web-time",
 ]
 
 [[package]]
@@ -520,6 +536,7 @@ dependencies = [
  "clax-fake-exe",
  "clax-hooks",
  "clax-mcp",
+ "clax-rt",
  "clax-server",
  "futures",
  "mime_guess",
@@ -544,6 +561,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "web-time",
 ]
 
 [[package]]
@@ -957,6 +975,18 @@ dependencies = [
  "log",
  "regex-automata",
  "regex-syntax",
+]
+
+[[package]]
+name = "gloo-timers"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbb143cf96099802033e0d4f4963b19fd2e0b728bcf076cd9cf7f6634f092994"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "js-sys",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -2088,6 +2118,15 @@ name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
+
+[[package]]
+name = "send_wrapper"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd0b0ec5f1c1ca621c432a25813d8d60c88abe6d3e08a3eb9cf37d97a0fe3d73"
+dependencies = [
+ "futures-core",
+]
 
 [[package]]
 name = "serde"
