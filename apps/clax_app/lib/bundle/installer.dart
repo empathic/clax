@@ -121,7 +121,9 @@ class Installer {
 
   /// Installs [opened] as a new app (§8.1): for [TrustAnswer.install],
   /// [TrustAnswer.foreign] and [TrustAnswer.forked]. Returns its artifact
-  /// ID. A failure deletes the app made and throws [BundleFailure].
+  /// ID. A bundle of this install's own ([TrustDecision.mine], on
+  /// `install`: the person's app deleted here and opened again) is
+  /// recorded with role `author`, so later exports continue its lineage. A failure deletes the app made and throws [BundleFailure].
   Future<String> install(OpenedBundle opened) async {
     final m = opened.manifest;
     final b = opened.bundle;
@@ -156,6 +158,8 @@ class Installer {
       );
     }
     final aid = made.artifact.id;
+    final mine =
+        opened.decision.mine && opened.decision.answer == TrustAnswer.install;
     try {
       final got = made.version.contentSha256;
       if (got != m.contentSha256) {
@@ -178,17 +182,17 @@ class Installer {
         aid,
         LineageEntry(
           lineage: m.lineage,
-          role: LineageRole.installed,
+          role: mine ? LineageRole.author : LineageRole.installed,
           key: m.author.key,
           name: m.author.name,
           version: m.version,
           released: [m.contentSha256],
           capabilities: m.capabilities,
           title: m.title,
-          fromBundle: true,
+          fromBundle: !mine,
         ),
       );
-      await store.keepBundle(aid, b.bytes);
+      if (!mine) await store.keepBundle(aid, b.bytes);
       return aid;
     } on Object catch (e) {
       try {

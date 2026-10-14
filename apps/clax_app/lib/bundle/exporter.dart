@@ -258,9 +258,10 @@ class Exporter {
               : null,
           fromBundle: entry?.fromBundle ?? false,
         );
-    await store.put(
+    await store.update(
       aid,
-      base.withRelease(state, version: version).copyWith(name: () => name),
+      (_) async =>
+          base.withRelease(state, version: version).copyWith(name: () => name),
     );
     return ExportedBundle(
       bytes: written.bytes,
