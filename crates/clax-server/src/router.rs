@@ -480,9 +480,13 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             .route("/api/artifacts/{aid}/live", get(live_layers::live))
             .merge(mcp)
     };
-    // The stream's WebSocket, which the Durable Object upgrades and holds.
+    // The stream's, the room's and the live layers' WebSockets, which the
+    // Durable Object upgrades and holds.
     #[cfg(target_arch = "wasm32")]
-    let r = r.route("/api/stream", get(stream::open_socket));
+    let r = r
+        .route("/api/stream", get(stream::open_socket))
+        .route("/api/artifacts/{aid}/room", get(room::room_socket))
+        .route("/api/artifacts/{aid}/live", get(live_layers::live_socket));
     // The tool set's JSON-RPC adapter: `/mcp` on a Durable Object, beside
     // rmcp's `/mcp` in the daemon.
     let r = r.merge(mcp_http::router(&state));

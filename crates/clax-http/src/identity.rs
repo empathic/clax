@@ -459,12 +459,23 @@ impl Identity {
 /// is not the current token's (the token was changed since) counts as no
 /// token: a reopened stream never has more rights than a request with the
 /// same cookie and token would get now.
+///
+/// On a hosted daemon a browser's socket also keeps its session, by the
+/// cookie's SHA-256 (`session`), and whether it is a guest's (`guest`:
+/// their stream carries agents' drafts, as a person's does). A socket is
+/// reopened ([`SocketCredentials::reopen`]) only while that session is
+/// live, as whoever it signs in as now; the gate still decides each
+/// subscription of a new stream.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SocketCredentials {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub viewer: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub guest: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 impl SocketCredentials {
@@ -474,6 +485,53 @@ impl SocketCredentials {
         SocketCredentials {
             viewer: who.cookie.clone(),
             token: who.token.then(|| Self::token_tag(token)),
+            guest: false,
+            session: None,
+        }
+    }
+
+    /// [`SocketCredentials::of`], with a hosted daemon's session and guest
+    /// flag from the request's `extensions` ([`crate::hosted::HostedRequest`]).
+    pub fn of_request(
+        who: &Identity,
+        token: &str,
+        extensions: &axum::http::Extensions,
+    ) -> SocketCredentials {
+        let h = extensions.get::<crate::hosted::HostedRequest>();
+        SocketCredentials {
+            guest: h.is_some_and(|h| h.session.as_ref().is_some_and(|v| v.guest)),
+            session: h.and_then(|h| h.cookie_sha256.clone()),
+            ..SocketCredentials::of(who, token)
+        }
+    }
+
+    /// The identity a reopened socket has now, and its hosted session:
+    /// [`SocketCredentials::identity`], and with a kept session, that
+    /// session as the hosted gate reads it while it is live
+    /// ([`crate::hosted::HostedRequest::identity`]). A socket whose kept
+    /// session ended or expired does not reopen.
+    ///
+    /// # Errors
+    /// [`clax_core::CoreError::NotFound`] for a kept session that is no
+    /// longer live; the store's.
+    pub fn reopen(
+        &self,
+        st: &Store,
+        token: &str,
+    ) -> clax_core::Result<(Identity, Option<clax_store::hosted::SessionViewer>)> {
+        let id = self.identity(token);
+        let Some(hash) = &self.session else {
+            return Ok((id, None));
+        };
+        match st.browser_session_of_hash(hash)? {
+            Some(sv) => {
+                let h = crate::hosted::HostedRequest {
+                    session: Some(sv.clone()),
+                    ..Default::default()
+                };
+                Ok((h.identity(id), Some(sv)))
+            }
+            None => Err(clax_core::CoreError::NotFound),
         }
     }
 
@@ -696,6 +754,16 @@ mod tests {
         );
         let creds = SocketCredentials::of(&viewer, TOKEN);
         assert_eq!(creds.token, None);
+        // A guest's flag round-trips through the attachment's JSON; a
+        // non-guest's adds nothing to it.
+        assert!(!serde_json::to_string(&creds).unwrap().contains("guest"));
+        let guest = SocketCredentials {
+            guest: true,
+            ..creds.clone()
+        };
+        let back: SocketCredentials =
+            serde_json::from_str(&serde_json::to_string(&guest).unwrap()).unwrap();
+        assert!(back.guest);
         let again = creds.identity(TOKEN);
         assert_eq!(
             (again.cookie.as_deref(), again.token, again.is_owner()),
@@ -705,6 +773,8 @@ mod tests {
         let forged = SocketCredentials {
             viewer: None,
             token: Some(SocketCredentials::token_tag("guess")),
+            guest: false,
+            session: None,
         };
         assert!(!forged.identity(TOKEN).token);
     }

@@ -8,38 +8,65 @@
 //! `RepoDO`'s stand-in or Cloudflare Artifacts, assets in the `ASSETS`
 //! bucket), made once per object and kept across the test route's
 //! rebuilds, builds the server's state and router once
-//! (`AppState::assemble`), and answers every
-//! request by calling the router. No request reaches it over a connection
-//! of the owner's machine: `clax_http::auth::conn_of` is `None` on wasm32,
-//! so it serves with the daemon's rules for a request from another machine
-//! (no `GET /api/token`, no owner cookie, no live pages, invites refused as
-//! on a loopback bind). The owner is whoever presents the bearer token
-//! (`CLAX_TOKEN`, else one the object made and keeps).
+//! (`AppState::assemble`), and answers every request by calling the
+//! router, its body read whole first (a body the router reads from the
+//! runtime's stream would be read after the response was sent).
 //!
-//! # Streams
+//! # Hosted mode
 //!
-//! `GET /api/stream` upgrades to a WebSocket the object accepts with the
-//! hibernation API: the router opens the stream
-//! (`clax_server::routes::stream::open_socket`), and the object holds its
-//! `Conn` beside the socket. Subscriptions stay on `POST
-//! /api/stream/<id>`, through the router and its admission rules. Frames
-//! are taken with `Conn::drain`, one SSE block a text message: after every
-//! request, socket message and alarm, and from a task the hub wakes
-//! (`Hub::on_queue`) whenever it queues frames, so events dispatched by
-//! spawned listeners go out too; only sockets whose `Conn::pending` says so
-//! are drained. The runtime answers the shell's `ping` with `pong` itself,
-//! so an idle socket never wakes the object.
+//! With `HOSTED` = `1` the instance is a hosted Clax
+//! (`clax_http::hosted`): people sign in through the browser (`/setup`
+//! with the `SETUP_SECRET` secret, invites, sign-in links, guests), each
+//! person's browser and agents act within their rights, and agent tokens
+//! reach `/mcp`. Its public origin is `PUBLIC_ORIGIN` (required), artifact
+//! content is served on `CONTENT_ORIGIN` when set (and never on the public
+//! origin), and clients are named by `CF-Connecting-IP`. The owner's token
+//! (`CLAX_TOKEN`, else one the object made and keeps) still works for the
+//! CLI. Without `HOSTED`, no request reaches the object over a connection
+//! of the owner's machine (`clax_http::auth::conn_of` is `None` on
+//! wasm32), so it serves with the daemon's rules for a request from another
+//! machine: the owner is whoever presents the bearer token, and every
+//! browser is a viewer.
 //!
-//! Each socket's attachment keeps its key, the credentials its stream was
-//! opened with (`SocketCredentials`: the viewer cookie's ULID and, when the
-//! token was presented, a tag of it, never the token) and the stream's ID.
-//! A tag of a token that is no longer the instance's reopens no owner's
-//! stream. An object
-//! rebuilt after hibernation or eviction has an empty hub: at its first
-//! event it opens each socket a new stream as the same caller, resolved
-//! against the store again, and sends its `ready`, which names a new
-//! stream; the shell then subscribes its topics again over `POST`, with
-//! every admission rule, and refetches them, as after a daemon restart.
+//! # Sockets
+//!
+//! `GET /api/stream`, `GET /api/artifacts/<id>/live` (the live layers) and
+//! `GET /api/artifacts/<id>/room` (the `room` capability) upgrade to
+//! WebSockets the object accepts with the hibernation API: the router
+//! admits the request and opens the stream, live socket or room socket
+//! (`routes::stream::open_socket`, `routes::live_layers::live_socket`,
+//! `routes::room::room_socket`), taking live seats through the server's
+//! seat functions, and the object holds it beside the socket. A stream's
+//! subscriptions stay on `POST /api/stream/<id>`, through the router and
+//! its admission rules. The object drains every socket (a stream's frames,
+//! one SSE block a text message; a live socket's batches; a room's frames)
+//! after every request, socket message and alarm, and from a task the
+//! hubs wake (`Hub::on_queue`, `LiveLayers::on_queue`) whenever they queue
+//! frames, so what spawned listeners and timers dispatch goes out too. The
+//! runtime answers the shell's `ping` on the stream with `pong` itself, so
+//! an idle socket never wakes the object.
+//!
+//! Each socket's attachment keeps its kind, its key, the credentials it
+//! was opened with (`SocketCredentials`: the viewer cookie's ULID, a tag of
+//! the token when it was presented, a hosted session by its cookie's hash,
+//! never a token or a cookie) and what reopens it (the stream's ID; the
+//! artifact; a room socket's peer label and named rooms). An object rebuilt
+//! after hibernation or eviction has empty hubs: at its first event it
+//! reopens each socket as the same caller, checked against the store again
+//! (a hosted session must still be live and still read the page): a
+//! stream gets a new stream and its `ready`, and the shell subscribes its
+//! topics again; a live or room socket joins again and is sent its welcome
+//! (and its rooms' peers).
+//!
+//! # Seats and presence across a wake
+//!
+//! The live seats held and the live presence reports are kept in the
+//! object's storage after every event that changed them (a few hundred
+//! bytes a seat or report), and taken back when the server is built: a
+//! seated person stays seated, with their latest input, until their own
+//! connection takes the seat again or it goes idle, so nobody who arrives
+//! first after a wake takes it, and presence chips do not empty while tabs
+//! report again.
 //!
 //! # Alarm
 //!
@@ -47,14 +74,17 @@
 //! the earliest of them next has something to do: `AppState::sweep` by
 //! `AppState::next_sweep_in` (a working record or presence report lapsing,
 //! a gone viewer dropping, a draft going idle, a detached stream's grace
-//! ending, a live seat going idle), the grant expiry by `Store::grants_next_due`, and the
-//! store's planner refresh an hour after the last one once a request that
-//! may write was served. After every request, socket event and alarm the
-//! object works that time out again and moves the alarm earlier when it
-//! must; with nothing due it holds no alarm, so an idle object, open
-//! sockets or not, sleeps until a request or a message wakes it. An alarm
-//! is never set sooner than `SWEEP_INTERVAL` ahead, the daemon's own sweep
-//! period.
+//! ending, a live seat going idle, a question's grace ending: graces run
+//! on no timer here, `questions::SweptGraces`), the grant expiry by
+//! `Store::grants_next_due`, and the store's planner refresh an hour after
+//! the last one once a request that may write was served. After every
+//! request, socket event and alarm the object works that time out again and
+//! moves the alarm earlier when it must; with nothing due it holds no
+//! alarm, so an idle object, open sockets or not, sleeps until a request or
+//! a message wakes it. An alarm is never set sooner than `SWEEP_INTERVAL`
+//! ahead, the daemon's own sweep period. A server built anew starts a grace
+//! for each open hook question no poll holds (its poll did not outlive the
+//! old one).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -65,14 +95,16 @@ use clax_core::content::ContentStore;
 use clax_core::{Home, Store};
 use clax_http::state::AppState;
 use clax_http::identity::SocketCredentials;
+use clax_server::routes::live_layers::{LiveOpened, LiveSocket, LiveStep};
+use clax_server::routes::room::{RoomOpened, RoomSocket, RoomStep};
 use clax_server::routes::stream::{SocketStream, open_stream};
 use clax_realtime::stream::Conn;
 use serde::{Deserialize, Serialize};
 use tower_service::Service;
 use wasm_bindgen::JsValue;
 use worker::{
-    DurableObject, Env, HttpRequest, Request, Response, Result, State, WebSocket,
-    WebSocketIncomingMessage, WebSocketPair, durable_object,
+    DurableObject, Env, Request, Response, Result, State, WebSocket, WebSocketIncomingMessage,
+    WebSocketPair, durable_object,
 };
 
 use crate::store::{DoPageStore, run};
@@ -98,21 +130,57 @@ const MIN_ALARM_MS: f64 = clax_realtime::working::SWEEP_INTERVAL.as_millis() as 
 /// How long after the last planner refresh the next is due, once a request
 /// that may write was served.
 const OPTIMIZE_MS: f64 = clax_store::OPTIMIZE_INTERVAL.as_millis() as f64;
+/// The most bytes of one room socket message (as the daemon's room route).
+const MAX_ROOM_MESSAGE: usize = 64 * 1024;
+
+/// What a socket carries.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Kind {
+    /// `/api/stream` (attachments written before kinds name none).
+    #[default]
+    Stream,
+    /// `/api/artifacts/<id>/live`.
+    Live,
+    /// `/api/artifacts/<id>/room`.
+    Room,
+}
 
 /// What a socket's attachment carries across hibernation (well under the
-/// platform's 2,048 bytes: two hex IDs, a ULID and a 16-digit tag).
+/// platform's 2,048 bytes: two hex IDs, a ULID, a 16-digit tag, a 64-digit
+/// hash, an artifact ID, a peer label and at most a few room names).
 #[derive(Serialize, Deserialize)]
 struct Attachment {
+    #[serde(default, skip_serializing_if = "is_stream")]
+    kind: Kind,
     sock: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     stream: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    aid: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    peer: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    rooms: Vec<String>,
     #[serde(flatten)]
     creds: SocketCredentials,
 }
 
-/// A socket and the stream connection it carries.
+fn is_stream(k: &Kind) -> bool {
+    *k == Kind::Stream
+}
+
+/// What a socket carries, live.
+enum Carried {
+    Stream(Conn),
+    Live(Box<LiveSocket>),
+    Room(Box<RoomSocket>),
+}
+
+/// A socket and what it carries.
 struct Socket {
     ws: WebSocket,
-    conn: Conn,
+    carried: Carried,
 }
 
 /// The server: built once per object, rebuilt only by the test route.
@@ -120,6 +188,10 @@ struct Instance {
     app: AppState,
     router: axum::Router,
     sockets: RefCell<HashMap<String, Socket>>,
+    /// The seats and presence last written to storage, as written.
+    kept: RefCell<String>,
+    /// Whether the open hook questions' graces were started.
+    graced: Cell<bool>,
     /// Kept so the streams' `shutdown` never closes.
     _shutdown: tokio::sync::watch::Sender<bool>,
     /// Dropped last: keeps the database file in the VFS.
@@ -134,7 +206,7 @@ pub struct InstanceDo {
     /// The content store, made once per object.
     content: std::result::Result<Arc<dyn ContentStore>, String>,
     inner: RefCell<std::result::Result<Rc<Instance>, String>>,
-    /// Whether the sockets the object found at its start have streams.
+    /// Whether the sockets the object found at its start were reopened.
     revived: Cell<bool>,
     /// The alarm's time (ms) as this object last read or set it: `None`
     /// before it has been read, `Some(None)` with none set.
@@ -147,6 +219,13 @@ pub struct InstanceDo {
 
 fn var(env: &Env, name: &str) -> String {
     env.var(name).map(|v| v.to_string()).unwrap_or_default()
+}
+
+/// A secret, else a var of the name (`wrangler dev --var`), else empty.
+fn secret(env: &Env, name: &str) -> String {
+    env.secret(name)
+        .map(|v| v.to_string())
+        .unwrap_or_else(|_| var(env, name))
 }
 
 fn now_ms() -> f64 {
@@ -165,37 +244,94 @@ fn rust_err(e: impl std::fmt::Display) -> worker::Error {
     worker::Error::RustError(e.to_string())
 }
 
-/// The owner's token: `CLAX_TOKEN` when set, else the one the object keeps
-/// in its storage, made on first use.
-fn owner_token(state: &State, env: &Env) -> Result<String> {
-    let set = var(env, "CLAX_TOKEN");
-    if !set.is_empty() {
-        return Ok(set);
-    }
+/// The object's own key-value rows (`_clax_instance`).
+fn kv_table(state: &State) -> Result<worker::SqlStorage> {
     let sql = state.storage().sql();
     run(
         &sql,
         "CREATE TABLE IF NOT EXISTS _clax_instance (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
         vec![],
     )?;
+    Ok(sql)
+}
+
+fn kv_get(state: &State, key: &str) -> Result<Option<String>> {
+    let sql = kv_table(state)?;
     let row = sql
-        .exec(
-            "SELECT value FROM _clax_instance WHERE key = 'token'",
-            vec![],
+        .exec_raw(
+            "SELECT value FROM _clax_instance WHERE key = ?",
+            vec![JsValue::from(key)],
         )?
         .raw()
         .next()
         .transpose()?;
-    if let Some([worker::SqlStorageValue::String(t)]) = row.as_deref() {
-        return Ok(t.clone());
-    }
-    let token = random_hex(32)?;
+    Ok(match row.as_deref() {
+        Some([worker::SqlStorageValue::String(t)]) => Some(t.clone()),
+        _ => None,
+    })
+}
+
+fn kv_put(state: &State, key: &str, value: &str) -> Result<()> {
+    let sql = kv_table(state)?;
     run(
         &sql,
-        "INSERT INTO _clax_instance (key, value) VALUES ('token', ?)",
-        vec![JsValue::from(token.as_str())],
-    )?;
+        "INSERT INTO _clax_instance (key, value) VALUES (?, ?)
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        vec![JsValue::from(key), JsValue::from(value)],
+    )
+}
+
+/// The owner's token: `CLAX_TOKEN` when set, else the one the object keeps
+/// in its storage, made on first use.
+fn owner_token(state: &State, env: &Env) -> Result<String> {
+    let set = secret(env, "CLAX_TOKEN");
+    if !set.is_empty() {
+        return Ok(set);
+    }
+    if let Some(t) = kv_get(state, "token")? {
+        return Ok(t);
+    }
+    let token = random_hex(32)?;
+    kv_put(state, "token", &token)?;
     Ok(token)
+}
+
+/// Hosted mode as the Worker's vars and secrets set it (see the module
+/// docs): `None` without `HOSTED` = `1`; an error for a hosted instance
+/// whose origins hosted mode does not take.
+fn hosted(env: &Env) -> Result<Option<Arc<clax_http::hosted::Hosted>>> {
+    if var(env, "HOSTED") != "1" {
+        return Ok(None);
+    }
+    let public = var(env, "PUBLIC_ORIGIN");
+    let setup = secret(env, "SETUP_SECRET");
+    let h = clax_http::hosted::Hosted::new(&public, Some(setup.as_str()))
+        .ok_or_else(|| {
+            rust_err(format!(
+                "HOSTED is 1 and PUBLIC_ORIGIN must be an https:// origin (http:// on localhost), not {public:?}"
+            ))
+        })?
+        .behind_cloudflare(true);
+    let content = var(env, "CONTENT_ORIGIN");
+    let h = if content.is_empty() {
+        h
+    } else {
+        h.with_content_origin(&content).ok_or_else(|| {
+            rust_err(format!(
+                "CONTENT_ORIGIN must be an origin of its own host, not {content:?}"
+            ))
+        })?
+    };
+    Ok(Some(Arc::new(h)))
+}
+
+/// The seats and presence the object keeps across a wake.
+#[derive(Default, Serialize, Deserialize)]
+struct Kept {
+    #[serde(default)]
+    seats: Vec<clax_core::seats::KeptSeat>,
+    #[serde(default)]
+    presence: Vec<clax_core::presence::KeptPresence>,
 }
 
 impl Instance {
@@ -205,6 +341,7 @@ impl Instance {
         content: &std::result::Result<Arc<dyn ContentStore>, String>,
     ) -> Result<Rc<Instance>> {
         let content = content.clone().map_err(worker::Error::RustError)?;
+        let hosted = hosted(env)?;
         let pages = Rc::new(DoPageStore::new(state.storage())?);
         let (conn, db) = clax_do_vfs::open(DB_FILE, pages)
             .map_err(rust_err)?
@@ -233,80 +370,229 @@ impl Instance {
             codex: clax_realtime::push::CodexPush::default(),
             sample: Arc::new(clax_sample::Sampler::disabled()),
             clock,
-            question_sleeper: Arc::new(clax_server::questions::TokioSleeper),
+            // Graces wait for the alarm, not a timer that keeps the object up.
+            question_sleeper: Arc::new(clax_server::questions::SweptGraces),
             agent_timer: Arc::new(clax_http::agent::TokioTimer::default()),
             extension_id: String::new(),
             terminal_after_s: clax_core::config::TERMINAL_AFTER_S,
             // Loopback: the most restrictive bind (invites need a LAN one).
             bind: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
             port: 0,
-            // Not a hosted daemon (yet): the owner's token and viewer
-            // cookies are its only callers.
-            hosted: None,
+            hosted,
         })
         .map_err(rust_err)?;
+        app.seats
+            .set_limits(clax_core::seats::SeatLimits::from_env(|k| {
+                Some(var(env, k)).filter(|v| !v.is_empty())
+            }));
+        // Before anyone can take a seat or report: what the last server held.
+        let kept_json = kv_get(state, "live")?.unwrap_or_default();
+        if let Ok(k) = serde_json::from_str::<Kept>(&kept_json) {
+            app.seats.restore(&k.seats);
+            app.presence.restore(&k.presence);
+        }
         app.start_listeners();
         let router = clax_server::router::build_router(app.clone());
         let inst = Rc::new(Instance {
             app,
             router,
             sockets: RefCell::default(),
+            kept: RefCell::new(kept_json),
+            graced: Cell::new(false),
             _shutdown: shutdown_tx,
             _db: db,
         });
-        // The hub wakes this task whenever it queues frames, from whatever
+        // The hubs wake this task whenever they queue frames, from whatever
         // task dispatched them.
         let wake = Arc::new(tokio::sync::Notify::new());
         let tell = wake.clone();
         inst.app
             .stream
             .on_queue(Arc::new(move || tell.notify_one()));
+        let tell = wake.clone();
+        inst.app
+            .live_layers
+            .on_queue(Arc::new(move || tell.notify_one()));
         let weak: Weak<Instance> = Rc::downgrade(&inst);
         wasm_bindgen_futures::spawn_local(async move {
             loop {
                 wake.notified().await;
                 let Some(inst) = weak.upgrade() else { return };
-                inst.drain_all();
+                inst.settle().await;
             }
         });
         Ok(inst)
     }
 
-    /// Sends every socket with frames pending what its stream has.
-    fn drain_all(&self) {
+    /// Sends every socket what it has; closes those that ended; checks
+    /// again the room sockets of artifacts with a new version.
+    async fn settle(&self) {
+        let recheck = self.drain_all();
+        for (key, aid) in recheck {
+            if !clax_server::routes::room::still_declared(&self.app, &aid).await {
+                self.close(&key, 4403, "revoked");
+            }
+        }
+    }
+
+    /// [`Instance::drain`] for every socket with something pending: the
+    /// room sockets to check again, with their artifacts.
+    fn drain_all(&self) -> Vec<(String, String)> {
         let keys: Vec<String> = self
             .sockets
             .borrow()
             .iter()
-            .filter(|(_, s)| s.conn.pending())
+            .filter(|(_, s)| match &s.carried {
+                Carried::Stream(c) => c.pending(),
+                Carried::Live(_) | Carried::Room(_) => true,
+            })
             .map(|(k, _)| k.clone())
             .collect();
-        for k in keys {
-            self.drain(&k);
+        keys.into_iter()
+            .filter_map(|k| self.drain(&k).map(|aid| (k, aid)))
+            .collect()
+    }
+
+    fn close(&self, key: &str, code: u16, reason: &str) {
+        if let Some(s) = self.sockets.borrow_mut().remove(key) {
+            let _ = s.ws.close(Some(code), Some(reason));
         }
     }
 
-    /// Sends socket `key` its stream's frames; closes it once the stream
-    /// has ended.
-    fn drain(&self, key: &str) {
+    /// Sends socket `key` what it carries has; closes it once that has
+    /// ended. A room socket of an artifact with a new version answers its
+    /// artifact, to be checked again.
+    fn drain(&self, key: &str) -> Option<String> {
         let mut sockets = self.sockets.borrow_mut();
-        let Some(s) = sockets.get_mut(key) else {
-            return;
-        };
-        match s.conn.drain() {
-            Some(frames) => {
-                for f in frames {
-                    if s.ws.send_with_str(String::from_utf8_lossy(&f)).is_err() {
-                        break;
+        let s = sockets.get_mut(key)?;
+        let mut end: Option<(u16, &'static str)> = None;
+        let mut recheck = None;
+        match &mut s.carried {
+            Carried::Stream(conn) => match conn.drain() {
+                Some(frames) => {
+                    for f in frames {
+                        if s.ws.send_with_str(String::from_utf8_lossy(&f)).is_err() {
+                            break;
+                        }
+                    }
+                }
+                None => end = Some((1000, "the stream ended")),
+            },
+            Carried::Live(live) => {
+                for step in live.drain() {
+                    match step {
+                        LiveStep::Send(t) => {
+                            let _ = s.ws.send_with_str(t);
+                        }
+                        LiveStep::Close(c, r) => end = Some((c, r)),
                     }
                 }
             }
-            None => {
-                let _ = s.ws.close(Some(1000), Some("the stream ended"));
-                sockets.remove(key);
+            Carried::Room(room) => {
+                let aid = room_aid(&s.ws);
+                for step in room.drain() {
+                    match step {
+                        RoomStep::Send(t) => {
+                            let _ = s.ws.send_with_str(t);
+                        }
+                        RoomStep::Close(c, r) => end = Some((c, r)),
+                        RoomStep::Recheck => recheck = aid.clone(),
+                    }
+                }
+            }
+        }
+        if let Some((code, reason)) = end {
+            let _ = s.ws.close(Some(code), Some(reason));
+            sockets.remove(key);
+            return None;
+        }
+        recheck
+    }
+
+    /// Writes the seats held and the presence reports to the object's
+    /// storage when they changed since the last write.
+    fn keep(&self, state: &State) {
+        let k = Kept {
+            seats: self.app.seats.kept(),
+            presence: self.app.presence.kept(),
+        };
+        let Ok(json) = serde_json::to_string(&k) else {
+            return;
+        };
+        if *self.kept.borrow() == json {
+            return;
+        }
+        if kv_put(state, "live", &json).is_ok() {
+            *self.kept.borrow_mut() = json;
+        }
+    }
+}
+
+/// A room socket's artifact, from its attachment.
+fn room_aid(ws: &WebSocket) -> Option<String> {
+    ws.deserialize_attachment::<Attachment>()
+        .ok()
+        .flatten()
+        .map(|a| a.aid)
+}
+
+/// The most bytes of a request's body the object reads: the largest body
+/// any route takes (a publish's).
+const MAX_BODY: usize = clax_server::routes::artifacts::PUBLISH_BODY_LIMIT;
+
+/// 413 `body_too_large`, as the router answers a body over a route's limit.
+fn too_large() -> Result<Response> {
+    use axum::response::IntoResponse;
+    Response::try_from(
+        clax_http::error::ApiError::new(
+            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+            "body_too_large",
+            "the request body is too large",
+        )
+        .into_response(),
+    )
+}
+
+/// The runtime's request as the router takes it, its body read whole
+/// first: the router may read a body after the response it answers with
+/// is built, and the runtime's stream cannot be read once the response
+/// has been sent. A body over [`MAX_BODY`] is not read past it: the
+/// answer is 413 (`Err`), before anything else sees the request.
+async fn http_request(
+    mut req: Request,
+) -> Result<std::result::Result<axum::http::Request<axum::body::Body>, Response>> {
+    use futures_util::StreamExt;
+    let method = req.method().to_string();
+    let url = req.url()?;
+    let mut body = Vec::new();
+    if !matches!(method.as_str(), "GET" | "HEAD") {
+        let declared = req
+            .headers()
+            .get("content-length")?
+            .and_then(|v| v.trim().parse::<u64>().ok());
+        if declared.is_some_and(|n| n > MAX_BODY as u64) {
+            return Ok(Err(too_large()?));
+        }
+        // No stream: the request has no body.
+        if let Ok(mut chunks) = req.stream() {
+            while let Some(chunk) = chunks.next().await {
+                let chunk = chunk?;
+                if body.len() + chunk.len() > MAX_BODY {
+                    return Ok(Err(too_large()?));
+                }
+                body.extend_from_slice(&chunk);
             }
         }
     }
+    let mut b = axum::http::Request::builder()
+        .method(method.as_str())
+        .uri(url.as_str());
+    for (k, v) in req.headers().entries() {
+        b = b.header(k, v);
+    }
+    b.body(axum::body::Body::from(body))
+        .map(Ok)
+        .map_err(rust_err)
 }
 
 impl InstanceDo {
@@ -314,38 +600,104 @@ impl InstanceDo {
         self.inner.borrow().clone()
     }
 
-    /// Opens a new stream for each socket the object holds but has none
-    /// for (sockets accepted before it hibernated or was evicted), and
-    /// sends its `ready`. A socket whose caller no longer resolves is
-    /// closed; the shell reconnects.
+    /// What every event starts with: the sockets the object holds but has
+    /// nothing for (accepted before it hibernated or was evicted) reopened,
+    /// and, once per server, a grace for each open hook question.
     async fn revive(&self, inst: &Rc<Instance>) {
+        if !inst.graced.replace(true) {
+            let _ = clax_server::questions::arm_open_hooks(&inst.app).await;
+        }
         if self.revived.replace(true) {
             return;
         }
         for ws in self.state.get_websockets() {
-            let Ok(Some(mut att)) = ws.deserialize_attachment::<Attachment>() else {
+            let Ok(Some(att)) = ws.deserialize_attachment::<Attachment>() else {
                 let _ = ws.close(Some(1011), Some("no attachment"));
                 continue;
             };
             if inst.sockets.borrow().contains_key(&att.sock) {
                 continue;
             }
-            let who = att.creds.identity(&inst.app.token);
-            match open_stream(&inst.app, who, false, None, None, false).await {
-                Ok(conn) => {
-                    att.stream = conn.stream_id().to_string();
-                    let _ = ws.serialize_attachment(&att);
-                    let key = att.sock.clone();
-                    inst.sockets
-                        .borrow_mut()
-                        .insert(key.clone(), Socket { ws, conn });
-                    inst.drain(&key);
-                }
-                Err(_) => {
-                    let _ = ws.close(Some(1008), Some("the stream could not be reopened"));
+            self.reopen(inst, ws, att).await;
+        }
+    }
+
+    /// Reopens socket `ws` as its attachment says (see the module docs);
+    /// closes it when it may no longer open, and the client reconnects.
+    async fn reopen(&self, inst: &Rc<Instance>, ws: WebSocket, mut att: Attachment) {
+        let key = att.sock.clone();
+        let carried = match att.kind {
+            Kind::Stream => {
+                let (creds, token) = (att.creds.clone(), inst.app.token.clone());
+                let reopened = inst
+                    .app
+                    .store_call(move |st| creds.reopen(st, &token))
+                    .await;
+                let who = match reopened {
+                    Ok((who, session)) if att.creds.session.is_none() || session.is_some() => who,
+                    _ => {
+                        let _ = ws.close(Some(1008), Some("the session ended"));
+                        return;
+                    }
+                };
+                match open_stream(&inst.app, who, false, None, None, att.creds.guest).await {
+                    Ok(conn) => {
+                        att.stream = conn.stream_id().to_string();
+                        Carried::Stream(conn)
+                    }
+                    Err(_) => {
+                        let _ = ws.close(Some(1008), Some("the stream could not be reopened"));
+                        return;
+                    }
                 }
             }
-        }
+            Kind::Live => {
+                match clax_server::routes::live_layers::reopen(&inst.app, &att.aid, &att.creds)
+                    .await
+                {
+                    Some(Ok((live, welcome))) => {
+                        let _ = ws.send_with_str(welcome);
+                        Carried::Live(Box::new(live))
+                    }
+                    Some(Err(LiveStep::Close(c, r))) => {
+                        let _ = ws.close(Some(c), Some(r));
+                        return;
+                    }
+                    _ => {
+                        let _ = ws.close(Some(1008), Some("the live socket could not be reopened"));
+                        return;
+                    }
+                }
+            }
+            Kind::Room => {
+                match clax_server::routes::room::reopen(
+                    &inst.app, &att.aid, &att.peer, &att.rooms, &att.creds,
+                )
+                .await
+                {
+                    Some(Ok((room, first))) => {
+                        for f in first {
+                            let _ = ws.send_with_str(f);
+                        }
+                        att.rooms = room.joined();
+                        Carried::Room(Box::new(room))
+                    }
+                    Some(Err(RoomStep::Close(c, r))) => {
+                        let _ = ws.close(Some(c), Some(r));
+                        return;
+                    }
+                    _ => {
+                        let _ = ws.close(Some(1008), Some("the room could not be reopened"));
+                        return;
+                    }
+                }
+            }
+        };
+        let _ = ws.serialize_attachment(&att);
+        inst.sockets
+            .borrow_mut()
+            .insert(key.clone(), Socket { ws, carried });
+        inst.drain(&key);
     }
 
     /// When the earliest of the object's timed work is next due (ms), as
@@ -368,10 +720,12 @@ impl InstanceDo {
             .reduce(f64::min)
     }
 
-    /// Sets the alarm for the next due work, no sooner than
-    /// [`MIN_ALARM_MS`] from now, unless one already set fires first;
-    /// deletes it when nothing is due.
+    /// What every event ends with: the seats and presence kept, and the
+    /// alarm set for the next due work, no sooner than [`MIN_ALARM_MS`]
+    /// from now, unless one already set fires first; deleted when nothing
+    /// is due.
     async fn schedule(&self, inst: &Instance) {
+        inst.keep(&self.state);
         let storage = self.state.storage();
         let set = match self.alarm.get() {
             Some(at) => at,
@@ -405,36 +759,107 @@ impl InstanceDo {
         }
     }
 
-    /// Accepts the socket for a stream the router opened. A socket whose
-    /// attachment cannot be kept is closed at once, never left accepted
-    /// without one.
+    /// Accepts the socket for what the router opened, its first frames
+    /// sent. A socket whose attachment cannot be kept is closed at once,
+    /// never left accepted without one; one opened only to be closed (no
+    /// live seat, no `room` declared) is accepted and closed with its code.
     fn accept(
         &self,
         inst: &Rc<Instance>,
-        conn: Conn,
-        creds: SocketCredentials,
+        carried: std::result::Result<(Carried, Vec<String>), (u16, &'static str)>,
+        mut att: Attachment,
     ) -> Result<Response> {
         let key = random_hex(16)?;
         let pair = WebSocketPair::new()?;
         self.state.accept_web_socket(&pair.server);
-        let kept = pair.server.serialize_attachment(&Attachment {
-            sock: key.clone(),
-            stream: conn.stream_id().to_string(),
-            creds,
-        });
-        if let Err(e) = kept {
+        let (carried, first) = match carried {
+            Ok(c) => c,
+            Err((code, reason)) => {
+                let _ = pair.server.close(Some(code), Some(reason));
+                return Response::from_websocket(pair.client);
+            }
+        };
+        att.sock = key.clone();
+        if let Carried::Stream(conn) = &carried {
+            att.stream = conn.stream_id().to_string();
+        }
+        if let Err(e) = pair.server.serialize_attachment(&att) {
             let _ = pair.server.close(Some(1011), Some("no attachment"));
             return Err(e);
+        }
+        for f in first {
+            let _ = pair.server.send_with_str(f);
         }
         inst.sockets.borrow_mut().insert(
             key.clone(),
             Socket {
                 ws: pair.server,
-                conn,
+                carried,
             },
         );
         inst.drain(&key);
         Response::from_websocket(pair.client)
+    }
+
+    /// The socket a response of the router opened, if it opened one: what
+    /// it carries (or the close it opened with) and its attachment.
+    #[allow(clippy::type_complexity)]
+    fn opened(
+        res: &mut axum::http::Response<axum::body::Body>,
+    ) -> Option<(
+        std::result::Result<(Carried, Vec<String>), (u16, &'static str)>,
+        Attachment,
+    )> {
+        let att = |kind, aid: String, peer: String, creds| Attachment {
+            kind,
+            sock: String::new(),
+            stream: String::new(),
+            aid,
+            peer,
+            rooms: Vec::new(),
+            creds,
+        };
+        let ext = res.extensions_mut();
+        if let Some((conn, creds)) = ext
+            .remove::<SocketStream>()
+            .and_then(|s| s.0.lock().unwrap_or_else(|e| e.into_inner()).take())
+        {
+            return Some((
+                Ok((Carried::Stream(conn), Vec::new())),
+                att(Kind::Stream, String::new(), String::new(), creds),
+            ));
+        }
+        if let Some((opened, creds)) = ext
+            .remove::<LiveOpened>()
+            .and_then(|s| s.0.lock().unwrap_or_else(|e| e.into_inner()).take())
+        {
+            let aid = match &opened {
+                Ok((l, _)) => l.artifact().to_string(),
+                Err(_) => String::new(),
+            };
+            let carried = match opened {
+                Ok((l, welcome)) => Ok((Carried::Live(Box::new(l)), vec![welcome])),
+                Err(LiveStep::Close(c, r)) => Err((c, r)),
+                Err(LiveStep::Send(_)) => Err((1011, "no socket")),
+            };
+            return Some((carried, att(Kind::Live, aid, String::new(), creds)));
+        }
+        if let Some((opened, peer, creds)) = ext
+            .remove::<RoomOpened>()
+            .and_then(|s| s.0.lock().unwrap_or_else(|e| e.into_inner()).take())
+        {
+            let aid = match &opened {
+                Ok((r, _)) => r.artifact().to_string(),
+                Err(_) => String::new(),
+            };
+            let carried = match opened {
+                Ok((r, first)) => Ok((Carried::Room(Box::new(r)), first)),
+                Err(RoomStep::Close(c, r)) => Err((c, r)),
+                Err(_) => Err((1011, "no socket")),
+            };
+            return Some((carried, att(Kind::Room, aid, peer, creds)));
+        }
+        None
     }
 
     /// The test routes, with `CLAX_TEST_ROUTES` = `1` and the token (else
@@ -445,7 +870,11 @@ impl InstanceDo {
     ///   sockets;
     /// - `GET /_worker/alarm`: `{alarm, now}`, the time the object's alarm
     ///   is set for (ms, `null` with none) and the object's time.
-    async fn test_route(&self, inst: &Rc<Instance>, req: &HttpRequest) -> Option<Result<Response>> {
+    async fn test_route(
+        &self,
+        inst: &Rc<Instance>,
+        req: &axum::http::Request<axum::body::Body>,
+    ) -> Option<Result<Response>> {
         let path = req.uri().path();
         if !matches!(path, "/_worker/hibernate" | "/_worker/alarm")
             || var(&self.env, "CLAX_TEST_ROUTES") != "1"
@@ -464,15 +893,18 @@ impl InstanceDo {
                 &serde_json::json!({ "alarm": alarm, "now": now_ms() as i64 }),
             ));
         }
+        // What a wake finds: only what storage kept.
+        inst.keep(&self.state);
+        let old = self.inner.replace(Err("rebuilding".into()));
+        // The old sockets' carriers go with the old server, sockets kept.
+        if let Ok(old) = old {
+            old.sockets.borrow_mut().clear();
+        }
         let fresh = match Instance::build(&self.state, &self.env, &self.content) {
             Ok(i) => i,
             Err(e) => return Some(Response::error(e.to_string(), 500)),
         };
-        let old = self.inner.replace(Ok(fresh));
-        // The old streams' connections go with the old server, sockets kept.
-        if let Ok(old) = old {
-            old.sockets.borrow_mut().clear();
-        }
+        let _ = self.inner.replace(Ok(fresh));
         self.revived.set(false);
         Some(Response::ok("rebuilt"))
     }
@@ -504,7 +936,10 @@ impl DurableObject for InstanceDo {
             Ok(i) => i,
             Err(e) => return Response::error(format!("the instance could not start: {e}"), 500),
         };
-        let req = HttpRequest::try_from(req)?;
+        let req = match http_request(req).await? {
+            Ok(r) => r,
+            Err(refused) => return Ok(refused),
+        };
         if let Some(res) = self.test_route(&inst, &req).await {
             return res;
         }
@@ -516,14 +951,10 @@ impl DurableObject for InstanceDo {
             self.wrote.set(true);
         }
         let mut res = inst.router.clone().call(req).await.map_err(rust_err)?;
-        let opened = res
-            .extensions_mut()
-            .remove::<SocketStream>()
-            .and_then(|s| s.0.lock().unwrap_or_else(|e| e.into_inner()).take());
-        let out = match opened {
-            Some((conn, creds)) => self.accept(&inst, conn, creds),
+        let out = match Self::opened(&mut res) {
+            Some((carried, att)) => self.accept(&inst, carried, att),
             None => {
-                inst.drain_all();
+                inst.settle().await;
                 Response::try_from(res)
             }
         };
@@ -536,14 +967,20 @@ impl DurableObject for InstanceDo {
         ws: WebSocket,
         message: WebSocketIncomingMessage,
     ) -> Result<()> {
-        if let Ok(inst) = self.instance() {
-            self.revive(&inst).await;
-            if matches!(&message, WebSocketIncomingMessage::String(t) if t == "ping") {
-                ws.send_with_str("pong")?;
-            }
-            inst.drain_all();
-            self.schedule(&inst).await;
+        let Ok(inst) = self.instance() else {
+            return Ok(());
+        };
+        self.revive(&inst).await;
+        let text = match &message {
+            WebSocketIncomingMessage::String(t) => Some(t.as_str()),
+            WebSocketIncomingMessage::Binary(_) => None,
+        };
+        let att = ws.deserialize_attachment::<Attachment>().ok().flatten();
+        if let (Some(t), Some(mut att)) = (text, att) {
+            self.on_text(&inst, &ws, &mut att, t);
         }
+        inst.settle().await;
+        self.schedule(&inst).await;
         Ok(())
     }
 
@@ -589,21 +1026,98 @@ impl DurableObject for InstanceDo {
             self.wrote.set(false);
             let _ = inst.app.store.call(|st| st.optimize()).await;
         }
-        inst.drain_all();
+        inst.settle().await;
         self.schedule(&inst).await;
         Response::ok("")
     }
 }
 
 impl InstanceDo {
-    /// Drops the stream connection of a closed socket: its stream detaches
-    /// and is dropped after its grace, freeing its seats; the alarm is set
-    /// for then.
+    /// A text message on socket `ws`: a stream's `ping` (the runtime
+    /// answers it unless it arrives with other text) is answered `pong`;
+    /// a live or room socket's goes to what it carries, and a room
+    /// socket's named rooms are kept in its attachment.
+    fn on_text(&self, inst: &Instance, ws: &WebSocket, att: &mut Attachment, t: &str) {
+        let mut sockets = inst.sockets.borrow_mut();
+        let Some(s) = sockets.get_mut(&att.sock) else {
+            return;
+        };
+        let mut close: Option<(u16, &'static str)> = None;
+        match &mut s.carried {
+            Carried::Stream(_) => {
+                if t == "ping" {
+                    let _ = ws.send_with_str("pong");
+                }
+            }
+            Carried::Live(live) => match live.message(t) {
+                Some(LiveStep::Send(r)) => {
+                    let _ = ws.send_with_str(r);
+                }
+                Some(LiveStep::Close(c, r)) => close = Some((c, r)),
+                None => {}
+            },
+            Carried::Room(room) => {
+                if t.len() > MAX_ROOM_MESSAGE {
+                    close = Some((1009, "message too big"));
+                } else {
+                    for f in room.message(t) {
+                        let _ = ws.send_with_str(f);
+                    }
+                    let joined = room.joined();
+                    if joined != att.rooms {
+                        att.rooms = joined;
+                        let _ = ws.serialize_attachment(&*att);
+                    }
+                }
+            }
+        }
+        if let Some((c, r)) = close {
+            let _ = ws.close(Some(c), Some(r));
+            sockets.remove(&att.sock);
+        }
+    }
+
+    /// Drops what a closed socket carried: a stream detaches and is dropped
+    /// after its grace, freeing its seats; a live or room socket leaves its
+    /// hub and its seat at once. The alarm is set for what that leaves due.
     async fn forget(&self, ws: &WebSocket) {
         let Ok(inst) = self.instance() else { return };
         if let Ok(Some(att)) = ws.deserialize_attachment::<Attachment>() {
             inst.sockets.borrow_mut().remove(&att.sock);
         }
         self.schedule(&inst).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_stream_attachment_written_before_kinds_reads_as_a_stream() {
+        let old = r#"{"sock":"ab","stream":"cd","viewer":"01J00000000000000000000000"}"#;
+        let a: Attachment = serde_json::from_str(old).unwrap();
+        assert_eq!((a.kind, a.stream.as_str()), (Kind::Stream, "cd"));
+        let again = serde_json::to_string(&a).unwrap();
+        assert!(!again.contains("kind"), "{again}");
+        let room = Attachment {
+            kind: Kind::Room,
+            sock: "ab".into(),
+            stream: String::new(),
+            aid: "7q3k9mzx2b4t".into(),
+            peer: "0123456789abcdef".into(),
+            rooms: vec!["chat".into()],
+            creds: SocketCredentials {
+                session: Some("f".repeat(64)),
+                ..SocketCredentials::default()
+            },
+        };
+        let json = serde_json::to_string(&room).unwrap();
+        assert!(json.len() < 2048, "{json}");
+        let back: Attachment = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            (back.kind, back.rooms),
+            (Kind::Room, vec!["chat".to_string()])
+        );
     }
 }

@@ -158,14 +158,25 @@ test("the seeded demo: agents' versions and a live comment in two people's brows
     // Rae and Mia stay live meanwhile.
     await expect(rae.getByRole("button", { name: /^Comment/ })).toBeEnabled();
     await expect(mia.getByRole("button", { name: /^Comment/ })).toBeEnabled();
-    // The guest leaves: Jo is offered the seat and joins live.
+    // The guest leaves: Jo is offered the seat and joins live. The banner
+    // shows once Jo's live socket is refused, which may be before her
+    // stream asks for the artifact's live topics: a stream that asks after
+    // the guest left takes the free seat at once (first come, first served,
+    // spec §16.1), and Jo is live with no Join live offered.
     await guest.context().close();
     const join = banner.getByRole("button", { name: "Join live" });
-    await expect(join).toBeVisible({ timeout: 30_000 });
-    await shot(jo, "jo-join-live");
-    await join.click();
+    await expect.poll(async () => (await join.isVisible()) || (await banner.count()) === 0, { timeout: 30_000 }).toBe(true);
+    if (await banner.count()) {
+      await shot(jo, "jo-join-live");
+      await join.click();
+    }
     await expect(banner).toHaveCount(0);
     await expect(jo.getByRole("button", { name: /^Comment/ })).toBeEnabled();
+    // Live means the artifact's topics reach Jo: a comment Rae posts now
+    // shows on Jo's page with no snapshot poll.
+    const now = (await s.owner.session.call<{ artifact: { current_version: number } }>("GET", `/api/artifacts/${brief}`)).artifact.current_version;
+    await s.owner.session.form(`/api/artifacts/${brief}/threads`, { anchor: HEADING_ANCHOR, body: "Jo, the pricing section is yours.", version: String(now) });
+    await expect(await card(jo, "Jo, the pricing section is yours.")).toBeVisible();
   } finally {
     await d.stop();
   }

@@ -41,6 +41,26 @@ pub struct PresenceView {
     pub since: String,
 }
 
+/// One tab's live report as [`Presence::kept`] gives it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct KeptPresence {
+    #[serde(rename = "a")]
+    pub artifact: String,
+    #[serde(rename = "p")]
+    pub public_id: String,
+    #[serde(rename = "n", default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(rename = "b", default, skip_serializing_if = "String::is_empty")]
+    pub tab: String,
+    #[serde(rename = "s")]
+    pub state: State,
+    #[serde(rename = "w", default, skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    /// The report's time, in ms.
+    #[serde(rename = "t")]
+    pub at_ms: i64,
+}
+
 /// Most tabs one viewer keeps on one artifact; past it the tab whose last
 /// report is oldest is dropped.
 pub const MAX_TABS: usize = 16;
@@ -305,6 +325,57 @@ impl Presence {
             })
             .min()
     }
+    /// Every live report (tabs whose report has not lapsed), for a host to
+    /// keep across a restart of the process that holds them (a Durable
+    /// Object woken from hibernation), in a stable order. Viewers listed
+    /// only as gone are not kept.
+    pub fn kept(&self) -> Vec<KeptPresence> {
+        let now = self.clock.now();
+        let map = self.entries.lock().unwrap();
+        let mut out = Vec::new();
+        for ((aid, pid), e) in map.iter() {
+            for (tab, t) in &e.tabs {
+                if lapsed(t, now) {
+                    continue;
+                }
+                out.push(KeptPresence {
+                    artifact: aid.clone(),
+                    public_id: pid.clone(),
+                    display_name: e.display_name.clone(),
+                    tab: tab.clone(),
+                    state: t.state,
+                    r#where: t.where_.clone(),
+                    at_ms: t.last_report.timestamp_millis(),
+                });
+            }
+        }
+        out
+    }
+
+    /// Takes `kept` back as the reports they were (each at its own time),
+    /// leaving a report already held for the same tab as it is; lapsed
+    /// ones are dropped by the next sweep as any.
+    pub fn restore(&self, kept: &[KeptPresence]) {
+        let mut map = self.entries.lock().unwrap();
+        for k in kept {
+            let Some(at) = DateTime::from_timestamp_millis(k.at_ms) else {
+                continue;
+            };
+            let key = (k.artifact.clone(), k.public_id.clone());
+            let entry = map.entry(key).or_insert_with(|| Entry {
+                display_name: k.display_name.clone(),
+                tabs: BTreeMap::new(),
+                shown: (State::Gone, None),
+            });
+            entry.tabs.entry(k.tab.clone()).or_insert(Tab {
+                state: k.state,
+                where_: k.r#where.clone(),
+                last_report: at,
+            });
+            entry.shown = combined(entry, self.clock.now());
+        }
+    }
+
     /// The artifact's viewers: here, then away, then gone, each by name.
     pub fn for_artifact(&self, aid: &str) -> Vec<PresenceView> {
         let now = self.clock.now();
@@ -339,6 +410,22 @@ mod tests {
     fn reg() -> (Arc<ManualClock>, Presence) {
         let c = Arc::new(ManualClock::at("2026-09-30T10:00:00Z"));
         (c.clone(), Presence::new(c))
+    }
+
+    #[test]
+    fn kept_reports_come_back_as_they_were_and_lapse_on_time() {
+        let (c, p) = reg();
+        p.report_tab("a", "v1", Some("Ann"), State::Here, Some("intro"), "t1");
+        p.report_tab("a", "v2", None, State::Away, None, "");
+        let kept = p.kept();
+        let json = serde_json::to_string(&kept).unwrap();
+        let back: Vec<KeptPresence> = serde_json::from_str(&json).unwrap();
+        let woken = Presence::new(c.clone());
+        woken.restore(&back);
+        assert_eq!(woken.for_artifact("a"), p.for_artifact("a"));
+        c.advance(PRESENCE_TTL_SECS + 1);
+        assert!(woken.kept().is_empty(), "lapsed reports are not kept");
+        assert_eq!(woken.sweep(), vec!["a".to_string()]);
     }
 
     #[test]

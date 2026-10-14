@@ -398,6 +398,8 @@ pub fn superseded(id: &ArtifactId, n: u32, above: u32) -> crate::CoreError {
 /// On `wasm32`, when `f` is not ready at once: a Worker has one thread,
 /// so whatever would wake it (a promise, another request holding a lock)
 /// can never run while this one waits, and parking there returns at once.
+// On wasm32 the loop's only other arm panics.
+#[cfg_attr(target_arch = "wasm32", allow(clippy::never_loop))]
 pub fn wait<F: Future>(f: F) -> F::Output {
     let _sync = SyncDriven::enter();
     let mut f = std::pin::pin!(f);

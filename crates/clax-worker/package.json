@@ -8,6 +8,7 @@
     "size": "wrangler deploy --dry-run --outdir build/dry-run",
     "test:wasm": "node test-wasm.mjs",
     "e2e": "node e2e.mjs",
+    "e2e:hosted": "node e2e-hosted.mjs",
     "test:repos": "node test-repos.mjs"
   },
   "devDependencies": {

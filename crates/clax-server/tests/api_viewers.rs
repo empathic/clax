@@ -121,6 +121,27 @@ async fn lookups_refuse_foreign_origins() {
     assert_eq!(res.status(), 403);
 }
 
+/// Behind TLS (a Worker), the shell's own origin is `https://` and its host.
+#[tokio::test]
+async fn the_shells_own_https_origin_is_its_own_and_another_https_one_is_not() {
+    let ts = TestServer::spawn().await;
+    let get = |origin: &'static str, host: &'static str| {
+        ts.client
+            .get(format!("{}/api/viewers/me", ts.base))
+            .header("origin", origin)
+            .header("host", host)
+            .send()
+    };
+    let ok = get("https://localhost", "localhost").await.unwrap();
+    assert_eq!(ok.status(), 200);
+    let other = get("https://evil.test", "localhost").await.unwrap();
+    assert_eq!(other.status(), 403);
+    let artifact = get("https://7q3k9mzx2b4t.localhost", "7q3k9mzx2b4t.localhost")
+        .await
+        .unwrap();
+    assert_eq!(artifact.status(), 404, "an artifact host reaches no API");
+}
+
 /// A page's `<img src=".../api/viewers/me">` is a no-cors GET, which carries
 /// no `Origin`; the browser still says where it came from in `Sec-Fetch-Site`.
 #[tokio::test]

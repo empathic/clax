@@ -12,6 +12,28 @@ use tokio::sync::Notify;
 pub trait Sleeper: Send + Sync {
     /// Completes after `d`.
     fn sleep(&self, d: std::time::Duration) -> futures::future::BoxFuture<'static, ()>;
+
+    /// Whether graces run on this sleeper's timers (`true`); `false` leaves
+    /// them to the sweep ([`withdraw_due`], from `AppState::sweep`, which
+    /// `AppState::next_sweep_in` says when to run): a host that must not
+    /// hold a timer open, a Durable Object, whose alarm runs the sweep.
+    fn times_graces(&self) -> bool {
+        true
+    }
+}
+
+/// [`Sleeper`] on Tokio's clock for polls, with graces left to the sweep
+/// ([`Sleeper::times_graces`]).
+pub struct SweptGraces;
+
+impl Sleeper for SweptGraces {
+    fn sleep(&self, d: std::time::Duration) -> futures::future::BoxFuture<'static, ()> {
+        Box::pin(clax_rt::time::sleep(d))
+    }
+
+    fn times_graces(&self) -> bool {
+        false
+    }
 }
 
 /// [`Sleeper`] on Tokio's clock.
@@ -45,6 +67,9 @@ struct Inner {
     /// The generation of each question's pending grace timer; a poll
     /// holding the question, or a later timer, replaces or cancels it.
     armed: HashMap<String, u64>,
+    /// When each swept grace ([`QuestionWaiters::arm_until`]) is due, by
+    /// question, with its generation.
+    due_at: HashMap<String, (u64, chrono::DateTime<chrono::Utc>)>,
     next: u64,
     /// Debug builds: how many of each question's polls are still to end at
     /// once, as if their timers had fired ([`QuestionWaiters::expire`]).
@@ -84,6 +109,7 @@ impl QuestionWaiters {
         e.1 += 1;
         let notify = e.0.clone();
         g.armed.remove(qid);
+        g.due_at.remove(qid);
         drop(g);
         self.changed.notify_waiters();
         Some((
@@ -152,6 +178,42 @@ impl QuestionWaiters {
         let generation = g.next;
         g.armed.insert(qid.to_string(), generation);
         generation
+    }
+
+    /// [`QuestionWaiters::arm`], due at `at`: the sweep withdraws it then
+    /// ([`QuestionWaiters::take_due`]).
+    pub fn arm_until(&self, qid: &str, at: chrono::DateTime<chrono::Utc>) -> u64 {
+        let generation = self.arm(qid);
+        self.lock().due_at.insert(qid.to_string(), (generation, at));
+        generation
+    }
+
+    /// When the next swept grace is due; `None` with none pending.
+    pub fn next_due(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.lock().due_at.values().map(|(_, at)| *at).min()
+    }
+
+    /// The questions whose swept grace is due at `now` and may withdraw
+    /// them ([`QuestionWaiters::due`]); those graces end.
+    pub fn take_due(&self, now: chrono::DateTime<chrono::Utc>) -> Vec<String> {
+        let ready: Vec<(String, u64)> = {
+            let mut g = self.lock();
+            let ready: Vec<(String, u64)> = g
+                .due_at
+                .iter()
+                .filter(|(_, (_, at))| *at <= now)
+                .map(|(q, (n, _))| (q.clone(), *n))
+                .collect();
+            for (q, _) in &ready {
+                g.due_at.remove(q);
+            }
+            ready
+        };
+        ready
+            .into_iter()
+            .filter(|(q, n)| self.due(q, *n))
+            .map(|(q, _)| q)
+            .collect()
     }
 
     /// Whether the grace timer `generation` of `qid` may withdraw it: it is
@@ -269,6 +331,20 @@ mod tests {
         let fifth = w.arm("q");
         assert!(!w.due("q", fourth));
         assert!(!w.due("q", fifth), "a poll holds it now");
+    }
+
+    #[test]
+    fn a_swept_grace_is_due_at_its_time_unless_a_poll_held_it() {
+        let w = Arc::new(QuestionWaiters::default());
+        let t0 = chrono::DateTime::from_timestamp(1_000, 0).unwrap();
+        let later = t0 + chrono::Duration::seconds(5);
+        w.arm_until("q", later);
+        w.arm_until("held", later);
+        assert_eq!(w.next_due(), Some(later));
+        assert!(w.take_due(t0).is_empty(), "not yet");
+        drop(w.hold("held", None).unwrap());
+        assert_eq!(w.take_due(later), vec!["q".to_string()]);
+        assert_eq!(w.next_due(), None, "each grace is due once");
     }
 
     #[tokio::test]

@@ -9,6 +9,10 @@ describe("shellOrigins", () => {
   it("allows only the content URL's own origin for path-based content", () => {
     expect(shellOrigins("http://192.168.1.5:7480/c/7q3k9mzx2b4t/v/1/")).toEqual(["http://192.168.1.5:7480"]);
   });
+  it("allows only the origin the bridge tag names (data-origin), for content on a hosted content origin", () => {
+    expect(shellOrigins("https://clax.example")).toEqual(["https://clax.example"]);
+    expect(shellOrigins("http://localhost:7480")).toEqual(["http://localhost:7480"]);
+  });
 });
 
 describe("acceptFromShell", () => {

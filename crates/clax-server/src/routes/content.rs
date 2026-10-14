@@ -11,7 +11,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use clax_core::model::CONTRACT_VERSION;
 use clax_core::model::FileMeta;
 use clax_core::publish::INDEX;
-use clax_core::wrap::wrap_page;
+use clax_core::wrap::wrap_page_framed_by;
 use clax_core::{ArtifactId, CoreError};
 use clax_http::error::ApiError;
 use clax_http::headers::parse_id;
@@ -158,7 +158,7 @@ fn is_html(content_type: &str) -> bool {
 
 /// A file of a version as it is served.
 enum Served {
-    /// An HTML page wrapped with the bridge ([`wrap_page`]).
+    /// An HTML page wrapped with the bridge ([`wrap_page_framed_by`]).
     Page(Arc<String>),
     /// Any other file, or an HTML file that is not UTF-8: served as stored.
     Raw(Vec<u8>, FileMeta),
@@ -182,6 +182,12 @@ async fn lookup(
     // A page wrapped concurrently with a debug rebuild may keep the old
     // `?v=`; a debug build serves every bridge URL revalidated, current bytes.
     cache.follow_bridge(&bridge);
+    // Content on a hosted daemon's content origin talks to the public one.
+    let shell = s
+        .hosted
+        .as_ref()
+        .filter(|h| h.content_origin().is_some())
+        .map(|h| h.origin.clone());
     s.store_call_async(move |st| async move {
         let meta = st.file_meta(&id, n, &file)?.ok_or(CoreError::NotFound)?;
         if !always_wrap && !is_html(&meta.content_type) {
@@ -202,13 +208,14 @@ async fn lookup(
                     return Err(std::io::Error::other(EVICTED));
                 };
                 Ok(match String::from_utf8(bytes) {
-                    Ok(page) => Some(wrap_page(
+                    Ok(page) => Some(wrap_page_framed_by(
                         &page,
                         id.as_str(),
                         n,
                         CONTRACT_VERSION,
                         &file,
                         &bridge,
+                        shell.as_deref(),
                     )),
                     Err(e) => {
                         unwrapped = Some(e.into_bytes());

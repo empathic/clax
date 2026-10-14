@@ -38,8 +38,6 @@ const ui = (s: ViewState): LiveUi => s.live ?? emptyLive();
  * state, and a post to the frame's greeted document (the gate decides). */
 export type LiveHost = {
   readonly id: string;
-  /** The daemon refused or released this viewer's live seat (`code`): the view turns spectator. */
-  spectate?(code: string): void;
   shown(s: ViewState): number;
   set(f: (s: ViewState) => Partial<ViewState>): void;
 };
@@ -88,8 +86,9 @@ export class LiveView {
         this.sendCursor();
         this.sendOpen();
       },
+      // A close for want of a seat (4429) reopens too: the stream's answer
+      // alone makes the view a spectator, and pauses the socket.
       closed: () => this.clear(),
-      unseated: code => ctl.spectate?.(code),
     }, make);
     this.drafts = new DraftSender(m => this.socket.send(m));
     // The stage the frame is in (artifact.html's `.stage`), where the name tags go over it.

@@ -89,6 +89,24 @@ export const CATCH_UP_SHOWN = 3;
 
 type Timer = ReturnType<typeof setTimeout>;
 
+/** The codes of a refused or released live seat (spec
+ * 2026-10-11-clax-dev-hosted-design §16.1). */
+const SEAT_CODES: ReadonlySet<string> = new Set(["no_live_seat", "seat_idle"]);
+/** An artifact's live topics: one subscription to any of them holds its seat. */
+const LIVE_TOPIC = /^(?:artifact|presence|working):(.+)$/;
+
+/** `topics` grouped by the seat they hold: an artifact's live topics
+ * together, every other topic alone, in first-seen order. */
+function seatGroups(topics: readonly string[]): string[][] {
+  const groups = new Map<string, string[]>();
+  for (const t of topics) {
+    const key = LIVE_TOPIC.exec(t)?.[1] ?? null;
+    const k = key === null ? `topic ${t}` : `seat ${key}`;
+    groups.set(k, [...(groups.get(k) ?? []), t]);
+  }
+  return [...groups.values()];
+}
+
 /** The key of the caller a stream's `ready` names (`{level, viewer}`), as
  * the tabs compute it (view/artifact-stream.ts): `admin` for the owner's
  * browser, named or not; else the viewer's public ID and whether it is
@@ -589,7 +607,8 @@ export class Hub {
 
   /** One subscription request; false when the connection was failed or
    * replaced meanwhile. A request the daemon refuses for one topic is
-   * split, so the other topics still go through. */
+   * split, so the other topics still go through; an artifact's live topics
+   * stay in one request ([`seatGroups`]), seated or refused together. */
   private async update(add: string[], remove: string[]): Promise<boolean> {
     // Subscribing `inbox`: once its baseline is known, events are kept aside
     // from the request on, so the catch-up after it neither repeats nor skips one.
@@ -653,16 +672,23 @@ export class Hub {
       return false;
     }
     if (res.status >= 500) { this.fail(); return false; }
-    if (add.length > 1) {
-      for (const t of add) {
-        if (!(await this.update([t], []))) return false;
+    // An artifact's live topics hold one seat, so a split keeps them in one
+    // request, and a seat refused refuses them together: asked one by one,
+    // a seat freed between two requests would seat the later topics of a
+    // view already told it has none.
+    const groups = seatGroups(add);
+    if (groups.length > 1 || (add.length > 1 && !SEAT_CODES.has(code))) {
+      for (const g of groups.length > 1 ? groups : add.map(t => [t])) {
+        if (!(await this.update(g, []))) return false;
       }
       if (remove.length) return this.update([], remove);
       return true;
     }
-    if (add.length === 1) {
-      this.refused.set(add[0], code);
-      this.env.send(this.wanting(add[0]), { t: "refused", topic: add[0], code });
+    if (add.length) {
+      for (const t of add) {
+        this.refused.set(t, code);
+        this.env.send(this.wanting(t), { t: "refused", topic: t, code });
+      }
       return true;
     }
     // Only removals, refused: start over on a new stream.

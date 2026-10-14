@@ -83,13 +83,57 @@ pub fn announce_ids(s: &AppState, st: &Store, ids: &[String]) {
 /// `qid` is withdrawn and announced, recording `question.withdraw` (reason
 /// `unwaited`) as `system:daemon`. The grace thus runs from the last time a
 /// poll let go (or from creation, when none has held it).
+///
+/// With a sleeper that leaves graces to the sweep
+/// ([`Sleeper::times_graces`]), no timer runs: the grace is due at the
+/// question clock's now plus the grace, and [`withdraw_due`] withdraws it
+/// then.
 pub fn start_grace(s: AppState, qid: String) {
+    if !s.question_sleeper.times_graces() {
+        let at = s.question_clock.now()
+            + chrono::Duration::from_std(s.question_grace).unwrap_or_default();
+        s.questions.arm_until(&qid, at);
+        return;
+    }
     let generation = s.questions.arm(&qid);
     clax_rt::spawn(async move {
         s.question_sleeper.sleep(s.question_grace).await;
         if !s.questions.due(&qid, generation) {
             return;
         }
+        withdraw_unwaited(&s, qid).await;
+    });
+}
+
+/// Withdraws every question whose swept grace is due now
+/// ([`QuestionWaiters::take_due`]).
+pub async fn withdraw_due(s: &AppState) {
+    for qid in s.questions.take_due(s.question_clock.now()) {
+        withdraw_unwaited(s, qid).await;
+    }
+}
+
+/// Starts a grace for every open hook question no poll holds: what a host
+/// whose polls did not outlive it (a Durable Object rebuilt after
+/// eviction) does at start, so a question whose hook does not poll again
+/// is withdrawn after the grace, as one let go is. A poll that comes back
+/// cancels it.
+///
+/// # Errors
+/// The store's.
+pub async fn arm_open_hooks(s: &AppState) -> Result<(), crate::error::ApiError> {
+    let ids = s.store_call(|st| st.open_hook_question_ids()).await?;
+    for qid in ids {
+        if s.questions.count(&qid) == 0 {
+            start_grace(s.clone(), qid);
+        }
+    }
+    Ok(())
+}
+
+/// Withdraws open hook question `qid` as unwaited and announces it.
+async fn withdraw_unwaited(s: &AppState, qid: String) {
+    {
         let st = s.clone();
         let r = s
             .store
@@ -109,7 +153,7 @@ pub fn start_grace(s: AppState, qid: String) {
             }) => {}
             Err(e) => tracing::warn!(error = %e, "could not withdraw an unwaited question"),
         }
-    });
+    }
 }
 
 /// [`start_grace`] for `qid`, to run when its last poll lets go.

@@ -465,6 +465,40 @@ describe("the stream hub", () => {
     expect(net.held.get(S1)).toEqual(new Set(["gallery", ...live]));
   });
 
+  it("splits a request refused a seat by artifact, so an artifact's live topics are seated or refused together", async () => {
+    const live = [`artifact:${A}`, `presence:${A}`, `working:${A}`];
+    hub.receive("t1", { t: "topics", topics: ["gallery", ...live] });
+    await tick();
+    net.ready(net.conns[0], S1);
+    net.auto = false;
+    // The daemon: a request adding any of A's live topics is refused while
+    // another viewer holds the one seat; that viewer leaves once two
+    // requests were refused.
+    let refusals = 0;
+    const held = new Set<string>();
+    for (let answered = 0, i = 0; i < 20; i++) {
+      await tick();
+      for (; answered < net.posts.length; answered++) {
+        const p = net.posts[answered];
+        if (refusals < 2 && p.body.subscribe.some(t => live.includes(t))) {
+          refusals++;
+          p.answer(429, { error: { code: "no_live_seat" } });
+          continue;
+        }
+        for (const t of p.body.unsubscribe) held.delete(t);
+        for (const t of p.body.subscribe) held.add(t);
+        p.answer(200, { seq: 0, topics: [...held] });
+      }
+    }
+    // Either all of A's live topics are live, or all are refused: never a
+    // seat held for a view that was told it has none.
+    const seated = live.filter(t => held.has(t));
+    expect(seated.length === 0 || seated.length === live.length).toBe(true);
+    expect(held.has("gallery")).toBe(true);
+    const refused = of("t1", "refused").map(m => m.t === "refused" && m.topic);
+    expect(new Set(refused)).toEqual(new Set(seated.length ? [] : live));
+  });
+
   it("takes a topic the daemon unseated off the stream, refused until a retry", async () => {
     hub.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
     await tick();

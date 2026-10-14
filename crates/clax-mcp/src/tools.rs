@@ -875,6 +875,8 @@ impl ClaxTools {
     /// prefixes the URLs in results; `log_path` is the daemon log named when the
     /// daemon cannot be reached. A managed client's current browser base and
     /// registered session take precedence over `browser_base` and `session`.
+    // rmcp's router holds `!Send` handlers on wasm32, which has one thread.
+    #[cfg_attr(target_arch = "wasm32", allow(clippy::arc_with_non_send_sync))]
     pub fn new(
         client: DaemonClient,
         browser_base: String,

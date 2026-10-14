@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { LIVE_CURSOR_MS, type ShellToBridge } from "../../../bridge/src/protocol";
 import type { ViewState } from "./artifact-controller";
-import type { SocketLike } from "./live-layers";
+import { RECONNECT_MS, type SocketLike } from "./live-layers";
 import { LiveView, emptyLive } from "./live-view";
 
 const T = "01J9Z3K4M5N6P7Q8R9S0T1V2W3";
@@ -9,14 +9,12 @@ const point = { path: [0, 1], offset: 4, x: 0, y: 0 };
 const advance = (ms: number) => (globalThis as unknown as { claxTestClock: { advance(ms: number): void } }).claxTestClock.advance(ms);
 
 function setup() {
-  const spectated: string[] = [];
   let state = { file: "index.html", pinnedVersion: null, data: { artifact: { current_version: 2, participants: { people: [{ public_id: "u_mia", display_name: "Mia", seen: null }], agents: [] } } }, draft: null, selected: null, presence: [], live: emptyLive() } as unknown as ViewState;
   const framed: ShellToBridge[] = [];
   const sent: unknown[] = [];
   let sock: SocketLike | null = null;
   const view = new LiveView({
     id: "7q3k9mzx2b4t",
-    spectate: code => spectated.push(code),
     shown: s => s.pinnedVersion ?? s.data?.artifact.current_version ?? 0,
     set: f => { const prev = state; state = { ...state, ...f(state) }; view.react(prev, state); },
   }, () => state, m => framed.push(m), () => {
@@ -26,20 +24,31 @@ function setup() {
   view.start();
   sock!.onopen!({});
   const change = (patch: Partial<ViewState>) => { const prev = state; state = { ...state, ...patch }; view.react(prev, state); };
-  return { view, framed, sent, sock: () => sock!, state: () => state, change, spectated };
+  return { view, framed, sent, sock: () => sock!, state: () => state, change };
 }
 
 describe("LiveView", () => {
-  it("turns the view spectator on a 4429, drops the others' layers, and opens a socket again on resume", () => {
-    const { view, sock, state, spectated } = setup();
+  it("on a 4429 drops the others' layers and opens the socket again, the view still live: the stream alone makes a spectator", () => {
+    const { view, sock, state } = setup();
     const first = sock();
     first.onmessage!({ data: JSON.stringify({ t: "live", senders: [{ person_id: "u_mia", color: 2, cursor: { version: 2, file: "index.html", anchor: point, selection: null } }], drop: [], others: 0, present: 1 }) });
     expect(Object.keys(state().live!.layer.peers)).toEqual(["u_mia"]);
-    first.onclose!({ code: 4429, reason: "seat_idle" });
-    expect(spectated).toEqual(["seat_idle"]);
+    // A seat frees between the socket's request and the stream's: the
+    // socket is refused, the stream seated.
+    first.onclose!({ code: 4429, reason: "no_live_seat" });
     expect(state().live!.layer.peers).toEqual({});
+    expect((state() as { spectator?: unknown }).spectator).toBeUndefined();
+    advance(RECONNECT_MS[0]);
+    const second = sock();
+    expect(second).not.toBe(first);
+    second.onopen!({});
+    // The stream refused: the controller pauses the view; Join live resumes it.
+    view.pause();
+    advance(60_000);
+    expect(sock()).toBe(second);
     view.resume();
-    expect(sock()).not.toBe(first);
+    expect(sock()).not.toBe(second);
+    view.dispose();
   });
 
   it("sends the frame's pointer and selection on the shown file and version, the open pick's selection in its place", () => {

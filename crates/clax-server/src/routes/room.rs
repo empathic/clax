@@ -22,6 +22,7 @@
 //! open, or a new version stopped declaring `room`), 4409 `replaced` (a newer socket took this peer label), 1001 when the
 //! daemon shuts down.
 
+#[cfg(not(target_arch = "wasm32"))]
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::response::Response;
@@ -36,14 +37,20 @@ use clax_http::headers::parse_id;
 use clax_http::state::AppState;
 use clax_http::viewer::SameOrigin;
 use clax_realtime::room::{Frame, Membership, Rooms, Sender, Who};
+use clax_rt::time::Instant;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
 use tokio_stream::StreamExt;
+#[cfg(not(target_arch = "wasm32"))]
 use tokio_stream::StreamMap;
+#[cfg(not(target_arch = "wasm32"))]
 use tokio_stream::wrappers::BroadcastStream;
+#[cfg(not(target_arch = "wasm32"))]
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
 /// Most bytes the daemon reads of one WebSocket message (and frame). A frame
@@ -113,9 +120,39 @@ enum ClientMsg {
     },
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 type Streams = StreamMap<Option<String>, BroadcastStream<Arc<Frame>>>;
 
+/// Where a socket's rooms' frames arrive: a task's [`Streams`], or the
+/// receivers a host drains itself ([`RoomSocket`]).
+trait Subs {
+    fn add(&mut self, room: Option<String>, rx: tokio::sync::broadcast::Receiver<Arc<Frame>>);
+    fn remove(&mut self, room: &Option<String>);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Subs for Streams {
+    fn add(&mut self, room: Option<String>, rx: tokio::sync::broadcast::Receiver<Arc<Frame>>) {
+        self.insert(room, BroadcastStream::new(rx));
+    }
+    fn remove(&mut self, room: &Option<String>) {
+        StreamMap::remove(self, room);
+    }
+}
+
+type Receivers = BTreeMap<Option<String>, tokio::sync::broadcast::Receiver<Arc<Frame>>>;
+
+impl Subs for Receivers {
+    fn add(&mut self, room: Option<String>, rx: tokio::sync::broadcast::Receiver<Arc<Frame>>) {
+        self.insert(room, rx);
+    }
+    fn remove(&mut self, room: &Option<String>) {
+        BTreeMap::remove(self, room);
+    }
+}
+
 /// `GET /api/artifacts/{aid}/room`.
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn room(
     State(s): State<AppState>,
     d: clax_http::agent::DeniedToGrants,
@@ -161,6 +198,7 @@ pub async fn room(
         .on_upgrade(move |socket| session(s, aid, who, level, topics, seat, socket)))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn close(code: u16, reason: &'static str) -> Message {
     Message::Close(Some(CloseFrame {
         code,
@@ -239,7 +277,7 @@ impl Conn {
         clax_http::seats::is_spectator(&self.seats, &self.aid, self.claim.as_ref())
     }
 
-    fn handle(&mut self, text: &str, streams: &mut Streams) -> Vec<Value> {
+    fn handle(&mut self, text: &str, streams: &mut impl Subs) -> Vec<Value> {
         let Ok(msg) = serde_json::from_str::<ClientMsg>(text) else {
             tracing::debug!("room: ignored a malformed frame");
             return Vec::new();
@@ -320,13 +358,13 @@ impl Conn {
                 let (m, rx) = self.rooms.enter(&self.aid, Some(&room), self.who.clone());
                 let key = Some(room.clone());
                 let snapshot = peers_frame(&key, &m, &self.who);
-                streams.insert(key, BroadcastStream::new(rx));
+                streams.add(key, rx);
                 self.named.insert(room, m);
                 vec![snapshot, json!({"t": "ack", "id": id})]
             }
             ClientMsg::Leave { room } => {
                 self.pending.remove(&Some(room.clone()));
-                streams.remove(&Some(room.clone()));
+                Subs::remove(streams, &Some(room.clone()));
                 self.named.remove(&room);
                 Vec::new()
             }
@@ -347,6 +385,7 @@ impl Conn {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn session(
     s: AppState,
     aid: String,
@@ -454,6 +493,333 @@ async fn session(
             }
         }
     }
+}
+
+/// What a host that holds a room socket itself (a Durable Object) does next.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RoomStep {
+    /// Send this text frame.
+    Send(String),
+    /// Close the socket with this code and reason; the [`RoomSocket`] is
+    /// done.
+    Close(u16, &'static str),
+    /// A new version of the artifact: close `revoked` unless it still
+    /// declares `room` ([`still_declared`]).
+    Recheck,
+}
+
+/// A room socket driven by its host, step by step, where [`session`]'s
+/// task cannot run: the host sends what [`RoomSocket::open`] gives first,
+/// hands it every text message ([`RoomSocket::message`]), and after each
+/// request, message and alarm sends what [`RoomSocket::drain`] gives. The
+/// rules are [`session`]'s; presence held back by the send budget goes out
+/// at the next drain, not on a 25 ms tick. Dropping it leaves its rooms.
+pub struct RoomSocket {
+    conn: Conn,
+    receivers: Receivers,
+    claim: clax_realtime::room::Claim,
+    events: tokio::sync::broadcast::Receiver<clax_core::events::Stamped>,
+}
+
+/// What a room socket is opened with: the artifact, the peer label, the
+/// viewer and level, the topics its artifact declares (`None`: it declares
+/// no `room`), and the seat its writes are checked against.
+pub struct RoomAdmission {
+    pub aid: String,
+    pub who: Who,
+    pub level: Level,
+    pub topics: Option<Topics>,
+    pub seat: Option<clax_core::seats::Claim>,
+}
+
+impl RoomSocket {
+    /// Enters the lobby and each of `rooms` (named rooms the socket was in
+    /// before its host lost them): the socket and its first frames (the
+    /// welcome and the lobby's peers, then each named room's peers); for
+    /// an artifact that declares no `room`, the close to send.
+    ///
+    /// # Errors
+    /// As above.
+    pub fn open(
+        s: &AppState,
+        a: RoomAdmission,
+        rooms: &[String],
+    ) -> Result<(RoomSocket, Vec<String>), RoomStep> {
+        let Some(topics) = a.topics else {
+            return Err(RoomStep::Close(4403, "not_granted"));
+        };
+        let claim = s.rooms.claim(&a.aid, &a.who.peer);
+        let (lobby, rx) = s.rooms.enter(&a.aid, None, a.who.clone());
+        let mut receivers = Receivers::new();
+        receivers.insert(None, rx);
+        let mut conn = Conn {
+            rooms: s.rooms.clone(),
+            aid: a.aid,
+            who: a.who.clone(),
+            level: a.level,
+            topics,
+            lobby,
+            named: BTreeMap::new(),
+            budget: Budget::new(Instant::now()),
+            pending: BTreeMap::new(),
+            seats: s.seats.clone(),
+            claim: a.seat,
+        };
+        let mut first = vec![
+            json!({"t": "welcome", "peer": a.who.peer}).to_string(),
+            peers_frame(&None, &conn.lobby, &a.who).to_string(),
+        ];
+        for r in rooms.iter().filter(|r| room_name_ok(r)).take(MAX_JOINED) {
+            let (m, rx) = s.rooms.enter(&conn.aid, Some(r), a.who.clone());
+            let key = Some(r.clone());
+            first.push(peers_frame(&key, &m, &a.who).to_string());
+            receivers.insert(key, rx);
+            conn.named.insert(r.clone(), m);
+        }
+        Ok((
+            RoomSocket {
+                conn,
+                receivers,
+                claim,
+                events: s.events.subscribe(),
+            },
+            first,
+        ))
+    }
+
+    /// The artifact the socket is on.
+    pub fn artifact(&self) -> &str {
+        &self.conn.aid
+    }
+
+    /// The named rooms the socket is in, for its host to keep.
+    pub fn joined(&self) -> Vec<String> {
+        self.conn.named.keys().cloned().collect()
+    }
+
+    /// The socket's text message `t`: the frames that answer it.
+    pub fn message(&mut self, t: &str) -> Vec<String> {
+        self.conn
+            .handle(t, &mut self.receivers)
+            .into_iter()
+            .map(|v| v.to_string())
+            .collect()
+    }
+
+    /// The frames its rooms sent since the last drain, then the close when
+    /// a newer socket took its peer label or the artifact was deleted, or
+    /// [`RoomStep::Recheck`] after a new version.
+    pub fn drain(&mut self) -> Vec<RoomStep> {
+        use futures::FutureExt;
+        let mut out = Vec::new();
+        if self.claim.replaced.notified().now_or_never().is_some() {
+            out.push(RoomStep::Close(4409, "replaced"));
+            return out;
+        }
+        let mut recheck = false;
+        loop {
+            match self.events.try_recv() {
+                Ok(stamped) => match &stamped.event {
+                    Event::ArtifactDeleted { artifact_id } if *artifact_id == self.conn.aid => {
+                        out.push(RoomStep::Close(4403, "revoked"));
+                        return out;
+                    }
+                    Event::Version { artifact_id, .. } if *artifact_id == self.conn.aid => {
+                        recheck = true;
+                    }
+                    _ => {}
+                },
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => recheck = true,
+                Err(_) => break,
+            }
+        }
+        self.conn.flush();
+        let who = self.conn.who.clone();
+        for (room, rx) in &mut self.receivers {
+            loop {
+                match rx.try_recv() {
+                    Ok(frame) => out.push(RoomStep::Send(render(room, &frame, &who).to_string())),
+                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                        let snap = match room {
+                            None => Some(&self.conn.lobby),
+                            Some(n) => self.conn.named.get(n),
+                        };
+                        if let Some(m) = snap {
+                            out.push(RoomStep::Send(peers_frame(room, m, &who).to_string()));
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
+        if recheck {
+            out.push(RoomStep::Recheck);
+        }
+        out
+    }
+}
+
+/// Whether artifact `aid` still declares `room`: a room socket's
+/// [`RoomStep::Recheck`].
+pub async fn still_declared(s: &AppState, aid: &str) -> bool {
+    let Ok(id) = parse_id(aid) else {
+        return false;
+    };
+    matches!(
+        s.store_call(move |st| st.get_artifact(&id)).await,
+        Ok(Some(a)) if a.capabilities.get("room").is_some()
+    )
+}
+
+/// How the room route admits a socket of `aid` for `peer`, from the store:
+/// the artifact's topics, the viewer and level `level_of` gives, and the
+/// seat `caller`'s writes are checked against.
+fn admission(
+    st: &clax_store::Store,
+    aid: &str,
+    peer: String,
+    caller: Option<&clax_http::auth::Caller>,
+    resolved: Caller,
+) -> clax_core::Result<RoomAdmission> {
+    let id = clax_core::ArtifactId::parse(aid).map_err(|_| CoreError::NotFound)?;
+    let artifact = st.get_artifact(&id)?;
+    let declared = artifact
+        .as_ref()
+        .filter(|a| a.capabilities.get("room").is_some());
+    let topics = declared.map(|a| Topics::from_capabilities(&a.capabilities).unwrap_or_default());
+    let declares_user = declared.is_some_and(|a| a.capabilities.get("user").is_some());
+    let seat = match caller {
+        Some(c @ (clax_http::auth::Caller::Person { .. } | clax_http::auth::Caller::Viewer { .. })) => {
+            clax_http::seats::claim_for(st, c, aid)?
+        }
+        _ => None,
+    };
+    let Caller { level, viewer, .. } = resolved;
+    Ok(RoomAdmission {
+        aid: aid.to_string(),
+        who: Who {
+            peer,
+            by: if declares_user { viewer.clone() } else { None },
+            viewer,
+        },
+        level,
+        topics,
+        seat,
+    })
+}
+
+/// What [`RoomOpened`] carries: the socket and its first frames (or the
+/// close to send at once), its peer label and the credentials to reopen
+/// it with.
+pub type RoomOpen = (
+    Result<(RoomSocket, Vec<String>), RoomStep>,
+    String,
+    clax_http::identity::SocketCredentials,
+);
+
+/// A room socket a host opened for its own WebSocket: the response of `GET
+/// /api/artifacts/<aid>/room` on wasm32 carries it as an extension.
+#[derive(Clone)]
+pub struct RoomOpened(pub std::sync::Arc<std::sync::Mutex<Option<RoomOpen>>>);
+
+/// `GET /api/artifacts/{aid}/room` on wasm32, where the socket is the
+/// host's (a Durable Object's): admitted as [`room`] admits it, and
+/// answered `200` with a [`RoomOpened`] extension the host replaces with
+/// its socket; any other request is 426 `websocket_required`.
+#[cfg(target_arch = "wasm32")]
+#[allow(clippy::too_many_arguments)]
+pub async fn room_socket(
+    State(s): State<AppState>,
+    d: clax_http::agent::DeniedToGrants,
+    Path(aid): Path<String>,
+    Query(q): Query<RoomQuery>,
+    _o: SameOrigin,
+    subscriber: Subscriber,
+    extensions: axum::http::Extensions,
+    headers: axum::http::HeaderMap,
+) -> Result<Response, ApiError> {
+    use axum::response::IntoResponse;
+    d.refuse_agents()?;
+    let upgrade = headers
+        .get(axum::http::header::UPGRADE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
+    if !upgrade {
+        return Err(ApiError::new(
+            axum::http::StatusCode::UPGRADE_REQUIRED,
+            "websocket_required",
+            "the room rides a WebSocket",
+        ));
+    }
+    let id = parse_id(&aid)?;
+    if !peer_label_ok(&q.peer) {
+        return Err(ApiError::bad_request(
+            "invalid_argument",
+            "peer is 16 characters of [0-9a-z]",
+        ));
+    }
+    let aid = id.as_str().to_string();
+    let caller = d.caller(&s).await.ok();
+    let creds = subscriber.credentials(&s.token, &extensions);
+    let (a, peer) = (aid.clone(), q.peer.clone());
+    let admitted = s
+        .store_call(move |st| {
+            let resolved = subscriber.resolve(st)?;
+            admission(st, &a, peer, caller.as_ref(), resolved)
+        })
+        .await?;
+    let opened = RoomSocket::open(&s, admitted, &[]);
+    let mut res = axum::http::StatusCode::OK.into_response();
+    res.extensions_mut()
+        .insert(RoomOpened(std::sync::Arc::new(std::sync::Mutex::new(
+            Some((opened, q.peer, creds)),
+        ))));
+    Ok(res)
+}
+
+/// Reopens a room socket of `aid` under `peer`, in `rooms`, kept with
+/// `creds` by a host that lost its server (a Durable Object woken from
+/// hibernation): admitted again as [`room`] admits it, as whoever the
+/// credentials are now, a hosted session still reading the page. `None`
+/// when it may no longer open: the host closes it. On a hosted daemon that
+/// is also a socket opened with neither the token nor a session, or whose
+/// session has ended.
+pub async fn reopen(
+    s: &AppState,
+    aid: &str,
+    peer: &str,
+    rooms: &[String],
+    creds: &clax_http::identity::SocketCredentials,
+) -> Option<Result<(RoomSocket, Vec<String>), RoomStep>> {
+    let (creds, a, token, peer) = (
+        creds.clone(),
+        aid.to_string(),
+        s.token.clone(),
+        peer.to_string(),
+    );
+    let hosted = s.hosted.is_some();
+    let admitted = s
+        .store_call(move |st| {
+            let (who, session) = creds.reopen(st, &token)?;
+            // On a hosted daemon only a session or the token opened it.
+            if hosted && session.is_none() && !who.token {
+                return Err(CoreError::NotFound);
+            }
+            if let Some(sv) = &session
+                && !clax_http::hosted::session_reads(st, sv, &a)?
+            {
+                return Err(CoreError::NotFound);
+            }
+            let caller = who.caller(st, None).ok();
+            if caller.as_ref().is_some_and(clax_http::auth::Caller::is_agent) {
+                return Err(CoreError::NotFound);
+            }
+            let resolved = clax_http::db_caller::base_caller(st, who.token, &who)?;
+            admission(st, &a, peer, caller.as_ref(), resolved)
+        })
+        .await
+        .ok()?;
+    Some(RoomSocket::open(s, admitted, rooms))
 }
 
 #[cfg(test)]

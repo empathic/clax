@@ -270,13 +270,20 @@ pub async fn assemble(
         .iter()
         .find(|v| u64::from(v.n) == n)
         .is_some_and(|v| file == "index.html" || v.files.contains_key(&file));
-    let (frame, frame_json) = match frame_origin(headers, id.as_str()) {
+    // A hosted daemon's content origin frames every page sandboxed, there.
+    let content_origin = s.hosted.as_ref().and_then(|h| h.content_origin());
+    let mode = match content_origin {
+        Some(_) => Some(None),
+        None => frame_origin(headers, id.as_str()),
+    };
+    let (frame, frame_json) = match mode {
         Some(origin) if holds => {
             let key = s
                 .hosted
                 .as_ref()
                 .map(|_| clax_http::hosted::content_key(&s.token, id.as_str(), n));
             let src = page_src(id.as_str(), n, origin.as_deref(), key.as_deref(), &file);
+            let src = format!("{}{src}", content_origin.unwrap_or(""));
             (
                 Some(frame_html(&src, origin.is_none())),
                 json!({"mode": if origin.is_some() { "subdomain" } else { "sandbox" }, "src": src}),

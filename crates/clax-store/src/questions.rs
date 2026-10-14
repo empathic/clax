@@ -878,6 +878,16 @@ impl Store {
         })
     }
 
+    /// The IDs of every open `hook` question.
+    pub fn open_hook_question_ids(&self) -> Result<Vec<String>> {
+        self.with_read(|c| {
+            Ok(open_keys(c, OPEN_HOOKS, [])?
+                .into_iter()
+                .map(|k| k.id)
+                .collect())
+        })
+    }
+
     /// At daemon start: withdraws every open `hook` question, whose hook
     /// was waiting on the previous daemon. Returns their IDs. Each records
     /// `question.withdraw` (reason `daemon_start`) as `system:daemon`,

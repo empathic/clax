@@ -2812,3 +2812,132 @@ async fn an_agent_token_forks_through_the_mcp_adapter_within_its_persons_rights(
         .unwrap();
     assert!(watched.iter().any(|w| w.artifact_id == fid), "{watched:?}");
 }
+
+#[tokio::test]
+async fn with_a_content_origin_content_is_served_there_alone_and_its_pages_name_the_shell() {
+    let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+    let ts = TestServer::spawn_hosted_with_content(clock.clone(), Some(SECRET)).await;
+    let port = ts.addr.port();
+    let origin = format!("http://localhost:{port}");
+    let site = Site { ts, clock, origin };
+    let owner = site.owner().await;
+    let aid = site.artifact().await;
+    let (s, v) = site.get(&owner, &format!("/api/artifacts/{aid}")).await;
+    assert_eq!(s, 200, "{v}");
+    let content = format!("http://[::1]:{port}");
+    assert_eq!(v["content_origin"], json!(content));
+    let key = v["versions"][0]["content_key"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let at = |host: String, path: String| {
+        site.ts
+            .client
+            .get(site.url(&path))
+            .header(HOST, host)
+            .send()
+    };
+    let public = format!("localhost:{port}");
+    let content_host = format!("[::1]:{port}");
+    let keyed = format!("/c/{aid}/v/1/k/{key}/");
+    // On the content origin, at its key, with the sandbox; the page's bridge
+    // talks to the public origin.
+    let r = at(content_host.clone(), keyed.clone()).await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(
+        r.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .contains("sandbox")
+    );
+    let html = r.text().await.unwrap();
+    assert!(
+        html.contains(&format!("data-origin=\"{}\"", site.origin)),
+        "{html}"
+    );
+    // Never on the public origin.
+    assert_eq!(
+        at(public.clone(), keyed.clone()).await.unwrap().status(),
+        404
+    );
+    // The content origin serves no API, shell or sign-in.
+    for p in ["/api/artifacts", "/", "/setup", &format!("/a/{aid}")] {
+        let r = at(content_host.clone(), p.to_string()).await.unwrap();
+        assert_eq!(r.status(), 404, "{p}");
+    }
+    assert_eq!(
+        at(content_host.clone(), "/healthz".into())
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    // The shell's first load frames the page there, sandboxed.
+    let r = site
+        .req(&owner, reqwest::Method::GET, &format!("/a/{aid}"))
+        .send()
+        .await
+        .unwrap();
+    let page = r.text().await.unwrap();
+    assert!(
+        page.contains(&format!("src=\"{content}{keyed}\"")),
+        "{page}"
+    );
+    // An asset's URL names the content origin.
+    let (s, v) = site
+        .get(&owner, &format!("/api/artifacts/{aid}/assets"))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert!(
+        clax_http::hosted::Hosted::new(&site.origin, None)
+            .unwrap()
+            .with_content_origin(&site.origin)
+            .is_none(),
+        "the public origin is no content origin"
+    );
+}
+
+#[tokio::test]
+async fn a_kept_socket_reopens_only_while_its_session_is_live() {
+    use clax_http::identity::SocketCredentials;
+    use clax_server::routes::{live_layers, room};
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let res = site
+        .ts
+        .post_json(
+            "/api/artifacts",
+            json!({"title": "Room", "capabilities": {"room": {}}, "files": {"index.html": {"content": "<main></main>", "encoding": "utf8"}}}),
+        )
+        .await;
+    assert_eq!(res.status(), 201);
+    let aid = res.json::<Value>().await.unwrap()["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let s = &site.ts.state;
+    let held = SocketCredentials {
+        session: Some(clax_core::secret::sha256_hex(
+            owner.cookie.as_deref().unwrap(),
+        )),
+        ..SocketCredentials::default()
+    };
+    let peer = "0123456789abcdef";
+    assert!(matches!(
+        room::reopen(s, &aid, peer, &[], &held).await,
+        Some(Ok(_))
+    ));
+    // Neither the token nor a session opened it: nothing reopens it.
+    let nobody = SocketCredentials::default();
+    assert!(room::reopen(s, &aid, peer, &[], &nobody).await.is_none());
+    assert!(live_layers::reopen(s, &aid, &nobody).await.is_none());
+    // The session ends while the object sleeps: its socket stays closed.
+    let res = site
+        .req(&owner, reqwest::Method::POST, "/api/hosted/signout")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    assert!(room::reopen(s, &aid, peer, &[], &held).await.is_none());
+    assert!(live_layers::reopen(s, &aid, &held).await.is_none());
+}

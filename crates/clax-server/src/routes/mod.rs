@@ -17,7 +17,6 @@ pub mod grants;
 pub mod health;
 pub mod inbox;
 pub mod live;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod live_layers;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mcp;
@@ -25,7 +24,6 @@ pub mod mcp_http;
 pub mod people;
 pub mod perf;
 pub mod questions;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod room;
 pub mod sample;
 pub mod sessions;

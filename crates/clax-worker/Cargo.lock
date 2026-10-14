@@ -423,6 +423,7 @@ dependencies = [
  "clax-rt",
  "clax-server",
  "console_error_panic_hook",
+ "futures-util",
  "getrandom 0.3.4",
  "js-sys",
  "rusqlite",

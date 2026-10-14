@@ -10,10 +10,11 @@
 //! - with `CLAX_TEST_ROUTES` = `1` (`0` in `wrangler.jsonc`), `/do/{name}/…`
 //!   goes to the spike object named `name` (below), whose routes check no
 //!   credential; otherwise `/do/` is a path like any other, the instance's;
-//! - on the app host (any host but an artifact's `<id>.localhost`), `/`,
-//!   `/inbox` and `/people` are the shell's `index.html`, from the static
-//!   assets, with the headers the daemon's `shell::gallery_page` sends (no
-//!   framing, revalidated);
+//! - on the app host (any host but an artifact's `<id>.localhost` and
+//!   `CONTENT_ORIGIN`'s), `/`, `/inbox` and `/people` are the shell's
+//!   `index.html`, from the static assets, with the headers the daemon's
+//!   `shell::gallery_page` sends (no framing, revalidated), except on a
+//!   hosted instance (`HOSTED` = `1`), whose gate decides who gets them;
 //! - on any host, `/_clax/<path>` is the web UI's file from the static
 //!   assets with the daemon's caching (`shell::asset_cache`), except the
 //!   bridge and the contract's type definitions, which the server answers;
@@ -25,9 +26,10 @@
 //! Artifact content keeps its own origin as on the daemon: the server
 //! serves `<id>.localhost[:port]` as that artifact's origin (its host
 //! rewrite), and browsers send `*.localhost` to this machine, so under
-//! `wrangler dev` the content origin works unchanged. A deployed Worker
-//! needs a content domain of its own (the hosted prototype's
-//! `CONTENT_ORIGIN`), which the server does not know yet.
+//! `wrangler dev` the content origin works unchanged. A deployed hosted
+//! instance serves content on a host of its own, `CONTENT_ORIGIN`, framed
+//! sandboxed, and none on its public origin (`clax_http::hosted::Hosted::with_content_origin`;
+//! `README.md` has the deploy).
 //!
 //! # The spike's routes
 //!
@@ -115,7 +117,11 @@ async fn fetch(req: Request, env: Env, _ctx: worker::Context) -> Result<Response
         return stub.fetch_with_request(req).await;
     }
     let host = req.headers().get("host")?.unwrap_or_default();
-    let app_host = clax_http::host::artifact_host(&host).is_none();
+    // A hosted instance's gate decides who gets the gallery pages (a
+    // guest is sent to sign in), so the instance serves them there.
+    let hosted = env.var("HOSTED").is_ok_and(|v| v.to_string() == "1");
+    let app_host =
+        clax_http::host::artifact_host(&host).is_none() && !content_host(&env, &host) && !hosted;
     if let Some(res) = static_asset(&env, &path, app_host).await? {
         return Response::try_from(res);
     }
@@ -127,6 +133,23 @@ async fn fetch(req: Request, env: Env, _ctx: worker::Context) -> Result<Response
         .unwrap_or_else(|| "default".to_string());
     let stub = env.durable_object("CLAX_INSTANCE_DO")?.get_by_name(&name)?;
     stub.fetch_with_request(req).await
+}
+
+/// Whether `host` (a `Host` header) is `CONTENT_ORIGIN`'s, which serves no
+/// shell page.
+fn content_host(env: &Env, host: &str) -> bool {
+    let origin = env
+        .var("CONTENT_ORIGIN")
+        .map(|v| v.to_string())
+        .unwrap_or_default();
+    worker::Url::parse(&origin).ok().is_some_and(|u| {
+        let authority = match (u.host_str(), u.port()) {
+            (Some(h), Some(p)) => format!("{h}:{p}"),
+            (Some(h), None) => h.to_string(),
+            _ => return false,
+        };
+        authority.eq_ignore_ascii_case(host)
+    })
 }
 
 /// The web UI's file for `path` from the static assets, with the headers

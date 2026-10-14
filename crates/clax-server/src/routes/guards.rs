@@ -765,6 +765,16 @@ mod l10 {
         };
         assert!(gate(mcp).contains("DeniedToGrants") && gate(mcp).contains("RequireToken"));
         assert!(gate(adapter).contains("caller: McpCaller"));
+        // Its extractor takes an agent token only as `verify_layer`
+        // verified it (a hosted daemon's bearer grant), and anything else
+        // only with the token, as `/mcp`.
+        let caller = super::agents::mcp_caller();
+        assert!(
+            caller.contains("is_bearer_grant_request")
+                && caller.contains(".get::<clax_http::agent::BearerGrant>()")
+                && caller.contains("RequireToken::from_request_parts(parts, state).await?;"),
+            "{caller}"
+        );
     }
 }
 
@@ -1250,6 +1260,15 @@ mod agents {
                 function_any(include_str!("mcp_http.rs"), "require_token"),
             ),
         ]
+    }
+
+    /// The JSON-RPC adapter's gate's extractor ([`super::mcp_http::McpCaller`]).
+    pub(super) fn mcp_caller() -> &'static str {
+        let src = include_str!("mcp_http.rs");
+        let at = &src[src
+            .find("impl axum::extract::FromRequestParts<AppState> for McpCaller")
+            .unwrap()..];
+        &at[..at.find("\n}\n").unwrap()]
     }
 
     /// The signature (to the first `{`) of `fn name` in `src`, public or not.
