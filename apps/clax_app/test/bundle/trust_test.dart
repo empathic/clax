@@ -67,6 +67,26 @@ void main() {
     expect(d.aid, 'a1');
   });
 
+  test(
+    'own without the keychain: an author entry with the lineage and key',
+    () {
+      final d = decide(_bundle(key: _own), {
+        'a1': _entry(role: LineageRole.author, key: _own),
+      }, null);
+      expect(d.answer, TrustAnswer.own);
+      expect(d.aid, 'a1');
+      expect(d.mine, isTrue);
+    },
+  );
+
+  test('own bundle after deleting the app: install, marked as mine', () {
+    final d = decide(_bundle(key: _own), {}, _own);
+    expect(d.answer, TrustAnswer.install);
+    expect(d.mine, isTrue);
+    expect(decide(_bundle(), {}, _own).mine, isFalse);
+    expect(decide(_bundle(key: _own), {}, null).mine, isFalse);
+  });
+
   test('install: no local app has the lineage or names it upstream', () {
     final store = {'x': _entry(lineage: _fork, key: _other)};
     expect(decide(_bundle(), store, _own).answer, TrustAnswer.install);
@@ -200,6 +220,16 @@ void main() {
     final d = decide(_bundle(), {'f1': fork}, _own);
     expect(d.answer, TrustAnswer.forked);
     expect(d.aid, 'f1');
+    // Only a local fork (role author) counts, not an installed entry
+    // that happens to carry an upstream.
+    final notFork = decide(_bundle(), {
+      'i1': _entry(
+        lineage: _fork,
+        key: _other,
+        upstream: const LineageUpstream(lineage: _lin, key: _author),
+      ),
+    }, _own);
+    expect(notFork.answer, TrustAnswer.install);
     // A fork of the same lineage under another key does not match.
     final otherKey = decide(_bundle(key: _other), {'f1': fork}, _own);
     expect(otherKey.answer, TrustAnswer.install);

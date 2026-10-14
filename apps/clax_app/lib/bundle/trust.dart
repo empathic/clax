@@ -36,6 +36,7 @@ class TrustDecision {
     this.entry,
     this.modified = false,
     this.stopped = false,
+    this.mine = false,
   });
 
   final TrustAnswer answer;
@@ -51,6 +52,14 @@ class TrustDecision {
 
   /// For [TrustAnswer.update]: the person chose "Keep mine" before.
   final bool stopped;
+
+  /// The bundle is signed with this install's key: an author entry of
+  /// its lineage and key matched ([TrustAnswer.own]), or the given own key
+  /// equals the bundle's. On [TrustAnswer.install] (the person's own app,
+  /// deleted here and opened again) the installer should record the
+  /// lineage with role `author`, so later exports continue it rather than
+  /// fork it.
+  final bool mine;
 }
 
 /// §6.4's trust decision for [bundle], over the lineage [store] (by
@@ -62,9 +71,11 @@ class TrustDecision {
 /// it counts as modified, so the person is asked before their changes
 /// could be replaced.
 ///
-/// Rows are matched in this order: `own`; an app with the bundle's lineage
+/// Rows are matched in this order: `own` (an author entry with the
+/// bundle's lineage and key; [ownKey] is not needed for it); an app with the bundle's lineage
 /// and key (`update`, `current`, `conflict`, `older`), so a separate
-/// install takes its own lineage's later bundles; `forked`; `foreign`;
+/// install takes its own lineage's later bundles; `forked` (a local
+/// author entry naming the lineage and key upstream); `foreign`;
 /// else `install`. Apps are visited in artifact ID order.
 TrustDecision decide(
   Manifest bundle,
@@ -79,16 +90,17 @@ TrustDecision decide(
       if (test(store[aid]!)) (aid, store[aid]!),
   ];
 
-  if (ownKey != null && key == ownKey) {
-    for (final (aid, e) in where(
-      (e) =>
-          e.role == LineageRole.author &&
-          e.lineage == bundle.lineage &&
-          e.key == key,
-    )) {
-      return TrustDecision(TrustAnswer.own, aid: aid, entry: e);
-    }
+  // An author entry under the bundle's key exists only because this
+  // install signed with that key, so it needs no keychain read.
+  for (final (aid, e) in where(
+    (e) =>
+        e.role == LineageRole.author &&
+        e.lineage == bundle.lineage &&
+        e.key == key,
+  )) {
+    return TrustDecision(TrustAnswer.own, aid: aid, entry: e, mine: true);
   }
+  final mine = ownKey != null && key == ownKey;
 
   for (final (aid, e) in where(
     (e) =>
@@ -109,10 +121,11 @@ TrustDecision decide(
               capabilities: state.capabilities,
             ),
         stopped: e.updatesStopped,
+        mine: mine,
       );
     }
     if (bundle.version < e.version) {
-      return TrustDecision(TrustAnswer.older, aid: aid, entry: e);
+      return TrustDecision(TrustAnswer.older, aid: aid, entry: e, mine: mine);
     }
     final same = e.isLatestRelease(
       ReleaseState(
@@ -125,18 +138,22 @@ TrustDecision decide(
       same ? TrustAnswer.current : TrustAnswer.conflict,
       aid: aid,
       entry: e,
+      mine: mine,
     );
   }
 
   for (final (aid, e) in where(
-    (e) => e.upstream?.lineage == bundle.lineage && e.upstream?.key == key,
+    (e) =>
+        e.role == LineageRole.author &&
+        e.upstream?.lineage == bundle.lineage &&
+        e.upstream?.key == key,
   )) {
-    return TrustDecision(TrustAnswer.forked, aid: aid, entry: e);
+    return TrustDecision(TrustAnswer.forked, aid: aid, entry: e, mine: mine);
   }
 
   for (final (aid, e) in where((e) => e.lineage == bundle.lineage)) {
-    return TrustDecision(TrustAnswer.foreign, aid: aid, entry: e);
+    return TrustDecision(TrustAnswer.foreign, aid: aid, entry: e, mine: mine);
   }
 
-  return const TrustDecision(TrustAnswer.install);
+  return TrustDecision(TrustAnswer.install, mine: mine);
 }

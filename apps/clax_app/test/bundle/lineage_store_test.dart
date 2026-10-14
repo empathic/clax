@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -100,6 +101,65 @@ void main() {
       await store.forget('nope');
     },
   );
+
+  test('a malformed file is set aside before a write, and reported', () async {
+    final at = DateTime.utc(2026, 10, 14, 1, 2, 3);
+    final store = LineageStore(dir, now: () => at);
+    File('${dir.path}/lineages.json').writeAsStringSync('{not json');
+    expect(await store.all(), isEmpty);
+    expect(store.damaged, isTrue);
+    expect(store.setAside, isNull);
+
+    await store.put('a2', _author());
+    final aside = store.setAside!;
+    expect(
+      aside.path,
+      '${dir.path}/lineages.json.corrupt-${at.millisecondsSinceEpoch}',
+    );
+    expect(aside.readAsStringSync(), '{not json');
+    expect(store.damaged, isFalse);
+    expect((await store.all()).keys, ['a2']);
+  });
+
+  test('a forget during an update stays forgotten', () async {
+    final store = LineageStore(dir);
+    await store.put('a1', _author());
+    final gate = Completer<void>();
+    final updating = store.update('a1', (e) async {
+      await gate.future;
+      return e?.copyWith(version: 5);
+    });
+    final forgetting = store.forget('a1');
+    gate.complete();
+    await updating;
+    await forgetting;
+    expect(await store.entry('a1'), isNull);
+
+    // A stale entry read before the forget is not written back either,
+    // nor is a bundle kept for the forgotten app.
+    await store.put('a3', _author());
+    final stale = (await store.entry('a3'))!;
+    await store.forget('a3');
+    await store.put('a3', stale.copyWith(version: 2));
+    await store.keepBundle('a3', Uint8List.fromList([1]));
+    await store.stopUpdates('a3');
+    expect(await store.entry('a3'), isNull);
+    expect(await store.keptBundle('a3'), isNull);
+  });
+
+  test('update re-reads the entry and may leave it', () async {
+    final store = LineageStore(dir);
+    await store.put('a1', _author());
+    await store.update('a1', (e) async => e!.copyWith(version: 2));
+    expect((await store.entry('a1'))!.version, 2);
+    await store.update('a1', (e) async => null);
+    expect((await store.entry('a1'))!.version, 2);
+    await store.update('nope', (e) async {
+      expect(e, isNull);
+      return null;
+    });
+    expect(await store.entry('nope'), isNull);
+  });
 
   test('keepBundle replaces the kept bytes', () async {
     final store = LineageStore(dir);
