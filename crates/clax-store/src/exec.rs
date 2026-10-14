@@ -308,7 +308,7 @@ impl Readers {
                 let at = d.load(Ordering::Relaxed);
                 at != 0 && now_ms() > at
             }),
-        );
+        )?;
         Ok(Reader { conn, deadline })
     }
 

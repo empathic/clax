@@ -209,13 +209,13 @@ impl Store {
                     }
                 }
             },
-        ));
+        ))?;
         let dropped = inbox_changes.clone();
         let dropped_requests = request_changes.clone();
         conn.rollback_hook(Some(move || {
             dropped.lock().unwrap().clear();
             dropped_requests.lock().unwrap().clear();
-        }));
+        }))?;
         Ok(Store {
             home: home.clone(),
             writer: Writer::new(conn),
