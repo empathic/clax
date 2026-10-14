@@ -14,6 +14,7 @@ members = [
     "crates/clax-realtime",
     "crates/clax-http",
     "crates/clax-store",
+    "crates/clax-git",
 ]
 
 [workspace.package]
