@@ -1601,24 +1601,26 @@ class _AppPageState extends State<_AppPage> {
   Widget build(BuildContext context) {
     final screen = widget.screen(_base, _surface);
     final cover = _cover;
-    if (cover == null) return screen;
+    // One tree shape with or without the cover, so the screen (and its
+    // page) is kept when the cover goes.
     return Stack(
       fit: StackFit.expand,
       children: [
         screen,
-        ColoredBox(
-          key: const ValueKey('made-cover'),
-          color: Theme.of(context).colorScheme.surface,
-          child: SafeArea(
-            child: Image.memory(
-              cover,
-              fit: BoxFit.fitWidth,
-              alignment: Alignment.topCenter,
-              gaplessPlayback: true,
-              errorBuilder: (_, _, _) => const SizedBox.shrink(),
+        if (cover != null)
+          ColoredBox(
+            key: const ValueKey('made-cover'),
+            color: Theme.of(context).colorScheme.surface,
+            child: SafeArea(
+              child: Image.memory(
+                cover,
+                fit: BoxFit.fitWidth,
+                alignment: Alignment.topCenter,
+                gaplessPlayback: true,
+                errorBuilder: (_, _, _) => const SizedBox.shrink(),
+              ),
             ),
           ),
-        ),
       ],
     );
   }
