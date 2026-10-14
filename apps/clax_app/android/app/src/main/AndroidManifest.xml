@@ -48,16 +48,27 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
-            <!-- App bundles (.clax) opened or shared to Clax; BundleIntake.kt
-                 copies each and hands it to Dart. Messaging apps label an
-                 unknown file application/octet-stream, and a .clax is a zip;
-                 the reader refuses a file that is not a bundle. -->
+        </activity>
+        <!-- App bundles (.clax) opened or shared to Clax. This invisible,
+             history-less activity forwards each file to the one MainActivity
+             in Clax's own task (BundleReceiverActivity.kt), so the sender's
+             task never starts a second engine; BundleIntake.kt copies it and
+             hands it to Dart. Messaging apps label an unknown file
+             application/octet-stream, and a .clax is a zip; the reader
+             refuses a file that is not a bundle. A SEND carries its file in
+             EXTRA_STREAM, not in the intent's data, so its filter names no
+             scheme (one would stop every share from matching). -->
+        <activity
+            android:name=".BundleReceiverActivity"
+            android:exported="true"
+            android:noHistory="true"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>
                 <category android:name="android.intent.category.BROWSABLE"/>
                 <data android:scheme="content"/>
-                <data android:scheme="file"/>
                 <data android:mimeType="application/vnd.empathic.clax+zip"/>
                 <data android:mimeType="application/zip"/>
                 <data android:mimeType="application/octet-stream"/>
