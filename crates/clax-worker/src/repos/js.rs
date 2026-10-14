@@ -43,18 +43,21 @@ fn get_str(o: &JsValue, key: &str) -> clax_git::Result<String> {
     })
 }
 
-/// Calls `o[method](...args)` and awaits the result when it is a promise.
+/// Calls `o[method](...args)` and awaits the result.
+///
+/// The binding and its repository handles are RPC stubs: every property of
+/// one of their methods is another remote call, so `f.apply(…)` would call
+/// a remote `apply`. The call goes through `Reflect.apply`, which looks
+/// nothing up on `f`. Its answer is an `RpcPromise`, a thenable that is no
+/// `Promise` instance, so it is awaited through `Promise.resolve`, which
+/// adopts any thenable and passes any other value through.
 async fn call(o: &JsValue, method: &str, args: &[JsValue]) -> clax_git::Result<JsValue> {
     let f: Function = get(o, method)
         .dyn_into()
         .map_err(|_| GitError::RepoUnavailable(format!("The Artifacts binding has no {method}")))?;
     let argv: Array = args.iter().collect();
-    let v = f.apply(o, &argv).map_err(js_error)?;
-    if v.is_instance_of::<Promise>() {
-        JsFuture::from(Promise::from(v)).await.map_err(js_error)
-    } else {
-        Ok(v)
-    }
+    let v = Reflect::apply(&f, o, &argv).map_err(js_error)?;
+    JsFuture::from(Promise::resolve(&v)).await.map_err(js_error)
 }
 
 fn created(v: &JsValue) -> clax_git::Result<CreatedRepo> {
@@ -124,8 +127,9 @@ impl Drop for JsRepoHandle {
         let dispose = Reflect::get(&self.handle, &key)
             .ok()
             .and_then(|f| f.dyn_into::<Function>().ok());
+        // Through `Reflect.apply`, as in `call`: `f.call` is a remote call.
         if let Some(f) = dispose {
-            let _ = f.call0(&self.handle);
+            let _ = Reflect::apply(&f, &self.handle, &Array::new());
         }
     }
 }

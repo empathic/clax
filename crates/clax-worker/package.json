@@ -13,6 +13,6 @@
     "test:repos": "node test-repos.mjs"
   },
   "devDependencies": {
-    "wrangler": "4.141.0"
+    "wrangler": "4.149.0"
   }
 }

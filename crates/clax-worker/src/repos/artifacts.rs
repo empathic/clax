@@ -17,8 +17,8 @@
 //!   or 403) the request is sent once more with a newly minted one.
 //! - **Tokens for people and agents**: [`ArtifactsTokens`], a
 //!   [`TokenHost`] over `createToken` and `revokeToken`.
-//! - **Readiness**: `get` throws `FORK_IN_PROGRESS` (or
-//!   `IMPORT_IN_PROGRESS`) for a repository Artifacts is still making. A
+//! - **Readiness**: `get` throws `CREATE_IN_PROGRESS`, `FORK_IN_PROGRESS`
+//!   or `IMPORT_IN_PROGRESS` for a repository Artifacts is still making. A
 //!   fork waits for its copy, and every `get` waits for such a repository,
 //!   pausing [`READY_WAITS_MS`] between tries (about 9 s in all) before it
 //!   fails `repo_unavailable`; a fork whose copy does not open in that time
@@ -129,7 +129,7 @@ pub trait ArtifactsRepoApi: MaybeSendSync {
 pub fn error_for_code(code: Option<&str>, message: String) -> GitError {
     match code {
         Some("NOT_FOUND") => GitError::NotFound(message),
-        Some(c @ (FORK_IN_PROGRESS | IMPORT_IN_PROGRESS)) => {
+        Some(c @ (CREATE_IN_PROGRESS | FORK_IN_PROGRESS | IMPORT_IN_PROGRESS)) => {
             GitError::RepoUnavailable(format!("{c}: {message}"))
         }
         Some(
@@ -140,18 +140,21 @@ pub fn error_for_code(code: Option<&str>, message: String) -> GitError {
     }
 }
 
+const CREATE_IN_PROGRESS: &str = "CREATE_IN_PROGRESS";
 const FORK_IN_PROGRESS: &str = "FORK_IN_PROGRESS";
 const IMPORT_IN_PROGRESS: &str = "IMPORT_IN_PROGRESS";
 
-/// Whether `e` is [`error_for_code`]'s for a repository still being forked
-/// or imported.
+/// Whether `e` is [`error_for_code`]'s for a repository still being
+/// created, forked or imported.
 pub fn in_progress(e: &GitError) -> bool {
     matches!(e, GitError::RepoUnavailable(m)
-        if m.starts_with(FORK_IN_PROGRESS) || m.starts_with(IMPORT_IN_PROGRESS))
+        if [CREATE_IN_PROGRESS, FORK_IN_PROGRESS, IMPORT_IN_PROGRESS]
+            .iter()
+            .any(|c| m.starts_with(c)))
 }
 
 /// `api.get(name)`, tried again after each of [`READY_WAITS_MS`] while the
-/// repository is still being forked or imported.
+/// repository is still being created, forked or imported.
 pub async fn get_ready<B: ArtifactsApi>(
     api: &B,
     name: &str,

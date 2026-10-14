@@ -41,14 +41,19 @@ export function pruneRuns(root, keep) {
   for (const n of runs.slice(keep - 1)) rmSync(join(root, n), { recursive: true, force: true });
 }
 
-/** wrangler.jsonc without its custom build (the caller builds once), with
- * absolute paths, and with `vars` added, written to `dir`. */
-export function writeConfig(dir, vars = {}) {
+/** wrangler.jsonc as an object (its comments are whole lines). */
+export function baseConfig() {
   const text = readFileSync(join(HERE, "wrangler.jsonc"), "utf8")
     .split("\n")
     .filter((l) => !/^\s*\/\//.test(l))
     .join("\n");
-  const config = JSON.parse(text);
+  return JSON.parse(text);
+}
+
+/** wrangler.jsonc without its custom build (the caller builds once), with
+ * absolute paths, and with `vars` added, written to `dir`. */
+export function writeConfig(dir, vars = {}) {
+  const config = baseConfig();
   delete config.$schema;
   delete config.build;
   config.main = join(HERE, config.main);
