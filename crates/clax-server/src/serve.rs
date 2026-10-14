@@ -330,6 +330,9 @@ pub async fn serve(
             clax_core::working::SystemClock,
         ))),
         rooms: Arc::new(clax_realtime::room::Rooms::default()),
+        live_layers: Arc::new(clax_realtime::live_layers::LiveLayers::new(Arc::new(
+            clax_core::working::SystemClock,
+        ))),
         sample: cfg.sample.clone(),
         stream: clax_realtime::stream::Hub::new(live_ids.clone()),
         seats: clax_http::seats::LiveSeats::from_env(Arc::new(clax_core::working::SystemClock)),

@@ -21,10 +21,20 @@ test("a viewer beyond the live seats is a read-only spectator until a seat frees
   // Ann's renamed stream holds the one seat before Bob arrives (a snapshot
   // is shared for 5 s, so a newer one says so).
   await expect.poll(async () => (await (await fetch(`${d.base}/api/artifacts/${artifact.id}/snapshot`)).json()).seats_free, { timeout: 20_000 }).toBe(0);
+  // Bob's live layers sockets: a spectator holds none open (spec §16.1).
+  const sockets: { closed: boolean }[] = [];
+  bob.on("websocket", ws => {
+    if (!ws.url().endsWith(`/api/artifacts/${artifact.id}/live`)) return;
+    const s = { closed: false };
+    sockets.push(s);
+    ws.on("close", () => { s.closed = true; });
+  });
+  const liveOpen = () => sockets.filter(s => !s.closed).length;
   await openArtifact(bob, d.base, artifact.id, 1, "sandbox", { lan: true });
   await setName(bob, "Bob");
   const banner = bob.locator(".banner.spectate");
   await expect(banner).toContainText(BANNER);
+  await expect.poll(liveOpen).toBe(0);
   await expect(banner.getByRole("button", { name: "Join live" })).toHaveCount(0);
   // Spectators have no chip: the top bar counts everyone viewing instead.
   await expect(bob.locator(".who .viewing")).toHaveText("2 viewing", { timeout: 20_000 });
@@ -45,6 +55,8 @@ test("a viewer beyond the live seats is a read-only spectator until a seat frees
   await expect(join).toBeVisible({ timeout: 20_000 });
   await join.click();
   await expect(banner).toHaveCount(0);
+  // Seated again, the view opens its live socket.
+  await expect.poll(liveOpen, { timeout: 20_000 }).toBe(1);
   await expect(bob.getByRole("button", { name: /^Comment/ })).toBeEnabled();
   await expect(card.getByRole("button", { name: "Resolve" })).toBeVisible();
   await bob.context().close();

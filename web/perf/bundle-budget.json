@@ -1,9 +1,9 @@
 {
   "bridgeBaseline": 32861,
   "gallery": 27960,
-  "artifact": 64069,
+  "artifact": 64243,
   "questions": 16384,
-  "bridge": 5501,
+  "bridge": 5548,
   "partComment": 11821,
   "partClip": 16504,
   "partCaps": 8773,
@@ -13,5 +13,6 @@
   "extWorker": 24576,
   "extComposer": 28672,
   "extPanel": 66560,
-  "people": 16384
+  "people": 16384,
+  "partLive": 4616
 }

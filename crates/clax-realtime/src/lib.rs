@@ -9,6 +9,7 @@ pub mod call_ids;
 pub mod drafts;
 pub mod feedback;
 pub mod live;
+pub mod live_layers;
 pub mod presence;
 pub mod push;
 pub mod questions;

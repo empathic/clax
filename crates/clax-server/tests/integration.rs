@@ -51,6 +51,8 @@ mod api_host;
 mod api_inbox;
 #[cfg(any(not(clax_split), clax_split = "api_live"))]
 mod api_live;
+#[cfg(any(not(clax_split), clax_split = "api_live_layers"))]
+mod api_live_layers;
 #[cfg(any(not(clax_split), clax_split = "api_live_site"))]
 mod api_live_site;
 #[cfg(any(not(clax_split), clax_split = "api_live_sites"))]

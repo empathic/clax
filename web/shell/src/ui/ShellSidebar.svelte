@@ -12,12 +12,20 @@
   import type { Thread } from "../threads";
   import { ownTarget, sendsFor } from "../view/send-menu";
   import type { ArtifactController, Loaded, ViewState } from "../view/artifact-controller";
+  import { emptyLayer, writersIn } from "../view/live-layers";
+  import LiveWriters from "./LiveWriters.svelte";
   import Sidebar from "./Sidebar.svelte";
 
   let { ctl, s }: { ctl: ArtifactController; s: ViewState & { data: Loaded } } = $props();
+  // Who writes where now (the live layers), named as the view knows them.
+  const live = { writers, onText: (tid: string | null, text: string) => ctl.liveView?.text(tid, text) };
   const target = $derived(s.sendTo ?? ownTarget(s.agents, sendsFor(s.agents, s.me)));
   const go = (send: () => unknown) => { if (target && target !== s.sendTo) ctl.chooseTarget(target); send(); };
 </script>
+
+{#snippet writers(tid: string | null)}
+  <LiveWriters writers={writersIn(s.live?.layer ?? emptyLayer(), tid, s.live?.now ?? 0).map(w => ({ ...w, name: ctl.liveView?.nameOf(w.person_id) ?? "Viewer" }))} />
+{/snippet}
 
 {#snippet above(t: Thread, now: Date)}
   {#if t.status === "open" && t.sent_to_agent && (s.me?.owner || s.me?.person)}
@@ -33,5 +41,5 @@
   onResolve={t => ctl.resolveThread(t)} onReply={(t, body) => ctl.reply(t, body)}
   selection={s.selection} batchNote={s.batchNote} batchBusy={s.batchBusy} sendTo={target}
   onToggle={(t, shift, order) => ctl.toggleSelect(t, shift, order)} onClear={() => ctl.clearSelection()} onNote={v => ctl.setBatchNote(v)}
-  compose={s.spectator ? undefined : { version: ctl.shown(s), host: ctl }} readOnly={!!s.spectator}
+  compose={s.spectator ? undefined : { version: ctl.shown(s), host: ctl }} readOnly={!!s.spectator} live={s.spectator ? undefined : live}
   onSendSelection={() => go(() => ctl.sendSelection())} onSendUnsent={() => go(() => ctl.sendUnsent())} onChoose={h => ctl.chooseTarget(h)} {above} />

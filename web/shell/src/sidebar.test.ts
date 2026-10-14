@@ -209,6 +209,21 @@ describe("Sidebar", () => {
     view.unmount();
   });
 
+  it("tells the live layers a reply's text as it is typed, and that it is gone when posted or when its card goes", () => {
+    const onText = vi.fn();
+    const writers = createRawSnippet(() => ({ render: () => "<span></span>" }));
+    const t: Thread = { ...base, id: "a", anchor, status: "open", sent_to_agent: false, comments: [comment("1", "viewer", "Alex", "note")] };
+    const props = { versions: [], shown: 1, agent: "claude", threads: [t], resolved: {}, now: new Date(base.created_at), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn(), live: { writers, onText } };
+    const view = mount(Sidebar, props);
+    const input = view.root.querySelector<HTMLInputElement>('input[aria-label="Reply"]')!;
+    flush(() => { input.value = "half a thought"; input.dispatchEvent(new Event("input", { bubbles: true })); });
+    expect(onText).toHaveBeenLastCalledWith("a", "half a thought");
+    // The thread leaves the list (resolved elsewhere, filtered out): the draft goes with it.
+    view.update({ ...props, threads: [] });
+    expect(onText).toHaveBeenLastCalledWith("a", "");
+    view.unmount();
+  });
+
   it("tags each comment with its author, version and time, keeps the history to what the comments do not say, and tags a thread whose element changed in a later version", () => {
     const v = (n: number, at: string) => ({ artifact_id: base.artifact_id, n, label: null, created_at: at, files: {} });
     const versions = [v(1, "2026-09-29T09:00:00.000Z"), v(2, "2026-09-29T11:00:00.000Z")];

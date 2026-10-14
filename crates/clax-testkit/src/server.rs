@@ -92,6 +92,8 @@ pub struct TestServer {
     pub web: Arc<dyn clax_core::embedded::FileTree>,
     /// The live seats, whose limits a test may set.
     pub seats: Arc<clax_http::seats::LiveSeats>,
+    /// The live layers' hub.
+    pub live_layers: Arc<clax_realtime::live_layers::LiveLayers>,
     extension_id: String,
     _dir: tempfile::TempDir,
 }
@@ -220,6 +222,7 @@ impl TestServer {
             drafts: Arc::new(clax_core::drafts::Drafts::new(clock.clone())),
             presence: Arc::new(clax_core::presence::Presence::new(clock.clone())),
             rooms: Arc::new(clax_realtime::room::Rooms::default()),
+            live_layers: Arc::new(clax_realtime::live_layers::LiveLayers::new(clock.clone())),
             // Sampling off; tests that sample set their own with `spawn_with`.
             sample: Arc::new(clax_sample::Sampler::disabled()),
             stream: clax_realtime::stream::Hub::new(live_ids.clone()),
@@ -262,6 +265,7 @@ impl TestServer {
         state.stream.listen(&state.events);
         clax_http::seats::install(&state);
         let seats = state.seats.clone();
+        let live_layers = state.live_layers.clone();
         clax_http::views::inbox::listen(&state);
         clax_http::views::approval::listen(&state);
         clax_server::routes::people::listen(&state);
@@ -305,6 +309,7 @@ impl TestServer {
             agent_gate,
             web,
             seats,
+            live_layers,
             extension_id,
             _dir: dir,
         }

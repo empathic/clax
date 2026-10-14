@@ -18,6 +18,8 @@ pub mod health;
 pub mod inbox;
 pub mod live;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod live_layers;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod mcp;
 pub mod people;
 pub mod perf;

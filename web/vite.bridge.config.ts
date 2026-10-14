@@ -7,7 +7,7 @@ import { defineConfig } from "vite";
 type Entry = { file: string; name?: string; isEntry?: boolean };
 const manifest = JSON.parse(readFileSync("dist/_clax/bridge/.vite/manifest.json", "utf8")) as Record<string, Entry>;
 const parts = Object.fromEntries(Object.values(manifest).filter(e => e.isEntry && e.name).map(e => [e.name!, e.file]));
-for (const name of ["comment", "clip", "caps", "room", "sample"]) if (!parts[name]) throw new Error(`the parts build has no ${name} entry; run node scripts/build-parts.mjs first`);
+for (const name of ["comment", "clip", "caps", "room", "sample", "live"]) if (!parts[name]) throw new Error(`the parts build has no ${name} entry; run node scripts/build-parts.mjs first`);
 
 export default defineConfig({
   // CLAX_TEST_CLOCK=1 builds the browser tests' bridge (see shell/src/clock.ts).

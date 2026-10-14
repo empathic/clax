@@ -31,6 +31,10 @@ export interface ModeHooks {
   /** A rectangle drawn in the viewport, at least `AREA_MIN` px one way. */
   pickArea(r: AreaRect): void;
   cancel(): void;
+  /** The live layers (`live-hook.ts`): the rectangle being drawn (once it is
+   * larger than a click, and null when the drag ends, picked or dropped),
+   * and each pick as it is made, before its `pick…` hook. */
+  live?: { drag(r: AreaRect | null): void; picked(t: Element | Range | AreaRect): void };
 }
 
 // Shell tokens do not reach this shadow root, so the values repeat them:
@@ -273,6 +277,7 @@ export class CommentMode {
 
   /** Drops a drag in progress (a capturing rectangle stays). */
   private endDrag(): void {
+    if (this.drag) this.hooks.live?.drag(null);
     this.drag = null;
     if (!this.capturing) this.areaBox.style.display = "none";
   }
@@ -284,7 +289,9 @@ export class CommentMode {
     if (this.drag) {
       // The button came up outside the frame: the drag is dropped.
       if (!(e.buttons & 1)) { this.endDrag(); return; }
-      const b = outlineBox(rectOf0(this.dragRectTo(e.clientX, e.clientY)), viewportOf(this.doc));
+      const r = this.dragRectTo(e.clientX, e.clientY);
+      if (!isClickSized(r)) this.hooks.live?.drag(r);
+      const b = outlineBox(rectOf0(r), viewportOf(this.doc));
       if (b) Object.assign(this.areaBox.style, { display: "block", left: `${b.left}px`, top: `${b.top}px`, width: `${b.width}px`, height: `${b.height}px` });
       this.outline.style.display = "none";
       return;
@@ -340,11 +347,13 @@ export class CommentMode {
     if (this.drag) {
       const r = this.dragRectTo(e.clientX, e.clientY);
       this.drag = null;
+      this.hooks.live?.drag(null);
       if (!isClickSized(r)) {
         this.suppressClick = true;
         this.hovered = null;
         this.capturing = true;
         this.areaBox.classList.add("capturing");
+        this.hooks.live?.picked(r);
         this.hooks.pickArea(r);
         return;
       }
@@ -364,9 +373,10 @@ export class CommentMode {
     if (this.widen.active || e.altKey) {
       // Option widens a drag selection like a click: to the enclosing element.
       const w = widenedTarget(r, Math.max(1, this.widen.level)).target;
-      if (w instanceof Element) { this.capturing = true; this.hooks.pickElement(w); return; }
+      if (w instanceof Element) { this.capturing = true; this.hooks.live?.picked(w); this.hooks.pickElement(w); return; }
     }
     this.capturing = true;
+    this.hooks.live?.picked(r);
     this.hooks.pickRange(r);
   };
 
@@ -379,7 +389,7 @@ export class CommentMode {
     if (this.capturing) return;
     let t = this.choose(this.target(e), e.clientX, e.clientY);
     if (t && (this.widen.active || e.altKey)) t = widenedTarget(t, this.widen.active ? this.widen.level : 1).target;
-    if (t) this.capturing = true;
+    if (t) { this.capturing = true; this.hooks.live?.picked(t); }
     if (t instanceof Element) this.hooks.pickElement(t);
     else if (t) this.hooks.pickRange(t);
   };

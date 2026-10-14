@@ -219,6 +219,7 @@ mod l10 {
             "perf" => include_str!("perf.rs"),
             "questions" => include_str!("questions.rs"),
             "room" => include_str!("room.rs"),
+            "live_layers" => include_str!("live_layers.rs"),
             "sample" => include_str!("sample.rs"),
             "sessions" => include_str!("sessions.rs"),
             "shell" => include_str!("../shell/mod.rs"),

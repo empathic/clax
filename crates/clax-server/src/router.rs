@@ -476,6 +476,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             .route("/api/events", get(events::events))
             .route("/api/stream", get(stream::open))
             .route("/api/artifacts/{aid}/room", get(room::room))
+            .route("/api/artifacts/{aid}/live", get(live_layers::live))
             .merge(mcp)
     };
     let mut r = r;
