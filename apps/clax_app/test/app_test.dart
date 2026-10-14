@@ -21,6 +21,7 @@ import 'package:clax_app/ui/inspector_surface.dart';
 import 'package:clax_app/ui/launcher.dart';
 import 'package:clax_app/ui/making_screen.dart'
     show MakingScreen, sayFirstOutput;
+import 'package:clax_app/ui/question_sheet.dart';
 import 'package:clax_app/ui/thread_detail.dart' show ThreadDetail;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -43,6 +44,20 @@ class _Key implements SecureKey {
 
   @override
   Future<void> write(String? key) async => value = key;
+}
+
+/// A [QuestionPage] that records what it loads.
+class _QuestionPage implements QuestionPage {
+  final loads = <Uri>[];
+
+  @override
+  Widget build(BuildContext context) => const SizedBox.expand();
+
+  @override
+  Future<void> load(Uri url) async => loads.add(url);
+
+  @override
+  void dispose() {}
 }
 
 /// Everything AppRoot is given, as fakes the test can reach.
@@ -79,6 +94,7 @@ class _Rig {
   final agentTimings = RecordingTimings();
   final surfaces = <FakeAppSurface>[];
   final surfaceBases = <Uri>[];
+  final questionPages = <_QuestionPage>[];
   final backendFor = <String>[];
 
   /// What the agent answers; its calls can be held at a gate.
@@ -114,6 +130,11 @@ class _Rig {
       final s = FakeAppSurface();
       surfaces.add(s);
       return s;
+    },
+    questionPage: (base) {
+      final p = _QuestionPage();
+      questionPages.add(p);
+      return p;
     },
     installId: 'install',
     supportDir: dir.path,
@@ -546,6 +567,79 @@ void main() {
     }
     expect(await r.api.listDrafts(), isEmpty);
     expect(r.api.callNames, contains('deleteDraft'));
+  });
+
+  group("the agent's questions", () {
+    const units = [
+      {
+        'question': 'Which unit should distances use?',
+        'header': 'Units',
+        'options': [
+          {'label': 'km', 'description': ''},
+          {'label': 'mi', 'description': ''},
+        ],
+      },
+    ];
+
+    Future<String> ask(WidgetTester tester, {String? about}) async {
+      final s = await rig.api.registerAppSession(installId: 'i', pid: 1);
+      final r = await rig.api.askQuestion(s.id, units, artifactId: about);
+      await tester.pumpAndSettle();
+      return r.question.id;
+    }
+
+    final sheet = find.byType(QuestionWebSheet);
+
+    testWidgets('a question about no app opens the question sheet; it '
+        'closes once answered', (tester) async {
+      await pumpApp(tester, _Rig(key: 'sk-ant-x'));
+      await up(tester);
+      final qid = await ask(tester);
+      expect(sheet, findsOneWidget);
+      expect(rig.questionPages.single.loads, [
+        Uri.parse('http://127.0.0.1:7999/inbox?q=$qid'),
+      ]);
+      await rig.api.answerQuestion(qid, [
+        const QuestionAnswer(selected: ['km']).toJson(),
+      ]);
+      await tester.pumpAndSettle();
+      expect(sheet, findsNothing);
+    });
+
+    testWidgets("a question about the open app is the app screen's; one "
+        "about another app is told in a toast whose View opens the sheet", (
+      tester,
+    ) async {
+      await pumpApp(tester, _Rig(key: 'sk-ant-x'));
+      await up(tester);
+      final aid = rig.api.seedArtifact('Runs', {'index.html': _page});
+      final other = rig.api.seedArtifact('Log', {'index.html': _page});
+      await openApp(tester, aid);
+      await ask(tester, about: aid);
+      expect(sheet, findsNothing);
+      expect(find.text('Log has a question'), findsNothing);
+      final qid = await ask(tester, about: other);
+      expect(sheet, findsNothing);
+      expect(find.text('Log has a question'), findsOneWidget);
+      await tester.tap(find.text('View'));
+      await tester.pumpAndSettle();
+      expect(sheet, findsOneWidget);
+      expect(rig.questionPages.single.loads.single.queryParameters['q'], qid);
+    });
+
+    testWidgets('a question in the inbox opens the sheet', (tester) async {
+      await pumpApp(tester, _Rig(key: 'sk-ant-x'));
+      await up(tester);
+      final qid = await ask(tester);
+      await tester.tap(find.byTooltip('Close'));
+      await tester.pumpAndSettle();
+      expect(sheet, findsNothing);
+      final launcher = tester.widget<Launcher>(find.byType(Launcher));
+      launcher.onOpenQuestion!(qid);
+      await tester.pumpAndSettle();
+      expect(sheet, findsOneWidget);
+      expect(rig.questionPages, hasLength(2));
+    });
   });
 
   testWidgets('an inbox reply opens its app at the thread once the shell '
