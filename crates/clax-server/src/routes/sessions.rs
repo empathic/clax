@@ -14,7 +14,7 @@ use clax_http::audit::DeferredAudit;
 use clax_http::error::ApiError;
 use clax_http::state::AppState;
 use clax_realtime::push::CodexPush;
-use clax_store::{JoinSession, NameSource, Proved, RegisterSession};
+use clax_store::{JoinSession, NameSource, Proved, RegisterSession, Store};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -60,8 +60,27 @@ pub async fn register(
     r.transcript_path = transcript(r.transcript_path)?;
     let audit = audit.agent_side();
     let proved = a.caller.session().map(str::to_string);
+    let (ctx, state) = (s.feedback_ctx(), s.clone());
     let reg = s
         .store_call(move |st| {
+            // An agent token holds at most `BEARER_SESSION_CAP` live
+            // sessions: room is made for this one.
+            if let Some(gid) = &r.grant_id {
+                let over = st.end_bearer_sessions_beyond(gid, Store::BEARER_SESSION_CAP - 1)?;
+                if !over.ended.is_empty() {
+                    let ttl =
+                        clax_core::audit::AuditCtx::system(clax_core::audit::SystemReason::Ttl);
+                    crate::feedback::sessions_ended(
+                        &state,
+                        &ctx,
+                        st,
+                        &ttl,
+                        &over.touched,
+                        &over.withdrawn_questions,
+                        &over.ended,
+                    );
+                }
+            }
             st.register_session_proved(&audit, r, Proved::Session(proved.as_deref()))
         })
         .await?;

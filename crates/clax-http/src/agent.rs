@@ -1558,6 +1558,16 @@ pub async fn authenticate(State(s): State<AppState>, req: Request, next: Next) -
     if !crate::auth::is_grant_request(req.headers()) {
         return next.run(req).await;
     }
+    if crate::auth::is_bearer_grant_request(req.headers()) {
+        return match bearer_head(&s, req.headers()).await {
+            Ok(b) => {
+                let mut req = req;
+                req.extensions_mut().insert(b);
+                next.run(req).await
+            }
+            Err(r) => r.into_response(),
+        };
+    }
     let (mut parts, body) = req.into_parts();
     match check_head(&s, &parts) {
         Ok(g) => {
@@ -1600,6 +1610,28 @@ fn check_head(s: &AppState, parts: &Parts) -> Result<GrantHead, Refusal> {
         token,
         head,
     })
+}
+
+/// What [`authenticate`] found for an agent token (`Authorization: Bearer
+/// cxa_…`): the bearer grant it holds, for [`verify_layer`] on the API and
+/// for the remote MCP endpoint (`crate::routes::mcp_http`).
+#[derive(Clone, Debug)]
+pub struct BearerGrant {
+    pub grant_id: String,
+}
+
+/// The header checks of an agent token's request: no `Origin` or cookie
+/// (403 `forbidden_origin`), one `Authorization`, naming a live token of an
+/// approved bearer grant (401 `invalid_token`). TLS carries the token; no
+/// key signs the request, so there is no signature, skew or nonce.
+async fn bearer_head(s: &AppState, headers: &HeaderMap) -> Result<BearerGrant, Refusal> {
+    grant_auth::no_browser(headers)?;
+    let token = crate::auth::bearer_agent_token(headers)
+        .ok_or_else(grant_auth::invalid_token)?
+        .to_string();
+    let found = s.store_call(move |st| st.bearer_grant(&token)).await?;
+    let grant_id = found.ok_or_else(grant_auth::invalid_token)?;
+    Ok(BearerGrant { grant_id })
 }
 
 /// Whether a request has no body: no or a zero `Content-Length`, and no
@@ -1722,11 +1754,14 @@ async fn by<T>(
 /// handler runs, on every method (spec §6.6, M5), over the agent-side
 /// headers ([`clax_core::sig::AGENT_HEADERS`]) of the very request it hands
 /// on (one given twice is 401 `invalid_signature`, before the body is
-/// read); passes every other request through untouched, its body unread.
-/// A route without a `need!`
-/// ([`ROUTES`]) is 403 `forbidden` to an agent credential before anything
-/// is read.
+/// read); reads an agent token's body within the same bounds
+/// ([`verify_bearer`]); passes every other request through untouched, its
+/// body unread. A route without a `need!` ([`ROUTES`]) is 403 `forbidden`
+/// to an agent credential before anything is read.
 pub async fn verify_layer(State(s): State<AppState>, mut req: Request, next: Next) -> Response {
+    if let Some(b) = req.extensions_mut().remove::<BearerGrant>() {
+        return verify_bearer(&s, b, req, next).await;
+    }
     let Some(g) = req.extensions_mut().remove::<GrantHead>() else {
         if crate::auth::is_grant_request(req.headers()) {
             // Not authenticated: never reaches a handler.
@@ -1789,6 +1824,87 @@ pub async fn verify_layer(State(s): State<AppState>, mut req: Request, next: Nex
         grant_id: g.grant_id,
     });
     next.run(Request::from_parts(parts, Body::from(body))).await
+}
+
+/// The [`Gate`] key of bearer grant `grant_id`: every body of its agent
+/// token shares one key's permit and small-body allowance, apart from every
+/// signing key's (a hash with its own prefix, never a public key).
+fn bearer_key(grant_id: &str) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    Sha256::new()
+        .chain_update(b"clax bearer grant body\0")
+        .chain_update(grant_id.as_bytes())
+        .finalize()
+        .into()
+}
+
+/// [`verify_layer`] for an agent token: the route must be one a grant may
+/// reach, as for a signed request; with nothing to verify, the bearer grant
+/// is the request's ([`VerifiedGrant`]). Its body is read before it is
+/// handed on as a signed request's is ([`read_unverified`], keyed by the
+/// grant), within the route's limit. The remote MCP endpoint
+/// (`crate::routes::mcp_http`), which serves agent tokens, is handed the
+/// [`BearerGrant`] instead, its body read the same way within the publish
+/// limit.
+async fn verify_bearer(s: &AppState, b: BearerGrant, mut req: Request, next: Next) -> Response {
+    let matched = req.extensions().get::<MatchedPath>().map(|m| m.as_str());
+    if matched == Some(crate::routes::mcp_http::PATH) {
+        let limit = crate::routes::artifacts::PUBLISH_BODY_LIMIT;
+        let mut req = match gated(s, &b, req, limit).await {
+            Ok(r) => r,
+            Err(e) => return e.into_response(),
+        };
+        req.extensions_mut().insert(b);
+        return next.run(req).await;
+    }
+    let need = req
+        .extensions()
+        .get::<MatchedPath>()
+        .and_then(|m| need_of(req.method(), m.as_str()));
+    let Some(need) = need.filter(|n| n.grants) else {
+        return crate::auth::grants_refused().into_response();
+    };
+    if need.class == Class::Filtered && !FILTERED_LIVE.contains(&need.name) {
+        return not_yet().into_response();
+    }
+    req = match gated(s, &b, req, need.limit).await {
+        Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+    let now = s.store.now_utc().timestamp();
+    if s.grant_auth.use_due(&b.grant_id, now) {
+        let (store, gid) = (s.store.clone(), b.grant_id.clone());
+        clax_rt::spawn(async move {
+            if let Err(e) = store.call(move |st| st.note_grant_use(&gid)).await {
+                tracing::warn!(error = %e, "noting a grant's use failed");
+            }
+        });
+    }
+    req.extensions_mut().insert(VerifiedGrant {
+        grant_id: b.grant_id,
+    });
+    next.run(req).await
+}
+
+/// `req` with its body (at most `limit` bytes) read through the agent gate
+/// under `b`'s key ([`read_unverified`]); a request whose body is known to
+/// be empty as it is. Its body's own length decides, not its headers: an
+/// in-process request (the MCP adapter's tools, through
+/// `crate::loopback`) carries a body with no `Content-Length`.
+async fn gated(
+    s: &AppState,
+    b: &BearerGrant,
+    req: Request,
+    limit: usize,
+) -> Result<Request, ApiError> {
+    use axum::body::HttpBody as _;
+    if req.body().size_hint().exact() == Some(0) {
+        return Ok(req);
+    }
+    let (parts, body) = req.into_parts();
+    let key = bearer_key(&b.grant_id);
+    let body = read_unverified(&s.agent_gate, key, &parts.headers, body, limit).await?;
+    Ok(Request::from_parts(parts, Body::from(body)))
 }
 
 /// `GET /api/_test/agent/gate` (debug builds): what the gate holds.

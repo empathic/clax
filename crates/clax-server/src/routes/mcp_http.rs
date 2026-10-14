@@ -4,15 +4,38 @@
 //! daemon serves it at [`PATH`] beside rmcp's `/mcp`, so both are tested
 //! against one suite.
 //!
-//! It is `/mcp` in every other respect: the owner's, behind the bearer
-//! token (a person's agent is refused, `DeniedToGrants`); the same `Host`
-//! names admitted; the same body limit; the tools acting as the
-//! sessionless agent on `mcp`; and outside the request timeout layers, as
-//! a tool may wait. The tools reach the routes through the daemon's own
-//! router in-process ([`crate::loopback::Loopback`]), not over HTTP, each
-//! request carrying the MCP caller's own `Authorization`
-//! ([`ClaxTools::for_caller`]) and never the daemon's token, so a tool
-//! call has the rights its caller has and no more.
+//! It admits what `/mcp` admits, the daemon token, and also a person's
+//! agent token (`Authorization: Bearer cxa_…`, a bearer grant a member
+//! minted in a hosted daemon's browser; [`McpCaller`]). An agent signing
+//! with `Clax-Grant` is refused 403 `forbidden`, as on `/mcp`: a signature
+//! covers one request, so the tools' requests could not carry it. It has
+//! the same `Host` names admitted, the same body limit, and sits outside
+//! the request timeout layers, as a tool may wait. The tools reach the
+//! routes through the daemon's own router in-process
+//! ([`crate::loopback::Loopback`]), not over HTTP, each request carrying
+//! the MCP caller's own `Authorization` ([`ClaxTools::for_caller`]) and
+//! never the daemon's token, so a tool call has the rights its caller has
+//! and no more.
+//!
+//! The daemon token's tools act as the sessionless agent on `mcp`, as on
+//! `/mcp`, and no `Mcp-Session-Id` is issued. An agent token's are an
+//! agent of another machine's ([`ClaxTools::for_remote_agent`]: no file of
+//! this machine is read for it, no browser opened) and have sessions
+//! ([`serve_agent`]): `initialize` registers a harness session for the
+//! token's grant, named after the MCP client (`clientInfo.name`), and
+//! answers `Mcp-Session-Id: <session ID>.<session secret>`: the session's
+//! own credential (spec 2026-10-08 §6.8, §6.9), which the token alone does
+//! not give, so one MCP client of a token cannot act in another's session.
+//! A request naming it acts in that session, proving it with the secret
+//! (the tools that need a session, such as `working` and
+//! `wait_for_feedback`, have it, publishes are its, and its narrowing
+//! binds it), and `DELETE` ends it. Each request
+//! marks its session seen; the reaper ends one unseen for
+//! `Store::REMOTE_SESSION_IDLE_SECS`, and a token holds at most
+//! `Store::BEARER_SESSION_CAP` live sessions (a new one ends the least
+//! recently seen). A session that is not the token's, or has ended,
+//! answers 404, which tells the client to initialize again. A request naming no session acts as the grant's
+//! sessionless agent, which reads but does not write.
 
 use clax_http::auth::RequireToken;
 use crate::routes::artifacts::PUBLISH_BODY_LIMIT;
@@ -31,13 +54,39 @@ pub const PATH: &str = "/mcp/json";
 #[cfg(target_arch = "wasm32")]
 pub const PATH: &str = "/mcp";
 
-/// As `/mcp`'s: the owner's agents only, with the token.
-async fn require_token(
-    _d: clax_http::agent::DeniedToGrants,
-    _t: RequireToken,
-    req: Request,
-    next: Next,
-) -> Response {
+/// Who may call the adapter: the daemon token's holder, as on `/mcp`, or
+/// an agent token's agent (a bearer grant that
+/// [`clax_http::agent::authenticate`] resolved). Any other agent credential is
+/// 403 `forbidden`; no credential, or another token, 401.
+#[derive(Clone, Debug)]
+pub enum McpCaller {
+    Token,
+    Agent(clax_http::agent::BearerGrant),
+}
+
+impl axum::extract::FromRequestParts<AppState> for McpCaller {
+    type Rejection = clax_http::error::ApiError;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        if clax_http::auth::is_bearer_grant_request(&parts.headers) {
+            return parts
+                .extensions
+                .get::<clax_http::agent::BearerGrant>()
+                .cloned()
+                .map(McpCaller::Agent)
+                .ok_or_else(clax_http::error::ApiError::unauthorized);
+        }
+        RequireToken::from_request_parts(parts, state).await?;
+        Ok(McpCaller::Token)
+    }
+}
+
+/// The adapter's gate ([`McpCaller`]), which hands the caller on.
+async fn require_token(caller: McpCaller, mut req: Request, next: Next) -> Response {
+    req.extensions_mut().insert(caller);
     next.run(req).await
 }
 
@@ -111,6 +160,162 @@ pub fn tools(state: &AppState) -> ClaxTools {
     )
 }
 
+/// The header that names an MCP session.
+pub const SESSION_HEADER: &str = "mcp-session-id";
+
+/// A plain-text answer, as the transport answers what it refuses.
+fn plain(status: axum::http::StatusCode, text: &str) -> axum::http::Response<axum::body::Bytes> {
+    axum::http::Response::builder()
+        .status(status)
+        .header(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; charset=utf-8",
+        )
+        .body(axum::body::Bytes::from(text.to_string()))
+        .expect("static response parts")
+}
+
+/// The `clientInfo` of a JSON-RPC `initialize` request in `body`, or
+/// `None` for any other message.
+fn initialize_client(body: &[u8]) -> Option<serde_json::Value> {
+    let v: serde_json::Value = serde_json::from_slice(body).ok()?;
+    (v["method"] == "initialize" && v.get("id").is_some())
+        .then(|| v["params"]["clientInfo"].clone())
+}
+
+/// The harness session an MCP client named `client` registers: of the
+/// harness its name names (`claude` when it names none), named after the
+/// client ([`clax_core::names::derive`] reads it as a repository name).
+fn registration(client: &serde_json::Value) -> clax_core::RegisterSession {
+    let name = client["name"].as_str().unwrap_or("").trim();
+    let lower = name.to_ascii_lowercase();
+    let harness = if lower.contains("codex") {
+        "codex"
+    } else if lower.contains("grok") {
+        "grok"
+    } else if lower == "pi" || lower.starts_with("pi-") {
+        "pi"
+    } else {
+        "claude"
+    };
+    clax_core::RegisterSession {
+        harness: harness.to_string(),
+        harness_session_id: None,
+        cwd: String::new(),
+        pid: None,
+        parent_pid: None,
+        transcript_path: None,
+        grant_id: None,
+        repo: (!name.is_empty()).then(|| name.chars().take(64).collect()),
+        branch: None,
+    }
+}
+
+/// The `Mcp-Session-Id` an agent token's MCP client is given for session
+/// `id`: its ID and, when it has one, its secret (spec 2026-10-08 §6.9).
+fn session_header(id: &str, secret: Option<&clax_core::secret::Secret>) -> String {
+    match secret {
+        Some(s) => format!("{id}.{}", s.expose()),
+        None => id.to_string(),
+    }
+}
+
+/// The session ID and secret an `Mcp-Session-Id` carries
+/// ([`session_header`]), or `None` when it is not one: a ULID's characters,
+/// then optionally `.` and a session secret's (`cxs_` and base64url).
+fn parse_session_header(v: &str) -> Option<(String, Option<clax_core::secret::Secret>)> {
+    let (sid, secret) = match v.split_once('.') {
+        Some((sid, secret)) => (sid, Some(secret)),
+        None => (v, None),
+    };
+    let id_ok =
+        !sid.is_empty() && sid.len() <= 64 && sid.bytes().all(|b| b.is_ascii_alphanumeric());
+    let secret_ok = secret.is_none_or(|s| {
+        s.len() <= 128
+            && s.starts_with("cxs_")
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    });
+    (id_ok && secret_ok).then(|| {
+        (
+            sid.to_string(),
+            secret.map(|s| clax_core::secret::Secret::new(s.to_string())),
+        )
+    })
+}
+
+/// An agent token's request ([`McpCaller::Agent`]), with `tools` acting
+/// for it: in the session `session` names when it names one, proved by
+/// the secret it carries (404 for a session that is not the token's, has
+/// ended, or is not proved; `DELETE` ends it), and an `initialize`
+/// registering a new session for the client, whose ID and secret the
+/// answer's `Mcp-Session-Id` carries ([`session_header`]).
+async fn serve_agent(
+    tools: ClaxTools,
+    session: Option<String>,
+    req: axum::http::Request<axum::body::Bytes>,
+) -> axum::http::Response<axum::body::Bytes> {
+    use axum::http::{Method, StatusCode};
+    if let Some(client) = initialize_client(req.body()) {
+        let res = clax_mcp::http::handle(&tools, req).await;
+        if res.status() != StatusCode::OK {
+            return res;
+        }
+        return match tools
+            .client()
+            .register_session(&registration(&client))
+            .await
+        {
+            Ok((s, secret)) => {
+                let mut res = res;
+                match axum::http::HeaderValue::from_str(&session_header(&s.id, secret.as_ref())) {
+                    Ok(v) => {
+                        res.headers_mut().insert(SESSION_HEADER, v);
+                        res
+                    }
+                    Err(_) => plain(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "a session ID that is no header",
+                    ),
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "registering an MCP client's session failed");
+                plain(
+                    StatusCode::FORBIDDEN,
+                    &format!("Forbidden: this agent token cannot register a session: {e}"),
+                )
+            }
+        };
+    }
+    let Some(session) = session else {
+        return clax_mcp::http::handle(&tools, req).await;
+    };
+    // A session ID is a ULID: anything else names no session, and never
+    // reaches a route's path.
+    let Some((sid, secret)) = parse_session_header(&session) else {
+        return plain(StatusCode::NOT_FOUND, "Not Found: no such session");
+    };
+    // Each request marks its session seen, so the reaper ends only one its
+    // client left (`Store::REMOTE_SESSION_IDLE_SECS` unseen); one it does
+    // not prove is refused as one that does not exist.
+    let found = tools
+        .client()
+        .heartbeat_session(&sid, secret.as_ref())
+        .await;
+    let Some(s) = found.ok().filter(|s| s.ended_at.is_none()) else {
+        return plain(StatusCode::NOT_FOUND, "Not Found: no such session");
+    };
+    let tools = tools.in_session(s, secret);
+    if req.method() == Method::DELETE {
+        return match tools.client().end_session().await {
+            Ok(_) => plain(StatusCode::NO_CONTENT, ""),
+            Err(_) => plain(StatusCode::NOT_FOUND, "Not Found: no such session"),
+        };
+    }
+    clax_mcp::http::handle(&tools, req).await
+}
+
 pub fn router(state: &AppState) -> Router<AppState> {
     let tools = Shared::new(local(tools(state)));
     let allowed = Arc::new(allowed_hosts(state));
@@ -133,6 +338,17 @@ pub fn router(state: &AppState) -> Router<AppState> {
             // The caller's credential, which every request of its tools
             // carries.
             let authorization = crate::loopback::caller_credential(req.headers());
+            let agent = matches!(
+                req.extensions().get::<McpCaller>(),
+                Some(McpCaller::Agent(_))
+            );
+            let session = req
+                .headers()
+                .get(SESSION_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            // An agent token's body is in memory already, read through the
+            // agent gate ([`clax_http::agent::verify_layer`]).
             let (parts, body) = req.into_parts();
             let body = match axum::body::to_bytes(body, PUBLISH_BODY_LIMIT).await {
                 Ok(b) => b,
@@ -151,7 +367,11 @@ pub fn router(state: &AppState) -> Router<AppState> {
             // `Send`; a Worker has one thread.
             let res = clax_rt::sendable(async move {
                 let tools = tools_of(&tools).for_caller(authorization);
-                clax_mcp::http::handle(&tools, req).await
+                if agent {
+                    serve_agent(tools.for_remote_agent(), session, req).await
+                } else {
+                    clax_mcp::http::handle(&tools, req).await
+                }
             })
             .await;
             res.map(axum::body::Body::from)
@@ -165,7 +385,34 @@ pub fn router(state: &AppState) -> Router<AppState> {
 
 #[cfg(test)]
 mod tests {
-    use super::host_allowed;
+    use super::{host_allowed, parse_session_header, session_header};
+
+    #[test]
+    fn session_headers_carry_the_session_and_its_secret() {
+        let secret = clax_core::secret::Secret::new("cxs_abc-DEF_123".to_string());
+        let v = session_header("01J0ABC", Some(&secret));
+        assert_eq!(v, "01J0ABC.cxs_abc-DEF_123");
+        let (sid, got) = parse_session_header(&v).unwrap();
+        assert_eq!(sid, "01J0ABC");
+        assert_eq!(got.unwrap().expose(), "cxs_abc-DEF_123");
+        assert_eq!(
+            parse_session_header("01J0ABC")
+                .unwrap()
+                .1
+                .map(|s| s.expose().to_string()),
+            None
+        );
+        for bad in [
+            "",
+            ".cxs_a",
+            "01J/0",
+            "01J0.abc",
+            "01J0.cxs_a.b",
+            "01J0.cxs_a b",
+        ] {
+            assert!(parse_session_header(bad).is_none(), "{bad}");
+        }
+    }
 
     #[test]
     fn hosts_are_matched_as_rmcp_matches_them() {

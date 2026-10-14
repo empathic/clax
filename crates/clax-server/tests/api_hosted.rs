@@ -584,7 +584,7 @@ async fn a_member_mints_agent_tokens_with_their_rights_and_revokes_them() {
     assert_eq!(s, 201, "{v}");
     let token = v["token"].as_str().unwrap();
     assert!(token.starts_with("cxa_"));
-    let mcp = format!("{}/mcp", site.origin);
+    let mcp = format!("{}/mcp/json", site.origin);
     assert_eq!(v["mcp_url"], json!(mcp));
     assert_eq!(
         v["claude_command"].as_str().unwrap(),
@@ -1109,7 +1109,14 @@ async fn an_authorization_that_is_no_credential_reaches_nothing() {
                 .await
                 .unwrap();
             let (s, v) = json_of(r).await;
-            assert_eq!((s, code(&v)), (401, "unauthorized"), "{p} [{auth}]: {v}");
+            // An agent token no grant holds is refused as an agent
+            // credential.
+            let want = if auth.starts_with("Bearer cxa_") {
+                "invalid_token"
+            } else {
+                "unauthorized"
+            };
+            assert_eq!((s, code(&v)), (401, want), "{p} [{auth}]: {v}");
         }
         // Beside a member's session cookie too: it never borrows the session.
         let r = site
@@ -1967,4 +1974,574 @@ async fn drafts_and_live_layers_reach_signed_in_people_who_may_read_the_page() {
     let e = events.next_named("drafts").await;
     assert_eq!(e["artifact_id"], json!(plan), "{e}");
     assert_eq!(e["drafts"].as_array().map(Vec::len), Some(1), "{e}");
+}
+
+/// An agent's MCP client on the adapter with an agent token: the session
+/// it was answered with, if any.
+struct TokenAgent<'a> {
+    site: &'a Site,
+    token: String,
+    session: Option<String>,
+}
+
+impl TokenAgent<'_> {
+    fn request(&self, method: reqwest::Method) -> reqwest::RequestBuilder {
+        let url = format!("{}{}", self.site.ts.base, crate::api_mcp::ADAPTER);
+        let mut r = self
+            .site
+            .ts
+            .client
+            .request(method, url)
+            .header("accept", crate::api_mcp::ACCEPT)
+            .header(HOST, format!("localhost:{}", self.site.ts.addr.port()))
+            .bearer_auth(&self.token);
+        if let Some(s) = &self.session {
+            r = r.header("mcp-session-id", s);
+        }
+        r
+    }
+
+    /// `initialize` as the MCP client `client`: the status; the session it
+    /// is answered with is kept.
+    async fn initialize(&mut self, client: &str) -> u16 {
+        let mut body = crate::api_mcp::initialize();
+        body["params"]["clientInfo"]["name"] = json!(client);
+        let res = self
+            .request(reqwest::Method::POST)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        let status = res.status().as_u16();
+        self.session = res
+            .headers()
+            .get("mcp-session-id")
+            .map(|v| v.to_str().unwrap().to_string());
+        status
+    }
+
+    /// Calls `tool`: the HTTP status and the tool's result.
+    async fn call(&self, tool: &str, args: Value) -> (u16, Value) {
+        let body = json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
+            "params": {"name": tool, "arguments": args}});
+        let res = self
+            .request(reqwest::Method::POST)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        let status = res.status().as_u16();
+        let text = res.text().await.unwrap();
+        let v: Value = serde_json::from_str(&text).unwrap_or(json!({"text": text}));
+        (status, v["result"].clone())
+    }
+}
+
+/// A tool result's error code (`structuredContent.error.code`), or "" for
+/// a success.
+fn tool_code(r: &Value) -> String {
+    if r["isError"] != true {
+        return String::new();
+    }
+    tool_json(r)["error"]["code"]
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+/// The JSON a tool result's text carries.
+fn tool_json(r: &Value) -> Value {
+    let text = r["content"][0]["text"].as_str().unwrap_or("{}");
+    serde_json::from_str(text).unwrap_or(json!({}))
+}
+
+#[tokio::test]
+async fn an_agent_token_acts_through_the_mcp_adapter_within_its_persons_rights() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let plan = site.titled("Plan").await;
+    let budget = site.titled("Budget").await;
+    // Sam may read, comment on and watch Budget alone.
+    let (sam, _) = site
+        .person_with(
+            &owner,
+            "Sam",
+            json!([
+                {"type": "clax-artifacts", "actions": ["read"], "locations": [budget]},
+                {"type": "clax-comments", "actions": ["read", "write", "reply", "watch"], "locations": [budget]},
+            ]),
+        )
+        .await;
+    let (s, v) = site
+        .post(
+            &sam,
+            "/api/hosted/agent-tokens",
+            json!({"label": "sam-laptop"}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let gid = v["id"].as_str().unwrap().to_string();
+    let mut agent = TokenAgent {
+        site: &site,
+        token: v["token"].as_str().unwrap().to_string(),
+        session: None,
+    };
+    // `initialize` registers a session for the token's grant, named after
+    // the client.
+    assert_eq!(agent.initialize("summary-writer").await, 200);
+    let sid = agent.session.clone().expect("an Mcp-Session-Id");
+    let session = site
+        .ts
+        .store
+        .get_session(&sid)
+        .unwrap()
+        .expect("registered");
+    assert_eq!(session.grant_id.as_deref(), Some(gid.as_str()));
+    assert_eq!(session.name.as_deref(), Some("summary-writer"));
+    // Within Sam's rights: Budget is there (its file withheld until Sam
+    // approves its author, as from any of Sam's agents), Plan is not.
+    let (s, r) = agent.call("read", json!({"url_or_id": budget})).await;
+    assert_eq!((s, tool_code(&r).as_str()), (200, "withheld"), "{r}");
+    let (_, r) = agent.call("read", json!({"url_or_id": plan})).await;
+    assert_eq!(tool_code(&r), "not_permitted", "{r}");
+    let (_, r) = agent.call("list", json!({})).await;
+    let listed = tool_json(&r)["artifacts"].as_array().unwrap().len();
+    assert_eq!(listed, 1, "{r}");
+    // Sam may not publish, so neither may the agent: not a new version of
+    // Budget, nor a new artifact.
+    let (_, r) = agent
+        .call(
+            "publish",
+            json!({"id": budget, "html": "<h1>mine</h1>", "if_version": 1}),
+        )
+        .await;
+    assert_eq!(tool_code(&r), "not_permitted", "{r}");
+    let (_, r) = agent
+        .call("publish", json!({"html": "<h1>new</h1>", "title": "New"}))
+        .await;
+    assert_eq!(tool_code(&r), "not_permitted", "{r}");
+    assert_eq!(site.ts.store.list_artifacts().unwrap().len(), 2);
+    // No file of the daemon's machine is read for it.
+    let (_, r) = agent
+        .call(
+            "publish",
+            json!({"file_path": "/etc/hosts", "title": "Hosts"}),
+        )
+        .await;
+    assert_eq!(tool_code(&r), "invalid_args", "{r}");
+    // Its session is its own: `working` shows on Budget.
+    let (_, r) = agent
+        .call(
+            "working",
+            json!({"url_or_id": budget, "message": "reading the budget"}),
+        )
+        .await;
+    assert_eq!(tool_code(&r), "", "{r}");
+    // `DELETE` ends the session: its ID names nothing after.
+    let res = agent.request(reqwest::Method::DELETE).send().await.unwrap();
+    assert_eq!(res.status(), 204);
+    let (s, _) = agent.call("read", json!({"url_or_id": budget})).await;
+    assert_eq!(s, 404);
+    // A revoked token reaches nothing.
+    let (s, _) = site
+        .send(
+            &sam,
+            reqwest::Method::DELETE,
+            &format!("/api/hosted/agent-tokens/{gid}"),
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, 200);
+    agent.session = None;
+    assert_eq!(agent.initialize("summary-writer").await, 401);
+}
+
+impl Site {
+    /// An agent token Sam mints, as Sam's MCP client holds it.
+    async fn token_agent(&self, sam: &Browser, label: &str) -> TokenAgent<'_> {
+        let (s, v) = self
+            .post(sam, "/api/hosted/agent-tokens", json!({"label": label}))
+            .await;
+        assert_eq!(s, 201, "{v}");
+        TokenAgent {
+            site: self,
+            token: v["token"].as_str().unwrap().to_string(),
+            session: None,
+        }
+    }
+
+    /// One reaper pass, as the daemon's.
+    async fn reap(&self) -> Vec<String> {
+        let (feedback, store) = (self.ts.feedback.clone(), self.ts.store.clone());
+        tokio::task::spawn_blocking(move || {
+            clax_server::daemon::reap_idle(
+                &feedback,
+                &store,
+                std::time::Duration::from_secs(clax_store::Store::SESSION_IDLE_SECS),
+                &|_| panic!("a remote session is never probed"),
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap()
+        .ended
+    }
+
+    fn live(&self, sid: &str) -> bool {
+        self.ts
+            .store
+            .get_session(sid)
+            .unwrap()
+            .is_some_and(|s| s.ended_at.is_none())
+    }
+}
+
+#[tokio::test]
+async fn an_agent_tokens_sessions_are_its_own_end_when_left_and_are_capped() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let budget = site.titled("Budget").await;
+    let (sam, _) = site
+        .person_with(
+            &owner,
+            "Sam",
+            json!([{"type": "clax-artifacts", "actions": ["read"], "locations": [budget]}]),
+        )
+        .await;
+    let mut a = site.token_agent(&sam, "laptop").await;
+    let mut b = site.token_agent(&sam, "desktop").await;
+    assert_eq!(a.initialize("summary-writer").await, 200);
+    let sid = a.session.clone().unwrap();
+    // Another token's request naming the session: 404, as for none, and its
+    // DELETE ends nothing.
+    b.session = Some(sid.clone());
+    let (s, _) = b.call("list", json!({})).await;
+    assert_eq!(s, 404);
+    let res = b.request(reqwest::Method::DELETE).send().await.unwrap();
+    assert_eq!(res.status(), 404);
+    assert!(site.live(&sid));
+    // Nor does an ID that is no session's, or one shaped as a path.
+    for bad in ["01ZZZZZZZZZZZZZZZZZZZZZZZZ", "../artifacts", "a/b"] {
+        b.session = Some(bad.to_string());
+        let (s, _) = b.call("list", json!({})).await;
+        assert_eq!(s, 404, "{bad}");
+    }
+    // Each request marks the session seen: in use, the reaper leaves it.
+    for _ in 0..3 {
+        site.clock.advance(20 * 60);
+        let (s, r) = a.call("list", json!({})).await;
+        assert_eq!((s, tool_code(&r).as_str()), (200, ""), "{r}");
+        assert!(site.reap().await.is_empty());
+    }
+    // Left without a DELETE, it ends once unseen for the remote idle time,
+    // and its ID then names nothing.
+    site.clock
+        .advance(clax_store::Store::REMOTE_SESSION_IDLE_SECS as i64 + 1);
+    assert_eq!(site.reap().await, vec![sid.clone()]);
+    let (s, _) = a.call("list", json!({})).await;
+    assert_eq!(s, 404);
+    // A token holds at most BEARER_SESSION_CAP live sessions: each
+    // initialize beyond it ends the least recently seen.
+    let cap = clax_store::Store::BEARER_SESSION_CAP;
+    let mut sids = Vec::new();
+    for _ in 0..cap + 2 {
+        site.clock.advance(1);
+        assert_eq!(a.initialize("summary-writer").await, 200);
+        sids.push(a.session.clone().unwrap());
+    }
+    let live: Vec<bool> = sids.iter().map(|s| site.live(s)).collect();
+    assert_eq!(live.iter().filter(|l| **l).count(), cap, "{live:?}");
+    assert!(
+        !live[0] && !live[1] && live[2..].iter().all(|l| *l),
+        "{live:?}"
+    );
+    // The other token's are its own.
+    assert_eq!(b.initialize("other").await, 200);
+    assert!(sids[2..].iter().all(|s| site.live(s)));
+}
+
+#[tokio::test]
+async fn an_agent_token_on_the_api_reaches_only_a_grants_routes() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let budget = site.titled("Budget").await;
+    let (sam, sam_id) = site
+        .person_with(
+            &owner,
+            "Sam",
+            json!([{"type": "clax-artifacts", "actions": ["read"], "locations": [budget]}]),
+        )
+        .await;
+    let (s, v) = site
+        .post(&sam, "/api/hosted/agent-tokens", json!({"label": "laptop"}))
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let (token, gid) = (
+        v["token"].as_str().unwrap().to_string(),
+        v["id"].as_str().unwrap().to_string(),
+    );
+    let mut agent = TokenAgent {
+        site: &site,
+        token: token.clone(),
+        session: None,
+    };
+    assert_eq!(agent.initialize("summary-writer").await, 200);
+    let sid = agent.session.clone().unwrap();
+    let handle = site
+        .ts
+        .store
+        .get_session(&sid)
+        .unwrap()
+        .unwrap()
+        .agent_handle;
+    let api = |method: reqwest::Method, path: &str| {
+        site.ts
+            .client
+            .request(method, site.url(path))
+            .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+            .bearer_auth(&token)
+    };
+    // A grant's route, within Sam's rights: Budget alone.
+    let (s, v) = json_of(
+        api(reqwest::Method::GET, "/api/artifacts")
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["artifacts"].as_array().unwrap().len(), 1, "{v}");
+    // The owner's, the browser's and the People routes: none, whatever the
+    // body. An agent token mints no token, approves no author and shares
+    // nothing.
+    use reqwest::Method as M;
+    let refused = [
+        (M::GET, "/api/token".to_string(), json!(null)),
+        (M::GET, "/api/people".to_string(), json!(null)),
+        (M::GET, "/api/people/me".to_string(), json!(null)),
+        (M::GET, "/api/people/invites".to_string(), json!(null)),
+        (
+            M::POST,
+            "/api/people/invites".to_string(),
+            json!({"name": "Eve", "rights": "clax:collaborator"}),
+        ),
+        (
+            M::PUT,
+            format!("/api/people/{sam_id}/rights"),
+            json!({"rights": "clax:collaborator"}),
+        ),
+        (M::DELETE, format!("/api/people/{sam_id}"), json!(null)),
+        (
+            M::PUT,
+            format!("/api/people/me/grants/{gid}/narrow"),
+            json!({"rights": []}),
+        ),
+        (M::GET, "/api/grants".to_string(), json!(null)),
+        (M::POST, format!("/api/grants/{gid}/approve"), json!({})),
+        (M::DELETE, format!("/api/grants/{gid}"), json!(null)),
+        (
+            M::POST,
+            "/api/approvals".to_string(),
+            json!({"author": "*unconnected", "scope": "*"}),
+        ),
+        (
+            M::POST,
+            "/api/approvals/requests/r1/decide".to_string(),
+            json!({"allow": true}),
+        ),
+        (
+            M::PUT,
+            format!("/api/agents/{handle}"),
+            json!({"name": "renamed"}),
+        ),
+        (
+            M::PUT,
+            format!("/api/agents/{handle}/elevate"),
+            json!({"rights": []}),
+        ),
+        (M::DELETE, format!("/api/agents/{handle}"), json!(null)),
+        (M::GET, "/api/inbox".to_string(), json!(null)),
+        (M::GET, "/api/viewers/me".to_string(), json!(null)),
+        (M::GET, "/api/toolpath/export".to_string(), json!(null)),
+        (M::GET, "/api/hosted/agent-tokens".to_string(), json!(null)),
+        (
+            M::POST,
+            "/api/hosted/agent-tokens".to_string(),
+            json!({"label": "more"}),
+        ),
+        (
+            M::DELETE,
+            format!("/api/hosted/agent-tokens/{gid}"),
+            json!(null),
+        ),
+        (M::POST, "/api/hosted/signin-links".to_string(), json!({})),
+        (M::GET, "/api/hosted/links".to_string(), json!(null)),
+        (
+            M::PUT,
+            format!("/api/hosted/artifacts/{budget}/link"),
+            json!({"access": "comment"}),
+        ),
+        (M::POST, "/api/hosted/signout".to_string(), json!({})),
+    ];
+    for (m, path, body) in refused {
+        let mut r = api(m.clone(), &path);
+        if !body.is_null() {
+            r = r.json(&body);
+        }
+        let (s, v) = json_of(r.send().await.unwrap()).await;
+        assert_eq!(s, 403, "{m} {path}: {v}");
+        assert!(
+            ["forbidden", "browser_required", "not_owner"].contains(&code(&v)),
+            "{m} {path}: {v}"
+        );
+    }
+    // Nothing changed: one token, Sam's rights, no link, no approval.
+    let (_, v) = site.get(&sam, "/api/hosted/agent-tokens").await;
+    assert_eq!(v["tokens"].as_array().map(Vec::len), Some(1), "{v}");
+    assert!(site.ts.store.link_access(&budget).unwrap().is_none());
+    // Beside a browser's marks the token is refused outright: an Origin or
+    // a cookie is 403 `forbidden_origin`, so a page cannot spend it.
+    for (k, val) in [
+        (ORIGIN.as_str(), site.origin.clone()),
+        (COOKIE.as_str(), "clax_session=x".to_string()),
+    ] {
+        let (s, v) = json_of(
+            api(M::GET, "/api/artifacts")
+                .header(k, val)
+                .send()
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!((s, code(&v)), (403, "forbidden_origin"), "{k}: {v}");
+    }
+}
+
+/// A POST written by hand on its own connection with agent token `token`,
+/// declaring a `len`-byte body and sending none of it, so the test holds
+/// the body's read open. The status and error code it is answered with
+/// come from [`held_response`].
+async fn held_body(site: &Site, path: &str, token: &str, len: usize) -> tokio::net::TcpStream {
+    use tokio::io::AsyncWriteExt;
+    let port = site.ts.addr.port();
+    let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .unwrap();
+    let head = format!(
+        "POST {path} HTTP/1.1\r\nhost: localhost:{port}\r\nconnection: close\r\n\
+         authorization: Bearer {token}\r\naccept: {}\r\n\
+         content-type: application/json\r\ncontent-length: {len}\r\n\r\n",
+        crate::api_mcp::ACCEPT
+    );
+    stream.write_all(head.as_bytes()).await.unwrap();
+    stream
+}
+
+/// The status and error code `stream` ([`held_body`]) is answered with.
+async fn held_response(mut stream: tokio::net::TcpStream) -> (u16, String) {
+    use tokio::io::AsyncReadExt;
+    let mut buf = Vec::new();
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        stream.read_to_end(&mut buf),
+    )
+    .await
+    .expect("a response within 10 s");
+    let text = String::from_utf8_lossy(&buf);
+    let status = text
+        .split(' ')
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| panic!("no status in {text:?}"));
+    let body = text.split("\r\n\r\n").nth(1).unwrap_or("");
+    let v: Value = serde_json::from_str(body).unwrap_or_default();
+    (status, code(&v).to_string())
+}
+
+#[tokio::test]
+async fn an_agent_tokens_bodies_are_bounded_like_a_signed_grants() {
+    use std::time::Duration;
+    const MIB: usize = 1024 * 1024;
+    let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+    let (ts, timer) = TestServer::spawn_hosted_agent_timer(clock.clone(), Some(SECRET)).await;
+    let origin = format!("http://localhost:{}", ts.addr.port());
+    let site = Site { ts, clock, origin };
+    let owner = site.owner().await;
+    let mint = |label: &'static str| {
+        let site = &site;
+        let owner = &owner;
+        async move {
+            let (s, v) = site
+                .post(owner, "/api/hosted/agent-tokens", json!({"label": label}))
+                .await;
+            assert_eq!(s, 201, "{v}");
+            v["token"].as_str().unwrap().to_string()
+        }
+    };
+    let (token, other) = (mint("laptop").await, mint("desktop").await);
+    let api = "/api/artifacts";
+    let adapter = crate::api_mcp::ADAPTER;
+    let r0 = site.ts.agent_gate.state().read;
+
+    // One large body of a token at a time, on the API and the adapter
+    // alike: the others wait in its queue of 4, and a sixth is refused at
+    // once. Another token's is not held up by them.
+    let holder = held_body(&site, api, &token, 2 * MIB).await;
+    site.ts
+        .wait_gate("the holder", |g| g.held == 1 && g.reserved == 2 * MIB)
+        .await;
+    let mut queued = Vec::new();
+    for i in 1..=4 {
+        let path = if i % 2 == 0 { adapter } else { api };
+        queued.push(held_body(&site, path, &token, 2 * MIB).await);
+        site.ts.wait_gate("queued", |g| g.queued == i).await;
+    }
+    let sixth = held_body(&site, adapter, &token, 2 * MIB).await;
+    assert_eq!(held_response(sixth).await, (429, "limit_reached".into()));
+    let theirs = held_body(&site, api, &other, 2 * MIB).await;
+    site.ts
+        .wait_gate("the other token's", |g| g.held == 2 && g.queued == 4)
+        .await;
+    // The holder's whole read ends 12 s in (10 s and 1 s per MiB): 408,
+    // and the first in its queue takes the permit.
+    timer.advance(Duration::from_secs(12));
+    assert_eq!(held_response(holder).await, (408, "timeout".into()));
+    drop((queued, theirs));
+    site.ts
+        .wait_gate("everything back", |g| {
+            g.held == 0 && g.reserved == 0 && g.queued == 0 && g.small == 0
+        })
+        .await;
+    assert_eq!(site.ts.agent_gate.state().read, r0, "nothing was sent");
+
+    // Past the adapter's limit (96 MiB): 413 before any of it is read.
+    let big = held_body(&site, adapter, &token, 97 * MIB).await;
+    assert_eq!(held_response(big).await.0, 413);
+
+    // Two publishes over 1 MiB at once through the adapter under the one
+    // token, each read through the gate by the adapter and again by the
+    // API it calls in process (each read waits for the one holding the
+    // token's permit): both land.
+    let mut a = TokenAgent {
+        site: &site,
+        token: token.clone(),
+        session: None,
+    };
+    let mut b = TokenAgent {
+        site: &site,
+        token,
+        session: None,
+    };
+    assert_eq!(a.initialize("one").await, 200);
+    assert_eq!(b.initialize("two").await, 200);
+    let html = |w: &str| format!("<h1>{w}</h1><p>{}</p>", "x".repeat(3 * MIB / 2));
+    let (ra, rb) = tokio::join!(
+        a.call("publish", json!({"html": html("A"), "title": "A"})),
+        b.call("publish", json!({"html": html("B"), "title": "B"}))
+    );
+    for (s, r) in [ra, rb] {
+        assert_eq!((s, tool_code(&r).as_str()), (200, ""), "{r}");
+    }
+    let read = site.ts.agent_gate.state().read - r0;
+    assert!(read > (6 * MIB) as u64, "{read}");
 }

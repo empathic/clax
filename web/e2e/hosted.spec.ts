@@ -117,7 +117,7 @@ test("setup, an invite joined in a second browser, a sign-in link for a third, a
     // An agent token, with the command Claude Code takes.
     await phone.getByLabel("Machine").fill("sam-laptop");
     await phone.getByRole("button", { name: "Create token" }).click();
-    await expect(phone.locator(".minted code").first()).toContainText(`claude mcp add --transport http clax ${origin}/mcp --header "Authorization: Bearer cxa_`);
+    await expect(phone.locator(".minted code").first()).toContainText(`claude mcp add --transport http clax ${origin}/mcp/json --header "Authorization: Bearer cxa_`);
     await expect(phone.locator(".hosted-tokens .tok")).toContainText("sam-laptop");
 
     // The owner shares the page by link, for comments.

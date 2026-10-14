@@ -147,10 +147,41 @@ pub fn has_scheme(headers: &axum::http::HeaderMap, scheme: &str) -> bool {
 /// The scheme of an agent credential of another machine (spec §6.6).
 pub const GRANT_SCHEME: &str = "Clax-Grant";
 
-/// Whether the request carries an agent credential (`Authorization:
-/// Clax-Grant`), valid or not.
+/// Whether the request carries an agent credential, valid or not: a
+/// signed one (`Authorization: Clax-Grant`), or an agent token
+/// ([`bearer_agent_token`]).
 pub fn is_grant_request(headers: &axum::http::HeaderMap) -> bool {
-    has_scheme(headers, GRANT_SCHEME)
+    has_scheme(headers, GRANT_SCHEME) || is_bearer_grant_request(headers)
+}
+
+/// Whether any `Authorization` header of `headers` is `Bearer cxa_…`: an
+/// agent token a person minted in a hosted daemon's browser, a bearer
+/// grant ([`clax_store::hosted`]), valid or not.
+pub fn is_bearer_grant_request(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get_all(axum::http::header::AUTHORIZATION)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|v| bearer_value(v).is_some())
+}
+
+/// The agent token in the request's one `Authorization` header, `Bearer
+/// cxa_…` (the scheme matched ignoring case); `None` for none, another
+/// credential, or more than one header.
+pub fn bearer_agent_token(headers: &axum::http::HeaderMap) -> Option<&str> {
+    let mut all = headers.get_all(axum::http::header::AUTHORIZATION).iter();
+    let (Some(v), None) = (all.next(), all.next()) else {
+        return None;
+    };
+    bearer_value(v.to_str().ok()?)
+}
+
+fn bearer_value(v: &str) -> Option<&str> {
+    let (scheme, token) = v.split_once(' ')?;
+    let token = token.trim_matches(' ');
+    (scheme.eq_ignore_ascii_case("bearer")
+        && token.starts_with(clax_store::hosted::AGENT_TOKEN_PREFIX))
+    .then_some(token)
 }
 
 /// Extractor for the routes that stay the owner's own: it admits a request

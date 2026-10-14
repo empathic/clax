@@ -58,7 +58,9 @@
 //!   answers 401 `sign_in_required`.
 //!
 //! Agent tokens a member mints here are bearer grants (their rights the
-//! person's); the remote MCP endpoint that takes them is not served yet.
+//! person's): `Authorization: Bearer cxa_…` is an agent credential
+//! ([`crate::agent::authenticate`]), which the MCP adapter
+//! (`crate::routes::mcp_http`) serves.
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -1172,9 +1174,9 @@ pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Re
     let headers = req.headers();
     let authz = headers.contains_key(header::AUTHORIZATION);
     // `Authorization` speaks for its credential alone, so it must be one:
-    // the daemon token, or an agent credential (`Clax-Grant`), which
-    // `crate::agent::authenticate` checks next. Anything else would pass
-    // the gate as no one, whom a local daemon lets read.
+    // the daemon token, or an agent credential (`Clax-Grant`, or an agent
+    // token), which `crate::agent::authenticate` checks next. Anything
+    // else would pass the gate as no one, whom a local daemon lets read.
     if authz
         && !crate::auth::is_grant_request(headers)
         && !crate::auth::has_token(headers, &s.token)
@@ -1631,6 +1633,9 @@ struct TokenBody {
 /// token, mcp_url, claude_command, codex_config, created_at}`: an agent
 /// token for the caller's remote agents, shown this once, with the commands
 /// that add it to Claude Code and Codex. Its rights are the caller's.
+/// `mcp_url` is the MCP adapter's, which serves agent tokens
+/// (`crate::routes::mcp_http::PATH`: `/mcp/json` on the daemon, `/mcp` on
+/// a Durable Object).
 async fn mint_token(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -1649,7 +1654,7 @@ async fn mint_token(
     let (t, token) = s
         .store_call(move |st| st.mint_agent_token(&audit.resolve(st)?, &id, &b.label, &peer))
         .await?;
-    let mcp_url = h.url("/mcp");
+    let mcp_url = h.url(crate::routes::mcp_http::PATH);
     let secret = token.expose();
     Ok(no_store(
         (
