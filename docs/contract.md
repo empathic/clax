@@ -4405,12 +4405,11 @@ dark mode, and on a phone:
   relative paths, for example `<link rel="stylesheet" href="style.css">`, and
   published under the same relative path in `files`. Do not use absolute
   `/...` paths or hard-coded hosts.
-- A page loads only its own files, its assets, `data:` and `blob:` URLs, and
-  connects nowhere itself: no scripts, styles, fonts or images from CDNs or
-  other sites, and no `fetch`, `XMLHttpRequest`, `WebSocket` or
-  `EventSource`, not even of its own files (keep data in a script module or
-  in `db`). The daemon's content policy refuses the rest. Data from the web
-  comes through the `net` capability.
+- A page loads and fetches only its own files, its assets, `data:` and
+  `blob:` URLs: no scripts, styles, fonts or images from CDNs or other
+  sites, and no `fetch`, `XMLHttpRequest`, `WebSocket` or `EventSource` to
+  anywhere else. The daemon's content policy refuses the rest. Data from
+  the web comes through the `net` capability.
 
 Minimal skeleton:
 
@@ -4759,10 +4758,10 @@ of the event stream), and any later `get()` rejects `not_granted`.
 ### Fetching from the network (`net`)
 
 An app page cannot connect anywhere itself, nor load anything from another
-site: its content security policy keeps `connect-src 'none'` and loads only
-its own files, its assets, `data:` and `blob:` (see "Security model"). It
-fetches through the daemon instead, from hosts it declares and the owner
-allows.
+site: its content security policy lets it fetch only its own files and
+assets, and load only those, `data:` and `blob:` (see "Security model"). It
+fetches from the web through the daemon instead, from hosts it declares and
+the owner allows.
 
 **Declaring.** `{"net": {"hosts": ["api.example.com", "cdn.example.com"]}}`:
 1 to 32 lowercase host names (at least two labels, the last not numeric;
@@ -6435,17 +6434,21 @@ it with Ajv (draft 2020-12, formats asserted;
   the origin is the boundary. On either origin the same policy goes on to
   keep the page to its own files: `default-src <own> <blobs> data: blob:;
   script-src <own> 'unsafe-inline' 'unsafe-eval' data: blob:; style-src <own>
-  'unsafe-inline' data: blob:; connect-src 'none'; object-src 'none';
-  base-uri 'none'; form-action 'none'`. `<own>` is `'self'` on the
+  'unsafe-inline' data: blob:; connect-src <files> <blobs>; object-src
+  'none'; base-uri 'none'; form-action 'none'`. `<own>` is `'self'` on the
   artifact's origin, and on the main origin, where the sandboxed page's
   origin is opaque, `http://<Host>/c/<id>/ http://<Host>/_clax/bridge.js
   http://<Host>/_clax/bridge/` (`<Host>` the request's, or the daemon's own
   when that is not a plain host and port), so the API on that host is not
-  among them. `<blobs>` is `http://<host>/_blob/` for the request's host,
+  among them. `<files>` is `'self'` on the artifact's origin (which serves
+  only GET and HEAD of the artifact's content, `/_clax/...`, `/_blob/...`
+  and `/healthz`, and no API) and `http://<Host>/c/<id>/` on the main
+  origin. `<blobs>` is `http://<host>/_blob/` for the request's host,
   the daemon's own, and `localhost` and `127.0.0.1` on the request's port.
   So a page loads its files, the bridge and its parts, its assets, and
-  `data:` and `blob:` URLs; it fetches nothing (`fetch`, `XMLHttpRequest`,
-  `WebSocket`, `EventSource`, beacons, JSON modules) and loads no script,
+  `data:` and `blob:` URLs; it fetches (`fetch`, `XMLHttpRequest`,
+  `WebSocket`, `EventSource`, beacons, JSON modules) its own files and
+  assets and nothing else, and none of them takes a write; it loads no script,
   style, font, image, media, frame or worker from another site; it posts
   no form. Everything else it does goes through the shell by `postMessage`
   (`db`, `comments`, `net`, `sample` and the other capabilities). A live
