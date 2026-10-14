@@ -1,4 +1,4 @@
-//! The Clax MCP tool set: twenty-six tools that call the daemon's REST API.
+//! The Clax MCP tool set: twenty-seven tools that call the daemon's REST API.
 
 use crate::client::{ClientError, DaemonClient};
 use crate::render;
@@ -344,6 +344,25 @@ pub struct DraftArgs {
     pub note: Option<String>,
     /// Drop the draft now: people no longer see it.
     pub done: Option<bool>,
+}
+
+/// What a git token allows.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum GitScope {
+    /// Clone and fetch.
+    Read,
+    /// Push as well.
+    Write,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GitRemoteArgs {
+    /// Artifact URL or ID.
+    pub url_or_id: String,
+    /// `read` to clone and fetch, `write` to push as well.
+    pub scope: GitScope,
 }
 
 /// An access level `as_level` narrows to.
@@ -2049,6 +2068,31 @@ impl ClaxTools {
         }))
     }
 
+    async fn do_git_remote(&self, a: GitRemoteArgs) -> Outcome {
+        let id = self.resolve_id(&a.url_or_id).await?;
+        self.require_session().await?;
+        let scope = match a.scope {
+            GitScope::Read => "read",
+            GitScope::Write => "write",
+        };
+        let r = self
+            .client
+            .git_token(&id, scope)
+            .await
+            .map_err(|e| self.fail(e))?;
+        Ok(json!({
+            "artifact_id": id,
+            "url": self.artifact_url(&id),
+            "scope": r["scope"],
+            "remote": r["remote"],
+            "token": r["token"],
+            "expires_at": r["expires_at"],
+            "clone_command": r["clone_command"],
+            "jj_clone_command": r["jj_clone_command"],
+            "existing_checkout": r["existing_checkout"],
+        }))
+    }
+
     async fn do_ask(&self, a: AskArgs) -> Outcome {
         if a.approval.is_some() || a.approval_id.is_some() {
             return self.do_ask_approval(a).await;
@@ -2636,6 +2680,7 @@ direct_tools!(
     wait_for_feedback,
     working,
     draft,
+    git_remote,
     ask,
     db_get,
     db_list,
@@ -2915,6 +2960,22 @@ impl ClaxTools {
         Parameters(args): Parameters<DraftArgs>,
     ) -> Result<CallToolResult, McpError> {
         self.finish(self.do_draft(args).await).await
+    }
+
+    #[tool(
+        description = "Get a git remote for an artifact and a 15-minute token: `scope: read` to clone and fetch, `scope: write` to push as well (a commit pushed to `main` becomes a version you published; needs the right to publish the artifact). Returns `remote`, `token`, `expires_at`, a ready `clone_command` and `jj_clone_command`, and `existing_checkout`: the commands that add the remote to a checkout you already have and fetch (and push) through it. Every command passes the token as an HTTP header, never in the remote's URL or a config file. Refused (`withheld`) while the repository's history holds work by someone your person has not approved; `not_available` where Clax keeps no repositories.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    pub async fn git_remote(
+        &self,
+        Parameters(args): Parameters<GitRemoteArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.finish(self.do_git_remote(args).await).await
     }
 
     #[tool(

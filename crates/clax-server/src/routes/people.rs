@@ -535,14 +535,19 @@ pub async fn set_rights(
     let b = body(req)?;
     let rights = rights_of(&b.rights)?;
     let state = s.clone();
-    let person = s
+    let who = pid.clone();
+    let (person, before, after) = s
         .store_call(move |st| {
+            let before = st.person_rights(&pid).ok();
             st.set_person_rights(&audit.resolve(st)?, &pid, rights)?;
+            let after = st.person_rights(&pid).ok();
             let person = person_of(st, &pid)?;
             announce(&state, json!({"what": "person_rights", "person": person}));
-            Ok(person)
+            Ok((person, before, after))
         })
         .await?;
+    // Their repository tokens and their agents' follow the rights.
+    clax_http::git_remotes::rights_changed(&s, &who, before.as_ref(), after.as_ref()).await?;
     Ok(Json(json!({"person": person})))
 }
 
@@ -565,6 +570,7 @@ pub async fn revoke_person(
     owner_browser(&caller, "revokes a person")?;
     let pid = path(pid)?;
     let (state, ctx) = (s.clone(), s.feedback_ctx());
+    let who = pid.clone();
     let v = s
         .store_call(move |st| {
             let r = st.revoke_person(&audit.resolve(st)?, &pid)?;
@@ -578,6 +584,8 @@ pub async fn revoke_person(
             }))
         })
         .await?;
+    // Their repository tokens and their agents' go with them.
+    clax_http::git_remotes::rights_changed(&s, &who, None, None).await?;
     Ok(Json(v))
 }
 
@@ -609,7 +617,9 @@ pub async fn narrow_grant(
     let gid = path(gid)?;
     let b = body(req)?;
     let narrow = rights_of(&b.access)?;
+    let narrowing = narrow.is_some();
     let state = s.clone();
+    let grant_id = gid.clone();
     let grant = s
         .store_call(move |st| {
             let g = st.grant(&gid)?;
@@ -628,6 +638,15 @@ pub async fn narrow_grant(
             Ok(g)
         })
         .await?;
+    // Its agents' repository tokens were handed out under the wider rights.
+    if narrowing {
+        let sessions = s
+            .store_call(move |st| st.list_sessions_for(Some(&grant_id), true))
+            .await?;
+        for sess in sessions {
+            clax_http::git_remotes::revoke_holder(&s, None, Some(&sess.id)).await?;
+        }
+    }
     Ok(Json(json!({"grant": grant_view(&grant)})))
 }
 

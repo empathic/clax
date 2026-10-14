@@ -234,6 +234,90 @@ impl Store {
     }
 }
 
+/// The most artifacts [`Store::repo_history`] follows up a lineage.
+const MAX_LINEAGE: usize = 1000;
+
+/// What an artifact's repository history carries, as far as the store
+/// knows its authors ([`Store::repo_history`]).
+#[derive(Debug, Default)]
+pub struct RepoHistory {
+    /// Every version whose commit the history holds: for a fork, its
+    /// source's versions up to the forked one (and so on up the lineage),
+    /// then its own.
+    pub versions: Vec<Version>,
+    /// The pushers of commits left out of a version
+    /// (`version.push_refused`) of the artifact or of an artifact up its
+    /// lineage (`None`: the owner), as a public ID: those commits stay on
+    /// `main`, where a clone reaches them.
+    pub refused_pushers: Vec<Option<String>>,
+}
+
+impl Store {
+    /// What `id`'s repository history carries (see [`RepoHistory`]), its
+    /// lineage followed through `forked_from_id` and
+    /// `forked_from_version` whether or not those artifacts are deleted
+    /// since. An ancestor's refused pushers are all listed, whether the
+    /// refused commit came before or after the forked version. `None` when
+    /// an artifact of the lineage is gone from the store, or the lineage is
+    /// longer than [`MAX_LINEAGE`] or loops: the history's authors cannot
+    /// all be named.
+    ///
+    /// # Errors
+    /// The database's.
+    pub fn repo_history(&self, id: &ArtifactId) -> Result<Option<RepoHistory>> {
+        let mut out = RepoHistory::default();
+        let mut seen: Vec<String> = Vec::new();
+        let mut at: (String, Option<u32>) = (id.as_str().to_string(), None);
+        loop {
+            if seen.len() >= MAX_LINEAGE || seen.contains(&at.0) {
+                return Ok(None);
+            }
+            let row: Option<(Option<String>, Option<u32>)> = self.with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT forked_from_id, forked_from_version FROM artifacts WHERE id = ?1",
+                    params![at.0],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?)
+            })?;
+            let Some((from, from_n)) = row else {
+                return Ok(None);
+            };
+            let Ok(aid) = ArtifactId::parse(&at.0) else {
+                return Ok(None);
+            };
+            let mut versions: Vec<Version> = self
+                .list_versions(&aid)?
+                .into_iter()
+                .filter(|v| at.1.is_none_or(|upto| v.n <= upto))
+                .collect();
+            versions.append(&mut out.versions);
+            out.versions = versions;
+            let refused: Vec<Option<String>> = self.with_read(|c| {
+                let mut stmt = c.prepare(
+                    "SELECT json_extract(body, '$.person') FROM audit_events
+                     WHERE artifact_id = ?1 AND kind = ?2",
+                )?;
+                let rows = stmt.query_map(
+                    params![at.0, crate::audit::AuditKind::VersionPushRefused.as_str()],
+                    |r| r.get(0),
+                )?;
+                Ok(rows.collect::<rusqlite::Result<Vec<Option<String>>>>()?)
+            })?;
+            for p in refused {
+                if !out.refused_pushers.contains(&p) {
+                    out.refused_pushers.push(p);
+                }
+            }
+            seen.push(at.0.clone());
+            match (from, from_n) {
+                (Some(f), Some(n)) => at = (f, Some(n)),
+                _ => return Ok(Some(out)),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::test_util::{DAEMON, anchor, content_file, store};
@@ -456,6 +540,94 @@ mod tests {
             }
         }
         assert_eq!(st.get_artifact(&src).unwrap().unwrap().current_version, 6);
+    }
+
+    /// A fork's repository history is its lineage's up to each forked
+    /// version, then its own, whether the source is deleted since; with an
+    /// ancestor's row gone it cannot be named.
+    #[test]
+    fn a_forks_repository_history_carries_its_lineage_up_to_each_forked_version() {
+        let (_d, st) = store();
+        let as_person = |id: &ArtifactId, person: &str, body: &str| {
+            let cur = st.get_artifact(id).unwrap().unwrap().current_version;
+            let req = serde_json::json!({"if_version": cur, "files": {"index.html": {"content": body, "encoding": "utf8"}}});
+            let mut p = crate::publish::validate(serde_json::from_value(req).unwrap()).unwrap();
+            p.person = Some(person.to_string());
+            st.publish_version(DAEMON, id, p, None).unwrap();
+        };
+        let src = publish(&st, None, &[("index.html", "<p>one")]);
+        as_person(&src, "p_rae0000000000", "<p>two");
+        let mia = MIA.to_string();
+        let (a, _) = st
+            .fork_artifact(DAEMON, &src, Some(2), Some(&mia), None)
+            .unwrap();
+        let fork = ArtifactId::parse(&a.id).unwrap();
+        // After the forked version: not in the fork's history.
+        as_person(&src, "p_sam0000000000", "<p>three");
+        let (b, _) = st.fork_artifact(DAEMON, &fork, None, None, None).unwrap();
+        let again = ArtifactId::parse(&b.id).unwrap();
+        as_person(&again, "p_kai0000000000", "<p>mine");
+        let seen = |st: &Store| -> Vec<(String, u32, Option<String>)> {
+            st.repo_history(&again)
+                .unwrap()
+                .unwrap()
+                .versions
+                .into_iter()
+                .map(|v| (v.artifact_id, v.n, v.authors.person))
+                .collect()
+        };
+        let want = vec![
+            (src.to_string(), 1, None),
+            (src.to_string(), 2, Some("p_rae0000000000".to_string())),
+            (fork.to_string(), 1, Some(mia.clone())),
+            (again.to_string(), 1, None),
+            (again.to_string(), 2, Some("p_kai0000000000".to_string())),
+        ];
+        assert_eq!(seen(&st), want);
+        assert!(
+            st.repo_history(&again)
+                .unwrap()
+                .unwrap()
+                .refused_pushers
+                .is_empty()
+        );
+        // A commit pushed to the source and left out of its versions.
+        st.with_tx(|tx| {
+            let mut rec = crate::audit::AuditRecord::new(
+                crate::audit::AuditKind::VersionPushRefused,
+                st.now(),
+            )
+            .with("commit", "c0ffee")
+            .with("person", "p_lee0000000000")
+            .with("reason", "no_right");
+            rec.ids.artifact = Some(src.as_str().to_string());
+            st.record_audit(tx, DAEMON, rec)
+        })
+        .unwrap();
+        assert_eq!(
+            st.repo_history(&again).unwrap().unwrap().refused_pushers,
+            [Some("p_lee0000000000".to_string())]
+        );
+        st.delete_artifact(DAEMON, &src).unwrap();
+        assert_eq!(
+            seen(&st),
+            want,
+            "a deleted source's history stays in the fork's"
+        );
+        st.with_tx(|tx| {
+            tx.execute(
+                "DELETE FROM versions WHERE artifact_id = ?1",
+                [src.as_str()],
+            )?;
+            tx.execute("DELETE FROM artifacts WHERE id = ?1", [src.as_str()])?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(
+            st.repo_history(&again).unwrap().is_none(),
+            "an ancestor gone: authors unknown"
+        );
+        assert!(st.repo_history(&ArtifactId::generate()).unwrap().is_none());
     }
 
     /// A fork after its source is deleted finds no such artifact.

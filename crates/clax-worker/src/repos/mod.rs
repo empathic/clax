@@ -21,7 +21,9 @@
 //! The Worker's entry points are in `worker` (wasm32 only):
 //! `content_store(env)`, the `ContentStore` an instance Durable Object
 //! holds; `forward_git`, the `/git/` route; `mint_git_token` and
-//! `revoke_git_token`, for the server's token route and MCP tool.
+//! `revoke_git_token`; and `git_remotes(env)`, the server's
+//! `clax_http::git_remotes::GitRemotes` ([`remotes`]), behind its git
+//! token routes and the MCP `git_remote` tool.
 
 pub mod api;
 pub mod artifacts;
@@ -29,6 +31,7 @@ pub mod assets;
 pub mod db;
 pub mod git_http;
 pub mod local;
+pub mod remotes;
 pub mod tokens;
 
 #[cfg(target_arch = "wasm32")]

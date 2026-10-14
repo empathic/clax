@@ -15,6 +15,7 @@ pub mod blocking;
 pub mod conn;
 pub mod db_caller;
 pub mod error;
+pub mod git_remotes;
 pub mod exports;
 pub mod extension;
 pub mod grant_auth;

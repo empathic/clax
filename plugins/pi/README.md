@@ -32,12 +32,12 @@ package, its skill, and the daemon's Pi sessions.
 
 ## What it adds
 
-- Twenty-seven tools: `clax_publish`, `clax_read`, `clax_list`,
+- Twenty-eight tools: `clax_publish`, `clax_read`, `clax_list`,
   `clax_delete`, `clax_open`, `clax_pin`, `clax_unpin`, `clax_fork`,
   `clax_asset_upload`, `clax_status`, `clax_comments_read`,
   `clax_comments_reply`, `clax_comments_resolve`, `clax_comments_handoff`,
   `clax_watch`,
-  `clax_wait_for_feedback`, `clax_working`, `clax_draft`, `clax_ask`, and the data tools `clax_db_get`,
+  `clax_wait_for_feedback`, `clax_working`, `clax_draft`, `clax_git_remote`, `clax_ask`, and the data tools `clax_db_get`,
   `clax_db_list`, `clax_db_query`, `clax_db_set`,
   `clax_db_update`, `clax_db_delete`, `clax_db_str_replace`,
   `clax_db_batch`. Pi keeps every tool in one namespace, hence the

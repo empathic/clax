@@ -407,6 +407,8 @@ pub struct FeedbackCtx {
     pub working: Arc<clax_core::working::Working>,
     /// Agents' drafts, which end with their sessions.
     pub drafts: Arc<clax_core::drafts::Drafts>,
+    /// The host's git remotes, whose tokens of an ended session are revoked.
+    pub git_remotes: Arc<crate::git_remotes::Slot>,
     /// The runtime `codex queue` runs on; dispatch may be called from blocking threads.
     pub handle: clax_rt::Handle,
     /// Held while a publish reads delivery states and sends them
@@ -558,6 +560,7 @@ pub fn sessions_stop(
         let drafts = ctx.drafts.end_session(id);
         crate::drafts::announce(&ctx.events, &ctx.drafts, &drafts);
         ctx.followers.forget(id);
+        crate::git_remotes::revoke_session_soon(&ctx.git_remotes, &ctx.handle, id);
     }
 }
 

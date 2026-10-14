@@ -276,6 +276,14 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             axum::routing::put(drafts::put.layer(draft_limit)).delete(drafts::delete),
         )
         .route("/api/artifacts/{aid}/drafts", get(drafts::list))
+        .route(
+            "/api/artifacts/{aid}/git-token",
+            get(git_token::options).post(git_token::mint),
+        )
+        .route(
+            "/api/sessions/{id}/git-token/{aid}",
+            post(git_token::session_mint),
+        )
         .route("/api/grants", get(grants::list).post(grants::request))
         .route("/api/grants/{gid}", delete(grants::revoke))
         .route(
@@ -653,8 +661,14 @@ fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
     } else {
         inner
     };
+    // Innermost: a request's git token revocations are done before it
+    // answers (`git_remotes::settle_layer`).
     let r = axum::Router::new()
         .fallback_service(inner)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            clax_http::git_remotes::settle_layer,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             agent::authenticate,

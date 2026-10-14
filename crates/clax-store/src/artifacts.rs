@@ -1232,6 +1232,29 @@ impl Store {
                 );
             }
         }
+        if expected > 0 && matches!(step, VersionStep::Write) {
+            // Every agent's repository token blind to the publisher goes
+            // before the commit exists (an adopted commit's were revoked
+            // before it was recorded; a new artifact has none): refused
+            // when one cannot be.
+            let person = match &p.person {
+                Some(person) => Some(person.clone()),
+                None => match session_id {
+                    Some(sid) => self.get_session(sid)?.and_then(|s| s.person),
+                    None => None,
+                },
+            };
+            self.revoke_blind_tokens(id, &[Author::of_token(person.as_deref())])
+                .await
+                .map_err(|e| {
+                    CoreError::invalid(
+                        "repo_unavailable",
+                        format!(
+                            "a repository token that may not see this version could not be revoked, so it is not published: {e}"
+                        ),
+                    )
+                })?;
+        }
         // Whether this call made `n` (an adopted commit may already be it).
         let written = match step {
             VersionStep::Write => {

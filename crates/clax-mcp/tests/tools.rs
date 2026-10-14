@@ -996,6 +996,126 @@ async fn draft_shows_people_work_in_progress_until_done_or_a_publish() {
     assert_eq!(listed["drafts"], serde_json::json!([]));
 }
 
+/// A host whose tokens are numbered, keeping whom each was handed to.
+#[derive(Default)]
+struct Remotes {
+    minted: std::sync::Mutex<Vec<clax_http::git_remotes::Holder>>,
+}
+
+impl clax_http::git_remotes::GitRemotes for Remotes {
+    fn mint<'a>(
+        &'a self,
+        artifact: &'a clax_core::ArtifactId,
+        scope: clax_http::git_remotes::Scope,
+        _ttl_s: u32,
+        _origin: Option<&'a str>,
+        holder: &'a clax_http::git_remotes::Holder,
+    ) -> clax_http::git_remotes::RemoteFuture<'a, clax_http::git_remotes::Minted> {
+        Box::pin(async move {
+            let n = {
+                let mut m = self.minted.lock().unwrap();
+                m.push(holder.clone());
+                m.len()
+            };
+            let remote = format!("http://clax.test/git/a-{}.git", artifact.as_str());
+            let token = format!("cxm_{}_{n}", scope.as_str());
+            Ok(clax_http::git_remotes::Minted {
+                id: format!("cxt_{n}"),
+                clone_command: format!(
+                    "git -c http.extraHeader=\"Authorization: Bearer {token}\" clone {remote}"
+                ),
+                jj_clone_command: format!("jj git clone {remote}"),
+                remote,
+                token,
+                expires_at: "2026-10-13T13:00:00.000Z".into(),
+            })
+        })
+    }
+
+    fn held(
+        &self,
+    ) -> clax_http::git_remotes::RemoteFuture<'_, Vec<clax_http::git_remotes::Held>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn revoke<'a>(
+        &'a self,
+        _artifact: &'a clax_core::ArtifactId,
+        _id: &'a str,
+    ) -> clax_http::git_remotes::RemoteFuture<'a, bool> {
+        Box::pin(async { Ok(true) })
+    }
+
+    fn revoke_held<'a>(
+        &'a self,
+        _person: Option<&'a str>,
+        _session: Option<&'a str>,
+    ) -> clax_http::git_remotes::RemoteFuture<'a, usize> {
+        Box::pin(async { Ok(0) })
+    }
+}
+
+#[tokio::test]
+async fn git_remote_hands_the_session_a_token_with_its_commands_and_says_where_there_is_none() {
+    use clax_mcp::tools::{GitRemoteArgs, GitScope};
+    let remotes = std::sync::Arc::new(Remotes::default());
+    let r = remotes.clone();
+    let ts = TestServer::spawn_with(move |s| s.git_remotes.set(r)).await;
+    let (t, session) = session_tools(&ts, "/w").await;
+    let p = ok(t.publish(Parameters(html("Plan", "<h1>Plan</h1>"))).await);
+    let id = p["artifact_id"].as_str().unwrap().to_string();
+    let g = ok(t
+        .git_remote(Parameters(GitRemoteArgs {
+            url_or_id: id.clone(),
+            scope: GitScope::Write,
+        }))
+        .await);
+    let remote = format!("http://clax.test/git/a-{id}.git");
+    assert_eq!(g["artifact_id"], id.as_str());
+    assert_eq!(g["scope"], "write");
+    assert_eq!(g["remote"], remote.as_str());
+    assert_eq!(g["token"], "cxm_write_1");
+    assert_eq!(g["expires_at"], "2026-10-13T13:00:00.000Z");
+    assert!(g["clone_command"].as_str().unwrap().ends_with(&remote));
+    assert!(
+        g["jj_clone_command"]
+            .as_str()
+            .unwrap()
+            .contains("jj git clone")
+    );
+    assert_eq!(
+        g["existing_checkout"]["add_remote_command"],
+        format!("git remote add clax {remote}")
+    );
+    assert!(
+        g["existing_checkout"]["push_command"]
+            .as_str()
+            .unwrap()
+            .ends_with("push clax HEAD:main")
+    );
+    assert!(g["url"].as_str().unwrap().contains(&id));
+    assert_eq!(
+        remotes.minted.lock().unwrap()[0],
+        clax_http::git_remotes::Holder {
+            person: None,
+            session: Some(session.id.clone())
+        },
+        "the token is the session's, so its pushes are"
+    );
+
+    // Where Clax keeps no repositories.
+    let plain = TestServer::spawn().await;
+    let (t, _) = session_tools(&plain, "/w").await;
+    let p = ok(t.publish(Parameters(html("Plan", "<h1>Plan</h1>"))).await);
+    let e = err(t
+        .git_remote(Parameters(GitRemoteArgs {
+            url_or_id: p["artifact_id"].as_str().unwrap().to_string(),
+            scope: GitScope::Read,
+        }))
+        .await);
+    assert_eq!(e["error"]["code"], "not_available", "{e}");
+}
+
 #[tokio::test]
 async fn fork_makes_a_new_artifact_from_the_version_a_url_names() {
     let ts = TestServer::spawn().await;

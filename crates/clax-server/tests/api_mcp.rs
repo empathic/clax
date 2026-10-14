@@ -160,6 +160,7 @@ async fn mcp_lists_the_twenty_six_tools(path: &str) {
             "delete",
             "draft",
             "fork",
+            "git_remote",
             "list",
             "open",
             "pin",
@@ -376,6 +377,29 @@ async fn mcp_draft_without_a_session_is_no_session(path: &str) {
     assert!(text.contains("no_session"), "{text}");
 }
 both!(mcp_draft_without_a_session_is_no_session);
+
+/// A git token is handed to a harness session, which `/mcp` has none of:
+/// the `git_remote` tool is called (not unknown to the endpoint) and
+/// answers `no_session`.
+async fn mcp_git_remote_without_a_session_is_no_session(path: &str) {
+    let ts = TestServer::spawn().await;
+    let a = ts.publish("Doc", &[("index.html", "<h2>x</h2>")]).await;
+    let aid = a["artifact"]["id"].as_str().unwrap().to_string();
+    let session = mcp_session(&ts, path).await;
+    let call = mcp_call(
+        &ts,
+        path,
+        &session,
+        2,
+        "git_remote",
+        json!({"url_or_id": aid, "scope": "read"}),
+    )
+    .await;
+    assert_eq!(call["result"]["isError"], true, "{call}");
+    let text = call["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("no_session"), "{text}");
+}
+both!(mcp_git_remote_without_a_session_is_no_session);
 
 /// A `server/discover` probe for `version`, with its `MCP-Protocol-Version`
 /// header and no session.

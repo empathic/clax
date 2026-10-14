@@ -113,6 +113,11 @@ impl From<CoreError> for ApiError {
                 code: code @ ("joining" | "unmerging"),
                 message,
             } => ApiError::new(StatusCode::CONFLICT, code, message),
+            // A repository token blind to a publish could not be revoked.
+            CoreError::Invalid {
+                code: "repo_unavailable",
+                message,
+            } => ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "repo_unavailable", message),
             // main ends in pushed commits whose pusher may not publish.
             CoreError::Invalid {
                 code: "push_refused",

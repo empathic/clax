@@ -166,6 +166,9 @@ pub struct AppState {
     pub vis_gen: VisGen,
     /// Hosted mode ([`crate::hosted`]); `None` for the local daemon.
     pub hosted: Option<Arc<crate::hosted::Hosted>>,
+    /// The host's git remotes ([`crate::git_remotes`]), once it installs
+    /// them; empty on the native daemon.
+    pub git_remotes: Arc<crate::git_remotes::Slot>,
     /// Debug builds: whether this is the testkit's daemon, which honours
     /// the `x-clax-test-delay-ms` header (so a test can make a real route
     /// slow) and serves `GET /api/_test/audit/ctx` (`clax_server::router`).
@@ -184,6 +187,7 @@ impl AppState {
             codex: self.codex.clone(),
             working: self.working.clone(),
             drafts: self.drafts.clone(),
+            git_remotes: self.git_remotes.clone(),
             handle: clax_rt::Handle::current(),
             states: self.feedback_states.clone(),
             #[cfg(debug_assertions)]
@@ -306,6 +310,7 @@ impl AppState {
             hosted: p.hosted,
             test_daemon: false,
             web: p.web,
+            git_remotes: Arc::default(),
             store: p.store,
         })
     }
@@ -322,6 +327,7 @@ impl AppState {
         self.stream.sweep();
         self.seats.sweep();
         crate::questions::withdraw_due(self).await;
+        crate::git_remotes::settle(self).await;
     }
 
     /// How long until [`AppState::sweep`] next has something to do (zero
@@ -329,7 +335,9 @@ impl AppState {
     /// report lapsing or a gone viewer dropping, a draft going idle, a
     /// detached stream's grace ending, a live seat going idle, and a
     /// question's swept grace ending
-    /// ([`crate::questions::Sleeper::times_graces`]). `None` when none of them holds
+    /// ([`crate::questions::Sleeper::times_graces`]), and a git token
+    /// revocation the host failed ([`crate::git_remotes::RETRY_AFTER`]).
+    /// `None` when none of them holds
     /// anything that will need it. A host whose sweeps run from a timer it
     /// sets itself (a Durable Object's alarm) sets it for then.
     pub fn next_sweep_in(&self) -> Option<Duration> {
@@ -343,6 +351,9 @@ impl AppState {
             self.stream.next_drop_in(),
             self.seats.next_idle_in(),
             self.questions.next_due().map(until),
+            self.git_remotes
+                .due()
+                .then_some(crate::git_remotes::RETRY_AFTER),
         ]
         .into_iter()
         .flatten()
@@ -359,6 +370,7 @@ impl AppState {
         crate::views::approval::listen(self);
         crate::routes::people::listen(self);
         crate::pushes::listen(self);
+        crate::git_remotes::listen(self);
     }
 }
 

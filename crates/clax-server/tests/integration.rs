@@ -45,6 +45,8 @@ mod api_feedback;
 mod api_forks;
 #[cfg(any(not(clax_split), clax_split = "api_gateway"))]
 mod api_gateway;
+#[cfg(any(not(clax_split), clax_split = "api_git_tokens"))]
+mod api_git_tokens;
 #[cfg(any(not(clax_split), clax_split = "api_grants"))]
 mod api_grants;
 #[cfg(any(not(clax_split), clax_split = "api_host"))]

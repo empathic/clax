@@ -19,6 +19,9 @@
 //! - `POST token/mint` `{"repo", "scope", "ttl_s", "origin", "person",
 //!   "session"}` (the last two the token's [`tokens::Holder`]) → a
 //!   [`GitToken`]; `POST token/revoke` `{"repo", "id"}` → `{"revoked"}`.
+//! - `GET token/held` → `[`[`tokens::HeldToken`]`, …]`: the live tokens
+//!   handed to a person or an agent session; `POST token/revoke-held`
+//!   `{"person", "session"}` (either may be absent) → `{"revoked": n}`.
 //! - `POST token/live` `{"repo"}` → `{"tokens": [{"id", "scope", "person",
 //!   "session"}, …]}`: the repository's live tokens and their holders.
 //! - `POST push/pushers` `{"repo", "commits": ["<hex>", …]}` → `{"pushers":
@@ -337,6 +340,23 @@ impl<C: AsConn + clax_git::MaybeSend, T: TokenHost> RepoService<C, T> {
                 let repo = v["repo"].as_str().ok_or_else(|| malformed("repo"))?;
                 let id = v["id"].as_str().ok_or_else(|| malformed("id"))?;
                 let revoked = tokens::revoke(h, &self.tokens, repo, id, self.now_ms()).await?;
+                Ok(json_response(200, &json!({ "revoked": revoked })))
+            }
+            ("GET", "token/held") => {
+                let held = tokens::held(h, self.now_ms())?;
+                Ok(json_response(200, &json!(held)))
+            }
+            ("POST", "token/revoke-held") => {
+                let v: Value =
+                    serde_json::from_slice(req.body).map_err(|_| malformed("revoke request"))?;
+                let revoked = tokens::revoke_held(
+                    h,
+                    &self.tokens,
+                    v["person"].as_str(),
+                    v["session"].as_str(),
+                    self.now_ms(),
+                )
+                .await?;
                 Ok(json_response(200, &json!({ "revoked": revoked })))
             }
             ("POST", "token/live") => {
@@ -692,5 +712,39 @@ impl<T: Transport> DoTokens<T> {
         .await?;
         let v: Value = serde_json::from_slice(&r.body).map_err(|_| malformed("revoke"))?;
         v["revoked"].as_bool().ok_or_else(|| malformed("revoke"))
+    }
+
+    /// The live tokens handed to a person or an agent session.
+    pub async fn held(&self) -> clax_git::Result<Vec<tokens::HeldToken>> {
+        let r = call(
+            &self.transport,
+            request("GET", url("token/held", &[]), Vec::new()),
+        )
+        .await?;
+        serde_json::from_slice(&r.body).map_err(|_| malformed("held tokens"))
+    }
+
+    /// Revokes every live token handed to agent session `session` or to
+    /// person `person` (their own and their agents'); answers how many.
+    pub async fn revoke_held(
+        &self,
+        person: Option<&str>,
+        session: Option<&str>,
+    ) -> clax_git::Result<usize> {
+        let body = json!({ "person": person, "session": session });
+        let r = call(
+            &self.transport,
+            request(
+                "POST",
+                url("token/revoke-held", &[]),
+                serde_json::to_vec(&body).expect("JSON"),
+            ),
+        )
+        .await?;
+        let v: Value = serde_json::from_slice(&r.body).map_err(|_| malformed("revoke"))?;
+        v["revoked"]
+            .as_u64()
+            .map(|n| n as usize)
+            .ok_or_else(|| malformed("revoke"))
     }
 }

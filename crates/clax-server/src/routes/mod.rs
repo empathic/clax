@@ -13,6 +13,7 @@ pub mod drafts;
 pub mod events;
 pub mod extension;
 pub mod feedback;
+pub mod git_token;
 pub mod grants;
 pub mod health;
 pub mod inbox;

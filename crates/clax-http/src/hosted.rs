@@ -1879,9 +1879,10 @@ struct LinkBody {
 
 /// `PUT /api/hosted/artifacts/<aid>/link {access}` (the owner, or the
 /// person who made the artifact): shares it by link as `viewer` or
-/// `commenter`, or stops (`null`). → `{artifact_id, access, url}`. 400
-/// `invalid_args` for another access, 404 for no such artifact, 403
-/// `forbidden` for anyone else.
+/// `commenter`, or stops (`null`). → `{artifact_id, access, url}`. The
+/// artifact's git tokens are rechecked before it answers
+/// ([`crate::git_remotes::recheck`]). 400 `invalid_args` for another
+/// access, 404 for no such artifact, 403 `forbidden` for anyone else.
 async fn set_link(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -1921,6 +1922,13 @@ async fn set_link(
         "forbidden" => ApiError::forbidden("forbidden", e.message),
         _ => e,
     })?;
+    // A person whose rights there came from the link loses its git tokens
+    // before this answers; when the host fails, the next settle retries.
+    if let Ok(page) = clax_core::ArtifactId::parse(&id)
+        && crate::git_remotes::recheck(&s, Some(&page)).await.is_err()
+    {
+        s.git_remotes.recheck_soon();
+    }
     Ok(no_store(
         Json(json!({
             "artifact_id": id,
