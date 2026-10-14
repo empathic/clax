@@ -89,6 +89,12 @@ void main() {
       final tid = await d.viewerThread(aid, 2, 'make it blue');
       await d.viewerSend(aid, tid);
 
+      // Sent and not yet taken: the next poll delivers it, so a restarted
+      // worker leaves it alone.
+      final sent = (await api.threads(aid)).single;
+      expect(sent.feedbackState?.state, 'sent');
+      expect(sent.stranded, isFalse);
+
       final batch = await api.pollFeedback(
         s.id,
         wait: const Duration(seconds: 5),
