@@ -394,6 +394,16 @@ class FakeClaxApi implements ClaxApi {
   /// The question [qid] as the routes show it.
   QuestionView questionOf(String qid) => _questions[qid]!.view;
 
+  /// Closes question [qid] as withdrawn without telling any stream, as the
+  /// daemon's start withdraws hook questions before a client's stream
+  /// reconnects.
+  void withdrawUnannounced(String qid) {
+    final q = _questions[qid]!;
+    q.json['status'] = 'withdrawn';
+    q.json['closed_at'] = _now();
+    q.closing = ++_closings;
+  }
+
   // --- ClaxApi ---
 
   @override
