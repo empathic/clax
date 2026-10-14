@@ -591,7 +591,8 @@ pub(crate) mod test_util {
     }
 
     /// A store on a new home, through [`Store::open_on`] on a connection
-    /// opened here, keeping content in the home's files.
+    /// opened here in `journal_mode=MEMORY` and `locking_mode=EXCLUSIVE`,
+    /// keeping content in the home's files.
     pub fn single_store() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
         let store = open_single(&Home::at(dir.path().join("ax")), Arc::new(SystemClock));
@@ -601,6 +602,10 @@ pub(crate) mod test_util {
     fn open_single(home: &Home, clock: Arc<dyn Clock>) -> Store {
         home.ensure_dirs().unwrap();
         let conn = rusqlite::Connection::open(home.db_path()).unwrap();
+        // The journal and locking a Durable Object's connection has: no WAL,
+        // and the one connection holds the lock for its life.
+        conn.execute_batch("PRAGMA journal_mode=MEMORY; PRAGMA locking_mode=EXCLUSIVE;")
+            .unwrap();
         let content = Arc::new(crate::content::fs::FsContent::new(home.clone()));
         Store::open_on(home, conn, clock, content).unwrap()
     }
