@@ -22,7 +22,7 @@ use crate::approvals::{approval_view, request_view};
 use crate::audit::DeferredAudit;
 use crate::auth::Caller;
 use crate::error::ApiError;
-use crate::feedback::apply;
+use crate::feedback::apply_decision;
 use crate::identity::Identity;
 use crate::state::AppState;
 use crate::viewer::SameOrigin;
@@ -228,7 +228,7 @@ pub async fn decide(
             st.approval_request(&rid, me.as_deref())?;
             let audit = audit.resolve(st)?;
             let d = st.decide_request(&audit, &rid, me.as_deref(), decision, via)?;
-            apply(&ctx, st, &d.touched);
+            apply_decision(&ctx, st, &d.touched);
             let approval = d
                 .approval
                 .as_ref()
@@ -287,7 +287,7 @@ pub async fn create(
             let before = st.live_approvals(me.as_deref())?.len();
             let audit = audit.resolve(st)?;
             let (a, touched) = st.approve_touched(&audit, me.as_deref(), &b.author, scope, via)?;
-            apply(&ctx, st, &touched);
+            apply_decision(&ctx, st, &touched);
             let made = st.live_approvals(me.as_deref())?.len() > before;
             Ok((made, json!({"approval": approval_view(st, &a)?})))
         })
@@ -324,6 +324,7 @@ pub async fn revoke(
             let (a, touched) = st.revoke_approval_touched(&audit, &id, me.as_deref())?;
             // Their waits learn of it at once (M17); nothing is delivered.
             ctx.waiters.wake(&touched.targets);
+            crate::feedback::publish_held(&ctx, st, &touched);
             Ok(json!({"approval": approval_view(st, &a)?}))
         })
         .await?;

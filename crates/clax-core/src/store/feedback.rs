@@ -1830,7 +1830,15 @@ pub(crate) const FEEDBACK_STATES: &str =
                                      WHERE pa.kind = 'comment' AND pa.id = f.comment_id)),
             f.comment_id = (SELECT l.comment_id FROM feedback l WHERE l.thread_id = j.value
                              ORDER BY l.created_at DESC, l.id DESC LIMIT 1),
-            s.person, f.comment_id, t.artifact_id
+            s.person, f.comment_id, t.artifact_id,
+            (SELECT json_group_array(a) FROM (
+                SELECT c.author_public_id AS a FROM comments c
+                 WHERE c.id = f.comment_id AND c.author_public_id IS NOT NULL
+                UNION ALL
+                SELECT CASE pa.author WHEN '*owner'
+                         THEN (SELECT public_id FROM viewers WHERE owner = 1)
+                         ELSE pa.author END
+                  FROM page_authors pa WHERE pa.kind = 'comment' AND pa.id = f.comment_id))
        FROM json_each(?1) j
       CROSS JOIN feedback f ON f.thread_id = j.value
        JOIN threads t ON t.id = f.thread_id
@@ -1860,49 +1868,97 @@ struct StateRow {
     requested: bool,
     /// Its comment is the thread's latest forwarded one.
     latest: bool,
-    /// Its person declined the request for its comment's author there.
-    declined: bool,
+    /// When its person declined its comment's author there, while that
+    /// decline is in force ([`Decline`]) and no request is open.
+    declined: Option<String>,
     /// Its session's person (`None`: the owner's).
     person: Option<String>,
 }
 
 impl StateRow {
+    /// Undelivered, for a live session.
+    fn pending(&self) -> bool {
+        self.delivered_at.is_none() && self.target.is_some() && self.ended_at.is_none()
+    }
+
     /// Whether the row waits for its person's approval (spec 2026-10-08
-    /// §9.3, §10): undelivered, for a live session, and held, either under
-    /// an open request or told of (`placeholder_at`) with no request its
-    /// person declined. An approval releases it (`placeholder_at` cleared
-    /// as the content becomes visible); a decline keeps it held but
-    /// waiting for nothing. The one rule the thread's state reads.
+    /// §9.3, §10): pending ([`StateRow::pending`]) and held, either under
+    /// an open request or told of (`placeholder_at`) with no decline in
+    /// force. An approval releases it (`placeholder_at` cleared as the
+    /// content becomes visible); a decline keeps it held but waiting for
+    /// nothing. The one rule the thread's state reads.
     fn waits_for_approval(&self) -> bool {
-        self.delivered_at.is_none()
-            && self.target.is_some()
-            && self.ended_at.is_none()
-            && (self.requested || (self.placeholder_at.is_some() && !self.declined))
+        self.pending()
+            && (self.requested || (self.placeholder_at.is_some() && self.declined.is_none()))
+    }
+
+    /// Whether its person declined it (spec §10, "declined by Mia"):
+    /// pending, no request open, and a decline of its author there in force.
+    fn was_declined(&self) -> bool {
+        self.pending() && !self.requested && self.declined.is_some()
+    }
+
+    /// When a take held it from its session and told it so, while it is
+    /// undelivered: what the plain state reads as seen by the agent.
+    fn told(&self) -> Option<&str> {
+        self.placeholder_at
+            .as_deref()
+            .filter(|_| self.delivered_at.is_none())
     }
 }
 
-/// Whether `person`'s request for the author of comment `comment_id` at
-/// thread `tid` of artifact `aid` was declined (and none is open since).
-fn declined_in(
-    c: &Connection,
-    person: Option<&str>,
-    comment_id: &str,
-    aid: &str,
-    tid: &str,
-) -> Result<bool> {
-    Ok(c.query_row(
-        "SELECT EXISTS (SELECT 1 FROM approval_requests d
-           WHERE COALESCE(d.approver, '') = COALESCE(?1, '') AND d.status = 'declined'
-             AND d.artifact_id = ?3 AND COALESCE(d.thread_id, '') = ?4
-             AND d.author IN (SELECT c.author_public_id FROM comments c WHERE c.id = ?2
-                              UNION ALL
-                              SELECT CASE pa.author WHEN '*owner'
-                                       THEN (SELECT public_id FROM viewers WHERE owner = 1)
-                                       ELSE pa.author END
-                                FROM page_authors pa WHERE pa.kind = 'comment' AND pa.id = ?2))",
-        params![person, comment_id, aid, tid],
-        |r| r.get(0),
-    )?)
+/// A decline in force (spec 2026-10-08 §10): `approver`'s (`None`: the
+/// owner) decline of `author` at thread `thread`, decided at `at`, with no
+/// approval of that author by that approver covering the thread made or
+/// revoked since. A later approval or revocation ends it; a newer open
+/// request covers its rows instead.
+struct Decline {
+    approver: Option<String>,
+    author: String,
+    thread: String,
+    at: String,
+}
+
+/// The declines in force at `thread_ids` ([`Decline`]).
+fn declines_in(c: &Connection, thread_ids: &str) -> Result<Vec<Decline>> {
+    let mut st = c.prepare_cached(
+        "SELECT d.approver, d.author, d.thread_id, d.artifact_id, d.decided_at
+           FROM approval_requests d
+          WHERE d.status = 'declined' AND d.decided_at IS NOT NULL
+            AND d.thread_id IN (SELECT value FROM json_each(?1))",
+    )?;
+    let found = st
+        .query_map(params![thread_ids], |r| {
+            Ok((
+                r.get::<_, Option<String>>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = Vec::new();
+    for (approver, author, thread, aid, at) in found {
+        let since: bool = c.query_row(
+            "SELECT EXISTS (SELECT 1 FROM approvals a
+               WHERE COALESCE(a.approver, '') = COALESCE(?1, '') AND a.author = ?2
+                 AND (a.scope = 'everywhere' OR (a.scope = 'artifact' AND a.artifact_id = ?3)
+                      OR (a.scope = 'thread' AND a.thread_id = ?4))
+                 AND (a.created_at > ?5 OR a.revoked_at > ?5))",
+            params![approver, author, aid, thread, at],
+            |r| r.get(0),
+        )?;
+        if !since {
+            out.push(Decline {
+                approver,
+                author,
+                thread,
+                at,
+            });
+        }
+    }
+    Ok(out)
 }
 
 pub(crate) fn feedback_states_in(
@@ -1910,11 +1966,28 @@ pub(crate) fn feedback_states_in(
     thread_ids: &[String],
     codex_push: bool,
 ) -> Result<BTreeMap<String, FeedbackState>> {
+    let ids = id_array(thread_ids);
+    let declines = declines_in(c, &ids)?;
     let mut by_thread: BTreeMap<String, Vec<StateRow>> = BTreeMap::new();
     let mut stmt = c.prepare_cached(FEEDBACK_STATES)?;
-    let mut rows = stmt.query(params![id_array(thread_ids)])?;
+    let mut rows = stmt.query(params![ids])?;
     while let Some(r) = rows.next()? {
-        let mut row = StateRow {
+        let tid: String = r.get(0)?;
+        let authors: Vec<String> = r
+            .get::<_, Option<String>>(20)?
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default();
+        let person: Option<String> = r.get(17)?;
+        let requested: bool = r.get(15)?;
+        let declined = (!requested)
+            .then(|| {
+                declines.iter().find(|d| {
+                    d.thread == tid && d.approver == person && authors.contains(&d.author)
+                })
+            })
+            .flatten()
+            .map(|d| d.at.clone());
+        by_thread.entry(tid).or_default().push(StateRow {
             target: r.get(1)?,
             created_at: r.get(2)?,
             delivered_at: r.get(3)?,
@@ -1929,20 +2002,11 @@ pub(crate) fn feedback_states_in(
             push_failed: r.get(12)?,
             placeholder_at: r.get(13)?,
             person_name: r.get(14)?,
-            requested: r.get(15)?,
+            requested,
             latest: r.get(16)?,
-            declined: false,
-            person: r.get(17)?,
-        };
-        let tid: String = r.get(0)?;
-        // A told row with no open request: was it declined? (Read only for
-        // such rows, which are rare.)
-        if row.placeholder_at.is_some() && !row.requested && row.delivered_at.is_none() {
-            let comment: String = r.get(18)?;
-            let aid: String = r.get(19)?;
-            row.declined = declined_in(c, row.person.as_deref(), &comment, &aid, &tid)?;
-        }
-        by_thread.entry(tid).or_default().push(row);
+            declined,
+            person,
+        });
     }
     Ok(by_thread
         .into_iter()
@@ -1953,12 +2017,49 @@ pub(crate) fn feedback_states_in(
         .collect())
 }
 
-/// The state of one thread from its rows (not empty): `withheld` while
-/// any row, of any of its comments, is held from its live target for its
-/// person's approval (spec 2026-10-08 §10: the thread waits for it even
-/// when a later comment went through); otherwise from its latest
-/// comment's rows.
+/// The state of one thread from its rows (not empty), as the people
+/// concerned read it (spec 2026-10-08 §10): `withheld` while any row, of
+/// any of its comments, waits for its person's approval
+/// ([`StateRow::waits_for_approval`]; even when a later comment went
+/// through); else `declined` while any row was declined
+/// ([`StateRow::was_declined`]); else the plain state ([`plain_state`]),
+/// which it carries in `plain` for everyone else.
 fn state_of(thread_id: &str, all: &[StateRow], codex_push: bool) -> FeedbackState {
+    let plain = plain_state(thread_id, all, codex_push);
+    let held = |phase, r: &StateRow, since: &str| FeedbackState {
+        thread_id: thread_id.to_string(),
+        state: phase,
+        tier: None,
+        since: since.to_string(),
+        resends: 0,
+        exhausted: false,
+        approver: Some(crate::feedback::display_name(
+            r.person_name.as_deref().unwrap_or(""),
+        )),
+        approver_person: r.person.clone(),
+        plain: Some(Box::new(plain.clone())),
+    };
+    if let Some(r) = all.iter().find(|r| r.waits_for_approval()) {
+        return held(
+            FeedbackPhase::Withheld,
+            r,
+            r.placeholder_at.as_deref().unwrap_or(&r.created_at),
+        );
+    }
+    if let Some(r) = all.iter().find(|r| r.was_declined()) {
+        return held(
+            FeedbackPhase::Declined,
+            r,
+            r.declined.as_deref().unwrap_or(&r.created_at),
+        );
+    }
+    plain
+}
+
+/// A thread's delivery state as if nothing were held, from its latest
+/// comment's rows: a row a take held and told its session of reads as
+/// acknowledged (seen by the agent) from then on.
+fn plain_state(thread_id: &str, all: &[StateRow], codex_push: bool) -> FeedbackState {
     let rows: Vec<&StateRow> = all.iter().filter(|r| r.latest).collect();
     let rows = rows.as_slice();
     let tier_of = |r: &StateRow| r.tier.as_deref().and_then(Tier::parse);
@@ -1971,19 +2072,11 @@ fn state_of(thread_id: &str, all: &[StateRow], codex_push: bool) -> FeedbackStat
         exhausted,
         approver: None,
         approver_person: None,
+        plain: None,
     };
-    if let Some(r) = all.iter().find(|r| r.waits_for_approval()) {
-        let at = r.placeholder_at.as_deref().unwrap_or(&r.created_at);
-        let mut s = state(FeedbackPhase::Withheld, None, at, 0, false);
-        s.approver = Some(crate::feedback::display_name(
-            r.person_name.as_deref().unwrap_or(""),
-        ));
-        s.approver_person = r.person.clone();
-        return s;
-    }
     if let Some((r, at)) = rows
         .iter()
-        .filter_map(|r| r.acknowledged_at.as_deref().map(|at| (r, at)))
+        .filter_map(|r| r.acknowledged_at.as_deref().or(r.told()).map(|at| (r, at)))
         .max_by(|a, b| a.1.cmp(b.1))
     {
         return state(

@@ -29,8 +29,6 @@
     versions?: VersionTag[];
     /** The card has been at least half visible for a second (decided: Q4). */
     onSeen?(t: Thread): void;
-    /** Its sends wait for this viewer's approval (its card is above): "waiting for your approval". */
-    yours?: boolean;
     /** The card's box is ticked for a batch send (spec §8). */
     checked?: boolean;
     /** Ticks or unticks the card; `shift` asks for the range from the last one ticked. Without it the card has no box. */
@@ -52,7 +50,7 @@
     /** `onResolve` resolves an open thread and reopens a resolved one. */
     onSelect(t: Thread): void; onSend(t: Thread): void; onResolve(t: Thread): void; onReply(t: Thread, body: string): void; onHover?(t: Thread | null): void;
   };
-  let { t, n, now, me, selected, file, history, outdated, agent, when, marker = null, versions = [], onSeen, yours = false, checked = false, onToggle, send: sendButton, fold, badge, meta, tools, clip, onSelect, onSend, onResolve, onReply, onHover }: Props = $props();
+  let { t, n, now, me, selected, file, history, outdated, agent, when, marker = null, versions = [], onSeen, checked = false, onToggle, send: sendButton, fold, badge, meta, tools, clip, onSelect, onSend, onResolve, onReply, onHover }: Props = $props();
   // A thread about the whole artifact (anchor kind `artifact`) has no spot to name.
   const anchorLabel = (a: Thread["anchor"]) => (a.kind === "artifact" ? "The whole artifact" : pickLabel(a));
   let reply = $state("");
@@ -85,7 +83,7 @@
   const guardSend = (e: Event, act: () => void) => {
     hint = guardedAction(e, "send", () => { if (card?.contains(document.activeElement)) head?.focus(); act(); });
   };
-  const label = $derived(t.status === "open" && t.sent_to_agent ? (yours ? "waiting for your approval" : waitingLabel(t.feedback_state, now)) : null);
+  const label = $derived(t.status === "open" && t.sent_to_agent ? waitingLabel(t.feedback_state, now) : null);
   // The owner agent (spec 2026-10-08 §12, §26 (e)): its name, with its
   // person when it is not this viewer's (the owner's agents have none; a
   // viewer unknown is taken for the owner); the person shows on hover.

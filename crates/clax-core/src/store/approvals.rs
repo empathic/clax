@@ -1582,6 +1582,22 @@ fn withheld_outside_threads(
 }
 
 impl Store {
+    /// Every approver (`None`: the owner) a request at thread `tid` named,
+    /// whatever became of it.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn request_approvers_at(&self, tid: &str) -> Result<Vec<Option<String>>> {
+        self.with_read(|c| {
+            let mut st = c.prepare_cached(
+                "SELECT DISTINCT approver FROM approval_requests WHERE thread_id = ?1",
+            )?;
+            Ok(st
+                .query_map(params![tid], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
     /// The people whose agents a send of `threads` (of artifact `aid`)
     /// naming one of them would ask first (§10, "Sam approves first"),
     /// as `asker` may learn it (§18, decided 2026-10-13 "Only about their
@@ -2637,12 +2653,16 @@ mod tests {
         let s = w.st.feedback_state(&tid, false).unwrap().unwrap();
         assert_eq!(s.state, crate::FeedbackPhase::Withheld);
         assert_eq!(s.approver.as_deref(), Some("Sam"));
-        // Declined: still held, no longer waiting on a request.
+        // Declined: still held, waiting for nothing; by Sam, to those
+        // concerned; plain "sent" (no take yet) to everyone else.
         let rid = w.open(Some(&w.sam))[0].id.clone();
         w.st.decide_request(DAEMON, &rid, Some(&w.sam), Decision::Decline, Via::Shell)
             .unwrap();
         let s = w.st.feedback_state(&tid, false).unwrap().unwrap();
-        assert_eq!(s.state, crate::FeedbackPhase::Sent);
+        assert_eq!(s.state, crate::FeedbackPhase::Declined);
+        assert_eq!(s.approver.as_deref(), Some("Sam"));
+        assert_eq!(s.public().state, crate::FeedbackPhase::Sent);
+        assert!(s.public().approver.is_none());
     }
 
     #[test]

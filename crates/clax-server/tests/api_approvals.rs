@@ -2374,33 +2374,284 @@ async fn a_connected_person_learns_who_approves_first_only_about_their_own_conte
     );
 }
 
-/// A declined comment waits for nothing (spec 2026-10-08 §9.3, §10): Lucy
-/// (a LAN viewer) comments, the owner replies "+1", Sam allows the owner,
-/// and the owner sends the thread to Sam's agent; the agent takes the
-/// "+1" (Lucy's row is held and told of), Sam declines Lucy, the agent
-/// replies, the owner thanks it, and the agent takes that too. The thread
-/// no longer reads withheld, for the owner or for Sam's agent.
-#[tokio::test]
-async fn a_declined_comment_leaves_its_thread_waiting_for_nothing() {
-    let t = Two::new().await;
-    sam_approves_the_owner(&t).await;
-    let lan = t.w.ts.viewer(Some("Lucy")).await;
-    let tid =
-        t.w.ts
-            .thread_as(&t.aid, &lan.cookie, "the chart is wrong")
-            .await["id"]
-            .as_str()
-            .unwrap()
-            .to_string();
-    let comment = |body: &'static str| {
-        let b = t.owner_browser();
-        let path = format!("/api/artifacts/{}/threads/{tid}/comments", t.aid);
-        async move {
-            let (status, v) = b.call("POST", &path, Some(json!({"body": body}))).await;
-            assert_eq!(status, 201, "{v}");
+/// `f` within 10 s, or the test fails naming `what` (a stream's keep-alive
+/// comments never end a wait on their own).
+async fn within<F: std::future::Future>(what: &str, f: F) -> F::Output {
+    tokio::time::timeout(std::time::Duration::from_secs(10), f)
+        .await
+        .unwrap_or_else(|_| panic!("{what} within 10 s"))
+}
+
+/// Thread `tid`'s `feedback_state` as `b` reads it.
+async fn state_as(b: &Browser<'_>, aid: &str, tid: &str) -> Value {
+    let (status, v) = b
+        .call("GET", &format!("/api/artifacts/{aid}/threads/{tid}"), None)
+        .await;
+    assert_eq!(status, 200, "{v}");
+    v["thread"]["feedback_state"].clone()
+}
+
+/// Thread `tid`'s `feedback_state` in the artifact page's boot payload, as
+/// `b` loads the page.
+async fn boot_state(b: &Browser<'_>, aid: &str, tid: &str) -> Value {
+    const OPEN: &str = r#"<script type="application/json" id="clax-boot">"#;
+    let html = b
+        .req("GET", &format!("/a/{aid}"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let start = html.find(OPEN).expect("a bootstrap block") + OPEN.len();
+    let end = start + html[start..].find("</script>").unwrap();
+    let boot: Value = serde_json::from_str(&html[start..end]).unwrap();
+    boot["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == json!(tid))
+        .map(|t| t["feedback_state"].clone())
+        .unwrap()
+}
+
+/// The owner agent's view of thread `tid`'s state.
+async fn owner_agent_state(t: &Two, tid: &str) -> Value {
+    let (status, v) = owner_agent(
+        t,
+        "GET",
+        &format!("/api/artifacts/{}/threads/{tid}", t.aid),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    v["thread"]["feedback_state"].clone()
+}
+
+/// Sam's agent's view of thread `tid`'s state.
+async fn sam_agent_state(t: &Two, tid: &str) -> Value {
+    let (status, v) = t
+        .sam_agent(
+            "GET",
+            &format!("/api/artifacts/{}/threads/{tid}", t.aid),
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "{v}");
+    v["thread"]["feedback_state"].clone()
+}
+
+/// Reads anonymous `/api/events` until the `thread` event of `sentinel`,
+/// failing on any event of `tid` before it: a decision on `tid` reaches
+/// no one it does not concern (owner decision 2026-10-14).
+async fn nothing_of_before(events: &mut EventReader, tid: &str, sentinel: &str) {
+    within("the sentinel's thread event", async {
+        loop {
+            let (name, ev) = events.next().await;
+            let of = |id: &str| ev["thread_id"] == json!(id) || ev["thread"]["id"] == json!(id);
+            assert!(!of(tid), "{name} of the decided thread: {ev}");
+            if name == "thread" && of(sentinel) {
+                break;
+            }
         }
+    })
+    .await;
+}
+
+/// A declined thread (owner decision 2026-10-14, "Declined by Mia" for
+/// those concerned): Mia's thread is sent to Sam's agent and Sam declines.
+/// The owner, Mia (its author) and Sam (who declined, `mine`) read
+/// `declined` by Sam; a LAN viewer, no cookie and the agents read the
+/// plain state: sent until the agent takes, then seen by the agent. The
+/// decision reaches the people concerned as `held_state` on their inbox
+/// topic, and no one else hears of it. Mia's next comment stays declined;
+/// once Sam allows Mia and then revokes that, the old decline no longer
+/// counts: the thread waits for Sam's approval again.
+#[tokio::test]
+async fn a_declined_thread_reads_declined_to_the_people_concerned_and_plain_to_everyone_else() {
+    let t = Two::new().await;
+    owner_agent_watches(&t).await;
+    let lan = t.w.ts.viewer(Some("Lucy")).await;
+    let lucy = Browser {
+        ts: &t.w.ts,
+        cookie: format!("clax_viewer={}", lan.cookie),
     };
-    comment("+1").await;
+    let nobody = Browser {
+        ts: &t.w.ts,
+        cookie: String::new(),
+    };
+    let tid = t.mia_thread("please fix the chart").await;
+    let (status, v) = t.mia_sends_to_sam(&tid).await;
+    assert_eq!(status, 200, "{v}");
+    let other = t.w.ts.thread_as_owner(&t.aid, "a sentinel").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // Waiting: the people concerned by name, agents without, everyone else plain.
+    for (who, b) in [("owner", t.owner_browser()), ("Mia", t.mia_browser())] {
+        let s = state_as(&b, &t.aid, &tid).await;
+        assert_eq!(
+            (s["state"].clone(), s["approver"].clone()),
+            (json!("withheld"), json!("Sam")),
+            "{who}: {s}"
+        );
+        assert!(s.get("mine").is_none(), "{who}: {s}");
+    }
+    let s = state_as(&t.sam_browser(), &t.aid, &tid).await;
+    assert_eq!(
+        (s["state"].clone(), s["mine"].clone()),
+        (json!("withheld"), json!(true)),
+        "{s}"
+    );
+    for (who, s) in [
+        ("Sam's agent", sam_agent_state(&t, &tid).await),
+        ("the owner's agent", owner_agent_state(&t, &tid).await),
+    ] {
+        assert_eq!(s["state"], "withheld", "{who}: {s}");
+        assert!(s.get("approver").is_none(), "{who}: {s}");
+    }
+    for (who, b) in [("Lucy", &lucy), ("no one", &nobody)] {
+        let s = state_as(b, &t.aid, &tid).await;
+        assert_eq!(s["state"], "sent", "{who}: {s}");
+        assert!(s.get("approver").is_none(), "{who}: {s}");
+    }
+    // Sam declines: the owner's inbox topic hears it, anonymous events do not.
+    let mut held = t.owner_browser().stream(&["inbox"]).await;
+    let mut anon =
+        t.w.ts
+            .events_as(&format!("?artifact={}", t.aid), None)
+            .await;
+    let rid = t.sams_requests().await[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, v) = t.sam_decides(&rid, "decline").await;
+    assert_eq!(status, 200, "{v}");
+    within("held_state on the owner's inbox topic", async {
+        loop {
+            let (name, ev) = held.next().await;
+            if name == "held_state" && ev["thread_id"] == json!(tid) {
+                break;
+            }
+        }
+    })
+    .await;
+    let (status, v) = t
+        .owner_browser()
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{other}/comments", t.aid),
+            Some(json!({"body": "a later note"})),
+        )
+        .await;
+    assert_eq!(status, 201, "{v}");
+    nothing_of_before(&mut anon, &tid, &other).await;
+    // Declined, to the people concerned; plain to the rest.
+    for (who, b) in [("owner", t.owner_browser()), ("Mia", t.mia_browser())] {
+        let s = state_as(&b, &t.aid, &tid).await;
+        assert_eq!(
+            (s["state"].clone(), s["approver"].clone()),
+            (json!("declined"), json!("Sam")),
+            "{who}: {s}"
+        );
+    }
+    let s = state_as(&t.sam_browser(), &t.aid, &tid).await;
+    assert_eq!(
+        (s["state"].clone(), s["mine"].clone()),
+        (json!("declined"), json!(true)),
+        "{s}"
+    );
+    assert_eq!(state_as(&lucy, &t.aid, &tid).await["state"], "sent");
+    assert_eq!(sam_agent_state(&t, &tid).await["state"], "sent");
+    assert_eq!(owner_agent_state(&t, &tid).await["state"], "sent");
+    // The agent takes: seen by the agent, to everyone but the people concerned.
+    t.sam_feedback("tier=piggyback").await;
+    assert_eq!(state_as(&lucy, &t.aid, &tid).await["state"], "acknowledged");
+    assert_eq!(
+        state_as(&nobody, &t.aid, &tid).await["state"],
+        "acknowledged"
+    );
+    assert_eq!(sam_agent_state(&t, &tid).await["state"], "acknowledged");
+    assert_eq!(
+        state_as(&t.owner_browser(), &t.aid, &tid).await["state"],
+        "declined"
+    );
+    // Mia comments again: still declined (the decline is Sam's of Mia here).
+    let (status, v) = t
+        .mia_browser()
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{tid}/comments", t.aid),
+            Some(json!({"body": "and the legend"})),
+        )
+        .await;
+    assert_eq!(status, 201, "{v}");
+    t.sam_feedback("tier=piggyback").await;
+    assert_eq!(
+        state_as(&t.owner_browser(), &t.aid, &tid).await["state"],
+        "declined"
+    );
+    // Sam allows Mia, then revokes it: the old decline no longer counts.
+    let (status, a) = t
+        .sam_browser()
+        .call(
+            "POST",
+            "/api/approvals",
+            Some(json!({"author": t.w.mia_public, "scope": "everywhere"})),
+        )
+        .await;
+    assert!(status == 200 || status == 201, "{a}");
+    t.sam_feedback("tier=piggyback").await;
+    assert!(
+        !["withheld", "declined"].contains(
+            &state_as(&t.owner_browser(), &t.aid, &tid).await["state"]
+                .as_str()
+                .unwrap()
+        ),
+        "allowed"
+    );
+    let aid_ = a["approval"]["id"].as_str().unwrap().to_string();
+    let (status, v) = t
+        .sam_browser()
+        .call("DELETE", &format!("/api/approvals/{aid_}"), None)
+        .await;
+    assert_eq!(status, 200, "{v}");
+    let (status, v) = t
+        .mia_browser()
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{tid}/comments", t.aid),
+            Some(json!({"body": "one more"})),
+        )
+        .await;
+    assert_eq!(status, 201, "{v}");
+    t.sam_feedback("tier=piggyback").await;
+    let s = state_as(&t.owner_browser(), &t.aid, &tid).await;
+    assert_eq!(
+        (s["state"].clone(), s["approver"].clone()),
+        (json!("withheld"), json!("Sam")),
+        "{s}"
+    );
+}
+
+/// Whose approval a thread waits for (spec 2026-10-08 §10, §18; owner
+/// decisions of 2026-10-14): the owner's thread sent to Sam's agent waits
+/// for Sam. The owner (its author) and Sam (the approver) read it, in views
+/// and in the boot payload; Mia, a connected person it does not concern, a
+/// LAN viewer and no cookie read the plain "sent", in views, in the boot
+/// payload and in events; agents read "withheld" without a name.
+#[tokio::test]
+async fn whose_approval_a_thread_waits_for_reaches_only_the_people_concerned() {
+    let t = Two::new().await;
+    let lan = t.w.ts.viewer(Some("Lucy")).await;
+    let tid = t.w.ts.thread_as_owner(&t.aid, "please fix the chart").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut anon =
+        t.w.ts
+            .events_as(&format!("?artifact={}", t.aid), None)
+            .await;
     let (status, v) = t
         .owner_browser()
         .call(
@@ -2410,73 +2661,21 @@ async fn a_declined_comment_leaves_its_thread_waiting_for_nothing() {
         )
         .await;
     assert_eq!(status, 200, "{v}");
-    t.sam_feedback("tier=piggyback").await;
-    assert_eq!(
-        t.owner_thread(&tid).await["feedback_state"]["state"],
-        "withheld"
-    );
-    let rid = t.sams_requests().await[0]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let mut events =
-        t.w.ts
-            .events_as(&format!("?artifact={}", t.aid), None)
-            .await;
-    let (status, v) = t.sam_decides(&rid, "decline").await;
-    assert_eq!(status, 200, "{v}");
-    // Open views hear it: the thread's state is announced again.
-    loop {
-        let (name, ev) = events.next().await;
-        if name == "feedback_state" && ev["thread_id"] == json!(tid) {
-            assert_ne!(ev["state"], "withheld", "{ev}");
-            break;
+    within("the send's events", async {
+        loop {
+            let (name, ev) = anon.next().await;
+            let text = ev.to_string();
+            assert!(
+                !text.contains("\"approver\"") && !text.contains("withheld"),
+                "{name}: {ev}"
+            );
+            if name == "feedback_state" && ev["thread_id"] == json!(tid) {
+                assert_eq!(ev["state"], "sent", "{ev}");
+                break;
+            }
         }
-    }
-    let path = format!("/api/artifacts/{}/threads/{tid}", t.aid);
-    let state = |v: &Value| v["feedback_state"]["state"].clone();
-    assert_ne!(state(&t.owner_thread(&tid).await), "withheld");
-    let (status, v) = t
-        .sam_agent(
-            "POST",
-            &format!("/api/artifacts/{}/threads/{tid}/comments", t.aid),
-            Some(json!({"body": "Fixed the axis.", "author_kind": "agent"})),
-        )
-        .await;
-    assert!(status == 200 || status == 201, "{v}");
-    comment("Thanks!").await;
-    t.sam_feedback("tier=piggyback").await;
-    assert_ne!(state(&t.owner_thread(&tid).await), "withheld");
-    // Sam's agent reads the same state.
-    let (status, v) = t.sam_agent("GET", &path, None).await;
-    assert_eq!(status, 200, "{v}");
-    assert_ne!(state(&v["thread"]), "withheld", "{v}");
-}
-
-/// Whose approval a thread waits for is approval state (spec 2026-10-08
-/// §18; ruling on record 8bc18379): the owner, the approver and the
-/// thread's own authors read it; a LAN viewer, an anonymous caller and
-/// anyone subscribed to the artifact's events never do, nor a connected
-/// person the thread does not concern.
-#[tokio::test]
-async fn whose_approval_a_thread_waits_for_reaches_only_the_people_concerned() {
-    let t = Two::new().await;
-    let lan = t.w.ts.viewer(Some("Lucy")).await;
-    let tid = t.mia_thread("please fix the chart").await;
-    let mut anon =
-        t.w.ts
-            .events_as(&format!("?artifact={}", t.aid), None)
-            .await;
-    let (status, v) = t.mia_sends_to_sam(&tid).await;
-    assert_eq!(status, 200, "{v}");
-    loop {
-        let (name, ev) = anon.next().await;
-        assert!(!ev.to_string().contains("\"approver\""), "{name}: {ev}");
-        if name == "feedback_state" && ev["state"] == "withheld" {
-            break;
-        }
-    }
-    let path = format!("/api/artifacts/{}/threads/{tid}", t.aid);
+    })
+    .await;
     let lucy = Browser {
         ts: &t.w.ts,
         cookie: format!("clax_viewer={}", lan.cookie),
@@ -2485,17 +2684,30 @@ async fn whose_approval_a_thread_waits_for_reaches_only_the_people_concerned() {
         ts: &t.w.ts,
         cookie: String::new(),
     };
-    for (who, b, named) in [
+    for (who, b, held) in [
         ("owner", t.owner_browser(), true),
         ("Sam, the approver", t.sam_browser(), true),
-        ("Mia, its author", t.mia_browser(), true),
+        ("Mia, not concerned", t.mia_browser(), false),
         ("Lucy, a LAN viewer", lucy, false),
         ("no one", nobody, false),
     ] {
-        let (status, v) = b.call("GET", &path, None).await;
-        assert_eq!(status, 200, "{who}: {v}");
-        let st = &v["thread"]["feedback_state"];
-        assert_eq!(st["state"], "withheld", "{who}: {st}");
-        assert_eq!(st.get("approver").is_some(), named, "{who}: {st}");
+        for (place, s) in [
+            ("view", state_as(&b, &t.aid, &tid).await),
+            ("boot", boot_state(&b, &t.aid, &tid).await),
+        ] {
+            if held {
+                assert_eq!(
+                    (s["state"].clone(), s["approver"].clone()),
+                    (json!("withheld"), json!("Sam")),
+                    "{who} {place}: {s}"
+                );
+            } else {
+                assert_eq!(s["state"], "sent", "{who} {place}: {s}");
+                assert!(s.get("approver").is_none(), "{who} {place}: {s}");
+            }
+        }
     }
+    let s = sam_agent_state(&t, &tid).await;
+    assert_eq!(s["state"], "withheld", "{s}");
+    assert!(s.get("approver").is_none(), "{s}");
 }

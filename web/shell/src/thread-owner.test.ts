@@ -11,6 +11,8 @@ const base = { artifact_id: "7q3k9mzx2b4t", version_n: 1, has_clip: false, clip_
 const anchor = { kind: "element" as const, selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
 const comment = { id: "c1", thread_id: TID, author_kind: "viewer" as const, author_name: "Mia", via_harness: null, body: "Add a Q4 column", created_at: base.created_at };
 const withheld = { thread_id: TID, state: "withheld" as const, tier: null, since: base.created_at, resends: 0, exhausted: false, approver: "Sam" };
+// As Sam, the approver, reads it.
+const yours = { ...withheld, mine: true };
 const thread = (o: Partial<Thread> = {}): Thread => ({ ...base, id: TID, anchor, status: "open", sent_to_agent: true, comments: [comment], ...o });
 const OWNER: Viewer = { public_id: "u_alex", display_name: "Alex", created_at: base.created_at, owner: true };
 const SAM: Viewer = { public_id: "u_sam", display_name: "Sam", created_at: base.created_at, person: true };
@@ -75,7 +77,7 @@ describe("a thread's owner and delivery state", () => {
       calls.push(url);
       return new Response(JSON.stringify({ items: [item("approval")], next_cursor: null, unread: 1 }));
     }));
-    const m = shell([thread({ feedback_state: withheld }), thread({ id: "t2" })], SAM);
+    const m = shell([thread({ feedback_state: yours }), thread({ id: "t2" })], SAM);
     await settle();
     expect(calls).toEqual(["/api/inbox?kind=approval&artifact=7q3k9mzx2b4t&limit=200"]);
     const card = m.root.querySelector<HTMLElement>(`.thread-card[data-thread="${TID}"]`)!;
@@ -89,9 +91,8 @@ describe("a thread's owner and delivery state", () => {
 
   it("puts the card above a thread whose newest comment went through while an earlier one waits", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ items: [item("approval")], next_cursor: null, unread: 1 }))));
-    const sent = { ...withheld, state: "sent" as const, tier: "piggyback" as const, approver: undefined };
     const plusOne = { ...comment, id: "c2", author_name: "Alex", body: "+1" };
-    const m = shell([thread({ feedback_state: sent, comments: [comment, plusOne] })], SAM);
+    const m = shell([thread({ feedback_state: yours, comments: [comment, plusOne] })], SAM);
     await settle();
     const card = m.root.querySelector<HTMLElement>(`.thread-card[data-thread="${TID}"]`)!;
     expect(card.previousElementSibling!.querySelector(".acard")).not.toBeNull();
@@ -102,6 +103,23 @@ describe("a thread's owner and delivery state", () => {
     const m = render([thread({ owner: { name: "clax-multi-person-agent-strip-ab", person: "u_sam", person_name: "Sam", live: true } })], { me: OWNER });
     expect(chip(m.root)!.querySelector(".on")!.textContent).toBe("clax-multi-person-agent-strip-ab");
     expect(chip(m.root)!.querySelector(".op")!.textContent).toBe(" · Sam");
+  });
+
+  it("reads the daemon's state, not the card above, once nothing waits for this viewer (an ended session, a handoff)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ items: [item("approval")], next_cursor: null, unread: 1 }))));
+    const ended = { ...withheld, state: "agent_ended" as const, approver: undefined };
+    const m = shell([thread({ feedback_state: ended }), thread({ id: "t2", feedback_state: withheld })], SAM);
+    await settle();
+    const card = m.root.querySelector<HTMLElement>(`.thread-card[data-thread="${TID}"]`)!;
+    expect(card.querySelector(".waiting")!.textContent).toBe("agent session ended; waiting for a new one");
+    // Handed off to another person's agent: it waits for theirs, not this viewer's.
+    expect(m.root.querySelector('.thread-card[data-thread="t2"] .waiting')!.textContent).toBe("waiting for Sam's approval");
+  });
+
+  it("reads a declined thread as declined by its person, or by this viewer", () => {
+    expect(waitingLabel({ ...withheld, state: "declined" }, new Date())).toBe("declined by Sam");
+    expect(waitingLabel({ ...withheld, state: "declined", mine: true }, new Date())).toBe("you declined");
+    expect(waitingLabel({ ...withheld, approver: undefined }, new Date())).toBe("waiting for approval");
   });
 
   it("asks for no approval card where the host shows none (the extension's panel), for a thread never sent, or in a browser with no inbox", async () => {

@@ -258,6 +258,12 @@ export class InboxFeed {
   }
 
   private on(e: StreamEvent): void {
+    // A thread's held state changed for this viewer (spec 2026-10-08 §10):
+    // an artifact view showing it fetches it again (`clax-held-state`).
+    if (e.type === "held_state" && typeof document !== "undefined") {
+      document.dispatchEvent(new CustomEvent("clax-held-state", { detail: { artifact_id: e.artifact_id, thread_id: e.thread_id } }));
+      return;
+    }
     if (typeof e.unread === "number") this.unread = e.unread;
     if (e.type === "inbox_item") {
       const item = e.item as InboxItem | undefined;

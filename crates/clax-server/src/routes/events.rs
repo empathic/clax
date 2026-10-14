@@ -151,6 +151,7 @@ pub async fn events(
                 | Event::ApprovalRequest { .. }
                 | Event::People { .. }
                 | Event::Agents { .. }
+                | Event::HeldState { .. }
         ) {
             return false;
         }

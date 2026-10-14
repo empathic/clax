@@ -3,9 +3,9 @@
 //! of it ([`Vis`]).
 
 use crate::state::AppState;
-#[cfg(debug_assertions)]
-use clax_core::feedback::Tier;
 use clax_core::feedback::Touched;
+#[cfg(debug_assertions)]
+use clax_core::feedback::{FeedbackState, Tier};
 use clax_core::model::{Artifact, Asset, Comment, Thread, Version};
 use clax_core::store::approvals::UNCONNECTED;
 use clax_core::store::docs::{Acquired, Doc, DocPage, Written};
@@ -439,23 +439,69 @@ impl AppState {
     }
 }
 
-/// Publishes `feedback_state` for every touched thread. Failures are logged;
-/// the change itself has happened.
+/// Publishes `feedback_state` for every touched thread: its plain state,
+/// which anyone may read (spec 2026-10-08 §10, §18), and, while people
+/// exist, `held_state` to the people concerned ([`publish_held`]).
+/// Failures are logged; the change itself has happened.
 pub fn publish_states(ctx: &FeedbackCtx, st: &Store, touched: &Touched) {
+    publish_states_as(ctx, st, touched, true);
+}
+
+/// [`publish_states`] for an approval decision (made, declined, revoked):
+/// only the people concerned hear it, so nothing anyone else reads (no
+/// event, no timing) tells that a decision was made (owner decision
+/// 2026-10-14); the plain state changes when the agent next takes.
+pub fn publish_held(ctx: &FeedbackCtx, st: &Store, touched: &Touched) {
+    publish_states_as(ctx, st, touched, false);
+}
+
+fn publish_states_as(ctx: &FeedbackCtx, st: &Store, touched: &Touched, plain: bool) {
     if touched.threads.is_empty() {
         return;
     }
     let ids: Vec<String> = touched.threads.iter().map(|(_, t)| t.clone()).collect();
+    let people = st.people_present().unwrap_or(false);
     match st.feedback_states(&ids, ctx.codex_push()) {
         Ok(mut states) => {
             for (aid, tid) in &touched.threads {
-                if let Some(s) = states.remove(tid) {
-                    ctx.events.publish(Event::feedback_state(aid.clone(), s));
+                let s = states.remove(tid);
+                if plain && let Some(s) = &s {
+                    ctx.events
+                        .publish(Event::feedback_state(aid.clone(), s.clone()));
+                }
+                if people {
+                    match concerned(st, tid, s.as_ref()) {
+                        Ok(recipients) => ctx.events.publish(Event::HeldState {
+                            artifact_id: aid.clone(),
+                            thread_id: tid.clone(),
+                            recipients,
+                        }),
+                        Err(e) => tracing::warn!(error = %e, "held-state recipients unavailable"),
+                    }
                 }
             }
         }
         Err(e) => tracing::warn!(error = %e, "feedback states unavailable"),
     }
+}
+
+/// The recipient keys (empty: the owner) of the people thread `tid`'s held
+/// state may concern: the owner, its comments' authors, its approver or
+/// decliner, and every approver a request at it named.
+fn concerned(st: &Store, tid: &str, s: Option<&FeedbackState>) -> clax_core::Result<Vec<String>> {
+    let mut out = std::collections::BTreeSet::from([String::new()]);
+    if let Some(t) = st.get_thread(tid)? {
+        out.extend(t.comments.iter().filter_map(|c| c.author_public_id.clone()));
+    }
+    if let Some(p) = s.and_then(|s| s.approver_person.clone()) {
+        out.insert(p);
+    }
+    out.extend(
+        st.request_approvers_at(tid)?
+            .into_iter()
+            .map(Option::unwrap_or_default),
+    );
+    Ok(out.into_iter().collect())
 }
 
 /// The live side of sessions' ends (spec 2026-10-08 §14), once the store
@@ -506,6 +552,14 @@ pub fn apply(ctx: &FeedbackCtx, st: &Store, touched: &Touched) {
     crate::push::dispatch(ctx, st, &touched.targets);
 }
 
+/// [`apply`] for an approval decision: its states reach the people
+/// concerned alone ([`publish_held`]).
+pub fn apply_decision(ctx: &FeedbackCtx, st: &Store, touched: &Touched) {
+    publish_held(ctx, st, touched);
+    ctx.waiters.wake(&touched.targets);
+    crate::push::dispatch(ctx, st, &touched.targets);
+}
+
 /// The thread as routes return it: the stored fields plus `clip_url`,
 /// `clip_path` (only when `with_path`, that is the caller presented the
 /// token), `feedback_state`, and `resolved_by_name`: the current display name
@@ -532,10 +586,10 @@ pub fn thread_view(
 }
 
 /// [`thread_view`] of each of `threads`, in order, read in one store call,
-/// as anyone may read them: a `withheld` state never names its approver
-/// (spec 2026-10-08 §18; [`thread_views_for`] names them to the callers
-/// concerned). For events, and for agents' and the owner's views on this
-/// machine that carry it otherwise.
+/// as anyone may read them: each `feedback_state` the plain one, never
+/// `withheld` or `declined` (spec 2026-10-08 §10, §18; [`thread_views_for`]
+/// shows the people concerned more). For events, and for the views that
+/// reach anyone.
 pub fn thread_views(
     st: &Store,
     threads: &[Thread],
@@ -545,11 +599,8 @@ pub fn thread_views(
     thread_views_for(st, threads, codex_push, with_path, &Handles::None)
 }
 
-/// [`thread_views`] as a caller whose handles are `handles` reads them:
-/// a `withheld` state names its approver ([`keep_approvers`]) to the owner
-/// and the owner's agents, and to the people concerned, the approver and
-/// the thread's own authors, and their agents (spec 2026-10-08 §18,
-/// ruling on record 8bc18379); LAN viewers and anonymous callers never.
+/// [`thread_views`] as a browser whose handles are `handles` reads them
+/// ([`states_for`]).
 pub fn thread_views_for(
     st: &Store,
     threads: &[Thread],
@@ -557,40 +608,72 @@ pub fn thread_views_for(
     with_path: bool,
     handles: &Handles,
 ) -> clax_core::Result<Vec<Value>> {
-    let (mut views, _, _, approvers) = views_and_senders(st, threads, codex_push, with_path)?;
-    keep_approvers(&mut views, threads, &approvers, handles);
+    let (mut views, _, _, states) = views_and_senders(st, threads, codex_push, with_path)?;
+    states_for(&mut views, threads, &states, handles, false);
     Ok(views)
 }
 
-/// Each thread view's `withheld` approver's public ID (`Some(None)`: the
-/// owner), when its state names one.
-type Approvers = Vec<Option<Option<String>>>;
+/// Each thread view's feedback state, as the store reads it (with its
+/// approver's public ID and its plain state).
+type States = Vec<Option<FeedbackState>>;
 
-/// Leaves `approver` in each view's `feedback_state` only for a caller
-/// with `handles` the approver concerns: everyone's (the owner), the
-/// owner's agents', or the person's who is the approver or wrote one of
-/// the thread's comments (and their agents').
-fn keep_approvers(
+/// Whether a person (`p`, a public ID) is concerned by thread `t`'s held
+/// state `s` (spec 2026-10-08 §10, §18): they are its approver or decliner,
+/// or wrote one of its comments.
+fn concerns(p: &str, t: &Thread, s: &FeedbackState) -> bool {
+    s.approver_person.as_deref() == Some(p)
+        || t.comments
+            .iter()
+            .any(|c| c.author_public_id.as_deref() == Some(p))
+}
+
+/// Sets each view's `feedback_state` as its caller reads it (spec
+/// 2026-10-08 §10, §18; owner decisions of 2026-10-14):
+/// - the owner's browser and the people concerned ([`concerns`]): the
+///   state as it is, `withheld` or `declined` with its person, and
+///   `mine: true` when they are that person;
+/// - agents (`agent`), the owner's included: `withheld` without its
+///   approver ("waiting for approval"), and a declined thread's plain state;
+/// - everyone else (LAN viewers, anonymous callers, connected people it
+///   does not concern): the plain state.
+fn states_for(
     views: &mut [Value],
     threads: &[Thread],
-    approvers: &Approvers,
+    states: &States,
     handles: &Handles,
+    agent: bool,
 ) {
-    for ((view, t), approver) in views.iter_mut().zip(threads).zip(approvers) {
-        let Some(approver) = approver else { continue };
-        let keep = match handles {
-            Handles::All | Handles::Of(None) => true,
-            Handles::Of(Some(p)) => {
-                approver.as_deref() == Some(p.as_str())
-                    || t.comments
-                        .iter()
-                        .any(|c| c.author_public_id.as_deref() == Some(p.as_str()))
-            }
-            Handles::None => false,
+    for ((view, t), s) in views.iter_mut().zip(threads).zip(states) {
+        let Some(s) = s.as_ref().filter(|s| s.held()) else {
+            continue;
         };
-        if !keep && let Some(s) = view["feedback_state"].as_object_mut() {
-            s.remove("approver");
-        }
+        let full = |mine: bool| {
+            let mut v = json!(s);
+            if mine {
+                v["mine"] = json!(true);
+            }
+            v
+        };
+        view["feedback_state"] = if agent {
+            match s.state {
+                clax_core::FeedbackPhase::Withheld => {
+                    let mut v = json!(s);
+                    if let Some(o) = v.as_object_mut() {
+                        o.remove("approver");
+                    }
+                    v
+                }
+                _ => json!(s.public()),
+            }
+        } else {
+            match handles {
+                Handles::All => full(s.approver_person.is_none()),
+                Handles::Of(Some(p)) if concerns(p, t, s) => {
+                    full(s.approver_person.as_deref() == Some(p.as_str()))
+                }
+                _ => json!(s.public()),
+            }
+        };
     }
 }
 
@@ -607,17 +690,9 @@ fn views_and_senders(
     threads: &[Thread],
     codex_push: bool,
     with_path: bool,
-) -> clax_core::Result<(Vec<Value>, Senders, Owners, Approvers)> {
+) -> clax_core::Result<(Vec<Value>, Senders, Owners, States)> {
     let extras = st.thread_extras(threads, codex_push)?;
-    let approvers: Approvers = extras
-        .iter()
-        .map(|x| {
-            x.feedback_state
-                .as_ref()
-                .filter(|f| f.approver.is_some())
-                .map(|f| f.approver_person.clone())
-        })
-        .collect();
+    let states: States = extras.iter().map(|x| x.feedback_state.clone()).collect();
     let senders: Senders = extras
         .iter()
         .map(|x| x.sends.iter().map(|b| b.sender.clone()).collect())
@@ -695,7 +770,7 @@ fn views_and_senders(
             Ok(v)
         })
         .collect::<clax_core::Result<Vec<Value>>>()
-        .map(|views| (views, senders, owners, approvers))
+        .map(|views| (views, senders, owners, states))
 }
 
 /// Comment `c`'s view `view` as an agent reads it: a viewer's name says
@@ -894,9 +969,15 @@ impl Vis {
         codex_push: bool,
         with_path: bool,
     ) -> clax_core::Result<Vec<Value>> {
-        let (mut views, senders, owners, approvers) =
+        let (mut views, senders, owners, states) =
             views_and_senders(st, threads, codex_push, with_path)?;
-        keep_approvers(&mut views, threads, &approvers, &self.handles);
+        states_for(
+            &mut views,
+            threads,
+            &states,
+            &self.handles,
+            self.agent.is_some(),
+        );
         for (view, owner) in views.iter_mut().zip(&owners) {
             if let Some(o) = owner
                 && self.handles.shows(&o.person)
