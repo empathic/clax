@@ -10,7 +10,8 @@
   import Composer from "./Composer.svelte";
   import { WHOLE_LABEL, type WholeHost, postWhole, wholeDraft } from "../view/whole-comment";
 
-  let { version, host }: { version: number; host: WholeHost } = $props();
+  // `onText` hears the composer's text as it is typed, and "" as it closes.
+  let { version, host, onText }: { version: number; host: WholeHost; onText?(text: string): void } = $props();
   let open = $state(false);
   let opener: HTMLButtonElement | undefined = $state();
   const draft = $derived(wholeDraft(version, `whole-${version}`));
@@ -20,7 +21,7 @@
 
 <div class="new-comment">
   {#if open}
-    <Composer {draft} onCancel={close} onSubmit={async body => { await postWhole(host, version, body); close(); }} />
+    <Composer {draft} {onText} onCancel={close} onSubmit={async body => { await postWhole(host, version, body); close(); }} />
   {:else}
     <button type="button" class="new-comment-open" bind:this={opener} aria-label={`New comment on ${WHOLE_LABEL.toLowerCase()}`}
       onclick={() => { open = true; }}><span class="plus" aria-hidden="true">+</span>New comment<span class="muted small">on the whole artifact</span></button>

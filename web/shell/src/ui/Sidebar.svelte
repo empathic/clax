@@ -95,6 +95,10 @@
     /** Read-only (a spectator, beyond the live seats): the cards show no
      * reply, resolve or send, and nothing is ticked or sent. */
     readOnly?: boolean;
+    /** The live layers: who is writing in each thread (null: a new comment)
+     * now, rendered by the host, and where this viewer's typing goes.
+     * Without it nothing live shows (the extension's side panel). */
+    live?: { writers: Snippet<[string | null]>; onText(threadId: string | null, text: string): void };
     /** What goes above a thread's card, at the sidebar's clock: the shell
      * puts this viewer's approval card above a thread waiting for their
      * approval (spec 2026-10-08 §9.5); the extension's panel, nothing. */
@@ -202,6 +206,7 @@
       marker={t.status === "open" ? threadMarker(p.working ?? [], t.id, agentsByHandle) : null} outdated={isOutdated(t, p.resolved[t.id], p.shown)} agent={p.agent} when={relativeTime(t.created_at, clock.now)}
       versions={p.versions} onSeen={p.onSeen} fold={foldOf(t)} clip={p.clip} tools={far(t) ? go : undefined}
       checked={ticked.has(t.id)} onToggle={p.onToggle && !p.readOnly && selectable(t, false) ? toggleCard : undefined} readOnly={p.readOnly}
+      writers={p.live?.writers} onReplyText={p.live ? (x, text) => p.live!.onText(x.id, text) : undefined}
       onSelect={p.onSelect} onSend={p.onSend} onResolve={resolve} onReply={p.onReply} onHover={p.onHover}>
       {#snippet send(guard: (e: Event, act: () => void) => void)}
         <SendButton label={`Send to ${target}`} agents={p.agents ?? []} names={agentsByHandle} target={p.sendTo ?? null} {me} aid={asks} threads={[t.id]}
@@ -217,9 +222,11 @@
   {#if p.compose}
     {@const c = p.compose}
     {#await import("./NewComment.svelte") then { default: NewComment }}
-      <NewComment version={c.version} host={c.host} />
+      <NewComment version={c.version} host={c.host} onText={p.live ? text => p.live!.onText(null, text) : undefined} />
     {/await}
   {/if}
+  <!-- New comments others are writing, on a spot or the whole artifact. -->
+  {#if p.live}<div class="new-writers">{@render p.live.writers(null)}</div>{/if}
   {#each newestFirst(p.working ?? []) as w (w.key)}
     {#await import("./WorkingStrip.svelte") then { default: WorkingStrip }}
       <WorkingStrip {w} text={stripText(w, agentsByHandle, s.numbers, new Set(p.mine ?? []))} commenting={p.commenting ?? false} />

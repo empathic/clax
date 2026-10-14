@@ -4,7 +4,7 @@ import { CommentMode, type ModeHooks } from "../src/comment-mode";
 // A backstop for a loaded machine; no test here times anything.
 vi.setConfig({ testTimeout: 20_000 });
 
-let hooks: { [K in keyof ModeHooks]: ReturnType<typeof vi.fn> };
+let hooks: { [K in Exclude<keyof ModeHooks, "live">]: ReturnType<typeof vi.fn> } & Pick<ModeHooks, "live">;
 let mode: CommentMode;
 const nextFrame = () => new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
 const outline = () => document.querySelector("clax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".o")!;
@@ -213,6 +213,17 @@ describe("drawing areas", () => {
     expect(hooks.pickArea).toHaveBeenCalledWith({ left: 10, top: 10, width: 100, height: 50 });
     at(img, "click", 110, 60);
     expect(hooks.pickElement).not.toHaveBeenCalled();
+    mode.captured();
+    // The live layers hear the rectangle as it is drawn, its end, and the pick before its hook.
+    const live = { drag: vi.fn(), picked: vi.fn(() => expect(hooks.pickArea).toHaveBeenCalledTimes(1)) };
+    hooks.live = live;
+    at(img, "mousedown", 10, 10);
+    at(img, "mousemove", 60, 40);
+    expect(live.drag).toHaveBeenLastCalledWith({ left: 10, top: 10, width: 50, height: 30 });
+    at(img, "mouseup", 60, 40);
+    expect(live.drag).toHaveBeenLastCalledWith(null);
+    expect(live.picked).toHaveBeenCalledExactlyOnceWith({ left: 10, top: 10, width: 50, height: 30 });
+    expect(hooks.pickArea).toHaveBeenCalledTimes(2);
   });
 
   it("keeps the rectangle drawn, dashed, while its clip is taken, and starts no other pick meanwhile", () => {

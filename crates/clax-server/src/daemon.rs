@@ -563,6 +563,9 @@ pub async fn serve(
             clax_core::working::SystemClock,
         ))),
         rooms: Arc::new(crate::room::Rooms::default()),
+        live_layers: Arc::new(crate::live_layers::LiveLayers::new(Arc::new(
+            clax_core::working::SystemClock,
+        ))),
         sample: cfg.sample.clone(),
         stream: crate::stream::Hub::new(live_ids.clone()),
         seats: crate::seats::LiveSeats::from_env(Arc::new(clax_core::working::SystemClock)),

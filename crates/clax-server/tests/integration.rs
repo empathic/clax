@@ -24,6 +24,7 @@ mod api_grants;
 mod api_host;
 mod api_inbox;
 mod api_live;
+mod api_live_layers;
 mod api_live_site;
 mod api_live_sites;
 mod api_live_watch;

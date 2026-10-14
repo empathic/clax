@@ -120,6 +120,8 @@ pub struct TestServer {
     pub agent_gate: Arc<crate::agent::Gate>,
     /// The live seats, whose limits a test may set.
     pub seats: Arc<crate::seats::LiveSeats>,
+    /// The live layers' hub.
+    pub live_layers: Arc<crate::live_layers::LiveLayers>,
     extension_id: String,
     _dir: tempfile::TempDir,
 }
@@ -242,6 +244,7 @@ impl TestServer {
             drafts: Arc::new(clax_core::drafts::Drafts::new(clock.clone())),
             presence: Arc::new(clax_core::presence::Presence::new(clock.clone())),
             rooms: Arc::new(crate::room::Rooms::default()),
+            live_layers: Arc::new(crate::live_layers::LiveLayers::new(clock.clone())),
             // Sampling off; tests that sample set their own with `spawn_with`.
             sample: Arc::new(crate::sample::Sampler::disabled()),
             stream: crate::stream::Hub::new(live_ids.clone()),
@@ -279,6 +282,7 @@ impl TestServer {
         state.stream.listen(&state.events);
         crate::seats::install(&state);
         let seats = state.seats.clone();
+        let live_layers = state.live_layers.clone();
         crate::inbox::listen(&state);
         crate::approvals::listen(&state);
         crate::routes::people::listen(&state);
@@ -320,6 +324,7 @@ impl TestServer {
             journal,
             agent_gate,
             seats,
+            live_layers,
             extension_id,
             _dir: dir,
         }

@@ -6,6 +6,20 @@ import { afterAll, afterEach, expect, vi } from "vitest";
 const page = (globalThis as { jsdom?: { window: Window } }).jsdom?.window;
 if (page) Object.defineProperty(globalThis, "localStorage", { value: page.localStorage, configurable: true, writable: true });
 
+// No unit test reaches a daemon over a WebSocket (jsdom's needs Node's `ws`,
+// which the browser build resolves away, and fails unhandled): a socket the
+// code under test opens stays connecting until it is closed. Tests of a
+// socket's use give their own (`LiveSocket`'s and the room's `make`).
+class NoSocket extends EventTarget {
+  static readonly CONNECTING = 0; static readonly OPEN = 1; static readonly CLOSING = 2; static readonly CLOSED = 3;
+  readyState = 0;
+  onopen = null; onmessage = null; onerror = null; onclose = null;
+  constructor(readonly url: string) { super(); }
+  send(): void {}
+  close(): void { this.readyState = 3; }
+}
+Object.defineProperty(globalThis, "WebSocket", { value: NoSocket, configurable: true, writable: true });
+
 // Every interval a test file starts must be stopped by the file's end: one
 // left running fires after the test environment is torn down, where the DOM
 // globals it reads no longer exist, and the run fails on an unhandled error.

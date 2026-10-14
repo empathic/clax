@@ -14,6 +14,8 @@ pub mod health;
 pub mod inbox;
 pub mod live;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod live_layers;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod mcp;
 pub mod people;
 pub mod perf;
@@ -475,6 +477,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             .route("/api/events", get(events::events))
             .route("/api/stream", get(stream::open))
             .route("/api/artifacts/{aid}/room", get(room::room))
+            .route("/api/artifacts/{aid}/live", get(live_layers::live))
             .merge(mcp)
     };
     let mut r = r;
@@ -796,6 +799,7 @@ mod l10 {
             "perf" => include_str!("perf.rs"),
             "questions" => include_str!("questions.rs"),
             "room" => include_str!("room.rs"),
+            "live_layers" => include_str!("live_layers.rs"),
             "sample" => include_str!("sample.rs"),
             "sessions" => include_str!("sessions.rs"),
             "shell" => include_str!("shell.rs"),

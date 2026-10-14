@@ -92,6 +92,8 @@ pub struct AppState {
     pub presence: Arc<clax_core::presence::Presence>,
     /// The live rooms of the `room` capability (memory only).
     pub rooms: Arc<crate::room::Rooms>,
+    /// The live layers between people on an artifact (memory only).
+    pub live_layers: Arc<crate::live_layers::LiveLayers>,
     /// The `sample` capability's provider and settings.
     pub sample: Arc<crate::sample::Sampler>,
     /// The multiplexed event stream's topics and streams (`/api/stream`);

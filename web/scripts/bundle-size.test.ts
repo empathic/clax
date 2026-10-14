@@ -55,13 +55,14 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
     "_qd.js": { file: "_clax/shell/qd.js" },
   }));
   // The parts: clip and caps import the comment part's file.
-  for (const f of ["comment-1.js", "clip-1.js", "caps-1.js", "room-1.js", "sample-1.js"]) dist(`_clax/bridge/${f}`, f.repeat(50));
+  for (const f of ["comment-1.js", "clip-1.js", "caps-1.js", "room-1.js", "sample-1.js", "live-1.js"]) dist(`_clax/bridge/${f}`, f.repeat(50));
   dist("_clax/bridge/.vite/manifest.json", JSON.stringify({
     "c.ts": { file: "comment-1.js", name: "comment", isEntry: true },
     "k.ts": { file: "clip-1.js", name: "clip", isEntry: true, imports: ["c.ts"] },
     "p.ts": { file: "caps-1.js", name: "caps", isEntry: true, imports: ["c.ts"] },
     "r.ts": { file: "room-1.js", name: "room", isEntry: true },
     "s.ts": { file: "sample-1.js", name: "sample", isEntry: true },
+    "l.ts": { file: "live-1.js", name: "live", isEntry: true },
   }));
   // The extension: the side panel names its script and stylesheet; the composer names one script.
   mkdirSync(join(web, "dist-extension/assets"), { recursive: true });
@@ -80,7 +81,7 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
 }
 
 describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
-  const full = { gallery: 10_000, artifact: 10_000, bridge: 10_000, bridgeBaseline: 10_000, partComment: 10_000, partClip: 10_000, partCaps: 10_000, partRoom: 10_000, partSample: 10_000, extOverlay: 10_000, extWorker: 10_000, extComposer: 10_000, extPanel: 10_000, questions: 10_000, people: 10_000 };
+  const full = { gallery: 10_000, artifact: 10_000, bridge: 10_000, bridgeBaseline: 10_000, partComment: 10_000, partClip: 10_000, partCaps: 10_000, partRoom: 10_000, partSample: 10_000, partLive: 10_000, extOverlay: 10_000, extWorker: 10_000, extComposer: 10_000, extPanel: 10_000, questions: 10_000, people: 10_000 };
 
   it("passes within budget", () => {
     expect(run(full).status).toBe(0);
@@ -244,7 +245,7 @@ describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
     expect(r.stderr).toContain("extPanel");
   });
 
-  it.each(["gallery", "artifact", "bridge", "bridgeBaseline", "partComment", "partClip", "partCaps", "partRoom", "partSample", "extOverlay", "extWorker", "extComposer", "extPanel"])("fails when the %s budget is missing or not a number", k => {
+  it.each(["gallery", "artifact", "bridge", "bridgeBaseline", "partComment", "partClip", "partCaps", "partRoom", "partSample", "partLive", "extOverlay", "extWorker", "extComposer", "extPanel"])("fails when the %s budget is missing or not a number", k => {
     for (const budget of [Object.fromEntries(Object.entries(full).filter(([key]) => key !== k)), { ...full, [k]: "10000" }]) {
       const r = run(budget);
       expect(r.status).toBe(1);

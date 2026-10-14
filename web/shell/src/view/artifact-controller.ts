@@ -35,6 +35,7 @@ import { Store } from "./store";
 import { type ThreadChange, ThreadSync } from "./thread-sync";
 import { setUrl, validHash } from "./url";
 import type { SetNotice } from "./viewer-name-model";
+import type { LiveUi, LiveView } from "./live-view";
 import type { AgentView, Working } from "./working-model";
 import { type DraftChanged, type DraftView, draftSrc, oldestFirst, parseDiff, tintOf } from "./draft-model";
 
@@ -136,6 +137,9 @@ export type ViewState = {
   showDraft: string | null;
   /** How many elements the shown draft changed, once its page says. */
   draftChanged: DraftChanged | null;
+  /** Other people's pointers, selections, typing and drafts (the live
+   * layers); none until their code loads after the first paint. */
+  live?: LiveUi;
 };
 
 /** The artifact is loaded and the frame mode decided: the islands show. */
@@ -499,6 +503,7 @@ export class ArtifactController {
     if (prev.commenting !== next.commenting) this.send({ type: "clax:comment-mode", on: next.commenting });
     if (prev.draft !== next.draft) this.draftChanged(next.draft, next.deleted);
     if (prev.hovered !== next.hovered || prev.selected !== next.selected || prev.threads !== next.threads) this.sendFocus();
+    this.liveView?.react(prev, next);
     if (prev.draft?.clipToken !== next.draft?.clipToken || prev.draft?.capturing !== next.draft?.capturing) this.armCapture(next.draft);
     if (prev.data !== next.data || prev.origin !== next.origin) this.decideChangelog();
     if (prev.me !== next.me || prev.data !== next.data || prev.origin !== next.origin) this.writeSeen();
@@ -673,7 +678,7 @@ export class ArtifactController {
   private resolveAll(): void {
     if (this.customLive) return;
     const file = this.s.file;
-    this.send({ type: "clax:resolve-anchors", requestId: `r${Date.now()}`, anchors: this.s.threads.filter(t => t.anchor.file === file).map(t => ({ id: this.anchorIds.handle(t.id), anchor: t.anchor, sameVersion: t.version_n === this.shown() })) });
+    this.send({ type: "clax:resolve-anchors", requestId: `r${Date.now()}`, anchors: this.s.threads.filter(t => t.anchor.file === file).map(t => ({ id: this.anchorIds.handle(t.id), anchor: t.anchor, sameVersion: t.version_n === this.shown(), highlight: t.status === "open" })) });
   }
 
   /** Tells the frame which thread's drawn area to outline dashed: the
@@ -775,9 +780,29 @@ export class ArtifactController {
     this.loadDrafts();
     if (!this.presenceAsked) {
       this.presenceAsked = true;
-      this.life.defer(afterPaint(() => this.startPresence()));
+      this.life.defer(afterPaint(() => void import("./presence-live").then(m => {
+        if (this.disposed) return;
+        this.startPresence(m);
+        this.startLive(m);
+      }, () => {})));
     }
   }
+
+  // ---- the live layers (spec 2026-10-11-clax-dev-hosted-design §16.3) ----
+
+  /** The live layers, once their code loaded after the first paint. */
+  /** @internal */
+  liveView: LiveView | null = null;
+  private startLive(m: typeof import("./presence-live")): void {
+    {
+      const v = new m.LiveView(this, () => this.s, msg => { if (this.gate.open) this.send(msg); });
+      this.liveView = v;
+      this.life.defer(() => v.dispose());
+      if (!this.s.spectator) v.start();
+      if (this.gate.open) v.hello();
+    }
+  }
+
 
   // ---- presence (spec §10, "Presence") ----
 
@@ -785,15 +810,14 @@ export class ArtifactController {
   /** The reporter, once its code loaded after the first paint. */
   /** @internal */
   reporter: PresenceReporter | null = null;
-  private startPresence(): void {
-    void import("./presence-reporter").then(m => {
-      if (this.disposed) return;
+  private startPresence(m: typeof import("./presence-live")): void {
+    {
       const r = new m.PresenceReporter(this.id, () => this.s, s => !!s.me && viewReady(s) && !s.deleted, p => this.set({ presence: p.people, ...p.viewing !== null && { viewing: p.viewing } }));
       this.reporter = r;
       this.life.defer(() => r.dispose());
       r.fetch();
       r.report(true);
-    }, () => {});
+    }
   }
 
   /** The "Share where I'm looking" switch: stored per browser, then reported
@@ -1111,6 +1135,7 @@ export class ArtifactController {
    * (the room socket, sample streams) ends now, not at the next hello. */
   private leaveDocument(): void {
     this.host?.leave();
+    this.liveView?.left();
   }
 
   private onMessage(e: MessageEvent): void {
@@ -1148,6 +1173,7 @@ export class ArtifactController {
         this.send({ type: "clax:welcome", mode: this.s.commenting ? "comment" : "view" });
         this.resolveAll();
         this.sendFocus();
+        this.liveView?.hello();
         const p = this.pendingScroll;
         if (p) {
           // The jump's page greeted: scroll there. Another page greeted: the
@@ -1276,13 +1302,18 @@ export class ArtifactController {
         // CSP, say): the viewer is told, and comment mode goes off if it was
         // the comment part. The page could post this itself, so the notice
         // is the shell's own words only, never the message's text.
+        // A part without words of the shell's (the live layers') shows nothing.
         if (!this.gate.open || typeof m.part !== "string" || !Object.hasOwn(PART_FAILED, m.part)) break;
-        this.failedParts.add(m.part);
-        this.showPartFailed(m.part);
+        this.failedParts.add(m.part as keyof typeof PART_FAILED);
+        this.showPartFailed(m.part as keyof typeof PART_FAILED);
         if (m.part === "comment") this.set({ commenting: false });
         break;
       }
       case "clax:hover": break;
+      // The live layers: this viewer's pointer and selection in the greeted
+      // page, and where it drew the others' pointers. The daemon checks the
+      // shapes it relays; the tags take only keys the shell gave the frame.
+      case "clax:cursor": case "clax:peer-at": if (this.gate.open) this.liveView?.fromFrame(m); break;
       case "clax:use": case "clax:call": if (this.gate.open) void this.host?.handle(m); break;
     }
   }
@@ -1339,6 +1370,8 @@ export class ArtifactController {
   spectate(code: string): void {
     if (this.disposed) return;
     this.set(s => ({ spectator: { code, joinable: s.spectator?.joinable ?? false }, commenting: false, selection: EMPTY_SELECTION, draft: null }));
+    // A spectator holds no live socket: it sends and hears no live layers.
+    this.liveView?.pause();
     if (this.spectating) return;
     this.spectating = true;
     let stop: (() => void) | null = null;
@@ -1361,6 +1394,7 @@ export class ArtifactController {
     if (!this.s.spectator) return;
     this.stopSpectating();
     this.set({ spectator: null });
+    this.liveView?.resume();
   }
 
   /** Join live: asks the daemon for a live seat again. */
@@ -1625,7 +1659,7 @@ export class ArtifactController {
     });
   }
   reply(t: Thread, body: string): void { this.saveThread(addComment(this.id, t.id, body), POST_FAILED); }
-  composerInput(text: string): void { this.composerText = text; }
+  composerInput(text: string): void { this.composerText = text; this.liveView?.text(null, text); }
   /** The composer for `pickId` has focus: the bridge may render its clip now. */
   composerFocused(pickId: string): void { if (this.pendingPick?.pickId === pickId) this.send({ type: "clax:composer-ready", pickId }); }
   cancelDraft(): void { this.set({ draft: null }); }

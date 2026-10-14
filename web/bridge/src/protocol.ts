@@ -37,6 +37,31 @@ export interface Box { x: number; y: number; w: number; h: number }
 export type ResolveMethod = "exact" | "selector" | "quote" | "custom";
 export interface AnchorResult { id: string; found: boolean; method: ResolveMethod | null; rect: Box | null }
 
+/** A point in the page for the live layers (spec 2026-10-11-clax-dev-hosted-design
+ * §16.3), anchored so it lands right at any width: the element at `path`
+ * (child indexes from `<body>`, at most `LIVE_DEPTH` deep), the character
+ * `offset` in its text (-1 when the point is on no text), and `x`, `y` as
+ * fractions of the element's border box (used when `offset` is -1). */
+export interface LivePoint { path: number[]; offset: number; x: number; y: number }
+/** What a person has selected or is commenting on, as comment mode's picker
+ * makes it: a text range (both ends on text), an element, or an area drawn
+ * on an element (fractions of its border box). */
+export type LiveSelection =
+  | { kind: "range"; start: LivePoint; end: LivePoint }
+  | { kind: "element"; path: number[] }
+  | { kind: "area"; path: number[]; x: number; y: number; w: number; h: number };
+/** Deepest element path a live point names. */
+export const LIVE_DEPTH = 64;
+/** Another person's pointer and selection as the frame draws them: an opaque
+ * `key` (`k<n>`, stable within one document of the frame) and a colour
+ * (`#rrggbb`); never a name or a person ID, since the artifact's own scripts
+ * run in the frame. The shell draws the names (`clax:peer-at`). */
+export interface FramePeer { key: string; color: string; anchor: LivePoint | null; selection: LiveSelection | null }
+/** Most peers the frame draws. */
+export const PEERS_MAX = 30;
+/** The least time between two `clax:cursor` messages, in ms (about ten a second). */
+export const LIVE_CURSOR_MS = 100;
+
 /** A page's `claude.use(name)`; `name` is canonical (`self` is sent as `artifact`). */
 export type UseRequest = { type: "clax:use"; id: string; name: string };
 /** One namespace method call; `args` are structured-cloned from the page. */
@@ -67,7 +92,8 @@ export type ShellToBridge =
   | { type: "clax:greet" }
   /** `sameVersion`: the thread was made on the version the frame shows (an
    * area's element fingerprint is then not checked: its content may be live). */
-  | { type: "clax:resolve-anchors"; requestId: string; anchors: { id: string; anchor: Anchor; sameVersion?: boolean }[] }
+  /** `highlight`: an open thread, whose quote the page highlights while its anchor resolves to text. */
+  | { type: "clax:resolve-anchors"; requestId: string; anchors: { id: string; anchor: Anchor; sameVersion?: boolean; highlight?: boolean }[] }
   | { type: "clax:scroll-to"; anchor: Anchor; sameVersion?: boolean }
   /** The thread whose drawn area the page outlines dashed (hovered in the
    * sidebar or selected), by its ID in the latest `resolve-anchors`; null
@@ -86,6 +112,12 @@ export type ShellToBridge =
    * renders its clip now, never before, so that work (which can hold the main
    * thread the page may share with the shell) never delays that focus. */
   | { type: "clax:composer-ready"; pickId: string }
+  /** Other people's pointers (unnamed arrows) and selections, drawn in their
+   * colours; replaces the last set. The page answers with `clax:peer-at`.
+   * `here`: someone else is on the artifact (whether or not they show
+   * anything), so the page reports this viewer's pointer; until a message
+   * draws someone or says `here`, the page reports nothing. */
+  | { type: "clax:peers"; peers: FramePeer[]; here?: boolean }
   | UseResult
   | CallResult
   | CapEvent;
@@ -118,10 +150,20 @@ export type BridgeToShell =
   /** A lazy part of the bridge could not load (the page's own CSP forbids it,
    * say); sent once per part, after the welcome. `message` is the browser's
    * error, for debugging: the page can post this too, so the shell shows only
-   * its own words for `part`. */
-  | { type: "clax:degraded"; part: "comment" | "clip" | "caps" | "room" | "sample"; message: string }
+   * its own words for `part`, and none for `live` (the live layers are best
+   * effort: others' pointers are simply not drawn). */
+  | { type: "clax:degraded"; part: "comment" | "clip" | "caps" | "room" | "sample" | "live"; message: string }
+  /** This viewer's pointer (null once it left the page) and selection: the
+   * text selected, or the area being drawn in comment mode; and `pick`, the
+   * last pick made in comment mode (what the shell shows others while that
+   * pick's composer is open). At most every `LIVE_CURSOR_MS` and only when
+   * it changed; sent only once someone else is here (`clax:peers`). */
+  | { type: "clax:cursor"; anchor: LivePoint | null; selection: LiveSelection | null; pick?: LiveSelection | null }
+  /** Where the page drew each peer's pointer, in its viewport's pixels,
+   * after each draw, scroll and resize: the shell puts the names there. */
+  | { type: "clax:peer-at"; peers: { key: string; x: number; y: number }[] }
   | UseRequest
   | CallRequest;
 
-export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:hash", "clax:greet", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:use-result", "clax:call-result", "clax:event"]);
-export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:use", "clax:call"]);
+export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:hash", "clax:greet", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:peers", "clax:use-result", "clax:call-result", "clax:event"]);
+export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:cursor", "clax:peer-at", "clax:use", "clax:call"]);

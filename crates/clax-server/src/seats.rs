@@ -12,8 +12,9 @@
 //!
 //! A live connection holds the seat while it is open: on the native daemon,
 //! a stream subscribed to an artifact's `artifact`, `presence` or `working`
-//! topic ([`crate::stream::Hub`], which keys its seats `stream:<id>`). Any
-//! other live connection (a relay's socket) takes a seat with
+//! topic ([`crate::stream::Hub`], which keys its seats `stream:<id>`), and a
+//! live layers socket (`routes/live_layers.rs`, keyed `live:<n>`). Any such
+//! other live connection takes a seat with
 //! [`LiveSeats::take`] under a connection key of its own, leaves with
 //! [`LiveSeats::leave`], asks [`LiveSeats::is_seated`] whether a person is
 //! seated, and hears seats released for want of input through
@@ -404,16 +405,23 @@ pub fn subscribe(
         })
 }
 
-/// Links the daemon's seats to its stream hub: the hub holds and releases
-/// its streams' seats, and unsubscribes a stream whose seat went idle.
+/// Links the daemon's seats to its stream hub and its live layers: the hub
+/// holds and releases its streams' seats, and unsubscribes a stream whose
+/// seat went idle; a live socket whose seat went idle is closed.
 pub fn install(state: &AppState) {
     state.stream.use_seats(state.seats.clone());
     let hub = Arc::downgrade(&state.stream);
+    let live = Arc::downgrade(&state.live_layers);
     state.seats.on_idle(Arc::new(move |r: &Released| {
-        let Some(hub) = hub.upgrade() else { return };
         for c in &r.conns {
             if let Some(id) = c.strip_prefix(crate::stream::SEAT_CONN_PREFIX) {
-                hub.unseat(id, &r.artifact, clax_core::seats::IDLE_CODE);
+                if let Some(hub) = hub.upgrade() {
+                    hub.unseat(id, &r.artifact, clax_core::seats::IDLE_CODE);
+                }
+            } else if c.starts_with(crate::live_layers::SEAT_CONN_PREFIX)
+                && let Some(live) = live.upgrade()
+            {
+                live.unseat(c);
             }
         }
     }));

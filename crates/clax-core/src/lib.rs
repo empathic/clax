@@ -17,6 +17,7 @@ pub mod gitctx;
 pub mod home;
 pub mod ids;
 pub mod live;
+pub mod live_layers;
 pub mod mentions;
 pub mod model;
 pub mod names;

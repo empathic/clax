@@ -13,7 +13,10 @@
  * rectangle, rendered only once the shell's composer for the pick has focus,
  * Option widening with keys the shell forwards), anchor
  * resolution (an area's rectangle projected onto its element's current box),
- * the dashed outline of the focused thread's area, and scroll-to (see `protocol.ts`). Every HTML
+ * the dashed outline of the focused thread's area, scroll-to, and the live
+ * layers (`live.ts`: this viewer's pointer and selection out as `clax:cursor`,
+ * other people's drawn from `clax:peers`, open threads' quotes highlighted;
+ * see `protocol.ts`). Every HTML
  * page of a version carries the bridge; anchors it builds name this page's
  * file, and anchors on other files never resolve here. Once welcomed, a plain
  * click on a link to another page of the version that the page did not cancel
@@ -58,8 +61,9 @@ import { makeUse } from "./use";
 
 type Mode = InstanceType<CommentPart["CommentMode"]>;
 type Cache = InstanceType<CommentPart["AnchorCache"]>;
-/** Comment mode once its part has loaded. */
-type Live = { part: CommentPart; mode: Mode; cache(): Cache; reset(): void };
+type Hook = InstanceType<CommentPart["LiveHook"]>;
+/** Comment mode and the live layers' hand-off once their part has loaded. */
+type Live = { part: CommentPart; mode: Mode; layer: Hook; cache(): Cache; reset(): void };
 type PartName = keyof Parts;
 
 (() => {
@@ -103,7 +107,7 @@ type PartName = keyof Parts;
     const next = retrying(name, load, failed(name), clock);
     return () => parsed ? next() : whenDone.then(next);
   };
-  const parts = { comment: onNeed("comment", loaders.comment), clip: onNeed("clip", loaders.clip), caps: onNeed("caps", loaders.caps), room: onNeed("room", loaders.room), sample: onNeed("sample", loaders.sample) };
+  const parts = { comment: onNeed("comment", loaders.comment), clip: onNeed("clip", loaders.clip), caps: onNeed("caps", loaders.caps), room: onNeed("room", loaders.room), sample: onNeed("sample", loaders.sample), live: onNeed("live", loaders.live) };
   const clips = () => parts.clip();
   const rpc = new Rpc(m => post(m));
   const use = makeUse({
@@ -142,7 +146,7 @@ type PartName = keyof Parts;
 
   // Anchors are resolved once per shell request; scroll and resize only
   // re-measure, unless the DOM under a resolved element changed since.
-  let anchors: { id: string; anchor: Anchor; sameVersion?: boolean }[] = [];
+  let anchors: { id: string; anchor: Anchor; sameVersion?: boolean; highlight?: boolean }[] = [];
   let latestResolve: unknown = null;
   // The thread the shell focuses (hovered in its list, or selected); its
   // area, if it is one, is outlined dashed.
@@ -166,6 +170,10 @@ type PartName = keyof Parts;
         // One cache for resolving and focusing. A detached thread is retried
         // when the page changes (content rendered late), not only on scroll or resize.
         let resolutions: Cache | null = null;
+        // The live layers (spec 2026-10-11-clax-dev-hosted-design §16.3):
+        // this viewer's pointer and selection out, other people's in, from
+        // a part of their own loaded on need.
+        const layer: Hook = new part.LiveHook(document, post, clock, parts.live);
         const mode: Mode = new part.CommentMode(document, {
           hover: t => post({ type: "clax:hover", selector: t ? part.cssPath(t instanceof Element ? t : part.blockAncestor(t.commonAncestorContainer, window)) : null, rect: t ? box(t) : null }),
           pickElement: el => { void pick(part.buildElementAnchor(document, el, meta.file), () => clips().then(c => c.renderTargetClip(el))).finally(() => mode.captured()); },
@@ -180,11 +188,13 @@ type PartName = keyof Parts;
             void pick(anchor, () => clips().then(c => c.renderAreaClip(el, at))).finally(() => mode.captured());
           },
           cancel: () => { mode.set(false); post({ type: "clax:cancel" }); },
+          live: layer,
         });
         commentsContext.liveChanged = () => mode.set(shellMode && !commentsContext.live);
         return {
           part,
           mode,
+          layer,
           cache: () => resolutions ??= new part.AnchorCache(document, undefined, meta.file, () => reflow()),
           reset: () => resolutions?.reset(),
         };
@@ -207,6 +217,8 @@ type PartName = keyof Parts;
       const r = resolved.resolve(id, anchor, sameVersion === true);
       return r ? { id, found: true, method: r.method, rect: placeOf(l, anchor, r) } : { id, found: false, method: null, rect: null };
     });
+    // Open threads' quotes stay highlighted in the page (spec §16.3).
+    l.layer.quotes(anchors, resolved);
     post({ type: "clax:anchors", requestId, results });
     updateFocus(l);
   };
@@ -310,6 +322,9 @@ type PartName = keyof Parts;
       // The focused thread's area is outlined once the page has parsed.
       // Only a resolved thread can be outlined, so comment mode not yet loaded has none to show.
       case "clax:focus": focusId = typeof m.id === "string" ? m.id : null; whenParsed(document, () => { if (live) withComment(l => updateFocus(l)); }); break;
+      // Other people's pointers and selections, drawn once the page has parsed.
+      // (The comment part loads only once the page has parsed.)
+      case "clax:peers": withComment(l => l.layer.peers(m)); break;
       case "clax:pick-refused": if (typeof m.pickId === "string") picks.answer(m.pickId, false); break;
       case "clax:composer-ready": if (typeof m.pickId === "string") picks.answer(m.pickId, true); break;
       case "clax:key": {
