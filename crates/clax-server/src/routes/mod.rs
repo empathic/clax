@@ -393,6 +393,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             "/api/artifacts/{aid}/versions",
             post(artifacts::publish.layer(publish_limit)),
         )
+        .route("/api/artifacts/{aid}/fork", post(artifacts::fork))
         .route(
             "/api/artifacts/{aid}/assets",
             post(assets::upload.layer(asset_limit)),
@@ -1421,6 +1422,12 @@ mod agents {
                 "/api/artifacts/{aid}/versions",
                 Filtered,
                 Some((Artifacts, "update")),
+            ),
+            (
+                "POST",
+                "/api/artifacts/{aid}/fork",
+                Filtered,
+                Some((Artifacts, "read")),
             ),
             (
                 "GET",

@@ -44,8 +44,8 @@ never fails a turn.
 
 ## What it adds
 
-- The `clax_grok` MCP server (`clax mcp --agent grok`): twenty-five tools,
-  `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
+- The `clax_grok` MCP server (`clax mcp --agent grok`): twenty-six tools,
+  `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `fork`,
   `asset_upload`, `status`, `comments_read`, `comments_reply`,
   `comments_resolve`, `watch`, `wait_for_feedback`, `working`, `draft`, `ask`, and the data tools
   `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`,

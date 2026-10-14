@@ -24,6 +24,20 @@ pub struct Artifact {
     /// Never served.
     #[serde(skip)]
     pub authors: ArtifactAuthors,
+    /// The artifact and version its version 1 was forked from; `None` for
+    /// an artifact that is not a fork. Not serialised with the artifact:
+    /// the routes that show it add the source's title for a reader who may
+    /// read the source.
+    #[serde(skip)]
+    pub forked_from: Option<ForkedFrom>,
+}
+
+/// Where a fork came from: version `version` of artifact `artifact_id`,
+/// which may since have been deleted.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForkedFrom {
+    pub artifact_id: String,
+    pub version: u32,
 }
 
 /// Who wrote an artifact's own text.

@@ -4,7 +4,7 @@
 //! Built for this crate's tests, and for other crates with the
 //! `content-contract` feature.
 
-use super::{AssetKey, ContentStore, NewFile, VersionWrite};
+use super::{AssetKey, ContentStore, NewFile, VersionMeta, VersionWrite};
 use crate::ArtifactId;
 
 /// Runs every check against `c`.
@@ -257,9 +257,15 @@ pub async fn a_fork_makes_version_one_of_a_new_artifact(c: &dyn ContentStore) {
     .await
     .unwrap();
     let to = ArtifactId::generate();
-    c.fork(&from, 1, &["index.html", "a.js"], &to)
-        .await
-        .unwrap();
+    c.fork(
+        &from,
+        1,
+        &["index.html", "a.js"],
+        &to,
+        &VersionMeta::default(),
+    )
+    .await
+    .unwrap();
     assert_eq!(read(c, &to, 1, "index.html").await.unwrap(), b"<p>1");
     assert_eq!(read(c, &to, 1, "a.js").await.unwrap(), b"a");
     assert_eq!(
@@ -279,22 +285,36 @@ pub async fn a_fork_makes_version_one_of_a_new_artifact(c: &dyn ContentStore) {
     assert_eq!(read(c, &from, 2, "index.html").await.unwrap(), b"<p>2");
     // Only the named files.
     let named = ArtifactId::generate();
-    c.fork(&from, 2, &["index.html"], &named).await.unwrap();
+    c.fork(&from, 2, &["index.html"], &named, &VersionMeta::default())
+        .await
+        .unwrap();
     assert_eq!(read(c, &named, 1, "index.html").await.unwrap(), b"<p>2");
     assert_eq!(read(c, &named, 1, "left.css").await, None);
     // A target with a version, or a path the source lacks, changes nothing.
-    assert!(c.fork(&from, 2, &["index.html"], &to).await.is_err());
+    assert!(
+        c.fork(&from, 2, &["index.html"], &to, &VersionMeta::default())
+            .await
+            .is_err()
+    );
     assert_eq!(read(c, &to, 1, "index.html").await.unwrap(), b"<p>1");
     assert_eq!(read(c, &to, 2, "index.html").await.unwrap(), b"<p>fork 2");
     let failed = ArtifactId::generate();
     assert!(
-        c.fork(&from, 2, &["index.html", "nope.js"], &failed)
-            .await
-            .is_err()
+        c.fork(
+            &from,
+            2,
+            &["index.html", "nope.js"],
+            &failed,
+            &VersionMeta::default()
+        )
+        .await
+        .is_err()
     );
     assert_eq!(read(c, &failed, 1, "index.html").await, None);
     // And leaves nothing that blocks a retry.
-    c.fork(&from, 2, &["index.html"], &failed).await.unwrap();
+    c.fork(&from, 2, &["index.html"], &failed, &VersionMeta::default())
+        .await
+        .unwrap();
     assert_eq!(read(c, &failed, 1, "index.html").await.unwrap(), b"<p>2");
 }
 

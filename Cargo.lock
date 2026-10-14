@@ -423,6 +423,8 @@ dependencies = [
  "axum",
  "clax-core",
  "clax-git",
+ "rusqlite",
+ "serde_json",
  "tempfile",
  "tokio",
 ]

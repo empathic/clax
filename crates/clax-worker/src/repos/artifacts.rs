@@ -488,6 +488,20 @@ impl<B: ArtifactsApi, T: Transport> RepoHost for ArtifactsHost<B, T> {
         }
     }
 
+    /// False: Artifacts has no call that drops a repository's objects, so
+    /// a fork is made as a new repository holding only what it reaches
+    /// ([`clax_git::versions::fork_at`]), never as an Artifacts fork, which
+    /// would keep every object the source held.
+    fn can_prune(&self) -> bool {
+        false
+    }
+
+    async fn prune(&self, name: &str) -> clax_git::Result<()> {
+        Err(GitError::RepoUnavailable(format!(
+            "Artifacts cannot drop the objects of {name}"
+        )))
+    }
+
     async fn delete(&self, name: &str) -> clax_git::Result<()> {
         self.forget(name);
         match self.inner.api.delete(name).await {

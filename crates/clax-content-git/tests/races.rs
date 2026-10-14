@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use clax_content_git::GitContent;
 use clax_core::ArtifactId;
 use clax_core::content::memory::MemContent;
-use clax_core::content::{ContentStore, wait};
+use clax_core::content::{ContentStore, VersionMeta, wait};
 use clax_git::memory::MemoryHost;
 use clax_git::versions::repo_name;
 use clax_git::{MAIN, ObjectId, Repo};
@@ -283,12 +283,12 @@ fn a_fork_whose_update_is_refused_leaves_no_repository_and_a_retry_succeeds() {
         let v1 = wait(repo.refs()).unwrap()["refs/tags/v1"];
         repo.force_ref(MAIN, Some(v1)).unwrap();
     });
-    assert!(wait(store.fork(&from, 2, &["index.html"], &to)).is_err());
+    assert!(wait(store.fork(&from, 2, &["index.html"], &to, &VersionMeta::default())).is_err());
     assert!(
         host.inner.repo(&repo_name(to.as_str())).is_none(),
         "the copy is deleted"
     );
-    wait(store.fork(&from, 2, &["index.html"], &to)).unwrap();
+    wait(store.fork(&from, 2, &["index.html"], &to, &VersionMeta::default())).unwrap();
     assert_eq!(read(&store, &to, 1, "index.html").unwrap(), b"two");
     assert_eq!(read(&store, &to, 2, "index.html"), None);
     let now = refs(&host.inner, &to);

@@ -111,7 +111,7 @@ async function deadHome(): Promise<string> {
 }
 
 describe("clax Pi extension", () => {
-  it("registers the twenty-five tools with one-line prompt snippets, and the clax command", () => {
+  it("registers the twenty-six tools with one-line prompt snippets, and the clax command", () => {
     const { pi } = load(daemon.home, "s-tools");
     expect([...pi.tools.keys()].sort()).toEqual([...TOOLS].sort());
     for (const t of pi.tools.values()) {
@@ -213,6 +213,19 @@ describe("clax Pi extension", () => {
       artifact_id: p.artifact_id, version: 1, path: "index.html", content_type: expect.stringMatching(/^text\/html/),
       truncated: false, size: Buffer.byteLength(html), content: html, feedback: [],
     });
+  });
+
+  it("forks the version a URL names into a new artifact", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-fork");
+    await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    const p = json(await pi.callTool("clax_publish", { html: "<title>Plan</title><p>one" }, ctx));
+    json(await pi.callTool("clax_publish", { id: p.artifact_id, if_version: 1, html: "<title>Plan</title><p>two" }, ctx));
+    const f = json(await pi.callTool("clax_fork", { url_or_id: `${p.url}/v/1` }, ctx));
+    expect(f).toMatchObject({ version: 1, title: "Plan", forked_from: { artifact_id: p.artifact_id, version: 1, title: "Plan" }, feedback: [] });
+    expect(f.artifact_id).not.toBe(p.artifact_id);
+    expect(f.url).toMatch(new RegExp(`/a/${f.artifact_id}$`));
+    const read = json(await pi.callTool("clax_read", { url_or_id: f.artifact_id }, ctx));
+    expect(read.content).toBe("<title>Plan</title><p>one");
   });
 
   it("resolves a relative file_path against the session's cwd", async () => {
@@ -486,6 +499,7 @@ describe("clax Pi extension", () => {
       clax_read: [{ url_or_id: id }, { url_or_id: id, path: "a.css", version: 1, max_bytes: 10 }],
       clax_list: [{}, { limit: 5, scope: "mine" }, { scope: "all" }],
       clax_delete: [{ url_or_id: id }],
+      clax_fork: [{ url_or_id: id }, { url_or_id: id, version: 2 }],
       clax_open: [{ url_or_id: id }],
       clax_pin: [{ url_or_id: id }],
       clax_unpin: [{ url_or_id: id }],
@@ -520,6 +534,7 @@ describe("clax Pi extension", () => {
       clax_read: [{ url_or_id: id, bogus: 1 }, {}],
       clax_list: [{ scope: "theirs" }, { bogus: 1 }],
       clax_delete: [{ url_or_id: id, bogus: 1 }],
+      clax_fork: [{ url_or_id: id, bogus: 1 }, { url_or_id: id, version: -1 }, {}],
       clax_open: [{ url_or_id: id, bogus: 1 }],
       clax_pin: [{ url_or_id: id, bogus: 1 }],
       clax_unpin: [{ url_or_id: id, bogus: 1 }],

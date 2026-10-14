@@ -383,7 +383,14 @@ fn versions_written_over_receive_pack_are_what_git_log_shows_and_read_back() {
 
     // A fork through the binding keeps the history under version 1.
     let to = ArtifactId::generate();
-    wait(c.fork(&id, 3, &["index.html"], &to)).unwrap();
+    wait(c.fork(
+        &id,
+        3,
+        &["index.html"],
+        &to,
+        &clax_core::content::VersionMeta::default(),
+    ))
+    .unwrap();
     assert_eq!(
         wait(c.read_file(&to, 1, "index.html")).unwrap().unwrap(),
         b"<h1>again</h1>\n"

@@ -4,7 +4,8 @@
 //! ([`DoTokens`]), each call one HTTP request to `http://repos/_repos/…`.
 //!
 //! - `GET open?repo=` → 200, or 404 when missing; `POST create?repo=`,
-//!   `POST fork?from=&to=`, `POST delete?repo=`.
+//!   `POST fork?from=&to=`, `POST delete?repo=`, `POST prune?repo=` (drops
+//!   the objects no ref of the repository reaches).
 //! - `GET refs?repo=` → `{"<ref>": "<hex>"}`.
 //! - `GET object?repo=&id=` → 200 with the type's pack code then the
 //!   content, or 204 when the repository does not hold it.
@@ -242,6 +243,10 @@ impl<C: AsConn + clax_git::MaybeSend, T: TokenHost> RepoService<C, T> {
                 h.with(|c| db::fork(c, &q("from")?, &q("to")?))?;
                 Ok(ok())
             }
+            ("POST", "prune") => {
+                h.with(|c| db::prune(c, &q("repo")?))?;
+                Ok(ok())
+            }
             ("POST", "delete") => {
                 let now = self.now_ms();
                 h.with(|c| db::delete(c, &q("repo")?, now))?;
@@ -402,6 +407,18 @@ impl<T: Transport + Clone> RepoHost for DoHost<T> {
         call(
             &self.transport,
             request("POST", url("delete", &[("repo", name)]), Vec::new()),
+        )
+        .await
+        .map(drop)
+    }
+    fn can_prune(&self) -> bool {
+        true
+    }
+
+    async fn prune(&self, name: &str) -> clax_git::Result<()> {
+        call(
+            &self.transport,
+            request("POST", url("prune", &[("repo", name)]), Vec::new()),
         )
         .await
         .map(drop)

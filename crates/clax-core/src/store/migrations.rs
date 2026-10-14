@@ -764,6 +764,12 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE viewers ADD COLUMN guest INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE grants ADD COLUMN bearer INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE artifacts ADD COLUMN link_access TEXT CHECK (link_access IN ('viewer', 'commenter'));",
+    // 28: forks (`crate::store::forks`): the artifact and version a fork's
+    // version 1 was made from. No foreign key: the source may be deleted,
+    // and the fork still says where it came from. NULL on every artifact
+    // that is not a fork.
+    "ALTER TABLE artifacts ADD COLUMN forked_from_id TEXT;
+    ALTER TABLE artifacts ADD COLUMN forked_from_version INTEGER;",
 ];
 
 /// The audit journal's migration, as a schema version (the

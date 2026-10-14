@@ -134,6 +134,8 @@ code { font: 12.5px var(--mono); background: var(--hover); border: 1px solid var
 .ttl { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 1px; }
 .ttl h1 { margin: 0; font-size: 15px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ttl .by { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ttl .by a { color: inherit; }
+.ttl .by a:hover { text-decoration: underline; }
 .topbar button:not(.primary) { background: none; border-color: transparent; }
 .topbar button:not(.primary):not(:disabled):hover { background-color: var(--hover); border-color: transparent; }
 .topbar button.comment[aria-pressed="true"], .topbar button.comment[aria-pressed="true"]:not(:disabled):hover { background: var(--comment-hl); border-color: transparent; color: var(--you-ink); }
@@ -145,6 +147,9 @@ code { font: 12.5px var(--mono); background: var(--hover); border: 1px solid var
 @media (max-width: 700px) {
   .topbar { gap: 8px; padding: 0 10px; height: 56px; }
   .topbar .hide-sm, .gbar .hide-sm, .ttl .by, .topbar .kc { display: none; }
+  /* A fork's line keeps its source alone. */
+  .ttl .by:has(.lineage) { display: block; font-size: 0; }
+  .ttl .by .lineage { display: block; font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
   .topbar .version-menu { display: contents; }
   .ttl h1 { font-size: 15px; }
   /* Above the home indicator on a phone with no bottom bezel. */

@@ -131,9 +131,16 @@ async fn a_clone_shows_one_commit_per_version_tagged_with_its_files_and_trailers
         git.text(&out, &["rev-parse", "v3:js/app.js"]).await
     );
 
-    // A fork: the source's history behind its own v1, no other tag.
+    // A fork: the source's history up to the forked version behind its own
+    // v1, no other tag, made by the forking person and agent.
     let fork = ArtifactId::generate();
-    c.fork(&id, 2, &["index.html", "js/app.js"], &fork)
+    let by = VersionMeta {
+        person: Some("u_mia".into()),
+        person_name: Some("Mia Park".into()),
+        agent: Some("claude".into()),
+        note: Some("ignored: a fork's subject names its source".into()),
+    };
+    c.fork(&id, 2, &["index.html", "js/app.js"], &fork, &by)
         .await
         .unwrap();
     let fork_out = work.path().join("fork");
@@ -152,8 +159,8 @@ async fn a_clone_shows_one_commit_per_version_tagged_with_its_files_and_trailers
     assert_eq!(git.text(&fork_out, &["tag", "--list"]).await, "v1");
     assert_eq!(
         git.text(&fork_out, &["rev-parse", "v1^"]).await,
-        git.text(&out, &["rev-parse", "v3"]).await,
-        "v1 sits on the source's main"
+        git.text(&out, &["rev-parse", "v2"]).await,
+        "v1 sits on the forked version"
     );
     assert_eq!(
         git.text(&fork_out, &["ls-tree", "-r", "--name-only", "v1"])
@@ -167,12 +174,20 @@ async fn a_clone_shows_one_commit_per_version_tagged_with_its_files_and_trailers
             &[
                 "log",
                 "-1",
-                "--format=%s%n%(trailers:key=Clax-Version,valueonly)%(trailers:key=Clax-Forked-From,valueonly)",
+                "--format=%s%n%(trailers:key=Clax-Version,valueonly)%(trailers:key=Clax-Publisher,valueonly)%(trailers:key=Clax-Agent,valueonly)%(trailers:key=Clax-Forked-From,valueonly)",
                 "v1"
             ]
         )
         .await,
-        format!("Forked from {reference}\n1\n{reference}")
+        format!("Forked from {reference}\n1\nu_mia\nclaude\n{reference}")
+    );
+    assert_eq!(
+        git.text(
+            &fork_out,
+            &["log", "-1", "--format=%an <%ae>|%cn <%ce>", "v1"]
+        )
+        .await,
+        "Mia Park <u_mia@users.clax.dev>|Mia Park <u_mia@users.clax.dev>"
     );
 }
 
@@ -280,5 +295,120 @@ async fn git_log_shows_who_published_each_version_and_the_note() {
             "Rae 3 <u_rae@users.clax.dev>|Rae 3 <u_rae@users.clax.dev>|First draft|1|u_rae|web",
         ]
         .join("\n")
+    );
+}
+
+/// A version write of `files` published by `name` (`u_<name>`).
+fn by<'a>(name: &str, files: &[(&'a str, &'a [u8])]) -> clax_core::content::VersionWrite<'a> {
+    let mut w = write(&[], files);
+    w.meta = VersionMeta {
+        person: Some(format!("u_{}", name.to_lowercase())),
+        person_name: Some(name.into()),
+        ..Default::default()
+    };
+    w
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_clone_of_a_fork_holds_nothing_the_source_gained_after_the_forked_version() {
+    let c = MemGitContent::in_memory(committer(), clock());
+    let id = ArtifactId::generate();
+    let pages: [(&str, &[u8]); 4] = [
+        ("Ann", b"<h1>one</h1>\n"),
+        ("Bo", b"<h1>two</h1>\n"),
+        ("Cy", b"<h1>three, withheld</h1>\n"),
+        ("Di", b"<h1>four, withheld</h1>\n"),
+    ];
+    for (i, (who, page)) in pages.iter().enumerate() {
+        let n = i as u32 + 1;
+        c.write_version(
+            &id,
+            n,
+            &by(
+                who,
+                &[("index.html", page), (&format!("v{n}.txt")[..], page)],
+            ),
+        )
+        .await
+        .unwrap();
+    }
+    let fork = ArtifactId::generate();
+    let mia = VersionMeta {
+        person: Some("u_mia".into()),
+        person_name: Some("Mia".into()),
+        ..Default::default()
+    };
+    c.fork(&id, 2, &["index.html"], &fork, &mia).await.unwrap();
+
+    let server = Server::start(c.host().clone()).await;
+    let git = Git::new();
+    let work = tempfile::tempdir().unwrap();
+    let (src_out, fork_out) = (work.path().join("src"), work.path().join("fork"));
+    for (repo, out) in [(&id, &src_out), (&fork, &fork_out)] {
+        git.text(
+            work.path(),
+            &[
+                "clone",
+                "-q",
+                &server.url(&repo_name(repo.as_str())),
+                out.to_str().unwrap(),
+            ],
+        )
+        .await;
+    }
+    git.text(&fork_out, &["fsck", "--strict", "--no-dangling"])
+        .await;
+    assert_eq!(git.text(&fork_out, &["tag", "--list"]).await, "v1");
+    assert_eq!(
+        git.text(&fork_out, &["log", "--all", "--format=%an"]).await,
+        "Mia\nBo\nAnn",
+        "only the authors up to the forked version"
+    );
+    // What only v3 and v4 hold: their commits, trees and files.
+    let mut later = Vec::new();
+    for v in ["v3", "v4"] {
+        later.push(git.text(&src_out, &["rev-parse", v]).await);
+        later.push(
+            git.text(&src_out, &["rev-parse", &format!("{v}^{{tree}}")])
+                .await,
+        );
+        later.push(
+            git.text(&src_out, &["rev-parse", &format!("{v}:index.html")])
+                .await,
+        );
+        later.push(
+            git.text(&src_out, &["rev-parse", &format!("{v}:{v}.txt")])
+                .await,
+        );
+    }
+    let objects = git
+        .text(&fork_out, &["rev-list", "--all", "--objects"])
+        .await;
+    let held: Vec<&str> = objects
+        .lines()
+        .map(|l| l.split(' ').next().unwrap())
+        .collect();
+    for o in &later {
+        assert!(!held.contains(&o.as_str()), "{o} reached in the fork");
+        let found = git.run(&fork_out, &["cat-file", "-e", o]).await;
+        assert!(!found.status.success(), "{o} in the fork's clone");
+    }
+    // Nor does the server give them to a fetch that names them.
+    for o in &later {
+        let fetched = git.run(&fork_out, &["fetch", "-q", "origin", o]).await;
+        assert!(!fetched.status.success(), "{o} fetched from the fork");
+    }
+    // And the repository itself no longer holds them.
+    let repo = c.host().repo(&repo_name(fork.as_str())).unwrap();
+    for o in &later {
+        let oid = clax_git::ObjectId::from_hex(o).unwrap();
+        assert!(
+            !repo.has_object(&oid).await.unwrap(),
+            "{o} held by the fork"
+        );
+    }
+    assert_eq!(
+        git.text(&fork_out, &["rev-parse", "v1^"]).await,
+        git.text(&src_out, &["rev-parse", "v2"]).await
     );
 }

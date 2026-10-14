@@ -135,6 +135,35 @@ pub fn delete(conn: &Connection, repo: &str, now_ms: i64) -> Result<()> {
     tx.commit().map_err(sql)
 }
 
+/// Drops from `repo` every object none of its refs reaches
+/// ([`clax_git::reachable_from`]): what a fork copied of its source beyond
+/// the version it was made from. The objects stay stored for the
+/// repositories that still hold them.
+pub fn prune(conn: &Connection, repo: &str) -> Result<()> {
+    let tx = conn.unchecked_transaction().map_err(sql)?;
+    let tips = refs(&tx, repo)?;
+    let keep = clax_git::reachable_from(tips.into_values(), |id| read_object(&tx, repo, id))?;
+    let held: Vec<ObjectId> = {
+        let mut st = tx
+            .prepare("SELECT id FROM git_held WHERE repo = ?1")
+            .map_err(sql)?;
+        let rows = st
+            .query_map([repo], |r| object_id(r.get(0)?))
+            .map_err(sql)?;
+        rows.collect::<rusqlite::Result<_>>().map_err(sql)?
+    };
+    {
+        let mut drop = tx
+            .prepare("DELETE FROM git_held WHERE repo = ?1 AND id = ?2")
+            .map_err(sql)?;
+        for id in held.iter().filter(|id| !keep.contains(id)) {
+            drop.execute(params![repo, id.as_bytes().as_slice()])
+                .map_err(sql)?;
+        }
+    }
+    tx.commit().map_err(sql)
+}
+
 fn object_id(bytes: Vec<u8>) -> rusqlite::Result<ObjectId> {
     ObjectId::from_bytes(&bytes).ok_or_else(|| {
         rusqlite::Error::FromSqlConversionFailure(

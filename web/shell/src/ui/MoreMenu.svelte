@@ -3,7 +3,8 @@
 <script lang="ts">
   // The top bar's ⋯ menu: open raw and copy link, and Versions at phone width,
   // where the version button is hidden; Versions closes the menu and opens
-  // the version menu (`onVersions`). On a live page (`pageHref`, the page's
+  // the version menu (`onVersions`), and Fork (`onFork`, when the viewer may
+  // fork) forks the shown version. On a live page (`pageHref`, the page's
   // URL) phone width also lists Open page, and Versions reads Snapshots. A menu button: opening
   // focuses the first item; Up, Down, Home and End move between the items;
   // Escape, Open raw and Copy link close it with focus back on the button; a
@@ -13,7 +14,7 @@
   // handles, and every printable key (so C and ? do nothing there).
   import { tick } from "svelte";
 
-  let { rawHref, canCopy, onCopy, onVersions, pageHref = null }: { rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void; pageHref?: string | null } = $props();
+  let { rawHref, canCopy, onCopy, onVersions, pageHref = null, onFork }: { rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void; pageHref?: string | null; onFork?(): void } = $props();
   let open = $state(false);
   // Phone width, as the bar's `hide-sm` rule draws it; read on each open.
   let phone = $state(false);
@@ -61,6 +62,7 @@
   {#if open}
     <div class="more-menu" role="menu" bind:this={menu}>
       {#if phone && onVersions}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onVersions(); }}>{pageHref ? "Snapshots" : "Versions"}</button>{/if}
+      {#if phone && onFork}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onFork(); }}>Fork</button>{/if}
       {#if phone && pageHref && /^https?:\/\//.test(pageHref)}<a role="menuitem" tabindex="-1" href={pageHref} target="_blank" rel="noopener noreferrer" onclick={close}>Open page</a>{/if}
       {#if rawHref}
         <a role="menuitem" tabindex="-1" href={rawHref} target="_blank" rel="noopener" onclick={close}>Open raw</a>

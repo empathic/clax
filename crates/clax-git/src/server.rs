@@ -911,7 +911,7 @@ fn report(unpack: &str, updates: &[RefUpdate], statuses: &[RefStatus]) -> Vec<u8
 /// The IDs an object names, each with the type it must have when known: a
 /// commit's tree and parents, a tree's entries (submodules aside), a tag's
 /// target.
-fn links(o: &Object) -> Result<Vec<(ObjectId, Option<ObjectKind>)>> {
+pub(crate) fn links(o: &Object) -> Result<Vec<(ObjectId, Option<ObjectKind>)>> {
     Ok(match o.kind {
         ObjectKind::Commit => {
             let c = Commit::parse(&o.data)?;

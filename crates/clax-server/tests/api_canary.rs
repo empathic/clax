@@ -11,7 +11,10 @@
 
 use crate::common::TestServer;
 use crate::common::clients::{HARNESS_ENVS, RealClients};
-use crate::common::people::{AgentOf, As, Call, DOC_PATH, World, without_named_doc};
+use crate::common::people::{
+    AgentOf, As, CARRIED_BYTES, Call, DOC_PATH, FILE_BYTES, FILE_NAME, TITLE, World,
+    without_named_doc,
+};
 use serde_json::{Value, json};
 
 async fn status_code(res: reqwest::Response) -> (u16, String) {
@@ -272,6 +275,45 @@ async fn sweep(w: &World, agent: &AgentOf<'_>, which: impl Fn(&Call) -> bool) {
 async fn no_canary_reaches_an_unapproved_agent() {
     let w = World::two_people().await;
     sweep(&w, &w.sam_agent(), |_| true).await;
+}
+
+/// A fork keeps the authors of each file and text field it copies (spec
+/// 2026-10-08-multi-agent-multi-person §8.2), so an agent reads Mia's
+/// words in a fork of her artifact, its own person's, no more than in
+/// hers: every read route on the fork, as the agent that forked it and as
+/// the owner's agent.
+#[tokio::test]
+async fn no_canary_reaches_an_unapproved_agent_through_a_fork() {
+    let mut w = World::two_people().await;
+    let res = w
+        .sam
+        .agent(
+            "POST",
+            &format!("/api/artifacts/{}/fork", w.read.artifact),
+            Some(&w.sam_session),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(res.status(), 201);
+    let v: Value = res.json().await.unwrap();
+    let fid = v["artifact"]["id"].as_str().unwrap().to_string();
+    // The fork holds her words: the owner by hand reads them there.
+    let mut seen = String::new();
+    for path in [
+        format!("/api/artifacts/{fid}"),
+        format!("/api/artifacts/{fid}/versions/1/files/index.html"),
+        format!("/api/artifacts/{fid}/versions/1/files/MIACANARYcarried.css"),
+    ] {
+        let res = w.ts.get_authed(&path).await;
+        assert_eq!(res.status(), 200, "{path}");
+        seen.push_str(&res.text().await.unwrap());
+    }
+    for c in [TITLE, FILE_NAME, FILE_BYTES, CARRIED_BYTES] {
+        assert!(seen.contains(c), "{c} not in the fork: {seen}");
+    }
+    w.read.artifact = fid;
+    sweep(&w, &w.sam_agent(), |c| c.method == "GET").await;
+    sweep(&w, &w.owner_agent(), |c| c.method == "GET" && !c.denied).await;
 }
 
 /// The routes a person's agent is refused (Denied) need no filter: as the

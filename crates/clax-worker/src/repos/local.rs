@@ -126,6 +126,14 @@ impl<C: AsConn + clax_git::MaybeSend> RepoHost for LocalHost<C> {
     async fn delete(&self, name: &str) -> clax_git::Result<()> {
         self.with(|c| db::delete(c, name, super::now_ms()))
     }
+
+    fn can_prune(&self) -> bool {
+        true
+    }
+
+    async fn prune(&self, name: &str) -> clax_git::Result<()> {
+        self.with(|c| db::prune(c, name))
+    }
 }
 
 /// `GitError` for a malformed internal request or answer.

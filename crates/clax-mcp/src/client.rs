@@ -958,6 +958,17 @@ impl DaemonClient {
         .await
     }
 
+    /// `POST /api/artifacts/<id>/fork`: forks a version (`{version?}`) into a
+    /// new artifact; `{artifact, version, url}`.
+    pub async fn fork(&self, id: &str, body: &Value) -> Result<Value> {
+        self.json(|c| {
+            c.request(reqwest::Method::POST, &format!("/api/artifacts/{id}/fork"))
+                .timeout(PUBLISH_TIMEOUT)
+                .json(body)
+        })
+        .await
+    }
+
     /// `DELETE /api/artifacts/<id>`.
     pub async fn delete(&self, id: &str) -> Result<()> {
         self.send(|c| c.request(reqwest::Method::DELETE, &format!("/api/artifacts/{id}")))

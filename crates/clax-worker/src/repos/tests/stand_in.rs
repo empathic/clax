@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use clax_content_git::GitContent;
 use clax_core::content::memory::MemContent;
-use clax_core::content::{contract, wait};
+use clax_core::content::{ContentStore, contract, wait};
 use clax_git::server::Access;
 use clax_git::{GitError, RepoHost};
 use rusqlite::Connection;
@@ -97,6 +97,58 @@ fn a_repository_reads_only_the_objects_it_holds_and_a_fork_shares_them() {
         );
         assert!(h.open("a").await.unwrap().is_none());
     });
+}
+
+#[test]
+fn a_fork_through_the_internal_api_holds_nothing_the_source_gained_after_the_forked_version() {
+    let t = stand_in(clock());
+    let c = GitContent::new(
+        DoHost {
+            transport: t.clone(),
+        },
+        MemContent::new(),
+        committer(),
+        clock(),
+    );
+    let id = clax_core::ArtifactId::generate();
+    for (n, page) in [(1, b"one\n"), (2, b"two\n"), (3, b"tri\n"), (4, b"for\n")] {
+        wait(c.write_version(&id, n, &super::write(&[], &[("index.html", page)]))).unwrap();
+    }
+    let to = clax_core::ArtifactId::generate();
+    let meta = clax_core::content::VersionMeta::default();
+    wait(c.fork(&id, 2, &["index.html"], &to, &meta)).unwrap();
+    let h = &t.service.host;
+    let (from, fork) = (
+        clax_git::versions::repo_name(id.as_str()),
+        clax_git::versions::repo_name(to.as_str()),
+    );
+    let src = h.with(|c| db::refs(c, &from)).unwrap();
+    let refs = h.with(|c| db::refs(c, &fork)).unwrap();
+    assert_eq!(refs.len(), 2, "main and v1: {refs:?}");
+    for v in ["refs/tags/v3", "refs/tags/v4"] {
+        let commit = src[v];
+        let tree = wait(clax_git::Repo::read_commit_meta(
+            &h.repo(&from).unwrap().unwrap(),
+            &commit,
+        ))
+        .unwrap()
+        .unwrap()
+        .tree;
+        for o in [commit, tree] {
+            assert!(h.with(|c| db::read_object(c, &fork, &o)).unwrap().is_none());
+            assert!(h.with(|c| db::read_object(c, &from, &o)).unwrap().is_some());
+        }
+    }
+    let v2 = src["refs/tags/v2"];
+    assert!(
+        h.with(|c| db::read_object(c, &fork, &v2))
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        wait(c.read_file(&to, 1, "index.html")).unwrap().unwrap(),
+        b"two\n"
+    );
 }
 
 fn tokens_of(t: &InProc<LocalTokens<Connection>>) -> DoTokens<InProc<LocalTokens<Connection>>> {
