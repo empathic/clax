@@ -571,7 +571,7 @@ files uploaded. The content type is inferred from the file name.
   "assets": [
     {
       "id": "01K6AB7D2E3F4G5H6J7K8M9N0P",
-      "url": "http://localhost:7480/_blob/01K6AB7D2E3F4G5H6J7K8M9N0P",
+      "url": "http://localhost:7480/_blob/7q3k9mzx2b4t/01K6AB7D2E3F4G5H6J7K8M9N0P",
       "content_type": "image/png",
       "size": 48213
     }
@@ -5265,7 +5265,12 @@ plan for:
   Clax adds `db.artifact(id)`, read-only access to another app's documents
   (see "Reading another app's documents" below).
 - `downloads`: `too_large` and `extension_not_enabled` are never returned.
-- `assets`: asset IDs are 26-character ULIDs, not 32 characters. SVG is
+- `assets`: asset IDs are 26-character ULIDs, not 32 characters. An
+  asset's `url` is `/_blob/<artifact ID>/<asset ID>`, served only for the
+  artifact that owns it; a page loads no other app's assets. On the
+  artifact's own origin `"/_blob/" + id` is the same asset; in a sandboxed
+  frame (the main origin) the content policy refuses it, so a page there
+  rebuilds the URL as `"/_blob/<artifact ID>/" + id`. SVG is
   checked to be an SVG document but not sanitised: it is stored as uploaded
   and served with `Content-Security-Policy: sandbox`. There is no quota, so
   `usage.maxFiles` and `usage.maxBytes` are `Number.MAX_SAFE_INTEGER`.
@@ -7072,7 +7077,9 @@ it with Ajv (draft 2020-12, formats asserted;
   of `localhost`, `127.0.0.1`, `::1`, or the daemon's own address and port.
 - Each artifact has its own origin, `http://<id>.localhost:<port>`. On that
   host the daemon serves only `/v/<n>/...` (that artifact's content),
-  `/healthz`, `/_clax/...` and `/_blob/...`; every other path, the API
+  `/healthz`, `/_clax/...` and `/_blob/...` (only that artifact's assets:
+  `/_blob/<asset>` and `/_blob/<id>/<asset>` are served as
+  `/_blob/<id>/<asset>`); every other path, the API
   included, is a 404. The host must be exactly a valid 12-character lowercase
   artifact ID followed by `.localhost` and an optional numeric port.
 - The viewer probes `http://<id>.localhost:<port>/healthz` (1 s timeout,
@@ -7105,7 +7112,9 @@ it with Ajv (draft 2020-12, formats asserted;
   among them. `<files>` is `'self'` on the artifact's origin (which serves
   only GET and HEAD of the artifact's content, `/_clax/...`, `/_blob/...`
   and `/healthz`, and no API) and `http://<Host>/c/<id>/` on the main
-  origin. `<blobs>` is `http://<host>/_blob/` for the request's host,
+  origin. `<blobs>` is `http://<host>/_blob/<id>/`, the artifact's own
+  assets (`/_blob/<id>/<asset>` serves only the artifact that owns the
+  asset, 404 otherwise), for the request's host,
   the daemon's own, and `localhost` and `127.0.0.1` on the request's port.
   So a page loads its files, the bridge and its parts, its assets, and
   `data:` and `blob:` URLs; it fetches (`fetch`, `XMLHttpRequest`,
