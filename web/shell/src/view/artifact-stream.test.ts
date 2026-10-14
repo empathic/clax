@@ -9,7 +9,7 @@ const reopens: (string | undefined)[] = [];
 vi.mock("../stream", () => ({
   pageStream: () => ({ watch: (_t: string[], f: (e: StreamEvent) => void) => { on = f; return () => { on = null; }; }, reconnect: (c?: string) => { reopens.push(c); } }),
 }));
-const { ArtifactStream } = await import("./artifact-stream");
+const { ArtifactStream, keepApprover } = await import("./artifact-stream");
 const { getToken } = await import("../api");
 
 const A = "7q3k9mzx2b4t";
@@ -83,5 +83,15 @@ describe("the artifact stream", () => {
     on!({ type: "refused", topic: `artifact:${A}`, code: "not_found" });
     expect(heard).toEqual([{ type: "resync", topic: `artifact:${A}` }]);
     s.stop();
+  });
+});
+
+describe("keepApprover", () => {
+  const s = (o: Record<string, unknown>) => ({ thread_id: "t", state: "withheld" as const, tier: null, since: "x", resends: 0, exhausted: false, ...o });
+  it("keeps the approver a fetched view named when an event, which never names one, still waits", () => {
+    expect(keepApprover(s({ approver: "Sam" }), s({})) ).toEqual(s({ approver: "Sam" }));
+    expect(keepApprover(s({ approver: "Sam" }), s({ state: "sent", tier: "piggyback" }))).toEqual(s({ state: "sent", tier: "piggyback" }));
+    expect(keepApprover(null, s({}))).toEqual(s({}));
+    expect(keepApprover(s({ approver: "Sam" }), null)).toBeNull();
   });
 });

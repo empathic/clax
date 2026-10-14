@@ -1814,7 +1814,8 @@ pub(crate) const FEEDBACK_STATES: &str =
                                       FROM page_authors pa
                                      WHERE pa.kind = 'comment' AND pa.id = f.comment_id)),
             f.comment_id = (SELECT l.comment_id FROM feedback l WHERE l.thread_id = j.value
-                             ORDER BY l.created_at DESC, l.id DESC LIMIT 1)
+                             ORDER BY l.created_at DESC, l.id DESC LIMIT 1),
+            s.person, f.comment_id, t.artifact_id
        FROM json_each(?1) j
       CROSS JOIN feedback f ON f.thread_id = j.value
        JOIN threads t ON t.id = f.thread_id
@@ -1844,6 +1845,49 @@ struct StateRow {
     requested: bool,
     /// Its comment is the thread's latest forwarded one.
     latest: bool,
+    /// Its person declined the request for its comment's author there.
+    declined: bool,
+    /// Its session's person (`None`: the owner's).
+    person: Option<String>,
+}
+
+impl StateRow {
+    /// Whether the row waits for its person's approval (spec 2026-10-08
+    /// §9.3, §10): undelivered, for a live session, and held, either under
+    /// an open request or told of (`placeholder_at`) with no request its
+    /// person declined. An approval releases it (`placeholder_at` cleared
+    /// as the content becomes visible); a decline keeps it held but
+    /// waiting for nothing. The one rule the thread's state reads.
+    fn waits_for_approval(&self) -> bool {
+        self.delivered_at.is_none()
+            && self.target.is_some()
+            && self.ended_at.is_none()
+            && (self.requested || (self.placeholder_at.is_some() && !self.declined))
+    }
+}
+
+/// Whether `person`'s request for the author of comment `comment_id` at
+/// thread `tid` of artifact `aid` was declined (and none is open since).
+fn declined_in(
+    c: &Connection,
+    person: Option<&str>,
+    comment_id: &str,
+    aid: &str,
+    tid: &str,
+) -> Result<bool> {
+    Ok(c.query_row(
+        "SELECT EXISTS (SELECT 1 FROM approval_requests d
+           WHERE COALESCE(d.approver, '') = COALESCE(?1, '') AND d.status = 'declined'
+             AND d.artifact_id = ?3 AND COALESCE(d.thread_id, '') = ?4
+             AND d.author IN (SELECT c.author_public_id FROM comments c WHERE c.id = ?2
+                              UNION ALL
+                              SELECT CASE pa.author WHEN '*owner'
+                                       THEN (SELECT public_id FROM viewers WHERE owner = 1)
+                                       ELSE pa.author END
+                                FROM page_authors pa WHERE pa.kind = 'comment' AND pa.id = ?2))",
+        params![person, comment_id, aid, tid],
+        |r| r.get(0),
+    )?)
 }
 
 pub(crate) fn feedback_states_in(
@@ -1855,7 +1899,7 @@ pub(crate) fn feedback_states_in(
     let mut stmt = c.prepare_cached(FEEDBACK_STATES)?;
     let mut rows = stmt.query(params![id_array(thread_ids)])?;
     while let Some(r) = rows.next()? {
-        by_thread.entry(r.get(0)?).or_default().push(StateRow {
+        let mut row = StateRow {
             target: r.get(1)?,
             created_at: r.get(2)?,
             delivered_at: r.get(3)?,
@@ -1872,7 +1916,18 @@ pub(crate) fn feedback_states_in(
             person_name: r.get(14)?,
             requested: r.get(15)?,
             latest: r.get(16)?,
-        });
+            declined: false,
+            person: r.get(17)?,
+        };
+        let tid: String = r.get(0)?;
+        // A told row with no open request: was it declined? (Read only for
+        // such rows, which are rare.)
+        if row.placeholder_at.is_some() && !row.requested && row.delivered_at.is_none() {
+            let comment: String = r.get(18)?;
+            let aid: String = r.get(19)?;
+            row.declined = declined_in(c, row.person.as_deref(), &comment, &aid, &tid)?;
+        }
+        by_thread.entry(tid).or_default().push(row);
     }
     Ok(by_thread
         .into_iter()
@@ -1900,24 +1955,15 @@ fn state_of(thread_id: &str, all: &[StateRow], codex_push: bool) -> FeedbackStat
         resends,
         exhausted,
         approver: None,
+        approver_person: None,
     };
-    if let Some((r, at)) = all
-        .iter()
-        .filter(|r| r.delivered_at.is_none())
-        .find_map(|r| {
-            let held = match (&r.placeholder_at, r.requested) {
-                (Some(at), _) => Some(at.as_str()),
-                (None, true) => Some(r.created_at.as_str()),
-                (None, false) => None,
-            };
-            held.filter(|_| r.target.is_some() && r.ended_at.is_none())
-                .map(|at| (r, at))
-        })
-    {
+    if let Some(r) = all.iter().find(|r| r.waits_for_approval()) {
+        let at = r.placeholder_at.as_deref().unwrap_or(&r.created_at);
         let mut s = state(FeedbackPhase::Withheld, None, at, 0, false);
         s.approver = Some(crate::feedback::display_name(
             r.person_name.as_deref().unwrap_or(""),
         ));
+        s.approver_person = r.person.clone();
         return s;
     }
     if let Some((r, at)) = rows

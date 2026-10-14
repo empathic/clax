@@ -164,7 +164,7 @@
   {/if}
 </article>
 
-{#snippet chip()}{#if owner}<span class="owner-chip" title={`${owner.name ?? "agent"}, ${mine ? "your agent" : `${owner.person_name}'s agent`}`}>{owner.name}{mine ? "" : ` · ${owner.person_name}`}</span>{/if}{/snippet}
+{#snippet chip()}{#if owner}<span class="owner-chip" title={`${owner.name ?? "agent"}, ${mine ? "your agent" : `${owner.person_name}'s agent`}`}><span class="on">{owner.name}</span>{#if !mine}<span class="op">{` · ${owner.person_name}`}</span>{/if}</span>{/if}{/snippet}
 
 {#snippet actions()}
   <!-- Only stops a click on these controls from also selecting the card. -->
@@ -191,7 +191,10 @@
     .thread-card header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; min-width: 0; }
     .thread-card .card-head { display: flex; gap: 8px; align-items: center; width: 100%; min-width: 0; min-height: 0; background: none; border: 0; padding: 0; color: var(--muted); text-align: left; font: 400 12.5px var(--font); }
     .thread-card .card-head:not(:disabled):hover { background-color: transparent; }
-    .thread-card .owner-chip { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 7px; border-radius: 999px; font: 600 11.5px/18px var(--font); color: var(--agent-ink); background: var(--accent-tint); }
+    /* The agent's name gives way; its person stays whole (phones have no hover). */
+    .thread-card .owner-chip { display: inline-flex; flex: 0 1 auto; max-width: 55%; min-width: 0; overflow: hidden; white-space: nowrap; padding: 0 7px; border-radius: 999px; font: 600 11.5px/18px var(--font); color: var(--agent-ink); background: var(--accent-tint); }
+    .thread-card .owner-chip .on { min-width: 3ch; overflow: hidden; text-overflow: ellipsis; }
+    .thread-card .owner-chip .op { flex: none; white-space: pre; }
     .thread-card .anchor-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
     .thread-card.far .anchor-label { color: var(--fg); font-weight: 500; }
     .fold-caret::before { content: "▸"; color: var(--fg); font-size: 13px; line-height: 1; }

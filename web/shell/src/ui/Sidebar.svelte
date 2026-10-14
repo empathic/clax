@@ -132,6 +132,9 @@
   });
   // The thread's people who approve a send to their agent first; for the selection, any of its threads'.
   const me = $derived(p.me ? p.me.public_id : undefined);
+  // Who approves first is asked only by a browser that may learn it (the
+  // owner's, a connected person's: spec 2026-10-08 §18): its artifact.
+  const asks = $derived(p.me?.owner || p.me?.person ? p.threads[0]?.artifact_id : undefined);
   // Every Send names the same agent: the target's name, with its person
   // when it is another's (spec 2026-10-08 §11); with no target while
   // agents are live (only other people's), Send opens the menu ("Send
@@ -198,7 +201,7 @@
       checked={ticked.has(t.id)} onToggle={p.onToggle && selectable(t, false) ? toggleCard : undefined}
       onSelect={p.onSelect} onSend={p.onSend} onResolve={resolve} onReply={p.onReply} onHover={p.onHover}>
       {#snippet send(guard: (e: Event, act: () => void) => void)}
-        <SendButton label={`Send to ${target}`} agents={p.agents ?? []} names={agentsByHandle} target={p.sendTo ?? null} {me} aid={t.artifact_id} threads={[t.id]}
+        <SendButton label={`Send to ${target}`} agents={p.agents ?? []} names={agentsByHandle} target={p.sendTo ?? null} {me} aid={asks} threads={[t.id]}
           onSend={e => guard(e, () => p.onSend(t))} onChoose={h => p.onChoose?.(h)} />
       {/snippet}
     </ThreadCard>
@@ -219,7 +222,11 @@
       <WorkingStrip {w} text={stripText(w, agentsByHandle, s.numbers, new Set(p.mine ?? []))} commenting={p.commenting ?? false} />
     {/await}
   {/each}
-  {#if unsentCount && p.onSendUnsent && !pick}
+  {#if unsentCount && p.onSendUnsent && pick}
+    <!-- No target yet: the bar opens the Send menu to choose one. -->
+    <div class="send-unsent pick"><SendButton label={unsentLabel(unsentCount, target)} agents={p.agents ?? []} names={agentsByHandle} target={null} {me} aid={asks}
+      threads={p.threads.filter(t => t.status === "open" && !t.sent_to_agent).map(t => t.id)} onSend={() => {}} onChoose={h => p.onChoose?.(h)} /></div>
+  {:else if unsentCount && p.onSendUnsent}
     <button type="button" class="primary send-unsent" disabled={p.batchBusy}
       onclick={e => { unsentHint = guardedAction(e, "send", () => p.onSendUnsent?.()); }}>{unsentLabel(unsentCount, target)}</button>
     <p class="act-hint" role="status">{unsentHint ?? ""}</p>
@@ -229,7 +236,7 @@
       <SelectionBar count={p.selection.ids.length} note={p.batchNote ?? ""} busy={p.batchBusy ?? false}
         onNote={v => p.onNote?.(v)} onClear={() => p.onClear?.()} onSend={() => p.onSendSelection?.()}>
         {#snippet send(go: (e: Event) => void)}
-          <SendButton label={sendLabel(p.selection!.ids.length, target)} agents={p.agents ?? []} names={agentsByHandle} target={p.sendTo ?? null} {me} aid={p.threads[0]?.artifact_id} threads={p.selection!.ids}
+          <SendButton label={sendLabel(p.selection!.ids.length, target)} agents={p.agents ?? []} names={agentsByHandle} target={p.sendTo ?? null} {me} aid={asks} threads={p.selection!.ids}
             disabled={p.batchBusy} onSend={go} onChoose={h => p.onChoose?.(h)} />
         {/snippet}
       </SelectionBar>
@@ -279,6 +286,7 @@
     button.primary.send-unsent { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
     button.primary.send-unsent:not(:disabled):hover { background: var(--accent-hover); border-color: var(--accent-hover); }
     .send-unsent { width: 100%; margin-bottom: 4px; }
+    .send-unsent.pick { display: flex; } .send-unsent.pick .send, .send-unsent.pick .send > button:first-child { flex: 1; }
     @media (max-width: 700px) { .send-unsent { min-height: 40px; } }
   }
 </style>
