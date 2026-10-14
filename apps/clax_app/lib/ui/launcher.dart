@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import '../agent/timings.dart';
+import '../bundle/lineage_store.dart' show LineageEntry;
 import '../clax/api.dart';
 import '../platform/voice.dart';
 import '../agent/plan.dart';
@@ -11,6 +12,7 @@ import '../agent/worker.dart';
 import 'app_icon.dart';
 import 'app_inspector.dart';
 import 'build_plan.dart';
+import 'bundle_sheets.dart';
 import 'inbox_screen.dart';
 import 'make_service.dart';
 import 'making_screen.dart';
@@ -45,9 +47,11 @@ import 'new_sheet.dart';
 /// [onOpenQuestion] (a question, when given), else to [onOpenTarget] with
 /// its thread or version, else to [open].
 ///
-/// A long press on a tile opens its menu: Open, and Inspect, which pushes
+/// A long press on a tile opens its menu: Open; Inspect, which pushes
 /// the [AppInspector] with [inspectorPermissions] (and a version opened
-/// from its history going to [onOpenTarget]).
+/// from its history going to [onOpenTarget]); and, with [bundles], Share
+/// app (Export… on the Mac), which the inspector's Overview offers too.
+/// With [bundles] the top bar's overflow holds Import app….
 ///
 /// With [build], a tile whose app's build goes shows how far it is (a ring
 /// and "3/7"), the making screen is the build view, and the inspector's
@@ -71,6 +75,8 @@ class Launcher extends StatefulWidget {
     this.build,
     this.makes,
     this.icons,
+    this.bundles,
+    this.lineage,
   });
 
   final ClaxApi api;
@@ -132,6 +138,13 @@ class Launcher extends StatefulWidget {
   /// The apps' icons, which a tile shows in its badge; when null, the
   /// launcher keeps its own in memory.
   final AppIcons? icons;
+
+  /// Shares apps as `.clax` files and opens them; null offers neither.
+  final BundleFlows? bundles;
+
+  /// An app's lineage entry, for the inspector's sharing line; null shows
+  /// none.
+  final Future<LineageEntry?> Function(String aid)? lineage;
 
   @override
   State<Launcher> createState() => _LauncherState();
@@ -440,6 +453,18 @@ class _LauncherState extends State<Launcher> {
               subtitle: const Text('Files, data and permissions'),
               onTap: () => Navigator.of(context).pop('inspect'),
             ),
+            if (widget.bundles case final b?)
+              ListTile(
+                key: const ValueKey('share-app'),
+                leading: Icon(
+                  b.toFile ? Icons.save_alt_rounded : Icons.ios_share_rounded,
+                ),
+                title: Text(b.shareLabel),
+                subtitle: Text(
+                  b.toFile ? 'Save it as a .clax file' : 'Send it as a file',
+                ),
+                onTap: () => Navigator.of(context).pop('share'),
+              ),
             if (resume)
               ListTile(
                 key: const ValueKey('resume-build'),
@@ -459,6 +484,8 @@ class _LauncherState extends State<Launcher> {
         widget.open(app.id);
       case 'resume':
         await widget.build?.control.resumeBuild(app.id);
+      case 'share':
+        await widget.bundles?.share(context, app.id, svg: _icons.svgOf(app.id));
       case 'inspect':
         final target = widget.onOpenTarget;
         await Navigator.of(context).push<void>(
@@ -467,6 +494,8 @@ class _LauncherState extends State<Launcher> {
               api: widget.api,
               aid: app.id,
               permissions: widget.inspectorPermissions,
+              bundles: widget.bundles,
+              lineage: widget.lineage,
               plan: switch (widget.build) {
                 final b? => (context, aid) => BuildWatch(
                   link: b,
@@ -530,6 +559,18 @@ class _LauncherState extends State<Launcher> {
                     tooltip: 'Settings',
                     onPressed: widget.openSettings,
                     icon: const Icon(Icons.settings_outlined),
+                  ),
+                if (widget.bundles case final b?)
+                  PopupMenuButton<String>(
+                    key: const ValueKey('launcher-more'),
+                    tooltip: 'More',
+                    onSelected: (_) => unawaited(b.importPicked(context)),
+                    itemBuilder: (_) => const [
+                      PopupMenuItem(
+                        value: 'import',
+                        child: Text('Import app…'),
+                      ),
+                    ],
                   ),
                 const SizedBox(width: 4),
               ],
