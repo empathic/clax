@@ -1,7 +1,7 @@
 //! [`MemContent`]: artifact content in memory, for tests and for hosts
 //! that keep nothing on disk.
 
-use super::{AssetKey, ContentStore, VersionWrite, missing, present};
+use super::{AssetKey, ContentStore, VersionWrite, missing, present, superseded};
 use crate::{ArtifactId, Result};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
@@ -48,6 +48,16 @@ fn key(id: &ArtifactId, n: u32) -> (String, u32) {
     (id.as_str().to_string(), n)
 }
 
+/// The newest version of `id` above `n`, when one is present.
+fn above(inner: &Inner, id: &ArtifactId, n: u32) -> Option<u32> {
+    inner
+        .versions
+        .keys()
+        .filter(|(a, m)| a == id.as_str() && *m > n)
+        .map(|(_, m)| *m)
+        .max()
+}
+
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl ContentStore for MemContent {
@@ -64,6 +74,9 @@ impl ContentStore for MemContent {
         let mut g = self.inner();
         if g.versions.contains_key(&key(id, n)) {
             return Err(present(id, n));
+        }
+        if let Some(m) = above(&g, id, n) {
+            return Err(superseded(id, n, m));
         }
         let mut files = Files::new();
         if !write.carry.is_empty() {
@@ -94,6 +107,9 @@ impl ContentStore for MemContent {
         if g.versions.contains_key(&key(to, to_n)) {
             return Err(present(to, to_n));
         }
+        if let Some(m) = above(&g, to, to_n) {
+            return Err(superseded(to, to_n, m));
+        }
         let src = g.versions.get(&key(from, from_n));
         let mut files = Files::new();
         for path in paths {
@@ -107,7 +123,13 @@ impl ContentStore for MemContent {
     }
 
     async fn remove_version(&self, id: &ArtifactId, n: u32) -> Result<()> {
-        self.inner().versions.remove(&key(id, n));
+        let mut g = self.inner();
+        if g.versions.contains_key(&key(id, n))
+            && let Some(m) = above(&g, id, n)
+        {
+            return Err(superseded(id, n, m));
+        }
+        g.versions.remove(&key(id, n));
         Ok(())
     }
 

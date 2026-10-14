@@ -31,7 +31,10 @@
 //!   under `refs/`, every object the new value reaches present and of the
 //!   type that names it (a commit's tree a tree, …), a fast
 //!   forward for `refs/heads/*` (unless allowed), no deletion of the branch
-//!   `HEAD` names. Then [`Repo::apply`] compares and swaps each ref.
+//!   `HEAD` names, and no creating, moving or deleting `refs/tags/v<n>`:
+//!   Clax writes its version tags `v<n>` itself, with [`Repo::apply`], and
+//!   a push may not touch them (unless allowed). Then [`Repo::apply`]
+//!   compares and swaps each ref.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -50,6 +53,23 @@ const SIDE_BAND_64K_PAYLOAD: usize = 65516;
 const SIDE_BAND_PAYLOAD: usize = 1000 - 4;
 /// The most want and have lines one upload-pack request may carry.
 pub const MAX_LINES: usize = 65536;
+
+/// The prefix of the refs [`ReceiveOptions::protect_version_tags`] keeps
+/// from pushes: `refs/tags/v` followed by digits alone
+/// ([`is_version_tag`]).
+pub const VERSION_TAGS: &str = "refs/tags/v";
+
+/// Why receive-pack refuses an update of a protected version tag.
+pub const VERSION_TAG_REFUSED: &str = "refs/tags/v<n> are Clax's version tags";
+
+/// Whether `name` is a ref [`ReceiveOptions::protect_version_tags`] keeps
+/// from pushes: exactly `refs/tags/v<digits>` (leading zeros included, so
+/// no look-alike of a version tag is taken either). A pusher's own tags
+/// that merely start with `v`, such as `v1.0` or `vendor`, are not.
+pub fn is_version_tag(name: &str) -> bool {
+    name.strip_prefix(VERSION_TAGS)
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()))
+}
 
 /// What the caller's authentication grants on the repository.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,6 +125,11 @@ pub struct ReceiveOptions {
     /// Refuse every ref deletion (default false; deleting the branch `HEAD`
     /// names is always refused).
     pub deny_deletes: bool,
+    /// Refuse every update of a version tag, [`is_version_tag`] (default true:
+    /// Clax owns its version tags `v<n>`; a push that created `v<n+1>`
+    /// first would make the next publish fail, and one that moved `v<n>`
+    /// would have the version read another commit than the one recorded).
+    pub protect_version_tags: bool,
     /// The most bytes one pushed object may hold.
     pub max_object_bytes: usize,
     /// The most bytes a push's pack may unpack to: its entries inflated
@@ -117,6 +142,7 @@ impl Default for ReceiveOptions {
         ReceiveOptions {
             deny_non_fast_forwards: true,
             deny_deletes: false,
+            protect_version_tags: true,
             max_object_bytes: DEFAULT_MAX_OBJECT_BYTES,
             max_unpacked_bytes: DEFAULT_MAX_UNPACKED_BYTES,
         }
@@ -1179,6 +1205,9 @@ async fn check_update(
     }
     if !names.insert(u.name.clone()) {
         return Ok(Err("duplicate ref update".into()));
+    }
+    if options.protect_version_tags && is_version_tag(&u.name) {
+        return Ok(Err(VERSION_TAG_REFUSED.into()));
     }
     let at = current.get(&u.name).copied().unwrap_or(ObjectId::ZERO);
     if at != u.old {

@@ -1348,9 +1348,11 @@ impl Store {
     }
 
     /// Removes the versions [`Store::place_copies`] wrote, which no row
-    /// records; one that cannot be removed is logged and left unrecorded.
+    /// records, newest first (a content store removes only an artifact's
+    /// newest version); one that cannot be removed is logged and left
+    /// unrecorded.
     fn remove_placed(&self, placed: &[(ArtifactId, u32)]) {
-        for (id, n) in placed {
+        for (id, n) in placed.iter().rev() {
             if let Err(e) = wait(self.content.remove_version(id, *n)) {
                 tracing::warn!(
                     artifact = id.as_str(),

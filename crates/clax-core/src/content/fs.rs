@@ -12,7 +12,7 @@
 //! Deleting an artifact removes its whole directory, with anything else
 //! kept there (its threads' clip images).
 
-use super::{AssetKey, ContentStore, VersionWrite, missing, present};
+use super::{AssetKey, ContentStore, VersionWrite, missing, present, superseded};
 use crate::publish::INDEX;
 use crate::{ArtifactId, Home, Result, new_ulid};
 use std::path::{Path, PathBuf};
@@ -95,6 +95,44 @@ impl FsContent {
         Ok(staging)
     }
 
+    /// Whether version `n` of `id` is present: its directory has its
+    /// `index.html`, as every version Clax writes does.
+    fn has_version(&self, id: &ArtifactId, n: u32) -> bool {
+        self.home.version_dir(id, n).join(INDEX).exists()
+    }
+
+    /// The newest version of `id` above `n`, when one is present.
+    fn above(&self, id: &ArtifactId, n: u32) -> Result<Option<u32>> {
+        let versions = self.home.artifact_dir(id).join("versions");
+        let entries = match std::fs::read_dir(&versions) {
+            Ok(entries) => entries,
+            Err(e) if is_absent(&e) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let mut newest = None;
+        for entry in entries {
+            let name = entry?.file_name();
+            let Some(m) = name.to_str().and_then(|s| s.parse::<u32>().ok()) else {
+                continue;
+            };
+            if m > n && newest.is_none_or(|k| m > k) && self.has_version(id, m) {
+                newest = Some(m);
+            }
+        }
+        Ok(newest)
+    }
+
+    /// Fails when version `n` of `id`, or a version above it, is present.
+    fn check_new(&self, id: &ArtifactId, n: u32) -> Result<()> {
+        if self.has_version(id, n) {
+            return Err(present(id, n));
+        }
+        match self.above(id, n)? {
+            Some(m) => Err(superseded(id, n, m)),
+            None => Ok(()),
+        }
+    }
+
     /// Renames `staging` to version `n` of `id`. A version directory with
     /// anything in it is never replaced.
     fn place(&self, staging: Staging, id: &ArtifactId, n: u32) -> Result<()> {
@@ -123,9 +161,7 @@ impl ContentStore for FsContent {
     }
 
     async fn write_version(&self, id: &ArtifactId, n: u32, write: &VersionWrite<'_>) -> Result<()> {
-        if self.home.version_dir(id, n).join(INDEX).exists() {
-            return Err(present(id, n));
-        }
+        self.check_new(id, n)?;
         let staging = self.stage(id)?;
         if !write.carry.is_empty() {
             let prev = self.home.version_dir(id, n - 1);
@@ -155,9 +191,7 @@ impl ContentStore for FsContent {
         to: &ArtifactId,
         to_n: u32,
     ) -> Result<()> {
-        if self.home.version_dir(to, to_n).join(INDEX).exists() {
-            return Err(present(to, to_n));
-        }
+        self.check_new(to, to_n)?;
         let staging = self.stage(to)?;
         let src = self.home.version_dir(from, from_n);
         for path in paths {
@@ -171,6 +205,11 @@ impl ContentStore for FsContent {
     }
 
     async fn remove_version(&self, id: &ArtifactId, n: u32) -> Result<()> {
+        if self.has_version(id, n)
+            && let Some(m) = self.above(id, n)?
+        {
+            return Err(superseded(id, n, m));
+        }
         remove_dir_if_present(&self.home.version_dir(id, n))
     }
 
@@ -234,6 +273,7 @@ mod tests {
         let w = VersionWrite {
             carry: Vec::new(),
             put: vec![put("index.html", b"<p>1"), put("js/app.js", b"go()")],
+            ..Default::default()
         };
         wait(c.write_version(&id, 1, &w)).unwrap();
         let v1 = home.artifact_dir(&id).join("versions/1");
@@ -271,6 +311,7 @@ mod tests {
                 bytes: b"<p>1",
                 content_type: "text/html",
             }],
+            ..Default::default()
         };
         let e = wait(c.write_version(&id, 1, &w)).unwrap_err();
         assert!(

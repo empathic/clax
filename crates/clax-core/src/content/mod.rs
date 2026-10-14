@@ -29,23 +29,47 @@
 //! the record of types, and a backend may keep them or not (the filesystem
 //! does not, and git trees have no place for them).
 //!
+//! An artifact's versions are written in ascending order, and only the
+//! newest is ever removed. Version `n` follows its predecessor, the newest
+//! present version below `n`: normally `n - 1`, but `n - 1` may be absent
+//! (a row can name a version whose content was lost, or an empty first
+//! version), and then `n` follows the newest present one below it, or
+//! starts the history when there is none, as version 1 does. Carried paths
+//! come from `n - 1` only, so a write that carries fails while `n - 1` is
+//! absent. A write of `n` fails, changing nothing, while a version above `n`
+//! is present; so does [`ContentStore::remove_version`] of `n`. The store
+//! never asks for either: it writes `current + 1` under the artifact's lock
+//! and removes only what it just wrote, newest first.
+//!
 //! [`ContentStore::read_file`] reads one file of one version without
 //! reading the rest of it (git reads one blob at a ref, the filesystem one
 //! file). [`ContentStore::copy_version`] makes a version of one artifact
 //! from a version of another (the re-filing of live-page threads copies a
 //! page's history onto another page this way); its default reads each file
-//! and writes it. [`ContentStore::remove_version`] takes away a version that
-//! no row records: the write of a publish whose transaction then failed.
-//! [`ContentStore::delete_artifact`] removes every version and asset of an
-//! artifact.
+//! and writes it. [`ContentStore::fork`] makes the first version of a new
+//! artifact from a version of another, keeping the source's history where
+//! the backend has one (hosted Clax forks an artifact this way); its
+//! default is a copy to version 1. [`ContentStore::remove_version`] takes
+//! away a version that no row records: the write of a publish whose
+//! transaction then failed. [`ContentStore::delete_artifact`] removes every
+//! version and asset of an artifact.
 //!
-//! In git terms: version `n` is the commit tagged `v<n>`, whose parent is
-//! `v<n - 1>`; a write is one push that creates the tag `v<n>` (it must not
-//! exist) and moves `main` from `v<n - 1>`, so a second writer of `n` is
-//! refused by the remote; removing an unrecorded version deletes its tag and
-//! moves `main` back; a copy rebuilds the source's tree in the target's
-//! repository (repositories share no objects), and a whole artifact's
-//! history copies with a repository fork.
+//! In git terms: version `n` is the commit tagged `v<n>`, whose first
+//! parent leads to its predecessor's commit (none for the first). A write
+//! is one atomic update that creates the tag `v<n>` (it must not exist)
+//! and moves `main` forward from where it must be (compare and swap), so a
+//! second writer of `n`, or any writer that finds `main` moved, is refused
+//! and changes nothing. Removing an unrecorded version deletes `v<n>` only
+//! while the tag still names the version's commit, and moves `main` back
+//! to that commit's parent while `main` is still at that commit; where the
+//! remote refuses that move (not a fast forward, or for a first version
+//! the deletion of the current branch), `main` keeps the untagged commit,
+//! which is never read and which the next write builds on. A remove never
+//! discards a commit another writer put on `main`; when `main` has moved
+//! past it, the remove fails and leaves both. `clax-content-git` gives the
+//! details. A copy rebuilds the source's files in the target's repository
+//! (repositories need share no objects), and a fork copies the source's
+//! repository with its history and commits version 1 on top.
 //!
 //! # Assets
 //!
@@ -55,8 +79,8 @@
 //! its `/_blob/<id>` URL. They are addressed by [`AssetKey`]: the artifact,
 //! the asset's ID and the extension its type gives (the filesystem names the
 //! file `<id>.<ext>`). An asset is therefore not part of any version: a git
-//! backend keeps assets outside the version history (for example on a ref
-//! of their own, one commit per upload, or in an object store), so a
+//! backend keeps assets outside the version history (`clax-content-git`
+//! keeps them in an asset store of their own the host provides), so a
 //! version's tree holds only its files.
 //!
 //! # Ordering
@@ -121,6 +145,29 @@ pub struct NewFile<'a> {
 pub struct VersionWrite<'a> {
     pub carry: Vec<&'a str>,
     pub put: Vec<NewFile<'a>>,
+    /// Who published the version and why, for a backend that keeps it with
+    /// the content.
+    pub meta: VersionMeta,
+}
+
+/// Who published a version and the note they gave, as the store knows them
+/// when it writes the version's content. A backend that keeps history
+/// records them with the version (git: the commit's author, message and
+/// `Clax-Publisher` and `Clax-Agent` trailers), so the history itself shows
+/// who made each version; the filesystem and memory stores ignore them.
+/// The version's row stays the record Clax reads.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VersionMeta {
+    /// The publishing person's public ID: the owner's, or a connected
+    /// person's. `None` when the store knows no ID for them (the owner of
+    /// a home that has not yet given its owner one).
+    pub person: Option<String>,
+    /// That person's display name, when they have one.
+    pub person_name: Option<String>,
+    /// The publishing agent's name, when an agent session published.
+    pub agent: Option<String>,
+    /// The publish note, when one was given.
+    pub note: Option<String>,
 }
 
 /// An asset's address: its artifact, its ID and its extension.
@@ -163,7 +210,9 @@ pub trait ContentStore: Send + Sync {
     /// Makes version `n` of `id` from `write`: its carried paths with their
     /// bytes in version `n - 1`, and its put files. All or nothing: on any
     /// error nothing is visible at `n`. Fails, changing nothing, when version
-    /// `n` is already present, or when a carried path is not in `n - 1`.
+    /// `n` or a version above it is present, or when a carried path is not
+    /// in `n - 1` (or `n - 1` is absent). See [Versions](self#versions) for
+    /// a version whose predecessor is not `n - 1`.
     async fn write_version(&self, id: &ArtifactId, n: u32, write: &VersionWrite<'_>) -> Result<()>;
 
     /// Makes version `to_n` of `to` hold `paths` with their bytes in version
@@ -197,12 +246,32 @@ pub trait ContentStore: Send + Sync {
                     content_type: "",
                 })
                 .collect(),
+            meta: VersionMeta::default(),
         };
         self.write_version(to, to_n, &write).await
     }
 
+    /// Makes version 1 of `to`, a new artifact with no versions, hold
+    /// `paths` with their bytes in version `from_n` of `from`, as
+    /// [`ContentStore::copy_version`] makes a version (all or nothing,
+    /// create-only). A backend that keeps history gives `to` the history of
+    /// `from` behind its version 1, without `from`'s versions: git forks the
+    /// repository, drops the copied `v<n>` tags and commits version 1 on top
+    /// of the copied `main`. Fails, changing nothing, when `to` has a
+    /// version or a path is not in the source. The default copies.
+    async fn fork(
+        &self,
+        from: &ArtifactId,
+        from_n: u32,
+        paths: &[&str],
+        to: &ArtifactId,
+    ) -> Result<()> {
+        self.copy_version(from, from_n, paths, to, 1).await
+    }
+
     /// Removes version `n` of `id`, which no row records. Succeeds when it
-    /// is not there.
+    /// is not there; fails, changing nothing, while a version above `n` is
+    /// present (only the newest version is removed).
     async fn remove_version(&self, id: &ArtifactId, n: u32) -> Result<()>;
 
     /// Removes every version and asset of `id`. Succeeds when there are
@@ -221,7 +290,7 @@ pub trait ContentStore: Send + Sync {
 }
 
 /// The error for a file a version write or copy expected to find.
-pub(crate) fn missing(id: &ArtifactId, n: u32, path: &str) -> crate::CoreError {
+pub fn missing(id: &ArtifactId, n: u32, path: &str) -> crate::CoreError {
     crate::CoreError::Io(std::io::Error::new(
         std::io::ErrorKind::NotFound,
         format!("{path} is not in version {n} of {id}"),
@@ -229,10 +298,19 @@ pub(crate) fn missing(id: &ArtifactId, n: u32, path: &str) -> crate::CoreError {
 }
 
 /// The error for a write to a version that is already present.
-pub(crate) fn present(id: &ArtifactId, n: u32) -> crate::CoreError {
+pub fn present(id: &ArtifactId, n: u32) -> crate::CoreError {
     crate::CoreError::Io(std::io::Error::new(
         std::io::ErrorKind::AlreadyExists,
         format!("version {n} of {id} is already present"),
+    ))
+}
+
+/// The error for a write or remove of version `n` while version `above`,
+/// newer, is present.
+pub fn superseded(id: &ArtifactId, n: u32, above: u32) -> crate::CoreError {
+    crate::CoreError::Io(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        format!("version {above} of {id}, newer than version {n}, is present"),
     ))
 }
 

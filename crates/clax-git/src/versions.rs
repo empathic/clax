@@ -16,9 +16,8 @@ use std::collections::BTreeMap;
 use crate::client::{is_atomic_collateral, is_conflict_reason};
 use crate::error::{GitError, Result};
 use crate::id::ObjectId;
-use crate::object::{
-    Commit, Mode, ObjectKind, Person, Signature, parse_trailers, tag_target, with_trailers,
-};
+use crate::object::{Commit, Mode, ObjectKind, Person, Signature, tag_target, with_trailers};
+pub use crate::repo::CommitMeta;
 use crate::repo::{MAIN, RefUpdate, Repo, RepoHost};
 use crate::tree::{Changes, build_tree, resolve_path, walk_tree};
 
@@ -141,55 +140,17 @@ pub struct FileEntry {
     pub mode: Mode,
 }
 
-/// A commit as [`GitVersions::log`] reports it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CommitMeta {
-    pub commit: ObjectId,
-    pub tree: ObjectId,
-    pub parents: Vec<ObjectId>,
-    pub author: Signature,
-    pub committer: Signature,
-    /// The whole message, trailers included, with one trailing newline removed.
-    pub message: String,
-    /// The message's trailers, in order.
-    pub trailers: Vec<(String, String)>,
-}
-
-impl CommitMeta {
-    pub fn from_commit(id: ObjectId, c: Commit) -> CommitMeta {
-        let message = c
-            .message
-            .strip_suffix('\n')
-            .unwrap_or(&c.message)
-            .to_string();
-        let trailers = parse_trailers(&message);
-        CommitMeta {
-            commit: id,
-            tree: c.tree,
-            parents: c.parents,
-            author: c.author,
-            committer: c.committer,
-            message,
-            trailers,
-        }
-    }
-
-    /// The value of the first trailer `key`.
-    pub fn trailer(&self, key: &str) -> Option<&str> {
-        self.trailers
-            .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v.as_str())
-    }
-}
-
 /// Artifact versions over the repositories of `H`.
 #[derive(Clone, Debug, Default)]
 pub struct GitVersions<H> {
     host: H,
 }
 
-async fn commit_of_repo(repo: &impl Repo, at: &Rev) -> Result<Option<ObjectId>> {
+/// The commit `at` names in `repo` (an annotated tag peeled), or `None`
+/// when there is no such commit. Commits are recognised through
+/// [`Repo::read_commit_meta`], so a repository that answers commits only as
+/// metadata resolves them; only a tag is read as a raw object.
+pub async fn commit_of_repo(repo: &impl Repo, at: &Rev) -> Result<Option<ObjectId>> {
     let mut id = match at {
         Rev::Commit(id) => *id,
         Rev::Version(n) => match repo.refs().await?.get(&format!("refs/tags/v{n}")) {
@@ -198,8 +159,10 @@ async fn commit_of_repo(repo: &impl Repo, at: &Rev) -> Result<Option<ObjectId>> 
         },
     };
     for _ in 0..16 {
+        if repo.read_commit_meta(&id).await?.is_some() {
+            return Ok(Some(id));
+        }
         match repo.read_object(&id).await? {
-            Some(o) if o.kind == ObjectKind::Commit => return Ok(Some(id)),
             Some(o) if o.kind == ObjectKind::Tag => match tag_target(&o.data) {
                 Some((target, _)) => id = target,
                 None => return Ok(None),
@@ -210,11 +173,8 @@ async fn commit_of_repo(repo: &impl Repo, at: &Rev) -> Result<Option<ObjectId>> 
     Ok(None)
 }
 
-async fn read_commit(repo: &impl Repo, id: &ObjectId) -> Result<Option<Commit>> {
-    match repo.read_object(id).await? {
-        Some(o) if o.kind == ObjectKind::Commit => Ok(Some(Commit::parse(&o.data)?)),
-        _ => Ok(None),
-    }
+async fn read_commit(repo: &impl Repo, id: &ObjectId) -> Result<Option<CommitMeta>> {
+    repo.read_commit_meta(id).await
 }
 
 impl<H: RepoHost> GitVersions<H> {
@@ -464,7 +424,7 @@ impl<H: RepoHost> GitVersions<H> {
                 .await?
                 .ok_or_else(|| GitError::unavailable(format!("Commit {id} is missing")))?;
             at = c.parents.first().copied();
-            out.push(CommitMeta::from_commit(id, c));
+            out.push(c);
         }
         Ok(out)
     }

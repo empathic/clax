@@ -15,7 +15,9 @@ pub async fn run(c: &dyn ContentStore) {
     a_present_version_is_never_replaced(c).await;
     a_failed_write_leaves_nothing(c).await;
     an_unrecorded_version_can_be_removed_and_written_again(c).await;
+    versions_are_written_in_order_and_only_the_newest_is_removed(c).await;
     a_copy_holds_the_source_files(c).await;
+    a_fork_makes_version_one_of_a_new_artifact(c).await;
     deleting_an_artifact_removes_only_its_content(c).await;
     assets_are_stored_read_and_deleted(c).await;
 }
@@ -32,6 +34,7 @@ fn puts<'a>(files: &[(&'a str, &'a [u8])]) -> VersionWrite<'a> {
     VersionWrite {
         carry: Vec::new(),
         put: files.iter().map(|(p, b)| file(p, b)).collect(),
+        ..Default::default()
     }
 }
 
@@ -96,6 +99,7 @@ pub async fn carried_files_keep_their_bytes_and_versions_never_change(c: &dyn Co
     let w = VersionWrite {
         carry: vec!["app.js"],
         put: vec![file("index.html", b"<p>2"), file("new.js", b"two")],
+        ..Default::default()
     };
     c.write_version(&id, 2, &w).await.unwrap();
     assert_eq!(read(c, &id, 2, "index.html").await.unwrap(), b"<p>2");
@@ -140,6 +144,7 @@ pub async fn a_failed_write_leaves_nothing(c: &dyn ContentStore) {
     let w = VersionWrite {
         carry: vec!["not-there.js"],
         put: vec![file("index.html", b"<p>2")],
+        ..Default::default()
     };
     assert!(c.write_version(&id, 2, &w).await.is_err());
     assert_eq!(read(c, &id, 2, "index.html").await, None);
@@ -178,10 +183,118 @@ pub async fn an_unrecorded_version_can_be_removed_and_written_again(c: &dyn Cont
     let w = VersionWrite {
         carry: vec!["index.html"],
         put: Vec::new(),
+        ..Default::default()
     };
     c.write_version(&id, 2, &w).await.unwrap();
     assert_eq!(read(c, &id, 2, "index.html").await.unwrap(), b"<p>1");
     assert_eq!(read(c, &id, 2, "f.js").await, None);
+}
+
+pub async fn versions_are_written_in_order_and_only_the_newest_is_removed(c: &dyn ContentStore) {
+    let id = ArtifactId::generate();
+    // A first version may be any number: nothing is below it.
+    c.write_version(&id, 2, &puts(&[("index.html", b"<p>2")]))
+        .await
+        .unwrap();
+    // A gap: version 4 follows version 2, the newest present below it.
+    c.write_version(&id, 4, &puts(&[("index.html", b"<p>4"), ("a.js", b"a")]))
+        .await
+        .unwrap();
+    assert_eq!(read(c, &id, 4, "index.html").await.unwrap(), b"<p>4");
+    assert_eq!(read(c, &id, 2, "index.html").await.unwrap(), b"<p>2");
+    assert_eq!(read(c, &id, 3, "index.html").await, None);
+    // Carrying needs n - 1 itself.
+    let carry = |path| VersionWrite {
+        carry: vec![path],
+        put: Vec::new(),
+        ..Default::default()
+    };
+    assert!(c.write_version(&id, 6, &carry("a.js")).await.is_err());
+    assert_eq!(read(c, &id, 6, "a.js").await, None);
+    // Nothing is written below a present version, nor removed under one.
+    assert!(
+        c.write_version(&id, 3, &puts(&[("index.html", b"<p>3")]))
+            .await
+            .is_err()
+    );
+    assert_eq!(read(c, &id, 3, "index.html").await, None);
+    let from = ArtifactId::generate();
+    c.write_version(&from, 1, &puts(&[("index.html", b"<p>src")]))
+        .await
+        .unwrap();
+    assert!(
+        c.copy_version(&from, 1, &["index.html"], &id, 1)
+            .await
+            .is_err()
+    );
+    assert_eq!(read(c, &id, 1, "index.html").await, None);
+    assert!(c.remove_version(&id, 2).await.is_err());
+    assert_eq!(read(c, &id, 2, "index.html").await.unwrap(), b"<p>2");
+    assert_eq!(read(c, &id, 4, "a.js").await.unwrap(), b"a");
+    // Newest first, each removal works; an absent version is no obstacle.
+    c.remove_version(&id, 3).await.unwrap();
+    c.remove_version(&id, 4).await.unwrap();
+    c.remove_version(&id, 2).await.unwrap();
+    assert_eq!(read(c, &id, 2, "index.html").await, None);
+    c.write_version(&id, 1, &puts(&[("index.html", b"<p>1")]))
+        .await
+        .unwrap();
+    c.write_version(&id, 2, &carry("index.html")).await.unwrap();
+    assert_eq!(read(c, &id, 2, "index.html").await.unwrap(), b"<p>1");
+}
+
+pub async fn a_fork_makes_version_one_of_a_new_artifact(c: &dyn ContentStore) {
+    let from = ArtifactId::generate();
+    c.write_version(&from, 1, &puts(&[("index.html", b"<p>1"), ("a.js", b"a")]))
+        .await
+        .unwrap();
+    c.write_version(
+        &from,
+        2,
+        &puts(&[("index.html", b"<p>2"), ("a.js", b"a2"), ("left.css", b"l")]),
+    )
+    .await
+    .unwrap();
+    let to = ArtifactId::generate();
+    c.fork(&from, 1, &["index.html", "a.js"], &to)
+        .await
+        .unwrap();
+    assert_eq!(read(c, &to, 1, "index.html").await.unwrap(), b"<p>1");
+    assert_eq!(read(c, &to, 1, "a.js").await.unwrap(), b"a");
+    assert_eq!(
+        read(c, &to, 2, "index.html").await,
+        None,
+        "no source version"
+    );
+    // The fork goes on from its version 1; the source is as it was.
+    let w = VersionWrite {
+        carry: vec!["a.js"],
+        put: vec![file("index.html", b"<p>fork 2")],
+        ..Default::default()
+    };
+    c.write_version(&to, 2, &w).await.unwrap();
+    assert_eq!(read(c, &to, 2, "a.js").await.unwrap(), b"a");
+    assert_eq!(read(c, &from, 2, "a.js").await.unwrap(), b"a2");
+    assert_eq!(read(c, &from, 2, "index.html").await.unwrap(), b"<p>2");
+    // Only the named files.
+    let named = ArtifactId::generate();
+    c.fork(&from, 2, &["index.html"], &named).await.unwrap();
+    assert_eq!(read(c, &named, 1, "index.html").await.unwrap(), b"<p>2");
+    assert_eq!(read(c, &named, 1, "left.css").await, None);
+    // A target with a version, or a path the source lacks, changes nothing.
+    assert!(c.fork(&from, 2, &["index.html"], &to).await.is_err());
+    assert_eq!(read(c, &to, 1, "index.html").await.unwrap(), b"<p>1");
+    assert_eq!(read(c, &to, 2, "index.html").await.unwrap(), b"<p>fork 2");
+    let failed = ArtifactId::generate();
+    assert!(
+        c.fork(&from, 2, &["index.html", "nope.js"], &failed)
+            .await
+            .is_err()
+    );
+    assert_eq!(read(c, &failed, 1, "index.html").await, None);
+    // And leaves nothing that blocks a retry.
+    c.fork(&from, 2, &["index.html"], &failed).await.unwrap();
+    assert_eq!(read(c, &failed, 1, "index.html").await.unwrap(), b"<p>2");
 }
 
 pub async fn a_copy_holds_the_source_files(c: &dyn ContentStore) {

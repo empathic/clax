@@ -860,3 +860,86 @@ fn crc32(data: &[u8]) -> u32 {
     }
     !crc
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn refuses_a_push_that_creates_moves_or_deletes_a_version_tag() {
+    let f = Fixture::new().await;
+    let work = temp("vtags");
+    let out = f.clone(WRITE, work.path()).await;
+    let before = f.host.repo(REPO).unwrap().refs().await.unwrap();
+    std::fs::write(out.join("pushed.txt"), "pushed\n").unwrap();
+    f.home.git(&out, &["add", "-A"]);
+    f.home.git(
+        &out,
+        &[
+            "-c",
+            "user.name=Rae",
+            "-c",
+            "user.email=rae@example.com",
+            "commit",
+            "-qm",
+            "pushed",
+        ],
+    );
+    let attempts: [&[&str]; 5] = [
+        // The next version's tag, taken before Clax writes it.
+        &["push", "origin", "HEAD:refs/tags/v3"],
+        // A look-alike with a leading zero.
+        &["push", "origin", "HEAD:refs/tags/v03"],
+        // An existing version's tag, moved.
+        &["push", "--force", "origin", "HEAD:refs/tags/v1"],
+        // An existing version's tag, deleted.
+        &["push", "origin", ":refs/tags/v1"],
+        // With main in one atomic push: neither moves.
+        &[
+            "push",
+            "--atomic",
+            "origin",
+            "HEAD:main",
+            "HEAD:refs/tags/v3",
+        ],
+    ];
+    for args in attempts {
+        let o = f.git_async(&out, WRITE, args).await;
+        assert!(!o.status.success(), "{args:?} was taken");
+        assert!(
+            stderr(&o).contains("refs/tags/v<n> are Clax's version tags"),
+            "{args:?}: {}",
+            stderr(&o)
+        );
+    }
+    assert_eq!(f.host.repo(REPO).unwrap().refs().await.unwrap(), before);
+    // Main alone, and tags of other names (a pusher's own, even ones
+    // starting with v), are taken.
+    let mine = [
+        "refs/tags/x1",
+        "refs/tags/v1.0",
+        "refs/tags/vendor",
+        "refs/tags/v2-rc",
+    ];
+    let mut args = vec!["push", "origin", "HEAD:main"];
+    let specs: Vec<String> = mine.iter().map(|t| format!("HEAD:{t}")).collect();
+    args.extend(specs.iter().map(String::as_str));
+    let o = f.git_async(&out, WRITE, &args).await;
+    assert!(o.status.success(), "{}", stderr(&o));
+    let refs = f.host.repo(REPO).unwrap().refs().await.unwrap();
+    for t in mine {
+        assert_eq!(refs[t], refs[MAIN], "{t}");
+    }
+    // And moved or deleted again.
+    let o = f
+        .git_async(&out, WRITE, &["push", "origin", ":refs/tags/v1.0"])
+        .await;
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert!(
+        !f.host
+            .repo(REPO)
+            .unwrap()
+            .refs()
+            .await
+            .unwrap()
+            .contains_key("refs/tags/v1.0")
+    );
+    assert_eq!(refs["refs/tags/v1"], before["refs/tags/v1"]);
+    assert!(!refs.contains_key("refs/tags/v3"));
+}

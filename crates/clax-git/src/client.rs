@@ -9,6 +9,7 @@
 //! [`Transport`].
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
 
 use crate::error::{GitError, Result};
 use crate::http::{HttpRequest, HttpResponse, Transport};
@@ -16,7 +17,9 @@ use crate::id::ObjectId;
 use crate::object::Object;
 use crate::pack::write_pack;
 use crate::pktline::{self, FLUSH};
-use crate::repo::{ATOMIC_FAILED, RefStatus, RefUpdate};
+use crate::repo::{
+    ATOMIC_FAILED, CommitMeta, MaybeSend, MaybeSendSync, RefStatus, RefUpdate, commit_meta_of,
+};
 
 /// A remote repository and the token to reach it with.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -395,9 +398,27 @@ pub fn is_atomic_collateral(reason: &str) -> bool {
 
 /// Reads objects of a repository whose writes go over receive-pack, such
 /// as a Cloudflare Artifacts repository read through its binding.
-#[allow(async_fn_in_trait)]
-pub trait ObjectReader {
-    async fn read_object(&self, id: &ObjectId) -> Result<Option<Object>>;
+pub trait ObjectReader: MaybeSendSync {
+    fn read_object(
+        &self,
+        id: &ObjectId,
+    ) -> impl Future<Output = Result<Option<Object>>> + MaybeSend;
+
+    /// The commit `id` as metadata, as [`crate::repo::Repo::read_commit_meta`]
+    /// answers it; the default parses [`ObjectReader::read_object`]. A reader
+    /// whose API answers commits as metadata (the Artifacts binding's
+    /// `readCommit`) overrides it.
+    fn read_commit_meta(
+        &self,
+        id: &ObjectId,
+    ) -> impl Future<Output = Result<Option<CommitMeta>>> + MaybeSend {
+        async move {
+            match self.read_object(id).await? {
+                Some(o) => commit_meta_of(*id, &o),
+                None => Ok(None),
+            }
+        }
+    }
 }
 
 /// A [`crate::repo::Repo`] that reads objects through `reader`, reads refs
@@ -411,6 +432,10 @@ pub struct PushingRepo<R, T> {
 impl<R: ObjectReader, T: Transport> crate::repo::Repo for PushingRepo<R, T> {
     async fn read_object(&self, id: &ObjectId) -> Result<Option<Object>> {
         self.reader.read_object(id).await
+    }
+
+    async fn read_commit_meta(&self, id: &ObjectId) -> Result<Option<CommitMeta>> {
+        self.reader.read_commit_meta(id).await
     }
 
     async fn refs(&self) -> Result<BTreeMap<String, ObjectId>> {

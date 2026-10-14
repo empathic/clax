@@ -13,7 +13,8 @@
 //! - [`server`]: upload-pack and receive-pack over a caller's
 //!   [`repo::Repo`], so a local stand-in serves `git clone`, `fetch` and
 //!   `push` over smart HTTP.
-//! - [`repo`], [`memory`]: the repository interface and an in-memory host.
+//! - [`repo`], [`memory`]: the repository interface (commits read as
+//!   [`CommitMeta`], futures `Send` natively) and an in-memory host.
 //! - [`versions`]: artifact versions as commits on `main` tagged `v<n>`:
 //!   publish, read, list, fork.
 //! - [`events`]: Cloudflare Artifacts push events.
@@ -35,5 +36,5 @@ pub mod versions;
 pub use error::{GitError, Result};
 pub use id::ObjectId;
 pub use object::{Commit, Mode, Object, ObjectKind, Person, Signature, TreeEntry};
-pub use repo::{MAIN, RefStatus, RefUpdate, Repo, RepoHost};
+pub use repo::{CommitMeta, MAIN, MaybeSend, MaybeSendSync, RefStatus, RefUpdate, Repo, RepoHost};
 pub use versions::{FileEntry, GitVersions, Publish, Published, Rev, VersionMeta};
