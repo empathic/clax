@@ -135,6 +135,7 @@ pub struct GitContent<H, A> {
     assets: A,
     committer: Person,
     clock: Arc<dyn Clock>,
+    needs_executor: bool,
 }
 
 /// A git error as clax-core's: an I/O error of the kind its code names, so
@@ -224,7 +225,17 @@ impl<H: RepoHost, A: AssetStore> GitContent<H, A> {
             assets,
             committer,
             clock,
+            needs_executor: false,
         }
+    }
+
+    /// This store saying its I/O completes only when an executor polls it
+    /// ([`ContentStore::needs_executor`]): a host or asset store over
+    /// JavaScript promises (a Worker's bindings), so the store's synchronous
+    /// methods refuse it at once instead of failing part way.
+    pub fn needing_executor(mut self) -> GitContent<H, A> {
+        self.needs_executor = true;
+        self
     }
 
     pub fn host(&self) -> &H {
@@ -383,6 +394,10 @@ impl<H: RepoHost, A: AssetStore> GitContent<H, A> {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A> {
+    fn needs_executor(&self) -> bool {
+        self.needs_executor
+    }
+
     async fn read_file(&self, id: &ArtifactId, n: u32, path: &str) -> Result<Option<Vec<u8>>> {
         self.versions
             .read_file(id.as_str(), &Rev::Version(u64::from(n)), path)

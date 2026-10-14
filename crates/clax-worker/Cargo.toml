@@ -25,8 +25,12 @@ unsafe_code = "deny"
 [dependencies]
 async-trait = "0.1"
 axum = { version = "0.8", default-features = false, features = ["json", "query"] }
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+clax-content-git = { path = "../clax-content-git" }
 clax-core = { path = "../clax-core" }
 clax-do-vfs = { path = "vfs" }
+clax-git = { path = "../clax-git" }
 clax-rt = { path = "../clax-rt" }
 clax-server = { path = "../clax-server" }
 console_error_panic_hook = "0.1"
@@ -36,11 +40,18 @@ js-sys = "0.3"
 rusqlite = { version = "0.40", features = ["bundled", "hooks"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.11"
 tokio = { version = "1", default-features = false, features = ["sync"] }
 tower-service = "0.3"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 worker = { version = "0.8.7", features = ["http", "axum"] }
+
+[dev-dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+clax-core = { path = "../clax-core", features = ["content-contract"] }
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "net"] }
 
 # No `strip`: wasm-bindgen reads the module's `target_features` section to
 # find reference types, and fails ("externref table required for catch
