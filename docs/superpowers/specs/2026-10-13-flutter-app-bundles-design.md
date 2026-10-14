@@ -39,6 +39,17 @@ Extends `2026-10-12-flutter-app-design.md` ("base §n"),
 - **The agent is told apps may be shared:** no personal data hard-coded in
   files; data in `db`.
 
+Ruled by the owner on 2026-10-13, on this design's own proposals:
+
+- **Cross-app reads** are stripped at export, and a bundle carrying
+  `db.read` or `db.share` is refused (§4.4).
+- **The live migration is snapshotted:** the app's documents are
+  snapshotted before `migrate.js` runs on live data; if it fails part way,
+  both the version and the documents roll back (§8.2, §8.4).
+- **Downgrades are refused** (§6.4 `older`).
+- **Consent:** capabilities are listed at install and asked on first use
+  (§8.2).
+
 ## 2. Goals and non-goals
 
 Goals:
@@ -521,11 +532,13 @@ change in progress to land"), from the make service's busy state.
    `title`, `icon`, `capabilities`, `label: "Update v<N>"`, `note:
    "Updated to v<N> from <who>"`. A 409 means the app changed during the
    check: "<title> changed while the update was checked. Try again."
-7. When `migrate.js` exists, it runs once more, on the live app at the
-   new version, in the inspect view. If it fails, the app is restored to
-   `base` (`restoreVersion`) and the sheet says "The update's data step
-   failed on your data; <title> is back on v<M>. It may have changed some
-   documents before it failed." (§9, T7).
+7. When `migrate.js` exists, the app's documents are snapshotted (§8.4),
+   then it runs once more, on the live app at the new version, in the
+   inspect view. If it fails, the documents are restored from the
+   snapshot and the app to `base` (`restoreVersion`), and the sheet says
+   "The update's data step failed on your data; <title> is back on v<M>
+   with your data as it was." (§9, T7). The snapshot is deleted once the
+   run passes or the restore completes.
 8. The lineage entry: `version` N, the new content hash appended to
    `released`, `capabilities`, `title`, `updates: on`; the kept bundle
    replaced.
@@ -549,8 +562,8 @@ An app file at the root, never loaded by `index.html` (like `tests/`):
 ```js
 // migrate.js
 export default async function migrate(db, { from, to }) {
-  // db: the page's window.claude.use("db"). Must be idempotent: it may run
-  // twice on the same documents, and on documents an earlier run changed.
+  // db: the page's window.claude.use("db"). Upgrades documents of any
+  // earlier shape; it always starts from documents no run has changed.
 }
 ```
 
@@ -564,8 +577,30 @@ and `{from, to}`, and answer host message `migration` `{ok: true}` or
 `MigrationRun {ok, error}`.
 
 The author's agent writes it: the system prompt (§10) says that a change
-to the shape of stored documents comes with an idempotent `migrate.js`
-that upgrades documents of any earlier shape.
+to the shape of stored documents comes with a `migrate.js` that upgrades
+documents of any earlier shape. It need not be idempotent: each run, on
+the draft's copy or on the live app, starts from unmigrated documents,
+because a failed live run is rolled back (§8.4).
+
+### 8.4 The document snapshot (`lib/bundle/doc_snapshot.dart`)
+
+- **Taking it.** Every document of the app at the owner's level
+  (`docs:collections`, then the paged list of each collection), written as
+  `seed.jsonl`-shaped lines (§4.3) to
+  `<support>/snapshots/<aid>.jsonl` through a temporary file renamed into
+  place, before the live run starts. No cap: it is streamed to the file.
+- **Restoring it.** `docs:batch` in calls of 50: `set` each snapshot
+  document with its data, and `delete` each document the app now has that
+  the snapshot lacks (pinned to the version just read, one re-read and
+  retry on a conflict). Document versions move forward; contents return.
+- **Nothing writes meanwhile.** The update sheet is modal over the app,
+  and the update is refused while the agent works on the app (§8.2), so
+  between the snapshot and the restore only `migrate.js` writes.
+- **Interrupted.** A snapshot file still present at the app's start (the
+  app or the daemon died during the run or the restore) is restored then,
+  with the version restored to the one before the update when the live
+  version is the update's, and the person is told once ("<title>'s update
+  was interrupted; it is back on v<M> with your data as it was").
 
 ## 9. Threats
 
@@ -593,7 +628,7 @@ network without a declared and granted host.
 | T4 | Path traversal, odd names | Nothing is extracted to disk (§6.3); names outside §4.1 refuse the bundle; the daemon validates paths again. |
 | T5 | Tampering in transit | The signature covers the manifest, the manifest covers every file and the seed; extra or missing entries refuse it. |
 | T6 | Someone else's key on an existing lineage | Installs only as a separate app (§6.4 `foreign`); never updates. |
-| T7 | `migrate.js` damages the recipient's data | It runs on a copy first and the check must pass; the live run can still fail part way on documents written after the copy, then the version is rolled back and the person told; documents it changed stay changed. Accepted (waiver record). |
+| T7 | `migrate.js` damages the recipient's data | It runs on a copy first and the check must pass; the live run is snapshotted (§8.4), and a failure part way restores both the documents and the version. A run that succeeds but migrates wrongly in a way the update's tests did not catch stays; the person can restore the version, not the data. |
 | T8 | Replay of an older signed version (downgrade) | Refused (`older`). Equal version, different content: refused (`conflict`). |
 | T9 | Lost key (Clax uninstalled, new device) | The author's later bundles install as separate apps on recipients' devices. Accepted for the prototype. |
 | T10 | A name that impersonates someone | Names are shown as the sender's claim beside the fingerprint. |
@@ -612,7 +647,7 @@ network without a declared and granted host.
 > neutral examples. When a change alters the shape of stored documents,
 > also write `migrate.js` (an ES module whose default export is `async
 > function migrate(db, {from, to})`) that upgrades documents of any
-> earlier shape; it must be safe to run twice. Pages never load it.
+> earlier shape. Pages never load it.
 
 `AgentRequest` gains `fromBundle` (from the lineage store), applied as
 T2 says, in `lib/agent/prompt.dart` and `lib/agent/tools/data_tools.dart`.
@@ -679,7 +714,7 @@ Capability words reuse `deviceCapWords`
 | Format (`test/bundle/`) | The writer's bytes are stable (golden SHA-256 for a fixed key seed and files); the manifest round-trips; the content hash matches a vector computed from §4.5 and, in the integration test, the daemon's; Ed25519 sign and verify with RFC 8032 test vector 1; the reader refuses each case: tampered file byte, tampered manifest, bad signature, missing entry, extra entry, duplicate name, case-folded duplicate path, `../x`, `/x`, `a\b`, `a/./b`, a zip header that understates an entry's size (inflate stops at the manifest size plus one), method 12, encryption flag, zip64, format 2, unknown manifest key, `db.read` present, seed over 2,000 lines, a seed path under `data/users/`. |
 | Trust (`test/bundle/trust_test.dart`) | `decide` over a table of every §6.4 row. |
 | Key and store | `BundleKey` over an in-memory storage: made once, fingerprint format; `LineageStore` writes atomically, forgets on delete, version rules of §5.2, modified rules of §5.4 (restore of a release is unmodified). |
-| Export, install, update | `FakeClaxApi` and `FakeInspector` (`test/support/fake_inspector.dart`, gaining `runMigration`): export with and without seed, binary files, re-share sends the kept bytes, fork mints a lineage with `forked_from`; install writes files, checks the content hash (a fake that reports another hash deletes the artifact), seeds; update passes and publishes with `null` entries for removed files; each failing step (migration error, uncaught page error, failed test, `not_run`, 409) publishes nothing and deletes the draft; a live migration failure restores `base`. |
+| Export, install, update | `FakeClaxApi` and `FakeInspector` (`test/support/fake_inspector.dart`, gaining `runMigration`): export with and without seed, binary files, re-share sends the kept bytes, fork mints a lineage with `forked_from`; install writes files, checks the content hash (a fake that reports another hash deletes the artifact), seeds; update passes and publishes with `null` entries for removed files; each failing step (migration error, uncaught page error, failed test, `not_run`, 409) publishes nothing and deletes the draft; a live migration failure restores the snapshot's documents (sets and deletes) and `base`; a snapshot file left at start is restored and then deleted; the snapshot covers every collection. |
 | Agent | `fromBundle`: no other apps' summaries; `db_get` with `app` refused. |
 | Web (vitest) | `host.ts` `runMigration` (nonce, inspect view only, latest request only, shape); `harness.ts` runs a module's default export with `db` and `{from, to}`, reports a thrown error, times out. |
 | Widget | Each sheet and its buttons; the launcher's Share app and Import app…; the inspector button; Settings' name and fingerprint. |
@@ -700,7 +735,7 @@ document's, so they run in parallel; T-I runs last.
 | **BK** Key, store, trust | `lib/platform/bundle_key.dart`, `lib/bundle/lineage_store.dart`, `lib/bundle/trust.dart`; their tests | BF's `Manifest` type |
 | **BA** API entries | `lib/clax/api.dart`, `http_api.dart`, `fake_api.dart`, `models.dart`; their tests | none |
 | **BW** Migration runner | `web/shell/src/app/host.ts`, `web/bridge/src/harness.ts`, their tests; `lib/agent/inspector.dart`, `lib/ui/inspector_surface.dart`, `test/support/fake_inspector.dart` | none |
-| **BS** Services | `lib/bundle/exporter.dart`, `installer.dart`, `updater.dart`; their tests | BF, BK, BA, BW interfaces |
+| **BS** Services | `lib/bundle/exporter.dart`, `installer.dart`, `updater.dart`, `doc_snapshot.dart`; their tests | BF, BK, BA, BW interfaces |
 | **BU** UI | `lib/ui/bundle_sheets.dart`, `lib/ui/launcher.dart`, `lib/ui/app_inspector.dart`, `lib/ui/settings_screen.dart`, `lib/platform/settings_store.dart`, `lib/app.dart`; widget tests | BS interfaces |
 | **BP** Platform | `android/app/src/main/AndroidManifest.xml`, `MainActivity.kt`, `BundleIntake.kt`, `macos/Runner/Info.plist`, `AppDelegate.swift`, `lib/platform/bundle_intake.dart` | none |
 | **BG** Agent | `assets/prompt/system.md`, `lib/agent/request.dart`, `lib/agent/prompt.dart`, `lib/agent/tools/data_tools.dart`; their tests | none |
