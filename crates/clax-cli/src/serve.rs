@@ -37,6 +37,7 @@ pub fn run(home: &Home, a: ServeArgs) -> anyhow::Result<()> {
         })),
         web,
         hosted: hosted(home)?,
+        require_credential: a.require_credential,
     };
     rt.block_on(serve(cfg, None))
 }

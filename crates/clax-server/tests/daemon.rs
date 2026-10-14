@@ -129,6 +129,7 @@ async fn serve_picks_a_free_port_writes_info_and_shuts_down_on_request() {
         sample: std::sync::Arc::new(clax_sample::Sampler::disabled()),
         web: clax_testkit::web_ui(),
         hosted: None,
+        require_credential: false,
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     let info = rx.await.unwrap();
@@ -171,6 +172,7 @@ fn config_on(home: &Home, port: u16) -> ServeConfig {
         sample: std::sync::Arc::new(clax_sample::Sampler::disabled()),
         web: clax_testkit::web_ui(),
         hosted: None,
+        require_credential: false,
     }
 }
 
@@ -267,6 +269,7 @@ async fn shutdown_completes_while_an_sse_client_stays_connected() {
         sample: std::sync::Arc::new(clax_sample::Sampler::disabled()),
         web: clax_testkit::web_ui(),
         hosted: None,
+        require_credential: false,
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     let info = rx.await.unwrap();
@@ -310,6 +313,7 @@ async fn serve_exits_when_daemon_json_is_deleted() {
         sample: std::sync::Arc::new(clax_sample::Sampler::disabled()),
         web: clax_testkit::web_ui(),
         hosted: None,
+        require_credential: false,
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     rx.await.unwrap();
@@ -338,6 +342,7 @@ async fn reaper_ends_idle_sessions_whose_process_is_gone() {
         sample: std::sync::Arc::new(clax_sample::Sampler::disabled()),
         web: clax_testkit::web_ui(),
         hosted: None,
+        require_credential: false,
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     let info = rx.await.unwrap();

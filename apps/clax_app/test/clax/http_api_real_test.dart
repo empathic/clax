@@ -4,7 +4,7 @@ import 'dart:io';
 
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/http_api.dart';
-import 'package:clax_app/daemon/supervisor.dart' show DaemonEndpoint;
+import 'package:clax_app/daemon/supervisor.dart' show DaemonEndpoint, keyCookie;
 import 'package:flutter_test/flutter_test.dart';
 
 /// [HttpClaxApi] against the real debug `clax` named by `CLAX_TEST_BIN`
@@ -13,6 +13,7 @@ import 'package:flutter_test/flutter_test.dart';
 /// PID in a tear-down, which runs on a failure or a timeout too.
 void main() {
   final bin = Platform.environment['CLAX_TEST_BIN'];
+  _lockedTest(bin);
 
   test(
     'the app session publishes, takes a sent comment, answers it and writes documents',
@@ -472,6 +473,46 @@ void main() {
   );
 }
 
+void _lockedTest(String? bin) => test(
+  'a daemon started as the app starts it serves the token holder alone',
+  () async {
+    final d = await _Daemon.start(bin!, requireCredential: true);
+    final api = HttpClaxApi(() => d.endpoint);
+    addTearDown(api.close);
+    await api.registerAppSession(
+      installId: 'install-1',
+      pid: pid,
+      cwd: d.dir.path,
+    );
+    final created = await api.createArtifact(
+      PublishRequest(title: 'Locked', files: {'index.html': '<p>one</p>'}),
+    );
+    expect(
+      (await api.listArtifacts()).map((a) => a.id),
+      contains(created.artifact.id),
+    );
+    final client = HttpClient();
+    addTearDown(() => client.close(force: true));
+    Future<int> status(String path, {String? cookie}) async {
+      final req = await client.getUrl(d.endpoint.base.replace(path: path));
+      req.headers.set('sec-fetch-site', 'same-origin');
+      if (cookie != null) req.headers.set('cookie', cookie);
+      final res = await req.close();
+      await res.drain<void>();
+      return res.statusCode;
+    }
+
+    final aid = created.artifact.id;
+    expect(await status('/api/token'), 401);
+    expect(await status('/api/artifacts/$aid'), 401);
+    final c = keyCookie(d.endpoint.base, d.endpoint.token);
+    expect(await status('/api/token', cookie: '${c.name}=${c.value}'), 200);
+    expect(await status('/a/$aid', cookie: '${c.name}=${c.value}'), 200);
+  },
+  skip: bin == null ? 'CLAX_TEST_BIN is not set' : false,
+  timeout: const Timeout(Duration(minutes: 3)),
+);
+
 /// A daemon this test started, stopped by its PID.
 class _Daemon {
   _Daemon(this.dir, this.process, this.endpoint);
@@ -480,7 +521,10 @@ class _Daemon {
   final Process process;
   final DaemonEndpoint endpoint;
 
-  static Future<_Daemon> start(String bin) async {
+  static Future<_Daemon> start(
+    String bin, {
+    bool requireCredential = false,
+  }) async {
     final scratch = Directory(
       '${Directory.current.path}/../../target/flutter-app',
     )..createSync(recursive: true);
@@ -494,7 +538,13 @@ class _Daemon {
     await probe.close();
     final p = await Process.start(
       bin,
-      ['--port', '$port', 'serve', '--foreground'],
+      [
+        '--port',
+        '$port',
+        'serve',
+        '--foreground',
+        if (requireCredential) '--require-credential',
+      ],
       environment: {
         'CLAX_HOME': home.path,
         'HOME': dir.path,

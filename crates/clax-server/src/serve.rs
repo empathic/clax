@@ -211,6 +211,9 @@ pub struct ServeConfig {
     /// [`clax_http::hosted::Hosted::from_config`] on the home's `[hosted]`), or
     /// `None` for the local daemon.
     pub hosted: Option<Arc<clax_http::hosted::Hosted>>,
+    /// Serve nothing but `/healthz`, static files and content by ID without
+    /// a credential ([`clax_http::state::AppState::require_credential`]).
+    pub require_credential: bool,
 }
 
 /// Binds the first port of [`port_range`]`(start)` that no other program
@@ -306,6 +309,7 @@ pub async fn serve(
         store,
         home: cfg.home.clone(),
         token,
+        require_credential: cfg.require_credential,
         started_at,
         version: cfg.version,
         shutdown: events_shutdown,

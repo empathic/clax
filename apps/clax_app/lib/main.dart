@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -83,7 +84,23 @@ Future<AppServices> platformServices() async {
     pids: IoPidKiller(),
     android: android,
     apiKey: secureKey.read,
+    requireCredential: true,
   );
+  String? token() => switch (supervisor.state) {
+    Up(:final endpoint) => endpoint.token,
+    _ => null,
+  };
+  // A restarted daemon has a new token: its key cookie replaces the old one
+  // at once, so an open page's next request carries it.
+  supervisor.states.listen((s) {
+    if (s case Up(:final endpoint)) {
+      unawaited(
+        WebViewAppSurface.setWebViewCookie(
+          WebViewAppSurface.keyWebViewCookie(endpoint.base, endpoint.token),
+        ).catchError((Object _) {}),
+      );
+    }
+  });
   final cliSupported = ClaudeCliBackend.supported;
   final scratch = Directory('${cache.path}/claude-cli');
   final script = await _agentScript();
@@ -116,7 +133,8 @@ Future<AppServices> platformServices() async {
     key: DaemonKey(secureKey, onChanged: supervisor.restart),
     timings: FileTimings(File('${support.path}/timings.jsonl')),
     agentTimings: FileTimings(File('${support.path}/agent-timings.jsonl')),
-    surface: (base) => WebViewAppSurface(base: base, openExternal: links.open),
+    surface: (base) =>
+        WebViewAppSurface(base: base, openExternal: links.open, token: token),
     installId: await loadInstallId(support),
     supportDir: support.path,
     prompts: PromptBuilder(rootBundle),
@@ -124,7 +142,7 @@ Future<AppServices> platformServices() async {
     asked: FileAskedQuestions(File('${support.path}/asked.json')),
     plans: PlanStore(file: File('${support.path}/plans.json')),
     inspector: WebViewInspector(
-      surface: (base) => WebViewAppSurface(base: base),
+      surface: (base) => WebViewAppSurface(base: base, token: token),
     ),
     consentMemory: FileConsentMemory(
       File('${support.path}/agent-read-consent.json'),

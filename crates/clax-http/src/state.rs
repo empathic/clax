@@ -63,6 +63,10 @@ pub struct AppState {
     pub store: Arc<Store>,
     pub home: Home,
     pub token: String,
+    /// Every request but [`crate::auth::open_without_credential`]'s needs a
+    /// credential, `GET /api/token` included ([`crate::auth::require_credential`]);
+    /// `clax serve --require-credential`, off by default.
+    pub require_credential: bool,
     pub events: EventBus,
     pub started_at: String,
     pub version: &'static str,
@@ -231,6 +235,9 @@ pub struct StateParts {
     pub home: Home,
     /// The owner's bearer token.
     pub token: String,
+    /// Whether every request but the exempt ones needs a credential
+    /// ([`AppState::require_credential`]).
+    pub require_credential: bool,
     /// When the server started (the store's clock, RFC 3339).
     pub started_at: String,
     pub version: &'static str,
@@ -271,6 +278,7 @@ impl AppState {
         Ok(AppState {
             home: p.home,
             token: p.token,
+            require_credential: p.require_credential,
             events: EventBus::new(),
             started_at: p.started_at,
             version: p.version,

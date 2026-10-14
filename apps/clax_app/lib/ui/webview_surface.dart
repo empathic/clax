@@ -6,6 +6,7 @@ import 'package:flutter/widgets.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../daemon/clock.dart';
+import '../daemon/supervisor.dart' show keyCookie;
 import 'app_surface.dart';
 import 'host_protocol.dart';
 
@@ -22,14 +23,21 @@ import 'host_protocol.dart';
 /// - A main frame that fails to load, or whose web content process ends,
 ///   is loaded again once; a second failure within [retryWindow] gives up
 ///   and waits for [reload]. Each is reported on [faults].
+/// - With [token], every [load] and [reload] first puts the daemon's key
+///   cookie ([keyCookie]) in the WebView's cookie store, so a daemon started
+///   with `--require-credential` serves the shell; the current token is
+///   read each time, since a restarted daemon has a new one.
 class WebViewAppSurface implements AppSurface {
   WebViewAppSurface({
     required this.base,
     this._clock = const SystemClock(),
     this.openExternal,
+    this.token,
+    Future<void> Function(WebViewCookie cookie)? setCookie,
     Color? background,
     WebViewController? controller,
   }) : controller = controller ?? WebViewController(),
+       _setCookie = setCookie ?? setWebViewCookie,
        _session = ShellSession(base) {
     final c = this.controller;
     c
@@ -58,6 +66,31 @@ class WebViewAppSurface implements AppSurface {
   final WebViewController controller;
   final Clock _clock;
   final ShellSession _session;
+
+  /// The daemon's current token, or null when it is not up.
+  final String? Function()? token;
+  final Future<void> Function(WebViewCookie cookie) _setCookie;
+
+  /// Puts [cookie] in the platform WebView's cookie store, shared by every
+  /// WebView of the app.
+  static Future<void> setWebViewCookie(WebViewCookie cookie) =>
+      WebViewCookieManager().setCookie(cookie);
+
+  /// The key cookie for [base] and [token], as a [WebViewCookie].
+  static WebViewCookie keyWebViewCookie(Uri base, String token) {
+    final c = keyCookie(base, token);
+    return WebViewCookie(
+      name: c.name,
+      value: c.value,
+      domain: c.domain,
+      path: c.path,
+    );
+  }
+
+  Future<void> _setKey() async {
+    final t = token?.call();
+    if (t != null) await _setCookie(keyWebViewCookie(base, t));
+  }
 
   /// Opens a link the app view does not load (in the system browser).
   /// Without it such links do nothing.
@@ -144,10 +177,16 @@ class WebViewAppSurface implements AppSurface {
   );
 
   @override
-  Future<void> load(Uri url) => controller.loadRequest(url);
+  Future<void> load(Uri url) async {
+    await _setKey();
+    await controller.loadRequest(url);
+  }
 
   @override
-  Future<void> reload() => controller.reload();
+  Future<void> reload() async {
+    await _setKey();
+    await controller.reload();
+  }
 
   @override
   Future<void> call(HostCall c) async {

@@ -217,7 +217,11 @@ class Rig {
     this.sup,
   );
 
-  factory Rig({bool android = false, Future<String?> Function()? apiKey}) {
+  factory Rig({
+    bool android = false,
+    Future<String?> Function()? apiKey,
+    bool requireCredential = false,
+  }) {
     final dir = Directory.systemTemp.createTempSync('clax-sup-');
     final home = '${dir.path}/support/clax-home';
     final starter = FakeStarter(home);
@@ -238,6 +242,7 @@ class Rig {
       clock: clock,
       android: android,
       apiKey: apiKey,
+      requireCredential: requireCredential,
     );
     final rig = Rig._(dir, starter, ports, health, pids, clock, sup);
     sup.states.listen(rig.states.add);
@@ -269,6 +274,26 @@ class Rig {
 void main() {
   late Rig rig;
   tearDown(() => rig.dispose());
+
+  test(
+    'asks the daemon for a credential on every request when told to',
+    () async {
+      rig = Rig(requireCredential: true);
+      final ep = await rig.up();
+      expect(rig.starter.calls.single.args, [
+        '--port',
+        '41000',
+        'serve',
+        '--foreground',
+        '--require-credential',
+      ]);
+      final c = keyCookie(ep.base, ep.token);
+      expect(c.name, 'clax_key_${ep.base.port}');
+      expect(c.value, ep.token);
+      expect(c.domain, ep.base.host);
+      expect(c.path, '/');
+    },
+  );
 
   test('starts with a clean environment and the expected arguments', () async {
     rig = Rig();

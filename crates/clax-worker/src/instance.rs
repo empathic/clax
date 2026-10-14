@@ -430,6 +430,7 @@ impl Instance {
             store,
             home,
             token,
+            require_credential: false,
             version: clax_server::VERSION,
             shutdown,
             self_base: base.clone(),
