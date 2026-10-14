@@ -651,6 +651,43 @@ void main() {
       expect(rig.questionPages, hasLength(2));
     });
 
+    testWidgets('a queued question the daemon withdrew without a stream event '
+        'is dropped on the questions resync', (tester) async {
+      await pumpApp(tester, _Rig(key: 'sk-ant-x'));
+      await up(tester);
+      final a = await ask(tester);
+      final b = await ask(tester);
+      expect(rig.questionPages.single.loads.single.queryParameters['q'], a);
+      rig.api.withdrawUnannounced(b);
+      rig.api.emitStream(
+        const StreamEvent(
+          topic: 'questions',
+          type: 'resync',
+          data: {'topic': 'questions', 'reason': 'reconnect'},
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Close'));
+      await tester.pumpAndSettle();
+      expect(sheet, findsNothing);
+      expect(rig.questionPages, hasLength(1));
+    });
+
+    testWidgets('after a daemon restart a queued question it withdrew is not '
+        'shown', (tester) async {
+      await pumpApp(tester, _Rig(key: 'sk-ant-x'));
+      await up(tester);
+      await ask(tester);
+      final b = await ask(tester);
+      rig.supervisor.set(const Failed('clax stopped', []));
+      await tester.pumpAndSettle();
+      expect(sheet, findsNothing);
+      rig.api.withdrawUnannounced(b);
+      await up(tester);
+      expect(sheet, findsNothing);
+      expect(rig.questionPages, hasLength(1));
+    });
+
     testWidgets('a question in the inbox opens the sheet', (tester) async {
       await pumpApp(tester, _Rig(key: 'sk-ant-x'));
       await up(tester);

@@ -517,6 +517,74 @@ void main() {
     expect(find.text('Log has a question'), findsOneWidget);
   });
 
+  Future<String> askUnits({String? about}) async {
+    final session = await api.registerAppSession(installId: 'i', pid: 1);
+    return (await api.askQuestion(session.id, [
+      {
+        'question': 'Which unit should distances use?',
+        'header': 'Units',
+        'options': [
+          {'label': 'km', 'description': ''},
+          {'label': 'mi', 'description': ''},
+        ],
+      },
+    ], artifactId: about)).question.id;
+  }
+
+  testWidgets('a background question the daemon withdrew without a stream '
+      'event is not shown on return', (tester) async {
+    await pumpApp(tester);
+    leave(tester);
+    final qid = await askUnits();
+    await pumpUntil(tester, () => work.targets.isNotEmpty);
+    api.withdrawUnannounced(qid);
+    comeBack(tester);
+    await pumpRoute(tester);
+    expect(find.byType(QuestionWebSheet), findsNothing);
+    expect(questionLoads, isEmpty);
+  });
+
+  testWidgets("a tapped question notification shows its question first, the "
+      'other background question after it', (tester) async {
+    await pumpApp(tester);
+    leave(tester);
+    final a = await askUnits();
+    final b = await askUnits();
+    await pumpUntil(tester, () => work.targets.length == 2);
+    comeBack(tester);
+    work.tap('question:$b');
+    await pumpRoute(tester);
+    expect(questionLoads.map((u) => u.queryParameters['q']), [b]);
+    await tester.tap(find.byTooltip('Close'));
+    await pumpRoute(tester);
+    expect(questionLoads.map((u) => u.queryParameters['q']), [b, a]);
+  });
+
+  testWidgets('several background questions about other apps are told in one '
+      'toast on return; its View shows each in turn', (tester) async {
+    final aid = api.seedArtifact('Runs', {'index.html': _page});
+    final log = api.seedArtifact('Log', {'index.html': _page});
+    final diary = api.seedArtifact('Diary', {'index.html': _page});
+    await pumpApp(tester);
+    work.tap(aid);
+    await pumpRoute(tester);
+    leave(tester);
+    final first = await askUnits(about: log);
+    final second = await askUnits(about: diary);
+    await pumpUntil(tester, () => work.targets.length == 2);
+    comeBack(tester);
+    await pumpRoute(tester);
+    expect(find.byType(QuestionWebSheet), findsNothing);
+    expect(find.text('Clax has 2 questions'), findsOneWidget);
+    expect(find.text('Diary has a question'), findsNothing);
+    await tester.tap(find.text('View'));
+    await pumpRoute(tester);
+    expect(questionLoads.map((u) => u.queryParameters['q']), [first]);
+    await tester.tap(find.byTooltip('Close'));
+    await pumpRoute(tester);
+    expect(questionLoads.map((u) => u.queryParameters['q']), [first, second]);
+  });
+
   testWidgets('a change that lands in the background says so', (tester) async {
     final aid = api.seedArtifact('Runs', {'index.html': _page});
     await pumpApp(tester);
