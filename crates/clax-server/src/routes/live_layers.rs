@@ -40,6 +40,7 @@ use crate::live_layers::LiveLayers;
 use crate::routes::artifacts::parse_id;
 use crate::state::AppState;
 use crate::viewer::SameOrigin;
+#[cfg(not(target_arch = "wasm32"))]
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::response::Response;
@@ -55,6 +56,7 @@ pub const CLOSE_OVERRUN: u16 = 1008;
 pub const CLOSE_DELETED: u16 = 4410;
 
 /// `GET /api/artifacts/{aid}/live`.
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn live(
     State(s): State<AppState>,
     d: crate::agent::DeniedToGrants,
@@ -86,6 +88,7 @@ pub async fn live(
         .on_upgrade(move |socket| session(s, aid, viewer.public_id, claim, socket)))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn close(code: u16, reason: &'static str) -> Message {
     Message::Close(Some(CloseFrame {
         code,
@@ -107,6 +110,7 @@ impl Drop for Seat {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn session(
     s: AppState,
     aid: String,
@@ -205,4 +209,260 @@ async fn session(
     if let Some(m) = end {
         let _ = socket.send(m).await;
     }
+}
+
+/// What a host that holds a live socket itself (a Durable Object, whose
+/// hibernatable sockets no task of the server's reads) does next.
+#[derive(Debug, PartialEq, Eq)]
+pub enum LiveStep {
+    /// Send this text frame.
+    Send(String),
+    /// Close the socket with this code and reason; the [`LiveSocket`] is
+    /// done.
+    Close(u16, &'static str),
+}
+
+/// A live socket driven by its host, step by step, where [`session`]'s
+/// task cannot run: the host sends what [`LiveSocket::open`] gives first,
+/// hands it every text message ([`LiveSocket::message`]), and after each
+/// request, message and alarm, and whenever the hub says batches are
+/// queued (`LiveLayers::on_queue`), sends what [`LiveSocket::drain`]
+/// gives. The rules are [`session`]'s: the seat taken before joining, the
+/// message rate, the close codes. Dropping it leaves the hub and the seat.
+pub struct LiveSocket {
+    hub: std::sync::Arc<LiveLayers>,
+    aid: String,
+    key: u64,
+    rx: tokio::sync::mpsc::Receiver<String>,
+    bucket: TokenBucket,
+    events: tokio::sync::broadcast::Receiver<clax_core::events::Stamped>,
+    released: Option<tokio::sync::oneshot::Receiver<()>>,
+    _seat: Option<Seat>,
+}
+
+impl Drop for LiveSocket {
+    fn drop(&mut self) {
+        self.hub.leave(&self.aid, self.key);
+    }
+}
+
+impl LiveSocket {
+    /// The artifact the socket is on.
+    pub fn artifact(&self) -> &str {
+        &self.aid
+    }
+
+    /// Takes `claim`'s seat (when it has one) and joins `person`'s socket
+    /// to `aid`'s live layers: the socket and its welcome frame; with no
+    /// seat free, the close to send ([`CLOSE_NO_SEAT`]).
+    ///
+    /// # Errors
+    /// As above.
+    pub fn open(
+        s: &AppState,
+        aid: &str,
+        person: &str,
+        claim: Option<clax_core::seats::Claim>,
+    ) -> Result<(LiveSocket, String), LiveStep> {
+        let hub = s.live_layers.clone();
+        let (seat, released) = match claim {
+            Some(c) => {
+                let conn = hub.seat_conn();
+                let released = hub.watch_seat(&conn);
+                let seat = Seat {
+                    s: s.clone(),
+                    aid: aid.to_string(),
+                    conn: conn.clone(),
+                };
+                if !s.seats.take(aid, &c, &conn) {
+                    return Err(LiveStep::Close(
+                        CLOSE_NO_SEAT,
+                        clax_core::seats::NO_SEAT_CODE,
+                    ));
+                }
+                (Some(seat), Some(released))
+            }
+            None => (None, None),
+        };
+        let joined = hub.join(aid, person);
+        let welcome = json!({"t": "welcome", "person_id": person, "color": joined.color});
+        Ok((
+            LiveSocket {
+                bucket: TokenBucket::new(hub.now()),
+                hub,
+                aid: aid.to_string(),
+                key: joined.key,
+                rx: joined.rx,
+                events: s.events.subscribe(),
+                released,
+                _seat: seat,
+            },
+            welcome.to_string(),
+        ))
+    }
+
+    /// The socket's text message `t`: applied, or answered (`ping` is
+    /// `pong`, over the rate too), or the close for a sustained overrun.
+    pub fn message(&mut self, t: &str) -> Option<LiveStep> {
+        let take = self.bucket.take(self.hub.now());
+        if take == Take::Close {
+            return Some(LiveStep::Close(CLOSE_OVERRUN, "too many live messages"));
+        }
+        if t == "ping" {
+            return Some(LiveStep::Send("pong".into()));
+        }
+        if take == Take::Drop || t.len() > MAX_LIVE_MESSAGE_BYTES {
+            return None;
+        }
+        if let Some(m) = parse_message(t) {
+            self.hub.apply(&self.aid, self.key, m);
+        }
+        None
+    }
+
+    /// The batches queued for the socket, then the close when its seat was
+    /// released for want of input or its artifact was deleted.
+    pub fn drain(&mut self) -> Vec<LiveStep> {
+        let mut out = Vec::new();
+        while let Ok(b) = self.rx.try_recv() {
+            out.push(LiveStep::Send(b));
+        }
+        if let Some(r) = self.released.as_mut() {
+            match r.try_recv() {
+                Ok(()) => {
+                    out.push(LiveStep::Close(CLOSE_NO_SEAT, clax_core::seats::IDLE_CODE));
+                    return out;
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => self.released = None,
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+            }
+        }
+        loop {
+            match self.events.try_recv() {
+                Ok(stamped) => {
+                    if matches!(&stamped.event, Event::ArtifactDeleted { artifact_id } if *artifact_id == self.aid)
+                    {
+                        out.push(LiveStep::Close(CLOSE_DELETED, "artifact deleted"));
+                        return out;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        out
+    }
+}
+
+/// Who may open `aid`'s live socket, as [`live`] admits them: the artifact
+/// exists, and the caller is a browser with a viewer; their person's
+/// public ID and seat claim.
+fn admit(
+    st: &clax_core::Store,
+    who: &Identity,
+    caller: &Caller,
+    aid: &str,
+) -> clax_core::Result<(String, Option<clax_core::seats::Claim>)> {
+    let id = clax_core::ArtifactId::parse(aid).map_err(|_| CoreError::NotFound)?;
+    st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
+    let viewer = who
+        .browser_viewer(st)?
+        .ok_or_else(|| CoreError::invalid("no_viewer", "open /api/viewers/me first"))?;
+    Ok((viewer.public_id, crate::seats::claim_for(st, caller, aid)?))
+}
+
+/// What [`LiveOpened`] carries: the socket (or the close to send at once)
+/// and the credentials to reopen it with.
+pub type LiveOpen = (
+    Result<(LiveSocket, String), LiveStep>,
+    crate::identity::SocketCredentials,
+);
+
+/// A live socket a host opened for its own WebSocket: the response of `GET
+/// /api/artifacts/<aid>/live` on wasm32 carries it as an extension, with
+/// the credentials to reopen it with ([`reopen`]).
+#[derive(Clone)]
+pub struct LiveOpened(pub std::sync::Arc<std::sync::Mutex<Option<LiveOpen>>>);
+
+/// `GET /api/artifacts/{aid}/live` on wasm32, where the socket is the
+/// host's (a Durable Object's): admitted as [`live`] admits it, and
+/// answered `200` with a [`LiveOpened`] extension the host replaces with
+/// its socket; any other request is 426 `websocket_required`.
+#[cfg(target_arch = "wasm32")]
+#[allow(clippy::too_many_arguments)]
+pub async fn live_socket(
+    State(s): State<AppState>,
+    d: crate::agent::DeniedToGrants,
+    Path(aid): Path<String>,
+    _o: SameOrigin,
+    who: Identity,
+    caller: Caller,
+    sees: crate::live::SeesLive,
+    extensions: axum::http::Extensions,
+    headers: axum::http::HeaderMap,
+) -> Result<Response, ApiError> {
+    use axum::response::IntoResponse;
+    d.refuse_agents()?;
+    let upgrade = headers
+        .get(axum::http::header::UPGRADE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
+    if !upgrade {
+        return Err(ApiError::new(
+            axum::http::StatusCode::UPGRADE_REQUIRED,
+            "websocket_required",
+            "the live layers ride a WebSocket",
+        ));
+    }
+    let id = parse_id(&aid)?;
+    sees.check(&s.live_ids, id.as_str())?;
+    let aid = id.as_str().to_string();
+    let creds = crate::identity::SocketCredentials::of_request(&who, &s.token, &extensions);
+    let a = aid.clone();
+    let (person, claim) = s.store_call(move |st| admit(st, &who, &caller, &a)).await?;
+    let opened = LiveSocket::open(&s, &aid, &person, claim);
+    let mut res = axum::http::StatusCode::OK.into_response();
+    res.extensions_mut()
+        .insert(LiveOpened(std::sync::Arc::new(std::sync::Mutex::new(
+            Some((opened, creds)),
+        ))));
+    Ok(res)
+}
+
+/// Reopens a live socket of `aid` kept with `creds` by a host that lost
+/// its server (a Durable Object woken from hibernation): admitted again as
+/// [`live`] admits it, as whoever the credentials are now
+/// ([`crate::identity::SocketCredentials::reopen`]), a hosted session
+/// still reading the page ([`crate::hosted::session_reads`]); its seat
+/// taken again. `None` when it may no longer open: the host closes it. On
+/// a hosted daemon that is also a socket opened with neither the token nor
+/// a session, or whose session has ended.
+pub async fn reopen(
+    s: &AppState,
+    aid: &str,
+    creds: &crate::identity::SocketCredentials,
+) -> Option<Result<(LiveSocket, String), LiveStep>> {
+    let (creds, a, token) = (creds.clone(), aid.to_string(), s.token.clone());
+    let hosted = s.hosted.is_some();
+    let (person, claim) = s
+        .store_call(move |st| {
+            let (who, session) = creds.reopen(st, &token)?;
+            // On a hosted daemon only a session or the token opened it.
+            if hosted && session.is_none() && !who.token {
+                return Err(CoreError::NotFound);
+            }
+            if let Some(sv) = &session
+                && !crate::hosted::session_reads(st, sv, &a)?
+            {
+                return Err(CoreError::NotFound);
+            }
+            let caller = who.caller(st, None).map_err(|_| CoreError::NotFound)?;
+            if caller.is_agent() {
+                return Err(CoreError::NotFound);
+            }
+            admit(st, &who, &caller, &a)
+        })
+        .await
+        .ok()?;
+    Some(LiveSocket::open(s, aid, &person, claim))
 }

@@ -260,12 +260,15 @@ impl AppState {
         crate::drafts::sweep_and_announce(&self.drafts, &self.events);
         self.stream.sweep();
         self.seats.sweep();
+        crate::questions::withdraw_due(self).await;
     }
 
     /// How long until [`AppState::sweep`] next has something to do (zero
     /// once it is due): the earliest of a working record lapsing, a presence
     /// report lapsing or a gone viewer dropping, a draft going idle, a
-    /// detached stream's grace ending, and a live seat going idle. `None` when none of them holds
+    /// detached stream's grace ending, a live seat going idle, and a
+    /// question's swept grace ending
+    /// ([`crate::questions::Sleeper::times_graces`]). `None` when none of them holds
     /// anything that will need it. A host whose sweeps run from a timer it
     /// sets itself (a Durable Object's alarm) sets it for then.
     pub fn next_sweep_in(&self) -> Option<Duration> {
@@ -278,6 +281,7 @@ impl AppState {
             self.drafts.next_idle().map(until),
             self.stream.next_drop_in(),
             self.seats.next_idle_in(),
+            self.questions.next_due().map(until),
         ]
         .into_iter()
         .flatten()

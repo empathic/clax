@@ -19,8 +19,9 @@
 //! `__Host-clax_session`, else `clax_session`.
 //! [`gate`] runs before every route:
 //!
-//! - the `Host` must be the public origin's, a local name (the CLI and
-//!   agents on the machine), or an artifact's content host;
+//! - the `Host` must be the public origin's, the content origin's
+//!   ([`Hosted::with_content_origin`]), a local name (the CLI and agents
+//!   on the machine), or an artifact's content host;
 //! - a write (any method but `GET`, `HEAD` and `OPTIONS`) without an
 //!   `Authorization` header must carry `Origin` equal to the public origin
 //!   (CSRF), else 403 `forbidden_origin`;
@@ -32,7 +33,10 @@
 //! - content is served only at its key's address: a version's files at
 //!   `/c/<aid>/v/<n>/k/<key>/…` ([`content_key`]), an asset's bytes at
 //!   `/_blob/<id>?k=<key>` ([`asset_key`]), each with no referrer, else 404,
-//!   on the public host and the content host alike. The content frame is
+//!   on the public host and the content host alike; with a content origin,
+//!   there and on an artifact's content host only, never on the public
+//!   host, and the content origin serves nothing else but the UI's files
+//!   and `/healthz`. The content frame is
 //!   sandboxed, so its requests carry no cookie: the key, which only the
 //!   routes that hand the version to someone who may read it carry, is the
 //!   capability, as the unguessable commit is in the prototype. An ID
@@ -42,9 +46,9 @@
 //!   the drafts listing and the `drafts` events, which reach only people
 //!   who may read the artifact ([`crate::routes::drafts`]);
 //! - the shell's static files and `/healthz` are open;
-//! - a request with `Authorization` (the daemon token, a grant) is as on a
-//!   local daemon, and so is the owner's session; any other
-//!   `Authorization` answers 401 `unauthorized`;
+//! - a request with `Authorization` (the daemon token, a grant, an agent
+//!   token) is as on a local daemon, and so is the owner's session; any
+//!   other `Authorization` answers 401 `unauthorized`;
 //! - a person's session is limited by the person's rights, as their agents
 //!   are ([`MemberRights`]): an artifact they may not read (by their rights,
 //!   or its link's) answers 404 wherever a route names it, listings leave it
@@ -59,8 +63,9 @@
 //!
 //! Agent tokens a member mints here are bearer grants (their rights the
 //! person's): `Authorization: Bearer cxa_…` is an agent credential
-//! ([`crate::agent::authenticate`]), which the MCP adapter
-//! (`crate::routes::mcp_http`) serves.
+//! ([`crate::agent::authenticate`]) on every route agents of other
+//! machines reach, and on the tool set's JSON-RPC adapter (`/mcp` on a
+//! Worker, `/mcp/json` on the daemon, [`crate::routes::mcp_http`]).
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -107,12 +112,16 @@ pub struct Hosted {
     behind_cloudflare: bool,
     /// Each client's attempts at setup, sign-in and naming a guest.
     limits: Limits,
+    /// The content origin ([`Hosted::with_content_origin`]): its origin and
+    /// its authority as a `Host` header names it.
+    content: Option<(String, String)>,
 }
 
 impl std::fmt::Debug for Hosted {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Hosted")
             .field("origin", &self.origin)
+            .field("content_origin", &self.content_origin())
             .field("setup_open", &self.setup_secret.is_some())
             .field("behind_cloudflare", &self.behind_cloudflare)
             .finish()
@@ -222,6 +231,17 @@ fn rate_limited(retry_after: u64) -> ApiError {
     e
 }
 
+/// The authority of a normalized origin as a `Host` header names it
+/// (`clax.example`, `localhost:7490`).
+fn authority(origin: &str) -> Option<String> {
+    let u = url::Url::parse(origin).ok()?;
+    match (u.host_str(), u.port()) {
+        (Some(h), Some(p)) => Some(format!("{h}:{p}")),
+        (Some(h), None) => Some(h.to_string()),
+        _ => None,
+    }
+}
+
 fn sha256(s: &str) -> [u8; 32] {
     Sha256::digest(s.as_bytes()).into()
 }
@@ -232,20 +252,49 @@ impl Hosted {
     /// `setup_secret` (`None` or empty: setup stays closed).
     pub fn new(origin: &str, setup_secret: Option<&str>) -> Option<Hosted> {
         let origin = clax_core::config::hosted_origin(origin)?;
-        let u = url::Url::parse(&origin).ok()?;
-        let host = match (u.host_str(), u.port()) {
-            (Some(h), Some(p)) => format!("{h}:{p}"),
-            (Some(h), None) => h.to_string(),
-            _ => return None,
-        };
+        let host = authority(&origin)?;
         Some(Hosted {
-            secure: u.scheme() == "https",
+            secure: origin.starts_with("https://"),
             host,
             origin,
             setup_secret: setup_secret.filter(|s| !s.is_empty()).map(sha256),
             behind_cloudflare: false,
             limits: Limits::new(std::sync::Arc::new(clax_core::working::SystemClock)),
+            content: None,
         })
+    }
+
+    /// This hosted mode with artifact content on an origin of its own,
+    /// `origin` (normalized as the public origin is; its host must differ
+    /// from the public origin's): every version's files, drafts and asset
+    /// bytes are served there, at their keys' addresses, and never on the
+    /// public origin, which serves everything else and no content; the
+    /// content origin serves only content, the web UI's files and
+    /// `/healthz`. Content is framed sandboxed there (one origin for every
+    /// artifact), and its bridge talks to the public origin only. `None`
+    /// for an origin hosted mode does not take, or the public one's host.
+    pub fn with_content_origin(self, origin: &str) -> Option<Hosted> {
+        let origin = clax_core::config::hosted_origin(origin)?;
+        let host = authority(&origin)?;
+        if host.eq_ignore_ascii_case(&self.host) {
+            return None;
+        }
+        Some(Hosted {
+            content: Some((origin, host)),
+            ..self
+        })
+    }
+
+    /// The content origin, when content has one of its own.
+    pub fn content_origin(&self) -> Option<&str> {
+        self.content.as_ref().map(|(o, _)| o.as_str())
+    }
+
+    /// Whether `host` (a `Host` header) is the content origin's.
+    pub fn is_content_host(&self, host: &str) -> bool {
+        self.content
+            .as_ref()
+            .is_some_and(|(_, h)| h.eq_ignore_ascii_case(host))
     }
 
     /// This hosted mode with its attempts counted on `clock`.
@@ -416,18 +465,28 @@ pub fn asset_key(token: &str, asset_id: &str) -> String {
 /// The URL a hosted daemon serves asset `asset_id` at; a local daemon's
 /// `/_blob/<asset_id>`.
 pub fn asset_url(s: &AppState, asset_id: &str) -> String {
-    match s.hosted {
-        Some(_) => format!("/_blob/{asset_id}?k={}", asset_key(&s.token, asset_id)),
+    match &s.hosted {
+        Some(h) => format!(
+            "{}/_blob/{asset_id}?k={}",
+            h.content_origin().unwrap_or(""),
+            asset_key(&s.token, asset_id)
+        ),
         None => format!("/_blob/{asset_id}"),
     }
 }
 
 /// On a hosted daemon, sets `content_key` on every version of view `v`
 /// (its `version` and each of its `versions`, which name their
-/// `artifact_id` and `n`); a local daemon's views are left as they are.
+/// `artifact_id` and `n`), and with a content origin, `content_origin` on
+/// the view: where the shell frames its content
+/// (`<content_origin>/c/<aid>/v/<n>/k/<key>/…`, sandboxed) and its drafts.
+/// A local daemon's views are left as they are.
 pub fn stamp_content_keys(s: &AppState, v: &mut Value) {
-    if s.hosted.is_none() {
+    let Some(h) = &s.hosted else {
         return;
+    };
+    if let (Some(o), Some(m)) = (h.content_origin(), v.as_object_mut()) {
+        m.insert("content_origin".into(), json!(o));
     }
     let stamp = |x: &mut Value| {
         let aid = x.get("artifact_id").and_then(Value::as_str);
@@ -576,6 +635,10 @@ pub struct HostedRequest {
     /// A person's session (a member who is not the owner): their rights,
     /// which limit their browser as they limit their agents.
     pub member: Option<MemberRights>,
+    /// The session cookie's SHA-256 (lowercase hex), with a live session:
+    /// what a socket's host keeps to check the session again when it
+    /// reopens the socket ([`crate::identity::SocketCredentials`]).
+    pub cookie_sha256: Option<String>,
 }
 
 /// A signed-in person's rights in their browser: the person's multi-person
@@ -627,6 +690,32 @@ impl MemberRights {
         let (m, aid) = (self.clone(), aid.to_string());
         s.store_call(move |st| m.allows_at(st, right, &aid)).await
     }
+}
+
+/// Whether session `who` may read artifact `aid` now, as the gate decides
+/// a route under it: the owner always; a person by their rights or the
+/// page's link ([`MemberRights::allows_at`]); a guest while the page is
+/// shared by link. What a host reopening a socket of `aid` checks again.
+///
+/// # Errors
+/// The store's.
+pub fn session_reads(
+    st: &clax_core::Store,
+    who: &SessionViewer,
+    aid: &str,
+) -> clax_core::Result<bool> {
+    if who.owner {
+        return Ok(true);
+    }
+    if who.member() {
+        let pid = who.viewer.public_id.clone();
+        let m = MemberRights {
+            rights: std::sync::Arc::new(st.person_rights(&pid)?),
+            person: pid,
+        };
+        return m.allows_at(st, (RightType::Artifacts, "read"), aid);
+    }
+    Ok(st.link_access(aid)?.is_some())
 }
 
 /// What a person's request needs before its route ([`gate`]); the route
@@ -1117,7 +1206,12 @@ pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Re
         .extensions()
         .get::<crate::host::OnArtifactOrigin>()
         .is_some();
-    if !(host.eq_ignore_ascii_case(&h.host) || crate::auth::is_local_host(&host) || content_host) {
+    let on_content = h.is_content_host(&host);
+    if !(host.eq_ignore_ascii_case(&h.host)
+        || on_content
+        || crate::auth::is_local_host(&host)
+        || content_host)
+    {
         return ApiError::forbidden(
             "forbidden_host",
             format!("this Clax answers at {}", h.origin),
@@ -1132,7 +1226,20 @@ pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Re
     if path.starts_with("/connect/b/") {
         return ApiError::not_found().into_response();
     }
-    if path.starts_with("/c/") || path.starts_with("/_blob/") {
+    let content = path.starts_with("/c/") || path.starts_with("/_blob/");
+    // The content origin serves content, the UI's files and `/healthz`
+    // alone; with one, the public origin serves no content.
+    if on_content && !content {
+        if path == "/healthz" || path.starts_with("/_clax/") {
+            req.extensions_mut().insert(HostedRequest::default());
+            return next.run(req).await;
+        }
+        return ApiError::not_found().into_response();
+    }
+    if content {
+        if h.content_origin().is_some() && !on_content && !content_host {
+            return ApiError::not_found().into_response();
+        }
         req.extensions_mut().insert(HostedRequest::default());
         return serve_content(&s, req, next).await;
     }
@@ -1164,10 +1271,15 @@ pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Re
         if let Err(e) = swap_shell_token(&mut req, &s.token) {
             return e.into_response();
         }
+        let cookie_sha256 = session
+            .as_ref()
+            .and(cookie.as_deref())
+            .map(clax_core::secret::sha256_hex);
         req.extensions_mut().insert(HostedRequest {
             session,
             origin_checked,
             member: None,
+            cookie_sha256,
         });
         return next.run(req).await;
     }
@@ -1216,6 +1328,10 @@ pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Re
         session: session.clone(),
         origin_checked,
         member: member.clone(),
+        cookie_sha256: session
+            .as_ref()
+            .and(cookie.as_deref())
+            .map(clax_core::secret::sha256_hex),
     });
     let own = path.starts_with("/api/hosted/")
         || path == "/setup"

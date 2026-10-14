@@ -50,7 +50,13 @@ pub struct LiveLayers {
     /// The open sockets that hold a live seat, by seat connection key: each
     /// is told when its seat is released for want of input.
     seated: Mutex<HashMap<String, oneshot::Sender<()>>>,
+    /// Called after a flush queued batches, or a seat was released
+    /// ([`LiveLayers::on_queue`]).
+    on_queue: Mutex<Option<QueueListener>>,
 }
+
+/// Hears that live sockets have batches queued.
+pub type QueueListener = Arc<dyn Fn() + Send + Sync>;
 
 /// A socket's place in an artifact's live layers.
 pub struct Joined {
@@ -71,6 +77,27 @@ impl LiveLayers {
             clock,
             flush_after: Duration::from_millis(FLUSH_MS),
             seated: Mutex::new(HashMap::new()),
+            on_queue: Mutex::new(None),
+        }
+    }
+
+    /// Calls `f`, outside the hub's lock, after each flush that queued a
+    /// batch and each seat released: what a host that sends sockets their
+    /// batches itself (a Durable Object, through
+    /// `crate::routes::live_layers::LiveSocket::drain`) listens to, as the
+    /// stream hub's `on_queue`.
+    pub fn on_queue(&self, f: QueueListener) {
+        *self.on_queue.lock().unwrap_or_else(PoisonError::into_inner) = Some(f);
+    }
+
+    fn queued(&self) {
+        let f = self
+            .on_queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(f) = f {
+            f();
         }
     }
 
@@ -111,6 +138,7 @@ impl LiveLayers {
             .remove(conn);
         if let Some(tx) = tx {
             let _ = tx.send(());
+            self.queued();
         }
     }
 
@@ -230,6 +258,7 @@ impl LiveLayers {
     /// [`Relay::batches`]); a socket whose queue is full gets everything
     /// whole at the next flush, which is then armed.
     pub fn flush(self: &Arc<Self>, aid: &str) {
+        let mut sent = false;
         let again = {
             let mut rooms = self.rooms.lock().unwrap_or_else(PoisonError::into_inner);
             let Some(room) = rooms.get_mut(aid) else {
@@ -253,12 +282,17 @@ impl LiveLayers {
                 let Some(sock) = room.sockets.get(&key) else {
                     continue;
                 };
-                if let Err(mpsc::error::TrySendError::Full(_)) = sock.tx.try_send(b) {
-                    room.relay.resend(key);
+                match sock.tx.try_send(b) {
+                    Ok(()) => sent = true,
+                    Err(mpsc::error::TrySendError::Full(_)) => room.relay.resend(key),
+                    Err(mpsc::error::TrySendError::Closed(_)) => {}
                 }
             }
             Self::arm(room)
         };
+        if sent {
+            self.queued();
+        }
         if again {
             self.schedule(aid);
         }

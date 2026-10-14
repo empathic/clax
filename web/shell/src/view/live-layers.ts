@@ -293,20 +293,20 @@ export type LiveHandlers = {
   batch(b: LiveBatch): void;
   /** The socket opened (again): what the daemon held of this page is gone. */
   opened(): void;
-  /** The socket closed; `final` when it will not reopen (no seat, the artifact deleted). */
+  /** The socket closed; `final` when it will not reopen (the artifact deleted, an overrun). */
   closed(final: boolean): void;
-  /** The daemon closed it for want of a live seat (4429): `code` is why,
-   * `no_live_seat` or `seat_idle`. It reopens on `resume`. */
-  unseated?(code: string): void;
 };
 
 /**
  * The live socket of one artifact view: opened on `start`, reopened after a
  * close with the waits in RECONNECT_MS, except after a close the daemon
- * means for good (4429 no seat, 4410 deleted, 1008 overrun). What is sent
- * while it is not open is dropped; `opened` lets the owner send its state again.
- * `pause` closes it until `resume` (a spectator holds no live socket), and
- * `resume` opens it again after a 4429.
+ * means for good (4410 deleted, 1008 overrun). A close for want of a live
+ * seat (4429) is reopened too: whether the view is a spectator is the
+ * stream's answer alone (`ArtifactStream`), which pauses the socket, so a
+ * seat that frees between the socket's request and the stream's leaves the
+ * view live. What is sent while it is not open is dropped; `opened` lets the
+ * owner send its state again. `pause` closes it until `resume` (a spectator
+ * holds no live socket).
  */
 export class LiveSocket {
   private ws: SocketLike | null = null;
@@ -342,9 +342,8 @@ export class LiveSocket {
       if (this.ws !== s) return;
       this.ws = null;
       this.open = false;
-      const final = this.stopped || e.code === 4429 || e.code === 4410 || e.code === 1008;
+      const final = this.stopped || e.code === 4410 || e.code === 1008;
       this.on.closed(final);
-      if (e.code === 4429 && !this.stopped) this.on.unseated?.(e.reason === "seat_idle" ? "seat_idle" : "no_live_seat");
       if (final) return;
       const wait = RECONNECT_MS[Math.min(this.attempt++, RECONNECT_MS.length - 1)];
       this.timers.setTimeout(() => this.start(), wait);
@@ -364,7 +363,7 @@ export class LiveSocket {
     s?.close(1000, "spectating");
   }
 
-  /** Opens the socket again (after `pause` or a 4429), unless stopped. */
+  /** Opens the socket again after `pause`, unless stopped. */
   resume(): void {
     this.paused = false;
     this.attempt = 0;

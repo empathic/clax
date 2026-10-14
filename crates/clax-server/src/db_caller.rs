@@ -68,7 +68,7 @@ fn percent_decode(raw: &str) -> Option<String> {
 /// one (an agent, the CLI, a script) `owner` with no viewer. Without the
 /// token, the owner cookie's caller is the owner's viewer and a viewer
 /// cookie's its viewer: `interact` when that viewer has a name, else `view`.
-fn base_caller(st: &Store, token: bool, who: &Identity) -> clax_core::Result<Caller> {
+pub(crate) fn base_caller(st: &Store, token: bool, who: &Identity) -> clax_core::Result<Caller> {
     let cookie_viewer = match &who.cookie {
         Some(c) => st.get_viewer(c)?,
         None => None,
@@ -289,6 +289,22 @@ impl Subscriber {
         Subscriber {
             token: self.token || self.who.events_cookie,
             who: self.who,
+        }
+    }
+
+    /// What a host keeps to reopen this subscriber's socket
+    /// ([`crate::identity::SocketCredentials::of_request`]), the token
+    /// counted when the query carried it.
+    pub fn credentials(
+        &self,
+        token: &str,
+        extensions: &axum::http::Extensions,
+    ) -> crate::identity::SocketCredentials {
+        crate::identity::SocketCredentials {
+            token: self
+                .token
+                .then(|| crate::identity::SocketCredentials::token_tag(token)),
+            ..crate::identity::SocketCredentials::of_request(&self.who, token, extensions)
         }
     }
 

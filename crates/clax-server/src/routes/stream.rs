@@ -202,8 +202,8 @@ pub async fn open_socket(
             .map(|(_, v)| v.into_owned())
     });
     let resume = last.as_deref().and_then(parse_last_event_id);
-    let creds = crate::identity::SocketCredentials::of(&who, &s.token);
     let guest = hosted_guest(&extensions);
+    let creds = crate::identity::SocketCredentials::of_request(&who, &s.token, &extensions);
     let conn = open_stream(&s, who, local, credential, resume, guest).await?;
     let mut res = StatusCode::OK.into_response();
     res.extensions_mut()

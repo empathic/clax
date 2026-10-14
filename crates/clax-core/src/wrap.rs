@@ -173,9 +173,34 @@ pub fn wrap_page(
     file: &str,
     bridge: &str,
 ) -> String {
+    wrap_page_framed_by(page, artifact_id, version, contract, file, bridge, None)
+}
+
+/// [`wrap_page`], the bridge tag naming `shell`, when given, as the one
+/// origin whose window it talks to (`data-origin`, after the tag's other
+/// attributes): what a page served on a hosted daemon's content origin
+/// needs, as its own URL does not name the shell's origin.
+pub fn wrap_page_framed_by(
+    page: &str,
+    artifact_id: &str,
+    version: u32,
+    contract: &str,
+    file: &str,
+    bridge: &str,
+    shell: Option<&str>,
+) -> String {
     let page = strip_bridge_tags(page);
     let page = page.as_ref();
-    let tag = bridge_tag_for(artifact_id, version, contract, file, bridge);
+    let mut tag = bridge_tag_for(artifact_id, version, contract, file, bridge);
+    if let Some(o) = shell {
+        let o = o
+            .replace('&', "&amp;")
+            .replace('"', "&quot;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;");
+        let end = tag.len() - "></script>".len();
+        tag.insert_str(end, &format!(" data-origin=\"{o}\""));
+    }
 
     if is_full_document(page) {
         let at = bridge_insertion_point(page);
@@ -192,6 +217,28 @@ mod tests {
 
     /// The bridge version the tests serve.
     const V: &str = "0123456789ab";
+
+    #[test]
+    fn a_page_framed_by_a_named_shell_carries_its_origin_last_in_the_one_bridge_tag() {
+        let out = wrap_page_framed_by(
+            "<p>hi</p>",
+            "7q3k9mzx2b4t",
+            2,
+            "0.2.61",
+            "index.html",
+            V,
+            Some("https://clax.example"),
+        );
+        assert!(
+            out.contains("data-file=\"index.html\" data-origin=\"https://clax.example\"></script>")
+        );
+        assert!(is_bridge_tag(&out[out.find(BRIDGE_START).unwrap()..]));
+        assert_eq!(out.matches(BRIDGE_START).count(), 1);
+        // Served again, its own tag is stripped like any other.
+        let again = wrap_page(&out, "7q3k9mzx2b4t", 2, "0.2.61", "index.html", V);
+        assert_eq!(again.matches(BRIDGE_START).count(), 1);
+        assert!(!again.contains("data-origin"));
+    }
 
     #[test]
     // The bridge moved from first in `<body>` to first in `<head>`, so it runs

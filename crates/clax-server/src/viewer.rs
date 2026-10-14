@@ -42,9 +42,10 @@ pub(crate) fn read(headers: &HeaderMap) -> Option<String> {
 }
 
 /// Admits a viewer request only when it carries no `Origin` header (scripts,
-/// curl) or its `Origin` is the daemon's own: `http://` plus the request's
-/// `Host`. Artifact origins (`<aid>.localhost:<port>`), `null`, and foreign
-/// origins are refused with 403 `forbidden_origin`, so a published page cannot
+/// curl) or its `Origin` is the daemon's own: `http://` or `https://` (a
+/// Worker served over TLS) plus the request's `Host`. Artifact origins
+/// (`<aid>.localhost:<port>`), `null`, and foreign origins are refused with
+/// 403 `forbidden_origin`, so a published page cannot
 /// comment, send, resolve, or rename the viewer on a person's behalf. A
 /// request without `Origin` whose `Sec-Fetch-Site` names another origin
 /// (`same-site` or `cross-site`: a page's `<img>` or other no-cors GET, which
@@ -86,11 +87,14 @@ impl<S: Send + Sync> FromRequestParts<S> for SameOrigin {
             .get(header::HOST)
             .and_then(|h| h.to_str().ok());
         let same = match (origin.to_str().ok(), host) {
-            (Some(o), Some(h)) => o.strip_prefix("http://").is_some_and(|rest| {
-                !h.is_empty()
-                    && rest.eq_ignore_ascii_case(h)
-                    && crate::host::artifact_host(h).is_none()
-            }),
+            (Some(o), Some(h)) => o
+                .strip_prefix("http://")
+                .or_else(|| o.strip_prefix("https://"))
+                .is_some_and(|rest| {
+                    !h.is_empty()
+                        && rest.eq_ignore_ascii_case(h)
+                        && crate::host::artifact_host(h).is_none()
+                }),
             _ => false,
         };
         if same {

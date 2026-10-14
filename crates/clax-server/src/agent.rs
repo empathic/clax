@@ -1580,12 +1580,14 @@ pub struct BearerGrant {
 }
 
 /// The header checks of an agent token's request: no `Origin` or cookie
-/// (403 `forbidden_origin`), one `Authorization`, naming a live token of an
-/// approved bearer grant (401 `invalid_token`). TLS carries the token; no
-/// key signs the request, so there is no signature, skew or nonce.
+/// (403 `forbidden_origin`), a hosted daemon (a local one takes no agent
+/// token: 401 `invalid_token`), one `Authorization`, naming a live token of
+/// an approved bearer grant (401 `invalid_token`). TLS carries the token;
+/// no key signs the request, so there is no signature, skew or nonce.
 async fn bearer_head(s: &AppState, headers: &HeaderMap) -> Result<BearerGrant, Refusal> {
     grant_auth::no_browser(headers)?;
     let token = crate::auth::bearer_agent_token(headers)
+        .filter(|_| s.hosted.is_some())
         .ok_or_else(grant_auth::invalid_token)?
         .to_string();
     let found = s.store_call(move |st| st.bearer_grant(&token)).await?;

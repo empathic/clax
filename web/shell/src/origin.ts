@@ -41,15 +41,16 @@ export async function probeOrigin(origin: string, f: typeof fetch = fetch): Prom
 }
 
 /** A version's content root; under `k/<key>/` when the version has a
- * content key (a hosted daemon serves its content only there). */
-export function contentSrc(id: string, n: number, origin: string | null, key?: string | null): string {
-  return (origin ? `${origin}/v/${n}/` : `/c/${id}/v/${n}/`) + (key ? `k/${key}/` : "");
+ * content key (a hosted daemon serves its content only there); on a
+ * hosted daemon's content origin (`base`), the sandboxed path is there. */
+export function contentSrc(id: string, n: number, origin: string | null, key?: string | null, base?: string | null): string {
+  return (origin ? `${origin}/v/${n}/` : `${base ?? ""}/c/${id}/v/${n}/`) + (key ? `k/${key}/` : "");
 }
 
 /** Where the frame shows the page published at `file`: the version's root
  * for `index.html`, else the file's path under it, each segment encoded. */
-export function pageSrc(id: string, n: number, origin: string | null, file: string, key?: string | null): string {
-  const root = contentSrc(id, n, origin, key);
+export function pageSrc(id: string, n: number, origin: string | null, file: string, key?: string | null, base?: string | null): string {
+  const root = contentSrc(id, n, origin, key, base);
   return file === "index.html" ? root : root + file.split("/").map(encodeURIComponent).join("/");
 }
 

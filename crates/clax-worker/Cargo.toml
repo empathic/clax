@@ -34,6 +34,8 @@ clax-git = { path = "../clax-git" }
 clax-rt = { path = "../clax-rt" }
 clax-server = { path = "../clax-server" }
 console_error_panic_hook = "0.1"
+# Reading a request's body in bounded chunks (`ByteStream`).
+futures-util = "0.3"
 # The owner token and socket keys: `crypto.getRandomValues` on wasm32.
 getrandom = { version = "0.3", features = ["wasm_js"] }
 js-sys = "0.3"

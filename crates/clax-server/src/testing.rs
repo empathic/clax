@@ -271,6 +271,9 @@ pub struct TestServer {
     pub seats: Arc<crate::seats::LiveSeats>,
     /// The live layers' hub.
     pub live_layers: Arc<crate::live_layers::LiveLayers>,
+    /// The server's state, for calling what a host calls beside the router
+    /// (a socket's reopening).
+    pub state: AppState,
     extension_id: String,
     _dir: tempfile::TempDir,
 }
@@ -365,6 +368,34 @@ impl TestServer {
             s.hosted = crate::hosted::Hosted::new(&origin, secret.as_deref())
                 .map(|h| Arc::new(h.with_clock(limits_clock)));
             f(s);
+        };
+        Self::start(
+            dir,
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            clock,
+            hosted,
+            false,
+            None,
+        )
+        .await
+    }
+
+    /// [`TestServer::spawn_hosted`] with artifact content on a content
+    /// origin of its own, `http://[::1]:<its port>`
+    /// ([`crate::hosted::Hosted::with_content_origin`]).
+    pub async fn spawn_hosted_with_content(
+        clock: Arc<ManualClock>,
+        secret: Option<&str>,
+    ) -> TestServer {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = secret.map(str::to_string);
+        let limits_clock: Arc<dyn clax_core::working::Clock> = clock.clone();
+        let hosted = move |s: &mut AppState| {
+            let origin = format!("http://localhost:{}", s.port);
+            let content = format!("http://[::1]:{}", s.port);
+            s.hosted = crate::hosted::Hosted::new(&origin, secret.as_deref())
+                .and_then(|h| h.with_clock(limits_clock).with_content_origin(&content))
+                .map(Arc::new);
         };
         Self::start(
             dir,
@@ -533,6 +564,7 @@ impl TestServer {
         let extension_id = state.extension_id.clone();
         let journal = state.journal.clone();
         let agent_gate = state.agent_gate.clone();
+        let kept_state = state.clone();
         let app = if shutdown {
             crate::build_router_with_shutdown(state, tokio::sync::watch::channel(false).0)
         } else {
@@ -563,6 +595,7 @@ impl TestServer {
             agent_gate,
             seats,
             live_layers,
+            state: kept_state,
             extension_id,
             _dir: dir,
         }

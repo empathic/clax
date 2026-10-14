@@ -858,6 +858,8 @@ mod capture_impl {
         }
 
         /// Runs a command to completion, keeping its standard output.
+        // Dropping `stdout` closes the pipe; wasm32's stand-in holds none.
+        #[cfg_attr(target_arch = "wasm32", allow(clippy::drop_non_drop))]
         fn output(&self, args: &[&str]) -> Result<Out, Outcome> {
             let (child, mut stdout) = self.spawn(args)?;
             let mut buf = Vec::new();
@@ -868,6 +870,8 @@ mod capture_impl {
         }
 
         /// Runs a diff, hashing its output as it streams, up to [`DIFF_CAP`].
+        // Dropping `stdout` closes the pipe; wasm32's stand-in holds none.
+        #[cfg_attr(target_arch = "wasm32", allow(clippy::drop_non_drop))]
         fn diff(&self, args: &[&str]) -> Result<Diff, Outcome> {
             let (child, mut stdout) = self.spawn(args)?;
             let mut hash = Sha256::new();

@@ -57,7 +57,23 @@
     // The base of the URLs the server writes into results, and the origin
     // the stand-in's remotes are built on; empty means http://localhost for
     // the server and the origin each token request came to for remotes.
+    // A hosted instance's public origin (required with HOSTED).
     "PUBLIC_ORIGIN": "",
+    // "1" makes the instance a hosted Clax (README.md): browser sign-in
+    // (/setup with the SETUP_SECRET secret, invites, sign-in links,
+    // guests), each person's rights, agent tokens on /mcp.
+    "HOSTED": "0",
+    // A hosted instance's content origin: a host of its own that serves
+    // artifact content and nothing else; empty serves content on the
+    // public origin, sandboxed (and on <id>.localhost under wrangler dev).
+    "CONTENT_ORIGIN": "",
+    // Live seats per artifact (people, the guests' share of them, agents)
+    // and a people seat's idle time in seconds; empty takes the defaults
+    // (100, 20, 20, 180).
+    "CLAX_LIVE_PEOPLE_SEATS": "",
+    "CLAX_LIVE_GUEST_SEATS": "",
+    "CLAX_LIVE_AGENT_SEATS": "",
+    "CLAX_LIVE_SEAT_IDLE_S": "",
     // "1" turns on the test routes (POST /_worker/hibernate, /do/*).
     "CLAX_TEST_ROUTES": "0",
     // "1" serves /_dev/repos/* (test-repos.mjs passes it with --var).
@@ -66,4 +82,6 @@
   // CLAX_TOKEN, the owner's bearer token, is a secret: `wrangler secret put
   // CLAX_TOKEN` for a deploy, `.dev.vars` or `--var CLAX_TOKEN:<value>` for
   // `wrangler dev`. Unset, the instance makes one and keeps it in its storage.
+  // SETUP_SECRET, which a hosted instance's /setup takes once, is a secret
+  // the same way; unset, setup stays closed.
 }

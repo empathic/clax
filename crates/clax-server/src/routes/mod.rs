@@ -13,7 +13,6 @@ pub mod grants;
 pub mod health;
 pub mod inbox;
 pub mod live;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod live_layers;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mcp;
@@ -21,7 +20,6 @@ pub mod mcp_http;
 pub mod people;
 pub mod perf;
 pub mod questions;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod room;
 pub mod sample;
 pub mod sessions;
@@ -482,9 +480,13 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             .route("/api/artifacts/{aid}/live", get(live_layers::live))
             .merge(mcp)
     };
-    // The stream's WebSocket, which the Durable Object upgrades and holds.
+    // The stream's, the room's and the live layers' WebSockets, which the
+    // Durable Object upgrades and holds.
     #[cfg(target_arch = "wasm32")]
-    let r = r.route("/api/stream", get(stream::open_socket));
+    let r = r
+        .route("/api/stream", get(stream::open_socket))
+        .route("/api/artifacts/{aid}/room", get(room::room_socket))
+        .route("/api/artifacts/{aid}/live", get(live_layers::live_socket));
     // The tool set's JSON-RPC adapter: `/mcp` on a Durable Object, beside
     // rmcp's `/mcp` in the daemon.
     let r = r.merge(mcp_http::router(&state));
@@ -1349,6 +1351,16 @@ mod l10 {
         };
         assert!(gate(mcp).contains("DeniedToGrants") && gate(mcp).contains("RequireToken"));
         assert!(gate(adapter).contains("caller: McpCaller"));
+        // Its extractor takes an agent token only as `verify_layer`
+        // verified it (a hosted daemon's bearer grant), and anything else
+        // only with the token, as `/mcp`.
+        let caller = super::agents::mcp_caller();
+        assert!(
+            caller.contains("is_bearer_grant_request")
+                && caller.contains(".get::<crate::agent::BearerGrant>()")
+                && caller.contains("RequireToken::from_request_parts(parts, state).await?;"),
+            "{caller}"
+        );
     }
 }
 
@@ -1831,6 +1843,15 @@ mod agents {
                 function_any(include_str!("mcp_http.rs"), "require_token"),
             ),
         ]
+    }
+
+    /// The JSON-RPC adapter's gate's extractor ([`super::mcp_http::McpCaller`]).
+    pub(super) fn mcp_caller() -> &'static str {
+        let src = include_str!("mcp_http.rs");
+        let at = &src[src
+            .find("impl axum::extract::FromRequestParts<AppState> for McpCaller")
+            .unwrap()..];
+        &at[..at.find("\n}\n").unwrap()]
     }
 
     /// The signature (to the first `{`) of `fn name` in `src`, public or not.

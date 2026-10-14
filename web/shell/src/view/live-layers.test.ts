@@ -168,7 +168,7 @@ describe("LiveSocket", () => {
   });
 
   it("does not reopen after a close the daemon means for good", () => {
-    for (const code of [4429, 4410, 1008]) {
+    for (const code of [4410, 1008]) {
       const t = manual();
       const { made, make } = fakeSockets();
       const ls = new LiveSocket("ws://x", { welcome() {}, batch() {}, opened() {}, closed() {} }, make, t);
@@ -179,17 +179,20 @@ describe("LiveSocket", () => {
     }
   });
 
-  it("says a 4429 unseats the viewer, with its reason, and opens again on resume", () => {
+  it("reopens after a 4429, as after any close, until paused: the stream decides a spectator", () => {
     const t = manual();
     const { made, make } = fakeSockets();
-    const unseated: string[] = [];
-    const ls = new LiveSocket("ws://x", { welcome() {}, batch() {}, opened() {}, closed() {}, unseated: c => unseated.push(c) }, make, t);
+    const finals: boolean[] = [];
+    const ls = new LiveSocket("ws://x", { welcome() {}, batch() {}, opened() {}, closed: f => finals.push(f) }, make, t);
     ls.start();
     made[0].onclose!({ code: 4429, reason: "no_live_seat" });
-    ls.resume();
-    made[1].onclose!({ code: 4429, reason: "seat_idle" });
-    made[1].onclose!({ code: 4429 });
-    expect(unseated).toEqual(["no_live_seat", "seat_idle"]);
+    expect(finals).toEqual([false]);
+    t.advance(RECONNECT_MS[0]);
+    expect(made.length).toBe(2);
+    made[1].onclose!({ code: 4429, reason: "no_live_seat" });
+    ls.pause();
+    t.advance(60_000);
+    expect(made.length).toBe(2);
     ls.resume();
     expect(made.length).toBe(3);
   });
@@ -197,8 +200,8 @@ describe("LiveSocket", () => {
   it("stays closed while paused, a pending reopen included, until resumed", () => {
     const t = manual();
     const { made, make } = fakeSockets();
-    let unseated = 0;
-    const ls = new LiveSocket("ws://x", { welcome() {}, batch() {}, opened() {}, closed() {}, unseated: () => unseated++ }, make, t);
+    let closes = 0;
+    const ls = new LiveSocket("ws://x", { welcome() {}, batch() {}, opened() {}, closed: () => closes++ }, make, t);
     ls.start();
     made[0].onclose!({ code: 1006 });
     ls.pause();
@@ -209,8 +212,11 @@ describe("LiveSocket", () => {
     ls.pause();
     expect(made[1].closed).toBe(1000);
     // The paused socket's own close is not heard.
+    const before = closes;
     made[1].onclose!({ code: 4429, reason: "seat_idle" });
-    expect(unseated).toBe(0);
+    expect(closes).toBe(before);
+    t.advance(60_000);
+    expect(made.length).toBe(2);
   });
 
   it("is opened on the shell's own origin", () => {

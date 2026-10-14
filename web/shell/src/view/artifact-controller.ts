@@ -47,7 +47,8 @@ export const REOPEN_NAME_MS = 120_000;
 
 export type ArtifactProps = { id: string; pinnedVersion: number | null; file?: string };
 /** `attention` is the viewer's, when the request carried the viewer cookie. */
-export type Loaded = { artifact: Artifact; versions: Version[]; attention?: Attention };
+/** `content_origin`: a hosted daemon's content origin, where every frame is sandboxed. */
+export type Loaded = { artifact: Artifact; versions: Version[]; attention?: Attention; content_origin?: string };
 export type ViewState = {
   /** The version the shell URL pins, null for the latest (a prop). */
   pinnedVersion: number | null;
@@ -427,7 +428,7 @@ export class ArtifactController {
   /** Where the frame shows `file` of the shown version (at its content key
    * on a hosted daemon). */
   private pageAt(file: string, s: ViewState = this.s): string {
-    return pageSrc(this.id, this.shown(s), s.origin ?? null, file, this.version(s)?.content_key);
+    return pageSrc(this.id, this.shown(s), s.origin ?? null, file, this.version(s)?.content_key, s.data?.content_origin);
   }
 
   openCount(s: ViewState = this.s): number {
@@ -777,7 +778,7 @@ export class ArtifactController {
     if (this.disposed) return;
     this.latestKnown = Math.max(this.latestKnown, d.artifact.current_version);
     // The stream opens after the load starts: a working delta already heard is newer.
-    this.set(s => ({ data: d, working: this.workingAt ? s.working : d.artifact.working ?? [], attention, looked: { ...s.looked, ...attention?.looked }, newer: s.newer !== null && s.newer <= d.artifact.current_version ? null : s.newer }));
+    this.set(s => ({ ...(d.content_origin ? { origin: null } : {}), data: d, working: this.workingAt ? s.working : d.artifact.working ?? [], attention, looked: { ...s.looked, ...attention?.looked }, newer: s.newer !== null && s.newer <= d.artifact.current_version ? null : s.newer }));
     this.agentsChanged(d.artifact.participants?.agents ?? []);
     this.viewChanged();
     this.decideChangelog();
@@ -874,11 +875,13 @@ export class ArtifactController {
     const o = artifactOrigin(this.id);
     const decided = (origin: string | null) => {
       if (this.disposed) return;
+      // A hosted daemon's content origin frames every page sandboxed.
+      if (this.s.data?.content_origin) origin = null;
       rememberFrameMode(origin);
       this.set({ origin });
       this.viewChanged();
     };
-    if (!o) { decided(null); return; }
+    if (!o || boot?.artifact.content_origin) { decided(null); return; }
     const cached = cachedOriginOk();
     if (cached !== null) { decided(cached ? o : null); return; }
     if (boot?.frame) {

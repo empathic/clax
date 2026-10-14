@@ -424,7 +424,13 @@ impl Store {
         if !token.starts_with(SESSION_PREFIX) {
             return Ok(None);
         }
-        let hash = sha256_hex(token);
+        self.browser_session_of_hash(&sha256_hex(token))
+    }
+
+    /// [`Store::browser_session`] by the cookie value's SHA-256 (lowercase
+    /// hex): what a host that kept a socket's session by its hash, never
+    /// its cookie, checks when it reopens the socket.
+    pub fn browser_session_of_hash(&self, hash: &str) -> Result<Option<SessionViewer>> {
         self.with_read(|c| {
             let viewer: Option<String> = c
                 .query_row(

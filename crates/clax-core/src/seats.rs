@@ -242,6 +242,31 @@ pub struct Released {
     pub conns: Vec<String>,
 }
 
+/// A held seat as a host keeps it across a restart of the process that
+/// holds the seats (a Durable Object woken from hibernation):
+/// [`Seats::kept`] and [`Seats::restore`]. Its connections are not kept.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct KeptSeat {
+    #[serde(rename = "a")]
+    pub artifact: String,
+    #[serde(rename = "k")]
+    pub key: String,
+    /// `true` for an agents' seat.
+    #[serde(rename = "g", default, skip_serializing_if = "std::ops::Not::not")]
+    pub agent: bool,
+    #[serde(rename = "r", default, skip_serializing_if = "std::ops::Not::not")]
+    pub reserved: bool,
+    #[serde(rename = "q", default, skip_serializing_if = "std::ops::Not::not")]
+    pub guest: bool,
+    /// The latest input, in ms.
+    #[serde(rename = "t")]
+    pub input_ms: i64,
+}
+
+/// The connection key a restored seat is held under until its holder's
+/// own connection takes it ([`Seats::restore`]).
+pub const RESTORED_CONN: &str = "restored:";
+
 /// Every artifact's seats (see the module docs).
 #[derive(Debug, Default)]
 pub struct Seats {
@@ -353,8 +378,53 @@ impl Seats {
             conns: BTreeSet::new(),
         });
         h.reserved |= c.reserved;
+        // A restored seat is its holder's again once they connect.
+        h.conns.retain(|k| !k.starts_with(RESTORED_CONN));
         h.conns.insert(conn.to_string());
         true
+    }
+
+    /// Every seat held now, for a host to keep ([`KeptSeat`]), in a stable
+    /// order (by artifact, then key).
+    pub fn kept(&self) -> Vec<KeptSeat> {
+        let mut out: Vec<KeptSeat> = self
+            .books
+            .iter()
+            .flat_map(|(aid, b)| {
+                b.held.iter().map(move |(key, h)| KeptSeat {
+                    artifact: aid.clone(),
+                    key: key.clone(),
+                    agent: h.pool == Pool::Agents,
+                    reserved: h.reserved,
+                    guest: h.guest,
+                    input_ms: h.input_ms,
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| (&a.artifact, &a.key).cmp(&(&b.artifact, &b.key)));
+        out
+    }
+
+    /// Holds `kept` again, each under [`RESTORED_CONN`] and its key, with
+    /// its latest input, before anyone else can take a seat: a restarted
+    /// host's seated people stay seated while their connections come back
+    /// (the first to take the seat replaces the placeholder), and a seat
+    /// whose holder does not come back is released when it goes idle, as
+    /// any is. A seat already held is left as it is. Agents' seats are not
+    /// held again: none goes idle, so a placeholder whose agent never came
+    /// back would hold its seat for good; an agent's connection takes one
+    /// anew.
+    pub fn restore(&mut self, kept: &[KeptSeat]) {
+        for k in kept.iter().filter(|k| !k.agent) {
+            let book = self.books.entry(k.artifact.clone()).or_default();
+            book.held.entry(k.key.clone()).or_insert_with(|| Held {
+                pool: if k.agent { Pool::Agents } else { Pool::People },
+                reserved: k.reserved,
+                guest: k.guest,
+                input_ms: k.input_ms,
+                conns: BTreeSet::from([format!("{RESTORED_CONN}{}", k.key)]),
+            });
+        }
     }
 
     /// Connection `conn` leaves its seat on `aid`; the seat is released
@@ -503,6 +573,48 @@ impl Seats {
         self.books.get(aid).map_or(0, |b| {
             u32::try_from(b.held.values().filter(|h| h.pool == pool).count()).unwrap_or(u32::MAX)
         })
+    }
+}
+
+#[cfg(test)]
+mod restore_tests {
+    use super::*;
+
+    #[test]
+    fn restored_seats_stay_seated_ahead_of_newcomers_until_their_holders_return_or_idle() {
+        let limits = SeatLimits {
+            people: 1,
+            ..SeatLimits::default()
+        };
+        let mut s = Seats::new(limits);
+        assert!(s.take("a", &Claim::person("p1", false), "stream:1", 1_000));
+        s.touch("a", &person_key("p1"), 2_000);
+        let kept = s.kept();
+        assert_eq!(kept[0].input_ms, 2_000);
+
+        let mut woken = Seats::new(limits);
+        woken.restore(&kept);
+        // A newcomer finds the one seat held; its holder takes it back.
+        assert!(!woken.take("a", &Claim::person("p2", false), "stream:9", 3_000));
+        assert!(woken.take("a", &Claim::person("p1", false), "stream:7", 3_000));
+        assert_eq!(woken.kept(), kept, "the same seat, its input kept");
+        // Leaving with its own connection releases it: no placeholder left.
+        woken.leave("a", "stream:7");
+        assert!(!woken.seated("a", &person_key("p1")));
+
+        // A holder who never returns is released when the seat goes idle.
+        let mut idle = Seats::new(limits);
+        idle.restore(&kept);
+        let gone = idle.release_idle(2_000 + limits.idle_ms);
+        assert_eq!(gone.len(), 1);
+        assert_eq!(gone[0].conns, vec![format!("{RESTORED_CONN}person:p1")]);
+
+        // An agent's seat, which never goes idle, is not held again.
+        let mut agents = Seats::new(limits);
+        assert!(agents.take("a", &Claim::agent("s1"), "s1", 1_000));
+        let mut woken = Seats::new(limits);
+        woken.restore(&agents.kept());
+        assert!(woken.kept().is_empty());
     }
 }
 

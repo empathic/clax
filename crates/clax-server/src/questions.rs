@@ -16,6 +16,28 @@ use tokio::sync::Notify;
 pub trait Sleeper: Send + Sync {
     /// Completes after `d`.
     fn sleep(&self, d: std::time::Duration) -> futures::future::BoxFuture<'static, ()>;
+
+    /// Whether graces run on this sleeper's timers (`true`); `false` leaves
+    /// them to the sweep ([`withdraw_due`], from `AppState::sweep`, which
+    /// `AppState::next_sweep_in` says when to run): a host that must not
+    /// hold a timer open, a Durable Object, whose alarm runs the sweep.
+    fn times_graces(&self) -> bool {
+        true
+    }
+}
+
+/// [`Sleeper`] on Tokio's clock for polls, with graces left to the sweep
+/// ([`Sleeper::times_graces`]).
+pub struct SweptGraces;
+
+impl Sleeper for SweptGraces {
+    fn sleep(&self, d: std::time::Duration) -> futures::future::BoxFuture<'static, ()> {
+        Box::pin(clax_rt::time::sleep(d))
+    }
+
+    fn times_graces(&self) -> bool {
+        false
+    }
 }
 
 /// [`Sleeper`] on Tokio's clock.
@@ -49,6 +71,9 @@ struct Inner {
     /// The generation of each question's pending grace timer; a poll
     /// holding the question, or a later timer, replaces or cancels it.
     armed: HashMap<String, u64>,
+    /// When each swept grace ([`QuestionWaiters::arm_until`]) is due, by
+    /// question, with its generation.
+    due_at: HashMap<String, (u64, chrono::DateTime<chrono::Utc>)>,
     next: u64,
     /// Debug builds: how many of each question's polls are still to end at
     /// once, as if their timers had fired ([`QuestionWaiters::expire`]).
@@ -88,6 +113,7 @@ impl QuestionWaiters {
         e.1 += 1;
         let notify = e.0.clone();
         g.armed.remove(qid);
+        g.due_at.remove(qid);
         drop(g);
         self.changed.notify_waiters();
         Some((
@@ -156,6 +182,42 @@ impl QuestionWaiters {
         let generation = g.next;
         g.armed.insert(qid.to_string(), generation);
         generation
+    }
+
+    /// [`QuestionWaiters::arm`], due at `at`: the sweep withdraws it then
+    /// ([`QuestionWaiters::take_due`]).
+    pub fn arm_until(&self, qid: &str, at: chrono::DateTime<chrono::Utc>) -> u64 {
+        let generation = self.arm(qid);
+        self.lock().due_at.insert(qid.to_string(), (generation, at));
+        generation
+    }
+
+    /// When the next swept grace is due; `None` with none pending.
+    pub fn next_due(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.lock().due_at.values().map(|(_, at)| *at).min()
+    }
+
+    /// The questions whose swept grace is due at `now` and may withdraw
+    /// them ([`QuestionWaiters::due`]); those graces end.
+    pub fn take_due(&self, now: chrono::DateTime<chrono::Utc>) -> Vec<String> {
+        let ready: Vec<(String, u64)> = {
+            let mut g = self.lock();
+            let ready: Vec<(String, u64)> = g
+                .due_at
+                .iter()
+                .filter(|(_, (_, at))| *at <= now)
+                .map(|(q, (n, _))| (q.clone(), *n))
+                .collect();
+            for (q, _) in &ready {
+                g.due_at.remove(q);
+            }
+            ready
+        };
+        ready
+            .into_iter()
+            .filter(|(q, n)| self.due(q, *n))
+            .map(|(q, _)| q)
+            .collect()
     }
 
     /// Whether the grace timer `generation` of `qid` may withdraw it: it is
@@ -294,13 +356,57 @@ pub fn announce_ids(s: &AppState, st: &Store, ids: &[String]) {
 /// `qid` is withdrawn and announced, recording `question.withdraw` (reason
 /// `unwaited`) as `system:daemon`. The grace thus runs from the last time a
 /// poll let go (or from creation, when none has held it).
+///
+/// With a sleeper that leaves graces to the sweep
+/// ([`Sleeper::times_graces`]), no timer runs: the grace is due at the
+/// question clock's now plus the grace, and [`withdraw_due`] withdraws it
+/// then.
 pub fn start_grace(s: AppState, qid: String) {
+    if !s.question_sleeper.times_graces() {
+        let at = s.question_clock.now()
+            + chrono::Duration::from_std(s.question_grace).unwrap_or_default();
+        s.questions.arm_until(&qid, at);
+        return;
+    }
     let generation = s.questions.arm(&qid);
     clax_rt::spawn(async move {
         s.question_sleeper.sleep(s.question_grace).await;
         if !s.questions.due(&qid, generation) {
             return;
         }
+        withdraw_unwaited(&s, qid).await;
+    });
+}
+
+/// Withdraws every question whose swept grace is due now
+/// ([`QuestionWaiters::take_due`]).
+pub async fn withdraw_due(s: &AppState) {
+    for qid in s.questions.take_due(s.question_clock.now()) {
+        withdraw_unwaited(s, qid).await;
+    }
+}
+
+/// Starts a grace for every open hook question no poll holds: what a host
+/// whose polls did not outlive it (a Durable Object rebuilt after
+/// eviction) does at start, so a question whose hook does not poll again
+/// is withdrawn after the grace, as one let go is. A poll that comes back
+/// cancels it.
+///
+/// # Errors
+/// The store's.
+pub async fn arm_open_hooks(s: &AppState) -> Result<(), crate::error::ApiError> {
+    let ids = s.store_call(|st| st.open_hook_question_ids()).await?;
+    for qid in ids {
+        if s.questions.count(&qid) == 0 {
+            start_grace(s.clone(), qid);
+        }
+    }
+    Ok(())
+}
+
+/// Withdraws open hook question `qid` as unwaited and announces it.
+async fn withdraw_unwaited(s: &AppState, qid: String) {
+    {
         let st = s.clone();
         let r = s
             .store
@@ -320,7 +426,7 @@ pub fn start_grace(s: AppState, qid: String) {
             }) => {}
             Err(e) => tracing::warn!(error = %e, "could not withdraw an unwaited question"),
         }
-    });
+    }
 }
 
 /// [`start_grace`] for `qid`, to run when its last poll lets go.
@@ -381,6 +487,20 @@ mod tests {
         let fifth = w.arm("q");
         assert!(!w.due("q", fourth));
         assert!(!w.due("q", fifth), "a poll holds it now");
+    }
+
+    #[test]
+    fn a_swept_grace_is_due_at_its_time_unless_a_poll_held_it() {
+        let w = Arc::new(QuestionWaiters::default());
+        let t0 = chrono::DateTime::from_timestamp(1_000, 0).unwrap();
+        let later = t0 + chrono::Duration::seconds(5);
+        w.arm_until("q", later);
+        w.arm_until("held", later);
+        assert_eq!(w.next_due(), Some(later));
+        assert!(w.take_due(t0).is_empty(), "not yet");
+        drop(w.hold("held", None).unwrap());
+        assert_eq!(w.take_due(later), vec!["q".to_string()]);
+        assert_eq!(w.next_due(), None, "each grace is due once");
     }
 
     #[tokio::test]

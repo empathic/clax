@@ -72,8 +72,10 @@
 //! calls the same sweep functions (`presence::sweep_and_announce`,
 //! `Working`'s and the stream hub's sweeps, the live seats'
 //! [`seats::LiveSeats::sweep`], the agents' drafts'
-//! [`drafts::sweep_and_announce`], grant expiry) and sets the
-//! next alarm for the earliest one due. The request timeout layer is the
+//! [`drafts::sweep_and_announce`], grant expiry, and a question's grace,
+//! which a [`questions::Sleeper`] that does not time graces leaves to the
+//! sweep) and sets the next alarm for the earliest one due. The request
+//! timeout layer is the
 //! daemon's; a Worker's request is bounded by the platform.
 //!
 //! ## Live updates: one fan-out, two outlets
@@ -101,9 +103,19 @@
 //!   caller and sends its `ready`; the client subscribes again and
 //!   refetches, as after a daemon restart.
 //!
-//! Rooms ([`room::Rooms`]) are to follow the same rule (the hubs shared,
-//! only the socket that carries their frames different); the Worker does
-//! not carry their socket yet.
+//! The room capability's socket and the live layers' socket follow the
+//! same rule, the hubs ([`room::Rooms`], [`live_layers::LiveLayers`])
+//! shared and only the outlet different: on wasm32
+//! `routes::room::room_socket` and `routes::live_layers::live_socket` admit
+//! the upgrade as the native handlers do and hand the object a socket it
+//! drives itself (`routes::room::RoomSocket`,
+//! `routes::live_layers::LiveSocket`: the first frames, each message, and
+//! a drain after each event; [`live_layers::LiveLayers::on_queue`] says
+//! when batches were queued), and reopens from its attachment after a
+//! wake (`routes::room::reopen`, `routes::live_layers::reopen`). The seats
+//! they and the streams hold, and the presence reports, are kept by the
+//! object across a wake ([`seats::LiveSeats::kept`],
+//! `clax_core::presence::Presence::kept`).
 //!
 //! ## MCP on the Worker
 //!

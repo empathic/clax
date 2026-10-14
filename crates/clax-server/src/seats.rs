@@ -168,6 +168,17 @@ impl LiveSeats {
         })
     }
 
+    /// Every seat held now ([`Seats::kept`]).
+    pub fn kept(&self) -> Vec<clax_core::seats::KeptSeat> {
+        self.lock().kept()
+    }
+
+    /// Holds `kept` again until their holders' connections take them
+    /// ([`Seats::restore`]).
+    pub fn restore(&self, kept: &[clax_core::seats::KeptSeat]) {
+        self.lock().restore(kept);
+    }
+
     /// Connection `conn` leaves its seat on `aid`.
     pub fn leave(&self, aid: &str, conn: &str) {
         self.lock().leave(aid, conn);

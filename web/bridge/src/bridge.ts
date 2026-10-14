@@ -7,7 +7,9 @@
  * queued until the shell's welcome. When framed, it greets the shell with `clax:hello`
  * (target "*"; artifact, version, and the page's published file, no page
  * content), then takes orders only from `window.parent` at
- * an origin in `shellOrigins(location.href)` and replies to that origin only:
+ * an origin in `shellOrigins` of its tag's `data-origin` (a hosted daemon's
+ * public origin, for content on its content origin) or else of
+ * `location.href`, and replies to that origin only:
  * comment mode (hover outline, element and range picks with anchors and PNG
  * clips within the budget in `clip.ts`, drawn areas clipped to exactly the
  * rectangle, rendered only once the shell's composer for the pick has focus,
@@ -134,7 +136,9 @@ type PartName = keyof Parts;
 
   if (!framed) return; // opened directly: there is no shell
 
-  const origins = shellOrigins(location.href);
+  // A hosted daemon's content origin names the shell's origin in the tag
+  // (`data-origin`): its own URL does not.
+  const origins = shellOrigins(script?.dataset.origin || location.href);
   const box = (t: Element | Range): Box => { const r = t.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; };
 
   /** Where a resolved anchor is now: an area's rectangle projected onto its
@@ -159,7 +163,6 @@ type PartName = keyof Parts;
   // A pick's clip is rendered only once the shell's composer for it has
   // focus (see `pick.ts`).
   const picks = new PickFlow(window, post, meta.version);
-  const pick = (anchor: Anchor, clip: () => Promise<ArrayBuffer>) => picks.start(anchor, clip);
 
   let live: Promise<Live> | null = null;
   /** Runs `f` with comment mode once its part has loaded; calls run in the
@@ -176,8 +179,8 @@ type PartName = keyof Parts;
         const layer: Hook = new part.LiveHook(document, post, clock, parts.live);
         const mode: Mode = new part.CommentMode(document, {
           hover: t => post({ type: "clax:hover", selector: t ? part.cssPath(t instanceof Element ? t : part.blockAncestor(t.commonAncestorContainer, window)) : null, rect: t ? box(t) : null }),
-          pickElement: el => { void pick(part.buildElementAnchor(document, el, meta.file), () => clips().then(c => c.renderTargetClip(el))).finally(() => mode.captured()); },
-          pickRange: r => { void pick(part.buildRangeAnchor(document, r, meta.file), () => clips().then(c => c.renderTargetClip(r))).finally(() => mode.captured()); },
+          pickElement: el => { void picks.start(part.buildElementAnchor(document, el, meta.file), () => clips().then(c => c.renderTargetClip(el))).finally(() => mode.captured()); },
+          pickRange: r => { void picks.start(part.buildRangeAnchor(document, r, meta.file), () => clips().then(c => c.renderTargetClip(r))).finally(() => mode.captured()); },
           // The clip is the drawn rectangle, placed on its element at release,
           // cropped out of a render of that element. The rectangle stays drawn
           // (as capturing) until the pick is posted.
@@ -185,7 +188,7 @@ type PartName = keyof Parts;
             const el = part.containingElement(document, r);
             const anchor = part.buildAreaAnchor(document, r, meta.file, el);
             const at = part.areaBox(anchor.area!, part.boxOf(el));
-            void pick(anchor, () => clips().then(c => c.renderAreaClip(el, at))).finally(() => mode.captured());
+            void picks.start(anchor, () => clips().then(c => c.renderAreaClip(el, at))).finally(() => mode.captured());
           },
           cancel: () => { mode.set(false); post({ type: "clax:cancel" }); },
           live: layer,
