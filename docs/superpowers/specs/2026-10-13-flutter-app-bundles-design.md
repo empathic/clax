@@ -604,9 +604,19 @@ because a failed live run is rolled back (§8.4).
   version it published and the snapshot's document count; a snapshot whose
   count is missing or differs is never restored. A kept snapshot is never
   overwritten: the app takes no update until it is restored or discarded.
-  The person's private `data/users/<id>/` documents are not in it: the
-  token can neither read nor write them (`docs/contract.md`, "The db
-  tools"), so a `migrate.js` that writes them is not undone.
+  The token can neither read nor write the person's private
+  `data/users/<id>/` documents (`docs/contract.md`, "The db tools"), so
+  the live run is also **journaled**: every `db` write of the page, through
+  any handle (the shell makes every one), first sends the document's
+  current value to the app, which appends `{path, before}` to
+  `<support>/snapshots/<aid>.writes` and syncs it before the write goes
+  ahead; a write the app could not journal fails. A rollback puts the
+  owner's documents back from the snapshot and replays the journal's
+  `data/users/` entries, in reverse order, through the migration view as
+  the person (`restoreJournal`: `before` set, or the document deleted when
+  it had none); the journal's other entries are only checked against the
+  snapshot. A journal line cut short by a crash is left out: its write
+  never went ahead.
 - **Restoring it.** `docs:batch` in calls of 50: `delete` each document
   the app now has that the snapshot lacks, then `set` each snapshot
   document with its data (deletes first, to stay under the 5,000-document
