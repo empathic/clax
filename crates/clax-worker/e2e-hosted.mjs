@@ -5,7 +5,8 @@
 // public origin and `http://127.0.0.1:<port>` as the content origin, and one
 // people seat. It checks that
 //
-// - a request body over 96 MiB, declared or chunked, is refused 413;
+// - a request body over 96 MiB, over 16 MiB, or over 256 KiB with no
+//   credential, declared or chunked, is refused 413;
 // - the first person sets up with the secret, invites Sam, who joins in a
 //   second browser, and Sam signs a third browser in with a sign-in link;
 // - Sam mints an agent token in the browser, and an agent with it reaches
@@ -108,15 +109,15 @@ async function tool(base, token, name, args) {
   return { error: r.result?.isError === true, text, json };
 }
 
-/** The status of a POST to `path` whose body is over 96 MiB: declared so
- * by its `Content-Length`, or chunked with no length, written 1 MiB at a
- * time until the answer comes. */
-function oversized(base, path, chunked) {
-  const total = 97 * 1024 * 1024;
+/** The status of a POST to `path` whose body is `mib` MiB: declared so by
+ * its `Content-Length`, or chunked with no length, written 1 MiB at a time
+ * until the answer comes; `extra` headers beside. */
+function oversized(base, path, chunked, mib = 97, extra = {}) {
+  const total = mib * 1024 * 1024;
   const chunk = Buffer.alloc(1024 * 1024, 0x20);
   return new Promise((resolve, reject) => {
     const u = new URL(path, base);
-    const headers = { "content-type": "application/json", origin: base, ...(chunked ? {} : { "content-length": String(total) }) };
+    const headers = { "content-type": "application/json", origin: base, ...extra, ...(chunked ? {} : { "content-length": String(total) }) };
     const req = request({ host: u.hostname, port: u.port, path: u.pathname, method: "POST", headers }, (res) => {
       res.resume();
       req.destroy();
@@ -255,10 +256,25 @@ async function main() {
     const me = await fetch(`${origin}/api/hosted/me`).then((r) => r.json());
     check(me.setup_open === true && me.origin === origin, "the instance is hosted at its public origin, setup open", me);
 
-    // A body over the largest any route takes is refused before it is
-    // read whole, and the instance keeps answering.
+    // A body over the largest any route takes, or than the isolate could
+    // hold beside what it is made into (past 16 MiB with a credential, past
+    // 256 KiB without one), is refused before it is read whole, and the
+    // instance keeps answering. The Worker refuses a declared length; the
+    // object, a chunked body once it is past the limit. Under `wrangler
+    // dev` the request after an answer to a body still being sent can fail
+    // (its proxy loses the connection), so one that may fail follows each.
+    const settle = () => fetch(`${origin}/healthz`).catch(() => undefined);
+    const bearer = { authorization: `Bearer ${TOKEN}` };
+    const anonymous = await oversized(origin, "/api/hosted/setup", false, 1);
+    check(anonymous === 413, "a body declared over 256 KiB with no credential is refused 413", anonymous);
+    check((await oversized(origin, "/api/artifacts", false, 17, bearer)) === 413, "a body declared over 16 MiB is refused 413");
     check((await oversized(origin, "/api/hosted/setup", false)) === 413, "a body declared over 96 MiB is refused 413");
-    check((await oversized(origin, "/api/hosted/setup", true)) === 413, "a chunked body past 96 MiB is refused 413");
+    const chunked16 = await oversized(origin, "/api/artifacts", true, 17, bearer);
+    check(chunked16 === 413, "a chunked body past 16 MiB is refused 413", chunked16);
+    await settle();
+    const chunked96 = await oversized(origin, "/api/hosted/setup", true);
+    check(chunked96 === 413, "a chunked body past 96 MiB is refused 413", chunked96);
+    await settle();
     check((await fetch(`${origin}/healthz`)).ok, "the instance answers after the oversized bodies");
 
     // Setup, with the secret.

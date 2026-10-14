@@ -239,6 +239,8 @@ pub struct InstanceDo {
     /// refresh.
     wrote: Cell<bool>,
     last_optimize: Cell<f64>,
+    /// The request bodies the object holds.
+    bodies: BodyBudget,
 }
 
 fn var(env: &Env, name: &str) -> String {
@@ -561,49 +563,167 @@ fn room_aid(ws: &WebSocket) -> Option<String> {
         .map(|a| a.aid)
 }
 
-/// The most bytes of a request's body the object reads: the largest body
-/// any route takes (a publish's).
-const MAX_BODY: usize = clax_server::routes::artifacts::PUBLISH_BODY_LIMIT;
+/// The most bytes of one request's body the object reads. The daemon's
+/// routes take more (a publish up to 96 MiB), but on the Worker the body,
+/// its parse and what is made of it share one isolate's 128 MB with every
+/// object in it: here a request body is at most 16 MiB, and a push to the
+/// stand-in at most 12 MiB.
+const MAX_BODY: usize = 16 << 20;
+/// The most bytes of the body of a request that carries no credential (no
+/// `Authorization` and no `Cookie`): what setup, sign-in and naming a guest
+/// send, with room to spare.
+const MAX_ANONYMOUS_BODY: usize = 256 << 10;
+/// The most bytes of request bodies the object holds at once, across every
+/// request it is reading or serving: past it a request is refused 429
+/// before more is read, so concurrent bodies cannot exhaust the isolate.
+const BODY_BUDGET: usize = 32 << 20;
 
 /// 413 `body_too_large`, as the router answers a body over a route's limit.
 fn too_large() -> Result<Response> {
-    use axum::response::IntoResponse;
-    Response::try_from(
-        clax_server::error::ApiError::new(
-            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
-            "body_too_large",
-            "the request body is too large",
-        )
-        .into_response(),
+    refused(
+        axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+        "body_too_large",
+        "the request body is too large",
     )
+}
+
+/// 429 `limit_reached`: the body would take the object past [`BODY_BUDGET`].
+fn busy() -> Result<Response> {
+    refused(
+        axum::http::StatusCode::TOO_MANY_REQUESTS,
+        "limit_reached",
+        "the instance is reading too many request bodies; try again shortly",
+    )
+}
+
+fn refused(status: axum::http::StatusCode, code: &'static str, message: &str) -> Result<Response> {
+    use axum::response::IntoResponse;
+    Response::try_from(clax_server::error::ApiError::new(status, code, message).into_response())
+}
+
+/// The bytes of request bodies the object holds (see [`BODY_BUDGET`]).
+#[derive(Default)]
+struct BodyBudget {
+    held: Cell<usize>,
+}
+
+/// The bytes of a [`BodyBudget`] one request holds, given back when it is
+/// dropped: once the request was answered, or when its future is dropped.
+struct BodyHold<'a> {
+    budget: &'a BodyBudget,
+    held: usize,
+}
+
+impl BodyBudget {
+    fn hold(&self) -> BodyHold<'_> {
+        BodyHold {
+            budget: self,
+            held: 0,
+        }
+    }
+}
+
+impl BodyHold<'_> {
+    /// Holds `to` bytes in all (never fewer than it holds); `false`, with
+    /// nothing more held, when that would pass the budget.
+    fn grow_to(&mut self, to: usize) -> bool {
+        if to <= self.held {
+            return true;
+        }
+        let total = self.budget.held.get() + (to - self.held);
+        if total > BODY_BUDGET {
+            return false;
+        }
+        self.budget.held.set(total);
+        self.held = to;
+        true
+    }
+}
+
+impl Drop for BodyHold<'_> {
+    fn drop(&mut self) {
+        let total = self.budget.held.get();
+        self.budget.held.set(total.saturating_sub(self.held));
+    }
+}
+
+/// The most bytes of the body of a request: [`MAX_ANONYMOUS_BODY`] for one
+/// that presents no credential, else [`MAX_BODY`].
+fn body_limit(authorization: bool, cookie: bool) -> usize {
+    if authorization || cookie {
+        MAX_BODY
+    } else {
+        MAX_ANONYMOUS_BODY
+    }
+}
+
+/// `req`'s body limit ([`body_limit`]) and its declared length, when it
+/// declares one; `None` for a request without a body (`GET`, `HEAD`).
+fn declared_body(req: &Request) -> Result<Option<(usize, Option<u64>)>> {
+    if matches!(req.method(), worker::Method::Get | worker::Method::Head) {
+        return Ok(None);
+    }
+    let headers = req.headers();
+    let limit = body_limit(headers.has("authorization")?, headers.has("cookie")?);
+    let declared = headers
+        .get("content-length")?
+        .and_then(|v| v.trim().parse::<u64>().ok());
+    Ok(Some((limit, declared)))
+}
+
+/// 413 for a request whose declared body is over its limit, which the
+/// Worker answers before handing it to the object (an object's answer to a
+/// body it never read breaks the next request on that connection under
+/// `wrangler dev`); `None` otherwise.
+pub(crate) fn refuse_declared(req: &Request) -> Result<Option<Response>> {
+    match declared_body(req)? {
+        Some((limit, Some(n))) if n > limit as u64 => Ok(Some(too_large()?)),
+        _ => Ok(None),
+    }
 }
 
 /// The runtime's request as the router takes it, its body read whole
 /// first: the router may read a body after the response it answers with
 /// is built, and the runtime's stream cannot be read once the response
-/// has been sent. A body over [`MAX_BODY`] is not read past it: the
-/// answer is 413 (`Err`), before anything else sees the request.
+/// has been sent. A body over its limit ([`body_limit`]) is not read past
+/// it: the answer is 413 (`Err`), before anything else sees the request;
+/// one that would take the object past [`BODY_BUDGET`] is 429. The body's
+/// bytes stay held in `hold` until it is dropped.
 async fn http_request(
     mut req: Request,
+    hold: &mut BodyHold<'_>,
 ) -> Result<std::result::Result<axum::http::Request<axum::body::Body>, Response>> {
     use futures_util::StreamExt;
     let method = req.method().to_string();
     let url = req.url()?;
     let mut body = Vec::new();
-    if !matches!(method.as_str(), "GET" | "HEAD") {
-        let declared = req
-            .headers()
-            .get("content-length")?
-            .and_then(|v| v.trim().parse::<u64>().ok());
-        if declared.is_some_and(|n| n > MAX_BODY as u64) {
+    if let Some((limit, declared)) = declared_body(&req)? {
+        if declared.is_some_and(|n| n > limit as u64) {
             return Ok(Err(too_large()?));
         }
+        // The declared length is held before any of it is read, so a body
+        // that would not fit is refused unread, and the buffer never grows.
+        let declared = declared.unwrap_or(0) as usize;
+        if !hold.grow_to(declared) {
+            return Ok(Err(busy()?));
+        }
+        body.reserve_exact(declared);
         // No stream: the request has no body.
         if let Ok(mut chunks) = req.stream() {
             while let Some(chunk) = chunks.next().await {
                 let chunk = chunk?;
-                if body.len() + chunk.len() > MAX_BODY {
+                let len = body.len() + chunk.len();
+                if len > limit {
                     return Ok(Err(too_large()?));
+                }
+                // The buffer grows as a Vec would, within the limit, and
+                // what it takes is held first.
+                if len > body.capacity() {
+                    let grown = len.max(body.capacity() * 2).min(limit);
+                    if !hold.grow_to(grown) {
+                        return Ok(Err(busy()?));
+                    }
+                    body.reserve_exact(grown - body.len());
                 }
                 body.extend_from_slice(&chunk);
             }
@@ -621,8 +741,21 @@ async fn http_request(
 }
 
 impl InstanceDo {
+    /// The server; one whose build failed is built again first, so a
+    /// failure at a start (storage the runtime could not read then) lasts
+    /// only until the next event, not until the object is evicted.
     fn instance(&self) -> std::result::Result<Rc<Instance>, String> {
-        self.inner.borrow().clone()
+        let built = self.inner.borrow().clone();
+        if built.is_ok() {
+            return built;
+        }
+        let again =
+            Instance::build(&self.state, &self.env, &self.content).map_err(|e| e.to_string());
+        if again.is_ok() {
+            self.revived.set(false);
+        }
+        let _ = self.inner.replace(again.clone());
+        again
     }
 
     /// What every event starts with: the sockets the object holds but has
@@ -953,6 +1086,7 @@ impl DurableObject for InstanceDo {
             alarm: Cell::new(None),
             wrote: Cell::new(false),
             last_optimize: Cell::new(now_ms()),
+            bodies: BodyBudget::default(),
         }
     }
 
@@ -974,7 +1108,8 @@ impl DurableObject for InstanceDo {
             self.schedule(&inst).await;
             return out;
         }
-        let req = match http_request(req).await? {
+        let mut hold = self.bodies.hold();
+        let req = match http_request(req, &mut hold).await? {
             Ok(r) => r,
             Err(refused) => return Ok(refused),
         };
@@ -1158,6 +1293,34 @@ impl InstanceDo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_bodies_share_one_budget_and_give_it_back_when_dropped() {
+        let budget = BodyBudget::default();
+        let mut a = budget.hold();
+        assert!(a.grow_to(MAX_BODY));
+        let mut b = budget.hold();
+        assert!(b.grow_to(MAX_BODY));
+        // A third body of any size waits for one of them.
+        let mut c = budget.hold();
+        assert!(!c.grow_to(1));
+        assert_eq!(budget.held.get(), BODY_BUDGET);
+        // Holding what it holds already, or less, takes nothing more.
+        assert!(a.grow_to(MAX_BODY / 2));
+        drop(a);
+        assert!(c.grow_to(MAX_BODY));
+        drop((b, c));
+        assert_eq!(budget.held.get(), 0);
+    }
+
+    #[test]
+    fn a_body_without_a_credential_is_small() {
+        assert_eq!(body_limit(false, false), MAX_ANONYMOUS_BODY);
+        assert_eq!(body_limit(true, false), MAX_BODY);
+        assert_eq!(body_limit(false, true), MAX_BODY);
+        // Within the isolate's 128 MB, beside what the body is made into.
+        const { assert!(BODY_BUDGET <= 32 << 20 && MAX_BODY * 2 <= BODY_BUDGET) };
+    }
 
     #[test]
     fn a_stream_attachment_written_before_kinds_reads_as_a_stream() {

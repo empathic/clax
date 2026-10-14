@@ -198,10 +198,29 @@ pub struct PathEntry {
 /// Every non-tree entry below `tree` (files, symlinks, submodules), with
 /// full paths, in tree order.
 pub async fn walk_tree(repo: &impl Repo, tree: &ObjectId) -> Result<Vec<PathEntry>> {
+    Ok(walk_tree_within(repo, tree, usize::MAX)
+        .await?
+        .unwrap_or_default())
+}
+
+/// [`walk_tree`], or `None` once more than `max` entries (files and trees,
+/// each time a tree is reached) were read: a tree a commit names more than
+/// once is walked each time, so a few small trees can stand for any number
+/// of paths, and a commit from elsewhere (a push) is walked within a bound.
+pub async fn walk_tree_within(
+    repo: &impl Repo,
+    tree: &ObjectId,
+    max: usize,
+) -> Result<Option<Vec<PathEntry>>> {
     let mut out = Vec::new();
+    let mut read = 0usize;
     let mut stack = vec![(String::new(), *tree)];
     while let Some((prefix, id)) = stack.pop() {
         let entries = existing(repo, Some(id)).await?;
+        read = read.saturating_add(entries.len());
+        if read > max {
+            return Ok(None);
+        }
         let mut subtrees = Vec::new();
         for e in entries {
             let path = format!("{prefix}{}", e.name);
@@ -218,7 +237,7 @@ pub async fn walk_tree(repo: &impl Repo, tree: &ObjectId) -> Result<Vec<PathEntr
         stack.extend(subtrees.into_iter().rev());
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(out)
+    Ok(Some(out))
 }
 
 /// The entry at `path` below `tree`, or `None`.

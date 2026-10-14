@@ -93,13 +93,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use clax_core::content::{
-    AssetKey, ContentStore, PushLedger, PushedCommit, PushedContent, PushedFile, Pusher, RepoToken,
-    VersionMeta, VersionWrite, missing, present, superseded,
+    AssetKey, ContentStore, MAX_PUSHED_ENTRIES, PushLedger, PushedCommit, PushedContent,
+    PushedFile, Pusher, RepoToken, VersionMeta, VersionWrite, missing, present, superseded,
 };
 use clax_core::working::Clock;
 use clax_core::{ArtifactId, CoreError, Result};
 use clax_git::object::with_trailers;
-use clax_git::tree::{Changes, build_tree, walk_tree};
+use clax_git::tree::{Changes, build_tree, walk_tree, walk_tree_within};
 use clax_git::versions::{
     commit_refs, fork_at, fork_ref, person_email, repo_name, tag_ref, version_of_tag_ref,
     version_tag,
@@ -203,6 +203,11 @@ const MAX_LEFT: usize = 64;
 /// The most pushed commits one reconcile records one by one; past it,
 /// `main`'s head stands for them all.
 const MAX_PUSHED: usize = 64;
+
+/// The most bytes of changed files one pushed commit's files carry
+/// ([`ContentStore::pushed_files`]): what a request body may carry on the
+/// Worker, whose isolate holds them.
+const PUSHED_BYTES: usize = 16 << 20;
 
 /// Whether an entry of `mode` is a regular file (executable or not).
 fn is_regular(mode: Mode) -> bool {
@@ -787,19 +792,48 @@ impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A>
             }
             None => BTreeMap::new(),
         };
+        let Some(entries) = walk_tree_within(&repo, &tree, MAX_PUSHED_ENTRIES)
+            .await
+            .map_err(core_error)?
+        else {
+            return Err(CoreError::invalid(
+                "push_too_large",
+                format!("the commit's trees hold more than {MAX_PUSHED_ENTRIES} entries"),
+            ));
+        };
         let mut out = Vec::new();
-        for e in walk_tree(&repo, &tree).await.map_err(core_error)? {
+        // Each blob is read once (`None`: it did not fit), and the files
+        // answered carry at most PUSHED_BYTES in all.
+        let mut read: BTreeMap<ObjectId, Option<Vec<u8>>> = BTreeMap::new();
+        let mut total = 0usize;
+        for e in entries {
             let content = if !is_regular(e.mode) {
                 PushedContent::NotAFile
             } else if base_entries.get(&e.path) == Some(&e.id) {
                 PushedContent::Same
             } else {
-                let blob = repo
-                    .read_object(&e.id)
-                    .await
-                    .map_err(core_error)?
-                    .ok_or_else(|| unavailable(format!("Blob {} is missing", e.id)))?;
-                PushedContent::Bytes(blob.data)
+                if let std::collections::btree_map::Entry::Vacant(slot) = read.entry(e.id) {
+                    let blob = if total >= PUSHED_BYTES {
+                        None
+                    } else {
+                        repo.read_object(&e.id)
+                            .await
+                            .map_err(core_error)?
+                            .ok_or_else(|| unavailable(format!("Blob {} is missing", e.id)))
+                            .map(Some)?
+                    };
+                    slot.insert(
+                        blob.map(|b| b.data)
+                            .filter(|d| total + d.len() <= PUSHED_BYTES),
+                    );
+                }
+                match &read[&e.id] {
+                    Some(bytes) if total + bytes.len() <= PUSHED_BYTES => {
+                        total += bytes.len();
+                        PushedContent::Bytes(bytes.clone())
+                    }
+                    _ => PushedContent::TooLarge,
+                }
             };
             out.push(PushedFile {
                 path: e.path,

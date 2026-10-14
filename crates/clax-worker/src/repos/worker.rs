@@ -214,13 +214,16 @@ pub async fn mint_git_token(
 }
 
 /// The server's git remotes ([`super::remotes::WorkerRemotes`]): tokens
-/// from `RepoDO`'s ledger, whichever host keeps the repositories. Fails
+/// from `RepoDO`'s ledger, whichever host keeps the repositories; pushes
+/// are credited to their tokens' holders only through the stand-in, which
+/// sees them (Cloudflare Artifacts' pushed events name no pusher). Fails
 /// without the `REPO` binding.
 pub fn git_remotes(env: &Env) -> Result<Arc<dyn clax_server::git_remotes::GitRemotes>> {
     Ok(Arc::new(super::remotes::WorkerRemotes {
         tokens: DoTokens {
             transport: repo_do(env)?,
         },
+        names_pushers: matches!(repo_store(env)?, RepoStore::Memory),
     }))
 }
 
@@ -409,13 +412,12 @@ impl DurableObject for RepoDO {
         }
         if path.starts_with("/git/") && self.serving {
             let authorization = req.headers().get("authorization")?;
+            // One time for the whole request: the token that was live when
+            // it was checked names the push's pusher, however long the
+            // body took, never the owner because it lapsed meanwhile.
+            let now = self.service.now_ms();
             // The token first, so no body is read for a caller without one.
-            match authorize(
-                &self.service.host,
-                &path,
-                authorization.as_deref(),
-                self.service.now_ms(),
-            ) {
+            match authorize(&self.service.host, &path, authorization.as_deref(), now) {
                 Ok(Some(_)) => {}
                 Ok(None) => return http_response(clax_git::server::unauthorized()),
                 Err(e) => return Response::error(format!("{e}\n"), 503),
@@ -437,7 +439,7 @@ impl DurableObject for RepoDO {
                     body: &body,
                 },
                 &self.options,
-                self.service.now_ms(),
+                now,
             )
             .await;
             // Entered before the next await, so no reconcile reads the
@@ -447,7 +449,7 @@ impl DurableObject for RepoDO {
                 &path,
                 authorization.as_deref(),
                 &served.pushed,
-                self.service.now_ms(),
+                now,
             );
             match noted {
                 Ok(Some((artifact, holder))) => self.record_push(&artifact, &holder).await,

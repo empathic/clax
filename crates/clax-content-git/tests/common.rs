@@ -176,6 +176,37 @@ impl Git {
             .to_string()
     }
 
+    /// Runs git with `input` on its stdin, which must succeed; answers its
+    /// trimmed stdout.
+    pub async fn text_in(&self, cwd: &Path, args: &[&str], input: &[u8]) -> String {
+        let file = tempfile::tempfile().expect("tempfile");
+        std::io::Write::write_all(&mut &file, input).expect("write the input");
+        std::io::Seek::rewind(&mut &file).expect("rewind the input");
+        let mut c = tokio::process::Command::new("git");
+        c.current_dir(cwd)
+            .args(args)
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", self.home.path())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .kill_on_drop(true)
+            .stdin(std::process::Stdio::from(file));
+        let out = tokio::time::timeout(HANG, c.output())
+            .await
+            .unwrap_or_else(|_| panic!("git {args:?} hung"))
+            .expect("run git");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout)
+            .expect("utf8")
+            .trim()
+            .to_string()
+    }
+
     /// Runs git, which must succeed; answers its stdout as bytes.
     pub async fn bytes(&self, cwd: &Path, args: &[&str]) -> Vec<u8> {
         let out = self.run(cwd, args).await;

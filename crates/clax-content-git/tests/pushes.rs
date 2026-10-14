@@ -908,3 +908,133 @@ async fn a_fork_holds_none_of_the_sources_pushes_beyond_the_forked_version() {
     // The source's push is still its own to record.
     assert_eq!(f.content.pushed_commits(&f.id, 1).await.unwrap().len(), 1);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn one_blob_at_many_paths_is_read_once_and_files_past_the_read_bytes_are_left_out() {
+    let f = fixture().await;
+    // A 1 MiB file, named at 40 paths: a small push that stands for 40 MiB.
+    f.write("big.txt", &"a".repeat(1 << 20));
+    let blob = f
+        .git
+        .text(&f.clone, &["hash-object", "-w", "big.txt"])
+        .await;
+    std::fs::remove_file(f.clone.join("big.txt")).unwrap();
+    for i in 0..40 {
+        f.git
+            .text(
+                &f.clone,
+                &[
+                    "update-index",
+                    "--add",
+                    "--cacheinfo",
+                    &format!("100644,{blob},p{i:02}.txt"),
+                ],
+            )
+            .await;
+    }
+    // The index as it is: the copies are in no working tree.
+    f.git
+        .text(
+            &f.clone,
+            &[
+                "-c",
+                "user.name=Rae",
+                "-c",
+                "user.email=rae@example.com",
+                "commit",
+                "-qm",
+                "Many copies",
+            ],
+        )
+        .await;
+    f.push().await;
+    let recorded =
+        f.st.reconcile_pushes_async(DAEMON, &f.id, &Pusher::default())
+            .await
+            .unwrap();
+    assert_eq!(recorded.len(), 1);
+    let v = &recorded[0].1;
+    let copies = v.files.keys().filter(|p| p.starts_with('p')).count();
+    assert_eq!(
+        copies,
+        16,
+        "16 MiB of the 40 are read: {:?}",
+        v.files.keys()
+    );
+    let note = v.note.as_deref().unwrap();
+    assert!(note.starts_with("24 files were not taken"), "{note}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_commit_whose_trees_name_too_many_paths_is_refused_unread() {
+    let f = fixture().await;
+    let dir = f.clone.clone();
+    let blob = f
+        .git
+        .text_in(&dir, &["hash-object", "-w", "--stdin"], b"x")
+        .await;
+    // Two small trees: 120 names of a tree of 100 files, 12,000 paths.
+    let leaf: String = (0..100)
+        .map(|i| format!("100644 blob {blob}\tf{i}\n"))
+        .collect();
+    let leaf = f.git.text_in(&dir, &["mktree"], leaf.as_bytes()).await;
+    let mid: String = (0..120)
+        .map(|i| format!("040000 tree {leaf}\td{i}\n"))
+        .collect();
+    let mid = f.git.text_in(&dir, &["mktree"], mid.as_bytes()).await;
+    let index = f
+        .git
+        .text_in(&dir, &["hash-object", "-w", "--stdin"], b"<p>many</p>")
+        .await;
+    let root = format!("100644 blob {index}\tindex.html\n040000 tree {mid}\tx\n");
+    let root = f.git.text_in(&dir, &["mktree"], root.as_bytes()).await;
+    let commit = f
+        .git
+        .text(
+            &dir,
+            &[
+                "-c",
+                "user.name=Rae",
+                "-c",
+                "user.email=rae@example.com",
+                "commit-tree",
+                &root,
+                "-p",
+                "HEAD",
+                "-m",
+                "Many paths",
+            ],
+        )
+        .await;
+    f.git
+        .text(&dir, &["push", "-q", "origin", &format!("{commit}:main")])
+        .await;
+
+    for _ in 0..2 {
+        assert!(
+            f.st.reconcile_pushes_async(DAEMON, &f.id, &Pusher::default())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+    assert_eq!(f.versions().len(), 1);
+    assert_eq!(
+        f.refusals(),
+        [(commit, "push_too_large".to_string())],
+        "named once, however often it is reconciled"
+    );
+    let blocked =
+        f.st.publish_version_async(DAEMON, &f.id, publish("<p>mine</p>", Some(1)), None)
+            .await;
+    assert!(
+        matches!(
+            &blocked,
+            Err(CoreError::Invalid {
+                code: "push_refused",
+                ..
+            })
+        ),
+        "{blocked:?}"
+    );
+}

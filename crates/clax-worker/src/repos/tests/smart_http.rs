@@ -34,6 +34,8 @@ async fn route(
     body: Bytes,
 ) -> Response {
     let header = |k: &str| headers.get(k).and_then(|v| v.to_str().ok());
+    // As RepoDO does: one time for the whole request.
+    let now = service.now_ms();
     let served = serve_git(
         &service.host,
         &GitHttpRequest {
@@ -45,7 +47,7 @@ async fn route(
             body: &body,
         },
         &serve_options(),
-        service.now_ms(),
+        now,
     )
     .await;
     // As RepoDO does: whom the push's token names, against main's commit.
@@ -54,7 +56,7 @@ async fn route(
         uri.path(),
         header("authorization"),
         &served.pushed,
-        service.now_ms(),
+        now,
     )
     .unwrap();
     let mut b = Response::builder().status(served.response.status);

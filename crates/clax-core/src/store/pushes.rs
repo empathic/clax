@@ -38,9 +38,12 @@
 //! Publish's rules hold: a path [`check_path`] refuses, a path that
 //! collides with one kept before it (the same name in another letter case,
 //! or a file over a directory), a file over [`MAX_FILE_BYTES`], changed
-//! files past [`MAX_BODY_BYTES`] in all, and anything but a regular file
-//! (a symbolic link, a submodule) are left out of the version (they stay
-//! in git), and its note names them. The note is the commit's message,
+//! files past [`MAX_BODY_BYTES`] in all, or past what the content store
+//! reads of one commit ([`PushedContent::TooLarge`]), and anything but a
+//! regular file (a symbolic link, a submodule) are left out of the version
+//! (they stay in git), and its note names them. A commit whose trees hold
+//! more than [`crate::content::MAX_PUSHED_ENTRIES`] is refused as a commit
+//! whose pusher may not publish is (`push_too_large`). The note is the commit's message,
 //! after a line saying so when the commit does not simply follow the
 //! version below it.
 
@@ -49,7 +52,7 @@ use std::collections::BTreeMap;
 use rusqlite::{OptionalExtension, params};
 
 use super::Store;
-use super::artifacts::{VersionStep, collide};
+use super::artifacts::VersionStep;
 use crate::audit::{AuditCtx, AuditKind, AuditRecord};
 use crate::content::{PushedCommit, PushedContent};
 use crate::model::{Artifact, FileMeta, Version};
@@ -151,6 +154,17 @@ impl Store {
                 .record_push(ctx, id, current, c, person, session.as_deref(), &refused)
                 .await
             {
+                // Its trees are past what is read of one commit: refused,
+                // as a commit whose pusher may not publish is.
+                Err(CoreError::Invalid {
+                    code: "push_too_large",
+                    ..
+                }) => {
+                    let by = [Author::of_token(pusher.person.as_deref())];
+                    self.revoke_blind_tokens(id, &by).await?;
+                    self.record_push_refused(ctx, id, &c.commit, pusher, "push_too_large")?;
+                    refused.push(c.commit.clone());
+                }
                 Ok((a, v)) => {
                     current = v.n;
                     refused.clear();
@@ -330,18 +344,20 @@ impl Store {
         let mut files = self.content.pushed_files(id, &c.commit, current).await?;
         files.sort_by(|a, b| a.path.cmp(&b.path));
         let mut changes: BTreeMap<String, FileChange> = BTreeMap::new();
-        let mut kept: Vec<String> = Vec::new();
+        let mut kept = KeptPaths::default();
         let mut skipped: Vec<String> = Vec::new();
         let mut total: u64 = 0;
         for f in files {
-            if check_path(&f.path).is_err() || kept.iter().any(|k| collide(k, &f.path)) {
+            if check_path(&f.path).is_err() || kept.collides(&f.path) {
                 skipped.push(f.path);
                 continue;
             }
             match f.content {
-                PushedContent::Same if prev.contains_key(&f.path) => kept.push(f.path),
+                PushedContent::Same if prev.contains_key(&f.path) => kept.keep(f.path),
                 // Left out of the version below as well.
-                PushedContent::Same | PushedContent::NotAFile => skipped.push(f.path),
+                PushedContent::Same | PushedContent::NotAFile | PushedContent::TooLarge => {
+                    skipped.push(f.path)
+                }
                 PushedContent::Bytes(bytes) => {
                     let size = bytes.len() as u64;
                     if size > MAX_FILE_BYTES || total + size > MAX_BODY_BYTES {
@@ -350,7 +366,7 @@ impl Store {
                     }
                     total += size;
                     let content_type = content_type_for(&f.path);
-                    kept.push(f.path.clone());
+                    kept.keep(f.path.clone());
                     changes.insert(
                         f.path,
                         FileChange::Put(DecodedFile {
@@ -370,7 +386,7 @@ impl Store {
         // files it carries unchanged.
         let mut authors = vec![Author::of_token(person.as_deref())];
         if let Some(v) = &below {
-            for path in kept.iter().filter(|p| !changes.contains_key(*p)) {
+            for path in kept.paths.iter().filter(|p| !changes.contains_key(*p)) {
                 for a in file_authors(&v.authors, path) {
                     if !authors.contains(&a) {
                         authors.push(a);
@@ -411,6 +427,44 @@ impl Store {
         )
         .await
         .map(|(a, v, ())| (a, v))
+    }
+}
+
+/// The paths a pushed version keeps, in path order, and what tells whether
+/// a later path collides with one of them (`artifacts::collide`) without comparing
+/// it with each.
+#[derive(Default)]
+struct KeptPaths {
+    paths: std::collections::BTreeSet<String>,
+    /// Each kept path, in lowercase.
+    files: std::collections::HashSet<String>,
+    /// Each directory above a kept path, in lowercase.
+    dirs: std::collections::HashSet<String>,
+}
+
+impl KeptPaths {
+    fn keep(&mut self, path: String) {
+        let lower = path.to_ascii_lowercase();
+        for (i, _) in lower.match_indices('/') {
+            self.dirs.insert(lower[..i].to_string());
+        }
+        self.files.insert(lower);
+        self.paths.insert(path);
+    }
+
+    fn contains(&self, path: &str) -> bool {
+        self.paths.contains(path)
+    }
+
+    /// Whether `path` collides with a kept path: the same in another
+    /// letter case, a directory above one, or below one.
+    fn collides(&self, path: &str) -> bool {
+        let lower = path.to_ascii_lowercase();
+        self.files.contains(&lower)
+            || self.dirs.contains(&lower)
+            || lower
+                .match_indices('/')
+                .any(|(i, _)| self.files.contains(&lower[..i]))
     }
 }
 
