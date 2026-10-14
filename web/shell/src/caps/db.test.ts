@@ -51,6 +51,28 @@ describe("db handler", () => {
     expect(dbError(403, { code: "not_declared" }, true).code).toBe("revoked");
   });
 
+  it("refuses a spectator's writes as unavailable, without a request, and still reads", async () => {
+    // A spectator's page (spec 2026-10-11-clax-dev-hosted-design §16.1).
+    let spectating = true;
+    const requests: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit = {}) => {
+      requests.push(init.method ?? "GET");
+      return json({ doc: doc("tasks/t1", 1), created: true });
+    }));
+    const env = { aid: "7q3k9mzx2b4t", token: null, post: () => {}, spectating: () => spectating } as unknown as CapEnv;
+    const h = dbHandler(env, null as never);
+    await expect(h.call("set", ["tasks/t1", { a: 1 }])).rejects.toMatchObject({ code: "unavailable", message: expect.stringContaining("join live") });
+    await expect(h.call("delete", ["tasks/t1"])).rejects.toMatchObject({ code: "unavailable" });
+    expect(await h.call("get", ["tasks/t1"])).toMatchObject({ path: "tasks/t1" });
+    expect(requests).toEqual(["GET"]);
+    // Seated again, the page writes.
+    spectating = false;
+    await h.call("set", ["tasks/t1", { a: 1 }]);
+    expect(requests).toEqual(["GET", "PUT"]);
+    // A refusal the daemon makes (the seat went meanwhile) is unavailable too.
+    expect(dbError(403, { code: "spectator", message: "viewing" }, true).code).toBe("unavailable");
+  });
+
   it("rejects revoked, not null, when a read finds the artifact no longer declares db", async () => {
     const { h } = setup(null, () => json({ error: { code: "not_declared", message: "this artifact does not declare the db capability" } }, 403));
     await expect(h.call("get", ["tasks/t1"])).rejects.toMatchObject({ code: "revoked" });

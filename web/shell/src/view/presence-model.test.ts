@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { personLine, roster, stateFor } from "./presence-model";
+import { personLine, roster, stateFor, viewingLabel } from "./presence-model";
 
 describe("presence-model", () => {
   it("is here while visible and active, away when hidden or idle 5 minutes", () => {
@@ -15,5 +15,13 @@ describe("presence-model", () => {
     const p = (id: string, state: "here" | "away" | "gone") => ({ public_id: id, display_name: id, state, where: null, since: "x" });
     expect(roster([], [p("u_a", "here"), p("u_b", "away")]).map(x => x.public_id)).toEqual(["u_a", "u_b"]);
     expect(roster([{ public_id: "u_a", display_name: "A", seen: 2 }], [p("u_a", "here"), p("u_c", "gone")])).toEqual([{ public_id: "u_a", display_name: "A", seen: 2 }]);
+  });
+});
+
+describe("viewingLabel", () => {
+  it("counts everyone viewing once more than the viewer is", () => {
+    expect(viewingLabel(null)).toBeNull();
+    expect(viewingLabel(1)).toBeNull();
+    expect(viewingLabel(7)).toBe("7 viewing");
   });
 });

@@ -75,6 +75,8 @@ mod api_questions;
 mod api_room;
 #[cfg(any(not(clax_split), clax_split = "api_sample"))]
 mod api_sample;
+#[cfg(any(not(clax_split), clax_split = "api_seats"))]
+mod api_seats;
 #[cfg(any(not(clax_split), clax_split = "api_sessions"))]
 mod api_sessions;
 #[cfg(any(not(clax_split), clax_split = "api_stream"))]

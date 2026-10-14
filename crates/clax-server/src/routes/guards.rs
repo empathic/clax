@@ -220,6 +220,7 @@ mod l10 {
             "sessions" => include_str!("sessions.rs"),
             "shell" => include_str!("../shell/mod.rs"),
             "sites" => include_str!("sites.rs"),
+            "snapshot" => include_str!("snapshot.rs"),
             "stream" => include_str!("stream.rs"),
             "threads" => include_str!("threads.rs"),
             "token" => include_str!("token.rs"),

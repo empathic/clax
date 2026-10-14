@@ -116,6 +116,17 @@ export type ViewState = {
   /** This artifact's calls to Claude today and the cap, once the owner's
    * browser has asked the daemon (null until then, and on a LAN view). */
   sampleCalls: { n: number; cap: number | null } | null;
+  /** The daemon had no live seat for this viewer (spec
+   * 2026-10-11-clax-dev-hosted-design §16.1): the view is read-only and
+   * kept current by the snapshot. `code` is why (`no_live_seat`, or
+   * `seat_idle` once a seat was released for want of input); `joinable`
+   * once a snapshot says a seat this viewer may take is free. Null while
+   * the view is live. */
+  spectator: { code: string; joinable: boolean } | null;
+  /** How many are viewing the artifact, spectators included (spec
+   * 2026-10-11-clax-dev-hosted-design §16.3), as the latest presence report
+   * or snapshot said; null until one did. */
+  viewing: number | null;
 };
 
 /** The artifact is loaded and the frame mode decided: the islands show. */
@@ -286,6 +297,7 @@ export class ArtifactController {
       notice: null, hint: null, me: null, ask: null, file: startFile, sheet: null, working: [], attention: null,
       decided: null, rally: false, menu: null, askName: null, looked: {}, presence: [], shareWhere: readShareWhere(),
       agents: [], selection: EMPTY_SELECTION, batchNote: "", batchBusy: false, sendTo: null, sampleCalls: null,
+      spectator: null, viewing: null,
     });
     this.threadLoad = new ThreadSync(f => this.set(s => ({ threads: f(s.threads) })));
     this.ownPublish.settled = () => {
@@ -600,6 +612,7 @@ export class ArtifactController {
           files: data.versions.find(v => v.n === shown)?.files,
           sampleStatus: token === null ? undefined : () => status ??= getSampleStatus(this.id, token),
           onSampleCalls: (n: number, cap: number | null) => this.set({ sampleCalls: { n, cap } }),
+          spectating: () => this.s.spectator !== null,
         };
       }));
       // It hears of the UI in the next reaction pass, as the effect that
@@ -758,7 +771,7 @@ export class ArtifactController {
   private startPresence(): void {
     void import("./presence-reporter").then(m => {
       if (this.disposed) return;
-      const r = new m.PresenceReporter(this.id, () => this.s, s => !!s.me && viewReady(s) && !s.deleted, people => this.set({ presence: people }));
+      const r = new m.PresenceReporter(this.id, () => this.s, s => !!s.me && viewReady(s) && !s.deleted, p => this.set({ presence: p.people, ...p.viewing !== null && { viewing: p.viewing } }));
       this.reporter = r;
       this.life.defer(() => r.dispose());
       r.fetch();
@@ -877,6 +890,7 @@ export class ArtifactController {
     this.live = false;
     this.life.dispose();
     this.cancelFlush();
+    this.stopSpectating();
     this.stream?.stop();
     this.stream = null;
     // A deferred publish belongs to this artifact: dropped before the host is
@@ -1273,6 +1287,8 @@ export class ArtifactController {
         beginThread: tid => this.threadLoad.beginThread(tid),
         event: e => m.onArtifactEvent(this, e),
         page: e => this.host?.onEvent(e),
+        spectate: code => this.spectate(code),
+        seated: () => this.seated(),
         disposed: () => this.disposed,
       });
       this.watchDocs();
@@ -1283,6 +1299,62 @@ export class ArtifactController {
     const first = () => { if (this.live && !this.stream) void open(false); };
     void getViewer().then(first, first);
     this.life.defer(onViewer(() => { if (this.live && this.stream) void open(true); }));
+  }
+
+  // ---- spectator mode (spec 2026-10-11-clax-dev-hosted-design §16.1, §16.2) ----
+
+  /** Stops the snapshot poll, while one runs. */
+  private stopSpectating: () => void = () => {};
+  private spectating = false;
+
+  /** @internal The daemon refused this viewer a live seat, or released it
+   * (`code`): the view turns read-only and polls the snapshot. */
+  spectate(code: string): void {
+    if (this.disposed) return;
+    this.set(s => ({ spectator: { code, joinable: s.spectator?.joinable ?? false }, commenting: false, selection: EMPTY_SELECTION, draft: null }));
+    if (this.spectating) return;
+    this.spectating = true;
+    let stop: (() => void) | null = null;
+    let gone = false;
+    this.stopSpectating = () => { gone = true; stop?.(); this.spectating = false; this.stopSpectating = () => {}; };
+    void import("./spectator").then(m => {
+      if (gone || this.disposed) return;
+      stop = m.watchSnapshots({
+        id: this.id,
+        me: () => this.s.me,
+        code: () => this.s.spectator?.code ?? null,
+        takeSnapshot: (snap, joinable) => this.takeSnapshot(snap, joinable),
+        joinLive: () => this.joinLive(),
+      });
+    }, () => {});
+  }
+
+  /** @internal The live topics are live: the view holds a seat again. */
+  seated(): void {
+    if (!this.s.spectator) return;
+    this.stopSpectating();
+    this.set({ spectator: null });
+  }
+
+  /** Join live: asks the daemon for a live seat again. */
+  joinLive(): void {
+    if (!this.s.spectator) return;
+    this.set(s => ({ spectator: s.spectator && { ...s.spectator, joinable: false } }));
+    this.stream?.rejoin();
+  }
+
+  /** @internal A spectator's snapshot: its threads, presence and working
+   * replace the view's, and a newer version is swapped in (on a view of
+   * the latest) or offered (on a pinned one). */
+  takeSnapshot(snap: { artifact: Artifact; versions: Version[]; threads: Thread[]; presence: PresenceView[]; viewing?: number }, joinable: boolean): void {
+    const sp = this.s.spectator;
+    if (!sp || snap.artifact.id !== this.id) return;
+    this.threadLoad.begin()(snap.threads);
+    this.set({ presence: snap.presence, working: snap.artifact.working ?? [], spectator: { ...sp, joinable }, ...typeof snap.viewing === "number" && { viewing: snap.viewing } });
+    const n = snap.artifact.current_version;
+    if (n <= this.latestKnown || !this.s.data) return;
+    if (this.pinnedVersion === null) this.loaded({ ...this.s.data, artifact: snap.artifact, versions: snap.versions }, this.s.attention);
+    else { this.latestKnown = n; this.set({ newer: n }); }
   }
 
   /** The `docs` topic, once the stream is open, for a page that declares `db`. */
@@ -1362,7 +1434,7 @@ export class ArtifactController {
   // ---- intents ----
 
   /** The Comment button and C; nothing on a live page, whose comments come from Chrome with the Clax extension. */
-  toggleComment(): void { if (!this.s.data?.artifact.live) { this.resumeAfter = null; this.set(s => ({ commenting: !s.commenting })); } }
+  toggleComment(): void { if (!this.s.data?.artifact.live && !this.s.spectator) { this.resumeAfter = null; this.set(s => ({ commenting: !s.commenting })); } }
   togglePanel(): void { this.set(s => ({ panel: !s.panel })); }
 
   closeSheet(): void { this.set({ sheet: null }); }

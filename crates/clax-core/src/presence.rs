@@ -237,6 +237,14 @@ impl Presence {
         changed
     }
 
+    /// Drops `public_id` from `aid` (a viewer who is not to be listed there:
+    /// a spectator, beyond its live seats); returns whether it was listed.
+    pub fn leave(&self, aid: &str, public_id: &str) -> bool {
+        let mut map = self.entries.lock().unwrap();
+        map.remove(&(aid.to_string(), public_id.to_string()))
+            .is_some()
+    }
+
     /// Drops `public_id` from every artifact (a viewer that no longer exists:
     /// it was folded into the owner); returns the artifacts it was on.
     pub fn forget(&self, public_id: &str) -> Vec<String> {
@@ -336,6 +344,17 @@ mod tests {
         c.advance(600);
         p.sweep();
         assert!(p.for_artifact("a1").is_empty());
+    }
+
+    #[test]
+    fn leave_drops_a_viewer_from_one_artifact_only() {
+        let (_, p) = reg();
+        p.report("a1", "u_a", Some("Alex"), State::Here, None);
+        p.report("a2", "u_a", Some("Alex"), State::Here, None);
+        assert!(p.leave("a1", "u_a"));
+        assert!(!p.leave("a1", "u_a"), "listed no more");
+        assert!(p.for_artifact("a1").is_empty());
+        assert_eq!(p.for_artifact("a2").len(), 1);
     }
 
     #[test]

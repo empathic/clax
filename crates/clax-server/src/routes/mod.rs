@@ -23,6 +23,7 @@ pub mod room;
 pub mod sample;
 pub mod sessions;
 pub mod sites;
+pub mod snapshot;
 pub mod stream;
 pub mod threads;
 pub mod token;

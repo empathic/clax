@@ -329,6 +329,7 @@ pub async fn serve(
         rooms: Arc::new(clax_realtime::room::Rooms::default()),
         sample: cfg.sample.clone(),
         stream: clax_realtime::stream::Hub::new(live_ids.clone()),
+        seats: clax_http::seats::LiveSeats::from_env(Arc::new(clax_core::working::SystemClock)),
         live_ids,
         ext_creds,
         extension_id: clax_core::extension::extension_id_in_effect(cfg.home.root()),
@@ -389,6 +390,7 @@ pub async fn serve(
         })
     });
     state.stream.listen(&state.events);
+    clax_http::seats::install(&state);
     clax_http::views::inbox::listen(&state);
     clax_http::views::approval::listen(&state);
     crate::routes::people::listen(&state);
@@ -400,6 +402,7 @@ pub async fn serve(
     let (state_working, state_events) = (state.working.clone(), state.events.clone());
     let state_presence = state.presence.clone();
     let state_stream = state.stream.clone();
+    let sweep_seats = state.seats.clone();
     let app = crate::router::build_router_with_shutdown(state, shutdown_tx.clone());
     if let Some(tx) = ready {
         let _ = tx.send(info.clone());
@@ -501,6 +504,7 @@ pub async fn serve(
                 .await;
             clax_realtime::presence::sweep_and_announce(&state_presence, &sweep_events);
             state_stream.sweep();
+            sweep_seats.sweep();
         }
     });
 

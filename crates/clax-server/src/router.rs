@@ -5,7 +5,7 @@
 
 use crate::routes::{
     approvals, artifacts, assets, connect, content, docs, events, extension, feedback, grants,
-    health, inbox, live, mcp, people, perf, questions, room, sample, sessions, sites, stream,
+    health, inbox, live, mcp, people, perf, questions, room, sample, sessions, sites, snapshot, stream,
     threads, token, toolpath, viewers, watches, working,
 };
 use crate::shell;
@@ -245,6 +245,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/api/artifacts/{aid}/docs:acquire", post(docs::acquire))
         .route("/api/artifacts/{aid}/working", get(working::for_artifact))
         .route("/api/artifacts/{aid}/presence", get(artifacts::presence))
+        .route("/api/artifacts/{aid}/snapshot", get(snapshot::snapshot))
         .route("/api/admin/perf/calibrate", post(perf::calibrate))
         .route("/api/admin/perf/verify", get(perf::verify_times))
         .route("/api/sessions/{id}/working", get(working::for_session))

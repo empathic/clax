@@ -104,6 +104,9 @@ pub struct AppState {
     /// The multiplexed event stream's topics and streams (`/api/stream`);
     /// fed by `events` once [`clax_realtime::stream::Hub::listen`] has run.
     pub stream: Arc<clax_realtime::stream::Hub>,
+    /// Every artifact's live seats (spec 2026-10-11-clax-dev-hosted-design
+    /// §16.1), held by the streams once [`crate::seats::install`] has run.
+    pub seats: Arc<crate::seats::LiveSeats>,
     /// Every live page's artifact ID (spec 2026-10-05-chrome-overlay-design
     /// L10), for hiding them from the LAN and serving their snapshots.
     pub live_ids: Arc<clax_realtime::live::LiveIds>,

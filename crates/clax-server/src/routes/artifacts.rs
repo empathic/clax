@@ -438,8 +438,10 @@ pub struct PatchBody {
     capabilities: Option<Value>,
 }
 
-/// `GET /api/artifacts/<aid>/presence` (no token): `{people}`, the viewers
-/// here, away or recently gone (spec §10, "Presence"), never a cookie. An
+/// `GET /api/artifacts/<aid>/presence` (no token): `{people, viewing}`, the
+/// viewers here, away or recently gone (spec §10, "Presence"), never a
+/// cookie, and how many are viewing: the people seated and the spectators
+/// seen in the last 15 s (spec 2026-10-11-clax-dev-hosted-design §16.3). An
 /// agent reads a viewer who is not connected as `<name> (not connected)`
 /// (spec 2026-10-08 §9.6).
 pub async fn presence(
@@ -448,6 +450,7 @@ pub async fn presence(
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(p)?)?;
+    let aid = id.as_str().to_string();
     let reg = s.presence.clone();
     let vf = clax_http::views::thread::VisFor::of(&a.caller, &s);
     let people = s
@@ -458,7 +461,8 @@ pub async fn presence(
             Ok(people)
         })
         .await?;
-    Ok(Json(json!({"people": people})))
+    let viewing = s.seats.counts(&aid).viewing;
+    Ok(Json(json!({"people": people, "viewing": viewing})))
 }
 
 /// Pins or edits an artifact's metadata. A person's agent edits from a

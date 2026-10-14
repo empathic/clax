@@ -6,8 +6,10 @@ import { ThreadSync } from "./thread-sync";
 let on: ((e: StreamEvent) => void) | null = null;
 /** The callers the module asked the page's stream to reopen as. */
 const reopens: (string | undefined)[] = [];
+/** The topics the module asked the page's stream to ask for again. */
+const retried: string[][] = [];
 vi.mock("../stream", () => ({
-  pageStream: () => ({ watch: (_t: string[], f: (e: StreamEvent) => void) => { on = f; return () => { on = null; }; }, reconnect: (c?: string) => { reopens.push(c); } }),
+  pageStream: () => ({ watch: (_t: string[], f: (e: StreamEvent) => void) => { on = f; return () => { on = null; }; }, reconnect: (c?: string) => { reopens.push(c); }, retry: (t: string[]) => { retried.push([...t]); } }),
 }));
 const { ArtifactStream, keepState, stateOf } = await import("./artifact-stream");
 const { getToken } = await import("../api");
@@ -55,6 +57,8 @@ describe("the artifact stream", () => {
       beginThread: tid => sync.beginThread(tid),
       event: () => {},
       page: () => {},
+      spectate: () => {},
+      seated: () => {},
       disposed: () => false,
     });
     // Two comments counted, one known: the thread is fetched whole.
@@ -119,12 +123,30 @@ describe("the artifact stream", () => {
     const heard: unknown[] = [];
     const s = new ArtifactStream(A, {
       threads: () => [], presence: () => [], changeThreads: () => {}, beginThread: () => () => {},
-      event: e => heard.push(e), page: () => {}, disposed: () => false,
+      event: e => heard.push(e), page: () => {}, spectate: () => {}, seated: () => {}, disposed: () => false,
     });
     on!({ type: "refused", topic: `presence:${A}`, code: "not_found" });
     expect(heard).toEqual([]);
     on!({ type: "refused", topic: `artifact:${A}`, code: "not_found" });
     expect(heard).toEqual([{ type: "resync", topic: `artifact:${A}` }]);
+    s.stop();
+  });
+  it("turns spectator when the daemon has no live seat, and asks again on Join live", () => {
+    const heard: string[] = [];
+    const s = new ArtifactStream(A, {
+      threads: () => [], presence: () => [], changeThreads: () => {}, beginThread: () => () => {},
+      event: e => heard.push(`event:${e.type}`), page: () => {}, spectate: c => heard.push(`spectate:${c}`), seated: () => heard.push("seated"), disposed: () => false,
+    });
+    on!({ type: "refused", topic: `artifact:${A}`, code: "no_live_seat" });
+    on!({ type: "refused", topic: `working:${A}`, code: "seat_idle" });
+    // A seat code on another artifact's topic is not this view's.
+    on!({ type: "refused", topic: `artifact:other`, code: "no_live_seat" });
+    expect(heard).toEqual(["spectate:no_live_seat", "spectate:seat_idle"]);
+    retried.length = 0;
+    s.rejoin();
+    expect(retried).toEqual([[`artifact:${A}`, `presence:${A}`, `working:${A}`]]);
+    on!({ type: "ready" });
+    expect(heard.slice(2)).toEqual(["seated", "event:ready"]);
     s.stop();
   });
 });

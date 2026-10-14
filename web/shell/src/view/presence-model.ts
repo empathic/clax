@@ -35,3 +35,8 @@ export function roster(people: Participants["people"], presence: PresenceView[])
 
 /** Public ID → state, for the roster's here and away marks. */
 export const presenceMap = (presence: PresenceView[]): Map<string, PresenceView["state"]> => new Map(presence.map(p => [p.public_id, p.state]));
+
+/** The top bar's count of everyone viewing, spectators included (spec
+ * 2026-10-11-clax-dev-hosted-design §16.3): said once more than the viewer
+ * is, since spectators have no chip. */
+export const viewingLabel = (viewing: number | null): string | null => (viewing !== null && viewing > 1 ? `${viewing} viewing` : null);

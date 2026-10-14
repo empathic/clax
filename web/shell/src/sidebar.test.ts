@@ -30,6 +30,28 @@ describe("Sidebar", () => {
     b.unmount();
   });
 
+  it("read-only (a spectator's), shows the threads with no reply, resolve, send or box", () => {
+    const threads: Thread[] = [
+      { ...base, id: "a", anchor, status: "open", sent_to_agent: false, comments: [comment("1", "viewer", "Alex", "two columns")] },
+      { ...base, id: "c", anchor, status: "resolved", sent_to_agent: false, comments: [comment("2", "viewer", "Alex", "old")] },
+    ];
+    const found = { a: { id: "a", found: true, method: "exact" as const, rect: null } };
+    const props = { versions: [], shown: 1, agent: "claude", threads, resolved: found, now: new Date(base.created_at), selected: null,
+      onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn(), onToggle: vi.fn(), onSendUnsent: vi.fn() };
+    const live = mount(Sidebar, props);
+    const labels = (root: Element) => Array.from(root.querySelectorAll("button")).map(b => b.textContent?.trim());
+    expect(labels(live.root)).toEqual(expect.arrayContaining(["Resolve", "Send to claude", "Reply", "Reopen"]));
+    expect(live.root.querySelector("input[aria-label=Reply]")).not.toBeNull();
+    live.unmount();
+    const ro = mount(Sidebar, { ...props, readOnly: true });
+    expect(ro.root.querySelectorAll(".thread-card")).toHaveLength(2);
+    for (const l of ["Resolve", "Send to claude", "Reply", "Reopen"]) expect(labels(ro.root)).not.toContain(l);
+    expect(ro.root.querySelector("input[aria-label=Reply]")).toBeNull();
+    expect(ro.root.querySelector(".send-unsent")).toBeNull();
+    expect(ro.root.querySelector("input[type=checkbox]")).toBeNull();
+    ro.unmount();
+  });
+
   it("groups open, detached, and resolved threads and labels agent comments", () => {
     const threads: Thread[] = [
       { ...base, id: "a", anchor, status: "open", sent_to_agent: true, comments: [comment("1", "viewer", "Alex", "two columns"), comment("2", "agent", "claude", "done")],

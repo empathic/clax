@@ -54,12 +54,13 @@ const tick = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 /** Starts a daemon on a fresh home whose config.toml is `opts.config` (`NO_KEY_CONFIG` by default);
  * with `opts.home`, on that home (which it does not create); with `opts.port` too, on that port (a restart);
- * with `opts.bind` (`0.0.0.0`: one that may invite people), on that address instead of loopback.
+ * with `opts.bind` (`0.0.0.0`: one that may invite people), on that address instead of loopback;
+ * with `opts.env`, with those environment variables set too.
  * `stop({ keepHome: true })` leaves the home; `ended()` says whether the daemon has exited.
  * It runs the binary daemon-setup.ts built, on a port the system picks, and
  * waits up to `opts.startMs` (20 s by default) for its daemon.json and its
  * health check; a start that fails says so with the end of the daemon's stderr. */
-export async function startDaemon(opts: { config?: string; home?: string; port?: number; startMs?: number; bind?: string } = {}) {
+export async function startDaemon(opts: { config?: string; home?: string; port?: number; startMs?: number; bind?: string; env?: Record<string, string> } = {}) {
   const bin = process.env.CLAX_E2E_BIN;
   if (!bin) throw new Error("CLAX_E2E_BIN is unset: run the tests through a Playwright config whose global setup builds the daemon (e2e/daemon-setup.ts)");
   // The browser tests' build of the web UI, when the global setup made one;
@@ -69,7 +70,7 @@ export async function startDaemon(opts: { config?: string; home?: string; port?:
   writeFileSync(join(home, "config.toml"), opts.config ?? NO_KEY_CONFIG);
   rmSync(join(home, "daemon.json"), { force: true });
   const child: ChildProcess = spawn(bin, ["serve", "--foreground", "--bind", opts.bind ?? "127.0.0.1", "--port", String(opts.port ?? 0), ...(dist ? ["--web-dist", dist] : [])],
-    { cwd: repoRoot, env: { ...process.env, CLAX_HOME: home, CLAX_CODEX_BIN: "", CLAX_E2E_UNSET_KEY: "" }, stdio: ["ignore", "inherit", "pipe"] });
+    { cwd: repoRoot, env: { ...process.env, CLAX_HOME: home, CLAX_CODEX_BIN: "", CLAX_E2E_UNSET_KEY: "", ...opts.env }, stdio: ["ignore", "inherit", "pipe"] });
   // The daemon's stderr goes on to the test's, and its end is kept for a failed start.
   let stderr = "";
   child.stderr?.on("data", (b: Buffer) => { process.stderr.write(b); stderr = (stderr + b.toString()).slice(-4000); });

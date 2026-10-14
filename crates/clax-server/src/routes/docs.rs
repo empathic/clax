@@ -19,6 +19,12 @@
 //! `acquire` without data) stay allowed and add the writer to its
 //! authors, so they never make it the writer's. A lease in force on it is
 //! busy whatever its holder.
+//!
+//! Every write (`PUT`, `PATCH`, `DELETE`, a batch, `str_replace`,
+//! `acquire`) by a person beyond the artifact's live seats is 403
+//! `spectator` ([`clax_http::seats::require_seat`]; spec
+//! 2026-10-11-clax-dev-hosted-design §7, §16.1), before the artifact's
+//! declaration is read; agents and the owner are never refused it.
 
 use super::artifacts::{JsonBytes, body, parse_body, path};
 use axum::Json;
@@ -146,6 +152,7 @@ pub async fn put(
 ) -> Result<Json<Value>, ApiError> {
     let (aid, doc) = path(p)?;
     let id = parse_id(&aid)?;
+    clax_http::seats::require_seat(&s, &a.caller, &id).await?;
     let b = body(req)?;
     let events = s.events.clone();
     let vf = VisFor::of(&a.caller, &s);
@@ -183,6 +190,7 @@ pub async fn patch(
 ) -> Result<Json<Value>, ApiError> {
     let (aid, doc) = path(p)?;
     let id = parse_id(&aid)?;
+    clax_http::seats::require_seat(&s, &a.caller, &id).await?;
     let b = body(req)?;
     let events = s.events.clone();
     let vf = VisFor::of(&a.caller, &s);
@@ -230,6 +238,7 @@ pub async fn delete(
 ) -> Result<Json<Value>, ApiError> {
     let (aid, doc) = path(p)?;
     let id = parse_id(&aid)?;
+    clax_http::seats::require_seat(&s, &a.caller, &id).await?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_argument", e.body_text()))?;
     let events = s.events.clone();
     let vf = VisFor::of(&a.caller, &s);
@@ -348,6 +357,7 @@ pub async fn batch(
     req: Result<JsonBytes, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
+    clax_http::seats::require_seat(&s, &a.caller, &id).await?;
     let (ops, writes, lww) = parse_body(req, "the docs batch limit", |b: BatchBody| {
         let ops: Vec<String> = b.writes.iter().map(|w| w.op.clone()).collect();
         let writes = b
@@ -426,6 +436,7 @@ pub async fn str_replace(
     req: Result<Json<StrReplaceBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
+    clax_http::seats::require_seat(&s, &a.caller, &id).await?;
     let b = body(req)?;
     let events = s.events.clone();
     let vf = VisFor::of(&a.caller, &s);
@@ -484,6 +495,7 @@ pub async fn acquire(
     req: Result<Json<AcquireBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
+    clax_http::seats::require_seat(&s, &a.caller, &id).await?;
     let b = body(req)?;
     let events = s.events.clone();
     let vf = VisFor::of(&a.caller, &s);

@@ -3,10 +3,10 @@
 // or the composer's anchor changes, on the first input after an away period,
 // and every 30 s; away as the page is left; and the artifact's presence, fetched once and on each
 // stream (re)connect.
-import { getPresence, putPresence } from "../api";
+import { type Presence, getPresence, putPresence } from "../api";
 import { after, wall } from "../clock";
 import type { ViewState } from "./artifact-controller";
-import { type PresenceView, stateFor, whereLabel } from "./presence-model";
+import { stateFor, whereLabel } from "./presence-model";
 
 const INPUTS = ["pointerdown", "pointermove", "keydown", "wheel", "touchstart"] as const;
 
@@ -35,7 +35,7 @@ export class PresenceReporter {
 
   /** `may(s)`: whether `s` may be reported (a viewer cookie exists and the
    * artifact is loaded and not deleted); `take` receives the artifact's presence. */
-  constructor(private readonly id: string, private readonly state: () => ViewState, private readonly may: (s: ViewState) => boolean, private readonly take: (people: PresenceView[]) => void) {
+  constructor(private readonly id: string, private readonly state: () => ViewState, private readonly may: (s: ViewState) => boolean, private readonly take: (p: Presence) => void) {
     document.addEventListener("visibilitychange", this.onVisible);
     addEventListener("pagehide", this.leave);
     for (const t of INPUTS) addEventListener(t, this.onInput, { passive: true, capture: true });
@@ -43,7 +43,7 @@ export class PresenceReporter {
   }
 
   fetch(): void {
-    void getPresence(this.id).then(people => { if (people && !this.done) this.take(people); });
+    void getPresence(this.id).then(p => { if (p && !this.done) this.take(p); });
   }
 
   /** Reports this viewer's presence. A report that says nothing new is
@@ -64,7 +64,7 @@ export class PresenceReporter {
     this.timer?.();
     this.timer = undefined;
     this.reported = { state, where, at: wall() };
-    void putPresence(this.id, state, where, this.tab).then(people => { if (people && !this.done) this.take(people); });
+    void putPresence(this.id, state, where, this.tab).then(p => { if (p && !this.done) this.take(p); });
   }
 
   /** Lets the next report go out at once (the share switch changed). */

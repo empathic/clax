@@ -36,7 +36,7 @@ const gesture = (on: boolean, quiet = true) => {
 
 let workingList: Working[] = [];
 
-function setup(declared: Record<string, unknown>, answer: "allow" | "deny" | "dismiss" = "allow") {
+function setup(declared: Record<string, unknown>, answer: "allow" | "deny" | "dismiss" = "allow", extra: Partial<CapEnv> = {}) {
   const posted: ShellToBridge[] = [];
   const state = { mode: false, composing: false, threads: [T("01J9A"), T("01J9B", { kind: "custom", selector: null, custom_name: "shape-1" }), T("01J9D", { file: "notes.html" })], selected: null as string | null, busy: false };
   const ui: Required<CommentsUi> = {
@@ -44,7 +44,7 @@ function setup(declared: Record<string, unknown>, answer: "allow" | "deny" | "di
     state: () => state, dismiss: vi.fn(() => true), attachClip: vi.fn(), enterMode: vi.fn(() => { state.mode = true; }),
   };
   const prompt = vi.fn(async () => answer);
-  const env = { aid: "7q3k9mzx2b4t", version: 1, token: "t", declared, prompt, post: (m: ShellToBridge) => posted.push(m), comments: ui, page: () => "index.html", working: () => workingList } as unknown as CapEnv;
+  const env = { aid: "7q3k9mzx2b4t", version: 1, token: "t", declared, prompt, post: (m: ShellToBridge) => posted.push(m), comments: ui, page: () => "index.html", working: () => workingList, ...extra } as unknown as CapEnv;
   const grants = new Grants("k", null, declared as never, true, prompt);
   return { h: commentsHandler(env, grants), ui, posted, prompt, state };
 }
@@ -119,6 +119,28 @@ describe("comments in the shell", () => {
     await expect(h.call("openComposer", [d])).rejects.toMatchObject({ code: "rate_limited" });
     expect(prompt).not.toHaveBeenCalled();
     expect(ui.openComposer).toHaveBeenCalledTimes(5);
+  });
+
+  it("a spectator's page opens no composer and writes nothing: unavailable, without a request", async () => {
+    // Beyond the live seats (spec 2026-10-11-clax-dev-hosted-design §16.1).
+    let spectating = true;
+    const f = daemon();
+    const { h, ui } = setup({ comments: {} }, "allow", { spectating: () => spectating });
+    gesture(true);
+    const d = { anchor: T("x").anchor, version: 1 };
+    await expect(h.call("openComposer", [d])).rejects.toMatchObject({ code: "unavailable", message: expect.stringContaining("join live") });
+    await expect(h.call("create", [{ anchor: T("x").anchor, text: "hi" }])).rejects.toMatchObject({ code: "unavailable" });
+    expect(ui.openComposer).not.toHaveBeenCalled();
+    expect(f).not.toHaveBeenCalled();
+    spectating = false;
+    expect(await h.call("openComposer", [d])).toEqual({ opened: true });
+  });
+
+  it("a write the daemon refuses a spectator is unavailable, not forbidden", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: { code: "spectator", message: "Lots of people are here" } }), { status: 403 })));
+    const { h } = setup({ comments: {} });
+    gesture(true);
+    await expect(h.call("create", [{ anchor: T("x").anchor, text: "hi" }])).rejects.toMatchObject({ code: "unavailable", message: expect.stringContaining("Lots of people are here") });
   });
 
   it("activation the viewer gave the shell is no gesture, and polling without one is cut off", async () => {

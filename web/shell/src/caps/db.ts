@@ -8,7 +8,7 @@
 // untrusted: every argument is checked here before any request, whatever the
 // bridge already checked.
 import type { ArtifactEvent } from "../events";
-import { CapError } from "./errors";
+import { CapError, SPECTATING } from "./errors";
 import type { HandlerFactory } from "./host";
 
 export type WireDoc = { path: string; id: string; data: Record<string, unknown>; version: number };
@@ -40,6 +40,9 @@ export function dbError(status: number, err: { code?: string; message?: string }
   const message = err.message ?? `HTTP ${status}`;
   if (err.code === "quota_exceeded" || err.code === "resource_exhausted") return new CapError(err.code, message);
   if (err.code === "not_declared") return new CapError("revoked", message);
+  // A spectator's write (spec 2026-10-11-clax-dev-hosted-design §16.1):
+  // transient, as the viewer may join live.
+  if (err.code === "spectator") return new CapError("unavailable", message);
   if (status === 413 || status === 414 || status === 431) return new CapError("invalid_argument", `the request is too large: ${message}`);
   if (status === 404 && write) return new CapError("invalid_argument", "this document does not exist, or this viewer cannot write it");
   if ([400, 403, 404, 409].includes(status)) return new CapError("invalid_argument", message);
@@ -167,6 +170,7 @@ export const dbHandler: HandlerFactory = env => {
 
   async function request<T>(method: string, url: string, body?: unknown, missingIsNull = false): Promise<T | null> {
     if (disposed) throw new CapError("unavailable", "this view has closed");
+    if (method !== "GET" && env.spectating?.()) throw new CapError("unavailable", SPECTATING);
     // Every request here is the page's: its writes count every author of
     // the page (multi-person spec §8.2).
     const headers: Record<string, string> = { "content-type": "application/json", "x-clax-via": "page" };

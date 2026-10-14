@@ -26,8 +26,17 @@ export type ArtifactStreamView = {
   event(e: ArtifactEvent): void;
   /** An event for the page's capabilities alone (the `docs` topic). */
   page(e: ArtifactEvent): void;
+  /** The daemon had no live seat for this viewer (`no_live_seat`), or
+   * released it for want of input (`seat_idle`): the view turns spectator. */
+  spectate(code: string): void;
+  /** The live topics are live (again): the view holds a live seat, or needs none. */
+  seated(): void;
   disposed(): boolean;
 };
+
+/** The codes of a refused or released live seat (spec
+ * 2026-10-11-clax-dev-hosted-design §16.1). */
+export const SEAT_CODES: ReadonlySet<string> = new Set(["no_live_seat", "seat_idle"]);
 
 /** One thread of the artifact, with all its comments. */
 async function getThread(aid: string, tid: string): Promise<Thread> {
@@ -68,8 +77,12 @@ export class ArtifactStream {
    * kept one is dropped unused. */
   private readonly early = new Map<string, FeedbackState | null>();
 
+  /** The artifact's live topics, which hold its live seat. */
+  private readonly live: string[];
+
   constructor(private readonly id: string, private readonly v: ArtifactStreamView) {
-    this.main = pageStream().watch([`artifact:${id}`, `presence:${id}`, `working:${id}`], e => this.on(e));
+    this.live = [`artifact:${id}`, `presence:${id}`, `working:${id}`];
+    this.main = pageStream().watch(this.live, e => this.on(e));
     void import("./artifact-questions").then(m => { if (!this.stopped) this.questions = m.artifactQuestions(id); }, () => {});
   }
 
@@ -78,6 +91,12 @@ export class ArtifactStream {
     this.docs ??= pageStream().watch([`docs:${this.id}`], e => {
       if (!this.v.disposed() && DOCS_EVENTS.has(e.type)) this.v.page(e as unknown as ArtifactEvent);
     });
+  }
+
+  /** Asks for the live topics again (Join live): `ready` if a seat is
+   * free, else `refused` once more. */
+  rejoin(): void {
+    pageStream().retry(this.live);
   }
 
   stop(): void {
@@ -93,6 +112,11 @@ export class ArtifactStream {
     const v = this.v;
     if (v.disposed()) return;
     if (e.type === "refused") {
+      // No live seat: a spectator polls the snapshot instead.
+      if (typeof e.topic === "string" && this.live.includes(e.topic) && SEAT_CODES.has(String(e.code))) {
+        v.spectate(String(e.code));
+        return;
+      }
       // The daemon would not subscribe the artifact's topic (it was deleted
       // before the view subscribed, say): the view refetches, and learns why.
       if (e.topic === `artifact:${this.id}`) v.event({ type: "resync", topic: e.topic });
@@ -104,6 +128,7 @@ export class ArtifactStream {
       if (!v.threads().some(t => t.id === f.thread_id)) { this.early.set(f.thread_id, stateOf(f)); return; }
       this.early.delete(f.thread_id);
     }
+    if (e.type === "ready") v.seated();
     if (e.type === "thread") {
       const raw = (e as unknown as { thread: ThreadDelta }).thread;
       // A thread event carries no delivery state: the thread keeps the one

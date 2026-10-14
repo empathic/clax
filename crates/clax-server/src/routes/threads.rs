@@ -1,5 +1,10 @@
 //! Comment threads (spec §6 "Comments"): create with anchor and clip, comment,
 //! send to the agent, resolve, list, and serve clips.
+//!
+//! Every write (create, comment, send, batch send, resolve, reopen, delete)
+//! by a person beyond the artifact's live seats is 403 `spectator`
+//! ([`clax_http::seats::require_seat`]; spec 2026-10-11-clax-dev-hosted-design
+//! §7, §16.1); agents and the owner are never refused it.
 
 use super::artifacts::{body, path, publishing_session};
 use super::assets::multipart_error;
@@ -629,6 +634,7 @@ pub async fn create(
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let id = parse_id(&path(aid)?)?;
     refuse_merged_away(&s, id.as_str()).await?;
+    clax_http::seats::require_seat(&s, &a.caller, &id).await?;
     let mut mp = mp.map_err(|e| multipart_error(e.status(), e.body_text()))?;
     let (mut anchor, mut text, mut version, mut clip) = (None, None, None, None);
     let mut via_page = false;
@@ -824,6 +830,7 @@ pub async fn comment(
     let (aid, tid) = path(p)?;
     let reads = a.read_rights();
     let id = parse_id(&aid)?;
+    clax_http::seats::require_seat(&s, &a.caller, &id).await?;
     let b = body(req)?;
     let agent = match b.author_kind.as_deref() {
         None | Some("viewer") => false,
@@ -1041,6 +1048,7 @@ pub async fn send(
 ) -> Result<Json<Value>, ApiError> {
     let (aid, tid) = path(p)?;
     let id = parse_id(&aid)?;
+    clax_http::seats::require_seat(&s, &a.caller, &id).await?;
     let page = clax_http::agent::page_marker(&a.caller, &headers)?;
     let live_page = s.live_ids.contains(id.as_str());
     let b: SendBody = if raw.is_empty() {
@@ -1218,6 +1226,7 @@ pub async fn send_batch(
     req: Result<Json<BatchBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
+    clax_http::seats::require_seat(&s, &a.caller, &id).await?;
     let b = body(req)?;
     sees_threads(&a, &s, &id).await?;
     let ctx = s.feedback_ctx();
@@ -1295,6 +1304,7 @@ pub async fn resolve(
     let (aid, tid) = path(p)?;
     let reads = a.read_rights();
     let id = parse_id(&aid)?;
+    clax_http::seats::require_seat(&s, &a.caller, &id).await?;
     let agent = acting_as(&raw)?;
     if agent && !may_act_as_agent(&a) {
         return Err(ApiError::unauthorized());
@@ -1432,6 +1442,7 @@ pub async fn reopen(
 ) -> Result<Response, ApiError> {
     let (aid, tid) = path(p)?;
     let id = parse_id(&aid)?;
+    clax_http::seats::require_seat(&s, &a.caller, &id).await?;
     let agent = acting_as(&raw)?;
     let authed = may_act_as_agent(&a);
     if agent && !authed {
@@ -1487,6 +1498,7 @@ pub async fn delete(
 ) -> Result<Response, ApiError> {
     let (aid, tid) = path(p)?;
     let id = parse_id(&aid)?;
+    clax_http::seats::require_seat(&s, &a.caller, &id).await?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let agent = agent_as(q.as_.as_deref())?;
     let authed = may_act_as_agent(&a);
