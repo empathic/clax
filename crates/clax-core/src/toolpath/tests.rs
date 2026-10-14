@@ -350,7 +350,7 @@ pub(super) fn segment(h: &History, closed: bool) -> String {
 }
 
 /// The `seq` of the golden history's last row (`tests/toolpath/history.json`).
-const LAST_SEQ: i64 = 82;
+const LAST_SEQ: i64 = 83;
 
 #[test]
 fn render_each_kind_matches_golden() {

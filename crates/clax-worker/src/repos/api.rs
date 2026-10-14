@@ -16,8 +16,15 @@
 //! - `POST git/authorize` `{"path", "authorization"}` → `{"access":
 //!   "read" | "write" | null}`: what a `/git/` request's `Authorization`
 //!   header grants on the repository its path names.
-//! - `POST token/mint` `{"repo", "scope", "ttl_s", "origin"}` → a
+//! - `POST token/mint` `{"repo", "scope", "ttl_s", "origin", "person",
+//!   "session"}` (the last two the token's [`tokens::Holder`]) → a
 //!   [`GitToken`]; `POST token/revoke` `{"repo", "id"}` → `{"revoked"}`.
+//! - `POST token/live` `{"repo"}` → `{"tokens": [{"id", "scope", "person",
+//!   "session"}, …]}`: the repository's live tokens and their holders.
+//! - `POST push/pushers` `{"repo", "commits": ["<hex>", …]}` → `{"pushers":
+//!   [null | {"person", "session"}, …]}`: who made the newest push leaving
+//!   `main` at each commit ([`DoLedger`] serves clax-core's push ledger
+//!   from these).
 //!
 //! An error is a status (400 `invalid_argument`, 404 `not_found`, 409
 //! `version_conflict`, 503 `repo_unavailable`) with `{"code", "message"}`.
@@ -32,7 +39,7 @@ use serde_json::{Value, json};
 
 use super::db;
 use super::local::{AsConn, LocalHost, malformed};
-use super::tokens::{self, GitToken, Scope, TokenHost};
+use super::tokens::{self, GitToken, Holder, Scope, TokenHost};
 
 /// The base of every internal URL.
 pub const BASE: &str = "http://repos/_repos/";
@@ -307,6 +314,10 @@ impl<C: AsConn + clax_git::MaybeSend, T: TokenHost> RepoService<C, T> {
                     .as_u64()
                     .and_then(|t| u32::try_from(t).ok())
                     .ok_or_else(|| malformed("ttl_s"))?;
+                let holder = Holder {
+                    person: v["person"].as_str().map(String::from),
+                    session: v["session"].as_str().map(String::from),
+                };
                 let token = tokens::mint(
                     h,
                     &self.tokens,
@@ -314,6 +325,7 @@ impl<C: AsConn + clax_git::MaybeSend, T: TokenHost> RepoService<C, T> {
                     scope,
                     ttl,
                     v["origin"].as_str(),
+                    &holder,
                     self.now_ms(),
                 )
                 .await?;
@@ -326,6 +338,39 @@ impl<C: AsConn + clax_git::MaybeSend, T: TokenHost> RepoService<C, T> {
                 let id = v["id"].as_str().ok_or_else(|| malformed("id"))?;
                 let revoked = tokens::revoke(h, &self.tokens, repo, id, self.now_ms()).await?;
                 Ok(json_response(200, &json!({ "revoked": revoked })))
+            }
+            ("POST", "token/live") => {
+                let v: Value =
+                    serde_json::from_slice(req.body).map_err(|_| malformed("tokens request"))?;
+                let repo = v["repo"].as_str().ok_or_else(|| malformed("repo"))?;
+                let now = self.now_ms();
+                let rows = h.with(|c| db::live_tokens(c, repo, now))?;
+                let tokens: Vec<Value> = rows
+                    .into_iter()
+                    .map(|r| {
+                        json!({
+                            "id": r.id,
+                            "scope": r.scope,
+                            "person": r.holder.person,
+                            "session": r.holder.session,
+                        })
+                    })
+                    .collect();
+                Ok(json_response(200, &json!({ "tokens": tokens })))
+            }
+            ("POST", "push/pushers") => {
+                let v: Value =
+                    serde_json::from_slice(req.body).map_err(|_| malformed("pushers request"))?;
+                let repo = v["repo"].as_str().ok_or_else(|| malformed("repo"))?;
+                let commits = v["commits"]
+                    .as_array()
+                    .ok_or_else(|| malformed("commits"))?;
+                let mut pushers = Vec::with_capacity(commits.len());
+                for c in commits {
+                    let c = c.as_str().ok_or_else(|| malformed("commits"))?;
+                    pushers.push(h.with(|conn| db::pusher(conn, repo, c))?);
+                }
+                Ok(json_response(200, &json!({ "pushers": pushers })))
             }
             _ => Err(GitError::InvalidArgument(format!(
                 "No repository store call {} {}",
@@ -496,6 +541,104 @@ pub async fn git_authorized(
     Ok(v["access"].is_string())
 }
 
+/// clax-core's push ledger ([`clax_core::content::PushLedger`]) over
+/// `RepoDO`'s ledger: who pushed, and the repositories' tokens, which
+/// `RepoDO` revokes (at Cloudflare Artifacts too, for its tokens).
+pub struct DoLedger<T> {
+    pub transport: T,
+}
+
+fn core(e: GitError) -> clax_core::CoreError {
+    clax_content_git::core_error(e)
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl<T: Transport + Send + Sync> clax_core::content::PushLedger for DoLedger<T> {
+    async fn pushers(
+        &self,
+        id: &clax_core::ArtifactId,
+        commits: &[String],
+    ) -> clax_core::Result<Vec<Option<clax_core::content::Pusher>>> {
+        let body =
+            json!({ "repo": clax_git::versions::repo_name(id.as_str()), "commits": commits });
+        let r = call(
+            &self.transport,
+            request(
+                "POST",
+                url("push/pushers", &[]),
+                serde_json::to_vec(&body).expect("JSON"),
+            ),
+        )
+        .await
+        .map_err(core)?;
+        let v: Value = serde_json::from_slice(&r.body).map_err(|_| core(malformed("pushers")))?;
+        let named = v["pushers"]
+            .as_array()
+            .ok_or_else(|| core(malformed("pushers")))?;
+        Ok(named
+            .iter()
+            .map(|p| {
+                p.is_object().then(|| clax_core::content::Pusher {
+                    person: p["person"].as_str().map(String::from),
+                    session_id: p["session"].as_str().map(String::from),
+                })
+            })
+            .collect())
+    }
+
+    async fn tokens(
+        &self,
+        id: &clax_core::ArtifactId,
+    ) -> clax_core::Result<Vec<clax_core::content::RepoToken>> {
+        let body = json!({ "repo": clax_git::versions::repo_name(id.as_str()) });
+        let r = call(
+            &self.transport,
+            request(
+                "POST",
+                url("token/live", &[]),
+                serde_json::to_vec(&body).expect("JSON"),
+            ),
+        )
+        .await
+        .map_err(core)?;
+        let v: Value = serde_json::from_slice(&r.body).map_err(|_| core(malformed("tokens")))?;
+        let rows = v["tokens"]
+            .as_array()
+            .ok_or_else(|| core(malformed("tokens")))?;
+        rows.iter()
+            .map(|t| {
+                Ok(clax_core::content::RepoToken {
+                    id: t["id"]
+                        .as_str()
+                        .ok_or_else(|| core(malformed("token id")))?
+                        .to_string(),
+                    write: t["scope"].as_str() == Some(Scope::Write.as_str()),
+                    holder: clax_core::content::Pusher {
+                        person: t["person"].as_str().map(String::from),
+                        session_id: t["session"].as_str().map(String::from),
+                    },
+                })
+            })
+            .collect()
+    }
+
+    async fn revoke(&self, id: &clax_core::ArtifactId, token: &str) -> clax_core::Result<()> {
+        let body = json!({ "repo": clax_git::versions::repo_name(id.as_str()), "id": token });
+        call(
+            &self.transport,
+            request(
+                "POST",
+                url("token/revoke", &[]),
+                serde_json::to_vec(&body).expect("JSON"),
+            ),
+        )
+        .await
+        .map(drop)
+        .map_err(core)
+    }
+}
+
 /// Repository tokens, minted and revoked by `RepoDO`.
 #[derive(Clone)]
 pub struct DoTokens<T> {
@@ -503,18 +646,25 @@ pub struct DoTokens<T> {
 }
 
 impl<T: Transport> DoTokens<T> {
-    /// A token for `repo` living `ttl_s` seconds; `origin` is the app
-    /// origin the asking request came to (the stand-in's remote is served
-    /// there unless `PUBLIC_ORIGIN` is set).
+    /// A token for `repo` living `ttl_s` seconds, handed to `holder`;
+    /// `origin` is the app origin the asking request came to (the
+    /// stand-in's remote is served there unless `PUBLIC_ORIGIN` is set).
     pub async fn mint(
         &self,
         repo: &str,
         scope: Scope,
         ttl_s: u32,
         origin: Option<&str>,
+        holder: &Holder,
     ) -> clax_git::Result<GitToken> {
-        let body =
-            json!({ "repo": repo, "scope": scope.as_str(), "ttl_s": ttl_s, "origin": origin });
+        let body = json!({
+            "repo": repo,
+            "scope": scope.as_str(),
+            "ttl_s": ttl_s,
+            "origin": origin,
+            "person": holder.person,
+            "session": holder.session,
+        });
         let r = call(
             &self.transport,
             request(

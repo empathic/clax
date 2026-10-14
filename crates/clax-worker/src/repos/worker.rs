@@ -15,6 +15,16 @@
 //!   their rights checks (see [`super::tokens`]).
 //! - [`dev_route`]: `/_dev/repos/…`, served only while `REPO_DEV_ROUTES`
 //!   is `1`, for `test-repos.mjs`.
+//!
+//! A push the stand-in takes is recorded as versions before `RepoDO`
+//! answers it. `RepoDO` first enters whom the push's token was handed to
+//! ([`tokens::Holder`]) in its ledger against the commit the push left
+//! `main` at ([`tokens::note_push`], before anything else can reach it),
+//! then asks the instance to record the artifact's pushed commits
+//! (`crate::reconcile_pushes`). Every reconcile, this one, the one before
+//! each publish and an Artifacts event's, reads the pushers from that
+//! ledger through [`content_store`]'s [`DoLedger`]. A failure is logged
+//! and the push kept; the next publish records the commits.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -32,13 +42,15 @@ use wasm_bindgen::JsValue;
 use worker::{DurableObject, Env, Headers, Request, Response, Result, State, durable_object};
 
 use super::RepoStore;
-use super::api::{DoHost, DoTokens, INTERNAL_HOST, InternalRequest, RepoService, git_authorized};
+use super::api::{
+    DoHost, DoLedger, DoTokens, INTERNAL_HOST, InternalRequest, RepoService, git_authorized,
+};
 use super::artifacts::{ArtifactsHost, ArtifactsTokens};
 use super::assets::BucketAssets;
 use super::git_http::{GitHttpRequest, authorize, serve_git, serve_options};
 use super::js::{FetchTransport, JsArtifacts, R2Objects, StubTransport, read_body_capped};
 use super::local::LocalHost;
-use super::tokens::{self, GitToken, LocalTokens, Minted, Scope, TokenHost};
+use super::tokens::{self, GitToken, Holder, LocalTokens, Minted, Scope, TokenHost};
 use crate::store::DoPageStore;
 
 /// The `RepoDO` namespace's binding, and the one instance's name.
@@ -115,6 +127,10 @@ pub fn asset_store(env: &Env) -> Result<BucketAssets<R2Objects>> {
 pub fn content_store(env: &Env) -> Result<Arc<dyn ContentStore>> {
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let assets = asset_store(env)?;
+    // RepoDO keeps the token ledger, and who pushed, for either store.
+    let ledger: Arc<dyn clax_core::content::PushLedger> = Arc::new(DoLedger {
+        transport: repo_do(env)?,
+    });
     Ok(match repo_store(env)? {
         RepoStore::Memory => Arc::new(
             GitContent::new(
@@ -125,7 +141,8 @@ pub fn content_store(env: &Env) -> Result<Arc<dyn ContentStore>> {
                 committer(),
                 clock,
             )
-            .needing_executor(),
+            .needing_executor()
+            .with_ledger(ledger),
         ),
         RepoStore::Artifacts => Arc::new(
             GitContent::new(
@@ -134,7 +151,8 @@ pub fn content_store(env: &Env) -> Result<Arc<dyn ContentStore>> {
                 committer(),
                 clock,
             )
-            .needing_executor(),
+            .needing_executor()
+            .with_ledger(ledger),
         ),
     })
 }
@@ -174,7 +192,7 @@ pub async fn forward_git(env: &Env, req: Request) -> Result<Response> {
     repo.stub.fetch_with_request(forwarded).await
 }
 
-/// A token for artifact `artifact`'s repository, living `ttl_s` seconds
+/// A token for artifact `artifact`'s repository, handed to `holder`, living `ttl_s` seconds
 /// ([`tokens::PERSON_TOKEN_TTL_S`] for a person,
 /// [`tokens::AGENT_TOKEN_TTL_S`] for an agent). `origin` is the app origin
 /// the asking request came to, where the stand-in's remote is served
@@ -185,10 +203,11 @@ pub async fn mint_git_token(
     scope: Scope,
     ttl_s: u32,
     origin: Option<&str>,
+    holder: &Holder,
 ) -> clax_git::Result<GitToken> {
     let t = repo_do(env).map_err(|e| GitError::RepoUnavailable(e.to_string()))?;
     DoTokens { transport: t }
-        .mint(&repo_name(artifact.as_str()), scope, ttl_s, origin)
+        .mint(&repo_name(artifact.as_str()), scope, ttl_s, origin, holder)
         .await
 }
 
@@ -248,6 +267,7 @@ impl TokenHost for DoTokenHost {
 #[durable_object]
 pub struct RepoDO {
     state: State,
+    env: Env,
     service: RepoService<clax_do_vfs::Database, DoTokenHost>,
     serving: bool,
     options: ServeOptions,
@@ -303,6 +323,25 @@ impl RepoDO {
     }
 }
 
+impl RepoDO {
+    /// Asks the instance to record the commits of the push to `artifact`'s
+    /// repository by `holder`; logs a failure.
+    async fn record_push(&self, artifact: &str, holder: &Holder) {
+        let repo = repo_name(artifact);
+        match crate::reconcile_pushes(&self.env, artifact, holder).await {
+            Ok(200) => {}
+            Ok(status) => worker::console_error!(
+                "RepoDO: recording the push to {repo} as versions answered {status}"
+            ),
+            Err(e) => {
+                worker::console_error!(
+                    "RepoDO: recording the push to {repo} as versions failed: {e}"
+                )
+            }
+        }
+    }
+}
+
 impl DurableObject for RepoDO {
     fn new(state: State, env: Env) -> Self {
         console_error_panic_hook::set_once();
@@ -322,6 +361,7 @@ impl DurableObject for RepoDO {
         };
         RepoDO {
             state,
+            env: env.clone(),
             serving: git_http_serving(&env),
             service: RepoService {
                 host,
@@ -387,11 +427,19 @@ impl DurableObject for RepoDO {
                 self.service.now_ms(),
             )
             .await;
-            if !served.pushed.is_empty() {
-                worker::console_log!(
-                    "RepoDO: a push to {path} moved {} refs; nothing records pushed commits as versions yet",
-                    served.pushed.len()
-                );
+            // Entered before the next await, so no reconcile reads the
+            // pushed commits without their pusher.
+            let noted = tokens::note_push(
+                &self.service.host,
+                &path,
+                authorization.as_deref(),
+                &served.pushed,
+                self.service.now_ms(),
+            );
+            match noted {
+                Ok(Some((artifact, holder))) => self.record_push(&artifact, &holder).await,
+                Ok(None) => {}
+                Err(e) => worker::console_error!("RepoDO: entering the push to {path} failed: {e}"),
             }
             return http_response(served.response);
         }
@@ -434,8 +482,9 @@ fn bad(e: impl std::fmt::Display) -> Result<Response> {
 /// - `POST publish?artifact=&n=&body=`: writes version `n` of the artifact
 ///   holding `index.html` with `body`, carrying nothing, through
 ///   [`content_store`]; answers what version `n` reads back;
-/// - `POST token?artifact=&scope=`: a person's token, the remote at the
-///   request's origin;
+/// - `POST token?artifact=&scope=&person=&session=`: a token handed to
+///   `person` (a public ID; none: the owner) and `session` (an agent's),
+///   the remote at the request's origin;
 /// - `POST revoke?artifact=&id=`: revokes a token;
 /// - `PUT|GET|DELETE asset?artifact=&asset=&ext=` (PUT: `body=`): an asset
 ///   through [`asset_store`]; GET answers its bytes, or 404;
@@ -487,12 +536,17 @@ pub async fn dev_route(env: &Env, req: Request) -> Result<Response> {
                 None => return bad("scope must be read or write"),
             };
             let origin = url.origin().ascii_serialization();
+            let holder = Holder {
+                person: param(&url, "person").filter(|p| !p.is_empty()),
+                session: param(&url, "session").filter(|s| !s.is_empty()),
+            };
             match mint_git_token(
                 env,
                 &artifact,
                 scope,
                 tokens::PERSON_TOKEN_TTL_S,
                 Some(&origin),
+                &holder,
             )
             .await
             {

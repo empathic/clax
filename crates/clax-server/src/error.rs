@@ -106,6 +106,11 @@ impl From<CoreError> for ApiError {
                 code: code @ ("joining" | "unmerging"),
                 message,
             } => ApiError::new(StatusCode::CONFLICT, code, message),
+            // main ends in pushed commits whose pusher may not publish.
+            CoreError::Invalid {
+                code: "push_refused",
+                message,
+            } => ApiError::new(StatusCode::CONFLICT, "push_refused", message),
             CoreError::Invalid {
                 code: "question_closed",
                 message,

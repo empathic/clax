@@ -162,6 +162,7 @@ pub mod live_layers;
 pub mod loopback;
 pub mod presence;
 pub mod push;
+pub mod pushes;
 pub mod questions;
 pub mod room;
 pub mod routes;

@@ -3,6 +3,7 @@
 mod common;
 mod contract;
 mod over_http;
+mod pushes;
 mod races;
 mod store_fork;
 mod with_git;

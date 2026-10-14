@@ -7,7 +7,10 @@
 // that a clone without a token or with a revoked one is refused, that a
 // write token pushes to main and not a version tag, that RepoDO's internal
 // API is unreachable from outside, that push bodies are bounded and read
-// only for a live token, that assets are kept in
+// only for a live token, that commits pushed with `git push` and with
+// `jj git push` to an artifact published through the API become versions
+// the API lists (a publish that did not see them conflicts, one that did
+// lands), that assets are kept in
 // the ASSETS R2 bucket, then restarts wrangler on the same state and clones
 // again and reads the asset back, and once more with REPO_STORE=artifacts,
 // where (without a Cloudflare account) the binding's calls fail, /git/ is
@@ -33,6 +36,7 @@ const STOP_LIMIT_MS = 10_000;
 /** A bound for a hung git or jj, not a time budget. */
 const HANG_MS = 120_000;
 const ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
+const TOKEN = "repos-owner-token-" + Math.random().toString(36).slice(2);
 
 function freePort() {
   return new Promise((ok, fail) => {
@@ -177,6 +181,23 @@ function rawGet(base, path) {
   });
 }
 
+/** A POST of `body` to `path` exactly as written, naming `host`; answers the status and body. */
+function rawPost(base, path, host, body) {
+  const { hostname, port } = new URL(base);
+  return new Promise((ok, fail) => {
+    const s = connect(Number(port), hostname, () =>
+      s.end(
+        `POST ${path} HTTP/1.1\r\nHost: ${host}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`,
+      ),
+    );
+    let text = "";
+    s.setEncoding("utf8");
+    s.on("data", (d) => (text += d));
+    s.on("error", fail);
+    s.on("end", () => ok({ status: Number(text.split(" ")[1]), text }));
+  });
+}
+
 /**
  * A POST of `mb` MiB to `url` as a chunked stream (no Content-Length), with
  * `headers`, on a connection of its own: the server answers before the body
@@ -226,6 +247,102 @@ function noise(n) {
     b[i] = x & 0xff;
   }
   return b;
+}
+
+/** An API call with the owner token; answers its status and parsed body. */
+async function api(base, method, path, body) {
+  const res = await fetch(`${base}${path}`, {
+    method,
+    headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const text = await res.text();
+  return { status: res.status, body: text ? JSON.parse(text) : null };
+}
+
+/**
+ * Checks that commits pushed with git and with jj to an artifact the API
+ * published become versions the API lists, as the owner's (the token's
+ * holder), and that publishing goes on from them.
+ */
+async function checkPushes(base, home, work, jj) {
+  const created = await api(base, "POST", "/api/artifacts", {
+    title: "Pushed",
+    files: { "index.html": { content: "<h1>one</h1>\n" } },
+  });
+  check(created.status === 201 && created.body.artifact.current_version === 1, "an artifact is published through the API", created);
+  const id = created.body.artifact.id;
+  const write = await post(base, `token?artifact=${id}&scope=write`);
+  const ident = ["-c", "user.name=Pusher", "-c", "user.email=pusher@clax.test"];
+  const out = join(work, "pushes-git");
+  ok(home, "git", work, [...bearer(write), "clone", "-q", write.remote, out]);
+  writeFileSync(join(out, "index.html"), "<h1>git</h1>\n");
+  writeFileSync(join(out, "notes.txt"), "from git\n");
+  ok(home, "git", out, ["add", "-A"]);
+  ok(home, "git", out, [...ident, "commit", "-q", "-m", "Pushed with git"]);
+  ok(home, "git", out, [...bearer(write), "push", "-q", "origin", "main"]);
+  let versions = (await api(base, "GET", `/api/artifacts/${id}/versions`)).body.versions;
+  check(
+    versions.length === 2 && versions[1].note === "Pushed with git" && "notes.txt" in versions[1].files,
+    "a git push to main is version 2 once the push is answered",
+    versions,
+  );
+  const file = await api(base, "GET", `/api/artifacts/${id}`);
+  check(file.body.artifact.current_version === 2, "the artifact's current version is the pushed one", file.body);
+
+  const header = `Authorization: Bearer ${write.token}`;
+  const jjEnv = { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "http.extraHeader", GIT_CONFIG_VALUE_0: header };
+  const jjOut = join(work, "pushes-jj");
+  ok(home, jj, work, ["git", "clone", write.remote, jjOut], jjEnv);
+  writeFileSync(join(jjOut, "index.html"), "<h1>jj</h1>\n");
+  ok(home, jj, jjOut, ["describe", "-m", "Pushed with jj"], jjEnv);
+  ok(home, jj, jjOut, ["bookmark", "set", "main", "-r", "@"], jjEnv);
+  ok(home, jj, jjOut, ["git", "push", "--bookmark", "main"], jjEnv);
+  versions = (await api(base, "GET", `/api/artifacts/${id}/versions`)).body.versions;
+  check(
+    versions.length === 3 && versions[2].note === "Pushed with jj" && "notes.txt" in versions[2].files,
+    "a jj git push to main is version 3, carrying version 2's other files",
+    versions,
+  );
+
+  const stale = await api(base, "POST", `/api/artifacts/${id}/versions`, {
+    if_version: 1,
+    files: { "index.html": { content: "<h1>stale</h1>\n" } },
+  });
+  check(stale.status === 409, "a publish that did not see the pushes conflicts", stale);
+  const next = await api(base, "POST", `/api/artifacts/${id}/versions`, {
+    if_version: 3,
+    note: "Published after the pushes",
+    files: { "index.html": { content: "<h1>four</h1>\n" } },
+  });
+  check(next.status === 201 && next.body.version.n === 4, "a publish after the pushes lands as version 4", next);
+  ok(home, "git", out, [...bearer(write), "pull", "-q", "--tags", "origin", "main"]);
+  const tags = ok(home, "git", out, ["tag"]);
+  check(tags === "v1\nv2\nv3\nv4", "every version, pushed or published, is tagged", tags);
+  check(readFileSync(join(out, "notes.txt"), "utf8") === "from git\n", "the publish carried the pushed file", null);
+
+  // The instance's internal route answers only other objects: from outside,
+  // under any spelling or host (the content origin's too), it is 404 and
+  // records nothing.
+  const { port } = new URL(base);
+  const app = `127.0.0.1:${port}`;
+  const body = JSON.stringify({ artifact: id, person: "u_nobody", session: null });
+  for (const [path, host] of [
+    ["/_internal/pushed", app],
+    ["/_internal/pushed", "instance.internal"],
+    ["/_internal/pushed", `${id}.localhost:${port}`],
+    ["/x/../_internal/pushed", app],
+    ["/%2e%2e/_internal/pushed", "instance.internal"],
+    ["/%5Finternal/pushed", "instance.internal"],
+    ["//_internal/pushed", "instance.internal"],
+    ["/_INTERNAL/pushed", "instance.internal"],
+    [`/api/artifacts/${id}/versions`, "instance.internal"],
+  ]) {
+    const r = await rawPost(base, path, host, body);
+    check(r.status === 404 && !r.text.includes("recorded"), `POST ${path} naming ${host} is 404`, r.text.slice(0, 300));
+  }
+  versions = (await api(base, "GET", `/api/artifacts/${id}/versions`)).body.versions;
+  check(versions.length === 4, "no internal call from outside recorded a version", versions.length);
 }
 
 /** One `/_dev/repos/` call; answers its status and body text. */
@@ -311,8 +428,9 @@ async function main() {
   const cleanup = () => Promise.all([...running].map((w) => w.stop()));
   for (const sig of ["SIGINT", "SIGTERM"]) process.once(sig, () => void cleanup().then(() => process.exit(130)));
   try {
-    let w = await start(dir, config, 1);
+    let w = await start(dir, config, 1, [`CLAX_TOKEN:${TOKEN}`]);
     running.add(w);
+    await checkPushes(w.base, home, work, jj);
     const id = newArtifactId();
     const v1 = await post(w.base, `publish?artifact=${id}&n=1&body=${encodeURIComponent("<h1>one</h1>\n")}`);
     check(v1.index_html === "<h1>one</h1>\n", "version 1 is written through the content store and reads back", v1);

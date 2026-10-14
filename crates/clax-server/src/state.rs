@@ -297,6 +297,7 @@ impl AppState {
         crate::inbox::listen(self);
         crate::approvals::listen(self);
         crate::routes::people::listen(self);
+        crate::pushes::listen(self);
     }
 }
 

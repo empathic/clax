@@ -45,6 +45,15 @@
   // binding throws.
   "artifacts": [{ "binding": "ARTIFACTS", "namespace": "clax" }],
 
+  // The Artifacts event subscription delivers `cf.artifacts.repo.*` events
+  // to this queue; each `pushed` one makes the instance record the pushed
+  // commits as versions (src/lib.rs, Pushes). Create the queue and the
+  // subscription on the account; locally the queue is simulated and never
+  // receives one, and pushes to the stand-in are recorded as they land.
+  "queues": {
+    "consumers": [{ "queue": "clax-artifacts-events", "max_batch_size": 10, "max_retries": 3 }]
+  },
+
   "vars": {
     // The instance's object; empty means "default".
     "CLAX_INSTANCE": "",

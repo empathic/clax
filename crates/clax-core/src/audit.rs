@@ -105,6 +105,7 @@ kinds! {
     ThreadTake = "thread.take",
     ThreadRelease = "thread.release",
     BackfillSkip = "backfill.skip",
+    VersionPushRefused = "version.push_refused",
 }
 
 impl std::fmt::Display for AuditKind {
@@ -687,6 +688,7 @@ mod tests {
             "thread.take",
             "thread.release",
             "backfill.skip",
+            "version.push_refused",
         ];
         let names: Vec<&str> = AuditKind::ALL.iter().map(|k| k.as_str()).collect();
         assert_eq!(names, spec);

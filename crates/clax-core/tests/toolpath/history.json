@@ -2961,6 +2961,35 @@
     }
    },
    "backfilled": false
+  },
+  {
+   "seq": 83,
+   "at": "2026-10-06T14:08:49.083Z",
+   "kind": "version.push_refused",
+   "actor": {
+    "type": "system",
+    "reason": "daemon"
+   },
+   "ids": {
+    "artifact": "k3m9q2w8x1ab",
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "via": "daemon",
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "commit": "4f2a9c1e7b3d5f60718293a4b5c6d7e8f9012345",
+    "person": "u_5am7q2",
+    "session": null,
+    "reason": "person_revoked"
+   },
+   "backfilled": false
   }
  ]
 }

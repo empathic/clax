@@ -51,6 +51,25 @@
 //! The Worker also hands `/git/<repo>.git/…` and `/_dev/repos/…` to
 //! [`repos`] (artifact repositories, their tokens and assets).
 //!
+//! # Pushes
+//!
+//! A commit pushed to an artifact's repository becomes a version when the
+//! instance records it: `POST /_internal/pushed` on the instance's object,
+//! at the host [`INSTANCE_INTERNAL`] (`{"artifact", "person",
+//! "session"}`, the last two whom the push's token was handed to), which
+//! only other objects and the Worker's own handlers reach: the Worker
+//! answers any request for `/_internal/`, or naming that host, with 404
+//! rather than forward it.
+//! `RepoDO` makes the call once the stand-in takes a push; the Worker's
+//! queue consumer makes it for each artifact a Cloudflare Artifacts
+//! `cf.artifacts.repo.pushed` event names (`clax_git::events`), acking
+//! the event's messages when it succeeds or is refused (4xx), and retrying
+//! them otherwise, at most `max_retries` times (`wrangler.jsonc`). The
+//! event, as `clax_git::events` reads it, names no pusher, and pushes to
+//! Artifacts never pass `RepoDO`, so their commits are the owner's.
+//! Before each publish the instance records any commits still unrecorded,
+//! so a lost event never blocks one.
+//!
 //! Build and run from this directory: `npm install`, then `npm run dev`
 //! (`wrangler dev --local --persist-to .wrangler/state`, which runs
 //! `build.sh`; build the web UI first with `scripts/build-web.sh`); `npm
@@ -95,6 +114,11 @@ use crate::store::DoPageStore;
 async fn fetch(req: Request, env: Env, _ctx: worker::Context) -> Result<Response> {
     console_error_panic_hook::set_once();
     let path = req.path();
+    // Calls between objects only (see Pushes): never forwarded, whatever
+    // host a request names.
+    if path.starts_with("/_internal/") || req.url()?.host_str() == Some(INSTANCE_INTERNAL) {
+        return Response::error("Not found", 404);
+    }
     #[cfg(target_arch = "wasm32")]
     if path.starts_with("/git/") {
         return repos::worker::forward_git(&env, req).await;
@@ -125,14 +149,91 @@ async fn fetch(req: Request, env: Env, _ctx: worker::Context) -> Result<Response
     if let Some(res) = static_asset(&env, &path, app_host).await? {
         return Response::try_from(res);
     }
+    instance_stub(&env)?.fetch_with_request(req).await
+}
+
+/// The instance's object, named by `CLAX_INSTANCE` (`default` when unset).
+fn instance_stub(env: &Env) -> Result<worker::Stub> {
     let name = env
         .var("CLAX_INSTANCE")
         .map(|v| v.to_string())
         .ok()
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| "default".to_string());
-    let stub = env.durable_object("CLAX_INSTANCE_DO")?.get_by_name(&name)?;
-    stub.fetch_with_request(req).await
+    env.durable_object("CLAX_INSTANCE_DO")?.get_by_name(&name)
+}
+
+/// The host of calls to the instance's object from other objects and the
+/// Worker's handlers (see Pushes).
+pub const INSTANCE_INTERNAL: &str = "instance.internal";
+
+/// Asks the instance to record the commits pushed to `artifact`'s
+/// repository as versions published by `holder`; answers the status (200
+/// when recorded, or when there was nothing to record).
+pub(crate) async fn reconcile_pushes(
+    env: &Env,
+    artifact: &str,
+    holder: &repos::tokens::Holder,
+) -> Result<u16> {
+    let body = json!({
+        "artifact": artifact,
+        "person": holder.person,
+        "session": holder.session,
+    });
+    let mut init = worker::RequestInit::new();
+    init.with_method(worker::Method::Post)
+        .with_body(Some(wasm_bindgen::JsValue::from_str(&body.to_string())));
+    let req = Request::new_with_init(
+        &format!("http://{INSTANCE_INTERNAL}/_internal/pushed"),
+        &init,
+    )?;
+    Ok(instance_stub(env)?
+        .fetch_with_request(req)
+        .await?
+        .status_code())
+}
+
+/// The consumer of the queue the Artifacts event subscription delivers to
+/// (`queues.consumers` in `wrangler.jsonc`; see Pushes): each artifact a
+/// pushed event names is reconciled once per batch; every other message is
+/// acknowledged.
+#[event(queue)]
+async fn queue(batch: worker::MessageBatch<Value>, env: Env, _ctx: worker::Context) -> Result<()> {
+    use worker::MessageExt;
+    console_error_panic_hook::set_once();
+    let messages = batch.messages()?;
+    let plan = clax_git::events::plan_batch(messages.iter().map(|m| m.body()));
+    for i in plan.ack {
+        messages[i].ack();
+    }
+    for (artifact, asked) in plan.reconcile {
+        let done = match reconcile_pushes(&env, &artifact, &Default::default()).await {
+            Ok(200) => true,
+            // Answered and refused (a malformed call): retrying cannot help.
+            Ok(status) if (400..500).contains(&status) => {
+                worker::console_error!(
+                    "recording the pushes to {artifact} was refused ({status}); acknowledging"
+                );
+                true
+            }
+            Ok(status) => {
+                worker::console_error!("recording the pushes to {artifact} answered {status}");
+                false
+            }
+            Err(e) => {
+                worker::console_error!("recording the pushes to {artifact} failed: {e}");
+                false
+            }
+        };
+        for i in asked {
+            if done {
+                messages[i].ack();
+            } else {
+                messages[i].retry();
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Whether `host` (a `Host` header) is `CONTENT_ORIGIN`'s, which serves no

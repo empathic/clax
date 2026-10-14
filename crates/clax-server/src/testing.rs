@@ -555,6 +555,7 @@ impl TestServer {
         crate::inbox::listen(&state);
         crate::approvals::listen(&state);
         crate::routes::people::listen(&state);
+        crate::pushes::listen(&state);
         let events = state.events.clone();
         let store = state.store.clone();
         let working = state.working.clone();

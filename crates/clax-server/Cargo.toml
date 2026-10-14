@@ -64,6 +64,8 @@ test-support = ["dep:tempfile", "dep:rusqlite", "dep:async-trait"]
 [dev-dependencies]
 clax-server = { path = ".", features = ["test-routes", "test-support"] }
 clax-hooks = { path = "../clax-hooks" }
+clax-content-git = { path = "../clax-content-git" }
+clax-git = { path = "../clax-git" }
 bytes = "1"
 sha2 = "0.11"
 reqwest = { workspace = true, features = ["stream"] }
