@@ -4730,8 +4730,10 @@ versions is a snapshot of the page, taken when a comment is posted.
   the page or the page does not exist (it never creates a page). A viewer
   route, as `POST /api/live/threads` is.
 - **Serving a snapshot.** Every content response of a live page
-  (`/c/<id>/v/<n>/...` and `<id>.localhost`) carries, besides its usual
-  policy, a second `Content-Security-Policy`: `script-src
+  (`/c/<id>/v/<n>/...` and `<id>.localhost`) carries, besides its framing
+  policy (the sandbox or `frame-ancestors` alone: unlike an artifact's own
+  content, a snapshot is not kept to its own files), a second
+  `Content-Security-Policy`: `script-src
   http://<Host>/_clax/; object-src 'none'; base-uri 'none'; form-action
   'none'; frame-src 'none'; connect-src 'none'; worker-src 'none'`, where
   `<Host>` is the request's `Host` (the daemon's own host when that is not
@@ -5052,6 +5054,12 @@ dark mode, and on a phone:
   relative paths, for example `<link rel="stylesheet" href="style.css">`, and
   published under the same relative path in `files`. Do not use absolute
   `/...` paths or hard-coded hosts.
+- A page loads only its own files, its assets, `data:` and `blob:` URLs, and
+  connects nowhere itself: no scripts, styles, fonts or images from CDNs or
+  other sites, and no `fetch`, `XMLHttpRequest`, `WebSocket` or
+  `EventSource`, not even of its own files (keep data in a script module or
+  in `db`). The daemon's content policy refuses the rest. Data from the web
+  comes through the `net` capability.
 
 Minimal skeleton:
 
@@ -5399,9 +5407,11 @@ of the event stream), and any later `get()` rejects `not_granted`.
 
 ### Fetching from the network (`net`)
 
-An app page cannot connect anywhere itself (its content security policy
-keeps `connect-src 'none'`). It fetches through the daemon instead, from
-hosts it declares and the owner allows.
+An app page cannot connect anywhere itself, nor load anything from another
+site: its content security policy keeps `connect-src 'none'` and loads only
+its own files, its assets, `data:` and `blob:` (see "Security model"). It
+fetches through the daemon instead, from hosts it declares and the owner
+allows.
 
 **Declaring.** `{"net": {"hosts": ["api.example.com", "cdn.example.com"]}}`:
 1 to 32 lowercase host names (at least two labels, the last not numeric;
@@ -7072,8 +7082,25 @@ it with Ajv (draft 2020-12, formats asserted;
   carries `Content-Security-Policy: frame-ancestors 'self'
   http://localhost<:port> http://127.0.0.1<:port>` (the request's port), so
   only the artifact's own pages and the shell may frame it, and no sandbox:
-  the origin is the boundary. A live page's snapshot carries, on either
-  origin, a second policy that runs no script but Clax's own. Supporting files and blobs are
+  the origin is the boundary. On either origin the same policy goes on to
+  keep the page to its own files: `default-src <own> <blobs> data: blob:;
+  script-src <own> 'unsafe-inline' 'unsafe-eval' data: blob:; style-src <own>
+  'unsafe-inline' data: blob:; connect-src 'none'; object-src 'none';
+  base-uri 'none'; form-action 'none'`. `<own>` is `'self'` on the
+  artifact's origin, and on the main origin, where the sandboxed page's
+  origin is opaque, `http://<Host>/c/<id>/ http://<Host>/_clax/bridge.js
+  http://<Host>/_clax/bridge/` (`<Host>` the request's, or the daemon's own
+  when that is not a plain host and port), so the API on that host is not
+  among them. `<blobs>` is `http://<host>/_blob/` for the request's host,
+  the daemon's own, and `localhost` and `127.0.0.1` on the request's port.
+  So a page loads its files, the bridge and its parts, its assets, and
+  `data:` and `blob:` URLs; it fetches nothing (`fetch`, `XMLHttpRequest`,
+  `WebSocket`, `EventSource`, beacons, JSON modules) and loads no script,
+  style, font, image, media, frame or worker from another site; it posts
+  no form. Everything else it does goes through the shell by `postMessage`
+  (`db`, `comments`, `net`, `sample` and the other capabilities). A live
+  page's snapshot carries instead, on either origin, only the framing part
+  and a second policy that runs no script but Clax's own. Supporting files and blobs are
   sent with `X-Content-Type-Options: nosniff`. Content, on either origin, and
   blobs carry `Referrer-Policy: no-referrer`, so what a page loads from
   another host names neither its artifact ID nor the daemon's port.
