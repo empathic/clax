@@ -429,7 +429,10 @@ class AgentRuntime {
 ///   questions sheet and a toast), told in a toast whose View shows the
 ///   question sheet over another app, and shown in the question sheet
 ///   ([showQuestionSheet]) anywhere else: the making screen, the launcher,
-///   the inbox. The inbox's questions open the sheet too.
+///   the inbox. The inbox's questions open the sheet too. A question that
+///   comes while the sheet shows another waits for it to close, and one
+///   posted in the background is presented as above when Clax comes back
+///   to the foreground; either is skipped if it closed meanwhile.
 /// - **macOS.** The app owns the menu bar ([ClaxMenuBar]); the open app
 ///   screen registers App › Comment and App › Threads.
 class AppRoot extends StatefulWidget {
@@ -462,15 +465,25 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// The `questions` topic's views, for the question sheet.
   final _questionViews = StreamController<QuestionView>.broadcast();
 
-  /// The questions already seen open, each presented once.
+  /// The questions already seen on the stream, each presented once if
+  /// open.
   final _seenQuestions = <String>{};
+
+  /// The questions seen open and not since closed, by ID, oldest first.
+  final _openQuestions = <String, QuestionView>{};
 
   /// The question the sheet shows, while it shows one.
   String? _sheetQuestion;
 
-  /// A question a notification or the inbox asked to show before the
-  /// daemon was up.
-  String? _pendingQuestion;
+  /// Questions waiting for the sheet, oldest first: each `asked` (a
+  /// notification, the inbox or a toast's View named it) or not (a new
+  /// question, presented again by [_presentQuestion] when its turn comes).
+  /// Kept while the sheet shows another or before the daemon is up.
+  final _questionQueue = <({String qid, bool asked})>[];
+
+  /// Questions posted as notifications while Clax was in the background,
+  /// presented when it comes back to the foreground unless shown by then.
+  final _backgroundQuestions = <String>{};
 
   /// The device capabilities, asking in a dialog over the app.
   late final DeviceHost? _device = _s.device?.call(
@@ -730,10 +743,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           });
           _questionEvents = stream.events.listen(_onQuestionEvent);
         }
-        if (_pendingQuestion case final qid?) {
-          _pendingQuestion = null;
-          scheduleMicrotask(() => _openQuestion(qid));
-        }
+        if (_questionQueue.isNotEmpty) scheduleMicrotask(_nextQuestion);
         if (_pendingOpen case (:final aid, :final action)?) {
           _pendingOpen = null;
           scheduleMicrotask(() => _openFromNotice(aid, action: action));
@@ -754,6 +764,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _presence.onLifecycle(state);
+    if (_presence.foreground && _backgroundQuestions.isNotEmpty) {
+      _presentBackgroundQuestions();
+    }
     switch (state) {
       case AppLifecycleState.resumed:
         unawaited(_s.supervisor.onResume());
@@ -1130,7 +1143,24 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       return;
     }
     _questionViews.add(q);
-    if (q.status == 'open' && _seenQuestions.add(q.id)) _presentQuestion(q);
+    if (q.status != 'open') {
+      _seenQuestions.add(q.id);
+      _openQuestions.remove(q.id);
+      _backgroundQuestions.remove(q.id);
+      return;
+    }
+    _openQuestions[q.id] = q;
+    if (_seenQuestions.add(q.id)) _presentQuestion(q);
+  }
+
+  /// Presents the questions posted while Clax was in the background that
+  /// are still open, as if each had just arrived in front.
+  void _presentBackgroundQuestions() {
+    final waiting = [..._backgroundQuestions];
+    _backgroundQuestions.clear();
+    for (final qid in waiting) {
+      if (_openQuestions[qid] case final q?) _presentQuestion(q);
+    }
   }
 
   /// A new open question [q]: in the background a notification; in front,
@@ -1144,6 +1174,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     if (!_presence.foreground) {
       final first = q.questions.firstOrNull?.question ?? '';
       unawaited(_s.background.ready(heading, first, '$questionNews${q.id}'));
+      _backgroundQuestions.add(q.id);
       return;
     }
     final top = _openApps.lastOrNull;
@@ -1167,19 +1198,28 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         );
       return;
     }
-    _openQuestion(q.id);
+    _showQuestion(q.id, asked: false);
   }
 
-  /// Shows question [qid] in the question sheet, over whatever is on top;
-  /// nothing while the sheet shows one already.
-  void _openQuestion(String qid) {
+  /// Shows question [qid] in the question sheet, over whatever is on top.
+  void _openQuestion(String qid) => _showQuestion(qid, asked: true);
+
+  /// Shows question [qid] in the question sheet; while the sheet shows
+  /// another, or before the daemon is up, queues it ([_questionQueue]).
+  void _showQuestion(String qid, {required bool asked}) {
+    _backgroundQuestions.remove(qid);
+    if (_sheetQuestion == qid) return;
     final base = _endpoint.value?.base;
     final nav = _nav.currentState;
-    if (!_wasUp || base == null || nav == null) {
-      _pendingQuestion = qid;
+    if (_sheetQuestion != null || !_wasUp || base == null || nav == null) {
+      final i = _questionQueue.indexWhere((e) => e.qid == qid);
+      if (i >= 0) {
+        if (!asked || _questionQueue[i].asked) return;
+        _questionQueue.removeAt(i);
+      }
+      _questionQueue.add((qid: qid, asked: asked));
       return;
     }
-    if (_sheetQuestion != null) return;
     _sheetQuestion = qid;
     unawaited(
       showQuestionSheet(
@@ -1188,8 +1228,31 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         base: base,
         questionId: qid,
         updates: _questionViews.stream,
-      ).whenComplete(() => _sheetQuestion = null),
+      ).whenComplete(() {
+        _sheetQuestion = null;
+        _nextQuestion();
+      }),
     );
+  }
+
+  /// Presents the next queued question still open: one that was asked for
+  /// in the sheet, a new one as [_presentQuestion] would (so never in a
+  /// sheet over an app). A question known closed is skipped; one asked for
+  /// but never seen on the stream (from the inbox) is shown.
+  void _nextQuestion() {
+    while (_sheetQuestion == null && _questionQueue.isNotEmpty) {
+      if (!_wasUp || _endpoint.value == null || _nav.currentState == null) {
+        return;
+      }
+      final (:qid, :asked) = _questionQueue.removeAt(0);
+      final q = _openQuestions[qid];
+      if (q == null && (!asked || _seenQuestions.contains(qid))) continue;
+      if (asked) {
+        _showQuestion(qid, asked: true);
+      } else {
+        _presentQuestion(q!);
+      }
+    }
   }
 
   void _onReady(String aid, Ready r) {
