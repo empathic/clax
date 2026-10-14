@@ -1,10 +1,10 @@
 {
   "bridgeBaseline": 32861,
   "gallery": 27960,
-  "artifact": 65088,
+  "artifact": 65216,
   "host": 7616,
   "questions": 16384,
-  "bridge": 6016,
+  "bridge": 6144,
   "partComment": 13248,
   "partClip": 17408,
   "partCaps": 9024,
