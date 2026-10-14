@@ -6,6 +6,7 @@ import 'package:archive/archive.dart' show Deflate;
 import 'package:clax_app/bundle/bundle_reader.dart';
 import 'package:clax_app/bundle/bundle_writer.dart';
 import 'package:clax_app/bundle/content_hash.dart';
+import 'package:clax_app/bundle/manifest.dart' show maxFilesBytes;
 import 'package:clax_app/bundle/signing.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -382,4 +383,216 @@ void main() {
     final g = manifestJson(good)..['icon'] = {'svg': 'icon.svg', 'word': null};
     expect((await BundleReader.read(await craft(g, good))).iconSvg, isNotNull);
   });
+
+  group('work bounds', () {
+    test('many empty dynamic blocks are refused, not inflated', () async {
+      final bomb = _emptyBlocks(20000);
+      expect(bomb.length, lessThan(256 * 1024));
+      // Each block builds a 2^15-entry table and yields nothing: refused
+      // once the block count passes the cap for the declared size.
+      expect(inflateAtMost(bomb, maxFilesBytes), isNull);
+      // The block form itself is valid deflate: one of them inflates.
+      expect(inflateAtMost(_emptyBlocks(1), 100), isEmpty);
+      // As manifest.json, before any signature check.
+      await expectReadRefused(
+        _rawDeflatedZip('manifest.json', bomb),
+        'too_large',
+      );
+    });
+
+    test('a compressed entry much larger than its declared size is refused '
+        'unread', () async {
+      final z = await craft(manifestJson(_files()), {
+        'index.html': Uint8List.fromList(List.generate(4096, (i) => i * 7)),
+      });
+      await expectReadRefused(z, 'bad_file');
+    });
+
+    test('a file over the inline size reads on another isolate', () async {
+      final big = Uint8List.fromList(
+        List.generate(200 * 1024, (i) => (i * 2654435761) >> 13 & 0xff),
+      );
+      final files = {..._files(), 'big.bin': big};
+      final z = await craft(manifestJson(files), files);
+      expect(z.length, greaterThan(inlineReadBytes));
+      expect((await BundleReader.read(z)).files['big.bin'], big);
+      z[_local(z, 'files/big.bin') + 30 + 'files/big.bin'.length] ^= 1;
+      await expectReadRefused(z, 'bad_file');
+    });
+  });
+
+  group('bytes outside the entries', () {
+    Future<void> junkAt(int Function(Uint8List z) where) async {
+      final z = await craft(manifestJson(_files()), _files());
+      expect(await BundleReader.read(z), isNotNull);
+      await expectReadRefused(_insert(z, where(z), 4096), 'not_a_bundle');
+    }
+
+    test('before the first entry', () => junkAt((_) => 0));
+    test('between entries', () => junkAt((z) => _local(z, 'manifest.sig')));
+    test('after the last entry', () => junkAt(_cdOffset));
+    test('after the end record', () async {
+      final z = await craft(manifestJson(_files()), _files());
+      await expectReadRefused(Uint8List.fromList([...z, 0]), 'not_a_bundle');
+    });
+  });
+
+  group('JSON depth', () {
+    Object? nest(int depth) => depth == 1 ? <Object?>[] : [nest(depth - 1)];
+
+    test('capabilities deeper than 64 levels is bad_manifest', () async {
+      final ok = manifestJson(_files())..['capabilities'] = {'x': nest(63)};
+      await BundleReader.read(await craft(ok, _files()));
+      await expectReadRefused(
+        await craft(
+          manifestJson(_files())..['capabilities'] = {'x': nest(64)},
+          _files(),
+        ),
+        'bad_manifest',
+      );
+    });
+
+    test('a seed document deeper than 64 levels is bad_seed', () async {
+      Future<Uint8List> seeded(String data) {
+        final bytes = b('{"path":"a/1","data":$data}\n');
+        return craft(
+          manifestJson(
+            _files(),
+            seed: {'sha256': sha256Hex(bytes), 'size': bytes.length, 'docs': 1},
+          ),
+          _files(),
+          seedBytes: bytes,
+        );
+      }
+
+      await BundleReader.read(await seeded('{"x":${'[' * 63}${']' * 63}}'));
+      await expectReadRefused(
+        await seeded('{"x":${'[' * 64}${']' * 64}}'),
+        'bad_seed',
+      );
+      // Far deeper than any stack: refused, not a StackOverflowError.
+      await expectReadRefused(
+        await seeded('{"x":${'[' * 100000}${']' * 100000}}'),
+        'bad_seed',
+      );
+    });
+  });
+}
+
+int _cdOffset(Uint8List z) =>
+    ByteData.sublistView(z).getUint32(z.length - 22 + 16, Endian.little);
+
+/// [z] with [n] zero bytes inserted at [at] and every offset past it moved,
+/// so the zip is otherwise consistent.
+Uint8List _insert(Uint8List z, int at, int n) {
+  final out = Uint8List.fromList([
+    ...z.sublist(0, at),
+    ...Uint8List(n),
+    ...z.sublist(at),
+  ]);
+  final d = ByteData.sublistView(out);
+  final eocd = out.length - 22;
+  final count = d.getUint16(eocd + 10, Endian.little);
+  final cd = d.getUint32(eocd + 16, Endian.little);
+  final newCd = cd >= at ? cd + n : cd;
+  d.setUint32(eocd + 16, newCd, Endian.little);
+  var p = newCd;
+  for (var i = 0; i < count; i++) {
+    final local = d.getUint32(p + 42, Endian.little);
+    if (local >= at) d.setUint32(p + 42, local + n, Endian.little);
+    p += 46 + d.getUint16(p + 28, Endian.little);
+  }
+  return out;
+}
+
+/// A one-entry zip whose data is [deflated] as given, method 8.
+Uint8List _rawDeflatedZip(String name, Uint8List deflated) {
+  final z = BundleWriter.zip([ZipEntry(name, deflated)]);
+  _u16(z, _central(z, name) + 10, 8);
+  _u16(z, _local(z, name) + 8, 8);
+  return z;
+}
+
+/// [count] dynamic deflate blocks that each declare a 15-bit literal code
+/// and a 1-bit end of block and hold only the end of block, then a final
+/// empty stored block.
+Uint8List _emptyBlocks(int count) {
+  final w = _Bits();
+  const order = [
+    16,
+    17,
+    18,
+    0,
+    8,
+    7,
+    9,
+    6,
+    10,
+    5,
+    11,
+    4,
+    12,
+    3,
+    13,
+    2,
+    14,
+    1,
+    15,
+  ];
+  for (var n = 0; n < count; n++) {
+    w.bits(0, 1); // not final
+    w.bits(2, 2); // dynamic
+    w.bits(0, 5); // 257 literal/length codes
+    w.bits(0, 5); // 1 distance code
+    w.bits(15, 4); // 19 code length codes
+    for (final sym in order) {
+      w.bits(const {0, 1, 15, 18}.contains(sym) ? 2 : 0, 3);
+    }
+    // Code length codes (2 bits each, canonical): 0->00 1->01 15->10 18->11.
+    w.code(2, 2); // literal 0: length 15
+    w.code(3, 2); // 18: 138 zeros
+    w.bits(127, 7);
+    w.code(3, 2); // 18: 117 zeros (literals 1 to 255)
+    w.bits(106, 7);
+    w.code(1, 2); // 256 (end of block): length 1
+    w.code(0, 2); // distance 0: length 0
+    w.code(0, 1); // end of block
+  }
+  w.bits(1, 1); // final
+  w.bits(0, 2); // stored
+  w.align();
+  w.bytes([0, 0, 0xff, 0xff]);
+  return w.done();
+}
+
+class _Bits {
+  final _out = <int>[];
+  var _acc = 0;
+  var _n = 0;
+
+  void bits(int v, int n) {
+    for (var i = 0; i < n; i++) {
+      _acc |= ((v >> i) & 1) << _n;
+      if (++_n == 8) {
+        _out.add(_acc);
+        _acc = 0;
+        _n = 0;
+      }
+    }
+  }
+
+  /// A Huffman code, most significant bit first.
+  void code(int v, int n) {
+    for (var i = n - 1; i >= 0; i--) {
+      bits((v >> i) & 1, 1);
+    }
+  }
+
+  void align() {
+    if (_n > 0) bits(0, 8 - _n);
+  }
+
+  void bytes(List<int> b) => _out.addAll(b);
+
+  Uint8List done() => Uint8List.fromList(_out);
 }
