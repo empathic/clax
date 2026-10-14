@@ -200,7 +200,7 @@ export async function runDemo(o: DemoOptions): Promise<DemoResult> {
         log(`${agent.name}: published v${n} (${said})`);
         return n;
       }
-      // Clax answers a stale `if_version` with `conflict` (the prototype said `version_conflict`).
+      // Clax answers a stale `if_version` with `conflict`.
       if (e.code !== "conflict" && e.code !== "version_conflict") throw new ClaxApiError(0, e.code, e.message);
       const current = (e.current_version as { n?: number } | number | undefined);
       const at = typeof current === "number" ? current : current?.n ?? 0;
