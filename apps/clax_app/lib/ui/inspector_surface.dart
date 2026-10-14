@@ -111,9 +111,16 @@ class WebViewInspector implements Inspector {
     return TestRun(passed: m.passed, failed: m.failed, skipped: m.skipped);
   });
 
-  /// Each migration run loads [url] as an inspection does (steps 1, 2 and
-  /// 4), then calls `claxHost.runMigration` and waits for its `migration`,
-  /// at most [total] plus [answerLimit].
+  /// Each migration run loads [url] in the migration view (its query
+  /// gains `migrate=1`: the page's bridge ends the page's markup before any
+  /// of it runs, so only the migration writes), as an inspection does
+  /// (steps 1, 2 and 4), then calls `claxHost.runMigration` and waits for
+  /// its `migration`, at most [total] plus [answerLimit].
+  ///
+  /// Whatever the outcome (an answer, a timeout, a cancel), it then loads
+  /// the migration view again and waits for its `ready`, at most
+  /// [readyLimit], before it returns: the document the migration ran in is
+  /// gone by then, so none of its code is still writing.
   @override
   Future<MigrationRun> runMigration(
     Uri url, {
@@ -123,21 +130,53 @@ class WebViewInspector implements Inspector {
     Duration total = const Duration(seconds: 30),
     Future<void>? cancelled,
   }) => _queued(cancelled, () async {
-    final (m, _) = await _ask<MigrationMsg>(
-      url,
-      RunMigration(
-        file: file,
-        from: from,
-        to: to,
-        totalMs: total.inMilliseconds,
-      ),
-      total + answerLimit,
-      cancelled,
+    final view = url.replace(
+      queryParameters: {...url.queryParameters, 'migrate': '1'},
     );
-    return m.ok
-        ? const MigrationRun.passed()
-        : MigrationRun.failed(m.error ?? 'the migration failed');
+    try {
+      final (m, _) = await _ask<MigrationMsg>(
+        view,
+        RunMigration(
+          file: file,
+          from: from,
+          to: to,
+          totalMs: total.inMilliseconds,
+        ),
+        total + answerLimit,
+        cancelled,
+      );
+      return m.ok
+          ? const MigrationRun.passed()
+          : MigrationRun.failed(m.error ?? 'the migration failed');
+    } finally {
+      await _replace(view);
+    }
   });
+
+  /// Loads [url] again in place of the document the surface shows, and
+  /// waits for its `ready`, at most [readyLimit]; a failure or no `ready`
+  /// in time is let go (the load was still asked for).
+  Future<void> _replace(Uri url) async {
+    final surface = _surface.value;
+    if (_disposed || surface == null) return;
+    final aid = _artifactOf(url);
+    final ready = Completer<void>();
+    final sub = surface.messages.listen((m) {
+      if (m is Ready && m.artifact == aid && !ready.isCompleted) {
+        ready.complete();
+      }
+    });
+    try {
+      surface.setVisible(true);
+      await surface.load(url);
+      await Future.any<void>([ready.future, _clock.delay(readyLimit)]);
+    } on Object {
+      // The old document is being replaced either way.
+    } finally {
+      unawaited(sub.cancel());
+      if (!_disposed) surface.setVisible(false);
+    }
+  }
 
   /// Runs [work] after every call before it has ended; a cancel before its
   /// turn ends it with `cancelled`.

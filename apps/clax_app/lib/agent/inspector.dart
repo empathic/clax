@@ -42,6 +42,10 @@ abstract interface class Inspector {
   /// page's `db` and `{from, to}` (the installed version and the bundle's),
   /// the whole run for at most [total].
   ///
+  /// The page's own markup does not run: only the migration writes the
+  /// documents. Once this returns, whatever the outcome, no code of the
+  /// run is running any more.
+  ///
   /// A migration that throws, does not load or runs out of time is a
   /// [MigrationRun] that is not [MigrationRun.ok]. Throws [InspectorError]
   /// when the page does not load, the page does not answer in time, or

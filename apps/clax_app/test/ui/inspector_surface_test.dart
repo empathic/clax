@@ -165,38 +165,52 @@ void main() {
     );
   });
 
-  test('a migration run loads the URL, asks runMigration after ready and '
-      'returns ok, or the error the page gave', () async {
+  final migrateView = Uri.parse(
+    'http://127.0.0.1:7999/a/$_draft?app=1&inspect=1&migrate=1',
+  );
+
+  test('a migration run loads the migration view, asks runMigration after '
+      'ready, and returns ok, or the error the page gave, once the view is '
+      'loaded again', () async {
+    var done = false;
     var f = inspector.runMigration(
       _url(),
       from: 2,
       to: 3,
       total: const Duration(seconds: 20),
-    );
+    )..whenComplete(() => done = true);
     await _settle();
     final s = surfaces.single;
-    expect(s.loads, [_url()]);
+    expect(s.loads, [migrateView]);
     s.push(_ready());
     await _settle();
     expect(s.js, [const RunMigration(from: 2, to: 3, totalMs: 20000).toJs()]);
     // Another call's answer is not taken.
     s.push(const TestsMsg(passed: 1, failed: [], skipped: 0));
     s.push(const MigrationMsg.ok());
+    await _settle();
+    // The document the migration ran in is replaced before the run returns.
+    expect(s.loads, [migrateView, migrateView]);
+    expect(done, isFalse);
+    s.push(_ready());
     final r = await f;
     expect((r.ok, r.error), (true, null));
-    expect(s.visibility, [true, false]);
+    expect(s.visibility.last, isFalse);
 
     f = inspector.runMigration(_url(), from: 1, to: 2);
     await _settle();
     s.push(_ready());
     await _settle();
     s.push(const MigrationMsg.failed('the migration failed: boom'));
+    await _settle();
+    expect(s.loads, hasLength(4));
+    s.push(_ready());
     final no = await f;
     expect((no.ok, no.error), (false, 'the migration failed: boom'));
   });
 
   test('a migration run that never answers, or is cancelled, is an '
-      'InspectorError', () async {
+      'InspectorError only once its document is replaced', () async {
     var f = inspector.runMigration(
       _url(),
       from: 1,
@@ -204,9 +218,13 @@ void main() {
       total: const Duration(seconds: 20),
     );
     await _settle();
-    surfaces.single.push(_ready());
+    final s = surfaces.single;
+    s.push(_ready());
     await _settle();
     clock.advance(const Duration(seconds: 30));
+    await _settle();
+    expect(s.loads, [migrateView, migrateView]);
+    s.push(_ready());
     await expectLater(
       f,
       throwsA(
@@ -220,7 +238,13 @@ void main() {
     final stop = Completer<void>();
     f = inspector.runMigration(_url(), from: 1, to: 2, cancelled: stop.future);
     await _settle();
+    s.push(_ready());
+    await _settle();
     stop.complete();
+    await _settle();
+    expect(s.loads, hasLength(4));
+    // No ready for the replacement: it waits its limit, then returns.
+    clock.advance(const Duration(seconds: 10));
     await expectLater(
       f,
       throwsA(
