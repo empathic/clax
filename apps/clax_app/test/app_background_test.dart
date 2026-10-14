@@ -20,6 +20,7 @@ import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/host_protocol.dart' show Ready;
 import 'package:clax_app/ui/making_screen.dart' show MakingScreen;
+import 'package:clax_app/ui/question_sheet.dart';
 import 'package:clax_app/ui/read_consent_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -113,6 +114,17 @@ ModelTurn _calls(List<(String, Map<String, Object?>)> calls) => ModelTurn(
   usage: const Usage(input: 100, output: 50),
 );
 
+class _QuestionPage implements QuestionPage {
+  @override
+  Widget build(BuildContext context) => const SizedBox.expand();
+
+  @override
+  Future<void> load(Uri url) async {}
+
+  @override
+  void dispose() {}
+}
+
 /// Records every [BackgroundWork] call as `method(args…)`, and plays the
 /// platform's launch artifact and taps.
 class _Work implements BackgroundWork {
@@ -138,9 +150,14 @@ class _Work implements BackgroundWork {
   @override
   Future<void> stop() async => calls.add('stop');
 
+  /// What each news notification opens when tapped.
+  final targets = <String>[];
+
   @override
-  Future<void> ready(String title, String text, String artifactId) async =>
-      calls.add('ready($title, $text)');
+  Future<void> ready(String title, String text, String artifactId) async {
+    calls.add('ready($title, $text)');
+    targets.add(artifactId);
+  }
 
   @override
   Future<void> failed(
@@ -199,6 +216,7 @@ void main() {
             surfaces.add(s);
             return s;
           },
+          questionPage: (_) => _QuestionPage(),
           installId: 'install',
           supportDir: dir.path,
           prompts: PromptBuilder(rootBundle),
@@ -395,6 +413,35 @@ void main() {
     work.tap(other);
     await pumpRoute(tester);
     expect(surfaces, hasLength(2));
+  });
+
+  testWidgets('a question asked in the background is posted; its tap shows '
+      'the question sheet', (tester) async {
+    final aid = api.seedArtifact('Runs', {'index.html': _page});
+    await pumpApp(tester);
+    leave(tester);
+    final session = await api.registerAppSession(installId: 'i', pid: 1);
+    final asked = await api.askQuestion(session.id, [
+      {
+        'question': 'Which unit should distances use?',
+        'header': 'Units',
+        'options': [
+          {'label': 'km', 'description': ''},
+          {'label': 'mi', 'description': ''},
+        ],
+      },
+    ], artifactId: aid);
+    await pumpUntil(tester, () => work.targets.isNotEmpty);
+    expect(work.calls, [
+      'ready(Runs has a question, Which unit should distances use?)',
+    ]);
+    expect(find.byType(QuestionWebSheet), findsNothing);
+    comeBack(tester);
+    work.tap(work.targets.single);
+    await pumpRoute(tester);
+    expect(find.byType(QuestionWebSheet), findsOneWidget);
+    expect(surfaces, isEmpty, reason: 'the sheet, not the app');
+    expect(work.targets.single, 'question:${asked.question.id}');
   });
 
   testWidgets('a change that lands in the background says so', (tester) async {
