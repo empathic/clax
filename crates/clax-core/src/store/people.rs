@@ -17,7 +17,7 @@ use crate::rights::Rights;
 use crate::secret::{self, Secret, constant_time_eq, sha256_hex};
 use crate::{CoreError, Result, new_public_id, new_ulid};
 use base64::Engine as _;
-use chrono::Duration;
+use chrono::{DateTime, Duration, Utc};
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde::Serialize;
 
@@ -2058,6 +2058,45 @@ impl Store {
             Ok(out)
         })
     }
+
+    /// When [`Store::expire_grants`] next has something to do, to the second
+    /// at or after it: a request lapsing unfinished, an issued grant idle
+    /// for [`GRANT_IDLE_SECS`], a never-issued request past its retention,
+    /// an invite lapsing unredeemed (its person returns to a viewer), or now
+    /// for an expiry not yet reported. `None` when no row will ever need it.
+    /// A host that expires on a timer of its own choosing sets it for then.
+    pub fn grants_next_due(&self) -> Result<Option<DateTime<Utc>>> {
+        // `unixepoch` drops the milliseconds; every rule compares strictly,
+        // so one second more is never early.
+        let due: Option<i64> = self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT MIN(t) FROM (
+                   SELECT unixepoch(created_at) + ?1 + 1 AS t FROM grants
+                    WHERE status = 'pending'
+                   UNION ALL
+                   SELECT unixepoch(decided_at) + ?1 + 1 FROM grants
+                    WHERE status = 'approved' AND manage_sha256 IS NULL
+                   UNION ALL
+                   SELECT unixepoch(COALESCE(last_used_at, decided_at, created_at)) + ?2 + 1
+                     FROM grants WHERE status = 'approved' AND manage_sha256 IS NOT NULL
+                   UNION ALL
+                   SELECT 0 FROM grants WHERE status = 'expired' AND ended_at IS NULL
+                   UNION ALL
+                   SELECT unixepoch(created_at) + ?3 + 1 FROM grants
+                    WHERE manage_sha256 IS NULL
+                      AND (status = 'denied'
+                           OR (status IN ('expired', 'revoked') AND ended_at IS NOT NULL))
+                   UNION ALL
+                   SELECT unixepoch(i.expires_at) + 1 FROM invites i
+                     JOIN viewers v ON v.id = i.viewer_id
+                    WHERE i.used_at IS NULL AND i.revoked_at IS NULL
+                      AND v.person = 1 AND v.owner = 0 AND v.person_revoked_at IS NULL)",
+                params![PENDING_TTL_SECS, GRANT_IDLE_SECS, UNISSUED_RETENTION_SECS],
+                |r| r.get(0),
+            )?)
+        })?;
+        Ok(due.and_then(|s| DateTime::<Utc>::from_timestamp(s, 0)))
+    }
 }
 
 /// A connected person (or a revoked one, kept as history) with their
@@ -3134,6 +3173,42 @@ pub(crate) mod tests {
         st.disconnect_grant(DAEMON, &g.id, continue_token.expose(), t(), &n())
             .unwrap();
         assert!(!st.token_live(token.expose()).unwrap());
+    }
+
+    #[test]
+    fn grants_next_due_is_never_before_expiry_has_something_to_do() {
+        let (_d, clock, st) = store();
+        assert_eq!(st.grants_next_due().unwrap(), None, "nothing to expire");
+        let t0 = st.now_utc();
+        let at = |s: i64| Some(t0 + Duration::seconds(s));
+        let (_gid, _, _) = approved(&st, "Sam", KEY_A);
+        assert_eq!(st.grants_next_due().unwrap(), at(GRANT_IDLE_SECS + 1));
+        pending(&st, KEY_B);
+        assert_eq!(st.grants_next_due().unwrap(), at(PENDING_TTL_SECS + 1));
+        clock.advance(PENDING_TTL_SECS);
+        assert!(st.expire_grants().unwrap().is_empty(), "not due yet");
+        clock.advance(1);
+        assert_eq!(st.expire_grants().unwrap().len(), 1);
+        assert_eq!(
+            st.grants_next_due().unwrap(),
+            at(UNISSUED_RETENTION_SECS + 1),
+            "the lapsed request is kept until its retention"
+        );
+        clock.advance(UNISSUED_RETENTION_SECS - PENDING_TTL_SECS);
+        st.expire_grants().unwrap();
+        assert_eq!(st.list_grants().unwrap().len(), 1, "the request is gone");
+        assert_eq!(st.grants_next_due().unwrap(), at(GRANT_IDLE_SECS + 1));
+        let (inv, _) = st
+            .create_invite(DAEMON, InvitePerson::New("Ola".into()), None)
+            .unwrap();
+        let expires = DateTime::parse_from_rfc3339(&inv.expires_at)
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(
+            st.grants_next_due().unwrap(),
+            Some(expires + Duration::seconds(1)),
+            "an unredeemed invite's person is released when it lapses"
+        );
     }
 
     #[test]

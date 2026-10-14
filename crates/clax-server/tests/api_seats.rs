@@ -191,10 +191,16 @@ async fn an_idle_seat_is_released_and_its_stream_told() {
     }
     clock.advance(179);
     ts.seats.sweep();
+    assert_eq!(
+        ts.seats.next_idle_in(),
+        Some(std::time::Duration::from_secs(1)),
+        "idle a second from now"
+    );
     let b = open(&ts, viewer_cookie(&p2.cookie)).await;
     assert_eq!(change(&ts, &b, &live(&aid), &[]).await.0, 429, "still held");
     clock.advance(1);
     ts.seats.sweep();
+    assert_eq!(ts.seats.next_idle_in(), None, "no seat is held");
     let mut told = Vec::new();
     for _ in 0..3 {
         let d = a.events.next_named("unseated").await;

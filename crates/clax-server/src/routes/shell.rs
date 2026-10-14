@@ -413,6 +413,30 @@ pub async fn static_file(
         .into_response())
 }
 
+/// How [`static_file`] caches `/_clax/<path>` when another host serves the
+/// web UI's files (a Worker's static assets): the `Cache-Control`, and
+/// whether any origin may read it (`Access-Control-Allow-Origin: *`).
+/// `None` for the paths only the server answers: the bridge, whose URL is
+/// immutable only at the version it serves, and the contract's type
+/// definitions, which are built in.
+pub fn asset_cache(path: &str) -> Option<(&'static str, bool)> {
+    if path == "bridge.js" || path.starts_with("contract/") {
+        return None;
+    }
+    let fixed = if cfg!(debug_assertions) {
+        REVALIDATE
+    } else {
+        IMMUTABLE
+    };
+    if path.starts_with("bridge/") {
+        return Some((fixed, true));
+    }
+    if path.starts_with("shell/") && hashed_name(path) {
+        return Some((fixed, false));
+    }
+    Some(("public, max-age=3600", false))
+}
+
 /// Whether the file name ends in a bundler's content hash: `<name>-<8 of
 /// [A-Za-z0-9_-]>.<ext>`.
 fn hashed_name(path: &str) -> bool {

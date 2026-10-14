@@ -148,6 +148,14 @@ impl LiveSeats {
         self.swept(|_, _| ());
     }
 
+    /// How long until [`LiveSeats::sweep`] releases the next people seat
+    /// gone idle (zero once it is due); `None` with none held.
+    pub fn next_idle_in(&self) -> Option<std::time::Duration> {
+        let at = self.lock().next_idle_at()?;
+        let ms = at.saturating_sub(self.now_ms()).max(0);
+        Some(std::time::Duration::from_millis(ms as u64))
+    }
+
     /// Connection `conn` takes `claim`'s seat on `aid`: whether it holds one
     /// now. A refused person is noted as a spectator (viewing).
     pub fn take(&self, aid: &str, claim: &Claim, conn: &str) -> bool {

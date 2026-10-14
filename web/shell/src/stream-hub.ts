@@ -15,6 +15,14 @@
 // `IDLE_MS` (the daemon sends a keep-alive every 15 s); a subscription that
 // does not answer within `STUCK_MS` fails the connection, which reconnects.
 //
+// A server that carries the stream over a WebSocket (a Durable Object, which
+// holds hibernatable sockets, not response bodies) answers the plain
+// request 426 `websocket_required`: the hub then opens `/api/stream` as a
+// WebSocket, from then on, naming the stream to resume in its
+// `last_event_id` parameter. Each text message is one SSE block, read as
+// the body's blocks are; the hub sends `ping` every `SOCKET_PING_MS`, which
+// the server answers `pong` without waking, in place of the keep-alive.
+//
 // Notifications (a hub made with `notify`): tabs say whether they have focus.
 // For each new unread inbox item (an `inbox_item` event whose `seq` is above
 // every item the hub has seen, so an older item marked unread again or
@@ -64,6 +72,8 @@ export type HubMsg =
 export const CONNECT_MS = 5000;
 /** How long the stream may stay silent; the daemon's keep-alive is every 15 s. */
 export const IDLE_MS = 40_000;
+/** How often the hub pings a WebSocket stream, whose server answers `pong`. */
+export const SOCKET_PING_MS = 15_000;
 /** How long the connection stays after the last topic is dropped, so a tab
  * moving between views (or reloading) does not reopen it. */
 export const LINGER_MS = 3000;
@@ -106,6 +116,8 @@ export type HubEnv = {
   base?: string;
   /** Asks tabs to notify about unread inbox items (the shell's hubs only). */
   notify?: boolean;
+  /** Opens a WebSocket to `url` (default: the global `WebSocket`). */
+  socket?: (url: string) => WebSocket;
 };
 
 export class Hub {
@@ -125,6 +137,9 @@ export class Hub {
   private asked: string | null = null;
   private seq = 0;
   private conn: AbortController | null = null;
+  /** The server answered the plain stream request 426: it carries the
+   * stream over a WebSocket. */
+  private socketMode = false;
   private up = false;
   /** The tabs were told the connection is down, and not yet that it is up. */
   private toldDown = false;
@@ -302,9 +317,15 @@ export class Hub {
     // After a failure the daemon may have restarted with a new token: the
     // token request renews the events cookie (a LAN view gets a 403 and none).
     if (this.failures > 0) await this.fetch(this.url("/api/token"), { signal: ac.signal, cache: "no-store" }).catch(() => null);
+    if (this.socketMode) return this.runSocket(ac);
     const headers: Record<string, string> = {};
     if (this.streamId) headers["Last-Event-ID"] = `${this.streamId}:${this.seq}`;
     const res = await this.fetch(this.url("/api/stream"), { headers, signal: ac.signal, cache: "no-store", credentials: "same-origin" });
+    if (res.status === 426) {
+      res.body?.cancel().catch(() => {});
+      this.socketMode = true;
+      return this.runSocket(ac);
+    }
     if (!res.ok || !res.body) throw new Error(`stream answered ${res.status}`);
     const reader = res.body.getReader();
     const dec = new TextDecoder();
@@ -326,6 +347,37 @@ export class Hub {
     } finally {
       reader.cancel().catch(() => {});
     }
+  }
+
+  /** The stream over a WebSocket, on connection `ac`: settles (rejecting)
+   * once the socket closes or fails, or `ac` is aborted. */
+  private runSocket(ac: AbortController): Promise<void> {
+    return new Promise<void>((_, reject) => {
+      const q = this.streamId ? `?last_event_id=${encodeURIComponent(`${this.streamId}:${this.seq}`)}` : "";
+      const origin = this.env.base ?? (globalThis as { location?: { origin: string } }).location?.origin ?? "";
+      const url = origin.replace(/^http/, "ws") + `/api/stream${q}`;
+      const ws = (this.env.socket ?? (u => new WebSocket(u)))(url);
+      const ping = setInterval(() => { try { ws.send("ping"); } catch { /* closing */ } }, SOCKET_PING_MS);
+      let done = false;
+      const end = (why: string) => {
+        if (done) return;
+        done = true;
+        clearInterval(ping);
+        ws.onmessage = ws.onclose = ws.onerror = null;
+        try { ws.close(); } catch { /* closed */ }
+        reject(new Error(why));
+      };
+      ac.signal.addEventListener("abort", () => end("aborted"));
+      ws.onmessage = (m: MessageEvent) => {
+        if (this.conn !== ac || typeof m.data !== "string") return;
+        if (this.up) this.arm(ac, IDLE_MS);
+        if (m.data === "pong") return;
+        const b = parseBlock(m.data.replace(/\r\n/g, "\n").replace(/\n+$/, ""));
+        if (b) this.frame(ac, b.event, b.data, b.id);
+      };
+      ws.onclose = () => end("the stream ended");
+      ws.onerror = () => end("the stream failed");
+    });
   }
 
   /** Fails connection `ac` unless it is heard from within `ms`. */

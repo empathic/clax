@@ -1,7 +1,7 @@
 //! Daemon discovery file, exclusive start lock, port selection, and shutdown.
 
 use crate::state::AppState;
-use clax_core::{EventBus, Home, Store};
+use clax_core::{Home, Store};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io;
@@ -513,7 +513,6 @@ pub async fn serve(
     };
     let reaper_store = store.clone();
     let optimize_store = store.clone();
-    let sweep_store = store.clone();
     let drain_store = store.clone();
     let token = generate_token();
     let started_at = store.now();
@@ -534,71 +533,26 @@ pub async fn serve(
 
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let events_shutdown = shutdown_tx.subscribe();
-    let live_ids = Arc::new(crate::live::LiveIds::load(&store)?);
-    let ext_creds = Arc::new(crate::extension::Credentials::load(&store)?);
-    let grant_auth = Arc::new(crate::grant_auth::GrantAuth::load(&store)?);
-    let vis_gen = crate::state::VisGen::install(&store);
-    let state = AppState {
+    let state = AppState::assemble(crate::state::StateParts {
         store,
         home: cfg.home.clone(),
         token,
-        events: EventBus::new(),
         started_at,
         version: cfg.version,
         shutdown: events_shutdown,
-        wrap_cache: Arc::new(crate::wrap_cache::WrapCache::new(
-            crate::wrap_cache::DEFAULT_MAX_BYTES,
-        )),
-        request_timeout: Duration::from_secs(30),
-        publish_timeout: Duration::from_secs(120),
-        sse_keep_alive: Duration::from_secs(15),
         self_base: format!("http://{}:{port}", probe_host(&info.bind)),
         browser_base: format!("http://{}:{port}", browser_host(&info.bind)),
-        feedback_waiters: Arc::new(Default::default()),
-        followers: Arc::new(Default::default()),
-        codex: Arc::new(cfg.codex.clone()),
-        working: Arc::new(clax_core::working::Working::new(Arc::new(
-            clax_core::working::SystemClock,
-        ))),
-        drafts: Arc::new(clax_core::drafts::Drafts::new(Arc::new(
-            clax_core::working::SystemClock,
-        ))),
-        presence: Arc::new(clax_core::presence::Presence::new(Arc::new(
-            clax_core::working::SystemClock,
-        ))),
-        rooms: Arc::new(crate::room::Rooms::default()),
-        live_layers: Arc::new(crate::live_layers::LiveLayers::new(Arc::new(
-            clax_core::working::SystemClock,
-        ))),
+        codex: cfg.codex.clone(),
         sample: cfg.sample.clone(),
-        stream: crate::stream::Hub::new(live_ids.clone()),
-        seats: crate::seats::LiveSeats::from_env(Arc::new(clax_core::working::SystemClock)),
-        live_ids,
-        ext_creds,
-        extension_id: clax_core::extension::extension_id_in_effect(cfg.home.root()),
-        questions: Arc::new(Default::default()),
-        question_grace: Duration::from_secs(5),
+        clock: Arc::new(clax_core::working::SystemClock),
         question_sleeper: Arc::new(crate::questions::TokioSleeper),
-        question_clock: Arc::new(clax_core::working::SystemClock),
+        agent_timer: Arc::new(crate::agent::TokioTimer::default()),
+        extension_id: clax_core::extension::extension_id_in_effect(cfg.home.root()),
         terminal_after_s,
-        calibration: Arc::default(),
-        audit_wake: crate::audit::AuditWake::new(),
-        journal: crate::audit::JournalStatus::off(None),
-        exports: crate::routes::toolpath::Exports::new(),
-        call_ids: Arc::new(crate::routes::sessions::CallIdWait::new(
-            crate::routes::sessions::CALL_ID_GRACE,
-            crate::routes::sessions::CALL_ID_CAP,
-        )),
         bind: cfg.bind,
         port,
-        lan_host: None,
-        grant_auth,
-        agent_gate: Arc::new(crate::agent::Gate::new(Arc::new(
-            crate::agent::TokioTimer::default(),
-        ))),
-        vis_gen,
         hosted: cfg.hosted.clone(),
-    };
+    })?;
     state.audit_wake.install(&state.store);
     // The appender recovers the journal and catches it up on its own
     // thread, so the daemon serves at once.
@@ -630,21 +584,13 @@ pub async fn serve(
             }
         })
     });
-    state.stream.listen(&state.events);
-    crate::seats::install(&state);
-    crate::inbox::listen(&state);
-    crate::approvals::listen(&state);
-    crate::routes::people::listen(&state);
+    state.start_listeners();
     tracing::info!(codex = ?state.codex.bin, source = ?state.codex.source, "codex push");
     tracing::info!(provider = ?state.sample.provider_name(), "sample provider");
     let fctx = state.feedback_ctx();
     let reap_state = state.clone();
     let grant_state = state.clone();
-    let (state_working, state_events) = (state.working.clone(), state.events.clone());
-    let state_presence = state.presence.clone();
-    let state_stream = state.stream.clone();
-    let sweep_seats = state.seats.clone();
-    let state_drafts = state.drafts.clone();
+    let sweep_state = state.clone();
     let app = crate::build_router_with_shutdown(state, shutdown_tx.clone());
     if let Some(tx) = ready {
         let _ = tx.send(info.clone());
@@ -737,16 +683,11 @@ pub async fn serve(
         }
     });
 
-    let (sweep_working, sweep_events) = (state_working, state_events);
     let sweeper = tokio::spawn(async move {
         let mut every = tokio::time::interval(crate::working::SWEEP_INTERVAL);
         loop {
             every.tick().await;
-            crate::working::sweep_and_announce(&sweep_store, &sweep_working, &sweep_events).await;
-            crate::presence::sweep_and_announce(&state_presence, &sweep_events);
-            crate::drafts::sweep_and_announce(&state_drafts, &sweep_events);
-            state_stream.sweep();
-            sweep_seats.sweep();
+            sweep_state.sweep().await;
         }
     });
 

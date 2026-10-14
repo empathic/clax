@@ -144,15 +144,19 @@ pub fn compressible(content_type: &str) -> bool {
 }
 
 /// gzip and brotli, as the request's `Accept-Encoding` prefers, for bodies
-/// of [`COMPRESS_MIN_BYTES`] or more whose type is [`compressible`].
+/// of [`COMPRESS_MIN_BYTES`] or more whose type is [`compressible`]. Never
+/// on wasm32: a Worker's runtime encodes a response body as its
+/// `Content-Encoding` says, so a body compressed here would be compressed
+/// twice; the runtime compresses responses itself.
 pub fn compression()
 -> tower_http::compression::CompressionLayer<impl tower_http::compression::Predicate> {
     use tower_http::compression::predicate::{Predicate, SizeAbove};
     let text =
         |_: StatusCode, _: axum::http::Version, h: &HeaderMap, _: &axum::http::Extensions| {
-            h.get(header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .is_some_and(compressible)
+            !cfg!(target_arch = "wasm32")
+                && h.get(header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .is_some_and(compressible)
         };
     // Level 4 of either: most of the size win at a small part of the CPU.
     tower_http::compression::CompressionLayer::new()

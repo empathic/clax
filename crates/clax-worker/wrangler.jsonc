@@ -8,9 +8,43 @@
   // JS shim and wasm module to build/.
   "build": { "command": "./build.sh" },
 
+  // The web UI (scripts/build-web.sh). Every request goes to the Worker
+  // first, which serves the shell's entries and /_clax/ files from here with
+  // the daemon's headers and hands everything else to the instance.
+  "assets": {
+    "directory": "../../web/dist",
+    "binding": "ASSETS",
+    "html_handling": "none",
+    "not_found_handling": "none",
+    "run_worker_first": true
+  },
+
   "durable_objects": {
-    "bindings": [{ "name": "CLAX_DB", "class_name": "ClaxDb" }]
+    "bindings": [
+      { "name": "CLAX_DB", "class_name": "ClaxDb" },
+      // One Clax instance per object, named by CLAX_INSTANCE.
+      { "name": "CLAX_INSTANCE_DO", "class_name": "InstanceDo" }
+    ]
   },
   // SQLite-backed storage: synchronous ctx.storage.sql and transactionSync.
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ClaxDb"] }]
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ClaxDb"] },
+    { "tag": "v2", "new_sqlite_classes": ["InstanceDo"] }
+  ],
+
+  "vars": {
+    // The instance's object; empty means "default".
+    "CLAX_INSTANCE": "",
+    // Where artifact content is kept: "storage" (the object's SQL storage,
+    // the default) or "memory" (lost with the isolate).
+    "CLAX_CONTENT": "",
+    // The base of the URLs the server writes into results; empty means
+    // http://localhost.
+    "PUBLIC_ORIGIN": "",
+    // "1" turns on the test routes (POST /_worker/hibernate).
+    "CLAX_TEST_ROUTES": "0"
+  }
+  // CLAX_TOKEN, the owner's bearer token, is a secret: `wrangler secret put
+  // CLAX_TOKEN` for a deploy, `.dev.vars` or `--var CLAX_TOKEN:<value>` for
+  // `wrangler dev`. Unset, the instance makes one and keeps it in its storage.
 }
