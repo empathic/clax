@@ -597,7 +597,9 @@ impl Store {
             }
             if !force {
                 let current =
-                    std::fs::read(self.home.version_dir(id, a.current_version).join(INDEX)).ok();
+                    crate::content::wait(self.content.read_file(id, a.current_version, INDEX))
+                        .ok()
+                        .flatten();
                 if current.as_deref() == Some(html) {
                     return Ok((
                         self.get_version(id, a.current_version)?

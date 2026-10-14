@@ -11,6 +11,7 @@ pub mod changelog;
 pub mod clips;
 pub mod config;
 pub mod daemon;
+pub mod content;
 pub mod db;
 pub mod embedded;
 pub mod error;

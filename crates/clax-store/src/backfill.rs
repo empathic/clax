@@ -59,13 +59,14 @@
 //! no content hash. Asset blobs are hashed the same way.
 
 use super::Store;
-use super::artifacts::{create_record, delete_record, version_file_path, version_record};
+use super::artifacts::{create_record, delete_record, version_record};
 use super::audit::insert_backfilled;
 use super::live::{LivePage, page_record};
 use super::sessions::{agent_of, facts, session_end_record, session_record};
 use super::threads::{addressed_record, comment_record, open_record, resolve_record};
 use super::watches::{Cause, artifact_watch_record_at, scope_watch_record_at, with_cause};
 use clax_core::audit::{Actor, AgentActor, AuditKind, AuditRecord, content_manifest_sha256};
+use clax_core::content::fs::file_path as version_file_path;
 use clax_core::model::{Asset, Comment, FileMeta, Version};
 use clax_core::{ArtifactId, CoreError, Home, Result};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};

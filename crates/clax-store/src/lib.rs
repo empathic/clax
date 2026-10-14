@@ -41,9 +41,10 @@
 //! hold every worker, so cheap requests do not wait behind them. Each queue
 //! holds at most [`QUEUE_CAPACITY`](exec::QUEUE_CAPACITY) jobs, so twice
 //! that may be queued or running in all. A job waiting for the write turn
-//! or holding it does not count against the workers that reads need: while
-//! fewer than one per reader would be free of writes, the pool starts
-//! another. [`Store::shutdown`] drains both queues and joins the threads.
+//! or holding it, or waiting for an artifact's content lock (which a write
+//! holds until its transaction ends), does not count against the workers
+//! that reads need: while fewer than one per reader would be free of
+//! writes, the pool starts another. [`Store::shutdown`] drains both queues and joins the threads.
 //!
 //! A store opened on one connection its host opened ([`Store::open_on`],
 //! for a Durable Object, which has no threads) has none of these: every
@@ -51,9 +52,12 @@
 //! read transaction under `PRAGMA query_only`, a write in the same
 //! transactions as above, and [`Store::call`] runs its job at once.
 //!
-//! Version writes, deletes, and asset writes combine a transaction with
-//! file-system work, ordered so that a failure on either side leaves no
-//! half-written state.
+//! Version files and asset bytes live in the store's [`ContentStore`]
+//! ([`crate::content`]; the home's files unless [`Store::with_content`] or
+//! [`Store::open_on`] gives another), never in a transaction. Version
+//! writes, deletes, and asset writes combine a transaction with content I/O
+//! done outside it, ordered so that a failure on either side leaves no
+//! half-written state (see the content module's Ordering).
 
 pub mod approvals;
 pub mod artifacts;
@@ -95,6 +99,7 @@ pub use sessions::{
 };
 pub use threads::{NewComment, NewThread, ThreadExtras};
 
+use clax_core::content::{ArtifactLock, ArtifactLocks, ContentStore, fs::FsContent};
 use chrono::{DateTime, Utc};
 use clax_core::time::stamp;
 use clax_core::working::{Clock, SystemClock};
@@ -123,6 +128,10 @@ pub struct Store {
     home: Home,
     /// The pool, or one connection.
     exec: Exec,
+    /// Where version files and assets are kept.
+    content: Arc<dyn ContentStore>,
+    /// Held across each version write and the transaction recording it.
+    content_locks: ArtifactLocks,
     /// Set by [`Store::shutdown`].
     shut_down: AtomicBool,
     /// Changes to `inbox_items` in the write transaction under way, recorded
@@ -189,7 +198,8 @@ impl Store {
         home.ensure_dirs()?;
         let path = home.db_path();
         let conn = exec::open_writer(&path)?;
-        Store::assemble(home, conn, |c| Exec::pool(c, path), clock, report)
+        let content = Arc::new(FsContent::new(home.clone()));
+        Store::assemble(home, conn, |c| Exec::pool(c, path), content, clock, report)
     }
 
     /// A store on `conn`, one connection its host opened (a Durable
@@ -200,13 +210,21 @@ impl Store {
     /// [`Store::open_with`] does; the journal mode and the busy timeout are
     /// the host's. Makes no directories: the files under `home` (version
     /// and asset bytes) are the host's too ([`Home::ensure_dirs`] makes
-    /// them on a local disk).
-    pub fn open_on(home: &Home, conn: Connection, clock: Arc<dyn Clock>) -> Result<Store> {
+    /// them on a local disk). Version files and assets are kept in
+    /// `content` (on a Durable Object, the host's; [`FsContent`] for the
+    /// home's files).
+    pub fn open_on(
+        home: &Home,
+        conn: Connection,
+        clock: Arc<dyn Clock>,
+        content: Arc<dyn ContentStore>,
+    ) -> Result<Store> {
         conn.execute_batch("PRAGMA foreign_keys=ON;")?;
         Store::assemble(
             home,
             conn,
             |c| Exec::Single(Single::new(c)),
+            content,
             clock,
             &mut |_| {},
         )
@@ -214,11 +232,12 @@ impl Store {
 
     /// Migrates the database on `conn`, the write connection, records the
     /// audit backfill and installs the change hooks, then runs the store's
-    /// jobs on what `exec` makes of `conn`.
+    /// jobs on what `exec` makes of `conn`, keeping content in `content`.
     fn assemble(
         home: &Home,
         mut conn: Connection,
         exec: impl FnOnce(Connection) -> Exec,
+        content: Arc<dyn ContentStore>,
         clock: Arc<dyn Clock>,
         report: &mut dyn FnMut(&backfill::Progress),
     ) -> Result<Store> {
@@ -257,6 +276,8 @@ impl Store {
         Ok(Store {
             home: home.clone(),
             exec: exec(conn),
+            content,
+            content_locks: ArtifactLocks::default(),
             shut_down: AtomicBool::new(false),
             inbox_changes,
             inbox_listener: RwLock::new(None),
@@ -286,6 +307,36 @@ impl Store {
 
     pub fn home(&self) -> &Home {
         &self.home
+    }
+
+    /// The store, keeping version files and assets in `content` instead of
+    /// the home's files. Content already written elsewhere is not moved.
+    pub fn with_content(mut self, content: Arc<dyn ContentStore>) -> Store {
+        self.content = content;
+        self
+    }
+
+    /// Where the store keeps version files and assets.
+    pub fn content(&self) -> &Arc<dyn ContentStore> {
+        &self.content
+    }
+
+    /// Waits for, then holds, the content lock of `id`. A worker thread
+    /// that has to wait counts as writing meanwhile
+    /// ([`exec::WriteLane::waiting`]), since the holder releases the lock
+    /// only once its transaction ends.
+    pub(crate) async fn lock_content(&self, id: &crate::ArtifactId) -> ArtifactLock<'_> {
+        if let Some(held) = self.content_locks.try_lock(id) {
+            return held;
+        }
+        let _lane = exec::WriteLane::waiting();
+        self.content_locks.lock(id).await
+    }
+
+    /// [`Store::lock_content`] for every one of `ids`, taken in ID order.
+    pub(crate) async fn lock_contents(&self, ids: &[&crate::ArtifactId]) -> Vec<ArtifactLock<'_>> {
+        let _lane = exec::WriteLane::waiting();
+        self.content_locks.lock_all(ids).await
     }
 
     /// First row of `PRAGMA integrity_check`; "ok" when the database is sound.
@@ -548,7 +599,7 @@ pub(crate) mod test_util {
     }
 
     /// A store on a new home, through [`Store::open_on`] on a connection
-    /// opened here.
+    /// opened here, keeping content in the home's files.
     pub fn single_store() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
         let store = open_single(&Home::at(dir.path().join("ax")), Arc::new(SystemClock));
@@ -558,7 +609,8 @@ pub(crate) mod test_util {
     fn open_single(home: &Home, clock: Arc<dyn Clock>) -> Store {
         home.ensure_dirs().unwrap();
         let conn = rusqlite::Connection::open(home.db_path()).unwrap();
-        Store::open_on(home, conn, clock).unwrap()
+        let content = Arc::new(crate::content::fs::FsContent::new(home.clone()));
+        Store::open_on(home, conn, clock, content).unwrap()
     }
 
     /// A one-version artifact titled "Quarterly Review", owned by `session`.

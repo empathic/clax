@@ -234,7 +234,7 @@ async fn a_pages_upload_carries_every_author_of_the_page() {
     };
     let authors = |res: serde_json::Value| {
         let aid = res["asset"]["id"].as_str().unwrap().to_string();
-        let (asset, _) = ts.store.get_asset(&aid).unwrap().unwrap();
+        let asset = ts.store.get_asset(&aid).unwrap().unwrap();
         authors_of_asset(&asset)
     };
     let res = upload(true).await.unwrap();

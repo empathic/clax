@@ -8,6 +8,7 @@ use axum::extract::rejection::PathRejection;
 use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
+use clax_core::content::wait;
 use clax_core::model::CONTRACT_VERSION;
 use clax_core::model::FileMeta;
 use clax_core::publish::INDEX;
@@ -18,7 +19,6 @@ use clax_http::headers::parse_id;
 use clax_http::host::OnArtifactOrigin;
 use clax_http::http_cache;
 use clax_http::state::AppState;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Content served on the main origin must not run same-origin with the API.
@@ -158,14 +158,16 @@ fn is_html(content_type: &str) -> bool {
 enum Served {
     /// An HTML page wrapped with the bridge ([`wrap_page`]).
     Page(Arc<String>),
-    /// Any other file, or an HTML file that is not UTF-8: streamed as stored.
-    Raw(PathBuf, FileMeta),
+    /// Any other file, or an HTML file that is not UTF-8: served as stored.
+    Raw(Vec<u8>, FileMeta),
 }
 
-/// `file` of version `n`, in one store call. It is wrapped when `always_wrap`
-/// is set or its stored content type is `text/html`, through the wrap cache,
-/// which also remembers a file that is not UTF-8 (served raw). `NotFound` when
-/// the artifact, the version, or the file is gone.
+/// `file` of version `n`, in one store call, its bytes read from the store's
+/// content store. It is wrapped when `always_wrap` is set or its stored
+/// content type is `text/html`, through the wrap cache, which also remembers
+/// a file that is not UTF-8 (served raw); a page the cache holds is not
+/// read again. `NotFound` when the artifact, the version, or the file is
+/// gone.
 async fn lookup(
     s: &AppState,
     id: ArtifactId,
@@ -179,19 +181,45 @@ async fn lookup(
     // `?v=`; a debug build serves every bridge URL revalidated, current bytes.
     cache.follow_bridge(&bridge);
     s.store_call(move |st| {
-        let (disk, meta) = st.file_path(&id, n, &file)?.ok_or(CoreError::NotFound)?;
+        let meta = st.file_meta(&id, n, &file)?.ok_or(CoreError::NotFound)?;
+        let read = || -> clax_core::Result<Vec<u8>> {
+            wait(st.content().read_file(&id, n, &file))?.ok_or(CoreError::NotFound)
+        };
         if !always_wrap && !is_html(&meta.content_type) {
-            return Ok(Served::Raw(disk, meta));
+            return Ok(Served::Raw(read()?, meta));
         }
         st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
+        let mut unwrapped = None;
         let wrapped = cache.get_or_wrap(id.as_str(), n, &file, || {
-            Ok(String::from_utf8(std::fs::read(&disk)?)
-                .ok()
-                .map(|page| wrap_page(&page, id.as_str(), n, CONTRACT_VERSION, &file, &bridge)))
+            let bytes = read().map_err(|e| match e {
+                CoreError::NotFound => std::io::ErrorKind::NotFound.into(),
+                CoreError::Io(e) => e,
+                e => std::io::Error::other(e.to_string()),
+            })?;
+            Ok(match String::from_utf8(bytes) {
+                Ok(page) => Some(wrap_page(
+                    &page,
+                    id.as_str(),
+                    n,
+                    CONTRACT_VERSION,
+                    &file,
+                    &bridge,
+                )),
+                Err(e) => {
+                    unwrapped = Some(e.into_bytes());
+                    None
+                }
+            })
         });
         match wrapped {
             Ok(Some(html)) => Ok(Served::Page(html)),
-            Ok(None) => Ok(Served::Raw(disk, meta)),
+            Ok(None) => Ok(Served::Raw(
+                match unwrapped {
+                    Some(bytes) => bytes,
+                    None => read()?,
+                },
+                meta,
+            )),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(CoreError::NotFound),
             Err(e) => Err(CoreError::Io(e)),
         }
@@ -202,7 +230,7 @@ async fn lookup(
 /// A supporting file of a version. A `text/html` file in UTF-8 is served like
 /// the index: wrapped with the bridge (`data-file` naming its path),
 /// revalidated by the browser on every load, cached by the daemon per file.
-/// Any other file is streamed as stored: immutable, except an HTML file that
+/// Any other file is served as stored: immutable, except an HTML file that
 /// is not UTF-8, which is revalidated like every page.
 pub async fn file(
     State(s): State<AppState>,
@@ -221,7 +249,7 @@ pub async fn file(
     let tag_source = format!("{aid}/{n}/{rel}");
     let own = own_host(&s);
     let live = s.live_ids.contains(id.as_str()).then_some(own.as_str());
-    let (disk, meta) = match lookup(&s, id, n, rel, false).await? {
+    let (bytes, meta) = match lookup(&s, id, n, rel, false).await? {
         Served::Page(html) => {
             return Ok(framed_by_shell(
                 http_cache::html(&req, &html),
@@ -230,12 +258,9 @@ pub async fn file(
                 live,
             ));
         }
-        Served::Raw(disk, meta) => (disk, meta),
+        Served::Raw(bytes, meta) => (bytes, meta),
     };
-    let f = tokio::fs::File::open(&disk)
-        .await
-        .map_err(|_| ApiError::not_found())?;
-    let body = Body::from_stream(tokio_util::io::ReaderStream::new(f));
+    let body = Body::from(bytes);
     if is_html(&meta.content_type) {
         // An HTML file that is not UTF-8 is still a page: revalidated, never
         // immutable. A version's files never change, so its artifact, version,
@@ -295,11 +320,11 @@ pub async fn raw_file(
                 }
             }
             Ok(Ok(st
-                .file_path(&id, n, &rel)?
+                .read_file(&id, n, &rel)?
                 .ok_or(CoreError::NotFound)?))
         })
         .await?;
-    let (disk, meta) = match found {
+    let (bytes, meta) = match found {
         Ok(f) => f,
         Err(authors) => {
             let mut e = ApiError::forbidden(
@@ -310,10 +335,7 @@ pub async fn raw_file(
             return Err(e);
         }
     };
-    let f = tokio::fs::File::open(&disk)
-        .await
-        .map_err(|_| ApiError::not_found())?;
-    let body = Body::from_stream(tokio_util::io::ReaderStream::new(f));
+    let body = Body::from(bytes);
     Ok((
         StatusCode::OK,
         [
