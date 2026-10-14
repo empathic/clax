@@ -220,30 +220,50 @@ describe("PersonCard", () => {
     expect(document.activeElement).toBe(rename());
   });
 
-  it("shows the person's agents raised by an artifact's creator, by name and place, which only the creator removes", () => {
+  it("shows each raise of a person's agent with who gave it and Remove, for the person and the owner, and a narrowing as capping it", async () => {
+    const calls = stubFetch({ "DELETE /api/agents/h1/elevate?granter=p2": { agent: {} }, "DELETE /api/agents/h1/elevate?granter=owner": { agent: {} } });
     const notes = [{ type: "clax-artifacts", actions: ["update"], locations: ["n1"] }];
     const raised = agent({ elevations: [{ granter: { public_id: "p2", name: "Mia", owner: false }, access: notes, created_at: "x" }] });
     const art = [{ id: "n1", title: "Mia's Notes" }];
-    // The person's own view: who raised what, where.
-    const self = mount(PersonCard, { view: "self", who: { public_id: "p1", display_name: "Sam", revoked_at: null, rights: COLLAB, grants: [grant()], agents: [raised] }, artifacts: art, onChanged: vi.fn() });
-    const publish = [...self.root.querySelectorAll(".agent label")].find(l => l.textContent!.trim().startsWith("Publish new versions"))!;
-    expect(publish.textContent).toContain("Raised by Mia on “Mia's Notes” until this session ends; turning this off leaves the raise on there");
+    const self = (a: typeof raised) => ({ public_id: "p1", display_name: "Sam", revoked_at: null, rights: COLLAB, grants: [grant()], agents: [a] });
+    // The person's own view: who raised what, where, with Remove.
+    const onChanged = vi.fn();
+    const m = mount(PersonCard, { view: "self", who: self(raised), artifacts: art, onChanged });
+    const line = m.root.querySelector(".agent .raised-by")!;
+    expect(line.querySelector(".note.by")!.textContent).toBe("Raised by Mia until this session ends: Publish new versions on “Mia's Notes”");
+    const publish = [...m.root.querySelectorAll(".agent label")].find(l => l.textContent!.trim().startsWith("Publish new versions"))!;
+    expect(publish.textContent).toContain("Raised by Mia on “Mia's Notes” until this session ends");
+    expect(publish.textContent).not.toContain("leaves");
     expect(publish.querySelector("input")!.checked).toBe(true);
-    self.unmount();
-    // Narrowed off by its person, the action still runs where Mia raised it:
-    // the box says so rather than reading as off everywhere.
+    click(line.querySelector('button[aria-label="Remove Mia\'s raise of clax-multi-person"]')!);
+    await settle();
+    expect(calls.at(-1)).toEqual({ url: "/api/agents/h1/elevate?granter=p2", method: "DELETE", body: undefined });
+    expect(onChanged).toHaveBeenCalled();
+    m.unmount();
+    // Narrowed off by its person: off where raised too (a narrowing caps raises).
     const narrowed = { ...raised, narrow: COLLAB.map(x => ({ ...x, actions: x.actions.filter(y => !(x.type === "clax-artifacts" && y === "update")) })).filter(x => x.actions.length) };
-    const off = mount(PersonCard, { view: "self", who: { public_id: "p1", display_name: "Sam", revoked_at: null, rights: COLLAB, grants: [grant()], agents: [narrowed] }, artifacts: art, onChanged: vi.fn() });
+    const off = mount(PersonCard, { view: "self", who: self(narrowed), artifacts: art, onChanged: vi.fn() });
     const label = [...off.root.querySelectorAll(".agent label")].find(l => l.textContent!.trim().startsWith("Publish new versions"))!;
     expect(label.querySelector("input")!.checked).toBe(false);
-    expect(label.textContent).toContain("Off, but still on where raised: by Mia on “Mia's Notes”, until this session ends");
+    expect(label.textContent).toContain("Raised by Mia on “Mia's Notes”, but off while this is off");
     off.unmount();
-    // The owner's view: read-only, beside the owner's own raise panel.
-    const owner = mount(PersonCard, { view: "owner", who: person({ agents: [raised] }), artifacts: art, onChanged: vi.fn() });
-    const by = owner.root.querySelector(".agent .note.by")!;
-    expect(by.textContent).toBe("Raised by Mia until this session ends: Publish new versions on “Mia's Notes”");
-    expect(by.querySelector("button, input")).toBeNull();
-    expect(owner.root.querySelector(".raise summary")!.textContent).toBe("Raise this agent");
+    // The owner's raise of it is removable by the person too.
+    const both = agent({ elevate: [{ type: "clax-comments", actions: ["resolve"], locations: ["*"] }], elevations: [
+      { granter: { public_id: null, name: "Alex", owner: true }, access: [{ type: "clax-comments", actions: ["resolve"], locations: ["*"] }], created_at: "x" },
+      { granter: { public_id: "p2", name: "Mia", owner: false }, access: notes, created_at: "x" }] });
+    const two = mount(PersonCard, { view: "self", who: self(both), artifacts: art, onChanged: vi.fn() });
+    const ownerLine = two.root.querySelector(".agent .raised-by")!;
+    expect(ownerLine.textContent).toContain("Raised by the owner until this session ends: Resolve threads on every artifact");
+    click(ownerLine.querySelector("button")!);
+    await settle();
+    expect(calls.at(-1)!.url).toBe("/api/agents/h1/elevate?granter=owner");
+    two.unmount();
+    // The owner's view: a creator's raise with Remove, beside the owner's own raise panel.
+    const o = mount(PersonCard, { view: "owner", who: person({ agents: [raised] }), artifacts: art, onChanged: vi.fn() });
+    const by = o.root.querySelector(".agent .raised-by")!;
+    expect(by.querySelector(".note.by")!.textContent).toBe("Raised by Mia until this session ends: Publish new versions on “Mia's Notes”");
+    expect(by.querySelector("button")!.textContent).toBe("Remove");
+    expect(o.root.querySelector(".raise summary")!.textContent).toBe("Raise this agent");
   });
 
   it("shows the owner the person's approvals of the owner's content, read-only, linking to the page or thread", () => {

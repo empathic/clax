@@ -119,9 +119,10 @@ describe("people model", () => {
     const a = agent({ rights: reader, elevate: [{ type: "clax-comments", actions: ["write"], locations: ["*"] }] });
     expect(agentCaps(reader, grant(), a).find(r => r.key === write)).toMatchObject({ on: true, locked: true, raised: ["*"] });
     expect(agentCaps(reader, grant(), agent({ rights: reader })).find(r => r.key === write)).toBeUndefined();
-    // Narrowed off by the person, then raised everywhere by the owner: on.
+    // Narrowed off by the person, then raised everywhere by the owner: the
+    // narrowing caps the raise (spec §7.2), so it stays off and theirs to decide.
     const n = narrowAgent(COLLAB, grant(), agent(), DELETE, false);
-    expect(agentCaps(COLLAB, grant(), agent({ narrow: n, elevate: [{ type: "clax-artifacts", actions: ["delete"], locations: ["*"] }] })).find(r => r.key === DELETE)).toMatchObject({ on: true, locked: true });
+    expect(agentCaps(COLLAB, grant(), agent({ narrow: n, elevate: [{ type: "clax-artifacts", actions: ["delete"], locations: ["*"] }] })).find(r => r.key === DELETE)).toMatchObject({ on: false, locked: false, raised: ["*"] });
     // Raised at one artifact only: the person's narrowing still decides the rest.
     const one = agentCaps(COLLAB, grant(), agent({ elevate: [{ type: "clax-artifacts", actions: ["update"], locations: ["01QR"] }] })).find(r => r.key === PUBLISH)!;
     expect(one).toMatchObject({ on: true, locked: false, raised: ["01QR"] });

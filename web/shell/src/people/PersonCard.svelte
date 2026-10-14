@@ -21,7 +21,7 @@
   import { tick } from "svelte";
   import type { PeopleAgent, PeopleApproval, PeopleElevation, PeopleGrant, PeopleRequest, Rights } from "../api";
   import * as api from "./api";
-  import { agentCaps, CAPS, elevation, MACHINE_BOUNDARY, machineCaps, narrowAgent, narrowGrant, othersRaises, ownerRaisedAt, PRESET_NAMES, presetOf, raiseCaps } from "./model";
+  import { agentCaps, CAPS, elevation, elevationsOf, MACHINE_BOUNDARY, machineCaps, narrowAgent, narrowGrant, othersRaises, ownerRaisedAt, PRESET_NAMES, presetOf, raiseCaps } from "./model";
 
   type Who = { public_id: string | null; display_name: string | null; revoked_at: string | null; rights: Rights; grants: PeopleGrant[]; agents: PeopleAgent[] };
   type Props = {
@@ -69,14 +69,14 @@
   const creatorRaise = (e: PeopleElevation) =>
     CAPS.flatMap(c => e.access.filter(x => x.type === c.type && x.actions.includes(c.action)).flatMap(x => (x.locations ?? ["*"]).map(loc => `${c.label} on ${where(loc)}`)));
   const byName = (g: PeopleElevation["granter"]) => (g.owner ? "the owner" : g.name);
-  /** The note on a raised capability, in its person's view: who raised it,
-   * where, and, where the agent's own checkbox still decides the rest, that
-   * turning it off leaves the raises (a raise is added after a narrowing). */
+  /** The note on a raised capability, in its person's view: who raised it
+   * and where. The agent's narrowing caps every raise, so off here it is off
+   * where raised too; an action its person never had is not theirs to turn
+   * off, only to take away by removing the raise. */
   const raisedNote = (c: { by: { who: PeopleElevation["granter"]; at: string[] }[]; on: boolean; locked: boolean }) => {
     const names = c.by.map(r => `${byName(r.who)}${r.at.includes("*") ? "" : ` on ${r.at.map(where).join(", ")}`}`).join("; by ");
-    if (c.locked) return `Raised by ${names} until this session ends`;
-    return c.on ? `Raised by ${names} until this session ends; turning this off leaves the raise on there`
-      : `Off, but still on where raised: by ${names}, until this session ends`;
+    if (c.locked) return `Raised by ${names} until this session ends; remove the raise to take it away`;
+    return c.on ? `Raised by ${names} until this session ends` : `Raised by ${names}, but off while this is off`;
   };
   /** The heading of the section event `e`'s control is in: where the
    * keyboard's focus goes when that control goes. */
@@ -123,6 +123,14 @@
     if (await act(() => api.rename(a.handle, newName.trim()))) await closeRename(a.handle, card);
   };
 </script>
+
+{#snippet raiseLine(a: PeopleAgent, e: PeopleElevation)}
+  <div class="line raised-by">
+    <span class="note by">Raised by {byName(e.granter)} until this session ends: {creatorRaise(e).join(", ")}</span>
+    <span class="sp"></span>
+    <button type="button" class="ghost" aria-label="Remove {byName(e.granter)}'s raise of {a.name}" onclick={ev => act(() => api.removeRaise(a.handle, e.granter.public_id), { to: heading(ev) })}>Remove</button>
+  </div>
+{/snippet}
 
 <article class="pcard person" data-person={who.public_id} aria-busy={busy}>
   <header>
@@ -192,6 +200,9 @@
         {#if !a.grant_id}
           <p class="note">On this machine: it acts with Clax's own token, which rights do not limit.</p>
         {:else if view === "self"}
+          {#each elevationsOf(a) as e (e.granter.public_id ?? "owner")}
+            {@render raiseLine(a, e)}
+          {/each}
           <details class="narrow">
             <summary>What this agent may do</summary>
             <p class="note">{MACHINE_BOUNDARY}</p>
@@ -203,7 +214,7 @@
           </details>
         {:else}
           {#each othersRaises(a) as e (e.granter.public_id)}
-            <p class="note by">Raised by {e.granter.name} until this session ends: {creatorRaise(e).join(", ")}</p>
+            {@render raiseLine(a, e)}
           {/each}
           <details class="raise" ontoggle={e => { if (e.currentTarget.open) needArtifacts?.(); }}>
             <summary>Raise this agent{a.elevate ? " (raised)" : ""}</summary>
