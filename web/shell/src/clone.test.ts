@@ -129,6 +129,22 @@ describe("Clone dialog", () => {
     m.unmount();
   });
 
+  it("tells whoever reads a page through its link that its token is read-only and short-lived", () => {
+    serve(null);
+    const m = mount(CloneDialog, { id: ID, options: { available: true, scopes: ["read"], ttl_s: 900, link: true }, onClose: vi.fn() });
+    expect(Array.from(m.root.querySelectorAll<HTMLInputElement>("input[type=radio]")).map(r => r.value)).toEqual(["read"]);
+    expect(m.root.textContent).toContain("This page's link lets you clone it read-only; pushing needs a member's rights.");
+    expect(m.root.textContent).toContain("A token lives 15 minutes and is shown once.");
+    m.unmount();
+  });
+
+  it("shows Clone to a link's reader", async () => {
+    serve({ available: true, scopes: ["read"], ttl_s: 900, link: true });
+    const m = mount(Clone, { id: ID });
+    await until(() => m.root.querySelector<HTMLButtonElement>("button.clone"));
+    m.unmount();
+  });
+
   it("says when a token expires", () => {
     const now = Date.parse("2026-10-13T12:00:00Z");
     expect(expiresIn("2026-10-13T13:00:00Z", now)).toBe("in about 60 min");

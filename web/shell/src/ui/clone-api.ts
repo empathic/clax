@@ -10,6 +10,8 @@ export type CloneOptions = {
   available: boolean;
   scopes: CloneScope[];
   ttl_s?: number;
+  /** The viewer reads the page through its link: read alone. */
+  link?: boolean;
   reason?: { code: string; message: string };
 };
 

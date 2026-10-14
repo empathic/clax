@@ -1,17 +1,19 @@
 //! The git token routes ([`crate::git_remotes`] has the rules): a
-//! signed-in person's browser asks at `/api/artifacts/<aid>/git-token`, an
-//! agent session at `/api/sessions/<id>/git-token/<aid>` (the MCP
-//! `git_remote` tool).
+//! signed-in person's browser, or on a hosted daemon anyone reading a page
+//! through its link, asks at `/api/artifacts/<aid>/git-token`, an agent
+//! session at `/api/sessions/<id>/git-token/<aid>` (the MCP `git_remote`
+//! tool).
 
 use crate::agent::{DeniedToGrants, TokenOrAgent};
 use crate::auth::Caller;
 use crate::error::ApiError;
 use crate::git_remotes::{Asker, Scope, mint_for, scopes_for};
+use crate::hosted::Attempt;
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode, Uri, header};
+use axum::http::{Extensions, HeaderMap, StatusCode, Uri, header};
 use clax_core::CoreError;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -46,9 +48,12 @@ fn origin_of(s: &AppState, uri: &Uri, headers: &HeaderMap) -> Option<String> {
 }
 
 /// The asker a browser route's caller is: the owner (browser or CLI) or a
-/// person who is not a spectator there; 401 with no credential, 403
-/// `sign_in_required` for a guest or a LAN viewer who is not a person, 403
-/// `spectator` beyond the live seats, and agents refused.
+/// person who is not a spectator there; on a hosted daemon a guest who is
+/// not a spectator there, or a request with no session, is the page's
+/// link ([`Asker::Link`], which the gate admitted only to a page shared by
+/// link). Elsewhere 401 with no credential and 403 `sign_in_required` for
+/// a LAN viewer who is not a person; 403 `spectator` beyond the live
+/// seats, and agents refused.
 async fn browser_asker(
     s: &AppState,
     d: &DeniedToGrants,
@@ -56,15 +61,21 @@ async fn browser_asker(
 ) -> Result<Asker, ApiError> {
     d.refuse_agents()?;
     let caller = d.caller(s).await?;
+    let hosted = s.hosted.is_some();
     match &caller {
         Caller::Owner { .. } => Ok(Asker::Owner),
         Caller::Person { viewer } => {
             crate::seats::require_seat(s, &caller, aid).await?;
             Ok(Asker::Person(viewer.public_id.clone()))
         }
+        Caller::Viewer { .. } if hosted => {
+            crate::seats::require_seat(s, &caller, aid).await?;
+            Ok(Asker::Link)
+        }
+        Caller::Anonymous if hosted => Ok(Asker::Link),
         Caller::Viewer { .. } => Err(ApiError::forbidden(
             "sign_in_required",
-            "git remotes are for signed-in people: a guest cannot clone",
+            "git remotes are for signed-in people: a LAN viewer cannot clone",
         )),
         Caller::Anonymous => Err(ApiError::unauthorized()),
         Caller::OwnerAgent { .. } => Err(crate::auth::not_for_agents()),
@@ -75,28 +86,43 @@ async fn browser_asker(
 /// `POST /api/artifacts/<aid>/git-token {scope}` (a signed-in person, same
 /// origin; the owner by hand with the token): a token living
 /// [`crate::git_remotes::PERSON_TTL_S`], as
-/// [`crate::git_remotes::mint_for`] answers it. Agents ask at
-/// `POST /api/sessions/<id>/git-token/<aid>`: 403 `not_for_agents` here.
+/// [`crate::git_remotes::mint_for`] answers it. On a hosted daemon a guest,
+/// or a visitor with no session, on a page shared by link gets a `read`
+/// token living [`crate::git_remotes::LINK_TTL_S`] (`write` 403
+/// `not_permitted`), each one an attempt of the client's
+/// ([`crate::hosted::Attempt::GitToken`], 429 `rate_limited`). Agents ask
+/// at `POST /api/sessions/<id>/git-token/<aid>`: 403 `not_for_agents` here.
+#[allow(clippy::too_many_arguments)]
 pub async fn mint(
     State(s): State<AppState>,
     d: DeniedToGrants,
     _same: crate::viewer::SameOrigin,
     uri: Uri,
     headers: HeaderMap,
+    extensions: Extensions,
     p: Result<Path<String>, PathRejection>,
     body: Result<Json<TokenBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let aid = super::artifacts::parse_id(&super::artifacts::path(p)?)?;
     let scope = scope_of(body)?;
     let asker = browser_asker(&s, &d, &aid).await?;
+    if let (Asker::Link, Some(h)) = (&asker, &s.hosted) {
+        // A link never pushes: refused before it costs an attempt.
+        if scope == Scope::Write {
+            return Err(crate::git_remotes::not_permitted(scope));
+        }
+        h.attempt(Attempt::GitToken, &headers, &extensions)?;
+    }
     let origin = origin_of(&s, &uri, &headers);
     Ok(Json(mint_for(&s, asker, aid, scope, origin).await?))
 }
 
 /// `GET /api/artifacts/<aid>/git-token` (as the POST): what the Clone
-/// dialog may offer the caller, `{available, scopes, ttl_s}`: `scopes` the
+/// dialog may offer the caller, `{available, scopes, ttl_s}` (and `link`
+/// true for whoever reads the page through its link): `scopes` the
 /// token scopes their rights allow (none, with `reason` `{code, message}`,
-/// for a guest, a spectator or no credential), `available` false and no
+/// for a LAN viewer, a spectator or no credential, and for a page's link
+/// whose lineage is not all shared by link), `available` false and no
 /// scopes on a daemon that serves no git and for a live page.
 pub async fn options(
     State(s): State<AppState>,
@@ -126,11 +152,27 @@ pub async fn options(
         .into_iter()
         .map(Scope::as_str)
         .collect();
-    Ok(Json(json!({
+    let link = matches!(asker, Asker::Link);
+    if scopes.is_empty() && link {
+        return Ok(Json(json!({
+            "available": true,
+            "scopes": [],
+            "link": true,
+            "reason": {
+                "code": "not_permitted",
+                "message": "this page was forked from one its link does not open: sign in to clone it",
+            },
+        })));
+    }
+    let mut v = json!({
         "available": true,
         "scopes": scopes,
         "ttl_s": asker.ttl_s(),
-    })))
+    });
+    if link {
+        v["link"] = json!(true);
+    }
+    Ok(Json(v))
 }
 
 /// `POST /api/sessions/<id>/git-token/<aid> {scope}` (an agent session):

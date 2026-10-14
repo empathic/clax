@@ -555,6 +555,7 @@ fn a_push_is_its_token_holders_whichever_reconcile_records_it_and_blind_agents_l
         &Holder {
             person: Some(rae.clone()),
             session: None,
+            link: false,
         },
     );
     let sam_read = f.token_for(
@@ -563,6 +564,7 @@ fn a_push_is_its_token_holders_whichever_reconcile_records_it_and_blind_agents_l
         &Holder {
             person: Some(sam.clone()),
             session: Some(sam_agent.clone()),
+            link: false,
         },
     );
 

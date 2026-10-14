@@ -121,6 +121,7 @@ fn a_fork_through_the_internal_api_holds_nothing_the_source_gained_after_the_for
     let mia = crate::repos::tokens::Holder {
         person: Some("u_mia".into()),
         session: None,
+        link: false,
     };
     let v2 = src["refs/tags/v2"];
     h.with(|c| db::record_push(c, &from, &v2, &mia, 1)).unwrap();
@@ -469,6 +470,7 @@ fn a_token_keeps_whom_it_was_handed_to_and_an_older_ledger_gains_the_columns() {
     let holder = tokens::Holder {
         person: Some("p_rae".into()),
         session: Some("s1".into()),
+        link: false,
     };
     wait(async {
         host.create("a-one").await.unwrap();
@@ -518,6 +520,7 @@ fn the_held_tokens_are_listed_without_secrets_and_revoked_by_session_or_person()
     let holder = |person: Option<&str>, session: Option<&str>| tokens::Holder {
         person: person.map(String::from),
         session: session.map(String::from),
+        link: false,
     };
     wait(async {
         host.create("a-one").await.unwrap();
@@ -561,13 +564,35 @@ fn the_held_tokens_are_listed_without_secrets_and_revoked_by_session_or_person()
             .mint("a-one", Scope::Write, 3600, None, &Default::default())
             .await
             .unwrap();
+        let link = api
+            .mint(
+                "a-one",
+                Scope::Read,
+                900,
+                None,
+                &tokens::Holder {
+                    link: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
         let held = api.held().await.unwrap();
         let ids: Vec<&str> = held.iter().map(|h| h.id.as_str()).collect();
         assert_eq!(
             ids,
-            [&rae_agent.id, &rae_agent_two.id, &rae.id, &owner_agent.id].map(|s| s.as_str()),
-            "the owner's own token is not listed"
+            [
+                &rae_agent.id,
+                &rae_agent_two.id,
+                &rae.id,
+                &owner_agent.id,
+                &link.id
+            ]
+            .map(|s| s.as_str()),
+            "the owner's own token is not listed; a page link's is"
         );
+        assert!(held[4].link && held[4].person.is_none() && held[4].session.is_none());
+        assert!(!held[2].link);
         assert_eq!(held[2].scope, "write");
         assert_eq!(held[2].person.as_deref(), Some("p_rae"));
         assert_eq!(held[2].session, None);
@@ -611,7 +636,11 @@ fn the_held_tokens_are_listed_without_secrets_and_revoked_by_session_or_person()
             .into_iter()
             .map(|h| h.id)
             .collect();
-        assert_eq!(left, std::slice::from_ref(&owner_agent.id));
+        assert_eq!(left, [owner_agent.id.clone(), link.id.clone()]);
+        assert_eq!(
+            tokens::check(&host, "a-one", &link.token, now).unwrap(),
+            Some(Access::Read)
+        );
         // An expired token is no longer held.
         clock.advance(901);
         assert!(api.held().await.unwrap().is_empty());
@@ -651,6 +680,7 @@ fn a_push_to_main_is_entered_as_its_token_holders_and_the_ledger_keeps_the_newes
     let rae = tokens::Holder {
         person: Some("u_rae".into()),
         session: None,
+        link: false,
     };
     for _ in 0..db::MAX_PUSHES_KEPT {
         h.with(|c| db::record_push(c, repo, &id(9), &rae, 2))

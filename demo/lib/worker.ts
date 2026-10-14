@@ -2,7 +2,8 @@
 // --local`, for the demo runner (demo/local.ts) and the end-to-end test
 // (web/e2e/hosted-demo-worker.spec.ts): a wrangler.json for a run
 // directory with hosted vars, one `wrangler dev` started on it in a process
-// group of its own, and a repository token from the stand-in's dev routes.
+// group of its own, and a person's repository token from the server's
+// git-token route, as the Clone dialog asks for one.
 //
 // The Worker must be built first (`scripts/build-web.sh`, then
 // `crates/clax-worker/build.sh`, which `buildWorker` runs).
@@ -12,6 +13,7 @@ import { mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { PersonSession } from "./http.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 /** The Worker's crate, where wrangler and its config live. */
@@ -71,9 +73,9 @@ export interface RunningWorker {
 
 /** The vars a hosted demo Worker runs with: the public origin
  * `http://localhost:<port>`, artifact content on `http://127.0.0.1:<port>`,
- * the setup secret, `seats` live people seats, versions in the RepoDO
- * stand-in served over git smart HTTP, and its dev routes (the demo's
- * repository tokens, `repoToken`). */
+ * the setup secret, `seats` live people seats, and versions in the RepoDO
+ * stand-in served over git smart HTTP. No dev or test routes: the demo's
+ * git tokens are people's own (`gitToken`). */
 export function demoVars(port: number, secret: string, seats: string): Record<string, string> {
   return {
     HOSTED: "1",
@@ -83,7 +85,6 @@ export function demoVars(port: number, secret: string, seats: string): Record<st
     CLAX_LIVE_PEOPLE_SEATS: seats,
     REPO_STORE: "memory",
     GIT_SMART_HTTP: "1",
-    REPO_DEV_ROUTES: "1",
   };
 }
 
@@ -164,24 +165,23 @@ export async function startWorker(o: WorkerOptions, readyMs = 90_000): Promise<R
   return { base, content: `http://127.0.0.1:${o.port}`, log, child, stop };
 }
 
-/** A repository token the stand-in's ledger hands out (`GitToken`, crates/clax-worker/src/repos/tokens.rs). */
+/** A git token as `POST /api/artifacts/<id>/git-token` answers it
+ * (docs/contract.md, "Git remotes"). */
 export interface GitToken {
-  id: string;
+  artifact_id: string;
+  scope: "read" | "write";
   remote: string;
   token: string;
   expires_at: string;
   clone_command: string;
   jj_clone_command: string;
+  existing_checkout: Record<string, string>;
 }
 
-/** A read token for artifact `id`'s repository, held by person `person`
- * (a public ID; none: the owner), from the stand-in's dev route
- * (`POST /_dev/repos/token`, served only with `REPO_DEV_ROUTES=1`). It
- * stands in for the git-token route the server does not serve yet. */
-export async function repoToken(base: string, id: string, person?: string): Promise<GitToken> {
-  const q = new URLSearchParams({ artifact: id, scope: "read", ...(person === undefined ? {} : { person }) });
-  const res = await fetch(`${base}/_dev/repos/token?${q}`, { method: "POST" });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`POST /_dev/repos/token answered ${res.status}: ${text.slice(0, 200)}`);
-  return JSON.parse(text) as GitToken;
+/** A token of `scope` for artifact `id`'s repository, handed to `who` by
+ * the server's git-token route (`POST /api/artifacts/<id>/git-token`), as
+ * the Clone dialog asks for one: their rights decide the scope, and a push
+ * with a write token is a version they published. */
+export function gitToken(who: PersonSession, id: string, scope: "read" | "write" = "read"): Promise<GitToken> {
+  return who.call<GitToken>("POST", `/api/artifacts/${id}/git-token`, { scope });
 }

@@ -16,7 +16,10 @@
 //! ([`clax_core::rights::Rights::allows`]) at the artifact:
 //!
 //! - a `read` token (clone and fetch) needs `clax-artifacts` `read`, as the
-//!   viewer role's clone does;
+//!   viewer role's clone does: a person's rights, or, on a hosted daemon,
+//!   the link of a page shared by link, which anyone who reads the page
+//!   through it holds (a guest, or a visitor who gave no name), as anyone
+//!   who can view a repository may clone it;
 //! - a `write` token (push as well) needs `clax-artifacts` `update`, the
 //!   right a publish needs: a commit pushed to `main` becomes a version
 //!   published by whom the token was handed to ([`Holder`]), so pushing is
@@ -31,12 +34,16 @@
 //! version (and so on up the lineage), so a token of a fork also needs
 //! `read` at every artifact up its lineage, deleted ones included.
 //!
-//! Only people and their agents get tokens: the owner (browser or CLI), a
+//! Tokens go to people and their agents: the owner (browser or CLI), a
 //! connected person or a hosted daemon's member (their rights, and the
 //! artifact's link's), and agent sessions (the owner's, or a person's
-//! within their grant's rights). A guest, a LAN viewer who is not a
-//! person and a request with no credential get none, and neither does a
-//! spectator (a person beyond the live seats, read-only there).
+//! within their grant's rights); and, on a hosted daemon, read tokens
+//! living [`LINK_TTL_S`] to whoever reads a page through its link
+//! ([`Asker::Link`]: a guest, or a request with no session), for that
+//! artifact alone. A link never gets a write token, and a link to a fork
+//! opens its source only where the source is shared by link too. A LAN
+//! viewer who is not a person gets none, and neither does a spectator (a
+//! person or guest beyond the live seats, read-only there).
 //!
 //! An agent's token also needs its person to see every author of the
 //! repository's history at the artifact (the visibility filter): a clone
@@ -104,6 +111,9 @@ pub const PERSON_TTL_S: u32 = 3600;
 /// Lifetime of an agent's token, in seconds: shorter than a person's, as
 /// it bounds what a missed revocation exposes.
 pub const AGENT_TTL_S: u32 = 900;
+/// Lifetime of a read token handed to a page's link ([`Asker::Link`]), in
+/// seconds: as short as an agent's, as it names no one.
+pub const LINK_TTL_S: u32 = 900;
 /// How soon a sweep tries again a revocation or recheck the host failed.
 pub const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
 /// The name the commands for an existing checkout give the remote.
@@ -145,12 +155,15 @@ impl Scope {
 }
 
 /// Whom a token is handed to: a person's public ID (`None` for the owner)
-/// and, for an agent's token, its session. A push with the token is
-/// theirs.
+/// and, for an agent's token, its session; or (`link`) whoever reads a
+/// page through its link, a read token naming no one ([`Asker::Link`]). A
+/// push with the token is theirs.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Holder {
     pub person: Option<String>,
     pub session: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub link: bool,
 }
 
 /// A token as the host mints it, with the commands that clone with it.
@@ -415,6 +428,11 @@ pub enum Asker {
         session: String,
         rights: Arc<Rights>,
     },
+    /// Whoever reads the artifact through the link of a page shared by
+    /// link, on a hosted daemon: a guest, or a request with no session.
+    /// Read alone, at the artifact and up its lineage, while each is
+    /// shared by link.
+    Link,
 }
 
 impl Asker {
@@ -423,24 +441,29 @@ impl Asker {
             Asker::Owner => Holder::default(),
             Asker::Person(p) => Holder {
                 person: Some(p.clone()),
-                session: None,
+                ..Holder::default()
             },
             Asker::OwnerAgent { session } => Holder {
-                person: None,
                 session: Some(session.clone()),
+                ..Holder::default()
             },
             Asker::PersonAgent {
                 person, session, ..
             } => Holder {
                 person: person.clone(),
                 session: Some(session.clone()),
+                ..Holder::default()
+            },
+            Asker::Link => Holder {
+                link: true,
+                ..Holder::default()
             },
         }
     }
 
     pub fn reader(&self) -> Option<Reader> {
         match self {
-            Asker::Owner | Asker::Person(_) => None,
+            Asker::Owner | Asker::Person(_) | Asker::Link => None,
             Asker::OwnerAgent { .. } | Asker::PersonAgent { person: None, .. } => {
                 Some(Reader::Owner)
             }
@@ -454,6 +477,7 @@ impl Asker {
         match self {
             Asker::Owner | Asker::Person(_) => PERSON_TTL_S,
             Asker::OwnerAgent { .. } | Asker::PersonAgent { .. } => AGENT_TTL_S,
+            Asker::Link => LINK_TTL_S,
         }
     }
 }
@@ -501,7 +525,20 @@ fn allows_one(st: &Store, asker: &Asker, scope: Scope, aid: &str) -> clax_core::
             };
             Ok(rights.allows(kind, action, Some(aid), &own))
         }
+        Asker::Link => link_allows(st, scope, aid),
     }
+}
+
+/// Whether the link of `aid` (shared by link) allows `scope`: read alone.
+fn link_allows(st: &Store, scope: Scope, aid: &str) -> clax_core::Result<bool> {
+    if scope != Scope::Read {
+        return Ok(false);
+    }
+    let (kind, action) = scope.right();
+    let none = |_: &str| false;
+    Ok(st
+        .link_access(aid)?
+        .is_some_and(|a| a.rights(aid).allows(kind, action, Some(aid), &none)))
 }
 
 /// Whether person `p`'s rights, or the artifact's link's, allow `scope` at
@@ -734,7 +771,7 @@ fn answer(aid: &ArtifactId, scope: Scope, m: Minted) -> Result<Value, ApiError> 
 }
 
 /// 403 `not_permitted`: `scope`'s right is not the asker's here.
-fn not_permitted(scope: Scope) -> ApiError {
+pub fn not_permitted(scope: Scope) -> ApiError {
     let (kind, action) = scope.right();
     let mut e = ApiError::forbidden(
         "not_permitted",
@@ -852,6 +889,9 @@ fn push_unattributed() -> ApiError {
 /// Whom a held token's holder is now, read on `st`: `None` once they may
 /// hold no token (the session ended or is gone, the grant ended).
 fn asker_now(st: &Store, h: &Holder) -> clax_core::Result<Option<Asker>> {
+    if h.link {
+        return Ok(Some(Asker::Link));
+    }
     match (&h.session, &h.person) {
         (Some(sid), _) => {
             let Some(sess) = st.get_session(sid)? else {

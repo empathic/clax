@@ -17,10 +17,11 @@
 //!   "read" | "write" | null}`: what a `/git/` request's `Authorization`
 //!   header grants on the repository its path names.
 //! - `POST token/mint` `{"repo", "scope", "ttl_s", "origin", "person",
-//!   "session"}` (the last two the token's [`tokens::Holder`]) → a
+//!   "session", "link"}` (the last three the token's [`tokens::Holder`]) → a
 //!   [`GitToken`]; `POST token/revoke` `{"repo", "id"}` → `{"revoked"}`.
 //! - `GET token/held` → `[`[`tokens::HeldToken`]`, …]`: the live tokens
-//!   handed to a person or an agent session; `POST token/revoke-held`
+//!   handed to a person, an agent session or a page's link; `POST
+//!   token/revoke-held`
 //!   `{"person", "session"}` (either may be absent) → `{"revoked": n}`.
 //! - `POST token/live` `{"repo"}` → `{"tokens": [{"id", "scope", "person",
 //!   "session"}, …]}`: the repository's live tokens and their holders.
@@ -320,6 +321,7 @@ impl<C: AsConn + clax_git::MaybeSend, T: TokenHost> RepoService<C, T> {
                 let holder = Holder {
                     person: v["person"].as_str().map(String::from),
                     session: v["session"].as_str().map(String::from),
+                    link: v["link"].as_bool().unwrap_or(false),
                 };
                 let token = tokens::mint(
                     h,
@@ -684,6 +686,7 @@ impl<T: Transport> DoTokens<T> {
             "origin": origin,
             "person": holder.person,
             "session": holder.session,
+            "link": holder.link,
         });
         let r = call(
             &self.transport,

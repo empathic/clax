@@ -4,8 +4,10 @@
   // The top bar's Clone button (hosted spec §9 "Tokens"): where this Clax
   // keeps the artifact in git and the viewer's rights allow a token, it asks
   // what they may have (`GET /api/artifacts/<id>/git-token`) and shows
-  // Clone, which opens the Clone dialog (its own lazy chunk). Elsewhere (the
-  // native daemon, a guest, a spectator) it shows nothing. At phone width
+  // Clone, which opens the Clone dialog (its own lazy chunk); on a hosted
+  // Clax that includes whoever reads a page shared by link, read-only.
+  // Elsewhere (the native daemon, a spectator, a fork whose source the link
+  // does not open) it shows nothing. At phone width
   // the button is hidden and the more menu lists Clone instead
   // (`setCloneOpener`). Loaded after the first paint (`more-menu.svelte.ts`).
   import type { Component } from "svelte";

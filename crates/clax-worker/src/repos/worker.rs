@@ -554,6 +554,7 @@ pub async fn dev_route(env: &Env, req: Request) -> Result<Response> {
             let holder = Holder {
                 person: param(&url, "person").filter(|p| !p.is_empty()),
                 session: param(&url, "session").filter(|s| !s.is_empty()),
+                link: false,
             };
             match mint_git_token(
                 env,

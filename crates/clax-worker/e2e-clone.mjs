@@ -10,7 +10,8 @@
 // width the more menu's Clone with git does. Each makes a read token, and
 // the dialog's git clone command, run as shown, clones the artifact. Sam,
 // a member Ada invites, may only read Ada's artifact; a browser with no
-// session gets no token. Screenshots of each go to
+// session gets no token until Ada shares the artifact by link, and then a
+// read token alone (15 minutes), whose command clones it too. Screenshots of each go to
 // target/e2e-clone/<run>/shots (or CLAX_E2E_SHOTS). Prints one line per
 // check; exits non-zero on the first failure.
 //
@@ -117,29 +118,7 @@ async function main() {
         const p = await ctx.newPage();
         p.on("pageerror", (e) => console.log(`     [${label} error] ${e.message}`));
         await p.goto(`${origin}/a/${id}`);
-        if (width > 700) {
-          const clone = p.locator("button.clone");
-          await clone.waitFor({ timeout: LIMIT });
-          check(await clone.isVisible(), `${label}: the top bar shows Clone`, null);
-          await clone.click();
-        } else {
-          check(!(await p.locator("button.clone").isVisible()), `${label}: the bar keeps no Clone button at phone width`, null);
-          const more = p.getByRole("button", { name: "More" });
-          await more.waitFor({ timeout: LIMIT });
-          const item = p.getByRole("menuitem", { name: "Clone with git…" });
-          // The menu lists Clone once the options are in.
-          const end = Date.now() + LIMIT;
-          for (;;) {
-            await more.click();
-            if (await item.isVisible()) break;
-            await p.keyboard.press("Escape");
-            if (Date.now() > end) throw new Error(`FAIL ${label}: the more menu lists no Clone with git`);
-            await p.waitForTimeout(100);
-          }
-          await item.click();
-        }
-        const dialog = p.getByRole("dialog", { name: "Clone with git or jj" });
-        await dialog.waitFor({ timeout: LIMIT });
+        const dialog = await openDialog(p, width, label);
         const radios = await dialog.locator("input[type=radio]").evaluateAll((els) => els.map((e) => e.value));
         check(radios.join(",") === "read,write", `${label}: Ada, signed in, may choose read or write`, radios);
         await shot(p, shots, `clone-${width}-${scheme}-open`);
@@ -198,11 +177,82 @@ async function main() {
       body: JSON.stringify({ scope: "read" }),
     });
     check([401, 403, 404].includes(anon.status), "a request with no session gets no token", anon.status);
+    // Shared by link: anyone reading it through the link clones it,
+    // read-only, with a token as short-lived as an agent's.
+    const actx = await browser.newContext({ storageState: adaState });
+    const ap = await actx.newPage();
+    await ap.goto(`${origin}/a/${id}`);
+    const shared = await ap.evaluate(async (aid) => {
+      const r = await fetch(`/api/hosted/artifacts/${aid}/link`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ access: "viewer" }) });
+      return r.status;
+    }, id);
+    check(shared === 200, "Ada shares the artifact by link", shared);
+    await actx.close();
+    for (const [width, height, scheme] of [[1280, 800, "light"], [390, 844, "dark"], [1280, 800, "dark"], [390, 844, "light"]]) {
+      const label = `link ${width} ${scheme}`;
+      const ctx = await browser.newContext({ viewport: { width, height }, colorScheme: scheme });
+      const p = await ctx.newPage();
+      p.on("pageerror", (e) => console.log(`     [${label} error] ${e.message}`));
+      await p.goto(`${origin}/a/${id}`);
+      const dialog = await openDialog(p, width, label);
+      const radios = await dialog.locator("input[type=radio]").evaluateAll((els) => els.map((e) => e.value));
+      check(radios.join(",") === "read", `${label}: a visitor with the link is offered read alone`, radios);
+      const lede = (await dialog.locator(".lede").textContent()) ?? "";
+      check(lede.includes("This page's link lets you clone it read-only"), `${label}: and told why`, lede);
+      await shot(p, shots, `clone-link-${width}-${scheme}-open`);
+      await dialog.getByRole("button", { name: "Make a token" }).click();
+      const git = dialog.locator("pre[aria-label=git]");
+      await git.waitFor({ timeout: LIMIT });
+      const command = (await git.textContent()) ?? "";
+      const meta = (await dialog.locator(".meta").textContent()) ?? "";
+      check(/expires in about (14|15) min/.test(meta), `${label}: the token lives 15 minutes`, meta);
+      const overflow = await p.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      check(overflow <= 0, `${label}: nothing scrolls sideways`, overflow);
+      await shot(p, shots, `clone-link-${width}-${scheme}-token`);
+      const out = `clone-link-${width}-${scheme}`;
+      const r = sh(home, `${command} ${out}`, home);
+      check(r.status === 0 && readFileSync(join(home, out, "index.html"), "utf8") === page, `${label}: the shown git command clones the artifact`, r.stderr);
+      const pushed = await p.evaluate(async (aid) => {
+        const r = await fetch(`/api/artifacts/${aid}/git-token`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ scope: "write" }) });
+        return { status: r.status, code: (await r.json().catch(() => ({})))?.error?.code ?? null };
+      }, id);
+      check(pushed.status === 403 && pushed.code === "not_permitted", `${label}: a write token is refused`, pushed);
+      await ctx.close();
+    }
     console.log(JSON.stringify({ ok: true, shots }));
   } finally {
     await browser.close();
     await w.stop();
   }
+}
+
+/** Opens the Clone dialog on `p`: the top bar's Clone wide, the more
+ * menu's Clone with git at phone width. */
+async function openDialog(p, width, label) {
+  if (width > 700) {
+    const clone = p.locator("button.clone");
+    await clone.waitFor({ timeout: LIMIT });
+    check(await clone.isVisible(), `${label}: the top bar shows Clone`, null);
+    await clone.click();
+  } else {
+    check(!(await p.locator("button.clone").isVisible()), `${label}: the bar keeps no Clone button at phone width`, null);
+    const more = p.getByRole("button", { name: "More" });
+    await more.waitFor({ timeout: LIMIT });
+    const item = p.getByRole("menuitem", { name: "Clone with git…" });
+    // The menu lists Clone once the options are in.
+    const end = Date.now() + LIMIT;
+    for (;;) {
+      await more.click();
+      if (await item.isVisible()) break;
+      await p.keyboard.press("Escape");
+      if (Date.now() > end) throw new Error(`FAIL ${label}: the more menu lists no Clone with git`);
+      await p.waitForTimeout(100);
+    }
+    await item.click();
+  }
+  const dialog = p.getByRole("dialog", { name: "Clone with git or jj" });
+  await dialog.waitFor({ timeout: LIMIT });
+  return dialog;
 }
 
 async function shot(page, dir, name) {

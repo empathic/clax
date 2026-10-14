@@ -13,7 +13,8 @@
 //!   stand-in token (`hash`; none for a Cloudflare Artifacts token, which
 //!   Artifacts checks) and whom it was handed to (`person`, a connected
 //!   person's public ID, none for the owner; `session`, the agent session,
-//!   for an agent's);
+//!   for an agent's; `link` 1 for a read token handed to whoever holds a
+//!   page's link);
 //! - `git_tokens_due(id, repo, expires_ms)`: the must-revoke list, tokens
 //!   whose revocation was asked and has not yet succeeded;
 //! - `git_pushes(repo, commit, person, session, at_ms)`: who made each push
@@ -77,10 +78,16 @@ pub fn init(conn: &Connection) -> Result<()> {
                 .collect::<rusqlite::Result<Vec<String>>>()
         })
         .map_err(sql)?;
-    for column in ["person", "session"] {
+    for (column, kind) in [
+        ("person", "TEXT"),
+        ("session", "TEXT"),
+        ("link", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
         if !columns.iter().any(|c| c == column) {
-            conn.execute_batch(&format!("ALTER TABLE git_tokens ADD COLUMN {column} TEXT"))
-                .map_err(sql)?;
+            conn.execute_batch(&format!(
+                "ALTER TABLE git_tokens ADD COLUMN {column} {kind}"
+            ))
+            .map_err(sql)?;
         }
     }
     Ok(())
@@ -380,8 +387,9 @@ pub struct TokenRow {
 /// stand-in token's plaintext.
 pub fn insert_token(conn: &Connection, row: &TokenRow, hash: Option<&[u8]>) -> Result<()> {
     conn.execute(
-        "INSERT INTO git_tokens (id, repo, scope, expires_ms, revoked_ms, hash, person, session)
-         VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7)",
+        "INSERT INTO git_tokens
+             (id, repo, scope, expires_ms, revoked_ms, hash, person, session, link)
+         VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?8)",
         params![
             row.id,
             row.repo,
@@ -389,7 +397,8 @@ pub fn insert_token(conn: &Connection, row: &TokenRow, hash: Option<&[u8]>) -> R
             row.expires_ms,
             hash,
             row.holder.person,
-            row.holder.session
+            row.holder.session,
+            row.holder.link
         ],
     )
     .map(drop)
@@ -398,7 +407,7 @@ pub fn insert_token(conn: &Connection, row: &TokenRow, hash: Option<&[u8]>) -> R
 
 pub fn token(conn: &Connection, id: &str) -> Result<Option<TokenRow>> {
     conn.query_row(
-        "SELECT id, repo, scope, expires_ms, revoked_ms, person, session FROM git_tokens
+        "SELECT id, repo, scope, expires_ms, revoked_ms, person, session, link FROM git_tokens
          WHERE id = ?1",
         [id],
         |r| {
@@ -411,6 +420,7 @@ pub fn token(conn: &Connection, id: &str) -> Result<Option<TokenRow>> {
                 holder: super::tokens::Holder {
                     person: r.get(5)?,
                     session: r.get(6)?,
+                    link: r.get(7)?,
                 },
             })
         },
@@ -497,6 +507,7 @@ pub fn pusher(
             Ok(super::tokens::Holder {
                 person: r.get(0)?,
                 session: r.get(1)?,
+                link: false,
             })
         },
     )
@@ -549,14 +560,15 @@ pub fn due(conn: &Connection, now_ms: i64) -> Result<Vec<(String, String)>> {
 }
 
 /// Every token live at `now_ms` (neither revoked nor expired) that was
-/// handed to a person or an agent session, oldest first: what the server
-/// rechecks when rights, visibility or sessions change. The owner's own
-/// tokens (no person, no session) are not listed.
+/// handed to a person, an agent session or a page's link, oldest first:
+/// what the server rechecks when rights, visibility, links or sessions
+/// change. The owner's own tokens (no person, no session, no link) are not
+/// listed.
 pub fn live_held_tokens(conn: &Connection, now_ms: i64) -> Result<Vec<TokenRow>> {
     let ids: Vec<String> = conn
         .prepare(
             "SELECT id FROM git_tokens WHERE revoked_ms IS NULL AND expires_ms > ?1
-               AND (person IS NOT NULL OR session IS NOT NULL)
+               AND (person IS NOT NULL OR session IS NOT NULL OR link = 1)
              ORDER BY rowid",
         )
         .and_then(|mut s| {

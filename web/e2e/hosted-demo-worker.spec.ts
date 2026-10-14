@@ -6,9 +6,10 @@
 // drafting over `/mcp` and publishing; a comment Rae sends to an agent
 // answered with a revision, and Mia's to Rae's agent held; the spectator
 // path with one seat ending in Join live; Mia's fork of the checklist
-// naming its source; and a real `git clone` of the brief whose commits name
-// each version's publisher and agent in `Clax-Publisher` and `Clax-Agent`
-// trailers.
+// naming its source; and a real `git clone` of the brief, with the read
+// token Rae's Clone dialog makes, whose commits name each version's
+// publisher and agent in `Clax-Publisher` and `Clax-Agent` trailers (the
+// demo's printed token comes from the same route, `gitToken`).
 //
 // It needs the web UI and the Worker built, in that order
 // (scripts/build-web.sh, then crates/clax-worker/build.sh: the Worker embeds
@@ -28,7 +29,7 @@ import type { Browser, BrowserContext, Frame, FrameLocator, Page } from "@playwr
 import { runDemo } from "../../demo/lib/agents";
 import { acceptInvite, type PersonSession } from "../../demo/lib/http";
 import { HEADING_ANCHOR, seed } from "../../demo/lib/seed";
-import { WORKER_DIR, freePort, repoToken, startWorker, type RunningWorker } from "../../demo/lib/worker";
+import { WORKER_DIR, freePort, gitToken, startWorker, type RunningWorker } from "../../demo/lib/worker";
 import { expect, setName, test } from "./fixtures";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
@@ -199,11 +200,27 @@ test("the demo on the Worker: two people live, agents drafting and publishing, c
     await shot(rae, "answered-1280-light");
     await shot(mia, "answered-1280-dark");
 
-    // A real git clone of the brief: one commit per version, each agent's
-    // naming it and the person it works for.
-    const t = await repoToken(origin, brief);
+    // A real git clone of the brief, with the token Rae's Clone dialog
+    // makes: one commit per version, each agent's naming it and the person
+    // it works for.
+    await rae.locator("button.clone").click();
+    const dialog = rae.getByRole("dialog", { name: "Clone with git or jj" });
+    await expect(dialog.locator("input[type=radio]")).toHaveCount(2);
+    await dialog.getByRole("button", { name: "Make a token" }).click();
+    const command = (await dialog.locator("pre[aria-label=git]").textContent({ timeout: 20_000 })) ?? "";
+    await shot(rae, "clone-1280-light");
+    await rae.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    const shown = /^git -c http\.extraHeader="Authorization: Bearer (cxm_read_[^"]+)" clone (\S+)$/.exec(command);
+    expect(shown, command).not.toBeNull();
+    const [, token, remote] = shown!;
+    expect(remote).toBe(`${origin}/git/a-${brief}.git`);
     const clone = join(dir, "brief");
-    git(dir, ["-c", `http.extraHeader=Authorization: Bearer ${t.token}`, "clone", "-q", t.remote, clone]);
+    git(dir, ["-c", `http.extraHeader=Authorization: Bearer ${token}`, "clone", "-q", remote, clone]);
+    // The demo's printed token: the same route, as Rae.
+    const printed = await gitToken(s.owner.session, brief, "read");
+    expect(printed.scope).toBe("read");
+    git(dir, ["-c", `http.extraHeader=Authorization: Bearer ${printed.token}`, "clone", "-q", printed.remote, join(dir, "brief-printed")]);
     const commits = git(clone, ["log", "--format=%(trailers:key=Clax-Version,valueonly,separator=)|%(trailers:key=Clax-Publisher,valueonly,separator=)|%(trailers:key=Clax-Agent,valueonly,separator=)"])
       .trim().split("\n").map((l) => l.split("|"));
     const current = (await s.owner.session.call<{ artifact: { current_version: number } }>("GET", `/api/artifacts/${brief}`)).artifact.current_version;

@@ -9,9 +9,10 @@
 // `http://localhost:<port>`, artifact content on `http://127.0.0.1:<port>`,
 // a random setup secret, CLAX_LIVE_PEOPLE_SEATS (1 by default, so the
 // spectator mode shows with one guest: the owner and the people an artifact
-// names hold reserved seats and stay live), versions in git in the RepoDO
-// stand-in served at /git/, and its dev routes, from which the demo takes a
-// read token to clone the brief with git or jj. `--native` runs the native
+// names hold reserved seats and stay live), and versions in git in the
+// RepoDO stand-in served at /git/; the demo takes Rae's read token from the
+// server's git-token route (what the Clone dialog asks) to clone the brief
+// with git or jj. `--native` runs the native
 // daemon in hosted mode instead (its home under target/demo/, the same
 // seats and secret), with no git remote.
 //
@@ -31,7 +32,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { NATIVE_MCP_PATH } from "./lib/http.ts";
 import { describe, seed, type Seeded } from "./lib/seed.ts";
-import { buildWorker, freePort, repoToken, startWorker } from "./lib/worker.ts";
+import { buildWorker, freePort, gitToken, startWorker } from "./lib/worker.ts";
 
 const DEMO = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(DEMO, "..");
@@ -121,14 +122,15 @@ const worker: Target = {
     return (await startWorker({ dir: this.dir, port, secret, seats, onSpawn: (c) => children.push(c) })).child;
   },
   async extra(base, s) {
-    const t = await repoToken(base, s.brief.id);
+    const t = await gitToken(s.owner.session, s.brief.id, "read");
     return `
 
 Clone the Brief's repository once the agents have published: one commit
 per version, each naming its publisher and agent in Clax-Publisher and
-Clax-Agent trailers. The read token is from the RepoDO stand-in's dev route
-(POST /_dev/repos/token, which REPO_DEV_ROUTES=1 serves for this demo only)
-and is good until ${t.expires_at}:
+Clax-Agent trailers. The read token is ${s.owner.name}'s, from the brief's
+Clone dialog (POST /api/artifacts/${s.brief.id}/git-token), and is good
+until ${t.expires_at}; for a push, take a Write token in ${s.owner.name}'s
+Clone dialog:
   ${t.clone_command} brief
   git -C brief log --format='%h %s%n    %(trailers:key=Clax-Publisher,key=Clax-Agent,separator=%x2C )'
 or with jj:

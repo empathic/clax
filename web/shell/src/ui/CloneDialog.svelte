@@ -25,7 +25,8 @@
   let copied = $state("");
   let timer: ReturnType<typeof setTimeout> | undefined;
   const canWrite = $derived(options.scopes.includes("write"));
-  const hours = $derived(Math.round((options.ttl_s ?? 3600) / 3600));
+  const ttl = $derived(options.ttl_s ?? 3600);
+  const lives = $derived(ttl < 3600 ? `${Math.round(ttl / 60)} minutes` : ttl < 5400 ? "an hour" : `${Math.round(ttl / 3600)} hours`);
   const focus = (el: HTMLElement) => { el.focus(); };
   let backdrop: HTMLElement | undefined = $state();
   // Once: everything outside the dialog is inert while it is open; on close
@@ -84,7 +85,7 @@
       <h2 id="clone-title">Clone with git or jj</h2>
       <button type="button" class="ghost" {@attach focus} onclick={onClose}>Close</button>
     </header>
-    <p class="lede">Each version is a commit on <code>main</code>, tagged <code>v1</code>, <code>v2</code> and so on.{#if canWrite}{" "}A push to <code>main</code> becomes a new version, published by you.{/if}</p>
+    <p class="lede">Each version is a commit on <code>main</code>, tagged <code>v1</code>, <code>v2</code> and so on.{#if canWrite}{" "}A push to <code>main</code> becomes a new version, published by you.{/if}{#if options.link}{" "}This page's link lets you clone it read-only; pushing needs a member's rights.{/if}</p>
     <fieldset>
       <legend class="sr">Token</legend>
       {#each options.scopes as s (s)}
@@ -108,7 +109,7 @@
       </section>
       <p class="meta">The token expires {expiresIn(tok.expires_at)}. Until then anyone holding it can {tok.scope === "write" ? "push to" : "clone"} this artifact. Each command sends it as a header and none saves it in the checkout, but your shell's history keeps a command you paste.</p>
     {:else}
-      <p class="meta">A token lives {hours <= 1 ? "an hour" : `${hours} hours`} and is shown once.</p>
+      <p class="meta">A token lives {lives} and is shown once.</p>
     {/if}
     <span class="sr" aria-live="polite">{copied ? `${copied} copied` : ""}</span>
   </div>
