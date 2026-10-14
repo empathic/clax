@@ -593,7 +593,12 @@ same signature and do not ask.
   page and its tests), and only when all pass does it become the app's
   next version, with your documents kept and the earlier versions still
   in Versions. When the check fails, "Your app is unchanged", and Details
-  says why. If you changed the app yourself, choose **Update (replaces
+  says why. While an update runs, the app shows "Updating…"; if its data
+  upgrade then fails on your documents, the app goes back to the version
+  before (files, title, icon and permissions) with your documents as they
+  were. An update cut short by Clax quitting is put back at the next
+  start, or, when the app changed since, Clax asks whether to Restore or
+  Discard. If you changed the app yourself, choose **Update (replaces
   your changes)** or **Keep mine (stop updates for this app)**. A file of
   an older or the same version is not installed; the same app signed by
   someone else's key, or the original of an app you made your own,
