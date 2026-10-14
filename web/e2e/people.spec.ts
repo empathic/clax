@@ -64,13 +64,14 @@ test("the owner invites a person who connects, narrows their machine from their 
     await expect(card.locator(".machine .key")).toContainText("key SHA256:");
 
     // One agent of Sam's, registered as Claude Code's SessionStart hook does
-    // (a hook's registration names it after its harness).
+    // (a hook's join sends its repository, so it is named after its
+    // checkout, sam-notes: spec §11).
     const project = join(sam, "work", "sam-notes");
     mkdirSync(join(project, ".git"), { recursive: true });
     writeFileSync(join(project, ".git", "HEAD"), "ref: refs/heads/main\n");
     const hook = asPerson(sam, ["hook", "--agent", "claude", "session-start"], JSON.stringify({ session_id: "e2e-sam-1", cwd: project, hook_event_name: "SessionStart", source: "startup" }), project);
     expect(hook.status, hook.stderr).toBe(0);
-    await expect(card.locator(".agent .aname")).toHaveText("claude");
+    await expect(card.locator(".agent .aname")).toHaveText("sam-notes");
     await expect(card.locator(".agent")).toContainText("sam-laptop");
 
     // Sam's browser: the link makes it Sam's, and People shows Sam alone.
