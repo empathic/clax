@@ -4,9 +4,8 @@
 //! branch never deleted, Clax's version tags `refs/tags/v<n>` never
 //! created, moved or deleted by a push).
 //!
-//! A pushed commit on `main` is not recorded as a version: the content
-//! store refuses the next publish until something records it (record
-//! 5fc9c903 on `crates/clax-content-git/src/lib.rs`).
+//! A push to `main` is recorded as versions by the instance before
+//! `RepoDO` answers it (`super::worker`'s `RepoDO`).
 
 use clax_git::http::HttpResponse;
 use clax_git::server::{

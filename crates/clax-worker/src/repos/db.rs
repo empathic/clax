@@ -8,11 +8,17 @@
 //!   answers only these, so one cannot read another's objects by ID, and a
 //!   fork copies these rows, not the objects;
 //! - `git_refs(repo, name, id)`: each repository's refs;
-//! - `git_tokens(id, repo, scope, expires_ms, revoked_ms, hash)`: every
-//!   repository token minted, with the SHA-256 of a stand-in token (`hash`;
-//!   none for a Cloudflare Artifacts token, which Artifacts checks);
+//! - `git_tokens(id, repo, scope, expires_ms, revoked_ms, hash, person,
+//!   session)`: every repository token minted, with the SHA-256 of a
+//!   stand-in token (`hash`; none for a Cloudflare Artifacts token, which
+//!   Artifacts checks) and whom it was handed to (`person`, a connected
+//!   person's public ID, none for the owner; `session`, the agent session,
+//!   for an agent's);
 //! - `git_tokens_due(id, repo, expires_ms)`: the must-revoke list, tokens
-//!   whose revocation was asked and has not yet succeeded.
+//!   whose revocation was asked and has not yet succeeded;
+//! - `git_pushes(repo, commit, person, session, at_ms)`: who made each push
+//!   that left `main` at `commit` (as the push's token's holder), the
+//!   newest [`MAX_PUSHES_KEPT`] per repository.
 //!
 //! Every function takes the connection and does its work synchronously; a
 //! change of more than one row is one transaction.
@@ -37,7 +43,16 @@ CREATE TABLE IF NOT EXISTS git_tokens (
     expires_ms INTEGER NOT NULL, revoked_ms INTEGER, hash BLOB UNIQUE);
 CREATE TABLE IF NOT EXISTS git_tokens_due (
     id TEXT PRIMARY KEY, repo TEXT NOT NULL, expires_ms INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS git_pushes (
+    repo TEXT NOT NULL, commit_id TEXT NOT NULL, person TEXT, session TEXT,
+    at_ms INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS git_pushes_by_commit ON git_pushes (repo, commit_id);
 ";
+
+/// The most pushes [`record_push`] keeps per repository: far more than the
+/// 64 commits one reconcile records one by one, so a push is named until
+/// well after the instance has recorded it.
+pub const MAX_PUSHES_KEPT: i64 = 256;
 
 pub type Result<T> = clax_git::Result<T>;
 
@@ -51,9 +66,24 @@ fn sql(e: rusqlite::Error) -> GitError {
     GitError::RepoUnavailable(format!("The repository store failed: {e}"))
 }
 
-/// Creates the tables when they are absent.
+/// Creates the tables when they are absent, and the columns a ledger made
+/// before them lacks.
 pub fn init(conn: &Connection) -> Result<()> {
-    conn.execute_batch(SCHEMA).map_err(sql)
+    conn.execute_batch(SCHEMA).map_err(sql)?;
+    let columns: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('git_tokens')")
+        .and_then(|mut s| {
+            s.query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()
+        })
+        .map_err(sql)?;
+    for column in ["person", "session"] {
+        if !columns.iter().any(|c| c == column) {
+            conn.execute_batch(&format!("ALTER TABLE git_tokens ADD COLUMN {column} TEXT"))
+                .map_err(sql)?;
+        }
+    }
+    Ok(())
 }
 
 pub fn exists(conn: &Connection, repo: &str) -> Result<bool> {
@@ -121,6 +151,8 @@ pub fn delete(conn: &Connection, repo: &str, now_ms: i64) -> Result<()> {
     tx.execute("DELETE FROM git_held WHERE repo = ?1", [repo])
         .map_err(sql)?;
     tx.execute("DELETE FROM git_repos WHERE name = ?1", [repo])
+        .map_err(sql)?;
+    tx.execute("DELETE FROM git_pushes WHERE repo = ?1", [repo])
         .map_err(sql)?;
     tx.execute(
         "UPDATE git_tokens SET revoked_ms = ?2 WHERE repo = ?1 AND revoked_ms IS NULL",
@@ -340,15 +372,25 @@ pub struct TokenRow {
     pub scope: String,
     pub expires_ms: i64,
     pub revoked_ms: Option<i64>,
+    /// Whom it was handed to.
+    pub holder: super::tokens::Holder,
 }
 
 /// Enters a minted token in the ledger; `hash` is the SHA-256 of a
 /// stand-in token's plaintext.
 pub fn insert_token(conn: &Connection, row: &TokenRow, hash: Option<&[u8]>) -> Result<()> {
     conn.execute(
-        "INSERT INTO git_tokens (id, repo, scope, expires_ms, revoked_ms, hash)
-         VALUES (?1, ?2, ?3, ?4, NULL, ?5)",
-        params![row.id, row.repo, row.scope, row.expires_ms, hash],
+        "INSERT INTO git_tokens (id, repo, scope, expires_ms, revoked_ms, hash, person, session)
+         VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7)",
+        params![
+            row.id,
+            row.repo,
+            row.scope,
+            row.expires_ms,
+            hash,
+            row.holder.person,
+            row.holder.session
+        ],
     )
     .map(drop)
     .map_err(sql)
@@ -356,7 +398,8 @@ pub fn insert_token(conn: &Connection, row: &TokenRow, hash: Option<&[u8]>) -> R
 
 pub fn token(conn: &Connection, id: &str) -> Result<Option<TokenRow>> {
     conn.query_row(
-        "SELECT id, repo, scope, expires_ms, revoked_ms FROM git_tokens WHERE id = ?1",
+        "SELECT id, repo, scope, expires_ms, revoked_ms, person, session FROM git_tokens
+         WHERE id = ?1",
         [id],
         |r| {
             Ok(TokenRow {
@@ -365,6 +408,10 @@ pub fn token(conn: &Connection, id: &str) -> Result<Option<TokenRow>> {
                 scope: r.get(2)?,
                 expires_ms: r.get(3)?,
                 revoked_ms: r.get(4)?,
+                holder: super::tokens::Holder {
+                    person: r.get(5)?,
+                    session: r.get(6)?,
+                },
             })
         },
     )
@@ -387,6 +434,74 @@ pub fn live_token_by_hash(conn: &Connection, hash: &[u8], now_ms: i64) -> Result
         Some(id) => token(conn, &id),
         None => Ok(None),
     }
+}
+
+/// The tokens of `repo` live at `now_ms`, oldest first.
+pub fn live_tokens(conn: &Connection, repo: &str, now_ms: i64) -> Result<Vec<TokenRow>> {
+    let ids: Vec<String> = conn
+        .prepare(
+            "SELECT id FROM git_tokens WHERE repo = ?1 AND revoked_ms IS NULL AND expires_ms > ?2
+             ORDER BY rowid",
+        )
+        .and_then(|mut s| {
+            s.query_map(params![repo, now_ms], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()
+        })
+        .map_err(sql)?;
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids {
+        if let Some(row) = token(conn, &id)? {
+            out.push(row);
+        }
+    }
+    Ok(out)
+}
+
+/// Records that `holder` made a push leaving `main` of `repo` at `commit`
+/// at `now_ms`, keeping the newest [`MAX_PUSHES_KEPT`] of the repository.
+pub fn record_push(
+    conn: &Connection,
+    repo: &str,
+    commit: &ObjectId,
+    holder: &super::tokens::Holder,
+    now_ms: i64,
+) -> Result<()> {
+    let tx = conn.unchecked_transaction().map_err(sql)?;
+    tx.execute(
+        "INSERT INTO git_pushes (repo, commit_id, person, session, at_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![repo, commit.to_hex(), holder.person, holder.session, now_ms],
+    )
+    .map_err(sql)?;
+    tx.execute(
+        "DELETE FROM git_pushes WHERE repo = ?1 AND rowid NOT IN (
+             SELECT rowid FROM git_pushes WHERE repo = ?1 ORDER BY rowid DESC LIMIT ?2)",
+        params![repo, MAX_PUSHES_KEPT],
+    )
+    .map_err(sql)?;
+    tx.commit().map_err(sql)
+}
+
+/// Who made the newest push leaving `main` of `repo` at `commit` (hex), or
+/// `None` when no kept push did.
+pub fn pusher(
+    conn: &Connection,
+    repo: &str,
+    commit: &str,
+) -> Result<Option<super::tokens::Holder>> {
+    conn.query_row(
+        "SELECT person, session FROM git_pushes WHERE repo = ?1 AND commit_id = ?2
+         ORDER BY rowid DESC LIMIT 1",
+        params![repo, commit],
+        |r| {
+            Ok(super::tokens::Holder {
+                person: r.get(0)?,
+                session: r.get(1)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(sql)
 }
 
 /// Marks token `id` of `repo` revoked; answers whether it was live.

@@ -738,9 +738,34 @@ fn check_collisions<'a>(paths: impl Iterator<Item = &'a String>) -> Result<()> {
 
 /// Whether paths `a` and `b` cannot both be in a version: equal under ASCII
 /// case folding, or one a directory of the other ([`check_collisions`]).
-fn collide(a: &str, b: &str) -> bool {
+pub(super) fn collide(a: &str, b: &str) -> bool {
     let (a, b) = (a.to_ascii_lowercase(), b.to_ascii_lowercase());
     a == b || b.starts_with(&format!("{a}/")) || a.starts_with(&format!("{b}/"))
+}
+
+/// How a new version's content comes to be.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum VersionStep<'a> {
+    /// Written from the publish, through [`crate::content::ContentStore::write_version`].
+    Write,
+    /// Pushed commit `.0`, made the version as it is
+    /// ([`crate::content::ContentStore::tag_pushed`]).
+    Adopt(&'a str),
+}
+
+/// The paths of `prev` a new version made from `p` carries: every one `p`
+/// does not name, but `index.html`, which a publish always gives, unless
+/// `adopt` (a pushed commit, which carries it like any other file); and
+/// none withheld from `p`'s publisher that collides with a path it puts.
+fn carried_of<'a>(
+    prev: &'a BTreeMap<String, FileMeta>,
+    p: &ValidatedPublish,
+    adopt: bool,
+) -> Vec<&'a String> {
+    prev.keys()
+        .filter(|path| (adopt || *path != INDEX) && !p.files.contains_key(*path))
+        .filter(|path| !(p.hidden.contains(*path) && put_paths(p).any(|q| collide(path, q))))
+        .collect()
 }
 
 /// Paths that `p` writes (its `Put` entries).
@@ -1112,16 +1137,64 @@ impl Store {
         session_id: Option<&str>,
         then: impl FnOnce(&rusqlite::Transaction<'_>, u32) -> Result<T>,
     ) -> Result<(Artifact, Version, T)> {
+        // Refused before waiting for the lock.
+        check_collisions(carried_of(prev, p, false).into_iter().chain(put_paths(p)))?;
+        let _lock = self.lock_content(id).await?;
+        if expected > 0 {
+            // Commits pushed since `expected` become versions first, so a
+            // push never blocks a publish and a publish that did not see
+            // them is a conflict (the content module's Pushes). One whose
+            // pusher may not publish leaves main where no write follows.
+            match self
+                .record_pushes_locked(&AuditCtx::DAEMON, id, &super::pushes::Pusher::default())
+                .await
+            {
+                Ok(r) => {
+                    if let Some(commit) = r.blocked
+                        && self.current_version_of(id)? == Some(expected)
+                    {
+                        return Err(super::pushes::push_refused(&commit));
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(artifact = id.as_str(), error = %e, "could not record pushed commits")
+                }
+            }
+        }
+        self.record_version_locked(
+            ctx,
+            id,
+            expected,
+            p,
+            prev,
+            session_id,
+            VersionStep::Write,
+            then,
+        )
+        .await
+    }
+
+    /// The rest of [`Store::write_version_then_async`], under the content
+    /// lock: `step` says how version `expected + 1`'s content comes to be,
+    /// written from `p` or a pushed commit adopted as it is. An adopted
+    /// commit's `index.html` is carried like any other file.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn record_version_locked<T>(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        expected: u32,
+        p: &ValidatedPublish,
+        prev: &BTreeMap<String, FileMeta>,
+        session_id: Option<&str>,
+        step: VersionStep<'_>,
+        then: impl FnOnce(&rusqlite::Transaction<'_>, u32) -> Result<T>,
+    ) -> Result<(Artifact, Version, T)> {
         let n = expected + 1;
-        let carried: Vec<&String> = prev
-            .keys()
-            .filter(|path| *path != INDEX && !p.files.contains_key(*path))
-            .filter(|path| !(p.hidden.contains(*path) && put_paths(p).any(|q| collide(path, q))))
-            .collect();
+        let adopt = matches!(step, VersionStep::Adopt(_));
+        let carried = carried_of(prev, p, adopt);
         let carried_paths: Vec<String> = carried.iter().map(|p| (*p).clone()).collect();
         check_collisions(carried.iter().copied().chain(put_paths(p)))?;
-
-        let _lock = self.lock_content(id).await?;
         if let Some(current) = self.current_version_of(id)?
             && current != expected
         {
@@ -1159,18 +1232,31 @@ impl Store {
                 );
             }
         }
-        let write = VersionWrite {
-            carry: carried.iter().map(|p| p.as_str()).collect(),
-            put,
-            meta: self.version_meta(p, session_id)?,
+        // Whether this call made `n` (an adopted commit may already be it).
+        let written = match step {
+            VersionStep::Write => {
+                let write = VersionWrite {
+                    carry: carried.iter().map(|p| p.as_str()).collect(),
+                    put,
+                    meta: self.version_meta(p, session_id)?,
+                };
+                self.content
+                    .write_version(id, n, &write)
+                    .await
+                    .map(|()| true)
+            }
+            VersionStep::Adopt(commit) => self.content.tag_pushed(id, n, commit).await,
         };
-        if let Err(e) = self.content.write_version(id, n, &write).await {
-            // Another process may have written `n` and recorded it.
-            return Err(match self.current_version_of(id)? {
-                Some(current) if current != expected => CoreError::Conflict { current },
-                _ => e,
-            });
-        }
+        let made = match written {
+            Ok(made) => made,
+            Err(e) => {
+                // Another process may have written `n` and recorded it.
+                return Err(match self.current_version_of(id)? {
+                    Some(current) if current != expected => CoreError::Conflict { current },
+                    _ => e,
+                });
+            }
+        };
         let now = self.now();
         let files_json = serde_json::to_string(&files).expect("serialisable map");
         let content_sha256 = content_manifest_sha256(&files);
@@ -1271,9 +1357,15 @@ impl Store {
             self.record_audit(tx, ctx, rec)?;
             Ok((a, v, extra))
         });
-        // No other writer can hold `n`: this one wrote it under the lock.
+        // No other writer can hold `n`: this one made it under the lock.
+        // An adopted commit that already was `n` may be another process's
+        // recorded version, so it stays.
         if result.is_err()
-            && let Err(e) = self.content.remove_version(id, n).await
+            && made
+            && let Err(e) = match step {
+                VersionStep::Write => self.content.remove_version(id, n).await,
+                VersionStep::Adopt(commit) => self.content.untag_pushed(id, n, commit).await,
+            }
         {
             // Left unrecorded: never served, and listed by `clax doctor`.
             tracing::warn!(

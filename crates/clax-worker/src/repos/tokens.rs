@@ -76,6 +76,16 @@ impl Scope {
     }
 }
 
+/// Whom a token is handed to, as the server knows them when it asks for
+/// one: a connected person's public ID (`None` for the owner) and, for an
+/// agent's token, its session. A push with the token is theirs: its
+/// commits become versions they published.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Holder {
+    pub person: Option<String>,
+    pub session: Option<String>,
+}
+
 /// A token as a host mints it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Minted {
@@ -203,8 +213,10 @@ impl<C: AsConn + MaybeSend> TokenHost for LocalTokens<C> {
     }
 }
 
-/// Mints a token for `repo` at `tokens` and enters it in the ledger of
-/// `ledger`. `ttl_s` must lie within [`MIN_TTL_S`]..=[`MAX_TTL_S`].
+/// Mints a token for `repo` at `tokens`, handed to `holder`, and enters it
+/// in the ledger of `ledger`. `ttl_s` must lie within
+/// [`MIN_TTL_S`]..=[`MAX_TTL_S`].
+#[allow(clippy::too_many_arguments)]
 pub async fn mint<C: AsConn, T: TokenHost>(
     ledger: &LocalHost<C>,
     tokens: &T,
@@ -212,6 +224,7 @@ pub async fn mint<C: AsConn, T: TokenHost>(
     scope: Scope,
     ttl_s: u32,
     origin: Option<&str>,
+    holder: &Holder,
     now_ms: i64,
 ) -> clax_git::Result<GitToken> {
     if !(MIN_TTL_S..=MAX_TTL_S).contains(&ttl_s) {
@@ -227,6 +240,7 @@ pub async fn mint<C: AsConn, T: TokenHost>(
         scope: scope.as_str().to_string(),
         expires_ms: minted.expires_ms,
         revoked_ms: None,
+        holder: holder.clone(),
     };
     ledger.with(|c| db::insert_token(c, &row, minted.hash.as_ref().map(|h| h.as_slice())))?;
     Ok(GitToken {
@@ -312,6 +326,60 @@ pub fn check<C: AsConn>(
         }
         Ok(Scope::parse(&row.scope).map(Scope::access))
     })
+}
+
+/// Whom the live stand-in token `token` of `repo` was handed to at
+/// `now_ms`, or `None` when it is not one.
+pub fn holder<C: AsConn>(
+    ledger: &LocalHost<C>,
+    repo: &str,
+    token: &str,
+    now_ms: i64,
+) -> clax_git::Result<Option<Holder>> {
+    let hash = token_hash(token);
+    ledger.with(|c| {
+        Ok(db::live_token_by_hash(c, &hash, now_ms)?
+            .filter(|row| row.repo == repo)
+            .map(|row| row.holder))
+    })
+}
+
+/// Records in `ledger` who made the push to `path` that moved `pushed`:
+/// when it left `main` at a commit, the holder of the push's token (from
+/// `authorization`; the owner for none the ledger knows), against that
+/// commit. Answers the artifact and the holder, or `None` when `path` is
+/// no artifact's repository or the push did not move `main` to a commit.
+/// It does not wait on anything, so `RepoDO` records the push before any
+/// other request reaches it.
+pub fn note_push<C: AsConn>(
+    ledger: &LocalHost<C>,
+    path: &str,
+    authorization: Option<&str>,
+    pushed: &[clax_git::RefUpdate],
+    now_ms: i64,
+) -> clax_git::Result<Option<(String, Holder)>> {
+    let Some((repo, _)) = clax_git::server::split_git_path(path) else {
+        return Ok(None);
+    };
+    let Some(artifact) = repo
+        .strip_prefix("a-")
+        .filter(|id| clax_git::events::is_artifact_id(id))
+    else {
+        return Ok(None);
+    };
+    let Some(head) = pushed
+        .iter()
+        .find(|u| u.name == clax_git::MAIN && !u.new.is_zero())
+        .map(|u| u.new)
+    else {
+        return Ok(None);
+    };
+    let holder = match authorization.and_then(clax_git::server::bearer_token) {
+        Some(t) => holder(ledger, repo, t, now_ms)?.unwrap_or_default(),
+        None => Holder::default(),
+    };
+    ledger.with(|c| db::record_push(c, repo, &head, &holder, now_ms))?;
+    Ok(Some((artifact.to_string(), holder)))
 }
 
 fn rfc3339(ms: i64) -> String {

@@ -69,6 +69,18 @@
 //!   [Ordering](clax_core::content#ordering)); the alternative of rows
 //!   naming content addresses, with refs advanced after the transaction,
 //!   is not taken because the filesystem store has no content address.
+//! - **Pushes** (clax-core's content [Pushes](clax_core::content#pushes)):
+//!   a push to `main` puts commits above the newest version that no tag
+//!   names. [`ContentStore::pushed_commits`] lists them, oldest first, by
+//!   `main`'s first parents down to the commit of the version pushed past,
+//!   leaving out the publish attempts a remove left directly above it;
+//!   more than 64 of them, or a `main` that no longer leads to that
+//!   version, are its head alone. [`ContentStore::tag_pushed`] creates
+//!   `v<n>` on one (create-only) and leaves `main` where it is, so the next
+//!   write finds `main` at version `n`'s commit; [`ContentStore::untag_pushed`]
+//!   deletes the tag only while it names that commit. Who pushed and the
+//!   repositories' tokens come from the [`PushLedger`] given with
+//!   [`GitContent::with_ledger`] (what serves the pushes keeps them).
 //! - **Fork** makes the fork's repository as far as the forked version's
 //!   commit ([`fork_at`]: a copy cut back and pruned, or a new repository
 //!   given what that commit reaches), so the fork's history ends at the
@@ -81,7 +93,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use clax_core::content::{
-    AssetKey, ContentStore, VersionMeta, VersionWrite, missing, present, superseded,
+    AssetKey, ContentStore, PushLedger, PushedCommit, PushedContent, PushedFile, Pusher, RepoToken,
+    VersionMeta, VersionWrite, missing, present, superseded,
 };
 use clax_core::working::Clock;
 use clax_core::{ArtifactId, CoreError, Result};
@@ -92,7 +105,7 @@ use clax_git::versions::{
     version_tag,
 };
 use clax_git::{
-    Commit, GitError, GitVersions, MAIN, ObjectId, Person, RefUpdate, Repo, RepoHost, Rev,
+    Commit, GitError, GitVersions, MAIN, Mode, ObjectId, Person, RefUpdate, Repo, RepoHost, Rev,
     Signature,
 };
 
@@ -141,6 +154,8 @@ pub struct GitContent<H, A> {
     committer: Person,
     clock: Arc<dyn Clock>,
     needs_executor: bool,
+    /// Who pushed, and the repositories' tokens ([`GitContent::with_ledger`]).
+    ledger: Option<Arc<dyn PushLedger>>,
 }
 
 /// A git error as clax-core's: an I/O error of the kind its code names, so
@@ -184,6 +199,25 @@ fn ident_part(s: &str) -> String {
 /// The most untagged commits a remove may leave between `main` and the
 /// newest version; a write finding more is refused.
 const MAX_LEFT: usize = 64;
+
+/// The most pushed commits one reconcile records one by one; past it,
+/// `main`'s head stands for them all.
+const MAX_PUSHED: usize = 64;
+
+/// Whether an entry of `mode` is a regular file (executable or not).
+fn is_regular(mode: Mode) -> bool {
+    mode == Mode::FILE || mode == Mode::EXEC
+}
+
+/// Commit `hex`.
+fn parse_commit(hex: &str) -> Result<ObjectId> {
+    ObjectId::from_hex(hex).ok_or_else(|| {
+        CoreError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{hex:?} is not a commit ID"),
+        ))
+    })
+}
 
 fn version_ref(n: u32) -> String {
     tag_ref(&version_tag(u64::from(n))).expect("v<n> is a valid tag name")
@@ -231,7 +265,16 @@ impl<H: RepoHost, A: AssetStore> GitContent<H, A> {
             committer,
             clock,
             needs_executor: false,
+            ledger: None,
         }
+    }
+
+    /// This store answering who pushed and the repositories' tokens from
+    /// `ledger` (clax-core's content [Pushes](clax_core::content#pushes));
+    /// without one it knows no pusher and no token.
+    pub fn with_ledger(mut self, ledger: Arc<dyn PushLedger>) -> GitContent<H, A> {
+        self.ledger = Some(ledger);
+        self
     }
 
     /// This store saying its I/O completes only when an executor polls it
@@ -635,6 +678,213 @@ impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A>
             "main of {} is not at version {n}'s commit {commit}; version {n} is left",
             repo_name(id.as_str())
         )))
+    }
+
+    async fn pushed_commits(&self, id: &ArtifactId, after: u32) -> Result<Vec<PushedCommit>> {
+        let Some(repo) = self.open(id).await? else {
+            return Ok(Vec::new());
+        };
+        let refs = repo.refs().await.map_err(core_error)?;
+        let tags = versions_of(&refs);
+        let Some(head) = refs.get(MAIN).copied() else {
+            return Ok(Vec::new());
+        };
+        let base = match tags.get(&after) {
+            Some(c) => Some(*c),
+            // Its content is lost: nothing is known to follow it.
+            None if after > 0 => return Ok(Vec::new()),
+            None => None,
+        };
+        if Some(head) == base {
+            return Ok(Vec::new());
+        }
+        // main's first parents, newest first, down to the base.
+        let mut chain: Vec<clax_git::CommitMeta> = Vec::new();
+        let mut at = Some(head);
+        let mut reached = false;
+        for _ in 0..MAX_PUSHED + MAX_LEFT + 1 {
+            if at == base {
+                reached = true;
+                break;
+            }
+            let Some(c) = at else { break };
+            let meta = repo
+                .read_commit_meta(&c)
+                .await
+                .map_err(core_error)?
+                .ok_or_else(|| unavailable(format!("Commit {c} is missing")))?;
+            at = meta.parents.first().copied();
+            chain.push(meta);
+        }
+        let tagged: BTreeSet<ObjectId> = tags.values().copied().collect();
+        if reached {
+            chain.reverse();
+            // Publish attempts a remove left directly above the base.
+            let left = chain
+                .iter()
+                .take_while(|c| !tagged.contains(&c.commit) && c.trailer("Clax-Version").is_some())
+                .count();
+            chain.drain(..left);
+            if chain.is_empty() {
+                return Ok(Vec::new());
+            }
+            if chain.len() <= MAX_PUSHED {
+                // Each one's first parent is the one below it (or the
+                // base, through the attempts a remove left).
+                return Ok(chain
+                    .into_iter()
+                    .map(|c| PushedCommit {
+                        commit: c.commit.to_hex(),
+                        message: c.message,
+                        follows: true,
+                        collapsed: false,
+                    })
+                    .collect());
+            }
+        }
+        // Too many commits, or main no longer leads to the base: its head
+        // stands for them all.
+        let meta = repo
+            .read_commit_meta(&head)
+            .await
+            .map_err(core_error)?
+            .ok_or_else(|| unavailable(format!("Commit {head} is missing")))?;
+        if !reached && meta.trailer("Clax-Version").is_some() && !tagged.contains(&head) {
+            // An untagged publish attempt on a history that lost the base.
+            return Ok(Vec::new());
+        }
+        Ok(vec![PushedCommit {
+            commit: head.to_hex(),
+            message: meta.message,
+            follows: false,
+            collapsed: true,
+        }])
+    }
+
+    async fn pushed_files(
+        &self,
+        id: &ArtifactId,
+        commit: &str,
+        base: u32,
+    ) -> Result<Vec<PushedFile>> {
+        let repo = self
+            .open(id)
+            .await?
+            .ok_or_else(|| unavailable(format!("{} is missing", repo_name(id.as_str()))))?;
+        let commit = parse_commit(commit)?;
+        let tree = Self::tree_of(&repo, &commit).await?;
+        let refs = repo.refs().await.map_err(core_error)?;
+        let base_entries: BTreeMap<String, ObjectId> = match versions_of(&refs).get(&base) {
+            Some(c) => {
+                let base_tree = Self::tree_of(&repo, c).await?;
+                walk_tree(&repo, &base_tree)
+                    .await
+                    .map_err(core_error)?
+                    .into_iter()
+                    .filter(|e| is_regular(e.mode))
+                    .map(|e| (e.path, e.id))
+                    .collect()
+            }
+            None => BTreeMap::new(),
+        };
+        let mut out = Vec::new();
+        for e in walk_tree(&repo, &tree).await.map_err(core_error)? {
+            let content = if !is_regular(e.mode) {
+                PushedContent::NotAFile
+            } else if base_entries.get(&e.path) == Some(&e.id) {
+                PushedContent::Same
+            } else {
+                let blob = repo
+                    .read_object(&e.id)
+                    .await
+                    .map_err(core_error)?
+                    .ok_or_else(|| unavailable(format!("Blob {} is missing", e.id)))?;
+                PushedContent::Bytes(blob.data)
+            };
+            out.push(PushedFile {
+                path: e.path,
+                content,
+            });
+        }
+        Ok(out)
+    }
+
+    async fn tag_pushed(&self, id: &ArtifactId, n: u32, commit: &str) -> Result<bool> {
+        let repo = self
+            .open(id)
+            .await?
+            .ok_or_else(|| unavailable(format!("{} is missing", repo_name(id.as_str()))))?;
+        let commit = parse_commit(commit)?;
+        let tags = versions_of(&repo.refs().await.map_err(core_error)?);
+        match tags.get(&n) {
+            Some(c) if *c == commit => return Ok(false),
+            Some(_) => return Err(present(id, n)),
+            None => {}
+        }
+        if let Some((&m, _)) = tags.range(n.saturating_add(1)..).next_back() {
+            return Err(superseded(id, n, m));
+        }
+        Self::apply_all(
+            &repo,
+            Vec::new(),
+            &[RefUpdate::new(version_ref(n), None, Some(commit))],
+        )
+        .await
+        .map(|()| true)
+    }
+
+    async fn untag_pushed(&self, id: &ArtifactId, n: u32, commit: &str) -> Result<()> {
+        let Some(repo) = self.open(id).await? else {
+            return Ok(());
+        };
+        let commit = parse_commit(commit)?;
+        let tags = versions_of(&repo.refs().await.map_err(core_error)?);
+        match tags.get(&n) {
+            None => Ok(()),
+            Some(c) if *c == commit => {
+                Self::apply_all(
+                    &repo,
+                    Vec::new(),
+                    &[RefUpdate::new(version_ref(n), Some(commit), None)],
+                )
+                .await
+            }
+            Some(_) => Err(present(id, n)),
+        }
+    }
+
+    async fn pushers(&self, id: &ArtifactId, commits: &[String]) -> Result<Vec<Option<Pusher>>> {
+        match &self.ledger {
+            Some(l) => {
+                let named = l.pushers(id, commits).await?;
+                if named.len() != commits.len() {
+                    return Err(unavailable(format!(
+                        "The push ledger named {} pushers for {} commits",
+                        named.len(),
+                        commits.len()
+                    )));
+                }
+                Ok(named)
+            }
+            None => Ok(vec![None; commits.len()]),
+        }
+    }
+
+    async fn repo_tokens(&self, id: &ArtifactId) -> Result<Vec<RepoToken>> {
+        match &self.ledger {
+            Some(l) => l.tokens(id).await,
+            None => Ok(Vec::new()),
+        }
+    }
+
+    async fn revoke_repo_token(&self, id: &ArtifactId, token: &str) -> Result<()> {
+        match &self.ledger {
+            Some(l) => l.revoke(id, token).await,
+            None => Err(unavailable(format!(
+                "{} keeps no token {token}",
+                repo_name(id.as_str())
+            ))),
+        }
     }
 
     async fn delete_artifact(&self, id: &ArtifactId) -> Result<()> {

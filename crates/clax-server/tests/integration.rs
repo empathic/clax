@@ -81,6 +81,8 @@ mod api_perf;
 mod api_presence;
 #[cfg(any(not(clax_split), clax_split = "api_push"))]
 mod api_push;
+#[cfg(any(not(clax_split), clax_split = "api_pushes"))]
+mod api_pushes;
 #[cfg(any(not(clax_split), clax_split = "api_questions"))]
 mod api_questions;
 #[cfg(any(not(clax_split), clax_split = "api_room"))]

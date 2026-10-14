@@ -458,6 +458,7 @@ fn tokens_for_people_are_artifacts_own_and_a_failed_revocation_is_retried() {
             Scope::Write,
             900,
             None,
+            &Default::default(),
             s.now_ms(),
         ))
         .unwrap()

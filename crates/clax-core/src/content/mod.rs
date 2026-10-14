@@ -71,6 +71,31 @@
 //! (repositories need share no objects), and a fork copies the source's
 //! repository with its history and commits version 1 on top.
 //!
+//! # Pushes
+//!
+//! A backend over git lets a person, or their agent, push to an artifact's
+//! `main` with git or jj. A pushed commit is a version once the store
+//! records it ([`crate::Store::reconcile_pushes_async`]), which it does
+//! under the artifact's content lock and before every new version:
+//! [`ContentStore::pushed_commits`] lists `main`'s first-parent commits
+//! above the commit of the version pushed past, oldest first, without the
+//! untagged commits a remove left directly above that version (publish
+//! attempts, never versions); [`ContentStore::pushed_files`] answers each
+//! one's files against the version below it; [`ContentStore::tag_pushed`]
+//! makes it version `n` (in git, creates `v<n>` on it, create-only) before
+//! the transaction recording `n`, and [`ContentStore::untag_pushed`] undoes
+//! that when the transaction fails. `main` stays where the push left it,
+//! so the next write finds it at the newest version's commit. Stores that
+//! take no pushes (the filesystem's, the in-memory one) list none.
+//!
+//! Who pushed is kept beside the repository, by whatever serves the push
+//! (a [`PushLedger`]): [`ContentStore::pushers`] names the pusher of each
+//! pushed commit it knows, [`ContentStore::repo_tokens`] lists the
+//! repository's live tokens with whom each was handed to, and
+//! [`ContentStore::revoke_repo_token`] revokes one, so a version an
+//! agent's person may not see is never recorded while that agent's token
+//! can still fetch it. A store with no ledger knows no pusher and no token.
+//!
 //! # Assets
 //!
 //! Assets belong to one artifact and are not versioned: an upload makes a new
@@ -325,6 +350,66 @@ pub trait ContentStore: Send + Sync {
         self.delete_asset(&clip_key(id, thread)).await
     }
 
+    /// The commits pushed past version `after` of `id` that no version
+    /// records, oldest first (see [Pushes](self#pushes)); none (the
+    /// default) for a store that is not a repository someone can push to.
+    async fn pushed_commits(&self, id: &ArtifactId, after: u32) -> Result<Vec<PushedCommit>> {
+        let _ = (id, after);
+        Ok(Vec::new())
+    }
+
+    /// The files of pushed commit `commit` of `id`, each compared with the
+    /// same path in version `base` (see [`PushedContent`]).
+    async fn pushed_files(
+        &self,
+        id: &ArtifactId,
+        commit: &str,
+        base: u32,
+    ) -> Result<Vec<PushedFile>> {
+        let _ = base;
+        Err(unsupported(id, commit))
+    }
+
+    /// Makes pushed commit `commit` of `id` version `n`, create-only: fails,
+    /// changing nothing, when version `n` is present at another commit.
+    /// Succeeds when it already is, answering `false` (this call made
+    /// nothing, so nothing of it is to be undone); `true` when it made it.
+    async fn tag_pushed(&self, id: &ArtifactId, n: u32, commit: &str) -> Result<bool> {
+        let _ = n;
+        Err(unsupported(id, commit))
+    }
+
+    /// Undoes [`ContentStore::tag_pushed`]: version `n` of `id` stops being
+    /// commit `commit`, which stays where the push left it. Succeeds when
+    /// version `n` is absent; fails, changing nothing, when it is another
+    /// commit.
+    async fn untag_pushed(&self, id: &ArtifactId, n: u32, commit: &str) -> Result<()> {
+        let _ = (id, n, commit);
+        Ok(())
+    }
+
+    /// For each of `commits` of `id`, whoever made a push that left `main`
+    /// at it, as far as this store knows (the newest such push); `None`
+    /// for one it knows no push to. One answer per commit, in order; all
+    /// `None` (the default) for a store with no [`PushLedger`].
+    async fn pushers(&self, id: &ArtifactId, commits: &[String]) -> Result<Vec<Option<Pusher>>> {
+        let _ = id;
+        Ok(vec![None; commits.len()])
+    }
+
+    /// The live tokens of `id`'s repository, with whom each was handed to;
+    /// none (the default) for a store with no [`PushLedger`].
+    async fn repo_tokens(&self, id: &ArtifactId) -> Result<Vec<RepoToken>> {
+        let _ = id;
+        Ok(Vec::new())
+    }
+
+    /// Revokes token `token` of `id`'s repository: once this succeeds, it
+    /// opens nothing.
+    async fn revoke_repo_token(&self, id: &ArtifactId, token: &str) -> Result<()> {
+        Err(unsupported(id, token))
+    }
+
     /// Whether this store's I/O completes only when an executor polls it
     /// (a Durable Object's, whose bindings are JavaScript promises), not
     /// when first polled as the filesystem's and the in-memory one do
@@ -361,6 +446,82 @@ pub fn clip_key(id: &ArtifactId, thread: &str) -> AssetKey {
         id: format!("clip-{thread}"),
         ext: "png".into(),
     }
+}
+
+/// A commit pushed to an artifact's repository that no version records.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PushedCommit {
+    /// Its ID, in hex.
+    pub commit: String,
+    /// Its whole message.
+    pub message: String,
+    /// Its first parent is the commit of the version below it (the
+    /// previous pushed commit, or the version pushed past): false when
+    /// history was rewritten or when [`PushedCommit::collapsed`].
+    pub follows: bool,
+    /// More commits were pushed than one reconcile records, or the version
+    /// pushed past is not in `main`'s history: this commit is `main`'s
+    /// head, standing for all of them.
+    pub collapsed: bool,
+}
+
+/// One file of a pushed commit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PushedFile {
+    pub path: String,
+    pub content: PushedContent,
+}
+
+/// What a pushed commit holds at a path, against the version it is
+/// compared with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PushedContent {
+    /// The same bytes as the same path in that version.
+    Same,
+    /// Other bytes, or a path that version does not have.
+    Bytes(Vec<u8>),
+    /// Not a regular file (a symbolic link or a submodule).
+    NotAFile,
+}
+
+/// Who pushed, as the push's token says: a connected person's public ID
+/// (`None`: the owner) and the agent session the token was handed to, when
+/// an agent's.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Pusher {
+    pub person: Option<String>,
+    pub session_id: Option<String>,
+}
+
+/// A live token of an artifact's repository.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepoToken {
+    /// Its ID (never the secret).
+    pub id: String,
+    /// It may push, not only fetch.
+    pub write: bool,
+    /// Whom it was handed to.
+    pub holder: Pusher,
+}
+
+/// What serves pushes to artifacts' repositories keeps of them: who made
+/// each push, and the repositories' tokens (see [Pushes](self#pushes)).
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+pub trait PushLedger: Send + Sync {
+    /// [`ContentStore::pushers`].
+    async fn pushers(&self, id: &ArtifactId, commits: &[String]) -> Result<Vec<Option<Pusher>>>;
+    /// [`ContentStore::repo_tokens`].
+    async fn tokens(&self, id: &ArtifactId) -> Result<Vec<RepoToken>>;
+    /// [`ContentStore::revoke_repo_token`].
+    async fn revoke(&self, id: &ArtifactId, token: &str) -> Result<()>;
+}
+
+fn unsupported(id: &ArtifactId, what: &str) -> crate::CoreError {
+    crate::CoreError::Io(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        format!("{id} keeps no pushed commit or token {what}"),
+    ))
 }
 
 /// The error for a file a version write or copy expected to find.

@@ -317,6 +317,7 @@ fn body_class(kind: &str, field: &str) -> Class {
         ("thread.release", "thread_id" | "session" | "reason") => Safe,
         ("backfill.skip", "reason") => Text,
         ("backfill.skip", "table" | "row_id") => Safe,
+        ("version.push_refused", "commit" | "person" | "session" | "reason") => Safe,
         _ => Class::Unclassified,
     }
 }

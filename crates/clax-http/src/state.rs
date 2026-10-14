@@ -358,6 +358,7 @@ impl AppState {
         crate::views::inbox::listen(self);
         crate::views::approval::listen(self);
         crate::routes::people::listen(self);
+        crate::pushes::listen(self);
     }
 }
 

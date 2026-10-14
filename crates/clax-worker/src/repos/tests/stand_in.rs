@@ -114,15 +114,29 @@ fn a_fork_through_the_internal_api_holds_nothing_the_source_gained_after_the_for
     for (n, page) in [(1, b"one\n"), (2, b"two\n"), (3, b"tri\n"), (4, b"for\n")] {
         wait(c.write_version(&id, n, &super::write(&[], &[("index.html", page)]))).unwrap();
     }
+    let h = &t.service.host;
+    let from = clax_git::versions::repo_name(id.as_str());
+    let src = h.with(|c| db::refs(c, &from)).unwrap();
+    // A push the source's ledger names.
+    let mia = crate::repos::tokens::Holder {
+        person: Some("u_mia".into()),
+        session: None,
+    };
+    let v2 = src["refs/tags/v2"];
+    h.with(|c| db::record_push(c, &from, &v2, &mia, 1)).unwrap();
     let to = clax_core::ArtifactId::generate();
     let meta = clax_core::content::VersionMeta::default();
     wait(c.fork(&id, 2, &["index.html"], &to, &meta)).unwrap();
-    let h = &t.service.host;
-    let (from, fork) = (
-        clax_git::versions::repo_name(id.as_str()),
-        clax_git::versions::repo_name(to.as_str()),
+    let fork = clax_git::versions::repo_name(to.as_str());
+    // The fork inherits none of the source's pushes.
+    assert_eq!(
+        h.with(|c| db::pusher(c, &from, &v2.to_hex())).unwrap(),
+        Some(mia)
     );
-    let src = h.with(|c| db::refs(c, &from)).unwrap();
+    assert_eq!(
+        h.with(|c| db::pusher(c, &fork, &v2.to_hex())).unwrap(),
+        None
+    );
     let refs = h.with(|c| db::refs(c, &fork)).unwrap();
     assert_eq!(refs.len(), 2, "main and v1: {refs:?}");
     for v in ["refs/tags/v3", "refs/tags/v4"] {
@@ -166,7 +180,13 @@ fn a_token_opens_its_own_repository_for_its_scope_until_it_expires() {
         host.create("a-one").await.unwrap();
         host.create("a-two").await.unwrap();
         let read = tokens_of(&t)
-            .mint("a-one", Scope::Read, 3600, Some("http://ignored.test"))
+            .mint(
+                "a-one",
+                Scope::Read,
+                3600,
+                Some("http://ignored.test"),
+                &Default::default(),
+            )
             .await
             .unwrap();
         // PUBLIC_ORIGIN wins over the request's origin.
@@ -183,7 +203,7 @@ fn a_token_opens_its_own_repository_for_its_scope_until_it_expires() {
         );
         assert!(read.jj_clone_command.starts_with("GIT_CONFIG_COUNT=1 "));
         let write = tokens_of(&t)
-            .mint("a-one", Scope::Write, 60, None)
+            .mint("a-one", Scope::Write, 60, None, &Default::default())
             .await
             .unwrap();
         let now = t.service.now_ms();
@@ -221,14 +241,14 @@ fn a_token_cannot_be_minted_for_a_missing_repository_or_an_unbounded_life() {
     let t = stand_in(clock());
     wait(async {
         let e = tokens_of(&t)
-            .mint("a-none", Scope::Read, 3600, None)
+            .mint("a-none", Scope::Read, 3600, None, &Default::default())
             .await
             .unwrap_err();
         assert!(matches!(e, GitError::NotFound(_)), "{e:?}");
         t.service.host.create("a-one").await.unwrap();
         for ttl in [0, 59, 31_536_001] {
             let e = tokens_of(&t)
-                .mint("a-one", Scope::Read, ttl, None)
+                .mint("a-one", Scope::Read, ttl, None, &Default::default())
                 .await
                 .unwrap_err();
             assert!(matches!(e, GitError::InvalidArgument(_)), "{ttl}: {e:?}");
@@ -243,11 +263,11 @@ fn a_revoked_token_and_the_tokens_of_a_deleted_repository_open_nothing() {
     wait(async {
         host.create("a-one").await.unwrap();
         let a = tokens_of(&t)
-            .mint("a-one", Scope::Read, 3600, None)
+            .mint("a-one", Scope::Read, 3600, None, &Default::default())
             .await
             .unwrap();
         let b = tokens_of(&t)
-            .mint("a-one", Scope::Write, 3600, None)
+            .mint("a-one", Scope::Write, 3600, None, &Default::default())
             .await
             .unwrap();
         assert!(
@@ -331,6 +351,7 @@ fn mint(s: &RepoService<Connection, Flaky>, repo: &str, ttl: u32) -> tokens::Git
         Scope::Read,
         ttl,
         None,
+        &Default::default(),
         s.now_ms(),
     ))
     .unwrap()
@@ -439,4 +460,101 @@ fn a_write_over_the_bound_is_refused_and_writes_nothing() {
         });
         assert_eq!(n, 0);
     });
+}
+
+#[test]
+fn a_token_keeps_whom_it_was_handed_to_and_an_older_ledger_gains_the_columns() {
+    let t = stand_in(clock());
+    let host = t.service.host.clone();
+    let holder = tokens::Holder {
+        person: Some("p_rae".into()),
+        session: Some("s1".into()),
+    };
+    wait(async {
+        host.create("a-one").await.unwrap();
+        let minted = tokens_of(&t)
+            .mint("a-one", Scope::Write, 3600, None, &holder)
+            .await
+            .unwrap();
+        let now = t.service.now_ms();
+        assert_eq!(
+            tokens::holder(&host, "a-one", &minted.token, now).unwrap(),
+            Some(holder.clone())
+        );
+        assert_eq!(
+            tokens::holder(&host, "a-two", &minted.token, now).unwrap(),
+            None,
+            "another repository's token is no one's there"
+        );
+        let owners = tokens_of(&t)
+            .mint("a-one", Scope::Write, 3600, None, &Default::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            tokens::holder(&host, "a-one", &owners.token, now).unwrap(),
+            Some(tokens::Holder::default())
+        );
+    });
+
+    let old = Connection::open_in_memory().unwrap();
+    old.execute_batch(
+        "CREATE TABLE git_tokens (
+            id TEXT PRIMARY KEY, repo TEXT NOT NULL, scope TEXT NOT NULL,
+            expires_ms INTEGER NOT NULL, revoked_ms INTEGER, hash BLOB UNIQUE);
+         INSERT INTO git_tokens VALUES ('cxt_old', 'a-one', 'read', 9, NULL, NULL);",
+    )
+    .unwrap();
+    db::init(&old).unwrap();
+    db::init(&old).unwrap();
+    let row = db::token(&old, "cxt_old").unwrap().unwrap();
+    assert_eq!(row.holder, tokens::Holder::default());
+}
+
+#[test]
+fn a_push_to_main_is_entered_as_its_token_holders_and_the_ledger_keeps_the_newest() {
+    let h = local_host();
+    let id = |b: u8| clax_git::ObjectId::from_bytes(&[b; 20]).unwrap();
+    let main = |b: u8| clax_git::RefUpdate::new(clax_git::MAIN, None, Some(id(b)));
+    let path = "/git/a-7q3k9mzx2b4t.git/git-receive-pack";
+    let note = |path: &str, pushed: &[clax_git::RefUpdate]| {
+        tokens::note_push(&h, path, None, pushed, 1).unwrap()
+    };
+    assert_eq!(
+        note(path, &[main(1)]),
+        Some(("7q3k9mzx2b4t".to_string(), tokens::Holder::default()))
+    );
+    let feature = clax_git::RefUpdate::new("refs/heads/feature", None, Some(id(2)));
+    assert_eq!(note(path, &[feature]), None, "main did not move");
+    assert_eq!(
+        note("/git/notes.git/git-receive-pack", &[main(3)]),
+        None,
+        "no artifact's repository"
+    );
+    let repo = "a-7q3k9mzx2b4t";
+    let hex = id(1).to_hex();
+    assert_eq!(
+        h.with(|c| db::pusher(c, repo, &hex)).unwrap(),
+        Some(tokens::Holder::default())
+    );
+    assert_eq!(
+        h.with(|c| db::pusher(c, repo, &id(2).to_hex())).unwrap(),
+        None
+    );
+    let rae = tokens::Holder {
+        person: Some("u_rae".into()),
+        session: None,
+    };
+    for _ in 0..db::MAX_PUSHES_KEPT {
+        h.with(|c| db::record_push(c, repo, &id(9), &rae, 2))
+            .unwrap();
+    }
+    assert_eq!(
+        h.with(|c| db::pusher(c, repo, &hex)).unwrap(),
+        None,
+        "pushed out by newer pushes"
+    );
+    assert_eq!(
+        h.with(|c| db::pusher(c, repo, &id(9).to_hex())).unwrap(),
+        Some(rae)
+    );
 }

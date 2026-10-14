@@ -538,6 +538,7 @@ impl TestServer {
         clax_http::views::inbox::listen(&state);
         clax_http::views::approval::listen(&state);
         clax_server::routes::people::listen(&state);
+        clax_http::pushes::listen(&state);
         let events = state.events.clone();
         let store = state.store.clone();
         let working = state.working.clone();

@@ -114,6 +114,7 @@ pub mod migrations;
 pub mod people;
 #[cfg(test)]
 mod plans;
+pub mod pushes;
 pub mod questions;
 pub mod sessions;
 pub mod site;
@@ -159,6 +160,10 @@ type RequestListener = Arc<dyn Fn(Vec<i64>) + Send + Sync>;
 /// The installed agents listener, cloned out of its lock.
 type AgentsListener = Arc<dyn Fn(Vec<String>) + Send + Sync>;
 
+/// The installed pushed versions listener, cloned out of its lock.
+pub(crate) type PushedListener =
+    Arc<dyn Fn(&crate::model::Artifact, &crate::model::Version) + Send + Sync>;
+
 pub struct Store {
     home: Home,
     /// The pool, or one connection.
@@ -188,6 +193,9 @@ pub struct Store {
     /// it once the write commits.
     agents_changed: Mutex<Option<std::collections::BTreeSet<String>>>,
     agents_listener: RwLock<Option<AgentsListener>>,
+    /// Told of each version recorded from a pushed commit
+    /// ([`Store::set_pushed_listener`]).
+    pushed_listener: RwLock<Option<PushedListener>>,
     /// Where every time the store writes or compares is read
     /// ([`Store::now`]). IDs are minted from the system clock.
     clock: Arc<dyn Clock>,
@@ -322,6 +330,7 @@ impl Store {
             visibility: approvals::VisState::default(),
             agents_changed: Mutex::new(None),
             agents_listener: RwLock::new(None),
+            pushed_listener: RwLock::new(None),
             resumed_at: Mutex::new(stamp(clock.now())),
             clock,
         })

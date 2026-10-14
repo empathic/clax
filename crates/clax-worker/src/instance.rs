@@ -68,6 +68,15 @@
 //! first after a wake takes it, and presence chips do not empty while tabs
 //! report again.
 //!
+//! # Pushes
+//!
+//! `POST /_internal/pushed` at the host `crate::INSTANCE_INTERNAL`
+//! (`{"artifact", "person", "session"}`; see the crate's Pushes) records
+//! the artifact's pushed commits as versions published by that person and
+//! session (`clax_http::pushes::reconcile`), answering `{"recorded":
+//! [n, …]}`; streams hear of each as of a publish. A missing or deleted
+//! artifact records nothing (200); a failure is 503.
+//!
 //! # Alarm
 //!
 //! The daemon's loops run from the object's alarm instead, set for when
@@ -931,11 +940,24 @@ impl DurableObject for InstanceDo {
         }
     }
 
-    async fn fetch(&self, req: Request) -> Result<Response> {
+    async fn fetch(&self, mut req: Request) -> Result<Response> {
         let inst = match self.instance() {
             Ok(i) => i,
             Err(e) => return Response::error(format!("the instance could not start: {e}"), 500),
         };
+        let url = req.url()?;
+        if url.host_str() == Some(crate::INSTANCE_INTERNAL) {
+            if url.path() != "/_internal/pushed" {
+                return Response::error("Not found", 404);
+            }
+            let call: PushedCall = match req.json().await {
+                Ok(c) => c,
+                Err(e) => return Response::error(format!("{e}"), 400),
+            };
+            let out = self.record_pushes(&inst, call).await;
+            self.schedule(&inst).await;
+            return out;
+        }
         let req = match http_request(req).await? {
             Ok(r) => r,
             Err(refused) => return Ok(refused),
@@ -1032,7 +1054,32 @@ impl DurableObject for InstanceDo {
     }
 }
 
+/// A call to record an artifact's pushed commits (see Pushes).
+#[derive(Deserialize)]
+struct PushedCall {
+    artifact: String,
+    person: Option<String>,
+    session: Option<String>,
+}
+
 impl InstanceDo {
+    /// Records `call`'s pushed commits and sends the streams their events.
+    async fn record_pushes(&self, inst: &Rc<Instance>, call: PushedCall) -> Result<Response> {
+        let Ok(id) = clax_core::ArtifactId::parse(&call.artifact) else {
+            return Response::error("not an artifact ID", 400);
+        };
+        let pusher = clax_store::pushes::Pusher {
+            person: call.person,
+            session_id: call.session,
+        };
+        let out = match clax_http::pushes::reconcile(&inst.app, id, pusher).await {
+            Ok(recorded) => Response::from_json(&serde_json::json!({ "recorded": recorded })),
+            Err(e) => Response::error(format!("{e:?}"), 503),
+        };
+        inst.settle().await;
+        out
+    }
+
     /// A text message on socket `ws`: a stream's `ping` (the runtime
     /// answers it unless it arrives with other text) is answered `pong`;
     /// a live or room socket's goes to what it carries, and a room

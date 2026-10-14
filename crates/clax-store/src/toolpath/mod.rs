@@ -1290,6 +1290,18 @@ impl Event<'_> {
                     None => format!("Elevated the agent of session {session}"),
                 }
             }
+            Some(K::VersionPushRefused) => format!(
+                "Left pushed commit {} of {} unrecorded: its pusher {} may not publish it ({})",
+                self.str("commit")
+                    .map_or("unknown", |c| &c[..c.len().min(12)]),
+                art(),
+                match (self.str("person"), self.str("session")) {
+                    (_, Some(s)) => format!("agent session {s}"),
+                    (Some(p), None) => format!("person {p}"),
+                    (None, None) => "the owner".to_string(),
+                },
+                self.show("reason")
+            ),
             Some(K::BackfillSkip) => {
                 return format!(
                     "Skipped {} row {} while recording earlier history",
