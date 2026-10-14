@@ -57,7 +57,10 @@ sealed class HostMessage {
         ),
         'inspection' => InspectionMsg.fromJson(m),
         'tests' => TestsMsg.fromJson(m),
-        'questions' => QuestionsMsg(_count(m['open'])),
+        'questions' => QuestionsMsg(
+          _count(m['open']),
+          showing: (m['showing'] ?? false) as bool,
+        ),
         'device' => DeviceRequest.fromJson(m),
         _ => null,
       };
@@ -320,12 +323,17 @@ final class TestsMsg extends HostMessage {
   final String? error;
 }
 
-/// How many of the agent's questions about this app are [open]; posted
-/// whenever that changes.
+/// How many of the owner's questions about this app are [open], and
+/// whether the shell's questions sheet is [showing]; posted whenever either
+/// changes.
 final class QuestionsMsg extends HostMessage {
-  const QuestionsMsg(this.open);
+  const QuestionsMsg(this.open, {this.showing = false});
 
   final int open;
+
+  /// Whether the questions sheet is up over the app (false when the shell
+  /// does not say).
+  final bool showing;
 }
 
 /// A device capability call of the page (`notify`, `share`, `files`,
@@ -500,11 +508,23 @@ final class ComposeArtifact extends HostCall {
   String toJs() => 'window.claxHost?.composeArtifact()';
 }
 
-/// Shows the open questions about the app, docked over it.
+/// Shows the open questions about the app in the shell's sheet, docked
+/// over it; with [question] (an ID), with that question's card in focus as
+/// soon as the shell knows it open.
 final class OpenQuestions extends HostCall {
-  const OpenQuestions();
+  const OpenQuestions({this.question});
+  final String? question;
   @override
-  String toJs() => 'window.claxHost?.openQuestions()';
+  String toJs() => question == null
+      ? 'window.claxHost?.openQuestions()'
+      : 'window.claxHost?.openQuestions({question:${jsString(question!)}})';
+}
+
+/// Closes the questions sheet, and drops a waiting [OpenQuestions].
+final class CloseQuestions extends HostCall {
+  const CloseQuestions();
+  @override
+  String toJs() => 'window.claxHost?.closeQuestions()';
 }
 
 /// In the inspect view (`?app=1&inspect=1`), asks for an [InspectionMsg]
