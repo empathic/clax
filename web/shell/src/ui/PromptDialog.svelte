@@ -23,6 +23,10 @@
   import { inertOutside, trapTab } from "./modal";
 
   let { ask }: { ask: Ask } = $props();
+  // The ask by identity: a parent that passes a field of a larger state
+  // (`StageIsland`'s `s.ask`) re-reads the prop on every change of that
+  // state, and only a new ask may disarm "Allow" below.
+  const current = $derived(ask);
   let deny = $state<HTMLButtonElement>();
   let box = $state<HTMLElement>();
   let armed = $state(false);
@@ -50,7 +54,7 @@
   // `init`, or while hidden), and while it says hidden "Allow" is disarmed
   // and nothing counts, so the full delay runs again from the next shown.
   $effect(() => {
-    const a = ask;
+    const a = current;
     armed = false;
     armedAt = Infinity;
     fresh = new Map();
