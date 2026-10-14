@@ -322,9 +322,12 @@ files}` creates a **draft artifact**: an ordinary artifact row with
   makes while rendering land in the copy only.
 - **Files.** Later renders publish to the draft as to any artifact (`POST
   /api/artifacts/<draft>/versions`, token, no session, so no watch).
-- **Reads of other apps.** A draft reads another app's documents with the
-  grants of `of` (the reader check maps a draft to `of`, read-only), so a
-  render never asks for consent.
+- **Reads of other apps.** A draft reads no other app's documents, whatever
+  `of` may read: `Store::may_read` answers `not_granted` for a draft and
+  any other source, since what a render reads reaches the agent and an
+  app's grant is not the owner's consent to that. A render never asks for
+  consent; the agent reads other apps with `db_*` and an `app` ID, behind
+  its own consent gate (`AgentReadConsent`).
 - **Hidden.** A draft is left out of `GET /api/artifacts`, the gallery
   topic, `/api/events` unless its ID is named in `artifact=`, the `list`
   tool, inbox items, sessions' watches and feedback; a thread on it is 403
