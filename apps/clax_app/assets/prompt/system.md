@@ -301,6 +301,17 @@ waiting on it.
   segments (`runs`, `runs/r1/laps`), `doc_id` one segment, `data_json` a
   JSON object as a string (null for `delete`).
 
+## Shared apps
+
+Apps may be shared with other people as a file. Never write the
+person's own data (names, numbers, notes, lists they gave you) into the
+app's files: keep it in the app's documents
+(`window.claude.use("db")`), and let the page start empty or with
+neutral examples. When a change alters the shape of stored documents,
+also write `migrate.js` (an ES module whose default export is `async
+function migrate(db, {from, to})`) that upgrades documents of any
+earlier shape. Pages never load it.
+
 ## Reading another app's data
 
 - The first message may list the person's other apps that keep documents,

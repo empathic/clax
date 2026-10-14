@@ -66,6 +66,7 @@ class World {
     bool withConsent = true,
     StepClock? clock,
     Future<void>? cancelled,
+    bool fromBundle = false,
   }) {
     clock ??= StepClock();
     final kind = newApp ? RequestKind.newApp : RequestKind.change;
@@ -96,7 +97,7 @@ class World {
         ),
         readConsent: withConsent ? consent : null,
       ),
-      [...fileTools(), ...dataTools(api)],
+      [...fileTools(), ...dataTools(api, fromBundle: fromBundle)],
     );
   }
 }
@@ -121,6 +122,50 @@ void main() {
         );
       }
       expect(specs.every((s) => toolOrder.contains(s.name)), isTrue);
+    });
+  });
+
+  group('an app from a bundle', () {
+    const message =
+        'This app came from someone else; it cannot read your other apps';
+
+    test('every read tool refuses another app without asking or reading '
+        'it', () async {
+      final w = World()..allowRead();
+      final tb = w.toolbox(fromBundle: true);
+      final calls = {
+        'db_collections': {'app': w.other},
+        'db_list': {'collection': 'meals', 'app': w.other, 'limit': null},
+        'db_get': {'path': 'meals/m1', 'app': w.other},
+        'db_query': {
+          'collection': 'meals',
+          'app': w.other,
+          'where': null,
+          'order_by': null,
+          'limit': null,
+        },
+      };
+      for (final e in calls.entries) {
+        expect(
+          await tb.call(e.key, e.value),
+          refused(contains(message)),
+          reason: e.key,
+        );
+      }
+      expect(w.consent.asks, isEmpty);
+      expect([
+        for (final c in w.api.calls) c.args['aid'],
+      ], isNot(contains(w.other)));
+    });
+
+    test('still reads its own documents', () async {
+      final w = World();
+      w.api.putDoc(w.app, 'runs/r1', {'km': 5});
+      final tb = w.toolbox(fromBundle: true);
+      final r = await tb.call('db_get', {'path': 'runs/r1', 'app': null});
+      expect((okJson(r)['doc']! as Map)['data'], {'km': 5});
+      final own = await tb.call('db_get', {'path': 'runs/r1', 'app': w.app});
+      expect((okJson(own)['doc']! as Map)['data'], {'km': 5});
     });
   });
 

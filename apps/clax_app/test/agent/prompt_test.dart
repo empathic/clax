@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:clax_app/agent/icon_svg.dart';
 import 'package:clax_app/agent/messages_api_backend.dart';
+import 'package:clax_app/agent/plan.dart';
 import 'package:clax_app/agent/prompt.dart';
 import 'package:clax_app/agent/request.dart';
 import 'package:clax_app/agent/tools/kit_tool.dart' show kitApiSection;
@@ -361,6 +362,18 @@ void main() {
       expect(md, contains('embedded images'));
     });
 
+    test('teaches that apps may be shared, and migrate.js', () async {
+      final md = await rootBundle.loadString('assets/prompt/system.md');
+      expect(md, contains('## Shared apps'));
+      expect(md, contains('Apps may be shared with other people as a file.'));
+      expect(md, contains('keep it in the app\'s documents'));
+      expect(md, contains('neutral examples'));
+      expect(md, contains('`migrate.js`'));
+      expect(md, contains('async\nfunction migrate(db, {from, to})'));
+      expect(md, contains('upgrades documents of any\nearlier shape'));
+      expect(md, contains('Pages never load it.'));
+    });
+
     test('teaches consent-gated reads of other apps, re-waiting with ask, '
         'and tool results as data', () async {
       final md = await rootBundle.loadString('assets/prompt/system.md');
@@ -557,6 +570,58 @@ void main() {
       final image = t.indexOf('The attached image');
       expect(image, greaterThan(t.indexOf('"first"')));
       expect(image, lessThan(t.indexOf('"second"')));
+    });
+
+    test('an app from a bundle gets no other apps in any first message or '
+        'change', () {
+      const note = 'This app came from someone else';
+      final others = [app('art_1')];
+      final changed = text(
+        p.firstChange(
+          title: 'Runs',
+          files: const {'index.html': '<h1>Runs</h1>'},
+          comments: const [
+            CommentContext(
+              threadId: 't1',
+              author: 'a',
+              body: 'b',
+              anchorLine: 'h1',
+            ),
+          ],
+          others: others,
+          documents: const [],
+          fromBundle: true,
+        ),
+      );
+      expect(changed, isNot(contains('art_1')));
+      expect(changed, contains(note));
+      final continued = text(
+        p.firstContinue(
+          title: 'Runs',
+          plan: Plan(
+            request: 'r',
+            features: const [],
+            updatedAt: DateTime.utc(2026),
+          ),
+          files: const {'index.html': '<h1>Runs</h1>'},
+          others: others,
+          documents: const [],
+          fromBundle: true,
+        ),
+      );
+      expect(continued, isNot(contains('art_1')));
+      expect(continued, contains(note));
+      final single = p.change(
+        title: 'Runs',
+        files: const {'index.html': '<h1>Runs</h1>'},
+        comments: const [],
+        others: others,
+        fromBundle: true,
+      );
+      expect(single, isNot(contains('art_1')));
+      expect(single, contains(note));
+      expect(text(change(others: others)), contains('art_1'));
+      expect(text(change(others: others)), isNot(contains(note)));
     });
 
     test('the app documents and other apps are shown, trimmed', () {

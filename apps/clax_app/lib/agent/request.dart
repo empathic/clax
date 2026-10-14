@@ -81,6 +81,7 @@ class AgentRequest {
     this.image,
     this.cancelled,
     this.onProgress,
+    this.fromBundle = false,
   });
 
   final RequestKind kind;
@@ -103,4 +104,11 @@ class AgentRequest {
   /// that can stream its answer does so only when this is set; null runs
   /// the request without streaming. Events stop once [cancelled] fires.
   final ProgressSink? onProgress;
+
+  /// Whether the app this request changes came from a bundle (its lineage
+  /// entry's `from_bundle`). Such an app's files are someone else's, so its
+  /// agent is shown none of the person's other apps
+  /// (`PromptBuilder`'s `fromBundle`) and its data tools refuse to read
+  /// them (`dataTools`' `fromBundle`). False for a new app.
+  final bool fromBundle;
 }
