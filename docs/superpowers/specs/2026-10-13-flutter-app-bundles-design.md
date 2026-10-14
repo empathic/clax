@@ -686,11 +686,17 @@ Capability words reuse `deviceCapWords`
 ### 12.2 Platform
 
 - **Android** (`android/app/src/main/AndroidManifest.xml`): on
-  `MainActivity` (singleTop), intent filters for `VIEW` and `SEND`,
-  category `DEFAULT` (and `BROWSABLE` for `VIEW`), `scheme` `content` and
-  `file`, MIME types `application/vnd.empathic.clax+zip`,
-  `application/zip` and `application/octet-stream` (what messaging apps
-  label an unknown file as). `BundleIntake.kt` copies the URI's bytes to
+  `BundleReceiverActivity` (exported, `noHistory`, translucent), intent
+  filters for `VIEW` (category `DEFAULT` and `BROWSABLE`, `scheme`
+  `content`) and `SEND` (category `DEFAULT`, no scheme: its file is in
+  `EXTRA_STREAM`, not the intent's data), MIME types
+  `application/vnd.empathic.clax+zip`, `application/zip` and
+  `application/octet-stream` (what messaging apps label an unknown file
+  as). It forwards the `content:` URI, with its read grant, to the one
+  `MainActivity` (singleTop) in Clax's own task (`NEW_TASK`, `SINGLE_TOP`,
+  `CLEAR_TOP`) and finishes, so the sender's task never starts a second
+  engine or daemon. `file:` URIs and Clax's own providers are refused.
+  `BundleIntake.kt` copies the URI's bytes to
   `<cache>/incoming/<random>.clax`, refusing past 32 MiB, and hands the
   path over the channel `dev.empathic.clax/bundles` (`initial` for the
   launching intent, `opened` events from `onNewIntent`). A file that is
