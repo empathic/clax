@@ -7113,7 +7113,16 @@ it with Ajv (draft 2020-12, formats asserted;
   assets and nothing else, and none of them takes a write; it loads no script,
   style, font, image, media, frame or worker from another site; it posts
   no form. Everything else it does goes through the shell by `postMessage`
-  (`db`, `comments`, `net`, `sample` and the other capabilities). A live
+  (`db`, `comments`, `net`, `sample` and the other capabilities). Every
+  other response on an artifact's origin, and under `/c/<id>/` on the main
+  origin (a 404, `/healthz`, `/_clax/...`, `/_blob/...`, a redirect, a
+  refusal), carries the artifact's policy too, beside any of its own, so a
+  page that frames or opens one cannot use that window to escape; a `/c/`
+  path naming no artifact carries `sandbox; default-src 'none'`. A request
+  there for a service worker script (`Service-Worker: script`) is answered
+  with Clax's own script, which installs, unregisters itself and handles
+  no fetch: a page's own worker never runs, and one registered before is
+  removed at its next update check. A live
   page's snapshot carries instead, on either origin, only the framing part
   and a second policy that runs no script but Clax's own. Supporting files and blobs are
   sent with `X-Content-Type-Options: nosniff`. Content, on either origin, and
