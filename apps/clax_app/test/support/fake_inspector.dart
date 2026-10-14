@@ -31,8 +31,12 @@ class MigrationCall {
     this.from,
     this.to,
     this.total,
-    this.cancelled,
-  );
+    this.cancelled, [
+    this.onWrite,
+  ]);
+
+  /// The run's journal, when it is journaled.
+  final Future<void> Function(MigrationWrite write)? onWrite;
 
   final Uri url;
   final String file;
@@ -100,6 +104,27 @@ class FakeInspector implements Inspector {
   /// Queues a migration run that answers only `cancelled`, once told to stop.
   void hangMigration() => _migrations.add(#hang);
 
+  /// Runs during each migration run, before it answers: what the run
+  /// writes (through `call.onWrite` first, when journaled).
+  Future<void> Function(MigrationCall call)? migrating;
+
+  /// Each [restoreWrites] call's writes, in order.
+  final List<List<MigrationWrite>> restoreCalls = [];
+
+  /// Puts back a [restoreWrites] call's writes; throws to fail it.
+  Future<void> Function(List<MigrationWrite> writes)? restoring;
+
+  @override
+  Future<void> restoreWrites(
+    Uri url,
+    List<MigrationWrite> writes, {
+    Duration total = const Duration(seconds: 60),
+    Future<void>? cancelled,
+  }) async {
+    restoreCalls.add(List.of(writes));
+    await restoring?.call(writes);
+  }
+
   @override
   Future<MigrationRun> runMigration(
     Uri url, {
@@ -108,8 +133,11 @@ class FakeInspector implements Inspector {
     required int to,
     Duration total = const Duration(seconds: 30),
     Future<void>? cancelled,
+    Future<void> Function(MigrationWrite write)? onWrite,
   }) async {
-    migrationCalls.add(MigrationCall(url, file, from, to, total, cancelled));
+    final call = MigrationCall(url, file, from, to, total, cancelled, onWrite);
+    migrationCalls.add(call);
+    await migrating?.call(call);
     final next = _migrations.isEmpty
         ? const MigrationRun.passed()
         : _migrations.removeAt(0);

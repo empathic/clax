@@ -734,6 +734,14 @@ class _StuckInspector implements Inspector {
   }) => throw UnimplementedError();
 
   @override
+  Future<void> restoreWrites(
+    Uri url,
+    List<MigrationWrite> writes, {
+    Duration total = const Duration(seconds: 60),
+    Future<void>? cancelled,
+  }) => throw UnimplementedError();
+
+  @override
   Future<MigrationRun> runMigration(
     Uri url, {
     String file = 'migrate.js',
@@ -741,5 +749,6 @@ class _StuckInspector implements Inspector {
     required int to,
     Duration total = const Duration(seconds: 30),
     Future<void>? cancelled,
+    Future<void> Function(MigrationWrite write)? onWrite,
   }) => throw UnimplementedError();
 }

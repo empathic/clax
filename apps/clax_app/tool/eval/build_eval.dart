@@ -254,6 +254,7 @@ class RecordingInspector implements Inspector {
     required int to,
     Duration total = const Duration(seconds: 30),
     Future<void>? cancelled,
+    Future<void> Function(MigrationWrite write)? onWrite,
   }) => inner.runMigration(
     url,
     file: file,
@@ -261,7 +262,16 @@ class RecordingInspector implements Inspector {
     to: to,
     total: total,
     cancelled: cancelled,
+    onWrite: onWrite,
   );
+
+  @override
+  Future<void> restoreWrites(
+    Uri url,
+    List<MigrationWrite> writes, {
+    Duration total = const Duration(seconds: 60),
+    Future<void>? cancelled,
+  }) => inner.restoreWrites(url, writes, total: total, cancelled: cancelled);
 
   @override
   Future<TestRun> runTests(

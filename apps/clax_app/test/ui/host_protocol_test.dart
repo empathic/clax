@@ -565,6 +565,48 @@ const host = { init: p => log.push('init'), setVisible: v => log.push('visible '
       expect(HostMessage.parse('{"type":"migration","ok":"yes"}'), isNull);
     });
 
+    test('the migration journal: journal decodes, journalAck, a journaled '
+        'RunMigration and RestoreJournal render, journalRestored decodes', () {
+      expect(
+        const RunMigration(from: 1, to: 2, journal: true).toJs(),
+        'window.claxHost?.runMigration({file:"migrate.js",from:1,to:2,'
+        'totalMs:30000,journal:true})',
+      );
+      final j = HostMessage.parse(
+        '{"type":"journal","seq":3,"path":"data/users/u/p","before":{"v":1}}',
+      ) as JournalMsg;
+      expect((j.seq, j.path), (3, 'data/users/u/p'));
+      expect(j.before, {'v': 1});
+      final none = HostMessage.parse(
+        '{"type":"journal","seq":4,"path":"a/b","before":null}',
+      ) as JournalMsg;
+      expect(none.before, isNull);
+      expect(HostMessage.parse('{"type":"journal","seq":4,"path":1}'), isNull);
+      expect(
+        const JournalAck(3, ok: false).toJs(),
+        'window.claxHost?.journalAck({seq:3,ok:false})',
+      );
+      expect(
+        const RestoreJournal([
+          {'path': 'a/b', 'before': null},
+        ]).toJs(),
+        'window.claxHost?.restoreJournal(JSON.parse('
+        r'"{\"entries\":[{\"path\":\"a/b\",\"before\":null}]}"))',
+      );
+      expect(
+        (HostMessage.parse(
+          '{"type":"journalRestored","ok":true}',
+        ) as JournalRestoredMsg).ok,
+        isTrue,
+      );
+      expect(
+        (HostMessage.parse(
+          '{"type":"journalRestored","ok":false,"error":"refused"}',
+        ) as JournalRestoredMsg).error,
+        'refused',
+      );
+    });
+
     test('an inspection that failed carries only why', () {
       final i = HostMessage.parse(
         '{"type":"inspection","error":"the page has not loaded"}',

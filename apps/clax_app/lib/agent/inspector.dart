@@ -50,6 +50,12 @@ abstract interface class Inspector {
   /// [MigrationRun] that is not [MigrationRun.ok]. Throws [InspectorError]
   /// when the page does not load, the page does not answer in time, or
   /// [cancelled] completes first.
+  ///
+  /// With [onWrite] the run is journaled (an update's live run, bundles
+  /// spec §8.4): before each document's first write, through any `db`
+  /// handle of the page, [onWrite] gets its value, and the write goes ahead
+  /// only once [onWrite] completes (it fails when [onWrite] throws). Writes
+  /// after the run's answer fail.
   Future<MigrationRun> runMigration(
     Uri url, {
     String file = 'migrate.js',
@@ -57,7 +63,43 @@ abstract interface class Inspector {
     required int to,
     Duration total = const Duration(seconds: 30),
     Future<void>? cancelled,
+    Future<void> Function(MigrationWrite write)? onWrite,
   });
+
+  /// Loads [url] in the migration view and puts back [writes] (a journaled
+  /// run's, in the order [runMigration] gave them) in reverse order, as the
+  /// person's viewer, so their private `data/users/<id>/` documents too: a
+  /// document whose `before` is null is deleted, any other set to it.
+  /// Throws [InspectorError] when any of it failed, the page did not load
+  /// or answer within [total], or [cancelled] completes first.
+  Future<void> restoreWrites(
+    Uri url,
+    List<MigrationWrite> writes, {
+    Duration total = const Duration(seconds: 60),
+    Future<void>? cancelled,
+  });
+}
+
+/// One entry of a journaled migration: the document at [path] held
+/// [before] (null: there was none) before the migration's first write to
+/// it.
+class MigrationWrite {
+  const MigrationWrite(this.path, this.before);
+
+  final String path;
+  final Map<String, Object?>? before;
+
+  Map<String, Object?> toJson() => {'path': path, 'before': before};
+
+  static MigrationWrite? fromJson(Object? j) {
+    if (j is! Map || j['path'] is! String) return null;
+    final b = j['before'];
+    if (b != null && b is! Map) return null;
+    return MigrationWrite(
+      j['path'] as String,
+      b == null ? null : (b as Map).cast<String, Object?>(),
+    );
+  }
 }
 
 /// What a run of an app bundle's migration found: it finished ([ok]), or

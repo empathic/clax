@@ -316,6 +316,14 @@ class _Writing implements Inspector {
   }) => inner.runTests(url, files: files);
 
   @override
+  Future<void> restoreWrites(
+    Uri url,
+    List<MigrationWrite> writes, {
+    Duration total = const Duration(seconds: 60),
+    Future<void>? cancelled,
+  }) async {}
+
+  @override
   Future<MigrationRun> runMigration(
     Uri url, {
     String file = 'migrate.js',
@@ -323,6 +331,7 @@ class _Writing implements Inspector {
     required int to,
     Duration total = const Duration(seconds: 30),
     Future<void>? cancelled,
+    Future<void> Function(MigrationWrite write)? onWrite,
   }) async {
     if (++_runs == 1) return const MigrationRun.passed();
     await write();

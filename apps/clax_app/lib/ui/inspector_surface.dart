@@ -121,6 +121,9 @@ class WebViewInspector implements Inspector {
   /// the migration view again and waits for its `ready`, at most
   /// [readyLimit], before it returns: the document the migration ran in is
   /// gone by then, so none of its code is still writing.
+  ///
+  /// With [onWrite], each `journal` message is handed to it and answered
+  /// with `journalAck` once it completes (ok), or throws (not ok).
   @override
   Future<MigrationRun> runMigration(
     Uri url, {
@@ -129,10 +132,27 @@ class WebViewInspector implements Inspector {
     required int to,
     Duration total = const Duration(seconds: 30),
     Future<void>? cancelled,
+    Future<void> Function(MigrationWrite write)? onWrite,
   }) => _queued(cancelled, () async {
-    final view = url.replace(
-      queryParameters: {...url.queryParameters, 'migrate': '1'},
-    );
+    final view = _migrationView(url);
+    StreamSubscription<HostMessage>? journal;
+    if (onWrite != null) {
+      final surface = _surfaceFor(view);
+      journal = surface.messages.listen((m) async {
+        if (m is! JournalMsg) return;
+        var ok = true;
+        try {
+          await onWrite(MigrationWrite(m.path, m.before));
+        } on Object {
+          ok = false;
+        }
+        try {
+          await surface.call(JournalAck(m.seq, ok: ok));
+        } on Object {
+          // The document is gone: its write cannot go ahead anyway.
+        }
+      });
+    }
     try {
       final (m, _) = await _ask<MigrationMsg>(
         view,
@@ -141,6 +161,7 @@ class WebViewInspector implements Inspector {
           from: from,
           to: to,
           totalMs: total.inMilliseconds,
+          journal: onWrite != null,
         ),
         total + answerLimit,
         cancelled,
@@ -150,8 +171,28 @@ class WebViewInspector implements Inspector {
           : MigrationRun.failed(m.error ?? 'the migration failed');
     } finally {
       await _replace(view);
+      await journal?.cancel();
     }
   });
+
+  @override
+  Future<void> restoreWrites(
+    Uri url,
+    List<MigrationWrite> writes, {
+    Duration total = const Duration(seconds: 60),
+    Future<void>? cancelled,
+  }) => _queued(cancelled, () async {
+    final (m, _) = await _ask<JournalRestoredMsg>(
+      _migrationView(url),
+      RestoreJournal([for (final w in writes) w.toJson()]),
+      total,
+      cancelled,
+    );
+    if (m.error case final why?) throw InspectorError(why);
+  });
+
+  static Uri _migrationView(Uri url) =>
+      url.replace(queryParameters: {...url.queryParameters, 'migrate': '1'});
 
   /// Loads [url] again in place of the document the surface shows, and
   /// waits for its `ready`, at most [readyLimit]; a failure or no `ready`
