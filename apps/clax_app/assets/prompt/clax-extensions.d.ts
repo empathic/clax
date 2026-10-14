@@ -2,6 +2,9 @@
  * Clax's additions to runtime contract 0.2.61.
  *
  * The files under `0.2.61/` are claude.ai's type definitions, unchanged.
+ * Where Clax departs from them it says so here: `assets.d.ts` has a page
+ * rebuild an asset's URL as `"/_blob/" + id`, but Clax serves assets per
+ * artifact, so a page uses `claude.assetUrl(id)` (below).
  * What Clax answers beyond them is declared here, so a page written for
  * claude.ai keeps working and a page written for Clax can handle the extra
  * cases. Served at `<daemon_url>/_clax/contract/clax-extensions.d.ts`.
@@ -302,4 +305,17 @@ declare namespace ClaxExtensions {
       fetch(url: string, init?: RequestInit): Promise<Response>;
     }
   }
+}
+
+/** What Clax adds to `window.claude` (`claude.d.ts` `interface Claude`). */
+interface Claude {
+  /**
+   * The URL of this artifact's asset `id` (as `assets.upload` resolved it
+   * and `db` keeps it): `/_blob/<artifact id>/<asset id>`, the same URL
+   * `assets` gives, resolving from every page and version of the artifact
+   * and for every viewer, `assets` granted or not. Assets are served per
+   * artifact and a page loads only its own, so never build `"/_blob/" +
+   * id`. A value that is not an asset ID gives a URL that answers 404.
+   */
+  assetUrl(id: string): string;
 }

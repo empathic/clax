@@ -153,9 +153,13 @@ type PartName = keyof Parts;
         : parts.caps().then(c => c.localsFor(name, r, config, { ctx: commentsContext, clip: clips })),
   });
 
+  // The URL of this artifact's asset `id`, as `assets` gives it: assets are
+  // served per artifact, and a page loads only its own.
+  const assetUrl = (id: unknown) => `/_blob/${meta.artifact}/${encodeURIComponent(String(id))}`;
+
   try {
     Object.defineProperty(window, "claude", {
-      value: Object.freeze({ use }),
+      value: Object.freeze({ use, assetUrl }),
       writable: false,
       configurable: false,
       enumerable: true,
