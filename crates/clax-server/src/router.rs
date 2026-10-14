@@ -743,11 +743,14 @@ fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
         ));
     let r = if hosted {
         r.layer(axum::middleware::from_fn_with_state(
-            state,
+            state.clone(),
             clax_http::hosted::gate,
         ))
     } else {
         r.layer(axum::middleware::from_fn(auth::require_api_host))
     };
-    r.layer(axum::middleware::from_fn(host::rewrite_artifact_host))
+    r.layer(axum::middleware::from_fn_with_state(
+        state,
+        host::rewrite_artifact_host,
+    ))
 }

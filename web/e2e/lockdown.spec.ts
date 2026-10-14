@@ -5,10 +5,10 @@
 // bridge, the kit's modules, its own files (fetched too) and the `db`
 // capability (through the shell) still work, and a comment clip inlines the
 // page's own image.
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import type { Frame } from "@playwright/test";
+import { type Browser, type Frame, chromium, webkit } from "@playwright/test";
 import { test, expect, type Daemon, api, colorStats, last, openArtifact, record } from "./fixtures";
 
 let d: Daemon;
@@ -118,3 +118,77 @@ test("subdomain: a comment clip of the page's own image shows the image", async 
   expect((await colorStats(p, pick.pickId, [255, 0, 0], 30)).count).toBeGreaterThan(1000);
   expect(await violations(f)).toEqual([]);
 });
+
+// Two ways out that the policy on a page's own responses does not close by
+// itself, in both engines: a same-origin frame of a response the content
+// route did not answer (a 404, /healthz, the bridge), whose window's fetch
+// would follow that response's policy; and a service worker of the page's
+// own, answering a frame with a document that carries no policy. Every
+// response for the artifact's content carries its policy, and a service
+// worker script asked for there is Clax's, which unregisters itself.
+const SW = `self.addEventListener("install", () => fetch("AWAY/sw-install").catch(() => {}));
+self.addEventListener("fetch", e => { if (e.request.url.endsWith("/pwn.html")) e.respondWith(new Response('<script>fetch("AWAY/sw-doc").catch(() => {})</script>', { headers: { "content-type": "text/html" } })); });`;
+
+for (const engine of [chromium, webkit]) {
+  for (const mode of ["subdomain", "sandbox"] as const) {
+    test(`${engine.name()} ${mode}: neither a framed 404, /healthz or bridge, nor a service worker of the page's own, reaches another host`, async () => {
+      test.skip(!existsSync(engine.executablePath()), `${engine.name()} is not installed`);
+      const away = await elsewhere();
+      const browser: Browser = await engine.launch();
+      try {
+        const { artifact } = await api(d.base, d.token, "/api/artifacts", {
+          method: "POST",
+          body: JSON.stringify({
+            title: `Escape ${engine.name()} ${mode}`,
+            files: {
+              "index.html": { content: "<!doctype html><title>Escape</title><p>escape</p>", encoding: "utf8" },
+              "sw.js": { content: SW.replaceAll("AWAY", away.url), encoding: "utf8" },
+            },
+          }),
+        }) as { artifact: { id: string } };
+        const p = await browser.newPage();
+        const f = await openArtifact(p, d.base, artifact.id, 1, mode);
+        // Borrowing a framed response's window.
+        const borrowed = await f.evaluate(async a => {
+          const out: Record<string, string> = {};
+          for (const src of ["/healthz", "/nope", "missing.txt", "/_clax/bridge.js"]) {
+            const fr = document.createElement("iframe");
+            fr.src = src;
+            await new Promise(r => { fr.onload = r; document.body.append(fr); });
+            try {
+              out[src] = await (fr.contentWindow as Window).fetch(`${a}/fr`).then(() => "reached", () => "refused");
+            } catch {
+              out[src] = "unreachable";
+            }
+          }
+          return out;
+        }, away.url);
+        for (const [src, r] of Object.entries(borrowed)) expect(r, src).not.toBe("reached");
+        // A service worker of the page's own.
+        const registered = await f.evaluate(async () => {
+          try {
+            await navigator.serviceWorker.register("sw.js");
+            return "registered";
+          } catch (e) {
+            return `refused:${(e as Error).name}`;
+          }
+        });
+        if (registered === "registered") {
+          // Clax's worker took its place and removes itself.
+          await expect.poll(() => f.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).length)).toBe(0);
+        }
+        const framed = await f.evaluate(async () => {
+          const fr = document.createElement("iframe");
+          fr.src = "pwn.html";
+          await new Promise(r => { fr.onload = r; document.body.append(fr); });
+          try { return (fr.contentDocument?.body?.textContent ?? "").slice(0, 40); } catch { return "unreachable"; }
+        });
+        expect(framed).not.toContain("<script>");
+        expect(away.hits()).toBe(0);
+      } finally {
+        await browser.close();
+        away.close();
+      }
+    });
+  }
+}

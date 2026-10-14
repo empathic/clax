@@ -301,6 +301,131 @@ async fn an_artifacts_content_loads_only_its_own_files_and_connects_nowhere() {
     }
 }
 
+/// Every response a page could frame or open on its artifact's host, or
+/// under its `/c/<id>/` path, holds it to the artifact's policy: errors,
+/// `/healthz`, `/_clax/...`, `/_blob/...` and redirects included.
+#[tokio::test]
+async fn every_response_for_an_artifacts_content_carries_its_policy() {
+    let ts = TestServer::spawn().await;
+    let created = ts.publish("R", &[("index.html", "<p>hi</p>")]).await;
+    let id = created["artifact"]["id"].as_str().unwrap();
+    let port = ts.addr.port();
+    let host = format!("{id}.localhost:{port}");
+    let main = format!("127.0.0.1:{port}");
+    let client = no_redirect_client();
+    for (h, path, own) in [
+        (&host, "/healthz".to_string(), "'self'".to_string()),
+        (&host, "/nope".to_string(), "'self'".to_string()),
+        (&host, "/v/1/missing.txt".to_string(), "'self'".to_string()),
+        (&host, "/v/9/".to_string(), "'self'".to_string()),
+        (&host, "/v/1".to_string(), "'self'".to_string()),
+        (&host, "/_clax/bridge.js".to_string(), "'self'".to_string()),
+        (
+            &host,
+            "/_clax/nothing-here".to_string(),
+            "'self'".to_string(),
+        ),
+        (
+            &host,
+            "/_blob/01K6AB7D2E3F4G5H6J7K8M9N0P".to_string(),
+            "'self'".to_string(),
+        ),
+        (
+            &main,
+            format!("/c/{id}/v/1/missing.txt"),
+            format!("http://{main}/c/{id}/"),
+        ),
+        (
+            &main,
+            format!("/c/{id}/v/1"),
+            format!("http://{main}/c/{id}/"),
+        ),
+        (
+            &main,
+            format!("/c/{id}/v/9/"),
+            format!("http://{main}/c/{id}/"),
+        ),
+    ] {
+        let res = client
+            .get(format!("{}{path}", ts.base))
+            .header("host", h)
+            .send()
+            .await
+            .unwrap();
+        let policies: Vec<String> = res
+            .headers()
+            .get_all("content-security-policy")
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .collect();
+        assert!(
+            policies
+                .iter()
+                .any(|p| p.contains(&format!("connect-src {own} "))
+                    && p.contains("default-src ")
+                    && !p.contains('*')),
+            "{h}{path} ({}): {policies:?}",
+            res.status()
+        );
+        assert_eq!(res.headers()["referrer-policy"], "no-referrer", "{h}{path}");
+    }
+    // A /c/ path that names no artifact runs nothing.
+    let res = ts.get("/c/NOT-AN-ID/v/1/").await;
+    assert_eq!(
+        res.headers()["content-security-policy"],
+        "sandbox; default-src 'none'"
+    );
+}
+
+/// A service worker script asked for on an artifact's content is Clax's,
+/// which removes itself: a page's own worker never runs.
+#[tokio::test]
+async fn a_service_worker_script_on_content_is_one_that_unregisters_itself() {
+    let ts = TestServer::spawn().await;
+    let created = ts
+        .publish(
+            "R",
+            &[
+                ("index.html", "<p>hi</p>"),
+                ("sw.js", "self.onfetch = () => {};"),
+            ],
+        )
+        .await;
+    let id = created["artifact"]["id"].as_str().unwrap();
+    let host = format!("{id}.localhost:{}", ts.addr.port());
+    for (h, path) in [
+        (Some(host.as_str()), "/v/1/sw.js".to_string()),
+        (Some(host.as_str()), "/healthz".to_string()),
+        (None, format!("/c/{id}/v/1/sw.js")),
+    ] {
+        let mut req = ts
+            .client
+            .get(format!("{}{path}", ts.base))
+            .header("service-worker", "script");
+        if let Some(h) = h {
+            req = req.header("host", h);
+        }
+        let res = req.send().await.unwrap();
+        assert_eq!(res.status(), 200, "{path}");
+        assert_eq!(res.headers()["content-type"], "text/javascript");
+        assert!(
+            res.headers()["content-security-policy"]
+                .to_str()
+                .unwrap()
+                .contains("connect-src ")
+        );
+        let body = res.text().await.unwrap();
+        assert_eq!(
+            body,
+            clax_server::host::SERVICE_WORKER_KILL_SWITCH,
+            "{path}"
+        );
+    }
+    // Without the header the file is served as stored.
+    let res = ts.get(&format!("/c/{id}/v/1/sw.js")).await;
+    assert_eq!(res.text().await.unwrap(), "self.onfetch = () => {};");
+}
+
 /// What a page may fetch on its own files and its artifact's host takes
 /// only GET and HEAD: nothing there accepts a write.
 #[tokio::test]

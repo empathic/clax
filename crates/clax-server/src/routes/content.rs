@@ -41,7 +41,7 @@ const SANDBOX: &str = "sandbox allow-scripts allow-forms allow-modals allow-popu
 /// The policy is a separate one: a page's own `<meta>` policy still applies
 /// in full beside it, and cannot set `frame-ancestors` itself.
 pub(crate) fn content_policy(
-    origin: &Option<Extension<OnArtifactOrigin>>,
+    on_artifact_origin: bool,
     req: &HeaderMap,
     own: &str,
     lockdown: Option<&str>,
@@ -54,7 +54,7 @@ pub(crate) fn content_policy(
         .filter(|(_, p)| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
         .map(|(_, p)| format!(":{p}"))
         .unwrap_or_default();
-    let frame = if origin.is_none() {
+    let frame = if !on_artifact_origin {
         SANDBOX.to_string()
     } else {
         format!("frame-ancestors 'self' http://localhost{port} http://127.0.0.1{port}")
@@ -64,7 +64,7 @@ pub(crate) fn content_policy(
             // An artifact host serves only GET and HEAD, of the artifact's
             // content, `/_clax/`, `/_blob/` and `/healthz` (`host.rs`): no
             // API, so `'self'` names nothing but those.
-            let (loadable, files) = if origin.is_some() {
+            let (loadable, files) = if on_artifact_origin {
                 ("'self'".to_string(), "'self'".to_string())
             } else {
                 (
@@ -160,6 +160,12 @@ fn snapshot_policy(req: &HeaderMap, fallback: &str) -> HeaderValue {
     .unwrap_or_else(|_| HeaderValue::from_static("script-src 'none'"))
 }
 
+/// Response extension: the content route set this response's policy itself
+/// ([`framed_by_shell`]); `host::rewrite_artifact_host` adds the artifact's
+/// lockdown policy to every other response for an artifact's content.
+#[derive(Clone, Copy)]
+pub(crate) struct ContentPolicySet;
+
 /// Sets the content policy of artifact `id`'s content on `res` (`own`: the
 /// daemon's host): one that frames it and keeps it to its own files; or, for
 /// a `live` page's content, the framing policy and [`snapshot_policy`]
@@ -177,7 +183,7 @@ fn framed_by_shell(
     let lockdown = (!live).then_some(id);
     res.headers_mut().insert(
         header::CONTENT_SECURITY_POLICY,
-        content_policy(origin, req, own, lockdown),
+        content_policy(origin.is_some(), req, own, lockdown),
     );
     res.headers_mut().insert(
         header::REFERRER_POLICY,
@@ -187,6 +193,7 @@ fn framed_by_shell(
         res.headers_mut()
             .append(header::CONTENT_SECURITY_POLICY, snapshot_policy(req, own));
     }
+    res.extensions_mut().insert(ContentPolicySet);
     res
 }
 
@@ -511,7 +518,7 @@ mod tests {
     fn the_content_policy_names_a_plain_host_and_never_a_crafted_one() {
         let mut h = HeaderMap::new();
         h.insert(header::HOST, HeaderValue::from_static("x;script-src *:80"));
-        let p = content_policy(&None, &h, "localhost:7480", Some("7q3k9mzx2b4t"));
+        let p = content_policy(false, &h, "localhost:7480", Some("7q3k9mzx2b4t"));
         let p = p.to_str().unwrap();
         assert!(p.contains("http://localhost:7480/c/7q3k9mzx2b4t/ "), "{p}");
         assert!(!p.contains('*') && !p.contains("x;"), "{p}");
@@ -524,7 +531,7 @@ mod tests {
         );
         // Without the lockdown (a live page), the framing policy alone.
         assert_eq!(
-            content_policy(&None, &h, "localhost:7480", None)
+            content_policy(false, &h, "localhost:7480", None)
                 .to_str()
                 .unwrap(),
             SANDBOX
