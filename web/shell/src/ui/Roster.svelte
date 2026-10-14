@@ -21,7 +21,7 @@
   };
   const mark = (a: Props["agents"][number]) => agentMark(a.name, a.harness);
   // Its name, with its person's when that person is not this viewer.
-  const named = (a: Props["agents"][number]) => `${a.name ?? a.harness}${a.person && a.person.public_id !== p.me ? ` · ${midName(a.person.name)}` : ""}`;
+  const named = (a: Props["agents"][number]) => `${a.name || a.harness}${a.person && a.person.public_id !== p.me ? ` · ${midName(a.person.name)}` : ""}`;
   const ordered = $derived([...p.people].sort((a, b) => Number(b.public_id === p.me) - Number(a.public_id === p.me)));
   const busy = $derived(new Set(p.working.map(w => w.agent)));
 </script>

@@ -260,6 +260,7 @@ pub async fn put(
                 session_id: sess.id.clone(),
                 harness: sess.harness.clone(),
                 agent: sess.agent_handle.clone(),
+                name: sess.name.clone(),
             };
             let who = Drafter {
                 session_id: sess.id,

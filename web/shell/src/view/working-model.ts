@@ -3,7 +3,7 @@
 // sidebar, the pins and the capability.
 import type { Participants } from "../api";
 
-export type Working = { key: string; agent: string; harness: string; message: string | null; thread_ids: string[]; started_at: string; last_heartbeat: string };
+export type Working = { key: string; agent: string; harness: string; name?: string | null; message: string | null; thread_ids: string[]; started_at: string; last_heartbeat: string };
 export type AgentView = Participants["agents"][number];
 export type SummaryInput = { working: Working[]; names: Map<string, string>; mine: Set<string>; open: number; idle: string[]; addressed: string | null; published: number | null; rally: boolean; now: Date; live?: boolean };
 export type Summary = { line1: string; agent: boolean; line2: string; elapsed: string | null };
@@ -16,10 +16,10 @@ export function newestFirst(list: Working[]): Working[] {
   return [...list].sort((a, b) => b.started_at.localeCompare(a.started_at) || b.key.localeCompare(a.key));
 }
 
-/** Handle → name: its agent name, else the harness, with the handle's first four hex digits when two agents share it. */
+/** Handle → name: its agent name (spec 2026-10-08 §11), else the harness, with the handle's first four hex digits when two agents share it. */
 export function agentNames(list: Working[], agents: AgentView[]): Map<string, string> {
-  const all = new Map<string, string>(agents.map(a => [a.handle, a.name ?? a.harness]));
-  for (const w of list) if (!all.has(w.agent)) all.set(w.agent, w.harness);
+  const all = new Map<string, string>(agents.map(a => [a.handle, a.name || a.harness]));
+  for (const w of list) if (!all.has(w.agent)) all.set(w.agent, w.name || w.harness);
   const count = new Map<string, number>();
   for (const h of all.values()) count.set(h, (count.get(h) ?? 0) + 1);
   return new Map([...all].map(([handle, h]) => [handle, (count.get(h) ?? 0) > 1 ? `${h} ${handle.slice(2, 6)}` : h]));

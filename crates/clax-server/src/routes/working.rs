@@ -116,6 +116,7 @@ pub async fn put(
                 session_id: sess.id,
                 harness: sess.harness,
                 agent: sess.agent_handle,
+                name: sess.name,
             };
             let (view, changed) = w.set(
                 &who,

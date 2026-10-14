@@ -1,0 +1,11 @@
+{
+  "name": "clax-demo",
+  "private": true,
+  "type": "module",
+  "description": "The hosted demo: seed a Clax, run scripted agents over MCP, and run it all locally",
+  "scripts": {
+    "seed": "node seed.ts",
+    "agents": "node agents.ts",
+    "local": "node local.ts"
+  }
+}

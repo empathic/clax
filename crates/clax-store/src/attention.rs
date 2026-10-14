@@ -19,9 +19,9 @@ pub struct Person {
 pub struct AgentView {
     pub handle: String,
     pub harness: String,
-    pub live: bool,
-    /// Its agent name (spec 2026-10-08 §11), when it has one.
+    /// Its agent name (spec 2026-10-08 §11), which it shows as.
     pub name: Option<String>,
+    pub live: bool,
     /// Whose agent it is (§10, §11 "Display"): names are not filtered (§21.9).
     pub person: AgentPerson,
 }
@@ -404,8 +404,8 @@ fn participants_in(c: &Connection, aid: Option<&str>) -> Result<BTreeMap<String,
         out.entry(r.get(0)?).or_default().agents.push(AgentView {
             handle: r.get(1)?,
             harness: r.get(2)?,
-            live: r.get(3)?,
             name: r.get(4)?,
+            live: r.get(3)?,
             person,
         });
     }
