@@ -1031,7 +1031,9 @@ the model with the reason and the run goes on.
   of the app, never the live version (see "Drafts" under "The Clax app").
   `add_kit` copies parts of the vendored kit into the draft under `kit/`:
   `preact` (Preact, its hooks and htm), `kit` (components and `kit.css`;
-  brings `preact` and `icons`), `chart`, `dates` and `icons`, which pages
+  brings `preact` and `icons`), `chart`, `dates`, `icons` and `map` (a
+  slippy map whose tiles come through `net` as `blob:` images, so the app
+  declares its tile host, `tile.openstreetmap.org` by default), which pages
   import by relative path (`./kit/preact.js`).
 - `icon.svg` among an app's files is its launcher icon: a square
   `viewBox`, at most 32 KB, in a subset of SVG (shapes, paths, groups,

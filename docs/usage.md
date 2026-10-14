@@ -446,6 +446,14 @@ answers with the scripted results in that file (a JSON array of edit
 results, or `{"error": "<message>"}` items) instead of a model, which drives
 the whole app without one.
 
+**The kit.** The agent's `add_kit` copies `apps/clax_app/assets/kit/`
+(see its `README.md`) into an app; `kitApi` in
+`lib/agent/tools/kit_tool.dart` describes it to the model, in the tool's
+result and in the system prompt. The map part (`map.js`) loads its tiles
+through `net`; `web/e2e/map.spec.ts` drives it in the app's view against
+tiles the test answers at the shell's `net:fetch` request, the consent
+dialog included.
+
 **On an Android phone.** Turn on developer options and USB debugging, plug
 the phone in, and from the checkout run:
 

@@ -38,6 +38,23 @@ void main() {
     expect(r['api'], allOf(contains('useCollection'), contains('html`')));
   });
 
+  test('map brings preact and icons, and its API names the net host', () async {
+    final tb = toolboxWith(extra: [AddKitTool(load: (n) async => '/* $n */')]);
+    final r = _ok(
+      await tb.call('add_kit', {
+        'parts': ['map'],
+      }),
+    );
+    expect(
+      [for (final f in r['files']! as List) (f as Map)['path']],
+      ['kit/preact.js', 'kit/icons.js', 'kit/map.js', 'kit/LICENSES.txt'],
+    );
+    expect(
+      r['api'],
+      allOf(contains('MapView'), contains('"tile.openstreetmap.org"')),
+    );
+  });
+
   test('a repeated call writes nothing', () async {
     final tb = toolboxWith(extra: [AddKitTool(load: (n) async => '/* $n */')]);
     await tb.call('add_kit', {
@@ -88,9 +105,9 @@ void main() {
     expect(pubspec, contains('- assets/kit/'));
     final tb = toolboxWith(extra: [AddKitTool(load: _diskKit)]);
     final r = _ok(await tb.call('add_kit', {'parts': kitParts.keys.toList()}));
-    expect((r['files']! as List).length, 7);
+    expect((r['files']! as List).length, 8);
     // Each export of kit.js and chart.js is named in the API text.
-    for (final file in ['kit.js', 'chart.js']) {
+    for (final file in ['kit.js', 'chart.js', 'map.js']) {
       final src = File('assets/kit/$file').readAsStringSync();
       final exports = RegExp(
         r'^export (?:async )?(?:function|const|let) (\w+)',

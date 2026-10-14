@@ -18,6 +18,7 @@ const kitParts = <String, List<String>>{
   'preact': ['preact.js', 'LICENSES.txt'],
   'kit': ['preact.js', 'icons.js', 'kit.css', 'kit.js', 'LICENSES.txt'],
   'chart': ['chart.js'],
+  'map': ['preact.js', 'icons.js', 'map.js', 'LICENSES.txt'],
   'dates': ['dates.js', 'LICENSES.txt'],
   'icons': ['icons.js', 'LICENSES.txt'],
 };
@@ -43,7 +44,8 @@ class AddKitTool implements Tool {
     'Adds the Clax kit to the draft under kit/: preact (Preact, hooks and '
         'htm as kit/preact.js), kit (kit.css, the design system, and kit.js, '
         'its components; brings preact and icons), chart (SVG charts), '
-        'dates (dayjs with relativeTime), icons (about 100 icons). The '
+        'dates (dayjs with relativeTime), icons (about 100 icons), map (a '
+        'slippy map; its tiles need the net capability). The '
         'result lists the API. Pages link ./kit/kit.css and import '
         "'./kit/<part>.js'. Repeating it is harmless.",
     objectSchema({
@@ -152,6 +154,22 @@ const kitApi = <String, String>{
       r'color}); data is {labels, series: [{name, values, color}]} or '
       r'{labels, values}; opts {height, format, legend}. Also compact(n) '
       r'(1200 -> 1.2k) and ticks(min, max, count).',
+  'map.js':
+      r'kit/map.js exports MapView {center: [lat, lng], zoom, fit: points '
+      r'(fits the view to them; points are [lat, lng] or {lat, lng}), '
+      r'markers: [{lat, lng, label, color, icon, selected, onClick(marker)}], '
+      r"here: {lat, lon, accuracy} (the location capability's current(), a "
+      r'"you are here" dot), onMove({center, zoom, bounds: {north, south, '
+      r'east, west}}), height, tiles: "https://host/{z}/{x}/{y}.png", '
+      r'attribution, maxZoom, darkTiles}; people drag, pinch, scroll, '
+      r'double-tap and use the arrow keys. Tiles come through the net '
+      r'capability as blob: images, so the app declares {"net": {"hosts": '
+      r'["tile.openstreetmap.org"]}} (or the host of its tiles): the owner is asked '
+      r'once, and the map says why it is empty when not allowed. The '
+      r'OpenStreetMap attribution always shows. Also fitBounds(points, '
+      r'{width, height, padding}) -> {center, zoom}, project(lat, lng) -> '
+      r'[x, y], unproject(x, y) -> [lat, lng], OSM {tiles, attribution, '
+      r'maxZoom}.',
   'dates.js':
       r"kit/dates.js default-exports dayjs with relativeTime: "
       r"dayjs(x).fromNow(), .format('D MMM'), .add(1, 'day'), "
