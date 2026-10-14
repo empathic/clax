@@ -719,10 +719,20 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       baseUrl: () => _currentEndpoint().base,
       snapshots: _snapshots,
       busy: _changing,
+      hold: <T>(aid, body) => _runtime.worker.hold(aid, body),
+      ensureSession: () => _api.registerAppSession(
+        installId: _s.installId,
+        pid: _s.pid,
+        cwd: _s.supportDir,
+      ),
       log: (l) => debugPrint('clax bundles: $l'),
     ),
     null => null,
   };
+
+  /// The apps an update runs on ([Updater.updating]).
+  late final ValueNotifier<Set<String>> _updating =
+      _updater?.updating ?? ValueNotifier(const {});
 
   /// Sharing and opening apps as `.clax` files; null without a key.
   late final BundleFlows? _bundles = switch (_s.bundleKey) {
@@ -820,6 +830,11 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     } on Object catch (e) {
       debugPrint('clax bundles: $e');
     }
+    try {
+      await _bundles?.installer.recoverInstalls();
+    } on Object catch (e) {
+      debugPrint('clax bundles: $e');
+    }
     final List<RecoveredUpdate> back;
     try {
       back = await _updater?.recoverInterrupted() ?? const [];
@@ -828,6 +843,21 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       return;
     }
     for (final r in back) {
+      final u = _updater!;
+      if (!r.restored) {
+        _bundleSheet((context) async {
+          final restore = await showBundleSheet<bool>(
+            context,
+            KeptUpdateSheet(title: r.title),
+          );
+          if (restore == true) {
+            await u.restoreKept(r.aid);
+          } else if (restore == false) {
+            await u.discardKept(r.aid);
+          }
+        });
+        continue;
+      }
       _bundleSheet(
         (context) => showBundleSheet<bool>(
           context,
@@ -1634,35 +1664,42 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           thread: thread,
           version: version,
         ),
-        screen: (base, surface) => AppScreen(
-          key: ValueKey(base),
-          aid: aid,
-          base: base,
-          api: _api,
-          surface: surface,
-          voice: _s.voice,
-          settings: settings,
-          timings: _s.timings,
-          worker: _runtime.worker.events,
-          onRetry: _runtime.worker.retry,
-          onStop: _runtime.worker.cancelChange,
-          initialThread: thread,
-          initialComment: comment,
-          onReady: (r) {
-            open.ready = true;
-            _onReady(aid, r);
-            _openRoute(aid);
-          },
-          device: _device,
-          build: _build,
-          comments: _comments,
-          notice: _notice,
-          actions: actions.stream,
-          initialAction: action,
-          firstRunHint: _notice != null && !settings.appHintSeen,
-          onHintShown: () => unawaited(_keep((s) => s.appHintSeen = true)),
-          onDictateChanged: (on) =>
-              unawaited(_keep((s) => s.dictateComments = on)),
+        // While an update runs on the app, its page is unloaded behind a
+        // cover (bundles spec §8.4) and loads again afterwards.
+        screen: (base, surface) => ValueListenableBuilder<Set<String>>(
+          valueListenable: _updating,
+          builder: (_, updating, child) =>
+              updating.contains(aid) ? const _UpdatingCover() : child!,
+          child: AppScreen(
+            key: ValueKey(base),
+            aid: aid,
+            base: base,
+            api: _api,
+            surface: surface,
+            voice: _s.voice,
+            settings: settings,
+            timings: _s.timings,
+            worker: _runtime.worker.events,
+            onRetry: _runtime.worker.retry,
+            onStop: _runtime.worker.cancelChange,
+            initialThread: thread,
+            initialComment: comment,
+            onReady: (r) {
+              open.ready = true;
+              _onReady(aid, r);
+              _openRoute(aid);
+            },
+            device: _device,
+            build: _build,
+            comments: _comments,
+            notice: _notice,
+            actions: actions.stream,
+            initialAction: action,
+            firstRunHint: _notice != null && !settings.appHintSeen,
+            onHintShown: () => unawaited(_keep((s) => s.appHintSeen = true)),
+            onDictateChanged: (on) =>
+                unawaited(_keep((s) => s.dictateComments = on)),
+          ),
         ),
       ),
     );
@@ -1948,4 +1985,23 @@ class _Splash extends StatelessWidget {
       ),
     );
   }
+}
+
+/// What an app's screen shows while an update runs on it: no page.
+class _UpdatingCover extends StatelessWidget {
+  const _UpdatingCover();
+
+  @override
+  Widget build(BuildContext context) => const Scaffold(
+    body: Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          CircularProgressIndicator(),
+          SizedBox(height: 16),
+          Text('Updating…'),
+        ],
+      ),
+    ),
+  );
 }
