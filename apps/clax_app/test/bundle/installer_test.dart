@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -177,6 +178,38 @@ void main() {
     expect(e.role, LineageRole.author);
     expect(e.fromBundle, isFalse);
     expect(e.version, 4);
+  });
+
+  test('an install a crash cut short is deleted at start; meanwhile every '
+      'app without an entry counts as from a bundle', () async {
+    final w = await makeBundle(lineage: lineageA);
+    final kept = await me.installer.install(
+      await me.installer.open(
+        (await makeBundle(lineage: 'l_cccccccccccccccccccccccccc')).bytes,
+      ),
+    );
+    final cut = (await me.api.createArtifact(
+      PublishRequest(
+        title: 'Plant log',
+        entries: {
+          'index.html': FileEntry.text(
+            '<p>v1</p>',
+            type: 'text/html; charset=utf-8',
+          ),
+        },
+      ),
+    )).artifact.id;
+    final marker = installMarker(me.store, lineageA)
+      ..parent.createSync(recursive: true)
+      ..writeAsStringSync(
+        jsonEncode({'content_sha256': w.manifest.contentSha256, 'aid': null}),
+      );
+    expect(await fromBundleOf(me.store)(cut), isTrue);
+    expect(await fromBundleOf(me.store)(kept), isTrue);
+    await me.installer.recoverInstalls();
+    expect(marker.existsSync(), isFalse);
+    expect([for (final a in await me.api.listArtifacts()) a.id], [kept]);
+    expect(await fromBundleOf(me.store)('a_other'), isFalse);
   });
 
   test('fromBundleOf reads the entry', () async {

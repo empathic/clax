@@ -253,6 +253,7 @@ void main() {
         },
       ),
     );
+    me.snapshots.writeMeta(aid, me.snapshots.meta(aid)!.copyWith(published: 2));
     me.api.putDoc(aid, 'plants/p9', {'name': 'stray'});
 
     final got = await me.updater.recoverInterrupted();
