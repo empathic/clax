@@ -106,6 +106,61 @@ void main() {
     expect(me.snapshots.has(aid), isFalse);
   });
 
+  test('a failed live migration puts back the person\'s data/users '
+      'documents from its journal, through the migration view', () async {
+    var runs = 0;
+    me.inspector.migrating = (call) async {
+      if (++runs == 1) return; // the check, on the draft: not journaled
+      expect(call.onWrite, isNotNull);
+      await call.onWrite!(
+        const MigrationWrite('data/users/u1/profile', {'v': 1}),
+      );
+      expect(
+        me.snapshots.journalEntries(aid).single.path,
+        'data/users/u1/profile',
+        reason: 'on disk before the write goes ahead',
+      );
+      await call.onWrite!(const MigrationWrite('plants/p1', {'name': 'fern'}));
+      me.api.putDoc(aid, 'plants/p1', {'name': 'FERN'});
+      await call.onWrite!(const MigrationWrite('data/users/u1/extra', null));
+    };
+    me.inspector.answerMigration(const MigrationRun.passed());
+    me.inspector.answerMigration(const MigrationRun.failed('boom'));
+    final out = await me.updater.update(aid, await v2());
+    expect((out as UpdateRolledBack).restored, isTrue);
+    expect(me.inspector.restoreCalls.single.map((w) => w.path), [
+      'data/users/u1/profile',
+      'data/users/u1/extra',
+    ]);
+    expect(await docs(), before);
+    expect(me.snapshots.journalFile(aid).existsSync(), isFalse);
+  });
+
+  test(
+    'a journal replay that fails keeps the snapshot for the person',
+    () async {
+      me.inspector.migrating = (call) async {
+        await call.onWrite?.call(const MigrationWrite('data/users/u1/p', null));
+      };
+      me.inspector.restoring = (_) async =>
+          throw const InspectorError('did not load');
+      me.inspector.answerMigration(const MigrationRun.passed());
+      me.inspector.answerMigration(const MigrationRun.failed('boom'));
+      final out = await me.updater.update(aid, await v2());
+      expect((out as UpdateRolledBack).restored, isFalse);
+      expect(me.snapshots.journalEntries(aid), hasLength(1));
+      expect(me.snapshots.meta(aid)!.failed, isTrue);
+    },
+  );
+
+  test('a journal line cut short by a crash is left out', () async {
+    await me.snapshots.journal(aid, const MigrationWrite('a/1', null));
+    me.snapshots
+        .journalFile(aid)
+        .writeAsStringSync('{"path":"a/2","bef', mode: FileMode.append);
+    expect(me.snapshots.journalEntries(aid).map((w) => w.path), ['a/1']);
+  });
+
   test(
     'a failed rollback keeps the snapshot and refuses further updates',
     () async {

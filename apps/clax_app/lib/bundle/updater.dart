@@ -398,7 +398,12 @@ class Updater {
         (snapshots.meta(aid) ?? meta).copyWith(published: landed.version.n),
       );
       onStep?.call(UpdateStep.liveMigrate);
-      final error = await _migrate(_page(aid), from, m.version);
+      final error = await _migrate(
+        _page(aid),
+        from,
+        m.version,
+        onWrite: (w) => snapshots.journal(aid, w),
+      );
       if (error != null) {
         _dropPending(aid);
         final restored = await _putBack(aid);
@@ -589,6 +594,7 @@ class Updater {
     if (meta == null) return false;
     try {
       await snapshots.restore(aid);
+      await _replayPrivate(aid);
       final d = await api.getArtifact(aid);
       final now = d.artifact.currentVersion;
       if (!force ||
@@ -607,6 +613,27 @@ class Updater {
       }
       return false;
     }
+  }
+
+  /// Puts back the person's private `data/users/` documents the live
+  /// migration wrote, from its journal, through the migration view (the
+  /// token cannot reach them). The owner's documents come back from the
+  /// snapshot; their journal entries are only checked against it.
+  Future<void> _replayPrivate(String aid) async {
+    final writes = snapshots.journalEntries(aid);
+    final kept = {for (final d in await snapshots.read(aid)) d.path: d.data};
+    for (final w in writes) {
+      if (w.path.startsWith('data/users/')) continue;
+      if (!jsonEquals(kept[w.path], w.before)) {
+        _log('the journal of $aid differs from its snapshot at ${w.path}');
+      }
+    }
+    final private = [
+      for (final w in writes)
+        if (w.path.startsWith('data/users/')) w,
+    ];
+    if (private.isEmpty) return;
+    await inspector.restoreWrites(_page(aid), private);
   }
 
   /// Publishes `base`'s files, title, icon and capabilities over [d]'s
@@ -706,14 +733,21 @@ class Updater {
     return null;
   }
 
-  /// Runs `migrate.js` at [url]; the error, or null when it finished.
-  Future<String?> _migrate(Uri url, int from, int to) async {
+  /// Runs `migrate.js` at [url], journaled through [onWrite] when given;
+  /// the error, or null when it finished.
+  Future<String?> _migrate(
+    Uri url,
+    int from,
+    int to, {
+    Future<void> Function(MigrationWrite w)? onWrite,
+  }) async {
     try {
       final run = await inspector.runMigration(
         url,
         from: from,
         to: to,
         total: migrationLimit,
+        onWrite: onWrite,
       );
       return run.ok ? null : (run.error ?? 'the migration failed');
     } on InspectorError catch (e) {
