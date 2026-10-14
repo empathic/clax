@@ -6,6 +6,7 @@ library;
 import '../agent/inspector.dart';
 import '../agent/tools/render_tool.dart' show perTestLimit, testLimit;
 import '../clax/api.dart';
+import '../platform/bundle_key.dart' show keyFingerprint;
 import 'bundle_reader.dart';
 import 'doc_snapshot.dart';
 import 'lineage_store.dart';
@@ -275,7 +276,8 @@ class Updater {
           capabilities: m.capabilities,
           label: 'Update v${m.version}',
           note:
-              'Updated to v${m.version} from ${m.author.name ?? 'its author'}',
+              'Updated to v${m.version} from '
+              '${m.author.name ?? keyFingerprint(m.author.key) ?? 'its author'}',
           entries: {
             ...entries,
             for (final p in _current(live)?.files.keys ?? const <String>[])
