@@ -1,0 +1,27 @@
+[package]
+name = "clax-git"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+# Every file in tests/ is a module of the one integration test binary.
+autotests = false
+description = "Git objects, packs, smart-HTTP client and server, and version storage for Clax artifacts, without I/O of its own"
+
+[lints]
+workspace = true
+
+[dependencies]
+miniz_oxide = "0.9"
+serde_json.workspace = true
+sha1 = "0.10"
+thiserror.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+reqwest.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

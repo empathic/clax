@@ -458,6 +458,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "clax-git"
+version = "0.4.0"
+dependencies = [
+ "axum",
+ "miniz_oxide",
+ "reqwest",
+ "serde_json",
+ "sha1",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "clax-hooks"
 version = "0.4.0"
 dependencies = [
