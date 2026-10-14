@@ -6,9 +6,12 @@
 // may take is free. A seat released for want of input is taken again at the
 // viewer's next input (a press, a key, a pointer move, a scroll) or when the
 // page shows again.
-import type { Artifact, Version } from "../api";
+import type { Artifact, Attention, Version } from "../api";
 import type { Thread, Viewer } from "../threads";
+import type { Loaded, ViewState } from "./artifact-controller";
 import type { PresenceView } from "./presence-model";
+import type { ThreadSync } from "./thread-sync";
+export { default as SpectatorBanner } from "../ui/SpectatorBanner.svelte";
 
 /** How often a visible spectator's page polls the snapshot, in ms. */
 export const SNAPSHOT_POLL_MS = 5000;
@@ -105,4 +108,43 @@ export function watchSnapshots(v: SpectatorView, doc: Document = document): () =
     doc.removeEventListener("visibilitychange", onVisible);
     for (const t of IDLE_INPUTS) doc.removeEventListener(t, onInput, { capture: true });
   };
+}
+
+/** What spectator mode needs of the controller (`ArtifactController`'s own). */
+export type SpectatorHost = {
+  readonly id: string;
+  readonly state: { get(): ViewState };
+  set(patch: Partial<ViewState>): void;
+  readonly threadLoad: ThreadSync;
+  readonly pinnedVersion: number | null;
+  latestKnown: number;
+  loaded(d: Loaded, attention: Attention | null): void;
+  joinLive(): void;
+};
+
+/** Polls `c`'s snapshot while it spectates; the returned function stops. */
+export function spectate(c: SpectatorHost): () => void {
+  return watchSnapshots({
+    id: c.id,
+    me: () => c.state.get().me,
+    code: () => c.state.get().spectator?.code ?? null,
+    takeSnapshot: (snap, joinable) => takeSnapshot(c, snap, joinable),
+    joinLive: () => c.joinLive(),
+  });
+}
+
+/** A spectator's snapshot: its threads, presence and working replace the
+ * view's, and a newer version is swapped in (on a view of the latest) or
+ * offered (on a pinned one). */
+export function takeSnapshot(c: SpectatorHost, snap: Pick<Snapshot, "artifact" | "versions" | "threads" | "presence"> & { viewing?: number }, joinable: boolean): void {
+  const s = c.state.get();
+  const sp = s.spectator;
+  if (!sp || snap.artifact.id !== c.id) return;
+  c.threadLoad.begin()(snap.threads);
+  c.set({ presence: snap.presence, working: snap.artifact.working ?? [], spectator: { ...sp, joinable }, ...typeof snap.viewing === "number" && { viewing: snap.viewing } });
+  const n = snap.artifact.current_version;
+  const data = c.state.get().data;
+  if (n <= c.latestKnown || !data) return;
+  if (c.pinnedVersion === null) c.loaded({ ...data, artifact: snap.artifact, versions: snap.versions }, c.state.get().attention);
+  else { c.latestKnown = n; c.set({ newer: n }); }
 }

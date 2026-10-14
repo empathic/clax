@@ -1,4 +1,3 @@
-import type { PresenceView } from "./view/presence-model";
 import type { Working } from "./view/working-model";
 
 export type Artifact = {
@@ -66,59 +65,11 @@ export async function getArtifact(id: string, init?: RequestInit): Promise<{ art
   return json(await (init ? fetch(`/api/artifacts/${id}`, init) : fetch(`/api/artifacts/${id}`)));
 }
 
-/** The artifact's live drafts (hosted spec §16.4), each with its revision's token; none on failure. */
-export async function getDrafts(id: string): Promise<import("./view/draft-model").DraftView[]> {
-  try {
-    const r = await fetch(`/api/artifacts/${id}/drafts`);
-    const list = r.ok ? (await r.json()).drafts : null;
-    return Array.isArray(list) ? list : [];
-  } catch { return []; }
-}
-
 /** This viewer's attention on every live artifact (with `only`, on that one
  * artifact, or none when it is not live); {} without a viewer, null on failure. */
 export async function getAttention(only?: string): Promise<Record<string, AttentionSummary> | null> {
   try { const r = await fetch(`/api/viewers/me/attention${only ? `?artifact=${only}` : ""}`); return r.ok ? (await r.json()).artifacts : null; } catch { return null; }
 }
-/** Records that this viewer looked at `ids`; answers the viewer's marks on `aid`, or null on failure (the next look writes again). */
-export async function putLooked(aid: string, ids: string[]): Promise<Record<string, string> | null> {
-  try {
-    const r = await fetch("/api/viewers/me/looked", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ artifact_id: aid, thread_ids: ids }) });
-    return r.ok ? (await r.json()).looked : null;
-  } catch { return null; }
-}
-
-/** Raises this viewer's version seen mark on `aid` to `n`; a failure is ignored (the next load writes again). */
-export async function putSeen(aid: string, n: number): Promise<void> {
-  try {
-    await fetch("/api/viewers/me/seen", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ artifact_id: aid, version: n }) });
-  } catch { /* the next load writes again */ }
-}
-
-/** Reports this viewer here or away on `aid` from tab `tab`, with where they look; answers
- * the artifact's presence, or null on failure (the next report writes again). */
-export async function putPresence(aid: string, state: "here" | "away", where: string | null, tab: string, keepalive = false): Promise<Presence | null> {
-  try {
-    const r = await fetch("/api/viewers/me/presence", { method: "PUT", keepalive, headers: { "content-type": "application/json" }, body: JSON.stringify({ artifact_id: aid, state, tab, ...where && { where } }) });
-    return r.ok ? presenceOf(await r.json()) : null;
-  } catch { return null; }
-}
-/** The artifact's presence, or null on failure. */
-export async function getPresence(aid: string): Promise<Presence | null> {
-  try {
-    const r = await fetch(`/api/artifacts/${aid}/presence`);
-    return r.ok ? presenceOf(await r.json()) : null;
-  } catch { return null; }
-}
-/** An artifact's presence: the people listed (seated ones, spectators never,
- * spec 2026-10-11-clax-dev-hosted-design §16.3) and how many are viewing,
- * spectators included (null when the daemon does not say). */
-export type Presence = { people: PresenceView[]; viewing: number | null };
-function presenceOf(v: { people?: unknown; viewing?: unknown }): Presence | null {
-  if (!Array.isArray(v.people)) return null;
-  return { people: v.people as PresenceView[], viewing: typeof v.viewing === "number" ? v.viewing : null };
-}
-
 let tokenPromise: Promise<string | null> | null = null;
 const tokenHeard = new Set<() => void>();
 let tokenFailed = false;
@@ -155,16 +106,6 @@ export async function deleteArtifact(id: string, token: string): Promise<void> {
 export type SampleLimits = { maxPromptBytes: number; images?: { maxCount: number; maxInputBytes: number; mediaTypes: string[] }; tools?: { maxCount: number } };
 /** `GET /api/artifacts/<id>/sample` with the token: whether this daemon samples for the artifact, and today's count. */
 export type SampleStatus = { available: boolean; provider: string | null; limits: SampleLimits; calls_today: number; daily_call_cap: number | null };
-
-/** The artifact's sample status as the owner's browser sees it, or null when it cannot be read. */
-export async function getSampleStatus(id: string, token: string): Promise<SampleStatus | null> {
-  try {
-    const res = await fetch(`/api/artifacts/${id}/sample`, { headers: { authorization: `Bearer ${token}` } });
-    return res.ok ? ((await res.json()) as SampleStatus) : null;
-  } catch {
-    return null;
-  }
-}
 
 // Agent questions and the owner's inbox (spec
 // 2026-10-06-agent-questions-and-inbox §5, §7.6, §8; docs/contract.md "Agent

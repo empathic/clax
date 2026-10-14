@@ -174,11 +174,6 @@ input, select { line-height: 1.2; }
 .viewer { position: relative; flex: 1; min-height: 0; display: flex; }
 .banner { position: absolute; left: 50%; transform: translateX(-50%); top: 12px; max-width: calc(100% - 32px); background: var(--raised); border: 1px solid var(--border-hover); border-radius: var(--radius); padding: 8px 8px 8px 14px; display: flex; gap: 10px; align-items: center; box-shadow: var(--elev-lg); }
 .banner.notice { top: 56px; background: var(--danger-tint); border-color: var(--danger); }
-/* A spectator's banner (spec 2026-10-11-clax-dev-hosted-design §16.1): read-only, beyond the live seats. */
-/* In the stage's foot (.stage-foot), so the top of the page it covers stays readable. */
-.banner.spectate { font-size: 13px; }
-.banner.spectate span { min-width: 0; }
-@media (max-width: 480px) { .stage-foot > .banner.spectate { align-self: stretch; } }
 .muted { color: var(--muted); }
 .stage { position: relative; flex: 1; min-width: 0; min-height: 0; }
 /* The sidebar's box, which holds its width from the first paint; the rest of
