@@ -76,7 +76,7 @@ pub(crate) fn content_policy(
             };
             format!(
                 "{frame}; {}",
-                load_policy(&loadable, &files, &blob_sources(host, own, &port))
+                load_policy(&loadable, &files, &blob_sources(host, own, &port, id))
             )
         }
         None => frame,
@@ -85,8 +85,8 @@ pub(crate) fn content_policy(
 }
 
 /// What an artifact's page may load: its own files and the bridge (`own`,
-/// source expressions), assets under `/_blob/` on the daemon's hosts
-/// (`blobs`), and `data:` and `blob:` URLs. It fetches (`fetch`, XHR,
+/// source expressions), its own assets under `/_blob/<id>/` on the daemon's
+/// hosts (`blobs`), and `data:` and `blob:` URLs. It fetches (`fetch`, XHR,
 /// WebSocket, EventSource, beacons, JSON modules) only its own files
 /// (`files`) and assets: the network is the `net` capability's, through the
 /// shell. No plugins, base URL or form posts. Inline and evaluated scripts
@@ -100,10 +100,10 @@ fn load_policy(own: &str, files: &str, blobs: &str) -> String {
     )
 }
 
-/// `/_blob/` on each host an asset URL may name: the request's (when plain),
-/// the daemon's browser base, and `localhost` and `127.0.0.1` on the
-/// request's port.
-fn blob_sources(host: &str, own: &str, port: &str) -> String {
+/// The artifact's own assets, `/_blob/<id>/`, on each host an asset URL may
+/// name: the request's (when plain), the daemon's browser base, and
+/// `localhost` and `127.0.0.1` on the request's port.
+fn blob_sources(host: &str, own: &str, port: &str, id: &str) -> String {
     let mut hosts: Vec<String> = Vec::new();
     for h in [
         host.to_string(),
@@ -117,7 +117,7 @@ fn blob_sources(host: &str, own: &str, port: &str) -> String {
     }
     hosts
         .iter()
-        .map(|h| format!("http://{h}/_blob/"))
+        .map(|h| format!("http://{h}/_blob/{id}/"))
         .collect::<Vec<_>>()
         .join(" ")
 }

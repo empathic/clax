@@ -95,7 +95,11 @@ pub async fn upload(
                 Ok(vis.filter_assets(std::slice::from_ref(&asset)).remove(0))
             })
             .await?;
-        let url = format!("/_blob/{}", asset["id"].as_str().unwrap_or_default());
+        let url = format!(
+            "/_blob/{}/{}",
+            asset["artifact_id"].as_str().unwrap_or_default(),
+            asset["id"].as_str().unwrap_or_default()
+        );
         return Ok((
             StatusCode::CREATED,
             Json(json!({"asset": asset, "url": url})),
@@ -146,10 +150,13 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// The asset's bytes. An asset of a live page answers 404 to a caller that
-/// may not see live pages ([`SeesLive`]), as a missing one does. Sent with
-/// `Referrer-Policy: no-referrer`: an asset opened as a document names no
-/// asset ID to what it loads.
+/// `/_blob/<asset ID>`: the asset's bytes, for the owner's surfaces and
+/// links opened on their own. An app page's policy names only its own
+/// artifact's prefix ([`scoped_blob`]), so a page cannot load this. An asset
+/// of a live page answers 404 to a caller that may not see live pages
+/// ([`SeesLive`]), as a missing one does. Sent with `Referrer-Policy:
+/// no-referrer`: an asset opened as a document names no asset ID to what it
+/// loads.
 pub async fn blob(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -159,10 +166,52 @@ pub async fn blob(
     // An asset's bytes serve browsers (spec §7.5): agents read through the routes the filter covers.
     d.refuse_agents()?;
     let asset_id = path(asset_id)?;
+    let (asset, file) = find_blob(&s, asset_id, None).await?;
+    sees.check(&s.live_ids, &asset.artifact_id)?;
+    send_blob(asset, file).await
+}
+
+/// `/_blob/<artifact ID>/<asset ID>`: an asset's bytes under the artifact
+/// that owns it, the URL pages are given. Another artifact's asset answers
+/// 404, as a missing one does, so the artifact's content policy, which
+/// names only this prefix, keeps a page to its own assets. On an artifact's
+/// origin `/_blob/<asset ID>` is this route for that artifact
+/// (`host::rewrite_artifact_host`).
+pub async fn scoped_blob(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    sees: SeesLive,
+    params: Result<Path<(String, String)>, PathRejection>,
+) -> Result<Response, ApiError> {
+    // As `blob`: an asset's bytes serve browsers (spec §7.5).
+    d.refuse_agents()?;
+    let (aid, asset_id) = path(params)?;
+    let id = parse_id(&aid)?;
+    let (asset, file) = find_blob(&s, asset_id, Some(id)).await?;
+    sees.check(&s.live_ids, &asset.artifact_id)?;
+    send_blob(asset, file).await
+}
+
+/// The asset and its file; `NotFound` when it is missing or, with `owner`,
+/// another artifact's.
+async fn find_blob(
+    s: &AppState,
+    asset_id: String,
+    owner: Option<clax_core::ArtifactId>,
+) -> Result<(clax_core::model::Asset, std::path::PathBuf), ApiError> {
     let (asset, path) = s
         .store_call(move |st| st.get_asset(&asset_id)?.ok_or(CoreError::NotFound))
         .await?;
-    sees.check(&s.live_ids, &asset.artifact_id)?;
+    if owner.is_some_and(|o| o.as_str() != asset.artifact_id) {
+        return Err(ApiError::not_found());
+    }
+    Ok((asset, path))
+}
+
+async fn send_blob(
+    asset: clax_core::model::Asset,
+    path: std::path::PathBuf,
+) -> Result<Response, ApiError> {
     let file = tokio::fs::File::open(&path)
         .await
         .map_err(|_| ApiError::not_found())?;

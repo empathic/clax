@@ -256,8 +256,12 @@ async fn an_artifacts_content_loads_only_its_own_files_and_connects_nowhere() {
                     "{csp}"
                 );
             }
-            assert!(d["default-src"].contains(&format!("http://localhost:{port}/_blob/")));
-            assert!(d["default-src"].contains(&format!("http://127.0.0.1:{port}/_blob/")));
+            assert!(d["default-src"].contains(&format!("http://localhost:{port}/_blob/{id}/")));
+            assert!(d["default-src"].contains(&format!("http://127.0.0.1:{port}/_blob/{id}/")));
+            assert!(
+                !d["default-src"].iter().any(|s| s.ends_with("/_blob/")),
+                "{csp}"
+            );
             assert!(d["default-src"].contains(&"data:".to_string()));
             assert!(d["default-src"].contains(&"blob:".to_string()));
             // It fetches its own files and assets, never the API.
@@ -267,7 +271,9 @@ async fn an_artifacts_content_loads_only_its_own_files_and_connects_nowhere() {
                 "{csp}"
             );
             assert!(
-                d["connect-src"][1..].iter().all(|s| s.ends_with("/_blob/")),
+                d["connect-src"][1..]
+                    .iter()
+                    .all(|s| s.ends_with(&format!("/_blob/{id}/"))),
                 "{csp}"
             );
             assert_eq!(d["object-src"], ["'none'"]);
@@ -293,7 +299,9 @@ async fn an_artifacts_content_loads_only_its_own_files_and_connects_nowhere() {
             );
             assert_eq!(d["connect-src"][0], "'self'", "{csp}");
             assert!(
-                d["connect-src"][1..].iter().all(|s| s.ends_with("/_blob/")),
+                d["connect-src"][1..]
+                    .iter()
+                    .all(|s| s.ends_with(&format!("/_blob/{id}/"))),
                 "{csp}"
             );
             assert_eq!(d["form-action"], ["'none'"], "{csp}");

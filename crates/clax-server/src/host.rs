@@ -46,8 +46,11 @@ fn content_path(path: &str) -> Option<Option<ArtifactId>> {
     Some(ArtifactId::parse(id).ok())
 }
 
-/// On an artifact host: `/healthz`, `/_clax/*` and `/_blob/*` pass through, `/v/*` is
-/// rewritten to `/c/<id>/v/*`, everything else is a JSON 404; other hosts are untouched.
+/// On an artifact host: `/healthz` and `/_clax/*` pass through, `/v/*` is
+/// rewritten to `/c/<id>/v/*`, `/_blob/<asset>` (or `/_blob/<id>/<asset>`)
+/// to `/_blob/<id>/<asset>`, which serves only the artifact's own assets
+/// (a `/_blob/<other ID>/<asset>` becomes a path that matches no asset), and
+/// everything else is a JSON 404; other hosts are untouched.
 ///
 /// Every response on an artifact host, and every response under `/c/` on any
 /// host, carries the artifact's content policy (`content_policy` with its
@@ -76,20 +79,29 @@ pub async fn rewrite_artifact_host(
             .query()
             .map(|q| format!("?{q}"))
             .unwrap_or_default();
-        let new_path =
-            if path == "/healthz" || path.starts_with("/_clax/") || path.starts_with("/_blob/") {
-                path
-            } else if path.starts_with("/v/") {
-                format!("/c/{}{}", id.as_str(), path)
-            } else {
-                return locked(
-                    ApiError::not_found().into_response(),
-                    true,
-                    req.headers(),
-                    &own_host(&s),
-                    Some(&id),
-                );
-            };
+        let blob = path.strip_prefix("/_blob/").map(|rest| {
+            // The artifact's own assets only: `/_blob/<asset>` and
+            // `/_blob/<this ID>/<asset>` both name this artifact's.
+            let asset = rest
+                .strip_prefix(&format!("{}/", id.as_str()))
+                .unwrap_or(rest);
+            format!("/_blob/{}/{asset}", id.as_str())
+        });
+        let new_path = if let Some(blob) = blob {
+            blob
+        } else if path == "/healthz" || path.starts_with("/_clax/") {
+            path
+        } else if path.starts_with("/v/") {
+            format!("/c/{}{}", id.as_str(), path)
+        } else {
+            return locked(
+                ApiError::not_found().into_response(),
+                true,
+                req.headers(),
+                &own_host(&s),
+                Some(&id),
+            );
+        };
         let uri: Uri = format!("{new_path}{query}")
             .parse()
             .expect("rewritten uri is valid");

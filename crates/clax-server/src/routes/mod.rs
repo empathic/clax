@@ -465,6 +465,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .merge(shell_routes)
         .route("/_blob/{asset_id}", get(assets::blob))
         .route("/connect/b/{code}", get(connect::browser_link))
+        .route("/_blob/{aid}/{asset_id}", get(assets::scoped_blob))
         .route("/c/{aid}/v/{n}", get(content::redirect_to_slash))
         .route("/c/{aid}/v/{n}/", get(content::index))
         .route("/c/{aid}/v/{n}/{*path}", get(content::file))
@@ -731,6 +732,7 @@ mod l10 {
         ("shell::static_file", NoArtifact),
         ("health::healthz", NoArtifact),
         ("assets::blob", SeesLive),
+        ("assets::scoped_blob", SeesLive),
         ("perf::calibrate", Token),
         ("perf::verify_times", Token),
         ("toolpath::export", Owner),
@@ -1808,6 +1810,7 @@ mod agents {
         "grants::create_invite",
         "grants::revoke_invite",
         "assets::blob",
+        "assets::scoped_blob",
         "content::index",
         "content::file",
         "shell::artifact_page",

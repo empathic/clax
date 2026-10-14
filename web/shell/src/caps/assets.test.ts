@@ -17,10 +17,10 @@ describe("assets in the shell", () => {
       box.sent = init.body as FormData;
       box.url = url;
       expect((init.headers as Record<string, string>).authorization).toBe("Bearer tok");
-      return new Response(JSON.stringify({ asset: ASSET, url: `/_blob/${ASSET.id}` }), { status: 201 });
+      return new Response(JSON.stringify({ asset: ASSET, url: `/_blob/7q3k9mzx2b4t/${ASSET.id}` }), { status: 201 });
     }));
     const r = await assetsHandler(env, null as never).call("upload", [{ blob: new Blob(["abc"]), type: "image/png" }]);
-    expect(r).toEqual({ id: ASSET.id, url: `/_blob/${ASSET.id}`, sizeBytes: 3, contentType: "image/png" });
+    expect(r).toEqual({ id: ASSET.id, url: `/_blob/7q3k9mzx2b4t/${ASSET.id}`, sizeBytes: 3, contentType: "image/png" });
     expect((box.sent!.get("file") as Blob).type).toBe("image/png");
     expect(box.url).toBe("/api/artifacts/7q3k9mzx2b4t/assets");
   });
@@ -67,7 +67,7 @@ describe("assets in the shell", () => {
   it("accepts every type in the contract's set", async () => {
     vi.stubGlobal("fetch", vi.fn(async (_u: string, init: RequestInit) => {
       const f = (init.body as FormData).get("file") as Blob;
-      return new Response(JSON.stringify({ asset: { ...ASSET, content_type: f.type }, url: `/_blob/${ASSET.id}` }), { status: 201 });
+      return new Response(JSON.stringify({ asset: { ...ASSET, content_type: f.type }, url: `/_blob/7q3k9mzx2b4t/${ASSET.id}` }), { status: 201 });
     }));
     const h = assetsHandler(env, null as never);
     const body: Record<string, string> = { "image/svg+xml": "<?xml version=\"1.0\"?>\n<!-- x --><svg xmlns=\"http://www.w3.org/2000/svg\"/>", "text/markdown": "<!-- stored as given -->\n# hi", "text/plain": "﻿hello" };
@@ -85,7 +85,7 @@ describe("assets in the shell", () => {
     }));
     const h = assetsHandler(env, null as never);
     const l = (await h.call("list", [])) as { assets: unknown[]; usage: Record<string, number> };
-    expect(l.assets).toEqual([{ id: ASSET.id, url: `/_blob/${ASSET.id}`, contentType: "image/png", sizeBytes: 3, createdAt: ASSET.created_at }]);
+    expect(l.assets).toEqual([{ id: ASSET.id, url: `/_blob/7q3k9mzx2b4t/${ASSET.id}`, contentType: "image/png", sizeBytes: 3, createdAt: ASSET.created_at }]);
     expect(l.usage).toMatchObject({ files: 1, bytes: 3 });
     expect(await h.call("delete", [ASSET.id])).toEqual({ deleted: false });
     vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 204 })));
