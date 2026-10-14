@@ -6,7 +6,9 @@
 //! It never widens what a read may see: the reader still has to declare the
 //! read, and the routes judge it at `view` with no viewer identity. Deleting
 //! either artifact removes its rows (a trigger on the soft delete, and the
-//! foreign keys on a row delete).
+//! foreign keys on a row delete), and a publish or metadata change that drops
+//! a source from the reader's `db.read` removes that pair's row, so declaring
+//! the read again asks the owner again.
 
 use super::Store;
 use super::docs::caps_in;
@@ -64,6 +66,37 @@ fn check_pair(c: &Connection, reader: &ArtifactId, source: &ArtifactId) -> Resul
 }
 
 impl Store {
+    /// Inside a write that sets `reader`'s declaration to `caps`, removes
+    /// the owner's grants to `reader` for every source `caps` does not list
+    /// in `db.read` (all of them when `caps` does not parse). Each removal is
+    /// recorded as a revoke under `audit`, as [`Store::revoke_read`] does.
+    pub(super) fn drop_undeclared_grants(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        audit: &AuditCtx,
+        reader: &ArtifactId,
+        caps: &serde_json::Value,
+    ) -> Result<()> {
+        let reads = ReadDecl::from_capabilities(caps, reader.as_str())
+            .map(|d| d.reads)
+            .unwrap_or_default();
+        let sources: Vec<String> = {
+            let mut stmt =
+                tx.prepare("SELECT source_id FROM db_read_grants WHERE reader_id = ?1")?;
+            let rows = stmt.query_map(params![reader.as_str()], |r| r.get(0))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        for source in sources.iter().filter(|s| !reads.contains(s)) {
+            tx.execute(
+                "DELETE FROM db_read_grants WHERE reader_id = ?1 AND source_id = ?2",
+                params![reader.as_str(), source],
+            )?;
+            let source = ArtifactId::parse(source)?;
+            self.record_audit(tx, audit, grant_record(reader, &source, "revoke"))?;
+        }
+        Ok(())
+    }
+
     /// Lets `reader` read `source`'s documents, once it declares the read.
     /// Granting again changes nothing. A new grant is recorded as
     /// `artifact.update` of `reader` under `audit`.
@@ -248,14 +281,72 @@ mod tests {
 
         st.grant_read(DAEMON, &a, &b).unwrap();
         set_caps(&st, &a, json!({"db": {}}));
+        assert_eq!(st.may_read(&a, &b).unwrap(), ReadAccess::NotDeclared);
+        assert_eq!(grant_rows(&st), 0, "dropping the read drops its grant");
+        set_caps(&st, &a, json!({"db": {"read": [b.as_str()]}}));
         assert_eq!(
             st.may_read(&a, &b).unwrap(),
-            ReadAccess::NotDeclared,
-            "a grant alone reads nothing once the declaration goes"
+            ReadAccess::NotGranted,
+            "declaring the read again asks the owner again"
         );
-        assert_eq!(grant_rows(&st), 1, "updating an artifact keeps its grants");
-        set_caps(&st, &a, json!({"db": {"read": [b.as_str()]}}));
-        assert_eq!(st.may_read(&a, &b).unwrap(), ReadAccess::Granted);
+    }
+
+    #[test]
+    fn a_publish_that_drops_a_source_drops_only_that_grant() {
+        let (_d, st) = store();
+        let b = artifact_with_caps(&st, json!({"db": {}}));
+        let c = artifact_with_caps(&st, json!({"db": {}}));
+        let a = artifact_with_caps(&st, json!({"db": {"read": [b.as_str(), c.as_str()]}}));
+        st.grant_read(DAEMON, &a, &b).unwrap();
+        st.grant_read(DAEMON, &a, &c).unwrap();
+        st.grant_read(DAEMON, &c, &b).unwrap();
+        let publish = |caps: Option<Value>| {
+            let cur = st.get_artifact(&a).unwrap().unwrap().current_version;
+            let mut req = json!({
+                "if_version": cur,
+                "files": {"index.html": {"content": "<main>2</main>", "encoding": "utf8"}}
+            });
+            if let Some(caps) = caps {
+                req["capabilities"] = caps;
+            }
+            let req: crate::publish::PublishRequest = serde_json::from_value(req).unwrap();
+            st.publish_version(DAEMON, &a, crate::publish::validate(req).unwrap(), None)
+                .unwrap();
+        };
+        publish(None);
+        assert_eq!(
+            grant_rows(&st),
+            3,
+            "a publish keeping the declaration keeps the grants"
+        );
+
+        publish(Some(json!({"db": {"read": [c.as_str()]}})));
+        let left: Vec<String> = st
+            .grants_of(&a)
+            .unwrap()
+            .into_iter()
+            .map(|g| g.source_id)
+            .collect();
+        assert_eq!(left, vec![c.to_string()]);
+        assert_eq!(
+            st.grants_of(&c).unwrap().len(),
+            1,
+            "another reader's grant stays"
+        );
+        assert_eq!(st.may_read(&a, &c).unwrap(), ReadAccess::Granted);
+
+        let revokes: i64 = st
+            .with_read(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM audit_events WHERE kind = 'artifact.update'
+                     AND artifact_id = ?1 AND artifact2_id = ?2
+                     AND json_extract(body, '$.fields.db_read_grants.revoke') = ?2",
+                    params![a.as_str(), b.as_str()],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(revokes, 1, "the dropped grant is audited as a revoke");
     }
 
     #[test]
