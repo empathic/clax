@@ -647,6 +647,7 @@ impl Drop for DiesLoudly {
 }
 
 /// The running appender thread.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct JournalHandle {
     stop: Arc<std::sync::atomic::AtomicBool>,
     wake: Arc<AuditWake>,
@@ -655,6 +656,7 @@ pub struct JournalHandle {
     ended: tokio::sync::oneshot::Receiver<()>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl JournalHandle {
     /// Stops the appender and waits for it to close its segment, however
     /// long that takes (tests).
@@ -689,6 +691,7 @@ impl JournalHandle {
 ///
 /// # Errors
 /// The thread could not be spawned.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn spawn_appender(
     appender: Appender,
     rx: Receiver<()>,
@@ -721,6 +724,7 @@ pub fn spawn_appender(
 }
 
 /// What starting the journal needs from the daemon.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct JournalStart {
     pub store: Arc<clax_store::Store>,
     /// The journal directory (`<home>/toolpath/journal`).
@@ -735,6 +739,7 @@ pub struct JournalStart {
 /// when the journal is off or the table is unreadable, or when `config` is
 /// invalid (the status then says why). Recording goes on either way, and a
 /// later start catches the journal up.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn start_journal(
     start: JournalStart,
     config: clax_core::Result<clax_core::config::ToolpathConfig>,

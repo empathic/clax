@@ -8,13 +8,13 @@
 use super::provider::{Block, ProviderEvent, ProviderRequest, Role, Stop, Turn};
 use super::request::{Prepared, Tier, Verb};
 use super::{Sampler, ToolOutput, json_reply};
+use clax_rt::AbortHandle;
 use futures::{Stream, StreamExt};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
-use tokio::task::AbortHandle;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Done {
@@ -277,7 +277,7 @@ pub async fn drive(
                 }
                 let limit = sampler.settings.tool_timeout;
                 let outputs = futures::future::join_all(waits.into_iter().map(|rx| async move {
-                    match tokio::time::timeout(limit, rx).await {
+                    match clax_rt::time::timeout(limit, rx).await {
                         Ok(Ok(o)) => o,
                         _ => ToolOutput {
                             content: format!(

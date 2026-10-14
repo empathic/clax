@@ -476,7 +476,7 @@ pub async fn tool_call_ids(
         ));
     };
     let report = Arc::new(report);
-    let deadline = tokio::time::Instant::now() + s.call_ids.grace;
+    let deadline = clax_rt::time::Instant::now() + s.call_ids.grace;
     let wake = s.call_ids.watch(&sid);
     let looking = s
         .call_ids
@@ -494,7 +494,7 @@ pub async fn tool_call_ids(
         let scan = s
             .store_call(move |st| st.scan_tool_call_id(&id, &r, arrival))
             .await?;
-        if scan != CallIdScan::None || tokio::time::Instant::now() >= deadline {
+        if scan != CallIdScan::None || clax_rt::time::Instant::now() >= deadline {
             break;
         }
         if parked.is_none() {
@@ -503,7 +503,7 @@ pub async fn tool_call_ids(
                 break;
             }
         }
-        if tokio::time::timeout_at(deadline, recorded).await.is_err() {
+        if clax_rt::time::timeout_at(deadline, recorded).await.is_err() {
             break;
         }
     }

@@ -85,7 +85,7 @@ pub fn announce_ids(s: &AppState, st: &Store, ids: &[String]) {
 /// poll let go (or from creation, when none has held it).
 pub fn start_grace(s: AppState, qid: String) {
     let generation = s.questions.arm(&qid);
-    tokio::spawn(async move {
+    clax_rt::spawn(async move {
         s.question_sleeper.sleep(s.question_grace).await;
         if !s.questions.due(&qid, generation) {
             return;

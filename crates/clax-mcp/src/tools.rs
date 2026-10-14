@@ -655,7 +655,12 @@ pub fn thread_summary(t: &Value) -> Value {
 }
 
 async fn read_local(path: &Path) -> Result<Vec<u8>, CallToolResult> {
-    tokio::fs::read(path).await.map_err(|e| {
+    #[cfg(not(target_arch = "wasm32"))]
+    let read = tokio::fs::read(path).await;
+    // A Worker has no files of the agent's to read.
+    #[cfg(target_arch = "wasm32")]
+    let read: std::io::Result<Vec<u8>> = Err(std::io::ErrorKind::Unsupported.into());
+    read.map_err(|e| {
         render::error(
             "file_unreadable",
             format!("cannot read {}: {e}", path.display()),
@@ -805,7 +810,7 @@ struct CallGuard<'a> {
 
 impl Drop for CallGuard<'_> {
     fn drop(&mut self) {
-        if tokio::runtime::Handle::try_current().is_ok() {
+        if clax_rt::in_runtime() {
             self.tools.report_call(&self.call, self.outcome);
         }
     }
@@ -896,7 +901,7 @@ impl ClaxTools {
     fn report_call(&self, call: &crate::calls::CallScope, outcome: clax_core::audit::ToolOutcome) {
         let report = call.report(outcome);
         let client = self.client.clone();
-        self.reports.push(tokio::spawn(async move {
+        self.reports.push(clax_rt::spawn(async move {
             if let Err(e) = client.report_tool_call(&report).await {
                 tracing::debug!(error = %e, tool = %report.tool, "tool-call report not recorded");
             }
@@ -1335,7 +1340,7 @@ impl ClaxTools {
         let opened = match program {
             Some(program) => {
                 let (url, wait) = (url.clone(), self.open_wait);
-                tokio::task::spawn_blocking(move || run_opener(&program, &url, wait))
+                clax_rt::spawn_blocking(move || run_opener(&program, &url, wait))
                     .await
                     .unwrap_or(false)
             }

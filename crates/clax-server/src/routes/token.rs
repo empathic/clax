@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    extract::{ConnectInfo, State},
+    extract::State,
     http::{HeaderMap, header},
     response::{IntoResponse, Response},
 };
@@ -27,7 +27,7 @@ use clax_store::viewers::Claim;
 pub async fn token(
     State(s): State<AppState>,
     _d: clax_http::agent::DeniedToGrants,
-    ConnectInfo(Conn { peer: addr, .. }): ConnectInfo<Conn>,
+    clax_http::auth::PeerConn(Conn { peer: addr, .. }): clax_http::auth::PeerConn,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let host = headers

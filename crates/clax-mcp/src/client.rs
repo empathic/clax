@@ -7,10 +7,13 @@ use crate::git::GitCapture;
 use clax_core::RegisterSession;
 use clax_core::audit::ToolCallReport;
 use clax_core::model::Session;
+#[cfg(not(target_arch = "wasm32"))]
 use clax_core::remote::{
-    MAX_RESPONSE_BYTES, Next, Remote, Retry, SESSION_SECRET_HEADER, Seeker, SessionCredential,
-    SessionKey, clock_skew_message, keys_of_row, path_and_query, prepare_headers, refusal_message,
-    sign_headers,
+    MAX_RESPONSE_BYTES, Next, Retry, clock_skew_message, path_and_query, prepare_headers,
+    refusal_message, sign_headers,
+};
+use clax_core::remote::{
+    Remote, SESSION_SECRET_HEADER, Seeker, SessionCredential, SessionKey, keys_of_row,
 };
 use clax_core::secret::Secret;
 use serde_json::{Value, json};
@@ -28,6 +31,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Deadline for publishes and asset uploads.
 const PUBLISH_TIMEOUT: Duration = Duration::from_secs(120);
 /// Deadline for establishing a connection; a live daemon on loopback accepts at once.
+#[cfg(not(target_arch = "wasm32"))]
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 /// Deadline for a tool-call report, sent in the background.
 const REPORT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -187,6 +191,12 @@ impl Conn<'_> {
         let mut req = self
             .http
             .request(method, format!("{}{path}", self.endpoint.base));
+        // The Worker's client has no deadline of its own; a request that
+        // sets one later (a publish) replaces this.
+        #[cfg(target_arch = "wasm32")]
+        {
+            req = req.timeout(REQUEST_TIMEOUT);
+        }
         if !self.remote {
             req = req.bearer_auth(&self.endpoint.token);
         }
@@ -244,6 +254,7 @@ struct Failure {
 
 /// The client every request goes out on. It follows no redirect: a
 /// signed request and its body never go to a URL a daemon names.
+#[cfg(not(target_arch = "wasm32"))]
 fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .no_proxy()
@@ -252,6 +263,14 @@ fn http_client() -> reqwest::Client {
         .timeout(REQUEST_TIMEOUT)
         .build()
         .expect("reqwest client builds with static settings")
+}
+
+/// The Worker's client: its `fetch` has no proxy, connect timeout or
+/// redirect policy to set (it follows redirects), and the deadline is set
+/// on each request ([`Conn::request`]).
+#[cfg(target_arch = "wasm32")]
+fn http_client() -> reqwest::Client {
+    reqwest::Client::new()
 }
 
 impl DaemonClient {
@@ -507,7 +526,7 @@ impl DaemonClient {
             let cwd = Some(m.registration.cwd.as_str()).filter(|c| !c.is_empty());
             g.start(cwd)
         });
-        let endpoint = tokio::task::spawn_blocking(move || refresh())
+        let endpoint = clax_rt::spawn_blocking(move || refresh())
             .await
             .map_err(|e| ClientError::Unreachable(format!("daemon discovery failed: {e}")))?
             .map_err(|e| ClientError::Unreachable(format!("{e:#}")))?;
@@ -808,6 +827,7 @@ impl DaemonClient {
         bytes: Vec<u8>,
     ) -> Result<Value> {
         let bytes = bytes::Bytes::from(bytes);
+        #[cfg(not(target_arch = "wasm32"))]
         let len = bytes.len() as u64;
         // Validated once up front so that building the part per attempt cannot fail.
         reqwest::multipart::Part::bytes(Vec::new())
@@ -833,7 +853,12 @@ impl DaemonClient {
                     .header(reqwest::header::CONTENT_TYPE, ct)
                     .body(body.clone()),
                 None => {
-                    let part = reqwest::multipart::Part::stream_with_length(bytes.clone(), len)
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let part = reqwest::multipart::Part::stream_with_length(bytes.clone(), len);
+                    // `fetch` takes the form whole: there is no length to stream with.
+                    #[cfg(target_arch = "wasm32")]
+                    let part = reqwest::multipart::Part::bytes(bytes.to_vec());
+                    let part = part
                         .file_name(filename.to_string())
                         .mime_str(content_type)
                         .expect("content type validated above");
@@ -1598,6 +1623,7 @@ fn multipart_bytes(filename: &str, content_type: &str, bytes: &[u8]) -> (String,
 /// spaces and tabs, and is signed anew. [`Retry`] decides on
 /// `stale_request`, `limit_reached` and `busy`; every other answer is read
 /// whole, at most [`MAX_RESPONSE_BYTES`], and [`check`]ed as a local one is.
+#[cfg(not(target_arch = "wasm32"))]
 async fn attempt_signed(
     remote: &Remote,
     req: reqwest::RequestBuilder,
@@ -1681,7 +1707,7 @@ async fn attempt_signed(
             clax_core::remote::jitter(),
         ) {
             Next::Resign => {}
-            Next::After(d) => tokio::time::sleep(d).await,
+            Next::After(d) => clax_rt::time::sleep(d).await,
             Next::ClockSkew(o) => return Err(given_up("clock_skew", clock_skew_message(o))),
             Next::GiveUp => {
                 return Err(given_up(&code, refusal_message(&code, &message, signer)));
@@ -1690,7 +1716,24 @@ async fn attempt_signed(
     }
 }
 
+/// A Worker's tool set reaches no remote daemon: connecting to one with a
+/// grant (`clax connect`) is a native client's. Refused without a request.
+#[cfg(target_arch = "wasm32")]
+async fn attempt_signed(
+    remote: &Remote,
+    _req: reqwest::RequestBuilder,
+) -> std::result::Result<reqwest::Response, Failure> {
+    Err(Failure {
+        error: ClientError::Unreachable(format!(
+            "the remote Clax at {} is reached from a native client only",
+            remote.signer.base()
+        )),
+        refreshable: false,
+    })
+}
+
 /// The body of `res`, at most [`MAX_RESPONSE_BYTES`].
+#[cfg(not(target_arch = "wasm32"))]
 async fn capped_body(mut res: reqwest::Response) -> std::result::Result<bytes::Bytes, Failure> {
     let too_big = || Failure {
         error: ClientError::BadResponse(format!(
@@ -1762,7 +1805,12 @@ fn session_of(mut res: Value) -> Result<Session> {
 /// anything else (such as a connection dropped mid-request) is `Unreachable`
 /// but not retried, since the request may have taken effect.
 fn transport_error(e: reqwest::Error) -> Failure {
-    if e.is_connect() {
+    // `fetch` does not say whether the connection failed.
+    #[cfg(not(target_arch = "wasm32"))]
+    let connect = e.is_connect();
+    #[cfg(target_arch = "wasm32")]
+    let connect = false;
+    if connect {
         Failure {
             error: ClientError::Unreachable(e.to_string()),
             refreshable: true,

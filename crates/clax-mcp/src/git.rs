@@ -76,9 +76,7 @@ impl GitCapture {
         let cwd = PathBuf::from(cwd);
         // The deadline starts now: a wait for the version counts against it.
         let deadline = std::time::Instant::now() + self.deadline;
-        GitStart::Running(tokio::task::spawn_blocking(move || {
-            git.capture(&cwd, deadline)
-        }))
+        GitStart::Running(clax_rt::spawn_blocking(move || git.capture(&cwd, deadline)))
     }
 
     /// Captures `cwd`, waiting for the result.

@@ -10,36 +10,46 @@ autotests = false
 [lints]
 workspace = true
 
+# What builds on both targets: the router, its handlers and their state.
+# The daemon around them (sockets, signals, processes, the files of a home)
+# is native only; see the crate documentation in src/lib.rs.
 [dependencies]
 clax-core = { path = "../clax-core" }
 clax-store = { path = "../clax-store" }
 clax-sample = { path = "../clax-sample" }
 clax-realtime = { path = "../clax-realtime" }
 clax-http = { path = "../clax-http" }
+clax-rt = { path = "../clax-rt" }
 anyhow.workspace = true
 axum.workspace = true
 chrono.workspace = true
-nix = { workspace = true, features = ["signal", "resource"] }
-socket2 = "0.6"
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["sync", "macros"] }
 tokio-stream.workspace = true
 tokio-util = { version = "0.7", features = ["io"] }
 tower.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 futures = "0.3"
 mime_guess.workspace = true
 clax-mcp = { path = "../clax-mcp" }
-rmcp = { workspace = true }
-reqwest = { workspace = true, features = ["stream", "rustls-tls"] }
+reqwest = { workspace = true, features = ["stream"] }
 base64.workspace = true
 sha2 = "0.11"
 url.workspace = true
+web-time = "1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+axum = { workspace = true, features = ["http1", "tokio", "tower-log", "ws"] }
+nix = { workspace = true, features = ["signal", "resource"] }
+reqwest = { workspace = true, features = ["rustls-tls"] }
+rmcp = { workspace = true, features = ["transport-streamable-http-server"] }
+socket2 = "0.6"
+tokio = { workspace = true, features = ["full"] }
+tracing-subscriber.workspace = true
 
 [dev-dependencies]
 clax-testkit = { path = "../clax-testkit" }

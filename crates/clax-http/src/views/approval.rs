@@ -187,7 +187,7 @@ pub fn listen(s: &AppState) {
         let _ = tx.send(rows);
     });
     let st = s.clone();
-    tokio::spawn(async move {
+    clax_rt::spawn(async move {
         while let Some(rows) = rx.recv().await {
             let out = st
                 .store

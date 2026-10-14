@@ -7,9 +7,9 @@
 
 use clax_core::audit::{CallHeader, ToolCallReport, ToolOutcome, encode_call_header};
 use clax_core::gitctx::{self, GitField};
+use clax_rt::JoinHandle;
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
-use tokio::task::JoinHandle;
 
 /// The tools whose calls capture git state (spec §9.3): every tool that
 /// changes history (`status` when it names the agent). The read-only
@@ -52,7 +52,7 @@ impl GitSlot {
 
     fn pending(task: JoinHandle<GitField>) -> GitSlot {
         let (tx, rx) = watch::channel(None);
-        tokio::spawn(async move {
+        clax_rt::spawn(async move {
             let field = task.await.unwrap_or(GitField::Capture("unavailable"));
             let _ = tx.send(Some(field));
         });

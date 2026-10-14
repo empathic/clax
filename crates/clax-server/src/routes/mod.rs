@@ -8,6 +8,7 @@ pub mod assets;
 pub mod connect;
 pub mod content;
 pub mod docs;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod events;
 pub mod extension;
 pub mod feedback;
@@ -15,10 +16,12 @@ pub mod grants;
 pub mod health;
 pub mod inbox;
 pub mod live;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod mcp;
 pub mod people;
 pub mod perf;
 pub mod questions;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod room;
 pub mod sample;
 pub mod sessions;

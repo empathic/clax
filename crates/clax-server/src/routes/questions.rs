@@ -33,10 +33,10 @@ use clax_http::views::question::{announce, arm_grace, start_grace, view as quest
 use clax_http::views::thread::VisFor;
 use clax_store::Store;
 use clax_store::questions::{Close, ListStatus, NewQuestion, Source, Status};
+use clax_rt::time::Instant;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::time::Duration;
-use tokio::time::Instant;
 
 /// Longest `wait` of a question poll, in seconds.
 pub const MAX_WAIT_SECS: u64 = 3600;

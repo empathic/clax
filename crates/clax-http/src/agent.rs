@@ -1089,11 +1089,11 @@ pub trait Timer: Send + Sync {
 }
 
 /// [`Timer`] on Tokio's clock.
-pub struct TokioTimer(tokio::time::Instant);
+pub struct TokioTimer(clax_rt::time::Instant);
 
 impl Default for TokioTimer {
     fn default() -> Self {
-        TokioTimer(tokio::time::Instant::now())
+        TokioTimer(clax_rt::time::Instant::now())
     }
 }
 
@@ -1102,7 +1102,7 @@ impl Timer for TokioTimer {
         self.0.elapsed()
     }
     fn sleep_until(&self, at: Duration) -> BoxFuture<'static, ()> {
-        Box::pin(tokio::time::sleep_until(self.0 + at))
+        Box::pin(clax_rt::time::sleep_until(self.0 + at))
     }
 }
 
@@ -1172,7 +1172,7 @@ impl Gate {
         f: impl Fn(GateState) -> bool,
         limit: Duration,
     ) -> Option<GateState> {
-        let deadline = tokio::time::Instant::now() + limit;
+        let deadline = clax_rt::time::Instant::now() + limit;
         loop {
             let changed = self.changed.notified();
             tokio::pin!(changed);
@@ -1181,7 +1181,7 @@ impl Gate {
             if f(now) {
                 return Some(now);
             }
-            if tokio::time::timeout_at(deadline, changed).await.is_err() {
+            if clax_rt::time::timeout_at(deadline, changed).await.is_err() {
                 return None;
             }
         }
@@ -1676,7 +1676,7 @@ pub async fn verify_layer(State(s): State<AppState>, mut req: Request, next: Nex
     }
     if s.grant_auth.use_due(&g.grant_id, now) {
         let (store, gid) = (s.store.clone(), g.grant_id.clone());
-        tokio::spawn(async move {
+        clax_rt::spawn(async move {
             if let Err(e) = store.call(move |st| st.note_grant_use(&gid)).await {
                 tracing::warn!(error = %e, "noting a grant's use failed");
             }

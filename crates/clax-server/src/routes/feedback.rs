@@ -24,10 +24,10 @@ use clax_realtime::questions::QuestionWaiters;
 use clax_store::questions::Status;
 use clax_store::visibility::Visibility;
 use clax_store::{Store, TakeFeedback};
+use clax_rt::time::Instant;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Duration;
-use tokio::time::Instant;
 
 /// Longest accepted `wait`, in seconds.
 pub const MAX_WAIT_SECS: u64 = 600;
@@ -127,7 +127,7 @@ pub(crate) async fn wait_for_change(
     tokio::select! {
         _ = notified => Woke::Row,
         _ = vis_gen.wait_after(seen) => Woke::Visibility,
-        _ = tokio::time::sleep_until(deadline) => Woke::Deadline,
+        _ = clax_rt::time::sleep_until(deadline) => Woke::Deadline,
         _ = stopping => Woke::Stopping,
     }
 }

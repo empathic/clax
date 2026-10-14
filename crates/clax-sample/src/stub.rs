@@ -226,7 +226,7 @@ impl SampleProvider for StubProvider {
         self.requests.lock().expect("stub requests lock").push(req);
         Box::pin(futures::stream::iter(steps).then(|(pause, ev)| async move {
             if !pause.is_zero() {
-                tokio::time::sleep(pause).await;
+                clax_rt::time::sleep(pause).await;
             }
             ev
         }))

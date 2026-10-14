@@ -10,6 +10,7 @@ use super::sse::SseParser;
 use futures::StreamExt;
 use serde_json::{Value, json};
 use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -33,14 +34,25 @@ impl std::fmt::Debug for AnthropicProvider {
 impl AnthropicProvider {
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> AnthropicProvider {
         AnthropicProvider {
-            client: reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(10))
-                .build()
-                .expect("a reqwest client with default TLS"),
+            client: client(),
             base_url: base_url.into().trim_end_matches('/').to_string(),
             api_key: api_key.into(),
         }
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .build()
+        .expect("a reqwest client with default TLS")
+}
+
+/// The Worker's `fetch`, which has no connect timeout to set.
+#[cfg(target_arch = "wasm32")]
+fn client() -> reqwest::Client {
+    reqwest::Client::new()
 }
 
 fn block_json(b: &Block) -> Value {
@@ -351,7 +363,7 @@ impl super::provider::SampleProvider for AnthropicProvider {
             format!("{}/v1/messages", self.base_url),
             self.api_key.clone(),
         );
-        tokio::spawn(async move {
+        clax_rt::spawn(async move {
             let closed = tx.clone();
             tokio::select! {
                 () = closed.closed() => {}

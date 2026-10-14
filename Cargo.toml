@@ -15,6 +15,7 @@ members = [
     "crates/clax-http",
     "crates/clax-store",
     "crates/clax-git",
+    "crates/clax-rt",
 ]
 # The Cloudflare Worker is a workspace of its own (wasm32 only, rusqlite 0.40).
 exclude = ["crates/clax-worker"]
@@ -31,7 +32,9 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(clax_embedded)', 'cfg(clax
 
 [workspace.dependencies]
 anyhow = "1"
-axum = { version = "0.8", features = ["multipart", "macros", "ws"] }
+# The features that build for wasm32 too; a crate that serves natively adds
+# axum's `tokio`, `http1` and `ws` under its native target.
+axum = { version = "0.8", default-features = false, features = ["form", "json", "matched-path", "original-uri", "query", "tracing", "multipart", "macros"] }
 base64 = "0.22"
 bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
@@ -40,8 +43,11 @@ nix = { version = "0.31", default-features = false }
 mime_guess = "2"
 rand = "0.9"
 ring = "0.17.14"
-reqwest = { version = "0.12", features = ["blocking", "json", "multipart"], default-features = false }
-rmcp = { version = "3.5", features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
+# `blocking` does not build for wasm32: each crate that uses it adds it.
+reqwest = { version = "0.12", features = ["json", "multipart"], default-features = false }
+# The tool set alone. The stdio and streamable HTTP transports run on
+# tokio's runtime: the crates that serve them add them natively.
+rmcp = { version = "3.5", features = ["server", "macros"] }
 semver = "1"
 # `fallible_uint` keeps `u64`/`usize` as SQL integers, checked against the
 # `i64` range, as rusqlite before 0.33 had them by default.
@@ -51,7 +57,9 @@ schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 thiserror = "2"
-tokio = { version = "1", features = ["full"] }
+# No features here: each crate names the ones it needs (`full` does not
+# build for wasm32-unknown-unknown).
+tokio = { version = "1", default-features = false }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-tungstenite = "0.29"
 tower = { version = "0.5", features = ["timeout"] }

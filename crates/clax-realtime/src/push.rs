@@ -13,6 +13,7 @@ use clax_store::{Store, TakeFeedback};
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -112,11 +113,18 @@ pub fn find_on_path(name: &str, path: Option<&OsStr>) -> Option<PathBuf> {
         .find(|p| is_executable_file(p))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn is_executable_file(p: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(p)
         .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
         .unwrap_or(false)
+}
+
+/// A Worker has no files to run.
+#[cfg(target_arch = "wasm32")]
+fn is_executable_file(_p: &Path) -> bool {
+    false
 }
 
 #[derive(Debug, PartialEq)]
@@ -145,6 +153,7 @@ impl QueueOutcome {
 
 /// Runs `<bin> queue --thread <thread> --message <message>` with `CODEX_HOME`
 /// set when known, stdio detached, killed after `timeout`.
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn run_queue(
     bin: &Path,
     timeout: Duration,
@@ -174,6 +183,18 @@ pub async fn run_queue(
             QueueOutcome::TimedOut
         }
     }
+}
+
+/// A Worker runs no processes: `codex queue` cannot run there.
+#[cfg(target_arch = "wasm32")]
+pub async fn run_queue(
+    _bin: &Path,
+    _timeout: Duration,
+    _thread: &str,
+    _message: &str,
+    _codex_home: Option<&str>,
+) -> QueueOutcome {
+    QueueOutcome::SpawnFailed("no processes run in a Worker".to_string())
 }
 
 /// For each target that is a live Codex session of the daemon's token with a

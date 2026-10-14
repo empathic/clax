@@ -3,9 +3,9 @@
 //! handlers that take an artifact ID outside the path, and the middleware
 //! that answers 404 for the rest.
 
-use crate::auth::{Conn, has_token, is_loopback};
+use crate::auth::{has_token, is_loopback};
 use crate::error::ApiError;
-use axum::extract::{ConnectInfo, FromRequestParts};
+use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::http::{Extensions, HeaderMap};
 use clax_core::CoreError;
@@ -18,9 +18,7 @@ use clax_realtime::live::LiveIds;
 pub fn sees_live_pages(headers: &HeaderMap, ext: &Extensions, token: &str) -> bool {
     !crate::auth::is_grant_request(headers)
         && (has_token(headers, token)
-            || ext
-                .get::<ConnectInfo<Conn>>()
-                .is_some_and(|c| is_loopback(c.0.peer)))
+            || crate::auth::conn_of(ext).is_some_and(|c| is_loopback(c.peer)))
 }
 
 /// Whether `path` is one of the live-page routes (`/api/live/…`), which

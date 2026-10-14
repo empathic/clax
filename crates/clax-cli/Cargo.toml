@@ -22,7 +22,7 @@ clax-sample = { path = "../clax-sample" }
 clax-realtime = { path = "../clax-realtime" }
 clax-embedded = { path = "../clax-embedded" }
 anyhow.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["full"] }
 tracing-subscriber.workspace = true
 nix.workspace = true
 

@@ -177,7 +177,7 @@ impl AppState {
             store: self.store.clone(),
             codex: self.codex.clone(),
             working: self.working.clone(),
-            handle: tokio::runtime::Handle::current(),
+            handle: clax_rt::Handle::current(),
             states: self.feedback_states.clone(),
             #[cfg(debug_assertions)]
             between: None,

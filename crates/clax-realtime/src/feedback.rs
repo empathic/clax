@@ -334,7 +334,7 @@ impl Drop for ParkGuard {
 #[derive(Default)]
 pub struct Followers {
     active: Mutex<HashMap<String, usize>>,
-    last: Mutex<HashMap<String, std::time::Instant>>,
+    last: Mutex<HashMap<String, clax_rt::wall::Instant>>,
 }
 
 impl Followers {
@@ -391,7 +391,7 @@ impl Drop for FollowGuard {
             .last
             .lock()
             .unwrap()
-            .insert(self.session_id.clone(), std::time::Instant::now());
+            .insert(self.session_id.clone(), clax_rt::wall::Instant::now());
     }
 }
 
@@ -406,7 +406,7 @@ pub struct FeedbackCtx {
     pub codex: Arc<crate::push::CodexPush>,
     pub working: Arc<clax_core::working::Working>,
     /// The runtime `codex queue` runs on; dispatch may be called from blocking threads.
-    pub handle: tokio::runtime::Handle,
+    pub handle: clax_rt::Handle,
     /// Held while a publish reads delivery states and sends them
     /// ([`publish_states`]), so states go out in the order they were read
     /// and the last one a reader hears is the newest.

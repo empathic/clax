@@ -4,11 +4,14 @@
 //! testkit's delay middleware are here too.
 
 use crate::routes::{
-    approvals, artifacts, assets, connect, content, docs, events, extension, feedback, grants,
-    health, inbox, live, mcp, people, perf, questions, room, sample, sessions, sites, snapshot, stream,
-    threads, token, toolpath, viewers, watches, working,
+    approvals, artifacts, assets, connect, content, docs, extension, feedback, grants, health,
+    inbox, live, people, perf, questions, sample, sessions, sites, snapshot, stream, threads,
+    token, toolpath, viewers, watches, working,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use crate::routes::{events, mcp, room};
 use crate::shell;
+#[cfg(not(target_arch = "wasm32"))]
 use axum::error_handling::HandleErrorLayer;
 use axum::{
     Router,
@@ -19,15 +22,19 @@ use axum::{
 };
 use clax_http::agent::{self, DeniedToGrants};
 use clax_http::auth::RequireToken;
+#[cfg(not(target_arch = "wasm32"))]
 use clax_http::error::ApiError;
 use clax_http::limits;
 use clax_http::state::AppState;
 use clax_http::{auth, host};
 use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
 use tower::ServiceBuilder;
+#[cfg(not(target_arch = "wasm32"))]
 use tower::timeout::TimeoutLayer;
 use tower_http::cors::{Any, CorsLayer};
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn timeout_error(err: tower::BoxError, limit: Duration) -> ApiError {
     if err.is::<tower::timeout::error::Elapsed>() {
         ApiError::new(
@@ -45,12 +52,20 @@ async fn timeout_error(err: tower::BoxError, limit: Duration) -> ApiError {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn with_timeout(router: Router<AppState>, d: Duration) -> Router<AppState> {
     router.layer(
         ServiceBuilder::new()
             .layer(HandleErrorLayer::new(move |e| timeout_error(e, d)))
             .layer(TimeoutLayer::new(d)),
     )
+}
+
+/// No deadline layer on wasm32: tower's timeout sleeps on tokio's timer, and
+/// a Worker's request is bounded by the platform.
+#[cfg(target_arch = "wasm32")]
+fn with_timeout(router: Router<AppState>, _d: Duration) -> Router<AppState> {
+    router
 }
 
 /// Every route, unwrapped; `shutdown`, when given, mounts `/api/admin/shutdown`.
@@ -310,7 +325,6 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
     #[cfg(debug_assertions)]
     let api_fast = api_fast
         .route("/api/_test/working/skew", post(working::skew))
-        .route("/api/_test/events/open", get(events::open_streams))
         .route("/api/_test/stream/open", get(stream::open_streams))
         .route(
             "/api/_test/questions/{qid}/waiters",
@@ -343,6 +357,8 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             "/api/_test/grants/index/fail",
             post(grants::test_fail_index),
         );
+    #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+    let api_fast = api_fast.route("/api/_test/events/open", get(events::open_streams));
     #[cfg(debug_assertions)]
     let api_fast = if state.test_daemon {
         api_fast.layer(axum::middleware::from_fn(test_delay))
@@ -401,18 +417,8 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/a/{aid}/{*rest}", get(shell::artifact_page))
         .route("/_clax/{*path}", get(shell::static_file))
         .layer(clax_http::http_cache::compression());
-    let mcp = mcp::router(&state);
-    #[cfg(debug_assertions)]
-    let mcp = if state.test_daemon {
-        mcp.layer(axum::middleware::from_fn(test_delay))
-    } else {
-        mcp
-    };
-    let mut r = Router::new()
+    let r = Router::new()
         .route("/healthz", get(health::healthz).layer(cors))
-        .route("/api/events", get(events::events))
-        .route("/api/stream", get(stream::open))
-        .route("/api/artifacts/{aid}/room", get(room::room))
         .route(
             "/api/artifacts/{aid}/sample",
             get(sample::status)
@@ -423,9 +429,6 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             post(sample::tool_result),
         )
         .route("/api/sessions/{id}/feedback", get(feedback::poll))
-        // Streams for as long as its reader takes: no request deadline, no
-        // buffering ETag.
-        .route("/api/toolpath/export", get(toolpath::export))
         .route("/api/sessions/{id}/notices", get(feedback::notices))
         // A long-poll: outside the request timeout, as the feedback poll.
         .route("/api/sessions/{id}/questions/{qid}", get(questions::poll))
@@ -441,8 +444,29 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route(
             "/api/artifacts/{aid}/versions/{n}/files/{*path}",
             get(content::raw_file),
-        )
-        .merge(mcp);
+        );
+    // What holds its connection open: the daemon's. A Durable Object
+    // carries the streams and rooms over its own hibernatable sockets and
+    // serves `/mcp` with the tool set's JSON-RPC adapter (see the crate
+    // documentation).
+    #[cfg(not(target_arch = "wasm32"))]
+    let r = {
+        let mcp = mcp::router(&state);
+        #[cfg(debug_assertions)]
+        let mcp = if state.test_daemon {
+            mcp.layer(axum::middleware::from_fn(test_delay))
+        } else {
+            mcp
+        };
+        // Streams for as long as its reader takes: no request deadline, no
+        // buffering ETag.
+        r.route("/api/toolpath/export", get(toolpath::export))
+            .route("/api/events", get(events::events))
+            .route("/api/stream", get(stream::open))
+            .route("/api/artifacts/{aid}/room", get(room::room))
+            .merge(mcp)
+    };
+    let mut r = r;
     if let Some(tx) = shutdown {
         let tx = std::sync::Arc::new(tx);
         r = r.route(
