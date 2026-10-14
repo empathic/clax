@@ -2551,13 +2551,20 @@ it, and runs these steps:
    the live version (`if_version`), with a `null` entry for each live file
    the bundle lacks, labelled `Update v<N>`; a 409 is "<title> changed
    while the update was checked".
-7. `migrate.js` runs once more, on the app itself, in the migration view.
-   If it fails, the documents are put back from the snapshot (each
-   snapshot document `set`, each document the snapshot lacks deleted) and
-   the version before the update is restored: "<title> is back on v<M>
-   with your data as it was". A snapshot still present when the app
-   starts (it ended during the run) is restored then, and the person told
-   once.
+7. `migrate.js` runs once more, on the app itself, in the migration view,
+   while the app's screen shows an "Updating…" cover with no page running
+   and the agent is held off the app. If it fails, the documents are put
+   back from the snapshot (each document the snapshot lacks deleted, then
+   each snapshot document `set`) and the version before the update with
+   it: its files, title, icon and capabilities are published again: "<title> is back on v<M>
+   with your data as it was". The person's private `data/users/<id>/`
+   documents are not in the snapshot (the token cannot read them), so a
+   migration's writes to them stay. A snapshot still present when the
+   app starts (it ended during the run) is restored then, and the person
+   told once, when the update's version is still the live one and no
+   restore of it failed before; otherwise the person chooses Restore or
+   Discard, since the documents may have changed since. A kept snapshot
+   is never overwritten: the app takes no update until it is resolved.
 
 The person's documents stay through an update; seed documents in an
 update bundle are ignored. The earlier versions stay in Versions. A
