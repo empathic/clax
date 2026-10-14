@@ -111,7 +111,8 @@ fn error_object(err: Value) -> CallToolResult {
 /// `daemon_unreachable` naming `log`; a request past its deadline is `timeout`
 /// (also naming `log`); an unparseable success body is `bad_response`; an API
 /// error passes the daemon's `error` object through unchanged (so a conflict
-/// keeps its `current`).
+/// keeps its `current`). An empty `log` names none (the log is not the
+/// agent's to read).
 pub fn client_error(e: ClientError, log: &Path) -> CallToolResult {
     client_error_with(e, log, json!({}))
 }
@@ -122,6 +123,11 @@ pub fn client_error_with(e: ClientError, log: &Path, extra: Value) -> CallToolRe
     let add = |mut v: Value| {
         if let (Some(o), Value::Object(x)) = (v.as_object_mut(), extra.clone()) {
             o.extend(x);
+        }
+        if log.as_os_str().is_empty()
+            && let Some(o) = v.as_object_mut()
+        {
+            o.remove("log");
         }
         v
     };
@@ -154,6 +160,17 @@ mod tests {
             .iter()
             .filter_map(|c| c.as_text().map(|t| t.text.clone()))
             .collect()
+    }
+
+    #[test]
+    fn an_empty_log_path_names_no_log() {
+        let e = || ClientError::Unreachable("down".into());
+        let named = texts(&client_error(e(), Path::new("/h/.clax/daemon.log")));
+        assert!(named[0].contains("/h/.clax/daemon.log"), "{named:?}");
+        let none = texts(&client_error(e(), Path::new("")));
+        let v: Value = serde_json::from_str(&none[0]).unwrap();
+        assert!(v["error"].get("log").is_none(), "{v}");
+        assert_eq!(v["error"]["code"], "daemon_unreachable");
     }
 
     #[test]

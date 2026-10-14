@@ -180,7 +180,9 @@ struct Managed {
 struct State {
     endpoint: Option<Endpoint>,
     session_id: Option<String>,
-    /// A remote daemon's session's secret (spec 2026-10-08 §6.8).
+    /// The session's secret (spec 2026-10-08 §6.8): a remote daemon's, or
+    /// one a client acting in another's session holds
+    /// ([`DaemonClient::in_session`]).
     session_secret: Option<Secret>,
     session: Option<Session>,
     /// True when `session` is registered with the daemon at `endpoint`.
@@ -203,7 +205,8 @@ struct Conn<'a> {
     http: &'a reqwest::Client,
     endpoint: Endpoint,
     session_id: Option<String>,
-    /// Sent beside the session it proves, to a remote daemon only.
+    /// Sent beside the session it proves. A local daemon's sessions have
+    /// none (they act with the daemon token).
     session_secret: Option<Secret>,
     call: Option<Arc<CallScope>>,
     via: Option<&'static str>,
@@ -236,7 +239,7 @@ impl Conn<'_> {
         }
         if let Some(s) = &self.session_id {
             req = req.header("x-clax-session", s);
-            if let Some(secret) = self.session_secret.as_ref().filter(|_| self.remote) {
+            if let Some(secret) = &self.session_secret {
                 req = req.header(SESSION_SECRET_HEADER, secret.expose());
             }
         }
@@ -491,6 +494,86 @@ impl DaemonClient {
             auth: Auth::Caller(authorization),
             ..self.clone()
         }
+    }
+
+    /// This client acting in `session`, a session registered at its
+    /// daemon: every request names it (`X-Clax-Session`), proved by
+    /// `secret` when the session has one (`X-Clax-Session-Secret`, spec
+    /// 2026-10-08 §6.8: a grant's session), and the session routes are
+    /// its. The endpoint, transport and credential are this client's; the
+    /// session is the new client's own, so this one is unchanged. For a
+    /// client that is neither managed nor remote.
+    ///
+    /// # Panics
+    /// On a managed or remote client, which registers its own session.
+    pub fn in_session(&self, session: Session, secret: Option<Secret>) -> DaemonClient {
+        assert!(
+            self.inner.managed.is_none() && self.inner.remote.is_none(),
+            "in_session on a client of its own session"
+        );
+        let endpoint = self.state().endpoint;
+        DaemonClient {
+            inner: Arc::new(Inner {
+                http: self.inner.http.clone(),
+                state: RwLock::new(State {
+                    endpoint,
+                    session_id: Some(session.id.clone()),
+                    session_secret: secret,
+                    session: Some(session),
+                    registered: true,
+                }),
+                managed: None,
+                agent: self.inner.agent,
+                remote: None,
+                in_process: self.inner.in_process.clone(),
+            }),
+            call: self.call.clone(),
+            via: self.via,
+            auth: self.auth.clone(),
+        }
+    }
+
+    /// `POST /api/sessions` with `registration`: the session registered,
+    /// and its secret when the daemon issued one (a grant's new session,
+    /// spec 2026-10-08 §6.8), for a client that registers sessions for
+    /// others (a remote MCP endpoint's, one per MCP client), not for
+    /// itself.
+    pub async fn register_session(
+        &self,
+        registration: &RegisterSession,
+    ) -> Result<(Session, Option<Secret>)> {
+        let mut res = self
+            .json(|c| {
+                c.request(reqwest::Method::POST, "/api/sessions")
+                    .json(registration)
+            })
+            .await?;
+        let secret = res["session_secret"]
+            .as_str()
+            .map(|s| Secret::new(s.to_string()));
+        Ok((session_of(res.take())?, secret))
+    }
+
+    /// `PATCH /api/sessions/<id>` `{"heartbeat": true}`, naming it
+    /// (`X-Clax-Session`) and proving it with `secret` when given
+    /// (`X-Clax-Session-Secret`) as a request in that session does: session
+    /// `id` marked seen, when this client's credential may act in it. An
+    /// ended session is returned as it is, never revived; a grant's ended
+    /// session proves nothing (401 `invalid_session_proof`).
+    pub async fn heartbeat_session(&self, id: &str, secret: Option<&Secret>) -> Result<Session> {
+        let res = self
+            .json(|c| {
+                let req = c
+                    .request(reqwest::Method::PATCH, &format!("/api/sessions/{id}"))
+                    .header("x-clax-session", id);
+                match secret {
+                    Some(s) => req.header(SESSION_SECRET_HEADER, s.expose()),
+                    None => req,
+                }
+                .json(&json!({"heartbeat": true}))
+            })
+            .await?;
+        session_of(res)
     }
 
     /// The tool call this client acts for.

@@ -491,6 +491,10 @@ impl Store {
     /// How long after an `idle` end a registration with the same harness
     /// session ID and credential gets the session's watches back (§6.7).
     pub const RESTORE_WINDOW_SECS: u64 = 24 * 3600;
+    /// The most live sessions an agent token (a bearer grant) holds: a new
+    /// one ends the least recently seen beyond it
+    /// ([`Store::end_bearer_sessions_beyond`]).
+    pub const BEARER_SESSION_CAP: usize = 16;
 
     /// Registers a session, reusing a live row where one already stands for it.
     /// An empty `harness_session_id` counts as none. Every match is among
@@ -1225,6 +1229,43 @@ impl Store {
                 let cutoff = if is_remote { &remote } else { &local };
                 let Some(c) = self.end_in(tx, &ttl, &id, &now, EndReason::Idle, Some(cutoff))?
                 else {
+                    continue;
+                };
+                reaped.touched.merge(c.touched);
+                reaped.withdrawn_questions.extend(c.withdrawn_questions);
+                reaped.ended.push(id);
+            }
+            Ok(reaped)
+        })
+    }
+
+    /// Ends the live sessions of grant `gid` beyond the `keep` most
+    /// recently seen, when it is a bearer grant (an agent token, whose MCP
+    /// clients register a session per `initialize` and may never end it);
+    /// a signed grant's are left alone. Each ends as the reaper ends one
+    /// ([`Store::reap_sessions`]: `idle`, recorded as `system:ttl`).
+    /// Returns what they released.
+    pub fn end_bearer_sessions_beyond(&self, gid: &str, keep: usize) -> Result<Reaped> {
+        let keep = i64::try_from(keep).unwrap_or(i64::MAX);
+        let over: Vec<String> = self.with_read(|c| {
+            let mut stmt = c.prepare(
+                "SELECT s.id FROM sessions s JOIN grants g ON g.id = s.grant_id
+                  WHERE s.grant_id = ?1 AND g.bearer = 1 AND s.ended_at IS NULL
+                  ORDER BY s.last_seen_at DESC, s.id DESC LIMIT -1 OFFSET ?2",
+            )?;
+            Ok(stmt
+                .query_map(params![gid, keep], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })?;
+        if over.is_empty() {
+            return Ok(Reaped::default());
+        }
+        self.with_tx(|tx| {
+            let now = self.now();
+            let mut reaped = Reaped::default();
+            let ttl = AuditCtx::system(SystemReason::Ttl);
+            for id in over {
+                let Some(c) = self.end_in(tx, &ttl, &id, &now, EndReason::Idle, None)? else {
                     continue;
                 };
                 reaped.touched.merge(c.touched);

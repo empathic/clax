@@ -1337,7 +1337,8 @@ mod l10 {
         let mcp = include_str!("mcp.rs");
         assert!(mcp.contains(".route_service(\"/mcp\"") && mcp.contains("require_token"));
         assert_eq!(routes(mcp).len(), 0, "a new MCP route: check it here");
-        // So is the JSON-RPC adapter's, behind the same gate as `/mcp`.
+        // So is the JSON-RPC adapter's, behind its own gate: the token, or
+        // an agent token (`McpCaller`).
         let adapter = include_str!("mcp_http.rs");
         assert!(adapter.contains(".route_service(PATH") && adapter.contains("require_token"));
         assert_eq!(routes(adapter).len(), 0, "a new MCP route: check it here");
@@ -1345,11 +1346,8 @@ mod l10 {
             let at = &src[src.find("async fn require_token(").unwrap()..];
             &at[..at.find("\n}\n").unwrap()]
         };
-        assert_eq!(
-            gate(adapter),
-            gate(mcp),
-            "the two MCP endpoints' gates differ"
-        );
+        assert!(gate(mcp).contains("DeniedToGrants") && gate(mcp).contains("RequireToken"));
+        assert!(gate(adapter).contains("caller: McpCaller"));
     }
 }
 
@@ -1881,6 +1879,7 @@ mod agents {
         sig.matches("Agent<").count()
             + sig.matches("DeniedToGrants").count()
             + sig.matches("GrantFlow").count()
+            + sig.matches("McpCaller").count()
     }
 
     #[test]
@@ -1979,9 +1978,16 @@ mod agents {
             );
         }
         for (path, text) in inline() {
+            // The adapter admits agent tokens (`McpCaller`); every other
+            // inline route is refused to agents.
+            let class = if path == "/mcp/json" {
+                "McpCaller"
+            } else {
+                "DeniedToGrants"
+            };
             assert!(
-                class_count(text) == 1 && text.contains("DeniedToGrants"),
-                "{path}: its handler must take DeniedToGrants"
+                class_count(text) == 1 && text.contains(class),
+                "{path}: its handler must take {class}"
             );
         }
     }

@@ -334,6 +334,29 @@ impl TestServer {
     /// `http://localhost:<its port>` and whose setup takes `secret` (`None`:
     /// setup closed), every time read from `clock`.
     pub async fn spawn_hosted(clock: Arc<ManualClock>, secret: Option<&str>) -> TestServer {
+        Self::spawn_hosted_with(clock, secret, |_| {}).await
+    }
+
+    /// [`TestServer::spawn_hosted`] whose bounds on agents' unverified
+    /// bodies wait and measure rates on the returned timer.
+    pub async fn spawn_hosted_agent_timer(
+        clock: Arc<ManualClock>,
+        secret: Option<&str>,
+    ) -> (TestServer, Arc<ManualTimer>) {
+        let timer = Arc::new(ManualTimer::default());
+        let t = timer.clone();
+        let ts = Self::spawn_hosted_with(clock, secret, move |s| {
+            s.agent_gate = Arc::new(crate::agent::Gate::new(t));
+        })
+        .await;
+        (ts, timer)
+    }
+
+    async fn spawn_hosted_with(
+        clock: Arc<ManualClock>,
+        secret: Option<&str>,
+        f: impl FnOnce(&mut AppState),
+    ) -> TestServer {
         let dir = tempfile::tempdir().unwrap();
         let secret = secret.map(str::to_string);
         let limits_clock: Arc<dyn clax_core::working::Clock> = clock.clone();
@@ -341,6 +364,7 @@ impl TestServer {
             let origin = format!("http://localhost:{}", s.port);
             s.hosted = crate::hosted::Hosted::new(&origin, secret.as_deref())
                 .map(|h| Arc::new(h.with_clock(limits_clock)));
+            f(s);
         };
         Self::start(
             dir,

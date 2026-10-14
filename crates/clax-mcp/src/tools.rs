@@ -5,6 +5,7 @@ use crate::render;
 use base64::Engine;
 use clax_core::ArtifactId;
 use clax_core::model::Session;
+use clax_core::secret::Secret;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
@@ -761,6 +762,10 @@ pub struct ClaxTools {
     channel: Option<crate::channel::ChannelState>,
     opener: Opener,
     open_wait: std::time::Duration,
+    /// Paths name files of the machine the tools run on, read for the
+    /// agent; false for an agent of another machine
+    /// ([`ClaxTools::for_remote_agent`]).
+    local_files: bool,
     /// For each open question `ask` created, whether an owner surface was
     /// open when it was created (the create call's `surface_open`).
     /// At most [`ASK_SURFACE_CAP`] entries; an entry leaves when its
@@ -833,6 +838,7 @@ impl ClaxTools {
             channel: None,
             opener: Opener::default(),
             open_wait: open_wait(),
+            local_files: true,
             ask_surface: Default::default(),
             git: None,
             reports: Default::default(),
@@ -967,6 +973,36 @@ impl ClaxTools {
         }
     }
 
+    /// These tools acting in `session`, proved by `secret`
+    /// ([`DaemonClient::in_session`]): the tools that need a harness
+    /// session (`working`, `wait_for_feedback`, `ask`, `watch`) have it,
+    /// and publishes are its.
+    pub fn in_session(&self, session: Session, secret: Option<Secret>) -> ClaxTools {
+        ClaxTools {
+            client: self.client.in_session(session.clone(), secret),
+            session: Some(session),
+            ..self.clone()
+        }
+    }
+
+    /// These tools for an agent of another machine, on a daemon that is
+    /// not its: no file of the daemon's machine is read (`file_path` and
+    /// other paths are refused `invalid_args`: pass the content instead),
+    /// `open` opens no browser there, and errors name no daemon log.
+    pub fn for_remote_agent(&self) -> ClaxTools {
+        ClaxTools {
+            local_files: false,
+            opener: Opener::Off,
+            log_path: PathBuf::new(),
+            ..self.clone()
+        }
+    }
+
+    /// The client these tools call the daemon with.
+    pub fn client(&self) -> &DaemonClient {
+        &self.client
+    }
+
     /// `tools/call` without an rmcp service around it, for a transport
     /// that answers JSON-RPC itself (`crate::http`): the named tool's
     /// method called directly, under its own call ID and reported, as
@@ -1079,6 +1115,11 @@ impl ClaxTools {
     /// error: resolving it against the process's own directory could publish
     /// the wrong file.
     fn local_path(&self, p: &str) -> Result<PathBuf, CallToolResult> {
+        if !self.local_files {
+            return Err(invalid(format!(
+                "'{p}': this Clax reads no files of its own machine for an agent of another; pass the file's content instead"
+            )));
+        }
         let path = PathBuf::from(p);
         if path.is_absolute() {
             return Ok(path);
