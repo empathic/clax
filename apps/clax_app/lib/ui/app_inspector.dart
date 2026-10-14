@@ -10,8 +10,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../agent/icon_svg.dart';
+import '../bundle/lineage_store.dart';
 import '../clax/api.dart';
+import '../platform/bundle_key.dart' show keyFingerprint;
 import 'app_icon.dart';
+import 'bundle_sheets.dart';
 import 'app_inspector_code.dart';
 import 'app_inspector_permissions.dart';
 import 'version_page.dart' show formatBytes, versionTime;
@@ -23,7 +26,9 @@ export 'app_inspector_permissions.dart';
 ///
 /// - **Overview**: title, ID (copyable), created and updated, versions,
 ///   the live version's file count and size, the document count, the
-///   declared capabilities, and the version history.
+///   declared capabilities, and the version history; with [bundles], a
+///   Share app (Export…) button, and, for an app with a lineage
+///   ([lineage]), its [sharingLine].
 /// - **Files**: the live version's files as a tree with sizes; a text file
 ///   opens in a read-only [CodePage].
 /// - **Data**: the collections with their counts; a collection lists its
@@ -46,6 +51,8 @@ class AppInspector extends StatefulWidget {
     this.plan,
     this.onOpenVersion,
     this.initialTab = 0,
+    this.bundles,
+    this.lineage,
   });
 
   final ClaxApi api;
@@ -62,6 +69,12 @@ class AppInspector extends StatefulWidget {
   /// The tab shown first (0 Overview … 4 Plan).
   final int initialTab;
 
+  /// Shares the app as a `.clax` file; null offers no button.
+  final BundleFlows? bundles;
+
+  /// The app's lineage entry; null shows no sharing line.
+  final Future<LineageEntry?> Function(String aid)? lineage;
+
   @override
   State<AppInspector> createState() => _AppInspectorState();
 }
@@ -72,11 +85,30 @@ class _AppInspectorState extends State<AppInspector> {
   Map<String, String>? _texts;
   Map<String, String> _titles = const {};
   Object? _error;
+  LineageEntry? _lineage;
 
   @override
   void initState() {
     super.initState();
     unawaited(_load());
+    unawaited(_loadLineage());
+  }
+
+  Future<void> _loadLineage() async {
+    final read = widget.lineage;
+    if (read == null) return;
+    LineageEntry? e;
+    try {
+      e = await read(widget.aid);
+    } on Object {
+      e = null;
+    }
+    if (mounted) setState(() => _lineage = e);
+  }
+
+  Future<void> _share(String? svg) async {
+    await widget.bundles?.share(context, widget.aid, svg: svg);
+    await _loadLineage();
   }
 
   Future<void> _load() async {
@@ -146,12 +178,14 @@ class _AppInspectorState extends State<AppInspector> {
             children: [
               _Overview(
                 detail: d,
-                icon: switch (_texts![appIconPath]) {
-                  final t? => cleanIcon(t),
-                  null => null,
-                },
+                icon: _icon,
                 collections: _collections!,
                 onHistory: () => _openHistory(d),
+                shareLabel: widget.bundles?.shareLabel,
+                onShare: widget.bundles == null
+                    ? null
+                    : () => unawaited(_share(_icon)),
+                sharing: sharingLine(_lineage),
               ),
               _Files(version: d.versions.last, texts: _texts!),
               _Data(
@@ -178,6 +212,11 @@ class _AppInspectorState extends State<AppInspector> {
       ),
     );
   }
+
+  String? get _icon => switch (_texts?[appIconPath]) {
+    final t? => cleanIcon(t),
+    null => null,
+  };
 
   void _openHistory(ArtifactDetail d) {
     final open = widget.onOpenVersion;
@@ -244,13 +283,35 @@ class _Failed extends StatelessWidget {
 
 // --- Overview ---
 
+/// The inspector's line about [entry]'s lineage: `Shared as v<N>` for an
+/// app this install authors, `From <who>, v<N> · <fingerprint>` for an
+/// installed one; null without a lineage.
+String? sharingLine(LineageEntry? entry) {
+  if (entry == null) return null;
+  if (entry.role == LineageRole.author) return 'Shared as v${entry.version}';
+  final fp = keyFingerprint(entry.key) ?? entry.key;
+  return entry.name == null
+      ? 'From $fp, v${entry.version}'
+      : 'From ${entry.name}, v${entry.version} · $fp';
+}
+
 class _Overview extends StatelessWidget {
   const _Overview({
     required this.detail,
     required this.collections,
     required this.onHistory,
     this.icon,
+    this.shareLabel,
+    this.onShare,
+    this.sharing,
   });
+
+  /// The share button's label and action; no button when null.
+  final String? shareLabel;
+  final VoidCallback? onShare;
+
+  /// [sharingLine]'s line.
+  final String? sharing;
 
   final ArtifactDetail detail;
 
@@ -295,6 +356,34 @@ class _Overview extends StatelessWidget {
             ),
           ],
         ),
+        if (sharing != null || onShare != null) ...[
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  sharing ?? '',
+                  key: const ValueKey('sharing-line'),
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              if (onShare case final share?)
+                OutlinedButton.icon(
+                  key: const ValueKey('inspector-share'),
+                  onPressed: share,
+                  icon: Icon(
+                    shareLabel == 'Export…'
+                        ? Icons.save_alt_rounded
+                        : Icons.ios_share_rounded,
+                    size: 18,
+                  ),
+                  label: Text(shareLabel ?? 'Share app'),
+                ),
+            ],
+          ),
+        ],
         const SizedBox(height: 20),
         Row(
           children: [
