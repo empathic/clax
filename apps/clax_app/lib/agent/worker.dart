@@ -262,6 +262,9 @@ class FeedbackWorker {
   /// Each app whose job runs, and that job's end.
   final _active = <String, Future<void>>{};
 
+  /// Apps [hold] keeps every job off, with how many holds each has.
+  final _held = <String, int>{};
+
   /// Threads already recovered after an interruption since the last
   /// registration.
   final _interrupted = <String>{};
@@ -774,6 +777,31 @@ class FeedbackWorker {
     }
   }
 
+  /// Runs [body] with app [aid] held: once the app's running job (if
+  /// any) has ended, and with none of its queued jobs started until
+  /// [body] ends, however it ends. Jobs queued meanwhile run afterwards.
+  Future<T> hold<T>(String aid, Future<T> Function() body) async {
+    _held[aid] = (_held[aid] ?? 0) + 1;
+    try {
+      for (
+        var running = _active[aid];
+        running != null;
+        running = _active[aid]
+      ) {
+        await running.catchError((Object _) {});
+      }
+      return await body();
+    } finally {
+      final n = _held[aid]! - 1;
+      if (n == 0) {
+        _held.remove(aid);
+      } else {
+        _held[aid] = n;
+      }
+      _kick();
+    }
+  }
+
   /// Starts the queue's next jobs, as long as fewer than [concurrency]
   /// run: each the first queued job of an app with none running.
   void _kick() {
@@ -792,7 +820,11 @@ class FeedbackWorker {
   /// job of its artifact and kind merged into it; null when there is none.
   _Job? _next() {
     final first = _queue
-        .where((j) => !_active.containsKey(j.artifactId))
+        .where(
+          (j) =>
+              !_active.containsKey(j.artifactId) &&
+              !_held.containsKey(j.artifactId),
+        )
         .firstOrNull;
     if (first == null) return null;
     _queue.remove(first);
@@ -1087,9 +1119,7 @@ class FeedbackWorker {
     if (t == null || !t.isOpen || !_started || _known(aid, tid)) return false;
     if (_stopped.containsKey(tid)) {
       // A stopped change runs again with the comments it had.
-      final items = [
-        for (final c in pendingComments(t)) _item(aid, t, c),
-      ];
+      final items = [for (final c in pendingComments(t)) _item(aid, t, c)];
       if (items.isEmpty) return false;
       _unstop(tid);
       _queue.add(_Job(aid, items: items));

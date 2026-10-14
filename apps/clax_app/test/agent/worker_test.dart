@@ -139,6 +139,39 @@ void main() {
     );
   });
 
+  test('hold waits for the app\'s running change and keeps its next one '
+      'queued until the hold ends', () async {
+    final aid = api.seedArtifact('Runs', {'index.html': page});
+    workerWith([
+      changeCalls(reply: 'Keep.', edits: [('Save', 'Keep')]),
+      changeCalls(reply: 'Red.', edits: [('<button>', '<button class=red>')]),
+    ]).start();
+    await idle();
+    runner.gate = Completer<void>();
+    api.sendComment(aid, 'Say Keep');
+    await runner.arrived.future;
+    final release = Completer<void>();
+    var inside = false;
+    final held = worker.hold(aid, () async {
+      inside = true;
+      await release.future;
+      return 7;
+    });
+    await pumpEventQueue();
+    expect(inside, isFalse, reason: 'the running change ends first');
+    runner.gate!.complete();
+    runner.gate = null;
+    await until(() => inside, reason: 'the hold starts');
+    api.sendComment(aid, 'Make it red');
+    await until(() => api.waitingPolls == 1, reason: 'second batch taken');
+    await pumpEventQueue();
+    expect(runner.seen, hasLength(1), reason: 'held: no second change');
+    release.complete();
+    expect(await held, 7);
+    await idle();
+    expect(runner.seen, hasLength(2));
+  });
+
   test('a change\'s progress arrives between working and landed, with its '
       'threads', () async {
     final aid = api.seedArtifact('Runs', {'index.html': page});
@@ -536,9 +569,7 @@ void main() {
 
   test('a reply names the threads it answered', () async {
     final aid = api.seedArtifact('Runs', {'index.html': page});
-    workerWith([
-      changeCalls(reply: 'Which button?', resolve: false),
-    ]).start();
+    workerWith([changeCalls(reply: 'Which button?', resolve: false)]).start();
     await idle();
     final item = api.sendComment(aid, 'Change the button');
     await until(() => events.whereType<WorkerReplied>().isNotEmpty);
