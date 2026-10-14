@@ -99,7 +99,7 @@ are this design's decisions, each with its reason.
 | O8 | An untargeted send with several of the owner's agents watching: the first to take it owns it. | Owner answer (Q5). |
 | O9 | Other people's artifact titles in an agent's `list` are withheld until approved. | Owner answer (Q8). |
 | O10 | "Each agent should get its own credential": narrowing and elevation bind exactly one agent session, which a sibling agent on the same machine cannot act as, and an agent narrowed to read-only cannot regain the machine's rights by naming no session (§6.8). The machine, meaning its OS user, stays the hard boundary, and the spec and People say so. | Owner decision (2026-10-12), after a review showed a sibling naming an elevated session, and a narrowed agent naming none, acting past one agent's rights. |
-| O11 | "Agents can have the max permissions equal to that of their "owner", that owner can choose what permissions any given agent has below that bound, and an agent can be given more permission than it's "owner" by the creator of a given artifact, etc." and "The creator of an artifact is its defacto owner and the one who has responsibility for delegation": an artifact's creator elevates any agent on the artifacts they created; the install's owner still elevates anywhere (§7.2, §7.4). Interpreted, not quoted (the coordinator's reading of "defacto owner" and "responsibility for delegation"): a creator gives only what they may do there themselves, and a raise is its granter's to remove (whether the agent's person or the owner may also remove one is an open owner question). A new session starts at the bound, its person's rights within its machine's narrowing, and inherits no other session's narrowing ("Starts at the bound", §6.8). | Owner decisions (2026-10-13). |
+| O11 | "Agents can have the max permissions equal to that of their "owner", that owner can choose what permissions any given agent has below that bound, and an agent can be given more permission than it's "owner" by the creator of a given artifact, etc." and "The creator of an artifact is its defacto owner and the one who has responsibility for delegation": an artifact's creator elevates any agent on the artifacts they created; the install's owner still elevates anywhere (§7.2, §7.4). Interpreted, not quoted (the coordinator's reading of "defacto owner" and "responsibility for delegation"): a creator gives only what they may do there themselves. The owner's later answers (2026-10-13): "Both may remove", the agent's own person and the install owner may each remove any creator's raise of that agent, and the granter may raise it again; and "Narrowing caps raises", the agent's person's narrowing (and the machine's) is the last word for that agent, so a raise adds only what the narrowings leave on (§7.2). A new session starts at the bound, its person's rights within its machine's narrowing, and inherits no other session's narrowing ("Starts at the bound", §6.8). | Owner decisions (2026-10-13). |
 | O12 | Approvals in both directions on People, "Your content only": on a person's card the owner also sees that person's live approvals whose author is the owner; a person's approvals of anyone else's content stay private to them (§9.5). | Owner decision (2026-10-13). |
 | R1 | A thread approval covers the author's later replies in that thread; the approval card says so. | Ruling (Q2). |
 | R2 | Only the agent's own person approves content for it; the owner cannot approve on another person's behalf. | Ruling (Q4). |
@@ -110,7 +110,7 @@ are this design's decisions, each with its reason.
 | M3 | **One grant per person per machine.** `clax connect` makes one GNAP grant for the person's Clax install on that machine (GNAP's client instance). Every agent session on that machine registers under it. | Agents are many and ephemeral; one key per machine is what a person can manage and revoke. |
 | M4 | **Sessions are bound to their credential.** Registration, refresh and join match only rows with the caller's `grant_id` (`grant_id IS NULL` for the daemon token); a grant never matches, lists, reads or modifies another grant's or the token's session; every session named in a path or in `X-Clax-Session` must be the caller's (403 `foreign_session`). | PIDs collide across machines; the existing match by `(harness, parent_pid)` would otherwise hand one person's agent another's session, its feedback and its threads. |
 | M5 | **Tokens are key-bound, never bearer, and live with their grant.** `clax connect` makes an Ed25519 key pair; the private key never leaves the machine. Every request carries the access token and a signature over the method, path, query, host, a timestamp, a nonce, the body digest and the token (§6.6). Access tokens do not expire and are not rotated; revoking the token (through the manage URI) revokes the whole grant, as revoking the grant does, and the person reconnects. Every signature is verified before the handler runs, on every request, with or without a body. The owner's daemon token (local, file mode 0600) is unchanged. | The LAN is plain HTTP: a sniffed bearer token would be reusable. A signature makes a sniffed token useless alone and a sniffed request useless twice. Expiry and rotation add little to a key-bound token, and can strand a sleeping machine. |
-| M6 | **Rights are GNAP access objects** with Clax types (`clax-artifacts`, `clax-comments`, `clax-db`, `clax-ask`), actions, and locations (`*`, `own`, or artifact IDs), plus reference presets (`clax:reader`, `clax:collaborator`, `clax:full`) (§7). An agent's effective rights are `(person ∩ grant narrowing ∩ agent narrowing) ∪ ⋃ elevations`: the owner's elevation anywhere, and each artifact creator's on the artifacts they created, within what the creator may do there (O11, §7.2). | O2 and O11 in one formula. |
+| M6 | **Rights are GNAP access objects** with Clax types (`clax-artifacts`, `clax-comments`, `clax-db`, `clax-ask`), actions, and locations (`*`, `own`, or artifact IDs), plus reference presets (`clax:reader`, `clax:collaborator`, `clax:full`) (§7). An agent's effective rights are `(person ∩ grant narrowing ∩ agent narrowing) ∪ (⋃ elevations, capped by both narrowings)`: the owner's elevation anywhere, and each artifact creator's on the artifacts they created, within what the creator may do there; a narrowing that turns an action off turns it off for every elevation too (O11, "Narrowing caps raises", §7.2). | O2 and O11 in one formula. |
 | M7 | **Every route declares what an agent needs on the route itself.** A typed extractor (`Agent<N: Need>`) takes the artifact from the same `Path` the handler uses and checks the right; the route table of §7.5 is the contract, and the guard test reads it off handler signatures. | One router: no second path matcher beside axum's to drift from it. |
 | M8 | **One `Caller`, and every agent channel is an agent.** Every handler learns who it serves from one `Caller` (§6.1); no handler reads `Authorization` or checks the token itself. A token request is an owner agent when it names a session (path or `X-Clax-Session`) or carries the agent-channel marker `X-Clax-Channel: agent`, which every agent-side client sends (the shim, `/mcp`'s internal client, the hooks, `clax feedback follow`, Pi), and the CLI whenever it runs under a harness: through the plugins' wrapper (which exports `CLAX_CHANNEL=agent`: slash commands, hooks), or in a harness's shell (an agent's shell tool, Claude Code's `!` commands), detected from the variables each harness sets (§16); only the CLI run outside any harness, or with `CLAX_CHANNEL=owner`, is the owner. | About twenty handlers decide agent-ness with an inline token check today; with a grant they would misfile an agent's reply as an anonymous comment. |
 | M9 | **Visibility is separate from rights.** Rights say what an agent may do; visibility (approvals) says whose words may reach it. Approvals are given by the agent's person (R2). | O3: B's person decides what reaches B. |
@@ -211,10 +211,10 @@ invite for themselves (**Invite → Me**).
   Sam's rights reaches it; Sam could not give it anything he may not do
   there himself (an interpretation, O11), nor anything on an artifact he
   did not create. Mia's People shows the raise on her agent's card as
-  "Raised by Sam on “Sam's Notes”"; she may still narrow or end her agent.
-  As built, only Sam (or the agent's end) removes Sam's raise; that the
-  agent's person cannot is an interpretation awaiting the owner's answer
-  (O11).
+  "Raised by Sam on “Sam's Notes”" with Remove: she may remove it (so may
+  the owner; Sam may raise it again), and her narrowing caps it: with her
+  agent narrowed to read-only, it publishes nothing, "Sam's Notes"
+  included (O11, "Both may remove", "Narrowing caps raises").
 
 ### 3.5 Several agents of one person
 
@@ -1021,11 +1021,15 @@ never grantable (the route table, §7.5, marks it `Denied`).
 ### 7.2 Effective rights
 
 ```
-effective(agent)                         = (person_rights ∩ grant.narrow ∩ session.narrow) ∪ ⋃ elevation(g) over its granters g
+effective(agent)                         = (person_rights ∩ grant.narrow ∩ session.narrow)
+                                           ∪ cap(cap(⋃ elevation(g) over its granters g, person_rights, grant.narrow),
+                                                 person_rights ∩ grant.narrow, session.narrow)
 effective(session-less grant request)    = person_rights ∩ grant.narrow ∩ ⋂ live session.narrow
 
 elevation(owner)                         = access
 elevation(creator c)                     = access at the artifacts c created ∩ person_rights(c) there
+cap(E, B, N)                             = E without every action B allows somewhere and N allows nowhere,
+                                           its db level at most the highest N allows for that action
 ```
 
 - `person_rights` is `clax:full` for the owner row and `viewers.rights_json`
@@ -1042,10 +1046,28 @@ elevation(creator c)                     = access at the artifacts c created ∩
   granter's elevation never covers another person's artifact, and never
   gives what its granter may not do there. A granter revoked as a person
   gives nothing from then on, and their elevations are deleted (§14).
-- An elevation is the granter's alone: the agent's person cannot remove
-  it (they may narrow or end the agent), and a creator cannot narrow
-  another person's agent. Narrowing an agent never removes an elevation:
-  `∪` comes after `∩`.
+- **Narrowing caps raises** (the owner's decision, 2026-10-13): the
+  agent's person's narrowing, and the machine's, is the last word for
+  that agent. `cap` takes from every elevation each action a narrowing
+  turns off: one that what it narrows allows somewhere and the narrowing
+  allows nowhere; that action is then off for the agent everywhere,
+  raised or not. Where a narrowing lowers a db level, a raise's level
+  drops to it. A narrowing is stated within its person's rights, whose
+  locations a raise exists to exceed (Collaborator's `update` is at `own`;
+  Sam raises it at his artifact), so it caps a raise by action and level,
+  not location; and an action the person never had is not the
+  narrowing's to turn off (a Reader narrowed to fewer reads keeps a raised
+  `update`). This is the formula `((person ∪ ⋃ raises) ∩ grant.narrow ∩
+  session.narrow)` read with each narrowing's locations widened to every
+  artifact for the raises: intersected as written, a narrowing at `own`
+  would cancel every raise at another's artifact, however little it
+  turned off. A location-limited narrowing (made outside People, which
+  narrows by whole actions) caps by action only: an action it allows at
+  some artifact stays on for a raise elsewhere.
+- **Both may remove** (the owner's decision, 2026-10-13): the granter, the
+  agent's person and the owner each remove an elevation (§7.4); the
+  granter may raise it again. A creator cannot narrow another person's
+  agent.
 - `⋂ live session.narrow` is every narrowing of the grant's live sessions
   (§6.8): a request naming no session is never wider than any of them.
 - A session's rights are reached only with its secret (§6.8).
@@ -1073,8 +1095,13 @@ elevation(creator c)                     = access at the artifacts c created ∩
   (403 `not_creator` for `*`, `own`, `clax-ask`, which has no location,
   and any other artifact) and whose every action they hold there under
   their own rights (403 `beyond_your_rights`); an empty access is 400
-  `invalid_rights`. `DELETE` removes the caller's own elevation only, and
-  is 404 `not_raised`, recording nothing, when the caller has none. Both
+  `invalid_rights`. `DELETE` removes one granter's elevation of that agent
+  (`?granter=<public_id>` or `?granter=owner`; the caller's own when
+  absent): the granter removes their own, and the agent's person and the
+  owner remove any granter's ("Both may remove", recorded with `reason`
+  `removed_by_person` or `removed_by_owner`); it is 404 `not_raised`,
+  recording nothing, when that granter has none or the caller may not
+  remove it, alike. Both
   answer the owner, and a person raising their own agent, with the
   agent's whole view; a person raising another person's agent reads back
   only `{handle, name, person, elevation}`, `elevation` their own raise
@@ -1712,7 +1739,9 @@ owner ended it). An `idle` end also saves its direct watches to
    an hour.
 
 An elevation (§7.2, O11) ends with its session (step 4, `reason`
-`session_end`), when its granter removes it, and when its granter's
+`session_end`), when its granter removes it, when the agent's person or
+the owner removes it (`removed_by_person`, `removed_by_owner`; the granter
+may raise it again), and when its granter's
 standing to give it ends. Each of these deletes the stored raise and records
 `agent.elevate {session, access, granter, reason}`:
 
@@ -1854,11 +1883,11 @@ The route table (§7.5) is the agents' contract. New routes:
 
 - **People** (`/people`, lazy module `web/shell/src/people/`): for the
   owner, people (rights, machines with key fingerprints, agents with every
-  elevation and its granter, approvals in both directions: the owner's of
+  elevation and its granter, each with Remove, approvals in both directions: the owner's of
   the person's content, and the person's of the owner's content, O12),
   invites, connection requests, and the `*unconnected` switch (§9.6); for a
   person, their machines, agents (rename, narrow; every elevation and who
-  granted it), approvals and requests.
+  granted it, each with Remove), approvals and requests.
 - **The artifact's People panel:** for the artifact's creator (the owner on
   the owner's artifacts), each live agent row offers **Raise on this
   artifact** (O11): the actions the creator may give there, as checkboxes,
@@ -1882,7 +1911,7 @@ The route table (§7.5) is the agents' contract. New routes:
 | Gallery, artifacts, threads | all | filtered for the owner | all | filtered for the person | all |
 | Live pages | yes (local) | yes (local) | never | never | never |
 | Inbox, questions | own | own questions | own | own questions | none |
-| People, approvals | everyone, and each person's approvals of the owner's content (O12); changes in the browser | none (no approver, ever: §10) | self, who approves first and whose approval a thread waits for only about their own content or threads (§10), and their own raises on what they created (O11); changes in the browser | none | none (plain delivery states: §10) |
+| People, approvals | everyone, and each person's approvals of the owner's content (O12); removes any raise; changes in the browser | none (no approver, ever: §10) | self, who approves first and whose approval a thread waits for only about their own content or threads (§10), every raise of their own agents with its granter (removable), and their own raises on what they created (O11); changes in the browser | none | none (plain delivery states: §10) |
 | Agents roster | every agent | own (`status`) | own agents; others' names and states | own (`status`) | names on threads |
 
 A person's inbox and question views are not filtered by Visibility; they
@@ -2001,7 +2030,7 @@ another machine, so no `remote` channel is added.
 | `agent.name` | `name, source, previous` | the namer |
 | `session.start` (audit spec §6.8) | for a grant's session, also `secret_issued: true` (§6.8); neither the secret nor its hash is recorded | the session's agent |
 | `agent.narrow` | `session, access` | person, owner |
-| `agent.elevate` | `session, access, granter` (the granter's public ID, null for the owner); `reason` (`session_end`, `person_revoked`, `person_released`, `viewer_folded`, `artifact_deleted`, §14) when a change it did not ask for removes it; a removal that removes nothing is not recorded | granter, or whoever made that change |
+| `agent.elevate` | `session, access, granter` (the granter's public ID, null for the owner); `reason` (`session_end`, `removed_by_person`, `removed_by_owner`, `person_revoked`, `person_released`, `viewer_folded`, `artifact_deleted`, §14) when a change it did not ask for removes it; a removal that removes nothing is not recorded | granter, or whoever made that change |
 | `approval.request` | `request_id, approver, author, artifact_id, thread_id, cause, count`; recorded when a request is made and when new withheld content raises its `count` | asking agent or router |
 | `approval.decide` | `request_id, scope` (`thread`, `artifact`, `everywhere` or `decline`); one per request an approval closes | approver |
 | `approval.withdraw` | `request_id, reason (thread_resolved\|thread_deleted\|artifact_deleted\|session_end\|person_revoked\|thread_taken)` | whoever made the change that withdrew it |
@@ -2506,3 +2535,11 @@ task, with recommendations; the owner took every recommendation
   a person's release and a viewer's fold, and an outright artifact delete;
   a creator's reduced rights bound the raise at each check without
   deleting it. O11 and §3.4 mark what interprets the owner's words.
+- **Amendment** (2026-10-13, the owner's answers to the question on
+  removing a creator's raise): "Both may remove": the agent's person and
+  the owner each remove any raise of that agent (§7.4 `?granter=`, §14,
+  §18), the granter may raise it again. "Narrowing caps raises": M6 and
+  §7.2 cap every raise by the machine's and the agent's narrowings, by
+  action and db level (`cap`), so a narrowing is the last word for its
+  agent. O11 and §3.4 state the answers in place of the interpretation
+  that a raise was its granter's alone to remove.
