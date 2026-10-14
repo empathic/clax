@@ -482,6 +482,9 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
     // The stream's WebSocket, which the Durable Object upgrades and holds.
     #[cfg(target_arch = "wasm32")]
     let r = r.route("/api/stream", get(stream::open_socket));
+    // The tool set's JSON-RPC adapter: `/mcp` on a Durable Object, beside
+    // rmcp's `/mcp` in the daemon.
+    let r = r.merge(mcp_http::router(&state));
     let mut r = r;
     if let Some(tx) = shutdown {
         let tx = std::sync::Arc::new(tx);

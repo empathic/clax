@@ -7,7 +7,9 @@ use clax_core::ArtifactId;
 use clax_core::model::Session;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, Implementation, ServerCapabilities, ServerConfig};
+use rmcp::model::{
+    CallToolResponse, CallToolResult, Implementation, ServerCapabilities, ServerConfig,
+};
 use rmcp::{ErrorData as McpError, ServerHandler, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -961,6 +963,74 @@ impl ClaxTools {
     pub fn with_open_wait(mut self, wait: std::time::Duration) -> ClaxTools {
         self.open_wait = wait;
         self
+    }
+
+    /// Runs tool call `call` with `run`, given these tools acting under
+    /// it: every request the tool makes carries the call's ID and argument
+    /// hash, and once the result is ready the call is reported in the
+    /// background, so the report never delays the result.
+    async fn reported(
+        &self,
+        call: std::sync::Arc<crate::calls::CallScope>,
+        run: impl AsyncFnOnce(ClaxTools) -> Result<CallToolResponse, McpError>,
+    ) -> Result<CallToolResponse, McpError> {
+        // Reports the call however it ends, a cancelled call as an error.
+        let mut guard = CallGuard {
+            tools: self,
+            call: call.clone(),
+            outcome: clax_core::audit::ToolOutcome::Error,
+            _running: self.reports.running(),
+        };
+        let tools = ClaxTools {
+            client: self.client.under(call),
+            ..self.clone()
+        };
+        let res = run(tools).await;
+        guard.outcome = match &res {
+            Ok(CallToolResponse::Complete(r)) if r.is_error == Some(true) => {
+                clax_core::audit::ToolOutcome::Error
+            }
+            Ok(_) => clax_core::audit::ToolOutcome::Ok,
+            Err(_) => clax_core::audit::ToolOutcome::Error,
+        };
+        drop(guard);
+        res
+    }
+
+    /// These tools acting for a caller whose credential is `authorization`
+    /// (its `Authorization` header, or none): every request they make
+    /// carries it in place of the client's token
+    /// ([`DaemonClient::as_caller`]), so a tool can do only what its caller
+    /// may. A transport that serves several callers with one tool set
+    /// (`crate::http`) calls each caller's tools this way.
+    pub fn for_caller(&self, authorization: Option<http::HeaderValue>) -> ClaxTools {
+        ClaxTools {
+            client: self.client.as_caller(authorization),
+            ..self.clone()
+        }
+    }
+
+    /// `tools/call` without an rmcp service around it, for a transport
+    /// that answers JSON-RPC itself (`crate::http`): the named tool's
+    /// method called directly, under its own call ID and reported, as
+    /// [`ServerHandler::call_tool`] runs it. The answers are the tool
+    /// router's: arguments that do not deserialize are an error result
+    /// naming why, and a name that is no tool is `invalid_params` "tool not
+    /// found".
+    pub async fn call_direct(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+    ) -> Result<CallToolResponse, McpError> {
+        if !self.tool_router.has_route(&request.name) {
+            return Err(McpError::invalid_params("tool not found", None));
+        }
+        let call = self.begin_call(&request.name, request.arguments.as_ref());
+        let name = request.name;
+        let arguments = request.arguments.unwrap_or_default();
+        self.reported(call, async move |tools: ClaxTools| {
+            tools.invoke(&name, arguments).await
+        })
+        .await
     }
 
     /// How many tools the set has.
@@ -2439,6 +2509,67 @@ fn run_opener(program: &Path, url: &str, wait: std::time::Duration) -> bool {
     }
 }
 
+/// [`ClaxTools::invoke`], and [`DIRECT`], the tools it calls: every tool
+/// of [`ClaxTools::tools`], which a test checks.
+macro_rules! direct_tools {
+    ($($tool:ident),* $(,)?) => {
+        /// The tools [`ClaxTools::call_direct`] calls.
+        #[cfg(test)]
+        const DIRECT: &[&str] = &[$(stringify!($tool)),*];
+
+        impl ClaxTools {
+            /// Calls tool `name`'s method with `arguments`, as the tool
+            /// router does: arguments that do not deserialize are an error
+            /// result naming why, not a protocol error.
+            async fn invoke(
+                &self,
+                name: &str,
+                arguments: Map<String, Value>,
+            ) -> Result<CallToolResponse, McpError> {
+                use rmcp::handler::server::tool::parse_json_object;
+                let res = match name {
+                    $(stringify!($tool) => match parse_json_object(arguments) {
+                        Ok(args) => self.$tool(Parameters(args)).await,
+                        Err(e) => Ok(CallToolResult::error(vec![
+                            rmcp::model::ContentBlock::text(e.message),
+                        ])),
+                    },)*
+                    _ => return Err(McpError::invalid_params("tool not found", None)),
+                };
+                res.map(CallToolResponse::from)
+            }
+        }
+    };
+}
+
+direct_tools!(
+    publish,
+    read,
+    list,
+    delete,
+    open,
+    pin,
+    unpin,
+    asset_upload,
+    status,
+    comments_read,
+    comments_reply,
+    comments_resolve,
+    watch,
+    wait_for_feedback,
+    working,
+    draft,
+    ask,
+    db_get,
+    db_list,
+    db_query,
+    db_set,
+    db_update,
+    db_delete,
+    db_str_replace,
+    db_batch,
+);
+
 #[tool_router]
 impl ClaxTools {
     #[tool(
@@ -2833,7 +2964,7 @@ impl ServerHandler for ClaxTools {
         &self,
         request: rmcp::model::CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
-    ) -> Result<rmcp::model::CallToolResponse, McpError> {
+    ) -> Result<CallToolResponse, McpError> {
         use rmcp::handler::server::tool::ToolCallContext;
         if !self.tool_router.has_route(&request.name) {
             return self
@@ -2842,30 +2973,13 @@ impl ServerHandler for ClaxTools {
                 .await;
         }
         let call = self.begin_call(&request.name, request.arguments.as_ref());
-        // Reports the call however it ends, a cancelled call as an error.
-        let mut guard = CallGuard {
-            tools: self,
-            call: call.clone(),
-            outcome: clax_core::audit::ToolOutcome::Error,
-            _running: self.reports.running(),
-        };
-        let tools = ClaxTools {
-            client: self.client.under(call),
-            ..self.clone()
-        };
-        let res = self
-            .tool_router
-            .call(ToolCallContext::new(&tools, request, context))
-            .await;
-        guard.outcome = match &res {
-            Ok(rmcp::model::CallToolResponse::Complete(r)) if r.is_error == Some(true) => {
-                clax_core::audit::ToolOutcome::Error
-            }
-            Ok(_) => clax_core::audit::ToolOutcome::Ok,
-            Err(_) => clax_core::audit::ToolOutcome::Error,
-        };
-        drop(guard);
-        res
+        self.reported(call, async |tools: ClaxTools| {
+            tools
+                .tool_router
+                .call(ToolCallContext::new(&tools, request, context))
+                .await
+        })
+        .await
     }
 
     fn get_info(&self) -> ServerConfig {
@@ -2907,6 +3021,19 @@ impl ServerHandler for ClaxTools {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `call_direct` reaches every tool the router lists, and no other.
+    #[test]
+    fn every_tool_is_called_directly() {
+        let mut listed: Vec<String> = ClaxTools::tools()
+            .into_iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        listed.sort();
+        let mut direct: Vec<String> = DIRECT.iter().map(|n| n.to_string()).collect();
+        direct.sort();
+        assert_eq!(direct, listed);
+    }
 
     /// The contract fixture shared with the Pi extension's tests.
     fn fixture() -> Value {

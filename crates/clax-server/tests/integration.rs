@@ -65,6 +65,8 @@ mod api_live_sites;
 mod api_live_watch;
 #[cfg(any(not(clax_split), clax_split = "api_mcp"))]
 mod api_mcp;
+#[cfg(any(not(clax_split), clax_split = "api_mcp_http"))]
+mod api_mcp_http;
 #[cfg(any(not(clax_split), clax_split = "api_notices"))]
 mod api_notices;
 #[cfg(any(not(clax_split), clax_split = "api_owner"))]

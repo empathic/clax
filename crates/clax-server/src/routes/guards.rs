@@ -754,6 +754,19 @@ mod l10 {
         let mcp = include_str!("mcp.rs");
         assert!(mcp.contains(".route_service(\"/mcp\"") && mcp.contains("require_token"));
         assert_eq!(routes(mcp).len(), 0, "a new MCP route: check it here");
+        // So is the JSON-RPC adapter's, behind the same gate as `/mcp`.
+        let adapter = include_str!("mcp_http.rs");
+        assert!(adapter.contains(".route_service(PATH") && adapter.contains("require_token"));
+        assert_eq!(routes(adapter).len(), 0, "a new MCP route: check it here");
+        let gate = |src: &'static str| {
+            let at = &src[src.find("async fn require_token(").unwrap()..];
+            &at[..at.find("\n}\n").unwrap()]
+        };
+        assert_eq!(
+            gate(adapter),
+            gate(mcp),
+            "the two MCP endpoints' gates differ"
+        );
     }
 }
 
@@ -1228,6 +1241,10 @@ mod agents {
                 function_any(src, "test_slow_publish"),
             ),
             ("/mcp", function_any(mcp, "require_token")),
+            (
+                "/mcp/json",
+                function_any(include_str!("mcp_http.rs"), "require_token"),
+            ),
         ]
     }
 
@@ -1427,6 +1444,7 @@ mod agents {
             .collect();
         modules.push(("mod".into(), src));
         modules.push(("mcp".into(), include_str!("mcp.rs")));
+        modules.push(("mcp_http".into(), include_str!("mcp_http.rs")));
         modules.push((
             "db_caller".into(),
             include_str!("../../../clax-http/src/db_caller.rs"),

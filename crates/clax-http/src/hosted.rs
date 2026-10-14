@@ -2229,6 +2229,8 @@ mod tests {
             (Method::GET, "/api/threads", None, Refused),
             (Method::POST, "/api/sessions", None, Refused),
             (Method::GET, "/mcp", None, Refused),
+            (Method::POST, "/mcp", None, Refused),
+            (Method::POST, "/mcp/json", None, Refused),
         ];
         for (m, p, q, want) in cases {
             assert_eq!(&guest_need(m, p, *q), want, "{m} {p} {q:?}");

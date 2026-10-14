@@ -19,6 +19,8 @@ use clax_core::secret::Secret;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -87,6 +89,21 @@ pub struct Endpoint {
 /// runs on a blocking thread.
 pub type Refresh = Arc<dyn Fn() -> anyhow::Result<Endpoint> + Send + Sync>;
 
+/// The answer an [`InProcess`] transport gives: the daemon's whole response.
+pub type InProcessFuture = Pin<Box<dyn Future<Output = http::Response<bytes::Bytes>> + Send>>;
+
+/// Carries a request to the daemon's router in the same process, in place
+/// of the network ([`DaemonClient::with_in_process`]). The request is what
+/// the daemon's HTTP server would hand its router: method, a path-and-query
+/// URI, the client's headers with `Host` set from the base URL, and the
+/// whole body. The answer is the router's response with its whole body.
+/// The transport is the daemon's to implement (it owns the router); a
+/// Durable Object, which is its own daemon, reaches its routes this way
+/// rather than over `fetch` to itself.
+pub trait InProcess: Send + Sync {
+    fn call(&self, req: http::Request<bytes::Bytes>) -> InProcessFuture;
+}
+
 /// A client of one daemon's REST API.
 ///
 /// A client made with [`DaemonClient::new`] talks to a fixed endpoint. One made
@@ -115,6 +132,18 @@ pub struct DaemonClient {
     via: Option<&'static str>,
     /// The longest one remote clip fetch may take ([`CLIP_FETCH_TIME`]).
     clip_fetch_time: Duration,
+    auth: Auth,
+}
+
+/// The credential a client's requests carry.
+#[derive(Clone, Debug)]
+enum Auth {
+    /// The endpoint's token, as `Bearer` (none for a remote daemon, whose
+    /// requests are signed).
+    Token,
+    /// The `Authorization` of the caller the client acts for
+    /// ([`DaemonClient::as_caller`]), or none.
+    Caller(Option<http::HeaderValue>),
 }
 
 struct Inner {
@@ -128,6 +157,8 @@ struct Inner {
     /// Remote mode: every request is signed with this grant's key and
     /// retried by [`Retry`]'s rule; no bearer token is sent.
     remote: Option<Arc<Remote>>,
+    /// Requests go to the daemon's router in-process, not over the network.
+    in_process: Option<Arc<dyn InProcess>>,
 }
 
 /// Whether finding the daemon may start one.
@@ -184,6 +215,7 @@ struct Conn<'a> {
     /// A remote daemon's: requests carry the grant, added as they are
     /// signed.
     remote: bool,
+    auth: Auth,
 }
 
 impl Conn<'_> {
@@ -197,8 +229,11 @@ impl Conn<'_> {
         {
             req = req.timeout(REQUEST_TIMEOUT);
         }
-        if !self.remote {
-            req = req.bearer_auth(&self.endpoint.token);
+        match &self.auth {
+            _ if self.remote => {}
+            Auth::Token => req = req.bearer_auth(&self.endpoint.token),
+            Auth::Caller(Some(v)) => req = req.header(http::header::AUTHORIZATION, v.clone()),
+            Auth::Caller(None) => {}
         }
         if let Some(v) = self.via {
             req = req.header("x-clax-via", v);
@@ -250,6 +285,32 @@ impl Stale {
 struct Failure {
     error: ClientError,
     refreshable: bool,
+}
+
+/// A daemon's answer: a response from the network, or one an [`InProcess`]
+/// transport handed back whole.
+enum Reply {
+    Net(reqwest::Response),
+    Whole {
+        status: reqwest::StatusCode,
+        body: bytes::Bytes,
+    },
+}
+
+impl Reply {
+    fn status(&self) -> reqwest::StatusCode {
+        match self {
+            Reply::Net(r) => r.status(),
+            Reply::Whole { status, .. } => *status,
+        }
+    }
+
+    async fn bytes(self) -> std::result::Result<bytes::Bytes, Failure> {
+        match self {
+            Reply::Net(r) => r.bytes().await.map_err(transport_error),
+            Reply::Whole { body, .. } => Ok(body),
+        }
+    }
 }
 
 /// The client every request goes out on. It follows no redirect: a
@@ -307,10 +368,12 @@ impl DaemonClient {
                 managed: None,
                 agent,
                 remote: None,
+                in_process: None,
             }),
             call: None,
             via: None,
             clip_fetch_time: CLIP_FETCH_TIME,
+            auth: Auth::Token,
         }
     }
 
@@ -354,6 +417,22 @@ impl DaemonClient {
         self
     }
 
+    /// This client sending its requests through `transport` to the
+    /// daemon's router in-process, as it would send them to its base URL
+    /// (which still names the `Host` they carry). Every request is the
+    /// same, headers and deadlines included; an asset upload's form is
+    /// written out whole rather than streamed. Call it on a client just
+    /// made.
+    ///
+    /// # Panics
+    /// When the client has been cloned already.
+    pub fn with_in_process(mut self, transport: Arc<dyn InProcess>) -> DaemonClient {
+        Arc::get_mut(&mut self.inner)
+            .expect("with_in_process on a client just made")
+            .in_process = Some(transport);
+        self
+    }
+
     /// This client naming channel `via` (`mcp`, `cli`, …) on every request.
     pub fn with_via(mut self, via: &'static str) -> DaemonClient {
         self.via = Some(via);
@@ -381,10 +460,12 @@ impl DaemonClient {
                 }),
                 agent: true,
                 remote: None,
+                in_process: None,
             }),
             call: None,
             via: Some(VIA),
             clip_fetch_time: CLIP_FETCH_TIME,
+            auth: Auth::Token,
         }
     }
 
@@ -409,6 +490,20 @@ impl DaemonClient {
             call: Some(call),
             via: self.via,
             clip_fetch_time: self.clip_fetch_time,
+            auth: self.auth.clone(),
+        }
+    }
+
+    /// This client acting for a caller whose credential is
+    /// `authorization` (its `Authorization` header, or none): every
+    /// request carries it in place of the endpoint's token, so what the
+    /// client does is what the caller may do. A daemon's tools reached
+    /// in-process ([`DaemonClient::with_in_process`]) act for the MCP
+    /// caller this way.
+    pub fn as_caller(&self, authorization: Option<http::HeaderValue>) -> DaemonClient {
+        DaemonClient {
+            auth: Auth::Caller(authorization),
+            ..self.clone()
         }
     }
 
@@ -558,6 +653,7 @@ impl DaemonClient {
                 via: self.via,
                 agent: self.inner.agent,
                 remote: self.inner.remote.is_some(),
+                auth: self.auth.clone(),
             };
             let mut req = conn
                 .request(reqwest::Method::POST, "/api/sessions")
@@ -654,16 +750,14 @@ impl DaemonClient {
             via: self.via,
             agent: self.inner.agent,
             remote: self.inner.remote.is_some(),
+            auth: self.auth.clone(),
         })
     }
 
     /// Sends `req` with the current call's `x-clax-git`, unless it has one:
     /// every request but a `GET` waits for the capture, and a `GET` carries
     /// it once it is there, so reads made while it runs are not held up.
-    async fn send_once(
-        &self,
-        req: reqwest::RequestBuilder,
-    ) -> std::result::Result<reqwest::Response, Failure> {
+    async fn send_once(&self, req: reqwest::RequestBuilder) -> std::result::Result<Reply, Failure> {
         let Some(call) = self.call.as_ref().filter(|c| c.has_git()) else {
             return self.attempt(req).await;
         };
@@ -683,12 +777,12 @@ impl DaemonClient {
             .await
     }
 
-    /// Sends `req`: as it is, or for a remote daemon signed
-    /// ([`DaemonClient::attempt_signed`]).
-    async fn attempt(
-        &self,
-        req: reqwest::RequestBuilder,
-    ) -> std::result::Result<reqwest::Response, Failure> {
+    /// Sends `req`: as it is, for a remote daemon signed
+    /// ([`attempt_signed`]), or in-process ([`attempt_in_process`]).
+    async fn attempt(&self, req: reqwest::RequestBuilder) -> std::result::Result<Reply, Failure> {
+        if let Some(t) = &self.inner.in_process {
+            return attempt_in_process(t.as_ref(), req).await;
+        }
         match &self.inner.remote {
             Some(r) => attempt_signed(r, req).await,
             None => attempt(req).await,
@@ -708,14 +802,14 @@ impl DaemonClient {
     /// the refresh fails, its error is returned (it says why the daemon
     /// cannot be reached, such as an upgrade that was rolled back), naming
     /// the original failure too.
-    async fn send<F>(&self, build: F) -> Result<reqwest::Response>
+    async fn send<F>(&self, build: F) -> Result<Reply>
     where
         F: Fn(&Conn<'_>) -> reqwest::RequestBuilder,
     {
         self.send_with(Mode::AutoStart, build).await
     }
 
-    async fn send_with<F>(&self, mode: Mode, build: F) -> Result<reqwest::Response>
+    async fn send_with<F>(&self, mode: Mode, build: F) -> Result<Reply>
     where
         F: Fn(&Conn<'_>) -> reqwest::RequestBuilder,
     {
@@ -812,10 +906,7 @@ impl DaemonClient {
         let res = self
             .send(|c| c.request(reqwest::Method::GET, &path))
             .await?;
-        res.bytes()
-            .await
-            .map(|b| b.to_vec())
-            .map_err(|e| transport_error(e).error)
+        res.bytes().await.map(|b| b.to_vec()).map_err(|f| f.error)
     }
 
     /// `POST /api/artifacts/<id>/assets` (multipart field `file`): `{asset, url}`.
@@ -836,10 +927,10 @@ impl DaemonClient {
                 status: 400,
                 error: json!({"code": "invalid_content_type", "message": e.to_string()}),
             })?;
-        // A remote daemon's request is signed over its body, which must
-        // be whole bytes: the form is written out rather than streamed.
-        let whole = self
-            .is_remote()
+        // A remote daemon's request is signed over its body, and an
+        // in-process one carries it, so both must be whole bytes: the form
+        // is written out rather than streamed.
+        let whole = (self.is_remote() || self.inner.in_process.is_some())
             .then(|| multipart_bytes(filename, content_type, &bytes));
         self.json(|c| {
             let req = c
@@ -987,7 +1078,7 @@ impl DaemonClient {
         self.json(|c| {
             c.request(
                 reqwest::Method::GET,
-                &format!("/api/artifacts/{id}/threads/{tid}"),
+                &format!("/api/artifacts/{id}/threads/{}", encode_segment(tid)),
             )
         })
         .await
@@ -1005,7 +1096,10 @@ impl DaemonClient {
         self.json(|c| {
             c.request(
                 reqwest::Method::POST,
-                &format!("/api/artifacts/{id}/threads/{tid}/comments"),
+                &format!(
+                    "/api/artifacts/{id}/threads/{}/comments",
+                    encode_segment(tid)
+                ),
             )
             .json(&body)
         })
@@ -1019,7 +1113,10 @@ impl DaemonClient {
         self.json(|c| {
             c.request(
                 reqwest::Method::POST,
-                &format!("/api/artifacts/{id}/threads/{tid}/resolve"),
+                &format!(
+                    "/api/artifacts/{id}/threads/{}/resolve",
+                    encode_segment(tid)
+                ),
             )
             .json(&body)
         })
@@ -1650,7 +1747,7 @@ fn multipart_bytes(filename: &str, content_type: &str, bytes: &[u8]) -> (String,
 async fn attempt_signed(
     remote: &Remote,
     req: reqwest::RequestBuilder,
-) -> std::result::Result<reqwest::Response, Failure> {
+) -> std::result::Result<Reply, Failure> {
     let bad = |m: &str| Failure {
         error: ClientError::BadResponse(m.to_string()),
         refreshable: false,
@@ -1694,7 +1791,9 @@ async fn attempt_signed(
             if let Some(h) = b.headers_mut() {
                 *h = headers.clone();
             }
-            reqwest::Response::from(b.body(bytes).map_err(|e| bad(&e.to_string()))?)
+            Reply::Net(reqwest::Response::from(
+                b.body(bytes).map_err(|e| bad(&e.to_string()))?,
+            ))
         };
         if !matches!(status.as_u16(), 401 | 429 | 503) {
             return check(whole).await;
@@ -1745,7 +1844,7 @@ async fn attempt_signed(
 async fn attempt_signed(
     remote: &Remote,
     _req: reqwest::RequestBuilder,
-) -> std::result::Result<reqwest::Response, Failure> {
+) -> std::result::Result<Reply, Failure> {
     Err(Failure {
         error: ClientError::Unreachable(format!(
             "the remote Clax at {} is reached from a native client only",
@@ -1779,18 +1878,76 @@ async fn capped_body(mut res: reqwest::Response) -> std::result::Result<bytes::B
 
 /// Sends `req`; a non-success status becomes `ClientError::Api` with the body's
 /// `error` object.
-async fn attempt(req: reqwest::RequestBuilder) -> std::result::Result<reqwest::Response, Failure> {
-    check(req.send().await.map_err(transport_error)?).await
+async fn attempt(req: reqwest::RequestBuilder) -> std::result::Result<Reply, Failure> {
+    check(Reply::Net(req.send().await.map_err(transport_error)?)).await
+}
+
+/// Hands `req` to the daemon's router through `transport`, as the daemon's
+/// HTTP server would: the URL's path and query as the URI, its authority
+/// as `Host`, the body whole, under the request's deadline (else
+/// [`REQUEST_TIMEOUT`]). The answer is [`check`]ed as a network one is.
+async fn attempt_in_process(
+    transport: &dyn InProcess,
+    req: reqwest::RequestBuilder,
+) -> std::result::Result<Reply, Failure> {
+    let bad = |m: String| Failure {
+        error: ClientError::BadResponse(m),
+        refreshable: false,
+    };
+    let built = req.build().map_err(transport_error)?;
+    let body = match built.body() {
+        None => bytes::Bytes::new(),
+        Some(b) => bytes::Bytes::copy_from_slice(
+            b.as_bytes()
+                .ok_or_else(|| bad("a streamed body cannot go in-process".into()))?,
+        ),
+    };
+    let url = built.url();
+    let path_and_query = match url.query() {
+        Some(q) => format!("{}?{q}", url.path()),
+        None => url.path().to_string(),
+    };
+    let mut request = http::Request::builder()
+        .method(built.method().clone())
+        .uri(path_and_query);
+    if let Some(h) = request.headers_mut() {
+        *h = built.headers().clone();
+        let host = match (url.host_str(), url.port()) {
+            (Some(host), Some(port)) => format!("{host}:{port}"),
+            (Some(host), None) => host.to_string(),
+            (None, _) => String::new(),
+        };
+        if let Ok(v) = http::HeaderValue::from_str(&host) {
+            h.insert(http::header::HOST, v);
+        }
+    }
+    let request = request.body(body).map_err(|e| bad(e.to_string()))?;
+    let deadline = built.timeout().copied().unwrap_or(REQUEST_TIMEOUT);
+    let res = clax_rt::time::timeout(deadline, transport.call(request))
+        .await
+        .map_err(|_| Failure {
+            error: ClientError::Timeout(format!("the daemon did not answer within {deadline:?}")),
+            refreshable: false,
+        })?;
+    let (parts, body) = res.into_parts();
+    check(Reply::Whole {
+        status: parts.status,
+        body,
+    })
+    .await
 }
 
 /// `res` when its status is a success; else `ClientError::Api` with the
 /// body's `error` object.
-async fn check(res: reqwest::Response) -> std::result::Result<reqwest::Response, Failure> {
+async fn check(res: Reply) -> std::result::Result<Reply, Failure> {
     let status = res.status();
     if status.is_success() {
         return Ok(res);
     }
-    let body: Value = res.json().await.unwrap_or(Value::Null);
+    let body: Value = match res.bytes().await {
+        Ok(b) => serde_json::from_slice(&b).unwrap_or(Value::Null),
+        Err(_) => Value::Null,
+    };
     let error = match body.get("error") {
         Some(e) if e.is_object() => e.clone(),
         _ => json!({
@@ -1809,11 +1966,11 @@ async fn check(res: reqwest::Response) -> std::result::Result<reqwest::Response,
     })
 }
 
-async fn body_json(res: reqwest::Response) -> Result<Value> {
+async fn body_json(res: Reply) -> Result<Value> {
     if res.status() == reqwest::StatusCode::NO_CONTENT {
         return Ok(json!({}));
     }
-    let bytes = res.bytes().await.map_err(|e| transport_error(e).error)?;
+    let bytes = res.bytes().await.map_err(|f| f.error)?;
     serde_json::from_slice(&bytes).map_err(|e| ClientError::BadResponse(e.to_string()))
 }
 
@@ -1851,15 +2008,34 @@ fn transport_error(e: reqwest::Error) -> Failure {
     }
 }
 
+/// Percent-encodes every byte of `segment` outside the RFC 3986 unreserved
+/// set, and `/` and `.`: an ID from a tool's arguments names one path
+/// segment, never another route (`..`, `../..`).
+fn encode_segment(segment: &str) -> String {
+    encode_path(segment).replace('/', "%2F").replace('.', "%2E")
+}
+
 /// Percent-encodes every byte of `path` outside the RFC 3986 unreserved set,
-/// keeping `/` as the segment separator.
+/// keeping `/` as the segment separator; a `.` or `..` segment is encoded
+/// whole, so the path stays under the route it is appended to (the daemon
+/// refuses such a segment) rather than climbing out of it as the URL is
+/// resolved.
 fn encode_path(path: &str) -> String {
     let mut out = String::with_capacity(path.len());
-    for b in path.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~' | b'/') {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
+    for (i, seg) in path.split('/').enumerate() {
+        if i > 0 {
+            out.push('/');
+        }
+        if seg == "." || seg == ".." {
+            out.push_str(&"%2E".repeat(seg.len()));
+            continue;
+        }
+        for b in seg.bytes() {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+                out.push(b as char);
+            } else {
+                out.push_str(&format!("%{b:02X}"));
+            }
         }
     }
     out
@@ -1888,9 +2064,51 @@ mod tests {
         assert_eq!(marker(&by_hand), None);
     }
 
+    /// A client acting for a caller sends the caller's `Authorization`, or
+    /// none, never its own token, and keeps doing so under a tool call.
+    #[test]
+    fn a_client_acting_for_a_caller_sends_only_the_callers_credential() {
+        let auth = |c: &super::DaemonClient| {
+            let conn = c.conn().unwrap();
+            let r = conn
+                .request(reqwest::Method::GET, "/api/artifacts")
+                .build()
+                .unwrap();
+            let all: Vec<String> = r
+                .headers()
+                .get_all(http::header::AUTHORIZATION)
+                .iter()
+                .map(|v| v.to_str().unwrap().to_string())
+                .collect();
+            all
+        };
+        let own = super::DaemonClient::new("http://127.0.0.1:1".into(), "own".into(), None);
+        assert_eq!(auth(&own), ["Bearer own"]);
+        let caller = own.as_caller(Some(http::HeaderValue::from_static("Bearer cxa_theirs")));
+        assert_eq!(auth(&caller), ["Bearer cxa_theirs"]);
+        let call = std::sync::Arc::new(crate::calls::CallScope::begin("list", None, None));
+        assert_eq!(auth(&caller.under(call)), ["Bearer cxa_theirs"]);
+        assert!(auth(&own.as_caller(None)).is_empty());
+        assert_eq!(auth(&own), ["Bearer own"]);
+    }
+
     #[test]
     fn encode_path_escapes_reserved_bytes_but_not_slashes() {
         assert_eq!(super::encode_path("a/b c#?.js"), "a/b%20c%23%3F.js");
         assert_eq!(super::encode_path("é"), "%C3%A9");
+        assert_eq!(
+            super::encode_path("../../../a/./b..c/.."),
+            "%2E%2E/%2E%2E/%2E%2E/a/%2E/b..c/%2E%2E"
+        );
+    }
+
+    #[test]
+    fn encode_segment_keeps_an_id_to_one_segment() {
+        assert_eq!(super::encode_segment("01JABC"), "01JABC");
+        assert_eq!(super::encode_segment(".."), "%2E%2E");
+        assert_eq!(
+            super::encode_segment("../../mcp/json?x="),
+            "%2E%2E%2F%2E%2E%2Fmcp%2Fjson%3Fx%3D"
+        );
     }
 }
