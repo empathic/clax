@@ -13,6 +13,18 @@ files).
 | `kit.css` | the design system: tokens, type, components | Clax |
 | `kit.js` | Preact components over `kit.css` | Clax |
 | `chart.js` | SVG line, area, bar, pie, donut and sparkline charts | Clax |
+| `map.js` | `MapView`, a slippy map: tiles fetched through the `net` capability and shown as `blob:` images, markers, a "you are here" dot; its styles are added by the module | Clax |
+
+The map loads nothing itself: a page may reach other hosts only through
+`net` (docs/contract.md, "Fetching from the network"), so `map.js` fetches
+each `{z}/{x}/{y}` tile with `net.fetch`, keeps up to 300 as `blob:` URLs
+(least recently used are revoked), runs 6 fetches at a time and never
+starts one for a tile no map shows any more. The app declares the tile host
+(`{"net": {"hosts": ["tile.openstreetmap.org"]}}`); the first tile asks
+the owner, and a refusal shows a note in the map instead of tiles.
+OpenStreetMap's tile policy wants its attribution visible and an
+identifying client: the map always shows it, and the daemon sends
+`User-Agent: Clax/<version>`.
 
 Each vendored file opens with a comment naming its packages, versions,
 licences and copyright holders; `LICENSES.txt` holds the full licence
