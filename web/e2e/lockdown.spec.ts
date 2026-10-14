@@ -218,14 +218,22 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       theirsOld: `${d.base}/_blob/${theirs.id}`,
       theirsRel: `/_blob/${theirs.id}`,
     };
-    const html = `<!doctype html><title>Assets</title>${Object.entries(imgs).map(([k, u]) => `<img id="${k}" src="${u}" alt="">`).join("")}`;
+    const html = `<!doctype html><title>Assets</title>${Object.entries(imgs).map(([k, u]) => `<img id="${k}" src="${u}" alt="">`).join("")}`
+      + `<img id="viaHelper" alt=""><script>document.getElementById("viaHelper").src = claude.assetUrl(${JSON.stringify(mine.id)});</script>`;
     await publish(d.base, d.token, `Mine ${mode}`, { "index.html": html }, 1, a);
     const f = await openArtifact(p, d.base, a, 2, mode);
     const loaded = (k: string) => f.locator(`#${k}`).evaluate(i => (i as HTMLImageElement).complete ? (i as HTMLImageElement).naturalWidth > 0 : null);
     await expect.poll(() => loaded("mineAbs")).toBe(true);
     for (const k of ["theirsAbs", "theirsUnderMine", "theirsOld", "theirsRel"]) await expect.poll(() => loaded(k), { message: k }).toBe(false);
-    // On its own origin a page's root-relative `/_blob/<id>` is its own asset.
-    if (mode === "subdomain") await expect.poll(() => loaded("mineRel")).toBe(true);
+    // The URL the assets API returns, and `claude.assetUrl(id)`, load in
+    // both modes.
+    await expect.poll(() => loaded("mineRel")).toBe(true);
+    await expect.poll(() => loaded("viaHelper")).toBe(true);
+    expect(await f.locator("#viaHelper").getAttribute("src")).toBe(mine.url);
+    // An older page's root-relative `"/_blob/" + id` is its own asset on
+    // its own origin, and refused in a sandboxed frame.
+    const old = await f.evaluate(id => new Promise<boolean>(r => { const i = new Image(); i.onload = () => r(true); i.onerror = () => r(false); i.src = "/_blob/" + id; }), mine.id);
+    expect(old).toBe(mode === "subdomain");
     // Fetching: its own asset, never another's.
     const got = await f.evaluate(async u => Promise.all(u.map(x => fetch(x).then(r => `status:${r.status}`, () => "refused"))), [imgs.mineAbs, imgs.theirsAbs, imgs.theirsUnderMine]);
     // Another app's asset is refused by the policy, or under this app's

@@ -3,7 +3,7 @@ import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 import { BRIDGE_TYPES } from "../src/protocol";
 import { hashFor, helloFor, isBridgeSrc, isFirstBridge, readMeta } from "../src/meta";
 
-declare global { interface Window { claude?: { use(name: string): Promise<unknown> }; __clax?: { artifact: string; version: number; contract: string; file: string } } }
+declare global { interface Window { claude?: { use(name: string): Promise<unknown>; assetUrl(id: unknown): string }; __clax?: { artifact: string; version: number; contract: string; file: string } } }
 
 // window.claude is defined non-configurable, so the bridge loads once and
 // every test shares that single load.
@@ -29,7 +29,7 @@ describe("bridge", () => {
   afterEach(() => { vi.restoreAllMocks(); });
 
   it("exposes only use() and resolves null for every capability when unframed", async () => {
-    expect(Object.keys(window.claude!)).toEqual(["use"]);
+    expect(Object.keys(window.claude!)).toEqual(["use", "assetUrl"]);
     for (const name of ["db", "artifact", "self", "permissions", "room", "sample", "nonsense"]) {
       await expect(window.claude!.use(name)).resolves.toBeNull();
     }
@@ -40,6 +40,12 @@ describe("bridge", () => {
     expect(Object.isFrozen(window.claude)).toBe(true);
     expect(window.claude!.use("db")).toBe(window.claude!.use("db"));
     expect(() => { (window as any).claude = {}; }).toThrow();
+  });
+
+  it("builds the URL of the artifact's own asset from its ID", () => {
+    expect(window.claude!.assetUrl("01J9ZZZZZZZZZZZZZZZZZZZZZZ")).toBe("/_blob/7q3k9mzx2b4t/01J9ZZZZZZZZZZZZZZZZZZZZZZ");
+    // Whatever it is given stays one path segment under the artifact's prefix.
+    expect(window.claude!.assetUrl("../../api/artifacts")).toBe("/_blob/7q3k9mzx2b4t/..%2F..%2Fapi%2Fartifacts");
   });
 
   it("reads its metadata from the script tag", () => {
