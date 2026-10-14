@@ -128,6 +128,11 @@ app-test:
 app-integration:
     ./scripts/build-app-clax.sh macos && cd apps/clax_app && flutter test integration_test -d macos
 
+# Build each eval prompt into an app with the in-app agent on a live model, results in target/flutter-app/eval/<run>/ (needs ANTHROPIC_API_KEY; up to $6 a build, refused over --max-spend, $30 by default): [--model ID] [--prompts a,b] [--max-spend USD] [--run NAME]
+[positional-arguments]
+app-eval *ARGS:
+    apps/clax_app/tool/eval/run.sh "$@"
+
 # Build the Android clax binaries and the Clax app's release APK, for arm64 and x86_64 only (the ABIs clax is built for); disable-abi-filtering keeps Flutter's Gradle plugin from adding armeabi-v7a back to the app's abiFilters
 app-apk:
     ./scripts/build-app-clax.sh android && cd apps/clax_app && flutter build apk --release --target-platform android-arm64,android-x64 -P disable-abi-filtering=true
