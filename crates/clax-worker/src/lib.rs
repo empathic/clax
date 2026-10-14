@@ -49,7 +49,9 @@
 //!   and answered with its row ID and the note count.
 //!
 //! The Worker also hands `/git/<repo>.git/…` and `/_dev/repos/…` to
-//! [`repos`] (artifact repositories, their tokens and assets).
+//! [`repos`] (artifact repositories, their tokens and assets), and, with
+//! `CLAX_DIAG_ROUTES` = `1`, `/_diag/…` to [`diag`] (what the platform's
+//! bindings answer, for the owner's token only).
 //!
 //! # Pushes
 //!
@@ -78,6 +80,7 @@
 //! checks the spike's routes under `wrangler dev --local` across a restart,
 //! and `npm run e2e` (`e2e.mjs`) the Clax instance in two browsers.
 
+pub mod diag;
 mod instance;
 pub mod repos;
 mod store;
@@ -118,6 +121,12 @@ async fn fetch(req: Request, env: Env, _ctx: worker::Context) -> Result<Response
     // host a request names.
     if path.starts_with("/_internal/") || req.url()?.host_str() == Some(INSTANCE_INTERNAL) {
         return Response::error("Not found", 404);
+    }
+    #[cfg(target_arch = "wasm32")]
+    if path.starts_with(diag::PREFIX)
+        && let Some(res) = diag::route(&env, &req).await
+    {
+        return res;
     }
     #[cfg(target_arch = "wasm32")]
     if path.starts_with("/git/") {

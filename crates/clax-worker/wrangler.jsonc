@@ -86,7 +86,10 @@
     // "1" turns on the test routes (POST /_worker/hibernate, /do/*).
     "CLAX_TEST_ROUTES": "0",
     // "1" serves /_dev/repos/* (test-repos.mjs passes it with --var).
-    "REPO_DEV_ROUTES": "0"
+    "REPO_DEV_ROUTES": "0",
+    // "1" serves /_diag/* to the owner's token (CLAX_TOKEN must be set):
+    // what the platform's bindings answer, for smoke-remote.mjs (src/diag.rs).
+    "CLAX_DIAG_ROUTES": "0"
   }
   // CLAX_TOKEN, the owner's bearer token, is a secret: `wrangler secret put
   // CLAX_TOKEN` for a deploy, `.dev.vars` or `--var CLAX_TOKEN:<value>` for

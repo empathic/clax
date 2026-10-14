@@ -44,6 +44,11 @@ struct State {
     forking: HashMap<String, usize>,
     /// How many `get`s each new fork answers `FORK_IN_PROGRESS` to.
     fork_delay: usize,
+    /// How many more `get`s of a new repository answer
+    /// `CREATE_IN_PROGRESS`.
+    creating: HashMap<String, usize>,
+    /// How many `get`s each new repository answers `CREATE_IN_PROGRESS` to.
+    create_delay: usize,
     /// Every pause the host asked for, in milliseconds.
     paused: Vec<u32>,
 }
@@ -122,6 +127,10 @@ impl ArtifactsApi for Fake {
 
     async fn create(&self, name: &str) -> clax_git::Result<CreatedRepo> {
         self.0.host.create(name).await?;
+        let mut st = self.state();
+        let delay = st.create_delay;
+        st.creating.insert(name.to_string(), delay);
+        drop(st);
         let token = format!("art_v1_seed?expires={}", self.now_s() + 3600);
         if self.0.seed_valid {
             self.state().valid.insert(token.clone());
@@ -133,6 +142,13 @@ impl ArtifactsApi for Fake {
     }
 
     async fn get(&self, name: &str) -> clax_git::Result<Option<Handle>> {
+        if let Some(n) = self.state().creating.get_mut(name).filter(|n| **n > 0) {
+            *n -= 1;
+            return Err(error_for_code(
+                Some("CREATE_IN_PROGRESS"),
+                format!("{name} is being created"),
+            ));
+        }
         if let Some(n) = self.state().forking.get_mut(name).filter(|n| **n > 0) {
             *n -= 1;
             return Err(error_for_code(
@@ -510,6 +526,31 @@ fn a_fork_waits_while_artifacts_is_still_making_the_copy() {
     wait(c.host().fork(&from, &to)).unwrap();
     assert!(wait(c.host().open(&to)).unwrap().is_some());
     assert_eq!(f.state().paused, READY_WAITS_MS[..3]);
+}
+
+#[test]
+fn a_first_version_waits_while_artifacts_is_still_creating_the_repository() {
+    let f = Fake::new(clock(), true, true);
+    let c = f.store();
+    f.state().create_delay = 2;
+    let id = ArtifactId::generate();
+    wait(c.write_version(&id, 1, &write(&[], &[("index.html", b"one\n")]))).unwrap();
+    assert_eq!(f.state().paused, READY_WAITS_MS[..2]);
+    assert_eq!(
+        wait(c.read_file(&id, 1, "index.html")).unwrap().unwrap(),
+        b"one\n"
+    );
+}
+
+#[test]
+fn a_repository_still_being_created_after_the_bounded_wait_is_unavailable() {
+    let f = Fake::new(clock(), true, true);
+    let c = f.store();
+    f.state().create_delay = READY_WAITS_MS.len() + 1;
+    let id = ArtifactId::generate();
+    let e = wait(c.write_version(&id, 1, &write(&[], &[("index.html", b"one\n")]))).unwrap_err();
+    assert!(e.to_string().contains("still being made"), "{e}");
+    assert_eq!(f.state().paused, READY_WAITS_MS);
 }
 
 #[test]
