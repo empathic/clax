@@ -1113,11 +1113,18 @@ cap(E, B, N)                             = E without every action B allows somew
   (or null), never the agent's narrowing, other granters' raises, rights
   or machine (§18). For the owner the route is unchanged: the
   owner's elevation may name any location. Each granter's elevation is
-  replaced whole by their `PUT`. The agent's handle is the one the
+  replaced whole by their `PUT`. Every elevation carries a `version`, new
+  at each change; a `PUT` may name `if_version`, the version of the
+  caller's raise it was built on (`null`: it believed there was none), and
+  a mismatch is 409 `conflict` with the caller's raise as it stands
+  (`raise: {access, version} | null`), nothing written or recorded. The
+  artifact's raise panel always sends it, and reads the raises again when
+  it opens and when the page regains focus, so a panel opened before the
+  agent's person or the owner removed a raise never brings it back. The agent's handle is the one the
   artifact's participants list (§10) carries.
 - `GET /api/people/me/raises?artifact=<aid>` (the owner's or a connected
   person's browser) → `{creator, holds, raisable, raises: [{agent:
-  {handle, name, person, live}, access}]}`: the caller's own live
+  {handle, name, person, live}, access, version}]}`: the caller's own live
   elevations, of every agent they raised; with `artifact`, whether the
   caller created it (`creator`; for the owner, an artifact the owner
   created), the access the caller may give there (`holds`, every action
@@ -2552,3 +2559,8 @@ task, with recommendations; the owner took every recommendation
   narrowing caps raises only for the actions the person holds, and
   anything else is taken away with Remove ("Remove is enough"); §7.2,
   §7.4: the agent's person may remove a raise the owner gave ("Yes").
+- **Amendment** (2026-10-14, Task 20b re-review I2): §7.4: elevations
+  carry a version; a `PUT` naming `if_version` is 409 `conflict` when the
+  raise changed since, and the artifact's raise panel always names it and
+  refreshes when it opens and on focus, so a stale panel never restores a
+  removed raise.
