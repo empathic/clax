@@ -1,0 +1,14 @@
+{
+  "name": "clax-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "./build.sh",
+    "dev": "wrangler dev --local --persist-to .wrangler/state",
+    "size": "wrangler deploy --dry-run --outdir build/dry-run",
+    "test:wasm": "node test-wasm.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "4.141.0"
+  }
+}
