@@ -962,6 +962,40 @@ void main() {
       );
     });
 
+    for (final bundled in [true, false]) {
+      test(
+        'a continue run of an app from a bundle (${bundled ? 'yes' : 'no'})'
+        ': other apps ${bundled ? 'left out and unreadable' : 'shown'}',
+        () async {
+          final aid = api.seedArtifact('Runs', {'index.html': page});
+          final other = api.seedArtifact(
+            'Secret diary',
+            {'index.html': page},
+            capabilities: const {'db': {}},
+          );
+          await plans.set(aid, const [
+            PlanFeature(id: 'f1', title: 'Weekly chart'),
+          ], request: 'a run tracker');
+          final consent = FakeReadConsent(fallback: ConsentAnswer.always);
+          final loop = loopWith(
+            [
+              [
+                ScriptedCall('db_get', {'path': 'notes/n1', 'app': other}),
+                ...changeCalls(edits: [('Save', 'Keep')]),
+              ],
+            ],
+            consent: consent,
+            fromBundle: (a) => bundled && a == aid,
+          );
+          await loop.continueBuild(aid);
+          final first = runner.text(0);
+          expect(first.contains('Secret diary'), !bundled);
+          expect(first.contains(PromptBuilder.fromBundleNote), bundled);
+          expect(consent.asks, hasLength(bundled ? 0 : 1));
+        },
+      );
+    }
+
     test('with nothing left to build, or over the build cap, a continue run '
         'does not start', () async {
       final aid = api.seedArtifact('Runs', {'index.html': page});
