@@ -84,7 +84,15 @@ export interface CapEnv {
    * 2026-10-11-clax-dev-hosted-design §16.1): the page's writes as the
    * viewer (db, comments, room) reject `unavailable` without a request. */
   spectating?(): boolean;
+  /** The write journal of an app bundle's live migration (app/host.ts),
+   * while one runs: `db` sends each document's value before the first write
+   * to it, and writes only once the journal has it. */
+  journal?(): DbJournal | null;
 }
+
+/** Keeps `before`, the data of the document at `path` (null when there is
+ * none), before a write to it; rejects when it could not. */
+export type DbJournal = (e: { path: string; before: Record<string, unknown> | null }) => Promise<void>;
 
 export interface Handler {
   call(method: string, args: unknown[]): Promise<unknown>;

@@ -7,7 +7,7 @@ import { getDrafts, getSampleStatus, putLooked, putSeen } from "./view-api";
 import { acceptByeFromFrame, acceptFromFrame, helloMatches, sendToFrame } from "../bridge-link";
 import type { Declared } from "../caps/availability";
 import { HINT_MS, PICK_ATTEST_WAIT_MS, afterHostAttestation, frameGesture, hostArrival, onShieldPress, pickHintAllowed, setForwardedKeys } from "../caps/gesture";
-import { CapabilityHost, type CommentsUi } from "../caps/host";
+import { CapabilityHost, type CommentsUi, type DbJournal } from "../caps/host";
 import { REQUEST_STUCK, connTrouble } from "../conn-notice";
 import { Lifecycle, onPageCache, retrying } from "../lifecycle";
 import { LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REOPEN_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, report, scopedNotice } from "../failure";
@@ -199,6 +199,9 @@ export class ArtifactController {
    * agent). */
   /** @internal */
   app: { welcome(file: string): { app: true; restoreScroll?: number }; posted(t: Thread): void } | null = null;
+  /** The write journal of a live migration in the app's migration view
+   * (app/host.ts), while one runs: every `db` write of the page waits for it. */
+  dbJournal: DbJournal | null = null;
   /** The thread the app's own thread view shows (`focusThread`), outlined
    * while it is open; null when none is. */
   private appFocus: string | null = null;
@@ -671,6 +674,7 @@ export class ArtifactController {
           sampleStatus: token === null ? undefined : () => status ??= getSampleStatus(this.id, token),
           onSampleCalls: (n: number, cap: number | null) => this.set({ sampleCalls: { n, cap } }),
           spectating: () => this.s.spectator !== null,
+          journal: () => this.dbJournal,
         };
       }));
       // It hears of the UI in the next reaction pass, as the effect that

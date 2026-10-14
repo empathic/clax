@@ -182,6 +182,25 @@ export async function runQuery(get: (url: string) => Promise<unknown>, base: str
   return out;
 }
 
+/** Puts back what a migration's write journal holds, as this viewer (the
+ * cookie, and `token` when given): each entry in reverse order, `set` to its
+ * `before`, or deleted when `before` is null (one already gone is fine).
+ * Throws the first refusal. */
+export async function replayJournal(aid: string, token: string | null, entries: { path: string; before: Record<string, unknown> | null }[]): Promise<void> {
+  const base = `/api/artifacts/${aid}/docs`;
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (token) headers.authorization = `Bearer ${token}`;
+  for (const e of [...entries].reverse()) {
+    const url = docUrl(base, checkPath(e.path, 0));
+    const res = e.before === null
+      ? await fetch(`${url}?lww=true`, { method: "DELETE", headers })
+      : await fetch(url, { method: "PUT", headers, body: JSON.stringify({ data: e.before, lww: true }) });
+    if (res.ok || (e.before === null && res.status === 404)) continue;
+    const err = ((await res.json().catch(() => ({}))) as { error?: { code?: string; message?: string } }).error ?? {};
+    throw dbError(res.status, err, true);
+  }
+}
+
 export const dbHandler: HandlerFactory = env => {
   const base = `/api/artifacts/${env.aid}/docs`;
   const subs = new Map<string, Spec>();
@@ -303,6 +322,18 @@ export const dbHandler: HandlerFactory = env => {
     }
   }
 
+  // Paths the write journal has a value of: only a document's first write
+  // is journaled (a replay in reverse puts back the earliest value anyway).
+  const journaled = new Set<string>();
+  /** Writes nothing to `p` until the journal (when one runs) has its value. */
+  async function journal(p: string): Promise<void> {
+    const j = env.journal?.();
+    if (!j || journaled.has(p)) return;
+    const r = await request<{ doc: ApiDoc }>("GET", own(p), undefined, true);
+    await j({ path: p, before: r ? r.doc.data : null });
+    journaled.add(p);
+  }
+
   return {
     async call(method, args) {
       const arg = args[0];
@@ -315,12 +346,14 @@ export const dbHandler: HandlerFactory = env => {
         case "set":
         case "update": {
           const p = path();
+          await journal(p);
           await request(method === "set" ? "PUT" : "PATCH", own(p), { data: checkBody(args[1]), lww: true });
           echo(p);
           return null;
         }
         case "delete": {
           const p = path();
+          await journal(p);
           await request("DELETE", `${own(p)}?lww=true`);
           echo(p);
           return null;
@@ -333,6 +366,7 @@ export const dbHandler: HandlerFactory = env => {
         case "acquire": {
           const p = path();
           const body = checkAcquire(args[1]);
+          await journal(p);
           const r = (await request<{ acquired: boolean; version: number | null; expires_at: string | null; holder: string | null }>(
             "POST", `${base}:acquire`, { path: p, ...body },
           ))!;
