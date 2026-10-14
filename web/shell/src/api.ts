@@ -66,6 +66,15 @@ export async function getArtifact(id: string, init?: RequestInit): Promise<{ art
   return json(await (init ? fetch(`/api/artifacts/${id}`, init) : fetch(`/api/artifacts/${id}`)));
 }
 
+/** The artifact's live drafts (hosted spec §16.4), each with its revision's token; none on failure. */
+export async function getDrafts(id: string): Promise<import("./view/draft-model").DraftView[]> {
+  try {
+    const r = await fetch(`/api/artifacts/${id}/drafts`);
+    const list = r.ok ? (await r.json()).drafts : null;
+    return Array.isArray(list) ? list : [];
+  } catch { return []; }
+}
+
 /** This viewer's attention on every live artifact (with `only`, on that one
  * artifact, or none when it is not live); {} without a viewer, null on failure. */
 export async function getAttention(only?: string): Promise<Record<string, AttentionSummary> | null> {

@@ -556,6 +556,9 @@ pub async fn serve(
         working: Arc::new(clax_core::working::Working::new(Arc::new(
             clax_core::working::SystemClock,
         ))),
+        drafts: Arc::new(clax_core::drafts::Drafts::new(Arc::new(
+            clax_core::working::SystemClock,
+        ))),
         presence: Arc::new(clax_core::presence::Presence::new(Arc::new(
             clax_core::working::SystemClock,
         ))),
@@ -633,6 +636,7 @@ pub async fn serve(
     let state_presence = state.presence.clone();
     let state_stream = state.stream.clone();
     let sweep_seats = state.seats.clone();
+    let state_drafts = state.drafts.clone();
     let app = crate::build_router_with_shutdown(state, shutdown_tx.clone());
     if let Some(tx) = ready {
         let _ = tx.send(info.clone());
@@ -732,6 +736,7 @@ pub async fn serve(
             every.tick().await;
             crate::working::sweep_and_announce(&sweep_store, &sweep_working, &sweep_events).await;
             crate::presence::sweep_and_announce(&state_presence, &sweep_events);
+            crate::drafts::sweep_and_announce(&state_drafts, &sweep_events);
             state_stream.sweep();
             sweep_seats.sweep();
         }

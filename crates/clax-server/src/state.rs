@@ -86,6 +86,8 @@ pub struct AppState {
     pub codex: Arc<crate::push::CodexPush>,
     /// Working records (spec §10 "Working"), in memory.
     pub working: Arc<clax_core::working::Working>,
+    /// Agents' drafts (spec 2026-10-11-clax-dev-hosted-design §16.4), in memory.
+    pub drafts: Arc<clax_core::drafts::Drafts>,
     /// Viewer presence (spec §10 "Presence"), in memory.
     pub presence: Arc<clax_core::presence::Presence>,
     /// The live rooms of the `room` capability (memory only).

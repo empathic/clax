@@ -1,7 +1,7 @@
 <script lang="ts">
   // The stage island: the overlays over the frame (the empty states, the
-  // gesture shield and hint, the pins, the composer, the failure notice and
-  // the consent dialog). Nothing else goes over the page: a newer version
+  // gesture shield and hint, agents' drafts, the pins, the composer, the
+  // spectator banner, the failure notice and the consent dialog). Nothing else goes over the page: a newer version
   // and an older one shown are said in the top bar (decided: Q12). Shown
   // once the artifact is loaded and the frame mode decided. A spectator (no
   // live seat free, spec 2026-10-11-clax-dev-hosted-design §16.1) sees a
@@ -12,14 +12,17 @@
   import { registerShield } from "../caps/gesture";
   import { shellPath } from "../route";
   import { type ArtifactController, viewReady } from "../view/artifact-controller";
+  import { bannerText } from "../view/draft-model";
+  import { agentNames } from "../view/working-model";
   import Composer from "./Composer.svelte";
+  import DraftBanner from "./DraftBanner.svelte";
   import Pins from "./Pins.svelte";
   import PromptDialog from "./PromptDialog.svelte";
 
   /** What a spectator is told (spec 2026-10-11-clax-dev-hosted-design
    * §16.1): a seat released for want of input says so, rather than that
    * the artifact is full. */
-  const bannerText = (code: string) => code === "seat_idle"
+  const spectatorText = (code: string) => code === "seat_idle"
     ? "You were away, so live activity is paused."
     : "Lots of people are here, so you're viewing: comments and live activity are paused.";
   /** Join live shows always after a seat went idle (the viewer's next input
@@ -34,6 +37,12 @@
   const s = $derived(view.current);
   const shown = $derived(ctl.shown(s));
   const missing = $derived(ctl.missing(s));
+  // Agents' drafts (hosted spec §16.4), each named as the working signal names its agent.
+  const draftBanner = $derived.by(() => {
+    if (!s.drafts.length) return null;
+    const names = agentNames(s.working, s.agents);
+    return bannerText(s.drafts, s.showDraft, s.draftChanged, shown, (h, harness) => names.get(h) ?? harness);
+  });
   // The group's threads, until this viewer looks at one after its version came out.
   const addressed = $derived.by(() => {
     const d = s.decided;
@@ -66,7 +75,20 @@
   {#if !s.deleted && !missing}
     <div class="frame-shield" aria-hidden="true" {@attach shield}><div></div><div></div><div></div><div></div></div>
   {/if}
-  {#if s.hint}<p class="gesture-hint" role="status">{s.hint}</p>{/if}
+  <!-- The stage's foot: what sits at the bottom of the stage stacks here,
+       newest-kind last, so no two of them cover each other (theme.css .stage-foot). -->
+  <div class="stage-foot">
+    {#if s.hint}<p class="gesture-hint" role="status">{s.hint}</p>{/if}
+    {#if draftBanner && !s.deleted}
+      <DraftBanner text={draftBanner} onShow={a => ctl.showDraftOf(a)} onBack={() => ctl.backFromDraft()} />
+    {/if}
+    {#if s.spectator}
+      <div class="banner spectate" role="status">
+        <span>{spectatorText(s.spectator.code)}</span>
+        {#if offersJoin(s.spectator)}<button class="primary" onclick={() => ctl.joinLive()}>Join live</button>{/if}
+      </div>
+    {/if}
+  </div>
   {#if !s.deleted && !missing}
     <Pins threads={s.threads} resolved={s.resolved} file={s.file} onit={new Set(s.working.flatMap(w => w.thread_ids))} {addressed} onSelect={t => ctl.openPin(t)} onHover={t => ctl.hover(t)} />
   {/if}
@@ -76,12 +98,6 @@
       <Composer {draft} onText={v => ctl.composerInput(v)} onFocused={() => ctl.composerFocused(draft.pickId)}
         onCancel={() => ctl.cancelDraft()} onSubmit={body => ctl.submitDraft(body, draft)} />
     {/key}
-  {/if}
-  {#if s.spectator}
-    <div class="banner spectate" role="status">
-      <span>{bannerText(s.spectator.code)}</span>
-      {#if offersJoin(s.spectator)}<button class="primary" onclick={() => ctl.joinLive()}>Join live</button>{/if}
-    </div>
   {/if}
   {#if s.notice}
     <div class="banner notice" role="alert"><span>{s.notice}</span><button onclick={() => ctl.dismissNotice()}>Dismiss</button></div>

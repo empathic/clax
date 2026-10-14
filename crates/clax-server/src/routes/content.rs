@@ -38,7 +38,10 @@ const SANDBOX: &str = "sandbox allow-scripts allow-forms allow-modals allow-popu
 ///
 /// The policy is a separate one: a page's own `<meta>` policy still applies
 /// in full beside it, and cannot set `frame-ancestors` itself.
-fn content_policy(origin: &Option<Extension<OnArtifactOrigin>>, req: &HeaderMap) -> HeaderValue {
+pub(crate) fn content_policy(
+    origin: &Option<Extension<OnArtifactOrigin>>,
+    req: &HeaderMap,
+) -> HeaderValue {
     if origin.is_none() {
         return HeaderValue::from_static(SANDBOX);
     }

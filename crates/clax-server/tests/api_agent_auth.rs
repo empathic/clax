@@ -1008,6 +1008,7 @@ fn every_route() -> Vec<(String, String, bool)> {
             "connect" => include_str!("../src/routes/connect.rs"),
             "content" => include_str!("../src/routes/content.rs"),
             "docs" => include_str!("../src/routes/docs.rs"),
+            "drafts" => include_str!("../src/routes/drafts.rs"),
             "events" => include_str!("../src/routes/events.rs"),
             "extension" => include_str!("../src/routes/extension.rs"),
             "feedback" => include_str!("../src/routes/feedback.rs"),

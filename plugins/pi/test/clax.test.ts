@@ -111,7 +111,7 @@ async function deadHome(): Promise<string> {
 }
 
 describe("clax Pi extension", () => {
-  it("registers the twenty-four tools with one-line prompt snippets, and the clax command", () => {
+  it("registers the twenty-five tools with one-line prompt snippets, and the clax command", () => {
     const { pi } = load(daemon.home, "s-tools");
     expect([...pi.tools.keys()].sort()).toEqual([...TOOLS].sort());
     for (const t of pi.tools.values()) {
@@ -509,6 +509,11 @@ describe("clax Pi extension", () => {
       clax_db_str_replace: [{ url_or_id: id, collection: "tasks", doc_id: "t1", field: "html", old_str: "a", new_str: "b", replace_all: true, if_version: 1 }],
       clax_db_batch: [{ url_or_id: id, writes: [{ op: "set", collection: "tasks", doc_id: "t1", data: {} }, { op: "delete", collection: "tasks", doc_id: "t2", if_version: 1 }] }],
       clax_working: [{ url_or_id: id }, { url_or_id: id, thread_ids: ["t1"], message: "m", done: true }],
+      clax_draft: [
+        { url_or_id: id, html: "<p>x</p>" },
+        { url_or_id: id, file_path: "a.html", files: { "a.css": { content: "x" }, "b.css": null }, if_version: 1, note: "n" },
+        { url_or_id: id, done: true },
+      ],
     };
     const invalid: Record<string, Record<string, unknown>[]> = {
       clax_publish: [{ html: "x", bogus: 1 }, { html: "x", files: { "a.css": { content: "x", nope: 1 } } }, { html: "x", files: { "a.css": { content: "x", encoding: "hex" } } }],
@@ -527,6 +532,7 @@ describe("clax Pi extension", () => {
       clax_wait_for_feedback: [{ timeout_s: -1 }, { bogus: 1 }],
       clax_ask: [{ bogus: 1 }, { questions: [] }, { questions: [{ question: "Q" }] }, { questions: [{ question: "Q", header: "H", nope: 1 }] }, { questions: [{ question: "Q", header: "H", options: [{ label: "A", nope: 1 }] }] }],
       clax_working: [{ url_or_id: id, done: "yes" }, { url_or_id: id, bogus: 1 }],
+      clax_draft: [{ html: "<p>x</p>" }, { url_or_id: id, bogus: 1 }, { url_or_id: id, done: "yes" }, { url_or_id: id, files: { "a.css": { content: "x", nope: 1 } } }],
       clax_db_get: [{ url_or_id: id, collection: "tasks" }, { url_or_id: id, collection: "tasks", doc_id: "t1", as_level: "owner" }],
       clax_db_query: [{ url_or_id: id, collection: "tasks", query: { bogus: 1 } }],
       clax_db_set: [{ url_or_id: id, collection: "tasks", doc_id: "t1", data: { n: 1 }, if_version: 0 }, { url_or_id: id, collection: "tasks", doc_id: "t1", bogus: 1 }],
@@ -1289,6 +1295,26 @@ describe("comments", () => {
     const bad = await pi.callTool("clax_working", { url_or_id: pub.artifact_id, thread_ids: ["x"] }, ctx);
     expect(bad.isError).toBe(true);
     expect(JSON.parse(bad.content[0].text!).error.code).toBe("invalid_args");
+  });
+
+  it("clax_draft shows people a draft over the current version and done drops it, as the MCP tool does", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-draft");
+    await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    const pub = JSON.parse((await pi.callTool("clax_publish", { html: "<h2>Goals</h2><p>One</p>", title: "D" }, ctx)).content[0].text!);
+    const d = await pi.callTool("clax_draft", { url_or_id: pub.artifact_id, html: "<h2>Goals</h2><p>Two</p>", note: "rewording" }, ctx);
+    expect(d.isError).toBe(false);
+    expect(JSON.parse(d.content[0].text!)).toMatchObject({ drafting: true, base_version: 1, paths: ["index.html"], note: "rewording", expires_in_s: 120 });
+    const seen = await (await fetch(`${daemon.base}/api/artifacts/${pub.artifact_id}/drafts`, { headers: { authorization: `Bearer ${daemon.token}` } })).json();
+    expect(seen.drafts[0]).toMatchObject({ harness: "pi", note: "rewording", base_version: 1 });
+    expect(d.content[0].text).not.toContain(seen.drafts[0].token);
+    const page = await (await fetch(`${daemon.base}/c/${pub.artifact_id}/draft/${seen.drafts[0].agent}/${seen.drafts[0].token}/`)).text();
+    expect(page).toContain("<p data-clax-draft-changed>Two</p>");
+    expect(page).toContain("<h2>Goals</h2>");
+    const done = await pi.callTool("clax_draft", { url_or_id: pub.artifact_id, done: true }, ctx);
+    expect(JSON.parse(done.content[0].text!)).toMatchObject({ drafting: false, ended: true });
+    const empty = await pi.callTool("clax_draft", { url_or_id: pub.artifact_id }, ctx);
+    expect(empty.isError).toBe(true);
+    expect(JSON.parse(empty.content[0].text!).error.code).toBe("invalid_args");
   });
 
   it("tool calls renew working records at most every 15 s, and agent_end ends them", async () => {

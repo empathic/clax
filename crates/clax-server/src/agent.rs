@@ -225,6 +225,14 @@ need!(WorkingRenew, Comments, "watch", Own, DEFAULT_LIMIT);
 need!(WorkingEnd, Comments, "watch", Own, DEFAULT_LIMIT);
 need!(WorkingPut, Comments, "watch", Own, DEFAULT_LIMIT);
 need!(WorkingDelete, Comments, "watch", Own, DEFAULT_LIMIT);
+need!(
+    DraftPut,
+    Artifacts,
+    "update",
+    Own,
+    crate::routes::drafts::DRAFT_BODY_LIMIT
+);
+need!(DraftDelete, Artifacts, "update", Own, DEFAULT_LIMIT);
 need!(WatchesList, Comments, "watch", Own, DEFAULT_LIMIT);
 need!(WatchesPut, Comments, "watch", Own, DEFAULT_LIMIT);
 need!(WatchesDelete, Comments, "watch", Own, DEFAULT_LIMIT);
@@ -365,6 +373,12 @@ pub const ROUTES: &[(&str, &str, NeedInfo)] = &[
         "/api/sessions/{id}/working/{aid}",
         WorkingDelete::INFO,
     ),
+    ("PUT", "/api/sessions/{id}/drafts/{aid}", DraftPut::INFO),
+    (
+        "DELETE",
+        "/api/sessions/{id}/drafts/{aid}",
+        DraftDelete::INFO,
+    ),
     ("GET", "/api/sessions/{id}/watches", WatchesList::INFO),
     ("PUT", "/api/sessions/{id}/watches/{aid}", WatchesPut::INFO),
     (
@@ -481,6 +495,8 @@ pub const ROUTE_NEEDS: &[RouteNeed] = &[
     route_need!("working::end", WorkingEnd),
     route_need!("working::put", WorkingPut),
     route_need!("working::delete", WorkingDelete),
+    route_need!("drafts::put", DraftPut),
+    route_need!("drafts::delete", DraftDelete),
     route_need!("watches::list", WatchesList),
     route_need!("watches::put", WatchesPut),
     route_need!("watches::delete", WatchesDelete),

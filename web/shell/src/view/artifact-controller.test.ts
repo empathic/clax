@@ -416,6 +416,47 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     });
   }
 
+  it("lists agents' drafts, shows one in the frame tinted and back, follows its revisions and gives way when it ends", async () => {
+    const d = { agent: "a_1111aaaa", harness: "claude", base_version: 2, paths: ["index.html"], note: "rewording", updated_at: "2026-10-12T10:00:00.000Z", token: "A".repeat(22) };
+    const { ctl, frame } = await started({ routes: url => (url === `/api/artifacts/${ID}/drafts` ? { drafts: [d] } : undefined) });
+    await vi.waitFor(() => expect(ctl.state.get().drafts).toEqual([d]));
+    const es = await streamOf(frame);
+    const versionSrc = frame.getAttribute("src");
+    const src = () => document.querySelector("iframe")!.getAttribute("src");
+    ctl.toggleComment();
+    ctl.showDraftOf(d.agent);
+    expect(ctl.state.get()).toMatchObject({ showDraft: d.agent, commenting: false, draftChanged: null });
+    expect(src()).toBe(`/c/${ID}/draft/a_1111aaaa/${d.token}/#tint=%232f6f2a`);
+    // Comments go on versions: comment mode stays off while the draft shows.
+    ctl.toggleComment();
+    expect(ctl.state.get().commenting).toBe(false);
+    // The draft page's count, from the frame alone.
+    const win = document.querySelector("iframe")!.contentWindow!;
+    fromFrame(window, { type: "clax:draft-diff", changed: 9, marked: true });
+    expect(ctl.state.get().draftChanged).toBeNull();
+    fromFrame(win, { type: "clax:draft-diff", changed: 3, marked: true });
+    expect(ctl.state.get().draftChanged).toEqual({ n: 3, marked: true });
+    // A draft page that greets as the version's page is not welcomed: its
+    // agent's script gets no capability.
+    hello(win);
+    expect(ctl.state.get().file).toBeNull();
+    // A revision is shown at its new token, counted again.
+    const next = { ...d, token: "B".repeat(22), updated_at: "2026-10-12T10:00:01.000Z" };
+    es.emit("drafts", { type: "drafts", artifact_id: ID, drafts: [next] });
+    expect(src()).toContain(next.token);
+    expect(ctl.state.get().draftChanged).toBeNull();
+    ctl.backFromDraft();
+    expect(ctl.state.get().showDraft).toBeNull();
+    expect(src()).toBe(versionSrc);
+    // A draft that ends while shown gives way to the version.
+    ctl.showDraftOf(d.agent);
+    expect(src()).toContain(next.token);
+    es.emit("drafts", { type: "drafts", artifact_id: ID, drafts: [] });
+    expect(ctl.state.get()).toMatchObject({ drafts: [], showDraft: null });
+    expect(src()).toBe(versionSrc);
+    ctl.dispose();
+  });
+
   it("an agents event refetches the agents, so an ended agent leaves the Send menu", async () => {
     const agent = { handle: "a_3333cccc", harness: "claude", live: true };
     const { ctl, frame } = await started();

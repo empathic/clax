@@ -166,7 +166,11 @@ impl Topic {
             Topic::Gallery => vec![Chan::Gallery],
             Topic::Artifact(a) => vec![Chan::Artifact(a.clone())],
             Topic::Presence(a) => vec![Chan::Presence(a.clone())],
-            Topic::Working(a) => vec![Chan::Working(a.clone())],
+            // Agents' drafts ride the working topic, to the owner's and
+            // connected people's streams only (hosted spec §16.4).
+            Topic::Working(a) => std::iter::once(Chan::Working(a.clone()))
+                .chain(person.map(|_| Chan::Drafts(a.clone())))
+                .collect(),
             Topic::Site(o) => vec![Chan::Site(o.clone())],
             Topic::Questions => person
                 .map(|p| Chan::Questions(p.to_string()))
@@ -203,6 +207,9 @@ enum Chan {
     Artifact(String),
     Presence(String),
     Working(String),
+    /// An artifact's `drafts` events, on its `working` topic; only the
+    /// streams of the owner and connected people subscribe.
+    Drafts(String),
     DocsAt(String, Level),
     DocsOf(String, String),
     /// The `artifact` channel's events of every live page of an origin.
@@ -231,7 +238,7 @@ impl Chan {
             Chan::Agents => "agents".into(),
             Chan::Artifact(a) => format!("artifact:{a}"),
             Chan::Presence(a) => format!("presence:{a}"),
-            Chan::Working(a) => format!("working:{a}"),
+            Chan::Working(a) | Chan::Drafts(a) => format!("working:{a}"),
             Chan::DocsAt(a, _) | Chan::DocsOf(a, _) => format!("docs:{a}"),
         }
     }
@@ -548,6 +555,8 @@ fn routes(ev: &Event) -> Vec<(Chan, Gate)> {
             (Chan::Agents, Gate::Any),
         ],
         Event::Presence { .. } => vec![(Chan::Presence(a), Gate::Any)],
+        // Named people who read the artifact: the stream serves no agent.
+        Event::Drafts { .. } => vec![(Chan::Drafts(a), Gate::Any)],
         // Only owners' streams on this machine follow a site (L10).
         // The gallery hears it too: a site's pages may be keyed elsewhere,
         // or merged away, so its cards are fetched again.

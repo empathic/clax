@@ -413,6 +413,8 @@ pub struct FeedbackCtx {
     pub store: Arc<Store>,
     pub codex: Arc<crate::push::CodexPush>,
     pub working: Arc<clax_core::working::Working>,
+    /// Agents' drafts, which end with their sessions.
+    pub drafts: Arc<clax_core::drafts::Drafts>,
     /// The runtime `codex queue` runs on; dispatch may be called from blocking threads.
     pub handle: clax_rt::Handle,
 }
@@ -434,6 +436,7 @@ impl AppState {
             store: self.store.clone(),
             codex: self.codex.clone(),
             working: self.working.clone(),
+            drafts: self.drafts.clone(),
             handle: clax_rt::Handle::current(),
         }
     }
@@ -494,6 +497,8 @@ pub fn sessions_stop(
             .working
             .end_session(id, clax_core::working::End::SessionEnd);
         crate::working::settle(st, audit, &ctx.events, &ctx.working, &stopped);
+        let drafts = ctx.drafts.end_session(id);
+        crate::drafts::announce(&ctx.events, &ctx.drafts, &drafts);
         ctx.followers.forget(id);
     }
 }

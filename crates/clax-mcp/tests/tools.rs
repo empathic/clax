@@ -896,3 +896,100 @@ async fn a_failed_reconnect_reaches_the_caller_with_its_reason() {
     let e = err(t.publish(Parameters(html("two", "<p>2"))).await);
     assert!(e.to_string().contains("rolled back"), "{e}");
 }
+
+#[tokio::test]
+async fn draft_shows_people_work_in_progress_until_done_or_a_publish() {
+    use clax_mcp::tools::DraftArgs;
+    let clock = std::sync::Arc::new(clax_core::working::ManualClock::at("2026-10-12T10:00:00Z"));
+    let ts = TestServer::spawn_with_clock(clock.clone()).await;
+    let (t, _session) = session_tools(&ts, "/w").await;
+    let p = ok(t
+        .publish(Parameters(html("Plan", "<h1>Plan</h1><p>One</p>")))
+        .await);
+    let id = p["artifact_id"].as_str().unwrap().to_string();
+    let draft = |page: &str| DraftArgs {
+        url_or_id: id.clone(),
+        html: Some(page.to_string()),
+        note: Some("rewording".into()),
+        ..Default::default()
+    };
+    let d = ok(t.draft(Parameters(draft("<h1>Plan</h1><p>Two</p>"))).await);
+    assert_eq!(d["drafting"], true);
+    assert_eq!(d["base_version"], 1);
+    assert_eq!(d["paths"], serde_json::json!(["index.html"]));
+    assert_eq!(d["note"], "rewording");
+    assert_eq!(d["expires_in_s"], 120);
+    let listed: Value = ts
+        .get_authed(&format!("/api/artifacts/{id}/drafts"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    let l = &listed["drafts"][0];
+    let token = l["token"].as_str().unwrap();
+    assert!(
+        !d.to_string().contains(token),
+        "the agent never holds the URL: {d}"
+    );
+    let page = ts
+        .get(&format!(
+            "/c/{id}/draft/{}/{token}/",
+            l["agent"].as_str().unwrap()
+        ))
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        page.contains("<p data-clax-draft-changed>Two</p>"),
+        "{page}"
+    );
+    // Two a second; the third is refused until the second is over.
+    ok(t.draft(Parameters(draft("<h1>Plan</h1><p>Three</p>")))
+        .await);
+    let e = err(t.draft(Parameters(draft("<h1>Plan</h1><p>Four</p>"))).await);
+    assert_eq!(e["error"]["code"], "rate_limited", "{e}");
+    assert_eq!(e["error"]["retry_after_ms"], 1000, "{e}");
+    // `done` drops it; nothing to draft is refused; a stale base conflicts.
+    let gone = ok(t
+        .draft(Parameters(DraftArgs {
+            url_or_id: id.clone(),
+            done: Some(true),
+            ..Default::default()
+        }))
+        .await);
+    assert_eq!(
+        (&gone["drafting"], &gone["ended"]),
+        (&Value::Bool(false), &Value::Bool(true))
+    );
+    let e = err(t
+        .draft(Parameters(DraftArgs {
+            url_or_id: id.clone(),
+            ..Default::default()
+        }))
+        .await);
+    assert_eq!(e["error"]["code"], "invalid_args", "{e}");
+    clock.advance(1);
+    let e = err(t
+        .draft(Parameters(DraftArgs {
+            if_version: Some(5),
+            ..draft("<p>x</p>")
+        }))
+        .await);
+    assert_eq!(e["error"]["code"], "conflict", "{e}");
+    assert_eq!(e["error"]["current_version"]["n"], 1, "{e}");
+    // A publish of the artifact ends the draft.
+    ok(t.draft(Parameters(draft("<h1>Plan</h1><p>Five</p>"))).await);
+    ok(t.publish(Parameters(PublishArgs {
+        id: Some(id.clone()),
+        ..html("Plan", "<h1>Plan</h1><p>Five</p>")
+    }))
+    .await);
+    let listed: Value = ts
+        .get_authed(&format!("/api/artifacts/{id}/drafts"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed["drafts"], serde_json::json!([]));
+}

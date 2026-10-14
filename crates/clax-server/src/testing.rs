@@ -107,6 +107,8 @@ pub struct TestServer {
     pub working: Arc<clax_core::working::Working>,
     /// The server's feedback context, for driving its background passes.
     pub feedback: crate::feedback::FeedbackCtx,
+    /// The server's drafts registry.
+    pub drafts: Arc<clax_core::drafts::Drafts>,
     /// The server's presence registry.
     pub presence: Arc<clax_core::presence::Presence>,
     /// The address the listener is bound to (may be unspecified, e.g. `0.0.0.0`).
@@ -237,6 +239,7 @@ impl TestServer {
             // Push off; tests about push set it with `spawn_with`.
             codex: Arc::new(Default::default()),
             working: Arc::new(clax_core::working::Working::new(clock.clone())),
+            drafts: Arc::new(clax_core::drafts::Drafts::new(clock.clone())),
             presence: Arc::new(clax_core::presence::Presence::new(clock.clone())),
             rooms: Arc::new(crate::room::Rooms::default()),
             // Sampling off; tests that sample set their own with `spawn_with`.
@@ -284,6 +287,7 @@ impl TestServer {
         let working = state.working.clone();
         let feedback = state.feedback_ctx();
         let presence = state.presence.clone();
+        let drafts = state.drafts.clone();
         let extension_id = state.extension_id.clone();
         let journal = state.journal.clone();
         let agent_gate = state.agent_gate.clone();
@@ -311,6 +315,7 @@ impl TestServer {
             working,
             feedback,
             presence,
+            drafts,
             addr,
             journal,
             agent_gate,

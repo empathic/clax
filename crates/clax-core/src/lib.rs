@@ -7,6 +7,8 @@ pub mod changelog;
 pub mod config;
 pub mod content;
 pub mod db;
+pub mod draft_diff;
+pub mod drafts;
 pub mod error;
 pub mod events;
 pub mod extension;

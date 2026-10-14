@@ -2,7 +2,7 @@
 // `state` and call the intent methods; the frame is a FrameHost the mount
 // gives it.
 import { type AnchorResult, INDEX_FILE, type ShellToBridge } from "../../../bridge/src/protocol";
-import { ApiError, type Artifact, type Attention, type SampleStatus, type Version, getArtifact, getSampleStatus, getToken, putLooked, putSeen } from "../api";
+import { ApiError, type Artifact, type Attention, type SampleStatus, type Version, getArtifact, getDrafts, getSampleStatus, getToken, putLooked, putSeen } from "../api";
 import { acceptByeFromFrame, acceptFromFrame, helloMatches, sendToFrame } from "../bridge-link";
 import type { Declared } from "../caps/availability";
 import { HINT_MS, frameGesture, onShieldPress, pickHintAllowed, setForwardedKeys } from "../caps/gesture";
@@ -36,6 +36,7 @@ import { type ThreadChange, ThreadSync } from "./thread-sync";
 import { setUrl, validHash } from "./url";
 import type { SetNotice } from "./viewer-name-model";
 import type { AgentView, Working } from "./working-model";
+import { type DraftChanged, type DraftView, draftSrc, oldestFirst, parseDiff, tintOf } from "./draft-model";
 
 /** `file` is the page the frame opens on, from the shell URL (`index.html` when it names none). */
 /** How long a reopen asked of an unnamed viewer waits for its name. */
@@ -127,6 +128,14 @@ export type ViewState = {
    * 2026-10-11-clax-dev-hosted-design §16.3), as the latest presence report
    * or snapshot said; null until one did. */
   viewing: number | null;
+  /** Agents' live drafts (hosted spec §16.4), oldest revision first, from
+   * the daemon's listing and then the stream's `drafts` events. */
+  drafts: DraftView[];
+  /** The agent (handle) whose draft the frame shows in place of the
+   * version, or null. */
+  showDraft: string | null;
+  /** How many elements the shown draft changed, once its page says. */
+  draftChanged: DraftChanged | null;
 };
 
 /** The artifact is loaded and the frame mode decided: the islands show. */
@@ -298,6 +307,7 @@ export class ArtifactController {
       decided: null, rally: false, menu: null, askName: null, looked: {}, presence: [], shareWhere: readShareWhere(),
       agents: [], selection: EMPTY_SELECTION, batchNote: "", batchBusy: false, sendTo: null, sampleCalls: null,
       spectator: null, viewing: null,
+      drafts: [], showDraft: null, draftChanged: null,
     });
     this.threadLoad = new ThreadSync(f => this.set(s => ({ threads: f(s.threads) })));
     this.ownPublish.settled = () => {
@@ -629,6 +639,12 @@ export class ArtifactController {
     const s = this.s;
     if (!this.frame || !s.data || s.origin === undefined) return;
     if (s.deleted || this.missing()) { this.frame.remove(); return; }
+    const d = this.shownDraft();
+    if (d) {
+      // A draft page never greets: the gate stays closed and no pins are drawn over it.
+      this.frame.show(draftSrc(this.id, d, s.origin, this.draftPage ?? this.startFile, this.tint()), s.origin === null, `draft-${d.agent}-${d.token}-${s.origin ? "o" : "s"}`);
+      return;
+    }
     this.frame.show(pageSrc(this.id, this.shown(), s.origin, this.startFile) + this.startHash, s.origin === null, `${this.shown()}-${s.origin ? "o" : "s"}`);
     const fragment = this.frame.takeFragment();
     if (fragment !== null) this.pendingFragment = fragment;
@@ -756,6 +772,7 @@ export class ArtifactController {
     this.decideChangelog();
     this.writeSeen();
     this.watchDocs();
+    this.loadDrafts();
     if (!this.presenceAsked) {
       this.presenceAsked = true;
       this.life.defer(afterPaint(() => this.startPresence()));
@@ -909,6 +926,13 @@ export class ArtifactController {
   private listen(): void {
     const onMessage = (e: MessageEvent) => this.hear(e);
     addEventListener("message", onMessage);
+    // A draft page's count of what it tinted (the daemon's tint script),
+    // heard only from the frame while it shows a draft.
+    const onDiff = (e: MessageEvent) => {
+      const changed = parseDiff(e.data);
+      if (changed && this.s.showDraft !== null && this.frame?.el && e.source === this.frame.el.contentWindow) this.set({ draftChanged: changed });
+    };
+    addEventListener("message", onDiff);
     // Whether the pointer is over the content frame (the shell sees a
     // mouseover on the iframe element as it enters, and on another element
     // as it leaves).
@@ -1057,6 +1081,7 @@ export class ArtifactController {
     this.life.defer(() => {
       unforward();
       removeEventListener("message", onMessage);
+      removeEventListener("message", onDiff);
       removeEventListener("mouseover", onOver);
       removeEventListener("keydown", onKey);
       removeEventListener("keyup", onKey);
@@ -1096,9 +1121,11 @@ export class ArtifactController {
     switch (m.type) {
       case "clax:hello": {
         // A stale or foreign document in the frame, or one naming a page
-        // this version does not hold, gets no welcome, no anchors, and no pins.
+        // this version does not hold, gets no welcome, no anchors, and no pins;
+        // nor does a draft page, which is never the version's page (its
+        // agent's script may greet as one: it gets no capability).
         const greeted = typeof m.file === "string" && m.file ? m.file : INDEX_FILE;
-        this.gate.hello(helloMatches(m, this.id, this.shown()) && this.holds(greeted));
+        this.gate.hello(this.s.showDraft === null && helloMatches(m, this.id, this.shown()) && this.holds(greeted));
         this.pendingPick = null;
         this.failedParts.clear();
         this.set({ resolved: {} });
@@ -1434,7 +1461,63 @@ export class ArtifactController {
   // ---- intents ----
 
   /** The Comment button and C; nothing on a live page, whose comments come from Chrome with the Clax extension. */
-  toggleComment(): void { if (!this.s.data?.artifact.live && !this.s.spectator) { this.resumeAfter = null; this.set(s => ({ commenting: !s.commenting })); } }
+  toggleComment(): void { if (!this.s.data?.artifact.live && !this.s.spectator && this.s.showDraft === null) { this.resumeAfter = null; this.set(s => ({ commenting: !s.commenting })); } }
+
+  // ---- agents' drafts (hosted spec §16.4) ----
+
+  /** The ticket of the latest `drafts` event (see `clock`). */
+  /** @internal */
+  draftsAt = 0;
+  /** The page the frame showed when a draft was first shown: the draft is shown at it. */
+  private draftPage: string | null = null;
+
+  /** The draft the frame shows, while it is live. */
+  shownDraft(s: ViewState = this.s): DraftView | undefined {
+    return s.showDraft === null ? undefined : s.drafts.find(d => d.agent === s.showDraft);
+  }
+
+  /** The agents' colour for a draft's tint: the theme's `--agent`. */
+  private tint(): string {
+    return tintOf(typeof getComputedStyle === "function" ? getComputedStyle(document.documentElement).getPropertyValue("--agent") : "");
+  }
+
+  /** Shows `agent`'s draft in the frame in place of the version, at the
+   * page the frame shows; comment mode ends (comments go on versions). */
+  showDraftOf(agent: string): void {
+    if (!this.s.drafts.some(d => d.agent === agent) || this.s.showDraft === agent) return;
+    if (this.s.showDraft === null) this.draftPage = this.s.file ?? this.startFile;
+    this.set({ showDraft: agent, draftChanged: null, commenting: false });
+    this.showFrame();
+  }
+
+  /** Shows the version again. */
+  backFromDraft(): void {
+    if (this.s.showDraft === null) return;
+    this.draftPage = null;
+    this.set({ showDraft: null, draftChanged: null });
+    this.showFrame();
+  }
+
+  /** The live drafts are `list` now. A shown draft that was revised is
+   * shown again at its new revision; one that ended gives way to the
+   * version. */
+  draftsChanged(list: DraftView[]): void {
+    const before = this.shownDraft();
+    const drafts = oldestFirst(list);
+    const kept = before !== undefined && drafts.some(d => d.agent === before.agent);
+    this.set(s => ({ drafts, showDraft: kept ? s.showDraft : null }));
+    const now = this.shownDraft();
+    if (before === undefined || now?.token === before.token) return;
+    if (!now) this.draftPage = null;
+    this.set({ draftChanged: null });
+    this.showFrame();
+  }
+
+  /** Fetches the live drafts; an answer never replaces a later event's list. */
+  loadDrafts(): void {
+    const t = ++this.clock;
+    getDrafts(this.id).then(list => { if (!this.disposed && this.draftsAt < t) this.draftsChanged(list); }, () => {});
+  }
   togglePanel(): void { this.set(s => ({ panel: !s.panel })); }
 
   closeSheet(): void { this.set({ sheet: null }); }

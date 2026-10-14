@@ -12,8 +12,9 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 
 /// The tools whose calls capture git state (spec §9.3): every tool that
-/// changes history. The read-only tools, and `open`, which only shows a
-/// page, capture none.
+/// changes history. The read-only tools, `open`, which only shows a page,
+/// and `draft`, whose work in progress is kept in memory and never in
+/// history, capture none.
 pub const GIT_TOOLS: [&str; 15] = [
     "publish",
     "comments_reply",
@@ -238,7 +239,7 @@ mod tests {
     #[test]
     fn every_tool_that_changes_history_captures_git() {
         let tools = crate::ClaxTools::tools();
-        assert_eq!(tools.len(), 24);
+        assert_eq!(tools.len(), 25);
         for t in &tools {
             let name = t.name.as_ref();
             let read_only = t
@@ -251,7 +252,7 @@ mod tests {
                 header.call_header().is_some(),
                 "{name} is not a bare tool name"
             );
-            if read_only || name == "open" {
+            if read_only || name == "open" || name == "draft" {
                 assert!(!captures_git(name), "{name} is read-only");
             } else {
                 assert!(captures_git(name), "{name} changes history");

@@ -71,7 +71,8 @@
 //! is not spawned on the Worker but run from the object's alarm, which
 //! calls the same sweep functions (`presence::sweep_and_announce`,
 //! `Working`'s and the stream hub's sweeps, the live seats'
-//! [`seats::LiveSeats::sweep`], grant expiry) and sets the
+//! [`seats::LiveSeats::sweep`], the agents' drafts'
+//! [`drafts::sweep_and_announce`], grant expiry) and sets the
 //! next alarm for the earliest one due. The request timeout layer is the
 //! daemon's; a Worker's request is bounded by the platform.
 //!
@@ -125,6 +126,7 @@ pub mod boot;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod daemon;
 pub mod db_caller;
+pub mod drafts;
 pub mod error;
 pub mod extension;
 pub mod feedback;

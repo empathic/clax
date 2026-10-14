@@ -15,6 +15,7 @@ mod api_canary;
 mod api_changelog;
 mod api_content;
 mod api_docs;
+mod api_drafts;
 mod api_events;
 mod api_extension;
 mod api_feedback;

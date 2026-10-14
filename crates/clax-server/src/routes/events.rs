@@ -141,10 +141,12 @@ pub async fn events(
     let passes = move |ev: &Event| -> bool {
         // A site's change names no artifact: only `site:` topics carry it.
         // Questions, the inbox and people are the owner's; only their stream
-        // topics carry them.
+        // topics carry them. Drafts go to people's streams alone (their
+        // tokens are capabilities, never an agent's).
         if matches!(
             ev,
             Event::Site { .. }
+                | Event::Drafts { .. }
                 | Event::Question { .. }
                 | Event::InboxItem { .. }
                 | Event::InboxRead { .. }
