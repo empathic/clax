@@ -3,6 +3,8 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import '../clax/api.dart';
@@ -124,10 +126,31 @@ class Installer {
   /// ID. A bundle of this install's own ([TrustDecision.mine], on
   /// `install`: the person's app deleted here and opened again) is
   /// recorded with role `author`, so later exports continue its lineage. A failure deletes the app made and throws [BundleFailure].
+  ///
+  /// Until the lineage entry (with `from_bundle`) is written, right after
+  /// the app is made and before it is filled, a marker
+  /// `<support>/installs/<lineage>.json` stands for it: [fromBundleOf]
+  /// counts every app as from a bundle while one is kept, and
+  /// [recoverInstalls] deletes what an install that a crash cut short
+  /// made.
   Future<String> install(OpenedBundle opened) async {
+    const separate = {
+      TrustAnswer.install,
+      TrustAnswer.foreign,
+      TrustAnswer.forked,
+    };
+    if (!separate.contains(opened.decision.answer)) {
+      throw BundleFailure(
+        'install',
+        'This file is not installed as a new app.',
+        details: ['The trust decision is ${opened.decision.answer.name}.'],
+      );
+    }
     final m = opened.manifest;
     final b = opened.bundle;
     final who = opened.who;
+    final marker = installMarker(store, m.lineage);
+    _writeMarker(marker, {'content_sha256': m.contentSha256, 'aid': null});
     final PublishResult made;
     try {
       made = await api.createArtifact(
@@ -151,16 +174,35 @@ class Installer {
           details: [e.message],
         );
       }
+      _dropMarker(marker);
       throw BundleFailure(
         'install',
         'The app could not be installed.',
         details: [e.message],
       );
+    } on Object {
+      _dropMarker(marker);
+      rethrow;
     }
     final aid = made.artifact.id;
     final mine =
         opened.decision.mine && opened.decision.answer == TrustAnswer.install;
     try {
+      _writeMarker(marker, {'content_sha256': m.contentSha256, 'aid': aid});
+      await store.put(
+        aid,
+        LineageEntry(
+          lineage: m.lineage,
+          role: mine ? LineageRole.author : LineageRole.installed,
+          key: m.author.key,
+          name: m.author.name,
+          version: m.version,
+          released: [m.contentSha256],
+          capabilities: m.capabilities,
+          title: m.title,
+          fromBundle: !mine,
+        ),
+      );
       final got = made.version.contentSha256;
       if (got != m.contentSha256) {
         throw BundleFailure(
@@ -178,21 +220,8 @@ class Installer {
             setWrite(d.path, d.data),
         ]);
       }
-      await store.put(
-        aid,
-        LineageEntry(
-          lineage: m.lineage,
-          role: mine ? LineageRole.author : LineageRole.installed,
-          key: m.author.key,
-          name: m.author.name,
-          version: m.version,
-          released: [m.contentSha256],
-          capabilities: m.capabilities,
-          title: m.title,
-          fromBundle: !mine,
-        ),
-      );
       if (!mine) await store.keepBundle(aid, b.bytes);
+      _dropMarker(marker);
       return aid;
     } on Object catch (e) {
       try {
@@ -201,6 +230,7 @@ class Installer {
         // Already gone.
       }
       await store.forget(aid);
+      _dropMarker(marker);
       if (e is BundleFailure) rethrow;
       throw BundleFailure(
         'install',
@@ -209,6 +239,65 @@ class Installer {
       );
     }
   }
+
+  /// Deletes what each install a crash cut short made (§8.1: a failure
+  /// deletes the app), from the markers [install] keeps: the app it named,
+  /// or, when it had not named one yet, every app whose live content hash
+  /// is the bundle's and that has no lineage entry. Run once the daemon is
+  /// up, before the person uses an app.
+  Future<void> recoverInstalls() async {
+    final dir = Directory('${store.support.path}/installs');
+    if (!dir.existsSync()) return;
+    final entries = await store.all();
+    for (final f in dir.listSync()) {
+      if (f is! File || !f.path.endsWith('.json')) continue;
+      try {
+        final j = jsonDecode(f.readAsStringSync()) as Map;
+        final named = j['aid'];
+        final hash = j['content_sha256'];
+        final doomed = <String>[
+          if (named is String) named,
+          if (named == null)
+            for (final a in await api.listArtifacts())
+              if (!entries.containsKey(a.id) &&
+                  (await liveRelease(api, a.id))?.contentSha256 == hash)
+                a.id,
+        ];
+        for (final aid in doomed) {
+          try {
+            await api.deleteArtifact(aid);
+          } on ClaxApiError catch (e) {
+            if (!e.isNotFound) rethrow;
+          }
+          await store.forget(aid);
+        }
+        f.deleteSync();
+      } on Object {
+        // Kept for the next start.
+      }
+    }
+  }
+}
+
+/// The marker [Installer.install] keeps while it installs [lineage].
+File installMarker(LineageStore store, String lineage) =>
+    File('${store.support.path}/installs/$lineage.json');
+
+void _writeMarker(File f, Map<String, Object?> j) {
+  f.parent.createSync(recursive: true);
+  final tmp = File('${f.path}.tmp');
+  final out = tmp.openSync(mode: FileMode.write);
+  try {
+    out.writeFromSync(utf8.encode(jsonEncode(j)));
+    out.flushSync();
+  } finally {
+    out.closeSync();
+  }
+  tmp.renameSync(f.path);
+}
+
+void _dropMarker(File f) {
+  if (f.existsSync()) f.deleteSync();
 }
 
 /// [aid]'s live release state (its current version's content hash, its
@@ -243,9 +332,17 @@ Map<String, Object?> shareableCapabilities(Map<String, Object?> caps) => {
 };
 
 /// Whether [aid]'s code came from a bundle (its lineage entry's
-/// `from_bundle`): the agent's T2 isolation (§9) for that app.
+/// `from_bundle`): the agent's T2 isolation (§9) for that app. An app
+/// without an entry counts as from a bundle while an install is unfinished
+/// ([installMarker]), since it may be that install's.
 Future<bool> Function(String aid) fromBundleOf(LineageStore store) =>
-    (aid) async => (await store.entry(aid))?.fromBundle ?? false;
+    (aid) async {
+      final e = await store.entry(aid);
+      if (e != null) return e.fromBundle;
+      final dir = Directory('${store.support.path}/installs');
+      return dir.existsSync() &&
+          dir.listSync().any((f) => f.path.endsWith('.json'));
+    };
 
 /// Forgets each deleted app's lineage entry, kept bundle and any document
 /// snapshot (§5.3) as `artifact_deleted` events arrive on [events].

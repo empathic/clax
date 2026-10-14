@@ -3,6 +3,11 @@
 /// (bundles spec §3.3, §3.4, §8.2–8.4).
 library;
 
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:flutter/foundation.dart' show ValueNotifier;
+
 import '../agent/inspector.dart';
 import '../agent/tools/render_tool.dart' show perTestLimit, testLimit;
 import '../clax/api.dart';
@@ -126,21 +131,41 @@ class UpdateRolledBack extends UpdateOutcome {
   final bool restored;
 }
 
-/// An update interrupted during its live migration, put back at start
-/// on lineage version [backOn] (§8.4), for the one-time notice.
+/// An update put back, or waiting for the person, at start (§8.4).
+///
+/// [restored]: it was interrupted during its live migration and is back
+/// on lineage version [backOn] with the documents as they were, for the
+/// one-time notice. Not [restored]: its snapshot is kept because
+/// documents may have been written since (a restore failed before, or the
+/// app moved on); the person chooses [Updater.restoreKept] ("Restore") or
+/// [Updater.discardKept] ("Discard").
 class RecoveredUpdate {
   const RecoveredUpdate({
     required this.aid,
     required this.title,
     required this.backOn,
+    this.restored = true,
   });
 
   final String aid;
   final String title;
   final int backOn;
+  final bool restored;
 }
 
+/// Runs a body with the agent held off app `aid` (`FeedbackWorker.hold`).
+typedef AppHold = Future<T> Function<T>(String aid, Future<T> Function() body);
+
+Future<T> _noHold<T>(String aid, Future<T> Function() body) => body();
+
 /// Updates installed apps from bundles.
+///
+/// While an update runs, the app is in [updating] (its screen shows an
+/// "Updating…" cover and runs no page) and [hold] keeps the agent off it.
+/// Before the publish, the release about to land is written to
+/// `<support>/updates/<aid>.json` (with the bundle beside it), so a crash
+/// between the publish and the lineage write is finished at the next
+/// [recoverInterrupted].
 class Updater {
   Updater({
     required this.api,
@@ -149,9 +174,12 @@ class Updater {
     required this.baseUrl,
     required this.snapshots,
     bool Function(String aid)? busy,
+    AppHold? hold,
+    this._ensureSession,
     this.migrationLimit = const Duration(seconds: 30),
     void Function(String line)? log,
   }) : _busy = busy ?? ((_) => false),
+       _hold = hold ?? _noHold,
        _log = log ?? ((_) {});
 
   final ClaxApi api;
@@ -165,26 +193,75 @@ class Updater {
   /// The longest a `migrate.js` run may take.
   final Duration migrationLimit;
   final bool Function(String) _busy;
+  final AppHold _hold;
+  final Future<void> Function()? _ensureSession;
   final void Function(String) _log;
+
+  /// The apps an update is running on: their pages must not run.
+  final updating = ValueNotifier<Set<String>>(const {});
+
+  Directory get _pendingDir => Directory('${store.support.path}/updates');
+  File _pending(String aid) => File('${_pendingDir.path}/$aid.json');
+  File _pendingBundle(String aid) => File('${_pendingDir.path}/$aid.clax');
 
   /// Marks [aid]'s lineage `updates: stopped` ("Keep mine").
   Future<void> keepMine(String aid) => store.stopUpdates(aid);
 
   /// Updates app [aid] to [bundle] (§8.2), telling [onStep] each step.
-  /// Never throws for a failed check or refusal: the outcome says.
+  /// Never throws: a failed check, a refusal or an error is the outcome.
   Future<UpdateOutcome> update(
     String aid,
     Bundle bundle, {
     void Function(UpdateStep step)? onStep,
   }) async {
-    if (_busy(aid)) {
-      return const UpdateRefused('Wait for the change in progress to land.');
+    try {
+      if (_busy(aid)) {
+        return const UpdateRefused('Wait for the change in progress to land.');
+      }
+      if (snapshots.has(aid) || _pending(aid).existsSync()) {
+        return const UpdateRefused(
+          'An earlier update of this app has not finished putting your data '
+          'back. Restore or discard it first.',
+        );
+      }
+      return await _hold(aid, () async {
+        updating.value = {...updating.value, aid};
+        try {
+          return await _update(aid, bundle, onStep);
+        } finally {
+          updating.value = {...updating.value}..remove(aid);
+        }
+      });
+    } on Object catch (e) {
+      _log('the update of $aid failed: $e');
+      return UpdateRefused('The update could not finish.', details: ['$e']);
     }
+  }
+
+  /// Why [entry] cannot take [m] as an update, or null when it can: the
+  /// same lineage and key, installed, at a lower version.
+  static String? _mismatch(LineageEntry? entry, Manifest m) {
+    if (entry == null || entry.role != LineageRole.installed) {
+      return 'This app was not installed from a bundle.';
+    }
+    if (entry.lineage != m.lineage || entry.key != m.author.key) {
+      return 'This file is not an update of this app.';
+    }
+    if (m.version <= entry.version) {
+      return 'This app is at v${entry.version} already.';
+    }
+    return null;
+  }
+
+  Future<UpdateOutcome> _update(
+    String aid,
+    Bundle bundle,
+    void Function(UpdateStep step)? onStep,
+  ) async {
     final m = bundle.manifest;
     final entry = await store.entry(aid);
-    if (entry == null) {
-      return const UpdateRefused('This app was not installed from a bundle.');
-    }
+    if (_mismatch(entry, m) case final why?) return UpdateRefused(why);
+    final from = entry!.version;
     final ArtifactDetail live;
     try {
       live = await api.getArtifact(aid);
@@ -192,7 +269,6 @@ class Updater {
       return UpdateRefused('The app could not be read.', details: [e.message]);
     }
     final base = live.artifact.currentVersion;
-    final from = entry.version;
     final entries = {
       for (final MapEntry(:key, :value) in m.files.entries)
         key: FileEntry.bytes(bundle.files[key]!, type: value.type),
@@ -221,18 +297,22 @@ class Updater {
       );
     }
     final truncated = draft.docsTruncated;
-    final failed = await _check(
-      draft.id,
-      hasMigration: hasMigration,
-      tests: tests,
-      from: from,
-      to: m.version,
-      onStep: onStep,
-    );
+    final (UpdateStep, String, List<String>)? failed;
     try {
-      await api.deleteDraft(draft.id);
-    } on ClaxApiError catch (e) {
-      _log('deleting update draft ${draft.id} failed: $e');
+      failed = await _check(
+        draft.id,
+        hasMigration: hasMigration,
+        tests: tests,
+        from: from,
+        to: m.version,
+        onStep: onStep,
+      );
+    } finally {
+      try {
+        await api.deleteDraft(draft.id);
+      } on Object catch (e) {
+        _log('deleting update draft ${draft.id} failed: $e');
+      }
     }
     if (failed != null) {
       final (step, reason, details) = failed;
@@ -245,17 +325,17 @@ class Updater {
     }
 
     // 6–7: publish, then migrate the live documents under a snapshot.
+    final meta = SnapshotMeta(
+      base: base,
+      contentSha256: m.contentSha256,
+      title: live.artifact.title,
+      icon: live.artifact.icon,
+      capabilities: live.artifact.capabilities,
+      backOn: from,
+    );
     if (hasMigration) {
       try {
-        await snapshots.take(
-          aid,
-          SnapshotMeta(
-            base: base,
-            contentSha256: m.contentSha256,
-            title: live.artifact.title,
-            backOn: from,
-          ),
-        );
+        await snapshots.take(aid, meta);
       } on Object catch (e) {
         snapshots.discard(aid);
         return UpdateRefused(
@@ -264,30 +344,40 @@ class Updater {
         );
       }
     }
+    _writePending(aid, bundle);
     onStep?.call(UpdateStep.publish);
-    final PublishResult published;
+    PublishResult? published;
+    Object? refused;
     try {
-      published = await api.publish(
-        aid,
-        PublishRequest(
-          ifVersion: base,
-          title: m.title,
-          icon: m.icon.word,
-          capabilities: m.capabilities,
-          label: 'Update v${m.version}',
-          note:
-              'Updated to v${m.version} from '
-              '${m.author.name ?? keyFingerprint(m.author.key) ?? 'its author'}',
-          entries: {
-            ...entries,
-            for (final p in _current(live)?.files.keys ?? const <String>[])
-              if (!entries.containsKey(p)) p: null,
-          },
-        ),
-      );
+      // Under the store's lock: no other update of this lineage lands
+      // between the re-check and the publish.
+      await store.update(aid, (now) async {
+        if (_mismatch(now, m) case final why?) {
+          refused = UpdateRefused(why);
+          return null;
+        }
+        published = await api.publish(
+          aid,
+          PublishRequest(
+            ifVersion: base,
+            title: m.title,
+            icon: m.icon.word,
+            capabilities: m.capabilities,
+            label: 'Update v${m.version}',
+            note:
+                'Updated to v${m.version} from '
+                '${m.author.name ?? keyFingerprint(m.author.key) ?? 'its author'}',
+            entries: {
+              ...entries,
+              for (final p in live.current?.files.keys ?? const <String>[])
+                if (!entries.containsKey(p)) p: null,
+            },
+          ),
+        );
+        return null;
+      });
     } on ClaxApiError catch (e) {
-      snapshots.discard(aid);
-      return UpdateRefused(
+      refused = UpdateRefused(
         e.isConflict
             ? '${live.artifact.title} changed while the update was checked. '
                   'Try again.'
@@ -295,74 +385,262 @@ class Updater {
         details: [e.message],
       );
     }
+    final landed = published;
+    if (landed == null) {
+      snapshots.discard(aid);
+      _dropPending(aid);
+      return refused as UpdateRefused? ??
+          const UpdateRefused('The app was forgotten during the update.');
+    }
     if (hasMigration) {
+      snapshots.writeMeta(
+        aid,
+        (snapshots.meta(aid) ?? meta).copyWith(published: landed.version.n),
+      );
       onStep?.call(UpdateStep.liveMigrate);
       final error = await _migrate(_page(aid), from, m.version);
       if (error != null) {
-        final restored = await _putBack(aid, base, published.version.n);
+        _dropPending(aid);
+        final restored = await _putBack(aid);
         return UpdateRolledBack(from, details: [error], restored: restored);
       }
+      // The snapshot goes first: a crash after it finishes from the
+      // pending release, never rolls a passed update back.
       snapshots.discard(aid);
     }
 
     // 8: the lineage.
+    await _applyPending(aid);
+    return UpdateLanded(m.version, truncated: truncated);
+  }
+
+  void _writePending(String aid, Bundle bundle) {
+    final m = bundle.manifest;
+    _pendingDir.createSync(recursive: true);
+    _syncWrite(_pendingBundle(aid), bundle.bytes);
+    _syncWrite(
+      _pending(aid),
+      utf8.encode(
+        jsonEncode({
+          'content_sha256': m.contentSha256,
+          'version': m.version,
+          'title': m.title,
+          'capabilities': m.capabilities,
+          'name': m.author.name,
+        }),
+      ),
+    );
+  }
+
+  void _dropPending(String aid) {
+    for (final f in [_pending(aid), _pendingBundle(aid)]) {
+      if (f.existsSync()) f.deleteSync();
+    }
+  }
+
+  /// Writes the pending release of [aid] into its lineage entry and keeps
+  /// its bundle, then drops it.
+  Future<void> _applyPending(String aid) async {
+    final p = jsonDecode(_pending(aid).readAsStringSync()) as Map;
+    final caps = p['capabilities'];
     await store.update(
       aid,
       (now) async => now
           ?.withRelease(
             ReleaseState(
-              contentSha256: m.contentSha256,
-              title: m.title,
-              capabilities: m.capabilities,
+              contentSha256: p['content_sha256'] as String,
+              title: p['title'] as String,
+              capabilities: caps is Map<String, Object?> ? caps : const {},
             ),
-            version: m.version,
+            version: p['version'] as int,
           )
           .copyWith(
-            name: () => m.author.name,
+            name: () => p['name'] as String?,
             updatesStopped: false,
             stoppedAt: () => null,
           ),
     );
-    await store.keepBundle(aid, bundle.bytes);
-    return UpdateLanded(m.version, truncated: truncated);
+    await store.keepBundle(aid, _pendingBundle(aid).readAsBytesSync());
+    _dropPending(aid);
   }
 
-  /// Puts back each update interrupted during its live migration (§8.4):
-  /// the documents from the snapshot, and the version before the update
-  /// when the live version is the update's. Run once at the app's start,
-  /// after the daemon is up. A snapshot whose app is gone is deleted; one
-  /// that cannot be restored now is kept for the next start.
+  static void _syncWrite(File target, List<int> bytes) {
+    final tmp = File('${target.path}.tmp');
+    final out = tmp.openSync(mode: FileMode.write);
+    try {
+      out.writeFromSync(bytes);
+      out.flushSync();
+    } finally {
+      out.closeSync();
+    }
+    tmp.renameSync(target.path);
+  }
+
+  /// Puts back each interrupted update (§8.4), once the daemon is up.
+  ///
+  /// A pending release whose version is live is written into the lineage
+  /// (the crash came after the publish); one that is not live is dropped.
+  /// A kept snapshot is restored, documents and `base`'s version, title,
+  /// icon and capabilities, only when its sidecar proves the live version
+  /// is still the one the update published and no restore of it failed
+  /// before; otherwise it is kept and reported not [RecoveredUpdate.restored]
+  /// for the person to choose. A snapshot whose app is gone is deleted.
   Future<List<RecoveredUpdate>> recoverInterrupted() async {
     final out = <RecoveredUpdate>[];
     for (final aid in snapshots.pending()) {
-      final meta = snapshots.meta(aid);
       try {
-        final ArtifactDetail d;
-        try {
-          d = await api.getArtifact(aid);
-        } on ClaxApiError catch (e) {
-          if (e.isNotFound) snapshots.discard(aid);
-          continue;
-        }
-        if (meta == null) {
-          snapshots.discard(aid);
-          continue;
-        }
-        final now = d.artifact.currentVersion;
-        if (now != meta.base &&
-            _current(d)?.contentSha256 == meta.contentSha256) {
-          await api.restoreVersion(aid, meta.base, ifVersion: now);
-        }
-        await snapshots.restore(aid);
-        snapshots.discard(aid);
-        out.add(
-          RecoveredUpdate(aid: aid, title: meta.title, backOn: meta.backOn),
-        );
+        final r = await _recoverSnapshot(aid);
+        if (r != null) out.add(r);
       } on Object catch (e) {
         _log('restoring the interrupted update of $aid failed: $e');
       }
     }
+    if (_pendingDir.existsSync()) {
+      for (final f in _pendingDir.listSync()) {
+        if (f is! File || !f.path.endsWith('.json')) continue;
+        final aid = f.uri.pathSegments.last.replaceFirst('.json', '');
+        try {
+          await _recoverPending(aid);
+        } on Object catch (e) {
+          _log('finishing the update of $aid failed: $e');
+        }
+      }
+    }
     return out;
+  }
+
+  Future<RecoveredUpdate?> _recoverSnapshot(String aid) async {
+    final ArtifactDetail d;
+    try {
+      d = await api.getArtifact(aid);
+    } on ClaxApiError catch (e) {
+      if (e.isNotFound) snapshots.discard(aid);
+      return null;
+    }
+    final meta = snapshots.meta(aid);
+    final now = d.artifact.currentVersion;
+    if (meta == null || (meta.published == null && now == meta.base)) {
+      // Nothing was published, so migrate.js never ran on the live app.
+      snapshots.discard(aid);
+      _dropPending(aid);
+      return null;
+    }
+    final proven =
+        !meta.failed &&
+        meta.published == now &&
+        d.current?.contentSha256 == meta.contentSha256;
+    if (proven && await _putBack(aid)) {
+      _dropPending(aid);
+      return RecoveredUpdate(aid: aid, title: meta.title, backOn: meta.backOn);
+    }
+    return RecoveredUpdate(
+      aid: aid,
+      title: meta.title,
+      backOn: meta.backOn,
+      restored: false,
+    );
+  }
+
+  Future<void> _recoverPending(String aid) async {
+    if (snapshots.has(aid)) return; // The person decides first.
+    final ArtifactDetail d;
+    try {
+      d = await api.getArtifact(aid);
+    } on ClaxApiError catch (e) {
+      if (e.isNotFound) _dropPending(aid);
+      return;
+    }
+    final p = jsonDecode(_pending(aid).readAsStringSync()) as Map;
+    if (d.current?.contentSha256 == p['content_sha256']) {
+      await _applyPending(aid);
+    } else {
+      _dropPending(aid);
+    }
+  }
+
+  /// The person's "Restore" for a kept snapshot: the documents back as
+  /// they were before the update, and `base`'s version and declaration
+  /// when the live version is still the update's. False when it failed
+  /// (the snapshot stays).
+  Future<bool> restoreKept(String aid) async {
+    try {
+      return await _hold(aid, () => _putBack(aid, force: true));
+    } on Object catch (e) {
+      _log('restoring $aid failed: $e');
+      return false;
+    }
+  }
+
+  /// The person's "Discard" for a kept snapshot: keeps the app and its
+  /// documents as they are.
+  Future<void> discardKept(String aid) async {
+    snapshots.discard(aid);
+    _dropPending(aid);
+  }
+
+  /// Restores [aid]'s documents from its snapshot and its version to the
+  /// snapshot's `base` (files, title, icon and capabilities, published
+  /// again pinned to the update's version), then deletes the snapshot.
+  /// The version is put back only while the live version is the update's
+  /// (always when not [force]d, which callers check first). False when it
+  /// failed: the snapshot stays, marked failed, for the person.
+  Future<bool> _putBack(String aid, {bool force = false}) async {
+    final meta = snapshots.meta(aid);
+    if (meta == null) return false;
+    try {
+      await snapshots.restore(aid);
+      final d = await api.getArtifact(aid);
+      final now = d.artifact.currentVersion;
+      if (!force ||
+          (meta.published == now &&
+              d.current?.contentSha256 == meta.contentSha256)) {
+        await _rollBackVersion(aid, d, meta);
+      }
+      snapshots.discard(aid);
+      return true;
+    } on Object catch (e) {
+      _log('rolling back the update of $aid failed: $e');
+      try {
+        snapshots.writeMeta(aid, meta.copyWith(failed: true));
+      } on Object catch (e) {
+        _log('marking the snapshot of $aid failed: $e');
+      }
+      return false;
+    }
+  }
+
+  /// Publishes `base`'s files, title, icon and capabilities over [d]'s
+  /// current version (a `versions:restore` would keep the update's
+  /// declaration).
+  Future<void> _rollBackVersion(
+    String aid,
+    ArtifactDetail d,
+    SnapshotMeta meta,
+  ) async {
+    final base = d.versions.where((v) => v.n == meta.base).firstOrNull;
+    if (base == null) throw StateError('version ${meta.base} is gone');
+    final entries = <String, FileEntry?>{};
+    for (final MapEntry(key: path, value: f) in base.files.entries) {
+      final bytes = await api.readFileBytes(aid, base.n, path);
+      if (bytes == null) throw StateError('$path of v${base.n} is gone');
+      entries[path] = FileEntry.bytes(bytes, type: f.contentType);
+    }
+    for (final p in d.current?.files.keys ?? const <String>[]) {
+      entries.putIfAbsent(p, () => null);
+    }
+    await _ensureSession?.call();
+    await api.publish(
+      aid,
+      PublishRequest(
+        ifVersion: d.artifact.currentVersion,
+        title: meta.title,
+        icon: meta.icon,
+        capabilities: meta.capabilities,
+        label: 'Back to v${meta.backOn}',
+        note: 'The update did not finish; back on v${meta.backOn}',
+        entries: entries,
+      ),
+    );
   }
 
   /// The check's failing step, reason and details, or null on a pass.
@@ -443,21 +721,6 @@ class Updater {
     }
   }
 
-  /// Restores [aid]'s documents from the snapshot and its version to
-  /// [base] (published as [published]); false when that failed, leaving
-  /// the snapshot for [recoverInterrupted].
-  Future<bool> _putBack(String aid, int base, int published) async {
-    try {
-      await snapshots.restore(aid);
-      await api.restoreVersion(aid, base, ifVersion: published);
-      snapshots.discard(aid);
-      return true;
-    } on Object catch (e) {
-      _log('rolling back the update of $aid failed: $e');
-      return false;
-    }
-  }
-
   /// `<base>/a/<aid>?app=1&inspect=1`, as the render tool serves a draft.
   Uri _page(String aid) {
     final b = baseUrl();
@@ -466,6 +729,4 @@ class Updater {
       query: 'app=1&inspect=1',
     );
   }
-
-  static VersionInfo? _current(ArtifactDetail d) => d.current;
 }

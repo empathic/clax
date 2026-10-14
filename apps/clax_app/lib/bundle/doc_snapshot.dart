@@ -39,27 +39,61 @@ DocWrite setWrite(String path, Map<String, Object?> data, {int? ifVersion}) {
   );
 }
 
-/// What a snapshot was taken for: the live version before the update
-/// ([base]), the content hash the update publishes ([contentSha256]),
-/// the title and the lineage version to name in the notice ([backOn]).
+/// What a snapshot was taken for, in its sidecar file: the live version
+/// before the update ([base]) with its [title], [icon] and
+/// [capabilities], the content hash the update publishes
+/// ([contentSha256]), the lineage version to name in the notice
+/// ([backOn]), the version the update published once it has
+/// ([published]), how many documents the snapshot holds once it is
+/// complete ([count]), and whether a restore of it failed before
+/// ([failed]: the person then chooses, since documents may have been
+/// written since).
 class SnapshotMeta {
   const SnapshotMeta({
     required this.base,
     required this.contentSha256,
     required this.title,
     required this.backOn,
+    this.icon,
+    this.capabilities = const {},
+    this.published,
+    this.count,
+    this.failed = false,
   });
 
   final int base;
   final String contentSha256;
   final String title;
   final int backOn;
+  final String? icon;
+  final Map<String, Object?> capabilities;
+  final int? published;
+  final int? count;
+  final bool failed;
+
+  SnapshotMeta copyWith({int? published, int? count, bool? failed}) =>
+      SnapshotMeta(
+        base: base,
+        contentSha256: contentSha256,
+        title: title,
+        backOn: backOn,
+        icon: icon,
+        capabilities: capabilities,
+        published: published ?? this.published,
+        count: count ?? this.count,
+        failed: failed ?? this.failed,
+      );
 
   Map<String, Object?> toJson() => {
     'base': base,
     'content_sha256': contentSha256,
     'title': title,
     'back_on': backOn,
+    'icon': icon,
+    'capabilities': capabilities,
+    'published': published,
+    'count': count,
+    'failed': failed,
   };
 
   static SnapshotMeta? fromJson(Object? j) {
@@ -70,20 +104,38 @@ class SnapshotMeta {
         j['back_on'] is! int) {
       return null;
     }
+    final caps = j['capabilities'];
     return SnapshotMeta(
       base: j['base'] as int,
       contentSha256: j['content_sha256'] as String,
       title: j['title'] as String,
       backOn: j['back_on'] as int,
+      icon: j['icon'] is String ? j['icon'] as String : null,
+      capabilities: caps is Map<String, Object?> ? caps : const {},
+      published: j['published'] is int ? j['published'] as int : null,
+      count: j['count'] is int ? j['count'] as int : null,
+      failed: j['failed'] == true,
     );
   }
 }
 
+/// A snapshot that cannot be restored: incomplete, or not the one its
+/// sidecar describes.
+class SnapshotError implements Exception {
+  const SnapshotError(this.message);
+
+  final String message;
+
+  @override
+  String toString() => 'SnapshotError: $message';
+}
+
 /// Document snapshots under `<support>/snapshots/`: `<aid>.jsonl` holds
 /// one `{"path", "data"}` line per document (as `seed.jsonl`), and
-/// `<aid>.json` the [SnapshotMeta]. Both are written to a temporary file
-/// and renamed into place; the meta is written first, so a `.jsonl` file
-/// present always has its meta.
+/// `<aid>.json` the [SnapshotMeta]. Each is written to a temporary file,
+/// synced, and renamed into place. The meta is written first and again
+/// with the document count once the snapshot file is in place, so a
+/// snapshot is restored only when the count it holds is the meta's.
 class DocSnapshots {
   DocSnapshots(this.api, this.support);
 
@@ -97,17 +149,17 @@ class DocSnapshots {
 
   File _meta(String aid) => File('${_dir.path}/$aid.json');
 
-  /// Whether a snapshot of [aid] is kept.
-  bool has(String aid) => file(aid).existsSync();
+  /// Whether a snapshot of [aid] (or its sidecar) is kept.
+  bool has(String aid) => file(aid).existsSync() || _meta(aid).existsSync();
 
-  /// The apps with a snapshot kept, by artifact ID.
+  /// The apps with a snapshot or a sidecar kept, by artifact ID.
   List<String> pending() {
     if (!_dir.existsSync()) return const [];
-    return [
+    return {
       for (final f in _dir.listSync())
-        if (f is File && f.path.endsWith('.jsonl'))
-          f.uri.pathSegments.last.replaceFirst(RegExp(r'\.jsonl$'), ''),
-    ]..sort();
+        if (f is File && RegExp(r'\.jsonl?$').hasMatch(f.path))
+          f.uri.pathSegments.last.replaceFirst(RegExp(r'\.jsonl?$'), ''),
+    }.toList()..sort();
   }
 
   /// [aid]'s snapshot meta, or null.
@@ -121,54 +173,82 @@ class DocSnapshots {
     }
   }
 
-  /// Snapshots every document of [aid] at the owner's level, streamed to
-  /// the file, with [meta]. Returns how many documents it holds.
-  Future<int> take(String aid, SnapshotMeta meta) async {
+  /// Replaces [aid]'s meta by [meta], synced.
+  void writeMeta(String aid, SnapshotMeta meta) {
     _dir.createSync(recursive: true);
-    _writeAtomic(_meta(aid), utf8.encode(jsonEncode(meta.toJson())));
+    _writeSynced(_meta(aid), utf8.encode(jsonEncode(meta.toJson())));
+  }
+
+  /// Snapshots every document of [aid] at the owner's level, streamed to
+  /// the file and synced, with [meta]. Returns how many documents it
+  /// holds. Throws [StateError] when a snapshot of [aid] is kept already:
+  /// it is never overwritten.
+  Future<int> take(String aid, SnapshotMeta meta) async {
+    if (has(aid)) {
+      throw StateError('a snapshot of $aid is kept already');
+    }
+    writeMeta(aid, meta);
     final target = file(aid);
     final tmp = File('${target.path}.tmp');
-    final sink = tmp.openWrite();
+    final out = tmp.openSync(mode: FileMode.write);
     var n = 0;
     try {
       await for (final d in ownerDocs(api, aid)) {
-        sink.write(jsonEncode({'path': d.path, 'data': d.data}));
-        sink.write('\n');
+        out.writeStringSync(
+          '${jsonEncode({'path': d.path, 'data': d.data})}\n',
+        );
         n++;
       }
-      await sink.flush();
+      out.flushSync();
     } finally {
-      await sink.close();
+      out.closeSync();
     }
     tmp.renameSync(target.path);
+    writeMeta(aid, meta.copyWith(count: n));
     return n;
   }
 
-  /// The documents [aid]'s snapshot holds.
+  /// The documents [aid]'s snapshot holds. Throws [SnapshotError] when the
+  /// snapshot is missing, or holds another count than its meta records.
   Future<List<SeedDoc>> read(String aid) async {
+    final count = meta(aid)?.count;
+    if (count == null) {
+      throw const SnapshotError('the snapshot was never completed');
+    }
+    final List<String> lines;
+    try {
+      lines = await file(aid).readAsLines();
+    } on FileSystemException {
+      throw const SnapshotError('the snapshot file is missing');
+    }
     final out = <SeedDoc>[];
-    for (final line in await file(aid).readAsLines()) {
+    for (final line in lines) {
       if (line.isEmpty) continue;
       final j = jsonDecode(line) as Map<String, Object?>;
       out.add(
         SeedDoc(j['path']! as String, j['data']! as Map<String, Object?>),
       );
     }
+    if (out.length != count) {
+      throw SnapshotError(
+        'the snapshot holds ${out.length} documents, not $count',
+      );
+    }
     return out;
   }
 
-  /// Puts [aid]'s documents back as the snapshot holds them: `set` each
-  /// snapshot document, `delete` each document the app has that the
-  /// snapshot lacks, each pinned to the version just read, in calls of
-  /// [docBatchLimit]. A conflict re-reads and retries once; a second one
-  /// throws. The snapshot stays until [discard].
+  /// Puts [aid]'s documents back as the snapshot holds them: `delete`
+  /// each document the app has that the snapshot lacks, then `set` each
+  /// snapshot document (deletes first, to stay under the document quota),
+  /// each pinned to the version just read, in calls of [docBatchLimit]. A
+  /// conflict re-reads and retries once; a second one throws. Throws
+  /// [SnapshotError], writing nothing, for an incomplete snapshot. The
+  /// snapshot stays until [discard].
   Future<void> restore(String aid) async {
     final want = {for (final d in await read(aid)) d.path: d.data};
     for (var attempt = 0; ; attempt++) {
       final have = {await for (final d in ownerDocs(api, aid)) d.path: d};
       final writes = <DocWrite>[
-        for (final MapEntry(:key, :value) in want.entries)
-          setWrite(key, value, ifVersion: have[key]?.version),
         for (final d in have.values)
           if (!want.containsKey(d.path))
             DocWrite(
@@ -177,6 +257,8 @@ class DocSnapshots {
               docId: d.id,
               ifVersion: d.version,
             ),
+        for (final MapEntry(:key, :value) in want.entries)
+          setWrite(key, value, ifVersion: have[key]?.version),
       ];
       try {
         for (var i = 0; i < writes.length; i += docBatchLimit) {
@@ -199,9 +281,18 @@ class DocSnapshots {
     }
   }
 
-  static void _writeAtomic(File target, List<int> bytes) {
+  /// Writes [bytes] to a sibling temporary file, syncs it and renames it
+  /// over [target]. The directory itself is not synced (Dart has no call
+  /// for it); a rename lost to a crash leaves a count that does not match.
+  static void _writeSynced(File target, List<int> bytes) {
     final tmp = File('${target.path}.tmp');
-    tmp.writeAsBytesSync(bytes, flush: true);
+    final out = tmp.openSync(mode: FileMode.write);
+    try {
+      out.writeFromSync(bytes);
+      out.flushSync();
+    } finally {
+      out.closeSync();
+    }
     tmp.renameSync(target.path);
   }
 }
