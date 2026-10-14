@@ -900,6 +900,41 @@ class BundleNoticeSheet extends StatelessWidget {
   );
 }
 
+/// An update whose snapshot was kept at start because documents may
+/// have been written since (bundles spec §8.4): **Restore** pops true
+/// (the documents go back to before the update), **Discard** pops false
+/// (the app and its documents stay as they are).
+class KeptUpdateSheet extends StatelessWidget {
+  const KeptUpdateSheet({super.key, required this.title});
+
+  final String title;
+
+  @override
+  Widget build(BuildContext context) => _Frame(
+    face: null,
+    title: title,
+    body: [
+      _Para(
+        "$title's update did not finish putting your data back, and it may "
+        'have changed since. Restore puts your data back as it was before '
+        'the update; Discard keeps it as it is now.',
+      ),
+    ],
+    actions: [
+      TextButton(
+        key: const ValueKey('discard'),
+        onPressed: () => Navigator.of(context).pop(false),
+        child: const Text('Discard'),
+      ),
+      FilledButton(
+        key: const ValueKey('restore'),
+        onPressed: () => Navigator.of(context).pop(true),
+        child: const Text('Restore'),
+      ),
+    ],
+  );
+}
+
 // ------------------------------------------------------------- Platform
 
 /// Where a built bundle goes and where one to import comes from: the share
@@ -1203,12 +1238,17 @@ class BundleFlows {
       BundleProgressSheet(progress: progress),
       dismissible: false,
     );
-    final outcome = await u.update(
-      aid,
-      opened.bundle,
-      onStep: (s) =>
-          progress.value = BundleWorking(checking, updateStepLabel(s)),
-    );
+    UpdateOutcome outcome;
+    try {
+      outcome = await u.update(
+        aid,
+        opened.bundle,
+        onStep: (s) =>
+            progress.value = BundleWorking(checking, updateStepLabel(s)),
+      );
+    } on Object catch (e) {
+      outcome = UpdateRefused('The update could not finish.', details: ['$e']);
+    }
     progress.value = switch (outcome) {
       UpdateLanded(:final version, :final truncated) => BundlePassed(
         'Updated to v$version',
