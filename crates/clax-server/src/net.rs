@@ -32,6 +32,9 @@ pub const MAX_BODY: usize = 5 * 1024 * 1024;
 pub const TIMEOUT: Duration = Duration::from_secs(20);
 /// Most redirects one fetch follows.
 pub const MAX_REDIRECTS: usize = 3;
+/// The `User-Agent` a fetch carries when the page sets none: tile and API
+/// servers (OpenStreetMap's among them) ask clients to identify themselves.
+pub const USER_AGENT: &str = concat!("Clax/", env!("CARGO_PKG_VERSION"));
 
 /// Why a fetch did not produce a response.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -331,7 +334,8 @@ const DROPPED_RESPONSE: &[&str] = &[
 ];
 
 /// The page's headers, lowercased, minus the ones it may not set and any
-/// `Connection` names; an invalid name or value is `Invalid`.
+/// `Connection` names, with [`USER_AGENT`] when the page sets none; an
+/// invalid name or value is `Invalid`.
 fn request_headers(given: &[(String, String)]) -> Result<Vec<(String, String)>, NetError> {
     let mut out = Vec::new();
     for (k, v) in given {
@@ -347,6 +351,9 @@ fn request_headers(given: &[(String, String)]) -> Result<Vec<(String, String)>, 
             continue;
         }
         out.push((name, v.clone()));
+    }
+    if !out.iter().any(|(k, _)| k == "user-agent") {
+        out.push(("user-agent".into(), USER_AGENT.into()));
     }
     Ok(out)
 }
@@ -740,10 +747,32 @@ mod tests {
             hops[0].headers,
             vec![
                 ("authorization".into(), "Bearer k".into()),
-                ("content-type".into(), "text/plain".into())
+                ("content-type".into(), "text/plain".into()),
+                ("user-agent".into(), USER_AGENT.into())
             ]
         );
         assert_eq!(hops[0].body.as_deref(), Some(&b"hi"[..]));
+    }
+
+    #[tokio::test]
+    async fn the_daemon_names_itself_unless_the_page_does() {
+        assert!(USER_AGENT.starts_with("Clax/"));
+        let (net, script) = setup(vec![answer(200, &[], ""), answer(200, &[], "")]);
+        net.fetch(&allows, get("https://api.example.com/"))
+            .await
+            .unwrap();
+        let mut req = get("https://api.example.com/");
+        req.headers = vec![("User-Agent".into(), "Mine/1".into())];
+        net.fetch(&allows, req).await.unwrap();
+        let hops = script.hops.lock().unwrap();
+        assert_eq!(
+            hops[0].headers,
+            vec![("user-agent".into(), USER_AGENT.into())]
+        );
+        assert_eq!(
+            hops[1].headers,
+            vec![("user-agent".into(), "Mine/1".into())]
+        );
     }
 
     #[tokio::test]
@@ -802,11 +831,12 @@ mod tests {
             assert_eq!(
                 seen,
                 vec![
-                    ("POST", "https://api.example.com/start", true, 2),
-                    // A 302 after a POST is a GET; another host loses Authorization.
-                    ("GET", "https://cdn.example.com/a", false, 0),
-                    ("GET", "https://cdn.example.com/b", false, 0),
-                    ("GET", "https://api.example.com/c", false, 0),
+                    ("POST", "https://api.example.com/start", true, 3),
+                    // A 302 after a POST is a GET; another host loses
+                    // Authorization and keeps only the User-Agent.
+                    ("GET", "https://cdn.example.com/a", false, 1),
+                    ("GET", "https://cdn.example.com/b", false, 1),
+                    ("GET", "https://api.example.com/c", false, 1),
                 ]
             );
             assert_eq!(hops[1].addrs.len(), 2);
@@ -953,7 +983,13 @@ mod tests {
             .iter()
             .map(|h| h.headers.iter().map(|(k, _)| k.as_str()).collect())
             .collect();
-        let all = vec!["accept", "authorization", "x-api-key", "x-custom"];
-        assert_eq!(names, vec![all.clone(), all, vec!["accept"]]);
+        let all = vec![
+            "accept",
+            "authorization",
+            "x-api-key",
+            "x-custom",
+            "user-agent",
+        ];
+        assert_eq!(names, vec![all.clone(), all, vec!["accept", "user-agent"]]);
     }
 }

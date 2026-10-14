@@ -22,7 +22,8 @@ import type { HandlerFactory } from "./host";
 /** The codes a page may see from `net.fetch` (clax-extensions.d.ts `NetErrorCode`). */
 const NET_CODES = new Set(["invalid_argument", "https_only", "not_declared", "not_granted", "redirect_refused", "blocked_address", "too_large", "too_many_redirects", "timeout", "upstream_error", "unavailable", "session_expired"]);
 
-export type NetResponse = { url: string; status: number; headers: Record<string, string>; body: string };
+/** The daemon's answer: `body` when the response is UTF-8, else `body_base64`. */
+export type NetResponse = { url: string; status: number; headers: Record<string, string>; body?: string; body_base64?: string };
 
 /** The hosts the page's declaration lists. */
 export function declaredHosts(declared: Record<string, Record<string, unknown> | undefined>): string[] {

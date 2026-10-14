@@ -32,7 +32,12 @@ impl Resolver for Table {
 struct Echo(Mutex<Vec<Hop>>);
 impl Transport for Echo {
     fn send(&self, hop: Hop) -> BoxFuture<'_, Result<HopResponse, NetError>> {
-        let body = format!("{} {}", hop.method, hop.url);
+        // A `.png` path answers bytes that are not UTF-8.
+        let body = if hop.url.path().ends_with(".png") {
+            vec![0x89, b'P', b'N', b'G', 0xff, 0x00]
+        } else {
+            format!("{} {}", hop.method, hop.url).into_bytes()
+        };
         self.0.lock().unwrap().push(hop);
         Box::pin(async move {
             Ok(HopResponse {
@@ -41,7 +46,7 @@ impl Transport for Echo {
                     ("content-type".into(), "text/plain".into()),
                     ("set-cookie".into(), "s=1".into()),
                 ],
-                body: body.into_bytes(),
+                body,
             })
         })
     }
@@ -137,6 +142,7 @@ async fn a_fetch_needs_the_owners_grant_and_ends_with_its_revocation() {
     assert_eq!(body["status"], 200);
     assert_eq!(body["url"], "https://api.example.com/v1?q=1");
     assert_eq!(body["body"], "POST https://api.example.com/v1?q=1");
+    assert_eq!(body.get("body_base64"), None);
     assert_eq!(body["headers"], json!({"content-type": "text/plain"}));
     {
         let hops = echo.0.lock().unwrap();
@@ -146,10 +152,22 @@ async fn a_fetch_needs_the_owners_grant_and_ends_with_its_revocation() {
         );
         assert_eq!(
             hops[0].headers,
-            vec![("x-key".to_string(), "k".to_string())]
+            vec![
+                ("x-key".to_string(), "k".to_string()),
+                (
+                    "user-agent".to_string(),
+                    clax_server::net::USER_AGENT.to_string()
+                )
+            ]
         );
         assert_eq!(hops[0].body.as_deref(), Some(&b"{}"[..]));
     }
+
+    // A body that is not UTF-8 comes as base64, byte for byte.
+    let (status, body) = fetch(&ts, &aid, json!({"url": "https://api.example.com/t/1.png"})).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body.get("body"), None);
+    assert_eq!(body["body_base64"], "iVBOR/8A");
 
     let (status, body) = fetch(&ts, &aid, json!({"url": "https://intranet.example.com/"})).await;
     assert_eq!(

@@ -22,3 +22,25 @@ describe("net.fetch in the page", () => {
     expect(call).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("net.fetch bodies", () => {
+  type Res = { text(): Promise<string>; arrayBuffer(): Promise<ArrayBuffer>; blob(): Promise<Blob> };
+  const fetchWith = async (answer: object) => {
+    const net = netLocals({ call: async () => answer } as never) as { fetch(u: string): Promise<Res> };
+    return net.fetch("https://tiles.example.com/1.png");
+  };
+
+  it("gives a base64 body's bytes as arrayBuffer() and a blob of the response's type", async () => {
+    const res = await fetchWith({ url: "u", status: 200, headers: { "content-type": "image/png" }, body_base64: "iVBOR/8A" });
+    expect([...new Uint8Array(await res.arrayBuffer())]).toEqual([0x89, 0x50, 0x4e, 0x47, 0xff, 0x00]);
+    const blob = await res.blob();
+    expect([blob.type, blob.size]).toEqual(["image/png", 6]);
+    expect(await res.text()).toBe("�PNG�\u0000");
+  });
+
+  it("gives a text body's UTF-8 bytes as arrayBuffer()", async () => {
+    const res = await fetchWith({ url: "u", status: 200, headers: {}, body: "é" });
+    expect([...new Uint8Array(await res.arrayBuffer())]).toEqual([0xc3, 0xa9]);
+    expect((await res.blob()).type).toBe("");
+  });
+});

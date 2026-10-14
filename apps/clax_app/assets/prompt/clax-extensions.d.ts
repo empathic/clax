@@ -299,6 +299,10 @@ declare namespace ClaxExtensions {
       text(): Promise<string>;
       /** The body parsed as JSON; rejects (a `SyntaxError`) when it is not JSON. */
       json<T = unknown>(): Promise<T>;
+      /** The body's bytes, exactly as the server sent them (an image, say). */
+      arrayBuffer(): Promise<ArrayBuffer>;
+      /** The body's bytes as a `Blob` of the response's `content-type`; `URL.createObjectURL` shows it in an `<img>`. */
+      blob(): Promise<Blob>;
     }
 
     interface Net {

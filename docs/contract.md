@@ -4803,8 +4803,9 @@ its grants.
 method?, headers?, body?}` (`method` `GET` when absent, `headers` an object
 of strings, `body` a string), answers `{url, status, headers, body}`: the
 final URL, the status (4xx and 5xx included), the headers (lowercase
-names, repeats joined with `, `) and the body as text (UTF-8, invalid bytes
-replaced). The daemon, for the first request and each redirect:
+names, repeats joined with `, `) and the body as text when it is UTF-8; a
+body that is not (an image, say) comes as `body_base64` instead, byte for
+byte. A request without a `User-Agent` carries `Clax/<version>`. The daemon, for the first request and each redirect:
 
 - takes only `https` URLs without a user name or password;
 - takes only a host the live version declares and the owner granted;
@@ -4833,7 +4834,9 @@ connection, TLS).
 **In the page.** `const net = await window.claude.use("net")` resolves the
 namespace in the owner's views (the Clax app, or the owner's browser) when
 `net` is declared, and `null` elsewhere. `net.fetch(url, init)` resolves
-`{status, ok, url, headers, text(), json()}`; the types are
+`{status, ok, url, headers, text(), json(), arrayBuffer(), blob()}` (a
+`blob()` of an image is shown with `URL.createObjectURL`, which the policy
+allows as `blob:`); the types are
 `ClaxExtensions.Net` in `clax-extensions.d.ts`. The shell refuses, before
 any request, a URL that is not `https` (`https_only`) or whose host is not
 declared (`not_declared`). The daemon's `not_granted` asks the owner once

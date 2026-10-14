@@ -19,6 +19,8 @@ use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use clax_core::audit::AuditCtx;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -56,8 +58,8 @@ fn net_error(e: &NetError) -> ApiError {
 
 /// `POST /api/artifacts/<id>/net:fetch` (token): `{url, method?, headers?,
 /// body?}` (`body` a string) → `{url, status, headers, body}`, `url` the
-/// final URL after redirects, `body` the response as text (UTF-8, invalid
-/// bytes replaced). 404 for an unknown artifact; 403 `not_declared` when
+/// final URL after redirects, `body` the response as text when it is UTF-8;
+/// any other response (an image, say) comes as `body_base64` instead. 404 for an unknown artifact; 403 `not_declared` when
 /// the live version does not declare the URL's host, `not_granted` when the
 /// owner has not allowed it, `redirect_refused` or `blocked_address`; 400
 /// `invalid_argument` or `https_only`; 413 `too_large`; 504 `timeout`; 502
@@ -96,12 +98,12 @@ pub async fn fetch(
         .fetch(&|h: &str| access.allows(h), req)
         .await
         .map_err(|e| net_error(&e))?;
-    Ok(Json(json!({
-        "url": res.url,
-        "status": res.status,
-        "headers": res.headers,
-        "body": String::from_utf8_lossy(&res.body),
-    })))
+    let mut out = json!({"url": res.url, "status": res.status, "headers": res.headers});
+    match String::from_utf8(res.body) {
+        Ok(text) => out["body"] = Value::String(text),
+        Err(e) => out["body_base64"] = Value::String(STANDARD.encode(e.into_bytes())),
+    }
+    Ok(Json(out))
 }
 
 /// `GET /api/artifacts/<id>/net-grants` (token): `{declared: [host],
