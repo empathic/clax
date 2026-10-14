@@ -638,6 +638,9 @@ pub struct Agent<N: Need> {
     raw_artifact: Option<String>,
     /// The request carried the daemon token.
     token: bool,
+    /// A hosted daemon's signed-in person: their rights, which limit their
+    /// browser as a person's agent's limit it ([`crate::hosted::MemberRights`]).
+    member: Option<crate::hosted::MemberRights>,
     _n: PhantomData<N>,
 }
 
@@ -687,6 +690,13 @@ impl<N: Need> Agent<N> {
     /// As above, and 400 for a malformed ID.
     pub async fn named_artifact(&self, s: &AppState, raw: &str) -> Result<ArtifactId, ApiError> {
         let id = crate::routes::artifacts::parse_id(raw)?;
+        if let Some(m) = &self.member
+            && !m
+                .allows(s, (RightType::Artifacts, "read"), id.as_str())
+                .await?
+        {
+            return Err(ApiError::not_found());
+        }
         if let Caller::PersonAgent { person, rights, .. } = &self.caller {
             if s.live_ids.contains(id.as_str()) {
                 return Err(ApiError::not_found());
@@ -702,10 +712,20 @@ impl<N: Need> Agent<N> {
     /// Which artifacts the caller may read, for a listing to leave out the
     /// others (spec §7.5: listing under location-limited rights).
     pub fn read_rights(&self) -> ReadRights {
-        ReadRights(match &self.caller {
-            Caller::PersonAgent { person, rights, .. } => Some((rights.clone(), person.clone())),
-            _ => None,
-        })
+        match (&self.caller, &self.member) {
+            (Caller::PersonAgent { person, rights, .. }, _) => ReadRights {
+                rights: Some((rights.clone(), person.clone())),
+                agent: true,
+            },
+            (_, Some(m)) => ReadRights {
+                rights: Some((m.rights.clone(), Some(m.person.clone()))),
+                agent: false,
+            },
+            _ => ReadRights {
+                rights: None,
+                agent: false,
+            },
+        }
     }
 
     /// For a person's agent, that its rights allow `right` at artifact `id`
@@ -724,20 +744,31 @@ impl<N: Need> Agent<N> {
         {
             return Err(not_permitted(right));
         }
+        if let Some(m) = &self.member
+            && !m.allows(s, right, id.as_str()).await?
+        {
+            return Err(member_not_permitted(right));
+        }
         Ok(())
     }
 }
 
 /// Which artifacts a caller may read ([`Agent::read_rights`]): a person's
-/// agent's rights and person; every other caller reads every artifact.
+/// agent's rights and person, or a hosted daemon's signed-in person's
+/// ([`crate::hosted::MemberRights`]); every other caller reads every
+/// artifact.
 #[derive(Clone)]
-pub struct ReadRights(Option<(Arc<clax_core::rights::Rights>, Option<String>)>);
+pub struct ReadRights {
+    rights: Option<(Arc<clax_core::rights::Rights>, Option<String>)>,
+    /// The rights are a person's agent's.
+    agent: bool,
+}
 
 impl ReadRights {
     /// Whether the caller may read artifact `a` (`own`: one its person
     /// created).
     pub fn allows(&self, a: &clax_core::model::Artifact) -> bool {
-        match &self.0 {
+        match &self.rights {
             None => true,
             Some((rights, person)) => {
                 rights.allows(RightType::Artifacts, "read", Some(&a.id), &|x| {
@@ -749,7 +780,13 @@ impl ReadRights {
 
     /// Whether it is a person's agent's.
     pub fn is_person_agent(&self) -> bool {
-        self.0.is_some()
+        self.agent
+    }
+
+    /// Whether it leaves anything out: a person's agent's, or a hosted
+    /// daemon's signed-in person's.
+    pub fn filters(&self) -> bool {
+        self.rights.is_some()
     }
 
     /// A person's agent's rights as the store holds them now, for grant
@@ -767,7 +804,10 @@ impl ReadRights {
         match grant {
             Some(g) if self.is_person_agent() => {
                 let gc = st.grant_caller(g, Some(session))?;
-                Ok(ReadRights(Some((Arc::new(gc.rights), gc.person))))
+                Ok(ReadRights {
+                    rights: Some((Arc::new(gc.rights), gc.person)),
+                    agent: true,
+                })
             }
             _ => Ok(self.clone()),
         }
@@ -933,6 +973,23 @@ impl<N: Need> FromRequestParts<AppState> for TokenOrAgent<N> {
     }
 }
 
+/// 403 `not_permitted`: a hosted daemon's signed-in person's rights lack
+/// `right`.
+fn member_not_permitted((kind, action): (RightType, &'static str)) -> ApiError {
+    let mut e = ApiError::forbidden(
+        "not_permitted",
+        format!(
+            "your rights here do not let you {action} ({})",
+            kind.as_str()
+        ),
+    );
+    e.extra.insert(
+        "right".into(),
+        serde_json::json!({"type": kind.as_str(), "action": action}),
+    );
+    e
+}
+
 /// 403 `not_permitted`: the caller's rights lack `right`.
 fn not_permitted((kind, action): (RightType, &'static str)) -> ApiError {
     let mut e = ApiError::forbidden(
@@ -992,10 +1049,34 @@ impl<N: Need> FromRequestParts<AppState> for Agent<N> {
                 return Err(not_yet());
             }
         }
+        // A hosted daemon's signed-in person: their rights limit their
+        // browser as a person's agent's limit it.
+        let member = match &caller {
+            Caller::Person { .. } => parts
+                .extensions
+                .get::<crate::hosted::HostedRequest>()
+                .and_then(|h| h.member.clone()),
+            _ => None,
+        };
+        if let (Some(m), Some((kind, action))) = (&member, N::RIGHT) {
+            let artifact = raw_artifact
+                .as_deref()
+                .map(|a| ArtifactId::parse(a).map_err(|_| ApiError::not_found()))
+                .transpose()?;
+            let allowed = match &artifact {
+                Some(a) => m.allows(s, (kind, action), a.as_str()).await?,
+                None if action == "create" => m.rights.allows(kind, action, None, &|_| false),
+                None => m.rights.allows_somewhere(kind, action),
+            };
+            if !allowed {
+                return Err(member_not_permitted((kind, action)));
+            }
+        }
         Ok(Agent {
             caller,
             raw_artifact,
             token,
+            member,
             _n: PhantomData,
         })
     }

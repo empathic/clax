@@ -6,7 +6,8 @@
 import { CapError } from "./errors";
 import type { HandlerFactory } from "./host";
 
-type ApiAsset = { id: string; content_type: string; size: number; created_at: string };
+/** An asset as the daemon lists it; `url` is a hosted daemon's keyed one. */
+type ApiAsset = { id: string; content_type: string; size: number; created_at: string; url?: string };
 
 /** Largest asset of most types, in bytes (the daemon's `MAX_ASSET_BYTES`). */
 export const MAX_BYTES = 20 * 1024 * 1024;
@@ -160,7 +161,7 @@ export const assetsHandler: HandlerFactory = env => {
             if (!res.ok) throw await failure(res);
             const { assets } = (await res.json()) as { assets: ApiAsset[] };
             return {
-              assets: assets.map(a => ({ id: a.id, url: `/_blob/${a.id}`, contentType: a.content_type, sizeBytes: a.size, createdAt: a.created_at })),
+              assets: assets.map(a => ({ id: a.id, url: a.url ?? `/_blob/${a.id}`, contentType: a.content_type, sizeBytes: a.size, createdAt: a.created_at })),
               // The asset store has no per-artifact quota; the maxima say so.
               usage: { files: assets.length, bytes: assets.reduce((n, a) => n + a.size, 0), maxFiles: Number.MAX_SAFE_INTEGER, maxBytes: Number.MAX_SAFE_INTEGER },
             };

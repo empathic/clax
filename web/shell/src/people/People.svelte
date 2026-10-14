@@ -15,7 +15,10 @@
   // topics, so a person who connects appears, and on its refusal. When
   // People stops being theirs (a person revoked), the page clears and says
   // so, and the header's People link is told to check again. `/people?invite`
-  // opens Invite at once for the owner.
+  // opens Invite at once for the owner. On a hosted daemon (`GET
+  // /api/hosted/me` answers) the page leads with this browser's sign-in,
+  // agent tokens and pages shared by link (`HostedPanel`), invites are
+  // links, and the viewers who are not connected are guests.
   import { onDestroy, onMount, tick } from "svelte";
   import { listArtifacts } from "../api";
   import type { PeopleApproval, PeopleGrant, PeopleInvite, PeopleList, PeopleMe, PeopleRequest } from "../api";
@@ -25,6 +28,8 @@
   import { expiresIn, liveInvites } from "./model";
   import PersonCard from "./PersonCard.svelte";
   import UnconnectedSwitch from "./UnconnectedSwitch.svelte";
+  import * as hostedApi from "../hosted/api";
+  import HostedPanel from "../hosted/HostedPanel.svelte";
 
   let { stream, now }: { stream?: EventStream; now?: () => Date } = $props();
   const clock = () => now?.() ?? new Date();
@@ -42,6 +47,7 @@
   let artifacts = $state<{ id: string; title: string }[] | null>(null);
   let artifactsWanted = false;
   let inviting = $state(false);
+  let hosted = $state<hostedApi.HostedMe | null>(null);
   // The open dialog is the first invite's: the switch shows in it, not apart.
   let firstInvite = $state(false);
   let gone = false;
@@ -114,7 +120,7 @@
   /** Whose content an approval or request is about; the owner marked as
    * such (the daemon names an unnamed owner "The owner"). */
   const authorOf = (a: { name: string; owner?: boolean }) => (a.owner && a.name !== "The owner" ? `${a.name} (the owner)` : a.name);
-  onMount(() => { document.title = "People · Clax"; reload(); });
+  onMount(() => { document.title = "People · Clax"; reload(); void hostedApi.me().then(h => { if (!gone) hosted = h; }, () => {}); });
   onDestroy(() => { gone = true; off?.(); });
 </script>
 
@@ -128,10 +134,11 @@
   {#if denied}<p class="note">{denied}</p>{/if}
   {#if err}<p class="err" role="alert">{err}</p>{/if}
   {#if banner}<p class="banner">{banner}</p>{/if}
+  {#if hosted?.person && me}<HostedPanel me={hosted} />{/if}
 
   {#if owner && list}
     {#if inviting}
-      <InviteDialog first={firstInvite} unconnected={list.unconnected} now={clock()} onMade={reload} onSwitched={reload} onClose={closeInvite} />
+      <InviteDialog first={firstInvite} unconnected={list.unconnected} now={clock()} onMade={reload} onSwitched={reload} onClose={closeInvite} hosted={!!hosted} />
     {/if}
     {#if live.length}
       <section class="pcard">
@@ -154,8 +161,8 @@
     {/if}
     {#if !inviting || !firstInvite}
       <section class="pcard">
-        <h3>People on your LAN who are not connected</h3>
-        <UnconnectedSwitch sw={list.unconnected} onChanged={reload} />
+        <h3>{hosted ? "Guests" : "People on your LAN who are not connected"}</h3>
+        <UnconnectedSwitch sw={list.unconnected} onChanged={reload} hosted={!!hosted} />
       </section>
     {/if}
   {/if}

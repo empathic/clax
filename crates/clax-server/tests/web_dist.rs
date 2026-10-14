@@ -9,6 +9,7 @@
 
 mod bridge_dev;
 mod common;
+mod hosted_pages;
 mod shell_boot;
 mod shell_entries;
 

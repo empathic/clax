@@ -98,7 +98,7 @@ pub async fn upload(
                 Ok(vis.filter_assets(std::slice::from_ref(&asset)).remove(0))
             })
             .await?;
-        let url = format!("/_blob/{}", asset["id"].as_str().unwrap_or_default());
+        let url = crate::hosted::asset_url(&s, asset["id"].as_str().unwrap_or_default());
         return Ok((
             StatusCode::CREATED,
             Json(json!({"asset": asset, "url": url})),
@@ -127,6 +127,8 @@ pub async fn list(
             Ok(vis.filter_assets(&st.list_assets(&id)?))
         })
         .await?;
+    let mut assets = assets;
+    crate::hosted::stamp_asset_urls(&s, &mut assets);
     Ok(Json(json!({"assets": assets})))
 }
 

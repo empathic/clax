@@ -37,6 +37,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         if let Some(dir) = &a.web_dist {
             clax_server::routes::shell::set_web_dist(dir.clone());
         }
+        let hosted = hosted(home)?;
         let rt = tokio::runtime::Runtime::new()?;
         let cfg = ServeConfig {
             home: home.clone(),
@@ -53,6 +54,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
                 home.root(),
                 |k| std::env::var(k).ok(),
             )),
+            hosted,
         };
         return rt.block_on(serve(cfg, None));
     }
@@ -78,6 +80,26 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         )
     });
     Ok(())
+}
+
+/// Hosted mode as the home's `[hosted]` sets it, or `None` without one. A
+/// bad `[hosted]` stops the daemon: started as a local daemon, it would
+/// serve the internet as a LAN.
+fn hosted(home: &Home) -> anyhow::Result<Option<std::sync::Arc<clax_server::hosted::Hosted>>> {
+    let Some(c) = clax_core::config::HomeConfig::load(home.root())?.hosted()? else {
+        return Ok(None);
+    };
+    let h = clax_server::hosted::Hosted::from_config(&c).ok_or_else(|| {
+        anyhow::anyhow!("[hosted] public_origin {} is not usable", c.public_origin)
+    })?;
+    if !h.setup_open() {
+        tracing::warn!(
+            env = %c.setup_secret_env,
+            "hosted mode: no setup secret in the environment, so /setup stays closed"
+        );
+    }
+    tracing::info!(origin = %h.origin, "hosted mode");
+    Ok(Some(std::sync::Arc::new(h)))
 }
 
 /// The version a foreground daemon reports: the build's, or in a debug build

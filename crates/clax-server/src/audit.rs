@@ -192,8 +192,17 @@ pub struct DeferredAudit {
 
 impl DeferredAudit {
     fn from_parts(parts: &Parts, state: &AppState) -> DeferredAudit {
-        let headers = &parts.headers;
-        let id = Identity::from_parts(headers, &parts.extensions, &state.token);
+        DeferredAudit::of_request(&parts.headers, &parts.extensions, state)
+    }
+
+    /// The audit context of a request with `headers` and `extensions`, for
+    /// code that holds the request rather than its parts (a middleware).
+    pub fn of_request(
+        headers: &axum::http::HeaderMap,
+        extensions: &axum::http::Extensions,
+        state: &AppState,
+    ) -> DeferredAudit {
+        let id = Identity::from_parts(headers, extensions, &state.token);
         DeferredAudit {
             named: named_channel(headers),
             session: header(headers, SESSION_HEADER).map(str::to_string),

@@ -195,10 +195,13 @@ pub async fn artifact_page(
         return entry(&req, "artifact.html");
     };
     let template = String::from_utf8_lossy(&f.data).into_owned();
-    let injected = if crate::auth::request_host_allowed(&req, &uri, &extensions) {
+    // A hosted daemon's gate checked the host already ([`crate::hosted::gate`]).
+    let host_ok = crate::auth::request_host_allowed(&req, &uri, &extensions)
+        || extensions.get::<crate::hosted::HostedRequest>().is_some();
+    let injected = if host_ok {
         within(
             s.request_timeout,
-            crate::boot::assemble(&s, route, &req, crate::identity::peer_of(&extensions)),
+            crate::boot::assemble(&s, route, &req, &extensions),
         )
         .await
     } else {

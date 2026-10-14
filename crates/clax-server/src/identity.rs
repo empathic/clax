@@ -26,7 +26,14 @@
 //! ignore ports, so another local server's page may send them too.
 //!
 //! Anyone else is the viewer the `clax_viewer` cookie names (a LAN viewer),
-//! or no one. An owner credential confers identity; what a request may do
+//! or no one.
+//!
+//! A hosted daemon ([`crate::hosted`]) serves the internet, so no request is
+//! from this machine: the owner and events cookies and the `clax_viewer`
+//! cookie count for nothing there. A browser is instead the viewer its
+//! session cookie signs in as ([`crate::hosted::HostedRequest`]): the owner
+//! for a session of the owner's row (a browser of the owner's), else a
+//! person's or a guest's viewer, as the `clax_viewer` cookie would name it. An owner credential confers identity; what a request may do
 //! still depends on the token (see [`crate::db_caller`]): the owner cookie
 //! alone grants no more than a viewer cookie does.
 
@@ -154,6 +161,9 @@ pub struct Identity {
     pub session_secret: Option<Result<Secret, ()>>,
     /// `X-Clax-Channel: agent`; counts only with the token.
     pub agent_marker: bool,
+    /// A hosted daemon's session of the owner's row: a browser of the
+    /// owner's ([`crate::hosted`]).
+    pub hosted_owner: bool,
 }
 
 pub use crate::routes::artifacts::SESSION_HEADER;
@@ -188,6 +198,7 @@ impl Identity {
             agent_marker: headers
                 .get(CHANNEL_HEADER)
                 .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"agent")),
+            hosted_owner: false,
         }
     }
 
@@ -200,11 +211,15 @@ impl Identity {
         token: &str,
     ) -> Identity {
         let id = Identity::of(headers, token, peer_of(extensions));
-        Identity {
+        let id = Identity {
             extension: !id.grant_header
                 && extensions.get::<crate::extension::ViaExtension>().is_some(),
             grant: extensions.get::<crate::agent::VerifiedGrant>().cloned(),
             ..id
+        };
+        match extensions.get::<crate::hosted::HostedRequest>() {
+            Some(h) => h.identity(id),
+            None => id,
         }
     }
 
@@ -356,7 +371,11 @@ impl Identity {
     /// agent credential of another machine never does.
     pub fn is_owner(&self) -> bool {
         !self.grant_header
-            && (self.token || self.events_cookie || self.owner_cookie || self.extension)
+            && (self.token
+                || self.events_cookie
+                || self.owner_cookie
+                || self.extension
+                || self.hosted_owner)
     }
 
     /// 403 `forbidden` ("only the owner `what`") unless the request speaks
@@ -376,7 +395,8 @@ impl Identity {
     /// shell's token request hands out the owner and events cookies, and the
     /// extension is a browser of the owner's.
     pub fn owner_browser(&self) -> bool {
-        !self.grant_header && (self.owner_cookie || self.events_cookie || self.extension)
+        !self.grant_header
+            && (self.owner_cookie || self.events_cookie || self.extension || self.hosted_owner)
     }
 
     /// The viewer the request speaks for: the owner's row for the owner

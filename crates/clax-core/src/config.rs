@@ -12,8 +12,10 @@
 //! [`bin_line`], which the plugins' wrapper reads without a TOML parser, and
 //! nothing else here reads it. `[questions] terminal_after_s` is how long a
 //! mirrored AskUserQuestion waits in Clax before the terminal dialog
-//! ([`HomeConfig::questions_terminal_after_s`]). Other tables are reserved
-//! (spec §5) and ignored.
+//! ([`HomeConfig::questions_terminal_after_s`]). `[hosted]` turns on hosted
+//! mode, in which the daemon serves the public internet at one origin
+//! ([`HomeConfig::hosted`]). Other tables are reserved (spec §5) and
+//! ignored.
 
 use crate::{CoreError, Result};
 use serde::Deserialize;
@@ -117,6 +119,57 @@ impl Default for ToolpathConfig {
             journal_retain_days: 0,
         }
     }
+}
+
+/// `[hosted]`: hosted mode, in which the daemon serves the public internet
+/// at `public_origin` (behind a proxy that terminates TLS and keeps the
+/// `Host` header): people sign in through the browser with session cookies,
+/// and nothing answers a request as "from this machine".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostedConfig {
+    /// The origin people reach the daemon at, normalized (`https://host[:port]`;
+    /// `http://` only on `localhost`, `127.0.0.1` or `[::1]`, for development).
+    pub public_origin: String,
+    /// The environment variable the daemon reads the setup secret from, at
+    /// start (`CLAX_SETUP_SECRET` when absent).
+    pub setup_secret_env: String,
+    /// Cloudflare is in front of the daemon (false when absent): a
+    /// request's client is the address its `CF-Connecting-IP` names, which
+    /// the abuse limits count by. Without Cloudflare that header is the
+    /// client's own to forge, so the connection's peer counts.
+    pub behind_cloudflare: bool,
+}
+
+/// [`HostedConfig::setup_secret_env`] when absent.
+pub const SETUP_SECRET_ENV: &str = "CLAX_SETUP_SECRET";
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HostedTable {
+    public_origin: String,
+    setup_secret_env: Option<String>,
+    behind_cloudflare: Option<bool>,
+}
+
+/// `origin` as hosted mode takes it ([`HostedConfig::public_origin`]): its
+/// normalized serialization, or `None` when it is not a bare `https://`
+/// origin or an `http://` one on a loopback name.
+pub fn hosted_origin(origin: &str) -> Option<String> {
+    let u = url::Url::parse(origin).ok()?;
+    let bare = u.username().is_empty()
+        && u.password().is_none()
+        && matches!(u.path(), "" | "/")
+        && u.query().is_none()
+        && u.fragment().is_none();
+    let local = matches!(
+        u.host(),
+        Some(url::Host::Domain("localhost"))
+            | Some(url::Host::Ipv4(std::net::Ipv4Addr::LOCALHOST))
+            | Some(url::Host::Ipv6(std::net::Ipv6Addr::LOCALHOST))
+    );
+    let ok =
+        bare && u.host().is_some() && (u.scheme() == "https" || (u.scheme() == "http" && local));
+    ok.then(|| u.origin().ascii_serialization())
 }
 
 impl HomeConfig {
@@ -285,6 +338,52 @@ impl HomeConfig {
     }
 }
 
+impl HomeConfig {
+    /// `[hosted]`: `None` when absent (the local daemon).
+    ///
+    /// # Errors
+    /// `Invalid { code: "bad_config" }` naming the file and `[hosted]` when
+    /// it is not a table, has an unknown key or a mistyped value, lacks
+    /// `public_origin`, names an origin [`hosted_origin`] refuses, or names
+    /// an empty `setup_secret_env`. A daemon refuses to start on it: falling
+    /// back to the local daemon would serve the internet as a LAN.
+    pub fn hosted(&self) -> Result<Option<HostedConfig>> {
+        let bad = |what: String| {
+            CoreError::invalid(
+                "bad_config",
+                format!("{}: [hosted] {what}", self.path.display()),
+            )
+        };
+        let Some(v) = self.table.get("hosted") else {
+            return Ok(None);
+        };
+        if !v.is_table() {
+            return Err(bad(format!("must be a table, not {}", v.type_str())));
+        }
+        let t: HostedTable = v
+            .clone()
+            .try_into()
+            .map_err(|e: toml::de::Error| bad(e.message().to_string()))?;
+        let public_origin = hosted_origin(&t.public_origin).ok_or_else(|| {
+            bad(format!(
+                "public_origin must be an https:// origin with no path, or http:// on localhost, 127.0.0.1 or [::1], not \"{}\"",
+                t.public_origin
+            ))
+        })?;
+        let setup_secret_env = t
+            .setup_secret_env
+            .unwrap_or_else(|| SETUP_SECRET_ENV.into());
+        if setup_secret_env.trim().is_empty() {
+            return Err(bad("setup_secret_env is empty".into()));
+        }
+        Ok(Some(HostedConfig {
+            public_origin,
+            setup_secret_env,
+            behind_cloudflare: t.behind_cloudflare.unwrap_or(false),
+        }))
+    }
+}
+
 /// [`HomeConfig::questions_terminal_after_s`] when the key is absent.
 pub const TERMINAL_AFTER_S: u64 = 600;
 /// The largest [`HomeConfig::questions_terminal_after_s`]: under the hook's
@@ -414,6 +513,63 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(FILE), text).unwrap();
         HomeConfig::load(dir.path()).unwrap()
+    }
+
+    #[test]
+    fn hosted_is_off_when_absent_and_its_origin_is_checked() {
+        assert_eq!(with("").hosted().unwrap(), None);
+        let h = with("[hosted]\npublic_origin = \"https://Clax.Example:8443/\"\n")
+            .hosted()
+            .unwrap()
+            .unwrap();
+        assert_eq!(h.public_origin, "https://clax.example:8443");
+        assert_eq!(h.setup_secret_env, SETUP_SECRET_ENV);
+        assert!(!h.behind_cloudflare);
+        let h =
+            with("[hosted]\npublic_origin = \"https://clax.example\"\nbehind_cloudflare = true\n")
+                .hosted()
+                .unwrap()
+                .unwrap();
+        assert!(h.behind_cloudflare);
+        assert!(
+            with(
+                "[hosted]\npublic_origin = \"https://clax.example\"\nbehind_cloudflare = \"yes\"\n"
+            )
+            .hosted()
+            .is_err()
+        );
+        let h = with(
+            "[hosted]\npublic_origin = \"http://localhost:7490\"\nsetup_secret_env = \"MY_SECRET\"\n",
+        )
+        .hosted()
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            (h.public_origin.as_str(), h.setup_secret_env.as_str()),
+            ("http://localhost:7490", "MY_SECRET")
+        );
+        for bad in [
+            "hosted = 1\n",
+            "[hosted]\n",
+            "[hosted]\npublic_origin = \"http://clax.example\"\n",
+            "[hosted]\npublic_origin = \"https://clax.example/app\"\n",
+            "[hosted]\npublic_origin = \"https://u:p@clax.example\"\n",
+            "[hosted]\npublic_origin = \"https://clax.example?x=1\"\n",
+            "[hosted]\npublic_origin = \"clax.example\"\n",
+            "[hosted]\npublic_origin = \"https://clax.example\"\nsetup_secret_env = \" \"\n",
+            "[hosted]\npublic_origin = \"https://clax.example\"\nport = 1\n",
+        ] {
+            let e = with(bad).hosted().unwrap_err().to_string();
+            assert!(e.contains("[hosted]") || e.contains("hosted"), "{bad}: {e}");
+        }
+        assert_eq!(
+            hosted_origin("http://127.0.0.1:9000").as_deref(),
+            Some("http://127.0.0.1:9000")
+        );
+        assert_eq!(
+            hosted_origin("http://[::1]:9000").as_deref(),
+            Some("http://[::1]:9000")
+        );
     }
 
     #[test]

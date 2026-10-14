@@ -28,6 +28,10 @@
   let artifacts = $state<Artifact[] | null>(null);
   let error = $state<string | null>(null);
   let token = $state<string | null>(null);
+  // A hosted daemon's gallery names its site rather than "local artifacts":
+  // the owner's browser holds its shell token (`cxo_`), anyone else asks
+  // `GET /api/hosted/me` (404 on a local daemon).
+  let site = $state<string | null>(null);
   let query = $state("");
   // This browser's viewer (`GET /api/viewers/me`): its name, public ID, and
   // whether it is a connected person's.
@@ -96,12 +100,12 @@
   const g = $derived(shown && gw && !query.trim() ? gw.groups(shown, att) : null);
   // This browser's viewer, asked once (after the token: on this machine that makes it the owner's).
   let mine: Promise<import("../people/PeopleLink.svelte").Viewer>;
-  onMount(() => { mine = getToken().then(t => { token = t; return fetch("/api/viewers/me"); }).then(r => r.json()).then(b => (viewer = b?.viewer), () => null); if (inbox) void lazy().then(loadQ, () => {}); else if (people) void lazy().then(m => { void loadQ(m); if (!destroyed) unPeople = m.peoplePage(document.querySelector("main.gal")!); }, () => {}); else void refresh(true); });
+  onMount(() => { mine = getToken().then(t => { token = t; if (t?.startsWith("cxo_")) site = location.host; else if (!t) void fetch("/api/hosted/me").then(r => { if (r.ok && !destroyed) site = location.host; }, () => {}); return fetch("/api/viewers/me"); }).then(r => r.json()).then(b => (viewer = b?.viewer), () => null); if (inbox) void lazy().then(loadQ, () => {}); else if (people) void lazy().then(m => { void loadQ(m); if (!destroyed) unPeople = m.peoplePage(document.querySelector("main.gal")!); }, () => {}); else void refresh(true); });
   onDestroy(() => { destroyed = true; unPeople?.(); life.dispose(); cancelStart?.(); sync?.stop(); Q?.stop(); });
 </script>
 
 <header class="gbar">
-  <Mark playful /><h1>Clax</h1><span class="sub hide-sm">local artifacts{#if me}{` · seen as ${me}`}{/if}</span>
+  <Mark playful /><h1>Clax</h1><span class="sub hide-sm">{site ?? "local artifacts"}{#if me}{` · seen as ${me}`}{/if}</span>
   {#if !inbox && !people}<input type="search" class="search" placeholder="Search artifacts" aria-label="Search artifacts" value={query} oninput={e => { query = e.currentTarget.value; }} />{/if}
   {#if Q}<Q.InboxLink current={inbox} />{/if}
   {#if lm}<lm.PeopleLink current={people} owner={!!token} {viewer} />{/if}

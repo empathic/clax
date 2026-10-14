@@ -286,6 +286,8 @@ fn body_class(kind: &str, field: &str) -> Class {
         ("session.start" | "session.join", "cwd" | "transcript_path") => Path,
         ("session.start" | "session.join", "harness" | "harness_session_id" | "pid") => Safe,
         ("session.end", "reason") => Safe,
+        // A browser's sign-in on a hosted daemon (`crate::store::hosted`).
+        ("session.start", "how" | "expires_at" | "invite_id") => Safe,
         ("invite.create" | "invite.revoke", "invite_id" | "person" | "expires_at") => Safe,
         ("invite.create", "rights") => Safe,
         ("grant.request", "client_name" | "peer_ip") => Name,
@@ -339,7 +341,7 @@ fn anchor_class(field: &str) -> Class {
 
 fn fields_class(field: &str) -> Class {
     match field {
-        "icon" | "pinned" => Class::Safe,
+        "icon" | "pinned" | "link_access" => Class::Safe,
         "title" | "description" | "capabilities" => Class::Text,
         _ => Class::Unclassified,
     }

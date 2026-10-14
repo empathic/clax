@@ -55,7 +55,7 @@ const tick = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 /** Starts a daemon on a fresh home whose config.toml is `opts.config` (`NO_KEY_CONFIG` by default);
  * with `opts.home`, on that home (which it does not create); with `opts.port` too, on that port (a restart);
  * with `opts.bind` (`0.0.0.0`: one that may invite people), on that address instead of loopback;
- * with `opts.env`, with those environment variables set too.
+ * with `opts.env`, with those variables set in its environment too.
  * `stop({ keepHome: true })` leaves the home; `ended()` says whether the daemon has exited.
  * It runs the binary daemon-setup.ts built, on a port the system picks, and
  * waits up to `opts.startMs` (20 s by default) for its daemon.json and its

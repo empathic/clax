@@ -729,6 +729,41 @@ pub const MIGRATIONS: &[&str] = &[
         WHERE status = 'open';
     CREATE INDEX questions_closed_by_person ON questions(COALESCE(person, ''), closed_at, id)
         WHERE status <> 'open';",
+    // 27: hosted mode's sign-in (`crate::store::hosted`). `hosted_setup`
+    // holds the one first-person setup (its row, once made, closes setup);
+    // `browser_sessions` and `signin_links` hold the SHA-256 of a browser
+    // session's cookie and of a one-use sign-in link's code, with the viewer
+    // row each signs in as (the owner's row, a person's or a guest's; no
+    // foreign key, as the owner row's ID is rewritten by a claim). A guest
+    // is a named viewer of a page shared by link (`viewers.guest`); a
+    // bearer grant is an agent token a person minted in the browser
+    // (`grants.bearer`), its token kept in `grant_tokens`; an artifact's
+    // `link_access` is what anyone with its link may do (NULL: nothing).
+    // Local daemons write none of these: every existing row reads as
+    // before.
+    "CREATE TABLE hosted_setup (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        viewer_id TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE browser_sessions (
+        sha256 TEXT PRIMARY KEY,
+        viewer_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        ended_at TEXT
+    );
+    CREATE INDEX browser_sessions_by_viewer ON browser_sessions(viewer_id) WHERE ended_at IS NULL;
+    CREATE TABLE signin_links (
+        sha256 TEXT PRIMARY KEY,
+        viewer_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        used_at TEXT
+    );
+    ALTER TABLE viewers ADD COLUMN guest INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE grants ADD COLUMN bearer INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE artifacts ADD COLUMN link_access TEXT CHECK (link_access IN ('viewer', 'commenter'));",
 ];
 
 /// The audit journal's migration, as a schema version (the
@@ -747,6 +782,10 @@ pub const VISIBILITY_MIGRATION: u32 = 25;
 /// The migration that gives every inbox item a recipient, as a schema
 /// version (spec 2026-10-08-multi-agent-multi-person §5.3).
 pub const INBOX_MIGRATION: u32 = 26;
+
+/// The migration that adds hosted mode's sign-in (browser sessions, sign-in
+/// links, guests, bearer grants and link access), as a schema version.
+pub const HOSTED_MIGRATION: u32 = 27;
 
 /// Runs the Rust part of the migration that brings the schema to
 /// `version`, in that migration's transaction, after its SQL.

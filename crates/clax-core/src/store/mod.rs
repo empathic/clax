@@ -100,6 +100,7 @@ pub mod docs;
 pub mod exec;
 pub mod extension;
 pub mod feedback;
+pub mod hosted;
 pub mod inbox;
 pub mod joined;
 pub mod live;

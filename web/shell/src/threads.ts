@@ -117,6 +117,8 @@ async function fetchViewer(): Promise<Viewer> {
   // The token request comes first: on this machine it makes the browser the
   // owner (the owner cookie), so no viewer cookie of its own is minted.
   await getToken();
+  // A hosted daemon's visitor with no session is a viewer of no public ID
+  // and no name, until naming themselves makes them a guest.
   return (await ok<{ viewer: Viewer }>(await fetch("/api/viewers/me"))).viewer;
 }
 

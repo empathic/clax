@@ -406,6 +406,10 @@ pub struct ServeConfig {
     /// The `sample` capability's provider and settings (`clax serve` uses
     /// [`crate::sample::Sampler::from_home`] on its own environment).
     pub sample: Arc<crate::sample::Sampler>,
+    /// Hosted mode ([`crate::hosted`]; `clax serve` uses
+    /// [`crate::hosted::Hosted::from_config`] on the home's `[hosted]`), or
+    /// `None` for the local daemon.
+    pub hosted: Option<Arc<crate::hosted::Hosted>>,
 }
 
 /// How long [`port_held`] waits for a connection to be accepted.
@@ -593,6 +597,7 @@ pub async fn serve(
             crate::agent::TokioTimer::default(),
         ))),
         vis_gen,
+        hosted: cfg.hosted.clone(),
     };
     state.audit_wake.install(&state.store);
     // The appender recovers the journal and catches it up on its own

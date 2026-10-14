@@ -63,7 +63,11 @@ pub(super) fn checked_name(name: &str) -> Result<Option<&str>> {
 ///
 /// # Errors
 /// `name_taken` as above.
-fn check_viewer_name(tx: &rusqlite::Transaction<'_>, id: &str, name: &str) -> Result<()> {
+pub(super) fn check_viewer_name(
+    tx: &rusqlite::Transaction<'_>,
+    id: &str,
+    name: &str,
+) -> Result<()> {
     let key = crate::names::CollisionKeys::of(name);
     let taken = || CoreError::invalid("name_taken", format!("the name '{name}' is taken"));
     let mut stmt = tx.prepare_cached(

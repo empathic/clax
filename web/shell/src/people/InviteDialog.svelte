@@ -8,7 +8,9 @@
   // LAN warning and, beside the first invite, the `*unconnected` switch
   // (§9.6). A daemon listening on loopback only answers `not_on_lan`, whose
   // message says how to restart it; no invite is made then. Opened, the
-  // keyboard's focus is on Name; made, on Copy.
+  // keyboard's focus is on Name; made, on Copy. A hosted daemon's invite is
+  // a link to send, which the person opens in their browser, with no LAN
+  // warning.
   import { onMount, tick } from "svelte";
   import type { NewInvite } from "../api";
   import * as api from "./api";
@@ -23,8 +25,10 @@
     onMade(): void;
     onClose(): void;
     onSwitched(): void;
+    /** A hosted daemon: no "Me, on another machine" (a sign-in link does that). */
+    hosted?: boolean;
   };
-  let { first, unconnected, now, onMade, onClose, onSwitched }: Props = $props();
+  let { first, unconnected, now, onMade, onClose, onSwitched, hosted }: Props = $props();
   let who = $state<"name" | "me">("name");
   let name = $state("");
   let preset = $state("clax:collaborator");
@@ -53,7 +57,12 @@
 
 <section class="pcard invite" aria-labelledby="invite-h">
   <header><h3 id="invite-h">Invite a person</h3><span class="sp"></span><button type="button" class="ghost" onclick={onClose}>{made ? "Done" : "Cancel"}</button></header>
-  {#if made}
+  {#if made?.url}
+    <p class="lead">Send {made.person.display_name ?? "them"} this link to join in their browser:</p>
+    <div class="cmd"><code>{made.url}</code><button type="button" onclick={copy}>{copied ? "Copied" : "Copy"}</button></div>
+    <p class="meta">Expires in {expiresIn(made.expires_at, now ?? new Date())}, one use. The link is shown this once.</p>
+    {#if first}<UnconnectedSwitch sw={unconnected} onChanged={onSwitched} hosted />{/if}
+  {:else if made}
     <p class="lead">On {made.person.display_name ? `${made.person.display_name}'s` : "your other"} machine, run:</p>
     <div class="cmd"><code>{made.command}</code><button type="button" onclick={copy}>{copied ? "Copied" : "Copy"}</button></div>
     <p class="meta">Expires in {expiresIn(made.expires_at, now ?? new Date())}, one use. The code is shown this once.</p>
@@ -61,11 +70,11 @@
     {#if first}<UnconnectedSwitch sw={unconnected} onChanged={onSwitched} />{/if}
   {:else}
     <form onsubmit={create}>
-      <fieldset class="who">
+      {#if !hosted}<fieldset class="who">
         <legend class="sr">Who</legend>
         <label><input type="radio" name="who" value="name" checked={who === "name"} onchange={() => { who = "name"; }} /> A new person</label>
         <label><input type="radio" name="who" value="me" checked={who === "me"} onchange={() => { who = "me"; }} /> Me, on another machine</label>
-      </fieldset>
+      </fieldset>{/if}
       {#if who === "name"}
         <div class="row">
           <label class="field">Name <input name="name" autocomplete="off" required maxlength="60" value={name} oninput={e => { name = e.currentTarget.value; }} /></label>

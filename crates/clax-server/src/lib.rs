@@ -132,6 +132,7 @@ pub mod extension;
 pub mod feedback;
 pub mod grant_auth;
 pub mod host;
+pub mod hosted;
 pub mod http_cache;
 pub mod identity;
 pub mod inbox;
@@ -170,13 +171,26 @@ pub fn build_router_with_shutdown(
 // whole inner router (mounted as the outer fallback) to influence routing. The
 // `/api` host check runs after the rewrite (the later `layer` is outermost),
 // and the header checks of agent credentials after both, before any route.
+// A hosted daemon ([`hosted`]) serves its sign-in routes too, and its gate
+// stands in for the `/api` host check, which admits only this machine's names.
 fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
-    axum::Router::new()
-        .fallback_service(inner)
-        .layer(axum::middleware::from_fn_with_state(
-            state,
-            agent::authenticate,
-        ))
-        .layer(axum::middleware::from_fn(auth::require_api_host))
-        .layer(axum::middleware::from_fn(host::rewrite_artifact_host))
+    let hosted = state.hosted.is_some();
+    let inner = if hosted {
+        inner.merge(hosted::router(state.clone()))
+    } else {
+        inner
+    };
+    let r =
+        axum::Router::new()
+            .fallback_service(inner)
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                agent::authenticate,
+            ));
+    let r = if hosted {
+        r.layer(axum::middleware::from_fn_with_state(state, hosted::gate))
+    } else {
+        r.layer(axum::middleware::from_fn(auth::require_api_host))
+    };
+    r.layer(axum::middleware::from_fn(host::rewrite_artifact_host))
 }

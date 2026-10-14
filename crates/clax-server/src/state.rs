@@ -152,6 +152,8 @@ pub struct AppState {
     pub agent_gate: Arc<crate::agent::Gate>,
     /// The visibility generation (spec 2026-10-08-multi-agent-multi-person M17).
     pub vis_gen: VisGen,
+    /// Hosted mode ([`crate::hosted`]); `None` for the local daemon.
+    pub hosted: Option<Arc<crate::hosted::Hosted>>,
 }
 
 #[cfg(test)]
