@@ -1170,6 +1170,65 @@ describe("app mode's inspect view", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(ofType("tests")).toEqual([{ type: "tests", error: "this view is not the inspect view" }]);
   });
 
+  it("runMigration asks the page to run the migration and posts its checked answer", async () => {
+    const { frame, host } = await appView({ query: INSPECT });
+    const framed = framePosts(frame);
+    hello(frame, 1);
+    host.runMigration({ file: "migrate.js", from: 2, to: 3 });
+    const ask = framed.find(m => m.type === "clax:migrate")!;
+    expect(ask).toEqual({ type: "clax:migrate", requestId: expect.any(String), file: "migrate.js", from: 2, to: 3, totalMs: 30000 });
+    // Another request's answer, or one from elsewhere, is not taken.
+    fromFrame(frame.contentWindow!, { type: "clax:migration", requestId: "other", ok: true });
+    fromFrame(window, { type: "clax:migration", requestId: ask.requestId, ok: true });
+    expect(ofType("migration")).toEqual([]);
+    fromFrame(frame.contentWindow!, { type: "clax:migration", requestId: ask.requestId, ok: false, error: "x".repeat(900), extra: 1 });
+    expect(ofType("migration")).toEqual([{ type: "migration", ok: false, error: "x".repeat(501) }]);
+    expect(raw.filter(r => r.includes("\"migration\"")).every(r => JSON.parse(r).nonce === NONCE)).toBe(true);
+    // Answered once.
+    fromFrame(frame.contentWindow!, { type: "clax:migration", requestId: ask.requestId, ok: true });
+    expect(ofType("migration")).toHaveLength(1);
+    // Only the latest request's answer counts; a bad shape is an error.
+    host.runMigration({ file: "migrate.js", from: 1, to: 2, totalMs: 500 });
+    host.runMigration({ file: "lib/migrate.js", from: 1, to: 2, totalMs: 10 ** 9 });
+    const [first, second] = framed.filter(m => m.type === "clax:migrate").slice(1);
+    expect([first.totalMs, second.totalMs, second.file]).toEqual([500, 120000, "lib/migrate.js"]);
+    fromFrame(frame.contentWindow!, { type: "clax:migration", requestId: first.requestId, ok: true });
+    expect(ofType("migration")).toHaveLength(1);
+    fromFrame(frame.contentWindow!, { type: "clax:migration", requestId: second.requestId, ok: "yes" });
+    expect(ofType("migration").at(-1)).toEqual({ type: "migration", ok: false, error: "the page sent no migration result" });
+    host.runMigration({ file: "migrate.js", from: 1, to: 2 });
+    const last = framed.filter(m => m.type === "clax:migrate").at(-1)!;
+    fromFrame(frame.contentWindow!, { type: "clax:migration", requestId: last.requestId, ok: true });
+    expect(ofType("migration").at(-1)).toEqual({ type: "migration", ok: true });
+  });
+
+  it("runMigration refuses a bad order, before the page greets, and outside the inspect view", async () => {
+    const { frame, host } = await appView({ query: INSPECT });
+    const framed = framePosts(frame);
+    host.runMigration({ file: "migrate.js", from: 1, to: 2 });
+    expect(ofType("migration")).toEqual([{ type: "migration", ok: false, error: "the page has not loaded" }]);
+    hello(frame, 1);
+    const bad = [
+      { file: "../migrate.js", from: 1, to: 2 },
+      { file: "https://x.test/migrate.js", from: 1, to: 2 },
+      { file: "migrate.ts", from: 1, to: 2 },
+      { file: "a/./migrate.js", from: 1, to: 2 },
+      { file: "migrate.js", from: 0, to: 2 },
+      { file: "migrate.js", from: 1, to: 1.5 },
+      { file: "migrate.js", from: "1", to: 2 },
+      undefined,
+    ];
+    for (const p of bad) host.runMigration(p as never);
+    expect(ofType("migration")).toHaveLength(1 + bad.length);
+    expect(ofType("migration").slice(1).every(m => !m.ok && /^file is a path/.test(m.error))).toBe(true);
+    expect(framed.filter(m => m.type === "clax:migrate")).toEqual([]);
+    const other = await appView();
+    hello(other.frame, 1);
+    toHost = [];
+    other.host.runMigration({ file: "migrate.js", from: 1, to: 2 });
+    expect(ofType("migration")).toEqual([{ type: "migration", ok: false, error: "this view is not the inspect view" }]);
+  });
+
   it("shows no comment UI: comment mode, a whole-app composer and a page's composer stay closed", async () => {
     const { ctl, frame, host } = await appView({ query: INSPECT });
     hello(frame, 1);

@@ -2,8 +2,10 @@
 // browser: a hidden draft holding `tests/*.test.js` loaded in the app's
 // inspect view, whose `claxHost.runTests` has the bridge's harness
 // (`bridge/src/harness.ts`) import the files as modules, drive the page with
-// `ui`, write its documents, and answer `tests`, in both frame modes. The
-// app's side is ./app-host.ts.
+// `ui`, write its documents, and answer `tests`, in both frame modes; and
+// `claxHost.runMigration`, where the harness imports an app bundle's
+// `migrate.js` and calls it with the page's `db` (spec 2026-10-13-flutter-
+// app-bundles-design §8.3). The app's side is ./app-host.ts.
 import type { Page } from "@playwright/test";
 import { host, hostChannel, initHost, ofType, type HostMessage } from "./app-host";
 import { test, expect, type Daemon, api, contentFrame } from "./fixtures";
@@ -54,7 +56,13 @@ async function draft(files: Record<string, string>): Promise<string> {
   return r.draft.id;
 }
 
-async function runTests(page: Page, id: string, mode: "subdomain" | "sandbox", call: string): Promise<Tests> {
+const MIGRATE = `export default async function migrate(db, { from, to }) {
+  const d = db.doc("counts/main");
+  const n = (await d.get()).data()?.n ?? 0;
+  await d.set({ count: n, migrated: [from, to] });
+}`;
+
+async function runTests(page: Page, id: string, mode: "subdomain" | "sandbox", call: string, answer = "tests"): Promise<Tests> {
   if (mode === "sandbox") await page.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch { /* storage unavailable */ } });
   await hostChannel(page);
   await page.goto(`${d.base}/a/${id}?app=1&inspect=1`);
@@ -62,8 +70,8 @@ async function runTests(page: Page, id: string, mode: "subdomain" | "sandbox", c
   await initHost(page);
   await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
   await host(page, call);
-  await expect.poll(async () => (await ofType(page, "tests")).length, { timeout: 30_000 }).toBeGreaterThan(0);
-  return (await ofType(page, "tests"))[0] as Tests;
+  await expect.poll(async () => (await ofType(page, answer)).length, { timeout: 30_000 }).toBeGreaterThan(0);
+  return (await ofType(page, answer))[0] as Tests;
 }
 
 for (const mode of ["subdomain", "sandbox"] as const) {
@@ -71,6 +79,21 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const id = await draft({ "index.html": PAGE, "tests/app.test.js": PASSING });
     const r = await runTests(page, id, mode, `runTests({ files: ["tests/app.test.js"] })`);
     expect(r).toEqual({ type: "tests", passed: 4, failed: [], skipped: 0 });
+  });
+
+  test(`${mode}: runMigration imports migrate.js and runs it on the page's db`, async ({ page }) => {
+    const id = await draft({ "index.html": PAGE, "migrate.js": MIGRATE });
+    await api(d.base, d.token, `/api/artifacts/${id}/docs/counts/main`, { method: "PUT", body: JSON.stringify({ data: { n: 4 }, lww: true }) });
+    const r = await runTests(page, id, mode, `runMigration({ file: "migrate.js", from: 2, to: 3 })`, "migration");
+    expect(r).toEqual({ type: "migration", ok: true });
+    const { doc } = await api(d.base, d.token, `/api/artifacts/${id}/docs/counts/main`) as { doc: { data: unknown } };
+    expect(doc.data).toEqual({ count: 4, migrated: [2, 3] });
+  });
+
+  test(`${mode}: a migration that throws answers its error`, async ({ page }) => {
+    const id = await draft({ "index.html": PAGE, "migrate.js": `export default async () => { throw new TypeError("old shape"); }` });
+    const r = await runTests(page, id, mode, `runMigration({ file: "migrate.js", from: 1, to: 2 })`, "migration");
+    expect(r).toEqual({ type: "migration", ok: false, error: "the migration failed: TypeError: old shape" });
   });
 
   test(`${mode}: failures, a test over its limit and a file that does not load are reported`, async ({ page }) => {

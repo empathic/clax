@@ -36,7 +36,8 @@
  * page's errors from before its first script (`inspect.ts`); it answers the
  * app's inspect view's `clax:inspect` with the clip part's inspection
  * (`clax:inspection`), and there only, its `clax:test` with the test part's
- * run of the draft's test files (`clax:tests`).
+ * run of the draft's test files (`clax:tests`) and its `clax:migrate` with
+ * the test part's run of an app bundle's migration (`clax:migration`).
  * The daemon serves it right after the doctype (first in the skeleton's
  * `<head>` for a fragment), and only the document's first bridge tag runs, so
  * `window.claude` exists before any page script; shell
@@ -378,6 +379,11 @@ type PartName = keyof Parts;
       case "clax:test": if (inspectFrame && typeof m.requestId === "string") {
         const requestId = m.requestId;
         void parts.test().then(t => t.test(window, m, post, clock), err => post({ type: "clax:tests", requestId, error: `the test harness did not load: ${err instanceof Error ? err.message : String(err)}` }));
+      } break;
+      // And an app bundle's migration (`harness.ts`), the same way.
+      case "clax:migrate": if (inspectFrame && typeof m.requestId === "string") {
+        const requestId = m.requestId;
+        void parts.test().then(t => t.migrate(window, m, post, clock), err => post({ type: "clax:migration", requestId, ok: false, error: `the test harness did not load: ${err instanceof Error ? err.message : String(err)}` }));
       } break;
       case "clax:key": {
         const k = forwardedKey(m);

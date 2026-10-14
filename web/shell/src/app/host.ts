@@ -61,7 +61,11 @@
 //   itself). Anywhere else `inspect` answers an error and asks nothing.
 //   `runTests({files, testMs, totalMs})` asks the bridge to run the draft's
 //   test files (`bridge/src/harness.ts`) and posts the results as `tests`,
-//   under the same rules.
+//   under the same rules. `runMigration({file, from, to, totalMs})` asks the
+//   bridge to run an app bundle's migration (spec 2026-10-13-flutter-app-
+//   bundles-design §8.3): import `file` in the page's frame and call its
+//   default export with the page's `db` and `{from, to}`; it posts
+//   `migration` `{ok: true}` or `{ok: false, error}`, under the same rules.
 // - Questions (spec 2026-10-12-flutter-app-round2-design R§10.2): the
 //   owner's open agent questions about the artifact are the shell's own
 //   question cards (`q/QuestionCard.svelte`), which a browser shows at the
@@ -130,6 +134,11 @@ export type HostMessage =
    * `skipped` for lack of time. Or `error`, why there was no run. */
   | { type: "tests"; passed: number; failed: { name: string; error: string }[]; skipped: number }
   | { type: "tests"; error: string }
+  /** The inspect view's answer to `runMigration`: the migration finished,
+   * or `error`, why it did not (it threw, did not load, ran out of time, or
+   * there was no run). */
+  | { type: "migration"; ok: true }
+  | { type: "migration"; ok: false; error: string }
   /** How many of the owner's questions about the artifact are `open`, and
    * whether the questions sheet is `showing`, posted whenever either
    * changes (see Questions above). */
@@ -190,6 +199,12 @@ export type ClaxHost = {
    * each test for at most `testMs`, the run for at most `totalMs`: `tests`
    * answers. A later call replaces an earlier one. */
   runTests(p: { files: string[]; testMs?: number; totalMs?: number }): void;
+  /** In the inspect view, asks the page to run the migration `file` (a
+   * `.js` path in the app, `migrate.js` for a bundle) with the page's `db`
+   * and `{from, to}` (versions, at least 1), the run for at most `totalMs`
+   * (`MIGRATE_MS` when absent): `migration` answers. A later call replaces
+   * an earlier one. */
+  runMigration(p: { file: string; from: number; to: number; totalMs?: number }): void;
   /** Shows the questions sheet. With `question` (an ID), shows it with that
    * question's card in focus as soon as the shell knows it open: the app may
    * hear of a question before the shell's own feed does, so the request
@@ -225,6 +240,11 @@ const TEST_MS_MAX = 30_000;
 const TEST_TOTAL_MS_MAX = 120_000;
 const TEST_FAILED = 50;
 const TEST_NAME_CHARS = 201;
+/** `runMigration`'s bounds. */
+export const MIGRATE_MS = 30_000;
+const MIGRATE_MS_MAX = 120_000;
+const MIGRATE_FILE = /^[A-Za-z0-9_][A-Za-z0-9_\-./]{0,196}\.js$/;
+const isVersion = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 1;
 /** What the composer calls the whole artifact in the app, and says of its
  * screenshot (as `view/whole-comment.ts` does in a browser). */
 const WHOLE_APP = "The whole app";
@@ -303,6 +323,14 @@ export function testsMessage(m: Record<string, unknown>): HostMessage {
     .slice(0, TEST_FAILED)
     .map(f => ({ name: f.name.slice(0, TEST_NAME_CHARS), error: f.error.slice(0, INSPECT_ERROR_CHARS) }));
   return { type: "tests", passed, failed, skipped };
+}
+
+/** The host message for the page's answer `m` to a migration run: only
+ * `ok` or `error`, whatever else the page sent. */
+export function migrationMessage(m: Record<string, unknown>): HostMessage {
+  if (m.ok === true) return { type: "migration", ok: true };
+  if (m.ok === false && typeof m.error === "string") return { type: "migration", ok: false, error: m.error.slice(0, INSPECT_ERROR_CHARS) || "the migration failed" };
+  return { type: "migration", ok: false, error: "the page sent no migration result" };
 }
 
 /** Installs `window.claxHost` over `ctl`, and, from `init` on, posts every
@@ -498,6 +526,12 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       post(testsMessage(m as unknown as Record<string, unknown>));
       return;
     }
+    if (m?.type === "clax:migration") {
+      if (migrationRun === null || m.requestId !== migrationRun) return;
+      migrationRun = null;
+      post(migrationMessage(m as unknown as Record<string, unknown>));
+      return;
+    }
     if (m?.type === "clax:pick-start" && typeof m.pickId === "string" && m.desc) {
       picked.clear();
       picked.set(m.pickId, m.desc);
@@ -511,6 +545,8 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   let inspections = 0;
   // The test run asked of the page, until it answers.
   let testRun: string | null = null;
+  // The migration run asked of the page, until it answers.
+  let migrationRun: string | null = null;
   // The shell's own trusted presses and releases, where and when.
   let shellPresses: { x: number; y: number; at: number }[] = [];
   const onPress = (e: Event) => {
@@ -776,6 +812,19 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       if (!ctl.gate.open) { post({ type: "tests", error: "the page has not loaded" }); return; }
       testRun = `test-${++inspections}`;
       ctl.send({ type: "clax:test", requestId: testRun, files: [...files], testMs: bounded(p.testMs, 1, TEST_MS_MAX, 5000), totalMs: bounded(p.totalMs, 1, TEST_TOTAL_MS_MAX, 30_000) });
+    },
+    runMigration: p => {
+      if (nonce === null) return;
+      const refuse = (error: string) => post({ type: "migration", ok: false, error });
+      if (!inspecting) { refuse("this view is not the inspect view"); return; }
+      const { file, from, to, totalMs } = (p && typeof p === "object" ? p : {}) as Partial<Record<"file" | "from" | "to" | "totalMs", unknown>>;
+      if (typeof file !== "string" || !MIGRATE_FILE.test(file) || file.split("/").some(seg => seg === "" || seg === "." || seg === "..") || !isVersion(from) || !isVersion(to)) {
+        refuse("file is a path <name>.js in the app, from and to are versions");
+        return;
+      }
+      if (!ctl.gate.open) { refuse("the page has not loaded"); return; }
+      migrationRun = `migrate-${++inspections}`;
+      ctl.send({ type: "clax:migrate", requestId: migrationRun, file, from, to, totalMs: bounded(totalMs, 1, MIGRATE_MS_MAX, MIGRATE_MS) });
     },
     openQuestions: p => {
       if (!dock) return;
