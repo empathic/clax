@@ -66,6 +66,7 @@ void main() {
     List<List<ScriptedCall>> runs, {
     bool images = true,
     AgentReadConsent? consent,
+    bool Function(String aid)? fromBundle,
   }) {
     runner = HeldRunner(runs, sendsImages: images);
     return AgentLoop(
@@ -81,6 +82,7 @@ void main() {
       plans: plans,
       readConsent: consent,
       clock: StepClock(),
+      fromBundle: fromBundle,
     );
   }
 
@@ -631,6 +633,37 @@ void main() {
       expect(api.callNames, isNot(contains('clip')));
       expect([for (final b in runner.seen.single.first) b['type']], ['text']);
     });
+
+    for (final bundled in [true, false]) {
+      test(
+        'an app from a bundle (${bundled ? 'yes' : 'no'}): other apps '
+        '${bundled ? 'left out and unreadable' : 'shown and asked for'}',
+        () async {
+          final other = api.seedArtifact(
+            'Secret diary',
+            {'index.html': page},
+            capabilities: const {'db': {}},
+          );
+          final consent = FakeReadConsent(fallback: ConsentAnswer.always);
+          final item = api.sendComment(aid, 'x', queue: false);
+          final loop = loopWith(
+            [
+              [
+                ScriptedCall('db_get', {'path': 'notes/n1', 'app': other}),
+                ...changeCalls(),
+              ],
+            ],
+            consent: consent,
+            fromBundle: (a) => bundled && a == aid,
+          );
+          await loop.change(aid, [item], session: sid);
+          final first = runner.text(0);
+          expect(first.contains('Secret diary'), !bundled);
+          expect(first.contains(PromptBuilder.fromBundleNote), bundled);
+          expect(consent.asks, hasLength(bundled ? 0 : 1));
+        },
+      );
+    }
 
     test('the read consent reaches the run', () async {
       final consent = FakeReadConsent();

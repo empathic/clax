@@ -26,7 +26,11 @@ void main() {
   late RecordingTimings timings;
   late String sid;
 
-  AgentLoop loopWith(List<Object> script, {String name = 'scripted'}) {
+  AgentLoop loopWith(
+    List<Object> script, {
+    String name = 'scripted',
+    Future<bool> Function(String aid)? fromBundle,
+  }) {
     backend = HeldBackend(script, name: name);
     return AgentLoop(
       api: api,
@@ -34,6 +38,7 @@ void main() {
       prompts: PromptBuilder(rootBundle),
       model: () => 'claude-haiku-5-5',
       timings: timings,
+      fromBundle: fromBundle,
     );
   }
 
@@ -247,6 +252,29 @@ void main() {
 
     setUp(() {
       aid = api.seedArtifact('Runs', {'index.html': page});
+    });
+
+    test('an app from a bundle: the request says so and the prompt leaves '
+        'the other apps out', () async {
+      api.seedArtifact('Secret diary', {'index.html': page});
+      final loop = loopWith([
+        change(reply: 'Keep.', edits: [edit('Save', 'Keep')]),
+      ], fromBundle: (a) async => a == aid);
+      final item = api.sendComment(aid, 'Say Keep', queue: false);
+      await loop.change(aid, [item], session: sid);
+      final r = backend.seen.single;
+      expect(r.fromBundle, isTrue);
+      expect(r.userText, isNot(contains('Secret diary')));
+      expect(r.userText, contains(PromptBuilder.fromBundleNote));
+    });
+
+    test('a failed from-bundle lookup counts as from a bundle', () async {
+      final loop = loopWith([
+        change(reply: 'Keep.', edits: [edit('Save', 'Keep')]),
+      ], fromBundle: (a) async => throw StateError('no store'));
+      final item = api.sendComment(aid, 'Say Keep', queue: false);
+      await loop.change(aid, [item], session: sid);
+      expect(backend.seen.single.fromBundle, isTrue);
     });
 
     test('forwards the backend\'s progress to onProgress', () async {

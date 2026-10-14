@@ -197,6 +197,7 @@ class AgentLoop {
     this._clock = const SystemClock(),
     bool Function(AgentBackend backend)? sendsImage,
     this._onAsked,
+    this._fromBundle,
     void Function(String line)? log,
   }) : assert(
          runner != null || singleCall != null,
@@ -232,7 +233,22 @@ class AgentLoop {
   final Clock _clock;
   final void Function(QuestionView q)? _onAsked;
   final bool Function(AgentBackend) _sendsImage;
+  final FutureOr<bool> Function(String aid)? _fromBundle;
   final void Function(String) _log;
+
+  /// Whether app [aid]'s code came from someone else's bundle (threat T2
+  /// of the bundles spec): its runs see no other apps and their data
+  /// tools refuse to read them. A lookup that fails counts as true.
+  Future<bool> _isFromBundle(String aid) async {
+    final f = _fromBundle;
+    if (f == null) return false;
+    try {
+      return await f(aid);
+    } on Object catch (e) {
+      _log('the from-bundle lookup of $aid failed: $e');
+      return true;
+    }
+  }
 
   /// Makes a new app from the person's [request] and returns its artifact
   /// ID, as the app session [session] (which also asks [AskTool]'s
@@ -586,6 +602,7 @@ class AgentLoop {
       final _Snapshot snap;
       final List<OtherApp> others;
       final String system;
+      final bool bundled;
       try {
         runner = _requireRunner();
         base = _baseUrl!();
@@ -594,10 +611,12 @@ class AgentLoop {
           _firstSnapshot(aid, listing),
           _othersFrom(listing, exclude: aid),
           _prompts.toolSystem(),
+          _isFromBundle(aid),
         ]);
         snap = reads[0]! as _Snapshot;
         others = reads[1]! as List<OtherApp>;
         system = reads[2]! as String;
+        bundled = reads[3]! as bool;
       } on ClaxApiError catch (e) {
         if (e.status == 0) return const ChangeInterrupted();
         if (e.isNotFound && e.code == 'not_found') return const ChangeDropped();
@@ -645,12 +664,14 @@ class AgentLoop {
             files: snap.files,
             others: others,
             documents: snap.docs,
+            fromBundle: bundled,
           ),
         ),
         onProgress,
         agentContinueTiming,
         {'artifact': aid},
         kind: RunKind.continueBuild,
+        fromBundle: bundled,
         plan: RunPlan(plans, aid, request: plan.request, seen: plan.revision),
       );
       // A continue run has no one waiting on its question.
@@ -743,6 +764,7 @@ class AgentLoop {
     final Uint8List? clip;
     final String system;
     final Plan? plan;
+    final bool bundled;
     try {
       runner = _requireRunner();
       base = _baseUrl!();
@@ -755,7 +777,9 @@ class AgentLoop {
             : Future<Uint8List?>.value(),
         _prompts.toolSystem(),
         _plan(aid),
+        _isFromBundle(aid),
       ]);
+      bundled = reads[5]! as bool;
       snap = reads[0]! as _Snapshot;
       others = reads[1]! as List<OtherApp>;
       clip = reads[2] as Uint8List?;
@@ -823,11 +847,13 @@ class AgentLoop {
           documents: snap.docs,
           answers: answers,
           plan: plan,
+          fromBundle: bundled,
         ),
       ),
       onProgress,
       agentChangeTiming,
       {'artifact': aid},
+      fromBundle: bundled,
       kind: RunKind.change,
       plan: RunPlan(
         plans,
@@ -926,6 +952,7 @@ class AgentLoop {
     Map<String, Object?> extra, {
     required RunKind kind,
     RunPlan? plan,
+    bool fromBundle = false,
   }) async {
     // [_requireRunner] made [runner], so the inspector is there.
     final inspector = _inspector!;
@@ -959,7 +986,7 @@ class AgentLoop {
       if (plan != null) ...[PlanSetTool(plan), PlanMarkTool(plan)],
       AddKitTool(),
       ...fileTools(),
-      ...dataTools(_api),
+      ...dataTools(_api, fromBundle: fromBundle),
       render,
       ask,
       _Ending(finish, ended),
@@ -1111,7 +1138,9 @@ class AgentLoop {
         _othersFrom(listing, exclude: aid),
         images ? _clip(aid, items.first.threadId) : Future<Uint8List?>.value(),
         _prompts.system(),
+        _isFromBundle(aid),
       ]);
+      final bundled = reads[4]! as bool;
       var snap = reads[0]! as _Snapshot;
       final others = reads[1]! as List<OtherApp>;
       final clip = reads[2] as Uint8List?;
@@ -1137,6 +1166,7 @@ class AgentLoop {
           others: others,
           documents: snap.docs,
           retryReason: retryReason,
+          fromBundle: bundled,
         );
         final EditResult r;
         try {
@@ -1150,6 +1180,7 @@ class AgentLoop {
             cancelled,
             onProgress,
             {'artifact': aid},
+            fromBundle: bundled,
           );
         } on AgentError catch (e) {
           if (e.kind == AgentErrorKind.cancelled) {
@@ -1631,8 +1662,9 @@ class AgentLoop {
     Uint8List? image,
     Future<void>? cancelled,
     ProgressSink? onProgress,
-    Map<String, Object?> extra,
-  ) async {
+    Map<String, Object?> extra, {
+    bool fromBundle = false,
+  }) async {
     final name = kind == RequestKind.newApp
         ? agentNewTiming
         : agentChangeTiming;
@@ -1658,6 +1690,7 @@ class AgentLoop {
           image: image,
           cancelled: cancelled,
           onProgress: sink,
+          fromBundle: fromBundle,
         ),
       );
     } finally {
