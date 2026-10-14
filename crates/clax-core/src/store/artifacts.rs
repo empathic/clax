@@ -348,6 +348,9 @@ impl Store {
             set("icon", patch.icon.clone().map(Into::into));
             set("pinned", patch.pinned.map(Into::into));
             set("capabilities", patch.capabilities.clone());
+            if let Some(caps) = &patch.capabilities {
+                self.drop_undeclared_grants(tx, ctx, id, caps)?;
+            }
             if !fields.is_empty() {
                 let mut rec =
                     AuditRecord::new(AuditKind::ArtifactUpdate, self.now()).with("fields", fields);
@@ -1333,6 +1336,9 @@ impl Store {
                     text
                 ],
             )?;
+            if let Some(caps) = &p.capabilities {
+                self.drop_undeclared_grants(tx, ctx, id, caps)?;
+            }
             super::inbox::note_version(
                 tx,
                 id.as_str(),

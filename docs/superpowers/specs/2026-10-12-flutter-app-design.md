@@ -433,7 +433,9 @@ abstract interface class AgentBackend {
   `db_read_grants(reader_id, source_id, granted_at)` (migration 24), made
   by `PUT /api/artifacts/<A>/db-grants/<B>` and removed by `DELETE` (token),
   listed by `GET /api/artifacts/<A>/db-grants`. Deleting either artifact
-  removes its rows.
+  removes its rows. A grant follows the declaration: a publish or `PATCH`
+  that drops B from A's `db.read` deletes the pair's row (recorded as a
+  revoke), so declaring the read again asks the owner again.
 - **Reading.** The db read routes of B (`GET …/docs`, `GET …/docs/<path>`)
   accept `X-Clax-Reader: <A ID>`: the caller's level is that of a reader,
   read-only, judged by B's rules at `view` with no viewer; without consent
