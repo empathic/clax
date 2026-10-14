@@ -21,6 +21,7 @@ mod api_extension;
 mod api_feedback;
 mod api_forks;
 mod api_gateway;
+mod api_git_tokens;
 mod api_grants;
 mod api_host;
 mod api_hosted;

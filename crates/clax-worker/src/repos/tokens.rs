@@ -287,6 +287,73 @@ pub async fn revoke<C: AsConn, T: TokenHost>(
     Ok(revoked)
 }
 
+/// A live token as [`held`] lists it: never its secret.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HeldToken {
+    pub id: String,
+    pub repo: String,
+    /// `read` or `write`.
+    pub scope: String,
+    /// Milliseconds since the epoch.
+    pub expires_ms: i64,
+    pub person: Option<String>,
+    pub session: Option<String>,
+}
+
+/// Every token live at `now_ms` that was handed to a person or an agent
+/// session ([`db::live_held_tokens`]).
+pub fn held<C: AsConn>(ledger: &LocalHost<C>, now_ms: i64) -> clax_git::Result<Vec<HeldToken>> {
+    let rows = ledger.with(|c| db::live_held_tokens(c, now_ms))?;
+    Ok(rows
+        .into_iter()
+        .map(|r| HeldToken {
+            id: r.id,
+            repo: r.repo,
+            scope: r.scope,
+            expires_ms: r.expires_ms,
+            person: r.holder.person,
+            session: r.holder.session,
+        })
+        .collect())
+}
+
+/// Revokes, as [`revoke`] does, every live token handed to agent session
+/// `session` (when given) or to person `person` (when given; their own
+/// tokens and their agents'). Naming neither revokes nothing. Answers how
+/// many were revoked; the first failure at the host is answered after
+/// every other token was tried, each failed one left in the must-revoke
+/// list.
+pub async fn revoke_held<C: AsConn, T: TokenHost>(
+    ledger: &LocalHost<C>,
+    tokens: &T,
+    person: Option<&str>,
+    session: Option<&str>,
+    now_ms: i64,
+) -> clax_git::Result<usize> {
+    if person.is_none() && session.is_none() {
+        return Ok(0);
+    }
+    let rows = ledger.with(|c| db::live_held_tokens(c, now_ms))?;
+    let mut revoked = 0;
+    let mut failed = None;
+    for r in rows.iter().filter(|r| {
+        session.is_some_and(|s| r.holder.session.as_deref() == Some(s))
+            || person.is_some_and(|p| r.holder.person.as_deref() == Some(p))
+    }) {
+        match revoke(ledger, tokens, &r.repo, &r.id, now_ms).await {
+            Ok(true) => revoked += 1,
+            Ok(false) => {}
+            Err(e) => {
+                failed.get_or_insert(e);
+            }
+        }
+    }
+    match failed {
+        Some(e) => Err(e),
+        None => Ok(revoked),
+    }
+}
+
 /// Tries again to revoke every token in the must-revoke list; expired ones
 /// leave it. Answers how many are still listed.
 pub async fn retry_due<C: AsConn, T: TokenHost>(

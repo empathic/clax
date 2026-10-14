@@ -111,7 +111,7 @@ async function deadHome(): Promise<string> {
 }
 
 describe("clax Pi extension", () => {
-  it("registers the twenty-six tools with one-line prompt snippets, and the clax command", () => {
+  it("registers the twenty-seven tools with one-line prompt snippets, and the clax command", () => {
     const { pi } = load(daemon.home, "s-tools");
     expect([...pi.tools.keys()].sort()).toEqual([...TOOLS].sort());
     for (const t of pi.tools.values()) {
@@ -532,6 +532,10 @@ describe("clax Pi extension", () => {
         { url_or_id: id, file_path: "a.html", files: { "a.css": { content: "x" }, "b.css": null }, if_version: 1, note: "n" },
         { url_or_id: id, done: true },
       ],
+      clax_git_remote: [
+        { url_or_id: id, scope: "read" },
+        { url_or_id: id, scope: "write" },
+      ],
     };
     const invalid: Record<string, Record<string, unknown>[]> = {
       clax_publish: [{ html: "x", bogus: 1 }, { html: "x", files: { "a.css": { content: "x", nope: 1 } } }, { html: "x", files: { "a.css": { content: "x", encoding: "hex" } } }],
@@ -551,6 +555,7 @@ describe("clax Pi extension", () => {
       clax_wait_for_feedback: [{ timeout_s: -1 }, { bogus: 1 }],
       clax_ask: [{ bogus: 1 }, { questions: [] }, { questions: [{ question: "Q" }] }, { questions: [{ question: "Q", header: "H", nope: 1 }] }, { questions: [{ question: "Q", header: "H", options: [{ label: "A", nope: 1 }] }] }],
       clax_working: [{ url_or_id: id, done: "yes" }, { url_or_id: id, bogus: 1 }],
+      clax_git_remote: [{ url_or_id: id }, { url_or_id: id, scope: "admin" }, { url_or_id: id, scope: "read", bogus: 1 }],
       clax_draft: [{ html: "<p>x</p>" }, { url_or_id: id, bogus: 1 }, { url_or_id: id, done: "yes" }, { url_or_id: id, files: { "a.css": { content: "x", nope: 1 } } }],
       clax_db_get: [{ url_or_id: id, collection: "tasks" }, { url_or_id: id, collection: "tasks", doc_id: "t1", as_level: "owner" }],
       clax_db_query: [{ url_or_id: id, collection: "tasks", query: { bogus: 1 } }],
@@ -1334,6 +1339,15 @@ describe("comments", () => {
     const empty = await pi.callTool("clax_draft", { url_or_id: pub.artifact_id }, ctx);
     expect(empty.isError).toBe(true);
     expect(JSON.parse(empty.content[0].text!).error.code).toBe("invalid_args");
+  });
+
+  it("clax_git_remote asks from the Pi session and reports not_available where Clax keeps no repositories, as the MCP tool does", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-git-remote");
+    await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    const pub = JSON.parse((await pi.callTool("clax_publish", { html: "<p>g</p>", title: "G" }, ctx)).content[0].text!);
+    const r = await pi.callTool("clax_git_remote", { url_or_id: pub.artifact_id, scope: "read" }, ctx);
+    expect(r.isError).toBe(true);
+    expect(JSON.parse(r.content[0].text!).error.code).toBe("not_available");
   });
 
   it("tool calls renew working records at most every 15 s, and agent_end ends them", async () => {

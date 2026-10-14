@@ -454,6 +454,17 @@ impl TestServer {
         .await
     }
 
+    /// [`TestServer::spawn_on_one_connection`] on a state `f` configures
+    /// first.
+    pub async fn spawn_on_one_connection_with(
+        content: Arc<dyn clax_core::content::ContentStore>,
+        f: impl FnOnce(&mut AppState),
+    ) -> TestServer {
+        let dir = tempfile::tempdir().unwrap();
+        let bind = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        Self::start(dir, bind, Arc::new(SystemClock), f, false, Some(content)).await
+    }
+
     /// Serves the home `ax` under `dir` on `bind`, every time read from
     /// `clock`: on the store's pool and the home's files, or with `content`
     /// on one connection ([`TestServer::spawn_on_one_connection`]).
@@ -545,6 +556,7 @@ impl TestServer {
             ))),
             vis_gen,
             hosted: None,
+            git_remotes: Arc::default(),
         };
         f(&mut state);
         state.audit_wake.install(&state.store);
@@ -556,6 +568,7 @@ impl TestServer {
         crate::approvals::listen(&state);
         crate::routes::people::listen(&state);
         crate::pushes::listen(&state);
+        crate::git_remotes::listen(&state);
         let events = state.events.clone();
         let store = state.store.clone();
         let working = state.working.clone();

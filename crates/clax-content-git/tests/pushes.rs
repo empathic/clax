@@ -787,6 +787,72 @@ async fn an_agents_token_that_may_not_see_a_pushed_version_is_revoked_before_it_
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_publish_revokes_the_agents_tokens_blind_to_its_publisher_before_its_commit() {
+    let f = fixture().await;
+    let (rae, rae_grant) = person_with_grant(&f.st, "Rae", 7);
+    let (sam, sam_grant) = person_with_grant(&f.st, "Sam", 8);
+    may_publish(&f.st, &rae, &f.id);
+    let rae_sid = agent(&f.st, &rae_grant);
+    let sam_sid = agent(&f.st, &sam_grant);
+    let token = |id: &str, person: &str, sid: &str| RepoToken {
+        id: id.into(),
+        write: false,
+        holder: Pusher {
+            person: Some(person.into()),
+            session_id: Some(sid.into()),
+        },
+    };
+    *f.ledger.tokens.lock().unwrap() = vec![
+        token("t_rae", &rae, &rae_sid),
+        token("t_sam", &sam, &sam_sid),
+    ];
+    let before = f.git.text(&f.clone, &["ls-remote", "origin"]).await;
+    // Rae's agent publishes: Sam's agent may not see Rae's work. While its
+    // token cannot be revoked, nothing is committed or recorded.
+    f.ledger.fail_revoke.store(true, Ordering::SeqCst);
+    let e =
+        f.st.publish_version_async(
+            DAEMON,
+            &f.id,
+            publish("<p>rae</p>", Some(1)),
+            Some(&rae_sid),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            e,
+            CoreError::Invalid {
+                code: "repo_unavailable",
+                ..
+            }
+        ),
+        "{e:?}"
+    );
+    assert_eq!(f.versions().len(), 1);
+    assert_eq!(
+        f.git.text(&f.clone, &["ls-remote", "origin"]).await,
+        before,
+        "no commit was written"
+    );
+    f.ledger.fail_revoke.store(false, Ordering::SeqCst);
+    f.st.publish_version_async(
+        DAEMON,
+        &f.id,
+        publish("<p>rae</p>", Some(1)),
+        Some(&rae_sid),
+    )
+    .await
+    .unwrap();
+    assert_eq!(f.versions().len(), 2);
+    assert_eq!(
+        *f.ledger.revoked.lock().unwrap(),
+        ["t_sam"],
+        "Rae's own agent sees Rae's work"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_pushed_commit_already_tagged_as_the_next_version_is_adopted_and_tagged_once() {
     let f = fixture().await;
     f.write("index.html", "<p>pushed</p>");

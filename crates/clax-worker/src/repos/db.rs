@@ -547,3 +547,28 @@ pub fn due(conn: &Connection, now_ms: i64) -> Result<Vec<(String, String)>> {
         .map_err(sql)?;
     rows.collect::<rusqlite::Result<_>>().map_err(sql)
 }
+
+/// Every token live at `now_ms` (neither revoked nor expired) that was
+/// handed to a person or an agent session, oldest first: what the server
+/// rechecks when rights, visibility or sessions change. The owner's own
+/// tokens (no person, no session) are not listed.
+pub fn live_held_tokens(conn: &Connection, now_ms: i64) -> Result<Vec<TokenRow>> {
+    let ids: Vec<String> = conn
+        .prepare(
+            "SELECT id FROM git_tokens WHERE revoked_ms IS NULL AND expires_ms > ?1
+               AND (person IS NOT NULL OR session IS NOT NULL)
+             ORDER BY rowid",
+        )
+        .and_then(|mut s| {
+            s.query_map(params![now_ms], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()
+        })
+        .map_err(sql)?;
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids {
+        if let Some(row) = token(conn, &id)? {
+            out.push(row);
+        }
+    }
+    Ok(out)
+}

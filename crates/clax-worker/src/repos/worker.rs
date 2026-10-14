@@ -9,10 +9,12 @@
 //! - [`forward_git`]: the Worker's `/git/<repo>.git/…` route, served by
 //!   `RepoDO` when `REPO_STORE` is `memory` and `GIT_SMART_HTTP` is not
 //!   `0`; 404 otherwise (Artifacts serves its own remotes).
-//! - [`mint_git_token`] and [`revoke_git_token`]: repository tokens, for
-//!   the server's `POST /api/artifacts/{id}/git-token` route (a signed-in
-//!   person, same origin) and its MCP `git_remote` tool (an agent), after
-//!   their rights checks (see [`super::tokens`]).
+//! - [`mint_git_token`] and [`revoke_git_token`]: repository tokens, and
+//!   [`git_remotes`], the server's `GitRemotes` over them, for its
+//!   `POST /api/artifacts/{id}/git-token` route (a signed-in person, same
+//!   origin) and `POST /api/sessions/{id}/git-token/{aid}` (an agent
+//!   session, the MCP `git_remote` tool), after their rights checks (see
+//!   `clax_server::git_remotes`).
 //! - [`dev_route`]: `/_dev/repos/…`, served only while `REPO_DEV_ROUTES`
 //!   is `1`, for `test-repos.mjs`.
 //!
@@ -211,6 +213,17 @@ pub async fn mint_git_token(
         .await
 }
 
+/// The server's git remotes ([`super::remotes::WorkerRemotes`]): tokens
+/// from `RepoDO`'s ledger, whichever host keeps the repositories. Fails
+/// without the `REPO` binding.
+pub fn git_remotes(env: &Env) -> Result<Arc<dyn clax_server::git_remotes::GitRemotes>> {
+    Ok(Arc::new(super::remotes::WorkerRemotes {
+        tokens: DoTokens {
+            transport: repo_do(env)?,
+        },
+    }))
+}
+
 /// Revokes token `id` of artifact `artifact`'s repository; a failure at
 /// the host leaves it in `RepoDO`'s must-revoke list, retried until it is
 /// revoked or expires.
@@ -389,7 +402,7 @@ impl DurableObject for RepoDO {
                     body: &body,
                 })
                 .await;
-            if op == "token/revoke" {
+            if op == "token/revoke" || op == "token/revoke-held" {
                 self.schedule_retry().await;
             }
             return http_response(r);

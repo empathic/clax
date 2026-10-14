@@ -9,6 +9,7 @@ pub mod drafts;
 pub mod events;
 pub mod extension;
 pub mod feedback;
+pub mod git_token;
 pub mod grants;
 pub mod health;
 pub mod inbox;
@@ -294,6 +295,14 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             axum::routing::put(drafts::put.layer(draft_limit)).delete(drafts::delete),
         )
         .route("/api/artifacts/{aid}/drafts", get(drafts::list))
+        .route(
+            "/api/artifacts/{aid}/git-token",
+            get(git_token::options).post(git_token::mint),
+        )
+        .route(
+            "/api/sessions/{id}/git-token/{aid}",
+            post(git_token::session_mint),
+        )
         .route("/api/grants", get(grants::list).post(grants::request))
         .route("/api/grants/{gid}", delete(grants::revoke))
         .route(
@@ -676,6 +685,7 @@ mod l10 {
         ("working::delete", AgentPath),
         ("drafts::put", AgentPath),
         ("drafts::delete", AgentPath),
+        ("git_token::session_mint", AgentPath),
         ("working::skew", Token),
         ("viewers::lookup", NoArtifact),
         ("viewers::me", NoArtifact),
@@ -804,6 +814,7 @@ mod l10 {
             "events" => include_str!("events.rs"),
             "extension" => include_str!("extension.rs"),
             "feedback" => include_str!("feedback.rs"),
+            "git_token" => include_str!("git_token.rs"),
             "health" => include_str!("health.rs"),
             "inbox" => include_str!("inbox.rs"),
             "live" => include_str!("live.rs"),
@@ -956,6 +967,14 @@ mod l10 {
             "debug builds only; shifts the working clock (the lapses it causes are recorded by the sweep as system:ttl)",
         ),
         ("extension::mint", "an extension credential grant (§6.11)"),
+        (
+            "git_token::mint",
+            "a repository credential, kept in the host's token ledger; what its pushes make is recorded as versions",
+        ),
+        (
+            "git_token::session_mint",
+            "a repository credential, kept in the host's token ledger; what its pushes make is recorded as versions",
+        ),
         ("extension::revoke", "an extension credential grant (§6.11)"),
         ("stream::update", "a stream subscription (§6.11)"),
         ("viewers::set_presence", "presence (§6.11)"),
@@ -1677,6 +1696,12 @@ mod agents {
                 "/api/sessions/{id}/drafts/{aid}",
                 Own,
                 Some((Artifacts, "update")),
+            ),
+            (
+                "POST",
+                "/api/sessions/{id}/git-token/{aid}",
+                Own,
+                Some((Artifacts, "read")),
             ),
             (
                 "POST",

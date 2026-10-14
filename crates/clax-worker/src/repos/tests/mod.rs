@@ -7,6 +7,7 @@
 mod artifacts_fake;
 mod artifacts_http_backend;
 mod assets;
+mod remotes;
 mod smart_http;
 mod stand_in;
 

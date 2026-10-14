@@ -132,6 +132,21 @@ fn content_store(_env: &Env) -> Result<Arc<dyn ContentStore>> {
     ))
 }
 
+/// Installs the server's git remotes (`crate::repos::worker::git_remotes`):
+/// its git token routes mint from `RepoDO`'s ledger. Without the `REPO`
+/// binding they answer `not_available`, as on the daemon.
+#[cfg(target_arch = "wasm32")]
+fn install_git_remotes(app: &AppState, env: &Env) {
+    match crate::repos::worker::git_remotes(env) {
+        Ok(r) => app.git_remotes.set(r),
+        Err(e) => worker::console_error!("the git remotes are off: {e}"),
+    }
+}
+
+/// The repositories' bindings exist only in a Worker.
+#[cfg(not(target_arch = "wasm32"))]
+fn install_git_remotes(_app: &AppState, _env: &Env) {}
+
 /// The database file's name in the object's storage.
 const DB_FILE: &str = "clax.db";
 /// The soonest an alarm is set for, from now: the daemon's sweep period.
@@ -400,6 +415,7 @@ impl Instance {
             app.seats.restore(&k.seats);
             app.presence.restore(&k.presence);
         }
+        install_git_remotes(&app, env);
         app.start_listeners();
         let router = clax_server::build_router(app.clone());
         let inst = Rc::new(Instance {
@@ -1042,6 +1058,9 @@ impl DurableObject for InstanceDo {
             });
         if grants_due {
             let _ = clax_server::routes::grants::sweep(&inst.app).await;
+            // The sessions of grants that expired: their git tokens go
+            // before the alarm ends, not from a task an eviction could drop.
+            clax_server::git_remotes::settle(&inst.app).await;
         }
         if self.wrote.get() && now - self.last_optimize.get() >= OPTIMIZE_MS {
             self.last_optimize.set(now);

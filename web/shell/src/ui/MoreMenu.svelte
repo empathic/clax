@@ -5,7 +5,9 @@
   // where the version button is hidden; Versions closes the menu and opens
   // the version menu (`onVersions`), and Fork (`onFork`, when the viewer may
   // fork) forks the shown version. On a live page (`pageHref`, the page's
-  // URL) phone width also lists Open page, and Versions reads Snapshots. A menu button: opening
+  // URL) phone width also lists Open page, and Versions reads Snapshots; where
+  // the viewer may clone the artifact (`onClone`), phone width lists Clone
+  // with git, which opens the Clone dialog. A menu button: opening
   // focuses the first item; Up, Down, Home and End move between the items;
   // Escape, Open raw and Copy link close it with focus back on the button; a
   // press outside, or Tab or focus leaving it, closes it. The items are out of
@@ -14,7 +16,7 @@
   // handles, and every printable key (so C and ? do nothing there).
   import { tick } from "svelte";
 
-  let { rawHref, canCopy, onCopy, onVersions, pageHref = null, onFork }: { rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void; pageHref?: string | null; onFork?(): void } = $props();
+  let { rawHref, canCopy, onCopy, onVersions, pageHref = null, onFork, onClone = null }: { rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void; pageHref?: string | null; onFork?(): void; onClone?: (() => void) | null } = $props();
   let open = $state(false);
   // Phone width, as the bar's `hide-sm` rule draws it; read on each open.
   let phone = $state(false);
@@ -70,6 +72,7 @@
         <button type="button" role="menuitem" tabindex="-1" class="ghost muted" aria-disabled="true">Open raw</button>
       {/if}
       {#if canCopy}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { onCopy(); close(); }}>Copy link</button>{/if}
+      {#if phone && onClone}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onClone(); }}>Clone with git…</button>{/if}
     </div>
   {/if}
 </div>

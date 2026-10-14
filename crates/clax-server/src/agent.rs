@@ -236,6 +236,7 @@ need!(
     crate::routes::drafts::DRAFT_BODY_LIMIT
 );
 need!(DraftDelete, Artifacts, "update", Own, DEFAULT_LIMIT);
+need!(GitTokenMint, Artifacts, "read", Own, DEFAULT_LIMIT);
 need!(WatchesList, Comments, "watch", Own, DEFAULT_LIMIT);
 need!(WatchesPut, Comments, "watch", Own, DEFAULT_LIMIT);
 need!(WatchesDelete, Comments, "watch", Own, DEFAULT_LIMIT);
@@ -383,6 +384,11 @@ pub const ROUTES: &[(&str, &str, NeedInfo)] = &[
         "/api/sessions/{id}/drafts/{aid}",
         DraftDelete::INFO,
     ),
+    (
+        "POST",
+        "/api/sessions/{id}/git-token/{aid}",
+        GitTokenMint::INFO,
+    ),
     ("GET", "/api/sessions/{id}/watches", WatchesList::INFO),
     ("PUT", "/api/sessions/{id}/watches/{aid}", WatchesPut::INFO),
     (
@@ -502,6 +508,7 @@ pub const ROUTE_NEEDS: &[RouteNeed] = &[
     route_need!("working::delete", WorkingDelete),
     route_need!("drafts::put", DraftPut),
     route_need!("drafts::delete", DraftDelete),
+    route_need!("git_token::session_mint", GitTokenMint),
     route_need!("watches::list", WatchesList),
     route_need!("watches::put", WatchesPut),
     route_need!("watches::delete", WatchesDelete),

@@ -154,6 +154,9 @@ pub struct AppState {
     pub vis_gen: VisGen,
     /// Hosted mode ([`crate::hosted`]); `None` for the local daemon.
     pub hosted: Option<Arc<crate::hosted::Hosted>>,
+    /// The host's git remotes ([`crate::git_remotes`]), once it installs
+    /// them; empty on the native daemon.
+    pub git_remotes: Arc<crate::git_remotes::Slot>,
 }
 
 /// What a host decides about the state it serves from; [`AppState::assemble`]
@@ -245,6 +248,7 @@ impl AppState {
             agent_gate: Arc::new(crate::agent::Gate::new(p.agent_timer)),
             vis_gen,
             hosted: p.hosted,
+            git_remotes: Arc::default(),
             store: p.store,
         })
     }
@@ -261,6 +265,7 @@ impl AppState {
         self.stream.sweep();
         self.seats.sweep();
         crate::questions::withdraw_due(self).await;
+        crate::git_remotes::settle(self).await;
     }
 
     /// How long until [`AppState::sweep`] next has something to do (zero
@@ -268,7 +273,9 @@ impl AppState {
     /// report lapsing or a gone viewer dropping, a draft going idle, a
     /// detached stream's grace ending, a live seat going idle, and a
     /// question's swept grace ending
-    /// ([`crate::questions::Sleeper::times_graces`]). `None` when none of them holds
+    /// ([`crate::questions::Sleeper::times_graces`]), and a git token
+    /// revocation the host failed ([`crate::git_remotes::RETRY_AFTER`]).
+    /// `None` when none of them holds
     /// anything that will need it. A host whose sweeps run from a timer it
     /// sets itself (a Durable Object's alarm) sets it for then.
     pub fn next_sweep_in(&self) -> Option<Duration> {
@@ -282,6 +289,9 @@ impl AppState {
             self.stream.next_drop_in(),
             self.seats.next_idle_in(),
             self.questions.next_due().map(until),
+            self.git_remotes
+                .due()
+                .then_some(crate::git_remotes::RETRY_AFTER),
         ]
         .into_iter()
         .flatten()
@@ -298,6 +308,7 @@ impl AppState {
         crate::approvals::listen(self);
         crate::routes::people::listen(self);
         crate::pushes::listen(self);
+        crate::git_remotes::listen(self);
     }
 }
 

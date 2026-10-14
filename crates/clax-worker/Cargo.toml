@@ -52,6 +52,8 @@ worker = { version = "0.8.7", features = ["http", "axum", "queue"] }
 [dev-dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 clax-core = { path = "../clax-core", features = ["content-contract"] }
+# The server in process, for the git token routes over the stand-in.
+clax-server = { path = "../clax-server", features = ["test-support"] }
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "net"] }
 

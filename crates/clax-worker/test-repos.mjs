@@ -10,7 +10,9 @@
 // only for a live token, that commits pushed with `git push` and with
 // `jj git push` to an artifact published through the API become versions
 // the API lists (a publish that did not see them conflicts, one that did
-// lands), that assets are kept in
+// lands), that the server's git token routes hand out tokens whose
+// answered commands clone and push and that an ended session's token clones
+// nothing, that assets are kept in
 // the ASSETS R2 bucket, then restarts wrangler on the same state and clones
 // again and reads the asset back, and once more with REPO_STORE=artifacts,
 // where (without a Cloudflare account) the binding's calls fail, /git/ is
@@ -345,6 +347,77 @@ async function checkPushes(base, home, work, jj) {
   check(versions.length === 4, "no internal call from outside recorded a version", versions.length);
 }
 
+/**
+ * Checks the server's git token routes on the Worker: the owner's write
+ * token from `POST /api/artifacts/<id>/git-token` clones with the answer's
+ * jj and git commands and pushes through its commands for an existing
+ * checkout, the push becoming a version; an agent session's read token from
+ * `POST /api/sessions/<sid>/git-token/<id>` clones until the session ends;
+ * no credential gets none.
+ */
+async function checkGitTokenRoutes(base, home, work, jj) {
+  const sh = (cwd, cmd) => ok(home, "sh", cwd, ["-c", cmd.replace(" jj git ", ` ${jj} git `)]);
+  const created = await api(base, "POST", "/api/artifacts", {
+    title: "Routed",
+    files: { "index.html": { content: "<h1>routed</h1>\n" } },
+  });
+  const id = created.body.artifact.id;
+  const opts = await api(base, "GET", `/api/artifacts/${id}/git-token`);
+  check(
+    opts.status === 200 && opts.body.available === true && opts.body.scopes.join(",") === "read,write",
+    "the git token route offers the owner read and write tokens",
+    opts,
+  );
+  const write = await api(base, "POST", `/api/artifacts/${id}/git-token`, { scope: "write" });
+  check(
+    write.status === 200 && write.body.remote === `${base}/git/a-${id}.git` && write.body.token.startsWith("cxm_write_"),
+    "the git token route mints a write token on the Worker's /git/ remote",
+    write,
+  );
+  const t = write.body;
+  const viaJj = join(work, "routed-jj-parent");
+  mkdirSync(viaJj);
+  sh(viaJj, `${t.jj_clone_command} routed`);
+  check(readFileSync(join(viaJj, "routed", "index.html"), "utf8") === "<h1>routed</h1>\n", "the answer's jj_clone_command clones", null);
+  const viaGit = join(work, "routed-git-parent");
+  mkdirSync(viaGit);
+  sh(viaGit, `${t.clone_command} routed`);
+  const out = join(viaGit, "routed");
+  writeFileSync(join(out, "index.html"), "<h1>routed, pushed</h1>\n");
+  ok(home, "git", out, ["-c", "user.name=Owner", "-c", "user.email=owner@clax.test", "commit", "-qam", "Pushed through the route"]);
+  sh(out, t.existing_checkout.add_remote_command);
+  sh(out, t.existing_checkout.push_command);
+  check(!readFileSync(join(out, ".git", "config"), "utf8").includes(t.token), "the checkout's configuration holds no token", null);
+  const versions = (await api(base, "GET", `/api/artifacts/${id}/versions`)).body.versions;
+  check(versions.length === 2 && versions[1].note === "Pushed through the route", "a push with the route's token is version 2", versions);
+
+  const session = await api(base, "POST", "/api/sessions", { harness: "claude", cwd: "/w" });
+  check(session.status === 201, "an agent session registers", session);
+  const sid = session.body.session.id;
+  const read = await api(base, "POST", `/api/sessions/${sid}/git-token/${id}`, { scope: "read" });
+  check(read.status === 200 && read.body.token.startsWith("cxm_read_"), "an agent session gets a read token", read);
+  const agentDir = join(work, "routed-agent");
+  mkdirSync(agentDir);
+  sh(agentDir, `${read.body.clone_command} first`);
+  const ended = await api(base, "PATCH", `/api/sessions/${sid}`, { ended: true });
+  check(ended.status === 200, "the agent session ends", ended);
+  // The revocation runs beside the answer: bounded, not timed.
+  const until = Date.now() + 20_000;
+  let refused = false;
+  while (!refused && Date.now() < until) {
+    refused = run(home, "sh", agentDir, ["-c", `${read.body.clone_command} again-${Date.now()}`]).status !== 0;
+    if (!refused) await new Promise((r) => setTimeout(r, 200));
+  }
+  check(refused, "an ended session's token clones nothing", null);
+
+  const anon = await fetch(`${base}/api/artifacts/${id}/git-token`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ scope: "read" }),
+  });
+  check(anon.status === 401, "no credential gets no git token", anon.status);
+}
+
 /** One `/_dev/repos/` call; answers its status and body text. */
 function dev(base, method, path) {
   return send(method, `${base}/_dev/repos/${path}`);
@@ -431,6 +504,7 @@ async function main() {
     let w = await start(dir, config, 1, [`CLAX_TOKEN:${TOKEN}`]);
     running.add(w);
     await checkPushes(w.base, home, work, jj);
+    await checkGitTokenRoutes(w.base, home, work, jj);
     const id = newArtifactId();
     const v1 = await post(w.base, `publish?artifact=${id}&n=1&body=${encodeURIComponent("<h1>one</h1>\n")}`);
     check(v1.index_html === "<h1>one</h1>\n", "version 1 is written through the content store and reads back", v1);

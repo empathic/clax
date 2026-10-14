@@ -559,6 +559,11 @@ export class DaemonClient {
     return this.json(() => `${this.sessionPath()}/drafts/${id}`, this.jsonBody("PUT", body));
   }
 
+  /** `POST /api/sessions/<sid>/git-token/<id>` `{scope}`: `{remote, token, expires_at, clone_command, jj_clone_command, existing_checkout, …}`. */
+  gitToken(id: string, scope: "read" | "write"): Promise<any> {
+    return this.json(() => `${this.sessionPath()}/git-token/${id}`, this.jsonBody("POST", { scope }));
+  }
+
   /** `DELETE /api/sessions/<sid>/drafts/<id>`: `{ended}`. */
   deleteDraft(id: string): Promise<any> {
     return this.json(() => `${this.sessionPath()}/drafts/${id}`, { method: "DELETE" });

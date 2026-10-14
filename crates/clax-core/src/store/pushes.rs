@@ -278,8 +278,13 @@ impl Store {
     }
 
     /// Revokes every agent's token of `id`'s repository whose person may
-    /// not see all of `authors` there (see the [module docs](self)).
-    async fn revoke_blind_tokens(&self, id: &ArtifactId, authors: &[Author]) -> Result<()> {
+    /// not see all of `authors` there (see the [module docs](self)); a
+    /// publish calls it with its publisher before its commit is written.
+    pub(super) async fn revoke_blind_tokens(
+        &self,
+        id: &ArtifactId,
+        authors: &[Author],
+    ) -> Result<()> {
         let tokens = self.content.repo_tokens(id).await?;
         let generation = self.visibility_generation();
         for t in tokens {

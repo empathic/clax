@@ -151,6 +151,7 @@ pub mod drafts;
 pub mod error;
 pub mod extension;
 pub mod feedback;
+pub mod git_remotes;
 pub mod grant_auth;
 pub mod host;
 pub mod hosted;
@@ -203,13 +204,18 @@ fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
     } else {
         inner
     };
-    let r =
-        axum::Router::new()
-            .fallback_service(inner)
-            .layer(axum::middleware::from_fn_with_state(
-                state.clone(),
-                agent::authenticate,
-            ));
+    // Innermost: a request's git token revocations are done before it
+    // answers (`git_remotes::settle_layer`).
+    let r = axum::Router::new()
+        .fallback_service(inner)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            git_remotes::settle_layer,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            agent::authenticate,
+        ));
     let r = if hosted {
         r.layer(axum::middleware::from_fn_with_state(state, hosted::gate))
     } else {

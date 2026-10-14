@@ -511,6 +511,114 @@ fn a_token_keeps_whom_it_was_handed_to_and_an_older_ledger_gains_the_columns() {
 }
 
 #[test]
+fn the_held_tokens_are_listed_without_secrets_and_revoked_by_session_or_person() {
+    let clock = clock();
+    let t = stand_in(clock.clone());
+    let host = t.service.host.clone();
+    let holder = |person: Option<&str>, session: Option<&str>| tokens::Holder {
+        person: person.map(String::from),
+        session: session.map(String::from),
+    };
+    wait(async {
+        host.create("a-one").await.unwrap();
+        host.create("a-two").await.unwrap();
+        let api = tokens_of(&t);
+        let rae_agent = api
+            .mint(
+                "a-one",
+                Scope::Read,
+                900,
+                None,
+                &holder(Some("p_rae"), Some("s1")),
+            )
+            .await
+            .unwrap();
+        let rae_agent_two = api
+            .mint(
+                "a-two",
+                Scope::Read,
+                900,
+                None,
+                &holder(Some("p_rae"), Some("s1")),
+            )
+            .await
+            .unwrap();
+        let rae = api
+            .mint(
+                "a-one",
+                Scope::Write,
+                3600,
+                None,
+                &holder(Some("p_rae"), None),
+            )
+            .await
+            .unwrap();
+        let owner_agent = api
+            .mint("a-one", Scope::Read, 900, None, &holder(None, Some("s2")))
+            .await
+            .unwrap();
+        let owners = api
+            .mint("a-one", Scope::Write, 3600, None, &Default::default())
+            .await
+            .unwrap();
+        let held = api.held().await.unwrap();
+        let ids: Vec<&str> = held.iter().map(|h| h.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [&rae_agent.id, &rae_agent_two.id, &rae.id, &owner_agent.id].map(|s| s.as_str()),
+            "the owner's own token is not listed"
+        );
+        assert_eq!(held[2].scope, "write");
+        assert_eq!(held[2].person.as_deref(), Some("p_rae"));
+        assert_eq!(held[2].session, None);
+        let listed = serde_json::to_string(&held).unwrap();
+        assert!(!listed.contains(&rae.token), "{listed}");
+
+        assert_eq!(api.revoke_held(None, None).await.unwrap(), 0);
+        assert_eq!(api.revoke_held(None, Some("s1")).await.unwrap(), 2);
+        let now = t.service.now_ms();
+        assert_eq!(
+            tokens::check(&host, "a-one", &rae_agent.token, now).unwrap(),
+            None
+        );
+        assert_eq!(
+            tokens::check(&host, "a-two", &rae_agent_two.token, now).unwrap(),
+            None
+        );
+        assert_eq!(
+            tokens::check(&host, "a-one", &rae.token, now).unwrap(),
+            Some(Access::Write),
+            "the person's own token outlives their agent's session"
+        );
+        assert_eq!(api.revoke_held(Some("p_rae"), None).await.unwrap(), 1);
+        let now = t.service.now_ms();
+        assert_eq!(
+            tokens::check(&host, "a-one", &rae.token, now).unwrap(),
+            None
+        );
+        assert_eq!(
+            tokens::check(&host, "a-one", &owner_agent.token, now).unwrap(),
+            Some(Access::Read)
+        );
+        assert_eq!(
+            tokens::check(&host, "a-one", &owners.token, now).unwrap(),
+            Some(Access::Write)
+        );
+        let left: Vec<String> = api
+            .held()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|h| h.id)
+            .collect();
+        assert_eq!(left, std::slice::from_ref(&owner_agent.id));
+        // An expired token is no longer held.
+        clock.advance(901);
+        assert!(api.held().await.unwrap().is_empty());
+    });
+}
+
+#[test]
 fn a_push_to_main_is_entered_as_its_token_holders_and_the_ledger_keeps_the_newest() {
     let h = local_host();
     let id = |b: u8| clax_git::ObjectId::from_bytes(&[b; 20]).unwrap();

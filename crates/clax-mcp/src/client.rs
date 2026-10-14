@@ -1303,6 +1303,19 @@ impl DaemonClient {
         .await
     }
 
+    /// `POST /api/sessions/<sid>/git-token/<id>` `{scope}`: `{remote, token,
+    /// expires_at, clone_command, jj_clone_command, existing_checkout, …}`.
+    pub async fn git_token(&self, id: &str, scope: &str) -> Result<Value> {
+        self.json(|c| {
+            c.request(
+                reqwest::Method::POST,
+                &format!("{}/git-token/{id}", c.session_path()),
+            )
+            .json(&serde_json::json!({ "scope": scope }))
+        })
+        .await
+    }
+
     /// `DELETE /api/sessions/<sid>/drafts/<id>`: `{ended}`.
     pub async fn delete_draft(&self, id: &str) -> Result<Value> {
         self.json(|c| {
