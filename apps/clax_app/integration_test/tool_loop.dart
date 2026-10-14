@@ -2,8 +2,8 @@
 // WebView, the app's real WebViewInspector rendering each draft (and
 // running its tests), and a scripted agent calling the real tools.
 //
-// Run: `just app-integration`, or from apps/clax_app
-// `flutter test integration_test/tool_loop_test.dart -d macos`; the scratch
+// Run from full_loop_test.dart (one app launch for both: a second test
+// file in one `flutter test -d macos` run fails to launch); the scratch
 // directory is rig.dart's.
 import 'package:clax_app/agent/scripted_backend.dart';
 import 'package:clax_app/agent/timings.dart';
@@ -15,14 +15,12 @@ import 'package:clax_app/ui/inspector_surface.dart';
 import 'package:clax_app/ui/webview_surface.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:integration_test/integration_test.dart';
 
 import 'rig.dart';
 import 'tool_script.dart';
 
-void main() {
-  IntegrationTestWidgetsFlutterBinding.ensureInitialized();
-
+/// Defines the tool loop's test, in the caller's test file.
+void toolLoopTest() {
   testWidgets('make and change an app on the tool loop', (tester) async {
     final runner = RecordingRunner([makeRun, changeRun]);
     final rig = await Rig.create(

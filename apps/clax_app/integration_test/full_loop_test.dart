@@ -19,9 +19,12 @@ import 'package:integration_test/integration_test.dart';
 
 import 'rig.dart';
 import 'script.dart';
+import 'tool_loop.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+
+  toolLoopTest();
 
   testWidgets('make, change, undo and recover on the embedded daemon', (
     tester,
