@@ -1,3 +1,6 @@
+import 'package:clax_app/bundle/exporter.dart' show ExportMode, ExportPlan;
+import 'package:clax_app/bundle/lineage_store.dart';
+import 'package:clax_app/bundle/updater.dart' show CapabilityDelta;
 import 'package:clax_app/clax/models.dart';
 import 'package:clax_app/ui/bundle_sheets.dart';
 import 'package:flutter/material.dart';
@@ -9,6 +12,42 @@ const _app = ArtifactSummary(
   icon: 'leaf',
   currentVersion: 4,
   updatedAt: '2026-10-13T09:00:00Z',
+);
+
+/// An export plan for [_app]: [modes] as the exporter gives them, and an
+/// installed lineage entry by Alex at [had] when given.
+ExportPlan _plan({
+  List<ExportMode> modes = const [ExportMode.own],
+  int version = 3,
+  int files = 4,
+  int bytes = 12345,
+  int docs = 7,
+  bool fits = true,
+  int? had,
+  String name = 'Alex',
+}) => ExportPlan(
+  aid: _app.id,
+  title: _app.title,
+  iconWord: _app.icon,
+  modes: modes,
+  version: version,
+  fileCount: files,
+  fileBytes: bytes,
+  docCount: docs,
+  dataAllowed: fits,
+  modified: modes.contains(ExportMode.fork),
+  entry: had == null
+      ? null
+      : LineageEntry(
+          lineage: 'l_aaaaaaaaaaaaaaaaaaaaaaaaaa',
+          role: LineageRole.installed,
+          key: 'A' * 43,
+          name: name,
+          version: had,
+          released: const ['sha256:x'],
+          capabilities: const {},
+          title: _app.title,
+        ),
 );
 
 const _bundle = BundleSummary(
@@ -76,26 +115,25 @@ void main() {
     test('added capabilities: new ones and new net hosts only', () {
       expect(
         addedCapabilityWords(
-          {
-            'db': {},
-            'net': {
-              'hosts': ['a.example'],
-            },
-          },
-          {
-            'db': {},
-            'camera': {},
-            'net': {
-              'hosts': ['a.example', 'b.example'],
-            },
-          },
+          const CapabilityDelta(capabilities: ['camera'], hosts: ['b.example']),
         ),
         [
           'take photos and pick photos from your library',
           'use the internet: b.example',
         ],
       );
-      expect(addedCapabilityWords({'db': {}}, {'db': {}}), isEmpty);
+      expect(
+        addedCapabilityWords(
+          const CapabilityDelta(capabilities: ['net'], hosts: ['c.example']),
+        ),
+        ['use the internet: c.example'],
+      );
+      expect(
+        addedCapabilityWords(
+          const CapabilityDelta(capabilities: [], hosts: []),
+        ),
+        isEmpty,
+      );
     });
 
     test('refusals in one sentence', () {
@@ -114,7 +152,6 @@ void main() {
         refusalMessage('too_new'),
         'Made by a newer Clax: update Clax to open it.',
       );
-      expect(refusalMessage('invalid_capabilities'), contains('newer Clax'));
     });
 
     test('from whom, and sizes', () {
@@ -129,13 +166,7 @@ void main() {
 
   group('ExportSheet', () {
     ExportSheet own({bool fits = true, bool askName = false}) => ExportSheet(
-      app: _app,
-      mode: ExportMode.own,
-      version: 3,
-      files: 4,
-      bytes: 12345,
-      docs: 7,
-      dataFits: fits,
+      plan: _plan(fits: fits),
       askName: askName,
     );
 
@@ -153,7 +184,7 @@ void main() {
       await tester.tap(find.text('Share'));
       await tester.pumpAndSettle();
       final c = answers.single! as ExportChoice;
-      expect(c.original, isFalse);
+      expect(c.mode, ExportMode.own);
       expect(c.includeData, isFalse);
       expect(c.name, isNull);
     });
@@ -188,16 +219,7 @@ void main() {
     testWidgets('on the Mac it exports', (tester) async {
       await _show(
         tester,
-        const ExportSheet(
-          app: _app,
-          mode: ExportMode.own,
-          version: 1,
-          files: 1,
-          bytes: 10,
-          docs: 0,
-          dataFits: true,
-          toFile: true,
-        ),
+        ExportSheet(plan: _plan(version: 1), toFile: true),
         size: const Size(1200, 800),
       );
       expect(find.byType(Dialog), findsOneWidget);
@@ -210,45 +232,35 @@ void main() {
     ) async {
       final answers = await _show(
         tester,
-        const ExportSheet(
-          app: _app,
-          mode: ExportMode.original,
-          version: 2,
-          originalVersion: 2,
-          author: 'Alex',
-          files: 4,
-          bytes: 100,
-          docs: 9,
-          dataFits: true,
+        ExportSheet(
+          plan: _plan(modes: const [ExportMode.reshare], version: 2, had: 2),
+          askName: true,
         ),
       );
       expect(find.text('Shares Alex’s v2 as you received it.'), findsOneWidget);
       expect(find.byKey(const ValueKey('include-data')), findsNothing);
       await tester.tap(find.text('Share'));
       await tester.pumpAndSettle();
-      expect((answers.single! as ExportChoice).original, isTrue);
+      expect(find.byKey(const ValueKey('export-name')), findsNothing);
+      expect((answers.single! as ExportChoice).mode, ExportMode.reshare);
       expect((answers.single! as ExportChoice).includeData, isFalse);
     });
 
     testWidgets('a modified copy: the original, or mine as a new app', (
       tester,
     ) async {
-      const sheet = ExportSheet(
-        app: _app,
-        mode: ExportMode.modified,
-        version: 1,
-        originalVersion: 2,
-        author: 'Alex',
-        files: 5,
-        bytes: 2000,
-        docs: 3,
-        dataFits: true,
+      final sheet = ExportSheet(
+        plan: _plan(
+          modes: const [ExportMode.reshare, ExportMode.fork],
+          version: 1,
+          had: 2,
+        ),
       );
       var answers = await _show(tester, sheet);
       expect(find.text('Share Alex’s v2'), findsOneWidget);
       await tester.tap(find.text('Share my version as a new app'));
       await tester.pumpAndSettle();
-      expect((answers.single! as ExportChoice).original, isFalse);
+      expect((answers.single! as ExportChoice).mode, ExportMode.fork);
 
       answers = await _show(tester, sheet);
       await tester.tap(find.text('Include my data'));
@@ -256,7 +268,7 @@ void main() {
       await tester.tap(find.text('Share Alex’s v2'));
       await tester.pumpAndSettle();
       final c = answers.single! as ExportChoice;
-      expect(c.original, isTrue);
+      expect(c.mode, ExportMode.reshare);
       expect(c.includeData, isFalse, reason: 'never data in their bundle');
     });
   });
@@ -496,16 +508,16 @@ void main() {
   ) async {
     for (final size in const [Size(320, 568), Size(1280, 800)]) {
       for (final sheet in <Widget>[
-        const ExportSheet(
-          app: _app,
-          mode: ExportMode.modified,
-          version: 1,
-          originalVersion: 12,
-          author: 'Alexandra Longname-Example',
-          files: 40,
-          bytes: 2400000,
-          docs: 300,
-          dataFits: true,
+        ExportSheet(
+          plan: _plan(
+            modes: const [ExportMode.reshare, ExportMode.fork],
+            version: 1,
+            had: 12,
+            name: 'Alexandra Longname-Example',
+            files: 40,
+            bytes: 2400000,
+            docs: 300,
+          ),
           askName: true,
         ),
         const InstallSheet(bundle: _bundle, kind: InstallKind.foreign),

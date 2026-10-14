@@ -4,7 +4,8 @@
 // and look at target/flutter-app/bu/*.png.
 import 'dart:io';
 
-import 'package:clax_app/clax/models.dart';
+import 'package:clax_app/bundle/exporter.dart' show ExportMode, ExportPlan;
+import 'package:clax_app/bundle/lineage_store.dart';
 import 'package:clax_app/ui/bundle_sheets.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:flutter/material.dart';
@@ -29,12 +30,29 @@ Future<void> _fonts() async {
   )..addFont(f('MaterialIcons-Regular.otf'))).load();
 }
 
-const _app = ArtifactSummary(
-  id: 'a_plants',
+ExportPlan _plan(List<ExportMode> modes, int version) => ExportPlan(
+  aid: 'a_plants',
   title: 'Plant log',
-  icon: 'leaf',
-  currentVersion: 4,
-  updatedAt: '2026-10-13T09:00:00Z',
+  iconWord: 'leaf',
+  modes: modes,
+  version: version,
+  fileCount: 5,
+  fileBytes: 20000,
+  docCount: 3,
+  dataAllowed: true,
+  modified: modes.contains(ExportMode.fork),
+  entry: modes.contains(ExportMode.own)
+      ? null
+      : LineageEntry(
+          lineage: 'l_aaaaaaaaaaaaaaaaaaaaaaaaaa',
+          role: LineageRole.installed,
+          key: 'A' * 43,
+          name: 'Alex',
+          version: 2,
+          released: const ['sha256:x'],
+          capabilities: const {},
+          title: 'Plant log',
+        ),
 );
 
 const _bundle = BundleSummary(
@@ -56,26 +74,10 @@ const _bundle = BundleSummary(
 
 void main() {
   final sheets = <String, Widget Function()>{
-    'export': () => const ExportSheet(
-      app: _app,
-      mode: ExportMode.own,
-      version: 3,
-      files: 4,
-      bytes: 12345,
-      docs: 7,
-      dataFits: true,
-      askName: true,
-    ),
-    'export-modified': () => const ExportSheet(
-      app: _app,
-      mode: ExportMode.modified,
-      version: 1,
-      originalVersion: 2,
-      author: 'Alex',
-      files: 5,
-      bytes: 20000,
-      docs: 3,
-      dataFits: true,
+    'export': () =>
+        ExportSheet(plan: _plan(const [ExportMode.own], 3), askName: true),
+    'export-modified': () => ExportSheet(
+      plan: _plan(const [ExportMode.reshare, ExportMode.fork], 1),
     ),
     'install': () =>
         const InstallSheet(bundle: _bundle, kind: InstallKind.install),

@@ -7,20 +7,28 @@
 library;
 
 import 'package:file_picker/file_picker.dart';
+
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../bundle/bundle_reader.dart' show BundleError;
+import '../bundle/exporter.dart';
+import '../bundle/installer.dart' hide OpenedBundle;
+import '../bundle/installer.dart' as svc show OpenedBundle;
+import '../bundle/trust.dart';
+import '../bundle/updater.dart';
 import '../clax/models.dart';
+import '../platform/bundle_key.dart' show keyFingerprint;
 import '../platform/device/device_grants.dart';
-import '../platform/settings_store.dart' show maxAuthorName;
+import '../platform/settings_store.dart';
 import 'app_icon.dart';
 
 /// From this width the sheets show as dialogs.
 const bundleDialogBreakpoint = 600.0;
-
-/// A bundle's MIME type.
-const bundleMime = 'application/vnd.empathic.clax+zip';
 
 /// Shows [sheet] over [context]: a bottom sheet on a phone, a dialog from
 /// [bundleDialogBreakpoint] wide. [dismissible] false keeps it up until
@@ -68,27 +76,15 @@ List<String> capabilityWords(Map<String, Object?> caps) => [
     },
 ];
 
-/// What [next] declares beyond [live], in words: each new top-level
-/// capability, and the `net` hosts [live] does not name.
-List<String> addedCapabilityWords(
-  Map<String, Object?> live,
-  Map<String, Object?> next,
-) {
-  final added = <String, Object?>{
-    for (final MapEntry(:key, :value) in next.entries)
-      if (!live.containsKey(key)) key: value,
-  };
-  final words = capabilityWords(added);
-  if (live.containsKey('net') && next.containsKey('net')) {
-    final had = _hosts(live['net']).toSet();
-    final more = [
-      for (final h in _hosts(next['net']))
-        if (!had.contains(h)) h,
-    ];
-    if (more.isNotEmpty) words.add('use the internet: ${more.join(', ')}');
-  }
-  return words;
-}
+/// What [delta] adds, in words ([UpdateSheet]'s "This version also asks
+/// to").
+List<String> addedCapabilityWords(CapabilityDelta delta) => [
+  ...capabilityWords({
+    for (final c in delta.capabilities)
+      if (c != 'net') c: const <String, Object?>{},
+  }),
+  if (delta.hosts.isNotEmpty) 'use the internet: ${delta.hosts.join(', ')}',
+];
 
 List<String> _hosts(Object? net) => switch (net) {
   {'hosts': final List<Object?> hosts} => [
@@ -98,17 +94,10 @@ List<String> _hosts(Object? net) => switch (net) {
   _ => const [],
 };
 
-/// The sentence a refused bundle shows, by `BundleError` code (and
-/// `invalid_capabilities` from the daemon at install).
-String refusalMessage(String code) => switch (code) {
-  'too_large' => 'This file is too large to be a Clax app.',
-  'not_a_bundle' => "This file isn't a Clax app.",
-  'too_new' => 'Made by a newer Clax: update Clax to open it.',
-  'not_shareable' =>
-    "This app reads other apps' data, so it can't be installed here.",
-  'invalid_capabilities' => 'This app needs a newer Clax.',
-  _ => 'This file is damaged or was changed after it was signed.',
-};
+/// The sentence a file the platform or the reader refused shows, by
+/// `BundleError` code.
+String refusalMessage(String code) =>
+    BundleFailure.fromError(BundleError(code, code)).message;
 
 /// `From <name> · <fingerprint>`, `From <fingerprint>`, or "From you" for
 /// this install's own key.
@@ -272,32 +261,19 @@ class _Bullets extends StatelessWidget {
 
 // ---------------------------------------------------------------- Export
 
-/// What an export sheet offers (§3.1, §3.5).
-enum ExportMode {
-  /// An app this install authors, or one with no lineage yet: version,
-  /// contents and the data switch.
-  own,
-
-  /// An unmodified installed app: its kept original goes as received.
-  original,
-
-  /// A modified installed app: the kept original, or a fork as a new app.
-  modified,
-}
-
 /// The person's choice on an [ExportSheet].
 @immutable
 class ExportChoice {
   const ExportChoice({
-    required this.original,
+    required this.mode,
     required this.includeData,
     this.name,
   });
 
-  /// Send the kept original bundle as received (no data, no new version).
-  final bool original;
+  /// Own, re-share the kept original, or fork.
+  final ExportMode mode;
 
-  /// Include the app's documents as seed data (never with [original]).
+  /// Include the app's documents as seed data (never on a re-share).
   final bool includeData;
 
   /// The name typed on the sheet, to keep in Settings; null when none was
@@ -305,54 +281,29 @@ class ExportChoice {
   final String? name;
 }
 
-/// Share app / Export…: what goes, the data switch (off), and, without a
-/// saved name, a Your name field. Pops an [ExportChoice], or null.
+/// Share app / Export… (§3.1, §3.5) for [plan]: what goes, the data switch
+/// (off), and, without a saved name ([askName]), a Your name field. An
+/// unmodified installed app re-shares its kept original with no switch; a
+/// modified one offers the original or a fork. Pops an [ExportChoice], or
+/// null.
 class ExportSheet extends StatefulWidget {
   const ExportSheet({
     super.key,
-    required this.app,
+    required this.plan,
     this.svg,
-    required this.mode,
-    required this.version,
-    required this.files,
-    required this.bytes,
-    required this.docs,
-    required this.dataFits,
     this.askName = false,
-    this.author,
-    this.originalVersion,
     this.toFile = false,
   });
 
-  final ArtifactSummary app;
+  final ExportPlan plan;
+
+  /// The app's cleaned `icon.svg`, when it has one.
   final String? svg;
-  final ExportMode mode;
-
-  /// The version this export carries (§5.2); 1 for a fork.
-  final int version;
-
-  /// The app's file count and total size.
-  final int files;
-  final int bytes;
-
-  /// The app's document count.
-  final int docs;
-
-  /// Whether [docs] fit the seed caps (§4.3); else the switch is off and
-  /// says "Too much data to include".
-  final bool dataFits;
 
   /// Shows the Your name field (Settings has none).
   final bool askName;
 
-  /// The original's author as shown (name, else fingerprint), for
-  /// [ExportMode.original] and [ExportMode.modified].
-  final String? author;
-
-  /// The kept original's version.
-  final int? originalVersion;
-
-  /// The Mac's wording: Export… to a file, rather than Share.
+  /// The Mac's wording: Export to a file, rather than Share.
   final bool toFile;
 
   @override
@@ -371,78 +322,78 @@ class _ExportSheetState extends State<ExportSheet> {
 
   String get _verb => widget.toFile ? 'Export' : 'Share';
 
-  void _done({required bool original}) {
+  void _done(ExportMode mode) {
     final typed = _name.text.trim();
+    final reshare = mode == ExportMode.reshare;
     Navigator.of(context).pop(
       ExportChoice(
-        original: original,
-        includeData: !original && _data && widget.dataFits,
-        name: widget.askName && typed.isNotEmpty ? typed : null,
+        mode: mode,
+        includeData: !reshare && _data && widget.plan.dataAllowed,
+        name: !reshare && widget.askName && typed.isNotEmpty ? typed : null,
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final w = widget;
+    final p = widget.plan;
     final face = BundleFace(
-      seed: w.app.id,
-      title: w.app.title,
-      word: w.app.icon,
-      svg: w.svg,
+      seed: p.aid,
+      title: p.title,
+      word: p.iconWord,
+      svg: widget.svg,
     );
     final cancel = TextButton(
       onPressed: () => Navigator.of(context).pop(),
       child: const Text('Cancel'),
     );
-    final what = '${_count(w.files, 'file')}, ${byteSize(w.bytes)}';
-    if (w.mode == ExportMode.original) {
+    final what = '${_count(p.fileCount, 'file')}, ${byteSize(p.fileBytes)}';
+    final author = switch (p.entry) {
+      final e? => e.name ?? keyFingerprint(e.key) ?? 'its author',
+      null => 'its author',
+    };
+    final original = p.entry?.version ?? p.version;
+    if (!p.modes.contains(ExportMode.own) &&
+        !p.modes.contains(ExportMode.fork)) {
       return _Frame(
         face: face,
-        title: w.app.title,
-        subtitle: 'v${w.originalVersion ?? w.version}',
-        body: [
-          _Para(
-            'Shares ${w.author}’s v${w.originalVersion ?? w.version} '
-            'as you received it.',
-          ),
-        ],
+        title: p.title,
+        subtitle: 'v$original',
+        body: [_Para('Shares $author’s v$original as you received it.')],
         actions: [
           cancel,
           FilledButton(
             key: const ValueKey('export-original'),
-            onPressed: () => _done(original: true),
+            onPressed: () => _done(ExportMode.reshare),
             child: Text(_verb),
           ),
         ],
       );
     }
-    final modified = w.mode == ExportMode.modified;
+    final fork = p.modes.contains(ExportMode.fork);
     return _Frame(
       face: face,
-      title: w.app.title,
-      subtitle: modified ? null : 'v${w.version} · $what',
+      title: p.title,
+      subtitle: fork ? null : 'v${p.version} · $what',
       body: [
-        if (modified) ...[
+        if (fork)
           _Para(
-            'You changed ${w.app.title} since ${w.author}’s '
-            'v${w.originalVersion}. Share theirs as you received it, or '
-            'yours as a new app ($what).',
+            'You changed ${p.title} since $author’s v$original. Share '
+            'theirs as you received it, or yours as a new app ($what).',
           ),
-        ],
         SwitchListTile(
           key: const ValueKey('include-data'),
           contentPadding: EdgeInsets.zero,
           title: const Text('Include my data'),
           subtitle: Text(
-            w.dataFits
-                ? _count(w.docs, 'document')
+            p.dataAllowed
+                ? _count(p.docCount, 'document')
                 : 'Too much data to include',
           ),
-          value: _data && w.dataFits,
-          onChanged: w.dataFits ? (v) => setState(() => _data = v) : null,
+          value: _data && p.dataAllowed,
+          onChanged: p.dataAllowed ? (v) => setState(() => _data = v) : null,
         ),
-        if (w.askName)
+        if (widget.askName)
           TextField(
             key: const ValueKey('export-name'),
             controller: _name,
@@ -457,21 +408,21 @@ class _ExportSheetState extends State<ExportSheet> {
       ],
       actions: [
         cancel,
-        if (modified) ...[
+        if (fork) ...[
           OutlinedButton(
             key: const ValueKey('export-original'),
-            onPressed: () => _done(original: true),
-            child: Text('$_verb ${w.author}’s v${w.originalVersion}'),
+            onPressed: () => _done(ExportMode.reshare),
+            child: Text('$_verb $author’s v$original'),
           ),
           FilledButton(
             key: const ValueKey('export-fork'),
-            onPressed: () => _done(original: false),
+            onPressed: () => _done(ExportMode.fork),
             child: Text('$_verb my version as a new app'),
           ),
         ] else
           FilledButton(
             key: const ValueKey('export-own'),
-            onPressed: () => _done(original: false),
+            onPressed: () => _done(ExportMode.own),
             child: Text(_verb),
           ),
       ],
@@ -529,6 +480,23 @@ class BundleSummary {
 
   /// The seed's document count, when it has one.
   final int? seedDocs;
+
+  /// What [opened] shows.
+  factory BundleSummary.of(svc.OpenedBundle opened) {
+    final m = opened.manifest;
+    return BundleSummary(
+      lineage: m.lineage,
+      title: m.title,
+      version: m.version,
+      fingerprint: opened.fingerprint,
+      name: m.author.name,
+      capabilities: m.capabilities,
+      word: m.icon.word,
+      svg: opened.bundle.iconSvg,
+      own: opened.fromSelf,
+      seedDocs: m.seed?.docs,
+    );
+  }
 
   /// The author as a sentence's subject: the name, else the fingerprint.
   String get author => name ?? fingerprint;
@@ -983,3 +951,343 @@ class PluginBundleFiles implements BundleFiles {
     return f?.readAsBytes();
   }
 }
+
+// ----------------------------------------------------------------- Flows
+
+/// The flows of §3 over the bundle services: Share app / Export…, Import
+/// app…, and a `.clax` file opened from outside, each through its sheets
+/// over the screen up at the time.
+class BundleFlows {
+  BundleFlows({
+    required this.exporter,
+    required this.installer,
+    required this.updater,
+    required this.files,
+    required this.settings,
+    required this.open,
+    this.toFile = false,
+  });
+
+  final Exporter exporter;
+  final Installer installer;
+
+  /// Null where nothing can check an update (no inspector): updates are
+  /// then refused with a sentence.
+  final Updater? updater;
+  final BundleFiles files;
+
+  /// Where the author's name is read and, when typed on the export sheet,
+  /// kept.
+  final SettingsStore settings;
+
+  /// Opens app [aid].
+  final void Function(String aid) open;
+
+  /// The Mac's Export… to a file, rather than the share sheet.
+  final bool toFile;
+
+  /// The label of the share action: "Share app", or "Export…" on the Mac.
+  String get shareLabel => toFile ? 'Export…' : 'Share app';
+
+  /// Shares (or exports) app [aid]: the export sheet, the build, then the
+  /// share sheet or the save panel.
+  Future<void> share(BuildContext context, String aid, {String? svg}) async {
+    final ExportPlan plan;
+    try {
+      plan = await exporter.plan(aid);
+    } on Object catch (e) {
+      if (!context.mounted) return;
+      await _fail(context, "Couldn't read this app to share it.", ['$e']);
+      return;
+    }
+    if (!context.mounted) return;
+    final saved = await settings.load();
+    if (!context.mounted) return;
+    final choice = await showBundleSheet<ExportChoice>(
+      context,
+      ExportSheet(
+        plan: plan,
+        svg: svg,
+        askName: saved.authorName == null,
+        toFile: toFile,
+      ),
+    );
+    if (choice == null || !context.mounted) return;
+    var name = saved.authorName;
+    if (choice.name case final typed?) {
+      final s = await settings.load();
+      s.authorName = cleanAuthorName(typed);
+      await settings.save(s);
+      name = s.authorName;
+    }
+    if (!context.mounted) return;
+    final built = await _working(
+      context,
+      BundleWorking('Making ${plan.title}’s file…'),
+      () => exporter.export(
+        aid,
+        mode: choice.mode,
+        includeData: choice.includeData,
+        authorName: name,
+      ),
+    );
+    if (built == null) return;
+    try {
+      await files.send(built.fileName, built.bytes);
+    } on Object catch (e) {
+      if (!context.mounted) return;
+      await _fail(
+        context,
+        toFile ? "Couldn't save the file." : "Couldn't share the file.",
+        ['$e'],
+      );
+    }
+  }
+
+  /// Import app…: a file the person picks, opened as [openBytes] does.
+  Future<void> importPicked(BuildContext context) async {
+    final Uint8List? bytes;
+    try {
+      bytes = await files.pick();
+    } on Object catch (e) {
+      if (!context.mounted) return;
+      await _fail(context, "Couldn't read that file.", ['$e']);
+      return;
+    }
+    if (bytes == null || !context.mounted) return;
+    await openBytes(context, bytes);
+  }
+
+  /// A file the platform handed over (`BundleIntake`): its [path], read
+  /// and, when [delete] (Android's own cache copy), deleted; or a
+  /// [refused] code.
+  Future<void> openFile(
+    BuildContext context, {
+    String? path,
+    String? refused,
+    bool delete = false,
+  }) async {
+    if (refused != null) {
+      await showBundleSheet<bool>(context, BundleNoticeSheet.refused(refused));
+      return;
+    }
+    if (path == null) return;
+    Uint8List? bytes;
+    var code = 'not_a_bundle';
+    try {
+      final f = File(path);
+      if (f.lengthSync() > maxBundleFileBytes) {
+        code = 'too_large';
+      } else {
+        bytes = f.readAsBytesSync();
+      }
+    } on FileSystemException {
+      // Unreadable: not a bundle.
+    } finally {
+      if (delete) {
+        try {
+          File(path).deleteSync();
+        } on FileSystemException {
+          // Already gone.
+        }
+      }
+    }
+    if (!context.mounted) return;
+    if (bytes == null) {
+      await showBundleSheet<bool>(context, BundleNoticeSheet.refused(code));
+      return;
+    }
+    await openBytes(context, bytes);
+  }
+
+  /// Opens a `.clax` file's [bytes] (§3.2–3.5): read, verified and
+  /// decided, then the sheet the decision picks.
+  Future<void> openBytes(BuildContext context, Uint8List bytes) async {
+    final svc.OpenedBundle opened;
+    try {
+      opened = await installer.open(bytes);
+    } on BundleFailure catch (e) {
+      if (!context.mounted) return;
+      await showBundleSheet<bool>(
+        context,
+        BundleNoticeSheet(title: "Couldn't open this file", message: e.message),
+      );
+      return;
+    }
+    if (!context.mounted) return;
+    final m = opened.manifest;
+    final d = opened.decision;
+    final have = d.entry?.version ?? 0;
+    switch (d.answer) {
+      case TrustAnswer.own || TrustAnswer.current:
+        final go = await showBundleSheet<bool>(
+          context,
+          d.answer == TrustAnswer.own
+              ? BundleNoticeSheet.own(m.title)
+              : BundleNoticeSheet.current(m.title, m.version),
+        );
+        if (go == true && d.aid != null) open(d.aid!);
+      case TrustAnswer.conflict:
+        await showBundleSheet<bool>(
+          context,
+          BundleNoticeSheet.conflict(m.title, m.version),
+        );
+      case TrustAnswer.older:
+        await showBundleSheet<bool>(
+          context,
+          BundleNoticeSheet.older(m.title, m.version, have),
+        );
+      case TrustAnswer.install || TrustAnswer.foreign || TrustAnswer.forked:
+        final ok = await showBundleSheet<bool>(
+          context,
+          InstallSheet(
+            bundle: BundleSummary.of(opened),
+            kind: switch (d.answer) {
+              TrustAnswer.foreign => InstallKind.foreign,
+              TrustAnswer.forked => InstallKind.forked,
+              _ => InstallKind.install,
+            },
+          ),
+        );
+        if (ok != true || !context.mounted) return;
+        final aid = await _working(
+          context,
+          BundleWorking('Installing ${m.title}…'),
+          () => installer.install(opened),
+        );
+        if (aid != null) open(aid);
+      case TrustAnswer.update:
+        await _update(context, opened, have);
+    }
+  }
+
+  Future<void> _update(
+    BuildContext context,
+    svc.OpenedBundle opened,
+    int have,
+  ) async {
+    final m = opened.manifest;
+    final d = opened.decision;
+    final aid = d.aid!;
+    final choice = await showBundleSheet<UpdateChoice>(
+      context,
+      UpdateSheet(
+        bundle: BundleSummary.of(opened),
+        have: have,
+        added: addedCapabilityWords(
+          addedCapabilities(
+            opened.live?.capabilities ?? d.entry?.capabilities ?? const {},
+            m.capabilities,
+          ),
+        ),
+        modified: d.modified,
+        stoppedAt: d.stopped
+            ? (d.entry?.stoppedAt ?? DateTime.fromMillisecondsSinceEpoch(0))
+            : null,
+      ),
+    );
+    if (choice == null || !context.mounted) return;
+    final u = updater;
+    if (choice == UpdateChoice.keepMine) {
+      await (u?.keepMine(aid) ?? Future<void>.value());
+      return;
+    }
+    if (u == null) {
+      await _fail(context, 'Updates cannot be checked here.', const []);
+      return;
+    }
+    final checking = 'Checking v${m.version} against your data…';
+    final progress = ValueNotifier<BundleProgress>(BundleWorking(checking));
+    final shown = showBundleSheet<bool>(
+      context,
+      BundleProgressSheet(progress: progress),
+      dismissible: false,
+    );
+    final outcome = await u.update(
+      aid,
+      opened.bundle,
+      onStep: (s) =>
+          progress.value = BundleWorking(checking, updateStepLabel(s)),
+    );
+    progress.value = switch (outcome) {
+      UpdateLanded(:final version, :final truncated) => BundlePassed(
+        'Updated to v$version',
+        note: truncated ? 'Checked against part of your data' : null,
+      ),
+      UpdateCheckFailed(:final reason, :final details) => updateCheckFailed(
+        m.version,
+        reason,
+        details: details,
+      ),
+      UpdateRefused(:final message, :final details) => BundleFailed(
+        message,
+        details: details,
+      ),
+      UpdateRolledBack(:final backOn, :final details, :final restored) =>
+        BundleFailed(
+          restored
+              ? "The update's data step failed on your data; ${m.title} is "
+                    'back on v$backOn with your data as it was.'
+              : "The update's data step failed on your data, and putting "
+                    '${m.title} back did not finish. Clax tries again at '
+                    'its next start.',
+          details: details,
+        ),
+    };
+    if (await shown == true) open(aid);
+  }
+
+  /// Runs [work] under a progress sheet that starts at [first]; on success
+  /// takes the sheet down and returns the result, on a failure shows it
+  /// and returns null.
+  Future<T?> _working<T>(
+    BuildContext context,
+    BundleWorking first,
+    Future<T> Function() work,
+  ) async {
+    final progress = ValueNotifier<BundleProgress>(first);
+    final nav = Navigator.of(context);
+    var up = true;
+    final shown = showBundleSheet<bool>(
+      context,
+      BundleProgressSheet(progress: progress),
+      dismissible: false,
+    ).whenComplete(() => up = false);
+    try {
+      final r = await work();
+      if (up) nav.pop();
+      await shown;
+      return r;
+    } on BundleFailure catch (e) {
+      progress.value = BundleFailed(e.message, details: e.details);
+    } on Object catch (e) {
+      progress.value = BundleFailed('Something went wrong.', details: ['$e']);
+    }
+    await shown;
+    return null;
+  }
+
+  Future<void> _fail(
+    BuildContext context,
+    String message,
+    List<String> details,
+  ) => showBundleSheet<bool>(
+    context,
+    BundleProgressSheet(
+      progress: ValueNotifier(BundleFailed(message, details: details)),
+    ),
+  );
+}
+
+/// At most this many bytes in a `.clax` file read from a path (§6.1).
+const maxBundleFileBytes = 32 * 1024 * 1024;
+
+/// An update step as the checking sheet names it.
+String updateStepLabel(UpdateStep s) => switch (s) {
+  UpdateStep.data => 'Copying your data',
+  UpdateStep.migrate => 'Upgrading the copy of your data',
+  UpdateStep.page => 'Loading the page',
+  UpdateStep.tests => 'Running its tests',
+  UpdateStep.publish => 'Publishing',
+  UpdateStep.liveMigrate => 'Upgrading your data',
+};
