@@ -46,6 +46,9 @@
 //! - `GET /do/{name}/ws`: a WebSocket; each text message is stored as a note
 //!   and answered with its row ID and the note count.
 //!
+//! The Worker also hands `/git/<repo>.git/…` and `/_dev/repos/…` to
+//! [`repos`] (artifact repositories, their tokens and assets).
+//!
 //! Build and run from this directory: `npm install`, then `npm run dev`
 //! (`wrangler dev --local --persist-to .wrangler/state`, which runs
 //! `build.sh`; build the web UI first with `scripts/build-web.sh`); `npm
@@ -54,8 +57,8 @@
 //! checks the spike's routes under `wrangler dev --local` across a restart,
 //! and `npm run e2e` (`e2e.mjs`) the Clax instance in two browsers.
 
-mod content;
 mod instance;
+pub mod repos;
 mod store;
 
 use std::rc::Rc;
@@ -76,33 +79,45 @@ use worker::{
 };
 
 pub use crate::instance::InstanceDo;
+
+/// The web UI's static assets (`assets.binding` in `wrangler.jsonc`); the
+/// `ASSETS` name is the artifact assets' R2 bucket ([`repos::worker`]).
+const WEB_BINDING: &str = "WEB";
 use crate::store::DoPageStore;
 
-/// The Worker (see the crate docs).
+/// The Worker (see the crate docs). It takes the runtime's `Request` as
+/// it is, so a body it reads or forwards is the runtime's own stream (an
+/// `HttpRequest`'s is re-wrapped in a stream this module serves, and
+/// reading or cancelling that one throws past wasm-bindgen).
 #[event(fetch)]
-async fn fetch(req: HttpRequest, env: Env, _ctx: worker::Context) -> Result<HttpResponse> {
+async fn fetch(req: Request, env: Env, _ctx: worker::Context) -> Result<Response> {
     console_error_panic_hook::set_once();
-    let path = req.uri().path().to_owned();
+    let path = req.path();
+    #[cfg(target_arch = "wasm32")]
+    if path.starts_with("/git/") {
+        return repos::worker::forward_git(&env, req).await;
+    }
+    #[cfg(target_arch = "wasm32")]
+    if path.starts_with("/_dev/repos/") {
+        return repos::worker::dev_route(&env, req).await;
+    }
     // The spike's routes write to its objects unauthenticated: tests only.
     let spike = env
         .var("CLAX_TEST_ROUTES")
         .is_ok_and(|v| v.to_string() == "1");
     if let Some(rest) = path.strip_prefix("/do/").filter(|_| spike) {
         let Some(name) = rest.split('/').next().filter(|n| !n.is_empty()) else {
-            return Ok(http_text(404, "routes live under /do/{name}/"));
+            let headers = worker::Headers::new();
+            headers.set("x-clax-error", "routes live under /do/{name}/")?;
+            return Ok(Response::empty()?.with_status(404).with_headers(headers));
         };
         let stub = env.durable_object("CLAX_DB")?.get_by_name(name)?;
-        let res = stub.fetch_with_request(Request::try_from(req)?).await?;
-        return HttpResponse::try_from(res);
+        return stub.fetch_with_request(req).await;
     }
-    let host = req
-        .headers()
-        .get(header::HOST)
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-    let app_host = clax_server::host::artifact_host(host).is_none();
+    let host = req.headers().get("host")?.unwrap_or_default();
+    let app_host = clax_server::host::artifact_host(&host).is_none();
     if let Some(res) = static_asset(&env, &path, app_host).await? {
-        return Ok(res);
+        return Response::try_from(res);
     }
     let name = env
         .var("CLAX_INSTANCE")
@@ -111,8 +126,7 @@ async fn fetch(req: HttpRequest, env: Env, _ctx: worker::Context) -> Result<Http
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| "default".to_string());
     let stub = env.durable_object("CLAX_INSTANCE_DO")?.get_by_name(&name)?;
-    let res = stub.fetch_with_request(Request::try_from(req)?).await?;
-    HttpResponse::try_from(res)
+    stub.fetch_with_request(req).await
 }
 
 /// The web UI's file for `path` from the static assets, with the headers
@@ -133,7 +147,7 @@ async fn static_asset(env: &Env, path: &str, app_host: bool) -> Result<Option<Ht
             _ => return Ok(None),
         },
     };
-    let Ok(assets) = env.assets("ASSETS") else {
+    let Ok(assets) = env.assets(WEB_BINDING) else {
         return Ok(None);
     };
     let mut res = assets
@@ -164,14 +178,6 @@ async fn static_asset(env: &Env, path: &str, app_host: bool) -> Result<Option<Ht
         );
     }
     Ok(Some(res))
-}
-
-fn http_text(status: u16, body: &str) -> HttpResponse {
-    let mut res = HttpResponse::new(worker::Body::empty());
-    *res.status_mut() = StatusCode::from_u16(status).unwrap_or(StatusCode::NOT_FOUND);
-    res.headers_mut()
-        .insert("x-clax-error", body.parse().expect("an ASCII message"));
-    res
 }
 
 /// Durable Objects this isolate has constructed, to tell a warm object from

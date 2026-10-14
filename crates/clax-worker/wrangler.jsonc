@@ -13,7 +13,7 @@
   // the daemon's headers and hands everything else to the instance.
   "assets": {
     "directory": "../../web/dist",
-    "binding": "ASSETS",
+    "binding": "WEB",
     "html_handling": "none",
     "not_found_handling": "none",
     "run_worker_first": true
@@ -23,26 +23,45 @@
     "bindings": [
       { "name": "CLAX_DB", "class_name": "ClaxDb" },
       // One Clax instance per object, named by CLAX_INSTANCE.
-      { "name": "CLAX_INSTANCE_DO", "class_name": "InstanceDo" }
+      { "name": "CLAX_INSTANCE_DO", "class_name": "InstanceDo" },
+      // Git repositories when REPO_STORE is "memory", and the repository
+      // token ledger (src/repos/).
+      { "name": "REPO", "class_name": "RepoDO" }
     ]
   },
   // SQLite-backed storage: synchronous ctx.storage.sql and transactionSync.
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["ClaxDb"] },
-    { "tag": "v2", "new_sqlite_classes": ["InstanceDo"] }
+    { "tag": "v2", "new_sqlite_classes": ["InstanceDo"] },
+    { "tag": "v3", "new_sqlite_classes": ["RepoDO"] }
   ],
+
+  // Artifact assets, in both REPO_STORE modes (src/repos/assets.rs).
+  // `wrangler dev --local` simulates the bucket in its --persist-to state.
+  "r2_buckets": [{ "binding": "ASSETS", "bucket_name": "clax-assets" }],
+
+  // Cloudflare Artifacts, used only when REPO_STORE is "artifacts". It has
+  // no local simulator: under `wrangler dev --local` every call on the
+  // binding throws.
+  "artifacts": [{ "binding": "ARTIFACTS", "namespace": "clax" }],
 
   "vars": {
     // The instance's object; empty means "default".
     "CLAX_INSTANCE": "",
-    // Where artifact content is kept: "storage" (the object's SQL storage,
-    // the default) or "memory" (lost with the isolate).
-    "CLAX_CONTENT": "",
-    // The base of the URLs the server writes into results; empty means
-    // http://localhost.
+    // Where artifact versions are kept: "memory", the RepoDO stand-in (git
+    // repositories in its storage); deploys set "artifacts". Assets are in
+    // the ASSETS bucket either way.
+    "REPO_STORE": "memory",
+    // "0" stops serving the stand-in over git smart HTTP at /git/*.
+    "GIT_SMART_HTTP": "1",
+    // The base of the URLs the server writes into results, and the origin
+    // the stand-in's remotes are built on; empty means http://localhost for
+    // the server and the origin each token request came to for remotes.
     "PUBLIC_ORIGIN": "",
-    // "1" turns on the test routes (POST /_worker/hibernate).
-    "CLAX_TEST_ROUTES": "0"
+    // "1" turns on the test routes (POST /_worker/hibernate, /do/*).
+    "CLAX_TEST_ROUTES": "0",
+    // "1" serves /_dev/repos/* (test-repos.mjs passes it with --var).
+    "REPO_DEV_ROUTES": "0"
   }
   // CLAX_TOKEN, the owner's bearer token, is a secret: `wrangler secret put
   // CLAX_TOKEN` for a deploy, `.dev.vars` or `--var CLAX_TOKEN:<value>` for

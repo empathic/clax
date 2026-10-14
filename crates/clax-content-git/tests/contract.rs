@@ -34,3 +34,16 @@ fn the_store_is_a_shareable_content_store() {
         });
     });
 }
+
+/// A store over hosts whose I/O completes when polled needs no executor;
+/// one marked as needing one says so, so the store's synchronous methods
+/// refuse it before doing anything.
+#[test]
+fn a_store_needs_an_executor_only_when_marked() {
+    use clax_core::content::ContentStore;
+    let plain = MemGitContent::in_memory(committer(), clock());
+    assert!(!plain.needs_executor());
+    let marked = MemGitContent::in_memory(committer(), clock()).needing_executor();
+    assert!(marked.needs_executor());
+    wait(contract::run(&marked));
+}

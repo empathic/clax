@@ -3,8 +3,12 @@
 //!
 //! The object opens the instance's database in its own storage through the
 //! `clax-do-vfs` VFS (`Store::open_on`, one connection, every store job
-//! inline), keeps artifact content where [`crate::content`] says, builds the
-//! server's state and router once (`AppState::assemble`), and answers every
+//! inline), keeps artifact content in git through the content store
+//! `REPO_STORE` names (`crate::repos::worker::content_store`: versions in
+//! `RepoDO`'s stand-in or Cloudflare Artifacts, assets in the `ASSETS`
+//! bucket), made once per object and kept across the test route's
+//! rebuilds, builds the server's state and router once
+//! (`AppState::assemble`), and answers every
 //! request by calling the router. No request reaches it over a connection
 //! of the owner's machine: `clax_server::auth::conn_of` is `None` on wasm32,
 //! so it serves with the daemon's rules for a request from another machine
@@ -57,6 +61,7 @@ use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
+use clax_core::content::ContentStore;
 use clax_core::{Home, Store};
 use clax_server::AppState;
 use clax_server::identity::SocketCredentials;
@@ -71,6 +76,20 @@ use worker::{
 };
 
 use crate::store::{DoPageStore, run};
+
+/// The instance's content store (see the module docs).
+#[cfg(target_arch = "wasm32")]
+fn content_store(env: &Env) -> Result<Arc<dyn ContentStore>> {
+    crate::repos::worker::content_store(env)
+}
+
+/// The content store's bindings exist only in a Worker.
+#[cfg(not(target_arch = "wasm32"))]
+fn content_store(_env: &Env) -> Result<Arc<dyn ContentStore>> {
+    Err(worker::Error::RustError(
+        "an instance's content store is a Worker's (wasm32)".into(),
+    ))
+}
 
 /// The database file's name in the object's storage.
 const DB_FILE: &str = "clax.db";
@@ -112,6 +131,8 @@ struct Instance {
 pub struct InstanceDo {
     state: State,
     env: Env,
+    /// The content store, made once per object.
+    content: std::result::Result<Arc<dyn ContentStore>, String>,
     inner: RefCell<std::result::Result<Rc<Instance>, String>>,
     /// Whether the sockets the object found at its start have streams.
     revived: Cell<bool>,
@@ -178,12 +199,16 @@ fn owner_token(state: &State, env: &Env) -> Result<String> {
 }
 
 impl Instance {
-    fn build(state: &State, env: &Env) -> Result<Rc<Instance>> {
+    fn build(
+        state: &State,
+        env: &Env,
+        content: &std::result::Result<Arc<dyn ContentStore>, String>,
+    ) -> Result<Rc<Instance>> {
+        let content = content.clone().map_err(worker::Error::RustError)?;
         let pages = Rc::new(DoPageStore::new(state.storage())?);
         let (conn, db) = clax_do_vfs::open(DB_FILE, pages)
             .map_err(rust_err)?
             .into_parts();
-        let content = crate::content::content_store(state, &var(env, "CLAX_CONTENT"))?;
         let home = Home::at("/clax".into());
         let clock: Arc<dyn clax_core::working::Clock> = Arc::new(clax_core::working::SystemClock);
         let store =
@@ -439,7 +464,7 @@ impl InstanceDo {
                 &serde_json::json!({ "alarm": alarm, "now": now_ms() as i64 }),
             ));
         }
-        let fresh = match Instance::build(&self.state, &self.env) {
+        let fresh = match Instance::build(&self.state, &self.env, &self.content) {
             Ok(i) => i,
             Err(e) => return Some(Response::error(e.to_string(), 500)),
         };
@@ -460,10 +485,12 @@ impl DurableObject for InstanceDo {
         if let Ok(pair) = worker::worker_sys::WebSocketRequestResponsePair::new("ping", "pong") {
             state.set_websocket_auto_response(&pair);
         }
-        let inner = Instance::build(&state, &env).map_err(|e| e.to_string());
+        let content = content_store(&env).map_err(|e| e.to_string());
+        let inner = Instance::build(&state, &env, &content).map_err(|e| e.to_string());
         InstanceDo {
             state,
             env,
+            content,
             inner: RefCell::new(inner),
             revived: Cell::new(false),
             alarm: Cell::new(None),
