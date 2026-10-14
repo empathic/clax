@@ -1,0 +1,32 @@
+[
+  {
+    "id": "habits",
+    "request": "A habit tracker. I want to add habits like 'read 20 minutes' or 'no sugar', tick them off each day, see my current and best streak for each, and a chart of how many I completed per day over the last month. Remind me every evening at 9 to check in.",
+    "covers": ["kit", "db", "charts", "notify"],
+    "desktop": "notify: reminders are scheduled through the Flutter host, which the harness's inspect view does not provide, so reminder calls are unavailable on the desktop harness."
+  },
+  {
+    "id": "split",
+    "request": "Split expenses with friends on a trip. Add people, log who paid what and who it was for, in any currency, convert to a home currency with live exchange rates, and show who owes whom with the fewest payments to settle up.",
+    "covers": ["kit", "db", "net"],
+    "desktop": "net: the agent's renders run in a draft that has no net grant, so rates fail there (as on the phone); the harness grants the published app's declared hosts before its final screenshots."
+  },
+  {
+    "id": "recipes",
+    "request": "A recipe box. Save recipes with a photo I take of the dish, ingredients and steps, tag them (dinner, baking, quick), search them, and pick a few recipes to build a combined shopping list I can tick off in the shop and share with my partner.",
+    "covers": ["kit", "db", "camera", "share"],
+    "desktop": "camera and share: no device host in the harness, so camera.take() and share calls are unavailable; the app must degrade (no photo) and the screenshots show its fallback."
+  },
+  {
+    "id": "workouts",
+    "request": "A workout log. Log sessions with exercises, sets, reps and weight, keep templates for my usual routines, and show weekly totals (volume, sessions, minutes) with charts comparing weeks and my best lift per exercise.",
+    "covers": ["kit", "db", "charts", "dates"],
+    "desktop": "none: everything it needs runs in the WebView."
+  },
+  {
+    "id": "reading",
+    "request": "A reading list. Track books I want to read, am reading and finished, with notes per book. Use AI to summarise my notes on a book into key takeaways and to suggest what to read next from what I liked.",
+    "covers": ["kit", "db", "sample"],
+    "desktop": "sample: the agent's renders run in a draft with no AI grant (as on the phone); the harness grants the published app AI before its final screenshots, which then spend the key (Haiku 5.5, capped at $0.50 a day per app by the daemon)."
+  }
+]
