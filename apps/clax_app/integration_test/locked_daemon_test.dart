@@ -16,6 +16,7 @@ import 'package:clax_app/daemon/ports.dart';
 import 'package:clax_app/daemon/process.dart';
 import 'package:clax_app/daemon/supervisor.dart';
 import 'package:clax_app/ui/app_screen.dart';
+import 'package:clax_app/ui/daemon_cookie.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/webview_surface.dart';
 import 'package:flutter/widgets.dart';
@@ -72,7 +73,10 @@ void main() {
     await res.drain<void>();
     expect(res.statusCode, 401);
 
-    final surface = WebViewAppSurface(base: ep.base, token: () => ep.token);
+    final surface = WebViewAppSurface(
+      base: ep.base,
+      keyCookie: DaemonKeyCookie(token: () => ep.token),
+    );
     addTearDown(surface.dispose);
     final ready = Completer<Ready>();
     final sub = surface.messages.listen((m) {

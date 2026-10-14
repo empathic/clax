@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../clax/api.dart';
+import 'daemon_cookie.dart';
 
 /// From this width the question shows as a dialog rather than a bottom
 /// sheet.
@@ -41,10 +42,16 @@ abstract interface class QuestionPage {
 
 /// [QuestionPage] over a platform WebView: JavaScript on (the shell is a
 /// script), and the top level held to the daemon's inbox
-/// ([questionPageAllows]); frames inside the page navigate freely.
+/// ([questionPageAllows]); frames inside the page navigate freely. With
+/// [keyCookie], each load first awaits the daemon's key cookie, and a
+/// loaded page loads again on a daemon restart ([CookieLoads] with
+/// `followRestarts`), whose new token its old one no longer matches.
 class WebViewQuestionPage implements QuestionPage {
-  WebViewQuestionPage({required this.base, WebViewController? controller})
-    : controller = controller ?? WebViewController() {
+  WebViewQuestionPage({
+    required this.base,
+    this.keyCookie,
+    WebViewController? controller,
+  }) : controller = controller ?? WebViewController() {
     this.controller
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setNavigationDelegate(
@@ -55,20 +62,32 @@ class WebViewQuestionPage implements QuestionPage {
               : NavigationDecision.prevent,
         ),
       );
+    _loads = CookieLoads(
+      keyCookie,
+      base,
+      load: this.controller.loadRequest,
+      reload: this.controller.reload,
+      followRestarts: true,
+    );
   }
 
   /// The daemon's base URL (`http://127.0.0.1:<port>`).
   final Uri base;
   final WebViewController controller;
 
+  /// The daemon's key cookie; none for a daemon without
+  /// `--require-credential`.
+  final DaemonKeyCookie? keyCookie;
+  late final CookieLoads _loads;
+
   @override
   Widget build(BuildContext context) => WebViewWidget(controller: controller);
 
   @override
-  Future<void> load(Uri url) => controller.loadRequest(url);
+  Future<void> load(Uri url) => _loads.load(url);
 
   @override
-  void dispose() {}
+  void dispose() => _loads.dispose();
 }
 
 /// Shows question [questionId] of the daemon at [base] in the shell's
