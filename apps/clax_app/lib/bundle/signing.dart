@@ -77,128 +77,85 @@ Future<bool> verifyManifest(
   return verifyStrict(signingInput(manifestBytes), sig, key);
 }
 
-/// Strict Ed25519 verification of [signature] by [publicKey] over
-/// [message] (RFC 8032 §5.1.7, cofactorless): both point encodings
-/// canonical, `S` below the group order, the key not of small order (unless
-/// [allowSmallOrderKey], for tests of the equation alone), and
-/// `[S]B - [h]A` re-encoded byte for byte equal to `R`, so a point that
-/// differs from `R` in any coordinate fails.
-bool verifyStrict(
+/// Ed25519 verification of [signature] by [publicKey] over [message]:
+/// a key of small order ([hasSmallOrder]) or an `S` at or above the group
+/// order fails at once, then the `cryptography` package verifies (which
+/// also refuses non-canonical point encodings).
+Future<bool> verifyStrict(
   List<int> message,
   List<int> signature,
-  List<int> publicKey, {
-  bool allowSmallOrderKey = false,
-}) {
+  List<int> publicKey,
+) async {
   if (signature.length != 64 || publicKey.length != 32) return false;
-  final a = _decode(publicKey);
-  final rBytes = signature.sublist(0, 32);
-  if (a == null || _decode(rBytes) == null) return false;
-  if (!allowSmallOrderKey && _isIdentity(_mul(BigInt.from(8), a))) {
+  if (hasSmallOrder(publicKey) || !_canonicalS(signature.sublist(32))) {
     return false;
   }
-  final s = _leInt(signature.sublist(32));
-  if (s >= _l) return false;
-  final h =
-      _leInt(_sha512.hashSync([...rBytes, ...publicKey, ...message]).bytes) %
-      _l;
-  final check = _add(_mul(s, _base), _mul(_l - h, a));
-  final enc = _encode(check);
-  for (var i = 0; i < 32; i++) {
-    if (enc[i] != rBytes[i]) return false;
+  try {
+    return await _ed25519.verify(
+      message,
+      signature: Signature(
+        signature,
+        publicKey: SimplePublicKey(publicKey, type: KeyPairType.ed25519),
+      ),
+    );
+  } on Object {
+    return false;
   }
-  return true;
 }
 
-/// The encoding of `[k]B` (RFC 8032 §5.1.2), for tests.
-Uint8List baseMultiple(BigInt k) => _encode(_mul(k, _base));
+/// The encodings of the Ed25519 points of small order, canonical and not,
+/// sign bit clear: libsodium's `has_small_order` blocklist
+/// (`crypto_core/ed25519/ref10/ed25519_ref10.c`).
+const smallOrderEncodings = [
+  // 0 (order 4)
+  '0000000000000000000000000000000000000000000000000000000000000000',
+  // 1 (order 1)
+  '0100000000000000000000000000000000000000000000000000000000000000',
+  // order 8
+  '26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05',
+  // order 8
+  'c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a',
+  // p - 1 (order 2)
+  'ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+  // p, non-canonical 0 (order 4)
+  'edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+  // p + 1, non-canonical 1 (order 1)
+  'eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+];
 
-const _sha512 = DartSha512();
+final _smallOrder = [
+  for (final h in smallOrderEncodings)
+    [
+      for (var i = 0; i < 64; i += 2)
+        int.parse(h.substring(i, i + 2), radix: 16),
+    ],
+];
 
-final _p = (BigInt.one << 255) - BigInt.from(19);
-final _l =
-    (BigInt.one << 252) +
-    BigInt.parse('27742317777372353535851937790883648493');
-final _d = (BigInt.from(-121665) * BigInt.from(121666).modInverse(_p)) % _p;
-final _sqrtM1 = BigInt.two.modPow((_p - BigInt.one) ~/ BigInt.from(4), _p);
-
-/// A point in extended coordinates (X, Y, Z, T), x = X/Z, y = Y/Z.
-typedef _Pt = (BigInt, BigInt, BigInt, BigInt);
-
-final _Pt _identity = (BigInt.zero, BigInt.one, BigInt.one, BigInt.zero);
-
-final _Pt _base = () {
-  final y = (BigInt.from(4) * BigInt.from(5).modInverse(_p)) % _p;
-  final x = _recoverX(y, 0)!;
-  return (x, y, BigInt.one, (x * y) % _p);
-}();
-
-BigInt _leInt(List<int> bytes) {
-  var v = BigInt.zero;
-  for (var i = bytes.length - 1; i >= 0; i--) {
-    v = (v << 8) | BigInt.from(bytes[i]);
+/// Whether [point] (32 bytes) is one of [smallOrderEncodings], ignoring
+/// its sign bit as libsodium does.
+bool hasSmallOrder(List<int> point) {
+  for (final bad in _smallOrder) {
+    var same = true;
+    for (var i = 0; i < 32 && same; i++) {
+      final v = i == 31 ? point[i] & 0x7f : point[i];
+      same = v == bad[i];
+    }
+    if (same) return true;
   }
-  return v;
+  return false;
 }
 
-BigInt? _recoverX(BigInt y, int sign) {
-  if (y >= _p) return null;
-  final x2 =
-      ((y * y - BigInt.one) * (_d * y * y + BigInt.one).modInverse(_p)) % _p;
-  if (x2 == BigInt.zero) return sign == 1 ? null : BigInt.zero;
-  var x = x2.modPow((_p + BigInt.from(3)) ~/ BigInt.from(8), _p);
-  if ((x * x - x2) % _p != BigInt.zero) x = (x * _sqrtM1) % _p;
-  if ((x * x - x2) % _p != BigInt.zero) return null;
-  if (x.isOdd != (sign == 1)) x = _p - x;
-  return x;
-}
+/// The group order L, little-endian.
+const _l = [
+  0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, //
+  0xde, 0xf9, 0xde, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10,
+];
 
-/// [bytes] decoded strictly: y below p, a square root that exists, and
-/// no negative zero.
-_Pt? _decode(List<int> bytes) {
-  final sign = bytes[31] >> 7;
-  final y = _leInt([...bytes.sublist(0, 31), bytes[31] & 0x7f]);
-  final x = _recoverX(y, sign);
-  if (x == null) return null;
-  return (x, y, BigInt.one, (x * y) % _p);
-}
-
-Uint8List _encode(_Pt pt) {
-  final (x0, y0, z, _) = pt;
-  final zi = z.modInverse(_p);
-  final x = (x0 * zi) % _p;
-  var y = (y0 * zi) % _p;
-  final out = Uint8List(32);
-  for (var i = 0; i < 32; i++) {
-    out[i] = (y & BigInt.from(0xff)).toInt();
-    y >>= 8;
+/// Whether the little-endian scalar [s] is below L.
+bool _canonicalS(List<int> s) {
+  for (var i = 31; i >= 0; i--) {
+    if (s[i] != _l[i]) return s[i] < _l[i];
   }
-  if (x.isOdd) out[31] |= 0x80;
-  return out;
-}
-
-bool _isIdentity(_Pt pt) {
-  final (x, y, z, _) = pt;
-  return x % _p == BigInt.zero && (y - z) % _p == BigInt.zero;
-}
-
-_Pt _add(_Pt p1, _Pt p2) {
-  final (x1, y1, z1, t1) = p1;
-  final (x2, y2, z2, t2) = p2;
-  final a = ((y1 - x1) * (y2 - x2)) % _p;
-  final b = ((y1 + x1) * (y2 + x2)) % _p;
-  final c = (t1 * BigInt.two * _d * t2) % _p;
-  final d = (z1 * BigInt.two * z2) % _p;
-  final e = b - a, f = d - c, g = d + c, h = b + a;
-  return ((e * f) % _p, (g * h) % _p, (f * g) % _p, (e * h) % _p);
-}
-
-_Pt _mul(BigInt k, _Pt pt) {
-  var q = _identity;
-  var r = pt;
-  while (k > BigInt.zero) {
-    if (k.isOdd) q = _add(q, r);
-    r = _add(r, r);
-    k >>= 1;
-  }
-  return q;
+  return false;
 }

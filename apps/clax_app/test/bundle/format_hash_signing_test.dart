@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:clax_app/bundle/bundle_writer.dart';
+import 'package:cryptography/cryptography.dart';
 import 'package:clax_app/bundle/content_hash.dart';
 import 'package:clax_app/bundle/signing.dart';
 import 'package:clax_app/platform/bundle_key.dart';
@@ -169,27 +170,54 @@ void main() {
           hexBytes(sig),
         );
         expect(
-          verifyStrict(hexBytes(msg), hexBytes(sig), hexBytes(key)),
+          await verifyStrict(hexBytes(msg), hexBytes(sig), hexBytes(key)),
           isTrue,
         );
-        final bad = hexBytes(sig)..[0] ^= 1;
-        expect(verifyStrict(hexBytes(msg), bad, hexBytes(key)), isFalse);
+        expect(hasSmallOrder(hexBytes(key)), isFalse);
+        for (final at in [0, 31, 32, 63]) {
+          final bad = hexBytes(sig)..[at] ^= 1;
+          expect(
+            await verifyStrict(hexBytes(msg), bad, hexBytes(key)),
+            isFalse,
+          );
+        }
       }
     });
 
-    // Under the identity key, R = [a]B and S = a satisfy [S]B = R + [h]A
-    // for every message, with no private key.
-    final a = BigInt.from(123456789);
+    // Under the identity key, R = [k]B and S = k mod L satisfy
+    // [S]B = R + [h]A for every message, with no private key. [k]B is the
+    // public key of any seed, k its clamped SHA-512 half.
+    Future<List<int>> forge() async {
+      final seed = List.generate(32, (i) => i + 1);
+      final r = base64UrlNoPadDecode(await publicKeyFromSeed(seed), 32)!;
+      final hash = (await Sha512().hash(seed)).bytes.sublist(0, 32);
+      hash[0] &= 248;
+      hash[31] = (hash[31] & 127) | 64;
+      final l =
+          (BigInt.one << 252) +
+          BigInt.parse('27742317777372353535851937790883648493');
+      return [...r, ..._le32(_leInt(hash) % l)];
+    }
+
     final identityKey = [1, ...List.filled(31, 0)];
-    final forged = [...baseMultiple(a), ..._le32(a)];
+
+    test('the identity-key forgery passes the library alone', () async {
+      final forged = await forge();
+      expect(
+        await Ed25519().verify(
+          b('any'),
+          signature: Signature(
+            forged,
+            publicKey: SimplePublicKey(identityKey, type: KeyPairType.ed25519),
+          ),
+        ),
+        isTrue,
+      );
+    });
 
     test('a small-order author key is refused', () async {
-      expect(
-        verifyStrict(b('any'), forged, identityKey, allowSmallOrderKey: true),
-        isTrue,
-        reason: 'the forgery satisfies the equation',
-      );
-      expect(verifyStrict(b('any'), forged, identityKey), isFalse);
+      final forged = await forge();
+      expect(await verifyStrict(b('any'), forged, identityKey), isFalse);
       expect(
         await verifyManifest(
           b('any'),
@@ -198,25 +226,17 @@ void main() {
         ),
         isFalse,
       );
-      // Another small-order point: y = -1 (order 2).
-      final minusOne = hexBytes(
-        'ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
-      );
-      expect(verifyStrict(b('any'), forged, minusOne), isFalse);
     });
 
-    test('R is compared by its bytes, so (x, -y) of R fails', () {
-      // Negate y of R, keeping x's sign bit: a point equal to R in x only.
-      final r = forged.sublist(0, 32);
-      final sign = r[31] & 0x80;
-      final y = _leInt([...r.sublist(0, 31), r[31] & 0x7f]);
-      final p = (BigInt.one << 255) - BigInt.from(19);
-      final negY = _le32(p - y)..[31] |= sign;
-      final sig = [...negY, ...forged.sublist(32)];
-      expect(
-        verifyStrict(b('any'), sig, identityKey, allowSmallOrderKey: true),
-        isFalse,
-      );
+    test('every blocklisted encoding is refused, either sign bit', () async {
+      final forged = await forge();
+      for (final h in smallOrderEncodings) {
+        for (final sign in [0, 0x80]) {
+          final key = hexBytes(h)..[31] |= sign;
+          expect(hasSmallOrder(key), isTrue, reason: '$h $sign');
+          expect(await verifyStrict(b('any'), forged, key), isFalse);
+        }
+      }
     });
 
     test('a BundleKey identity signs bundles that verify', () async {
