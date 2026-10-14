@@ -6,7 +6,7 @@
 // artifact's People panel and raises Mia's agent to publish versions there;
 // Mia's agent then publishes there, and nowhere else; the owner's People
 // shows the raise and who gave it, and Sam's connect-time approval of the
-// owner's content. On a machine with no LAN address the daemon refuses
+// owner's content; the owner removes Sam's raise from Mia's card. On a machine with no LAN address the daemon refuses
 // invites (`not_on_lan`) and the test says so and skips.
 import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -132,6 +132,17 @@ test("a creator raises another person's agent on their artifact from its People 
     await box.uncheck();
     await expect(raise.locator("summary")).toHaveText("Raise on this artifact");
     await expect.poll(async () => String((await mia.call("publish", { id: notes, html: "<main>again</main>" })).error)).toContain("not_permitted");
+
+    // Sam raises it again; the owner removes Sam's raise from Mia's card
+    // (the owner's decision, "Both may remove").
+    await box.check();
+    await expect(raise.locator("summary")).toHaveText("Raise on this artifact (raised)");
+    await o.reload();
+    const line = card("Mia").locator(".agent .raised-by");
+    await expect(line.locator(".note.by")).toHaveText("Raised by Sam until this session ends: Publish new versions on “Sam's Notes”");
+    await line.getByRole("button", { name: "Remove Sam's raise of notes-fix" }).click();
+    await expect(card("Mia").locator(".agent .raised-by")).toHaveCount(0);
+    await expect.poll(async () => String((await mia.call("publish", { id: notes, html: "<main>once more</main>" })).error)).toContain("not_permitted");
   } finally {
     for (const a of agents) a.stop();
     await ownerCtx.close();

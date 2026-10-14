@@ -51,6 +51,10 @@ export const narrowAgent = (handle: string, access: Rights | null) => call<unkno
 /** Raises an agent with `access`, or removes its elevation (null). */
 export const elevate = (handle: string, access: Rights | null) =>
   access ? call<unknown>(`/api/agents/${e(handle)}/elevate`, "PUT", { access }) : call<unknown>(`/api/agents/${e(handle)}/elevate`, "DELETE");
+/** Removes `granter`'s raise of agent `handle` (null: the owner's); the
+ * agent's person and the owner may remove any granter's. */
+export const removeRaise = (handle: string, granter: string | null) =>
+  call<unknown>(`/api/agents/${e(handle)}/elevate?granter=${e(granter ?? "owner")}`, "DELETE");
 export const endAgent = (handle: string) => call<unknown>(`/api/agents/${e(handle)}`, "DELETE");
 export const rename = (handle: string, name: string) => call<unknown>(`/api/agents/${e(handle)}`, "PUT", { name });
 /** Lets `author`'s content reach the caller's agents everywhere (`*unconnected`: the switch's on). */

@@ -115,17 +115,19 @@ export const raisersOf = (a: PeopleAgent, c: Cap) =>
 export const othersRaises = (a: PeopleAgent) => elevationsOf(a).filter(e => !e.granter.owner);
 
 /** Agent `a`'s capabilities on machine `g`: those of its person's rights
- * and those the owner raised it with. `machineOff` for those the machine's
- * narrowing turns off, which the agent's cannot turn on; `raised` where the
- * elevation adds one (`*`, or artifact IDs); `locked` when the agent's own
- * narrowing does not decide it: raised at every artifact, or beyond its
- * person's rights. `on` is the narrowing's, or the elevation's when locked. */
+ * and those a granter raised it with. `machineOff` for those the machine's
+ * narrowing turns off, which the agent's cannot turn on; `raised` where an
+ * elevation adds one (`*`, or artifact IDs), `by` who raised it where;
+ * `locked` when the narrowing cannot decide it: an action beyond the
+ * person's rights, which only removing its raise takes away. A narrowing
+ * caps every raise (spec §7.2), so `on` is the narrowings', or the raise's
+ * when locked. */
 export const agentCaps = (person: Rights, g: PeopleGrant | null, a: PeopleAgent) => {
   const machine = offIn(person, g?.narrow ?? null);
   const own = offIn(person, a.narrow);
   return CAPS.filter(c => allows(person, c) || raisedAt(a, c).length > 0).map(c => {
     const raised = raisedAt(a, c);
-    const locked = raised.includes("*") || !allows(person, c);
+    const locked = !allows(person, c);
     return { ...c, raised, by: raisersOf(a, c), locked, machineOff: machine.has(c.key), on: locked || (!machine.has(c.key) && !own.has(c.key)) };
   });
 };
