@@ -662,7 +662,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
           if (_toldVisible == true) unawaited(HapticFeedback.lightImpact());
           _toast('Clax has a question', () => _call(const OpenQuestions()));
         }
-      case InspectionMsg() || TestsMsg():
+      case InspectionMsg() || TestsMsg() || MigrationMsg():
         // An app view is never inspected.
         break;
       case DeviceRequest():

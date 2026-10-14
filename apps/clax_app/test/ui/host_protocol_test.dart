@@ -538,6 +538,33 @@ const host = { init: p => log.push('init'), setVisible: v => log.push('visible '
       );
     });
 
+    test('RunMigration renders its call, and migration decodes ok or why', () {
+      expect(
+        const RunMigration(from: 2, to: 3).toJs(),
+        'window.claxHost?.runMigration({file:"migrate.js",from:2,to:3,'
+        'totalMs:30000})',
+      );
+      expect(
+        const RunMigration(
+          file: 'lib/m.js',
+          from: 1,
+          to: 2,
+          totalMs: 500,
+        ).toJs(),
+        'window.claxHost?.runMigration({file:"lib/m.js",from:1,to:2,'
+        'totalMs:500})',
+      );
+      final ok =
+          HostMessage.parse('{"type":"migration","ok":true}') as MigrationMsg;
+      expect((ok.ok, ok.error), (true, null));
+      final no = HostMessage.parse(
+        '{"type":"migration","ok":false,"error":"the migration failed: x"}',
+      ) as MigrationMsg;
+      expect((no.ok, no.error), (false, 'the migration failed: x'));
+      expect(HostMessage.parse('{"type":"migration","ok":false}'), isNull);
+      expect(HostMessage.parse('{"type":"migration","ok":"yes"}'), isNull);
+    });
+
     test('an inspection that failed carries only why', () {
       final i = HostMessage.parse(
         '{"type":"inspection","error":"the page has not loaded"}',

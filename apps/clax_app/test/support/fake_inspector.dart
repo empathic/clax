@@ -23,6 +23,25 @@ class TestCall {
   final Future<void>? cancelled;
 }
 
+/// One [FakeInspector.runMigration] call.
+class MigrationCall {
+  MigrationCall(
+    this.url,
+    this.file,
+    this.from,
+    this.to,
+    this.total,
+    this.cancelled,
+  );
+
+  final Uri url;
+  final String file;
+  final int from;
+  final int to;
+  final Duration total;
+  final Future<void>? cancelled;
+}
+
 /// An [Inspector] that answers from a script.
 ///
 /// Each call takes the next queued answer ([answer], [fail], [hang]), else
@@ -32,6 +51,9 @@ class TestCall {
 ///
 /// A test run takes the next of [answerTests] / [failTests], else every
 /// test passes (one per file).
+///
+/// A migration run takes the next of [answerMigration] / [failMigration] /
+/// [hangMigration], else it passes.
 class FakeInspector implements Inspector {
   final List<InspectCall> calls = [];
   final List<TestCall> testCalls = [];
@@ -64,6 +86,39 @@ class FakeInspector implements Inspector {
       throw const InspectorError('cancelled');
     }
     return next as TestRun;
+  }
+
+  final List<MigrationCall> migrationCalls = [];
+  final _migrations = <Object>[];
+
+  /// Queues [r] as the next migration run's answer.
+  void answerMigration(MigrationRun r) => _migrations.add(r);
+
+  /// Queues [e] as the next migration run's answer, thrown.
+  void failMigration(InspectorError e) => _migrations.add(e);
+
+  /// Queues a migration run that answers only `cancelled`, once told to stop.
+  void hangMigration() => _migrations.add(#hang);
+
+  @override
+  Future<MigrationRun> runMigration(
+    Uri url, {
+    String file = 'migrate.js',
+    required int from,
+    required int to,
+    Duration total = const Duration(seconds: 30),
+    Future<void>? cancelled,
+  }) async {
+    migrationCalls.add(MigrationCall(url, file, from, to, total, cancelled));
+    final next = _migrations.isEmpty
+        ? const MigrationRun.passed()
+        : _migrations.removeAt(0);
+    if (next is InspectorError) throw next;
+    if (next == #hang) {
+      await cancelled;
+      throw const InspectorError('cancelled');
+    }
+    return next as MigrationRun;
   }
 
   final _queue = <Object>[];

@@ -36,6 +36,37 @@ abstract interface class Inspector {
     Duration total = const Duration(seconds: 30),
     Future<void>? cancelled,
   });
+
+  /// Loads [url] in the inspect view and runs the migration [file] (an app
+  /// bundle's `migrate.js`) there: its default export is called with the
+  /// page's `db` and `{from, to}` (the installed version and the bundle's),
+  /// the whole run for at most [total].
+  ///
+  /// A migration that throws, does not load or runs out of time is a
+  /// [MigrationRun] that is not [MigrationRun.ok]. Throws [InspectorError]
+  /// when the page does not load, the page does not answer in time, or
+  /// [cancelled] completes first.
+  Future<MigrationRun> runMigration(
+    Uri url, {
+    String file = 'migrate.js',
+    required int from,
+    required int to,
+    Duration total = const Duration(seconds: 30),
+    Future<void>? cancelled,
+  });
+}
+
+/// What a run of an app bundle's migration found: it finished ([ok]), or
+/// [error], why not.
+class MigrationRun {
+  const MigrationRun({required this.ok, this.error});
+  const MigrationRun.passed() : ok = true, error = null;
+  const MigrationRun.failed(String this.error) : ok = false;
+
+  final bool ok;
+
+  /// Why the migration did not finish, when it did not.
+  final String? error;
 }
 
 /// What a run of a draft's tests found.
