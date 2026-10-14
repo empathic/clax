@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { dispatchTrusted } from "../../bridge/test/trusted";
 import { flush, mount } from "./test/svelte";
 import PromptDialog from "./ui/PromptDialog.svelte";
+import StageIsland from "./ui/StageIsland.svelte";
+import type { ArtifactController, ViewState } from "./view/artifact-controller";
+import { Store } from "./view/store";
 import { FRAME_FALLBACK_MS } from "./view/after-paint";
 import { ALLOW_DELAY_MS, type Ask } from "./view/prompt-queue";
 import { visibility } from "./visibility";
@@ -176,6 +179,27 @@ describe("PromptDialog", () => {
     pressClick(button(root, "Allow"));
     expect(next.answer).toHaveBeenCalledWith("allow");
     expect(answer).not.toHaveBeenCalled();
+  });
+
+  it("stays armed in the stage island while the view's other state changes under the same ask", () => {
+    const answer = vi.fn();
+    const ask = askFor(answer);
+    const state = new Store({
+      pinnedVersion: null, startFile: "index.html", data: { versions: [] }, error: null, origin: null,
+      deleted: false, threads: [], resolved: {}, draft: null, hint: null, notice: null, file: null,
+      working: [], decided: null, looked: {}, sheet: null, busy: 0, ask,
+    } as unknown as ViewState);
+    const ctl = { id: "7q3k9mzx2b4t", state, shown: () => 1, missing: () => null } as unknown as ArtifactController;
+    const { root } = mount(StageIsland, { ctl });
+    arm();
+    const allow = button(root, "Allow");
+    expect(allow.disabled).toBe(false);
+    // A send in flight, a thread refetch: the view changes, the ask does not.
+    flush(() => state.set({ busy: 1 }));
+    flush(() => state.set({ threads: [] as never[], busy: 0 }));
+    expect(allow.disabled).toBe(false);
+    pressClick(allow);
+    expect(answer).toHaveBeenCalledWith("allow");
   });
 
   it("grants on no pointer press that began before Allow was armed, only on one after", () => {
