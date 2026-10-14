@@ -209,6 +209,72 @@ void main() {
     expect((no.ok, no.error), (false, 'the migration failed: boom'));
   });
 
+  test('a journaled migration run hands each journal entry to onWrite and '
+      'acks it once kept, or refuses it when onWrite throws', () async {
+    final kept = <Object?>[];
+    final f = inspector.runMigration(
+      _url(),
+      from: 1,
+      to: 2,
+      onWrite: (w) async {
+        if (w.path == 'bad/doc') throw StateError('disk full');
+        kept.add([w.path, w.before]);
+      },
+    );
+    await _settle();
+    final s = surfaces.single;
+    s.push(_ready());
+    await _settle();
+    expect(s.js, [const RunMigration(from: 1, to: 2, journal: true).toJs()]);
+    s.push(const JournalMsg(1, 'data/users/u/p', {'v': 1}));
+    s.push(const JournalMsg(2, 'bad/doc', null));
+    await _settle();
+    expect(kept, [
+      [
+        'data/users/u/p',
+        {'v': 1},
+      ],
+    ]);
+    expect(s.js.skip(1), [
+      const JournalAck(1, ok: true).toJs(),
+      const JournalAck(2, ok: false).toJs(),
+    ]);
+    s.push(const MigrationMsg.ok());
+    await _settle();
+    s.push(_ready());
+    expect((await f).ok, isTrue);
+  });
+
+  test('restoreWrites asks restoreJournal in the migration view, and throws '
+      'the error it answers', () async {
+    var f = inspector.restoreWrites(_url(), const [
+      MigrationWrite('a/b', null),
+      MigrationWrite('data/users/u/p', {'v': 1}),
+    ]);
+    await _settle();
+    final s = surfaces.single;
+    expect(s.loads, [migrateView]);
+    s.push(_ready());
+    await _settle();
+    expect(s.js, [
+      const RestoreJournal([
+        {'path': 'a/b', 'before': null},
+        {
+          'path': 'data/users/u/p',
+          'before': {'v': 1},
+        },
+      ]).toJs(),
+    ]);
+    s.push(const JournalRestoredMsg(null));
+    await f;
+    f = inspector.restoreWrites(_url(), const []);
+    await _settle();
+    s.push(_ready());
+    await _settle();
+    s.push(const JournalRestoredMsg('refused'));
+    await expectLater(f, throwsA(isA<InspectorError>()));
+  });
+
   test('a migration run that never answers, or is cancelled, is an '
       'InspectorError only once its document is replaced', () async {
     var f = inspector.runMigration(

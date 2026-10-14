@@ -58,6 +58,17 @@ sealed class HostMessage {
         'inspection' => InspectionMsg.fromJson(m),
         'tests' => TestsMsg.fromJson(m),
         'migration' => MigrationMsg.fromJson(m),
+        'journal' => JournalMsg(
+          _int(m['seq']),
+          m['path'] as String,
+          m['before'] == null
+              ? null
+              : (m['before'] as Map).cast<String, Object?>(),
+        ),
+        'journalRestored' =>
+          m['ok'] == true
+              ? const JournalRestoredMsg(null)
+              : JournalRestoredMsg(m['error'] as String),
         'questions' => QuestionsMsg(
           _count(m['open']),
           showing: (m['showing'] ?? false) as bool,
@@ -344,6 +355,25 @@ final class MigrationMsg extends HostMessage {
   final String? error;
 }
 
+/// A journaled migration's write is waiting (see [RunMigration.journal]):
+/// the document at [path] held [before] (null: none). [JournalAck] answers.
+final class JournalMsg extends HostMessage {
+  const JournalMsg(this.seq, this.path, this.before);
+
+  final int seq;
+  final String path;
+  final Map<String, Object?>? before;
+}
+
+/// The answer to [RestoreJournal]: done, or [error], why not.
+final class JournalRestoredMsg extends HostMessage {
+  const JournalRestoredMsg(this.error);
+
+  final String? error;
+
+  bool get ok => error == null;
+}
+
 /// How many of the owner's questions about this app are [open], and
 /// whether the shell's questions sheet is [showing]; posted whenever either
 /// changes.
@@ -587,15 +617,40 @@ final class RunMigration extends HostCall {
     required this.from,
     required this.to,
     this.totalMs = 30000,
+    this.journal = false,
   });
   final String file;
   final int from;
   final int to;
   final int totalMs;
+
+  /// Journal every write: each waits for a [JournalAck] of its [JournalMsg].
+  final bool journal;
   @override
   String toJs() =>
       'window.claxHost?.runMigration({file:${jsString(file)},from:$from,'
-      'to:$to,totalMs:$totalMs})';
+      'to:$to,totalMs:$totalMs${journal ? ',journal:true' : ''}})';
+}
+
+/// The app's answer to [JournalMsg] [seq]: it keeps the entry ([ok]), so
+/// the write goes ahead, or not, so it fails.
+final class JournalAck extends HostCall {
+  const JournalAck(this.seq, {required this.ok});
+  final int seq;
+  final bool ok;
+  @override
+  String toJs() => 'window.claxHost?.journalAck({seq:$seq,ok:$ok})';
+}
+
+/// In the migration view, puts back a journaled migration's [entries]
+/// (`{path, before}`, in journal order) in reverse order: a
+/// [JournalRestoredMsg] answers.
+final class RestoreJournal extends HostCall {
+  const RestoreJournal(this.entries);
+  final List<Map<String, Object?>> entries;
+  @override
+  String toJs() =>
+      'window.claxHost?.restoreJournal(JSON.parse(${jsString(jsonEncode({'entries': entries}))}))';
 }
 
 /// The app's answer to [DeviceRequest] [id]: [value] when [code] is null,
