@@ -447,6 +447,14 @@ const host = { init: p => log.push('init'), setVisible: v => log.push('visible '
       );
       expect(const OpenQuestions().toJs(), 'window.claxHost?.openQuestions()');
       expect(
+        const OpenQuestions(question: 'q1"</x').toJs(),
+        'window.claxHost?.openQuestions({question:"q1\\"<\\/x"})',
+      );
+      expect(
+        const CloseQuestions().toJs(),
+        'window.claxHost?.closeQuestions()',
+      );
+      expect(
         const Inspect().toJs(),
         'window.claxHost?.inspect({settleMs:3000,maxBytes:1048576})',
       );
@@ -586,12 +594,22 @@ const host = { init: p => log.push('init'), setVisible: v => log.push('visible '
       }
     });
 
-    test('questions carries how many are open', () {
+    test('questions carries how many are open and whether the sheet shows', () {
+      final m = HostMessage.parse(
+        '{"type":"questions","open":2,"showing":true}',
+      ) as QuestionsMsg;
+      expect(m.open, 2);
+      expect(m.showing, isTrue);
       expect(
         (HostMessage.parse(
-          '{"type":"questions","open":2}',
-        ) as QuestionsMsg).open,
-        2,
+          '{"type":"questions","open":0}',
+        ) as QuestionsMsg).showing,
+        isFalse,
+        reason: 'a shell without the sheet says nothing of it',
+      );
+      expect(
+        HostMessage.parse('{"type":"questions","open":1,"showing":"yes"}'),
+        isNull,
       );
       expect(HostMessage.parse('{"type":"questions"}'), isNull);
       expect(HostMessage.parse('{"type":"questions","open":-1}'), isNull);

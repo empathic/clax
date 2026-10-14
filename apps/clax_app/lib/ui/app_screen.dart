@@ -67,7 +67,11 @@ import 'working_chip.dart';
 /// - **Toasts.** A reply from the agent for this app, or a new question
 ///   from it, shows a snack bar that fades on its own, while the screen is
 ///   in front: View opens the reply's thread (the panel when the change had
-///   several) or the shell's questions.
+///   several) or the shell's questions. A new question also taps lightly.
+/// - **Questions.** The shell docks the open questions about the app in
+///   its own sheet (`openQuestions`), and says how many are open and
+///   whether the sheet shows ([QuestionsMsg]). While it shows, back and
+///   Escape close it (`closeQuestions`) before anything else.
 /// - **First-run hint.** With [AppScreen.firstRunHint] and a notice, a
 ///   card over the page once it is ready says where Comment and Threads are
 ///   (on the notice, or on the edge handle when notifications are off),
@@ -275,6 +279,9 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
 
   /// The open questions the shell last counted; null before its first.
   int? _questions;
+
+  /// Whether the shell's questions sheet is up over the page.
+  var _questionsShowing = false;
 
   // The panel.
   var _open = false;
@@ -544,8 +551,20 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     }
   }
 
-  /// Closes what is on top: the panel, else the comment bar.
-  void _closeTop() => _open ? _setOpen(false) : _setBar(false);
+  /// Closes what is on top: the shell's questions sheet, the panel, else
+  /// the comment bar.
+  void _closeTop() {
+    if (_questionsShowing) {
+      // The shell's sheet is over everything: it goes first. Its next
+      // `questions` confirms.
+      setState(() => _questionsShowing = false);
+      _call(const CloseQuestions());
+    } else if (_open) {
+      _setOpen(false);
+    } else {
+      _setBar(false);
+    }
+  }
 
   @override
   void dispose() {
@@ -631,12 +650,16 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         setState(() => _changes.sendFailed(thread, text));
       case Notice():
         _snack(m.text);
-      case QuestionsMsg(:final open):
+      case QuestionsMsg(:final open, :final showing):
         // The shell shows the questions in its own sheet; one that lands
-        // while the app is open is told in a toast.
+        // while the app is open is told in a toast and a light tap.
         final before = _questions;
         _questions = open;
+        if (showing != _questionsShowing) {
+          setState(() => _questionsShowing = showing);
+        }
         if (before != null && open > before) {
+          if (_toldVisible == true) unawaited(HapticFeedback.lightImpact());
           _toast('Clax has a question', () => _call(const OpenQuestions()));
         }
       case InspectionMsg() || TestsMsg():
@@ -1187,8 +1210,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         },
       ),
     );
-    // Escape is back: it closes the panel or the bar first (the PopScope
-    // below), then leaves the app.
+    // Escape is back: it closes the questions sheet, the panel or the bar
+    // first (the PopScope below), then leaves the app.
     screen = CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.escape): () =>
@@ -1201,7 +1224,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       screen = ClaxMenuBar(comments: own, child: screen);
     }
     return PopScope(
-      canPop: !_wantComment,
+      canPop: !_wantComment && !_questionsShowing,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) _closeTop();
       },

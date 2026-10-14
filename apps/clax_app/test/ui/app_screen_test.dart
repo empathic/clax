@@ -1673,6 +1673,71 @@ void main() {
       expect(rig.surface.js.last, const OpenQuestions().toJs());
     });
 
+    testWidgets('a question that lands taps lightly', (tester) async {
+      final haptics = <Object?>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'HapticFeedback.vibrate') {
+            haptics.add(call.arguments);
+          }
+          return null;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          null,
+        ),
+      );
+      final rig = await pumpScreen(tester);
+      rig.surface.push(rig.ready());
+      rig.surface.push(const QuestionsMsg(0));
+      await tester.pump();
+      expect(haptics, isEmpty);
+      rig.surface.push(const QuestionsMsg(1));
+      await tester.pump();
+      expect(haptics, ['HapticFeedbackType.lightImpact']);
+      rig.surface.push(const QuestionsMsg(0));
+      await tester.pump();
+      expect(haptics, hasLength(1), reason: 'an answer is no news');
+    });
+
+    testWidgets('back closes the questions sheet first, then the bar', (
+      tester,
+    ) async {
+      final rig = await pumpScreen(tester);
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      await comment(tester, rig);
+      rig.surface.push(const QuestionsMsg(1, showing: true));
+      await tester.pump();
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(rig.surface.js.last, const CloseQuestions().toJs());
+      expect(bar, findsOneWidget, reason: 'the bar stays under the sheet');
+      expect(modes(rig), [enter]);
+      rig.surface.push(const QuestionsMsg(1));
+      await tester.pump();
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(bar, findsNothing);
+      expect(find.byType(AppScreen), findsOneWidget);
+      expect(modes(rig), [enter, exit]);
+    });
+
+    testWidgets('without comment mode, back closes the questions sheet and '
+        'keeps the app', (tester) async {
+      final rig = await pumpScreen(tester);
+      rig.surface.push(rig.ready());
+      rig.surface.push(const QuestionsMsg(1, showing: true));
+      await tester.pump();
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.byType(AppScreen), findsOneWidget);
+      expect(rig.surface.js.last, const CloseQuestions().toJs());
+    });
+
     testWidgets('the first-run hint says where Comment and Threads are, once', (
       tester,
     ) async {
