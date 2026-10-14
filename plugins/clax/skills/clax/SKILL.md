@@ -491,7 +491,10 @@ capability first and light features up when it resolves.
   `{}` (not `{"composer_only": true}`) the page may also `create`, `reply`,
   `resolve`, `delete`, and `sendToClaude` as the viewer after one consent;
   `{"customAnchors": true}` lets a canvas-like page place pins itself.
-- `assets`: `upload`, `list`, `delete`, in the person's browser only.
+- `assets`: `upload`, `list`, `delete`, in the person's browser only. Use
+  an asset's `url` as given; to show an asset whose ID a page stored,
+  `claude.assetUrl(id)` (any viewer), never `"/_blob/" + id`: assets are
+  served per app, and a page loads only its own.
 - `room`: `emit`, `on`, `presence`, `peers`, `onPeers`, `join`, `connected`,
   and `onConnection` reach every view of the artifact that is open now;
   nothing is stored. Presence works for every viewer. A topic declared
