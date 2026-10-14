@@ -17,6 +17,7 @@ pub mod live;
 pub mod live_layers;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mcp;
+pub mod mcp_http;
 pub mod people;
 pub mod perf;
 pub mod questions;
@@ -483,6 +484,9 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
     // The stream's WebSocket, which the Durable Object upgrades and holds.
     #[cfg(target_arch = "wasm32")]
     let r = r.route("/api/stream", get(stream::open_socket));
+    // The tool set's JSON-RPC adapter: `/mcp` on a Durable Object, beside
+    // rmcp's `/mcp` in the daemon.
+    let r = r.merge(mcp_http::router(&state));
     let mut r = r;
     if let Some(tx) = shutdown {
         let tx = std::sync::Arc::new(tx);
@@ -1333,6 +1337,19 @@ mod l10 {
         let mcp = include_str!("mcp.rs");
         assert!(mcp.contains(".route_service(\"/mcp\"") && mcp.contains("require_token"));
         assert_eq!(routes(mcp).len(), 0, "a new MCP route: check it here");
+        // So is the JSON-RPC adapter's, behind the same gate as `/mcp`.
+        let adapter = include_str!("mcp_http.rs");
+        assert!(adapter.contains(".route_service(PATH") && adapter.contains("require_token"));
+        assert_eq!(routes(adapter).len(), 0, "a new MCP route: check it here");
+        let gate = |src: &'static str| {
+            let at = &src[src.find("async fn require_token(").unwrap()..];
+            &at[..at.find("\n}\n").unwrap()]
+        };
+        assert_eq!(
+            gate(adapter),
+            gate(mcp),
+            "the two MCP endpoints' gates differ"
+        );
     }
 }
 
@@ -1804,6 +1821,10 @@ mod agents {
                 function_any(src, "test_slow_publish"),
             ),
             ("/mcp", function_any(mcp, "require_token")),
+            (
+                "/mcp/json",
+                function_any(include_str!("mcp_http.rs"), "require_token"),
+            ),
         ]
     }
 
@@ -2004,6 +2025,7 @@ mod agents {
             .collect();
         modules.push(("mod".into(), src));
         modules.push(("mcp".into(), include_str!("mcp.rs")));
+        modules.push(("mcp_http".into(), include_str!("mcp_http.rs")));
         modules.push(("db_caller".into(), include_str!("../db_caller.rs")));
         modules.dedup_by(|a, b| a.0 == b.0);
         assert!(modules.len() > 20, "{}", modules.len());

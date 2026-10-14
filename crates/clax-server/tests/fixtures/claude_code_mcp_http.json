@@ -1,0 +1,79 @@
+{
+  "recorded": "claude mcp list (Claude Code 2.1.296) against a daemon's /mcp/json through a recording proxy; Authorization, Host, Content-Length and Connection removed",
+  "requests": [
+    {
+      "method": "POST",
+      "headers": {
+        "accept": "application/json, text/event-stream",
+        "accept-encoding": "identity",
+        "content-type": "application/json",
+        "user-agent": "claude-code/2.1.296 (sdk-cli)",
+        "mcp-method": "server/discover",
+        "mcp-protocol-version": "2026-07-28"
+      },
+      "body": {
+        "jsonrpc": "2.0",
+        "id": "server-discover-probe-1",
+        "method": "server/discover",
+        "params": {
+          "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": {
+              "name": "claude-code",
+              "title": "Claude Code",
+              "version": "2.1.296",
+              "description": "Anthropic's agentic coding tool",
+              "websiteUrl": "https://claude.com/claude-code"
+            },
+            "io.modelcontextprotocol/clientCapabilities": {
+              "roots": {
+                "listChanged": true
+              },
+              "elicitation": {
+                "form": {},
+                "url": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "headers": {
+        "accept": "application/json, text/event-stream",
+        "accept-encoding": "identity",
+        "content-type": "application/json",
+        "user-agent": "claude-code/2.1.296 (sdk-cli)",
+        "mcp-method": "tools/list",
+        "mcp-protocol-version": "2026-07-28"
+      },
+      "body": {
+        "method": "tools/list",
+        "jsonrpc": "2.0",
+        "id": 0,
+        "params": {
+          "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": {
+              "name": "claude-code",
+              "title": "Claude Code",
+              "version": "2.1.296",
+              "description": "Anthropic's agentic coding tool",
+              "websiteUrl": "https://claude.com/claude-code"
+            },
+            "io.modelcontextprotocol/clientCapabilities": {
+              "roots": {
+                "listChanged": true
+              },
+              "elicitation": {
+                "form": {},
+                "url": {}
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

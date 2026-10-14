@@ -3,9 +3,32 @@ use common::TestServer;
 use serde_json::{Value, json};
 use std::net::{IpAddr, UdpSocket};
 
-const ACCEPT: &str = "application/json, text/event-stream";
+pub(crate) const ACCEPT: &str = "application/json, text/event-stream";
 
-fn initialize() -> Value {
+/// rmcp's streamable HTTP service, the daemon's `/mcp`.
+pub(crate) const RMCP: &str = "/mcp";
+/// The tool set's JSON-RPC adapter (`clax_mcp::http`), what a Durable
+/// Object serves at `/mcp`.
+pub(crate) const ADAPTER: &str = "/mcp/json";
+
+/// Runs test `$name(path)` against both MCP endpoints: one suite proves
+/// they answer alike.
+macro_rules! both {
+    ($name:ident) => {
+        mod $name {
+            #[tokio::test]
+            async fn rmcp() {
+                super::$name(super::RMCP).await
+            }
+            #[tokio::test]
+            async fn adapter() {
+                super::$name(super::ADAPTER).await
+            }
+        }
+    };
+}
+
+pub(crate) fn initialize() -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -18,15 +41,15 @@ fn initialize() -> Value {
     })
 }
 
-fn mcp_post(ts: &TestServer, body: &Value) -> reqwest::RequestBuilder {
+pub(crate) fn mcp_post(ts: &TestServer, path: &str, body: &Value) -> reqwest::RequestBuilder {
     ts.client
-        .post(format!("{}/mcp", ts.base))
+        .post(format!("{}{path}", ts.base))
         .header("accept", ACCEPT)
         .json(body)
 }
 
 /// The JSON-RPC message in a response that is either plain JSON or an SSE stream.
-async fn rpc_message(res: reqwest::Response) -> Value {
+pub(crate) async fn rpc_message(res: reqwest::Response) -> Value {
     let text = res.text().await.unwrap();
     if let Ok(v) = serde_json::from_str(&text) {
         return v;
@@ -38,26 +61,25 @@ async fn rpc_message(res: reqwest::Response) -> Value {
         .unwrap_or_else(|| panic!("no JSON-RPC response in {text:?}"))
 }
 
-#[tokio::test]
-async fn mcp_requires_the_bearer_token() {
+async fn mcp_requires_the_bearer_token(path: &str) {
     let ts = TestServer::spawn().await;
-    let res = mcp_post(&ts, &initialize()).send().await.unwrap();
+    let res = mcp_post(&ts, path, &initialize()).send().await.unwrap();
     assert_eq!(res.status(), 401);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["error"]["code"], "unauthorized");
 
-    let res = mcp_post(&ts, &initialize())
+    let res = mcp_post(&ts, path, &initialize())
         .bearer_auth("wrong")
         .send()
         .await
         .unwrap();
     assert_eq!(res.status(), 401);
 }
+both!(mcp_requires_the_bearer_token);
 
-#[tokio::test]
-async fn mcp_refuses_a_non_local_host() {
+async fn mcp_refuses_a_non_local_host(path: &str) {
     let ts = TestServer::spawn().await;
-    let res = mcp_post(&ts, &initialize())
+    let res = mcp_post(&ts, path, &initialize())
         .bearer_auth(&ts.token)
         .header("host", "evil.com")
         .send()
@@ -65,11 +87,11 @@ async fn mcp_refuses_a_non_local_host() {
         .unwrap();
     assert_eq!(res.status(), 403);
 }
+both!(mcp_refuses_a_non_local_host);
 
-#[tokio::test]
-async fn mcp_lists_the_twenty_five_tools() {
+async fn mcp_lists_the_twenty_five_tools(path: &str) {
     let ts = TestServer::spawn().await;
-    let res = mcp_post(&ts, &initialize())
+    let res = mcp_post(&ts, path, &initialize())
         .bearer_auth(&ts.token)
         .send()
         .await
@@ -89,6 +111,7 @@ async fn mcp_lists_the_twenty_five_tools() {
     let res = with_session(
         mcp_post(
             &ts,
+            path,
             &json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
         )
         .bearer_auth(&ts.token),
@@ -101,6 +124,7 @@ async fn mcp_lists_the_twenty_five_tools() {
     let res = with_session(
         mcp_post(
             &ts,
+            path,
             &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
         )
         .bearer_auth(&ts.token),
@@ -152,6 +176,7 @@ async fn mcp_lists_the_twenty_five_tools() {
     let res = with_session(
         mcp_post(
             &ts,
+            path,
             &json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {
                 "name": "publish",
                 "arguments": {"html": "<p>via mcp</p>", "title": "Via MCP"}
@@ -175,6 +200,7 @@ async fn mcp_lists_the_twenty_five_tools() {
     let listed: Value = ts.get("/api/artifacts").await.json().await.unwrap();
     assert_eq!(listed["artifacts"][0]["title"], "Via MCP");
 }
+both!(mcp_lists_the_twenty_five_tools);
 
 #[tokio::test]
 async fn raw_file_route_serves_unwrapped_bytes_sandboxed() {
@@ -218,15 +244,14 @@ fn non_loopback_ipv4() -> Option<IpAddr> {
     (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
 }
 
-#[tokio::test]
-async fn mcp_accepts_the_daemons_own_address_when_bound_to_it() {
+async fn mcp_accepts_the_daemons_own_address_when_bound_to_it(path: &str) {
     let Some(ip) = non_loopback_ipv4() else {
         eprintln!("skipping: this machine has no non-loopback IPv4 address");
         return;
     };
     let ts = TestServer::spawn_on(ip, |_| {}).await;
     assert_eq!(ts.base, format!("http://{ip}:{}", ts.addr.port()));
-    let res = mcp_post(&ts, &initialize())
+    let res = mcp_post(&ts, path, &initialize())
         .bearer_auth(&ts.token)
         .send()
         .await
@@ -234,7 +259,7 @@ async fn mcp_accepts_the_daemons_own_address_when_bound_to_it() {
     assert_eq!(res.status(), 200);
     let init = rpc_message(res).await;
     assert!(init["result"]["instructions"].is_string(), "{init}");
-    let res = mcp_post(&ts, &initialize())
+    let res = mcp_post(&ts, path, &initialize())
         .bearer_auth(&ts.token)
         .header("host", "evil.com")
         .send()
@@ -242,10 +267,11 @@ async fn mcp_accepts_the_daemons_own_address_when_bound_to_it() {
         .unwrap();
     assert_eq!(res.status(), 403);
 }
+both!(mcp_accepts_the_daemons_own_address_when_bound_to_it);
 
 /// Initializes an MCP session on `/mcp`; the `mcp-session-id`, if any.
-async fn mcp_session(ts: &TestServer) -> Option<String> {
-    let res = mcp_post(ts, &initialize())
+async fn mcp_session(ts: &TestServer, path: &str) -> Option<String> {
+    let res = mcp_post(ts, path, &initialize())
         .bearer_auth(&ts.token)
         .send()
         .await
@@ -258,6 +284,7 @@ async fn mcp_session(ts: &TestServer) -> Option<String> {
     rpc_message(res).await;
     let mut req = mcp_post(
         ts,
+        path,
         &json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
     )
     .bearer_auth(&ts.token);
@@ -270,6 +297,7 @@ async fn mcp_session(ts: &TestServer) -> Option<String> {
 
 async fn mcp_call(
     ts: &TestServer,
+    path: &str,
     session: &Option<String>,
     id: u32,
     name: &str,
@@ -277,6 +305,7 @@ async fn mcp_call(
 ) -> Value {
     let mut req = mcp_post(
         ts,
+        path,
         &json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": name, "arguments": args}}),
     )
     .bearer_auth(&ts.token);
@@ -290,14 +319,13 @@ async fn mcp_call(
 
 /// The daemon's `/mcp` has no harness session, so agent replies and resolves
 /// fail with `unknown_session` and write nothing.
-#[tokio::test]
-async fn mcp_reply_and_resolve_without_a_session_are_unknown_session() {
+async fn mcp_reply_and_resolve_without_a_session_are_unknown_session(path: &str) {
     let ts = TestServer::spawn().await;
     let a = ts.publish("Doc", &[("index.html", "<h2>x</h2>")]).await;
     let aid = a["artifact"]["id"].as_str().unwrap().to_string();
     let t = ts.thread(&aid, 1, "@agent fix").await;
     let tid = t["id"].as_str().unwrap().to_string();
-    let session = mcp_session(&ts).await;
+    let session = mcp_session(&ts, path).await;
     for (id, name, args) in [
         (
             2,
@@ -310,7 +338,7 @@ async fn mcp_reply_and_resolve_without_a_session_are_unknown_session() {
             json!({"url_or_id": aid, "thread_id": tid}),
         ),
     ] {
-        let call = mcp_call(&ts, &session, id, name, args).await;
+        let call = mcp_call(&ts, path, &session, id, name, args).await;
         assert_eq!(call["result"]["isError"], true, "{name}: {call}");
         let text = call["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("unknown_session"), "{name}: {text}");
@@ -324,16 +352,39 @@ async fn mcp_reply_and_resolve_without_a_session_are_unknown_session() {
     assert_eq!(after["thread"]["status"], "open");
     assert_eq!(after["thread"]["comments"].as_array().unwrap().len(), 1);
 }
+both!(mcp_reply_and_resolve_without_a_session_are_unknown_session);
+
+/// Drafting needs a harness session, which `/mcp` has none of: the `draft`
+/// tool is called (not unknown to the endpoint) and answers `no_session`.
+async fn mcp_draft_without_a_session_is_no_session(path: &str) {
+    let ts = TestServer::spawn().await;
+    let a = ts.publish("Doc", &[("index.html", "<h2>x</h2>")]).await;
+    let aid = a["artifact"]["id"].as_str().unwrap().to_string();
+    let session = mcp_session(&ts, path).await;
+    let call = mcp_call(
+        &ts,
+        path,
+        &session,
+        2,
+        "draft",
+        json!({"url_or_id": aid, "html": "<h2>y</h2>"}),
+    )
+    .await;
+    assert_eq!(call["result"]["isError"], true, "{call}");
+    let text = call["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("no_session"), "{text}");
+}
+both!(mcp_draft_without_a_session_is_no_session);
 
 /// A `server/discover` probe for `version`, with its `MCP-Protocol-Version`
 /// header and no session.
-async fn mcp_discover(ts: &TestServer, version: &str) -> Value {
+async fn mcp_discover(ts: &TestServer, path: &str, version: &str) -> Value {
     let body = json!({"jsonrpc": "2.0", "id": "probe", "method": "server/discover", "params": {"_meta": {
         "io.modelcontextprotocol/protocolVersion": version,
         "io.modelcontextprotocol/clientCapabilities": {},
         "io.modelcontextprotocol/clientInfo": {"name": "api-mcp-test", "version": "0"},
     }}});
-    let res = mcp_post(ts, &body)
+    let res = mcp_post(ts, path, &body)
         .bearer_auth(&ts.token)
         .header("mcp-protocol-version", version)
         .header("mcp-method", "server/discover")
@@ -346,19 +397,19 @@ async fn mcp_discover(ts: &TestServer, version: &str) -> Value {
 
 /// A discover probe opens no session, so `initialize` after it starts a
 /// legacy session whose requests need no `_meta`.
-#[tokio::test]
-async fn mcp_serves_a_legacy_session_after_a_discover_probe() {
+async fn mcp_serves_a_legacy_session_after_a_discover_probe(path: &str) {
     let ts = TestServer::spawn().await;
-    let v = mcp_discover(&ts, "2099-01-01").await;
+    let v = mcp_discover(&ts, path, "2099-01-01").await;
     assert_eq!(v["error"]["code"], -32022, "{v}");
-    let v = mcp_discover(&ts, "2026-07-28").await;
+    let v = mcp_discover(&ts, path, "2026-07-28").await;
     let versions = v["result"]["supportedVersions"]
         .as_array()
         .unwrap_or_else(|| panic!("{v}"));
     assert!(versions.iter().any(|x| x == "2026-07-28"), "{v}");
-    let session = mcp_session(&ts).await;
+    let session = mcp_session(&ts, path).await;
     let mut req = mcp_post(
         &ts,
+        path,
         &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
     )
     .bearer_auth(&ts.token);
@@ -367,18 +418,18 @@ async fn mcp_serves_a_legacy_session_after_a_discover_probe() {
     }
     let list = rpc_message(req.send().await.unwrap()).await;
     assert!(list["result"]["tools"].as_array().is_some(), "{list}");
-    let v = mcp_call(&ts, &session, 3, "status", json!({})).await;
+    let v = mcp_call(&ts, path, &session, 3, "status", json!({})).await;
     assert!(v["result"]["isError"] != true, "{v}");
 }
+both!(mcp_serves_a_legacy_session_after_a_discover_probe);
 
 /// The daemon's `/mcp` acts as the sessionless agent on `mcp` (spec §5.2),
 /// under the call's identity, with no working directory to capture.
-#[tokio::test]
-async fn mcp_tool_calls_are_the_sessionless_agent_under_a_call() {
+async fn mcp_tool_calls_are_the_sessionless_agent_under_a_call(path: &str) {
     let ts = TestServer::spawn().await;
-    let session = mcp_session(&ts).await;
+    let session = mcp_session(&ts, path).await;
     let args = json!({"html": "<p>via mcp</p>", "title": "Via MCP"});
-    let call = mcp_call(&ts, &session, 2, "publish", args.clone()).await;
+    let call = mcp_call(&ts, path, &session, 2, "publish", args.clone()).await;
     assert_eq!(call["result"]["isError"], false, "{call}");
     let c = rusqlite::Connection::open(ts.home.db_path()).unwrap();
     let (actor, call_id, body): (String, Option<String>, String) = c
@@ -400,42 +451,44 @@ async fn mcp_tool_calls_are_the_sessionless_agent_under_a_call() {
     );
     assert_eq!(call_id.as_deref(), body["call"]["call_id"].as_str());
 }
+both!(mcp_tool_calls_are_the_sessionless_agent_under_a_call);
 
 /// The `read` tool, for an agent whose person may not see a file, hands
 /// it the daemon's `withheld` answer, alike for a withheld file and one
 /// the version lacks, and never the name it was asked for.
-#[tokio::test]
-async fn the_read_tool_answers_a_withheld_file_as_withheld() {
+async fn the_read_tool_answers_a_withheld_file_as_withheld(path: &str) {
     use crate::common::people::{CARRIED_NAME, FILE_NAME, World};
     let w = World::two_people().await;
-    let session = mcp_session(&w.ts).await;
+    let session = mcp_session(&w.ts, path).await;
     let aid = &w.read.artifact;
     let mut answers = Vec::new();
-    for (i, path) in [FILE_NAME, CARRIED_NAME, "not-there.css"]
+    for (i, file) in [FILE_NAME, CARRIED_NAME, "not-there.css"]
         .into_iter()
         .enumerate()
     {
         let v = mcp_call(
             &w.ts,
+            path,
             &session,
             10 + i as u32,
             "read",
-            json!({"url_or_id": aid, "version": 2, "path": path}),
+            json!({"url_or_id": aid, "version": 2, "path": file}),
         )
         .await;
         let text = v.to_string();
-        assert_eq!(v["result"]["isError"], true, "{path}: {text}");
+        assert_eq!(v["result"]["isError"], true, "{file}: {text}");
         assert!(
             text.contains("withheld") && text.contains("Mia"),
-            "{path}: {text}"
+            "{file}: {text}"
         );
-        assert!(!text.contains(path), "{path}: {text}");
+        assert!(!text.contains(file), "{file}: {text}");
         answers.push(v["result"]["content"].clone());
     }
     assert!(answers.windows(2).all(|p| p[0] == p[1]), "{answers:?}");
     // A file it may see reads as before.
     let v = mcp_call(
         &w.ts,
+        path,
         &session,
         20,
         "read",
@@ -445,18 +498,19 @@ async fn the_read_tool_answers_a_withheld_file_as_withheld() {
     assert_eq!(v["result"]["isError"], false, "{v}");
     assert!(v.to_string().contains("<p>mine</p>"), "{v}");
 }
+both!(the_read_tool_answers_a_withheld_file_as_withheld);
 
 /// The db tools, for an agent whose person may not see a document, hand
 /// it the placeholder (`withheld` with its authors, no data) when it names
 /// the document, and a listing's count of withheld documents.
-#[tokio::test]
-async fn the_db_tools_answer_withheld_documents_as_withheld() {
+async fn the_db_tools_answer_withheld_documents_as_withheld(path: &str) {
     use crate::common::people::{DOC_FIELD, World};
     let w = World::two_people().await;
-    let session = mcp_session(&w.ts).await;
+    let session = mcp_session(&w.ts, path).await;
     let aid = &w.read.artifact;
     let v = mcp_call(
         &w.ts,
+        path,
         &session,
         10,
         "db_get",
@@ -473,6 +527,7 @@ async fn the_db_tools_answer_withheld_documents_as_withheld() {
     assert!(r["doc"].get("data").is_none(), "{r}");
     let v = mcp_call(
         &w.ts,
+        path,
         &session,
         11,
         "db_list",
@@ -487,3 +542,37 @@ async fn the_db_tools_answer_withheld_documents_as_withheld() {
         "{r}"
     );
 }
+both!(the_db_tools_answer_withheld_documents_as_withheld);
+
+/// An asset upload goes out as a multipart form: streamed over HTTP by
+/// `/mcp`'s tools, written out whole by the adapter's in-process client.
+async fn mcp_uploads_an_asset(path: &str) {
+    let ts = TestServer::spawn().await;
+    let a = ts.publish("Doc", &[("index.html", "<h2>x</h2>")]).await;
+    let aid = a["artifact"]["id"].as_str().unwrap().to_string();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("dot \"1\".png");
+    let bytes = [137u8, 80, 78, 71, 0, 255];
+    std::fs::write(&file, bytes).unwrap();
+    let session = mcp_session(&ts, path).await;
+    let v = mcp_call(
+        &ts,
+        path,
+        &session,
+        2,
+        "asset_upload",
+        json!({"url_or_id": aid, "file_path": file.to_string_lossy()}),
+    )
+    .await;
+    assert_eq!(v["result"]["isError"], false, "{v}");
+    let r: Value =
+        serde_json::from_str(v["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let asset = &r["assets"][0];
+    assert_eq!(asset["content_type"], "image/png", "{r}");
+    assert_eq!(asset["size"], 6, "{r}");
+    let url = asset["url"].as_str().unwrap();
+    let blob = url.split_once(&format!(":{}", ts.addr.port())).unwrap().1;
+    let res = ts.get(blob).await;
+    assert_eq!(res.bytes().await.unwrap().as_ref(), bytes);
+}
+both!(mcp_uploads_an_asset);

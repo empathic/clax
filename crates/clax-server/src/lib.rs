@@ -111,13 +111,16 @@
 //! stateless mode each request, on tokio (`tokio::spawn` in
 //! `transport/streamable_http_server/tower.rs` and in `serve_directly`),
 //! and its `Peer` cannot be built outside rmcp, so no rmcp transport runs
-//! in a Worker. There `/mcp` is to be a thin JSON-RPC adapter over the
-//! same tool set (not built yet): `POST` with a JSON response, no session
-//! and no SSE; `initialize`, `ping`, `tools/list` (from the tool router)
-//! and `tools/call`, which
+//! in a Worker. There `/mcp` is a thin JSON-RPC adapter over the same tool
+//! set (`clax_mcp::http`, routed by `routes::mcp_http`): `POST` with a JSON
+//! response, no session and no SSE; `initialize`, `server/discover`,
+//! `ping`, `tools/list` (from the tool router) and `tools/call`, which
 //! calls the named tool's method directly (the tools take no request
-//! context). The daemon keeps rmcp's stateful service and the stdio shim
-//! unchanged.
+//! context). Its tools reach the routes through the router in-process
+//! ([`loopback::Loopback`]), not over `fetch` to the object itself. The
+//! daemon keeps rmcp's stateful service at `/mcp` and the stdio shim
+//! unchanged, and serves the adapter beside it at `/mcp/json`, where the
+//! MCP tests run against both.
 
 /// The Clax version this server is built at (the workspace's), for a host
 /// that does not take it from the CLI (a Durable Object's `/healthz`).
@@ -144,6 +147,7 @@ pub mod identity;
 pub mod inbox;
 pub mod live;
 pub mod live_layers;
+pub mod loopback;
 pub mod presence;
 pub mod push;
 pub mod questions;
