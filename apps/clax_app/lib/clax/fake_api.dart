@@ -1285,11 +1285,18 @@ class FakeClaxApi implements ClaxApi {
       for (final q in _questions.values)
         if (q.status != 'open') q,
     ]..sort((x, y) => y.closing.compareTo(x.closing));
-    return [
+    final result = [
       if (status != 'closed') ...open.map((q) => q.view),
       if (status != 'open') ...closed.map((q) => q.view),
     ];
+    final hold = holdQuestions;
+    if (hold != null) await hold;
+    return result;
   }
+
+  /// When set, [questions] answers with the list as it was when called, only
+  /// once this completes, so a test can land a question mid-request.
+  Future<void>? holdQuestions;
 
   @override
   Future<QuestionView> answerQuestion(

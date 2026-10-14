@@ -673,6 +673,32 @@ void main() {
       expect(rig.questionPages, hasLength(1));
     });
 
+    testWidgets('a question that lands while the recheck is in flight is '
+        'kept', (tester) async {
+      await pumpApp(tester, _Rig(key: 'sk-ant-x'));
+      await up(tester);
+      final a = await ask(tester);
+      final gate = Completer<void>();
+      rig.api.holdQuestions = gate.future;
+      rig.api.emitStream(
+        const StreamEvent(
+          topic: 'questions',
+          type: 'resync',
+          data: {'topic': 'questions', 'reason': 'reconnect'},
+        ),
+      );
+      await tester.pump();
+      final b = await ask(tester);
+      rig.api.holdQuestions = null;
+      gate.complete();
+      await tester.pumpAndSettle();
+      expect(rig.questionPages.single.loads.single.queryParameters['q'], a);
+      await tester.tap(find.byTooltip('Close'));
+      await tester.pumpAndSettle();
+      expect(sheet, findsOneWidget);
+      expect(rig.questionPages.last.loads.single.queryParameters['q'], b);
+    });
+
     testWidgets('after a daemon restart a queued question it withdrew is not '
         'shown', (tester) async {
       await pumpApp(tester, _Rig(key: 'sk-ant-x'));
