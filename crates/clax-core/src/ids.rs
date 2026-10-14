@@ -74,9 +74,20 @@ pub fn new_ulid() -> String {
         .get_or_init(|| std::sync::Mutex::new(ulid::Generator::new()))
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    g.generate()
-        .unwrap_or_else(|_| ulid::Ulid::new())
+    let now = system_now();
+    g.generate_from_datetime(now)
+        .unwrap_or_else(|_| ulid::Ulid::from_datetime(now))
         .to_string()
+}
+
+/// The system clock's time, also where `std` has no clock: on
+/// wasm32-unknown-unknown it is the Worker's `Date.now()` (through
+/// `web-time`), where `SystemTime::now` panics.
+pub(crate) fn system_now() -> std::time::SystemTime {
+    let since = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .unwrap_or_default();
+    std::time::UNIX_EPOCH + since
 }
 
 /// True when `s` is a ULID in canonical form: 26 uppercase Crockford base32

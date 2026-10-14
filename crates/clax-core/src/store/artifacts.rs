@@ -1295,12 +1295,7 @@ mod tests {
     use crate::store::test_util::DAEMON;
     use crate::{Home, Store};
 
-    fn store() -> (tempfile::TempDir, Store) {
-        let dir = tempfile::tempdir().unwrap();
-        let home = Home::at(dir.path().join("ax"));
-        let store = Store::open(&home).unwrap();
-        (dir, store)
-    }
+    use crate::store::test_util::store;
 
     #[test]
     fn open_twice_is_idempotent() {

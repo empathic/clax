@@ -2431,9 +2431,8 @@ pub(crate) mod tests {
     const T0: &str = "2026-10-01T09:00:00Z";
 
     pub(crate) fn store() -> (tempfile::TempDir, Arc<ManualClock>, Store) {
-        let dir = tempfile::tempdir().unwrap();
         let clock = Arc::new(ManualClock::at(T0));
-        let st = Store::open_with_clock(&Home::at(dir.path().join("ax")), clock.clone()).unwrap();
+        let (dir, st) = crate::store::test_util::store_with_clock(clock.clone());
         (dir, clock, st)
     }
 

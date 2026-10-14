@@ -380,6 +380,7 @@ pub const DIFF_CAP: u64 = 64 << 20;
 
 /// The git executable named `git` on `path` (a `PATH` value), when there
 /// is one.
+#[cfg(unix)]
 pub fn find_git(path: Option<&std::ffi::OsStr>) -> Option<std::path::PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     std::env::split_paths(path?)
@@ -388,6 +389,13 @@ pub fn find_git(path: Option<&std::ffi::OsStr>) -> Option<std::path::PathBuf> {
         .find(|p| {
             std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
         })
+}
+
+/// No git: off unix (a hosted build) there is no git to run, so no capture
+/// starts.
+#[cfg(not(unix))]
+pub fn find_git(_path: Option<&std::ffi::OsStr>) -> Option<std::path::PathBuf> {
+    None
 }
 
 /// The oldest git capture runs: 2.44, the first to honour

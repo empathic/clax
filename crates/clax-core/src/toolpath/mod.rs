@@ -534,8 +534,16 @@ pub fn normalize_remote(url: &str) -> String {
 }
 
 /// A `file://` URL for the absolute path `p`, or `None` for a relative one.
+#[cfg(unix)]
 fn file_url(p: &str) -> Option<String> {
     url::Url::from_file_path(p).ok().map(String::from)
+}
+
+/// No `file://` URL: off unix (a hosted build) a path names no file the
+/// reader could open.
+#[cfg(not(unix))]
+fn file_url(_p: &str) -> Option<String> {
+    None
 }
 
 /// The facts of one row that rendering reads, parsed once.

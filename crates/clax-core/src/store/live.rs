@@ -1089,13 +1089,9 @@ impl Store {
 mod tests {
     use crate::live::{KIND_LIVE, PageKey};
     use crate::store::test_util::DAEMON;
-    use crate::{ArtifactId, Home, Store};
+    use crate::{ArtifactId, Store};
 
-    fn store() -> (tempfile::TempDir, Store) {
-        let dir = tempfile::tempdir().unwrap();
-        let st = Store::open(&Home::at(dir.path().join("ax"))).unwrap();
-        (dir, st)
-    }
+    use crate::store::test_util::store;
     fn key(path: &str) -> PageKey {
         PageKey {
             origin: "http://localhost:5173".into(),

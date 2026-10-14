@@ -109,14 +109,13 @@ impl Home {
         self.root.join("remote-sessions")
     }
 
+    /// Makes the root (mode 0700 on unix), `logs/` and `artifacts/`.
     pub fn ensure_dirs(&self) -> std::io::Result<()> {
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            std::fs::DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(&self.root)?;
-        }
+        let mut root = std::fs::DirBuilder::new();
+        root.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut root, 0o700);
+        root.create(&self.root)?;
         std::fs::create_dir_all(self.root.join("logs"))?;
         std::fs::create_dir_all(self.root.join("artifacts"))?;
         Ok(())

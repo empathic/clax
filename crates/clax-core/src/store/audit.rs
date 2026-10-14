@@ -631,7 +631,7 @@ impl Store {
     /// as its reader takes); it stops with [`CoreError::TaskFailed`] once
     /// the store shuts down.
     pub fn select<T>(&self, f: impl FnOnce(&dyn Source) -> Result<T>) -> Result<T> {
-        self.readers.run(false, |c| {
+        self.exec.read(false, |c| {
             f(&StoreSource {
                 c,
                 shut_down: &self.shut_down,
