@@ -5,7 +5,7 @@ import { type ArtifactProps, ArtifactController, type ViewState } from "./view/a
 import { afterPaint } from "./view/after-paint";
 import type { Boot } from "./view/boot";
 import { FrameHost } from "./view/frame-host";
-import { publisherText } from "./view/publisher";
+import { setBy } from "./view/publisher";
 import { type Skeleton, skeleton } from "./view/skeleton";
 
 export { MOVE_TO_CLICK, MOVE_TO_PICK, pageWait } from "./view/artifact-controller";
@@ -27,7 +27,7 @@ function setText(el: HTMLElement, text: string): void {
 function pageFollows(sk: Skeleton, s: ViewState, status: HTMLElement): void {
   const ready = !s.error && !!s.data && s.origin !== undefined;
   setText(sk.title, !s.error && s.data ? s.data.artifact.title : "Clax");
-  setText(sk.by, !s.error && s.data ? publisherText(s.data.artifact) : "");
+  setBy(sk.by, !s.error && s.data ? s.data.artifact : null);
   if (sk.topbar.classList.contains("commenting") !== s.commenting) sk.topbar.classList.toggle("commenting", s.commenting);
   sk.topbar.classList.toggle("working", s.working.length > 0);
   if (ready) {

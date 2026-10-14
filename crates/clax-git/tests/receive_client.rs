@@ -83,6 +83,13 @@ impl RepoHost for BackendHost {
     async fn delete(&self, _: &str) -> clax_git::Result<()> {
         Ok(())
     }
+    fn can_prune(&self) -> bool {
+        false
+    }
+
+    async fn prune(&self, _: &str) -> clax_git::Result<()> {
+        Ok(())
+    }
 }
 
 struct Fixture {

@@ -406,8 +406,16 @@ fn a_fork_through_the_binding_keeps_the_history() {
     let id = ArtifactId::generate();
     wait(c.write_version(&id, 1, &write(&[], &[("index.html", b"one\n")]))).unwrap();
     wait(c.write_version(&id, 2, &write(&[], &[("index.html", b"two\n")]))).unwrap();
+    wait(c.write_version(&id, 3, &write(&[], &[("index.html", b"three\n")]))).unwrap();
     let to = ArtifactId::generate();
-    wait(c.fork(&id, 2, &["index.html"], &to)).unwrap();
+    wait(c.fork(
+        &id,
+        2,
+        &["index.html"],
+        &to,
+        &clax_core::content::VersionMeta::default(),
+    ))
+    .unwrap();
     assert_eq!(
         wait(c.read_file(&to, 1, "index.html")).unwrap().unwrap(),
         b"two\n"
@@ -416,8 +424,18 @@ fn a_fork_through_the_binding_keeps_the_history() {
     let main = wait(repo.refs()).unwrap()[clax_git::MAIN];
     let log = wait(clax_git::GitVersions::new(f.0.host.clone()).log(to.as_str(), None, Some(10)))
         .unwrap();
-    assert_eq!(log.len(), 3, "the source's two versions and the fork's");
+    assert_eq!(
+        log.len(),
+        3,
+        "the source's versions up to v2 and the fork's"
+    );
     assert_eq!(log[0].commit, main);
+    // Made as a new repository, not an Artifacts fork: nothing of the
+    // source's v3 is in it.
+    let source = f.0.host.repo(&repo_name(id.as_str())).unwrap();
+    let v3 = wait(source.refs()).unwrap()["refs/tags/v3"];
+    assert!(!wait(repo.has_object(&v3)).unwrap());
+    assert!(f.state().forking.is_empty());
 }
 
 #[test]
@@ -484,12 +502,12 @@ fn a_fork_waits_while_artifacts_is_still_making_the_copy() {
     let id = ArtifactId::generate();
     wait(c.write_version(&id, 1, &write(&[], &[("index.html", b"one\n")]))).unwrap();
     f.state().fork_delay = 3;
-    let to = ArtifactId::generate();
-    wait(c.fork(&id, 1, &["index.html"], &to)).unwrap();
-    assert_eq!(
-        wait(c.read_file(&to, 1, "index.html")).unwrap().unwrap(),
-        b"one\n"
+    let (from, to) = (
+        repo_name(id.as_str()),
+        repo_name(ArtifactId::generate().as_str()),
     );
+    wait(c.host().fork(&from, &to)).unwrap();
+    assert!(wait(c.host().open(&to)).unwrap().is_some());
     assert_eq!(f.state().paused, READY_WAITS_MS[..3]);
 }
 
@@ -500,8 +518,11 @@ fn a_fork_still_in_progress_after_the_bounded_wait_deletes_its_copy_and_a_retry_
     let id = ArtifactId::generate();
     wait(c.write_version(&id, 1, &write(&[], &[("index.html", b"one\n")]))).unwrap();
     f.state().fork_delay = READY_WAITS_MS.len() + 1;
-    let to = ArtifactId::generate();
-    let e = wait(c.fork(&id, 1, &["index.html"], &to)).unwrap_err();
+    let (from, to) = (
+        repo_name(id.as_str()),
+        repo_name(ArtifactId::generate().as_str()),
+    );
+    let e = wait(c.host().fork(&from, &to)).unwrap_err();
     assert!(e.to_string().contains("still being made"), "{e}");
     assert_eq!(
         f.state().paused,
@@ -509,16 +530,13 @@ fn a_fork_still_in_progress_after_the_bounded_wait_deletes_its_copy_and_a_retry_
         "one try after each pause, no more"
     );
     assert!(
-        f.0.host.repo(&repo_name(to.as_str())).is_none(),
+        f.0.host.repo(&to).is_none(),
         "the unfinished copy, holding the source's tags, is deleted"
     );
     f.state().fork_delay = 0;
     f.state().forking.clear();
-    wait(c.fork(&id, 1, &["index.html"], &to)).unwrap();
-    assert_eq!(
-        wait(c.read_file(&to, 1, "index.html")).unwrap().unwrap(),
-        b"one\n"
-    );
+    wait(c.host().fork(&from, &to)).unwrap();
+    assert!(wait(c.host().open(&to)).unwrap().is_some());
 }
 
 #[test]

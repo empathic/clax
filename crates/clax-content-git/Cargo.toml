@@ -20,6 +20,9 @@ clax-git = { path = "../clax-git" }
 # builds them for wasm32); the tests serve smart HTTP and run git natively.
 axum = { workspace = true, features = ["http1", "tokio"] }
 clax-core = { path = "../clax-core", features = ["content-contract"] }
+# A store on one connection, as a Durable Object opens it.
+rusqlite.workspace = true
+serde_json.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "process", "rt-multi-thread", "time"] }
 

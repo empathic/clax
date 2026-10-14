@@ -383,6 +383,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             "/api/artifacts/{aid}/versions",
             post(artifacts::publish.layer(publish_limit)),
         )
+        .route("/api/artifacts/{aid}/fork", post(artifacts::fork))
         .route(
             "/api/artifacts/{aid}/assets",
             post(assets::upload.layer(asset_limit)),

@@ -840,6 +840,12 @@ mod agents {
                 Some((Artifacts, "update")),
             ),
             (
+                "POST",
+                "/api/artifacts/{aid}/fork",
+                Filtered,
+                Some((Artifacts, "read")),
+            ),
+            (
                 "GET",
                 "/api/artifacts/{aid}/files",
                 Filtered,

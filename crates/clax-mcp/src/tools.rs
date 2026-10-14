@@ -1,4 +1,4 @@
-//! The Clax MCP tool set: twenty-five tools that call the daemon's REST API.
+//! The Clax MCP tool set: twenty-six tools that call the daemon's REST API.
 
 use crate::client::{ClientError, DaemonClient};
 use crate::render;
@@ -139,6 +139,16 @@ pub enum ListScope {
 pub struct TargetArgs {
     /// Artifact URL or ID.
     pub url_or_id: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ForkArgs {
+    /// Artifact URL or ID. A URL naming a version (`/a/<id>/v/<n>`) forks that
+    /// version unless `version` is given.
+    pub url_or_id: String,
+    /// Version to fork; defaults to the URL's version, else the current version.
+    pub version: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
@@ -1458,6 +1468,27 @@ impl ClaxTools {
         Ok(json!({"artifact_id": id, "pinned": res["artifact"]["pinned"]}))
     }
 
+    async fn do_fork(&self, a: ForkArgs) -> Outcome {
+        let (id, url_version) = self.resolve_ref(&a.url_or_id).await?;
+        let mut body = json!({});
+        if let Some(n) = a.version.or(url_version) {
+            body["version"] = json!(n);
+        }
+        let res = self
+            .client
+            .fork(&id, &body)
+            .await
+            .map_err(|e| self.fail(e))?;
+        let fid = res["artifact"]["id"].as_str().unwrap_or_default();
+        Ok(json!({
+            "artifact_id": fid,
+            "url": self.artifact_url(fid),
+            "version": res["version"]["n"],
+            "title": res["artifact"]["title"],
+            "forked_from": res["artifact"]["forked_from"],
+        }))
+    }
+
     async fn do_open(&self, a: TargetArgs) -> Outcome {
         let id = self.resolve_id(&a.url_or_id).await?;
         self.client.get(&id).await.map_err(|e| self.fail(e))?;
@@ -2590,6 +2621,7 @@ direct_tools!(
     read,
     list,
     delete,
+    fork,
     open,
     pin,
     unpin,
@@ -2667,6 +2699,22 @@ impl ClaxTools {
         Parameters(args): Parameters<TargetArgs>,
     ) -> Result<CallToolResult, McpError> {
         self.finish(self.do_delete(args).await).await
+    }
+
+    #[tool(
+        description = "Fork an artifact into a new artifact of your person's: its version 1 is the given version of the artifact (by default the version a URL names, else the current one), with its files; comment threads are not copied. Returns the new artifact's ID, its URL for the person, and `forked_from` (the artifact and version it came from). Needs the right to read the artifact and to create artifacts. Publish to the new artifact to change it.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    pub async fn fork(
+        &self,
+        Parameters(args): Parameters<ForkArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.finish(self.do_fork(args).await).await
     }
 
     #[tool(

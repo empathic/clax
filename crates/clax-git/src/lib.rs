@@ -36,5 +36,8 @@ pub mod versions;
 pub use error::{GitError, Result};
 pub use id::ObjectId;
 pub use object::{Commit, Mode, Object, ObjectKind, Person, Signature, TreeEntry};
-pub use repo::{CommitMeta, MAIN, MaybeSend, MaybeSendSync, RefStatus, RefUpdate, Repo, RepoHost};
+pub use repo::{
+    CommitMeta, MAIN, MaybeSend, MaybeSendSync, RefStatus, RefUpdate, Repo, RepoHost,
+    reachable_from,
+};
 pub use versions::{FileEntry, GitVersions, Publish, Published, Rev, VersionMeta};

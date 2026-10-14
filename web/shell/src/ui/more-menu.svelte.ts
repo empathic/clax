@@ -5,7 +5,7 @@
 import type { Component } from "svelte";
 import type WhoT from "./Who.svelte";
 
-type More = Component<{ rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void; pageHref?: string | null }>;
+type More = Component<{ rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void; pageHref?: string | null; onFork?(): void }>;
 
 let loaded: More | null = $state(null);
 let whoLoaded: typeof WhoT | null = $state(null);

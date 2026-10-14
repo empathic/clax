@@ -1,6 +1,6 @@
 // Clax for Pi: registers the Pi session with the Clax daemon (the local one,
 // or in remote mode the daemon of the person this machine is connected to)
-// and adds the twenty-five Clax tools (`clax_publish`, `clax_read`, ...) and
+// and adds the twenty-seven Clax tools (`clax_publish`, `clax_read`, ...) and
 // the `/clax` command. Pi has no MCP support in its extension API, so the
 // tools call the daemon's REST API directly and return the same JSON as the MCP
 // tools. It appends feedback to its tool results and long-polls for pushed
@@ -83,6 +83,11 @@ const ListArgs = Type.Object({
 }, strict);
 
 const TargetArgs = Type.Object({ url_or_id: urlOrId }, strict);
+
+const ForkArgs = Type.Object({
+  url_or_id: str("Artifact URL or ID. A URL naming a version (`/a/<id>/v/<n>`) forks that version unless `version` is given."),
+  version: opt(version("Version to fork; defaults to the URL's version, else the current version.")),
+}, strict);
 
 const AssetUploadArgs = Type.Object({
   url_or_id: str("Artifact URL or ID the assets belong to."),
@@ -1090,6 +1095,21 @@ class Tools {
     return { artifact_id: id, pinned: res.artifact?.pinned ?? null };
   }
 
+  async fork(ctx: ExtensionContext, a: Static<typeof ForkArgs>): Promise<Json> {
+    const c = this.clientFor(ctx);
+    const { id, version: urlVersion } = await this.resolveRef(c, a.url_or_id);
+    const n = a.version ?? urlVersion;
+    const res = await this.call(() => c.fork(id, n === undefined || n === null ? {} : { version: n }));
+    const fid: string = res.artifact?.id ?? "";
+    return {
+      artifact_id: fid,
+      url: this.artifactUrl(c, fid),
+      version: res.version?.n ?? null,
+      title: res.artifact?.title ?? null,
+      forked_from: res.artifact?.forked_from ?? null,
+    };
+  }
+
   async open(ctx: ExtensionContext, a: Static<typeof TargetArgs>): Promise<Json> {
     const c = this.clientFor(ctx);
     const { id } = await this.resolveRef(c, a.url_or_id);
@@ -1800,6 +1820,10 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
     define("delete", "Clax delete", "Delete an artifact and all its versions.",
       "Delete a Clax artifact and all its versions",
       TargetArgs, (ctx, a) => tools.delete(ctx, a));
+    define("fork", "Clax fork",
+      "Fork an artifact into a new artifact of your person's: its version 1 is the given version of the artifact (by default the version a URL names, else the current one), with its files; comment threads are not copied. Returns the new artifact's ID, its URL for the person, and `forked_from` (the artifact and version it came from). Needs the right to read the artifact and to create artifacts. Publish to the new artifact to change it.",
+      "Fork a Clax artifact's version into a new artifact of your person's",
+      ForkArgs, (ctx, a) => tools.fork(ctx, a));
     define("open", "Clax open", "Open an artifact in the person's browser on this machine.",
       "Open a Clax artifact in the person's browser",
       TargetArgs, (ctx, a) => tools.open(ctx, a));

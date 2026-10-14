@@ -14,7 +14,7 @@ The implementation is the authority where the two disagree:
 
 ## Tools
 
-Twenty-six tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
+Twenty-seven tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `fork`,
 `asset_upload`, `status`, the comment tools `comments_read`,
 `comments_reply`, `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working` (see
 "Comments and feedback"), `draft`, `ask` (see "Agent questions"), and the data tools `db_get`, `db_list`,
@@ -38,7 +38,7 @@ Twenty-six tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
   which attributes publishes to no session.
 
 Pi's extension API cannot register an MCP server, so `plugins/pi` implements
-the same twenty-six tools in TypeScript against the daemon's REST API, with the same
+the same twenty-seven tools in TypeScript against the daemon's REST API, with the same
 arguments and the same result and error JSON.
 
 Names as the model sees them:

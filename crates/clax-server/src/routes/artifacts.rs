@@ -12,6 +12,7 @@ use clax_core::audit::AuditCtx;
 use clax_core::live::KIND_LIVE;
 use clax_core::model::Session;
 use clax_core::publish::{PublishRequest, require_title, validate};
+use clax_core::rights::RightType;
 use clax_core::{ArtifactId, CoreError, Event};
 use clax_http::agent::{Agent, ArtifactsList, TokenOrAgent, page_marker, person_agent_session};
 use clax_http::error::ApiError;
@@ -386,6 +387,8 @@ pub async fn get(
     let working = s.working.for_artifact(id.as_str());
     let has_viewer = who.owner_browser() || who.cookie.is_some();
     let vf = VisFor::of(&a.caller, &s);
+    let reader = SourceReader::new(a.caller.clone(), a.member().cloned(), s.hosted.is_some());
+    let (caller, member) = (a.caller.clone(), a.member_rights());
     let mut v = s
         .store_call(move |st| {
             let a = st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
@@ -403,6 +406,14 @@ pub async fn get(
                 live_part(st, &a)?.as_ref(),
             );
             vis.filter_artifact(st, &a, &working, &mut artifact)?;
+            if let Some(lineage) = forked_from_view(st, &a, &reader, Some(&vis))? {
+                artifact["forked_from"] = lineage;
+            }
+            // Whether the caller may fork it (the shell's Fork button).
+            artifact["may_fork"] = json!(
+                a.kind != KIND_LIVE
+                    && fork_refusal(st, &caller, member.as_deref(), &a.id)?.is_none()
+            );
             let mut v = json!({
                 "artifact": artifact,
                 "versions": vis.filter_versions(&versions),
@@ -734,4 +745,243 @@ pub async fn files(
         })
         .await?;
     Ok(Json(v))
+}
+
+/// Who reads a fork's lineage ([`forked_from_view`]): whether they may
+/// read its source decides whether its title is named.
+#[derive(Clone)]
+pub(crate) struct SourceReader {
+    caller: clax_http::auth::Caller,
+    member: Option<clax_http::hosted::MemberRights>,
+    hosted: bool,
+}
+
+impl SourceReader {
+    /// `caller`, a hosted daemon's signed-in person `member` (`None`: no
+    /// member), on a hosted daemon when `hosted`.
+    pub(crate) fn new(
+        caller: clax_http::auth::Caller,
+        member: Option<clax_http::hosted::MemberRights>,
+        hosted: bool,
+    ) -> SourceReader {
+        SourceReader {
+            caller,
+            member,
+            hosted,
+        }
+    }
+
+    /// Whether they may read artifact `src`: the owner and the owner's
+    /// agents always; a person's agent and a hosted daemon's signed-in
+    /// person by their rights (the person's also by `src`'s link); a local
+    /// daemon's connected person by their person rights; on a hosted daemon
+    /// a guest or no session only when `src` is shared by link, and on a
+    /// local daemon, whose browsers read every artifact, always.
+    fn may_read(&self, st: &Store, src: &Artifact) -> clax_core::Result<bool> {
+        use clax_http::auth::Caller;
+        let read = (RightType::Artifacts, "read");
+        if let Some(m) = &self.member {
+            return m.allows_at(st, read, &src.id);
+        }
+        Ok(match &self.caller {
+            Caller::Owner { .. } | Caller::OwnerAgent { .. } => true,
+            Caller::PersonAgent { person, rights, .. } => {
+                rights.allows(RightType::Artifacts, "read", Some(&src.id), &|x| {
+                    x == src.id && src.authors.creator == *person
+                })
+            }
+            Caller::Person { viewer } => {
+                let pid = viewer.public_id.as_str();
+                let own = |x: &str| st.artifact_created_by(x, Some(pid)).unwrap_or(false);
+                st.person_rights(pid)?
+                    .allows(RightType::Artifacts, "read", Some(&src.id), &own)
+            }
+            Caller::Viewer { .. } | Caller::Anonymous if self.hosted => {
+                st.link_access(&src.id)?.is_some()
+            }
+            Caller::Viewer { .. } | Caller::Anonymous => true,
+        })
+    }
+}
+
+/// `a`'s lineage as `reader` sees it: `{artifact_id, version, title}`, the
+/// title the source's (as `vis` filters it for an agent) when it still
+/// exists and `reader` may read it, else null; `None` when `a` is no fork.
+///
+/// # Errors
+/// The store's.
+pub(crate) fn forked_from_view(
+    st: &Store,
+    a: &Artifact,
+    reader: &SourceReader,
+    vis: Option<&crate::feedback::Vis>,
+) -> clax_core::Result<Option<Value>> {
+    let Some(f) = &a.forked_from else {
+        return Ok(None);
+    };
+    let source = match ArtifactId::parse(&f.artifact_id) {
+        Ok(id) => st.get_artifact(&id)?,
+        Err(_) => None,
+    };
+    let title = match source {
+        Some(s) if reader.may_read(st, &s)? => {
+            let mut view = json!(s);
+            if let Some(vis) = vis {
+                vis.filter_artifact(st, &s, &[], &mut view)?;
+            }
+            view["title"].clone()
+        }
+        _ => Value::Null,
+    };
+    Ok(Some(
+        json!({"artifact_id": f.artifact_id, "version": f.version, "title": title}),
+    ))
+}
+
+/// Why `caller` may not fork artifact `aid` (one they may read, as the
+/// route's extractor checked for an agent and a hosted daemon's signed-in
+/// person, `member`), or `None` when they may: a person's agent and
+/// `member` need `create` in their rights; a local daemon's connected
+/// person needs read on `aid` (404 without) and `create` in their own
+/// person rights; a guest is refused 403 `not_permitted`, no credential
+/// 401; the owner and the owner's agents may. A live page is never forked.
+///
+/// # Errors
+/// The store's.
+pub(crate) fn fork_refusal(
+    st: &Store,
+    caller: &clax_http::auth::Caller,
+    member: Option<&clax_core::rights::Rights>,
+    aid: &str,
+) -> clax_core::Result<Option<ApiError>> {
+    use clax_http::auth::Caller;
+    let create =
+        |r: &clax_core::rights::Rights| r.allows(RightType::Artifacts, "create", None, &|_| false);
+    let no_create = || {
+        Some(ApiError::forbidden(
+            "not_permitted",
+            "your rights here do not let you create (clax-artifacts)",
+        ))
+    };
+    if member.is_some_and(|m| !create(m)) {
+        return Ok(no_create());
+    }
+    Ok(match caller {
+        Caller::Owner { .. } | Caller::OwnerAgent { .. } => None,
+        Caller::PersonAgent { rights, .. } => (!create(rights)).then(no_create).flatten(),
+        Caller::Person { .. } if member.is_some() => None,
+        Caller::Person { viewer } => {
+            let pid = viewer.public_id.as_str();
+            let rights = st.person_rights(pid)?;
+            let own = |x: &str| st.artifact_created_by(x, Some(pid)).unwrap_or(false);
+            if !rights.allows(RightType::Artifacts, "read", Some(aid), &own) {
+                Some(ApiError::not_found())
+            } else if !create(&rights) {
+                no_create()
+            } else {
+                None
+            }
+        }
+        Caller::Viewer { .. } => Some(ApiError::forbidden(
+            "not_permitted",
+            "a guest cannot fork: sign in as a person of this Clax first",
+        )),
+        Caller::Anonymous => Some(ApiError::unauthorized()),
+    })
+}
+
+/// `POST /api/artifacts/<aid>/fork` body.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ForkBody {
+    /// The version to fork; the current version when absent.
+    version: Option<u32>,
+}
+
+/// Forks version `version` (default the current one) of the artifact into
+/// a new artifact of the caller's (spec 2026-10-11-clax-dev-hosted-design
+/// H11; [`clax_store::forks`]): `{artifact, version, url}` with
+/// `artifact.forked_from`, 201. It needs read on the source and `create`
+/// (multi-person rights): a person's agent's, a hosted daemon's signed-in
+/// person's, or a local daemon's connected person's own rights; the owner
+/// and the owner's agents hold both. A guest (a named viewer who is no
+/// connected person) is refused 403 `not_permitted`, no credential 401;
+/// a person beyond the live seats forks as one within them. A person's agent
+/// forks from a session, as its person; the fork is the forking person's,
+/// and the session, when one is named, watches it.
+#[allow(clippy::too_many_arguments)]
+pub async fn fork(
+    State(s): State<AppState>,
+    a: Agent<clax_http::agent::ArtifactsFork>,
+    _o: clax_http::viewer::SameOrigin,
+    audit: AuditCtx,
+    headers: HeaderMap,
+    req: Result<Json<ForkBody>, JsonRejection>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    use clax_http::auth::Caller;
+    let id = a.artifact()?;
+    let b = body(req)?;
+    if s.live_ids.contains(id.as_str()) {
+        return Err(ApiError::bad_request(
+            "live_page",
+            "a live page cannot be forked: its versions are snapshots of a page elsewhere",
+        ));
+    }
+    person_agent_session(&a.caller)?;
+    let (c, m, aid) = (a.caller.clone(), a.member_rights(), id.as_str().to_string());
+    s.store_call(move |st| fork_refusal(st, &c, m.as_deref(), &aid))
+        .await?
+        .map_or(Ok(()), Err)?;
+    // Who forks: the owner (no person), a person's agent's person, or a
+    // connected person in their browser.
+    let person: Option<String> = match &a.caller {
+        Caller::PersonAgent { person, .. } => person.clone(),
+        Caller::Person { viewer } => Some(viewer.public_id.clone()),
+        _ => None,
+    };
+    // A spectator forks too: a fork writes nothing of the source's (spec
+    // 2026-10-11-clax-dev-hosted-design §7: beyond the seats one reads and
+    // forks).
+    let session = session_header(&headers)?;
+    let grant = a.grant().map(str::to_string);
+    let events = s.events.clone();
+    let vf = VisFor::of(&a.caller, &s);
+    let reader = SourceReader::new(a.caller.clone(), a.member().cloned(), s.hosted.is_some());
+    let (mut artifact, version, lineage) = s
+        .store_call_async(move |st| async move {
+            let st = &*st;
+            let session = publishing_session(st, &session, grant.as_deref())?;
+            let (artifact, version) = st
+                .fork_artifact_async(
+                    &audit,
+                    &id,
+                    b.version,
+                    person.as_deref(),
+                    session.as_deref(),
+                )
+                .await?;
+            if let Some(sid) = &session {
+                st.ensure_watch(&audit, sid, &ArtifactId::parse(&artifact.id)?)?;
+            }
+            events.publish(Event::Version {
+                artifact_id: artifact.id.clone(),
+                n: version.n,
+                by_page: false,
+                title: Some(artifact.title.clone()),
+                at: Some(version.created_at.clone()),
+            });
+            let vis = vf.build(st)?;
+            let lineage = forked_from_view(st, &artifact, &reader, Some(&vis))?;
+            let (a, v) = vis.filter_published(st, &artifact, &version)?;
+            Ok((a, v, lineage))
+        })
+        .await?;
+    artifact["forked_from"] = json!(lineage);
+    let url = format!("/a/{}", artifact["id"].as_str().unwrap_or_default());
+    let mut v = json!({"artifact": artifact, "version": version, "url": url});
+    if !a.holds_token() {
+        strip_sessions(&mut v);
+    }
+    clax_http::hosted::stamp_content_keys(&s, &mut v);
+    Ok((StatusCode::CREATED, Json(v)))
 }

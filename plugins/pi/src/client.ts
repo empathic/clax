@@ -565,6 +565,11 @@ export class DaemonClient {
     return this.json(`/api/artifacts/${id}`, this.jsonBody("PATCH", body));
   }
 
+  /** `POST /api/artifacts/<id>/fork`: forks a version (`{version?}`) into a new artifact; `{artifact, version, url}`. */
+  fork(id: string, body: unknown): Promise<any> {
+    return this.json(`/api/artifacts/${id}/fork`, this.jsonBody("POST", body, PUBLISH_TIMEOUT_MS));
+  }
+
   /** `DELETE /api/artifacts/<id>`. */
   async delete(id: string): Promise<void> {
     await this.request(`/api/artifacts/${id}`, { method: "DELETE" });

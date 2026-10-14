@@ -243,7 +243,7 @@ async fn a_file_replaces_a_directory_and_an_emptied_directory_disappears() {
 }
 
 #[tokio::test]
-async fn fork_copies_history_drops_the_version_tags_and_commits_v1_on_top() {
+async fn fork_keeps_history_to_the_version_drops_other_refs_and_commits_v1_on_it() {
     let host = MemoryHost::new();
     let v = GitVersions::new(host.clone());
     v.create(A).await.unwrap();
@@ -283,17 +283,20 @@ async fn fork_copies_history_drops_the_version_tags_and_commits_v1_on_top() {
         v.versions(B).await.unwrap(),
         BTreeMap::from([(1, forked.commit)])
     );
-    let refs = host.repo(&repo_name(B)).unwrap().refs().await.unwrap();
+    let fork = host.repo(&repo_name(B)).unwrap();
+    let refs = fork.refs().await.unwrap();
     assert_eq!(
-        refs.get("refs/tags/keep"),
-        Some(&c2),
-        "tags other than v<n> stay"
+        refs.keys().map(String::as_str).collect::<Vec<_>>(),
+        [MAIN, "refs/tags/v1"],
+        "no other copied ref stays"
     );
+    // The history ends at the forked version: nothing of v2 is held.
     let log = v.log(B, None, None).await.unwrap();
     assert_eq!(
         log.iter().map(|c| c.commit).collect::<Vec<_>>(),
-        [forked.commit, c2, c1]
+        [forked.commit, c1]
     );
+    assert!(!fork.has_object(&c2).await.unwrap());
     assert_eq!(
         log[0].message,
         format!(
@@ -383,7 +386,7 @@ async fn a_fork_clones_with_real_git_and_its_history() {
         "one"
     );
     assert_eq!(home.git_text(&out, &["tag", "--list"]), "v1");
-    assert_eq!(home.git_text(&out, &["rev-list", "--count", "HEAD"]), "3");
+    assert_eq!(home.git_text(&out, &["rev-list", "--count", "--all"]), "2");
     home.git(&out, &["fsck", "--strict", "--no-dangling"]);
 }
 
@@ -582,6 +585,13 @@ impl clax_git::RepoHost for MetaOnlyHost {
     }
     async fn delete(&self, name: &str) -> clax_git::Result<()> {
         self.0.delete(name).await
+    }
+    fn can_prune(&self) -> bool {
+        self.0.can_prune()
+    }
+
+    async fn prune(&self, name: &str) -> clax_git::Result<()> {
+        self.0.prune(name).await
     }
 }
 

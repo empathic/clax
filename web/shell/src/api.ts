@@ -20,7 +20,15 @@ export type Artifact = {
    * its site's most recently used origin, and its site's origins, the most
    * recently used first (spec 2026-10-05 §7.2). */
   live?: { origin: string; path: string; page_url: string; origins?: string[]; merged_into?: string; merged_into_url?: string | null } | null;
+  /** From `GET /api/artifacts/<id>` and the bootstrap: the artifact and
+   * version a fork was made from, with the source's title, or null when
+   * the viewer may not read it (or it was deleted). Absent on an artifact
+   * that is no fork. */
+  forked_from?: ForkedFrom;
+  /** From `GET /api/artifacts/<id>`: the viewer may fork it. */
+  may_fork?: boolean;
 };
+export type ForkedFrom = { artifact_id: string; version: number; title: string | null };
 /** An artifact's people and agents. `agents` is ordered live first, then
  * most recently active; `live` means a send can reach it. An agent carries
  * its name, which it shows as, and its person (`owner` for the owner's

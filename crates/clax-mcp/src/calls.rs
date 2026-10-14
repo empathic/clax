@@ -15,8 +15,9 @@ use tokio::sync::watch;
 /// changes history (`status` when it names the agent). The read-only
 /// tools, `open`, which only shows a page, and `draft`, whose work in
 /// progress is kept in memory and never in history, capture none.
-pub const GIT_TOOLS: [&str; 17] = [
+pub const GIT_TOOLS: [&str; 18] = [
     "publish",
+    "fork",
     "comments_reply",
     "comments_resolve",
     "comments_handoff",
@@ -240,7 +241,7 @@ mod tests {
     #[test]
     fn every_tool_that_changes_history_captures_git() {
         let tools = crate::ClaxTools::tools();
-        assert_eq!(tools.len(), 25);
+        assert_eq!(tools.len(), 26);
         for t in &tools {
             let name = t.name.as_ref();
             let read_only = t

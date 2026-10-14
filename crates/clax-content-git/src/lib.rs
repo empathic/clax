@@ -20,8 +20,9 @@
 //!   person is the store's committer's, without `Clax-Publisher`. So
 //!   `git log` shows who made each version, as the hosted prototype's
 //!   commits do. A fork's version 1 is `Forked from <artifact ID>@v<n>`
-//!   with `Clax-Forked-From: <artifact ID>@v<n>` after `Clax-Version: 1`,
-//!   by the store's committer.
+//!   with `Clax-Forked-From: <artifact ID>@v<n>` after the trailers of its
+//!   publisher (the forking person and agent, [`ContentStore::fork`]'s
+//!   metadata), and is signed as a version they published.
 //! - A carried file keeps its blob: the new tree is built from version
 //!   `n - 1`'s tree, so neither its bytes nor its unchanged directories are
 //!   read or written again.
@@ -68,10 +69,13 @@
 //!   [Ordering](clax_core::content#ordering)); the alternative of rows
 //!   naming content addresses, with refs advanced after the transaction,
 //!   is not taken because the filesystem store has no content address.
-//! - **Fork** copies the source repository, then in one update commits the
-//!   fork's version 1 on the copied `main`, points `v1` at it and deletes
-//!   the other copied version tags; when any step after the copy fails, the
-//!   copy is deleted, so a retry starts clean.
+//! - **Fork** makes the fork's repository as far as the forked version's
+//!   commit ([`fork_at`]: a copy cut back and pruned, or a new repository
+//!   given what that commit reaches), so the fork's history ends at the
+//!   forked version and holds nothing the source gained after it; then in
+//!   one update it commits the fork's version 1 on that commit and points
+//!   `main` and `v1` at it. When any step after the repository exists
+//!   fails, it is deleted, so a retry starts clean.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -84,7 +88,8 @@ use clax_core::{ArtifactId, CoreError, Result};
 use clax_git::object::with_trailers;
 use clax_git::tree::{Changes, build_tree, walk_tree};
 use clax_git::versions::{
-    commit_refs, fork_ref, person_email, repo_name, tag_ref, version_of_tag_ref, version_tag,
+    commit_refs, fork_at, fork_ref, person_email, repo_name, tag_ref, version_of_tag_ref,
+    version_tag,
 };
 use clax_git::{
     Commit, GitError, GitVersions, MAIN, ObjectId, Person, RefUpdate, Repo, RepoHost, Rev,
@@ -262,6 +267,20 @@ impl<H: RepoHost, A: AssetStore> GitContent<H, A> {
         } else {
             note.to_string()
         };
+        self.commit_as(n, &subject, meta, Vec::new())
+    }
+
+    /// The message and signature of version `n`'s commit with `subject`,
+    /// published as `meta` says (its note aside): `Clax-Version`,
+    /// `Clax-Publisher`, `Clax-Agent`, then `extra`; signed as
+    /// [`GitContent::version_commit`] signs.
+    fn commit_as(
+        &self,
+        n: u32,
+        subject: &str,
+        meta: &VersionMeta,
+        extra: Vec<(String, String)>,
+    ) -> Result<(String, Signature)> {
         let mut trailers = vec![("Clax-Version".to_string(), n.to_string())];
         let sig = match meta.person.as_deref().map(ident_part) {
             Some(person) if !person.is_empty() => {
@@ -285,7 +304,8 @@ impl<H: RepoHost, A: AssetStore> GitContent<H, A> {
         {
             trailers.push(("Clax-Agent".to_string(), agent));
         }
-        let message = with_trailers(&subject, &trailers).map_err(core_error)?;
+        trailers.extend(extra);
+        let message = with_trailers(subject, &trailers).map_err(core_error)?;
         Ok((message, sig))
     }
 
@@ -479,6 +499,7 @@ impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A>
         from_n: u32,
         paths: &[&str],
         to: &ArtifactId,
+        meta: &VersionMeta,
     ) -> Result<()> {
         let first = paths.first().copied().unwrap_or(clax_core::publish::INDEX);
         let source = self
@@ -511,35 +532,27 @@ impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A>
                 .map_err(core_error)?;
         }
         let name = repo_name(to.as_str());
-        self.host()
-            .fork(&repo_name(from.as_str()), &name)
-            .await
-            .map_err(core_error)?;
         let made = async {
-            let repo = self
-                .open(to)
-                .await?
-                .ok_or_else(|| unavailable(format!("{name} was not created")))?;
-            let refs = repo.refs().await.map_err(core_error)?;
-            let head = refs.get(MAIN).copied();
+            // The fork's history ends at the forked version: its repository
+            // holds only what that commit reaches, and v1's parent is it.
+            let repo = fork_at(self.host(), &repo_name(from.as_str()), &name, source_commit)
+                .await
+                .map_err(core_error)?;
             let base_paths: Vec<String> = source_files.into_keys().collect();
             let changes = changes_from(&base_paths, &keep, &[]);
             let (tree, mut objects) = build_tree(&repo, Some(source_tree), &changes)
                 .await
                 .map_err(core_error)?;
             let reference = fork_ref(from.as_str(), u64::from(from_n));
-            let message = with_trailers(
+            let (message, sig) = self.commit_as(
+                1,
                 &format!("Forked from {reference}"),
-                &[
-                    ("Clax-Version".to_string(), "1".to_string()),
-                    ("Clax-Forked-From".to_string(), reference),
-                ],
-            )
-            .map_err(core_error)?;
-            let sig = self.signature();
+                meta,
+                vec![("Clax-Forked-From".to_string(), reference)],
+            )?;
             let commit = Commit {
                 tree,
-                parents: head.into_iter().collect(),
+                parents: vec![source_commit],
                 author: sig.clone(),
                 committer: sig,
                 message,
@@ -548,14 +561,10 @@ impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A>
             .map_err(core_error)?;
             let new = commit.id();
             objects.push(commit);
-            let copied = versions_of(&refs);
-            let mut updates = vec![
-                RefUpdate::new(MAIN, head, Some(new)),
-                RefUpdate::new(version_ref(1), copied.get(&1).copied(), Some(new)),
+            let updates = [
+                RefUpdate::new(MAIN, Some(source_commit), Some(new)),
+                RefUpdate::new(version_ref(1), None, Some(new)),
             ];
-            for (m, c) in copied.range(2..) {
-                updates.push(RefUpdate::new(version_ref(*m), Some(*c), None));
-            }
             Self::apply_all(&repo, objects, &updates).await
         }
         .await;

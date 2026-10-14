@@ -2545,3 +2545,270 @@ async fn an_agent_tokens_bodies_are_bounded_like_a_signed_grants() {
     let read = site.ts.agent_gate.state().read - r0;
     assert!(read > (6 * MIB) as u64, "{read}");
 }
+
+#[tokio::test]
+async fn a_member_forks_what_they_may_read_into_their_own_artifact() {
+    let site = Site::new().await;
+    site.ts.seats.set_limits(clax_core::seats::SeatLimits {
+        people: 1,
+        guests: 1,
+        agents: 20,
+        idle_ms: 180_000,
+    });
+    let owner = site.owner().await;
+    let plan = site.titled("Plan").await;
+    let budget = site.titled("Budget").await;
+    // Sam may read Budget alone, and create nothing; Mia and Kim hold the
+    // default, which creates.
+    let (sam, _) = site
+        .person_with(
+            &owner,
+            "Sam",
+            json!([{"type": "clax-artifacts", "actions": ["read"], "locations": [budget]}]),
+        )
+        .await;
+    let (mia, mia_id) = site
+        .person_with(&owner, "Mia", json!(["clax:collaborator"]))
+        .await;
+    let kim = site.person(&owner, "Kim").await;
+    let fork = |aid: &str| format!("/api/artifacts/{aid}/fork");
+    // No read: as if there were no such artifact. No create: refused.
+    let (s, v) = site.post(&sam, &fork(&plan), json!({})).await;
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+    let (s, v) = site.post(&sam, &fork(&budget), json!({})).await;
+    assert_eq!((s, code(&v)), (403, "not_permitted"), "{v}");
+    // Mia's stream takes Plan's one seat: Kim, beyond it, is a spectator.
+    let res = site
+        .req(&mia, reqwest::Method::GET, "/api/stream")
+        .send()
+        .await
+        .unwrap();
+    let mut events = clax_testkit::EventReader::from_response(res);
+    let (_, ready) = events.next().await;
+    let sid = ready["stream"].as_str().unwrap().to_string();
+    let (s, v) = site
+        .post(
+            &mia,
+            &format!("/api/stream/{sid}"),
+            json!({"subscribe": [format!("artifact:{plan}")]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    // A spectator reads and forks (spec §7).
+    let (s, v) = site.post(&kim, &fork(&plan), json!({})).await;
+    assert_eq!(s, 201, "{v}");
+    // Mia forks version 1: the fork is hers, and names where it came from.
+    let (s, v) = site.post(&mia, &fork(&plan), json!({"version": 1})).await;
+    assert_eq!(s, 201, "{v}");
+    let fid = v["artifact"]["id"].as_str().unwrap().to_string();
+    assert_ne!(fid, plan);
+    assert_eq!(v["url"], json!(format!("/a/{fid}")));
+    assert_eq!(v["version"]["n"], json!(1));
+    assert_eq!(
+        v["artifact"]["forked_from"],
+        json!({"artifact_id": plan, "version": 1, "title": "Plan"})
+    );
+    assert!(v["version"]["content_key"].is_string(), "{v}");
+    let (s, got) = site.get(&mia, &format!("/api/artifacts/{fid}")).await;
+    assert_eq!(s, 200, "{got}");
+    assert_eq!(got["artifact"]["forked_from"]["title"], json!("Plan"));
+    let (s, people) = site.get(&owner, "/api/artifacts").await;
+    assert_eq!(s, 200);
+    assert!(listed(&people).contains(&fid));
+    let st = site.ts.store.clone();
+    let (fork_id, mia_id2) = (fid.clone(), mia_id.clone());
+    assert!(
+        tokio::task::spawn_blocking(move || st.artifact_created_by(&fork_id, Some(&mia_id2)))
+            .await
+            .unwrap()
+            .unwrap()
+    );
+    // The source has no threads to give, and the fork has none.
+    let (_, threads) = site
+        .get(&mia, &format!("/api/artifacts/{fid}/threads"))
+        .await;
+    assert_eq!(threads["threads"], json!([]), "{threads}");
+    // A version the source lacks.
+    let (s, v) = site.post(&mia, &fork(&budget), json!({"version": 9})).await;
+    assert_eq!((s, code(&v)), (400, "unknown_version"), "{v}");
+    // A guest of a page shared by link may comment there, never fork.
+    site.send(
+        &owner,
+        reqwest::Method::PUT,
+        &format!("/api/hosted/artifacts/{budget}/link"),
+        json!({"access": "commenter"}),
+    )
+    .await;
+    let mut guest = Browser::default();
+    site.sign_in_put(&mut guest, json!({"display_name": "Gil"}))
+        .await;
+    let (s, v) = site.post(&guest, &fork(&budget), json!({})).await;
+    assert_eq!((s, code(&v)), (401, "sign_in_required"), "{v}");
+    // The owner forks too; a source since deleted keeps its ID, not its title.
+    let (s, v) = site.post(&owner, &fork(&budget), json!({})).await;
+    assert_eq!(s, 201, "{v}");
+    let oid = v["artifact"]["id"].as_str().unwrap().to_string();
+    let res = site
+        .ts
+        .authed(
+            site.ts
+                .client
+                .delete(site.url(&format!("/api/artifacts/{budget}"))),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    let (_, got) = site.get(&owner, &format!("/api/artifacts/{oid}")).await;
+    assert_eq!(
+        got["artifact"]["forked_from"],
+        json!({"artifact_id": budget, "version": 1, "title": null})
+    );
+}
+
+#[tokio::test]
+async fn a_forks_source_is_named_only_to_who_may_read_the_source() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let secret = site.titled("Secret plan").await;
+    let (s, v) = site
+        .post(&owner, &format!("/api/artifacts/{secret}/fork"), json!({}))
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let fid = v["artifact"]["id"].as_str().unwrap().to_string();
+    let res = site
+        .ts
+        .authed(
+            site.ts
+                .client
+                .patch(site.url(&format!("/api/artifacts/{fid}")))
+                .json(&json!({"title": "Mine"})),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    // The fork is shared by link; its source is not.
+    site.send(
+        &owner,
+        reqwest::Method::PUT,
+        &format!("/api/hosted/artifacts/{fid}/link"),
+        json!({"access": "viewer"}),
+    )
+    .await;
+    let anon = Browser::default();
+    let mut guest = Browser::default();
+    site.sign_in_put(&mut guest, json!({"display_name": "Gil"}))
+        .await;
+    let kim = site.person(&owner, "Kim").await;
+    let (sam, _) = site
+        .person_with(
+            &owner,
+            "Sam",
+            json!([{"type": "clax-artifacts", "actions": ["read"], "locations": [fid]}]),
+        )
+        .await;
+    let unnamed = json!({"artifact_id": secret, "version": 1, "title": null});
+    for (who, b) in [("anonymous", &anon), ("a guest", &guest), ("Sam", &sam)] {
+        let (s, got) = site.get(b, &format!("/api/artifacts/{fid}")).await;
+        assert_eq!(s, 200, "{who}: {got}");
+        assert_eq!(got["artifact"]["forked_from"], unnamed, "{who}");
+        let page = site
+            .req(b, reqwest::Method::GET, &format!("/a/{fid}"))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(page.contains(&fid), "{who}: {page}");
+        assert!(
+            !page.contains("Secret plan"),
+            "{who}: the page names the source"
+        );
+    }
+    // A member who reads the source, by their rights or its link, sees it.
+    let (_, got) = site.get(&kim, &format!("/api/artifacts/{fid}")).await;
+    assert_eq!(
+        got["artifact"]["forked_from"]["title"],
+        json!("Secret plan")
+    );
+    site.send(
+        &owner,
+        reqwest::Method::PUT,
+        &format!("/api/hosted/artifacts/{secret}/link"),
+        json!({"access": "viewer"}),
+    )
+    .await;
+    for (who, b) in [("anonymous", &anon), ("Sam", &sam)] {
+        let (_, got) = site.get(b, &format!("/api/artifacts/{fid}")).await;
+        assert_eq!(
+            got["artifact"]["forked_from"]["title"],
+            json!("Secret plan"),
+            "{who}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_agent_token_forks_through_the_mcp_adapter_within_its_persons_rights() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let plan = site.titled("Plan").await;
+    let budget = site.titled("Budget").await;
+    // Sam may read Budget alone, and create nothing; Mia holds the default,
+    // which creates.
+    let (sam, _) = site
+        .person_with(
+            &owner,
+            "Sam",
+            json!([{"type": "clax-artifacts", "actions": ["read"], "locations": [budget]}]),
+        )
+        .await;
+    let (mia, mia_id) = site
+        .person_with(&owner, "Mia", json!(["clax:collaborator"]))
+        .await;
+    let mut sams = site.token_agent(&sam, "sam-laptop").await;
+    assert_eq!(sams.initialize("summary-writer").await, 200);
+    // No read, as for the agent's `read`: refused. No create: refused.
+    let (s, r) = sams.call("fork", json!({"url_or_id": plan})).await;
+    assert_eq!((s, tool_code(&r).as_str()), (200, "not_permitted"), "{r}");
+    let (s, r) = sams.call("fork", json!({"url_or_id": budget})).await;
+    assert_eq!((s, tool_code(&r).as_str()), (200, "not_permitted"), "{r}");
+    // Mia's agent forks version 1 of Plan: the fork is Mia's, made from the
+    // agent's session, which watches it.
+    let mut mias = site.token_agent(&mia, "mia-laptop").await;
+    assert_eq!(mias.initialize("summary-writer").await, 200);
+    let (s, r) = mias
+        .call("fork", json!({"url_or_id": format!("/a/{plan}/v/1")}))
+        .await;
+    assert_eq!((s, tool_code(&r).as_str()), (200, ""), "{r}");
+    let out = tool_json(&r);
+    let fid = out["artifact_id"]
+        .as_str()
+        .expect("artifact_id")
+        .to_string();
+    assert_ne!(fid, plan);
+    // The owner's title is withheld from Mia's agents until Mia approves
+    // the owner as an author, as for its `read`.
+    assert_eq!(
+        out["forked_from"],
+        json!({"artifact_id": plan, "version": 1, "title": null}),
+        "{out}"
+    );
+    let st = site.ts.store.clone();
+    let (fork_id, who) = (fid.clone(), mia_id.clone());
+    assert!(
+        tokio::task::spawn_blocking(move || st.artifact_created_by(&fork_id, Some(&who)))
+            .await
+            .unwrap()
+            .unwrap()
+    );
+    let sid = mias.session.clone().unwrap();
+    let st = site.ts.store.clone();
+    let watched = tokio::task::spawn_blocking(move || st.list_watches(&sid))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(watched.iter().any(|w| w.artifact_id == fid), "{watched:?}");
+}

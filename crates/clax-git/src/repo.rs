@@ -8,10 +8,10 @@
 //! be, since a Worker's JavaScript futures are `!Send` and run on one
 //! thread. An implementation may still write its methods as `async fn`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::future::Future;
 
-use crate::error::Result;
+use crate::error::{GitError, Result};
 use crate::id::ObjectId;
 use crate::object::{Commit, Object, ObjectKind, Signature, parse_trailers};
 
@@ -215,4 +215,45 @@ pub trait RepoHost: MaybeSendSync {
 
     /// Deletes the repository `name`; nothing when it is missing.
     fn delete(&self, name: &str) -> impl Future<Output = Result<()>> + MaybeSend;
+
+    /// Whether [`RepoHost::prune`] drops objects, and [`Repo::apply`] moves
+    /// a branch to any commit it holds (not only a fast forward): then a
+    /// fork can be copied and cut back ([`crate::versions::fork_at`]).
+    fn can_prune(&self) -> bool;
+
+    /// Drops from `name` every object none of its refs reaches
+    /// ([`reachable_from`]), so the repository answers none of them: what a
+    /// fork copied of its source beyond the version it was made from.
+    /// `not_found` when `name` is missing; `unavailable` on a host that
+    /// cannot ([`RepoHost::can_prune`]).
+    fn prune(&self, name: &str) -> impl Future<Output = Result<()>> + MaybeSend;
+}
+
+/// Every object `tips` reach: commits and their parents, each commit's tree
+/// and the trees and files it names (submodule entries aside), tags and
+/// their targets. `read` answers an object, or `None` when it is missing,
+/// which is `unavailable`. A file named by a tree is taken as reached
+/// without being read.
+pub fn reachable_from(
+    tips: impl IntoIterator<Item = ObjectId>,
+    mut read: impl FnMut(&ObjectId) -> Result<Option<Object>>,
+) -> Result<HashSet<ObjectId>> {
+    let mut seen = HashSet::new();
+    let mut todo: Vec<ObjectId> = tips.into_iter().collect();
+    while let Some(id) = todo.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let Some(o) = read(&id)? else {
+            return Err(GitError::unavailable(format!("object {id} is missing")));
+        };
+        for (next, kind) in crate::server::links(&o)? {
+            if kind == Some(ObjectKind::Blob) {
+                seen.insert(next);
+            } else {
+                todo.push(next);
+            }
+        }
+    }
+    Ok(seen)
 }

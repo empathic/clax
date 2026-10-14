@@ -147,6 +147,9 @@ need!(
     crate::limits::PUBLISH_BODY_LIMIT
 );
 need!(ArtifactsGet, Artifacts, "read", Filtered, DEFAULT_LIMIT);
+// Forking also needs `create` (no location), which the handler checks
+// (`routes::artifacts::fork_refusal`).
+need!(ArtifactsFork, Artifacts, "read", Filtered, DEFAULT_LIMIT);
 need!(ArtifactsPatch, Artifacts, "update", Filtered, DEFAULT_LIMIT);
 need!(ArtifactsDelete, Artifacts, "delete", Own, DEFAULT_LIMIT);
 need!(VersionsList, Artifacts, "read", Filtered, DEFAULT_LIMIT);
@@ -274,6 +277,7 @@ pub const ROUTES: &[(&str, &str, NeedInfo)] = &[
     ("GET", "/api/artifacts/{aid}/versions", VersionsList::INFO),
     ("GET", "/api/artifacts/{aid}/versions/{n}", VersionGet::INFO),
     ("POST", "/api/artifacts/{aid}/versions", Publish::INFO),
+    ("POST", "/api/artifacts/{aid}/fork", ArtifactsFork::INFO),
     ("GET", "/api/artifacts/{aid}/files", FilesList::INFO),
     (
         "GET",
@@ -454,6 +458,7 @@ pub const ROUTE_NEEDS: &[RouteNeed] = &[
     route_need!("artifacts::list", ArtifactsList),
     route_need!("artifacts::create", ArtifactsCreate),
     route_need!("artifacts::get", ArtifactsGet),
+    route_need!("artifacts::fork", ArtifactsFork),
     route_need!("artifacts::patch", ArtifactsPatch),
     route_need!("artifacts::delete", ArtifactsDelete),
     route_need!("artifacts::list_versions", VersionsList),
@@ -534,6 +539,7 @@ pub const FILTERED_LIVE: &[&str] = &[
     "ArtifactsList",
     "ArtifactsCreate",
     "ArtifactsGet",
+    "ArtifactsFork",
     "ArtifactsPatch",
     "VersionsList",
     "VersionGet",
@@ -739,6 +745,18 @@ impl<N: Need> Agent<N> {
             }
         }
         Ok(id)
+    }
+
+    /// A hosted daemon's signed-in person's rights, which limit this
+    /// request as a person's agent's limit it; `None` for any other caller.
+    pub fn member_rights(&self) -> Option<Arc<clax_core::rights::Rights>> {
+        self.member.as_ref().map(|m| m.rights.clone())
+    }
+
+    /// A hosted daemon's signed-in person, with their rights; `None` for
+    /// any other caller.
+    pub fn member(&self) -> Option<&crate::hosted::MemberRights> {
+        self.member.as_ref()
     }
 
     /// Which artifacts the caller may read, for a listing to leave out the

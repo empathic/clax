@@ -105,6 +105,7 @@ pub mod elevations;
 pub mod exec;
 pub mod extension;
 pub mod feedback;
+pub mod forks;
 pub mod hosted;
 pub mod inbox;
 pub mod joined;

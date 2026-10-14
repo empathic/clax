@@ -230,4 +230,27 @@ impl RepoHost for MemoryHost {
         self.lock().repos.remove(name);
         Ok(())
     }
+
+    fn can_prune(&self) -> bool {
+        true
+    }
+
+    async fn prune(&self, name: &str) -> Result<()> {
+        let mut inner = self.lock();
+        let inner = &mut *inner;
+        let r = inner
+            .repos
+            .get_mut(name)
+            .ok_or_else(|| GitError::not_found(format!("No repository {name}")))?;
+        let objects = &inner.objects;
+        let held = &r.held;
+        let keep = crate::repo::reachable_from(r.refs.values().copied(), |id| {
+            Ok(held
+                .contains(id)
+                .then(|| objects.get(id).map(|o| (**o).clone()))
+                .flatten())
+        })?;
+        r.held.retain(|id| keep.contains(id));
+        Ok(())
+    }
 }

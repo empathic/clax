@@ -13,6 +13,7 @@ import { encodeHeader, MAX_HEADER_BYTES, type GitField } from "./git.ts";
  * `open`, which only shows a page, capture none. */
 export const GIT_TOOLS: ReadonlySet<string> = new Set([
   "publish",
+  "fork",
   "comments_reply",
   "comments_resolve",
   "comments_handoff",

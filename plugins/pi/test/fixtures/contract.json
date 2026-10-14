@@ -474,6 +474,16 @@
       }
     },
     {
+      "name": "fork",
+      "description": "Fork an artifact into a new artifact of your person's: its version 1 is the given version of the artifact (by default the version a URL names, else the current one), with its files; comment threads are not copied. Returns the new artifact's ID, its URL for the person, and `forked_from` (the artifact and version it came from). Needs the right to read the artifact and to create artifacts. Publish to the new artifact to change it.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
       "name": "asset_upload",
       "description": "Upload local files (images, video, fonts, data) as assets of an artifact. Returns each asset's URL for the page to reference.",
       "annotations": {

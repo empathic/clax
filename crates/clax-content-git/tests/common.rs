@@ -117,6 +117,13 @@ impl RepoHost for HookHost {
     async fn delete(&self, name: &str) -> clax_git::Result<()> {
         self.inner.delete(name).await
     }
+    fn can_prune(&self) -> bool {
+        self.inner.can_prune()
+    }
+
+    async fn prune(&self, name: &str) -> clax_git::Result<()> {
+        self.inner.prune(name).await
+    }
 }
 
 // ── git ─────────────────────────────────────────────────────────────────────

@@ -32,8 +32,8 @@ package, its skill, and the daemon's Pi sessions.
 
 ## What it adds
 
-- Twenty-six tools: `clax_publish`, `clax_read`, `clax_list`,
-  `clax_delete`, `clax_open`, `clax_pin`, `clax_unpin`,
+- Twenty-seven tools: `clax_publish`, `clax_read`, `clax_list`,
+  `clax_delete`, `clax_open`, `clax_pin`, `clax_unpin`, `clax_fork`,
   `clax_asset_upload`, `clax_status`, `clax_comments_read`,
   `clax_comments_reply`, `clax_comments_resolve`, `clax_comments_handoff`,
   `clax_watch`,

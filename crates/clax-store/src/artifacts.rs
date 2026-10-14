@@ -8,7 +8,7 @@ use clax_core::content::{NewFile, VersionMeta, VersionWrite};
 use clax_core::live::KIND_LIVE;
 use clax_core::model::ARTIFACT_TEXT_FIELDS;
 use clax_core::model::{
-    Artifact, ArtifactAuthors, CONTRACT_VERSION, FileMeta, Version, VersionAuthors,
+    Artifact, ArtifactAuthors, CONTRACT_VERSION, FileMeta, ForkedFrom, Version, VersionAuthors,
 };
 use clax_core::publish::{FileChange, INDEX, ValidatedPublish};
 use clax_core::visibility::OWNER;
@@ -162,6 +162,16 @@ pub(super) fn row_to_artifact(r: &Row<'_>) -> rusqlite::Result<Result<Artifact>>
             creator: r.get("person")?,
             text,
         },
+        forked_from: match (
+            r.get::<_, Option<String>>("forked_from_id")?,
+            r.get::<_, Option<u32>>("forked_from_version")?,
+        ) {
+            (Some(artifact_id), Some(version)) => Some(ForkedFrom {
+                artifact_id,
+                version,
+            }),
+            _ => None,
+        },
     }))
 }
 
@@ -187,7 +197,7 @@ fn skip_corrupt<T>(rows: Vec<Result<T>>) -> Result<Vec<T>> {
 pub(super) const SELECT: &str =
     "SELECT id, title, description, icon, created_at, updated_at, current_version,
     owner_session_id, pinned, capabilities_json, contract_version, kind, person,
-    text_authors_json FROM artifacts";
+    text_authors_json, forked_from_id, forked_from_version FROM artifacts";
 
 /// The live artifact `id` (not deleted, at least one version) on `c`, or `None`.
 pub(crate) fn live_artifact_in(c: &rusqlite::Connection, id: &str) -> Result<Option<Artifact>> {
@@ -784,7 +794,7 @@ pub(super) const SELECT_VERSION: &str =
      FROM versions";
 
 /// Author tokens, each once in first-seen order.
-fn tokens(authors: impl IntoIterator<Item = Author>) -> Vec<String> {
+pub(super) fn tokens(authors: impl IntoIterator<Item = Author>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for a in authors {
         if let Some(t) = a.token()
@@ -797,7 +807,7 @@ fn tokens(authors: impl IntoIterator<Item = Author>) -> Vec<String> {
 }
 
 /// Whether every list of `map` names the owner alone (stored as NULL).
-fn owners_alone(map: &BTreeMap<String, Vec<Option<String>>>) -> bool {
+pub(super) fn owners_alone(map: &BTreeMap<String, Vec<Option<String>>>) -> bool {
     map.values()
         .all(|a| a.iter().all(|t| t.is_none() || t.as_deref() == Some(OWNER)))
 }
@@ -1281,6 +1291,18 @@ impl Store {
     /// else the owner's public ID) with their display name, the session's
     /// agent name (its name, else its harness), and the note.
     fn version_meta(&self, p: &ValidatedPublish, session_id: Option<&str>) -> Result<VersionMeta> {
+        self.publisher_meta(p.person.as_deref(), session_id, p.note.as_deref())
+    }
+
+    /// [`Store::version_meta`] of a version published as `person` (a
+    /// public ID; `None`: the session's person, else the owner) from
+    /// `session_id`, with `note`.
+    pub(super) fn publisher_meta(
+        &self,
+        person: Option<&str>,
+        session_id: Option<&str>,
+        note: Option<&str>,
+    ) -> Result<VersionMeta> {
         self.with_read(|c| {
             let session: Option<(Option<String>, Option<String>, String)> = match session_id {
                 Some(sid) => c
@@ -1292,9 +1314,8 @@ impl Store {
                     .optional()?,
                 None => None,
             };
-            let person = p
-                .person
-                .clone()
+            let person = person
+                .map(str::to_string)
                 .or_else(|| session.as_ref().and_then(|s| s.0.clone()))
                 .filter(|person| person != OWNER);
             let viewer: Option<(String, Option<String>)> = match &person {
@@ -1319,7 +1340,7 @@ impl Store {
                 person,
                 person_name: person_name.filter(|n| !n.trim().is_empty()),
                 agent: session.map(|(_, name, harness)| name.unwrap_or(harness)),
-                note: p.note.clone().filter(|n| !n.trim().is_empty()),
+                note: note.filter(|n| !n.trim().is_empty()).map(str::to_string),
             })
         })
     }

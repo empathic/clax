@@ -187,6 +187,13 @@ pub async fn assemble(
     let codex = s.feedback_ctx().codex_push();
     let lookup = id.clone();
     let working = s.working.for_artifact(id.as_str());
+    // The source of a fork is named for a reader who may read it, and
+    // Fork offered as `GET /api/artifacts/<id>` offers it.
+    let member = extensions
+        .get::<clax_http::hosted::HostedRequest>()
+        .and_then(|h| h.member.clone());
+    let member_rights = member.as_ref().map(|m| m.rights.clone());
+    let hosted = s.hosted.is_some();
     let found = s
         .store_call(move |st| {
             let Some(a) = st.get_artifact(&lookup)? else {
@@ -223,13 +230,35 @@ pub async fn assemble(
                 Some(v) => Some(st.attention(&v.id, &lookup)?),
                 None => None,
             };
-            let artifact = with_owner(
+            let mut artifact = with_owner(
                 &a,
                 owner.as_ref(),
                 &working,
                 &st.participants(&lookup)?,
                 clax_http::views::artifact::live_part(st, &a)?.as_ref(),
             );
+            let caller = who.caller(st, None);
+            // A caller who cannot be told is read as no one.
+            let reader = crate::routes::artifacts::SourceReader::new(
+                caller
+                    .as_ref()
+                    .map_or(clax_http::auth::Caller::Anonymous, Clone::clone),
+                member.clone(),
+                hosted,
+            );
+            if let Some(lineage) =
+                crate::routes::artifacts::forked_from_view(st, &a, &reader, None)?
+            {
+                artifact["forked_from"] = lineage;
+            }
+            let may_fork = match caller {
+                Ok(c) if a.kind != clax_core::live::KIND_LIVE => {
+                    crate::routes::artifacts::fork_refusal(st, &c, member_rights.as_deref(), &a.id)?
+                        .is_none()
+                }
+                _ => false,
+            };
+            artifact["may_fork"] = json!(may_fork);
             Ok(Some((a, artifact, versions, threads, viewer, attention)))
         })
         .await?;

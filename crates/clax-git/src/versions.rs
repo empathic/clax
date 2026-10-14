@@ -266,9 +266,10 @@ impl<H: RepoHost> GitVersions<H> {
 
     /// Creates `to` as a fork of `from` at version `from_version` (whose
     /// commit is `at`, normally `Rev::Version(from_version)`): copies the
-    /// whole history, drops the copied version tags (the fork numbers its
-    /// own versions), and commits the fork's v1, with the tree of `at`, on
-    /// top of the copied `main`, tagged `v1`. Its note is `meta.note`, or
+    /// repository as far as `at` ([`fork_at`]: no other ref, no object `at`
+    /// does not reach; the fork numbers its own versions) and commits the
+    /// fork's v1, with the tree of `at` and `at` as its parent, on `main`,
+    /// tagged `v1`: the fork's history ends at `at`. Its note is `meta.note`, or
     /// `Forked from <from>@v<from_version>` when that is blank.
     pub async fn fork(
         &self,
@@ -282,29 +283,12 @@ impl<H: RepoHost> GitVersions<H> {
         let source_commit = commit_of_repo(&source, at).await?.ok_or_else(|| {
             GitError::not_found(format!("No such version in {}", repo_name(from)))
         })?;
-        self.host.fork(&repo_name(from), &repo_name(to)).await?;
-        let repo = self.repo(to).await?;
-        let refs = repo.refs().await?;
-        let drop: Vec<RefUpdate> = refs
-            .iter()
-            .filter(|(name, _)| version_of_tag_ref(name).is_some())
-            .map(|(name, id)| RefUpdate::new(name.clone(), Some(*id), None))
-            .collect();
-        if !drop.is_empty() {
-            for (u, s) in drop.iter().zip(repo.apply(Vec::new(), &drop, false).await?) {
-                if let Err(reason) = s {
-                    return Err(GitError::unavailable(format!(
-                        "Could not delete {}: {reason}",
-                        u.name
-                    )));
-                }
-            }
-        }
+        let repo = fork_at(&self.host, &repo_name(from), &repo_name(to), source_commit).await?;
+        let head = Some(source_commit);
         let tree = read_commit(&repo, &source_commit)
             .await?
             .ok_or_else(|| GitError::unavailable(format!("Commit {source_commit} is missing")))?
             .tree;
-        let head = refs.get(MAIN).copied();
         let reference = fork_ref(from, from_version);
         let note = if meta.note.trim().is_empty() {
             format!("Forked from {reference}")
@@ -316,7 +300,7 @@ impl<H: RepoHost> GitVersions<H> {
         let sig = Signature::utc(&meta.author, meta.time);
         let commit = Commit {
             tree,
-            parents: head.into_iter().collect(),
+            parents: vec![source_commit],
             author: sig.clone(),
             committer: sig,
             message,
@@ -476,6 +460,62 @@ fn conflict(head: Option<ObjectId>, parent: Option<ObjectId>) -> GitError {
         message: format!("main is at {}, not {}", show(head), show(parent)),
         head,
     }
+}
+
+/// Makes `to` a new repository whose `main` is `at`, a commit of `from`,
+/// holding only the objects `at` reaches, with no other ref: the start of
+/// a fork whose history ends at `at`. On a host that prunes
+/// ([`RepoHost::can_prune`]) `from` is copied ([`RepoHost::fork`]), `main`
+/// moved to `at`, every other ref deleted and the rest pruned; on any other
+/// `to` is created and the objects `at` reaches are written to it. When it
+/// fails after `to` exists, `to` is left for the caller to delete.
+pub async fn fork_at<H: RepoHost>(host: &H, from: &str, to: &str, at: ObjectId) -> Result<H::Repo> {
+    let opened = |r: Option<H::Repo>| {
+        r.ok_or_else(|| GitError::unavailable(format!("{to} was not created")))
+    };
+    if host.can_prune() {
+        host.fork(from, to).await?;
+        let repo = opened(host.open(to).await?)?;
+        let refs = repo.refs().await?;
+        let mut updates = vec![RefUpdate::new(MAIN, refs.get(MAIN).copied(), Some(at))];
+        for (name, id) in &refs {
+            if name != MAIN {
+                updates.push(RefUpdate::new(name.clone(), Some(*id), None));
+            }
+        }
+        refuse_any(&updates, &repo.apply(Vec::new(), &updates, true).await?)?;
+        host.prune(to).await?;
+        Ok(repo)
+    } else {
+        let source = host
+            .open(from)
+            .await?
+            .ok_or_else(|| GitError::not_found(format!("No repository {from}")))?;
+        let objects = crate::server::pack_objects(&source, &[at], &[]).await?;
+        host.create(to).await?;
+        let repo = opened(host.open(to).await?)?;
+        let updates = [RefUpdate::new(MAIN, None, Some(at))];
+        refuse_any(&updates, &repo.apply(objects, &updates, true).await?)?;
+        Ok(repo)
+    }
+}
+
+/// `unavailable` naming the first update `statuses` refused.
+fn refuse_any(updates: &[RefUpdate], statuses: &[crate::repo::RefStatus]) -> Result<()> {
+    for (u, s) in updates.iter().zip(statuses) {
+        if let Err(reason) = s
+            && !is_atomic_collateral(reason)
+        {
+            return Err(GitError::unavailable(format!(
+                "The repository refused {}: {reason}",
+                u.name
+            )));
+        }
+    }
+    if statuses.len() != updates.len() || statuses.iter().any(|s| s.is_err()) {
+        return Err(GitError::unavailable("The repository refused the update"));
+    }
+    Ok(())
 }
 
 /// Writes `objects` and moves `[main, tag]` in one atomic update, as a

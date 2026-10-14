@@ -158,6 +158,13 @@ impl RepoHost for HttpHost {
     async fn delete(&self, name: &str) -> clax_git::Result<()> {
         self.inner.delete(name).await
     }
+    fn can_prune(&self) -> bool {
+        false
+    }
+
+    async fn prune(&self, name: &str) -> clax_git::Result<()> {
+        self.inner.prune(name).await
+    }
 }
 
 fn store(host: &HttpHost) -> GitContent<HttpHost, MemContent> {

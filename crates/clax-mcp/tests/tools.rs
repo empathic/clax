@@ -1,6 +1,6 @@
 use clax_mcp::tools::{
-    AssetUploadArgs, FileArg, FileEncoding, ListArgs, ListScope, PublishArgs, ReadArgs, StatusArgs,
-    TargetArgs,
+    AssetUploadArgs, FileArg, FileEncoding, ForkArgs, ListArgs, ListScope, PublishArgs, ReadArgs,
+    StatusArgs, TargetArgs,
 };
 use clax_mcp::{ClaxTools, DaemonClient};
 use clax_testkit::TestServer;
@@ -994,4 +994,64 @@ async fn draft_shows_people_work_in_progress_until_done_or_a_publish() {
         .await
         .unwrap();
     assert_eq!(listed["drafts"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn fork_makes_a_new_artifact_from_the_version_a_url_names() {
+    let ts = TestServer::spawn().await;
+    let t = tools_for(&ts);
+    let port = ts.addr.port();
+    let id = ok(t.publish(Parameters(html("Plan", "<p>one"))).await)["artifact_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ok(t.publish(Parameters(PublishArgs {
+        id: Some(id.clone()),
+        ..html("Plan", "<p>two")
+    }))
+    .await);
+    let f = ok(t
+        .fork(Parameters(ForkArgs {
+            url_or_id: format!("http://localhost:{port}/a/{id}/v/1"),
+            version: None,
+        }))
+        .await);
+    let fid = f["artifact_id"].as_str().unwrap().to_string();
+    assert_ne!(fid, id);
+    assert_eq!(f["url"], format!("http://localhost:{port}/a/{fid}"));
+    assert_eq!(f["version"], 1);
+    assert_eq!(f["title"], "Plan");
+    assert_eq!(
+        f["forked_from"],
+        serde_json::json!({"artifact_id": id, "version": 1, "title": "Plan"})
+    );
+    let r = ok(t
+        .read(Parameters(ReadArgs {
+            url_or_id: fid.clone(),
+            ..Default::default()
+        }))
+        .await);
+    assert_eq!(r["content"], "<p>one");
+    // An explicit version wins; the current one by default.
+    let f = ok(t
+        .fork(Parameters(ForkArgs {
+            url_or_id: id.clone(),
+            version: None,
+        }))
+        .await);
+    assert_eq!(f["forked_from"]["version"], 2);
+    let e = err(t
+        .fork(Parameters(ForkArgs {
+            url_or_id: id.clone(),
+            version: Some(9),
+        }))
+        .await);
+    assert_eq!(e["error"]["code"], "unknown_version", "{e}");
+    let e = err(t
+        .fork(Parameters(ForkArgs {
+            url_or_id: "zzzzzzzzzzzz".into(),
+            version: None,
+        }))
+        .await);
+    assert_eq!(e["error"]["code"], "not_found", "{e}");
 }

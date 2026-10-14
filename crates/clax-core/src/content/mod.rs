@@ -265,17 +265,24 @@ pub trait ContentStore: Send + Sync {
     /// `paths` with their bytes in version `from_n` of `from`, as
     /// [`ContentStore::copy_version`] makes a version (all or nothing,
     /// create-only). A backend that keeps history gives `to` the history of
-    /// `from` behind its version 1, without `from`'s versions: git forks the
-    /// repository, drops the copied `v<n>` tags and commits version 1 on top
-    /// of the copied `main`. Fails, changing nothing, when `to` has a
-    /// version or a path is not in the source. The default copies.
+    /// `from` up to version `from_n` behind its version 1 (nothing `from`
+    /// gained after `from_n`), without `from`'s versions, and records the
+    /// forking person and agent in `meta` as
+    /// [`ContentStore::write_version`] records a publisher (its note aside:
+    /// version 1 says where it came from): git forks the repository,
+    /// commits version 1 on `from_n`'s commit, keeps only `main` and `v1`,
+    /// and drops the objects they do not reach. Fails, changing nothing,
+    /// when `to` has a version or a path is not in the source. The default
+    /// copies.
     async fn fork(
         &self,
         from: &ArtifactId,
         from_n: u32,
         paths: &[&str],
         to: &ArtifactId,
+        meta: &VersionMeta,
     ) -> Result<()> {
+        let _ = meta;
         self.copy_version(from, from_n, paths, to, 1).await
     }
 

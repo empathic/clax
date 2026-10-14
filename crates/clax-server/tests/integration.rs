@@ -41,6 +41,8 @@ mod api_events;
 mod api_extension;
 #[cfg(any(not(clax_split), clax_split = "api_feedback"))]
 mod api_feedback;
+#[cfg(any(not(clax_split), clax_split = "api_forks"))]
+mod api_forks;
 #[cfg(any(not(clax_split), clax_split = "api_gateway"))]
 mod api_gateway;
 #[cfg(any(not(clax_split), clax_split = "api_grants"))]

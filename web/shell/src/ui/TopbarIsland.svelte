@@ -12,7 +12,12 @@
   // are snapshots, Comment is off (comments on it come from Chrome with the
   // Clax extension) and Open page, the page itself, comes with the roster (on a
   // phone, in the more menu). For a spectator (no live seat free), Comment is off.
+  // Fork (the shown version, into an artifact of the viewer's) comes with the
+  // more menu, for the owner's shell and a viewer who may fork (`may_fork`); on a phone it is a more
+  // menu item. Neither shows on a live page or a deleted one; a spectator,
+  // who reads, forks too.
   import { fromStore } from "svelte/store";
+  import { getToken } from "../api";
   import { type ArtifactController, viewReady } from "../view/artifact-controller";
   import { moreMenu, who } from "./more-menu.svelte";
   import SampleCount from "./SampleCount.svelte";
@@ -26,6 +31,16 @@
   const s = $derived(view.current);
   const MoreMenu = $derived(moreMenu.current);
   const Who = $derived(who.current);
+  let forking = $state(false);
+  // The owner's shell (it holds the token) may always fork; anyone else as
+  // the daemon says (`may_fork`).
+  let ownerShell = $state(false);
+  void getToken().then(t => { ownerShell = !!t; });
+  /** Forks version `n` into an artifact of the viewer's and opens it. */
+  function fork(n: number) {
+    forking = true;
+    void import("../view/fork").then(m => m.forkVersion(ctl.id, n, ctl.setNotice)).finally(() => { forking = false; });
+  }
 </script>
 
 {#if viewReady(s)}
@@ -43,8 +58,10 @@
     input={() => ({ versions: s.data.versions, latest, shown, now: new Date(), threads: s.threads, numbers: ctl.numbers(s), me: s.me?.public_id ?? null, live: !!live })}
     hrefFor={n => ctl.here(n === latest ? null : n, s)} onChoose={n => { ctl.closeMenu(); ctl.chooseVersion(n); }} />
   {#if shown < latest && !s.newer && !s.deleted}<a class="latest hide-sm" href={ctl.here(null, s)}>Latest</a>{/if}
+  {@const forkable = !!MoreMenu && (ownerShell || !!s.data.artifact.may_fork) && !live && !s.deleted}
+  {#if forkable}<button class="fork hide-sm" disabled={forking} title={`Fork v${shown} into an artifact of your own`} onclick={() => fork(shown)}>Fork</button>{/if}
   {#if MoreMenu}
-    <MoreMenu rawHref={s.deleted ? null : ctl.rawHref(s)} canCopy={!!navigator.clipboard && !s.deleted} onCopy={() => ctl.copyLink()} onVersions={() => ctl.openMenu("versions")} pageHref={live?.page_url} />
+    <MoreMenu rawHref={s.deleted ? null : ctl.rawHref(s)} canCopy={!!navigator.clipboard && !s.deleted} onCopy={() => ctl.copyLink()} onVersions={() => ctl.openMenu("versions")} pageHref={live?.page_url} onFork={forkable && !forking ? () => fork(shown) : undefined} />
   {:else}
     <span class="more-slot"></span>
   {/if}
