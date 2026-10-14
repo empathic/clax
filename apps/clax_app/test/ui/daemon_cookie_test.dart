@@ -163,14 +163,15 @@ void main() {
         await pumpEventQueue();
         store.completeAll();
         await pumpEventQueue();
-        // Only the loaded page that follows restarts reloads, after the
-        // new cookie is set.
+        // Only the loaded page that follows restarts loads its URL again,
+        // after the new cookie is set: a reload while the first load has
+        // not committed would reload about:blank.
         expect(log, [
           'cookie new',
           'cookie set new',
           'cookie new',
           'cookie set new',
-          'reload',
+          'load $base',
         ]);
 
         log.clear();

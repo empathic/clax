@@ -95,8 +95,10 @@ class DaemonKeyCookie {
 
 /// The loads of one daemon WebView, each after its key cookie: [load] and
 /// [reload] await [DaemonKeyCookie.ready] before they call the WebView's
-/// own. With `followRestarts`, a WebView that has loaded a page loads it
-/// again on each [DaemonKeyCookie.restarts], with the new cookie; a WebView
+/// own. With `followRestarts`, a WebView that has loaded a page loads its
+/// last [load]ed URL again on each [DaemonKeyCookie.restarts], with the new
+/// cookie (not a reload, which before the first load commits would reload
+/// about:blank); a WebView
 /// whose owner reloads it on a restart itself leaves it off. Without a key
 /// cookie (a daemon without `--require-credential`) the loads go straight
 /// through.
@@ -110,7 +112,8 @@ class CookieLoads {
   }) {
     if (followRestarts) {
       _restarts = keyCookie?.restarts.listen((_) {
-        if (_loaded) unawaited(reload().catchError((Object _) {}));
+        final url = _url;
+        if (url != null) unawaited(load(url).catchError((Object _) {}));
       });
     }
   }
@@ -122,12 +125,12 @@ class CookieLoads {
   final Future<void> Function(Uri url) _load;
   final Future<void> Function() _reload;
   StreamSubscription<void>? _restarts;
-  var _loaded = false;
+  Uri? _url;
 
   /// Loads [url] once the key cookie is set.
   Future<void> load(Uri url) async {
     await keyCookie?.ready(base);
-    _loaded = true;
+    _url = url;
     await _load(url);
   }
 
