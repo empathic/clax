@@ -153,7 +153,9 @@ impl Attempt {
 }
 
 /// The most clients [`Limits`] keeps; past it, those whose attempts are all
-/// back are forgotten, and when none are, everyone.
+/// back are forgotten, and when none are, the one with the most back: a
+/// client that spent its attempts is the last forgotten, so many addresses
+/// cannot give one back its attempts.
 const MAX_CLIENTS: usize = 10_000;
 
 /// A token bucket per client and [`Attempt`], on an injected clock: each
@@ -190,7 +192,17 @@ impl Limits {
                 refill(*b, per, burst) < burst
             });
             if m.len() >= MAX_CLIENTS {
-                m.clear();
+                let fullest = m
+                    .iter()
+                    .map(|((w, c), b)| {
+                        let (burst, per) = w.rule();
+                        (refill(*b, per, burst) / burst, (*w, *c))
+                    })
+                    .max_by(|a, b| a.0.total_cmp(&b.0))
+                    .map(|(_, k)| k);
+                if let Some(k) = fullest {
+                    m.remove(&k);
+                }
             }
         }
         let b = m.entry((what, client)).or_insert((burst, now));
@@ -2195,6 +2207,26 @@ mod tests {
         clock.advance(60);
         assert_eq!(l.take(Attempt::Guest, a), Ok(()));
         assert_eq!(l.take(Attempt::Guest, a), Err(120));
+    }
+
+    #[test]
+    fn a_full_table_never_gives_a_client_its_spent_attempts_back() {
+        let clock =
+            std::sync::Arc::new(clax_core::working::ManualClock::at("2026-10-12T10:00:00Z"));
+        let l = Limits::new(clock);
+        let a: std::net::IpAddr = "198.51.100.1".parse().unwrap();
+        for _ in 0..5 {
+            assert_eq!(l.take(Attempt::Guest, a), Ok(()));
+        }
+        assert_eq!(l.take(Attempt::Guest, a), Err(120));
+        // Enough other clients to fill the table, each once.
+        for i in 0..MAX_CLIENTS as u32 {
+            let other = std::net::IpAddr::V4(std::net::Ipv4Addr::from(0x0a00_0000 + i));
+            assert_eq!(l.take(Attempt::Guest, other), Ok(()));
+        }
+        assert_eq!(l.take(Attempt::Guest, a), Err(120));
+        let n = l.buckets.lock().unwrap().len();
+        assert_eq!(n, MAX_CLIENTS);
     }
 
     #[test]

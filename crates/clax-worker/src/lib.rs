@@ -158,6 +158,9 @@ async fn fetch(req: Request, env: Env, _ctx: worker::Context) -> Result<Response
     if let Some(res) = static_asset(&env, &path, app_host).await? {
         return Response::try_from(res);
     }
+    if let Some(res) = instance::refuse_declared(&req)? {
+        return Ok(res);
+    }
     instance_stub(&env)?.fetch_with_request(req).await
 }
 

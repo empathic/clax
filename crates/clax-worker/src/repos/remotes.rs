@@ -23,6 +23,9 @@ use super::tokens;
 /// transport (a stub's `fetch` in a Worker).
 pub struct WorkerRemotes<T> {
     pub tokens: DoTokens<T>,
+    /// Whether the repositories' host credits a push to its token's
+    /// holder ([`GitRemotes::names_pushers`]).
+    pub names_pushers: bool,
 }
 
 fn remote_error(e: GitError) -> RemoteError {
@@ -96,6 +99,10 @@ where
                 jj_clone_command: t.jj_clone_command,
             })
         })
+    }
+
+    fn names_pushers(&self) -> bool {
+        self.names_pushers
     }
 
     fn held(&self) -> RemoteFuture<'_, Vec<Held>> {

@@ -21,7 +21,15 @@
 //!   right a publish needs: a commit pushed to `main` becomes a version
 //!   published by whom the token was handed to ([`Holder`]), so pushing is
 //!   publishing. Under `clax:collaborator` that is the person's own
-//!   artifacts, as the owner role's push is in the prototype.
+//!   artifacts, as the owner role's push is in the prototype. A host that
+//!   cannot say who pushed ([`GitRemotes::names_pushers`]: Cloudflare
+//!   Artifacts) records every push as the owner's, so there only the owner
+//!   and the owner's agents get one (403 `push_unattributed`), and the
+//!   Clone dialog offers no other a write token.
+//!
+//! A fork's repository carries its source's history up to the forked
+//! version (and so on up the lineage), so a token of a fork also needs
+//! `read` at every artifact up its lineage, deleted ones included.
 //!
 //! Only people and their agents get tokens: the owner (browser or CLI), a
 //! connected person or a hosted daemon's member (their rights, and the
@@ -214,6 +222,15 @@ pub trait GitRemotes: Send + Sync {
         origin: Option<&'a str>,
         holder: &'a Holder,
     ) -> RemoteFuture<'a, Minted>;
+
+    /// Whether a push made with a token this host minted is credited to
+    /// the token's holder. A host that cannot say who pushed (Cloudflare
+    /// Artifacts: its pushed events name no pusher, so its commits are
+    /// recorded as the owner's) answers `false`, and then only the owner
+    /// and the owner's agents get write tokens.
+    fn names_pushers(&self) -> bool {
+        true
+    }
 
     /// Every live token handed to a person or an agent session.
     fn held(&self) -> RemoteFuture<'_, Vec<Held>>;
@@ -441,9 +458,38 @@ impl Asker {
     }
 }
 
-/// Whether `asker`'s rights allow a token of `scope` at `aid`, read on
-/// `st` now.
+/// Whether `asker`'s rights allow a token of `scope` at `aid`, and read
+/// at every artifact up its lineage, read on `st` now.
 fn allows(st: &Store, asker: &Asker, scope: Scope, aid: &str) -> clax_core::Result<bool> {
+    if matches!(asker, Asker::Owner | Asker::OwnerAgent { .. }) {
+        return Ok(true);
+    }
+    if !allows_one(st, asker, scope, aid)? {
+        return Ok(false);
+    }
+    // A clone carries a fork's lineage's history up to each forked version:
+    // reading it needs read at every artifact up the lineage, deleted ones
+    // included. A lineage that cannot be followed allows a person nothing;
+    // an agent's history check refuses it, `withheld`.
+    let Some(history) = st.repo_history(&ArtifactId::parse(aid)?)? else {
+        return Ok(matches!(asker, Asker::PersonAgent { .. }));
+    };
+    let up: BTreeSet<&str> = history
+        .versions
+        .iter()
+        .map(|v| v.artifact_id.as_str())
+        .filter(|a| *a != aid)
+        .collect();
+    for a in up {
+        if !allows_one(st, asker, Scope::Read, a)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// [`allows`] at `aid` alone.
+fn allows_one(st: &Store, asker: &Asker, scope: Scope, aid: &str) -> clax_core::Result<bool> {
     let (kind, action) = scope.right();
     match asker {
         Asker::Owner | Asker::OwnerAgent { .. } => Ok(true),
@@ -743,6 +789,9 @@ pub async fn mint_for(
     if !allowed {
         return Err(not_permitted(scope));
     }
+    if !credited(host.as_ref(), &asker, scope) {
+        return Err(push_unattributed());
+    }
     check_history(s, &asker, &aid).await?;
     let holder = asker.holder();
     let minted =
@@ -766,16 +815,36 @@ pub async fn scopes_for(
     aid: &ArtifactId,
 ) -> Result<Vec<Scope>, ApiError> {
     let (a, id) = (asker.clone(), aid.clone());
+    let host = s.git_remotes.get();
     s.store_call(move |st| {
         let mut out = Vec::new();
         for scope in [Scope::Read, Scope::Write] {
-            if allows(st, &a, scope, id.as_str())? {
+            let credited = host.as_deref().is_none_or(|h| credited(h, &a, scope));
+            if credited && allows(st, &a, scope, id.as_str())? {
                 out.push(scope);
             }
         }
         Ok(out)
     })
     .await
+}
+
+/// Whether a push with a token of `scope` handed to `asker` would be
+/// credited to them: always but for a write token from a host that names
+/// no pusher ([`GitRemotes::names_pushers`]), whose pushes are the
+/// owner's, which only the owner and the owner's agents get.
+fn credited(host: &dyn GitRemotes, asker: &Asker, scope: Scope) -> bool {
+    scope == Scope::Read
+        || host.names_pushers()
+        || matches!(asker, Asker::Owner | Asker::OwnerAgent { .. })
+}
+
+/// 403 `push_unattributed`: see [`credited`].
+fn push_unattributed() -> ApiError {
+    ApiError::forbidden(
+        "push_unattributed",
+        "this instance's repositories cannot say who pushed, so only the owner gets write tokens; clone with a read token and publish your changes",
+    )
 }
 
 // ── Revocation ──────────────────────────────────────────────────────────────

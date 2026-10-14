@@ -34,6 +34,8 @@ struct FakeRemotes {
     revoked: tokio::sync::Notify,
     /// Each revoke_held call's person and session.
     by_holder: Mutex<Vec<(Option<String>, Option<String>)>>,
+    /// Whether its pushes name no pusher (`names_pushers` is `false`).
+    anonymous: std::sync::atomic::AtomicBool,
 }
 
 impl FakeRemotes {
@@ -62,6 +64,10 @@ impl FakeRemotes {
 }
 
 impl GitRemotes for FakeRemotes {
+    fn names_pushers(&self) -> bool {
+        !self.anonymous.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     fn mint<'a>(
         &'a self,
         artifact: &'a ArtifactId,
@@ -419,6 +425,54 @@ async fn people_get_tokens_by_their_rights_and_guests_and_no_credential_get_none
         .unwrap();
     assert_eq!(r.status(), 401);
     assert_eq!(fake.rows().len(), 2);
+}
+
+#[tokio::test]
+async fn a_host_that_names_no_pusher_gives_write_tokens_to_the_owner_alone() {
+    let (ts, fake) = served().await;
+    fake.anonymous
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let rae = ts.person("Rae").await;
+    let rae_cookie = format!("clax_viewer={}", rae.cookie);
+    let hers = aid_of(&ts.publish("Rae's", &[("index.html", "<p>r</p>")]).await);
+    let db = rusqlite::Connection::open(ts.home.db_path()).unwrap();
+    db.busy_timeout(Duration::from_secs(10)).unwrap();
+    db.execute(
+        "UPDATE artifacts SET person = ?2 WHERE id = ?1",
+        rusqlite::params![hers, rae.public_id],
+    )
+    .unwrap();
+    drop(db);
+
+    // Her push would be recorded as the owner's: she may clone, not push.
+    assert_eq!(
+        options(&ts, &hers, Some(&rae_cookie)).await["scopes"],
+        json!(["read"])
+    );
+    let (status, v) = browser(&ts, &hers, "write", Some(&rae_cookie)).await;
+    assert_eq!(
+        (status, v["error"]["code"].as_str()),
+        (403, Some("push_unattributed")),
+        "{v}"
+    );
+    let (status, v) = browser(&ts, &hers, "read", Some(&rae_cookie)).await;
+    assert_eq!(status, 200, "{v}");
+
+    // The owner and the owner's agents still push.
+    assert_eq!(
+        options(&ts, &hers, None).await["scopes"],
+        json!(["read", "write"])
+    );
+    let (status, v) = browser(&ts, &hers, "write", None).await;
+    assert_eq!(status, 200, "{v}");
+    let sid = ts.register_session("claude", "h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, v) = owner_agent(&ts, &sid, &hers, "write").await;
+    assert_eq!(status, 200, "{v}");
+    let scopes: Vec<Scope> = fake.rows().iter().map(|r| r.scope).collect();
+    assert_eq!(scopes, [Scope::Read, Scope::Write, Scope::Write]);
 }
 
 #[tokio::test]
@@ -957,4 +1011,64 @@ async fn a_withdrawn_approval_or_an_ended_grant_revokes_tokens_before_its_route_
         fake.row(&owners).revoked,
         "revoked before the route answered"
     );
+}
+
+#[tokio::test]
+async fn a_person_who_may_read_a_fork_but_not_its_source_gets_no_token_for_the_fork() {
+    let (ts, fake) = served().await;
+    let src = aid_of(&ts.publish("Source", &[("index.html", "<p>one</p>")]).await);
+    let r = ts
+        .post_json(
+            &format!("/api/artifacts/{src}/versions"),
+            json!({"if_version": 1, "files": {"index.html": {"content": "<p>two</p>"}}}),
+        )
+        .await;
+    assert_eq!(r.status(), 201);
+    let (fork, _) = ts
+        .store
+        .fork_artifact(
+            &AuditCtx::DAEMON,
+            &ArtifactId::parse(&src).unwrap(),
+            Some(2),
+            None,
+            None,
+        )
+        .unwrap();
+    let rae = ts.person("Rae").await;
+    let rae_cookie = format!("clax_viewer={}", rae.cookie);
+    let read_at = |ids: &[&str]| {
+        clax_core::rights::Rights::parse(&json!([
+            {"type": "clax-artifacts", "actions": ["read"], "locations": ids}
+        ]))
+        .unwrap()
+    };
+    // The fork's repository holds the source's versions 1 and 2.
+    ts.store
+        .set_person_rights(
+            &AuditCtx::DAEMON,
+            &rae.public_id,
+            Some(read_at(&[fork.id.as_str()])),
+        )
+        .unwrap();
+    assert_eq!(
+        options(&ts, &fork.id, Some(&rae_cookie)).await["scopes"],
+        json!([])
+    );
+    let (status, v) = browser(&ts, &fork.id, "read", Some(&rae_cookie)).await;
+    assert_eq!(
+        (status, v["error"]["code"].as_str()),
+        (403, Some("not_permitted")),
+        "{v}"
+    );
+    assert!(fake.rows().is_empty());
+    // With read at the source too, she clones the fork.
+    ts.store
+        .set_person_rights(
+            &AuditCtx::DAEMON,
+            &rae.public_id,
+            Some(read_at(&[fork.id.as_str(), src.as_str()])),
+        )
+        .unwrap();
+    let (status, v) = browser(&ts, &fork.id, "read", Some(&rae_cookie)).await;
+    assert_eq!(status, 200, "{v}");
 }

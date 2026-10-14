@@ -108,6 +108,7 @@ impl World {
         let ts = TestServer::spawn_on_one_connection_with(Arc::new(content), move |s| {
             s.git_remotes.set(Arc::new(WorkerRemotes {
                 tokens: DoTokens { transport },
+                names_pushers: true,
             }));
             *kept.lock().unwrap() = Some(s.clone());
         })

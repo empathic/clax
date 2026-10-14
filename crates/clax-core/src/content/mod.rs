@@ -359,7 +359,12 @@ pub trait ContentStore: Send + Sync {
     }
 
     /// The files of pushed commit `commit` of `id`, each compared with the
-    /// same path in version `base` (see [`PushedContent`]).
+    /// same path in version `base` (see [`PushedContent`]): a store reads
+    /// each changed blob once, however many paths name it, and at most
+    /// [`MAX_BODY_BYTES`](crate::publish::MAX_BODY_BYTES) of them in all
+    /// (or less, as its host bounds it), answering the files past that
+    /// [`PushedContent::TooLarge`]; a commit whose trees hold more than
+    /// [`MAX_PUSHED_ENTRIES`] is `push_too_large`.
     async fn pushed_files(
         &self,
         id: &ArtifactId,
@@ -482,7 +487,15 @@ pub enum PushedContent {
     Bytes(Vec<u8>),
     /// Not a regular file (a symbolic link or a submodule).
     NotAFile,
+    /// Other bytes, not read: the files before it in path order changed
+    /// as many bytes as the store reads of one commit.
+    TooLarge,
 }
+
+/// The most entries (files and trees, a tree each time it is reached) a
+/// store reads of one pushed commit's trees; past them the commit is
+/// refused, `push_too_large` ([`ContentStore::pushed_files`]).
+pub const MAX_PUSHED_ENTRIES: usize = 10_000;
 
 /// Who pushed, as the push's token says: a connected person's public ID
 /// (`None`: the owner) and the agent session the token was handed to, when
