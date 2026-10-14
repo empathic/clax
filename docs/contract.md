@@ -2334,6 +2334,16 @@ named `clax-migrate`. The app's `Inspector.runMigration` loads the
 view, calls `runMigration`, and on every outcome (an answer, its time
 running out, a cancel) loads the view once more and waits for its
 `ready` before it returns, so no code of the run still writes.
+With `journal: true` (an update's live run) every `db` write of the page,
+through any handle, first posts `journal` `{seq, path, before}` (`before`
+the document's data, null when there is none) and waits for the app's
+`journalAck({seq, ok})`; `ok: false`, or the run's answer coming first,
+fails the write, and once the run has answered every later write in that
+document fails. `restoreJournal({entries})` (the migration view only;
+at most 20,000 `{path, before}`) writes the entries back in reverse
+order as this viewer, `before` set last-writer-wins or the document
+deleted when `before` is null, and posts `journalRestored` `{ok: true}`
+or `{ok: false, error}`.
 
 **Drafts.** The app's agent works on a **draft**: an ordinary artifact,
 published, rendered and read like any other, but hidden. All of its routes
@@ -2557,9 +2567,11 @@ it, and runs these steps:
    back from the snapshot (each document the snapshot lacks deleted, then
    each snapshot document `set`) and the version before the update with
    it: its files, title, icon and capabilities are published again: "<title> is back on v<M>
-   with your data as it was". The person's private `data/users/<id>/`
-   documents are not in the snapshot (the token cannot read them), so a
-   migration's writes to them stay. A snapshot still present when the
+   with your data as it was". The run is journaled (the token cannot
+   reach the person's private `data/users/<id>/` documents): each write
+   waits until the app has synced the document's prior value to disk,
+   and the rollback replays those of `data/users/` through the migration
+   view as the person. A snapshot still present when the
    app starts (it ended during the run) is restored then, and the person
    told once, when the update's version is still the live one and no
    restore of it failed before; otherwise the person chooses Restore or
