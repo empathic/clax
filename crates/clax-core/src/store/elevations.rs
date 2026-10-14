@@ -153,7 +153,7 @@ fn empty_raise() -> CoreError {
 }
 
 /// 404 `not_raised`: a removal of an elevation the caller never gave.
-fn not_raised() -> CoreError {
+pub fn not_raised() -> CoreError {
     CoreError::invalid(
         "not_raised",
         "you have not raised this agent: nothing was removed",
@@ -365,6 +365,37 @@ impl Store {
         granter: Option<&str>,
         access: Option<Rights>,
     ) -> Result<super::people::AgentRights> {
+        self.set_raise(ctx, sid, granter, access, None)
+    }
+
+    /// Removes `granter`'s (`None`: the owner's) elevation of live agent
+    /// `sid` for someone other than the granter (spec §7.4, the owner's
+    /// decision "Both may remove"): the agent's person, or the owner.
+    /// Recorded as `agent.elevate {session, access: null, granter, reason}`
+    /// under `ctx`, `reason` `removed_by_person` or `removed_by_owner`; the
+    /// granter may raise it again.
+    ///
+    /// # Errors
+    /// As [`Store::elevate_agent`] removing: `not_raised` when `granter`
+    /// has no elevation of it.
+    pub fn remove_raise(
+        &self,
+        ctx: &AuditCtx,
+        sid: &str,
+        granter: Option<&str>,
+        reason: &'static str,
+    ) -> Result<super::people::AgentRights> {
+        self.set_raise(ctx, sid, granter, None, Some(reason))
+    }
+
+    fn set_raise(
+        &self,
+        ctx: &AuditCtx,
+        sid: &str,
+        granter: Option<&str>,
+        access: Option<Rights>,
+        reason: Option<&str>,
+    ) -> Result<super::people::AgentRights> {
         self.with_tx(|tx| {
             super::people::live_grant_of(tx, sid)?;
             if access.as_ref().is_some_and(Rights::is_empty) {
@@ -379,7 +410,7 @@ impl Store {
             if access.is_none() && !changed {
                 return Err(not_raised());
             }
-            record(self, tx, ctx, (sid, granter), access.as_ref(), None)?;
+            record(self, tx, ctx, (sid, granter), access.as_ref(), reason)?;
             if changed {
                 self.visibility_changed();
             }
