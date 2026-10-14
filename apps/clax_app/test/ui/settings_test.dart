@@ -44,10 +44,15 @@ void main() {
     test('a missing file loads the defaults', () async {
       final s = await SettingsStore(file).load();
       expect(s.backend, 'messages-api');
-      expect(s.model, 'claude-haiku-5-5');
+      expect(s.model, 'claude-sonnet-5-5');
       expect(s.dictateComments, isTrue);
       expect(s.dictationCues, isTrue);
       expect(s.claudePath, isNull);
+    });
+
+    test('an install that saved Haiku keeps it', () async {
+      file.writeAsStringSync(jsonEncode({'model': 'claude-haiku-5-5'}));
+      expect((await SettingsStore(file).load()).model, 'claude-haiku-5-5');
     });
 
     test('settings round trip through the file', () async {
@@ -92,13 +97,13 @@ void main() {
 
     test('a broken file or unknown values load the defaults', () async {
       file.writeAsStringSync('{not json');
-      expect((await SettingsStore(file).load()).model, 'claude-haiku-5-5');
+      expect((await SettingsStore(file).load()).model, 'claude-sonnet-5-5');
       file.writeAsStringSync(
         jsonEncode({'backend': 'telepathy', 'model': 'gpt', 'dictate': 3}),
       );
       final s = await SettingsStore(file).load();
       expect(s.backend, 'messages-api');
-      expect(s.model, 'claude-haiku-5-5');
+      expect(s.model, 'claude-sonnet-5-5');
       expect(s.dictateComments, isTrue);
       expect(s.dictationCues, isTrue);
     });
@@ -229,7 +234,7 @@ void main() {
     expect(key.writes, [secret]);
     expect(find.text('A key is saved'), findsOneWidget);
     // Any later settings write still leaves the key out of the file.
-    await tester.tap(find.text('Balanced (Sonnet 5.5)'));
+    await tester.tap(find.text('Fast (Haiku 5.5)'));
     await tester.runAsync(() => Future<void>.delayed(Duration.zero));
     await tester.pumpAndSettle();
     expect(file.existsSync(), isTrue);

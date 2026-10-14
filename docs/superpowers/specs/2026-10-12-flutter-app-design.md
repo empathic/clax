@@ -340,9 +340,10 @@ abstract interface class AgentBackend {
   `result` as JSON. The executable is found on `PATH` and at
   `~/.local/bin/claude`, overridable in settings. It sends no image: with
   tools off it has no way to read the clip; the anchor and quote go as text.
-- **Models.** Default `claude-haiku-5-5` at effort `low`, for both new apps
-  and changes, for speed (§12, D-2). Settings offer `claude-sonnet-5-5` and
-  `claude-opus-5-5`.
+- **Models.** Default `claude-sonnet-5-5` at effort `low` for a new
+  install, for both new apps and changes (§12, D-2). Settings offer
+  `claude-haiku-5-5` (fastest) and `claude-opus-5-5`; an install keeps the
+  model it saved.
 - **The prompt** teaches the page contract: the system prompt is built from
   `assets/prompt/system.md` (how to build an app in Clax: one
   self-contained `index.html` unless more files help, persist with
@@ -615,7 +616,7 @@ has the conservative choice this design takes.
 
 - D-1 Structured output instead of a forced tool on the Messages API
   (§3.6).
-- D-2 Default model `claude-haiku-5-5` at effort `low` (§3.6).
+- D-2 Default model `claude-sonnet-5-5` at effort `low` (§3.6).
 - D-3 The `/api/token` exposure to other apps on Android (§8).
 - D-4 No auto-grant: an app the agent made to read another app still asks
   the owner on first read (§3.8).
