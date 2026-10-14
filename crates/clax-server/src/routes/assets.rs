@@ -147,7 +147,9 @@ pub async fn delete(
 }
 
 /// The asset's bytes. An asset of a live page answers 404 to a caller that
-/// may not see live pages ([`SeesLive`]), as a missing one does.
+/// may not see live pages ([`SeesLive`]), as a missing one does. Sent with
+/// `Referrer-Policy: no-referrer`: an asset opened as a document names no
+/// asset ID to what it loads.
 pub async fn blob(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -174,6 +176,7 @@ pub async fn blob(
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
             (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
             (header::CONTENT_SECURITY_POLICY, "sandbox"),
+            (header::REFERRER_POLICY, "no-referrer"),
         ],
         Body::from_stream(stream),
     )

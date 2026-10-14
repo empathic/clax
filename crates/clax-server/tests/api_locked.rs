@@ -124,3 +124,69 @@ async fn the_default_daemon_still_serves_loopback_without_a_credential() {
     assert_eq!(status(&ts, "/api/token", None).await, 200);
     assert_eq!(status(&ts, "/api/artifacts", None).await, 200);
 }
+
+/// Content addressed by artifact ID never names its artifact to the hosts it
+/// loads from: every content response, on the daemon's host and on the
+/// artifact's own origin, and every asset carry `Referrer-Policy: no-referrer`.
+#[tokio::test]
+async fn content_and_assets_send_no_referrer() {
+    let ts = locked().await;
+    let a = ts
+        .publish(
+            "Notes",
+            &[
+                ("index.html", "<p>hi</p>"),
+                ("app.js", "1"),
+                ("more.html", "<p>more</p>"),
+            ],
+        )
+        .await;
+    let aid = a["artifact"]["id"].as_str().unwrap().to_string();
+    let port = ts.addr.port();
+    let origin = format!("{aid}.localhost:{port}");
+    let part = reqwest::multipart::Part::bytes(vec![137, 80, 78, 71])
+        .file_name("logo.png")
+        .mime_str("image/png")
+        .unwrap();
+    let res = ts
+        .authed(
+            ts.client
+                .post(format!("{}/api/artifacts/{aid}/assets", ts.base))
+                .multipart(reqwest::multipart::Form::new().part("file", part)),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let blob = res.json::<serde_json::Value>().await.unwrap()["url"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let host = ts.base.trim_start_matches("http://").to_string();
+    let cases = [
+        (format!("/c/{aid}/v/1/"), host.clone()),
+        (format!("/c/{aid}/v/1/app.js"), host.clone()),
+        (format!("/c/{aid}/v/1/more.html"), host.clone()),
+        ("/v/1/".to_string(), origin.clone()),
+        ("/v/1/app.js".to_string(), origin.clone()),
+        (blob.clone(), host.clone()),
+        (blob, origin),
+    ];
+    for (path, h) in &cases {
+        let res = ts
+            .client
+            .get(format!("{}{path}", ts.base))
+            .header("host", h)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200, "{path} on {h}");
+        assert_eq!(
+            res.headers()
+                .get("referrer-policy")
+                .and_then(|v| v.to_str().ok()),
+            Some("no-referrer"),
+            "{path} on {h}"
+        );
+    }
+}
