@@ -120,6 +120,22 @@ class HttpClaxApi implements ClaxApi {
   }
 
   @override
+  Future<Uint8List?> readFileBytes(String aid, int n, String path) async {
+    final r = await _send(
+      'GET',
+      '/api/artifacts/${_seg(aid)}/versions/$n/files/${_path(path)}',
+    );
+    if (r.status == 404) return null;
+    _check(r);
+    return r.body;
+  }
+
+  @override
+  Future<void> deleteArtifact(String aid) async {
+    await _json('DELETE', '/api/artifacts/${_seg(aid)}');
+  }
+
+  @override
   Future<PublishResult> createArtifact(PublishRequest r) async {
     _needSession();
     final j = await _json(
@@ -441,7 +457,8 @@ class HttpClaxApi implements ClaxApi {
     String? of,
     required String title,
     Map<String, Object?>? capabilities,
-    required Map<String, String> files,
+    Map<String, String> files = const {},
+    Map<String, FileEntry> entries = const {},
   }) async {
     final j = await _json(
       'POST',
@@ -450,7 +467,10 @@ class HttpClaxApi implements ClaxApi {
         'of': of,
         'title': title,
         'capabilities': capabilities,
-        'files': files,
+        'files': {
+          ...files,
+          for (final e in entries.entries) e.key: e.value.toJson(),
+        },
       },
       timeout: publishTimeout,
     );

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/http_api.dart';
@@ -1804,5 +1805,165 @@ void main() {
       expect(t(authors: ['viewer', 'agent']).stranded, isFalse);
       expect(t(status: 'resolved').stranded, isFalse);
     });
+  });
+
+  group('file entries and bytes', () {
+    final png = Uint8List.fromList([0x89, 0x50, 0x4e, 0x47, 0xff, 0x00]);
+
+    test('readFileBytes returns the raw bytes; a 404 is null', () async {
+      server.bytes(
+        'GET',
+        '/api/artifacts/$aid/versions/2/files/img/a%20b.png',
+        200,
+        png,
+      );
+      server.json('GET', '/api/artifacts/$aid/versions/1/files/x.png', 404, {
+        'error': {'code': 'not_found', 'message': 'not found'},
+      });
+      expect(await api.readFileBytes(aid, 2, 'img/a b.png'), png);
+      expect(await api.readFileBytes(aid, 1, 'x.png'), isNull);
+      for (final r in server.requests) {
+        expectOwnerCall(r);
+      }
+    });
+
+    test('a version carries its content hash and file hashes', () async {
+      server.json('GET', '/api/artifacts/$aid', 200, {
+        'artifact': artifactJson(),
+        'versions': [
+          versionJson(1, {
+            'index.html': {...meta('text/html', 10), 'sha256': 'ab' * 32},
+          }),
+        ],
+      });
+      final v = (await api.getArtifact(aid)).current!;
+      expect(v.contentSha256, 'sha256:00');
+      expect(v.files['index.html']!.sha256, 'ab' * 32);
+    });
+
+    test(
+      'createArtifact sends entries as {content, encoding, content_type}',
+      () async {
+        api.sessionId = sid;
+        server.json('POST', '/api/artifacts', 201, publishAnswer(1));
+        await api.createArtifact(
+          PublishRequest(
+            title: 'Runs',
+            icon: 'leaf',
+            files: {'app.js': 'x()'},
+            entries: {
+              'index.html': FileEntry.text('<p>é</p>'),
+              'a.png': FileEntry.bytes(png, type: 'image/png'),
+              'data.bin': FileEntry.bytes(png),
+            },
+          ),
+        );
+        final req = only('POST', '/api/artifacts');
+        expectAgentCall(req);
+        expect(req.json, {
+          'title': 'Runs',
+          'icon': 'leaf',
+          'files': {
+            'app.js': {'content': 'x()'},
+            'index.html': {'content': '<p>é</p>', 'encoding': 'utf8'},
+            'a.png': {
+              'content': base64Encode(png),
+              'encoding': 'base64',
+              'content_type': 'image/png',
+            },
+            'data.bin': {'content': base64Encode(png), 'encoding': 'base64'},
+          },
+        });
+      },
+    );
+
+    test('publish sends a null entry as a removal', () async {
+      api.sessionId = sid;
+      server.json(
+        'POST',
+        '/api/artifacts/$aid/versions',
+        201,
+        publishAnswer(2),
+      );
+      await api.publish(
+        aid,
+        PublishRequest(
+          ifVersion: 1,
+          entries: {
+            'index.html': FileEntry.text('<p>2</p>', type: 'text/html'),
+            'old.png': null,
+          },
+        ),
+      );
+      expect(only('POST', '/api/artifacts/$aid/versions').json, {
+        'if_version': 1,
+        'files': {
+          'index.html': {
+            'content': '<p>2</p>',
+            'encoding': 'utf8',
+            'content_type': 'text/html',
+          },
+          'old.png': null,
+        },
+      });
+    });
+
+    test('createDraft sends entries beside text files', () async {
+      server.json('POST', '/api/drafts', 201, {
+        'draft': {
+          'id': draftId,
+          'of': aid,
+          'version': 1,
+          'docs_copied': 0,
+          'docs_truncated': true,
+        },
+      });
+      final d = await api.createDraft(
+        of: aid,
+        title: 'Runs',
+        entries: {
+          'index.html': FileEntry.text('<p>v2</p>'),
+          'a.png': FileEntry.bytes(png, type: 'image/png'),
+        },
+      );
+      final req = only('POST', '/api/drafts');
+      expectOwnerCall(req);
+      expect(req.json, {
+        'of': aid,
+        'title': 'Runs',
+        'capabilities': null,
+        'files': {
+          'index.html': {'content': '<p>v2</p>', 'encoding': 'utf8'},
+          'a.png': {
+            'content': base64Encode(png),
+            'encoding': 'base64',
+            'content_type': 'image/png',
+          },
+        },
+      });
+      expect(d.docsTruncated, isTrue);
+    });
+
+    test(
+      'deleteArtifact deletes as the owner; an unknown one is 404',
+      () async {
+        api.sessionId = sid;
+        server.handle('DELETE', '/api/artifacts/$aid', (_, res) async {
+          res.statusCode = 204;
+          await res.close();
+        });
+        server.json('DELETE', '/api/artifacts/zzzzzzzzzzzz', 404, {
+          'error': {'code': 'not_found', 'message': 'not found'},
+        });
+        await api.deleteArtifact(aid);
+        expectOwnerCall(only('DELETE', '/api/artifacts/$aid'));
+        await expectLater(
+          api.deleteArtifact('zzzzzzzzzzzz'),
+          throwsA(
+            isA<ClaxApiError>().having((e) => e.isNotFound, '404', isTrue),
+          ),
+        );
+      },
+    );
   });
 }

@@ -34,7 +34,9 @@ class _Rig {
 /// changed, app.css removed, app.js added, notes.txt unchanged. v3: a
 /// 4,001-line data.csv added.
 Future<_Rig> _rig() async {
-  final api = FakeClaxApi(clock: () => '2026-10-12T09:30:00Z');
+  // Versions without hashes: the page tells changes apart by their texts.
+  final api = FakeClaxApi(clock: () => '2026-10-12T09:30:00Z')
+    ..contentHashes = false;
   final aid = api.seedArtifact('Runs', {
     'index.html': page(v1Body),
     'app.css': 'body { margin: 0 }\n',
