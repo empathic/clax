@@ -95,6 +95,25 @@ void main() {
       }
     });
 
+    test('the author name round trips trimmed; empty, long or odd values '
+        'are none', () async {
+      final store = SettingsStore(file);
+      expect((await store.load()).authorName, isNull);
+      await store.save(AppSettings(authorName: 'Alex'));
+      expect(
+        jsonDecode(file.readAsStringSync()),
+        containsPair('author_name', 'Alex'),
+      );
+      expect((await store.load()).authorName, 'Alex');
+      expect(store.last.authorName, 'Alex');
+      file.writeAsStringSync(jsonEncode({'author_name': '  Sam  '}));
+      expect((await store.load()).authorName, 'Sam');
+      for (final bad in ['', '   ', 'x' * 65, 3, null]) {
+        file.writeAsStringSync(jsonEncode({'author_name': bad}));
+        expect((await store.load()).authorName, isNull, reason: '$bad');
+      }
+    });
+
     test('a broken file or unknown values load the defaults', () async {
       file.writeAsStringSync('{not json');
       expect((await SettingsStore(file).load()).model, 'claude-sonnet-5-5');
@@ -137,6 +156,7 @@ void main() {
     required SecureKey key,
     bool cliSupported = false,
     List<TimingRecord> timings = const [],
+    Future<String?> Function()? fingerprint,
   }) async {
     await tester.pumpWidget(
       MaterialApp(
@@ -145,6 +165,7 @@ void main() {
           secureKey: key,
           cliSupported: cliSupported,
           timings: timings,
+          fingerprint: fingerprint,
         ),
       ),
     );
@@ -338,5 +359,78 @@ void main() {
     await tester.pumpAndSettle();
     expect(key.writes, isEmpty);
     expect(find.text('Claude API keys start with sk-ant-'), findsOneWidget);
+  });
+
+  group('Sharing', () {
+    testWidgets('Your name is saved as it is typed', (tester) async {
+      final store = SettingsStore(file);
+      await pumpSettings(tester, store: store, key: FakeKey());
+      final field = find.byKey(const Key('author-name-field'));
+      await tester.scrollUntilVisible(field, 100, scrollable: _list);
+      expect(find.text('Sharing'), findsOneWidget);
+      await tester.enterText(field, ' Alex ');
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await tester.pumpAndSettle();
+      await tester.runAsync(() async {
+        expect((await store.load()).authorName, 'Alex');
+      });
+      await tester.enterText(field, '');
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await tester.pumpAndSettle();
+      await tester.runAsync(() async {
+        expect((await store.load()).authorName, isNull);
+      });
+    });
+
+    testWidgets('a saved name fills the field; the field takes at most 64 '
+        'characters', (tester) async {
+      final store = SettingsStore(file);
+      await tester.runAsync(() => store.save(AppSettings(authorName: 'Sam')));
+      await pumpSettings(tester, store: store, key: FakeKey());
+      final field = find.byKey(const Key('author-name-field'));
+      await tester.scrollUntilVisible(field, 100, scrollable: _list);
+      final editable = tester.widget<EditableText>(
+        find.descendant(of: field, matching: find.byType(EditableText)),
+      );
+      expect(editable.controller.text, 'Sam');
+      await tester.enterText(field, 'y' * 80);
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await tester.pumpAndSettle();
+      await tester.runAsync(() async {
+        expect((await store.load()).authorName, 'y' * 64);
+      });
+    });
+
+    testWidgets('the key fingerprint shows once a key exists', (tester) async {
+      await pumpSettings(
+        tester,
+        store: SettingsStore(file),
+        key: FakeKey(),
+        fingerprint: () async => '7KQ2-M9XD-4FTA-QW3B',
+      );
+      await tester.scrollUntilVisible(
+        find.text('7KQ2-M9XD-4FTA-QW3B'),
+        100,
+        scrollable: _list,
+      );
+      expect(find.text('Your sharing key'), findsOneWidget);
+    });
+
+    testWidgets('before the first share there is no fingerprint', (
+      tester,
+    ) async {
+      await pumpSettings(
+        tester,
+        store: SettingsStore(file),
+        key: FakeKey(),
+        fingerprint: () async => null,
+      );
+      await tester.scrollUntilVisible(
+        find.text('A sharing key is made the first time you share an app'),
+        100,
+        scrollable: _list,
+      );
+      expect(find.text('Your sharing key'), findsNothing);
+    });
   });
 }

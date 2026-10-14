@@ -7,7 +7,8 @@ import '../platform/settings_store.dart';
 
 /// Settings: the Claude API key, the agent (where `claude -p` can run), the
 /// model, dictation (whether it starts on its own, and its sounds and
-/// vibration), the Claude Code path, and the last ten measured timings.
+/// vibration), the Claude Code path, sharing (the name bundles carry and
+/// the sharing key's fingerprint), and the last ten measured timings.
 ///
 /// Every choice is saved to [store] as it is made. The key is saved only
 /// through [secureKey], on Save key, and is never shown back: a saved key
@@ -19,6 +20,7 @@ class SettingsScreen extends StatefulWidget {
     required this.secureKey,
     required this.cliSupported,
     required this.timings,
+    this.fingerprint,
   });
 
   final SettingsStore store;
@@ -31,6 +33,10 @@ class SettingsScreen extends StatefulWidget {
   /// Newest first; the first ten are shown.
   final List<TimingRecord> timings;
 
+  /// The sharing key's fingerprint (`BundleIdentity.fingerprint`), or null
+  /// before the first export made the key. Read once; never makes a key.
+  final Future<String?> Function()? fingerprint;
+
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
@@ -42,6 +48,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _showKey = false;
   final _key = TextEditingController();
   late final TextEditingController _path = TextEditingController();
+  final _name = TextEditingController();
+  String? _fingerprint;
 
   @override
   void initState() {
@@ -57,11 +65,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } catch (_) {
       saved = null;
     }
+    String? fingerprint;
+    try {
+      fingerprint = await widget.fingerprint?.call();
+    } catch (_) {
+      fingerprint = null;
+    }
     if (!mounted) return;
     setState(() {
       _s = s;
       _hasKey = saved != null;
       _path.text = s.claudePath ?? '';
+      _name.text = s.authorName ?? '';
+      _fingerprint = fingerprint;
     });
   }
 
@@ -69,6 +85,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void dispose() {
     _key.dispose();
     _path.dispose();
+    _name.dispose();
     super.dispose();
   }
 
@@ -207,6 +224,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   value: s.dictationCues,
                   onChanged: (v) => _change((s) => s.dictationCues = v),
                 ),
+                const _Header('Sharing'),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  child: TextField(
+                    key: const Key('author-name-field'),
+                    controller: _name,
+                    maxLength: maxAuthorName,
+                    textCapitalization: TextCapitalization.words,
+                    decoration: const InputDecoration(
+                      labelText: 'Your name',
+                      helperText: 'Shown to people you share apps with',
+                      counterText: '',
+                    ),
+                    onChanged: (v) =>
+                        _change((s) => s.authorName = cleanAuthorName(v)),
+                  ),
+                ),
+                if (_fingerprint case final f?)
+                  ListTile(
+                    leading: const Icon(Icons.fingerprint_rounded),
+                    title: const Text('Your sharing key'),
+                    subtitle: SelectableText(
+                      f,
+                      style: const TextStyle(
+                        fontFeatures: [FontFeature.tabularFigures()],
+                      ),
+                    ),
+                  )
+                else
+                  ListTile(
+                    leading: const Icon(Icons.fingerprint_rounded),
+                    subtitle: const Text(
+                      'A sharing key is made the first time you share an app',
+                    ),
+                  ),
                 const _Header('Recent timings'),
                 ..._timings(context),
               ],
