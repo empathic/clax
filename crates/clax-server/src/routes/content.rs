@@ -92,7 +92,9 @@ fn snapshot_policy(req: &HeaderMap, fallback: &str) -> HeaderValue {
 
 /// Sets the content policy on `res`, and for a live page's content (`live`:
 /// the daemon's host, the policy's fallback) appends [`snapshot_policy`]:
-/// both apply.
+/// both apply. `Referrer-Policy: no-referrer` keeps the page's URL, which
+/// names its artifact ID and the daemon's port, out of the `Referer` of
+/// every request the page makes.
 fn framed_by_shell(
     mut res: Response,
     origin: &Option<Extension<OnArtifactOrigin>>,
@@ -101,6 +103,10 @@ fn framed_by_shell(
 ) -> Response {
     res.headers_mut()
         .insert(header::CONTENT_SECURITY_POLICY, content_policy(origin, req));
+    res.headers_mut().insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
     if let Some(fallback) = live {
         res.headers_mut().append(
             header::CONTENT_SECURITY_POLICY,
