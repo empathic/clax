@@ -70,7 +70,8 @@ Non-goals (this round):
 - Patches, delta bundles, merging the recipient's changes into an update.
 - Cross-app reads in shared apps (§4.4), assets uploaded through the
   `assets` capability, the build plan (`PlanStore`), version history.
-- Any daemon change (§7) and any migration (§11).
+- Any daemon change (§7) beyond naming the migration view's frame
+  (§8.3), and any migration (§11).
 
 ## 3. User flows
 
@@ -534,7 +535,7 @@ change in progress to land"), from the make service's busy state.
    check: "<title> changed while the update was checked. Try again."
 7. When `migrate.js` exists, the app's documents are snapshotted (§8.4),
    then it runs once more, on the live app at the new version, in the
-   inspect view. If it fails, the documents are restored from the
+   migration view (§8.3). If it fails, the documents are restored from the
    snapshot and the app to `base` (`restoreVersion`), and the sheet says
    "The update's data step failed on your data; <title> is back on v<M>
    with your data as it was." (§9, T7). The snapshot is deleted once the
@@ -567,14 +568,21 @@ export default async function migrate(db, { from, to }) {
 }
 ```
 
-The inspect view runs it: host method `runMigration({file, from, to,
-totalMs})` asks the bridge (`web/bridge/src/harness.ts`) to import the
+The migration view runs it: the inspect view with `&migrate=1`, whose
+content frame is named `clax-migrate` (by the shell, and by the daemon's
+boot, `frame_name` in `crates/clax-server/src/boot.rs`). There the
+bridge, the page's first script, writes `<plaintext hidden>` while the
+document parses, so none of the app's own markup or scripts run: only
+`migrate.js` writes. Host method `runMigration({file, from, to,
+totalMs})`, refused outside that view, asks the bridge (`web/bridge/src/harness.ts`) to import the
 module in the page's frame, call its default export with the page's `db`
 and `{from, to}`, and answer host message `migration` `{ok: true}` or
 `{ok: false, error}`, under the nonce, by the same rules as `tests`
 (`web/shell/src/app/host.ts` header). The Dart side is
 `Inspector.runMigration(Uri url, {from, to, total, cancelled})` returning
-`MigrationRun {ok, error}`.
+`MigrationRun {ok, error}`; it loads `url` in the migration view and, on
+every outcome (answer, timeout, cancel), loads that view again and waits
+for its `ready` before it returns, so no code of the run still writes.
 
 The author's agent writes it: the system prompt (§10) says that a change
 to the shape of stored documents comes with a `migrate.js` that upgrades
@@ -594,8 +602,11 @@ because a failed live run is rolled back (§8.4).
   the snapshot lacks (pinned to the version just read, one re-read and
   retry on a conflict). Document versions move forward; contents return.
 - **Nothing writes meanwhile.** The update sheet is modal over the app,
-  and the update is refused while the agent works on the app (§8.2), so
-  between the snapshot and the restore only `migrate.js` writes.
+  the update is refused while the agent works on the app (§8.2), the
+  migration view runs none of the app's own scripts, and
+  `Inspector.runMigration` returns only once the run's document is gone
+  (§8.3), so between the snapshot and the restore only `migrate.js`
+  writes, and nothing once the restore starts.
 - **Interrupted.** A snapshot file still present at the app's start (the
   app or the daemon died during the run or the restore) is restored then,
   with the version restored to the one before the update when the live
