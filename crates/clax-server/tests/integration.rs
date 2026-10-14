@@ -36,6 +36,7 @@ mod api_push;
 mod api_questions;
 mod api_room;
 mod api_sample;
+mod api_seats;
 mod api_sessions;
 mod api_stream;
 mod api_threads;

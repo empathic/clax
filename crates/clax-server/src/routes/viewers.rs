@@ -379,8 +379,14 @@ pub struct PresenceBody {
 
 /// `PUT /api/viewers/me/presence`: reports this viewer here or away on an
 /// artifact, with where they look when they share it (spec §10, "Presence");
-/// `{people}`, the artifact's presence. Announces a `presence` event when the
-/// report changed what others see. 400 `no_viewer` without a viewer cookie;
+/// the artifact's presence. Announces a `presence` event when the
+/// report changed what others see. A `here` report is input on the viewer's
+/// live seat there ([`crate::seats`]). A spectator's report (a person beyond
+/// the artifact's live seats, spec 2026-10-11-clax-dev-hosted-design §16.3)
+/// is not listed (one listed before is dropped): it counts them as viewing
+/// instead. `{people, viewing}`:
+/// `viewing` counts the people seated and the spectators seen in the last
+/// 15 s. 400 `no_viewer` without a viewer cookie;
 /// 429 `limit_reached` when the artifact already lists
 /// [`clax_core::presence::MAX_PEOPLE`] others and none of them is gone.
 pub async fn set_presence(
@@ -395,17 +401,45 @@ pub async fn set_presence(
     let b = body(req)?;
     let id = parse_id(&b.artifact_id)?;
     sees.check(&s.live_ids, id.as_str())?;
-    let v = s
+    let (v, claim) = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
-            who.viewer(st)?
-                .ok_or_else(|| CoreError::invalid("no_viewer", "open /api/viewers/me first"))
+            let v = who
+                .viewer(st)?
+                .ok_or_else(|| CoreError::invalid("no_viewer", "open /api/viewers/me first"))?;
+            let claim = match who.caller(st, None) {
+                Ok(c) => crate::seats::claim_for(st, &c, id.as_str())?,
+                Err(_) => None,
+            };
+            Ok((v, claim))
         })
         .await?;
     let state = match b.state {
         ReportedState::Here => P::Here,
         ReportedState::Away => P::Away,
     };
+    let aid = b.artifact_id.as_str();
+    let presence_answer = |s: &AppState| {
+        Json(json!({
+            "people": s.presence.for_artifact(aid),
+            "viewing": s.seats.counts(aid).viewing,
+        }))
+    };
+    if let Some(c) = &claim {
+        if !s.seats.may_hold(aid, c) {
+            // A spectator is counted, never listed (spec §16.3): a listing
+            // from before (unnamed, or seated) goes.
+            s.seats.see_spectator(aid, &c.key);
+            if s.presence.leave(aid, &v.public_id) {
+                crate::presence::announce(&s.events, &s.presence, aid);
+            }
+            return Ok(presence_answer(&s));
+        }
+        // A page in use keeps its viewer's live seat (spec §16.1).
+        if state == P::Here {
+            s.seats.touch(aid, &c.key);
+        }
+    }
     let changed = s
         .presence
         .report_tab(
@@ -427,9 +461,7 @@ pub async fn set_presence(
             )
         })?;
     if changed {
-        crate::presence::announce(&s.events, &s.presence, &b.artifact_id);
+        crate::presence::announce(&s.events, &s.presence, aid);
     }
-    Ok(Json(
-        json!({"people": s.presence.for_artifact(&b.artifact_id)}),
-    ))
+    Ok(presence_answer(&s))
 }

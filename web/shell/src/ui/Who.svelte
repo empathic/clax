@@ -6,13 +6,15 @@
   // its styles carry the sweep under the top bar while anyone works, and the
   // split pins of the threads an agent works on. The block is the button that
   // opens the people panel; it lists everyone present, commenters or not,
-  // with their here or away mark, and never where they look. On a live page,
+  // with their here or away mark, and never where they look. Once more than
+  // the viewer is viewing, a count of everyone viewing follows the roster
+  // (spectators, beyond the live seats, have no chip). On a live page,
   // an Open page link to the page itself follows it (a page a join merged
   // away links to the page it was merged into instead: its comments go there) (hidden at phone width,
   // where the more menu lists it).
   // Not needed for the first paint: the artifact entry loads it after (`more-menu.svelte.ts`).
   import type { ArtifactController, Loaded, ViewState } from "../view/artifact-controller";
-  import { presenceMap, roster } from "../view/presence-model";
+  import { presenceMap, roster, viewingLabel } from "../view/presence-model";
   import { withPeople } from "../view/agent-display";
   import { agentNames, summary } from "../view/working-model";
   import Roster from "./Roster.svelte";
@@ -31,6 +33,7 @@
   const parts = $derived({ people: p.s.data.artifact.participants?.people ?? [], agents: p.s.agents });
   // Agents by name, each with its person when another person's agents are among them.
   const names = $derived(withPeople(agentNames(p.s.working, parts.agents), parts.agents, p.s.me?.public_id));
+  const viewing = $derived(viewingLabel(p.s.viewing));
   const busy = $derived(new Set(p.s.working.map(w => w.agent)));
   const sum = $derived(summary({
     working: p.s.working, names, mine: new Set(p.s.attention?.open_in ?? []), open: p.open, now: tick.now,
@@ -40,6 +43,7 @@
 
 <button type="button" class="who" aria-haspopup="dialog" aria-expanded={p.s.menu === "people"} aria-label="People and agents" onclick={() => p.ctl.openMenu("people")}>
   <Roster people={roster(parts.people, p.s.presence)} agents={parts.agents} working={p.s.working} me={p.s.me?.public_id ?? null} max={p.s.narrow ? 1 : 5} presence={presenceMap(p.s.presence)} />
+  {#if viewing}<span class="viewing" title="Everyone viewing, including people beyond the live seats">{viewing}</span>{/if}
   <WorkingSummary s={sum} />
 </button>
 {#if p.s.data.artifact.live?.merged_into && /^[0-9a-z]{12}$/.test(p.s.data.artifact.live.merged_into)}<a class="open-page merged" href={`/a/${p.s.data.artifact.live.merged_into}`}>Merged into {p.s.data.artifact.live.merged_into_url?.replace(/^\w+:\/\//, "") ?? "another page"}</a>{:else if p.s.data.artifact.live && /^https?:\/\//.test(p.s.data.artifact.live.page_url)}<a class="open-page hide-sm" href={p.s.data.artifact.live.page_url} target="_blank" rel="noopener noreferrer">Open page</a>{/if}
@@ -52,11 +56,12 @@
     .who { display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 12px 0 5px; border: 1px solid var(--border); border-radius: 999px; background: var(--card); flex: none; min-width: 0; }
     .who .sum { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .who .sum b { display: block; font: 600 13px/1.2 var(--font); white-space: nowrap; } .who .sum b.ag { color: var(--agent-ink); }
+    .who .viewing { font: 600 11.5px/1 var(--font); color: var(--muted); white-space: nowrap; flex: none; }
     .who .sum small { display: block; font: 400 11.5px/1.3 var(--font); color: var(--muted); white-space: nowrap; }
     .thread-pin.onit, .thread-pin.onit:not(:disabled):hover { background: linear-gradient(90deg, var(--pin) 50%, #2f6f2a 50%); color: #fff; text-shadow: 0 0 2px #141413; }
     .topbar.working::after { content: ""; position: absolute; left: 0; bottom: -1px; height: 2px; width: 20%; background: var(--agent); animation: sweep 2.4s cubic-bezier(.4,0,.2,1) infinite; }
     @keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(400%); } }
     @media (prefers-reduced-motion: reduce) { .topbar.working::after { animation: none; display: none; } }
-    @media (max-width: 700px) { .who { height: 36px; padding: 0 5px; gap: 0; } .who .sum { display: none; } }
+    @media (max-width: 700px) { .who { height: 36px; padding: 0 5px; gap: 0; } .who .sum { display: none; } .who .viewing { padding: 0 5px 0 4px; } }
   }
 </style>

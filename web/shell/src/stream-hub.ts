@@ -33,12 +33,15 @@ import { parseBlock } from "./sse";
  * the tab lives), when it has one; `topics` is the tab's whole set;
  * `focus` whether the tab has focus; `reconnect` opens a new stream, the
  * caller having changed to `caller` (a key: see `callerKey`), unless the
- * stream is already opened as that caller. */
+ * stream is already opened as that caller; `retry` asks again for topics
+ * the daemon refused (the tab joins live after a live seat was refused or
+ * released). */
 export type TabMsg =
   | { t: "hello"; lock?: string }
   | { t: "topics"; topics: string[] }
   | { t: "focus"; focused: boolean }
   | { t: "reconnect"; caller?: string }
+  | { t: "retry"; topics: string[] }
   | { t: "ping" }
   | { t: "bye" };
 
@@ -201,6 +204,10 @@ export class Hub {
         }
         this.streamId = null;
         if (this.conn) this.connect();
+        break;
+      case "retry":
+        for (const t of msg.topics) this.refused.delete(t);
+        this.changed();
         break;
       case "ping": break;
     }
@@ -372,7 +379,16 @@ export class Hub {
     const to = this.wanting(topic);
     if (!to.length) return;
     if (name === "resync") this.env.send(to, { t: "resync", topic });
-    else this.env.send(to, { t: "event", topic, name, data });
+    else if (name === "unseated") {
+      // The daemon took the topic off the stream: its live seat was
+      // released (no input) or not taken again on a resume. Refused until
+      // a tab asks again (`retry`).
+      const code = typeof data.code === "string" ? data.code : "unseated";
+      this.server.delete(topic);
+      for (const c of this.clients.values()) c.live.delete(topic);
+      this.refused.set(topic, code);
+      this.env.send(to, { t: "refused", topic, code });
+    } else this.env.send(to, { t: "event", topic, name, data });
     if (this.env.notify && topic === "inbox" && name === "inbox_item") this.announce(data, to);
   }
 

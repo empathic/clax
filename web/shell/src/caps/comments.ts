@@ -31,7 +31,7 @@ import type { ArtifactEvent } from "../events";
 import { type Thread, createThread, deleteThread, reopenThread, resolveThread, sendToAgent } from "../threads";
 import { declaredConfig } from "./availability";
 import { seconds, takeSlot } from "./budget";
-import { CapError } from "./errors";
+import { CapError, SPECTATING } from "./errors";
 import { SHELL_QUIET_MS, frameGesture, frameGestureStrict } from "./gesture";
 import type { HandlerFactory } from "./host";
 import type { Working } from "../view/working-model";
@@ -138,6 +138,8 @@ function mapped(e: unknown): CapError {
   if (e instanceof ApiError) {
     if (e.status === 404) return new CapError("not_found", "no such thread on this artifact");
     if (e.status === 400 || e.status === 413) return invalid(e.message);
+    // A spectator's write: transient, as the viewer may join live.
+    if (e.status === 403 && e.code === "spectator") return new CapError("unavailable", e.message);
     if (e.status === 403) return new CapError("forbidden", e.message);
     if (e.status === 429) return new CapError("rate_limited", e.message);
     return new CapError("upstream_error", e.message);
@@ -196,7 +198,13 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
     const limits = kind === "opens" ? OPEN_RATE : kind === "writes" ? WRITE_RATE : REFUSED_RATE;
     return takeSlot(`clax.comment-${kind}.v1:${env.aid}`, { perWindow: limits });
   };
+  /** A spectator's page opens no composer and writes nothing (spec
+   * 2026-10-11-clax-dev-hosted-design §16.1). */
+  const seated = () => {
+    if (env.spectating?.()) throw new CapError("unavailable", SPECTATING);
+  };
   const opening = () => {
+    seated();
     const wait = budget("opens");
     if (wait > 0) throw new CapError("rate_limited", `the page opens the composer too often; wait ${seconds(wait)} s`);
   };
@@ -238,6 +246,7 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
     return t as string;
   };
   const writable = () => {
+    seated();
     if (composerOnly) throw new CapError("not_granted", "the composer-only declaration grants no write verbs");
   };
   /** The store ID behind a handle `create` gave this document; `not_found` otherwise. */

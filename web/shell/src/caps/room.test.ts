@@ -22,10 +22,10 @@ const WHO = { peer: "k3v6q2rt7wacd4fn", by: null, isMe: false, sameTab: false, k
 
 type Viewers = (fn: (v: unknown) => void) => () => void;
 
-function setup(token: string | null = null, viewers: Viewers = () => () => {}) {
+function setup(token: string | null = null, viewers: Viewers = () => () => {}, spectating?: () => boolean) {
   FakeSocket.all = [];
   const posted: ShellToBridge[] = [];
-  const env = { aid: "7q3k9mzx2b4t", token, post: (m: ShellToBridge) => posted.push(m) } as unknown as CapEnv;
+  const env = { aid: "7q3k9mzx2b4t", token, post: (m: ShellToBridge) => posted.push(m), spectating } as unknown as CapEnv;
   const handler = makeRoomHandler(url => new FakeSocket(url), undefined, viewers)(env, {} as never);
   const events = () => posted.filter(m => m.type === "clax:event").map(m => m as { topic: string; data: unknown });
   return { handler, posted, events, sock: () => FakeSocket.all.at(-1)! };
@@ -114,6 +114,21 @@ describe("room handler", () => {
     const settled = expect(slow).rejects.toMatchObject({ code: "upstream_error" });
     await vi.advanceTimersByTimeAsync(ACK_TIMEOUT_MS);
     await settled;
+  });
+
+  it("a spectator's emit is a transient upstream_error, refused by the shell or the daemon", async () => {
+    // Beyond the live seats (spec 2026-10-11-clax-dev-hosted-design §16.1).
+    let spectating = true;
+    const { handler, sock } = setup(null, undefined, () => spectating);
+    await handler.call("connect", []);
+    sock().open();
+    await expect(handler.call("emit", [null, "reaction"])).rejects.toMatchObject({ code: "upstream_error", message: expect.stringContaining("join live") });
+    expect(sock().sent).toEqual([]);
+    // Seated by the shell's reckoning, but not the daemon's.
+    spectating = false;
+    const late = handler.call("emit", [null, "reaction"]);
+    sock().frame({ t: "nack", id: (sock().sent.at(-1) as { id: number }).id, code: "spectator", message: "Lots of people are here" });
+    await expect(late).rejects.toMatchObject({ code: "upstream_error", message: "Lots of people are here" });
   });
 
   it("an emit while the socket is down resolves without sending", async () => {

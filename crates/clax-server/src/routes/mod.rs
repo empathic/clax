@@ -20,6 +20,7 @@ pub mod sample;
 pub mod sessions;
 pub mod shell;
 pub mod sites;
+pub mod snapshot;
 pub mod stream;
 pub mod threads;
 pub mod token;
@@ -260,6 +261,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .route("/api/artifacts/{aid}/docs:acquire", post(docs::acquire))
         .route("/api/artifacts/{aid}/working", get(working::for_artifact))
         .route("/api/artifacts/{aid}/presence", get(artifacts::presence))
+        .route("/api/artifacts/{aid}/snapshot", get(snapshot::snapshot))
         .route("/api/admin/perf/calibrate", post(perf::calibrate))
         .route("/api/sessions/{id}/working", get(working::for_session))
         .route("/api/sessions/{id}/working/renew", post(working::renew))
@@ -757,6 +759,7 @@ mod l10 {
             "sessions" => include_str!("sessions.rs"),
             "shell" => include_str!("shell.rs"),
             "sites" => include_str!("sites.rs"),
+            "snapshot" => include_str!("snapshot.rs"),
             "stream" => include_str!("stream.rs"),
             "threads" => include_str!("threads.rs"),
             "token" => include_str!("token.rs"),

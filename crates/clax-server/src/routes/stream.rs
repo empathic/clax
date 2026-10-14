@@ -173,7 +173,10 @@ fn topics(names: &[String]) -> Result<Vec<Topic>, ApiError> {
 /// that ID for this caller (a stream opened through the extension gateway
 /// is changed only with its own credential, and any other only without
 /// one); 429 `limit_reached` past
-/// [`crate::stream::MAX_TOPICS`] topics; 400 `invalid_topic` for a name
+/// [`crate::stream::MAX_TOPICS`] topics; 429 `no_live_seat` when an
+/// artifact's `artifact`, `presence` or `working` topic is asked for and no
+/// live seat is free for the caller there ([`crate::seats`]: the stream
+/// holds its person's seat while it holds any of them); 400 `invalid_topic` for a name
 /// that is not a topic. On a live-only stream (the extension's), 403
 /// `forbidden` for `gallery`, a `docs` topic, or a topic of an artifact
 /// that is not a live page (`questions` and `inbox` it may take). Refuses a foreign `Origin` like the viewer routes.
@@ -243,8 +246,9 @@ pub async fn update(
     }
     let token = token_or_cookie(&who);
     let check = add.clone();
-    let caller = s
+    let (caller, claims) = s
         .store_call(move |st| {
+            let mut live = std::collections::BTreeSet::new();
             for t in &check {
                 let Some(aid) = t.artifact() else { continue };
                 let aid = parse_id(aid).map_err(|_| CoreError::NotFound)?;
@@ -252,12 +256,49 @@ pub async fn update(
                 if matches!(t, Topic::Docs(_)) && !token && !st.doc_declared(&aid)? {
                     return Err(CoreError::NotDeclared { capability: "db" });
                 }
+                if t.is_live() {
+                    live.insert(aid.as_str().to_string());
+                }
             }
-            crate::db_caller::caller_of(st, token, &who)
+            // The live seat each artifact's live topics take (spec
+            // 2026-10-11-clax-dev-hosted-design §16.1).
+            let mut claims = Vec::new();
+            if !live.is_empty() {
+                let person = who.caller(st, None).map_err(|_| CoreError::NotFound)?;
+                for aid in live {
+                    if let Some(c) = crate::seats::claim_for(st, &person, &aid)? {
+                        claims.push((aid, c));
+                    }
+                }
+            }
+            Ok((crate::db_caller::caller_of(st, token, &who)?, claims))
         })
         .await?;
+    // Each seat is taken before the topics are added: a stream refused one
+    // for any artifact is refused the whole change, and keeps no seat it
+    // took for it.
+    let conn = crate::stream::seat_conn(&id);
+    let mut taken: Vec<String> = Vec::new();
+    for (aid, c) in &claims {
+        let held = s.stream.holds_live(&id, aid);
+        if !s.seats.take(aid, c, &conn) {
+            for a in &taken {
+                s.seats.leave(a.as_str(), &conn);
+            }
+            return Err(no_seat());
+        }
+        if !held {
+            taken.push(aid.clone());
+        }
+    }
     let credential = via.as_ref().map(|c| c.0.hash());
-    match s.stream.update_via(&id, &caller, credential, &add, &remove) {
+    let result = s.stream.update_via(&id, &caller, credential, &add, &remove);
+    if result.is_err() {
+        for a in &taken {
+            s.seats.leave(a.as_str(), &conn);
+        }
+    }
+    match result {
         Ok((seq, topics)) => Ok(Json(json!({"seq": seq, "topics": topics}))),
         Err(SubError::UnknownStream) => Err(ApiError::new(
             StatusCode::NOT_FOUND,
@@ -272,6 +313,17 @@ pub async fn update(
             format!("a stream holds at most {MAX_TOPICS} topics"),
         )),
     }
+}
+
+/// 429 `no_live_seat`: no live seat is free for the caller on an artifact
+/// whose live topics it asked for (spec 2026-10-11-clax-dev-hosted-design
+/// §16.1); its page turns spectator and polls the snapshot.
+fn no_seat() -> ApiError {
+    ApiError::new(
+        StatusCode::TOO_MANY_REQUESTS,
+        clax_core::seats::NO_SEAT_CODE,
+        clax_core::seats::NO_SEAT_MESSAGE,
+    )
 }
 
 /// 403 `forbidden`: a topic a live-only stream may not take.

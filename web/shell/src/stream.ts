@@ -271,6 +271,13 @@ export class EventStream {
     else this.wantReconnect = true;
   }
 
+  /** Asks the hub again for `topics`, which the daemon refused (a live
+   * seat refused or released): their watchers hear `ready` once they are
+   * live, or `refused` again. */
+  retry(topics: readonly string[]): void {
+    this.link?.send({ t: "retry", topics: [...topics] });
+  }
+
   /** Leaves the hub and forgets every watcher. */
   close(): void {
     this.watchers = [];

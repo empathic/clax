@@ -88,20 +88,26 @@ export async function putSeen(aid: string, n: number): Promise<void> {
 
 /** Reports this viewer here or away on `aid` from tab `tab`, with where they look; answers
  * the artifact's presence, or null on failure (the next report writes again). */
-export async function putPresence(aid: string, state: "here" | "away", where: string | null, tab: string, keepalive = false): Promise<PresenceView[] | null> {
+export async function putPresence(aid: string, state: "here" | "away", where: string | null, tab: string, keepalive = false): Promise<Presence | null> {
   try {
     const r = await fetch("/api/viewers/me/presence", { method: "PUT", keepalive, headers: { "content-type": "application/json" }, body: JSON.stringify({ artifact_id: aid, state, tab, ...where && { where } }) });
-    const people = r.ok ? (await r.json()).people : null;
-    return Array.isArray(people) ? people : null;
+    return r.ok ? presenceOf(await r.json()) : null;
   } catch { return null; }
 }
 /** The artifact's presence, or null on failure. */
-export async function getPresence(aid: string): Promise<PresenceView[] | null> {
+export async function getPresence(aid: string): Promise<Presence | null> {
   try {
     const r = await fetch(`/api/artifacts/${aid}/presence`);
-    const people = r.ok ? (await r.json()).people : null;
-    return Array.isArray(people) ? people : null;
+    return r.ok ? presenceOf(await r.json()) : null;
   } catch { return null; }
+}
+/** An artifact's presence: the people listed (seated ones, spectators never,
+ * spec 2026-10-11-clax-dev-hosted-design §16.3) and how many are viewing,
+ * spectators included (null when the daemon does not say). */
+export type Presence = { people: PresenceView[]; viewing: number | null };
+function presenceOf(v: { people?: unknown; viewing?: unknown }): Presence | null {
+  if (!Array.isArray(v.people)) return null;
+  return { people: v.people as PresenceView[], viewing: typeof v.viewing === "number" ? v.viewing : null };
 }
 
 let tokenPromise: Promise<string | null> | null = null;

@@ -441,4 +441,43 @@ describe("the stream hub", () => {
     await vi.advanceTimersByTimeAsync(PING_MS);
     expect(of("t1", "ping")).toHaveLength(1);
   });
+
+  it("asks again for live topics refused a seat when a tab retries (Join live)", async () => {
+    const live = [`artifact:${A}`, `presence:${A}`];
+    for (const t of live) net.refuse.set(t, [429, "no_live_seat"]);
+    hub.receive("t1", { t: "topics", topics: ["gallery", ...live] });
+    await tick();
+    net.ready(net.conns[0], S1);
+    await tick();
+    expect(of("t1", "refused").map(m => m.t === "refused" && m.code)).toEqual(["no_live_seat", "no_live_seat"]);
+    expect(net.held.get(S1)).toEqual(new Set(["gallery"]));
+    const asked = net.posts.length;
+    // The tab saying its topics again asks nothing: they stay refused.
+    hub.receive("t1", { t: "topics", topics: ["gallery", ...live] });
+    await tick();
+    expect(net.posts).toHaveLength(asked);
+    // A seat came free; the tab retries and the topics go live.
+    net.refuse.clear();
+    hub.receive("t1", { t: "retry", topics: live });
+    await tick();
+    expect(net.posts.length).toBeGreaterThan(asked);
+    expect(of("t1", "live").at(-1)).toEqual({ t: "live", topics: expect.arrayContaining(live) });
+    expect(net.held.get(S1)).toEqual(new Set(["gallery", ...live]));
+  });
+
+  it("takes a topic the daemon unseated off the stream, refused until a retry", async () => {
+    hub.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
+    await tick();
+    net.ready(net.conns[0], S1);
+    await tick();
+    net.conns[0].push(`event: unseated\ndata: ${JSON.stringify({ topic: `artifact:${A}`, code: "seat_idle" })}\nid: ${S1}:3\n\n`);
+    await tick();
+    expect(of("t1", "refused")).toEqual([{ t: "refused", topic: `artifact:${A}`, code: "seat_idle" }]);
+    expect(of("t1", "event")).toEqual([]);
+    expect(hub.stats().topics).toEqual([]);
+    net.held.set(S1, new Set());
+    hub.receive("t1", { t: "retry", topics: [`artifact:${A}`] });
+    await tick();
+    expect(net.posts.at(-1)!.body.subscribe).toEqual([`artifact:${A}`]);
+  });
 });

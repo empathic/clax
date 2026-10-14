@@ -116,6 +116,8 @@ pub struct TestServer {
     pub journal: Arc<crate::audit::JournalStatus>,
     /// The bounds on agents' unverified bodies.
     pub agent_gate: Arc<crate::agent::Gate>,
+    /// The live seats, whose limits a test may set.
+    pub seats: Arc<crate::seats::LiveSeats>,
     extension_id: String,
     _dir: tempfile::TempDir,
 }
@@ -240,6 +242,7 @@ impl TestServer {
             // Sampling off; tests that sample set their own with `spawn_with`.
             sample: Arc::new(crate::sample::Sampler::disabled()),
             stream: crate::stream::Hub::new(live_ids.clone()),
+            seats: crate::seats::LiveSeats::new(Default::default(), clock.clone()),
             live_ids,
             ext_creds,
             extension_id: clax_core::extension::extension_id_in_effect(home.root()),
@@ -271,6 +274,8 @@ impl TestServer {
         f(&mut state);
         state.audit_wake.install(&state.store);
         state.stream.listen(&state.events);
+        crate::seats::install(&state);
+        let seats = state.seats.clone();
         crate::inbox::listen(&state);
         crate::approvals::listen(&state);
         crate::routes::people::listen(&state);
@@ -309,6 +314,7 @@ impl TestServer {
             addr,
             journal,
             agent_gate,
+            seats,
             extension_id,
             _dir: dir,
         }
@@ -692,6 +698,23 @@ impl TestServer {
             base: self.base.clone(),
             client: self.client.clone(),
         }
+    }
+
+    /// A connected person's browser named `name`, made straight in the
+    /// store (a viewer marked a person, with no grant or machine): for tests
+    /// of what a person's browser may do, by the dozen.
+    pub async fn person(&self, name: &str) -> TestViewer {
+        let v = self.viewer(Some(name)).await;
+        let conn = rusqlite::Connection::open(self.home.db_path()).unwrap();
+        conn.busy_timeout(Duration::from_secs(10)).unwrap();
+        let n = conn
+            .execute(
+                "UPDATE viewers SET person = 1 WHERE public_id = ?1",
+                [&v.public_id],
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        v
     }
 
     /// The owner identity's public ID, made as a browser of the owner's

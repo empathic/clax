@@ -333,6 +333,41 @@ struct Inner {
     /// The detached streams, longest detached first (by when, then key), so
     /// a detach, an eviction and a sweep never scan every stream.
     detached: BTreeMap<(Instant, u64), String>,
+    /// The live seats the streams hold ([`Hub::use_seats`]): a stream
+    /// subscribed to an artifact's live topics holds its person's seat
+    /// there, keyed [`seat_conn`].
+    seats: Option<Arc<crate::seats::LiveSeats>>,
+}
+
+/// What a stream's seat connections are keyed by: this, then the stream ID.
+pub const SEAT_CONN_PREFIX: &str = "stream:";
+
+/// The seat connection key of stream `id`.
+pub fn seat_conn(id: &str) -> String {
+    format!("{SEAT_CONN_PREFIX}{id}")
+}
+
+impl Topic {
+    /// Whether the topic is one of an artifact's live topics (`artifact`,
+    /// `presence`, `working`), which hold a live seat (spec
+    /// 2026-10-11-clax-dev-hosted-design §16.1). `docs` does not: the page's
+    /// documents are its own.
+    pub fn is_live(&self) -> bool {
+        matches!(
+            self,
+            Topic::Artifact(_) | Topic::Presence(_) | Topic::Working(_)
+        )
+    }
+}
+
+/// The artifacts whose live topics `topics` hold.
+fn live_artifacts<'a>(
+    topics: impl Iterator<Item = &'a Topic>,
+) -> std::collections::BTreeSet<&'a str> {
+    topics
+        .filter(|t| t.is_live())
+        .filter_map(Topic::artifact)
+        .collect()
 }
 
 /// Why a subscription change was refused.
@@ -405,6 +440,21 @@ fn resync_frame(topic: &str, reason: &str) -> Bytes {
         "event: resync\ndata: {}\n\n",
         json!({"topic": topic, "reason": reason})
     ))
+}
+
+/// The `unseated` event for `topic` (`{topic, code}`): the stream left the
+/// topic because its live seat was released or refused.
+fn unseated_frame(topic: &str, code: &str) -> Bytes {
+    sse("unseated", &json!({"topic": topic, "code": code}))
+}
+
+fn unseated_item(seq: u64, topic: &str, code: &str) -> Item {
+    Item {
+        seq,
+        topic: topic.into(),
+        frame: unseated_frame(topic, code),
+        gate: Gate::Any,
+    }
 }
 
 fn id_line(id: &str, seq: u64) -> Bytes {
@@ -664,6 +714,54 @@ impl Hub {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Makes the streams hold live seats in `seats`: a stream's seats are
+    /// released when it unsubscribes an artifact's last live topic, parked
+    /// while it is detached (taken again on resume, where one is still
+    /// free), and forgotten when it is dropped.
+    pub fn use_seats(&self, seats: Arc<crate::seats::LiveSeats>) {
+        self.lock().seats = Some(seats);
+    }
+
+    /// Whether stream `id` holds any of `aid`'s live topics.
+    pub fn holds_live(&self, id: &str, aid: &str) -> bool {
+        self.lock().streams.get(id).is_some_and(|s| {
+            s.topics
+                .keys()
+                .any(|t| t.is_live() && t.artifact() == Some(aid))
+        })
+    }
+
+    /// Stream `id`'s seat on `aid` was released (`code`: why): the stream
+    /// leaves the artifact's live topics, and an attached one is sent
+    /// `unseated` (`{topic, code}`) for each, so its page turns spectator.
+    pub fn unseat(&self, id: &str, aid: &str, code: &str) {
+        let mut g = self.lock();
+        let seq = g.seq;
+        let Inner {
+            chans,
+            streams,
+            seats,
+            ..
+        } = &mut *g;
+        let Some(s) = streams.get_mut(id) else { return };
+        let gone: Vec<Topic> = s
+            .topics
+            .keys()
+            .filter(|t| t.is_live() && t.artifact() == Some(aid))
+            .cloned()
+            .collect();
+        for t in &gone {
+            s.topics.remove(t);
+            leave(chans, s.key, &t.chans(&s.caller, s.person.as_deref()));
+            if let Some(tx) = &s.tx {
+                let _ = tx.try_send(Arc::new(unseated_item(seq, &t.name(), code)));
+            }
+        }
+        if let Some(seats) = seats {
+            seats.leave(aid, &seat_conn(id));
+        }
+    }
+
     /// Files `ev` in each subscribed channel it belongs to and offers it to
     /// their subscribers.
     pub fn dispatch(&self, ev: &Event) {
@@ -781,6 +879,7 @@ impl Hub {
                 chans,
                 streams,
                 detached,
+                seats,
                 ..
             } = &mut *g;
             let s = streams.get_mut(id).expect("checked above");
@@ -791,6 +890,27 @@ impl Hub {
             }
             s.shared = Arc::new(Shared::default());
             let mut prelude = Vec::new();
+            // The seats it held while detached went back to the pool: it
+            // takes them again where one is free, and leaves the live
+            // topics of the artifacts where none is.
+            for aid in seats
+                .as_ref()
+                .map(|x| x.unpark(&seat_conn(id)))
+                .unwrap_or_default()
+            {
+                let gone: Vec<Topic> = s
+                    .topics
+                    .keys()
+                    .filter(|t| t.is_live() && t.artifact() == Some(aid.as_str()))
+                    .cloned()
+                    .collect();
+                for t in gone {
+                    s.topics.remove(&t);
+                    leave(chans, s.key, &t.chans(&s.caller, s.person.as_deref()));
+                    prelude.push(unseated_frame(&t.name(), clax_core::seats::NO_SEAT_CODE));
+                    prelude.push(id_line(id, seq));
+                }
+            }
             let mut replay: Vec<Arc<Item>> = Vec::new();
             for (topic, since) in &s.topics {
                 let from = last.max(*since);
@@ -899,6 +1019,7 @@ impl Hub {
     ) -> Result<(u64, Vec<String>), SubError> {
         let mut g = self.lock();
         let seq = g.seq;
+        let g_seats = g.seats.clone();
         let Inner { chans, streams, .. } = &mut *g;
         let s = streams
             .get_mut(id)
@@ -924,9 +1045,19 @@ impl Hub {
         if s.credential.is_some() && !add.iter().all(|t| live_only_admits(&self.live, t)) {
             return Err(SubError::Forbidden);
         }
+        let had = live_artifacts(s.topics.keys())
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
         for t in remove {
             if s.topics.remove(t).is_some() {
                 leave(chans, s.key, &t.chans(&s.caller, s.person.as_deref()));
+            }
+        }
+        if let Some(seats) = &g_seats {
+            let now = live_artifacts(s.topics.keys().chain(add.iter()));
+            for a in had.iter().filter(|a| !now.contains(a.as_str())) {
+                seats.leave(a, &seat_conn(id));
             }
         }
         for t in add {
@@ -974,6 +1105,7 @@ impl Hub {
             chans,
             streams,
             detached,
+            seats,
             ..
         } = &mut *g;
         let Some(s) = streams.get_mut(id).filter(|s| s.epoch == epoch) else {
@@ -985,6 +1117,9 @@ impl Hub {
         s.tx = None;
         let now = Instant::now();
         s.detached_at = Some(now);
+        if let Some(seats) = seats {
+            seats.park(&seat_conn(id));
+        }
         detached.insert((now, s.key), id.to_string());
         for t in s.topics.keys() {
             for c in t.chans(&s.caller, s.person.as_deref()) {
@@ -1137,6 +1272,9 @@ fn leave(chans: &mut HashMap<Chan, Channel>, key: u64, cs: &[Chan]) {
 }
 
 fn drop_stream(g: &mut Inner, id: &str) {
+    if let Some(seats) = &g.seats {
+        seats.forget(&seat_conn(id));
+    }
     if let Some(s) = g.streams.remove(id) {
         if let Some(at) = s.detached_at {
             g.detached.remove(&(at, s.key));
@@ -1771,6 +1909,55 @@ mod tests {
         let last = opened.last().unwrap();
         assert!(hub.open(c.clone(), true, None, Some((&last.id, 0))).resumed);
         assert!(!hub.open(c, true, None, Some((&opened[0].id, 0))).resumed);
+    }
+
+    #[test]
+    fn a_detached_stream_releases_its_seat_and_takes_it_again_on_resume() {
+        use clax_core::seats::{Claim, SeatLimits};
+        let hub = Hub::new(Default::default());
+        let seats = crate::seats::LiveSeats::new(
+            SeatLimits {
+                people: 1,
+                ..SeatLimits::default()
+            },
+            Arc::new(clax_core::working::SystemClock),
+        );
+        hub.use_seats(seats.clone());
+        let c = viewer(Level::Interact, Some("p1"));
+        let (p1, p2) = (Claim::person("p1", false), Claim::person("p2", false));
+        let live = [Topic::Artifact(A.into()), Topic::Presence(A.into())];
+        let open = |hub: &Hub, claim: &Claim| {
+            let o = hub.open(c.clone(), true, None, None);
+            assert!(seats.take(A, claim, &seat_conn(&o.id)));
+            hub.update(&o.id, &c, &live, &[]).unwrap();
+            o
+        };
+        let o = open(&hub, &p1);
+        // Detached, its seat goes back to the pool; resumed, it takes it again.
+        hub.detach(&o.id, o.epoch);
+        assert!(!seats.is_seated(A, &p1.key));
+        let r = hub.open(c.clone(), true, None, Some((&o.id, 0)));
+        assert!(r.resumed && r.prelude.is_empty());
+        assert!(seats.is_seated(A, &p1.key));
+        // Taken meanwhile: the resumed stream leaves the live topics, told why.
+        hub.detach(&r.id, r.epoch);
+        assert!(seats.take(A, &p2, "other"));
+        let r = hub.open(c.clone(), true, None, Some((&o.id, 0)));
+        assert!(r.resumed);
+        assert!(r.topics.is_empty(), "{:?}", r.topics);
+        let told: Vec<String> = r
+            .prelude
+            .iter()
+            .map(|b| String::from_utf8_lossy(b).to_string())
+            .filter(|f| f.starts_with("event: unseated"))
+            .collect();
+        assert_eq!(told.len(), 2);
+        assert!(told[0].contains("no_live_seat"), "{}", told[0]);
+        // Dropping a stream forgets its seats.
+        seats.leave(A, "other");
+        let o2 = open(&hub, &p1);
+        hub.end(&o2.id, o2.epoch);
+        assert!(!seats.is_seated(A, &p1.key));
     }
 
     #[test]

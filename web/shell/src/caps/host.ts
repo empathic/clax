@@ -79,6 +79,10 @@ export interface CapEnv {
   sampleStatus?(): Promise<SampleStatus | null>;
   /** The artifact's calls to Claude today, and the cap: the top bar's count. */
   onSampleCalls?(n: number, cap: number | null): void;
+  /** Whether the view is a spectator now (no live seat, spec
+   * 2026-10-11-clax-dev-hosted-design §16.1): the page's writes as the
+   * viewer (db, comments, room) reject `unavailable` without a request. */
+  spectating?(): boolean;
 }
 
 export interface Handler {

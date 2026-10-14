@@ -12,7 +12,7 @@
 // the daemon's shapes reach the page (`checkFrame`). This module is a lazy
 // chunk (registry.ts), loaded on the page's first room call.
 import { onViewer } from "../threads";
-import { CapError } from "./errors";
+import { CapError, SPECTATING } from "./errors";
 import type { HandlerFactory } from "./host";
 
 export type SocketLike = {
@@ -146,7 +146,9 @@ export function makeRoomHandler(
           if (!w) return;
           waiting.delete(f.id as number);
           clearTimeout(w.timer);
-          if (f.t === "ack") w.resolve(f); else w.reject(new CapError(f.code as string, f.message as string));
+          // A spectator's emit (spec 2026-10-11-clax-dev-hosted-design
+          // §16.1) is the contract's transient `upstream_error`.
+          if (f.t === "ack") w.resolve(f); else w.reject(new CapError(f.code === "spectator" ? "upstream_error" : f.code as string, f.message as string));
           return;
         }
         default: return;
@@ -237,6 +239,7 @@ export function makeRoomHandler(
           }
           case "emit": {
             if (!ws || !isOpen) return { dropped: false };
+            if (env.spectating?.()) throw new CapError("upstream_error", SPECTATING);
             const [room, topic] = args;
             const msg: Record<string, unknown> = { t: "emit", room: room ?? null, topic };
             if (args.length > 2) msg.data = args[2];

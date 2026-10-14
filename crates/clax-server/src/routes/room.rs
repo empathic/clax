@@ -8,6 +8,11 @@
 //! protocol") and decides which topics it may send on: a topic declared `"interact"` in `capabilities.room.topics` admits
 //! `interact` and above, every other topic `admin` and above; presence admits
 //! everyone. Frames are the JSON objects of `docs/contract.md` "Room protocol".
+//! A person beyond the artifact's live seats is a spectator (spec
+//! 2026-10-11-clax-dev-hosted-design §7, §16.1): while they are, each emit
+//! is nacked `spectator` and their presence is dropped; the seat is asked
+//! at each one ([`crate::seats::is_spectator`]), so a viewer who joins live
+//! sends again on the same socket.
 //!
 //! Rooms are keyed by artifact, not by version ([`crate::room`]): a socket
 //! stays open across new versions that keep declaring `room`.
@@ -130,6 +135,12 @@ pub async fn room(
         ));
     }
     let aid = id.as_str().to_string();
+    // The seat its emits and presence are checked against (a spectator's
+    // are refused, spec 2026-10-11-clax-dev-hosted-design §7, §16.1).
+    let seat = match d.caller(&s).await {
+        Ok(c) => crate::seats::write_claim(&s, &c, &id).await?,
+        Err(_) => None,
+    };
     let (artifact, caller) = s
         .store_call(move |st| Ok((st.get_artifact(&id)?, subscriber.resolve(st)?)))
         .await?;
@@ -147,7 +158,7 @@ pub async fn room(
     Ok(ws
         .max_message_size(MAX_ROOM_MESSAGE_BYTES)
         .max_frame_size(MAX_ROOM_MESSAGE_BYTES)
-        .on_upgrade(move |socket| session(s, aid, who, level, topics, socket)))
+        .on_upgrade(move |socket| session(s, aid, who, level, topics, seat, socket)))
 }
 
 fn close(code: u16, reason: &'static str) -> Message {
@@ -208,6 +219,10 @@ struct Conn {
     budget: Budget,
     /// Presence that arrived past the budget, latest per room.
     pending: BTreeMap<Option<String>, Map<String, Value>>,
+    seats: Arc<crate::seats::LiveSeats>,
+    /// The seat this socket's writes are checked against
+    /// ([`crate::seats::write_claim`]).
+    claim: Option<clax_core::seats::Claim>,
 }
 
 impl Conn {
@@ -218,6 +233,12 @@ impl Conn {
         }
     }
 
+    /// Whether the socket's viewer is a spectator now: their emits are
+    /// refused and their presence is dropped.
+    fn spectator(&self) -> bool {
+        crate::seats::is_spectator(&self.seats, &self.aid, self.claim.as_ref())
+    }
+
     fn handle(&mut self, text: &str, streams: &mut Streams) -> Vec<Value> {
         let Ok(msg) = serde_json::from_str::<ClientMsg>(text) else {
             tracing::debug!("room: ignored a malformed frame");
@@ -225,7 +246,10 @@ impl Conn {
         };
         match msg {
             ClientMsg::Presence { room, state } => {
-                if check_presence(&state).is_err() || self.member(&room).is_none() {
+                if check_presence(&state).is_err()
+                    || self.member(&room).is_none()
+                    || self.spectator()
+                {
                     return Vec::new();
                 }
                 let Value::Object(map) = state else {
@@ -267,6 +291,12 @@ impl Conn {
                     return vec![nack(
                         "invalid_argument",
                         "this page is not in that room".into(),
+                    )];
+                }
+                if self.spectator() {
+                    return vec![nack(
+                        clax_core::seats::SPECTATOR_CODE,
+                        clax_core::seats::SPECTATOR_MESSAGE.into(),
                     )];
                 }
                 if !self.budget.take(Instant::now()) {
@@ -323,6 +353,7 @@ async fn session(
     who: Who,
     level: Level,
     topics: Option<Topics>,
+    seat: Option<clax_core::seats::Claim>,
     mut socket: WebSocket,
 ) {
     let Some(topics) = topics else {
@@ -343,6 +374,8 @@ async fn session(
         named: BTreeMap::new(),
         budget: Budget::new(Instant::now()),
         pending: BTreeMap::new(),
+        seats: s.seats.clone(),
+        claim: seat,
     };
     let mut events = s.events.subscribe();
     let mut shutdown = s.shutdown.clone();

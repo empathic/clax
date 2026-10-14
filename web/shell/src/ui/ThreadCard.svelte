@@ -49,10 +49,12 @@
     tools?: Snippet<[Thread]>;
     /** Fetches the clip's image instead of loading `t.clip_url` (the side panel's clips come through the worker). */
     clip?(t: Thread): Promise<string | null>;
+    /** Read-only: no reply box, and no Resolve, Send or Reopen (the card's `tools` stay). */
+    readOnly?: boolean;
     /** `onResolve` resolves an open thread and reopens a resolved one. */
     onSelect(t: Thread): void; onSend(t: Thread): void; onResolve(t: Thread): void; onReply(t: Thread, body: string): void; onHover?(t: Thread | null): void;
   };
-  let { t, n, now, me, selected, file, history, outdated, agent, when, marker = null, versions = [], onSeen, yours = false, checked = false, onToggle, send: sendButton, fold, badge, meta, tools, clip, onSelect, onSend, onResolve, onReply, onHover }: Props = $props();
+  let { t, n, now, me, selected, file, history, outdated, agent, when, marker = null, versions = [], onSeen, yours = false, checked = false, onToggle, send: sendButton, fold, badge, meta, tools, clip, readOnly = false, onSelect, onSend, onResolve, onReply, onHover }: Props = $props();
   // A thread about the whole artifact (anchor kind `artifact`) has no spot to name.
   const anchorLabel = (a: Thread["anchor"]) => (a.kind === "artifact" ? "The whole artifact" : pickLabel(a));
   let reply = $state("");
@@ -148,11 +150,13 @@
       </ul>
     {/if}
     {#if !fold}{@render actions()}{/if}
+    {#if !readOnly}
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
     <form class="reply" onclick={e => e.stopPropagation()} onsubmit={e => e.preventDefault()}>
       <input aria-label="Reply" placeholder="Reply, or @name someone" bind:value={reply} onkeydown={replyKey} />
       <button type="button" onclick={e => { hint = guardedAction(e, "reply", send); }}>Reply</button>
     </form>
+    {/if}
     {#if fold}{@render actions()}{/if}
     <!-- Said when a key asked for an action on a trail the page may have steered (`keyboardTrail`). -->
     <p class="act-hint" role="status">{hint ?? ""}</p>
@@ -170,7 +174,7 @@
   <!-- Only stops a click on these controls from also selecting the card. -->
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div class="actions" onclick={e => e.stopPropagation()}>
-    {#if t.status === "open"}
+    {#if readOnly}{:else if t.status === "open"}
       <button onclick={e => { hint = guardedAction(e, "resolve", () => onResolve(t)); }}>Resolve</button>
       {#if !t.sent_to_agent}{#if sendButton}{@render sendButton(guardSend)}{:else}<button class="primary" onclick={e => { guardSend(e, () => onSend(t)); }}>Send to {agent}</button>{/if}{/if}
     {:else}

@@ -25,6 +25,7 @@ pub mod questions;
 pub mod remote;
 pub mod rights;
 pub mod room;
+pub mod seats;
 pub mod secret;
 pub mod sig;
 pub mod store;

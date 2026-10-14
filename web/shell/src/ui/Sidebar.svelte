@@ -92,6 +92,9 @@
      * `version`, posted through `host` (the artifact view's controller).
      * Without it the panel has no box (the extension's side panel). */
     compose?: { version: number; host: WholeHost };
+    /** Read-only (a spectator, beyond the live seats): the cards show no
+     * reply, resolve or send, and nothing is ticked or sent. */
+    readOnly?: boolean;
     /** What goes above a thread's card, at the sidebar's clock: the shell
      * puts this viewer's approval card above a thread waiting for their
      * approval (spec 2026-10-08 §9.5); the extension's panel, nothing. */
@@ -198,7 +201,7 @@
       history={historyOf(t, p.versions, names(t), { working: t.status === "open" ? threadAgent(p.working ?? [], t.id, agentsByHandle) : null })}
       marker={t.status === "open" ? threadMarker(p.working ?? [], t.id, agentsByHandle) : null} outdated={isOutdated(t, p.resolved[t.id], p.shown)} agent={p.agent} when={relativeTime(t.created_at, clock.now)}
       versions={p.versions} onSeen={p.onSeen} fold={foldOf(t)} clip={p.clip} tools={far(t) ? go : undefined}
-      checked={ticked.has(t.id)} onToggle={p.onToggle && selectable(t, false) ? toggleCard : undefined}
+      checked={ticked.has(t.id)} onToggle={p.onToggle && !p.readOnly && selectable(t, false) ? toggleCard : undefined} readOnly={p.readOnly}
       onSelect={p.onSelect} onSend={p.onSend} onResolve={resolve} onReply={p.onReply} onHover={p.onHover}>
       {#snippet send(guard: (e: Event, act: () => void) => void)}
         <SendButton label={`Send to ${target}`} agents={p.agents ?? []} names={agentsByHandle} target={p.sendTo ?? null} {me} aid={asks} threads={[t.id]}
@@ -222,11 +225,11 @@
       <WorkingStrip {w} text={stripText(w, agentsByHandle, s.numbers, new Set(p.mine ?? []))} commenting={p.commenting ?? false} />
     {/await}
   {/each}
-  {#if unsentCount && p.onSendUnsent && pick}
+  {#if unsentCount && p.onSendUnsent && !p.readOnly && pick}
     <!-- No target yet: the bar opens the Send menu to choose one. -->
     <div class="send-unsent pick"><SendButton label={unsentLabel(unsentCount, target)} agents={p.agents ?? []} names={agentsByHandle} target={null} {me} aid={asks}
       threads={p.threads.filter(t => t.status === "open" && !t.sent_to_agent).map(t => t.id)} onSend={() => {}} onChoose={h => p.onChoose?.(h)} /></div>
-  {:else if unsentCount && p.onSendUnsent}
+  {:else if unsentCount && p.onSendUnsent && !p.readOnly}
     <button type="button" class="primary send-unsent" disabled={p.batchBusy}
       onclick={e => { unsentHint = guardedAction(e, "send", () => p.onSendUnsent?.()); }}>{unsentLabel(unsentCount, target)}</button>
     <p class="act-hint" role="status">{unsentHint ?? ""}</p>
@@ -249,7 +252,7 @@
   {/if}
   <section class="section-open">
     <h2 class="gh you"><span class="sw" aria-hidden="true"></span><span class="t">Open</span> <span class="c">{open.length}</span></h2>
-    {#if open.length === 0}<p class="muted small empty-open">{group.length ? "Nothing else open." : `Nothing open. Press C and click anything to comment on it${p.compose ? ", or use New comment for the whole artifact" : ""}.`}</p>{:else}{@render cards(open)}{/if}
+    {#if open.length === 0}<p class="muted small empty-open">{group.length ? "Nothing else open." : p.readOnly ? "Nothing open." : `Nothing open. Press C and click anything to comment on it${p.compose ? ", or use New comment for the whole artifact" : ""}.`}</p>{:else}{@render cards(open)}{/if}
   </section>
   <div class="tail">
     <details class="section-detached" aria-label={`Detached ${detached.length}`} bind:open={detachedOpen}>
