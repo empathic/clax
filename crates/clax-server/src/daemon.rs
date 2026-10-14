@@ -409,6 +409,9 @@ pub struct ServeConfig {
     /// The `sample` capability's provider and settings (`clax serve` uses
     /// [`crate::sample::Sampler::from_home`] on its own environment).
     pub sample: Arc<crate::sample::Sampler>,
+    /// Serve nothing but `/healthz`, static files and content by ID without
+    /// a credential ([`crate::state::AppState::require_credential`]).
+    pub require_credential: bool,
 }
 
 /// How long [`port_held`] waits for a connection to be accepted.
@@ -541,6 +544,7 @@ pub async fn serve(
         store,
         home: cfg.home.clone(),
         token,
+        require_credential: cfg.require_credential,
         events: EventBus::new(),
         started_at,
         version: cfg.version,

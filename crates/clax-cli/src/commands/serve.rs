@@ -12,6 +12,13 @@ pub struct Args {
     /// Run the daemon in this process instead of the background.
     #[arg(long)]
     pub foreground: bool,
+    /// Answer no request without a credential (the bearer token, or the
+    /// cookies a WebView of the app that started the daemon holds), but
+    /// `/healthz`, the web UI's static files and page content by artifact
+    /// ID; `GET /api/token` included. For a daemon on a loopback that other
+    /// programs share, such as an Android device's.
+    #[arg(long, requires = "foreground")]
+    pub require_credential: bool,
     /// Report this version instead of the build's, so a test can run a
     /// genuine older daemon. Debug builds only.
     #[cfg(debug_assertions)]
@@ -53,6 +60,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
                 home.root(),
                 |k| std::env::var(k).ok(),
             )),
+            require_credential: a.require_credential,
         };
         return rt.block_on(serve(cfg, None));
     }

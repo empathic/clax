@@ -1,6 +1,7 @@
 //! Who a request speaks for ([`Caller`]), the owner-only gate
 //! ([`RequireToken`]), the `Host` check on every `/api` route (DNS
-//! rebinding), and the loopback check for /api/token.
+//! rebinding), the loopback check for /api/token, and the credential gate
+//! of a daemon that serves no one without one ([`require_credential`]).
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -262,6 +263,74 @@ pub fn has_events_cookie(headers: &axum::http::HeaderMap, token: &str) -> bool {
         .any(|(_, v)| constant_time_eq(v.as_bytes(), want.as_bytes()))
 }
 
+/// The name of the key cookie: `clax_key_<port>`, the port from the
+/// request's `Host` as for the events cookie. Its value is the token itself.
+/// No response sets it: the app that starts a daemon with
+/// `require_credential` puts it in its own WebView's cookie store, so the
+/// shell there passes [`require_credential`] and fetches the token as on a
+/// desktop.
+pub fn key_cookie_name(host: &str) -> String {
+    events_cookie_name(host).replacen("clax_events_", "clax_key_", 1)
+}
+
+/// True when `headers` carry this port's key cookie with the token
+/// (compared in constant time).
+pub fn has_key_cookie(headers: &axum::http::HeaderMap, token: &str) -> bool {
+    let host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let name = key_cookie_name(host);
+    headers
+        .get_all(axum::http::header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .filter_map(|kv| kv.trim().split_once('='))
+        .filter(|(k, _)| *k == name)
+        .any(|(_, v)| constant_time_eq(v.as_bytes(), token.as_bytes()))
+}
+
+/// Paths a daemon with `require_credential` serves without a credential:
+/// `/healthz`, the shell's static files (`/_clax/...`, code and no data),
+/// and content addressed by artifact ID (`/c/<id>/...`, which an artifact
+/// origin's `/v/...` is rewritten to, and `/_blob/<asset ID>`). The content
+/// frame on `<id>.localhost` is a cross-site frame of the shell, which an
+/// Android WebView sends no cookie for; IDs are 60 random bits, and every
+/// route that lists or names them needs a credential.
+pub fn open_without_credential(path: &str) -> bool {
+    path == "/healthz"
+        || path.starts_with("/_clax/")
+        || path.starts_with("/c/")
+        || path.starts_with("/_blob/")
+}
+
+/// Middleware: on a daemon serving with `require_credential` (the app's
+/// embedded daemon, whose loopback every other app on the device shares),
+/// a request answers 401 `unauthorized` unless its path is
+/// [`open_without_credential`] or it carries a credential: the bearer token,
+/// the key cookie ([`key_cookie_name`]), or the owner or events cookie that
+/// `GET /api/token` sets. `GET /api/token` is behind it like every other
+/// route, so a program that can only reach loopback never gets the token.
+/// A daemon without the option passes every request on.
+pub async fn require_credential(
+    axum::extract::State(s): axum::extract::State<AppState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if !s.require_credential
+        || open_without_credential(req.uri().path())
+        || has_token(req.headers(), &s.token)
+        || has_key_cookie(req.headers(), &s.token)
+        || crate::identity::has_owner_cookie(req.headers(), &s.token)
+        || has_events_cookie(req.headers(), &s.token)
+    {
+        return next.run(req).await;
+    }
+    ApiError::unauthorized().into_response()
+}
+
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() || a.is_empty() {
         return false;
@@ -494,6 +563,35 @@ mod tests {
             ("", Some(lan)),
         ] {
             assert!(!api_host_allowed(h, local), "{h} {local:?}");
+        }
+    }
+
+    #[test]
+    fn the_key_cookie_holds_the_token_under_its_ports_name() {
+        assert_eq!(key_cookie_name("127.0.0.1:41000"), "clax_key_41000");
+        let mut h = axum::http::HeaderMap::new();
+        h.insert("host", "127.0.0.1:41000".parse().unwrap());
+        h.insert("cookie", "a=b; clax_key_41000=tok".parse().unwrap());
+        assert!(has_key_cookie(&h, "tok"));
+        assert!(!has_key_cookie(&h, "other"));
+        h.insert("cookie", "clax_key_41001=tok".parse().unwrap());
+        assert!(!has_key_cookie(&h, "tok"));
+    }
+
+    #[test]
+    fn only_health_static_files_and_content_are_open_without_a_credential() {
+        for p in ["/healthz", "/_clax/app.js", "/c/abc/v/1/", "/_blob/x"] {
+            assert!(open_without_credential(p), "{p}");
+        }
+        for p in [
+            "/api/token",
+            "/api/artifacts",
+            "/a/abc",
+            "/",
+            "/mcp",
+            "/healthz/x",
+        ] {
+            assert!(!open_without_credential(p), "{p}");
         }
     }
 

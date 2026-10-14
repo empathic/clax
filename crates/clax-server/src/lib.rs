@@ -49,13 +49,18 @@ pub fn build_router_with_shutdown(
 // `Router::layer` runs after route matching, so the host rewrite has to wrap the
 // whole inner router (mounted as the outer fallback) to influence routing. The
 // `/api` host check runs after the rewrite (the later `layer` is outermost),
-// and the header checks of agent credentials after both, before any route.
+// then the credential gate on the rewritten path, and the header checks of
+// agent credentials after all three, before any route.
 fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
     axum::Router::new()
         .fallback_service(inner)
         .layer(axum::middleware::from_fn_with_state(
-            state,
+            state.clone(),
             agent::authenticate,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state,
+            auth::require_credential,
         ))
         .layer(axum::middleware::from_fn(auth::require_api_host))
         .layer(axum::middleware::from_fn(host::rewrite_artifact_host))

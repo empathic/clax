@@ -60,6 +60,10 @@ pub struct AppState {
     pub store: Arc<Store>,
     pub home: Home,
     pub token: String,
+    /// Every request but [`crate::auth::open_without_credential`]'s needs a
+    /// credential, `GET /api/token` included ([`crate::auth::require_credential`]);
+    /// `clax serve --require-credential`, off by default.
+    pub require_credential: bool,
     pub events: EventBus,
     pub started_at: String,
     pub version: &'static str,

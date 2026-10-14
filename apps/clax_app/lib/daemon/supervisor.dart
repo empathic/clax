@@ -71,6 +71,18 @@ class DaemonEndpoint {
   String toString() => 'DaemonEndpoint($base, pid $pid)';
 }
 
+/// The key cookie for a daemon started with `--require-credential` at
+/// [base] with [token]: `clax_key_<port>`, holding the token, for the
+/// daemon's host and every path. With it in a WebView's cookie store, the
+/// shell there passes the daemon's credential gate and fetches the token
+/// (`GET /api/token`) as on a desktop. Pages on an artifact's own origin
+/// (`<id>.localhost`) never receive it.
+({String name, String value, String domain, String path}) keyCookie(
+  Uri base,
+  String token,
+) =>
+    (name: 'clax_key_${base.port}', value: token, domain: base.host, path: '/');
+
 /// `ensureUp` could not bring the daemon up: it reached [Failed].
 class DaemonFailure implements Exception {
   const DaemonFailure(this.reason, this.stderrTail);
@@ -123,6 +135,7 @@ class DaemonSupervisor {
     this._clock = const SystemClock(),
     this._android = false,
     this._apiKey,
+    this._requireCredential = false,
   }) : _support = supportDir,
        _cache = cacheDir;
 
@@ -177,6 +190,13 @@ complex = "claude-sonnet-5-5"
   final Clock _clock;
   final bool _android;
   final Future<String?> Function()? _apiKey;
+
+  /// Starts the daemon with `--require-credential`: it answers nothing but
+  /// `/healthz`, the web UI's static files and page content by artifact ID
+  /// without the token or a cookie for it, `GET /api/token` included, so
+  /// other programs on the device's shared loopback cannot read the apps or
+  /// fetch the token. A WebView reaches it with [keyCookie] set.
+  final bool _requireCredential;
 
   /// [restart] stopped the running daemon: its exit starts the next one at
   /// once, and is not counted as a failure.
@@ -376,7 +396,13 @@ complex = "claude-sonnet-5-5"
       if (_stopping) return null;
       final proc = p = await _starter.start(
         exe,
-        ['--port', '$port', 'serve', '--foreground'],
+        [
+          '--port',
+          '$port',
+          'serve',
+          '--foreground',
+          if (_requireCredential) '--require-credential',
+        ],
         environment: environment,
         workingDirectory: _home,
       );

@@ -220,6 +220,7 @@ impl TestServer {
             store,
             home: home.clone(),
             token: token.clone(),
+            require_credential: false,
             events: EventBus::new(),
             started_at,
             version: "test",

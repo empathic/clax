@@ -29,6 +29,7 @@ mod api_live;
 mod api_live_site;
 mod api_live_sites;
 mod api_live_watch;
+mod api_locked;
 mod api_mcp;
 mod api_net;
 mod api_notices;
