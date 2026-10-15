@@ -433,6 +433,9 @@ pub async fn retry(
     let n = s
         .store_call(move |st| st.outbox_retry(&rid, Some(id.as_str())))
         .await?;
+    // Their threads read as sending again, in every open tab, before the
+    // sync tries them.
+    crate::linked::publish_outbox(&s, &r.id).await;
     s.linked.retry(&r.id);
     Ok(Json(json!({"retried": n})))
 }

@@ -633,8 +633,10 @@ async fn an_outage_queues_marks_rows_not_sent_at_the_cap_then_drains_in_order() 
     assert_eq!(links["links"][0]["failed"], 2, "{links}");
     let local = p.local_threads().await;
     assert_eq!(local[0]["comments"][2]["linked"]["state"], "failed");
-    // Back: Retry drains them, in order.
+    // Back: Retry drains them, in order, and first tells every open page
+    // at once that they are sending again.
     p.local.state.linked.set_offline(false);
+    let mut events = p.local.state.events.subscribe();
     let (s, v) = p
         .local_req(
             reqwest::Method::POST,
@@ -644,6 +646,18 @@ async fn an_outage_queues_marks_rows_not_sent_at_the_cap_then_drains_in_order() 
         )
         .await;
     assert_eq!((s, &v["retried"]), (200, &json!(2)), "{v}");
+    let thread = loop {
+        let ev = events.recv().await.unwrap();
+        if let clax_core::Event::Thread { thread, .. } = ev.event
+            && thread["id"] == tid.as_str()
+        {
+            break thread;
+        }
+    };
+    assert_eq!(
+        thread["comments"][2]["linked"]["state"], "pending",
+        "{thread}"
+    );
     until("the rows drain in order", || async {
         let ts = p.hosted_threads().await;
         (ts.len() == 1 && bodies(&ts[0]) == ["before", "one", "two"]).then_some(())
@@ -663,6 +677,69 @@ async fn an_outage_queues_marks_rows_not_sent_at_the_cap_then_drains_in_order() 
             links["links"][0]["failed"].clone()
         ),
         (json!(0), json!(0))
+    );
+}
+
+#[tokio::test]
+async fn a_reply_whose_answer_was_lost_before_an_outage_comes_back_as_itself() {
+    let p = Pair::new().await;
+    let rt = p.hosted_thread("from there", whole(), None).await;
+    let rtid = rt["id"].as_str().unwrap().to_string();
+    p.backstop().await;
+    let tid = until("the thread comes down", || async {
+        p.local_threads()
+            .await
+            .first()
+            .map(|t| t["id"].as_str().unwrap().to_string())
+    })
+    .await;
+    p.sleeper.wait_for(BACKSTOP, 1).await;
+    // The reply reaches the remote, its answer is lost, and the remote is
+    // then out of reach past the backoff's cap: the row is marked not sent.
+    p.local.state.linked.lose_next_answers(1);
+    let (s, v) = p
+        .local_req(
+            reqwest::Method::POST,
+            &format!("/api/artifacts/{}/threads/{tid}/comments", p.aid),
+            json!({"body": "made there"}),
+            None,
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let mut d = BACKOFF_FIRST;
+    p.sleeper.wait_for(d, 1).await;
+    p.local.state.linked.set_offline(true);
+    loop {
+        p.sleeper.wait_for(d, 1).await;
+        if d == BACKOFF_CAP {
+            break;
+        }
+        p.sleeper.fire(d);
+        d = (d * 2).min(BACKOFF_CAP);
+    }
+    assert_eq!(
+        bodies(&p.hosted_thread_by(&rtid).await),
+        ["from there", "made there"]
+    );
+    // Back, with no Retry: the next read finds the reply there. It is the
+    // reply made here, not a second copy of it from the remote.
+    p.local.state.linked.set_offline(false);
+    p.sleeper.fire(BACKOFF_CAP);
+    p.sleeper.wait_for(BACKSTOP, 1).await;
+    p.backstop().await;
+    p.sleeper.wait_for(BACKSTOP, 1).await;
+    let t = p
+        .local_threads()
+        .await
+        .into_iter()
+        .find(|t| t["id"] == tid.as_str())
+        .unwrap();
+    assert_eq!(bodies(&t), ["from there", "made there"], "{t}");
+    assert_eq!(t["comments"][1]["linked"]["origin"], "local", "{t}");
+    assert_eq!(t["comments"][1]["linked"]["state"], Value::Null, "{t}");
+    assert_eq!(
+        bodies(&p.hosted_thread_by(&rtid).await),
+        ["from there", "made there"]
     );
 }
 

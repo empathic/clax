@@ -1057,6 +1057,11 @@ pub const MIGRATIONS: &[&str] = &[
         created_at TEXT NOT NULL,
         PRIMARY KEY (grant_id, key)
     );",
+    // 34: a linked artifact's threads go up from `threads_since` on
+    // (`crate::linked`): set when a download-only link is made
+    // two-way again, so a thread started while it was download only stays
+    // local. NULL: since the link was made.
+    "ALTER TABLE remote_links ADD COLUMN threads_since TEXT;",
 ];
 
 /// The audit journal's migration, as a schema version (the

@@ -33,7 +33,9 @@
 //! - **Offline.** An unreachable remote backs the task off, doubling from
 //!   [`BACKOFF_FIRST`] to [`BACKOFF_CAP`]; [`Linked::status`] says since
 //!   when, and once the backoff reaches its cap the waiting rows are marked
-//!   not sent, for Retry. Local work never waits on the remote.
+//!   not sent, for Retry. A row a try may have made there (its answer
+//!   lost) is resent under its key as soon as the remote answers, before
+//!   anything is read from there. Local work never waits on the remote.
 //!
 //! The timers run on a [`Sleeper`], which tests drive. A hosted daemon runs
 //! none of this.
@@ -417,7 +419,7 @@ async fn remote_label(s: &AppState, rid: &str) -> String {
 
 /// Republishes the threads with outbox rows of remote `rid`, so the shell
 /// shows their state.
-async fn publish_outbox(s: &AppState, rid: &str) {
+pub(crate) async fn publish_outbox(s: &AppState, rid: &str) {
     let r = rid.to_string();
     let ctx = s.feedback_ctx();
     let _ = s
@@ -602,7 +604,11 @@ impl Sync {
             if blocked.contains(&row.thread_id) {
                 continue;
             }
-            if row.failed_at.is_some() {
+            // A row marked not sent waits for Retry, unless a try of it may
+            // have been made there with its answer lost: only a resend under
+            // its key tells, and until then the remote's copy would come down
+            // here as someone else's.
+            if row.failed_at.is_some() && !maybe_made(&row) {
                 blocked.insert(row.thread_id.clone());
                 continue;
             }
@@ -740,6 +746,15 @@ impl Sync {
         }
     }
 
+    /// Records that row `seq` is about to be sent: from now until its
+    /// answer is read, the remote may have made it.
+    async fn trying(&self, seq: i64) -> Result<(), String> {
+        self.s
+            .store_call(move |st| st.outbox_trying(seq))
+            .await
+            .map_err(|e| e.message)
+    }
+
     /// Whether the answer to an up-send is lost (tests).
     fn lose_answer(&self) -> bool {
         self.s
@@ -835,6 +850,7 @@ impl Sync {
                 {
                     form = form.part("clip", part);
                 }
+                self.trying(row.seq).await?;
                 let v = match clax_http::public::sendable(c.post_form_keyed(
                     &format!("/api/artifacts/{raid}/threads"),
                     form,
@@ -878,6 +894,7 @@ impl Sync {
                     return Ok(Sent::Acked);
                 };
                 let path = format!("/api/artifacts/{raid}/threads/{rtid}/comments");
+                self.trying(row.seq).await?;
                 let mut answer: Option<Value> = None;
                 if let (Some(name), Some(harness)) = (&row.agent_name, &row.agent_harness) {
                     match self
@@ -1209,6 +1226,13 @@ impl Sync {
             Err(f) => tracing::debug!(thread = tid, error = f.message.as_str(), "no remote clip"),
         }
     }
+}
+
+/// Whether a try of outbox row `row` may have made its thread or comment
+/// there, its answer never read: echoes of those are told from the
+/// remote's own only once a resend under its key answers.
+fn maybe_made(row: &OutboxRow) -> bool {
+    row.attempts > 0 && matches!(row.kind.as_str(), "thread" | "comment")
 }
 
 /// Whether `id` is shaped as a Clax ID (letters and digits): what a remote

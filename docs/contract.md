@@ -1023,7 +1023,8 @@ them all.
   longer linked to. `PATCH /api/artifacts/<id>/remotes/<remote>
   {download_only}` (the owner; `clax remote comments <artifact>
   two-way|download-only`) keeps new local threads local while replies and
-  resolves on linked threads still go up; `POST …/retry` tries the
+  resolves on linked threads still go up (made two-way again, a thread
+  started while it was download only stays local); `POST …/retry` tries the
   writes not sent again; `DELETE …` (`clax remote unlink <artifact>`) ends
   the link: its threads stay as read-only history (`unlinked: true`; a
   reply, resolve or reopen there is 409 `thread_unlinked`) and its unsent

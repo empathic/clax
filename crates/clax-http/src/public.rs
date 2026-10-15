@@ -221,6 +221,26 @@ pub struct Client {
     session: Option<(String, Secret)>,
 }
 
+/// The body of `res` while it is at most `max` bytes; `None` as soon as
+/// it passes `max`, read no further (an answer that names no length, or a
+/// wrong one, is cut there rather than held whole).
+async fn read_capped(
+    res: reqwest::Response,
+    max: usize,
+) -> Result<Option<Vec<u8>>, reqwest::Error> {
+    use futures::StreamExt;
+    let mut out = Vec::new();
+    let mut body = res.bytes_stream();
+    while let Some(chunk) = body.next().await {
+        let chunk = chunk?;
+        if out.len() + chunk.len() > max {
+            return Ok(None);
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(Some(out))
+}
+
 fn timeout(r: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -309,11 +329,9 @@ impl Client {
                 Value::Null,
             ));
         }
-        let bytes = res.bytes().await.unwrap_or_default();
-        let v: Value = if bytes.len() > MAX_ANSWER_BYTES {
-            Value::Null
-        } else {
-            serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+        let v: Value = match read_capped(res, MAX_ANSWER_BYTES).await {
+            Ok(Some(bytes)) => serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+            Ok(None) | Err(_) => Value::Null,
         };
         if (200..300).contains(&status) {
             return Ok(v);
@@ -430,18 +448,15 @@ impl Client {
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default()
             .to_string();
-        let bytes = res
-            .bytes()
-            .await
-            .map_err(|e| fail(None, "unreachable", e.to_string()))?;
-        if bytes.len() > max {
-            return Err(fail(
+        match read_capped(res, max).await {
+            Ok(Some(bytes)) => Ok((bytes, ct)),
+            Ok(None) => Err(fail(
                 Some(status),
                 "too_large",
                 "the answer is too large".into(),
-            ));
+            )),
+            Err(e) => Err(fail(None, "unreachable", e.to_string())),
         }
-        Ok((bytes.to_vec(), ct))
     }
 
     /// POSTs multipart `form` to `path` with idempotency key `key`.
@@ -1319,6 +1334,48 @@ pub async fn revoke(remote: &Remote, token: Secret) -> Result<(), ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A remote at a local port that answers every request 200 with a
+    /// chunked body of `n` bytes of `fill` and then never ends it.
+    async fn endless(fill: u8, n: usize) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut c, _)) = l.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    let mut req = [0u8; 4096];
+                    let _ = c.read(&mut req).await;
+                    let _ = c
+                        .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\n\r\n")
+                        .await;
+                    for _ in 0..n.div_ceil(1024) {
+                        let mut chunk = b"400\r\n".to_vec();
+                        chunk.extend(std::iter::repeat_n(fill, 1024));
+                        chunk.extend_from_slice(b"\r\n");
+                        if c.write_all(&chunk).await.is_err() {
+                            return;
+                        }
+                    }
+                    // Never the last chunk: held open until the client goes.
+                    let _ = c.read(&mut req).await;
+                });
+            }
+        });
+        origin
+    }
+
+    #[tokio::test]
+    async fn an_answer_past_its_cap_is_cut_there_and_never_held_whole() {
+        let c = Client::new(&endless(b'x', 8 * 1024).await, None);
+        let f = c.get_bytes("/clip", 4 * 1024).await.unwrap_err();
+        assert_eq!(f.code, "too_large", "{}", f.message);
+        let c = Client::new(&endless(b' ', MAX_ANSWER_BYTES + 1024).await, None);
+        assert_eq!(c.get("/api/x").await.unwrap(), Value::Null);
+    }
 
     const A: &str = "01K6AB7D2E3F4G5H6J7K8M9N0P";
     const B: &str = "01K6AB7D2E3F4G5H6J7K8M9N0Q";

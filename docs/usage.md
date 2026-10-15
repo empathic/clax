@@ -268,9 +268,10 @@ on the public copy shows up on your local page tagged with where it came
 from and who wrote it there, reaches your agents as a local comment does
 (`wait_for_feedback`, channel notifications), and their replies and resolves
 go back to the public thread, once each. Threads you start locally go up
-too, as you, unless the link is download only. While the public Clax cannot
-be reached, what you write waits, marked "Sending…", then "Not sent" with
-Retry after five minutes; nothing local waits on it.
+too, as you, unless the link is download only (a thread started while it
+is download only stays local, even once it is two-way again). While the
+public Clax cannot be reached, what you write waits, marked "Sending…",
+then "Not sent" with Retry after five minutes; nothing local waits on it.
 
 On an artifact's page, Publish to `<host>` does the same in the browser
 (and Push v`<N>` once it is public, beside a link to its public copy). An

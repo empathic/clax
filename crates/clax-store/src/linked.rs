@@ -137,6 +137,8 @@ pub struct OutboxRow {
     /// The local agent that wrote it, when one did (`None`: the owner).
     pub agent_name: Option<String>,
     pub agent_harness: Option<String>,
+    /// Tries sent whose answer was never read: while above zero, the
+    /// remote may have made what the row asks for.
     pub attempts: i64,
     pub last_error: Option<String>,
     /// Set once it was not sent within the backoff cap: shown as not
@@ -365,14 +367,19 @@ impl Store {
 
     /// Sets whether link `aid`–`rid` is download only: local threads stay
     /// local, while replies and resolves on linked threads still go up.
+    /// Made two-way again, it sends only the threads started from then on:
+    /// one started while it was download only stays local.
     ///
     /// # Errors
     /// `NotFound` for no such link.
     pub fn set_link_download_only(&self, aid: &str, rid: &str, on: bool) -> Result<()> {
         self.with_tx(|tx| {
             let n = tx.execute(
-                "UPDATE remote_links SET download_only = ?3 WHERE artifact_id = ?1 AND remote_id = ?2",
-                params![aid, rid, on],
+                "UPDATE remote_links SET download_only = ?3,
+                    threads_since = CASE WHEN download_only = 1 AND ?3 = 0 THEN ?4
+                                         ELSE threads_since END
+                 WHERE artifact_id = ?1 AND remote_id = ?2",
+                params![aid, rid, on, self.now()],
             )?;
             if n == 0 {
                 return Err(CoreError::NotFound);
@@ -672,7 +679,7 @@ impl Store {
     /// Queues the local writes on remote `rid`'s links not queued yet, in
     /// the order they were made: for a two-way link, each thread the owner
     /// or an agent of the owner's started on its artifact since it was
-    /// linked, with its comments; on every linked thread still linked, each
+    /// linked (or last made two-way again), with its comments; on every linked thread still linked, each
     /// comment of theirs not linked yet, and each change from the status
     /// both sides agreed on (a resolve only when theirs). Another local
     /// person's words never go up as the token's person. How many rows it
@@ -689,7 +696,9 @@ impl Store {
             for l in &links {
                 if !l.download_only {
                     let mut stmt = tx.prepare(&format!(
-                        "SELECT t.id FROM threads t WHERE t.artifact_id = ?1 AND t.created_at >= ?2
+                        "SELECT t.id FROM threads t WHERE t.artifact_id = ?1
+                           AND t.created_at >= COALESCE((SELECT threads_since FROM remote_links
+                                 WHERE artifact_id = ?1 AND remote_id = ?3), ?2)
                            AND NOT EXISTS (SELECT 1 FROM linked_threads lt WHERE lt.thread_id = t.id)
                            AND EXISTS (SELECT 1 FROM comments c WHERE c.id = (
                                  SELECT id FROM comments WHERE thread_id = t.id
@@ -697,7 +706,7 @@ impl Store {
                          ORDER BY t.created_at, t.id"
                     ))?;
                     let fresh: Vec<String> = stmt
-                        .query_map(params![l.artifact_id, l.created_at], |r| r.get(0))?
+                        .query_map(params![l.artifact_id, l.created_at, rid], |r| r.get(0))?
                         .collect::<rusqlite::Result<_>>()?;
                     drop(stmt);
                     for tid in fresh {
@@ -844,23 +853,37 @@ impl Store {
         })
     }
 
-    /// Records a failed attempt at outbox row `seq`.
+    /// Records that outbox row `seq` is about to be sent: until an answer
+    /// is read, the remote may have made it (a lost answer, or this daemon
+    /// stopping first).
+    pub fn outbox_trying(&self, seq: i64) -> Result<()> {
+        self.with_tx(|tx| {
+            tx.execute(
+                "UPDATE linked_outbox SET attempts = attempts + 1 WHERE seq = ?1",
+                params![seq],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Records why a try at outbox row `seq` got no answer.
     pub fn outbox_attempted(&self, seq: i64, error: &str) -> Result<()> {
         self.with_tx(|tx| {
             tx.execute(
-                "UPDATE linked_outbox SET attempts = attempts + 1, last_error = ?2 WHERE seq = ?1",
+                "UPDATE linked_outbox SET last_error = ?2 WHERE seq = ?1",
                 params![seq, error],
             )?;
             Ok(())
         })
     }
 
-    /// Marks outbox row `seq` not sent (the remote refused it, or did not
-    /// answer within the backoff cap) with `error`; it waits for Retry.
+    /// Marks outbox row `seq` refused by the remote with `error`: it made
+    /// nothing, and the row waits for Retry.
     pub fn outbox_failed(&self, seq: i64, error: &str) -> Result<()> {
         self.with_tx(|tx| {
             tx.execute(
-                "UPDATE linked_outbox SET last_error = ?2, failed_at = COALESCE(failed_at, ?3) WHERE seq = ?1",
+                "UPDATE linked_outbox SET last_error = ?2, attempts = 0,
+                    failed_at = COALESCE(failed_at, ?3) WHERE seq = ?1",
                 params![seq, error, self.now()],
             )?;
             Ok(())
@@ -1310,9 +1333,15 @@ mod tests {
         let out = w.st.outbox_of(&w.rid).unwrap();
         assert_eq!(out[0].comment_id.as_deref(), Some(reply.id.as_str()));
         let key = out[0].idem_key.clone();
-        // A lost answer: tried, the row stays with its key.
+        // A lost answer: tried, the row stays with its key, marked as
+        // perhaps made there.
+        w.st.outbox_trying(out[0].seq).unwrap();
         w.st.outbox_attempted(out[0].seq, "unreachable").unwrap();
-        assert_eq!(w.st.outbox_of(&w.rid).unwrap()[0].idem_key, key);
+        let row = &w.st.outbox_of(&w.rid).unwrap()[0];
+        assert_eq!((row.idem_key.as_str(), row.attempts), (key.as_str(), 1));
+        // A refusal made nothing there.
+        w.st.outbox_failed(out[0].seq, "invalid_args: no").unwrap();
+        assert_eq!(w.st.outbox_of(&w.rid).unwrap()[0].attempts, 0);
         w.st.ack_outbox(out[0].seq, None, Some("rc9"), None)
             .unwrap();
         assert!(w.st.outbox_of(&w.rid).unwrap().is_empty());
@@ -1409,6 +1438,32 @@ mod tests {
         )
         .unwrap();
         assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 0);
+        // Two-way again: the thread started meanwhile still stays local,
+        // while one started from now on goes up.
+        w.clock.advance(1);
+        w.st.set_link_download_only(&w.aid, &w.rid, false).unwrap();
+        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 0, "kept local");
+        w.clock.advance(1);
+        let later =
+            w.st.create_thread(
+                &AuditCtx::DAEMON,
+                &id,
+                NewThread {
+                    version_n: 1,
+                    anchor: whole(),
+                    author_name: "Owner".into(),
+                    author_public_id: Some(w.owner.clone()),
+                    body: "shared".into(),
+                    clip: None,
+                    via_page: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 1);
+        let out = w.st.outbox_of(&w.rid).unwrap();
+        assert_eq!(out.last().unwrap().thread_id, later.id);
+        w.st.ack_outbox(out.last().unwrap().seq, Some("rt9"), Some("rc9"), Some(1))
+            .unwrap();
         // Unlinked: unsent rows wait for the owner, then go.
         w.st.unlink_remote(&w.aid, &w.rid).unwrap();
         assert_eq!(w.st.unsent_of(&w.aid).unwrap().len(), 4);
