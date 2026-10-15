@@ -102,6 +102,7 @@ pub mod exec;
 pub mod extension;
 pub mod feedback;
 pub mod forks;
+pub mod github;
 pub mod hosted;
 pub mod inbox;
 pub mod joined;
@@ -186,6 +187,8 @@ pub struct Store {
     /// daemon's last resume after its machine slept ([`Store::mark_resumed`]).
     /// A remote session's idle time counts from no earlier than this.
     resumed_at: Mutex<String>,
+    /// Each GitHub member's caps ([`Store::set_member_caps`]).
+    member_caps: RwLock<Option<github::MemberCaps>>,
 }
 
 /// `t` as the store writes times: RFC 3339 in UTC, to the millisecond.
@@ -327,6 +330,7 @@ impl Store {
             agents_listener: RwLock::new(None),
             pushed_listener: RwLock::new(None),
             resumed_at: Mutex::new(stamp(clock.now())),
+            member_caps: RwLock::new(None),
             clock,
         })
     }

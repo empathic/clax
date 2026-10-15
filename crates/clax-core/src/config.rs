@@ -138,7 +138,30 @@ pub struct HostedConfig {
     /// the abuse limits count by. Without Cloudflare that header is the
     /// client's own to forge, so the connection's peer counts.
     pub behind_cloudflare: bool,
+    /// GitHub sign-in (`github_client_id`); `None` keeps it off.
+    pub github: Option<GitHubConfig>,
+    /// The most live artifacts a GitHub member keeps
+    /// (`member_max_artifacts`, [`crate::store::github::DEFAULT_MAX_ARTIFACTS`]
+    /// when absent).
+    pub member_max_artifacts: u64,
 }
+
+/// `[hosted]`'s GitHub sign-in: a GitHub OAuth App's client ID, the
+/// environment variable its client secret is read from at start
+/// (`github_client_secret_env`, `GITHUB_CLIENT_SECRET` when absent), the
+/// owner's GitHub login (`owner_github`, compared case-insensitively), and,
+/// for tests, the bases of GitHub's API and OAuth endpoints.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitHubConfig {
+    pub client_id: String,
+    pub client_secret_env: String,
+    pub owner_login: Option<String>,
+    pub api_base: Option<String>,
+    pub oauth_base: Option<String>,
+}
+
+/// [`GitHubConfig::client_secret_env`] when absent.
+pub const GITHUB_CLIENT_SECRET_ENV: &str = "GITHUB_CLIENT_SECRET";
 
 /// [`HostedConfig::setup_secret_env`] when absent.
 pub const SETUP_SECRET_ENV: &str = "CLAX_SETUP_SECRET";
@@ -149,6 +172,12 @@ struct HostedTable {
     public_origin: String,
     setup_secret_env: Option<String>,
     behind_cloudflare: Option<bool>,
+    github_client_id: Option<String>,
+    github_client_secret_env: Option<String>,
+    owner_github: Option<String>,
+    github_api_base: Option<String>,
+    github_oauth_base: Option<String>,
+    member_max_artifacts: Option<u64>,
 }
 
 /// `origin` as hosted mode takes it ([`HostedConfig::public_origin`]): its
@@ -376,10 +405,26 @@ impl HomeConfig {
         if setup_secret_env.trim().is_empty() {
             return Err(bad("setup_secret_env is empty".into()));
         }
+        let github = t
+            .github_client_id
+            .filter(|c| !c.trim().is_empty())
+            .map(|client_id| GitHubConfig {
+                client_id: client_id.trim().to_string(),
+                client_secret_env: t
+                    .github_client_secret_env
+                    .unwrap_or_else(|| GITHUB_CLIENT_SECRET_ENV.into()),
+                owner_login: t.owner_github.filter(|o| !o.trim().is_empty()),
+                api_base: t.github_api_base,
+                oauth_base: t.github_oauth_base,
+            });
         Ok(Some(HostedConfig {
             public_origin,
             setup_secret_env,
             behind_cloudflare: t.behind_cloudflare.unwrap_or(false),
+            github,
+            member_max_artifacts: t
+                .member_max_artifacts
+                .unwrap_or(crate::store::github::DEFAULT_MAX_ARTIFACTS),
         }))
     }
 }

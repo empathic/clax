@@ -898,6 +898,24 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE INDEX inbox_by_thread ON inbox_items(thread_id) WHERE thread_id IS NOT NULL;
     CREATE INDEX inbox_by_question ON inbox_items(question_id) WHERE question_id IS NOT NULL;
     CREATE INDEX inbox_by_request ON inbox_items(request_id) WHERE request_id IS NOT NULL;",
+    // 31: GitHub sign-in on a hosted daemon (`crate::store::github`).
+    // `github_identities` links a GitHub account, by its numeric user ID
+    // (stable across renames), to the viewer row it signs in as: the
+    // owner's, or a person made at their first sign-in. `login`, `name`
+    // and `avatar_url` are GitHub's, as of the last sign-in, for display.
+    // `blocked_at` is set when the owner revokes the person: the account
+    // may not sign in or sign up again. No foreign key, as for `browser_sessions`. A local daemon writes
+    // none.
+    "CREATE TABLE github_identities (
+        github_id INTEGER PRIMARY KEY,
+        viewer_id TEXT NOT NULL UNIQUE,
+        login TEXT NOT NULL,
+        name TEXT,
+        avatar_url TEXT,
+        created_at TEXT NOT NULL,
+        signed_in_at TEXT NOT NULL,
+        blocked_at TEXT
+    );",
 ];
 
 /// The audit journal's migration, as a schema version (the
