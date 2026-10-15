@@ -18,6 +18,8 @@ export type Link = {
   sync?: Sync;
   /** Writes waiting to go up, and those not sent. */
   pending?: number; failed?: number;
+  /** Open questions whose copies there were not sent (Retry sends them). */
+  failed_questions?: number;
 };
 
 /** A write not sent to a remote the artifact is no longer linked to. */

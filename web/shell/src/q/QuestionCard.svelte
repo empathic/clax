@@ -32,7 +32,7 @@
   import { ApiError, type AnswerBody, type QuestionStatus, type QuestionView } from "../api";
   import { after } from "../clock";
   import { relativeTime } from "../format";
-  import { agentLabel, answerLine, answerText, closedLabel, complete, cutHeader, emptyDraft, nextOpen, pick, previewOf, shownLabel, toBody, typeOther } from "./model";
+  import { agentLabel, answerLine, answerText, closedLabel, complete, cutHeader, emptyDraft, nextOpen, pick, previewOf, questionLink, shownLabel, toBody, typeOther } from "./model";
   import { trail } from "./trail";
 
   type Props = {
@@ -78,6 +78,7 @@
   const spec =$derived(p.q.questions[Math.min(tab, p.q.questions.length - 1)]);
   const preview = $derived(previewOf(spec, focused, draft[tab]));
   const open = $derived(p.q.status === "open");
+  const link = $derived(questionLink(p.q));
   const base = $derived(`q-${p.q.id}`);
   // Takes focus back only when it went nowhere (<body>): focus the person
   // moved elsewhere while the action was pending stays where they put it.
@@ -215,12 +216,13 @@
   onkeydown={onKey} onfocusin={e => { card = e.currentTarget; inside = true; }} onfocusout={onFocusOut}>
   <header class="qhead">
     <strong class="asker">{who}</strong>
+    {#if link}<span class="link-tag" data-unlinked={p.q.linked?.unlinked ? "" : undefined} title={link.title}>{link.label}</span>{/if}
     {#if p.q.agent?.project}<span class="proj">in {p.q.agent.project}</span>{/if}
     {#if p.q.artifact && p.q.artifact.id !== p.here}<a class="about" href={`/a/${p.q.artifact.id}`}>{p.q.artifact.title}</a>{/if}
     <time datetime={p.q.created_at}>{relativeTime(p.q.created_at, p.now ?? new Date())}</time>
   </header>
   {#if !open}
-    <p class="closed">{closedLabel(p.q)}</p>
+    <p class="closed">{closedLabel(p.q)}{#if link?.line}<span class="there">{` ${link.line}`}</span>{/if}</p>
     <!-- The status region says the whole sentence; this is its visible part. -->
     {#if notTaken}<p class="instead" aria-hidden="true">{notTaken}</p>{/if}
     <dl class="answers">
@@ -275,6 +277,7 @@
       </div>
       {/each}
     </div>
+    {#if link?.line}<p class="link-line" data-failed={link.failed ? "" : undefined}>{link.line}</p>{/if}
     <footer class="acts">
       {#if n > 1}
         <!-- aria-disabled, not disabled: a button disabled under focus drops it. -->
@@ -353,6 +356,11 @@
     .qcard .answers dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
     .qcard .answers .q { font-size: 12.5px; color: var(--muted); }
     .qcard .answers .a { font-size: 13.5px; }
+    .qcard .link-tag { display: inline-flex; align-self: center; flex: none; padding: 0 7px; border-radius: 999px; font: 600 11px/17px var(--font); color: var(--muted); background: var(--hover); border: 1px solid var(--border); white-space: nowrap; max-width: 40%; overflow: hidden; text-overflow: ellipsis; }
+    .qcard .link-tag[data-unlinked] { font-weight: 500; font-style: italic; }
+    .qcard .link-line { margin: 8px 0 0; font-size: 12.5px; color: var(--muted); }
+    .qcard .link-line[data-failed] { color: var(--danger); }
+    .qcard .closed .there { font-weight: 400; color: var(--muted); }
     .qcard .instead { margin: -2px 0 6px; font-size: 12.5px; color: var(--danger); }
     @media (pointer: coarse) { .qcard .opt input[data-opt] { width: 20px; height: 20px; } }
   }

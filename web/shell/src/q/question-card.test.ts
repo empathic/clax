@@ -43,6 +43,31 @@ describe("QuestionCard", () => {
     one.unmount();
   });
 
+  it("tags a question asked on a remote too, and says how its copy stands", () => {
+    const link = { remote_id: "r1", remote: "clax.dev", remote_origin: "https://clax.dev", url: "https://clax.dev/a/p1",
+      sent: false, state: "pending" as const, error: null, answered_there: false, unlinked: false };
+    const props = (q: ReturnType<typeof view>) => ({ q, onAnswer: vi.fn(), onDecline: vi.fn() });
+    const pending = mount(QuestionCard, props(view({ linked: link })));
+    expect(pending.root.querySelector(".link-tag")!.textContent).toBe("clax.dev");
+    expect(pending.root.querySelector(".link-tag")!.getAttribute("title")).toBe("Also asked on clax.dev");
+    expect(pending.root.querySelector(".link-line")!.textContent).toBe("Sending to clax.dev…");
+    pending.unmount();
+    const failed = mount(QuestionCard, props(view({ linked: { ...link, state: "failed" } })));
+    expect(failed.root.querySelector(".link-line")!.textContent).toBe("Not sent: clax.dev unreachable");
+    expect(failed.root.querySelector(".link-line")!.hasAttribute("data-failed")).toBe(true);
+    failed.unmount();
+    const sent = mount(QuestionCard, props(view({ linked: { ...link, sent: true, state: null } })));
+    expect(sent.root.querySelector(".link-line")).toBeNull();
+    sent.unmount();
+    const there = mount(QuestionCard, props(view({ status: "answered", answers: view().questions.map(() => ({ selected: [], text: "x" })),
+      answered_via: "shell", linked: { ...link, sent: true, state: null, answered_there: true } })));
+    expect(there.root.querySelector(".closed")!.textContent).toBe("Answered on clax.dev");
+    there.unmount();
+    const plain = mount(QuestionCard, props(view()));
+    expect(plain.root.querySelector(".link-tag")).toBeNull();
+    plain.unmount();
+  });
+
   describe("with several questions", () => {
     beforeEach(() => { vi.useFakeTimers(); });
     afterEach(() => { vi.useRealTimers(); });

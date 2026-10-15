@@ -14,7 +14,7 @@
   // the first paint (`more-menu.svelte.ts`).
   import { getToken } from "../api";
   import { dropUnsent, hostOf, push, remotesOf, retryLink, setDownloadOnly, unlink, type Link, type Mode, type Remote, type Remotes } from "./publish-api";
-  import { sinceLabel } from "./link-model";
+  import { notSentLabel, sinceLabel } from "./link-model";
   import { setPublishOpener } from "./more-menu.svelte";
 
   let { id, title, latest }: { id: string; title: string; latest: number } = $props();
@@ -41,8 +41,9 @@
   const unsent = $derived(info?.unsent ?? []);
   const pending = $derived(link?.pending ?? 0);
   const failed = $derived(link?.failed ?? 0);
+  const failedQuestions = $derived(link?.failed_questions ?? 0);
   const since = $derived(link?.sync?.unreachable_since ?? null);
-  const warn = $derived(!!since || failed > 0);
+  const warn = $derived(!!since || failed > 0 || failedQuestions > 0);
 
   async function refresh() {
     const t = await getToken();
@@ -103,7 +104,7 @@
       <button type="button" class="publish hide-sm" aria-haspopup="dialog" aria-expanded={open} onclick={() => (open ? close() : show())}>{action}</button>
     {/if}
     {#if link && behind === 0}
-      <button type="button" class="linked hide-sm" data-warn={warn ? "" : undefined} aria-haspopup="dialog" aria-expanded={open} title={`Its link to ${host}: versions and comments`} onclick={() => (open ? close() : show())}>Linked{#if warn}<span class="warn-dot" aria-label={since ? `${host} unreachable` : "comments not sent"}></span>{/if}</button>
+      <button type="button" class="linked hide-sm" data-warn={warn ? "" : undefined} aria-haspopup="dialog" aria-expanded={open} title={`Its link to ${host}: versions and comments`} onclick={() => (open ? close() : show())}>Linked{#if warn}<span class="warn-dot" aria-label={since ? `${host} unreachable` : `${notSentLabel(failed, failedQuestions)} not sent`}></span>{/if}</button>
     {/if}
     {#if link}
       <a class="public hide-sm" href={link.url} target="_blank" rel="noopener noreferrer" title={`Its public copy on ${host}`}>Public ↗</a>
@@ -144,8 +145,8 @@
               <p class="muted small">{link.download_only ? `Threads from ${host} come here; threads started here stay here. Replies and resolves on its threads still go up.` : `Threads and replies go both ways.`}</p>
               {#if since}<p class="err small" role="status">{host} unreachable since {sinceLabel(since)}</p>{/if}
               {#if pending > 0}<p class="muted small">Sending {pending === 1 ? "1 comment" : `${pending} comments`} to {host}…</p>{/if}
-              {#if failed > 0}
-                <p class="err small row">Not sent: {failed === 1 ? "1 comment" : `${failed} comments`}<button type="button" disabled={linkBusy} onclick={() => change(() => retryLink(id, link.remote_id))}>Retry</button></p>
+              {#if failed > 0 || failedQuestions > 0}
+                <p class="err small row">Not sent: {notSentLabel(failed, failedQuestions)}<button type="button" disabled={linkBusy} onclick={() => change(() => retryLink(id, link.remote_id))}>Retry</button></p>
               {/if}
               {#if confirm === "unlink"}
                 <p class="small">Unlink “{title}” from {host}? Its public copy stays there; its threads stay here, read-only.</p>

@@ -152,6 +152,16 @@ export type QuestionView = {
   questions: QuestionSpec[]; answers: QAnswer[] | null;
   answered_via: "shell" | "extension" | "cli" | "terminal" | null;
   created_at: string; closed_at: string | null;
+  /** On a local daemon, its copy on a remote (linked questions); absent or null for none. */
+  linked?: QuestionLink | null;
+};
+/** Where a question's copy on a remote stands: `pending` until the remote
+ * acknowledged it, `failed` when it was not sent (Retry); `answered_there`
+ * when the remote's answer or decline closed it. */
+export type QuestionLink = {
+  remote_id: string; remote: string; remote_origin: string; url: string;
+  sent: boolean; state: "pending" | "failed" | null; error: string | null;
+  answered_there: boolean; unlinked: boolean;
 };
 
 export type InboxKind = "reply" | "version" | "published" | "question" | "finished" | "approval" | "connection" | "ended" | "push";

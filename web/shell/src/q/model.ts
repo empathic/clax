@@ -85,6 +85,24 @@ export function closedLabel(q: QuestionView): string {
   }
 }
 
+/** The tag on a question asked on a remote too (linked questions): the
+ * remote's name, its title, and the line saying how its copy stands: while
+ * open, sending or not sent; once closed, "on <remote>" when the answer or
+ * decline came from there. Null for none. */
+export function questionLink(q: QuestionView): { label: string; title: string; line: string | null; failed: boolean } | null {
+  const l = q.linked;
+  if (!l) return null;
+  if (l.unlinked) return { label: `${l.remote} · unlinked`, title: `Was also asked on ${l.remote}; no longer linked`, line: null, failed: false };
+  const title = `Also asked on ${l.remote}`;
+  if (q.status === "open") {
+    if (l.state === "pending") return { label: l.remote, title, line: `Sending to ${l.remote}…`, failed: false };
+    if (l.state === "failed") return { label: l.remote, title, line: `Not sent: ${l.remote} unreachable`, failed: true };
+    return { label: l.remote, title, line: null, failed: false };
+  }
+  // Closed: the closed label says "on <remote>" when the answer came from there.
+  return { label: l.remote, title, line: l.answered_there ? `on ${l.remote}` : null, failed: false };
+}
+
 /** A header for its chip: one longer than 12 characters is cut with "…". */
 export function cutHeader(h: string): string {
   const cs = [...h];
