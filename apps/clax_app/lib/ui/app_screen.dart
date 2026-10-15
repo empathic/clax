@@ -20,6 +20,7 @@ import 'build_plan.dart';
 import 'change_sheet.dart';
 import 'change_tracker.dart';
 import 'comment_bar.dart';
+import 'comment_composer.dart';
 import 'host_protocol.dart';
 import 'swipe.dart';
 import 'thread_detail.dart';
@@ -395,6 +396,21 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   /// How long the build chip shows whole before it folds.
   static const buildChipFor = Duration(seconds: 4);
 
+  // The app's composer, while the shell has a draft: its text (the app's,
+  // sent to the shell as it changes), the draft's screenshot, and whether a
+  // Send is under way.
+  final _text = TextEditingController();
+  final _field = FocusNode(debugLabel: 'composer');
+
+  /// The text the shell was last given or gave, so its own echo is not
+  /// sent back.
+  var _shellText = '';
+  Uint8List? _clip;
+  var _sending = false;
+
+  /// The threads' screenshots, read once each.
+  final _clips = <String, Future<Uint8List?>>{};
+
   // Dictation.
   Future<VoiceAvailability>? _availability;
   StreamSubscription<VoiceResult>? _listen;
@@ -408,6 +424,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       artifact: widget.aid,
       now: widget.clock.now,
     );
+    _text.addListener(_onText);
     _comments = widget.comments ?? (_ownComments = CommentsCommand());
     _comments.register(_toggleOpen, comment: _toggleComment);
     _swipe = TwoFingerSwipe(
@@ -571,6 +588,9 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       // `questions` confirms.
       setState(() => _questionsShowing = false);
       _call(const CloseQuestions());
+    } else if (_draft != null) {
+      // Back is Cancel while the composer is open.
+      _call(const CancelDraft());
     } else if (_open) {
       _setOpen(false);
     } else {
@@ -590,6 +610,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     for (final s in _subs) {
       s.cancel();
     }
+    _text.dispose();
+    _field.dispose();
     if (_listen != null) {
       _listen!.cancel();
       unawaited(widget.voice.stop());
@@ -632,10 +654,28 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       case StateMsg():
         final picked = _draft == null && m.draft != null;
         final closed = _draft != null && m.draft == null;
+        // A new composer (a pick, or another in an empty one's place)
+        // starts from the shell's text, with no screenshot yet.
+        final fresh = m.draft != null && m.draft!.key != _draft?.key;
+        // A post that failed leaves the composer open and the shell idle.
+        final failed = _sending && _busy && !m.busy && m.draft != null;
         setState(() {
           _commenting = m.commenting;
           _draft = m.draft;
           _busy = m.busy;
+          if (fresh) {
+            _clip = null;
+            _sending = false;
+            _shellText = m.draft!.text;
+            _text.text = m.draft!.text;
+          }
+          if (failed) _sending = false;
+          if (closed) {
+            _clip = null;
+            _sending = false;
+            _shellText = '';
+            _text.clear();
+          }
           if (picked && !_open) {
             _open = true;
             _peekFromBar = _bar;
@@ -647,13 +687,23 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         });
         if (picked && _dictate) {
           unawaited(_startDictation());
+        } else if (picked) {
+          // Typing, then: the field takes focus (and the keyboard comes up).
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _draft != null) _field.requestFocus();
+          });
         }
-        if (closed) unawaited(_stopDictation());
+        if (closed) {
+          _field.unfocus();
+          unawaited(_stopDictation());
+        }
         // The shell turns comment mode back on when a composer closes; with
         // the panel and the bar closed meanwhile, it stays off.
         if (m.commenting && !_wantComment && m.draft == null) {
           _call(const ExitCommentMode());
         }
+      case DraftClipMsg(:final key, :final png):
+        if (key == _draft?.key) setState(() => _clip = png);
       case ThreadsMsg():
         setState(() => _threads = m.threads);
       case Sent(:final thread):
@@ -665,6 +715,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       case SendFailed(:final thread, :final text):
         setState(() => _changes.sendFailed(thread, text));
       case Notice():
+        // A failed post says so in a notice; the composer may send again.
+        if (_sending) setState(() => _sending = false);
         _snack(m.text);
       case QuestionsMsg(:final open, :final showing):
         // The shell shows the questions in its own sheet; one that lands
@@ -930,7 +982,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   /// Adds the open composer's text to the plan instead of sending it.
   Future<void> _addToPlan() async {
     final b = widget.build;
-    final text = _draft?.text.trim() ?? '';
+    final text = _draft == null ? '' : _text.text.trim();
     if (b == null || text.isEmpty) return;
     final PlanFeature f;
     try {
@@ -1204,15 +1256,18 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         return;
       case VoiceAvailable():
     }
-    final draft = _draft;
-    if (draft == null || _listen != null) return;
-    final before = draft.text.trim();
+    if (_draft == null || _listen != null) return;
+    final before = _text.text.trim();
     setState(() => _dictation = const Dictation(listening: true));
     _listen = widget.voice.listen().listen(
       (r) {
         if (!mounted || _draft == null) return;
         setState(() => _dictation = Dictation(listening: true, words: r.words));
-        _call(SetDraftText(before.isEmpty ? r.words : '$before ${r.words}'));
+        final text = before.isEmpty ? r.words : '$before ${r.words}';
+        _text.value = TextEditingValue(
+          text: text,
+          selection: TextSelection.collapsed(offset: text.length),
+        );
       },
       onError: (Object e) {
         if (!mounted) return;
@@ -1240,6 +1295,59 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     await widget.voice.stop();
   }
 
+  // --- the composer ---
+
+  /// The composer's text changed (typed or dictated): the shell's draft
+  /// holds it too, so a pick or a page's composer does not take the place
+  /// of a comment being written.
+  void _onText() {
+    final t = _text.text;
+    if (_draft == null || t == _shellText) return;
+    _shellText = t;
+    _call(SetDraftText(t, composer: true));
+  }
+
+  /// Sends the comment: the shell posts it on the pick's anchor and
+  /// screenshot and sends it to the agent (`sent`, or a notice).
+  void _send() {
+    final text = _text.text;
+    if (_draft == null || _sending || text.trim().isEmpty) return;
+    unawaited(_stopDictation());
+    setState(() => _sending = true);
+    _shellText = text;
+    _call(SubmitDraft(text: text));
+  }
+
+  void _cancelDraft() => _call(const CancelDraft());
+
+  /// Thread [id]'s screenshot, read once.
+  Future<Uint8List?> _clipOf(String id) => _clips.putIfAbsent(
+    id,
+    () => widget.api
+        .clip(widget.aid, id)
+        .then<Uint8List?>((p) => p, onError: (Object _) => null),
+  );
+
+  Widget _composer({
+    required bool docked,
+    bool compact = false,
+    double bottom = 0,
+  }) => CommentComposer(
+    draft: _draft!,
+    clip: _clip,
+    controller: _text,
+    focusNode: _field,
+    sending: _sending,
+    dictation: _dictation,
+    onMic: () => unawaited(_toggleMic()),
+    onSend: _send,
+    onCancel: _cancelDraft,
+    onAddToPlan: widget.build == null ? null : () => unawaited(_addToPlan()),
+    docked: docked,
+    compact: compact,
+    bottomInset: bottom,
+  );
+
   // --- the view ---
 
   void _attest(PointerEvent e, PointerPhase phase) {
@@ -1263,19 +1371,25 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     final macOS = defaultTargetPlatform == TargetPlatform.macOS;
+    final composing = _draft != null;
     Widget screen = Scaffold(
+      // While the app's composer is open the keyboard comes up over the
+      // page, which keeps its size, and the composer rides above it.
+      resizeToAvoidBottomInset: !composing,
       body: LayoutBuilder(
         builder: (context, box) {
           final wide = box.maxWidth >= 720;
           final bottomInset = MediaQuery.paddingOf(context).bottom;
-          final double extent = !_open
+          final keyboard = MediaQuery.viewInsetsOf(context).bottom;
+          final shown = _open || composing;
+          final double extent = !shown
               ? 0
               : wide
               ? 360
-              : _draft != null
+              : composing
               ? AppPanel.peekHeight + bottomInset
               : box.maxHeight * 0.45;
-          return Flex(
+          final flex = Flex(
             direction: wide ? Axis.horizontal : Axis.vertical,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -1283,7 +1397,38 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
               SizedBox(
                 width: wide ? extent : null,
                 height: wide ? null : extent,
-                child: _open ? _panel(wide) : null,
+                child: !shown
+                    ? null
+                    : wide || !composing
+                    ? _panel(wide)
+                    : ColoredBox(
+                        color: Theme.of(context)
+                            .colorScheme
+                            .surfaceContainerLow,
+                      ),
+              ),
+            ],
+          );
+          if (!composing || wide) return flex;
+          // On a narrow screen the composer is docked at the bottom, over
+          // the page's lower edge, and above the keyboard while it is up.
+          final top = MediaQuery.paddingOf(context).top;
+          final room = box.maxHeight - keyboard - top;
+          return Stack(
+            children: [
+              Positioned.fill(child: flex),
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: keyboard,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxHeight: room),
+                  child: MediaQuery.removePadding(
+                    context: context,
+                    removeBottom: keyboard > 0,
+                    child: _composerSheet(compact: room < 340),
+                  ),
+                ),
               ),
             ],
           );
@@ -1312,9 +1457,26 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     );
   }
 
+  /// The docked composer, with the bottom inset under it when the keyboard
+  /// is down.
+  Widget _composerSheet({required bool compact}) => KeyedSubtree(
+    key: const ValueKey('composer-sheet'),
+    child: Builder(
+      builder: (context) => SingleChildScrollView(
+        reverse: true,
+        child: _composer(
+          docked: true,
+          compact: compact,
+          bottom: MediaQuery.paddingOf(context).bottom,
+        ),
+      ),
+    ),
+  );
+
   Widget _page(BuildContext context, bool wide) {
     final scheme = Theme.of(context).colorScheme;
     final bar = _bar && !_open && _draft == null && !_covered;
+    final shown = _open || _draft != null;
     return KeyedSubtree(
       key: _pageKey,
       child: ColoredBox(
@@ -1329,8 +1491,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
                   SafeArea(
                     // The bar under the page, or the panel, holds the
                     // bottom inset.
-                    bottom: !bar && (!_open || wide),
-                    right: !_open || !wide,
+                    bottom: !bar && (!shown || wide),
+                    right: !shown || !wide,
                     child: _pageStack(context),
                   ),
                   if (_buildChip && !_buildOpen) _buildPill(context),
@@ -1565,11 +1727,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       tab: _tab,
       onTab: (t) => setState(() => _tab = t),
       onClose: () => _setOpen(false),
-      draft: _draft,
-      busy: _busy,
-      dictation: _dictation,
-      onMic: () => unawaited(_toggleMic()),
-      onAddToPlan: widget.build == null ? null : () => unawaited(_addToPlan()),
+      composer: _draft == null ? null : _composer(docked: false),
+      clipOf: _clipOf,
       threads: _threads,
       onThread: _openThread,
       onResend: _resend,

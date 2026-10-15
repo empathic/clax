@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/agent/timings.dart';
@@ -77,6 +78,11 @@ class _Timings implements Timings {
 }
 
 const _page = {'index.html': '<!doctype html><h1>Runs</h1>'};
+
+/// A 1 x 1 PNG.
+final _png = base64Decode(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+);
 final _base = Uri.parse('http://127.0.0.1:7999');
 
 class _Rig {
@@ -384,26 +390,31 @@ void main() {
   });
 
   testWidgets(
-    'a pick shrinks the panel to a peek and dictates into the draft; the timing waits for Send',
+    "a pick docks the app's composer and dictates into its field; its Send sends the text; the timing waits for Send",
     (tester) async {
       final rig = await pumpScreen(tester);
       rig.surface.push(rig.ready());
       await openPanel(tester);
-      final full = tester.getRect(find.byKey(const ValueKey('app-panel')));
+      final page = find.byKey(const ValueKey('fake-surface'));
       rig.surface.push(_Rig.draft);
       await tester.pumpAndSettle();
-      final peek = tester.getRect(find.byKey(const ValueKey('app-panel')));
-      expect(peek.height, lessThan(full.height / 2));
+      expect(find.byKey(const ValueKey('composer-sheet')), findsOneWidget);
+      expect(find.byKey(const ValueKey('app-panel')), findsNothing);
       expect(find.text('Versions'), findsNothing);
+      // The composer sits at the bottom, over the page's lower edge.
+      final sheet = tester.getRect(find.byKey(const ValueKey('composer')));
+      expect(sheet.bottom, 780);
+      expect(sheet.top, greaterThan(tester.getRect(page).top + 300));
       expect(rig.timings.log, isEmpty, reason: 'it starts at Send (spec 6.2)');
       expect(rig.voice.listens, 1);
       expect(
         rig.surface.js,
         containsAllInOrder([
-          'window.claxHost?.setDraftText("make it")',
-          'window.claxHost?.setDraftText("make it blue")',
+          'window.claxHost?.setDraftText("make it",{composer:true})',
+          'window.claxHost?.setDraftText("make it blue",{composer:true})',
         ]),
       );
+      expect(find.text('make it blue'), findsOneWidget);
 
       // The mic button stops and starts listening.
       await tester.tap(find.byKey(const ValueKey('dictate')));
@@ -414,17 +425,174 @@ void main() {
       await tester.pumpAndSettle();
       expect(rig.voice.listens, 2);
 
-      // The composer in the page has the one Send: the peek has none.
-      expect(find.byKey(const ValueKey('send')), findsNothing);
-      expect(find.text('Send'), findsNothing);
+      // One Send, the composer's: it sends the field's text.
+      expect(find.text('Send'), findsOneWidget);
+      await tester.enterText(
+        find.byKey(const ValueKey('composer-field')),
+        'make it blue please',
+      );
+      await tester.pump();
+      expect(
+        rig.surface.js.last,
+        'window.claxHost?.setDraftText("make it blue please",{composer:true})',
+      );
+      await tester.tap(find.byKey(const ValueKey('send')));
+      await tester.pump();
+      expect(
+        rig.surface.js.last,
+        'window.claxHost?.submitDraft({text:"make it blue please"})',
+      );
+      expect(find.text('Sending…'), findsOneWidget);
+      expect(
+        tester
+            .widget<ButtonStyleButton>(find.byKey(const ValueKey('send')))
+            .onPressed,
+        isNull,
+        reason: 'one Send per comment',
+      );
 
-      // The composer closing ends the peek and the listen.
+      // The composer closing ends the composer and the listen.
       rig.surface.push(_Rig.noDraft);
       await tester.pumpAndSettle();
       expect(rig.voice.listening, isFalse);
+      expect(find.byKey(const ValueKey('composer')), findsNothing);
       expect(find.text('Versions'), findsOneWidget);
     },
   );
+
+  testWidgets(
+    'Cancel and back close the composer; a failed post may send again',
+    (tester) async {
+      final rig = await pumpScreen(
+        tester,
+        settings: AppSettings(dictateComments: false),
+      );
+      rig.surface.push(rig.ready());
+      await openPanel(tester);
+      rig.surface.push(_Rig.draft);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('composer-cancel')));
+      expect(rig.surface.js.last, 'window.claxHost?.cancelDraft()');
+      await tester.binding.handlePopRoute();
+      expect(rig.surface.js.last, 'window.claxHost?.cancelDraft()');
+      expect(find.byKey(const ValueKey('composer')), findsOneWidget);
+
+      await tester.enterText(
+        find.byKey(const ValueKey('composer-field')),
+        'bigger',
+      );
+      await tester.tap(find.byKey(const ValueKey('send')));
+      await tester.pump();
+      rig.surface.push(
+        const StateMsg(
+          commenting: false,
+          draft: Draft(label: 'h1', text: 'bigger', clip: DraftClip.pending),
+          busy: true,
+        ),
+      );
+      rig.surface.push(const Notice('Could not post the comment'));
+      rig.surface.push(
+        const StateMsg(
+          commenting: false,
+          draft: Draft(label: 'h1', text: 'bigger', clip: DraftClip.pending),
+          busy: false,
+        ),
+      );
+      await tester.pump();
+      expect(find.text('bigger'), findsOneWidget, reason: 'the text is kept');
+      expect(
+        tester
+            .widget<ButtonStyleButton>(find.byKey(const ValueKey('send')))
+            .onPressed,
+        isNotNull,
+      );
+    },
+  );
+
+  group('the keyboard comes up over the page, and the composer rides above it', () {
+    const range = StateMsg(
+      commenting: false,
+      draft: Draft(
+        key: 'r1',
+        kind: 'range',
+        label: '“Grow revenue in every region”',
+        quote:
+            'Grow revenue in every region this year, and hire two more '
+            'people for the support team',
+        text: '',
+        clip: DraftClip.ready,
+      ),
+      busy: false,
+    );
+    for (final (size, scale) in [
+      (const Size(320, 568), 1.0),
+      (const Size(320, 568), 1.3),
+      (const Size(390, 844), 1.0),
+      (const Size(390, 844), 1.3),
+      (const Size(1100, 720), 1.0),
+      (const Size(1100, 720), 1.3),
+    ]) {
+      testWidgets(
+        '${size.width.toInt()} x ${size.height.toInt()} dp at text scale $scale',
+        (tester) async {
+          final rig = await pumpScreen(
+            tester,
+            size: size,
+            settings: AppSettings(dictateComments: false),
+          );
+          tester.platformDispatcher.textScaleFactorTestValue = scale;
+          addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+          rig.surface.push(rig.ready());
+          await openPanel(tester);
+          rig.surface.push(range);
+          rig.surface.push(DraftClipMsg('r1', _png));
+          await tester.pumpAndSettle();
+          final page = find.byKey(const ValueKey('fake-surface'));
+          final before = tester.getRect(page);
+          // The field has focus as the composer opens (no dictation).
+          expect(
+            tester
+                .widget<TextField>(find.byKey(const ValueKey('composer-field')))
+                .focusNode!
+                .hasFocus,
+            isTrue,
+          );
+          // A 260 dp keyboard.
+          tester.view.viewInsets = const FakeViewPadding(bottom: 260 * 3);
+          addTearDown(tester.view.resetViewInsets);
+          await tester.pumpAndSettle();
+          expect(tester.takeException(), isNull);
+          expect(
+            tester.getRect(page),
+            before,
+            reason: 'the page keeps its size',
+          );
+          final kb = size.height - 260;
+          for (final k in ['send', 'composer-cancel', 'composer-field']) {
+            final r = tester.getRect(find.byKey(ValueKey(k)));
+            expect(
+              r.bottom,
+              lessThanOrEqualTo(kb),
+              reason: '$k above the keyboard',
+            );
+            expect(
+              r.top,
+              greaterThanOrEqualTo(24),
+              reason: '$k under the status bar',
+            );
+          }
+          expect(find.byKey(const ValueKey('snippet-clip')), findsOneWidget);
+          if (size.width < 720) {
+            expect(
+              tester.getRect(find.byKey(const ValueKey('composer'))).bottom,
+              kb,
+              reason: 'it rides on the keyboard',
+            );
+          }
+        },
+      );
+    }
+  });
 
   testWidgets('dictation keeps the text typed before it', (tester) async {
     final rig = await pumpScreen(
@@ -443,8 +611,9 @@ void main() {
     await tester.pumpAndSettle();
     expect(
       rig.surface.js.last,
-      'window.claxHost?.setDraftText("make it blue")',
+      'window.claxHost?.setDraftText("make it blue",{composer:true})',
     );
+    expect(find.text('make it blue'), findsOneWidget);
   });
 
   testWidgets('without Dictate comments a pick waits for the mic button', (
@@ -702,7 +871,7 @@ void main() {
     );
     rig.surface.push(rig.ready());
     await openPanel(tester);
-    expect(find.textContaining('Hold a finger'), findsOneWidget);
+    expect(find.textContaining('Tap anything'), findsOneWidget);
     rig.surface.push(
       ThreadsMsg([
         ThreadSummary(
@@ -1119,8 +1288,9 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      await tester.binding.handlePopRoute();
-      await tester.pumpAndSettle();
+      // The panel goes; the composer stays until it is sent or cancelled.
+      await twoFingerSwipe(tester, 120);
+      expect(find.byKey(const ValueKey('composer')), findsOneWidget);
       // The shell turns comment mode back on as the composer closes.
       rig.surface.push(_Rig.noDraft);
       await tester.pumpAndSettle();
@@ -1364,6 +1534,8 @@ void main() {
           const StateMsg(
             commenting: false,
             draft: Draft(
+              key: 'w1',
+              kind: 'artifact',
               label: 'The whole app',
               text: '',
               clip: DraftClip.none,
@@ -1373,10 +1545,10 @@ void main() {
         );
         await tester.pumpAndSettle();
         expect(rig.voice.listens, 1, reason: 'Dictate comments is on');
-        expect(find.text('The whole app'), findsOneWidget);
+        expect(find.byKey(const ValueKey('snippet-whole-app')), findsOneWidget);
         expect(bar, findsNothing, reason: "the peek's controls take over");
 
-        // The composer's Send, in the page.
+        // The composer's Send.
         rig.surface.push(const Sent('t9'));
         rig.surface.push(_Rig.noDraft);
         // Working spins on, so the frames are counted out.
@@ -1582,7 +1754,7 @@ void main() {
     });
 
     testWidgets(
-      'a pick from the bar puts the peek in its place: the page keeps its height',
+      "a pick from the bar puts the app's composer in its place: the page keeps its height",
       (tester) async {
         final rig = await pumpScreen(tester);
         rig.surface.push(rig.ready());
@@ -1592,7 +1764,7 @@ void main() {
         final withBar = tester.getRect(page);
         rig.surface.push(_Rig.draft);
         await tester.pumpAndSettle();
-        expect(panel, findsOneWidget);
+        expect(find.byKey(const ValueKey('composer-sheet')), findsOneWidget);
         expect(tester.getRect(page), withBar);
         rig.surface.push(_Rig.noDraft);
         await tester.pumpAndSettle();

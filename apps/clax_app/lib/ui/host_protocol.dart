@@ -48,6 +48,10 @@ sealed class HostMessage {
           for (final t in m['threads'] as List)
             ThreadSummary.fromJson((t as Map).cast<String, Object?>()),
         ]),
+        'draftClip' => DraftClipMsg(
+          m['key'] as String,
+          base64Decode(m['png'] as String),
+        ),
         'sent' => Sent(m['thread'] as String),
         'landed' => Landed(_int(m['version'])),
         'notice' => Notice(m['text'] as String),
@@ -121,13 +125,23 @@ final class Ready extends HostMessage {
 /// wanted.
 enum DraftClip { pending, ready, none }
 
-/// The shell's open composer: the picked element's [label] and the
-/// comment's [text].
+/// The shell's open composer, which the app's composer shows and sends:
+/// what it is on ([kind], [label], [quote]) and the comment's [text].
 final class Draft {
-  const Draft({required this.label, required this.text, required this.clip});
+  const Draft({
+    required this.label,
+    required this.text,
+    required this.clip,
+    this.key = '',
+    this.kind = 'element',
+    this.quote,
+  });
 
   factory Draft.fromJson(Map<String, Object?> j) => Draft(
+    key: j['key'] as String? ?? '',
+    kind: j['kind'] as String? ?? 'element',
     label: j['label'] as String,
+    quote: j['quote'] as String?,
     text: j['text'] as String,
     clip: switch (j['clip']) {
       'pending' => DraftClip.pending,
@@ -137,10 +151,36 @@ final class Draft {
     },
   );
 
+  /// The composer's identity: a new one for each pick. Its screenshot
+  /// comes under it ([DraftClipMsg]).
+  final String key;
+
+  /// The anchor's kind: `element`, `range` (selected text), `area` (a
+  /// drawn rectangle), `custom` (a spot the page named) or `artifact`
+  /// (the whole app).
+  final String kind;
+
   /// What the composer is about, in a person's words, shown as is.
   final String label;
+
+  /// The text it quotes as a reader sees it, for the app to show in its
+  /// own quote marks (no quote marks of the page's in it); null when it
+  /// quotes none.
+  final String? quote;
   final String text;
   final DraftClip clip;
+
+  /// Whether this is a comment on the whole app.
+  bool get wholeApp => kind == 'artifact';
+}
+
+/// The screenshot of open composer [key] (a PNG), posted once for each
+/// screenshot it takes.
+final class DraftClipMsg extends HostMessage {
+  const DraftClipMsg(this.key, this.png);
+
+  final String key;
+  final Uint8List png;
 }
 
 /// The view's comment mode, its open composer (null when none), and
@@ -167,6 +207,7 @@ final class ThreadSummary {
     required this.comments,
     required this.version,
     this.label = '',
+    this.clip = false,
   });
 
   factory ThreadSummary.fromJson(Map<String, Object?> j) => ThreadSummary(
@@ -177,6 +218,7 @@ final class ThreadSummary {
     comments: _int(j['comments']),
     version: _int(j['version']),
     label: j['label'] as String? ?? '',
+    clip: j['clip'] as bool? ?? false,
   );
 
   final String id;
@@ -197,6 +239,9 @@ final class ThreadSummary {
   /// What the thread is anchored to, in a person's words; empty when the
   /// shell gives none.
   final String label;
+
+  /// Whether the thread has a screenshot (`ClaxApi.clip`).
+  final bool clip;
 }
 
 /// The view's threads changed.
@@ -461,19 +506,29 @@ final class ReloadLatest extends HostCall {
   String toJs() => 'window.claxHost?.reloadLatest()';
 }
 
-/// Replaces the open composer's text.
+/// Replaces the open composer's text. Without [composer] a focused text
+/// field of the shell's questions sheet takes it instead (dictation into
+/// a question); with it, only the composer does (the app's composer).
 final class SetDraftText extends HostCall {
-  const SetDraftText(this.text);
+  const SetDraftText(this.text, {this.composer = false});
   final String text;
+  final bool composer;
   @override
-  String toJs() => 'window.claxHost?.setDraftText(${jsString(text)})';
+  String toJs() => composer
+      ? 'window.claxHost?.setDraftText(${jsString(text)},{composer:true})'
+      : 'window.claxHost?.setDraftText(${jsString(text)})';
 }
 
-/// Presses Send on the open composer.
+/// Presses Send on the open composer, with [text] as its comment when
+/// given (the app's composer): the shell posts the thread on the pick's
+/// anchor and screenshot, waiting for the screenshot as Send does.
 final class SubmitDraft extends HostCall {
-  const SubmitDraft();
+  const SubmitDraft({this.text});
+  final String? text;
   @override
-  String toJs() => 'window.claxHost?.submitDraft()';
+  String toJs() => text == null
+      ? 'window.claxHost?.submitDraft()'
+      : 'window.claxHost?.submitDraft({text:${jsString(text!)}})';
 }
 
 /// Closes the open composer.

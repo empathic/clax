@@ -338,8 +338,8 @@ class Rig {
   }
 
   /// Clicks the page's heading (a real click, through the Runner's test
-  /// input) to pick it, types [text] into the composer through the host
-  /// and presses the composer's Send; returns the thread the shell sent.
+  /// input) to pick it, sends [text] through the host as the app's
+  /// composer does; returns the thread the shell sent.
   Future<String> comment(WidgetTester tester, String text) async {
     final before = messages.length;
     final frame = await _frameRect();
@@ -364,10 +364,10 @@ class Rig {
     final hit = await _input.invokeMethod<bool>('click', {'x': x, 'y': y});
     expect(hit, isTrue, reason: 'no WebView under ($x, $y)');
     await untilState(tester, 'the composer', (s) => s.draft != null);
-    await surface!.call(SetDraftText(text));
+    // The app's composer: its text as typed, then its Send.
+    await surface!.call(SetDraftText(text, composer: true));
     await untilState(tester, 'the typed comment', (s) => s.draft?.text == text);
-    // The composer's Send, in the page, as the person presses it.
-    await surface!.call(const SubmitDraft());
+    await surface!.call(SubmitDraft(text: text));
     final sent = await until<Sent>(
       tester,
       'the shell\'s sent',
