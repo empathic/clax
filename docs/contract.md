@@ -14,10 +14,14 @@ The implementation is the authority where the two disagree:
 
 ## Tools
 
-Twenty-four tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
+Twenty-eight tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `fork`,
 `asset_upload`, `status`, the comment tools `comments_read`,
 `comments_reply`, `comments_resolve`, `watch`, `wait_for_feedback`, `working` (see
-"Comments and feedback"), `ask` (see "Agent questions"), and the data tools `db_get`, `db_list`,
+"Comments and feedback"), `draft` (an agent's work in progress, shown to
+the people viewing the artifact until it publishes), `git_remote` (a git
+remote and a short-lived token for an artifact's repository, where Clax keeps
+one), `ask` (see "Agent questions"), `publish_public` (see "Publishing to a
+public Clax"), and the data tools `db_get`, `db_list`,
 `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`,
 `db_batch` (see "Runtime capabilities"). The MCP implementation lives in
 `crates/clax-mcp` and is served two ways:
@@ -38,7 +42,7 @@ Twenty-four tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
   which attributes publishes to no session.
 
 Pi's extension API cannot register an MCP server, so `plugins/pi` implements
-the same twenty-four tools in TypeScript against the daemon's REST API, with the same
+the same twenty-eight tools in TypeScript against the daemon's REST API, with the same
 arguments and the same result and error JSON.
 
 Names as the model sees them:
@@ -58,8 +62,8 @@ Every MCP tool carries MCP annotations, all with `openWorldHint: false`
 true` on `delete`, `db_set`, `db_update`, `db_delete`, `db_str_replace` and
 `db_batch`, which replace or remove data no version keeps; `destructiveHint:
 false` on the rest, which only add (a publish keeps every earlier version) or
-toggle state (`pin`, `unpin`, `watch`, `comments_resolve`, `working`), or
-open a browser tab (`open`).
+toggle state (`pin`, `unpin`, `watch`, `comments_resolve`, `working`,
+`draft`), or open a browser tab (`open`).
 `idempotentHint` is true on `delete`, `db_delete`, `pin`, `unpin`, `watch` and
 `comments_resolve`. The read-only tools acknowledge comments they deliver,
 as every tool result does; that is delivery bookkeeping, and no annotation
@@ -414,6 +418,80 @@ Pins the artifact to the top of the gallery, or removes the pin.
 
 Errors: `invalid_id`, `not_found`.
 
+### fork
+
+| Name | Type | Required | Meaning |
+|---|---|---|---|
+| `url_or_id` | string | yes | The artifact to fork; a URL naming a version (`/a/<id>/v/<n>`) names that version. |
+| `version` | integer | no | The version to fork; defaults to the URL's version, else the current version. |
+
+Makes a new artifact whose version 1 holds the chosen version's files,
+title, description, icon and capabilities. It is the agent's person's (the
+owner's for the owner's agents) and the session's, which watches it; the
+source's comment threads, assets, documents and sharing are not copied.
+Version 1's note is `Forked from <artifact ID>@v<n>`. A daemon that keeps
+versions in git gives the fork the source's history behind its version 1,
+which carries `Clax-Forked-From: <artifact ID>@v<n>`. Over HTTP it is
+`POST /api/artifacts/<id>/fork` with `{version?}`, answering 201 with
+`{artifact, version, url}`; `artifact.forked_from` (also on `GET
+/api/artifacts/<id>` of a fork, and in the page's bootstrap) is
+`{artifact_id, version, title}`, `title` null when the reader may not read
+the source or it was deleted. It needs read on the source and `create`:
+an agent of another machine lacking read is refused 403 `not_permitted`
+as every read is, and a person's browser 404; lacking `create`, 403
+`not_permitted`; a guest
+403 `not_permitted` (on a hosted daemon, 401 `sign_in_required`); a live
+page 400 `live_page`.
+
+```json
+{ "artifact_id": "9z1x4c7v2b5n", "url": "http://localhost:7480/a/9z1x4c7v2b5n", "version": 1,
+  "title": "Quarterly review", "forked_from": { "artifact_id": "7q3k9mzx2b4t", "version": 2, "title": "Quarterly review" },
+  "feedback": [] }
+```
+
+Errors: `invalid_id`, `not_found`, `unknown_version`, `not_permitted`.
+
+### publish_public
+
+| Name | Type | Required | Meaning |
+|---|---|---|---|
+| `url_or_id` | string | yes | The artifact of this Clax to publish. |
+| `remote` | string | no | The public Clax, by its name or origin (`clax remote list`); the only one when this Clax is signed in to one. |
+| `mode` | string | no | `update` (default): publish it, or push its new versions to its public copy; `fork`: push onto a fork of the public copy; `new`: publish it again as a new public artifact. |
+| `question_id` | string | no | The approval question an earlier call returned (`call_again`), to keep waiting on it. |
+| `timeout_s` | integer | no | Seconds to wait for the person's answer, 1 to 600 (default 600); under Codex 1 to 50 (default 50). |
+
+Publishes an artifact on a public Clax this Clax is signed in to (see
+"Publishing to a public Clax"). Making content public is the person's
+decision, never the agent's: the first call asks the owner a question the
+daemon writes itself (the artifact's title, the public origin, and as
+whom it is published there), with the choices `Publish`, `Publish and push
+new versions` and `Don't publish`, and waits for the answer like `ask`.
+Only an answer given in Clax in the browser or the extension counts; one
+given with the daemon token (which an agent holds too) is refused. An
+approval is used once. When the owner chose `Publish and push new
+versions`, later versions of that artifact are pushed without asking:
+by this tool, and by the daemon on its own after each new local version.
+The result:
+
+```json
+{ "status": "published", "url": "https://clax.example/a/9z1x4c7v2b5n",
+  "remote": "https://clax.example", "pushed": [{ "n": 1, "remote_n": 1 }, { "n": 2, "remote_n": 2 }],
+  "follows_new_versions": false, "assets_not_pushed": 0, "feedback": [] }
+```
+
+or, while the owner has not answered, `{status: "approval_pending",
+question_id, url, call_again: true, note}`: call again with
+`question_id`. Errors: `not_approved` (the owner chose not to publish,
+skipped the question, or answered outside the browser), `approval_used`,
+`no_remote` (none added: `clax remote add`), `remote_required` (several:
+name one), `not_connected` (its sign-in is not finished), `remote_moved`
+(someone published on the public copy since this Clax pushed:
+`remote_version` and `pushed_version` say where each is; pass `mode`
+`fork` or `new`), `remote_unreachable`, `remote_signed_out` (its token was
+revoked there), `remote_refused` (the public Clax's own refusal, in
+`remote_code`), `live_page`, `no_session`.
+
 ### asset_upload
 
 Uploads local files as assets of an artifact. Assets are not part of any
@@ -740,6 +818,113 @@ Arguments: `url_or_id`, `writes` (1 to 50, each document at most once), optional
 `if_version` as for the single tools. All writes land or none do. Returns
 `{artifact_id, atomic: true, results: [{op, path, version, deleted}]}`, one
 entry per write in order.
+
+## Publishing to a public Clax
+
+A local Clax publishes artifacts to a public one (a hosted daemon, or the
+Cloudflare Worker in hosted mode) as a person signed in there. Nothing
+here changes a local daemon or the plugins until a remote is added.
+
+**Signing in, by device code.** `clax remote add <url>` (or `POST
+/api/remotes {url, name?, machine?}` with the daemon token, the owner's
+alone: 403 `not_for_agents` for an agent) asks the public Clax for a
+device sign-in naming this machine (`Clax on <host name>`, or
+`machine`), prints the user code and opens the approval page; the person,
+signed in there, checks the code and approves; the CLI polls (`POST
+/api/remotes/<id or name>/poll` → `{remote, status}`, status `pending`,
+`connected`, `denied` or `expired`; a denied or expired sign-in forgets the
+remote) and the daemon receives an agent token of that person's, which it
+keeps in its database and never shows. `GET /api/remotes` → `{remotes}`
+(`id`, `origin`, `name`, `status`, whose token it holds: `person_public_id`,
+`person_name`, `grant_id`); `DELETE /api/remotes/<id or name>` → `{remote,
+revoked}` revokes its token there (`DELETE /api/hosted/agent-token`) and
+forgets it with its artifacts' links; `revoked: false` when the public Clax
+could not (unreachable, or revoked already), and the token is then revoked
+on its People page. Once a sign-in connects, the daemon makes its home 0700
+and its database's files 0600. A URL must be an `https` origin, or `http` on localhost; 400
+`invalid_args` otherwise, 400 `remote_exists` for one signed in to
+already. A hosted daemon answers these routes, and the push routes, 404.
+
+**The public side's device sign-in** (a hosted daemon; the Worker serves
+the same routes):
+
+- `POST /api/hosted/device/code {client_name}` (no credential, no
+  `Origin` needed) → `{device_code, user_code, verification_uri,
+  verification_uri_complete, expires_at, expires_in, interval}`. Codes last
+  600 s and are used once; at most 5 sign-ins per client address a minute
+  (429 `rate_limited`), and 1,000 waiting in all (400 `limit_reached`).
+- `GET /device[?code=<user code>]`: the approval page, the shell's; it
+  names the machine and its address, and the person it signs in as.
+- `GET /api/hosted/device/<user code>` (a member's browser) →
+  `{client_name, peer_ip, created_at, expires_at, same_address}`
+  (`same_address`: the sign-in asked from this browser's address; the page
+  warns when it did not); `POST
+  …/approve` → `{token}` (an agent token of the caller's, labelled with the
+  machine's name, listed on their People page and revocable there); `POST
+  …/deny` → 204. 404 for a code unknown, decided or expired; 401
+  `sign_in_required` without a session, 403 `forbidden` for a guest, 403
+  `browser_required` with `Authorization`, 403 `forbidden_origin` without
+  the public origin's `Origin`. Rate-limited as sign-in codes are.
+- `POST /api/hosted/device/token {device_code}` (the machine) → once
+  approved, `{token, token_type: "Bearer", grant_id, person: {public_id,
+  display_name}, origin, mcp_url}`, this once. Before that 400
+  `authorization_pending`; 400 `slow_down` for a poll sooner than `interval`
+  after the last; 400 `access_denied` once denied (or the token revoked
+  before the poll); 400 `expired_token` for a code unknown, expired or
+  spent. At most 30 polls per client address at once, one back every 2 s.
+- `DELETE /api/hosted/agent-token` (an agent token) → 204: revokes the
+  calling token itself, as its person would on People.
+- A session registered by an agent token may take the harness `clax`:
+  another Clax publishing its person's own versions. What it publishes is
+  recorded with no session, as the person's by hand.
+- A publish (`POST /api/artifacts`, `POST /api/artifacts/<id>/versions`)
+  by an agent token may name an `Idempotency-Key` (at most 200 printable
+  ASCII characters, else 400 `invalid_args`): the version it makes is kept
+  under the key, and a publish naming the key again answers that version
+  and publishes nothing (400 `invalid_args` when it was another artifact's).
+  The daemon token's publishes ignore the header.
+
+**Pushing.** `clax push <artifact> [--to <remote>] [--new|--fork]
+[--follow|--no-follow]`, the shell's Publish button, or the
+`publish_public` tool, all `POST /api/artifacts/<id>/push {remote?,
+mode?, auto?, question_id?}` → `{status: "pushed", url, remote, link,
+pushed: [{n, remote_n}], assets_not_pushed}`. The first push creates the
+public artifact from version 1 and publishes each later version in order;
+the link it records (`GET /api/artifacts/<id>/remotes` → `{links:
+[{remote_id, remote_name, origin, remote_artifact_id, url, pushed_n,
+remote_n, auto, behind, pushed_at}], remotes}`) makes each later push send
+only the versions not pushed yet, to the same public artifact. Each version
+carries its label, note and files (a path the version dropped is removed
+there); its publisher there is the person whose token this Clax holds, and
+its agent a session named as the local agent that published it (the
+owner's own versions: a session of the harness `clax`, so they read as the
+person's by hand there, with no agent). Original timestamps are not
+carried. Each version names the idempotency key
+`clax-push:<artifact>:<n>:<public artifact, or new:<previous or ->>`, so a
+push sent again after a lost answer is answered the version made. When
+someone published on the public copy since this Clax's last push, the push
+is refused 409 `remote_moved` and nothing is overwritten; `mode:
+"fork"` forks the public copy at the version this Clax pushed last and
+continues on the fork, `mode: "new"` publishes every version as a new
+public artifact; either moves the link. Comments on the public copy stay
+there. Assets: each of the artifact's assets that a pushed version's text
+file (HTML, CSS, JavaScript, JSON, SVG, other text) references as
+`/_blob/<asset ID>`, alone or after an `http(s)://` origin, is uploaded to
+the public artifact once, and those references are rewritten to the
+address the public Clax gave it; nothing else in a file changes, and
+`assets_not_pushed` counts the assets no pushed version references. (A
+public artifact takes assets once it exists; a first version that named
+one of its own assets, which only a version written after its artifact
+can, would be published as it is and then again rewritten.) The owner pushes at once (`auto` sets whether
+agents may push its new versions without asking); an agent of the owner's
+waits for the owner's approval (`publish_public`: 202 `{status:
+"approval_pending", question_id, inbox_url}` until answered), which pushes
+the versions up to the one the owner was asked about; an agent's CLI (an
+agent channel with no session) is refused 400 `no_session` before
+anything, pointed at `publish_public`; an agent of another machine is
+refused. An automatic push (a link that follows) that is refused leaves a
+`push` item in the owner's inbox (`push: {n, origin, code, message,
+url}`).
 
 ## Sessions
 
@@ -1344,11 +1529,83 @@ all, may have the artifact open in several tabs or browsers, and is listed
 once, `here` while any of its views reported `here` within the last 90 s
 (with that view's `where`), else `away` while any report is that recent,
 else `gone`. The route and answers `{"people":
-[{public_id, display_name, state, where, since}]}`, as `GET
+[{public_id, display_name, state, where, since}], "viewing"}`, as `GET
 /api/artifacts/<aid>/presence` does without a cookie; `presence` events
-carry the same list. An artifact lists at most 64 people: a newcomer takes
+carry the same list. `viewing` counts the people holding a live seat and
+the spectators seen in the last 15 s (see "Live seats and spectators"); a
+spectator's report is not listed, and answers the list without them. An artifact lists at most 64 people: a newcomer takes
 the place of the gone person whose last report is oldest, and with none
 gone the report is 429 `limit_reached`.
+
+### Live seats and spectators
+
+Each artifact has live seats: 100 for people and 20 for agents, of which
+guests (named viewers who are not connected people) hold at most 20
+(`CLAX_LIVE_PEOPLE_SEATS`, `CLAX_LIVE_GUEST_SEATS`, `CLAX_LIVE_AGENT_SEATS`
+in the daemon's environment). The owner and the connected people an
+artifact names (its creator, or a person whose rights name it by ID) hold
+reserved seats, never counted against the pool; everyone else takes a
+free one, first come first served. A viewer with no name takes none. A
+`GET /api/stream` stream subscribed to an artifact's `artifact`,
+`presence` or `working` topic holds its viewer's seat there, one seat
+however many streams the viewer has open; asking for those topics with no
+seat free is 429 `no_live_seat`. The seat is released when the stream
+leaves the last of them, while the stream is dropped (taken again on
+resume where one is free; else the stream is sent `unseated` for each),
+and after 3 minutes (`CLAX_LIVE_SEAT_IDLE_S`) without input: a `here`
+presence report or a write. A released stream gets `event: unseated` with
+`{"topic", "code": "seat_idle"}` for each live topic, and leaves them.
+
+A viewer beyond the seats is a spectator: every thread write (create,
+comment, send, batch send, resolve, reopen, delete) and every db write
+(`PUT`, `PATCH`, `DELETE`, `docs:batch`, `docs:str_replace`,
+`docs:acquire`) is 403 `spectator` ("Lots of people are here, so you're
+viewing; join live to comment"), whatever the viewer's rights; on the room
+socket an emit is nacked `spectator` and presence is dropped. A viewer
+with no stream writes while a seat is free. A spectator's presence report
+is not listed: seated people see spectators only in the `viewing` count.
+Agents are never spectators. `GET
+/api/artifacts/<aid>/snapshot[?tab=<ID>]` (people only: 403 for agents)
+answers what a spectator's page shows, the same for every caller: `{artifact,
+versions, threads, presence, viewing, seats_free, guest_seats_free,
+built_at}`, with every thread, resolved ones included, and nothing of the
+caller's own. A build is shared for 5 s per artifact and head version
+(`x-clax-cache: hit` or `miss`). The shell polls it every 5 s while the
+page is visible, shows the spectator banner and Join live once a seat it
+may take is free, and asks for the live topics again on Join live (after
+`seat_idle`, at the viewer's next input or when the page shows again).
+While the view is a spectator the page's writes as the viewer reject at
+once, without a request: `db` and `comments` calls (`openComposer`
+included) with `unavailable`, room emits with `upstream_error`; a
+`spectator` refusal from the daemon maps to the same codes. The top bar
+says "N viewing" once more than one is viewing.
+
+`GET /api/artifacts/<aid>/live` is the live layers' WebSocket (a viewer
+route: a foreign `Origin` is 403 before the upgrade, and the token alone
+is 400 `no_viewer`): what the people on an artifact see of each other as
+it happens, never stored and never sent to agents (the owner's agents are
+403 `not_for_agents`, a person's agents 403). The page sends JSON text
+frames `{"t": "open" | "typing", "thread_id"}` (`null`: a new comment),
+`{"t": "draft", "thread_id", "text"}` (at most 2000 characters; `""` when
+posted or cancelled) and `{"t": "cursor", "version", "file", "anchor",
+"selection"}` (element paths and text offsets, not pixels), at most about
+30 a second with `ping` (answered `pong`) counted too; over the rate they
+are dropped, and five seconds in a row over it close the socket 1008. The
+daemon sends `{"t": "welcome", "person_id", "color"}` and then, at most ten
+times a second, `{"t": "live", "senders", "drop", "others", "present"}`:
+the people who changed (each `{person_id, color, cursor?, typing?,
+draft?}`, a part left out unchanged), those no longer detailed, how many
+more show something beyond the 30 detailed, and how many other people have
+the socket open. A late joiner gets everyone whole; one person's tabs are
+one sender. The socket holds its viewer's live seat while it is open, as a
+stream's live topics do (a viewer with no name takes none): a spectator's
+socket is closed as it opens and relays nothing. Close codes: 4429 without
+a live seat (reason `no_live_seat`) or when the seat was released for want
+of input (reason `seat_idle`), after which the shell is a spectator as for
+a refused stream; 4410 when the artifact is deleted, 1001 when the daemon
+stops. The content frame never learns a
+name or a person ID: the shell gives it opaque keys and colours
+(`clax:peers`) and draws the names itself.
 
 ### The `comments` capability
 
@@ -1623,6 +1880,8 @@ entry of the shell's own; copy link includes it.
 | `watch` | `url_or_id` (an artifact, or a page URL); optional `on` (default true), `replies` (default true) | `{artifact_id, url, watching, replies_armed}`; for a page URL `{artifact_id, url, page_url, scope, watching: true, replies_armed}`, or `{page_url, watching: false, replies_armed: false}` with `on: false` (`page_url` without its route) |
 | `wait_for_feedback` | optional `url_or_id`; optional `timeout_s` (default 50) | `{feedback: [...], waited_s, call_again}` |
 | `working` | `url_or_id`; optional `thread_ids` (at most 20 open threads), `message` (at most 140 characters), `done` | `{artifact_id, url, working: true, message, thread_ids, started_at, expires_in_s, message_truncated}` or `{artifact_id, url, working: false, cleared}` |
+| `draft` | `url_or_id`; `html` or `file_path` (the page) and/or `files` (as `publish` takes them, `null` removing a path); optional `if_version`, `note` (at most 140 characters), `done` | `{artifact_id, url, drafting: true, base_version, paths, note, note_truncated, expires_in_s}` or `{artifact_id, url, drafting: false, ended}` |
+| `git_remote` | `url_or_id`, `scope` (`read` or `write`) | `{artifact_id, url, scope, remote, token, expires_at, clone_command, jj_clone_command, existing_checkout}` (see "Git remotes") |
 
 `comments_read` returns the open threads (and resolved ones with
 `include_resolved`) oldest first, 50 per page, with `next_cursor` naming the
@@ -1722,6 +1981,118 @@ session ends. Renewal is automatic:
 | Claude Code | tool calls, at most once a minute (`PostToolUse` hook); clax tool calls; each message the person sends (the prompt hook); a Stop hook that hands you comments (a Stop hook that allows the stop ends the turn instead) | work asked for in the terminal (call `working`); a turn you interrupt with Esc runs no Stop hook, so its mark lapses within 2 minutes |
 | Codex | clax tool calls; a Stop hook that hands you comments; tool calls through the `PostToolUse` hook: not yet measured (`scripts/smoke-codex.sh --hooks`) | a `codex queue` delivery to a session with no TUI marks it for up to 2 minutes; `codex exec` without trusted hooks never ends the turn; terminal requests |
 | Pi | tool calls (at most every 15 s) | terminal requests; a Pi process killed without `session_shutdown` |
+
+### Drafts
+
+`draft` shows the people viewing an artifact your work in progress before
+you publish it (hosted design §16.4). Each call carries the files you are
+changing over the artifact's current version (the base; `if_version`, when
+given, must be it: `conflict` otherwise), at most 1 MiB of file bytes in
+all, and replaces your previous draft; `done: true` drops it. At most 2
+calls a second per agent and artifact (`rate_limited`, with
+`retry_after_ms`), at most 8 drafts live per session (on different
+artifacts) and 64 on the daemon at once (`limit_reached`). It needs the
+right to publish the artifact (`clax-artifacts` `update`, from a session).
+Drafting marks your session working on the artifact, as feedback reaching
+it does, so the top bar does not call you idle. The draft ends when your
+session publishes the artifact, calls `draft` with `done: true`, goes 120 s
+without a new draft, or ends, and when the artifact is deleted. Drafts live
+in the daemon's memory only: a restart drops them.
+
+The owner and connected people see `<agent> is drafting…` at the foot of
+the stage, with **Show draft**; LAN viewers who are not connected, and
+agents, are never shown a draft. Showing it puts the draft in the frame from
+`/c/<id>/draft/<agent handle>/<token>/<path>` (on an artifact origin,
+`/draft/<agent handle>/<token>/<path>`), served like content (the content
+policy, `no-store`, `Referrer-Policy: no-referrer`) and never wrapped with
+the bridge: no pins, no comment mode and no page capabilities while it
+shows (the shell welcomes no greeting from a draft page). The token is new
+for every revision and travels only to the owner and connected people: in
+`GET /api/artifacts/<id>/drafts` (`{drafts: [{agent, harness,
+base_version, paths, note, updated_at, token}]}`; 403 `forbidden` to
+anyone else, `not_for_agents` to the owner's agents) and in the `drafts`
+event of the `working:<id>` stream topic, which only their streams
+receive; `/api/events` never carries it. The URL refuses agents and is
+otherwise the token alone (an artifact origin's frame carries no cookie). A revised or ended draft's URL
+answers 404. A path the draft does not write is served from the base
+version, unless that file is withheld from the drafting agent (404). A
+drafted HTML page has `data-clax-draft-changed` on each element whose own
+text is not the own text of any element of the base file at its path, and
+a script that tints them in the colour the URL's fragment names
+(`#tint=%23rrggbb`) and posts `{type: "clax:draft-diff", changed, marked}`
+to the shell. Only a base file the drafting agent may see is compared, and
+at most 2 MiB of base files a revision: against a withheld one, one past
+that, or none, every element with text is marked. The
+page carries those marks, never the base's text or a hash of it. Past 5,000
+changed elements nothing is marked (`marked: false`).
+
+REST: `PUT /api/sessions/<sid>/drafts/<id>` with `{files, note?,
+if_version?}` (`files` in the publish shape) answers `{draft:
+{artifact_id, base_version, paths, note, updated_at}, note_truncated}`;
+`DELETE /api/sessions/<sid>/drafts/<id>` answers `{ended}`.
+
+### Git remotes
+
+Where Clax keeps artifacts in git (the Cloudflare Worker; hosted design §9
+"Tokens"), each artifact is a repository whose `main` holds one commit per
+version, tagged `v1`, `v2` and so on, and `git_remote` hands the agent's
+session its remote with a token: `read` clones and fetches, `write` pushes
+as well, and a commit pushed to `main` becomes a version published by the
+session's person. The native daemon keeps versions as files and answers
+`not_available`.
+
+A `read` token needs the right to read the artifact (`clax-artifacts`
+`read`), a `write` token the right to publish it (`clax-artifacts`
+`update`). An agent's token also needs its person to see every author of
+the repository's history there: a clone carries every version, so while one
+holds work by someone the person has not approved it is refused (403
+`withheld`, with `withheld_authors`), and while the repository holds pushed
+commits not yet recorded as versions it answers 503 `repo_unavailable`. The
+history is the artifact's versions, a fork's source's versions up to the
+forked one (and so on up its lineage), and the pushers of commits left out
+of a version; when an artifact up the lineage is gone, the authors cannot
+all be named and the token is refused as `withheld` with none named. An
+agent's token lives 15 minutes and is revoked when its session ends, when
+its rights no longer allow the scope, and before a version its person may
+not see is committed (a publish whose revocation fails is refused, 503
+`repo_unavailable`); a person's lives an hour and is revoked when their
+rights drop. A request that ends a session or narrows rights or approvals
+answers only once the tokens it took away are revoked.
+
+`clone_command` is `git -c http.extraHeader="Authorization: Bearer <token>"
+clone <remote>`; `jj_clone_command` the same through `jj git clone`, the
+header set through `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_0` and
+`GIT_CONFIG_VALUE_0`, which the git jj runs reads. `existing_checkout` holds
+`remote_name` (`clax`), `add_remote_command`, `fetch_command` and, for a
+write token, `push_command` (`git … push clax HEAD:main`), with their jj
+forms (`jj_add_remote_command`, `jj_fetch_command`, `jj_push_command`). The
+token travels as a header on each command, never in the remote's URL or a
+configuration file, so nothing saved in the checkout holds it. It is in the
+command itself, though: a pasted command lands in the shell's history, and
+while it runs other users of the machine can read git's `-c` argument in
+the process list (the environment jj's form uses is readable only by the
+same user). That is the trade for one command that works as pasted in any
+shell, PowerShell included; the token's short life bounds it. To keep it
+out of the history, export the header's value first (for example
+`read -rs T` and `GIT_CONFIG_VALUE_0="Authorization: Bearer $T"`).
+
+REST: `POST /api/sessions/<sid>/git-token/<id>` with `{scope}` answers the
+tool's fields but `url`. A signed-in person's browser (the owner, a
+connected person or a hosted daemon's member, same origin; the owner's CLI
+with the token) asks at `POST /api/artifacts/<id>/git-token` `{scope}` for a
+token handed to them, and `GET /api/artifacts/<id>/git-token` answers
+`{available, scopes, ttl_s}`: the scopes their rights allow, none (with
+`reason`) for a LAN viewer who is not a person, a spectator or no
+credential. On a hosted daemon, anyone who reads a page shared by link
+through its link (a guest, or a visitor who gave no name) may clone it, as
+anyone who can view a repository may: the options answer `scopes:
+["read"]` and `link: true`, and the POST hands a `read` token of that
+artifact alone, living 15 minutes, never a `write` one (403
+`not_permitted`). A fork's link opens its source only where the source is
+shared by link too (else no scopes, `reason` `not_permitted`). Each such
+token is one of the client's attempts, five at once and one back every two
+minutes (429 `rate_limited`), and stopping a link's sharing revokes its
+tokens before it answers. Agents are refused there (`not_for_agents`).
 
 ### Payload
 
@@ -2285,6 +2656,10 @@ An item is made in the same transaction as its source:
   machine's, or its grant revoked) while it owned open threads or had open
   questions or `ask` approval requests: one item per such end, none for
   an end with nothing to clean up.
+- **`push`**: for the owner, an automatic push of an artifact's new
+  version to a public Clax was refused (the public copy moved, the remote
+  unreachable, its token revoked there): one item per artifact, remote and
+  version. It adds `push: {n, origin, code, message, url}`.
 
 No connected person gets an item about a live page, and a revoked person
 gets none.
@@ -4194,8 +4569,9 @@ the body below.
 
 | Kind | Body | Recorded at |
 |---|---|---|
-| `artifact.create` | `title, kind (html\|live), icon, capabilities, contract_version` | first publish, or a live page's creation |
-| `version.publish` | `n, label, note, title, files{path:{sha256,size,content_type}}, content_sha256, carried[paths], addresses[thread IDs], by_page` | every version write |
+| `artifact.create` | `title, kind (html\|live), icon, capabilities, contract_version`; `forked_from{artifact_id, n}` on a fork | first publish, a fork, or a live page's creation |
+| `version.publish` | `n, label, note, title, files{path:{sha256,size,content_type}}, content_sha256, carried[paths], addresses[thread IDs], by_page`; `source{artifact_id, n}` on a fork's version 1 | every version write |
+| `version.push_refused` | `commit, person, session, reason (unknown_person\|person_revoked\|not_a_person\|no_right\|session_ended\|foreign_session\|grant_ended)` (`system:daemon`) | a commit pushed to an artifact's repository left unrecorded because its pusher may not publish the artifact, once per commit |
 | `artifact.update` | `fields{title?, description?, icon?, pinned?, capabilities?}` | pin, unpin, metadata edits |
 | `artifact.delete` | `title, current_version` | delete |
 | `asset.upload` | `asset_id, path, sha256, size, content_type` | asset store writes |
