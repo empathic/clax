@@ -15,6 +15,12 @@ fn text(mut obj: Map<String, Value>) -> ContentBlock {
     )
 }
 
+/// The `Clip:` line of a comment whose clip a remote daemon keeps.
+pub const REMOTE_CLIP: &str =
+    "Clip: unavailable here (kept on the remote Clax: open the thread there to see it)";
+/// The `Snapshot:` line of a live page's comment a remote daemon sent.
+pub const REMOTE_SNAPSHOT: &str = "Snapshot: on the remote Clax (no file on this machine)";
+
 /// What a feedback poll handed over: comments (`feedback`), late answers
 /// to the session's questions (`answers`), placeholders for comments held
 /// because their bodies are withheld from the session's person
@@ -41,6 +47,52 @@ impl Handover {
             notes: list("notes"),
             text: res["text"].as_str().map(str::to_string),
         }
+    }
+
+    /// This handover as an agent of this machine may read it when a remote
+    /// daemon sent it (remote mode, spec 2026-10-08 §16): no file path the
+    /// remote names is handed on, since it is not this machine's. Each
+    /// item's `clip_path` and live `snapshot_path` are dropped, and in the
+    /// prose each `Clip:` line naming a file, and each `Snapshot:` line,
+    /// says the image is on the remote Clax instead. A comment's own line
+    /// is kept: its body is quoted, so it never reads as one of these. A
+    /// clip already fetched into this machine's cache (`cache`, the
+    /// directory [`crate::client::DaemonClient::rewrite_clip_items`] writes
+    /// to) is this machine's file, and stays.
+    pub fn foreign(mut self, cache: Option<&Path>) -> Handover {
+        let cached = |p: &str| cache.is_some_and(|c| Path::new(p).starts_with(c));
+        for i in &mut self.feedback {
+            if let Some(o) = i.as_object_mut() {
+                if o
+                    .get("clip_path")
+                    .is_some_and(|p| !p.as_str().is_some_and(cached))
+                {
+                    o.insert("clip_path".into(), Value::Null);
+                }
+                if let Some(l) = o.get_mut("live").and_then(Value::as_object_mut)
+                    && l.contains_key("snapshot_path")
+                {
+                    l.insert("snapshot_path".into(), Value::Null);
+                }
+            }
+        }
+        self.text = self.text.map(|t| {
+            t.split('\n')
+                .map(|line| match line.strip_prefix("Clip: ") {
+                    Some(rest)
+                        if !rest.starts_with('"')
+                            && !rest.starts_with("none (")
+                            && !cached(rest) =>
+                    {
+                        REMOTE_CLIP.to_string()
+                    }
+                    _ if line.starts_with("Snapshot: ") => REMOTE_SNAPSHOT.to_string(),
+                    _ => line.to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
+        self
     }
 
     /// Whether nothing was handed over.
@@ -188,6 +240,48 @@ mod tests {
                 .contains("the owner's machine"),
             "{remote}"
         );
+    }
+
+    #[test]
+    fn a_remote_daemons_paths_are_never_handed_on() {
+        let text = [
+            "[clax] 2 comments sent to you:",
+            "[clax] Comment sent to you on \"Plan\" (https://r/a/x), thread t1",
+            "Anchored on: #x  (v1)",
+            "Clip: /Users/sam/.ssh/id_ed25519",
+            "Clip: \"not a path\"",
+            "Ada: \"look\"",
+            "",
+            "[clax] Comment sent to you on \"Plan\" (live page p; Clax view u), thread t2",
+            "Clip: none (no screenshot was captured for this comment)",
+            "Snapshot: /Users/sam/.clax/remote.key",
+        ]
+        .join("\n");
+        let h = Handover::of(&json!({
+            "feedback": [
+                {"thread_id": "t1", "clip_path": "/Users/sam/.ssh/id_ed25519", "body": "look"},
+                {"thread_id": "t2", "clip_path": null,
+                 "live": {"page_url": "p", "snapshot_path": "/Users/sam/.clax/remote.key"}},
+            ],
+            "text": text,
+        }))
+        .foreign(None);
+        assert_eq!(h.feedback[0]["clip_path"], Value::Null);
+        assert_eq!(h.feedback[0]["body"], "look");
+        assert_eq!(h.feedback[1]["live"]["snapshot_path"], Value::Null);
+        assert_eq!(h.feedback[1]["live"]["page_url"], "p");
+        let t = h.text.unwrap();
+        assert!(!t.contains("/Users/sam"), "{t}");
+        assert!(
+            t.contains(REMOTE_CLIP) && t.contains(REMOTE_SNAPSHOT),
+            "{t}"
+        );
+        assert!(
+            t.contains("Clip: \"not a path\""),
+            "a quoted comment line stays: {t}"
+        );
+        assert!(t.contains("Clip: none (no screenshot"), "{t}");
+        assert!(t.contains("Ada: \"look\""), "{t}");
     }
 
     #[test]

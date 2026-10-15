@@ -1784,10 +1784,17 @@ impl ClaxTools {
     async fn handover(&self, res: &Value) -> render::Handover {
         let mut h = render::Handover::of(res);
         if self.client.is_remote() {
-            if let Some(t) = &h.text {
-                h.text = Some(self.client.rewrite_clip_text(t).await);
-            }
+            let text = match h.text.take() {
+                Some(t) => Some(self.client.rewrite_clip_text(&t).await),
+                None => None,
+            };
             self.client.rewrite_clip_items(&mut h.feedback).await;
+            // Whatever item path is left (a live page's snapshot, a path
+            // the remote named rather than a clip reference) is not this
+            // machine's: only the clips fetched into its cache stay. The
+            // text is already rewritten line by line, with each reason.
+            h = h.foreign(self.client.clip_cache().as_deref());
+            h.text = text;
         }
         h
     }

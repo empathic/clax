@@ -413,6 +413,12 @@ impl DaemonClient {
         self.inner.remote.is_some()
     }
 
+    /// For a remote daemon, the directory its clips are fetched into
+    /// ([`DaemonClient::rewrite_clip_items`]); `None` otherwise.
+    pub fn clip_cache(&self) -> Option<PathBuf> {
+        self.inner.remote.as_ref().map(|r| r.clip_cache())
+    }
+
     /// This client giving each remote clip fetch at most `t`, instead of
     /// [`CLIP_FETCH_TIME`].
     pub fn with_clip_fetch_time(mut self, t: Duration) -> DaemonClient {
