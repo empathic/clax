@@ -8,10 +8,13 @@
 // - a request body over 96 MiB, over 16 MiB, or over 256 KiB with no
 //   credential, declared or chunked, is refused 413;
 // - the first person sets up with the secret, invites Sam, who joins in a
-//   second browser, and Sam signs a third browser in with a sign-in link;
+//   second browser in a space of their own, and Sam signs a third browser
+//   in with a sign-in link;
 // - Sam mints an agent token in the browser, and an agent with it reaches
 //   `/mcp`, publishes, and is refused what Sam's rights do not allow;
-// - the owner sends a thread to Sam's agent; the approval card reaches
+// - the owner shares a page with Sam from its Share dialog, and it
+//   reaches Sam's gallery; the owner sends a thread on it to Sam's agent;
+//   the approval card reaches
 //   Sam's open inbox live, over the WebSocket stream; Sam allows the
 //   thread there and the agent then reads the comment; Sam narrows the
 //   agent's session and it is refused what the narrowing leaves out;
@@ -307,8 +310,9 @@ async function main() {
     await sam.goto(join);
     await sam.getByRole("button", { name: "Join as Sam" }).click();
     await sam.waitForURL(`${origin}/`);
-    await sam.locator("a.card", { hasText: "Tide tables" }).waitFor({ timeout: LIMIT });
-    check(true, "Sam joins with the invite in a second browser");
+    await sam.locator("main").waitFor({ timeout: LIMIT });
+    check((await sam.locator("a.card", { hasText: "Tide tables" }).count()) === 0, "Sam joins with the invite in a second browser, in a space of their own");
+
 
     // A sign-in link for a third browser.
     await sam.goto(`${origin}/people`);
@@ -358,6 +362,21 @@ async function main() {
       method: "POST",
       body: JSON.stringify({ title: "Harbour log", files: { "index.html": { content: "<title>Harbour log</title><main><h2>Harbour log</h2></main>", encoding: "utf8" } } }),
     });
+    // Ada shares it with Sam from the artifact's Share dialog, Can edit;
+    // it reaches Sam's gallery.
+    await ada.goto(`${origin}/a/${harbour.id}`);
+    await ada.getByRole("button", { name: "Share", exact: true }).click();
+    const sd = ada.getByRole("dialog", { name: "Share Harbour log" });
+    await sd.getByRole("textbox", { name: "GitHub login" }).fill("Sa");
+    await sd.locator(".hints button", { hasText: "Sam" }).click();
+    await sd.getByRole("combobox", { name: "Access for the person added" }).selectOption("editor");
+    await sd.getByRole("button", { name: "Add", exact: true }).click();
+    await sd.getByRole("combobox", { name: "Access for Sam" }).waitFor({ timeout: LIMIT });
+    await shot(ada, "share-dialog");
+    await sd.getByRole("button", { name: "Done" }).click();
+    await laptop.goto(`${origin}/`);
+    await laptop.locator("a.card", { hasText: "Harbour log" }).waitFor({ timeout: LIMIT });
+    check(true, "Ada shares the Harbour log with Sam from Share, and it reaches Sam's gallery");
     const watched = await tool(origin, token, "watch", { url_or_id: harbour.id });
     check(!watched.error, "Sam's agent watches the owner's page", watched.text.slice(0, 300));
     const agents = (await api(origin, `/api/artifacts/${harbour.id}`)).artifact.participants?.agents ?? [];
