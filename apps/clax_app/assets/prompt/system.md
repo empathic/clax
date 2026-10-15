@@ -227,10 +227,11 @@ Test the app's logic, so each version keeps working as the app grows.
   The person allows it once per app; past the app's daily cost cap calls
   reject `rate_limited`. Call the model only on the person's action, never
   on page load.
-- **Both are off in your renders and tests**: `net` calls fail with
-  `not_granted` and `sample` is not granted. So the app shows a sensible
-  empty or offline state when `use` gives null or a call fails, and no test
-  depends on live network data or model output.
+- **In your renders and tests** `net` reaches only the hosts the person
+  already allowed the live app (never a new app's, nor a host they have not
+  allowed: those fail `not_granted`), and `sample` is not granted. So the
+  app shows a sensible empty or offline state when `use` gives null or a
+  call fails, and no test depends on live network data or model output.
 
 ## The device
 

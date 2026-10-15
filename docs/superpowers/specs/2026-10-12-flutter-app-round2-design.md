@@ -327,7 +327,9 @@ files}` creates a **draft artifact**: an ordinary artifact row with
   any other source, since what a render reads reaches the agent and an
   app's grant is not the owner's consent to that. A render never asks for
   consent; the agent reads other apps with `db_*` and an `app` ID, behind
-  its own consent gate (`AgentReadConsent`).
+  its own consent gate (`AgentReadConsent`). Network fetches are the one
+  exception: a draft uses the owner's existing `net` grants to `of`
+  (real-apps spec C6), never asking and never granted itself.
 - **Hidden.** A draft is left out of `GET /api/artifacts`, the gallery
   topic, `/api/events` unless its ID is named in `artifact=`, the `list`
   tool, inbox items, sessions' watches and feedback; a thread on it is 403
