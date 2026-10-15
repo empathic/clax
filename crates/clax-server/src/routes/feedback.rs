@@ -226,15 +226,9 @@ pub async fn poll(
     };
     let mut rights = a.read_rights();
     let grant = a.grant().map(str::to_string);
-    let check = sid.clone();
-    // Built once: the poll's deliveries are recorded as this session's agent.
-    let audit = std::sync::Arc::new(
-        s.store_call(move |st| {
-            live_session(st, &check)?;
-            crate::audit::session_ctx(st, &headers, &check)
-        })
-        .await?,
-    );
+    // Built with the first view: the poll's deliveries are recorded as
+    // this session's agent.
+    let mut audit: Option<std::sync::Arc<clax_core::audit::AuditCtx>> = None;
     let started = Instant::now();
     let deadline = started + Duration::from_secs(q.wait.min(MAX_WAIT_SECS));
     let notify = s.feedback_waiters.get(&sid);
@@ -278,18 +272,22 @@ pub async fn poll(
         let (prior_rights, grant) = (rights.clone(), grant.clone());
         let prior = vis.take();
         let sid = take.session_id.clone();
-        let (view, rights_now) = s
+        let (prior_audit, headers) = (audit.take(), headers.clone());
+        let (view, rights_now, audit_now) = s
             .store_call(move |st| {
-                let stale = prior.as_ref().is_none_or(|v| v.generation() != seen);
-                let view = view_at(st, &sid, prior, seen)?;
-                let rights = if stale {
-                    prior_rights.current(st, grant.as_deref(), &sid)?
-                } else {
-                    prior_rights
+                let audit = match prior_audit {
+                    Some(a) => a,
+                    None => {
+                        live_session(st, &sid)?;
+                        std::sync::Arc::new(crate::audit::session_ctx(st, &headers, &sid)?)
+                    }
                 };
-                Ok((view, rights))
+                let view = view_at(st, &sid, prior, seen)?;
+                let rights = prior_rights.current(st, grant.as_deref(), &sid, seen)?;
+                Ok((view, rights, audit))
             })
             .await?;
+        audit = Some(audit_now.clone());
         #[cfg(debug_assertions)]
         s.feedback_waiters
             .stop_at(&take.session_id, crate::feedback::Stop::BeforeTake)
@@ -298,7 +296,7 @@ pub async fn poll(
         let ctx_after = ctx.clone();
         let t = take.clone();
         let (held, clock) = (s.questions.clone(), s.question_clock.clone());
-        let audit = audit.clone();
+        let audit = audit_now;
         let (view_now, readable_rights) = (view.clone(), rights_now.clone());
         let (taken, (answers, late)) = s
             .store_call(move |st| {
@@ -452,13 +450,8 @@ pub async fn notices(
         let (view, rights_now, announced) = s
             .store_call(move |st| {
                 live_session(st, &who)?;
-                let stale = prior.as_ref().is_none_or(|v| v.generation() != seen);
                 let view = view_at(st, &who, prior, seen)?;
-                let rights = if stale {
-                    prior_rights.current(st, grant.as_deref(), &who)?
-                } else {
-                    prior_rights
-                };
+                let rights = prior_rights.current(st, grant.as_deref(), &who, seen)?;
                 let readable = |a: &Artifact| rights.allows(a);
                 let readable: Option<&(dyn Fn(&Artifact) -> bool + Sync)> =
                     rights.is_person_agent().then_some(&readable);

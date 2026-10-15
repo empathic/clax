@@ -286,12 +286,16 @@ impl Identity {
             // The agent acting is the session whose resources the path
             // names; else the one the header names.
             let acting = path_session.or(self.header_session.as_deref());
+            // Read first: a change committed meanwhile leaves the rights
+            // stale for the next reader, never newer than their label.
+            let generation = st.visibility_generation();
             let gc = st.grant_caller(&g.grant_id, acting)?;
             return Ok(Caller::PersonAgent {
                 person: gc.person,
                 grant: gc.grant_id,
                 session: gc.session,
                 rights: std::sync::Arc::new(gc.rights),
+                generation,
             });
         }
         if self.token {

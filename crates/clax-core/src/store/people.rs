@@ -395,11 +395,8 @@ fn check_person_name(tx: &Transaction<'_>, name: &str, except: Option<&str>) -> 
 /// the owner, else the stored rights or the collaborator preset.
 pub(super) fn rights_of_row(c: &rusqlite::Connection, viewer_id: &str) -> Result<Rights> {
     let (owner, json): (bool, Option<String>) = c
-        .query_row(
-            "SELECT owner, rights_json FROM viewers WHERE id = ?1",
-            params![viewer_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
+        .prepare_cached("SELECT owner, rights_json FROM viewers WHERE id = ?1")?
+        .query_row(params![viewer_id], |r| Ok((r.get(0)?, r.get(1)?)))
         .optional()?
         .ok_or(CoreError::NotFound)?;
     if owner {
@@ -2343,12 +2340,13 @@ pub(crate) fn grant_caller_in(
     session: Option<&str>,
 ) -> Result<GrantCaller> {
     let row: Option<(String, String, bool, String, Option<String>)> = c
-        .query_row(
+        .prepare_cached(
             "SELECT g.status, g.viewer_id, COALESCE(v.owner, 0), v.public_id, g.narrow_json
                  FROM grants g JOIN viewers v ON v.id = g.viewer_id WHERE g.id = ?1",
-            params![gid],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-        )
+        )?
+        .query_row(params![gid], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
         .optional()?;
     let Some((_, viewer_id, owner, public_id, narrow)) = row.filter(|r| r.0 == "approved") else {
         return Err(CoreError::invalid(
@@ -2365,12 +2363,11 @@ pub(crate) fn grant_caller_in(
         None => (sessionless_narrow(c, gid)?, None),
         Some(sid) => {
             let row: Option<(Option<String>, Option<String>)> = c
-                .query_row(
+                .prepare_cached(
                     "SELECT narrow_json, ended_at FROM sessions
                          WHERE id = ?1 AND grant_id = ?2",
-                    params![sid, gid],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
+                )?
+                .query_row(params![sid, gid], |r| Ok((r.get(0)?, r.get(1)?)))
                 .optional()?;
             let (narrow, ended) = row.ok_or_else(|| {
                 CoreError::invalid(
