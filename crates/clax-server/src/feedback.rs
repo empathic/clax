@@ -4,8 +4,9 @@
 
 use crate::state::AppState;
 use clax_core::feedback::Touched;
+use clax_core::feedback::FeedbackState;
 #[cfg(debug_assertions)]
-use clax_core::feedback::{FeedbackState, Tier};
+use clax_core::feedback::Tier;
 use clax_core::model::{Artifact, Asset, Comment, Thread, Version};
 use clax_core::store::approvals::UNCONNECTED;
 use clax_core::store::docs::{Acquired, Doc, DocPage, Written};
