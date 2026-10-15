@@ -143,6 +143,12 @@ pub struct Anchor {
     /// the query and hash route, set by the daemon; absent elsewhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<String>,
+    /// The quote as a person reads it: its text with a space where it runs
+    /// from one element into another, which the quote (kept as the page's
+    /// text nodes join, for re-anchoring) lacks. Shown in place of the quote;
+    /// absent on anchors made without one, which show the quote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 fn bad(message: impl Into<String>) -> CoreError {
@@ -161,6 +167,14 @@ fn check_len(name: &str, v: &Option<String>, max: usize) -> Result<()> {
 /// Whitespace runs collapsed to one space, trimmed.
 pub fn collapse(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `s` without whitespace, control characters or U+FEFF: what a label and
+/// its quote must share.
+fn squash(s: &str) -> String {
+    s.chars()
+        .filter(|c| !(c.is_whitespace() || c.is_control() || *c == '\u{FEFF}'))
+        .collect()
 }
 
 /// At most `n` characters of `s`, with `…` appended when cut.
@@ -197,7 +211,7 @@ impl Anchor {
     /// the version holds it is the store's check.
     ///
     /// An `artifact` anchor carries no selector, quote, prefix, suffix,
-    /// `html_hash`, `rect`, `custom_name`, `area`, or `route`, and its `file`
+    /// `html_hash`, `rect`, `custom_name`, `area`, `route`, or `label`, and its `file`
     /// is empty ([`Anchor::normalized`] empties the index default).
     ///
     /// # Errors
@@ -258,6 +272,7 @@ impl Anchor {
         check_len("quote", &self.quote, MAX_QUOTE)?;
         check_len("prefix", &self.prefix, MAX_AFFIX)?;
         check_len("suffix", &self.suffix, MAX_AFFIX)?;
+        self.validate_label()?;
         if let Some(r) = &self.route
             && (r.len() > crate::live::MAX_ROUTE
                 || !(r.starts_with('?') || r.starts_with('#'))
@@ -272,6 +287,29 @@ impl Anchor {
         Ok(())
     }
 
+    /// A `label` is at most [`MAX_QUOTE`] characters of plain text (no control
+    /// characters or line separators) and reads as the quote, or the start of
+    /// it, with only its whitespace changed; an anchor without a quote has none.
+    fn validate_label(&self) -> Result<()> {
+        let Some(label) = &self.label else {
+            return Ok(());
+        };
+        check_len("label", &self.label, MAX_QUOTE)?;
+        if label
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
+        {
+            return Err(bad("label contains control characters or line breaks"));
+        }
+        let shown = squash(label);
+        match &self.quote {
+            Some(q) if !shown.is_empty() && squash(q).starts_with(&shown) => Ok(()),
+            _ => Err(bad(
+                "label is the quote, or its start, with only its whitespace changed",
+            )),
+        }
+    }
+
     /// An `artifact` anchor names nothing on a page.
     fn validate_whole(&self) -> Result<()> {
         let targets = self.selector.is_some()
@@ -282,10 +320,11 @@ impl Anchor {
             || self.rect.is_some()
             || self.custom_name.is_some()
             || self.area.is_some()
-            || self.route.is_some();
+            || self.route.is_some()
+            || self.label.is_some();
         if targets {
             return Err(bad(
-                "artifact anchors carry no selector, quote, prefix, suffix, html_hash, rect, custom_name, area, or route",
+                "artifact anchors carry no selector, quote, prefix, suffix, html_hash, rect, custom_name, area, route, or label",
             ));
         }
         if self.file != WHOLE_FILE {
@@ -316,7 +355,8 @@ impl Anchor {
     /// `area in <selector> (<w>% × <h>%)`, its share of the element's width
     /// and height rounded to whole percent, `<1%` for a share under half a
     /// percent), then two
-    /// spaces and the quote in «» when there is one, whitespace collapsed,
+    /// spaces and the quote (its `label` when it has one) in «» when there is
+    /// one, whitespace collapsed,
     /// `«`/`»` in the quote replaced by `"`, cut to 120 characters with `…`.
     pub fn summary(&self) -> String {
         if self.is_whole() {
@@ -345,8 +385,9 @@ impl Anchor {
             None => target,
         };
         match self
-            .quote
+            .label
             .as_deref()
+            .or(self.quote.as_deref())
             .map(collapse)
             .filter(|q| !q.is_empty())
         {
@@ -535,6 +576,62 @@ mod tests {
         let c: Anchor =
             serde_json::from_value(json!({"kind": "custom", "custom_name": "chart-1"})).unwrap();
         assert_eq!(c.summary(), "custom:chart-1");
+    }
+
+    #[test]
+    fn a_label_respaces_the_quote_for_display() {
+        let v = json!({"kind": "element", "selector": "body > div", "quote": "Mon5 km", "label": "Mon 5 km"});
+        let a: Anchor = serde_json::from_value(v.clone()).unwrap();
+        a.validate().unwrap();
+        assert_eq!(serde_json::to_value(&a).unwrap()["label"], "Mon 5 km");
+        assert_eq!(a.summary(), "body > div  «Mon 5 km»");
+        let old: Anchor = serde_json::from_value(
+            json!({"kind": "element", "selector": "body > div", "quote": "Mon5 km"}),
+        )
+        .unwrap();
+        old.validate().unwrap();
+        assert!(serde_json::to_value(&old).unwrap().get("label").is_none());
+        assert_eq!(old.summary(), "body > div  «Mon5 km»");
+        let with = |label: String| {
+            let mut a = a.clone();
+            a.label = Some(label);
+            a.validate()
+        };
+        // A label may stop short of a long quote's end; one with U+FEFF or a
+        // control character dropped from the quote still matches.
+        assert!(with("Mon 5".into()).is_ok());
+        let mut q = a.clone();
+        q.quote = Some("Mon\u{FEFF}\u{85}5 km".into());
+        q.validate().unwrap();
+        let long = "w ".repeat(MAX_QUOTE);
+        let mut big = a.clone();
+        big.quote = Some("w".repeat(MAX_QUOTE));
+        big.label = Some(long.trim_end().into());
+        for bad in [
+            with(String::new()),
+            with("Tue 6 km".into()),
+            with("Mon 5 km more".into()),
+            with("Mon\n5 km".into()),
+            with("Mon\u{2028}5 km".into()),
+            big.validate(),
+        ] {
+            assert!(
+                matches!(
+                    bad,
+                    Err(CoreError::Invalid {
+                        code: "invalid_anchor",
+                        ..
+                    })
+                ),
+                "{bad:?}"
+            );
+        }
+        let mut no_quote = a.clone();
+        no_quote.quote = None;
+        assert!(no_quote.validate().is_err(), "a label needs a quote");
+        let whole: Anchor =
+            serde_json::from_value(json!({"kind": "artifact", "file": "", "label": "x"})).unwrap();
+        assert!(whole.validate().is_err());
     }
 
     fn area_anchor() -> Anchor {

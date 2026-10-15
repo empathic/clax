@@ -807,6 +807,7 @@ pub(crate) mod test_util {
             area: None,
             file: "index.html".into(),
             route: None,
+            label: None,
         }
     }
 }
