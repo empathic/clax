@@ -623,7 +623,10 @@ pub const MIGRATIONS: &[&str] = &[
     // a person, are `*unconnected`. The owner's
     // one approval, of `*unconnected` everywhere, keeps LAN viewers' words
     // reaching the owner's agents (O6, M14): the migration's Rust step
-    // makes it, with a ULID.
+    // makes it, with a ULID. Requests pile up (each resolve withdraws its
+    // thread's), so the reads of a pair's or a thread's open and declined
+    // requests go through `approval_requests_by_target` and
+    // `approval_requests_by_thread`.
     "CREATE TABLE approvals (
         id TEXT PRIMARY KEY,
         approver TEXT,
@@ -661,6 +664,9 @@ pub const MIGRATIONS: &[&str] = &[
         COALESCE(approver, ''), author, artifact_id, COALESCE(thread_id, ''))
         WHERE status = 'open';
     CREATE INDEX approval_requests_by_session ON approval_requests(session_id, status);
+    CREATE INDEX approval_requests_by_target ON approval_requests(
+        COALESCE(approver, ''), artifact_id, author, status);
+    CREATE INDEX approval_requests_by_thread ON approval_requests(thread_id, status);
 
     CREATE TABLE doc_authors (
         artifact_id TEXT NOT NULL,

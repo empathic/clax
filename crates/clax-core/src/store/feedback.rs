@@ -2135,14 +2135,18 @@ struct Decline {
     at: String,
 }
 
+/// The declined requests of the threads in `?1` (a JSON array of IDs),
+/// through the index `approval_requests_by_thread`: never a walk of every
+/// request.
+pub(crate) const DECLINES: &str =
+    "SELECT d.approver, d.author, d.thread_id, d.artifact_id, d.decided_at
+       FROM approval_requests d
+      WHERE d.thread_id IN (SELECT value FROM json_each(?1))
+        AND d.status = 'declined' AND d.decided_at IS NOT NULL";
+
 /// The declines in force at `thread_ids` ([`Decline`]).
 fn declines_in(c: &Connection, thread_ids: &str) -> Result<Vec<Decline>> {
-    let mut st = c.prepare_cached(
-        "SELECT d.approver, d.author, d.thread_id, d.artifact_id, d.decided_at
-           FROM approval_requests d
-          WHERE d.status = 'declined' AND d.decided_at IS NOT NULL
-            AND d.thread_id IN (SELECT value FROM json_each(?1))",
-    )?;
+    let mut st = c.prepare_cached(DECLINES)?;
     let found = st
         .query_map(params![thread_ids], |r| {
             Ok((
