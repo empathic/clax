@@ -165,7 +165,8 @@ async function login(o) {
   const r = await wrangler(["whoami", "--json"]);
   let who;
   try {
-    who = JSON.parse(r.out.trim().split("\n").filter((l) => l.startsWith("{")).pop() ?? "{}");
+    // `whoami --json` prints the object over many lines.
+    who = jsonIn(r.out);
   } catch {
     who = {};
   }
