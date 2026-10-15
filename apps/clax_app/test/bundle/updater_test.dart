@@ -88,6 +88,7 @@ void main() {
     ]);
     final draft = me.api.calls.firstWhere((c) => c.name == 'createDraft');
     expect(draft.args['of'], aid);
+    expect(draft.args['inheritNet'], isFalse, reason: 'a check runs offline');
     expect(me.api.callNames, contains('deleteDraft'));
     final pub = me.api.calls.firstWhere((c) => c.name == 'publish');
     final r = pub.args['request']! as PublishRequest;

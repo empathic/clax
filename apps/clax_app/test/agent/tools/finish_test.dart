@@ -48,6 +48,7 @@ class TestApi extends FakeClaxApi {
     Map<String, Object?>? capabilities,
     Map<String, String> files = const {},
     Map<String, FileEntry> entries = const {},
+    bool inheritNet = true,
   }) async {
     final d = await super.createDraft(
       of: of,
@@ -55,6 +56,7 @@ class TestApi extends FakeClaxApi {
       capabilities: capabilities,
       files: files,
       entries: entries,
+      inheritNet: inheritNet,
     );
     drafts.add(d.id);
     return d;

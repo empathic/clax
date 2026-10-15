@@ -459,6 +459,7 @@ class HttpClaxApi implements ClaxApi {
     Map<String, Object?>? capabilities,
     Map<String, String> files = const {},
     Map<String, FileEntry> entries = const {},
+    bool inheritNet = true,
   }) async {
     final j = await _json(
       'POST',
@@ -471,6 +472,7 @@ class HttpClaxApi implements ClaxApi {
           ...files,
           for (final e in entries.entries) e.key: e.value.toJson(),
         },
+        if (!inheritNet) 'inherit_net': false,
       },
       timeout: publishTimeout,
     );
