@@ -17,7 +17,7 @@ export const CAPABILITY_METHODS = {
   share: ["text", "file"],
   file: ["pick", "save"],
   camera: ["take", "pick"],
-  location: ["current"],
+  location: ["current", "watch"],
   // Clax's network, through the daemon (clax-extensions.d.ts `Net`).
   net: ["fetch"],
 } as const satisfies Record<string, readonly string[]>;

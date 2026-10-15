@@ -53,7 +53,7 @@ describe("use()", () => {
     expect(await members("share")).toEqual(["file", "text"]);
     expect(await members("file")).toEqual(["pick", "save"]);
     expect(await members("camera")).toEqual(["pick", "take"]);
-    expect(await members("location")).toEqual(["current"]);
+    expect(await members("location")).toEqual(["current", "watch"]);
     const notify = (await use("notify")) as Record<string, (...a: unknown[]) => Promise<unknown>>;
     await expect(notify.cancel("water")).resolves.toEqual({ ns: "notify", method: "cancel", args: ["water"] });
   });
