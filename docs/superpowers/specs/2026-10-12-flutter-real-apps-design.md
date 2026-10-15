@@ -89,9 +89,11 @@ The engine:
   from the request and the app's size, whether it fits one run; a big one
   becomes plan features (`plan_set`) and a `finish` saying so, and the
   worker builds them in continue runs (a plan with nothing left to build
-  that gains features starts a new build, with its own $6). A change that
-  ends at or near a cap (or `give_up`s there) gets Clax's reply naming the
-  limit, the agent's words under it as detail, keeping the failure prefix
+  that gains features in a change run starts a new build, with its own $6;
+  a build's own runs never renew it, and Resume of a capped build starts a
+  new $6). A change that ends at a cap, or `give_up`s with `out_of_room`,
+  gets Clax's reply naming the limit, the agent's reason under it as
+  detail, keeping the failure prefix
   when nothing was published. It is kept per thread (`unfinished.json`:
   comments, the draft's edits over what the app held, the agent's notes,
   cost), and the thread offers **Keep going** (the Retry hook): a change

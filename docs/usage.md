@@ -555,10 +555,12 @@ same signature and do not ask.
   becomes a short build plan instead: the reply says so and the Working
   chip shows the build, as for a new app. A change that still runs out
   says which limit it hit ("too big for one go — it needed more than 10
-  steps"), with the agent's own words under it, and offers **Keep going**:
+  steps"), with the agent's note of what is left when it gave up for
+  lack of room, and offers **Keep going**:
   it goes on from the stopped run's unfinished draft and notes, or, after
   an hour, starts over with the notes. A change and its Keep goings may
-  cost $6 together; the reply says what is left when under half.
+  cost $6 together; the reply says what is left when under half. A build
+  that spent its $6 waits; Resume on it starts a new $6.
 - **Questions.** When the agent asks you something while its app is on
   screen, the question docks in a sheet at the bottom, with a light tap
   (back or Esc closes it before anything else). Over another app a toast
