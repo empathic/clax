@@ -131,7 +131,9 @@ pub const SESSION_HEADER: &str = "x-clax-session";
 
 /// The session named by `X-Clax-Session`, checked to exist, be live, and
 /// be one of the caller's credential's: `grant` (`None` for the daemon
-/// token, M4).
+/// token, M4). A session of [`BY_HAND_HARNESS`](super::sessions::BY_HAND_HARNESS)
+/// (another Clax publishing its person's own versions) is `None`: what it
+/// writes is the person's by hand.
 ///
 /// # Errors
 /// `unknown_session` when the header names a session that does not exist
@@ -149,11 +151,80 @@ pub(crate) fn publishing_session(
             "foreign_session",
             "that session is not one of this credential's",
         )),
-        Some(sess) if sess.ended_at.is_none() => Ok(Some(sess.id)),
+        Some(sess) if sess.ended_at.is_none() => {
+            Ok((sess.harness != super::sessions::BY_HAND_HARNESS).then_some(sess.id))
+        }
         _ => Err(CoreError::invalid(
             "unknown_session",
             "X-Clax-Session names no live session",
         )),
+    }
+}
+
+/// Header an agent of another machine names a publish's idempotency key in
+/// (another Clax's push: `crate::public`). A publish whose key the token
+/// named before answers the version that publish made, whatever the
+/// public copy holds now, and publishes nothing.
+pub const IDEMPOTENCY_HEADER: &str = "idempotency-key";
+
+/// The idempotency key of a publish by agent token `grant`: `None` without
+/// one, and always for the daemon token (a local daemon's own publishes
+/// are as before).
+///
+/// # Errors
+/// 400 `invalid_args` for a key over
+/// [`MAX_PUBLISH_KEY`](clax_core::store::remotes::MAX_PUBLISH_KEY) bytes or
+/// with anything but printable ASCII.
+fn publish_key(headers: &HeaderMap, grant: Option<&str>) -> Result<Option<String>, ApiError> {
+    let (Some(_), Some(v)) = (grant, headers.get(IDEMPOTENCY_HEADER)) else {
+        return Ok(None);
+    };
+    match v.to_str() {
+        Ok(k)
+            if !k.is_empty()
+                && k.len() <= clax_core::store::remotes::MAX_PUBLISH_KEY
+                && k.bytes().all(|b| b.is_ascii_graphic()) =>
+        {
+            Ok(Some(k.to_string()))
+        }
+        _ => Err(ApiError::bad_request(
+            "invalid_args",
+            format!(
+                "Idempotency-Key is at most {} printable ASCII characters",
+                clax_core::store::remotes::MAX_PUBLISH_KEY
+            ),
+        )),
+    }
+}
+
+/// The version agent token `grant`'s publish keyed `key` made, as `vis`
+/// shows it, when it made one (of artifact `of`, when given).
+///
+/// # Errors
+/// 400 `invalid_args` for a key that made another artifact's version.
+fn replayed(
+    st: &Store,
+    grant: Option<&str>,
+    key: Option<&str>,
+    of: Option<&ArtifactId>,
+    vis: &crate::feedback::Vis,
+) -> clax_core::Result<Option<(Value, Value)>> {
+    let (Some(g), Some(k)) = (grant, key) else {
+        return Ok(None);
+    };
+    let Some((aid, n)) = st.publish_key(g, k)? else {
+        return Ok(None);
+    };
+    if of.is_some_and(|o| o.as_str() != aid) {
+        return Err(CoreError::invalid(
+            "invalid_args",
+            "this Idempotency-Key named a publish of another artifact",
+        ));
+    }
+    let id = ArtifactId::parse(&aid)?;
+    match (st.get_artifact(&id)?, st.get_version(&id, n)?) {
+        (Some(a), Some(v)) => Ok(Some(vis.filter_published(st, &a, &v)?)),
+        _ => Ok(None),
     }
 }
 
@@ -450,6 +521,7 @@ pub async fn create(
     let truncated = p.note_truncated;
     let session = session_header(&headers)?;
     let grant = a.grant().map(str::to_string);
+    let key = publish_key(&headers, grant.as_deref())?;
     let events = s.events.clone();
     let ctx = s.feedback_ctx();
     let vf = VisFor::of(&a.caller, &s);
@@ -457,9 +529,17 @@ pub async fn create(
         .store_call_async(move |st| async move {
             let st = &*st;
             let session = publishing_session(st, &session, grant.as_deref())?;
+            if let Some(done) =
+                replayed(st, grant.as_deref(), key.as_deref(), None, &vf.build(st)?)?
+            {
+                return Ok(done);
+            }
             let (artifact, version) = st
                 .create_artifact_async(&audit, p, session.as_deref())
                 .await?;
+            if let (Some(g), Some(k)) = (&grant, &key) {
+                st.record_publish_key(g, k, &artifact.id, version.n)?;
+            }
             if let Some(sid) = &session {
                 let aid = ArtifactId::parse(&artifact.id)?;
                 st.ensure_watch(&audit, sid, &aid)?;
@@ -751,6 +831,7 @@ pub async fn publish(
     let truncated = p.note_truncated;
     let session = session_header(&headers)?;
     let grant = a.grant().map(str::to_string);
+    let key = publish_key(&headers, grant.as_deref())?;
     p.by_page = by_page;
     p.person = publisher(&a.caller);
     // A person's agent's publish leaves the owner's agents' untargeted
@@ -764,6 +845,16 @@ pub async fn publish(
         .store_call_async(move |st| async move {
             let st = &*st;
             let session = publishing_session(st, &session, grant.as_deref())?;
+            // A publish sent again whose first answer was lost: what it made.
+            if let Some(done) = replayed(
+                st,
+                grant.as_deref(),
+                key.as_deref(),
+                Some(&id),
+                &vf.build(st)?,
+            )? {
+                return Ok(done);
+            }
             // Read before the clear below: the threads this session was
             // working on are linked to the new version.
             if let Some(sid) = &session {
@@ -781,6 +872,9 @@ pub async fn publish(
             let (artifact, version) = st
                 .publish_version_async(&audit, &id, p, session.as_deref())
                 .await?;
+            if let (Some(g), Some(k)) = (&grant, &key) {
+                st.record_publish_key(g, k, &artifact.id, version.n)?;
+            }
             if let Some(sid) = &session {
                 let aid = ArtifactId::parse(&artifact.id)?;
                 st.ensure_watch(&audit, sid, &aid)?;
@@ -813,6 +907,10 @@ pub async fn publish(
             vis.filter_published(st, &artifact, &version)
         })
         .await?;
+    // A public twin that follows new versions gets this one.
+    if let Ok(id) = clax_core::ArtifactId::parse(artifact["id"].as_str().unwrap_or_default()) {
+        crate::public::after_publish(&s, &id);
+    }
     let url = format!("/a/{}", artifact["id"].as_str().unwrap_or_default());
     let mut v =
         json!({"artifact": artifact, "version": version, "url": url, "note_truncated": truncated});

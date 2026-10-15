@@ -16,7 +16,7 @@ use tokio::sync::watch;
 /// `draft`, whose work in progress is kept in memory and never in
 /// history, and `git_remote`, which hands out a repository token, capture
 /// none.
-pub const GIT_TOOLS: [&str; 16] = [
+pub const GIT_TOOLS: [&str; 17] = [
     "publish",
     "fork",
     "comments_reply",
@@ -33,6 +33,7 @@ pub const GIT_TOOLS: [&str; 16] = [
     "unpin",
     "working",
     "ask",
+    "publish_public",
 ];
 
 /// Whether a call of `tool` captures git state.
@@ -241,7 +242,7 @@ mod tests {
     #[test]
     fn every_tool_that_changes_history_captures_git() {
         let tools = crate::ClaxTools::tools();
-        assert_eq!(tools.len(), 27);
+        assert_eq!(tools.len(), 28);
         for t in &tools {
             let name = t.name.as_ref();
             let read_only = t

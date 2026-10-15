@@ -150,7 +150,7 @@ export type QuestionView = {
   created_at: string; closed_at: string | null;
 };
 
-export type InboxKind = "reply" | "version" | "published" | "question" | "finished" | "approval" | "connection" | "ended";
+export type InboxKind = "reply" | "version" | "published" | "question" | "finished" | "approval" | "connection" | "ended" | "push";
 /** A `connection` item's grant: a request waiting for the owner, or a
  * machine that connected with an invite (`person` once it has one). */
 export type InboxConnection = {
@@ -208,6 +208,9 @@ export type InboxItem = {
   /** `ended`: what the agent's end cleaned up; `text` is the note's line
    * ("clax-claude ended · released 2 threads · withdrew 1 question"). */
   ended?: InboxEnded | null;
+  /** `push`: an automatic push of local version `n` that the public Clax at
+   * `origin` refused, its code and message, and the public copy's `url`. */
+  push?: { n: number | null; origin: string | null; code: string | null; message: string | null; url: string | null };
   gone: boolean;
   /** Where opening the item leads (a path on the daemon). */
   url: string;

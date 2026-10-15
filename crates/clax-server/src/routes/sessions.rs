@@ -22,9 +22,19 @@ use std::sync::Arc;
 /// The harness names a session may carry.
 pub const HARNESSES: [&str; 4] = ["claude", "codex", "grok", "pi"];
 
-/// `invalid_args` unless `harness` is one of [`HARNESSES`].
-fn check_harness(harness: &str) -> Result<(), ApiError> {
-    if HARNESSES.contains(&harness) {
+/// The harness of a session another machine's Clax registers to publish
+/// its person's own versions there, made by hand (the CLI or the browser)
+/// and by no agent (`crate::public`). Taken only from an agent token a
+/// device sign-in issued to another Clax (not one minted for an agent); what
+/// such a session publishes is recorded as its person's, with no session
+/// ([`crate::routes::artifacts::publishing_session`]), so it reads as the
+/// person's own publish.
+pub const BY_HAND_HARNESS: &str = "clax";
+
+/// `invalid_args` unless `harness` is one of [`HARNESSES`], or
+/// [`BY_HAND_HARNESS`] for a device sign-in's agent token (`by_hand`).
+fn check_harness(harness: &str, by_hand: bool) -> Result<(), ApiError> {
+    if HARNESSES.contains(&harness) || (by_hand && harness == BY_HAND_HARNESS) {
         Ok(())
     } else {
         Err(ApiError::bad_request(
@@ -50,7 +60,14 @@ pub async fn register(
     req: Result<Json<RegisterSession>, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let mut r = body(req)?;
-    check_harness(&r.harness)?;
+    let by_hand = match (a.grant(), r.harness == BY_HAND_HARNESS) {
+        (Some(g), true) => {
+            let g = g.to_string();
+            s.store_call(move |st| st.is_device_grant(&g)).await?
+        }
+        _ => false,
+    };
+    check_harness(&r.harness, by_hand)?;
     r.grant_id = a.grant().map(str::to_string);
     if r.grant_id.is_some() {
         // A process of another machine: never probed as a local one by the
@@ -169,7 +186,7 @@ pub async fn join(
 ) -> Result<Json<Value>, ApiError> {
     let grant = a.grant().map(str::to_string);
     let b = body(req)?;
-    check_harness(&b.harness)?;
+    check_harness(&b.harness, false)?;
     if b.harness_session_id.is_empty() {
         return Err(ApiError::bad_request(
             "invalid_session",

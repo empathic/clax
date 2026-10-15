@@ -9,7 +9,10 @@
   // in with it. Both say who the browser is signed in as now, and that the
   // button signs them out of it: the click is the confirmation the server
   // asks before it replaces a session (`replace`). `/signin` says who the
-  // browser is signed in as, or how to get in. A code is redeemed only by
+  // browser is signed in as, or how to get in; `/device[?code=]` approves
+  // another machine's Clax signing in as this browser's person (a device
+  // code it showed), naming the machine and the address it asked from, or
+  // denies it. A code is redeemed only by
   // the button, never by loading the page, so a link preview spends
   // nothing. Signed in, the browser goes to the gallery. The gallery's entry
   // loads this as a chunk of its own on these paths; the header's mark is
@@ -19,11 +22,12 @@
   import ThemeSwitch from "../ui/ThemeSwitch.svelte";
   import * as api from "./api";
 
-  type Page = { kind: "setup" } | { kind: "join"; code: string } | { kind: "signin"; code: string } | { kind: "status" };
+  type Page = { kind: "setup" } | { kind: "join"; code: string } | { kind: "signin"; code: string } | { kind: "device" } | { kind: "status" };
   const page: Page = (() => {
     const p = location.pathname;
     const code = (prefix: string) => decodeURIComponent(p.slice(prefix.length).replace(/\/+$/, ""));
     if (p === "/setup") return { kind: "setup" };
+    if (p === "/device") return { kind: "device" };
     if (p.startsWith("/join/")) return { kind: "join", code: code("/join/") };
     if (p.startsWith("/signin/") && p.length > "/signin/".length) return { kind: "signin", code: code("/signin/") };
     return { kind: "status" };
@@ -38,7 +42,27 @@
   let err = $state<string | null>(null);
   const msg = (x: unknown) => (x instanceof Error ? x.message : String(x));
 
-  const TITLE = { setup: "Set up Clax", join: "Join Clax", signin: "Sign in", status: "Sign in" } as const;
+  const TITLE = { setup: "Set up Clax", join: "Join Clax", signin: "Sign in", device: "Connect a Clax", status: "Sign in" } as const;
+
+  // The device sign-in: the code as typed (from `?code=`, which leaves the
+  // address bar), the machine it names once looked up, and the outcome.
+  let deviceCode = $state("");
+  let device = $state<api.DeviceRequest | null | false>(null);
+  let decided = $state<"approved" | "denied" | null>(null);
+  async function lookUp(e?: Event) {
+    e?.preventDefault();
+    if (busy || !deviceCode.trim()) return;
+    busy = true; err = null;
+    try { device = await api.peekDevice(deviceCode.trim()); } catch (x) { device = false; if (!(x instanceof api.Refused && x.status === 404)) err = msg(x); } finally { busy = false; }
+  }
+  async function decide(approve: boolean) {
+    if (busy) return;
+    busy = true; err = null;
+    try {
+      await (approve ? api.approveDevice(deviceCode.trim()) : api.denyDevice(deviceCode.trim()));
+      decided = approve ? "approved" : "denied";
+    } catch (x) { err = msg(x); } finally { busy = false; }
+  }
 
   async function run(fn: () => Promise<unknown>) {
     if (busy) return;
@@ -63,7 +87,12 @@
       const s = q.get("secret");
       if (s !== null) { secret = s; history.replaceState(null, "", "/setup"); }
     }
+    if (page.kind === "device") {
+      const q = new URLSearchParams(location.search).get("code");
+      if (q !== null) { deviceCode = q; history.replaceState(null, "", "/device"); }
+    }
     try { me = await api.me(); } catch (x) { err = msg(x); }
+    if (page.kind === "device" && deviceCode && me?.person && !me.person.guest) await lookUp();
     if (page.kind === "join") {
       try { invite = await api.peekInvite(page.code); } catch { invite = false; }
     }
@@ -116,6 +145,28 @@
           <p class="now" data-testid="signed-in-now">You are signed in here as <strong>{currentName}</strong>{current.guest ? " (a guest)" : current.owner ? ", the owner" : ""}. Signing in as {linkName} signs you out of {currentName}.</p>
         {/if}
         <button class="primary" type="button" onclick={signin} disabled={busy}>Sign in as {linkName}</button>
+      {/if}
+    {:else if page.kind === "device"}
+      {#if me === null}
+        <p class="muted">Reading your sign-in…</p>
+      {:else if !me.person || me.person.guest}
+        <p>Another Clax asks to publish here as you. Sign in first: open a sign-in link from a device that is signed in, then come back to this page.</p>
+      {:else if decided === "approved"}
+        <p><strong>{device ? device.client_name : "That Clax"}</strong> is signed in as you. It shows on People among your agent tokens, where you can revoke it. You can close this tab.</p>
+        <div class="acts"><a class="go" href="/people">Open People</a></div>
+      {:else if decided === "denied"}
+        <p>Denied: that Clax is not signed in. You can close this tab.</p>
+      {:else if device}
+        <p><strong>{device.client_name}</strong>, from {device.peer_ip || "an unknown address"}, asks to publish here as you, <strong>{me.person.display_name ?? "you"}</strong>. Check that it shows the code <code>{deviceCode.trim().toUpperCase()}</code>.</p>
+        {#if !device.same_address}<p class="now" data-testid="other-address">It asked from another address than this browser's. Approve only if you started this sign-in yourself, just now, on that machine: anyone who sent you this link would publish as you.</p>{/if}
+        <p class="hint">It gets an agent token of yours: what it publishes is public as yours, within your rights. It shows on People, where you can revoke it.</p>
+        <div class="acts"><button class="primary" type="button" disabled={busy} onclick={() => decide(true)}>Approve</button><button type="button" disabled={busy} onclick={() => decide(false)}>Deny</button></div>
+      {:else}
+        <form onsubmit={lookUp}>
+          {#if device === false}<p>No Clax is waiting with that code. It may have expired (codes last ten minutes) or been used: start again on that machine.</p>{/if}
+          <label class="field">The code your Clax shows <input name="code" autocomplete="off" required maxlength="12" placeholder="WXYZ-4821" value={deviceCode} oninput={e => { deviceCode = e.currentTarget.value; }} /></label>
+          <button class="primary" type="submit" disabled={busy || !deviceCode.trim()}>Continue</button>
+        </form>
       {/if}
     {:else if me?.person && !me.person.guest}
       <p>You are signed in as <strong>{me.person.display_name ?? "an unnamed person"}</strong>{me.person.owner ? ", the owner" : ""}.</p>

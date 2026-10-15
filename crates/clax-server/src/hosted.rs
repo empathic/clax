@@ -85,7 +85,7 @@ use axum::extract::{Path, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Extension, Router};
 use clax_core::rights::RightType;
 use clax_core::store::hosted::{LinkAccess, SessionViewer, SignedIn};
@@ -148,6 +148,12 @@ pub enum Attempt {
     /// Naming a guest (`PUT /api/viewers/me` with no session, or a
     /// guest's rename): a viewer row and a session each.
     Guest,
+    /// Starting a device sign-in (`POST /api/hosted/device/code`): a
+    /// waiting row each.
+    Device,
+    /// A machine's poll of its device sign-in
+    /// (`POST /api/hosted/device/token`): device codes' guesses.
+    DevicePoll,
     /// A read git token minted for a page's link (a guest, or no
     /// session): a token at the repository host each.
     GitToken,
@@ -160,6 +166,8 @@ impl Attempt {
             Attempt::Setup => (5.0, 120.0),
             Attempt::SignIn => (10.0, 30.0),
             Attempt::Guest | Attempt::GitToken => (5.0, 120.0),
+            Attempt::Device => (5.0, 60.0),
+            Attempt::DevicePoll => (30.0, 2.0),
         }
     }
 }
@@ -1366,7 +1374,13 @@ pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Re
     {
         return ApiError::unauthorized().into_response();
     }
-    if write && !authz && !origin_checked {
+    // A device sign-in's machine routes carry no cookie and act for no
+    // one: the device code is their only credential.
+    let machine = matches!(
+        path.as_str(),
+        "/api/hosted/device/code" | "/api/hosted/device/token"
+    );
+    if write && !authz && !origin_checked && !machine {
         return forbidden_origin(&h);
     }
     let session = if authz {
@@ -1407,6 +1421,7 @@ pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Re
     let own = path.starts_with("/api/hosted/")
         || path == "/setup"
         || path == "/signin"
+        || path == "/device"
         || path.starts_with("/signin/")
         || path.starts_with("/join/");
     if let Some(m) = member.as_ref().filter(|_| !open && !own) {
@@ -1976,6 +1991,32 @@ async fn revoke_token(
     ))
 }
 
+/// `DELETE /api/hosted/agent-token` (an agent token, of itself) → 204: the
+/// token is revoked, as its person revoking it on People would. Another
+/// machine's Clax ends its own sign-in with it (`clax remote remove`). 401
+/// for any other caller.
+async fn revoke_own_token(
+    State(s): State<AppState>,
+    bearer: Option<Extension<crate::agent::BearerGrant>>,
+    audit: crate::audit::DeferredAudit,
+) -> Result<Response, ApiError> {
+    let Some(Extension(b)) = bearer else {
+        return Err(ApiError::unauthorized());
+    };
+    let (state, ctx) = (s.clone(), s.feedback_ctx());
+    s.store_call(move |st| {
+        let ended = st.revoke_grant(
+            &audit.resolve(st)?,
+            &b.grant_id,
+            clax_core::store::people::EndedBy::Person,
+        )?;
+        crate::routes::grants::announce_ended(&state, &ctx, st, &[ended], "person");
+        Ok(())
+    })
+    .await?;
+    Ok(no_store(StatusCode::NO_CONTENT.into_response()))
+}
+
 /// `GET /api/hosted/links` (a member) → `{links: [{artifact_id, title,
 /// access, url}]}`: the pages shared by link that the caller shares (the
 /// owner every one, a person those they made, as [`set_link`] allows).
@@ -2123,6 +2164,183 @@ async fn setup_page(
     signin_page(d, req).await
 }
 
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct DeviceCodeBody {
+    /// What the machine calls itself: the approval page names it.
+    #[serde(default)]
+    client_name: String,
+}
+
+/// `POST /api/hosted/device/code {client_name}` (another machine's Clax,
+/// no credential) → `{device_code, user_code, verification_uri,
+/// verification_uri_complete, expires_at, expires_in, interval}`: starts a
+/// device sign-in ([`clax_core::store::device`]). The machine shows the
+/// person the user code and opens `verification_uri_complete`, where a
+/// signed-in member approves it, then polls `POST
+/// /api/hosted/device/token` every `interval` seconds. Rate-limited per
+/// client; 400 `invalid_args` for a bad name, 400 `limit_reached` with too
+/// many waiting.
+async fn device_code(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    extensions: axum::http::Extensions,
+    req: Result<Json<DeviceCodeBody>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    let h = hosted_of(&s);
+    h.attempt(Attempt::Device, &headers, &extensions)?;
+    let b = crate::routes::artifacts::body(req)?;
+    let peer = h.client(&headers, &extensions).to_string();
+    let start = s
+        .store_call(move |st| st.start_device(&b.client_name, &peer))
+        .await?;
+    let user = start.user_code.expose().to_string();
+    Ok(no_store(
+        Json(json!({
+            "device_code": start.device_code.expose(),
+            "user_code": user,
+            "verification_uri": h.url("/device"),
+            "verification_uri_complete": h.url(&format!("/device?code={user}")),
+            "expires_at": start.expires_at,
+            "expires_in": clax_core::store::device::DEVICE_TTL_SECS,
+            "interval": clax_core::store::device::DEVICE_INTERVAL_SECS,
+        }))
+        .into_response(),
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeviceTokenBody {
+    device_code: String,
+}
+
+/// `POST /api/hosted/device/token {device_code}` (the machine) → once the
+/// sign-in is approved, `{token, token_type, grant_id, person: {public_id,
+/// display_name}, origin, mcp_url}`, this once: an agent token of the
+/// person who approved it. Before that, 400 `authorization_pending`; 400
+/// `slow_down` for a poll sooner than `interval` after the last; 400
+/// `access_denied` once denied (or the token revoked before this poll);
+/// 400 `expired_token` for an unknown, expired or spent code.
+async fn device_token(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    extensions: axum::http::Extensions,
+    audit: crate::audit::DeferredAudit,
+    req: Result<Json<DeviceTokenBody>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    use clax_core::store::device::DevicePoll;
+    let h = hosted_of(&s);
+    h.attempt(Attempt::DevicePoll, &headers, &extensions)?;
+    let b = crate::routes::artifacts::body(req)?;
+    let poll = s
+        .store_call(move |st| st.poll_device(&audit.resolve(st)?, &b.device_code))
+        .await?;
+    let refuse = |code: &'static str, message: &str| Err(ApiError::bad_request(code, message));
+    match poll {
+        DevicePoll::Pending => refuse(
+            "authorization_pending",
+            "waiting for the person to approve this sign-in",
+        ),
+        DevicePoll::SlowDown => refuse(
+            "slow_down",
+            "polled too soon: wait the interval between polls",
+        ),
+        DevicePoll::Denied => refuse("access_denied", "this sign-in was denied"),
+        DevicePoll::Expired => refuse(
+            "expired_token",
+            "this sign-in expired or was used: start a new one",
+        ),
+        DevicePoll::Issued {
+            token,
+            grant_id,
+            person,
+            person_name,
+        } => Ok(no_store(
+            Json(json!({
+                "token": token.expose(),
+                "token_type": "Bearer",
+                "grant_id": grant_id,
+                "person": {"public_id": person, "display_name": person_name},
+                "origin": h.origin,
+                "mcp_url": h.url(crate::routes::mcp_http::PATH),
+            }))
+            .into_response(),
+        )),
+    }
+}
+
+/// `GET /api/hosted/device/<user code>` (a member's browser) →
+/// `{client_name, peer_ip, created_at, expires_at, same_address}`: the
+/// machine a waiting sign-in names, for its approval page, and whether it
+/// asked from this browser's own address (a code someone else started
+/// does not, which the page says). 404 `not_found` for a code that is
+/// unknown, decided or expired. Rate-limited as sign-in codes are.
+async fn peek_device(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    extensions: axum::http::Extensions,
+    Extension(r): Extension<HostedRequest>,
+    code: Result<Path<String>, PathRejection>,
+) -> Result<Response, ApiError> {
+    browser_only(&headers)?;
+    member_of(&r, "approve sign-ins")?;
+    hosted_of(&s).attempt(Attempt::SignIn, &headers, &extensions)?;
+    let code = crate::routes::artifacts::path(code)?;
+    let here = hosted_of(&s).client(&headers, &extensions).to_string();
+    match s.store_call(move |st| st.peek_device(&code)).await? {
+        Some(d) => {
+            let mut v = json!(d);
+            v["same_address"] = json!(d.peer_ip == here);
+            Ok(no_store(Json(v).into_response()))
+        }
+        None => Err(ApiError::not_found()),
+    }
+}
+
+/// `POST /api/hosted/device/<user code>/approve` (a member's browser) →
+/// `{token: {id, label, …}}`: approves the sign-in as the caller. The
+/// machine's next poll receives an agent token of theirs, labelled with
+/// the machine's name, which their People page lists and revokes. 404 as
+/// [`peek_device`].
+async fn approve_device(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    extensions: axum::http::Extensions,
+    Extension(r): Extension<HostedRequest>,
+    audit: crate::audit::DeferredAudit,
+    code: Result<Path<String>, PathRejection>,
+) -> Result<Response, ApiError> {
+    browser_only(&headers)?;
+    let id = member_of(&r, "approve sign-ins")?.viewer.id.clone();
+    hosted_of(&s).attempt(Attempt::SignIn, &headers, &extensions)?;
+    let code = crate::routes::artifacts::path(code)?;
+    let t = s
+        .store_call(move |st| st.approve_device(&audit.resolve(st)?, &id, &code))
+        .await?;
+    Ok(no_store(
+        Json(json!({"token": token_view(&t)})).into_response(),
+    ))
+}
+
+/// `POST /api/hosted/device/<user code>/deny` (a member's browser): the
+/// machine's next poll is refused `access_denied`. 204; 404 as
+/// [`peek_device`].
+async fn deny_device(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    extensions: axum::http::Extensions,
+    Extension(r): Extension<HostedRequest>,
+    code: Result<Path<String>, PathRejection>,
+) -> Result<Response, ApiError> {
+    browser_only(&headers)?;
+    let id = member_of(&r, "deny sign-ins")?.viewer.id.clone();
+    hosted_of(&s).attempt(Attempt::SignIn, &headers, &extensions)?;
+    let code = crate::routes::artifacts::path(code)?;
+    s.store_call(move |st| st.deny_device(&id, &code)).await?;
+    Ok(no_store(StatusCode::NO_CONTENT.into_response()))
+}
+
 /// The hosted routes, merged into the daemon's router in hosted mode.
 pub fn router(state: AppState) -> Router {
     Router::new()
@@ -2151,6 +2369,13 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/hosted/links", get(list_links))
         .route("/api/hosted/artifacts/{aid}/link", put(set_link))
+        .route("/device", get(signin_page))
+        .route("/api/hosted/agent-token", delete(revoke_own_token))
+        .route("/api/hosted/device/code", post(device_code))
+        .route("/api/hosted/device/token", post(device_token))
+        .route("/api/hosted/device/{code}", get(peek_device))
+        .route("/api/hosted/device/{code}/approve", post(approve_device))
+        .route("/api/hosted/device/{code}/deny", post(deny_device))
         .with_state(state)
 }
 

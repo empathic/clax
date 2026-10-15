@@ -111,7 +111,7 @@ async function deadHome(): Promise<string> {
 }
 
 describe("clax Pi extension", () => {
-  it("registers the twenty-seven tools with one-line prompt snippets, and the clax command", () => {
+  it("registers the twenty-eight tools with one-line prompt snippets, and the clax command", () => {
     const { pi } = load(daemon.home, "s-tools");
     expect([...pi.tools.keys()].sort()).toEqual([...TOOLS].sort());
     for (const t of pi.tools.values()) {
@@ -504,6 +504,7 @@ describe("clax Pi extension", () => {
       clax_list: [{}, { limit: 5, scope: "mine" }, { scope: "all" }],
       clax_delete: [{ url_or_id: id }],
       clax_fork: [{ url_or_id: id }, { url_or_id: id, version: 2 }],
+      clax_publish_public: [{ url_or_id: id }, { url_or_id: id, remote: "pub", mode: "fork", question_id: "01J0000000000000000000000A", timeout_s: 5 }],
       clax_open: [{ url_or_id: id }],
       clax_pin: [{ url_or_id: id }],
       clax_unpin: [{ url_or_id: id }],
@@ -543,6 +544,7 @@ describe("clax Pi extension", () => {
       clax_list: [{ scope: "theirs" }, { bogus: 1 }],
       clax_delete: [{ url_or_id: id, bogus: 1 }],
       clax_fork: [{ url_or_id: id, bogus: 1 }, { url_or_id: id, version: -1 }, {}],
+      clax_publish_public: [{ url_or_id: id, bogus: 1 }, { url_or_id: id, timeout_s: -1 }, {}],
       clax_open: [{ url_or_id: id, bogus: 1 }],
       clax_pin: [{ url_or_id: id, bogus: 1 }],
       clax_unpin: [{ url_or_id: id, bogus: 1 }],

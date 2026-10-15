@@ -10,6 +10,7 @@
     "e2e": "node e2e.mjs",
     "e2e:clone": "node e2e-clone.mjs",
     "e2e:hosted": "node e2e-hosted.mjs",
+    "e2e:publish": "node e2e-publish.mjs",
     "test:repos": "node test-repos.mjs"
   },
   "devDependencies": {

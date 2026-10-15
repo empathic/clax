@@ -165,6 +165,7 @@ async fn mcp_lists_the_twenty_six_tools(path: &str) {
             "open",
             "pin",
             "publish",
+            "publish_public",
             "read",
             "status",
             "unpin",

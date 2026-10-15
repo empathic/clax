@@ -42,6 +42,7 @@ mod api_presence;
 mod api_push;
 mod api_pushes;
 mod api_questions;
+mod api_remotes;
 mod api_room;
 mod api_sample;
 mod api_seats;

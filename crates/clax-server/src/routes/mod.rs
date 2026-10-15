@@ -21,6 +21,7 @@ pub mod mcp_http;
 pub mod people;
 pub mod perf;
 pub mod questions;
+pub mod remotes;
 pub mod room;
 pub mod sample;
 pub mod sessions;
@@ -401,6 +402,12 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             post(artifacts::publish.layer(publish_limit)),
         )
         .route("/api/artifacts/{aid}/fork", post(artifacts::fork))
+        // Remotes and pushes wait on a public Clax.
+        .route("/api/remotes", get(remotes::list).post(remotes::add))
+        .route("/api/remotes/{id}", delete(remotes::remove))
+        .route("/api/remotes/{id}/poll", post(remotes::poll))
+        .route("/api/artifacts/{aid}/remotes", get(remotes::for_artifact))
+        .route("/api/artifacts/{aid}/push", post(remotes::push))
         .route(
             "/api/artifacts/{aid}/assets",
             post(assets::upload.layer(asset_limit)),
@@ -666,6 +673,10 @@ mod l10 {
     /// The handlers of the routes the path rule does not cover.
     const GUARDS: &[(&str, Guard)] = &[
         ("token::token", NoArtifact),
+        ("remotes::list", Owner),
+        ("remotes::add", Owner),
+        ("remotes::poll", Owner),
+        ("remotes::remove", Owner),
         ("artifacts::list", Filtered),
         ("artifacts::create", Creates),
         ("sessions::list", AgentPath),
@@ -820,6 +831,7 @@ mod l10 {
             "live" => include_str!("live.rs"),
             "perf" => include_str!("perf.rs"),
             "questions" => include_str!("questions.rs"),
+            "remotes" => include_str!("remotes.rs"),
             "room" => include_str!("room.rs"),
             "live_layers" => include_str!("live_layers.rs"),
             "sample" => include_str!("sample.rs"),
@@ -958,6 +970,18 @@ mod l10 {
     /// [`DeferredAudit`](crate::audit::DeferredAudit)), and why.
     const UNAUDITED: &[(&str, &str)] = &[
         ("working::renew", "a heartbeat (§6.11)"),
+        (
+            "remotes::add",
+            "a sign-in to a public Clax, which audits the token it mints",
+        ),
+        (
+            "remotes::poll",
+            "a sign-in to a public Clax, which audits the token it issues",
+        ),
+        (
+            "remotes::remove",
+            "forgets a public Clax's token here; its revocation there is audited there",
+        ),
         (
             "drafts::delete",
             "an agent's work in progress, kept in memory and never published (hosted spec §16.4)",

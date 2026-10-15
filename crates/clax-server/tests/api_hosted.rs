@@ -3347,6 +3347,246 @@ async fn a_member_narrows_and_ends_one_token_agent_session_from_people() {
     assert!(people.to_string().contains(&b_handle), "{people}");
 }
 
+// Device sign-in (`/api/hosted/device/…`): another machine's Clax signs in
+// as a person and receives an agent token of theirs.
+
+impl Site {
+    /// A request of another machine's Clax: no cookie, no `Origin`.
+    async fn machine(&self, path: &str, body: Value) -> (u16, Value) {
+        json_of(
+            self.ts
+                .client
+                .post(self.url(path))
+                .header(HOST, format!("localhost:{}", self.ts.addr.port()))
+                .json(&body)
+                .send()
+                .await
+                .unwrap(),
+        )
+        .await
+    }
+
+    async fn start_device(&self, name: &str) -> Value {
+        let (s, v) = self
+            .machine("/api/hosted/device/code", json!({"client_name": name}))
+            .await;
+        assert_eq!(s, 200, "{v}");
+        v
+    }
+
+    async fn poll_device(&self, device_code: &str) -> (u16, Value) {
+        self.machine(
+            "/api/hosted/device/token",
+            json!({"device_code": device_code}),
+        )
+        .await
+    }
+}
+
+#[tokio::test]
+async fn a_person_approves_a_machines_device_sign_in_and_it_gets_their_agent_token_once() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let sam = site.person(&owner, "Sam").await;
+    let v = site.start_device("sams-laptop").await;
+    let (dc, uc) = (
+        v["device_code"].as_str().unwrap().to_string(),
+        v["user_code"].as_str().unwrap().to_string(),
+    );
+    assert!(dc.starts_with("cxd_"), "{v}");
+    assert_eq!(v["verification_uri"], format!("{}/device", site.origin));
+    assert_eq!(
+        v["verification_uri_complete"],
+        format!("{}/device?code={uc}", site.origin)
+    );
+    assert_eq!(
+        (v["expires_in"].as_i64(), v["interval"].as_i64()),
+        (Some(600), Some(5))
+    );
+    // The approval page is the shell's, open to anyone; its API is a
+    // member's.
+    let page = site
+        .req(&Browser::default(), reqwest::Method::GET, "/device")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(page.status(), 200);
+    let (s, v) = site
+        .get(&Browser::default(), &format!("/api/hosted/device/{uc}"))
+        .await;
+    assert_eq!((s, code(&v)), (401, "sign_in_required"), "{v}");
+    let (s, v) = site.get(&sam, &format!("/api/hosted/device/{uc}")).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["client_name"], "sams-laptop");
+    assert!(
+        v["peer_ip"].as_str().is_some_and(|ip| !ip.is_empty()),
+        "{v}"
+    );
+    let (s, v) = site.poll_device(&dc).await;
+    assert_eq!((s, code(&v)), (400, "authorization_pending"), "{v}");
+    // Approving is a browser's same-origin change.
+    let (s, v) = json_of(
+        site.ts
+            .client
+            .post(site.url(&format!("/api/hosted/device/{uc}/approve")))
+            .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+            .header(
+                COOKIE,
+                format!("clax_session={}", sam.cookie.clone().unwrap()),
+            )
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (403, "forbidden_origin"), "{v}");
+    let (s, v) = site
+        .post(&sam, &format!("/api/hosted/device/{uc}/approve"), json!({}))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let gid = v["token"]["id"].as_str().unwrap().to_string();
+    assert_eq!(v["token"]["label"], "sams-laptop");
+    // Listed on Sam's People page at once.
+    let (_, list) = site.get(&sam, "/api/hosted/agent-tokens").await;
+    assert_eq!(list["tokens"][0]["id"], gid.as_str(), "{list}");
+    let (s, v) = site.poll_device(&dc).await;
+    assert_eq!((s, code(&v)), (400, "slow_down"), "{v}");
+    site.clock.advance(5);
+    let (s, v) = site.poll_device(&dc).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["grant_id"], gid.as_str());
+    assert_eq!(v["person"]["display_name"], "Sam");
+    assert_eq!(v["origin"], site.origin.as_str());
+    let token = v["token"].as_str().unwrap().to_string();
+    assert!(token.starts_with("cxa_"));
+    // The token is Sam's agent's.
+    let ok = site
+        .ts
+        .client
+        .get(site.url("/api/artifacts"))
+        .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), 200);
+    // Once.
+    site.clock.advance(5);
+    let (s, v) = site.poll_device(&dc).await;
+    assert_eq!((s, code(&v)), (400, "expired_token"), "{v}");
+    // Revoked on People, it stops working.
+    let (s, _) = site
+        .send(
+            &sam,
+            reqwest::Method::DELETE,
+            &format!("/api/hosted/agent-tokens/{gid}"),
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, 200);
+    let gone = site
+        .ts
+        .client
+        .get(site.url("/api/artifacts"))
+        .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(gone.status(), 401);
+}
+
+#[tokio::test]
+async fn a_device_sign_in_is_refused_when_denied_expired_or_unknown() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let v = site.start_device("box").await;
+    let (dc, uc) = (
+        v["device_code"].as_str().unwrap().to_string(),
+        v["user_code"].as_str().unwrap().to_string(),
+    );
+    let (s, _) = site
+        .post(&owner, &format!("/api/hosted/device/{uc}/deny"), json!({}))
+        .await;
+    assert_eq!(s, 204);
+    let (s, v) = site
+        .post(
+            &owner,
+            &format!("/api/hosted/device/{uc}/approve"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, 404, "{v}");
+    let (s, v) = site.poll_device(&dc).await;
+    assert_eq!((s, code(&v)), (400, "access_denied"), "{v}");
+    // Expiry, on the daemon's clock.
+    let v = site.start_device("box").await;
+    let (dc, uc) = (
+        v["device_code"].as_str().unwrap().to_string(),
+        v["user_code"].as_str().unwrap().to_string(),
+    );
+    site.clock.advance(600);
+    let (s, _) = site.get(&owner, &format!("/api/hosted/device/{uc}")).await;
+    assert_eq!(s, 404);
+    let (s, v) = site.poll_device(&dc).await;
+    assert_eq!((s, code(&v)), (400, "expired_token"), "{v}");
+    let (s, v) = site.poll_device("cxd_unknown").await;
+    assert_eq!((s, code(&v)), (400, "expired_token"), "{v}");
+    let (s, _) = site.get(&owner, "/api/hosted/device/ABCD-1234").await;
+    assert_eq!(s, 404);
+    // A guest approves nothing.
+    let mut guest = Browser::default();
+    let aid = site.artifact().await;
+    let (s, _) = site
+        .send(
+            &owner,
+            reqwest::Method::PUT,
+            &format!("/api/hosted/artifacts/{aid}/link"),
+            json!({"access": "commenter"}),
+        )
+        .await;
+    assert_eq!(s, 200);
+    site.sign_in_put(&mut guest, json!({"display_name": "Gus"}))
+        .await;
+    let v = site.start_device("box").await;
+    let uc = v["user_code"].as_str().unwrap();
+    let (s, v) = site
+        .post(
+            &guest,
+            &format!("/api/hosted/device/{uc}/approve"),
+            json!({}),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (403, "forbidden"), "{v}");
+}
+
+#[tokio::test]
+async fn starting_device_sign_ins_is_rate_limited_per_client() {
+    let site = Site::new().await;
+    for _ in 0..5 {
+        site.start_device("box").await;
+    }
+    let (s, v) = site
+        .machine("/api/hosted/device/code", json!({"client_name": "box"}))
+        .await;
+    assert_eq!((s, code(&v)), (429, "rate_limited"), "{v}");
+    site.clock.advance(60);
+    site.start_device("box").await;
+}
+
+#[tokio::test]
+async fn a_local_daemon_has_no_device_sign_in() {
+    let ts = TestServer::spawn().await;
+    let r = ts
+        .client
+        .post(format!("{}/api/hosted/device/code", ts.base))
+        .json(&json!({"client_name": "box"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+}
+
 #[tokio::test]
 async fn a_token_client_initializing_again_keeps_the_narrowing_of_its_name() {
     let site = Site::new().await;

@@ -43,6 +43,16 @@ pub enum Cmd {
     Status(commands::status::Args),
     /// Publish a page (and files) as a new artifact or a new version.
     Publish(Box<commands::publish::Args>),
+    /// Publish a local artifact to a public Clax (`clax remote add`).
+    ///
+    /// Sends every version the public copy has not had, in order, with its
+    /// label, note and agent; the public link stays the same on later
+    /// pushes. Refused when someone published on the public copy since:
+    /// --fork or --new then.
+    Push(commands::push::Args),
+    /// The public Clax instances this Clax publishes to: add, list, remove.
+    #[command(subcommand)]
+    Remote(commands::remotes::Cmd),
     /// List artifacts, or the files of one.
     List(commands::list::Args),
     /// Read a published file of an artifact.
@@ -252,6 +262,8 @@ fn remote_ok(cmd: &Cmd) -> bool {
         | Cmd::Haiku
         | Cmd::Version(_) => true,
         Cmd::Publish(_)
+        | Cmd::Push(_)
+        | Cmd::Remote(_)
         | Cmd::Asset(_)
         | Cmd::Inbox(_)
         | Cmd::Delete(_)
@@ -344,6 +356,8 @@ fn main() {
         Cmd::Stop => commands::stop::run(&cli, &home),
         Cmd::Status(a) => commands::status::run(&cli, &home, a),
         Cmd::Publish(a) => commands::publish::run(&cli, &home, a),
+        Cmd::Push(a) => commands::push::run(&cli, &home, a),
+        Cmd::Remote(c) => commands::remotes::run(&cli, &home, c),
         Cmd::List(a) => commands::list::run(&cli, &home, a),
         Cmd::Read(a) => commands::read::run(&cli, &home, a),
         Cmd::Asset(c) => commands::asset::run(&cli, &home, c),

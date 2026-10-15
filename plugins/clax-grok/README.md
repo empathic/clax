@@ -44,10 +44,10 @@ never fails a turn.
 
 ## What it adds
 
-- The `clax_grok` MCP server (`clax mcp --agent grok`): twenty-seven tools,
+- The `clax_grok` MCP server (`clax mcp --agent grok`): twenty-eight tools,
   `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `fork`,
   `asset_upload`, `status`, `comments_read`, `comments_reply`,
-  `comments_resolve`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, and the data tools
+  `comments_resolve`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, `publish_public`, and the data tools
   `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`,
   `db_str_replace`, `db_batch`, which Grok names `clax_grok__<tool>` and reaches through `use_tool`.
   The first tool call starts the daemon when none is running.

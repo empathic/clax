@@ -112,10 +112,10 @@ binary differ.
 
 ## What it adds
 
-- The `clax` MCP server (`clax mcp --agent claude`): twenty-seven tools,
+- The `clax` MCP server (`clax mcp --agent claude`): twenty-eight tools,
   `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `fork`,
   `asset_upload`, `status`, `comments_read`, `comments_reply`,
-  `comments_resolve`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, and the data tools
+  `comments_resolve`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, `publish_public`, and the data tools
   `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`,
   `db_str_replace`, `db_batch`.
 - Hooks (`hooks/hooks.json`), run as `clax hook --agent claude <event>`

@@ -1,5 +1,5 @@
 // Clax for Pi: registers the Pi session with the local Clax daemon and
-// adds the twenty-seven Clax tools (`clax_publish`, `clax_read`, ...) and
+// adds the twenty-eight Clax tools (`clax_publish`, `clax_read`, ...) and
 // the `/clax` command. Pi has no MCP support in its extension API, so the
 // tools call the daemon's REST API directly and return the same JSON as the MCP
 // tools. It appends feedback to its tool results and long-polls for pushed
@@ -76,6 +76,14 @@ const ListArgs = Type.Object({
 }, strict);
 
 const TargetArgs = Type.Object({ url_or_id: urlOrId }, strict);
+
+const PublishPublicArgs = Type.Object({
+  url_or_id: str("Artifact URL or ID (an artifact of this Clax)."),
+  remote: opt(str("The public Clax (its name or origin, as `clax remote list` shows them); defaults to the only one this Clax is signed in to.")),
+  mode: opt(str("`update` (default): publish it, or push its new versions to its public copy. `fork`: push onto a fork of the public copy. `new`: publish it again as a new public artifact.")),
+  question_id: opt(str("The approval question an earlier call returned, to keep waiting on it.")),
+  timeout_s: opt(Type.Integer({ minimum: 0, description: "Seconds to wait for the person's answer (default 600, 50 under Codex)." })),
+}, strict);
 
 const ForkArgs = Type.Object({
   url_or_id: str("Artifact URL or ID. A URL naming a version (`/a/<id>/v/<n>`) forks that version unless `version` is given."),
@@ -985,6 +993,42 @@ class Tools {
     };
   }
 
+  async publishPublic(ctx: ExtensionContext, a: Static<typeof PublishPublicArgs>): Promise<Json> {
+    if (a.mode !== undefined && !["update", "new", "fork"].includes(a.mode)) throw invalid("mode is update, new or fork");
+    if (a.question_id !== undefined && !ULID_RE.test(a.question_id)) throw invalid(`'${a.question_id}' is not a question ID`);
+    const c = this.clientFor(ctx);
+    const { id } = await this.resolveRef(c, a.url_or_id);
+    const wait = Math.min(Math.max(a.timeout_s ?? DEFAULT_ASK_WAIT_S, MIN_WAIT_S), MAX_ASK_WAIT_S);
+    const started = Date.now();
+    const body: Record<string, unknown> = { remote: a.remote ?? null, mode: a.mode ?? null, question_id: a.question_id ?? null };
+    for (;;) {
+      const res = await this.call(() => c.push(id, body));
+      if (res.status !== "approval_pending") {
+        return {
+          status: "published",
+          url: res.url ?? null,
+          remote: res.remote?.origin ?? null,
+          pushed: res.pushed ?? [],
+          follows_new_versions: res.link?.auto ?? false,
+          assets_not_pushed: res.assets_not_pushed ?? 0,
+        };
+      }
+      const qid = String(res.question_id ?? "");
+      const left = Math.max(0, wait - Math.floor((Date.now() - started) / 1000));
+      const pending = {
+        status: "approval_pending",
+        question_id: qid,
+        url: res.inbox_url ?? null,
+        call_again: true,
+        note: "The person has not answered yet: call publish_public again with this question_id to keep waiting.",
+      };
+      if (left === 0) return pending;
+      const q = await this.call(() => c.askWait(qid, left));
+      if (q.question?.status === "open") return pending;
+      body.question_id = qid;
+    }
+  }
+
   async open(ctx: ExtensionContext, a: Static<typeof TargetArgs>): Promise<Json> {
     const c = this.clientFor(ctx);
     const { id } = await this.resolveRef(c, a.url_or_id);
@@ -1620,6 +1664,10 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       "Fork an artifact into a new artifact of your person's: its version 1 is the given version of the artifact (by default the version a URL names, else the current one), with its files; comment threads are not copied. Returns the new artifact's ID, its URL for the person, and `forked_from` (the artifact and version it came from). Needs the right to read the artifact and to create artifacts. Publish to the new artifact to change it.",
       "Fork a Clax artifact's version into a new artifact of your person's",
       ForkArgs, (ctx, a) => tools.fork(ctx, a));
+    define("publish_public", "Clax publish public",
+      "Publish an artifact on a public Clax this Clax is signed in to (`clax remote add`), or push its new versions to its public copy there. Making it public is the person's decision: the call asks them in Clax and waits for their answer (up to `timeout_s`; when it returns `call_again`, call again with its `question_id`), and publishes only if they approve. New versions of an artifact they let follow are pushed without asking. Returns the public URL. Refused `remote_moved` when someone published on the public copy since: pass `mode` `fork` or `new` then.",
+      "Publish a Clax artifact on a public Clax, once the person approves",
+      PublishPublicArgs, (ctx, a) => tools.publishPublic(ctx, a));
     define("open", "Clax open", "Open an artifact in the person's browser on this machine.",
       "Open a Clax artifact in the person's browser",
       TargetArgs, (ctx, a) => tools.open(ctx, a));

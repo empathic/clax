@@ -44,7 +44,7 @@ web-time = "1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 axum = { workspace = true, features = ["http1", "tokio", "tower-log", "ws"] }
-nix = { workspace = true, features = ["signal", "resource"] }
+nix = { workspace = true, features = ["signal", "resource", "hostname"] }
 reqwest = { workspace = true, features = ["rustls-tls"] }
 rmcp = { workspace = true, features = ["transport-streamable-http-server"] }
 socket2 = "0.6"
@@ -54,7 +54,7 @@ tracing-subscriber.workspace = true
 # The MCP adapter's tool set holds rmcp's `local` tool router, which is
 # not `Send`; a Worker has one thread.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-send_wrapper = "0.6"
+send_wrapper = { version = "0.6", features = ["futures"] }
 
 [features]
 test-routes = []

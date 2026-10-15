@@ -49,10 +49,13 @@ pub enum Kind {
     /// An agent's session ended with something to clean up
     /// (`detail_json`).
     Ended,
+    /// An automatic push of a new version to a public Clax was refused
+    /// (`detail_json`: the remote and the refusal).
+    Push,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 8] = [
+    pub const ALL: [Kind; 9] = [
         Kind::Reply,
         Kind::Version,
         Kind::Published,
@@ -61,6 +64,7 @@ impl Kind {
         Kind::Approval,
         Kind::Connection,
         Kind::Ended,
+        Kind::Push,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -73,6 +77,7 @@ impl Kind {
             Kind::Approval => "approval",
             Kind::Connection => "connection",
             Kind::Ended => "ended",
+            Kind::Push => "push",
         }
     }
 
@@ -1584,6 +1589,34 @@ impl Store {
             .map_err(|e| search_error(e, b.searched))
     }
 
+    /// The automatic push of local version `n` of `aid` to remote `rid` was
+    /// refused: a `push` item for the owner, keyed by the artifact, the
+    /// remote and the version, its detail `detail` (`{remote, origin, code,
+    /// message, url}`) and indexed by `text`. `None` when that version has
+    /// one already.
+    pub fn note_push_refused(
+        &self,
+        aid: &str,
+        rid: &str,
+        n: u32,
+        detail: Value,
+        text: &str,
+    ) -> Result<Option<i64>> {
+        self.with_tx(|tx| {
+            insert_at(
+                tx,
+                New {
+                    artifact_id: Some(aid),
+                    version_n: Some(n),
+                    detail: Some(detail),
+                    text: text.to_string(),
+                    ..New::of(Kind::Push, format!("push:{aid}:{rid}:{n}"))
+                },
+                &self.now(),
+            )
+        })
+    }
+
     /// A working record that ended as finished work (the agent said it was
     /// done, or its turn ended): a `finished` item for its session's person
     /// (the owner for the owner's agents) keeping its message and threads,
@@ -1965,7 +1998,11 @@ impl Store {
                             s.thread = thread_ref(c, tid)?;
                         }
                     }
-                    Kind::Published | Kind::Question | Kind::Connection | Kind::Ended => {}
+                    Kind::Published
+                    | Kind::Question
+                    | Kind::Connection
+                    | Kind::Ended
+                    | Kind::Push => {}
                 }
                 out.push(s);
             }

@@ -1,0 +1,60 @@
+// The local daemon's remotes and pushes the Publish button uses
+// (docs/contract.md "Publishing to a public Clax"). Loaded with the button,
+// after the first paint. A hosted daemon answers none of them (404).
+import { ApiError, getToken } from "../api";
+
+/** A public Clax this Clax is signed in to (never its token). */
+export type Remote = { id: string; origin: string; name: string; status: string; person_name: string | null };
+
+/** An artifact's public twin on one remote. */
+export type Link = {
+  remote_id: string; remote_name: string | null; origin: string | null; url: string;
+  pushed_n: number; remote_n: number; auto: boolean; behind: number;
+};
+
+/** `GET /api/artifacts/<id>/remotes`. */
+export type Remotes = { links: Link[]; remotes: Remote[] };
+
+/** `POST /api/artifacts/<id>/push`'s answer. */
+export type Pushed = { status: "pushed"; url: string; link: Link; pushed: { n: number; remote_n: number }[]; assets_not_pushed: number };
+
+export type Mode = "update" | "new" | "fork";
+
+async function headers(json: boolean): Promise<Record<string, string>> {
+  const h: Record<string, string> = json ? { "content-type": "application/json" } : {};
+  const t = await getToken();
+  if (t) h.authorization = `Bearer ${t}`;
+  return h;
+}
+
+async function answer<T>(res: Response): Promise<T> {
+  if (!res.ok) {
+    let msg = res.statusText;
+    let code: string | null = null;
+    try {
+      const e = (await res.json()).error;
+      msg = e?.message ?? msg;
+      code = e?.code ?? null;
+    } catch { /* not JSON */ }
+    throw new ApiError(res.status, msg, code);
+  }
+  return res.json() as Promise<T>;
+}
+
+/** Artifact `id`'s public twins and the remotes it could go to. */
+export async function remotesOf(id: string): Promise<Remotes> {
+  return answer<Remotes>(await fetch(`/api/artifacts/${id}/remotes`, { headers: await headers(false), cache: "no-store" }));
+}
+
+/** Pushes artifact `id` to `remote` in `mode`; `auto` lets agents push its new versions without asking. */
+export async function push(id: string, remote: string, mode: Mode, auto?: boolean): Promise<Pushed> {
+  return answer<Pushed>(await fetch(`/api/artifacts/${id}/push`, {
+    method: "POST", headers: await headers(true), body: JSON.stringify({ remote, mode, auto }),
+  }));
+}
+
+/** A remote's short label: its host. */
+export function hostOf(origin: string | null): string {
+  if (!origin) return "the public Clax";
+  try { return new URL(origin).host; } catch { return origin; }
+}

@@ -170,8 +170,20 @@ pub struct AgentToken {
     pub ended_at: Option<String>,
 }
 
+/// An agent token's label as typed: trimmed, `Agent` when empty.
+///
+/// # Errors
+/// `invalid_args` for a label over [`MAX_LABEL_CHARS`] characters or with
+/// control characters.
+pub fn agent_label(label: &str) -> Result<String> {
+    match label.trim() {
+        "" => Ok("Agent".to_string()),
+        l => checked_client_name(l),
+    }
+}
+
 impl AgentToken {
-    fn of(g: &Grant) -> AgentToken {
+    pub(super) fn of(g: &Grant) -> AgentToken {
         AgentToken {
             id: g.id.clone(),
             label: g.client_name.clone(),
@@ -717,53 +729,82 @@ impl Store {
         label: &str,
         peer_ip: &str,
     ) -> Result<(AgentToken, Secret)> {
-        let label = match label.trim() {
-            "" => "Agent".to_string(),
-            l => checked_client_name(l)?,
-        };
-        let token = secret::token(AGENT_TOKEN_PREFIX);
+        let label = agent_label(label)?;
+        self.with_tx(|tx| {
+            let grant = self.bearer_grant_in(tx, ctx, viewer_id, &label, peer_ip)?;
+            let token = self.issue_bearer_token_in(tx, ctx, &grant.id)?;
+            Ok((AgentToken::of(&grant), token))
+        })
+    }
+
+    /// Makes a bearer grant for member `viewer_id` in `tx`, labelled
+    /// `label` (already checked, [`agent_label`]), recording `grant.approve`
+    /// under `ctx`: approved at once, with no token yet
+    /// ([`Store::issue_bearer_token_in`] issues one).
+    ///
+    /// # Errors
+    /// `forbidden` for anyone not a member; `NotFound` for no such viewer.
+    pub(super) fn bearer_grant_in(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+        viewer_id: &str,
+        label: &str,
+        peer_ip: &str,
+    ) -> Result<Grant> {
+        let who = session_viewer(tx, viewer_id)?.ok_or_else(not_found)?;
+        if !who.member() {
+            return Err(CoreError::invalid(
+                "forbidden",
+                "only a member of this Clax mints agent tokens",
+            ));
+        }
         let key =
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(secret::random_bytes::<32>());
-        self.with_tx(|tx| {
-            let who = session_viewer(tx, viewer_id)?.ok_or_else(not_found)?;
-            if !who.member() {
-                return Err(CoreError::invalid(
-                    "forbidden",
-                    "only a member of this Clax mints agent tokens",
-                ));
-            }
-            let now = self.now();
-            let gid = new_grant_id();
-            tx.execute(
-                "INSERT INTO grants (id, viewer_id, status, via, client_key, client_name, peer_ip,
-                    continue_sha256, manage_sha256, created_at, decided_at, bearer)
-                 VALUES (?1, ?2, 'approved', 'invite', ?3, ?4, ?5, ?6, ?7, ?8, ?8, 1)",
-                params![
-                    gid,
-                    viewer_id,
-                    key,
-                    label,
-                    peer_ip,
-                    secret::token(secret::CONTINUE_PREFIX).sha256_hex(),
-                    secret::token(secret::MANAGE_PREFIX).sha256_hex(),
-                    now
-                ],
-            )?;
-            tx.execute(
-                "INSERT INTO grant_tokens (sha256, grant_id, created_at) VALUES (?1, ?2, ?3)",
-                params![token.sha256_hex(), gid, now],
-            )?;
-            let grant = grant_in(tx, &gid)?.expect("the grant was written");
-            let access = grant_access(tx, viewer_id, None)?;
-            let rec = grant_record(AuditKind::GrantApprove, &now, &gid)
-                .with("person", grant.person.clone())
-                .with("access", access.to_json())
-                .with("code_checked", false);
-            self.record_audit(tx, ctx, rec)?;
-            let rec = grant_record(AuditKind::GrantToken, &now, &gid).with("op", "issue");
-            self.record_audit(tx, ctx, rec)?;
-            Ok((AgentToken::of(&grant), token.clone()))
-        })
+        let now = self.now();
+        let gid = new_grant_id();
+        tx.execute(
+            "INSERT INTO grants (id, viewer_id, status, via, client_key, client_name, peer_ip,
+                continue_sha256, manage_sha256, created_at, decided_at, bearer)
+             VALUES (?1, ?2, 'approved', 'invite', ?3, ?4, ?5, ?6, ?7, ?8, ?8, 1)",
+            params![
+                gid,
+                viewer_id,
+                key,
+                label,
+                peer_ip,
+                secret::token(secret::CONTINUE_PREFIX).sha256_hex(),
+                secret::token(secret::MANAGE_PREFIX).sha256_hex(),
+                now
+            ],
+        )?;
+        let grant = grant_in(tx, &gid)?.expect("the grant was written");
+        let access = grant_access(tx, viewer_id, None)?;
+        let rec = grant_record(AuditKind::GrantApprove, &now, &gid)
+            .with("person", grant.person.clone())
+            .with("access", access.to_json())
+            .with("code_checked", false);
+        self.record_audit(tx, ctx, rec)?;
+        Ok(grant)
+    }
+
+    /// Issues bearer grant `gid`'s agent token in `tx`, recording
+    /// `grant.token` under `ctx`.
+    pub(super) fn issue_bearer_token_in(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+        gid: &str,
+    ) -> Result<Secret> {
+        let token = secret::token(AGENT_TOKEN_PREFIX);
+        let now = self.now();
+        tx.execute(
+            "INSERT INTO grant_tokens (sha256, grant_id, created_at) VALUES (?1, ?2, ?3)",
+            params![token.sha256_hex(), gid, now],
+        )?;
+        let rec = grant_record(AuditKind::GrantToken, &now, gid).with("op", "issue");
+        self.record_audit(tx, ctx, rec)?;
+        Ok(token)
     }
 
     /// Member `viewer_id`'s agent tokens, newest first, live and ended.

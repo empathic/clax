@@ -969,6 +969,19 @@ impl DaemonClient {
         .await
     }
 
+    /// `POST /api/artifacts/<id>/push`: publishes it to a public Clax
+    /// (`{remote?, mode?, question_id?}`); `{status: "pushed", url, …}`,
+    /// or `{status: "approval_pending", question_id, inbox_url}` while the
+    /// owner has not answered.
+    pub async fn push(&self, id: &str, body: &Value) -> Result<Value> {
+        self.json(|c| {
+            c.request(reqwest::Method::POST, &format!("/api/artifacts/{id}/push"))
+                .timeout(PUBLISH_TIMEOUT)
+                .json(body)
+        })
+        .await
+    }
+
     /// `DELETE /api/artifacts/<id>`.
     pub async fn delete(&self, id: &str) -> Result<()> {
         self.send(|c| c.request(reqwest::Method::DELETE, &format!("/api/artifacts/{id}")))
