@@ -38,12 +38,13 @@ On an account with Workers Paid (and the Artifacts beta, for
 safe to run again: it checks the tools (Node 26, rustup's wasm32 target, an
 LLVM that targets wasm32), installs the npm packages when their lockfiles
 changed, starts `wrangler login` for you to finish in the browser when you
-aren't signed in, then runs `deploy.mjs`, which creates only what is missing:
+aren't signed in, then runs `deploy.mjs`, which creates only what is missing.
+It is a dry run unless you pass `--i-know-what-i-am-doing`:
 
 ```sh
-scripts/cloudflare-setup.sh --zone example.com --dry-run # changes nothing on the account
-scripts/cloudflare-setup.sh --zone example.com --smoke   # sign in if needed, deploy, smoke it, redeploy without diagnostics
-scripts/cloudflare-setup.sh --login                      # only sign in
+scripts/cloudflare-setup.sh --zone example.com                                   # dry run: changes nothing on the account
+scripts/cloudflare-setup.sh --zone example.com --smoke --i-know-what-i-am-doing  # sign in if needed, deploy, smoke it, redeploy without diagnostics
+scripts/cloudflare-setup.sh --login                                              # only sign in
 ```
 
 Or step by step, in this directory:
