@@ -153,6 +153,7 @@ impl Subs for Receivers {
 
 /// `GET /api/artifacts/{aid}/room`.
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::too_many_arguments)]
 pub async fn room(
     State(s): State<AppState>,
     d: clax_http::agent::DeniedToGrants,
@@ -160,6 +161,8 @@ pub async fn room(
     Query(q): Query<RoomQuery>,
     _o: SameOrigin,
     subscriber: Subscriber,
+    headers: axum::http::HeaderMap,
+    extensions: axum::http::Extensions,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
     // The room streams presence and documents to people (spec §7.5).
@@ -171,6 +174,13 @@ pub async fn room(
             "peer is 16 characters of [0-9a-z]",
         ));
     }
+    let slot = s
+        .sockets
+        .admit(&clax_http::socket_caps::SocketClient::of_request(
+            &s,
+            &headers,
+            &extensions,
+        ))?;
     let aid = id.as_str().to_string();
     // The seat its emits and presence are checked against (a spectator's
     // are refused, spec 2026-10-11-clax-dev-hosted-design §7, §16.1).
@@ -195,7 +205,7 @@ pub async fn room(
     Ok(ws
         .max_message_size(MAX_ROOM_MESSAGE_BYTES)
         .max_frame_size(MAX_ROOM_MESSAGE_BYTES)
-        .on_upgrade(move |socket| session(s, aid, who, level, topics, seat, socket)))
+        .on_upgrade(move |socket| session(s, aid, who, level, topics, seat, slot, socket)))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -393,6 +403,7 @@ async fn session(
     level: Level,
     topics: Option<Topics>,
     seat: Option<clax_core::seats::Claim>,
+    _slot: clax_http::socket_caps::SocketSlot,
     mut socket: WebSocket,
 ) {
     let Some(topics) = topics else {
@@ -519,6 +530,8 @@ pub struct RoomSocket {
     receivers: Receivers,
     claim: clax_realtime::room::Claim,
     events: tokio::sync::broadcast::Receiver<clax_core::events::Stamped>,
+    /// Its place in its client's cap ([`clax_http::socket_caps`]).
+    _slot: Option<clax_http::socket_caps::SocketSlot>,
 }
 
 /// What a room socket is opened with: the artifact, the peer label, the
@@ -582,9 +595,17 @@ impl RoomSocket {
                 receivers,
                 claim,
                 events: s.events.subscribe(),
+                _slot: None,
             },
             first,
         ))
+    }
+
+    /// This socket, holding `slot` (its client's place under the cap) until
+    /// it drops.
+    pub fn holding(mut self, slot: clax_http::socket_caps::SocketSlot) -> RoomSocket {
+        self._slot = Some(slot);
+        self
     }
 
     /// The artifact the socket is on.
@@ -759,8 +780,11 @@ pub async fn room_socket(
         ));
     }
     let aid = id.as_str().to_string();
+    let client = clax_http::socket_caps::SocketClient::of_request(&s, &headers, &extensions);
+    let slot = s.sockets.admit(&client)?;
     let caller = d.caller(&s).await.ok();
-    let creds = subscriber.credentials(&s.token, &extensions);
+    let mut creds = subscriber.credentials(&s.token, &extensions);
+    creds.address = client.address();
     let (a, peer) = (aid.clone(), q.peer.clone());
     let admitted = s
         .store_call(move |st| {
@@ -768,7 +792,7 @@ pub async fn room_socket(
             admission(st, &a, peer, caller.as_ref(), resolved)
         })
         .await?;
-    let opened = RoomSocket::open(&s, admitted, &[]);
+    let opened = RoomSocket::open(&s, admitted, &[]).map(|(r, f)| (r.holding(slot), f));
     let mut res = axum::http::StatusCode::OK.into_response();
     res.extensions_mut()
         .insert(RoomOpened(std::sync::Arc::new(std::sync::Mutex::new(
@@ -791,6 +815,7 @@ pub async fn reopen(
     rooms: &[String],
     creds: &clax_http::identity::SocketCredentials,
 ) -> Option<Result<(RoomSocket, Vec<String>), RoomStep>> {
+    let client = clax_http::socket_caps::SocketClient::of_credentials(creds);
     let (creds, a, token, peer) = (
         creds.clone(),
         aid.to_string(),
@@ -819,7 +844,8 @@ pub async fn reopen(
         })
         .await
         .ok()?;
-    Some(RoomSocket::open(s, admitted, rooms))
+    let slot = s.sockets.hold(&client);
+    Some(RoomSocket::open(s, admitted, rooms).map(|(r, f)| (r.holding(slot), f)))
 }
 
 #[cfg(test)]

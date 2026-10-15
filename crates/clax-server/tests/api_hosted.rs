@@ -3346,3 +3346,244 @@ async fn a_member_narrows_and_ends_one_token_agent_session_from_people() {
     let (_, people) = site.get(&owner, "/api/people").await;
     assert!(people.to_string().contains(&b_handle), "{people}");
 }
+
+type Ws =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// `aid`'s live socket from `b`, past its welcome frame.
+async fn live_ws(site: &Site, b: &Browser, aid: &str) -> Ws {
+    use futures::StreamExt;
+    use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
+    let url = format!(
+        "{}/api/artifacts/{aid}/live",
+        site.ts.base.replacen("http://", "ws://", 1)
+    );
+    let mut req = url.into_client_request().unwrap();
+    let h = req.headers_mut();
+    h.insert(
+        "host",
+        format!("localhost:{}", site.ts.addr.port())
+            .parse()
+            .unwrap(),
+    );
+    h.insert("origin", site.origin.parse().unwrap());
+    if let Some(c) = &b.cookie {
+        h.insert("cookie", format!("clax_session={c}").parse().unwrap());
+    }
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    loop {
+        match ws.next().await.unwrap().unwrap() {
+            Message::Text(t) if t.as_str().contains("\"welcome\"") => return ws,
+            _ => {}
+        }
+    }
+}
+
+/// The next live batch on `ws` that names `person`'s sender.
+async fn batch_naming(ws: &mut Ws, person: &str) -> Value {
+    use futures::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+    loop {
+        let m = tokio::time::timeout(std::time::Duration::from_secs(10), ws.next())
+            .await
+            .expect("a batch within 10 s")
+            .unwrap()
+            .unwrap();
+        if let Message::Text(t) = m {
+            let v: Value = serde_json::from_str(t.as_str()).unwrap();
+            let names = v["senders"]
+                .as_array()
+                .is_some_and(|s| s.iter().any(|x| x["person_id"] == json!(person)));
+            if names {
+                return v;
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_person_who_may_not_read_comments_gets_no_comment_text() {
+    use futures::SinkExt;
+    use tokio_tungstenite::tungstenite::Message;
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let plan = site.titled("Plan").await;
+    // Sam reads Plan and not its comments; Mia reads both.
+    let (sam, _) = site
+        .person_with(
+            &owner,
+            "Sam",
+            json!([{"type": "clax-artifacts", "actions": ["read"], "locations": [plan]}]),
+        )
+        .await;
+    let (mia, mia_id) = site
+        .person_with(
+            &owner,
+            "Mia",
+            json!([
+                {"type": "clax-artifacts", "actions": ["read"], "locations": [plan]},
+                {"type": "clax-comments", "actions": ["read", "write", "reply"], "locations": [plan]},
+            ]),
+        )
+        .await;
+    let (s, t) = site.thread(&owner, &plan, "secret words").await;
+    assert_eq!(s, 201, "{t}");
+    let (s, v) = site
+        .get(&sam, &format!("/api/artifacts/{plan}/threads"))
+        .await;
+    assert_eq!((s, code(&v)), (403, "not_permitted"), "{v}");
+    // The snapshot: Mia's carries the thread, Sam's (the same build) none.
+    // (The page's first-load data: tests/hosted_pages.rs.)
+    let snapshot = format!("/api/artifacts/{plan}/snapshot");
+    let (s, snap) = site.get(&mia, &snapshot).await;
+    assert_eq!(s, 200, "{snap}");
+    assert!(snap.to_string().contains("secret words"), "{snap}");
+    let (s, snap) = site.get(&sam, &snapshot).await;
+    assert_eq!(s, 200, "{snap}");
+    assert_eq!(snap["threads"], json!([]), "{snap}");
+    assert!(!snap.to_string().contains("secret words"), "{snap}");
+    assert_eq!(snap["versions"][0]["n"], json!(1), "the rest is there");
+    // The stream's artifact topic: versions reach Sam, thread events not.
+    let open = |b: &Browser| {
+        let r = site.req(b, reqwest::Method::GET, "/api/stream");
+        async move {
+            let res = r.send().await.unwrap();
+            let mut events = clax_testkit::EventReader::from_response(res);
+            let (_, ready) = events.next().await;
+            (events, ready["stream"].as_str().unwrap().to_string())
+        }
+    };
+    let (mut sam_events, sam_stream) = open(&sam).await;
+    let (mut mia_events, mia_stream) = open(&mia).await;
+    for (b, sid) in [(&sam, &sam_stream), (&mia, &mia_stream)] {
+        let (s, v) = site
+            .post(
+                b,
+                &format!("/api/stream/{sid}"),
+                json!({"subscribe": [format!("artifact:{plan}")]}),
+            )
+            .await;
+        assert_eq!(s, 200, "{v}");
+        assert_eq!(v["topics"], json!([format!("artifact:{plan}")]), "{v}");
+    }
+    let (s, t) = site.thread(&owner, &plan, "more secret words").await;
+    assert_eq!(s, 201, "{t}");
+    let r = site
+        .ts
+        .authed(
+            site.ts
+                .client
+                .post(format!("{}/api/artifacts/{plan}/versions", site.ts.base)),
+        )
+        .json(&json!({"if_version": 1, "files": {"index.html": {"content": "<h1>two</h1>", "encoding": "utf8"}}}))
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    let e = mia_events.next_named("thread").await;
+    assert!(e.to_string().contains("more secret words"), "{e}");
+    let (name, e) = sam_events.next().await;
+    assert_eq!(name, "version", "Sam's first event is the version: {e}");
+    // The live socket: Mia's draft reaches the owner, not Sam, who gets her
+    // pointer alone.
+    let mut sam_ws = live_ws(&site, &sam, &plan).await;
+    let mut owner_ws = live_ws(&site, &owner, &plan).await;
+    let mut mia_ws = live_ws(&site, &mia, &plan).await;
+    for m in [
+        json!({"t": "draft", "thread_id": null, "text": "draft words"}),
+        json!({"t": "cursor", "version": 1, "file": "index.html",
+               "anchor": {"path": [0], "offset": -1, "x": 0.5, "y": 0.5}, "selection": null}),
+    ] {
+        mia_ws
+            .send(Message::Text(m.to_string().into()))
+            .await
+            .unwrap();
+    }
+    let b = batch_naming(&mut sam_ws, &mia_id).await;
+    let s = b["senders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["person_id"] == json!(mia_id))
+        .unwrap()
+        .clone();
+    assert!(s.get("draft").is_none() && s.get("typing").is_none(), "{b}");
+    loop {
+        let b = batch_naming(&mut owner_ws, &mia_id).await;
+        if b.to_string().contains("draft words") {
+            break;
+        }
+    }
+    // Sam's own draft is relayed to no one: the owner sees his pointer only.
+    let (_, sam_me) = site.get(&sam, "/api/viewers/me").await;
+    let sam_id = sam_me["viewer"]["public_id"].as_str().unwrap().to_string();
+    for m in [
+        json!({"t": "draft", "thread_id": null, "text": "sams words"}),
+        json!({"t": "cursor", "version": 1, "file": "index.html",
+               "anchor": {"path": [0], "offset": -1, "x": 0.2, "y": 0.2}, "selection": null}),
+    ] {
+        sam_ws
+            .send(Message::Text(m.to_string().into()))
+            .await
+            .unwrap();
+    }
+    let b = batch_naming(&mut owner_ws, &sam_id).await;
+    assert!(!b.to_string().contains("sams words"), "{b}");
+}
+
+#[tokio::test]
+async fn a_browser_holds_at_most_its_cap_of_streams_and_sockets() {
+    use clax_http::socket_caps::MAX_PER_SESSION;
+    use futures::SinkExt;
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let plan = site.titled("Plan").await;
+    let (sam, _) = site
+        .person_with(
+            &owner,
+            "Sam",
+            json!([{"type": "clax-artifacts", "actions": ["read"], "locations": [plan]}]),
+        )
+        .await;
+    let stream = |b: &Browser| site.req(b, reqwest::Method::GET, "/api/stream").send();
+    // Its streams and its live socket count together.
+    let mut held = Vec::new();
+    for _ in 0..MAX_PER_SESSION - 1 {
+        let r = stream(&sam).await.unwrap();
+        assert_eq!(r.status(), 200);
+        held.push(r);
+    }
+    let mut ws = live_ws(&site, &sam, &plan).await;
+    let (s, v) = json_of(stream(&sam).await.unwrap()).await;
+    assert_eq!((s, code(&v)), (429, "too_many_streams"), "{v}");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("this browser holds 32"),
+        "{v}"
+    );
+    assert_eq!(live_socket(&site, &sam, &plan).await, Err(429));
+    // Another browser is not held to Sam's.
+    let r = stream(&owner).await.unwrap();
+    assert_eq!(r.status(), 200);
+    // A closed connection gives its place back.
+    ws.send(tokio_tungstenite::tungstenite::Message::Close(None))
+        .await
+        .unwrap();
+    drop(ws);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let r = loop {
+        let r = stream(&sam).await.unwrap();
+        if r.status() == 200 {
+            break r;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the closed socket's place within 10 s"
+        );
+        tokio::task::yield_now().await;
+    };
+    held.push(r);
+    assert_eq!(held.len(), MAX_PER_SESSION);
+}

@@ -57,6 +57,7 @@ pub const CLOSE_DELETED: u16 = 4410;
 
 /// `GET /api/artifacts/{aid}/live`.
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::too_many_arguments)]
 pub async fn live(
     State(s): State<AppState>,
     d: clax_http::agent::DeniedToGrants,
@@ -65,27 +66,45 @@ pub async fn live(
     who: Identity,
     caller: Caller,
     sees: crate::live::SeesLive,
+    headers: axum::http::HeaderMap,
+    extensions: axum::http::Extensions,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
     // People-to-people (spec §16.3): never an agent.
     d.refuse_agents()?;
     let id = parse_id(&aid)?;
     sees.check(&s.live_ids, id.as_str())?;
+    let slot = s
+        .sockets
+        .admit(&clax_http::socket_caps::SocketClient::of_request(
+            &s,
+            &headers,
+            &extensions,
+        ))?;
     let aid = id.as_str().to_string();
     let a = aid.clone();
-    let (viewer, claim) = s
+    let member = member_of(&extensions);
+    let (viewer, claim, text) = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
             let viewer = who
                 .browser_viewer(st)?
                 .ok_or_else(|| CoreError::invalid("no_viewer", "open /api/viewers/me first"))?;
-            Ok((viewer, clax_http::seats::claim_for(st, &caller, &a)?))
+            let text = clax_http::hosted::reads_comments(st, member.as_ref(), &a)?;
+            Ok((viewer, clax_http::seats::claim_for(st, &caller, &a)?, text))
         })
         .await?;
     Ok(ws
         .max_message_size(MAX_LIVE_MESSAGE_BYTES)
         .max_frame_size(MAX_LIVE_MESSAGE_BYTES)
-        .on_upgrade(move |socket| session(s, aid, viewer.public_id, claim, socket)))
+        .on_upgrade(move |socket| session(s, aid, viewer.public_id, claim, text, slot, socket)))
+}
+
+/// A hosted daemon's signed-in person's rights, as the gate set them.
+fn member_of(extensions: &axum::http::Extensions) -> Option<clax_http::hosted::MemberRights> {
+    extensions
+        .get::<clax_http::hosted::HostedRequest>()
+        .and_then(|h| h.member.clone())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -116,6 +135,8 @@ async fn session(
     aid: String,
     person: String,
     claim: Option<clax_core::seats::Claim>,
+    text: bool,
+    _slot: clax_http::socket_caps::SocketSlot,
     mut socket: WebSocket,
 ) {
     let hub: std::sync::Arc<LiveLayers> = s.live_layers.clone();
@@ -140,7 +161,7 @@ async fn session(
         }
         None => (None, None),
     };
-    let mut joined = hub.join(&aid, &person);
+    let mut joined = hub.join(&aid, &person, text);
     let key = joined.key;
     let welcome = json!({"t": "welcome", "person_id": person, "color": joined.color});
     let mut bucket = TokenBucket::new(hub.now());
@@ -238,6 +259,8 @@ pub struct LiveSocket {
     events: tokio::sync::broadcast::Receiver<clax_core::events::Stamped>,
     released: Option<tokio::sync::oneshot::Receiver<()>>,
     _seat: Option<Seat>,
+    /// Its place in its client's cap ([`clax_http::socket_caps`]).
+    _slot: Option<clax_http::socket_caps::SocketSlot>,
 }
 
 impl Drop for LiveSocket {
@@ -253,8 +276,9 @@ impl LiveSocket {
     }
 
     /// Takes `claim`'s seat (when it has one) and joins `person`'s socket
-    /// to `aid`'s live layers: the socket and its welcome frame; with no
-    /// seat free, the close to send ([`CLOSE_NO_SEAT`]).
+    /// to `aid`'s live layers (`text`: whether they may read comments
+    /// there, [`LiveLayers::join`]): the socket and its welcome frame; with
+    /// no seat free, the close to send ([`CLOSE_NO_SEAT`]).
     ///
     /// # Errors
     /// As above.
@@ -263,6 +287,7 @@ impl LiveSocket {
         aid: &str,
         person: &str,
         claim: Option<clax_core::seats::Claim>,
+        text: bool,
     ) -> Result<(LiveSocket, String), LiveStep> {
         let hub = s.live_layers.clone();
         let (seat, released) = match claim {
@@ -284,7 +309,7 @@ impl LiveSocket {
             }
             None => (None, None),
         };
-        let joined = hub.join(aid, person);
+        let joined = hub.join(aid, person, text);
         let welcome = json!({"t": "welcome", "person_id": person, "color": joined.color});
         Ok((
             LiveSocket {
@@ -296,9 +321,17 @@ impl LiveSocket {
                 events: s.events.subscribe(),
                 released,
                 _seat: seat,
+                _slot: None,
             },
             welcome.to_string(),
         ))
+    }
+
+    /// This socket, holding `slot` (its client's place under the cap) until
+    /// it drops.
+    pub fn holding(mut self, slot: clax_http::socket_caps::SocketSlot) -> LiveSocket {
+        self._slot = Some(slot);
+        self
     }
 
     /// The socket's text message `t`: applied, or answered (`ping` is
@@ -356,19 +389,25 @@ impl LiveSocket {
 
 /// Who may open `aid`'s live socket, as [`live`] admits them: the artifact
 /// exists, and the caller is a browser with a viewer; their person's
-/// public ID and seat claim.
+/// public ID, seat claim, and whether they may read comments there
+/// (`member`: a hosted daemon's signed-in person's rights).
 fn admit(
     st: &clax_store::Store,
     who: &Identity,
     caller: &Caller,
+    member: Option<&clax_http::hosted::MemberRights>,
     aid: &str,
-) -> clax_core::Result<(String, Option<clax_core::seats::Claim>)> {
+) -> clax_core::Result<(String, Option<clax_core::seats::Claim>, bool)> {
     let id = clax_core::ArtifactId::parse(aid).map_err(|_| CoreError::NotFound)?;
     st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
     let viewer = who
         .browser_viewer(st)?
         .ok_or_else(|| CoreError::invalid("no_viewer", "open /api/viewers/me first"))?;
-    Ok((viewer.public_id, clax_http::seats::claim_for(st, caller, aid)?))
+    Ok((
+        viewer.public_id,
+        clax_http::seats::claim_for(st, caller, aid)?,
+        clax_http::hosted::reads_comments(st, member, aid)?,
+    ))
 }
 
 /// What [`LiveOpened`] carries: the socket (or the close to send at once)
@@ -417,10 +456,17 @@ pub async fn live_socket(
     let id = parse_id(&aid)?;
     sees.check(&s.live_ids, id.as_str())?;
     let aid = id.as_str().to_string();
-    let creds = clax_http::identity::SocketCredentials::of_request(&who, &s.token, &extensions);
+    let client = clax_http::socket_caps::SocketClient::of_request(&s, &headers, &extensions);
+    let slot = s.sockets.admit(&client)?;
+    let mut creds = clax_http::identity::SocketCredentials::of_request(&who, &s.token, &extensions);
+    creds.address = client.address();
     let a = aid.clone();
-    let (person, claim) = s.store_call(move |st| admit(st, &who, &caller, &a)).await?;
-    let opened = LiveSocket::open(&s, &aid, &person, claim);
+    let member = member_of(&extensions);
+    let (person, claim, text) = s
+        .store_call(move |st| admit(st, &who, &caller, member.as_ref(), &a))
+        .await?;
+    let opened =
+        LiveSocket::open(&s, &aid, &person, claim, text).map(|(l, w)| (l.holding(slot), w));
     let mut res = axum::http::StatusCode::OK.into_response();
     res.extensions_mut()
         .insert(LiveOpened(std::sync::Arc::new(std::sync::Mutex::new(
@@ -442,9 +488,10 @@ pub async fn reopen(
     aid: &str,
     creds: &clax_http::identity::SocketCredentials,
 ) -> Option<Result<(LiveSocket, String), LiveStep>> {
+    let client = clax_http::socket_caps::SocketClient::of_credentials(creds);
     let (creds, a, token) = (creds.clone(), aid.to_string(), s.token.clone());
     let hosted = s.hosted.is_some();
-    let (person, claim) = s
+    let (person, claim, text) = s
         .store_call(move |st| {
             let (who, session) = creds.reopen(st, &token)?;
             // On a hosted daemon only a session or the token opened it.
@@ -460,9 +507,14 @@ pub async fn reopen(
             if caller.is_agent() {
                 return Err(CoreError::NotFound);
             }
-            admit(st, &who, &caller, &a)
+            let member = match &session {
+                Some(sv) => clax_http::hosted::MemberRights::of_session(st, sv)?,
+                None => None,
+            };
+            admit(st, &who, &caller, member.as_ref(), &a)
         })
         .await
         .ok()?;
-    Some(LiveSocket::open(s, aid, &person, claim))
+    let slot = s.sockets.hold(&client);
+    Some(LiveSocket::open(s, aid, &person, claim, text).map(|(l, w)| (l.holding(slot), w)))
 }

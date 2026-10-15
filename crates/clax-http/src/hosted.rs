@@ -232,7 +232,7 @@ impl Limits {
 /// The key a client's attempts are counted under: an IPv4 address (an
 /// IPv4-mapped IPv6 one as IPv4), or an IPv6 address's /64, which one
 /// subscriber holds whole.
-fn client_key(ip: std::net::IpAddr) -> std::net::IpAddr {
+pub(crate) fn client_key(ip: std::net::IpAddr) -> std::net::IpAddr {
     match ip.to_canonical() {
         std::net::IpAddr::V6(v6) => {
             let mut o = v6.octets();
@@ -713,6 +713,47 @@ impl MemberRights {
     ) -> Result<bool, ApiError> {
         let (m, aid) = (self.clone(), aid.to_string());
         s.store_call(move |st| m.allows_at(st, right, &aid)).await
+    }
+}
+
+impl MemberRights {
+    /// The rights of session `who` when it is a person's who is not the
+    /// owner (as the gate gives a request of theirs); `None` for the owner,
+    /// a guest and anyone else.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn of_session(
+        st: &clax_store::Store,
+        who: &SessionViewer,
+    ) -> clax_core::Result<Option<MemberRights>> {
+        if who.owner || !who.member() {
+            return Ok(None);
+        }
+        let pid = who.viewer.public_id.clone();
+        Ok(Some(MemberRights {
+            rights: std::sync::Arc::new(st.person_rights(&pid)?),
+            person: pid,
+        }))
+    }
+}
+
+/// Whether `member` may read the comments on artifact `aid` (`clax-comments`
+/// `read`, by their rights or the page's link), as `GET
+/// /api/artifacts/<aid>/threads` asks; `None` (the owner, a guest, a
+/// visitor, a local daemon's browser) is not limited here: a guest's and a
+/// visitor's link always reads comments ([`LinkAccess::rights`]).
+///
+/// # Errors
+/// The store's.
+pub fn reads_comments(
+    st: &clax_store::Store,
+    member: Option<&MemberRights>,
+    aid: &str,
+) -> clax_core::Result<bool> {
+    match member {
+        None => Ok(true),
+        Some(m) => m.allows_at(st, (RightType::Comments, "read"), aid),
     }
 }
 

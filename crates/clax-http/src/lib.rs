@@ -29,6 +29,7 @@ pub mod live_access;
 pub mod perf;
 pub mod pushes;
 pub mod seats;
+pub mod socket_caps;
 pub mod state;
 pub mod viewer;
 pub mod views;

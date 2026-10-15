@@ -465,7 +465,9 @@ impl Identity {
 /// their stream carries agents' drafts, as a person's does). A socket is
 /// reopened ([`SocketCredentials::reopen`]) only while that session is
 /// live, as whoever it signs in as now; the gate still decides each
-/// subscription of a new stream.
+/// subscription of a new stream. It keeps the client address it was
+/// counted against (`address`, [`crate::socket_caps`]) too, so a reopened
+/// socket is counted against it again.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SocketCredentials {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -476,6 +478,8 @@ pub struct SocketCredentials {
     pub guest: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
 }
 
 impl SocketCredentials {
@@ -487,6 +491,7 @@ impl SocketCredentials {
             token: who.token.then(|| Self::token_tag(token)),
             guest: false,
             session: None,
+            address: None,
         }
     }
 
@@ -775,6 +780,7 @@ mod tests {
             token: Some(SocketCredentials::token_tag("guess")),
             guest: false,
             session: None,
+            address: None,
         };
         assert!(!forged.identity(TOKEN).token);
     }

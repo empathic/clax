@@ -508,6 +508,7 @@ impl TestServer {
             sample: Arc::new(clax_sample::Sampler::disabled()),
             stream: clax_realtime::stream::Hub::new(live_ids.clone()),
             seats: clax_http::seats::LiveSeats::new(Default::default(), clock.clone()),
+            sockets: Arc::default(),
             live_ids,
             ext_creds,
             extension_id: clax_core::extension::extension_id_in_effect(home.root()),

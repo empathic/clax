@@ -29,6 +29,9 @@ struct Socket {
     person: String,
     /// The thread its page has open, once it said.
     open: Option<Option<String>>,
+    /// Whether its person may read comments on the artifact: one who may
+    /// not is sent no typing or drafts, and its own are not relayed.
+    text: bool,
     tx: mpsc::Sender<String>,
 }
 
@@ -153,7 +156,9 @@ impl LiveLayers {
 
     /// Joins a socket of `person` to artifact `aid`'s live layers; it is
     /// sent what everyone else shows at the next flush, which is armed.
-    pub fn join(self: &Arc<Self>, aid: &str, person: &str) -> Joined {
+    /// `text`: whether the person may read comments there; without it the
+    /// socket is sent no one's typing or drafts and relays none of its own.
+    pub fn join(self: &Arc<Self>, aid: &str, person: &str, text: bool) -> Joined {
         let key = {
             let mut n = self.next.lock().unwrap_or_else(PoisonError::into_inner);
             *n += 1;
@@ -176,6 +181,7 @@ impl LiveLayers {
             Socket {
                 person: person.to_string(),
                 open: None,
+                text,
                 tx,
             },
         );
@@ -201,6 +207,9 @@ impl LiveLayers {
             };
             if let ClientMessage::Open(t) = &m {
                 sock.open = Some(t.clone());
+            }
+            if !sock.text && matches!(m, ClientMessage::Typing(_) | ClientMessage::Draft(_)) {
+                return;
             }
             let person = sock.person.clone();
             room.relay.apply(&person, key, m, now);
@@ -272,6 +281,7 @@ impl LiveLayers {
                     key: *k,
                     person: s.person.clone(),
                     open: s.open.clone(),
+                    text: s.text,
                 })
                 .collect();
             let colors = &room.colors;
@@ -342,9 +352,9 @@ mod tests {
     #[tokio::test]
     async fn one_persons_sockets_share_a_colour_and_others_get_another() {
         let h = hub();
-        let a1 = h.join("x", "u_a");
-        let a2 = h.join("x", "u_a");
-        let b = h.join("x", "u_b");
+        let a1 = h.join("x", "u_a", true);
+        let a2 = h.join("x", "u_a", true);
+        let b = h.join("x", "u_b", true);
         assert_eq!(a1.color, a2.color);
         assert_ne!(a1.color, b.color);
         assert_eq!(h.sockets("x"), 3);
@@ -357,8 +367,8 @@ mod tests {
     #[tokio::test]
     async fn a_flush_sends_each_receiver_its_batch() {
         let h = hub();
-        let a = h.join("x", "u_a");
-        let mut b = h.join("x", "u_b");
+        let a = h.join("x", "u_a", true);
+        let mut b = h.join("x", "u_b", true);
         h.apply("x", a.key, cursor());
         h.apply(
             "x",
@@ -378,8 +388,8 @@ mod tests {
     #[tokio::test]
     async fn a_full_queue_gets_everything_whole_next_time() {
         let h = hub();
-        let a = h.join("x", "u_a");
-        let mut b = h.join("x", "u_b");
+        let a = h.join("x", "u_a", true);
+        let mut b = h.join("x", "u_b", true);
         h.apply("x", a.key, cursor());
         h.flush("x");
         // Fill b's queue with changes it never reads.

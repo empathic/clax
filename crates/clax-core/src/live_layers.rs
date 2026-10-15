@@ -365,13 +365,16 @@ impl SenderState {
     }
 }
 
-/// A receiving socket: its key, its person, and the thread it has open
-/// (`None`: none; `Some(None)`: the new-comment box).
+/// A receiving socket: its key, its person, the thread it has open
+/// (`None`: none; `Some(None)`: the new-comment box), and whether it may
+/// read comments there (`text`): a receiver that may not is sent no
+/// sender's typing or draft, only their pointer and selection.
 #[derive(Clone, Debug)]
 pub struct Receiver {
     pub key: u64,
     pub person: String,
     pub open: Option<Option<String>>,
+    pub text: bool,
 }
 
 /// What a receiver was last sent: each detailed sender's revisions, the
@@ -555,7 +558,7 @@ impl Relay {
                 revs.insert((*id).clone(), (s.c_rev, s.t_rev));
                 let was = prev.revs.get(*id);
                 let c = was.is_none_or(|w| w.0 != s.c_rev);
-                let t = was.is_none_or(|w| w.1 != s.t_rev);
+                let t = r.text && was.is_none_or(|w| w.1 != s.t_rev);
                 if c || t {
                     let p = parts.entry((id.as_str(), c, t)).or_insert_with(|| {
                         serde_json::to_string(&SenderOut {
@@ -637,6 +640,7 @@ mod tests {
             key,
             person: person.into(),
             open: None,
+            text: true,
         }
     }
 
@@ -845,6 +849,45 @@ mod tests {
         assert_eq!(third["senders"][0]["draft"], Value::Null);
         assert_eq!(third["senders"][0]["typing"], Value::Null);
         assert!(third["senders"][0].get("cursor").is_none());
+    }
+
+    #[test]
+    fn a_receiver_that_may_not_read_comments_gets_no_typing_or_draft() {
+        let mut r = Relay::default();
+        r.apply(
+            "u_a",
+            1,
+            ClientMessage::Draft(LiveDraft {
+                thread_id: None,
+                text: "secret".into(),
+            }),
+            0,
+        );
+        r.apply("u_a", 1, cursor_msg(0.1), 0);
+        let blind = Receiver {
+            text: false,
+            ..rx(3, "u_c")
+        };
+        let out = r.batches(&[rx(2, "u_b"), blind], &|_| 0);
+        let reader = batch(&out, 2).unwrap();
+        assert_eq!(reader["senders"][0]["draft"]["text"], "secret");
+        let b = batch(&out, 3).unwrap();
+        let s = &b["senders"][0];
+        assert!(s.get("draft").is_none() && s.get("typing").is_none(), "{s}");
+        assert_eq!(s["cursor"]["anchor"]["x"], 0.1);
+        assert!(!b.to_string().contains("secret"), "{b}");
+        r.apply("u_a", 1, ClientMessage::Typing(None), 5);
+        let out = r.batches(
+            &[
+                rx(2, "u_b"),
+                Receiver {
+                    text: false,
+                    ..rx(3, "u_c")
+                },
+            ],
+            &|_| 0,
+        );
+        assert!(batch(&out, 3).is_none(), "nothing it may see changed");
     }
 
     #[test]
