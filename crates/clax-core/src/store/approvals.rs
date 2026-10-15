@@ -143,6 +143,19 @@ fn approval_record(kind: AuditKind, at: &str, a: &Approval) -> AuditRecord {
     rec
 }
 
+/// Whether `?4`'s authors (a JSON array of keys) have an open or a
+/// declined request of approver `?1` (`NULL`: the owner) at artifact `?2`,
+/// for thread `?3` or the whole artifact: through the index
+/// `approval_requests_by_target`, so the requests a busy pair piles up
+/// (withdrawn and approved ones) are never walked.
+pub(crate) const REQUEST_STATE: &str =
+    "SELECT COALESCE(MAX(status = 'open'), 0), COALESCE(MAX(status = 'declined'), 0)
+       FROM approval_requests
+      WHERE COALESCE(approver, '') = COALESCE(?1, '') AND artifact_id = ?2
+        AND author IN (SELECT value FROM json_each(?4))
+        AND status IN ('open', 'declined')
+        AND (thread_id = ?3 OR thread_id IS NULL)";
+
 /// [`Store::request_state`] on connection `c`.
 pub(crate) fn request_state_in(
     c: &rusqlite::Connection,
@@ -153,13 +166,7 @@ pub(crate) fn request_state_in(
 ) -> Result<ApprovalState> {
     let authors = serde_json::to_string(authors).expect("strings serialise");
     let (open, declined): (bool, bool) = c
-        .prepare_cached(
-            "SELECT COALESCE(MAX(status = 'open'), 0), COALESCE(MAX(status = 'declined'), 0)
-             FROM approval_requests
-             WHERE COALESCE(approver, '') = COALESCE(?1, '') AND artifact_id = ?2
-               AND (thread_id = ?3 OR thread_id IS NULL)
-               AND author IN (SELECT value FROM json_each(?4))",
-        )?
+        .prepare_cached(REQUEST_STATE)?
         .query_row(params![approver, artifact, thread, authors], |r| {
             Ok((r.get(0)?, r.get(1)?))
         })?;
@@ -3263,5 +3270,92 @@ mod tests {
         let t = w.st.take_feedback(DAEMON, &q, "http://h", &vis).unwrap();
         assert!(t.items.is_empty());
         assert_eq!(t.placeholders.len(), 1, "held again and told");
+    }
+
+    /// The request state a take reads per held thread, and the declines a
+    /// delivery state reads, each go through an index: a busy pair's
+    /// piled-up requests (withdrawn by resolves, approved, declined) are
+    /// never walked. Planned with and without statistics.
+    #[test]
+    fn request_reads_are_indexed_whatever_the_pile() {
+        let (_d, _clock, st) = store();
+        st.with_write(|c| {
+            c.execute_batch("BEGIN")?;
+            for i in 0..2000 {
+                let status = ["withdrawn", "approved", "declined", "open"][i % 4];
+                c.execute(
+                    "INSERT INTO approval_requests (id, approver, author, artifact_id, thread_id, cause,
+                         status, created_at, updated_at, decided_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'routing', ?6, 'x', 'x', 'x')",
+                    rusqlite::params![
+                        format!("r{i}"),
+                        format!("u_{:022}", i % 3),
+                        format!("u_{:022}", 10 + i % 5),
+                        format!("a{}", i % 4),
+                        // Open requests are unique per (approver, author,
+                        // artifact, thread).
+                        format!("t{i}"),
+                        status
+                    ],
+                )?;
+            }
+            c.execute_batch("COMMIT")?;
+            Ok(())
+        })
+        .unwrap();
+        let plan =
+            |c: &rusqlite::Connection, sql: &str, args: &[&dyn rusqlite::ToSql]| -> Vec<String> {
+                let mut stmt = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+                stmt.query_map(args, |r| r.get::<_, String>(3))
+                    .unwrap()
+                    .collect::<rusqlite::Result<_>>()
+                    .unwrap()
+            };
+        st.with_write(|c| {
+            for stats in [
+                "DELETE FROM sqlite_stat1; ANALYZE sqlite_schema;",
+                "ANALYZE",
+            ] {
+                c.execute_batch(stats)?;
+                let authors = format!("[\"u_{:022}\"]", 10);
+                for (sql, args, index) in [
+                    (
+                        REQUEST_STATE,
+                        vec![
+                            Box::new(format!("u_{:022}", 0)) as Box<dyn rusqlite::ToSql>,
+                            Box::new("a0"),
+                            Box::new("t0"),
+                            Box::new(authors.clone()),
+                        ],
+                        // By target, or (with statistics) by thread: the
+                        // thread or the whole artifact.
+                        &["approval_requests_by_target", "approval_requests_by_thread"][..],
+                    ),
+                    (
+                        crate::store::feedback::DECLINES,
+                        vec![Box::new("[\"t0\",\"t1\"]") as Box<dyn rusqlite::ToSql>],
+                        &["approval_requests_by_thread"][..],
+                    ),
+                ] {
+                    let args: Vec<&dyn rusqlite::ToSql> = args.iter().map(|b| b.as_ref()).collect();
+                    let plan = plan(c, sql, &args);
+                    assert!(
+                        plan.iter().any(|l| index
+                            .iter()
+                            .any(|i| l.contains(&format!("USING INDEX {i} ")))),
+                        "{stats}: {plan:?}"
+                    );
+                    assert!(
+                        !plan
+                            .iter()
+                            .any(|l| l.starts_with("SCAN approval_requests")
+                                || l.starts_with("SCAN d")),
+                        "{stats}: {plan:?}"
+                    );
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
     }
 }
