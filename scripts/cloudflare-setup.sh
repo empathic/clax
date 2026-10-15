@@ -6,11 +6,20 @@
 # builds locally and ends at `wrangler deploy --dry-run`, changing nothing on
 # the account.
 #
-#   scripts/cloudflare-setup.sh --zone example.com                    # dry run
-#   scripts/cloudflare-setup.sh --zone example.com --i-know-what-i-am-doing
-#   scripts/cloudflare-setup.sh --public example.com --content content.example.com --i-know-what-i-am-doing
-#   scripts/cloudflare-setup.sh --zone example.com --smoke --i-know-what-i-am-doing  # deploy, then smoke it
-#   scripts/cloudflare-setup.sh --login                               # only sign in to Cloudflare
+#   scripts/cloudflare-setup.sh                            # dry run
+#   scripts/cloudflare-setup.sh --i-know-what-i-am-doing   # deploy
+#   scripts/cloudflare-setup.sh --smoke --i-know-what-i-am-doing  # deploy, then smoke it
+#   scripts/cloudflare-setup.sh --login                    # only sign in to Cloudflare
+#
+# The first run asks, on a terminal, for the public hostname, the content
+# hostname, where versions live, and (optionally) a GitHub OAuth App's
+# Client ID and secret and your GitHub login, and keeps the answers in
+# ~/.config/clax/deploy/setup.env (readable only by you; $CLAX_DEPLOY_HOME or
+# $XDG_CONFIG_HOME/clax/deploy when set).
+# Later runs need no flags. To change a setting, pass it once:
+# --public <host>, --content <host>, --zone <domain> (public <domain>,
+# content content.<domain>), --store artifacts|memory, --github-client-id
+# <ID>, --owner-github <login>; or edit or delete setup.env.
 #
 # Every other option is passed to crates/clax-worker/deploy.mjs (see the top of
 # that file), e.g. --store memory, --account <ID>, --rotate-secrets, --yes,
@@ -39,23 +48,89 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 worker="$root/crates/clax-worker"
 
+records="${CLAX_DEPLOY_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/clax/deploy}"
+settings="$records/setup.env"
+# Settings an earlier version kept under crates/ move here once.
+[ -f "$worker/.deploy/setup.env" ] && [ ! -f "$settings" ] && { mkdir -p "$records" && chmod 700 "$records" && mv "$worker/.deploy/setup.env" "$settings"; }
+
 smoke=0
 dry=1
 login_only=0
 args=()
-for a in "$@"; do
-  case "$a" in
+set_public="" set_content="" set_store="" set_gh_id="" set_owner=""
+while [ $# -gt 0 ]; do
+  case "$1" in
     --smoke) smoke=1 ;;
     --login) login_only=1 ;;
     --i-know-what-i-am-doing) dry=0 ;;
     --dry-run) ;;
-    -h|--help) sed -n '2,35p' "$0"; exit 0 ;;
-    *) args+=("$a") ;;
+    --public) set_public="$2"; shift ;;
+    --content) set_content="$2"; shift ;;
+    --store) set_store="$2"; shift ;;
+    --github-client-id) set_gh_id="$2"; shift ;;
+    --owner-github) set_owner="$2"; shift ;;
+    --zone) set_public="$2"; set_content="content.$2"; shift ;;
+    -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
+    *) args+=("$1") ;;
   esac
+  shift
 done
 
 say() { printf '\n== %s\n' "$*"; }
 fail() { printf 'cloudflare-setup: %s\n' "$*" >&2; exit 1; }
+
+# The settings this script keeps between runs, in a git-ignored file only you
+# can read. A flag given on the command line replaces its saved value.
+PUBLIC_HOST="" CONTENT_HOST="" STORE="" GITHUB_CLIENT_ID="" OWNER_GITHUB="" GITHUB_CLIENT_SECRET="${GITHUB_CLIENT_SECRET:-}"
+if [ -f "$settings" ]; then
+  while IFS='=' read -r k v; do
+    case "$k" in
+      PUBLIC_HOST|CONTENT_HOST|STORE|GITHUB_CLIENT_ID|OWNER_GITHUB) printf -v "$k" '%s' "$v" ;;
+      GITHUB_CLIENT_SECRET) [ -n "$GITHUB_CLIENT_SECRET" ] || GITHUB_CLIENT_SECRET="$v" ;;
+    esac
+  done < "$settings"
+fi
+[ -n "$set_public" ] && PUBLIC_HOST="$set_public"
+[ -n "$set_content" ] && CONTENT_HOST="$set_content"
+[ -n "$set_store" ] && STORE="$set_store"
+[ -n "$set_gh_id" ] && GITHUB_CLIENT_ID="$set_gh_id"
+[ -n "$set_owner" ] && OWNER_GITHUB="$set_owner"
+
+# Asks on a terminal for a value not saved yet; `$3` is the default.
+ask() {
+  local var="$1" question="$2" default="${3:-}" secret="${4:-}" answer
+  [ -n "${!var}" ] && return 0
+  [ -t 0 ] || { [ -n "$default" ] && printf -v "$var" '%s' "$default"; return 0; }
+  if [ -n "$secret" ]; then
+    read -r -s -p "$question: " answer; echo
+  else
+    read -r -p "$question${default:+ [$default]}: " answer
+  fi
+  printf -v "$var" '%s' "${answer:-$default}"
+}
+if [ "$login_only" = 0 ]; then
+  ask PUBLIC_HOST "Public hostname (where people reach Clax)"
+  [ -n "$PUBLIC_HOST" ] || fail "no public hostname: run on a terminal, or pass --public <host> once"
+  ask CONTENT_HOST "Content hostname (a host of its own for artifact content)" "content.$PUBLIC_HOST"
+  ask STORE "Where versions live: artifacts (Cloudflare Artifacts) or memory" "artifacts"
+  ask GITHUB_CLIENT_ID "GitHub OAuth App Client ID (blank: no GitHub sign-in)"
+  if [ -n "$GITHUB_CLIENT_ID" ]; then
+    ask OWNER_GITHUB "Your GitHub login (that account signs in as the owner)"
+    ask GITHUB_CLIENT_SECRET "GitHub OAuth App client secret" "" secret
+  fi
+  mkdir -p "$records" && chmod 700 "$records"
+  ( umask 077
+    { echo "PUBLIC_HOST=$PUBLIC_HOST"; echo "CONTENT_HOST=$CONTENT_HOST"; echo "STORE=$STORE"
+      echo "GITHUB_CLIENT_ID=$GITHUB_CLIENT_ID"; echo "OWNER_GITHUB=$OWNER_GITHUB"
+      echo "GITHUB_CLIENT_SECRET=$GITHUB_CLIENT_SECRET"; } > "$settings" )
+  args+=(--public "$PUBLIC_HOST" --content "$CONTENT_HOST" --store "${STORE:-artifacts}")
+  if [ -n "$GITHUB_CLIENT_ID" ]; then
+    args+=(--github-client-id "$GITHUB_CLIENT_ID")
+    [ -n "$OWNER_GITHUB" ] && args+=(--owner-github "$OWNER_GITHUB")
+    export GITHUB_CLIENT_SECRET
+  fi
+  echo "Settings: https://$PUBLIC_HOST, content https://$CONTENT_HOST, store ${STORE:-artifacts}, GitHub sign-in ${GITHUB_CLIENT_ID:+on (owner @$OWNER_GITHUB)}${GITHUB_CLIENT_ID:-off} (saved in $settings)"
+fi
 
 [ "$dry" = 1 ] && [ "$login_only" = 0 ] && args+=("--dry-run")
 [ "$dry" = 1 ] && [ "$login_only" = 0 ] && echo "Dry run: nothing changes on the Cloudflare account. Add --i-know-what-i-am-doing to deploy."
@@ -115,8 +190,8 @@ say "Deploying"
 (cd "$worker" && node deploy.mjs ${args[@]+"${args[@]}"})
 
 if [ "$smoke" = 1 ] && [ "$dry" = 0 ]; then
-  record="$(ls -t "$worker"/.deploy/*.json 2>/dev/null | head -1)"
-  [ -n "$record" ] || fail "no deploy record in crates/clax-worker/.deploy to smoke"
+  record="$records/$PUBLIC_HOST.json"
+  [ -f "$record" ] || fail "no deploy record $record to smoke"
   say "Smoking the deployment (diagnostics routes on for the probe)"
   (cd "$worker" && node deploy.mjs ${args[@]+"${args[@]}"} --diag --no-build --yes)
   smoke_status=0
@@ -128,7 +203,7 @@ fi
 
 say "Done"
 if [ "$dry" = 1 ]; then
-  echo "That was a dry run. To deploy: $0 ${*:+$* }--i-know-what-i-am-doing"
+  echo "That was a dry run. To deploy: $0 --i-know-what-i-am-doing"
 else
   echo "Open the setup page deploy.mjs printed, or the sign-in link the smoke printed, to make your browser the owner."
 fi
