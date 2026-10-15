@@ -6,8 +6,10 @@
   // as, a one-use sign-in link for another device, sign out), agent tokens
   // for remote agents (made with the `claude mcp add` command and Codex's
   // config, shown this once; listed and revoked), and pages shared by link
-  // (anyone with the link may view, or comment once they give a name). Only
-  // the owner and a page's maker share it; the daemon says so otherwise.
+  // (anyone with the link may view, or comment once they give a name), each
+  // marked Public when the public gallery lists it. Only the owner and a
+  // page's maker share it; the daemon says so otherwise. Changing a link's
+  // access here keeps its listing (the artifact's Share dialog sets it).
   import { onMount } from "svelte";
   import { listArtifacts } from "../api";
   import * as api from "./api";
@@ -90,7 +92,7 @@
   <h3 id="hl-h">Shared by link</h3>
   <p class="note">Anyone with a shared page's link sees it. To comment there they give a name and become a guest, whose comments reach your agents only once you approve them.</p>
   {#each shared as s (s.artifact_id)}
-    <div class="line"><a class="mname" href={s.url}>{s.title}</a><span class="sp"></span>
+    <div class="line"><a class="mname" href={s.url}>{s.title}</a>{#if s.listed}<span class="meta pub">Public</span>{/if}<span class="sp"></span>
       <select aria-label="Who may do what on {s.title}" onchange={e => { const v = e.currentTarget.value; void act(() => api.setLink(s.artifact_id, v === "none" ? null : (v as api.LinkAccess))); }}>
         {#each LEVELS as v (v)}<option value={v} selected={v === s.access}>{ACCESS[v]}</option>{/each}
         <option value="none">Stop sharing</option>
