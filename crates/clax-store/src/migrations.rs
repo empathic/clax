@@ -1223,6 +1223,11 @@ pub const MIGRATIONS: &[&str] = &[
         DELETE FROM sample_grants WHERE artifact_id = NEW.id;
         DELETE FROM sample_spend WHERE artifact_id = NEW.id;
     END;",
+    // 28: whether a draft fetches under its live app's network grants
+    // (spec 2026-10-12-flutter-real-apps-design C6): 1 for the agent's
+    // drafts, 0 for a bundle update's check draft, which stays offline.
+    // Meaningless for an artifact that is no draft.
+    "ALTER TABLE artifacts ADD COLUMN draft_inherit_net INTEGER NOT NULL DEFAULT 1;",
 ];
 
 /// The audit journal's migration, as a schema version (the
