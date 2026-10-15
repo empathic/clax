@@ -685,7 +685,7 @@ async fn revoking_a_person_revokes_grants_and_invites_and_keeps_history() {
     let fb = owner_feedback(&p).await;
     let text = fb.to_string();
     assert!(!text.contains("Sam after"), "{fb}");
-    assert!(text.contains("comments from Sam on"), "{fb}");
+    assert!(text.contains("1 comment from Sam on"), "{fb}");
     assert!(!text.contains("(not connected)"), "{fb}");
     // Mia is untouched.
     assert_eq!(
@@ -938,7 +938,7 @@ async fn unconnected_switch_off_withholds_lan_viewers_from_owner_agents() {
     let text = fb.to_string();
     assert!(!text.contains("Lan says hi"), "{fb}");
     assert!(
-        text.contains("comments from Lan (not connected) on"),
+        text.contains("1 comment from Lan (not connected) on"),
         "{fb}"
     );
     // The owner's agent's thread read holds it back too.
