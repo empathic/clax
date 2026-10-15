@@ -2832,8 +2832,7 @@ async fn an_agent_reply_names_the_agent_its_person_and_its_harness() {
     };
     assert_eq!(
         agent(&tids[0]),
-        json!({"name": owner_agent_name, "person": w.ts.store.owner_viewer(false).unwrap().public_id,
-               "person_name": owner_name})
+        json!({"name": owner_agent_name, "person": null, "person_name": owner_name})
     );
     assert_eq!(
         agent(&tids[1]),

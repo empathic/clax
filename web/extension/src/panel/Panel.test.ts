@@ -38,11 +38,11 @@ describe("Panel", () => {
   });
 
   it("names agents' replies by agent, person and harness, the owner's own as its agent (spec §11)", () => {
-    const reply = (id: string, person: string, person_name: string, name: string) => ({
+    const reply = (id: string, person: string | null, person_name: string, name: string) => ({
       id, thread_id: thread.id, author_kind: "agent", author_name: "claude", via_harness: "claude", body: `reply ${id}`,
       created_at: "2026-10-05T10:00:30.000Z", agent: { name, person, person_name },
     });
-    const t = { ...thread, comments: [...thread.comments, reply("c2", "u_x", "Alex", "clax-web"), reply("c3", "u_sam", "Sam", "sam-notes")] };
+    const t = { ...thread, comments: [...thread.comments, reply("c2", null, "Alex", "clax-web"), reply("c3", "u_sam", "Sam", "sam-notes")] };
     render(Panel, { props: { link: link(state({ threads: [t as never] })) as never, now: new Date("2026-10-05T10:01:00.000Z") } });
     expect(screen.getByText("clax-web (agent, via claude)")).toBeTruthy();
     expect(screen.getByText("sam-notes (Sam's agent, via claude)")).toBeTruthy();

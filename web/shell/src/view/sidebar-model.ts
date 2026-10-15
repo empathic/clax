@@ -39,16 +39,12 @@ export function needsTicking(threads: Thread[]): boolean {
 
 /** A comment's author line (spec 2026-10-08 §11 "Display"): an agent's
  * reply as `<name> (agent, via <harness>)` when the agent's person is the
- * viewer (by public ID: the owner's for the owner's agents), else `<name> (<person>'s
+ * viewer (`person` null: the owner's agent, for the owner), else `<name> (<person>'s
  * agent, via <harness>)`; a reply from before agent names by its harness;
  * a person's comment by their name. Text, never markup. */
 export function authorLabel(c: Comment, me?: Viewer | null): string {
-  if (c.author_kind !== "agent") return c.author_name;
-  const via = agentName(c.via_harness);
-  const a = c.agent;
-  if (!a) return via;
-  const own = a.person !== null ? a.person === me?.public_id : !!me?.owner;
-  return own ? `${a.name} (agent, via ${via})` : `${a.name} (${a.person_name}'s agent, via ${via})`;
+  const a = c.agent, via = agentName(c.via_harness);
+  return c.author_kind !== "agent" ? c.author_name : a ? `${a.name} (${(a.person === null ? me?.owner : a.person === me?.public_id) ? "" : `${a.person_name}'s `}agent, via ${via})` : via;
 }
 
 /** A page as people read it: percent-encoding decoded, or the page as

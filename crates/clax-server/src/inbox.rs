@@ -80,8 +80,8 @@ fn project(cwd: &str) -> &str {
         .unwrap_or("")
 }
 
-/// The name of an agent's person (`None`: the owner) as views give it,
-/// read once per page into `names`.
+/// The name of an agent's person (`None`: the owner) as browsers show it,
+/// as stored, read once per page into `names`.
 fn person_name(
     st: &Store,
     names: &mut HashMap<Option<String>, String>,
@@ -90,11 +90,7 @@ fn person_name(
     if let Some(n) = names.get(person) {
         return Ok(n.clone());
     }
-    let raw = match person {
-        Some(p) => st.viewer_by_public_id(p)?.and_then(|v| v.display_name),
-        None => st.owner()?.and_then(|v| v.display_name),
-    };
-    let n = clax_core::feedback::person_name(raw.as_deref(), person.is_none());
+    let n = st.agent_person(person.as_deref())?.name;
     names.insert(person.clone(), n.clone());
     Ok(n)
 }

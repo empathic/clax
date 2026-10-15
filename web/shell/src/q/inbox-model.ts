@@ -42,10 +42,11 @@ export const heldAnchor = (i: InboxItem, a: InboxApproval): string | undefined =
 
 /** A reply's author line (spec 2026-10-08 §11 "Display"): `<name> (agent,
  * via <harness>)` for the recipient's own person's agent, else `<name>
- * (<person>'s agent, via <harness>)`; null for an agent with no name. */
+ * (<person>'s agent, via <harness>)` (an inbox item's agent with `own`
+ * always has `person_name`); null for an agent with no name. */
 function replier(a: QAgent | null): string | null {
   if (!a?.name || a.own === undefined) return null;
-  return a.own ? `${a.name} (agent, via ${a.harness})` : `${a.name} (${a.person_name ?? "another person"}'s agent, via ${a.harness})`;
+  return `${a.name} (${a.own ? "" : `${a.person_name}'s `}agent, via ${a.harness})`;
 }
 
 /** An item's title: who did what, on which page ("claude replied on
