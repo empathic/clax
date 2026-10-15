@@ -82,4 +82,65 @@ void main() {
       expect(statusLines(tester), 1);
     });
   });
+
+  testWidgets(
+    'a wide panel composing beside an unsent thread offers Send to Clax, '
+    'not a second Send',
+    (tester) async {
+      tester.view.devicePixelRatio = 2;
+      tester.view.physicalSize = const Size(1200, 800) * 2;
+      addTearDown(tester.view.reset);
+      final resent = <String>[];
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: claxTheme(Brightness.light),
+          home: Scaffold(
+            body: Align(
+              alignment: Alignment.centerRight,
+              child: SizedBox(
+                width: 360,
+                child: AppPanel(
+                  wide: true,
+                  tab: PanelTab.threads,
+                  onTab: (_) {},
+                  onClose: () {},
+                  draft: const Draft(
+                    label: '“Mon 5 km”',
+                    text: '',
+                    clip: DraftClip.ready,
+                  ),
+                  busy: false,
+                  dictation: const Dictation(listening: false, words: ''),
+                  onMic: () {},
+                  threads: const [
+                    ThreadSummary(
+                      id: 't1',
+                      status: 'open',
+                      summary: 'make it blue',
+                      sent: false,
+                      comments: 1,
+                      version: 1,
+                    ),
+                  ],
+                  onThread: (_) {},
+                  onResend: resent.add,
+                  versions: const SizedBox(),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.byKey(const ValueKey('peek-label')), findsOneWidget);
+      expect(find.text('Send'), findsNothing);
+      final row = find.byKey(const ValueKey('resend-t1'));
+      expect(
+        find.descendant(of: row, matching: find.text('Send to Clax')),
+        findsOneWidget,
+      );
+      await tester.tap(row);
+      expect(resent, ['t1']);
+    },
+  );
 }
