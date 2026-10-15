@@ -10,9 +10,12 @@
 // The app declares the tile host: {"net": {"hosts": ["tile.openstreetmap.org"]}}.
 // The first tile asks the owner once for it (the shell's consent dialog);
 // after Allow the map fills in, and without it the map says why it is empty.
+// In the app's inspect view (the agent's renders and tests), where nobody is
+// asked, a map without tiles draws a stand-in grid under its markers and
+// controls, captioned "Map preview", rather than the permission note.
 
 import { html, useState, useEffect, useRef, useMemo, useLayoutEffect } from './preact.js';
-import { icon } from './icons.js';
+import { icon, names } from './icons.js';
 
 /** OpenStreetMap's standard tiles; its tile policy wants the attribution always visible. */
 export const OSM = {
@@ -26,7 +29,12 @@ const MAX_LAT = 85.0511287798;
 const EARTH = 40075016.686;
 const CACHE_MAX = 300;
 const CONCURRENCY = 6;
+/** The longest wait before a failed tile is tried again; the first retry waits RETRY_FIRST_MS, each next one twice as long. */
 const RETRY_MS = 15000;
+const RETRY_FIRST_MS = 1000;
+/** The frame name the shell gives the page in the app's inspect view (bridge/src/protocol.ts INSPECT_FRAME). */
+const INSPECT_FRAME = 'clax-inspect';
+const ICONS = new Set(names);
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const wrap = (v, n) => ((v % n) + n) % n;
@@ -67,13 +75,27 @@ export function fitBounds(points, { width = 360, height = 320, padding = 48, max
 // Tiles: fetched through `net`, kept as blob: URLs in a least-recently-used
 // cache shared by every map of the page.
 
-const cache = new Map(); // url -> {src} | {fail, at}
+const cache = new Map(); // url -> {src} | {fail, at, tries}
 const inflight = new Set();
 const wanted = new Map(); // map key -> urls, nearest the center first
 const listeners = new Set();
 const blocked = new Map(); // host ('*' for every host) -> code
 const TERMINAL = new Set(['not_granted', 'not_declared', 'https_only', 'redirect_refused', 'blocked_address', 'session_expired', 'no_net']);
 let netPromise;
+let retryTimer = null;
+let retryAt = 0;
+
+/** The wait before a tile that failed `tries` times in a row is tried again. */
+const backoff = (tries) => Math.min(RETRY_MS, RETRY_FIRST_MS * 2 ** Math.max(0, tries - 1));
+
+/** Runs pump() in `ms`, unless a run is already due sooner. */
+function retryIn(ms) {
+  const at = Date.now() + ms;
+  if (retryTimer !== null && retryAt <= at) return;
+  if (retryTimer !== null) clearTimeout(retryTimer);
+  retryAt = at;
+  retryTimer = setTimeout(() => { retryTimer = null; pump(); }, ms);
+}
 
 function getNet() {
   if (!netPromise) {
@@ -121,7 +143,8 @@ async function load(url) {
       console.warn('[kit] map: the net capability is not available here; declare '
         + `{"net": {"hosts": ["${hostOf(url)}"]}} to load tiles.`);
     } else if (TERMINAL.has(code)) blocked.set(hostOf(url), code);
-    put(url, { fail: code, at: Date.now() });
+    const prev = cache.get(url);
+    put(url, { fail: code, at: Date.now(), tries: (prev && prev.fail ? prev.tries || 1 : 0) + 1 });
   } finally {
     inflight.delete(url);
     emit();
@@ -129,17 +152,28 @@ async function load(url) {
   }
 }
 
-/** Starts the wanted tiles not yet cached, up to CONCURRENCY at once; a tile no map wants any more is never fetched. */
+/**
+ * Starts the wanted tiles not yet cached, up to CONCURRENCY at once; a tile no map wants any
+ * more is never fetched. A tile that failed waits out its backoff, and a timer runs pump()
+ * again when the first such wait ends, so a failed tile is retried without the map moving.
+ */
 function pump() {
+  const now = Date.now();
+  let wait = Infinity;
   for (const urls of wanted.values()) {
     for (const u of urls) {
       if (inflight.size >= CONCURRENCY) return;
       if (inflight.has(u) || blocked.has('*') || blocked.has(hostOf(u))) continue;
       const c = cache.get(u);
-      if (c && (c.src || Date.now() - c.at < RETRY_MS)) continue;
+      if (c && c.src) continue;
+      if (c) {
+        const left = c.at + backoff(c.tries) - now;
+        if (left > 0) { wait = Math.min(wait, left); continue; }
+      }
       load(u);
     }
   }
+  if (wait < Infinity) retryIn(wait);
 }
 
 const tileUrl = (tmpl, z, x, y) => tmpl.replace('{z}', z).replace('{x}', x).replace('{y}', y);
@@ -191,6 +225,14 @@ const CSS = `
 .k-map-note b { font-weight: 600; }
 .k-map-note, .k-map-zoom, .k-map-attr { z-index: 3; }
 .k-map-note span { color: var(--k-fg-2, #5c5c66); font-size: 13px; }
+.k-map-standin { background-color: var(--k-surface-3, #e9e9ef);
+  background-image: linear-gradient(var(--k-line, rgba(60,60,67,.16)) 1px, transparent 1px),
+    linear-gradient(90deg, var(--k-line, rgba(60,60,67,.16)) 1px, transparent 1px),
+    linear-gradient(color-mix(in srgb, var(--k-line, rgba(60,60,67,.16)) 45%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--k-line, rgba(60,60,67,.16)) 45%, transparent) 1px, transparent 1px); }
+.k-map-caption { position: absolute; left: 8px; top: 8px; z-index: 3; padding: 2px 8px; border-radius: 999px;
+  background: color-mix(in srgb, var(--k-surface, #fff) 82%, transparent); color: var(--k-fg-2, #5c5c66);
+  font: 500 11px/1.4 var(--k-font, system-ui); pointer-events: none; }
 .k-map-note-top { top: 10px; translate: -50% 0; flex-direction: row; padding: 6px 12px; width: auto; max-width: calc(100% - 100px); font-size: 13px; }
 `;
 
@@ -207,11 +249,11 @@ function addStyles() {
 // ---------------------------------------------------------------------------
 // The component.
 
-function pinSvg(color) {
-  return `<svg width="30" height="40" viewBox="0 0 30 40" aria-hidden="true">
-    <path d="M15 39C15 39 2 23.5 2 14.5 2 7 8 1.5 15 1.5S28 7 28 14.5C28 23.5 15 39 15 39Z" fill="${color}" stroke="#fff" stroke-width="2"/>
+/** A marker's pin; its fill is the button's `--k-map-pin` property, so a marker's color never enters markup. */
+const PIN_SVG = `<svg width="30" height="40" viewBox="0 0 30 40" aria-hidden="true">
+    <path d="M15 39C15 39 2 23.5 2 14.5 2 7 8 1.5 15 1.5S28 7 28 14.5C28 23.5 15 39 15 39Z" fill="var(--k-map-pin, var(--k-accent, #3b5bdb))" stroke="#fff" stroke-width="2"/>
   </svg>`;
-}
+const DOT_SVG = '<svg width="8" height="8" aria-hidden="true"><circle cx="4" cy="4" r="4" fill="#fff"/></svg>';
 
 const NOTES = {
   no_net: ['Map unavailable', 'Map tiles cannot load in this view.'],
@@ -464,11 +506,14 @@ export function MapView({
     if (!valid(p) || !w) return null;
     const s = screen(p.lat, p.lng);
     if (!inView(s)) return null;
-    const glyph = m.icon ? icon(m.icon, { size: 14, stroke: 2.6 }) : '<svg width="8" height="8" aria-hidden="true"><circle cx="4" cy="4" r="4" fill="#fff"/></svg>';
+    // Only a known icon's markup is set as HTML; the color is a style property, set through the DOM.
+    const glyph = typeof m.icon === 'string' && ICONS.has(m.icon) ? icon(m.icon, { size: 14, stroke: 2.6 }) : DOT_SVG;
+    const pinStyle = { transform: `translate(${s[0]}px,${s[1]}px)`, zIndex: m.selected ? 2 : 1 };
+    if (typeof m.color === 'string' && m.color) pinStyle['--k-map-pin'] = m.color;
     return html`<button key=${m.id ?? i} type="button" class="k-map-pin" aria-label=${m.label || 'Place'} title=${m.label || ''}
-      style=${`transform:translate(${s[0]}px,${s[1]}px);z-index:${m.selected ? 2 : 1}`}
+      style=${pinStyle}
       onPointerDown=${stop} onClick=${(e) => { e.stopPropagation(); if (m.onClick) m.onClick(m, e); }}>
-      <span dangerouslySetInnerHTML=${{ __html: pinSvg(m.color || 'var(--k-accent, #3b5bdb)') }} />
+      <span dangerouslySetInnerHTML=${{ __html: PIN_SVG }} />
       <span class="k-map-pin-glyph" dangerouslySetInnerHTML=${{ __html: glyph }} />
       ${m.selected && m.label ? html`<span class="k-map-label">${m.label}</span>` : null}
     </button>`;
@@ -477,8 +522,14 @@ export function MapView({
   // Why the map is empty, when it is.
   const host = hostOf(tileUrl(tiles, 0, 0, 0));
   const code = blocked.get('*') || blocked.get(host);
+  // In the inspect view nobody is asked for the tile host, so a refused or missing net shows
+  // the map's layout over a stand-in grid instead of a note about permission.
+  const standin = !!code && (code === 'not_granted' || code === 'no_net')
+    && typeof window !== 'undefined' && window.name === INSPECT_FRAME;
   let note = null;
-  if (code) {
+  if (standin) {
+    note = html`<div class="k-map-caption">Map preview</div>`;
+  } else if (code) {
     const [title, body] = NOTES[code] || ['Map tiles cannot load', () => `Requests to ${host} were refused (${code}).`];
     note = html`<div class="k-map-note" role="status">${html`<span dangerouslySetInnerHTML=${{ __html: icon('map', { size: 26 }) }} />`}
       <b>${title}</b><span>${typeof body === 'function' ? body(host) : body}</span></div>`;
@@ -486,8 +537,9 @@ export function MapView({
     note = html`<div class="k-map-note k-map-note-top" role="status">Map tiles did not load; retrying.</div>`;
   }
 
-  return html`<div ref=${ref} class=${['k-map', darkTiles && 'k-map-dark', cls].filter(Boolean).join(' ')}
-    style=${`height:${typeof height === 'number' ? `${height}px` : height};background-size:${ts}px ${ts}px;`
+  const grid = standin ? `${ts}px ${ts}px,${ts}px ${ts}px,${ts / 4}px ${ts / 4}px,${ts / 4}px ${ts / 4}px` : `${ts}px ${ts}px`;
+  return html`<div ref=${ref} class=${['k-map', darkTiles && 'k-map-dark', standin && 'k-map-standin', cls].filter(Boolean).join(' ')}
+    style=${`height:${typeof height === 'number' ? `${height}px` : height};background-size:${grid};`
       + `background-position:${wrap(w / 2 - cx * scale, ts)}px ${wrap(h / 2 - cy * scale, ts)}px;${style || ''}`}
     tabindex="0" role="application" aria-label=${label} aria-roledescription="map"
     onPointerDown=${onPointerDown} onPointerMove=${onPointerMove} onPointerUp=${onPointerUp} onPointerCancel=${onPointerUp}
