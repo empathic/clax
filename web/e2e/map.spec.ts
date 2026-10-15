@@ -9,7 +9,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { crc32, deflateSync } from "node:zlib";
 import type { Frame, Page } from "@playwright/test";
 import { host, hostChannel, initHost, ofType, type HostMessage } from "./app-host";
-import { test, expect, type Daemon, api, contentFrame } from "./fixtures";
+import { test, expect, type Daemon, api, contentFrame, reach } from "./fixtures";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -210,3 +210,69 @@ for (const scheme of ["light", "dark"] as const) {
     await page.screenshot({ path: new URL(`standin-${scheme}.png`, SHOTS).pathname });
   });
 }
+
+/** The page's `location` calls the shell sent to the app, oldest first. */
+const deviceCalls = async (page: Page) => (await ofType(page, "device")) as (HostMessage & { id: string; cap: string; method: string; args: { watch?: string; minDistance?: number }[] })[];
+
+test("the locate button follows the device: a dot and its circle, only a circle when approximate, and the watch's end", async ({ page }) => {
+  await fakeTiles(page);
+  const frame = await openMap(page, "Places locate", custom, { net: { hosts: [HOST] }, location: {} });
+  await page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true }).click();
+  await expect.poll(async () => (await tiles(frame)).filter(t => t.ok).length).toBeGreaterThan(3);
+  const locate = frame.getByRole("button", { name: "Show my location" });
+  // After the Allow click the shell shields the page until the pointer moves onto it.
+  await reach(page, locate);
+  await locate.click();
+  await expect.poll(async () => (await deviceCalls(page)).filter(c => c.method === "watch").length).toBe(1);
+  const watch = (await deviceCalls(page)).find(c => c.method === "watch")!;
+  expect([watch.cap, watch.args[0].minDistance]).toEqual(["location", 10]);
+  await host(page, `deviceResult(${JSON.stringify({ id: watch.id, ok: true, value: null })})`);
+  const push = (kind: string, rest: object) => host(page, `deviceEvent(${JSON.stringify({ cap: "location", watch: watch.args[0].watch, kind, ...rest })})`);
+
+  // A precise fix: the dot, centred, with its accuracy circle.
+  await push("update", { value: { lat: 48.8606, lon: 2.3376, accuracy: 60, precise: true } });
+  const dot = frame.getByRole("img", { name: "You are here" });
+  await expect(dot).toBeVisible();
+  await expect(frame.getByRole("button", { name: "Stop showing my location" })).toHaveAttribute("aria-pressed", "true");
+  const map = (await frame.locator(".k-map").boundingBox())!;
+  const at = (await dot.boundingBox())!;
+  expect(Math.abs(at.x + at.width / 2 - (map.x + map.width / 2))).toBeLessThan(2);
+  mkdirSync(SHOTS, { recursive: true });
+  const settled = async () => { const t = await tiles(frame); return t.length > 0 && t.every(x => x.ok); };
+  await expect.poll(settled).toBe(true);
+  await page.screenshot({ path: new URL("locate-precise.png", SHOTS).pathname });
+
+  // An approximate one: only the area's circle.
+  await push("update", { value: { lat: 48.86, lon: 2.34, accuracy: 2000, precise: false } });
+  await expect(frame.getByRole("img", { name: "You are in this area" })).toBeVisible();
+  await expect(dot).toHaveCount(0);
+  // The view zooms out to show the whole area.
+  const area = (await frame.getByRole("img", { name: "You are in this area" }).boundingBox())!;
+  expect(area.width).toBeLessThan(map.width);
+  await expect.poll(settled).toBe(true);
+  await page.screenshot({ path: new URL("locate-approximate.png", SHOTS).pathname });
+
+  // The watch stops (the app left the screen): the button is there to start again.
+  await push("end", { error: { code: "stopped", message: "stopped" } });
+  await expect(frame.getByRole("button", { name: "Show my location" })).toHaveAttribute("aria-pressed", "false");
+  await expect(frame.getByRole("img", { name: "You are in this area" })).toHaveCount(0);
+  await expect(frame.getByRole("status")).toHaveCount(0);
+
+  // A refused start says why; a second tap on a running watch stops it.
+  await locate.click();
+  await expect.poll(async () => (await deviceCalls(page)).filter(c => c.method === "watch").length).toBe(2);
+  const second = (await deviceCalls(page)).filter(c => c.method === "watch")[1];
+  await host(page, `deviceResult(${JSON.stringify({ id: second.id, ok: false, error: { code: "not_granted", message: "no" } })})`);
+  await expect(frame.getByRole("status")).toContainText("Location is not allowed for this app.");
+  await locate.click();
+  await expect.poll(async () => (await deviceCalls(page)).filter(c => c.method === "watch").length).toBe(3);
+  await frame.getByRole("button", { name: "Stop showing my location" }).click();
+  await expect.poll(async () => (await deviceCalls(page)).filter(c => c.method === "unwatch").length).toBe(1);
+  await expect(frame.getByRole("button", { name: "Show my location" })).toHaveAttribute("aria-pressed", "false");
+});
+
+test("a map in an app without location shows no locate button", async ({ page }) => {
+  const frame = await openMap(page, "Places no locate", "", {});
+  await expect(frame.getByRole("button", { name: "Zoom in" })).toBeVisible();
+  await expect(frame.getByRole("button", { name: "Show my location" })).toHaveCount(0);
+});
