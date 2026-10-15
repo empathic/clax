@@ -193,15 +193,21 @@ pub fn listen(s: &AppState) {
                 .call(move |db| {
                     let rs = db.approval_requests_by_rowid(&rows)?;
                     rs.iter()
-                        .map(|r| Ok((r.approver.clone(), request_view(db, r)?)))
+                        .map(|r| {
+                            let public = r.cause == clax_core::store::approvals::Cause::Ask;
+                            Ok((r.approver.clone(), public, request_view(db, r)?))
+                        })
                         .collect::<clax_core::Result<Vec<_>>>()
                 })
                 .await;
             match out {
                 Ok(views) => {
-                    for (recipient, request) in views {
-                        st.events
-                            .publish(Event::ApprovalRequest { request, recipient });
+                    for (recipient, public, request) in views {
+                        st.events.publish(Event::ApprovalRequest {
+                            request,
+                            recipient,
+                            public,
+                        });
                     }
                 }
                 Err(e) => tracing::warn!(error = %e, "approval request change not announced"),

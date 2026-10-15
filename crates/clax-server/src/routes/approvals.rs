@@ -228,7 +228,13 @@ pub async fn decide(
             st.approval_request(&rid, me.as_deref())?;
             let audit = audit.resolve(st)?;
             let d = st.decide_request(&audit, &rid, me.as_deref(), decision, via)?;
-            apply_decision(&ctx, st, &d.touched);
+            apply_decision(
+                &ctx,
+                st,
+                &d.touched,
+                d.request.approver.as_deref(),
+                &d.request.author,
+            );
             let approval = d
                 .approval
                 .as_ref()
@@ -287,7 +293,7 @@ pub async fn create(
             let before = st.live_approvals(me.as_deref())?.len();
             let audit = audit.resolve(st)?;
             let (a, touched) = st.approve_touched(&audit, me.as_deref(), &b.author, scope, via)?;
-            apply_decision(&ctx, st, &touched);
+            apply_decision(&ctx, st, &touched, me.as_deref(), &a.author);
             let made = st.live_approvals(me.as_deref())?.len() > before;
             Ok((made, json!({"approval": approval_view(st, &a)?})))
         })
@@ -324,7 +330,12 @@ pub async fn revoke(
             let (a, touched) = st.revoke_approval_touched(&audit, &id, me.as_deref())?;
             // Their waits learn of it at once (M17); nothing is delivered.
             ctx.waiters.wake(&touched.targets);
-            crate::feedback::publish_held(&ctx, st, &touched);
+            crate::feedback::publish_decision(
+                &ctx,
+                st,
+                &touched,
+                &crate::feedback::decision_parties(a.approver.as_deref(), &a.author),
+            );
             Ok(json!({"approval": approval_view(st, &a)?}))
         })
         .await?;

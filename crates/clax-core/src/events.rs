@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 
-use crate::feedback::{FeedbackPhase, FeedbackState, Tier};
+use crate::feedback::FeedbackState;
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -64,17 +64,18 @@ pub enum Event {
         thread_id: String,
         to_artifact_id: String,
     },
+    /// Thread `thread_id`'s delivery state changed for each reader in
+    /// `views`, which holds each one's state as it reads it
+    /// ([`crate::Delivery::view`]), by recipient key (empty: the owner; a
+    /// connected person's public ID). Only the `artifact` stream topic
+    /// carries it, each view to its reader's streams alone (spec 2026-10-08
+    /// §10, §18); `/api/events` never does.
     FeedbackState {
         artifact_id: String,
         thread_id: String,
-        state: FeedbackPhase,
-        tier: Option<Tier>,
-        since: String,
-        resends: u32,
-        exhausted: bool,
-        /// For `withheld`: whose approval the comment waits for.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        approver: Option<String>,
+        /// Never serialised.
+        #[serde(skip)]
+        views: Vec<(String, FeedbackState)>,
     },
     /// The artifact's working list changed; `working` is the whole list
     /// (spec §10 "Working"), never naming a session.
@@ -161,6 +162,10 @@ pub enum Event {
         /// The approver (`None`: the owner); never serialised.
         #[serde(skip)]
         recipient: Option<String>,
+        /// Its agent asked (`cause: ask`), so its change shows in the
+        /// agent's state everyone may read (§13); never serialised.
+        #[serde(skip)]
+        public: bool,
     },
     /// People, invites or grants changed (spec 2026-10-08-multi-agent-
     /// multi-person §6.2–§6.4): `change` names what (`what`) with the
@@ -179,19 +184,6 @@ pub enum Event {
         /// The artifacts the agent watched; never serialised.
         #[serde(skip)]
         artifacts: Vec<String>,
-    },
-    /// Thread `thread_id`'s delivery state changed as the people concerned
-    /// read it (spec 2026-10-08 §10, §18): waiting for an approval, declined,
-    /// or no longer. It carries no state: its recipients fetch the thread,
-    /// whose view says as much as they may read. Only the `inbox` stream
-    /// topics of `recipients` carry it (the owner's and each person's
-    /// concerned); `/api/events` never does.
-    HeldState {
-        artifact_id: String,
-        thread_id: String,
-        /// The recipients' keys (empty: the owner); never serialised.
-        #[serde(skip)]
-        recipients: Vec<String>,
     },
 }
 
@@ -216,8 +208,7 @@ impl Event {
             | Event::InboxRead { .. }
             | Event::ApprovalRequest { .. }
             | Event::People { .. }
-            | Event::Agents { .. }
-            | Event::HeldState { .. } => "",
+            | Event::Agents { .. } => "",
         }
     }
 
@@ -242,25 +233,6 @@ impl Event {
             Event::ApprovalRequest { .. } => "approval_request",
             Event::People { .. } => "people",
             Event::Agents { .. } => "agents",
-            Event::HeldState { .. } => "held_state",
-        }
-    }
-
-    /// The `feedback_state` event of `s`: its plain state
-    /// ([`FeedbackState::public`]), which every subscriber may read.
-    pub fn feedback_state(artifact_id: String, s: FeedbackState) -> Event {
-        let s = s.public();
-        Event::FeedbackState {
-            artifact_id,
-            thread_id: s.thread_id,
-            state: s.state,
-            tier: s.tier,
-            since: s.since,
-            resends: s.resends,
-            exhausted: s.exhausted,
-            // Whose approval it waits for is not public: an event reaches
-            // every subscriber of the artifact (spec 2026-10-08 §18).
-            approver: None,
         }
     }
 }
@@ -416,6 +388,7 @@ impl Default for EventBus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::feedback::{FeedbackPhase, Tier};
 
     #[tokio::test]
     async fn subscribers_receive_published_events_as_json() {
@@ -463,8 +436,7 @@ mod tests {
             resends: 0,
             exhausted: false,
             approver: None,
-            approver_person: None,
-            plain: None,
+            mine: false,
         };
         for ev in [
             Event::Thread {
@@ -487,7 +459,11 @@ mod tests {
                 thread_id: "t".into(),
                 moved: false,
             },
-            Event::feedback_state("a".into(), s),
+            Event::FeedbackState {
+                artifact_id: "a".into(),
+                thread_id: "t".into(),
+                views: vec![(String::new(), s)],
+            },
             Event::Working {
                 artifact_id: "a".into(),
                 working: vec![],
@@ -522,6 +498,7 @@ mod tests {
             Event::ApprovalRequest {
                 request: serde_json::json!({"id": "r"}),
                 recipient: None,
+                public: false,
             },
             Event::People {
                 change: serde_json::json!({"what": "grant_requested"}),

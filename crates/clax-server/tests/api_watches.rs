@@ -91,7 +91,7 @@ async fn untargeted_feedback_goes_to_the_next_publisher_and_session_end_releases
     let sid1 = s1["id"].as_str().unwrap().to_string();
     let a = ts.publish_as(&sid1, "T", "<p>1</p>").await;
     let aid = a["artifact"]["id"].as_str().unwrap().to_string();
-    let mut ev = ts.events(&format!("?artifact={aid}")).await;
+    let mut ev = ts.stream_as_owner(&[&format!("artifact:{aid}")]).await;
     let res = ts
         .authed(ts.client.patch(format!("{}/api/sessions/{sid1}", ts.base)))
         .json(&json!({"ended": true}))

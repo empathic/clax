@@ -83,7 +83,10 @@
   const guardSend = (e: Event, act: () => void) => {
     hint = guardedAction(e, "send", () => { if (card?.contains(document.activeElement)) head?.focus(); act(); });
   };
-  const label = $derived(t.status === "open" && t.sent_to_agent ? waitingLabel(t.feedback_state, now) : null);
+  // A viewer who reads none of its delivery (a visitor, or a person it
+  // holds nothing of theirs for) reads only that it was sent (spec
+  // 2026-10-08 §10).
+  const label = $derived(t.status === "open" && t.sent_to_agent ? waitingLabel(t.feedback_state, now) ?? `sent to ${t.owner?.name ?? "an agent"}` : null);
   // The owner agent (spec 2026-10-08 §12, §26 (e)): its name, with its
   // person when it is not this viewer's (the owner's agents have none; a
   // viewer unknown is taken for the owner); the person shows on hover.

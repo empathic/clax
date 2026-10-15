@@ -2654,16 +2654,33 @@ mod tests {
         let s = w.st.feedback_state(&tid, false).unwrap().unwrap();
         assert_eq!(s.state, crate::FeedbackPhase::Withheld);
         assert_eq!(s.approver.as_deref(), Some("Sam"));
-        // Declined: still held, waiting for nothing; by Sam, to those
-        // concerned; plain "sent" (no take yet) to everyone else.
+        // Declined: still held, waiting for nothing; by Sam, to the owner,
+        // Sam and Mia; to Sam's agent, its plain "sent" (no take yet); to a
+        // visitor, nothing.
         let rid = w.open(Some(&w.sam))[0].id.clone();
         w.st.decide_request(DAEMON, &rid, Some(&w.sam), Decision::Decline, Via::Shell)
             .unwrap();
         let s = w.st.feedback_state(&tid, false).unwrap().unwrap();
         assert_eq!(s.state, crate::FeedbackPhase::Declined);
         assert_eq!(s.approver.as_deref(), Some("Sam"));
-        assert_eq!(s.public().state, crate::FeedbackPhase::Sent);
-        assert!(s.public().approver.is_none());
+        let d =
+            w.st.deliveries(std::slice::from_ref(&tid), false)
+                .unwrap()
+                .remove(&tid)
+                .unwrap();
+        use crate::DeliveryViewer as V;
+        let agent = V::Agent {
+            session: Some(w.sid.clone()),
+            every: false,
+        };
+        let a = d.view(&agent).unwrap();
+        assert_eq!(a.state, crate::FeedbackPhase::Sent);
+        assert!(a.approver.is_none());
+        let sam = d.view(&V::Person(w.sam.clone())).unwrap();
+        assert!(sam.mine && sam.state == crate::FeedbackPhase::Declined);
+        let mia = d.view(&V::Person(w.mia.clone())).unwrap();
+        assert!(!mia.mine && mia.approver.as_deref() == Some("Sam"));
+        assert_eq!(d.view(&V::Visitor), None);
     }
 
     #[test]

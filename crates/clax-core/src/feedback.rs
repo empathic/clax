@@ -70,14 +70,13 @@ pub enum FeedbackPhase {
 }
 
 /// Where a thread's latest forwarded comment stands, for the shell's waiting
-/// indicator. `tier` is the tier waited on (`sent`), the delivering tier
-/// (`delivered`, `acknowledged`), or `None` (`agent_ended`, `withheld`).
+/// indicator, as one reader reads it ([`crate::Delivery::view`]).
+/// `tier` is the tier waited on (`sent`), the delivering tier (`delivered`,
+/// `acknowledged`), or `None` (`agent_ended`, `withheld`, `declined`).
 /// `approver` names, for `withheld`, the person whose approval the comment
 /// waits for, and for `declined` the person who declined; it is absent
-/// otherwise. Who reads which (spec 2026-10-08 §10, §18): the people
-/// concerned read the state as it is ([`FeedbackState::plain`] aside);
-/// agents read `withheld` without its approver and a declined thread's
-/// plain state; everyone else reads the plain state.
+/// otherwise and for agents. `mine` is set when that person is the reader
+/// ("waiting for your approval", "you declined").
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FeedbackState {
     pub thread_id: String,
@@ -88,35 +87,8 @@ pub struct FeedbackState {
     pub exhausted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approver: Option<String>,
-    /// For `withheld`, the approver's public ID (`None`: the owner); never
-    /// served: views keep `approver` only for the callers concerned (spec
-    /// 2026-10-08 §18).
-    #[serde(skip)]
-    pub approver_person: Option<String>,
-    /// The thread's delivery state as if nothing were held (`withheld` and
-    /// `declined` never; a row a take held and told its session of reads
-    /// as seen by the agent): what callers not concerned read. `None` when
-    /// it is this state itself. Never served.
-    #[serde(skip)]
-    pub plain: Option<Box<FeedbackState>>,
-}
-
-impl FeedbackState {
-    /// The plain state ([`FeedbackState::plain`]), which anyone may read.
-    pub fn public(&self) -> FeedbackState {
-        match &self.plain {
-            Some(p) => (**p).clone(),
-            None => self.clone(),
-        }
-    }
-
-    /// Whether whose approval it is (or was) appears in it.
-    pub fn held(&self) -> bool {
-        matches!(
-            self.state,
-            FeedbackPhase::Withheld | FeedbackPhase::Declined
-        )
-    }
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mine: bool,
 }
 
 /// One forwarded comment as an agent receives it: its body always, and each

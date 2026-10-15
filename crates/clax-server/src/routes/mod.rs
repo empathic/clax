@@ -1662,6 +1662,8 @@ mod agents {
     const CONTENT_VIEWS: &[&str] = &[
         "thread_view(",
         "thread_views(",
+        "thread_views_as(",
+        "thread_event_views(",
         "comment_view(",
         "artifact_view(",
         "with_owner(",

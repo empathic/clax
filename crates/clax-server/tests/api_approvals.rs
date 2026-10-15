@@ -2458,127 +2458,265 @@ async fn nothing_of_before(events: &mut EventReader, tid: &str, sentinel: &str) 
     .await;
 }
 
-/// A declined thread (owner decision 2026-10-14, "Declined by Mia" for
-/// those concerned): Mia's thread is sent to Sam's agent and Sam declines.
-/// The owner, Mia (its author) and Sam (who declined, `mine`) read
-/// `declined` by Sam; a LAN viewer, no cookie and the agents read the
-/// plain state: sent until the agent takes, then seen by the agent. The
-/// decision reaches the people concerned as `held_state` on their inbox
-/// topic, and no one else hears of it. Mia's next comment stays declined;
-/// once Sam allows Mia and then revokes that, the old decline no longer
-/// counts: the thread waits for Sam's approval again.
-#[tokio::test]
-async fn a_declined_thread_reads_declined_to_the_people_concerned_and_plain_to_everyone_else() {
-    let t = Two::new().await;
-    owner_agent_watches(&t).await;
-    let lan = t.w.ts.viewer(Some("Lucy")).await;
-    let lucy = Browser {
+/// Thread `tid` as `b` reads it.
+async fn thread_as_seen(b: &Browser<'_>, aid: &str, tid: &str) -> Value {
+    let (status, v) = b
+        .call("GET", &format!("/api/artifacts/{aid}/threads/{tid}"), None)
+        .await;
+    assert_eq!(status, 200, "{v}");
+    v["thread"].clone()
+}
+
+/// Thread `tid` as Mia's agent reads it.
+async fn mia_agent_thread(t: &Two, tid: &str) -> Value {
+    let (status, v) = json_of(
+        t.w.mia
+            .agent(
+                "GET",
+                &format!("/api/artifacts/{}/threads/{tid}", t.aid),
+                Some(&t.w.mia_session),
+                None,
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    v["thread"].clone()
+}
+
+/// A LAN viewer's browser (not a connected person).
+async fn lan_browser<'a>(t: &'a Two, name: &str) -> Browser<'a> {
+    let v = t.w.ts.viewer(Some(name)).await;
+    Browser {
         ts: &t.w.ts,
-        cookie: format!("clax_viewer={}", lan.cookie),
-    };
-    let nobody = Browser {
+        cookie: format!("clax_viewer={}", v.cookie),
+    }
+}
+
+/// A browser with no cookie at all.
+fn nobody(t: &Two) -> Browser<'_> {
+    Browser {
         ts: &t.w.ts,
         cookie: String::new(),
-    };
-    let tid = t.mia_thread("please fix the chart").await;
-    let (status, v) = t.mia_sends_to_sam(&tid).await;
+    }
+}
+
+/// A thread of the owner's that the tests comment on to mark a point in
+/// every event stream.
+async fn sentinel_thread(t: &Two) -> String {
+    t.w.ts.thread_as_owner(&t.aid, "a sentinel").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// The owner comments on `other`, then each of `readers` is read up to
+/// that comment's `thread` event, failing on any event of `tid` before it.
+async fn quiet(t: &Two, readers: &mut [&mut EventReader], tid: &str, other: &str) {
+    let (status, v) = t
+        .owner_browser()
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{other}/comments", t.aid),
+            Some(json!({"body": "a mark"})),
+        )
+        .await;
+    assert_eq!(status, 201, "{v}");
+    for r in readers.iter_mut() {
+        nothing_of_before(r, tid, other).await;
+    }
+}
+
+/// The owner comments on `other`, and each of `readers` is read up to that
+/// comment's `thread` event: what came before is passed over, save a
+/// `feedback_state`, which no visitor ever hears.
+async fn drain(t: &Two, readers: &mut [&mut EventReader], other: &str) {
+    let (status, v) = t
+        .owner_browser()
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{other}/comments", t.aid),
+            Some(json!({"body": "a mark"})),
+        )
+        .await;
+    assert_eq!(status, 201, "{v}");
+    for r in readers.iter_mut() {
+        within("the mark", async {
+            loop {
+                let (name, ev) = r.next().await;
+                assert_ne!(name, "feedback_state", "{ev}");
+                if name == "thread" && ev["thread"]["id"] == json!(other) {
+                    break;
+                }
+            }
+        })
+        .await;
+    }
+}
+
+/// The next `feedback_state` event of `tid` on `events`.
+async fn feedback_event(events: &mut EventReader, tid: &str) -> Value {
+    within("a feedback_state event", async {
+        loop {
+            let (name, ev) = events.next().await;
+            if name == "feedback_state" && ev["thread_id"] == json!(tid) {
+                return ev;
+            }
+        }
+    })
+    .await
+}
+
+/// `(state, approver, mine)` of a state.
+fn held(s: &Value) -> (Value, Value, Value) {
+    (s["state"].clone(), s["approver"].clone(), s["mine"].clone())
+}
+
+/// The owner reads every row (spec 2026-10-08 §10, §18): whose approval
+/// each thread waits for, and `mine` when it is the owner's own. Mia's
+/// thread sent to the owner's agent waits for the owner ("waiting for
+/// your approval"); Mia's sent to Sam's agent waits for Sam. The owner's
+/// stream hears each change, its own decline included, as the owner reads
+/// it.
+#[tokio::test]
+async fn the_owner_reads_every_rows_state_and_mine_for_its_own_approval() {
+    let t = Two::new().await;
+    let to_owner = t.mia_thread("for the owner's agent").await;
+    mia_sends_to_the_owners_agent(&t, &to_owner).await;
+    let to_sam = t.mia_thread("for Sam's agent").await;
+    let (status, v) = t.mia_sends_to_sam(&to_sam).await;
     assert_eq!(status, 200, "{v}");
-    let other = t.w.ts.thread_as_owner(&t.aid, "a sentinel").await["id"]
+    let owner = t.owner_browser();
+    let s = state_as(&owner, &t.aid, &to_owner).await;
+    assert_eq!(s["state"], "withheld", "{s}");
+    assert_eq!(s["mine"], true, "the owner's own approval: {s}");
+    assert!(s["approver"].is_string(), "{s}");
+    for s in [
+        state_as(&owner, &t.aid, &to_sam).await,
+        boot_state(&owner, &t.aid, &to_sam).await,
+    ] {
+        assert_eq!(
+            held(&s),
+            (json!("withheld"), json!("Sam"), Value::Null),
+            "{s}"
+        );
+    }
+    let mut events = owner.stream(&[&format!("artifact:{}", t.aid)]).await;
+    let rid = t
+        .owner_browser()
+        .call("GET", "/api/approvals/requests", None)
+        .await
+        .1["requests"][0]["id"]
         .as_str()
         .unwrap()
         .to_string();
-    // Waiting: the people concerned by name, agents without, everyone else plain.
-    for (who, b) in [("owner", t.owner_browser()), ("Mia", t.mia_browser())] {
-        let s = state_as(&b, &t.aid, &tid).await;
-        assert_eq!(
-            (s["state"].clone(), s["approver"].clone()),
-            (json!("withheld"), json!("Sam")),
-            "{who}: {s}"
-        );
-        assert!(s.get("mine").is_none(), "{who}: {s}");
-    }
-    let s = state_as(&t.sam_browser(), &t.aid, &tid).await;
+    let (status, v) = t
+        .owner_browser()
+        .call(
+            "POST",
+            &format!("/api/approvals/requests/{rid}/decide"),
+            Some(json!({"scope": "decline"})),
+        )
+        .await;
+    assert_eq!(status, 200, "{v}");
+    let ev = feedback_event(&mut events, &to_owner).await;
     assert_eq!(
-        (s["state"].clone(), s["mine"].clone()),
-        (json!("withheld"), json!(true)),
-        "{s}"
+        (ev["state"].clone(), ev["mine"].clone()),
+        (json!("declined"), json!(true)),
+        "{ev}"
     );
-    for (who, s) in [
-        ("Sam's agent", sam_agent_state(&t, &tid).await),
-        ("the owner's agent", owner_agent_state(&t, &tid).await),
+}
+
+/// The approver reads its own decisions (spec 2026-10-08 §10): Mia's
+/// thread sent to Sam's agent reads "waiting for your approval" to Sam,
+/// in views and the boot payload; his decline reaches his own stream as
+/// "you declined", and the owner's and Mia's as "declined by Sam".
+#[tokio::test]
+async fn the_approver_reads_its_own_decisions() {
+    let t = Two::new().await;
+    let tid = t.mia_thread("please fix the chart").await;
+    let (status, v) = t.mia_sends_to_sam(&tid).await;
+    assert_eq!(status, 200, "{v}");
+    let sam = t.sam_browser();
+    for s in [
+        state_as(&sam, &t.aid, &tid).await,
+        boot_state(&sam, &t.aid, &tid).await,
     ] {
-        assert_eq!(s["state"], "withheld", "{who}: {s}");
-        assert!(s.get("approver").is_none(), "{who}: {s}");
+        assert_eq!(
+            held(&s),
+            (json!("withheld"), json!("Sam"), json!(true)),
+            "{s}"
+        );
     }
-    for (who, b) in [("Lucy", &lucy), ("no one", &nobody)] {
-        let s = state_as(b, &t.aid, &tid).await;
-        assert_eq!(s["state"], "sent", "{who}: {s}");
-        assert!(s.get("approver").is_none(), "{who}: {s}");
-    }
-    // Sam declines: the owner's inbox topic hears it, anonymous events do not.
-    let mut held = t.owner_browser().stream(&["inbox"]).await;
-    let mut anon =
-        t.w.ts
-            .events_as(&format!("?artifact={}", t.aid), None)
-            .await;
+    let topic = format!("artifact:{}", t.aid);
+    let mut sams = sam.stream(&[&topic]).await;
+    let mut mias = t.mia_browser().stream(&[&topic]).await;
+    let mut owners = t.owner_browser().stream(&[&topic]).await;
     let rid = t.sams_requests().await[0]["id"]
         .as_str()
         .unwrap()
         .to_string();
     let (status, v) = t.sam_decides(&rid, "decline").await;
     assert_eq!(status, 200, "{v}");
-    within("held_state on the owner's inbox topic", async {
-        loop {
-            let (name, ev) = held.next().await;
-            if name == "held_state" && ev["thread_id"] == json!(tid) {
-                break;
-            }
-        }
-    })
-    .await;
-    let (status, v) = t
-        .owner_browser()
-        .call(
-            "POST",
-            &format!("/api/artifacts/{}/threads/{other}/comments", t.aid),
-            Some(json!({"body": "a later note"})),
-        )
-        .await;
-    assert_eq!(status, 201, "{v}");
-    nothing_of_before(&mut anon, &tid, &other).await;
-    // Declined, to the people concerned; plain to the rest.
-    for (who, b) in [("owner", t.owner_browser()), ("Mia", t.mia_browser())] {
-        let s = state_as(&b, &t.aid, &tid).await;
+    let ev = feedback_event(&mut sams, &tid).await;
+    assert_eq!(
+        held(&ev),
+        (json!("declined"), json!("Sam"), json!(true)),
+        "{ev}"
+    );
+    for (who, r) in [("Mia", &mut mias), ("the owner", &mut owners)] {
+        let ev = feedback_event(r, &tid).await;
         assert_eq!(
-            (s["state"].clone(), s["approver"].clone()),
-            (json!("declined"), json!("Sam")),
-            "{who}: {s}"
+            held(&ev),
+            (json!("declined"), json!("Sam"), Value::Null),
+            "{who}: {ev}"
         );
     }
-    let s = state_as(&t.sam_browser(), &t.aid, &tid).await;
+    let s = state_as(&sam, &t.aid, &tid).await;
     assert_eq!(
-        (s["state"].clone(), s["mine"].clone()),
-        (json!("declined"), json!(true)),
+        held(&s),
+        (json!("declined"), json!("Sam"), json!(true)),
         "{s}"
     );
-    assert_eq!(state_as(&lucy, &t.aid, &tid).await["state"], "sent");
-    assert_eq!(sam_agent_state(&t, &tid).await["state"], "sent");
-    assert_eq!(owner_agent_state(&t, &tid).await["state"], "sent");
-    // The agent takes: seen by the agent, to everyone but the people concerned.
+}
+
+/// The held content's author is concerned (owner decision 2026-10-14,
+/// "Only the held content's author"): Mia reads whose approval her
+/// thread waits for and its decline. Her next comment stays declined;
+/// once Sam allows Mia and revokes that, the old decline no longer
+/// counts and the thread waits for Sam again.
+#[tokio::test]
+async fn the_held_contents_author_reads_whose_approval_and_the_decline() {
+    let t = Two::new().await;
+    let tid = t.mia_thread("please fix the chart").await;
+    let (status, v) = t.mia_sends_to_sam(&tid).await;
+    assert_eq!(status, 200, "{v}");
+    let mia = t.mia_browser();
+    for s in [
+        state_as(&mia, &t.aid, &tid).await,
+        boot_state(&mia, &t.aid, &tid).await,
+    ] {
+        assert_eq!(
+            held(&s),
+            (json!("withheld"), json!("Sam"), Value::Null),
+            "{s}"
+        );
+    }
+    let rid = t.sams_requests().await[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, v) = t.sam_decides(&rid, "decline").await;
+    assert_eq!(status, 200, "{v}");
     t.sam_feedback("tier=piggyback").await;
-    assert_eq!(state_as(&lucy, &t.aid, &tid).await["state"], "acknowledged");
+    let s = state_as(&mia, &t.aid, &tid).await;
     assert_eq!(
-        state_as(&nobody, &t.aid, &tid).await["state"],
-        "acknowledged"
-    );
-    assert_eq!(sam_agent_state(&t, &tid).await["state"], "acknowledged");
-    assert_eq!(
-        state_as(&t.owner_browser(), &t.aid, &tid).await["state"],
-        "declined"
+        held(&s),
+        (json!("declined"), json!("Sam"), Value::Null),
+        "{s}"
     );
     // Mia comments again: still declined (the decline is Sam's of Mia here).
-    let (status, v) = t
-        .mia_browser()
+    let (status, v) = mia
         .call(
             "POST",
             &format!("/api/artifacts/{}/threads/{tid}/comments", t.aid),
@@ -2587,10 +2725,7 @@ async fn a_declined_thread_reads_declined_to_the_people_concerned_and_plain_to_e
         .await;
     assert_eq!(status, 201, "{v}");
     t.sam_feedback("tier=piggyback").await;
-    assert_eq!(
-        state_as(&t.owner_browser(), &t.aid, &tid).await["state"],
-        "declined"
-    );
+    assert_eq!(state_as(&mia, &t.aid, &tid).await["state"], "declined");
     // Sam allows Mia, then revokes it: the old decline no longer counts.
     let (status, a) = t
         .sam_browser()
@@ -2602,22 +2737,18 @@ async fn a_declined_thread_reads_declined_to_the_people_concerned_and_plain_to_e
         .await;
     assert!(status == 200 || status == 201, "{a}");
     t.sam_feedback("tier=piggyback").await;
+    let s = state_as(&mia, &t.aid, &tid).await;
     assert!(
-        !["withheld", "declined"].contains(
-            &state_as(&t.owner_browser(), &t.aid, &tid).await["state"]
-                .as_str()
-                .unwrap()
-        ),
-        "allowed"
+        !["withheld", "declined"].contains(&s["state"].as_str().unwrap()),
+        "{s}"
     );
-    let aid_ = a["approval"]["id"].as_str().unwrap().to_string();
+    let id = a["approval"]["id"].as_str().unwrap().to_string();
     let (status, v) = t
         .sam_browser()
-        .call("DELETE", &format!("/api/approvals/{aid_}"), None)
+        .call("DELETE", &format!("/api/approvals/{id}"), None)
         .await;
     assert_eq!(status, 200, "{v}");
-    let (status, v) = t
-        .mia_browser()
+    let (status, v) = mia
         .call(
             "POST",
             &format!("/api/artifacts/{}/threads/{tid}/comments", t.aid),
@@ -2626,88 +2757,449 @@ async fn a_declined_thread_reads_declined_to_the_people_concerned_and_plain_to_e
         .await;
     assert_eq!(status, 201, "{v}");
     t.sam_feedback("tier=piggyback").await;
-    let s = state_as(&t.owner_browser(), &t.aid, &tid).await;
+    let s = state_as(&mia, &t.aid, &tid).await;
     assert_eq!(
-        (s["state"].clone(), s["approver"].clone()),
-        (json!("withheld"), json!("Sam")),
+        held(&s),
+        (json!("withheld"), json!("Sam"), Value::Null),
         "{s}"
     );
 }
 
-/// Whose approval a thread waits for (spec 2026-10-08 §10, §18; owner
-/// decisions of 2026-10-14): the owner's thread sent to Sam's agent waits
-/// for Sam. The owner (its author) and Sam (the approver) read it, in views
-/// and in the boot payload; Mia, a connected person it does not concern, a
-/// LAN viewer and no cookie read the plain "sent", in views, in the boot
-/// payload and in events; agents read "withheld" without a name.
+/// Commenting on a thread makes no one concerned about others' content
+/// (owner decision 2026-10-14, "Only the held content's author"): Sam's
+/// thread is sent to the owner's agent, which holds it; Mia, whom the
+/// owner allowed, adds "+1"; the owner declines Sam. Mia reads her own
+/// comment's delivery, never the hold or the decline of Sam's, and her
+/// stream hears nothing at the decision: no `feedback_state` and no
+/// `agents` ping. Sam, the held content's author, reads "declined".
 #[tokio::test]
-async fn whose_approval_a_thread_waits_for_reaches_only_the_people_concerned() {
+async fn a_comment_on_anothers_held_thread_shows_nothing_of_its_hold() {
     let t = Two::new().await;
-    let lan = t.w.ts.viewer(Some("Lucy")).await;
-    let tid = t.w.ts.thread_as_owner(&t.aid, "please fix the chart").await["id"]
+    let handle = owner_agent_watches(&t).await;
+    approve_mia_for_owner(&t);
+    let sam_cookie = t.sam_browser().cookie.replace("clax_viewer=", "");
+    let tid = t.w.ts.thread_as(&t.aid, &sam_cookie, "Sam's note").await["id"]
         .as_str()
         .unwrap()
         .to_string();
-    let mut anon =
-        t.w.ts
-            .events_as(&format!("?artifact={}", t.aid), None)
-            .await;
+    let (status, v) = t
+        .sam_browser()
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{tid}/send", t.aid),
+            Some(json!({"to": handle})),
+        )
+        .await;
+    assert_eq!(status, 200, "{v}");
+    owner_take(&t).await;
+    let mia = t.mia_browser();
+    assert_eq!(
+        state_as(&mia, &t.aid, &tid).await,
+        Value::Null,
+        "nothing of Mia's yet"
+    );
+    let (status, v) = mia
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{tid}/comments", t.aid),
+            Some(json!({"body": "+1"})),
+        )
+        .await;
+    assert_eq!(status, 201, "{v}");
+    owner_take(&t).await;
+    let before = state_as(&mia, &t.aid, &tid).await;
+    assert!(
+        before["state"] == "acknowledged" || before["state"] == "delivered",
+        "Mia's own comment: {before}"
+    );
+    assert!(before.get("approver").is_none(), "{before}");
+    let other = sentinel_thread(&t).await;
+    let mut mias = mia
+        .stream(&[&format!("artifact:{}", t.aid), "agents", "inbox"])
+        .await;
+    let rid = t
+        .owner_browser()
+        .call("GET", "/api/approvals/requests", None)
+        .await
+        .1["requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["thread_id"] == json!(tid))
+        .expect("the owner's request about Sam")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let (status, v) = t
         .owner_browser()
         .call(
             "POST",
-            &format!("/api/artifacts/{}/threads/{tid}/send", t.aid),
-            Some(json!({"to": t.sam_handle})),
+            &format!("/api/approvals/requests/{rid}/decide"),
+            Some(json!({"scope": "decline"})),
         )
         .await;
     assert_eq!(status, 200, "{v}");
-    within("the send's events", async {
+    // Nothing of the decision reaches Mia's stream before a later mark.
+    let (status, v) = t
+        .owner_browser()
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{other}/comments", t.aid),
+            Some(json!({"body": "a mark"})),
+        )
+        .await;
+    assert_eq!(status, 201, "{v}");
+    within("the mark", async {
         loop {
-            let (name, ev) = anon.next().await;
-            let text = ev.to_string();
+            let (name, ev) = mias.next().await;
+            assert!(name != "agents", "an agents ping at the decision: {ev}");
             assert!(
-                !text.contains("\"approver\"") && !text.contains("withheld"),
-                "{name}: {ev}"
+                !(name == "feedback_state" && ev["thread_id"] == json!(tid)),
+                "{ev}"
             );
-            if name == "feedback_state" && ev["thread_id"] == json!(tid) {
-                assert_eq!(ev["state"], "sent", "{ev}");
+            if name == "thread" && ev["thread"]["id"] == json!(other) {
                 break;
             }
         }
     })
     .await;
-    let lucy = Browser {
-        ts: &t.w.ts,
-        cookie: format!("clax_viewer={}", lan.cookie),
-    };
-    let nobody = Browser {
-        ts: &t.w.ts,
-        cookie: String::new(),
-    };
-    for (who, b, held) in [
-        ("owner", t.owner_browser(), true),
-        ("Sam, the approver", t.sam_browser(), true),
-        ("Mia, not concerned", t.mia_browser(), false),
-        ("Lucy, a LAN viewer", lucy, false),
-        ("no one", nobody, false),
-    ] {
-        for (place, s) in [
-            ("view", state_as(&b, &t.aid, &tid).await),
-            ("boot", boot_state(&b, &t.aid, &tid).await),
-        ] {
-            if held {
-                assert_eq!(
-                    (s["state"].clone(), s["approver"].clone()),
-                    (json!("withheld"), json!("Sam")),
-                    "{who} {place}: {s}"
-                );
-            } else {
-                assert_eq!(s["state"], "sent", "{who} {place}: {s}");
-                assert!(s.get("approver").is_none(), "{who} {place}: {s}");
+    assert_eq!(
+        state_as(&mia, &t.aid, &tid).await,
+        before,
+        "unchanged for Mia"
+    );
+    assert_eq!(boot_state(&mia, &t.aid, &tid).await, before);
+    let s = state_as(&t.sam_browser(), &t.aid, &tid).await;
+    assert_eq!(s["state"], "declined", "Sam, the author: {s}");
+    // The owner then allows Sam, and its agent's take delivers his
+    // comment: Mia's rows did not change, so she hears no state.
+    let (status, v) = t
+        .owner_browser()
+        .call(
+            "POST",
+            "/api/approvals",
+            Some(json!({"author": t.sam_public(), "scope": "everywhere"})),
+        )
+        .await;
+    assert!(status == 200 || status == 201, "{v}");
+    let taken = owner_take(&t).await;
+    assert!(
+        taken.iter().any(|f| f["thread_id"] == json!(tid)),
+        "Sam's comment delivered: {taken:?}"
+    );
+    let (status, v) = t
+        .owner_browser()
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{other}/comments", t.aid),
+            Some(json!({"body": "another mark"})),
+        )
+        .await;
+    assert_eq!(status, 201, "{v}");
+    within("the second mark", async {
+        loop {
+            let (name, ev) = mias.next().await;
+            assert!(
+                !(name == "feedback_state" && ev["thread_id"] == json!(tid)),
+                "{ev}"
+            );
+            if name == "thread" && ev["thread"]["id"] == json!(other) {
+                break;
             }
         }
+    })
+    .await;
+    assert_eq!(
+        state_as(&mia, &t.aid, &tid).await,
+        before,
+        "still Mia's own"
+    );
+}
+
+/// A page's authors are the held content's authors (spec §10): Mia's
+/// page, running in the owner's browser, sends to Sam's agent, which Sam
+/// has not allowed Mia's content to reach. Mia reads whose approval it
+/// waits for, and Sam's decline.
+#[tokio::test]
+async fn a_pages_author_reads_the_hold_of_what_her_page_sent() {
+    let t = Two::new().await;
+    sam_approves_the_owner(&t).await;
+    let aid = t.w.read.artifact.clone();
+    let r =
+        t.w.sam
+            .agent(
+                "PUT",
+                &format!("/api/sessions/{}/watches/{aid}", t.w.sam_session),
+                Some(&t.w.sam_session),
+                None,
+            )
+            .await;
+    assert_eq!(r.status(), 200);
+    let form = reqwest::multipart::Form::new()
+        .text("anchor", clax_server::testing::element_anchor().to_string())
+        .text("body", "the page asks")
+        .text("version", "2")
+        .text("via_page", "true");
+    let r = t
+        .owner_browser()
+        .req("POST", &format!("/api/artifacts/{aid}/threads"))
+        .header("x-clax-via", "page")
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    let (status, v) = json_of(r).await;
+    assert_eq!(status, 201, "{v}");
+    let tid = v["thread"]["id"].as_str().unwrap().to_string();
+    let r = t
+        .owner_browser()
+        .req("POST", &format!("/api/artifacts/{aid}/threads/{tid}/send"))
+        .header("x-clax-via", "page")
+        .json(&json!({"to": t.sam_handle}))
+        .send()
+        .await
+        .unwrap();
+    let (status, v) = json_of(r).await;
+    assert_eq!(status, 200, "{v}");
+    let s = state_as(&t.mia_browser(), &aid, &tid).await;
+    assert_eq!(
+        held(&s),
+        (json!("withheld"), json!("Sam"), Value::Null),
+        "{s}"
+    );
+    let rid = t.sams_requests().await[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, v) = t.sam_decides(&rid, "decline").await;
+    assert_eq!(status, 200, "{v}");
+    let s = state_as(&t.mia_browser(), &aid, &tid).await;
+    assert_eq!(
+        held(&s),
+        (json!("declined"), json!("Sam"), Value::Null),
+        "{s}"
+    );
+}
+
+/// Visitors read only "sent" (owner decision 2026-10-14, "Only \"sent\""):
+/// a LAN viewer and no cookie read a sent thread's `sent_to_agent` and no
+/// delivery state, in views and the boot payload, and anonymous
+/// `/api/events` and a LAN viewer's `/api/stream` carry no
+/// `feedback_state`. An approval, a decline, a revocation, the owner's
+/// `*unconnected` switch turned on and off, and the agents' takes that
+/// follow each change nothing they read.
+#[tokio::test]
+async fn visitors_read_sent_and_nothing_of_any_decision() {
+    let t = Two::new().await;
+    let handle = owner_agent_watches(&t).await;
+    let lucy = lan_browser(&t, "Lucy").await;
+    let nobody = nobody(&t);
+    let other = sentinel_thread(&t).await;
+    let topic = format!("artifact:{}", t.aid);
+    let mut anon =
+        t.w.ts
+            .events_as(&format!("?artifact={}", t.aid), None)
+            .await;
+    let mut lucys = lucy.stream(&[&topic]).await;
+    // Mia's thread to Sam's agent: held, then told at the take.
+    let tid = t.mia_thread("please fix the chart").await;
+    let (status, v) = t.mia_sends_to_sam(&tid).await;
+    assert_eq!(status, 200, "{v}");
+    t.sam_feedback("tier=piggyback").await;
+    drain(&t, &mut [&mut anon, &mut lucys], &other).await;
+    let (lucy0, nobody0) = (
+        thread_as_seen(&lucy, &t.aid, &tid).await,
+        thread_as_seen(&nobody, &t.aid, &tid).await,
+    );
+    for (who, v) in [("Lucy", &lucy0), ("no one", &nobody0)] {
+        assert_eq!(v["feedback_state"], Value::Null, "{who}: {v}");
+        assert_eq!(v["sent_to_agent"], true, "{who}: {v}");
     }
-    let s = sam_agent_state(&t, &tid).await;
+    for b in [&lucy, &nobody] {
+        assert_eq!(boot_state(b, &t.aid, &tid).await, Value::Null);
+    }
+    let unchanged = |step: &str, l: Value, n: Value| {
+        assert_eq!(l, lucy0, "Lucy after {step}");
+        assert_eq!(n, nobody0, "no one after {step}");
+    };
+    // A decline, then the take.
+    let rid = t.sams_requests().await[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, v) = t.sam_decides(&rid, "decline").await;
+    assert_eq!(status, 200, "{v}");
+    t.sam_feedback("tier=piggyback").await;
+    quiet(&t, &mut [&mut anon, &mut lucys], &tid, &other).await;
+    unchanged(
+        "a decline",
+        thread_as_seen(&lucy, &t.aid, &tid).await,
+        thread_as_seen(&nobody, &t.aid, &tid).await,
+    );
+    // An approval, then the take that delivers.
+    let (status, a) = t
+        .sam_browser()
+        .call(
+            "POST",
+            "/api/approvals",
+            Some(json!({"author": t.w.mia_public, "scope": "everywhere"})),
+        )
+        .await;
+    assert!(status == 200 || status == 201, "{a}");
+    t.sam_feedback("tier=piggyback").await;
+    quiet(&t, &mut [&mut anon, &mut lucys], &tid, &other).await;
+    unchanged(
+        "an approval",
+        thread_as_seen(&lucy, &t.aid, &tid).await,
+        thread_as_seen(&nobody, &t.aid, &tid).await,
+    );
+    // A revocation.
+    let id = a["approval"]["id"].as_str().unwrap().to_string();
+    let (status, v) = t
+        .sam_browser()
+        .call("DELETE", &format!("/api/approvals/{id}"), None)
+        .await;
+    assert_eq!(status, 200, "{v}");
+    t.sam_feedback("tier=piggyback").await;
+    quiet(&t, &mut [&mut anon, &mut lucys], &tid, &other).await;
+    unchanged(
+        "a revocation",
+        thread_as_seen(&lucy, &t.aid, &tid).await,
+        thread_as_seen(&nobody, &t.aid, &tid).await,
+    );
+    // The owner's switch: Lucy's own thread to the owner's agent, held
+    // while it is off, let through when it is turned on.
+    let (status, v) = t.owner_browser().call("GET", "/api/people", None).await;
+    assert_eq!(status, 200, "{v}");
+    let on = v["unconnected"]["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, v) = t
+        .owner_browser()
+        .call("DELETE", &format!("/api/approvals/{on}"), None)
+        .await;
+    assert_eq!(status, 200, "{v}");
+    let lucy_cookie = lucy.cookie.replace("clax_viewer=", "");
+    let own = t.w.ts.thread_as(&t.aid, &lucy_cookie, "Lucy asks").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, v) = lucy
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{own}/send", t.aid),
+            Some(json!({"to": handle})),
+        )
+        .await;
+    assert_eq!(status, 200, "{v}");
+    owner_take(&t).await;
+    assert_eq!(
+        state_as(&t.owner_browser(), &t.aid, &own).await["state"],
+        "withheld",
+        "held while the switch is off"
+    );
+    drain(&t, &mut [&mut anon, &mut lucys], &other).await;
+    let lucy_own = state_as(&lucy, &t.aid, &own).await;
+    assert_eq!(lucy_own, Value::Null);
+    let (status, v) = t
+        .owner_browser()
+        .call(
+            "POST",
+            "/api/approvals",
+            Some(json!({"author": "*unconnected", "scope": "everywhere"})),
+        )
+        .await;
+    assert!(status == 200 || status == 201, "{v}");
+    owner_take(&t).await;
+    assert_ne!(
+        state_as(&t.owner_browser(), &t.aid, &own).await["state"],
+        "withheld",
+        "let through"
+    );
+    quiet(&t, &mut [&mut anon, &mut lucys], &own, &other).await;
+    assert_eq!(state_as(&lucy, &t.aid, &own).await, Value::Null);
+    assert_eq!(state_as(&nobody, &t.aid, &own).await, Value::Null);
+    unchanged(
+        "the switch",
+        thread_as_seen(&lucy, &t.aid, &tid).await,
+        thread_as_seen(&nobody, &t.aid, &tid).await,
+    );
+}
+
+/// Agents read their own threads only (owner decision 2026-10-14, "Own
+/// threads only"): Sam's thread sent to the owner's agent, which holds it.
+/// The owner's agent reads "withheld" with no approver, then the plain
+/// state after the owner declines. Mia's agent and Sam's agent read no
+/// delivery state at all, before or after, though they see the thread's
+/// owner chip.
+#[tokio::test]
+async fn agents_read_the_state_of_threads_sent_to_them_alone() {
+    let t = Two::new().await;
+    let handle = owner_agent_watches(&t).await;
+    mia_agent_watches(&t).await;
+    let sam_cookie = t.sam_browser().cookie.replace("clax_viewer=", "");
+    let tid = t.w.ts.thread_as(&t.aid, &sam_cookie, "Sam's note").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, v) = t
+        .sam_browser()
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{tid}/send", t.aid),
+            Some(json!({"to": handle})),
+        )
+        .await;
+    assert_eq!(status, 200, "{v}");
+    owner_take(&t).await;
+    let s = owner_agent_state(&t, &tid).await;
     assert_eq!(s["state"], "withheld", "{s}");
+    assert!(
+        s.get("approver").is_none() && s.get("mine").is_none(),
+        "{s}"
+    );
+    let before = mia_agent_thread(&t, &tid).await;
+    assert_eq!(before["feedback_state"], Value::Null, "{before}");
+    assert!(
+        before["owner"]["name"].is_string(),
+        "the owner chip: {before}"
+    );
+    assert_eq!(sam_agent_state(&t, &tid).await, Value::Null);
+    let rid = t
+        .owner_browser()
+        .call("GET", "/api/approvals/requests", None)
+        .await
+        .1["requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["thread_id"] == json!(tid))
+        .expect("the owner's request about Sam")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, v) = t
+        .owner_browser()
+        .call(
+            "POST",
+            &format!("/api/approvals/requests/{rid}/decide"),
+            Some(json!({"scope": "decline"})),
+        )
+        .await;
+    assert_eq!(status, 200, "{v}");
+    owner_take(&t).await;
+    let s = owner_agent_state(&t, &tid).await;
+    assert_eq!(s["state"], "acknowledged", "the plain state: {s}");
     assert!(s.get("approver").is_none(), "{s}");
+    assert_eq!(
+        mia_agent_thread(&t, &tid).await,
+        before,
+        "Mia's agent learns nothing"
+    );
+    assert_eq!(
+        mia_agent_thread(&t, &tid).await["feedback_state"],
+        Value::Null
+    );
+    assert_eq!(sam_agent_state(&t, &tid).await, Value::Null);
 }

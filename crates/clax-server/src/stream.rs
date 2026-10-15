@@ -237,9 +237,13 @@ impl Chan {
 }
 
 /// Which subscribers of a channel an item reaches.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum Gate {
     Any,
+    /// Only the streams of one person: the recipient key (empty: the
+    /// owner) a stream was opened for (a delivery state as that person
+    /// reads it, spec 2026-10-08 §10).
+    Person(String),
     /// Only subscribers on this machine or holding the token (a live page's
     /// gallery event; see [`crate::live::sees_live_pages`]).
     Local,
@@ -252,11 +256,12 @@ enum Gate {
 }
 
 impl Gate {
-    fn admits(self, level: Level, local: bool) -> bool {
+    fn admits(&self, level: Level, local: bool, person: Option<&str>) -> bool {
         match self {
             Gate::Any => true,
+            Gate::Person(p) => person == Some(p.as_str()),
             Gate::Local => local,
-            Gate::Level { min, unless } => level >= min && unless.is_none_or(|u| level < u),
+            Gate::Level { min, unless } => level >= *min && unless.is_none_or(|u| level < u),
         }
     }
 }
@@ -282,6 +287,8 @@ struct Shared {
 struct Sub {
     tx: Option<mpsc::Sender<Arc<Item>>>,
     level: Level,
+    /// The stream's recipient key ([`StreamEntry::person`]).
+    person: Option<String>,
     /// The stream may see live pages.
     local: bool,
     lagged: bool,
@@ -296,6 +303,10 @@ struct Channel {
     evicted: u64,
     /// The last presence list, which the next `presence` event is a diff against.
     people: Vec<PresenceView>,
+    /// The last delivery state sent to each recipient key for each thread:
+    /// one that would say the same again is not sent (it would tell only
+    /// that something else changed).
+    delivery: HashMap<(String, String), Value>,
 }
 
 struct StreamEntry {
@@ -490,7 +501,11 @@ fn routes(ev: &Event) -> Vec<(Chan, Gate)> {
             (Chan::Working(a.clone()), Gate::Any),
             (Chan::DocsAt(a, Level::View), Gate::Any),
         ],
-        Event::FeedbackState { .. } => vec![(Chan::Artifact(a), Gate::Any)],
+        // Each reader's state to its own streams; no one else's.
+        Event::FeedbackState { views, .. } => views
+            .iter()
+            .map(|(key, _)| (Chan::Artifact(a.clone()), Gate::Person(key.clone())))
+            .collect(),
         Event::Working { .. } => vec![
             (Chan::Gallery, Gate::Any),
             (Chan::Working(a), Gate::Any),
@@ -521,20 +536,28 @@ fn routes(ev: &Event) -> Vec<(Chan, Gate)> {
             Chan::Inbox(recipient.clone().unwrap_or_default()),
             Gate::Any,
         )],
-        Event::ApprovalRequest { recipient, .. } => vec![
-            (
-                Chan::Inbox(recipient.clone().unwrap_or_default()),
-                Gate::Any,
-            ),
-            (Chan::Agents, Gate::Any),
-        ],
+        // The roster changes for the approver, whose agent's `blocked`
+        // counts it, and the owner, who sees every agent in full; for
+        // everyone only when the agent asked, which shows in its state
+        // (§13). No one else hears a decision (§10).
+        Event::ApprovalRequest {
+            recipient, public, ..
+        } => {
+            let key = recipient.clone().unwrap_or_default();
+            let mut v = vec![(Chan::Inbox(key.clone()), Gate::Any)];
+            if *public {
+                v.push((Chan::Agents, Gate::Any));
+            } else {
+                if !key.is_empty() {
+                    v.push((Chan::Agents, Gate::Person(key)));
+                }
+                v.push((Chan::Agents, Gate::Person(String::new())));
+            }
+            v
+        }
         Event::People { .. } => vec![(Chan::People, Gate::Any)],
         // An agent started, ended or was renamed: the roster, and the Send
         // menus of the artifacts it watched.
-        Event::HeldState { recipients, .. } => recipients
-            .iter()
-            .map(|r| (Chan::Inbox(r.clone()), Gate::Any))
-            .collect(),
         Event::Agents { artifacts } => artifacts
             .iter()
             .map(|a| (Chan::Artifact(a.clone()), Gate::Any))
@@ -573,6 +596,7 @@ fn routes(ev: &Event) -> Vec<(Chan, Gate)> {
 fn project(
     ev: &Event,
     chan: &Chan,
+    gate: &Gate,
     topic: &str,
     ch: &mut Channel,
 ) -> Option<(&'static str, Value)> {
@@ -626,6 +650,33 @@ fn project(
                 .map(|w| json!({"agent": w.agent, "harness": w.harness, "threads": w.thread_ids.len(), "started_at": w.started_at}))
                 .collect();
             json!({"topic": topic, "artifact_id": artifact_id, "working": summary})
+        }
+        (
+            Event::FeedbackState {
+                artifact_id,
+                thread_id,
+                views,
+            },
+            _,
+        ) => {
+            // A person's own streams; a live page's site, the owner's.
+            let key = match gate {
+                Gate::Person(k) => k.as_str(),
+                _ => "",
+            };
+            let (_, state) = views.iter().find(|(k, _)| k == key)?;
+            let mut v = json!({"topic": topic, "artifact_id": artifact_id});
+            if let (Value::Object(m), Ok(Value::Object(st))) = (&mut v, serde_json::to_value(state))
+            {
+                m.extend(st);
+            }
+            let last = ch
+                .delivery
+                .insert((key.to_string(), thread_id.clone()), v.clone());
+            if last.as_ref() == Some(&v) {
+                return None;
+            }
+            v
         }
         (
             Event::Presence {
@@ -707,7 +758,7 @@ impl Hub {
         for (chan, gate) in present {
             let topic = chan.topic();
             let ch = g.chans.get_mut(&chan).expect("checked above");
-            let Some((name, data)) = project(ev, &chan, &topic, ch) else {
+            let Some((name, data)) = project(ev, &chan, &gate, &topic, ch) else {
                 continue;
             };
             let item = Arc::new(Item {
@@ -723,7 +774,11 @@ impl Hub {
             }
             ch.ring.push_back(item.clone());
             for sub in ch.subs.values_mut() {
-                if sub.lagged || !item.gate.admits(sub.level, sub.local) {
+                if sub.lagged
+                    || !item
+                        .gate
+                        .admits(sub.level, sub.local, sub.person.as_deref())
+                {
                     continue;
                 }
                 let Some(tx) = &sub.tx else { continue };
@@ -817,7 +872,14 @@ impl Hub {
                         replay.extend(
                             ch.ring
                                 .iter()
-                                .filter(|i| i.seq > from && i.gate.admits(s.caller.level, s.local))
+                                .filter(|i| {
+                                    i.seq > from
+                                        && i.gate.admits(
+                                            s.caller.level,
+                                            s.local,
+                                            s.person.as_deref(),
+                                        )
+                                })
                                 .cloned(),
                         );
                     }
@@ -944,6 +1006,7 @@ impl Hub {
                     Sub {
                         tx: s.tx.clone(),
                         level: s.caller.level,
+                        person: s.person.clone(),
                         local: s.local,
                         lagged: false,
                         shared: s.shared.clone(),
@@ -1353,6 +1416,47 @@ mod tests {
         ] {
             assert!(Topic::parse(bad).is_err(), "{bad}");
         }
+    }
+
+    fn delivery(views: &[(&str, &str)]) -> Event {
+        Event::FeedbackState {
+            artifact_id: A.into(),
+            thread_id: "t".into(),
+            views: views
+                .iter()
+                .map(|(key, state)| {
+                    let s: clax_core::FeedbackState = serde_json::from_value(serde_json::json!({
+                        "thread_id": "t", "state": state, "tier": null, "since": "s",
+                        "resends": 0, "exhausted": false
+                    }))
+                    .unwrap();
+                    (key.to_string(), s)
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_delivery_state_reaches_its_readers_streams_alone_and_never_twice_the_same() {
+        let hub = Hub::new(Arc::default());
+        let c = viewer(Level::Interact, None);
+        let open = |person: Option<&str>| {
+            let o = hub.open_for(c.clone(), true, None, None, person.map(str::to_string));
+            hub.update(&o.id, &c, &[Topic::Artifact(A.into())], &[])
+                .unwrap();
+            o
+        };
+        let (mut owner, mut mia, mut lan) = (open(Some("")), open(Some("u_mia")), open(None));
+        hub.dispatch(&delivery(&[("", "withheld"), ("u_mia", "sent")]));
+        let o = drain(&mut owner);
+        assert!(o.len() == 1 && o[0].1.contains("withheld"), "{o:?}");
+        let m = drain(&mut mia);
+        assert!(m.len() == 1 && m[0].1.contains("\"sent\""), "{m:?}");
+        assert!(drain(&mut lan).is_empty(), "a visitor hears none");
+        // The same state again tells its reader nothing: it is not sent.
+        hub.dispatch(&delivery(&[("", "withheld"), ("u_mia", "acknowledged")]));
+        assert!(drain(&mut owner).is_empty());
+        assert_eq!(drain(&mut mia).len(), 1);
     }
 
     #[test]

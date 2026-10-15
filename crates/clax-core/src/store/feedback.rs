@@ -1740,40 +1740,39 @@ impl Store {
         })
     }
 
-    /// The state of the thread's latest forwarded comment, or `None` when
-    /// nothing was forwarded. Any acknowledged row: `acknowledged`; else any
-    /// delivered row: `delivered`; else any row a take held from its live
-    /// session because its body is withheld (`placeholder_at`), or that an
-    /// open approval request of that session's person covers (a routed
-    /// send, §10): `withheld`, naming that session's person as `approver`
-    /// (spec 2026-10-08 §8.4);
-    /// else any row targeting a live session:
-    /// `sent`, with the tier that session waits on (`queue` for an armed Codex
-    /// session with a known session ID when `codex_push` and `codex queue` has
-    /// not failed to take the row, `inject` for an
-    /// armed Pi session, `stop_hook` for other armed sessions, else
-    /// `piggyback`); else `agent_ended`.
+    /// The state of the thread's latest forwarded comment as the owner
+    /// reads it ([`Delivery::view`] of [`DeliveryViewer::Owner`]), or
+    /// `None` when nothing was forwarded. Any acknowledged row:
+    /// `acknowledged`; else any delivered row: `delivered`; else any row
+    /// held from its live session (`withheld`, naming that session's
+    /// person as `approver`) or declined (`declined`); else any row
+    /// targeting a live session: `sent`, with the tier that session waits
+    /// on (`queue` for an armed Codex session with a known session ID when
+    /// `codex_push` and `codex queue` has not failed to take the row,
+    /// `inject` for an armed Pi session, `stop_hook` for other armed
+    /// sessions, else `piggyback`); else `agent_ended`.
     pub fn feedback_state(
         &self,
         thread_id: &str,
         codex_push: bool,
     ) -> Result<Option<FeedbackState>> {
         Ok(self
-            .feedback_states(&[thread_id.to_string()], codex_push)?
-            .remove(thread_id))
+            .deliveries(&[thread_id.to_string()], codex_push)?
+            .remove(thread_id)
+            .and_then(|d| d.view(&DeliveryViewer::Owner)))
     }
 
-    /// [`Store::feedback_state`] of each of `thread_ids`, by thread ID; a
-    /// thread with nothing forwarded is missing.
-    pub fn feedback_states(
+    /// The delivery rows of each of `thread_ids` that has any, by thread
+    /// ID, each read as [`Delivery::view`] says.
+    pub fn deliveries(
         &self,
         thread_ids: &[String],
         codex_push: bool,
-    ) -> Result<BTreeMap<String, FeedbackState>> {
+    ) -> Result<BTreeMap<String, Delivery>> {
         if thread_ids.is_empty() {
             return Ok(BTreeMap::new());
         }
-        self.with_read(|c| feedback_states_in(c, thread_ids, codex_push))
+        self.with_read(|c| deliveries_in(c, thread_ids, codex_push))
     }
 }
 
@@ -1809,8 +1808,8 @@ pub(crate) fn id_array(ids: &[String]) -> String {
     serde_json::to_string(&set).expect("strings serialise")
 }
 
-/// The feedback rows of each thread, each saying whether its comment is
-/// the thread's latest forwarded one.
+/// The feedback rows of each thread, oldest first, each with what
+/// [`Delivery`] reads of it.
 pub(crate) const FEEDBACK_STATES: &str =
     "SELECT f.thread_id, f.target_session_id, f.created_at, f.delivered_at, f.delivery_tier, f.acknowledged_at,
             f.resend_count, f.untargeted_at, s.ended_at, s.harness, s.harness_session_id IS NOT NULL,
@@ -1828,8 +1827,7 @@ pub(crate) const FEEDBACK_STATES: &str =
                                              ELSE pa.author END
                                       FROM page_authors pa
                                      WHERE pa.kind = 'comment' AND pa.id = f.comment_id)),
-            f.comment_id = (SELECT l.comment_id FROM feedback l WHERE l.thread_id = j.value
-                             ORDER BY l.created_at DESC, l.id DESC LIMIT 1),
+            f.last_sent_at,
             s.person, f.comment_id, t.artifact_id,
             (SELECT json_group_array(a) FROM (
                 SELECT c.author_public_id AS a FROM comments c
@@ -1846,6 +1844,7 @@ pub(crate) const FEEDBACK_STATES: &str =
        LEFT JOIN watches w ON w.session_id = f.target_session_id AND w.artifact_id = t.artifact_id
       ORDER BY f.thread_id, f.created_at, f.id";
 
+#[derive(Clone, Debug, PartialEq)]
 struct StateRow {
     target: Option<String>,
     created_at: String,
@@ -1853,6 +1852,7 @@ struct StateRow {
     tier: Option<String>,
     acknowledged_at: Option<String>,
     resends: u32,
+    last_sent_at: Option<String>,
     untargeted_at: Option<String>,
     ended_at: Option<String>,
     harness: Option<String>,
@@ -1866,13 +1866,16 @@ struct StateRow {
     /// Undelivered, and an open approval request of its session's person
     /// covers its comment's author there.
     requested: bool,
-    /// Its comment is the thread's latest forwarded one.
-    latest: bool,
     /// When its person declined its comment's author there, while that
     /// decline is in force ([`Decline`]) and no request is open.
     declined: Option<String>,
-    /// Its session's person (`None`: the owner's).
+    /// Its session's person (`None`: the owner's, or no session).
     person: Option<String>,
+    comment_id: String,
+    /// Its comment's authors' public IDs: the comment's own and, for a
+    /// comment a page wrote, the page's authors (the held content's
+    /// authors, spec §10).
+    authors: Vec<String>,
 }
 
 impl StateRow {
@@ -1886,7 +1889,7 @@ impl StateRow {
     /// an open request or told of (`placeholder_at`) with no decline in
     /// force. An approval releases it (`placeholder_at` cleared as the
     /// content becomes visible); a decline keeps it held but waiting for
-    /// nothing. The one rule the thread's state reads.
+    /// nothing.
     fn waits_for_approval(&self) -> bool {
         self.pending()
             && (self.requested || (self.placeholder_at.is_some() && self.declined.is_none()))
@@ -1899,11 +1902,132 @@ impl StateRow {
     }
 
     /// When a take held it from its session and told it so, while it is
-    /// undelivered: what the plain state reads as seen by the agent.
+    /// undelivered: the agent read that much of it.
     fn told(&self) -> Option<&str> {
         self.placeholder_at
             .as_deref()
             .filter(|_| self.delivered_at.is_none())
+    }
+
+    /// When it last changed: the newest of its own times and its session's
+    /// end. Clearing `placeholder_at` (an approval) stamps nothing.
+    fn stamp(&self) -> &str {
+        [
+            self.delivered_at.as_deref(),
+            self.acknowledged_at.as_deref(),
+            self.placeholder_at.as_deref(),
+            self.untargeted_at.as_deref(),
+            self.last_sent_at.as_deref(),
+            self.ended_at.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .fold(self.created_at.as_str(), |a, b| a.max(b))
+    }
+}
+
+/// Who reads a thread's delivery state (spec 2026-10-08 §10, §18): each
+/// reads the rows [`Delivery::view`] shows it, and nothing of the others.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeliveryViewer {
+    /// The owner's browser, or the owner by hand: every row, whose
+    /// approval named.
+    Owner,
+    /// A connected person's browser (a public ID): the rows of content
+    /// they wrote (a comment, or the page that wrote one) and the rows
+    /// sent to their own agents, whose approval named.
+    Person(String),
+    /// An agent (its session; `None`: none named): the rows sent to that
+    /// session alone, whose approval never named; every row while nothing
+    /// can be held (`every`: no person and the owner's `*unconnected`
+    /// switch on, §8.7), as before people existed.
+    Agent {
+        session: Option<String>,
+        every: bool,
+    },
+    /// A LAN viewer or an anonymous caller: no row. A sent thread reads
+    /// "sent to <agent>" from its `sent_to_agent` and `owner`, never its
+    /// progress.
+    Visitor,
+}
+
+/// A thread's delivery rows (one per forwarded comment and target
+/// session), from which each reader's state is read ([`Delivery::view`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Delivery {
+    thread_id: String,
+    rows: Vec<StateRow>,
+    codex_push: bool,
+}
+
+impl Delivery {
+    /// Whether `v` reads row `r` ([`DeliveryViewer`]).
+    fn sees(r: &StateRow, v: &DeliveryViewer) -> bool {
+        match v {
+            DeliveryViewer::Owner => true,
+            DeliveryViewer::Person(p) => {
+                r.person.as_deref() == Some(p.as_str()) || r.authors.iter().any(|a| a == p)
+            }
+            DeliveryViewer::Agent { every: true, .. } => true,
+            DeliveryViewer::Agent { session, .. } => {
+                session.is_some() && r.target.as_deref() == session.as_deref()
+            }
+            DeliveryViewer::Visitor => false,
+        }
+    }
+
+    fn visible(&self, v: &DeliveryViewer) -> Vec<&StateRow> {
+        self.rows.iter().filter(|r| Self::sees(r, v)).collect()
+    }
+
+    /// The thread's delivery state as `v` reads it: the state of the rows
+    /// it sees ([`state_of`]), `None` when it sees none. The one reading
+    /// every channel serves (views, the page's boot payload, events,
+    /// agents' reads), so none can say more than another (spec 2026-10-08
+    /// §10, §18):
+    /// - the owner and a person: `withheld` and `declined` with whose
+    ///   approval, `mine` when it is theirs;
+    /// - an agent: `withheld` with no approver, and a declined thread's
+    ///   plain state ([`plain_state`]);
+    /// - a visitor: nothing.
+    pub fn view(&self, v: &DeliveryViewer) -> Option<FeedbackState> {
+        let rows = self.visible(v);
+        if rows.is_empty() {
+            return None;
+        }
+        let (mut s, by) = state_of(&self.thread_id, &rows, self.codex_push);
+        match v {
+            DeliveryViewer::Owner => s.mine = by.is_some_and(|p| p.is_none()),
+            DeliveryViewer::Person(p) => {
+                s.mine = by.is_some_and(|by| by.as_deref() == Some(p.as_str()));
+            }
+            DeliveryViewer::Agent { .. } => match s.state {
+                FeedbackPhase::Withheld => s.approver = None,
+                FeedbackPhase::Declined => s = plain_state(&self.thread_id, &rows, self.codex_push),
+                _ => {}
+            },
+            // It reads no row ([`Delivery::sees`]), so never here.
+            DeliveryViewer::Visitor => {}
+        }
+        Some(s)
+    }
+
+    /// The people with rows here: each row's authors and its session's
+    /// person. A [`DeliveryViewer::Person`] not among them reads nothing.
+    pub fn people(&self) -> std::collections::BTreeSet<String> {
+        self.rows
+            .iter()
+            .flat_map(|r| r.authors.iter().cloned().chain(r.person.clone()))
+            .collect()
+    }
+
+    /// Whether the newest change to the rows is one `v` sees: its rows'
+    /// newest [`StateRow::stamp`] is the thread's. A change to rows `v`
+    /// does not see (another author's delivery after an approval, say)
+    /// tells it nothing, so it is not told of it.
+    pub fn changed_for(&self, v: &DeliveryViewer) -> bool {
+        let mine = self.visible(v).into_iter().map(StateRow::stamp).max();
+        mine.is_some() && mine == self.rows.iter().map(StateRow::stamp).max()
     }
 }
 
@@ -1961,11 +2085,11 @@ fn declines_in(c: &Connection, thread_ids: &str) -> Result<Vec<Decline>> {
     Ok(out)
 }
 
-pub(crate) fn feedback_states_in(
+pub(crate) fn deliveries_in(
     c: &Connection,
     thread_ids: &[String],
     codex_push: bool,
-) -> Result<BTreeMap<String, FeedbackState>> {
+) -> Result<BTreeMap<String, Delivery>> {
     let ids = id_array(thread_ids);
     let declines = declines_in(c, &ids)?;
     let mut by_thread: BTreeMap<String, Vec<StateRow>> = BTreeMap::new();
@@ -1994,6 +2118,7 @@ pub(crate) fn feedback_states_in(
             tier: r.get(4)?,
             acknowledged_at: r.get(5)?,
             resends: r.get(6)?,
+            last_sent_at: r.get(16)?,
             untargeted_at: r.get(7)?,
             ended_at: r.get(8)?,
             harness: r.get(9)?,
@@ -2003,41 +2128,51 @@ pub(crate) fn feedback_states_in(
             placeholder_at: r.get(13)?,
             person_name: r.get(14)?,
             requested,
-            latest: r.get(16)?,
             declined,
             person,
+            comment_id: r.get(18)?,
+            authors,
         });
     }
     Ok(by_thread
         .into_iter()
         .map(|(tid, rows)| {
-            let s = state_of(&tid, &rows, codex_push);
-            (tid, s)
+            let d = Delivery {
+                thread_id: tid.clone(),
+                rows,
+                codex_push,
+            };
+            (tid, d)
         })
         .collect())
 }
 
-/// The state of one thread from its rows (not empty), as the people
-/// concerned read it (spec 2026-10-08 §10): `withheld` while any row, of
-/// any of its comments, waits for its person's approval
+/// The state of one thread from `all`, the rows its reader sees (not
+/// empty), with whose approval it is held (`Some(None)`: the owner's;
+/// `None` when it is not held): `withheld` while any row, of any of its
+/// comments, waits for its person's approval
 /// ([`StateRow::waits_for_approval`]; even when a later comment went
 /// through); else `declined` while any row was declined
-/// ([`StateRow::was_declined`]); else the plain state ([`plain_state`]),
-/// which it carries in `plain` for everyone else.
-fn state_of(thread_id: &str, all: &[StateRow], codex_push: bool) -> FeedbackState {
-    let plain = plain_state(thread_id, all, codex_push);
-    let held = |phase, r: &StateRow, since: &str| FeedbackState {
-        thread_id: thread_id.to_string(),
-        state: phase,
-        tier: None,
-        since: since.to_string(),
-        resends: 0,
-        exhausted: false,
-        approver: Some(crate::feedback::display_name(
-            r.person_name.as_deref().unwrap_or(""),
-        )),
-        approver_person: r.person.clone(),
-        plain: Some(Box::new(plain.clone())),
+/// ([`StateRow::was_declined`]); else the plain state ([`plain_state`]).
+fn state_of(
+    thread_id: &str,
+    all: &[&StateRow],
+    codex_push: bool,
+) -> (FeedbackState, Option<Option<String>>) {
+    let held = |phase, r: &StateRow, since: &str| {
+        let s = FeedbackState {
+            thread_id: thread_id.to_string(),
+            state: phase,
+            tier: None,
+            since: since.to_string(),
+            resends: 0,
+            exhausted: false,
+            approver: Some(crate::feedback::display_name(
+                r.person_name.as_deref().unwrap_or(""),
+            )),
+            mine: false,
+        };
+        (s, Some(r.person.clone()))
     };
     if let Some(r) = all.iter().find(|r| r.waits_for_approval()) {
         return held(
@@ -2053,14 +2188,19 @@ fn state_of(thread_id: &str, all: &[StateRow], codex_push: bool) -> FeedbackStat
             r.declined.as_deref().unwrap_or(&r.created_at),
         );
     }
-    plain
+    (plain_state(thread_id, all, codex_push), None)
 }
 
-/// A thread's delivery state as if nothing were held, from its latest
-/// comment's rows: a row a take held and told its session of reads as
+/// The delivery state of `all`'s (not empty) newest comment's rows as if
+/// nothing were held: a row a take held and told its session of reads as
 /// acknowledged (seen by the agent) from then on.
-fn plain_state(thread_id: &str, all: &[StateRow], codex_push: bool) -> FeedbackState {
-    let rows: Vec<&StateRow> = all.iter().filter(|r| r.latest).collect();
+fn plain_state(thread_id: &str, all: &[&StateRow], codex_push: bool) -> FeedbackState {
+    let latest = &all.last().expect("rows").comment_id;
+    let rows: Vec<&StateRow> = all
+        .iter()
+        .copied()
+        .filter(|r| &r.comment_id == latest)
+        .collect();
     let rows = rows.as_slice();
     let tier_of = |r: &StateRow| r.tier.as_deref().and_then(Tier::parse);
     let state = |state, tier, since: &str, resends, exhausted| FeedbackState {
@@ -2071,8 +2211,7 @@ fn plain_state(thread_id: &str, all: &[StateRow], codex_push: bool) -> FeedbackS
         resends,
         exhausted,
         approver: None,
-        approver_person: None,
-        plain: None,
+        mine: false,
     };
     if let Some((r, at)) = rows
         .iter()

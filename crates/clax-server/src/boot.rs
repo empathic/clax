@@ -185,22 +185,22 @@ pub async fn assemble(
                 Some(sid) => st.get_session(sid)?,
                 None => None,
             };
-            // Whose approval a withheld thread waits for, as this browser
-            // may read it (`thread_views_for`).
+            // Each thread's delivery state as this browser reads it
+            // (spec 2026-10-08 §10, §18).
             let viewer = who.browser_viewer(st)?;
-            let handles = match &viewer {
-                _ if owner_browser => crate::feedback::Handles::All,
+            let reads = match &viewer {
+                _ if owner_browser => clax_core::DeliveryViewer::Owner,
                 Some(v) if v.person && v.person_revoked_at.is_none() => {
-                    crate::feedback::Handles::Of(Some(v.public_id.clone()))
+                    clax_core::DeliveryViewer::Person(v.public_id.clone())
                 }
-                _ => crate::feedback::Handles::None,
+                _ => clax_core::DeliveryViewer::Visitor,
             };
             let mut threads = Vec::new();
             let mut cursor: Option<String> = None;
             loop {
                 let (page, next) = st.list_threads(&lookup, true, cursor.as_deref(), 200)?;
-                threads.extend(crate::feedback::thread_views_for(
-                    st, &page, codex, false, &handles,
+                threads.extend(crate::feedback::thread_views_as(
+                    st, &page, codex, false, &reads,
                 )?);
                 match next {
                     Some(c) => cursor = Some(c),

@@ -65,6 +65,13 @@ describe("a thread's owner and delivery state", () => {
     expect(chip(h.root)!.textContent).toBe(`${HOSTILE} · ${HOSTILE}`);
   });
 
+  it("reads a sent thread with no delivery state for this viewer as sent to its agent", () => {
+    // A visitor, or a person it holds nothing of theirs for (spec 2026-10-08 §10).
+    const m = render([thread({ owner: { name: "sam-web", person: "u_sam", person_name: "Sam", live: true } }), thread({ id: "t2" })], { me: LAN });
+    const waiting = [...m.root.querySelectorAll(".thread-card .waiting")].map(e => e.textContent);
+    expect(waiting).toEqual(["sent to sam-web", "sent to an agent"]);
+  });
+
   it("reads withheld as waiting for the approver's approval", () => {
     expect(waitingLabel(withheld, new Date())).toBe("waiting for Sam's approval");
     const m = render([thread({ feedback_state: withheld })], { me: OWNER });
