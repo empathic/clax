@@ -2030,7 +2030,27 @@ mod agents {
                 ));
             }
         }
-        let mut rest: Vec<(String, String, &str, bool)> = handlers
+        // How a Denied handler refuses the owner's agents: `not_for_agents`
+        // by `refuse_agents`, else `browser_required` by a browser gate
+        // (M20) that refuses every caller but a browser's.
+        let refusal = |src: &str| {
+            if src.contains(".refuse_agents()?") {
+                Some("not_for_agents")
+            } else if [
+                "browser_approver(&",
+                "browser_person(&",
+                "owner_browser(&",
+                "require_browser(&",
+            ]
+            .iter()
+            .any(|g| src.contains(g))
+            {
+                Some("browser_required")
+            } else {
+                None
+            }
+        };
+        let mut rest: Vec<(String, String, &str, Option<&str>)> = handlers
             .iter()
             .filter(|h| agent_need(h.sig).is_none() && !h.path.starts_with("/api/_test/"))
             .map(|h| {
@@ -2039,12 +2059,7 @@ mod agents {
                 } else {
                     "Denied"
                 };
-                (
-                    h.path.clone(),
-                    h.method.clone(),
-                    class,
-                    h.src.contains(".refuse_agents()?"),
-                )
+                (h.path.clone(), h.method.clone(), class, refusal(h.src))
             })
             .collect();
         for (path, text) in inline() {
@@ -2054,7 +2069,7 @@ mod agents {
                     path.to_string(),
                     method.to_string(),
                     "Denied",
-                    text.contains(".refuse_agents()?"),
+                    refusal(text),
                 ));
             }
         }
@@ -2063,15 +2078,30 @@ mod agents {
         out.push_str("\n| Route | Class | Refuses the owner's agents |\n|---|---|---|\n");
         for (path, method, class, refuses) in rest {
             let owner_agents = match (class, refuses) {
-                ("Grant", _) => "—",
-                (_, true) => "yes: 403 `not_for_agents`",
-                (_, false) => "no",
+                ("Grant", _) => "—".to_string(),
+                (_, Some(code)) => format!("yes: 403 `{code}`"),
+                (_, None) => "no".to_string(),
             };
             out.push_str(&format!(
                 "| `{method} {path}` | {class} | {owner_agents} |\n"
             ));
         }
         out
+    }
+
+    /// The browser-only routes (M20) say they refuse the owner's agents,
+    /// with the code they refuse them with.
+    #[test]
+    fn browser_only_routes_say_they_refuse_the_owners_agents() {
+        let table = route_table();
+        for route in [
+            "POST /api/approvals",
+            "POST /api/approvals/requests/{rid}/decide",
+            "DELETE /api/approvals/{id}",
+        ] {
+            let row = format!("| `{route}` | Denied | yes: 403 `browser_required` |");
+            assert!(table.contains(&row), "{row} missing from:\n{table}");
+        }
     }
 
     /// `docs/contract.md` carries the route table [`route_table`] builds,
