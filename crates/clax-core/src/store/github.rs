@@ -123,8 +123,10 @@ fn linked(tx: &Transaction<'_>, github_id: i64) -> Result<Option<(String, bool, 
 }
 
 /// Links `user` to viewer row `viewer_id` (moving the account's link, and
-/// refreshing its login, name and avatar), noting the sign-in.
-fn link(tx: &Transaction<'_>, now: &str, user: &GitHubUser, viewer_id: &str) -> Result<()> {
+/// refreshing its login, name and avatar), noting the sign-in, and binds
+/// the shares waiting for the account's login to that row
+/// ([`super::shares::bind_github_shares`]). Returns how many it bound.
+fn link(tx: &Transaction<'_>, now: &str, user: &GitHubUser, viewer_id: &str) -> Result<usize> {
     tx.execute(
         "INSERT INTO github_identities (github_id, viewer_id, login, name, avatar_url, created_at, signed_in_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
@@ -133,7 +135,7 @@ fn link(tx: &Transaction<'_>, now: &str, user: &GitHubUser, viewer_id: &str) -> 
              signed_in_at = excluded.signed_in_at",
         params![user.id, viewer_id, user.login, user.name, user.avatar_url, now],
     )?;
-    Ok(())
+    super::shares::bind_github_shares(tx, &user.login, viewer_id)
 }
 
 /// The names a new person for `user` may take, in order: the profile's
@@ -202,7 +204,7 @@ impl Store {
                         _ => Err(e),
                     })?;
                 let id = signed.who.viewer.id.clone();
-                self.with_tx(|tx| link(tx, &self.now(), user, &id))?;
+                self.with_tx(|tx| link(tx, &self.now(), user, &id).map(drop))?;
                 return Ok((signed, GitHubOutcome::Owner));
             }
             // The owner's name follows the account's, when it is free.
@@ -233,7 +235,10 @@ impl Store {
                 if is_blocked {
                     return Err(blocked());
                 }
-                link(tx, &now, user, &viewer_id)?;
+                if link(tx, &now, user, &viewer_id)? > 0 {
+                    // Shares given to the login before it signed in.
+                    self.visibility_changed();
+                }
                 let signed = self.signed_in(tx, ctx, &viewer_id, SignInVia::GitHub, &extra)?;
                 return Ok((signed, GitHubOutcome::Returning));
             }

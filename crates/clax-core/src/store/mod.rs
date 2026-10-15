@@ -115,6 +115,7 @@ pub mod pushes;
 pub mod questions;
 pub mod remotes;
 pub mod sessions;
+pub mod shares;
 pub mod site;
 pub mod threads;
 pub mod viewers;

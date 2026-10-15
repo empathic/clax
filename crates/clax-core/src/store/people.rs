@@ -402,7 +402,28 @@ pub(super) fn check_person_name(
 
 /// The rights of the person behind viewer row `viewer_id`: everything for
 /// the owner, else the stored rights or the collaborator preset.
+/// The rights of viewer row `viewer_id`: its stored rights
+/// ([`stored_rights_of_row`]), and what its artifact shares hold
+/// ([`super::shares::share_rights`]). The owner's are every right.
 fn rights_of_row(c: &rusqlite::Connection, viewer_id: &str) -> Result<Rights> {
+    let (owner, stored) = stored_row(c, viewer_id)?;
+    if owner {
+        return Ok(stored);
+    }
+    Ok(match super::shares::share_rights(c, viewer_id)? {
+        Some(shared) => stored.union(&shared),
+        None => stored,
+    })
+}
+
+/// The rights set on viewer row `viewer_id` (by default the collaborator
+/// preset), without its artifact shares: what People shows and edits.
+fn stored_rights_of_row(c: &rusqlite::Connection, viewer_id: &str) -> Result<Rights> {
+    Ok(stored_row(c, viewer_id)?.1)
+}
+
+/// Whether viewer row `viewer_id` is the owner's, and its stored rights.
+fn stored_row(c: &rusqlite::Connection, viewer_id: &str) -> Result<(bool, Rights)> {
     let (owner, json): (bool, Option<String>) = c
         .query_row(
             "SELECT owner, rights_json FROM viewers WHERE id = ?1",
@@ -412,12 +433,13 @@ fn rights_of_row(c: &rusqlite::Connection, viewer_id: &str) -> Result<Rights> {
         .optional()?
         .ok_or(CoreError::NotFound)?;
     if owner {
-        return Ok(Rights::full());
+        return Ok((true, Rights::full()));
     }
-    match json {
-        Some(j) => read_rights(&j),
-        None => Ok(Rights::preset(crate::rights::PRESET_COLLABORATOR).expect("a preset")),
-    }
+    let rights = match json {
+        Some(j) => read_rights(&j)?,
+        None => Rights::preset(crate::rights::PRESET_COLLABORATOR).expect("a preset"),
+    };
+    Ok((false, rights))
 }
 
 /// The access a grant of viewer row `viewer_id` holds: the person's rights
@@ -1937,8 +1959,9 @@ impl Store {
     }
 
     /// The rights of person `public_id` (spec §7): everything for the owner,
-    /// else what was set, by default the collaborator preset. A revoked
-    /// person keeps theirs, as history.
+    /// else what was set, by default the collaborator preset, with what the
+    /// artifacts shared with them hold ([`crate::store::shares`]). A
+    /// revoked person keeps theirs, as history.
     ///
     /// # Errors
     /// `not_a_person` for a viewer who is neither a person nor the owner;
@@ -2235,7 +2258,7 @@ impl Store {
             viewers
                 .into_iter()
                 .map(|v| {
-                    let rights = rights_of_row(c, &v.id)?;
+                    let rights = stored_rights_of_row(c, &v.id)?;
                     Ok(PersonRow { viewer: v, rights })
                 })
                 .collect()
