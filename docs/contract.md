@@ -116,6 +116,14 @@ and its text is:
 `error` may carry extra fields, named under each code below. A result field
 the daemon has no value for is `null`.
 
+Beside `feedback`, a result may carry `answers` (late answers to your
+questions, see "Agent questions"), `withheld` (one entry per author and
+thread whose comments sent to you are withheld until your person approves
+them: `{thread_id, artifact_id, count, author, title, asked}`, see "What
+reaches an agent") and `notes` (notes from Clax itself, such as what a
+session's idle end released), each present only when not empty, and each
+also told in the trailing text block.
+
 The one exception: arguments that fail the tool's schema (a wrong type, a
 missing required argument, or an unknown argument, since every schema rejects
 unknown fields) are refused before the tool runs. Over MCP that is a
@@ -152,11 +160,29 @@ daemon codes a tool can surface in normal operation:
 - `schema_newer` (500): the database's schema is newer than this binary
   knows. The daemon never starts on such a database, so this is not
   expected over HTTP.
-- With people connected (spec 2026-10-08 §16): `not_permitted` (403, naming
-  the right), `withheld` (403, naming the authors), `thread_taken` (409,
-  naming the owner in `taken_by`), `foreign_session`, `name_taken`,
-  `name_locked`, `invalid_name`, `nothing_withheld`, `recently_declined`,
-  `agent_cannot_read`.
+- With people connected (see "People and their agents"): `not_permitted`
+  (403, naming the right in `right: {type, action}`), `withheld` (403,
+  naming the authors in `authors`), `thread_taken` (409, naming the owner
+  in `taken_by`), `foreign_session` (403: a session of another
+  credential), `name_taken` (409), `name_locked` (409), `invalid_name`
+  (400), `nothing_withheld` (400), `recently_declined` (400),
+  `agent_cannot_read` (400), `no_session` (400: the route needs a
+  session), `invalid_via_page` (400).
+- On another machine (signed requests, see "Signed requests"):
+  `invalid_token`, `grant_revoked` (the machine was disconnected; tools say
+  so), `invalid_signature`, `stale_request`, `replayed_request`,
+  `invalid_session_proof` (all 401), `forbidden_origin` (403),
+  `forbidden` (403: a route agents of another machine may not use),
+  `unknown_session` (400), `body_too_large` (413), `timeout` (408: the
+  request's body arrived too slowly to be verified), `limit_reached`
+  (429) and `busy` (503), which the clients retry with backoff, and
+  `remote_key_unreadable` (the machine's key cannot be read: reconnect).
+- `not_for_agents` (403): a route that serves people (the inbox, the
+  owner's question lists, People, the event streams, the browser's content
+  routes). Agents reach the same content through the tools. The CLI run
+  under a harness prints `The inbox is for people: open
+  http://localhost:7480/inbox in a browser.` (or `This is for people, not
+  agents: open http://localhost:7480/ in a browser.`) and exits 2.
 
 ### publish
 
@@ -1315,7 +1341,8 @@ hold yet fetches that card, with `?artifact=<aid>` on both routes.
 ```json
 {
   "people": [{"public_id": "u_…", "display_name": "Alex", "seen": 3}],
-  "agents": [{"handle": "a_…", "harness": "claude", "live": true}]
+  "agents": [{"handle": "a_…", "harness": "claude", "live": true, "name": "clax-claude",
+              "person": {"public_id": null, "name": "Alex", "owner": true}}]
 }
 ```
 
@@ -1325,7 +1352,11 @@ artifact's owner session, its watchers and the sessions that published its
 versions, at most 10. Each is named by its agent handle (`a_` and 22
 lowercase hex digits, assigned once per session), never by session ID.
 `live` is `true` when the session has not ended and owns or watches the
-artifact, so a send can reach it. Live agents come first, then the most
+artifact, so a send can reach it. `name` is the agent's name (see "Names"
+under "People and their agents"), and `person` whose agent it is
+(`public_id` null for the owner's). Browsers get people's names as
+stored; agents get them as the payload names authors (control characters, `"`
+and `:` as spaces, at most 40 characters). Live agents come first, then the most
 recently active on the artifact (its newest version, comment on the
 artifact's threads, or watch, else its registration). Each version view
 carries `agent` (its publishing session's handle) and `agent_harness`, both
@@ -1637,7 +1668,7 @@ entry of the shell's own; copy link includes it.
 
 | Tool | Arguments | Result |
 |---|---|---|
-| `comments_read` | `url_or_id`; optional `thread_id`, `cursor`, `include_resolved` | `{artifact_id, url, threads: [{thread_id, status, sent_to_agent, version, anchor: {kind, selector, quote, custom_name, file, area, summary}, clip_path, comments: [{id, author_kind, author_name, via_page, body, created_at}], feedback_state, addressed_pending, page_url?, snapshot_path?}], next_cursor, note}` |
+| `comments_read` | `url_or_id`; optional `thread_id`, `cursor`, `include_resolved` | `{artifact_id, url, threads: [{thread_id, status, sent_to_agent, version, anchor: {kind, selector, quote, custom_name, file, area, summary}, clip_path, comments: [{id, author_kind, author_name, via_page, body, created_at, withheld?}], feedback_state, addressed_pending, page_url?, snapshot_path?, owner?, taken_by?, withheld?, anchor_withheld?, clip_withheld?}], next_cursor, note}` |
 | `comments_reply` | `url_or_id`, `thread_id`, `text`, `addressed?` (live pages only) | `{thread_id, replied: true, comment_id, addressed?}` or `{thread_id, replied: false, guidance}` |
 | `comments_resolve` | `url_or_id`, `thread_id` | `{thread_id, resolved: true, status}` or `{thread_id, resolved: false, guidance}`; a thread no version lists yet is listed as addressed in the current version |
 | `comments_handoff` | `url_or_id`, `thread_id`; optional `to` (a live agent's name) | `{artifact_id, url, released, thread, note}`: with `to`, the thread is sent to that agent, which owns it (`thread.owner`); without, the owner releases it. `thread_taken` when another live agent owns it. |
@@ -1659,8 +1690,12 @@ sent. `addressed_pending` is true while an agent's address of the thread
 waits for a live page's next snapshot (see "Live pages"). A live page's
 thread also carries `page_url` (the page's URL with the thread's route) and
 `snapshot_path` (the absolute path of its version's `index.html`, the
-snapshot it was made on). `note` says that comment text comes from people
-viewing the page. A viewer who is neither the owner nor a connected person
+snapshot it was made on). `owner` is the agent that owns the thread and
+`taken_by` the name of another live agent that took it; `withheld`,
+`anchor_withheld`, `clip_withheld` and a comment's `withheld` mark what is
+withheld from you (see "What reaches an agent" under "People and their
+agents"); none of them is present when it does not apply. `note` says that
+comment text comes from people viewing the page. A viewer who is neither the owner nor a connected person
 (a LAN viewer, an anonymous one) is named `<name> (not connected)` in every
 author name an agent reads: `author_name`, a feedback item's `author` and
 its text's author line, a batch's `sent_by`, `resolved_by_name`, and an
@@ -1722,9 +1757,10 @@ changes.
 `working` tells the person you are acting on an artifact. The top bar
 shows `<agent> working on N` (or `<agent>: <message>`), its gallery card a
 chip, and each thread named in `thread_ids` `<agent> is working on it`,
-where `<agent>` is your harness (`claude`, `codex`, `pi`), followed by the
-first four hex digits of your agent handle when another agent of the same
-harness takes part in the artifact (`claude 1f3a`). Comments sent to you
+where `<agent>` is your agent name (your harness, such as `claude`, when
+you have none), followed by the first four hex digits of your agent handle
+when another agent taking part in the artifact shows the same
+(`clax-claude 1f3a`). Comments sent to you
 mark you working automatically; call `working` for work that did not start
 from a comment, or to add a message. `thread_ids` and `message` replace the
 stored ones when given; `done: true` clears the record, or with `thread_ids`
@@ -1969,8 +2005,9 @@ the agent's harness. An agent comment carries `via_harness` (the replying
 session's harness, e.g. `claude`; `null` on viewer comments).
 
 An open thread a working record names shows "<agent> is working on it"
-(the agent's harness, such as "claude is working on it", with the first
-four hex digits of its handle when two agents share a harness) instead of its
+(the agent's name, or its harness when it has none, such as "clax-claude
+is working on it", with the first four hex digits of its handle when two
+agents show the same) instead of its
 waiting indicator. A new version puts nothing over the page:
 the version button gets a dot, the top bar's summary reads "v5 addressed 3",
 the sidebar's "Addressed in v5" group lists the threads it addressed that
@@ -2049,7 +2086,7 @@ The **question view**, as every route and event gives it:
 ```json
 {
   "id": "01J9…",
-  "agent": {"handle": "a_…", "harness": "claude", "project": "clax"},
+  "agent": {"handle": "a_…", "name": "clax-claude", "harness": "claude", "project": "clax"},
   "artifact": {"id": "7q3k9mzx2b4t", "title": "Quarterly Review", "kind": "html"},
   "source": "ask",
   "status": "open",
@@ -2358,7 +2395,7 @@ The item view:
   "kind": "reply",
   "read": false,
   "created_at": "2026-10-07T09:12:03.120Z",
-  "agent": {"handle": "a_…", "harness": "claude", "project": "clax"},
+  "agent": {"handle": "a_…", "name": "clax-claude", "harness": "claude", "project": "clax"},
   "artifact": {"id": "7q3k9mzx2b4t", "title": "Quarterly Review", "kind": "html", "page_url": null},
   "thread": {"id": "01J9…", "summary": "body > main > h2  «Quarterly goals»", "status": "open"},
   "reply": {"comment_id": "01J9…", "body": "Done: two columns now.", "addressed": false},
@@ -2525,6 +2562,681 @@ bidirectional characters. The global `--json` prints the route's objects:
 - a listing prints the list response;
 - `show` and `read` print their responses;
 - `unread` prints an array of the `unread` responses.
+
+## People and their agents
+
+The install's owner may connect other people, each with their own
+machines and agents (spec `2026-10-08-multi-agent-multi-person-design.md`).
+A **person** is a viewer of this install connected with `clax connect`;
+each of their machines holds a key-bound credential (a **grant**); each of
+their agents is a session registered under it. An agent acts with its
+person's rights, narrowed by its person, raised by the owner or by an
+artifact's creator. What other people wrote is **withheld** from an agent
+until its person approves the author. The owner's own agents are agents
+too: every Clax agent channel filters what it hands them.
+
+A single-owner install, with no person ever connected, changes in nine
+ways and no others (spec §19): agents have names, shown where the harness
+was; `@<name>` sends a thread to that agent; with several of the owner's
+agents watching one artifact, an untargeted send goes to the first to take
+it; that agent then owns the thread (`thread_taken` for the others); an
+ended session that held something leaves one `ended` inbox note; views
+gain the fields `owner`, `taken_by`, `name`, `person`, `withheld` (absent
+or null) and `rights`; viewers who are not connected read `<name> (not
+connected)` in what agents get; display names that look like the owner's
+or a live agent's are refused; and LAN viewers' and anonymous callers'
+thread views carry `feedback_state: null`.
+
+### Connecting a machine
+
+A person's machine connects in one of two ways:
+
+- **An invite.** The owner, in People (`/people`) in a browser, makes one:
+  `POST /api/people/invites {name | viewer | me, rights?}` → 201 `{invite:
+  {id, command, expires_at, person}}`. `name` makes a new person, `viewer`
+  makes an existing LAN viewer (by public ID) a person, and `me` invites a
+  machine of the owner's own. `command` is `clax connect
+  http://<LAN address>:<port>/i/<code>`, the code twelve Crockford base32
+  characters in three groups, shown this once; an invite works once,
+  within 24 hours, and at most 20 are live. 409 `not_on_lan` while the
+  daemon listens on loopback only (restart it with `clax serve --bind
+  0.0.0.0`). `GET /api/people/invites` lists them without codes; `DELETE
+  /api/people/invites/<id>` revokes one.
+- **A request.** `clax connect http://<IP>:<port>` prints `Ask the owner of
+  <url> to approve request WXYZ-4821` and waits up to 10 minutes (Ctrl-C
+  cancels the request). The owner's inbox gets a `connection` item; the
+  owner approves with the code the requesting machine shows, a name and a
+  preset, which always makes a **new** person: adding a machine to an
+  existing person, or to the owner, takes an invite. A wrong code is 400
+  `wrong_code` and the third denies the request. At most 3 requests wait
+  per peer address and 20 in all (429 `limit_reached`).
+
+`clax connect` makes an Ed25519 key pair, prints its fingerprint
+(`key SHA256:…`), connects, and prints `Connected to <owner>'s Clax as
+<person>.` (or, for the owner's own machine, `Connected to your own Clax at
+<url>: this machine's agents act as yours.`). It then asks `Let <owner>'s
+comments and pages reach your agents everywhere? [Y/n]`: yes is the
+person's approval of the owner's content everywhere. Off a terminal,
+without `--yes`, nothing is asked and nothing approved. Last, it opens the
+person's browser at a one-time link (`/connect/b/<code>`, 10 minutes)
+that makes that browser the person; `--no-browser` skips it. Its other
+forms: `--status` (the connection, reachability and clock offset), `--off`
+(disconnect: the grant ends with its sessions), `--url <new daemon URL>`
+(the owner's address changed; the key and grant stay) and `--name <client
+name>`. URLs name the daemon by IP address. `clax connect` refuses to run
+on an agent channel, except `--status`: it prints `` This is for people,
+not agents: connecting this machine to a Clax is yours to do; run `clax
+connect` in your own terminal. `` and exits 2.
+
+Under the commands, this is a GNAP grant (RFC 9635), signed with the new
+key:
+
+| Route | What it does |
+|---|---|
+| `POST /api/grants` | The grant request, `{access_token: {access}, client: {key: {proof: "clax-ed25519", jwk}, display: {name}}, interact: {start: ["user_code"]}, clax: {invite?}}`, at most 16 KiB. With a live invite: 200 with `access_token`, `continue`, `subject` and `clax` (`person`, `owner`, `own_machine`, `browser_link`). Without: 201 with `continue {access_token, uri, wait: 5}` and `interact.user_code`. 400 `invalid_invite` for an expired, used, revoked or unknown code alike; 409 `key_in_use` for a key a live grant holds. |
+| `POST /api/grants/<gid>/continue` | The client's poll (`Authorization: GNAP <continuation token>`): pending, 200 with `continue` (400 `too_fast` sooner than `wait`); approved, the tokens once (409 `already_issued` after); denied or lapsed, 403 `denied`. With the body `{"clax": {"approve_owner": true}}`, the person's yes to the question about the owner: 200 `{"clax": {"owner_approval": {id, scope} \| null}}`; 409 `not_issued`, `answer_closed` (ten minutes after the tokens' issue) or `owner_answered` (once the person made or revoked any approval of the owner). |
+| `DELETE /api/grants/<gid>/continue` | The person disconnects the machine (`clax connect --off`). 204. |
+| `DELETE /api/grants/<gid>/token` | With the manage token: revokes the access token and with it the whole grant. 204. |
+
+Tokens are `cxg_` (access), `cxm_` (manage) and `cxc_` (continuation)
+followed by 43 base64url characters; the daemon keeps only their SHA-256.
+Access tokens neither expire nor rotate; a grant unused for 30 days
+expires. A person who wants a fresh token disconnects and connects again.
+
+The owner sees and decides in People and the inbox: `GET
+/api/grants?status=`, `POST /api/grants/<gid>/approve {user_code, name,
+rights?}` (409 `name_taken`, `not_pending`), `POST /api/grants/<gid>/deny`
+and `DELETE /api/grants/<gid>` (revoke). Revoking a grant ends its
+sessions at once (each releases its threads and withdraws its questions).
+`DELETE /api/people/<public_id>` revokes a person: their grants and
+invites end, and their browser is a plain viewer's from then on; their
+viewer row, authorship and approvals stay as history, and their content
+stays theirs, withheld from agents whose person never approved them.
+
+### Signed requests
+
+Every request from another machine carries the access token and a
+signature:
+
+```
+Authorization: Clax-Grant <access token>
+Clax-Signature: t=<unix seconds>, n=<nonce: 22 base64url chars>, s=<base64url Ed25519 signature>
+```
+
+over the UTF-8 of `clax-ed25519 v2\n<METHOD>\n<path and query as
+sent>\n<Host>\n<t>\n<n>\n<SHA-256 hex of the body>\n<SHA-256 hex of the
+token>\n<SHA-256 hex of the agent headers>`. The agent headers are
+`X-Clax-Session`, `X-Clax-Channel`, `x-clax-via`, `x-clax-git` and
+`x-clax-call`, in that order, each one record ending in `\n`: `-` when
+absent, else `+`, the value's length in bytes, `:` and the value (trimmed
+of spaces and tabs). A header sent twice is 401 `invalid_signature`. The
+grant request signs with an empty token line; continuation and manage
+calls sign with their `GNAP` token.
+
+The daemon checks, before the body is read: the token (401
+`invalid_token`; 401 `grant_revoked` for a revoked grant's), the header's
+shape (401 `invalid_signature`), `t` within 120 seconds of its clock (401
+`stale_request`, with the daemon's `Date`), and the nonce unused for that
+key within 240 seconds (401 `replayed_request`). A signed request with an
+`Origin` or a `Cookie` is 403 `forbidden_origin`. It then reads the body,
+up to the route's limit (413 `body_too_large`; the limits are in the route
+table below), verifies the signature (401 `invalid_signature`) and only
+then runs the handler. Unverified bodies are bounded: per key, one body
+over 1 MiB is read at a time, with at most 4 waiting up to 30 seconds (429
+`limit_reached` beyond), and bodies of 1 MiB or less hold at most 8 MiB
+together (429 `limit_reached`); all keys share 128 MiB of unverified
+bytes, waiting up to 30 seconds for room (503 `busy`); and after its first
+10 seconds a body slower than 64 KiB/s on average, or one not read within
+10 seconds plus 1 second per MiB of its length (of the route's limit for a
+chunked body), is dropped with 408 `timeout`. A key has at most 65,536
+nonces in 240 seconds (429 `limit_reached`). The clients re-sign and retry
+once on `stale_request` with the offset its `Date` gives, and retry
+`limit_reached` and `busy` three times, after 1, 2 and 4 seconds with
+jitter, re-signing each.
+
+### Remote mode
+
+While `<home>/remote.json` exists (and `CLAX_REMOTE` is not `0`), the CLI,
+the MCP shim, the hooks and the Pi extension of that machine talk to the
+owner's daemon, signed, and never start a local one. `remote.json` (0600)
+holds the daemon's URL, the grant's ID and tokens and the person;
+`remote.key` (0600) holds the private key, which never leaves the machine;
+`remote-pending.json` (0600) holds an ad-hoc request still waiting, which
+the next `clax connect` against the same daemon resumes. A `remote.json`
+whose key cannot be read fails every command with `remote_key_unreadable`
+and how to reconnect.
+
+**Each agent session proves itself.** Registering or joining a new
+session under a grant answers, once, `session_secret: "cxs_…"` beside the
+session; the daemon keeps only its hash. Every grant request that names a
+session (in `X-Clax-Session` or in its path) carries its secret in
+`X-Clax-Session-Secret`; a missing, repeated or wrong secret, a sibling's,
+or one whose session has ended, is 401 `invalid_session_proof`. The shim
+keeps its secret in memory; hooks and the CLI, which run as new processes,
+read it from `<home>/remote-sessions/` (directory 0700, files 0600),
+named `<harness>-s-<harness session ID>.json` (or
+`<harness>-h-<SHA-256 prefix>.json` for an ID outside `[A-Za-z0-9._-]`,
+1–128 characters) and, for clients that know only their harness process,
+`<harness>-p-<parent PID>.json` with that process's start time. The files
+are written whole and renamed into place, opened without following
+symbolic links, and removed when the session ends. Pi keeps its secret in
+memory and writes only the harness-session-ID file, checking the
+directory with `lstat` before opening the file with `O_NOFOLLOW`. A shim
+whose session ended registers again on `invalid_session_proof` or
+`unknown_session`, getting a new session and secret; a hook without its
+file fails with a message naming the file, logged to `hooks.log`. `clax
+connect --off` removes the directory.
+
+The secrets keep one agent's narrowing and raises from reaching another by
+mistake or by a well-behaved agent's call. They do not stop a hostile
+agent with a shell: every agent of a machine runs as the same OS user,
+which can read the machine's key and every session's file. The machine is
+the hard boundary: to bind every agent of a machine, narrow the machine.
+
+Session binding: a grant's registration, join and listing (`GET
+/api/sessions`) match only its own sessions, and the token's only the
+token's. A session named in a path or in `X-Clax-Session` that belongs to
+another credential is 403 `foreign_session`; one that does not exist is
+400 `unknown_session` for a grant. A grant's session has no `pid` (it is
+another machine's process), is never probed, and ends after 30 minutes
+without contact (counted only while the daemon runs and is awake); a
+registration with the same harness session ID within 24 hours of an idle
+end gets its direct watches back, where its rights still allow, and its
+first tool result says what ended.
+
+**From the command line.** On a connected machine `clax list`, `read`,
+`open`, `versions`, `db …`, `comments` (with `resolve`, `reopen` and
+`send`), `agents`, `approvals`, `status` and `connect` act on the owner's
+daemon as the person, with no session: their rights are the person's
+within the machine's narrowing and every live narrowing of its sessions,
+never a raise, and a route that needs a session is 400 `no_session` (so
+`comments reply` is). `mcp`, `hook` and `feedback` run over it as agent
+sides, and `serve`, `stop`, `init`, `uninit`, `bin`, `doctor`, `version`
+and `haiku` act on this machine. Every other command prints `` `clax
+<command>` is not available on a remote Clax (this machine is connected to
+<url>): do it on the owner's machine, or in your browser; `CLAX_REMOTE=0
+clax <command>` uses this machine's own Clax `` and exits 2.
+
+A clip on another machine is fetched, signed, into
+`<home>/remote-cache/clips/`, and the payload's `Clip:` line names the
+local file, or reads `Clip: unavailable (<reason>)`. `codex queue` is not
+attempted for a remote session, and its `push` says so.
+
+### Rights
+
+Rights are GNAP access objects:
+
+```json
+{"type": "clax-artifacts", "actions": ["read", "create", "update", "delete"], "locations": ["*"]}
+{"type": "clax-comments",  "actions": ["read", "write", "reply", "resolve", "send", "watch"], "locations": ["*"]}
+{"type": "clax-db",        "actions": ["read", "write"], "level": "interact", "locations": ["*"]}
+{"type": "clax-ask",       "actions": ["ask"]}
+```
+
+Locations are `*`, `own` (the artifacts the agent's person created) or
+artifact IDs. The presets:
+
+| Preset | Rights |
+|---|---|
+| `clax:reader` | artifacts `read` `*`; comments `read`, `reply`, `watch` `*`; db `read` `*`; ask |
+| `clax:collaborator` (a new person's default) | reader, plus artifacts `create`, `update` and `delete` at `own`; comments `write`, `resolve`, `send` `*`; db `write` `*` at `interact`, and at `admin` on `own` |
+| `clax:full` | every action at `*`, db `admin` (the owner) |
+
+An agent's rights:
+
+```
+(person ∩ machine narrowing ∩ agent narrowing)
+∪ every raise of it, each capped by both narrowings
+```
+
+- **The bound.** An agent may do at most what its person may, within its
+  machine's narrowing and its own. A new session starts at the bound: its
+  person's rights within its machine's narrowing, with no narrowing and no
+  raise of its own, and it inherits no other session's narrowing, live or
+  ended.
+- **Narrowing.** A person narrows every agent of one machine (`PUT
+  /api/people/me/grants/<gid>/narrow {access}`) or one agent (`PUT
+  /api/agents/<handle>/narrow {access}`), from their browser; `null`
+  removes it; 400 `not_narrower` for an access that would widen. It takes
+  effect at the agent's next request or take, and an agent's narrowing
+  ends with its session.
+- **Raises.** The owner raises any agent of a connected machine anywhere;
+  an artifact's **creator** raises any such agent (their own, another
+  person's or the owner's) on the artifacts they created, with only what
+  they may do there themselves: `PUT /api/agents/<handle>/elevate {access,
+  if_version?}`. A creator's raise names artifact IDs only (403
+  `not_creator` for `*`, `own`, `clax-ask` or an artifact they did not
+  create; 403 `beyond_your_rights` for an action they lack there; 400
+  `invalid_rights` for an empty access). Each granter holds one raise per
+  agent, replaced whole by their `PUT`, read at every check against what
+  the granter may still do on the artifacts they still have, and ended
+  with the session. `if_version` (the version of the caller's raise the
+  change was built on, `null` for none) makes a changed raise 409
+  `conflict`, with `raise: {access, version} | null` as it stands.
+- **Narrowing caps raises.** A narrowing is the last word for its agent:
+  an action a narrowing turns off is off for the agent everywhere, raised
+  or not, and a raise's db level drops to the narrowing's. A narrowing
+  caps raises only for actions the person holds; a raise of anything else
+  is taken away with Remove.
+- **Removing a raise.** `DELETE
+  /api/agents/<handle>/elevate[?granter=<public ID>|owner]` removes one
+  granter's raise (the caller's own by default). The granter removes
+  their own; the agent's person and the owner remove anyone's, the owner's
+  included; the granter may raise it again. 404 `not_raised` when there is
+  none or the caller may not remove it, alike.
+- **What the owner sets.** `PUT /api/people/<public_id>/rights {rights}`
+  (400 `invalid_rights`, `not_a_person`).
+- **This machine's agents** act with the daemon token, which rights do not
+  limit: narrowing or raising one is 400 `token_agent`.
+- **A request naming no session** (the remote CLI) gets the person's
+  rights within the machine's narrowing and every live narrowing of the
+  machine's sessions, never a raise: an agent narrowed to read-only cannot
+  regain the machine's rights by leaving its session out.
+
+`GET /api/people/me/raises?artifact=<aid>` lists the caller's own raises
+and, for an artifact they created, what they may give there (`holds`) and
+the live agents a raise reaches (`raisable`). A person reading back a raise
+of another person's agent sees only `{handle, name, person, elevation,
+version}`. An agent that lacks a right for a route is refused with 403
+`not_permitted`, naming it in `right: {type, action}`.
+
+No agent changes rights, raises, narrowings, approvals or connections:
+those routes are Denied to agents and refuse the bare token (403
+`browser_required`); they take the owner's or a connected person's
+browser on a same-origin request. `GET /api/people` (the owner) and `GET
+/api/people/me` (the owner or a connected person) are People's reads;
+`DELETE /api/agents/<handle>` ends an agent (the owner any, a person their
+own), as its session's end would.
+
+### The route table
+
+Every route, with its class for agents of another machine. **Filtered**
+routes run every author field of their response, reads and writes alike,
+through the visibility filter (below). **Own** routes return only the
+caller's own person's fields and Clax's own (IDs, versions, counts,
+times, states). **Denied** routes refuse a person's agents (403
+`forbidden`); among them, those that build a view of threads, comments,
+artifacts, versions, documents, questions, inbox items, working records or
+people, or stream events, refuse the owner's agents too, with 403
+`not_for_agents`: they serve people's browsers and the CLI used by hand.
+**Grant** routes are the grant flow. `Right` is checked at the artifact
+the path names (403 `not_permitted`). A thread write other than creating
+a thread also needs `clax-comments` `read` there. This table is generated
+from the route declarations (`agent::ROUTE_NEEDS` and the router), and a
+test fails when it differs:
+
+<!-- route-table:begin: generated from agent::ROUTE_NEEDS by the test the_contract_route_table_is_the_declared_one in crates/clax-server/src/routes/mod.rs; CLAX_UPDATE_GOLDEN=1 rewrites it -->
+| Route | Class | Right | Body limit | A person's agents |
+|---|---|---|---|---|
+| `GET /api/sessions` | Own | none | 2 MiB | yes |
+| `POST /api/sessions` | Own | none | 2 MiB | yes |
+| `POST /api/sessions/join` | Own | none | 2 MiB | yes |
+| `GET /api/sessions/{id}` | Own | none | 2 MiB | yes |
+| `PATCH /api/sessions/{id}` | Own | none | 2 MiB | yes |
+| `GET /api/artifacts` | Filtered | `clax-artifacts` `read` | 2 MiB | yes |
+| `POST /api/artifacts` | Filtered | `clax-artifacts` `create` | 96 MiB | yes |
+| `GET /api/artifacts/{aid}` | Filtered | `clax-artifacts` `read` | 2 MiB | yes |
+| `PATCH /api/artifacts/{aid}` | Filtered | `clax-artifacts` `update` | 2 MiB | yes |
+| `DELETE /api/artifacts/{aid}` | Own | `clax-artifacts` `delete` | 2 MiB | yes |
+| `GET /api/artifacts/{aid}/versions` | Filtered | `clax-artifacts` `read` | 2 MiB | yes |
+| `GET /api/artifacts/{aid}/versions/{n}` | Filtered | `clax-artifacts` `read` | 2 MiB | yes |
+| `POST /api/artifacts/{aid}/versions` | Filtered | `clax-artifacts` `update` | 96 MiB | yes |
+| `GET /api/artifacts/{aid}/files` | Filtered | `clax-artifacts` `read` | 2 MiB | yes |
+| `GET /api/artifacts/{aid}/versions/{n}/files/{*path}` | Filtered | `clax-artifacts` `read` | 2 MiB | yes |
+| `GET /api/artifacts/{aid}/assets` | Filtered | `clax-artifacts` `read` | 2 MiB | yes |
+| `POST /api/artifacts/{aid}/assets` | Filtered | `clax-artifacts` `update` | 21 MiB | yes |
+| `DELETE /api/artifacts/{aid}/assets/{asset_id}` | Own | `clax-artifacts` `delete` | 2 MiB | yes |
+| `GET /api/artifacts/{aid}/presence` | Own | `clax-artifacts` `read` | 2 MiB | yes |
+| `GET /api/artifacts/{aid}/working` | Filtered | `clax-comments` `watch` | 2 MiB | yes |
+| `GET /api/working` | Filtered | `clax-comments` `watch` | 2 MiB | yes |
+| `GET /api/threads` | Filtered | `clax-comments` `read` | 2 MiB | no: the owner's agents only |
+| `GET /api/artifacts/{aid}/threads` | Filtered | `clax-comments` `read` | 2 MiB | yes |
+| `POST /api/artifacts/{aid}/threads` | Filtered | `clax-comments` `write` | 16 MiB | yes |
+| `GET /api/artifacts/{aid}/threads/{tid}` | Filtered | `clax-comments` `read` | 2 MiB | yes |
+| `DELETE /api/artifacts/{aid}/threads/{tid}` | Own | `clax-comments` `resolve` | 2 MiB | yes |
+| `GET /api/artifacts/{aid}/threads/{tid}/clip` | Filtered | `clax-comments` `read` | 2 MiB | yes |
+| `POST /api/artifacts/{aid}/threads/{tid}/comments` | Filtered | `clax-comments` `reply` | 2 MiB | yes |
+| `POST /api/artifacts/{aid}/threads/{tid}/resolve` | Filtered | `clax-comments` `resolve` | 2 MiB | yes |
+| `POST /api/artifacts/{aid}/threads/{tid}/reopen` | Filtered | `clax-comments` `resolve` | 2 MiB | yes |
+| `POST /api/artifacts/{aid}/threads/{tid}/send` | Filtered | `clax-comments` `send` | 2 MiB | yes |
+| `POST /api/artifacts/{aid}/threads:send` | Filtered | `clax-comments` `send` | 2 MiB | yes |
+| `POST /api/sessions/{id}/threads/{tid}/handoff` | Filtered | `clax-comments` `reply` | 2 MiB | yes |
+| `GET /api/artifacts/{aid}/docs` | Filtered | `clax-db` `read` | 2 MiB | yes |
+| `GET /api/artifacts/{aid}/docs/{*path}` | Filtered | `clax-db` `read` | 2 MiB | yes |
+| `PUT /api/artifacts/{aid}/docs/{*path}` | Filtered | `clax-db` `write` | 2 MiB | yes |
+| `PATCH /api/artifacts/{aid}/docs/{*path}` | Filtered | `clax-db` `write` | 2 MiB | yes |
+| `DELETE /api/artifacts/{aid}/docs/{*path}` | Filtered | `clax-db` `write` | 2 MiB | yes |
+| `POST /api/artifacts/{aid}/docs:batch` | Filtered | `clax-db` `write` | 14 MiB | yes |
+| `POST /api/artifacts/{aid}/docs:str_replace` | Filtered | `clax-db` `write` | 2 MiB | yes |
+| `POST /api/artifacts/{aid}/docs:acquire` | Filtered | `clax-db` `write` | 2 MiB | yes |
+| `GET /api/sessions/{id}/feedback` | Filtered | `clax-comments` `watch` | 2 MiB | yes |
+| `GET /api/sessions/{id}/notices` | Filtered | `clax-comments` `watch` | 2 MiB | yes |
+| `POST /api/sessions/{id}/feedback/ack` | Own | `clax-comments` `watch` | 2 MiB | yes |
+| `GET /api/sessions/{id}/working` | Own | `clax-comments` `watch` | 2 MiB | yes |
+| `POST /api/sessions/{id}/working/renew` | Own | `clax-comments` `watch` | 2 MiB | yes |
+| `POST /api/sessions/{id}/working/end` | Own | `clax-comments` `watch` | 2 MiB | yes |
+| `PUT /api/sessions/{id}/working/{aid}` | Own | `clax-comments` `watch` | 2 MiB | yes |
+| `DELETE /api/sessions/{id}/working/{aid}` | Own | `clax-comments` `watch` | 2 MiB | yes |
+| `GET /api/sessions/{id}/watches` | Own | `clax-comments` `watch` | 2 MiB | yes |
+| `PUT /api/sessions/{id}/watches/{aid}` | Own | `clax-comments` `watch` | 2 MiB | yes |
+| `DELETE /api/sessions/{id}/watches/{aid}` | Own | `clax-comments` `watch` | 2 MiB | yes |
+| `POST /api/sessions/{id}/questions` | Own | `clax-ask` `ask` | 128 KiB | yes |
+| `GET /api/sessions/{id}/questions/{qid}` | Own | `clax-ask` `ask` | 2 MiB | yes |
+| `POST /api/sessions/{id}/questions/{qid}/withdraw` | Own | `clax-ask` `ask` | 2 MiB | yes |
+| `POST /api/sessions/{id}/questions/{qid}/release` | Own | `clax-ask` `ask` | 2 MiB | yes |
+| `POST /api/sessions/{id}/questions:terminal` | Own | `clax-ask` `ask` | 2 MiB | yes |
+| `POST /api/sessions/{id}/approvals` | Own | `clax-ask` `ask` | 2 MiB | yes |
+| `GET /api/sessions/{id}/approvals/{rid}` | Own | `clax-ask` `ask` | 2 MiB | yes |
+| `GET /api/approvals` | Own | none | 2 MiB | yes |
+| `GET /api/approvals/requests` | Own | none | 2 MiB | yes |
+| `GET /api/agents` | Own | none | 2 MiB | yes |
+| `POST /api/sessions/{id}/tool-calls` | Own | none | 2 MiB | yes |
+| `POST /api/sessions/{id}/tool-call-ids` | Own | none | 2 MiB | yes |
+
+| Route | Class | Refuses the owner's agents |
+|---|---|---|
+| `GET /` | Denied | no |
+| `GET /_blob/{asset_id}` | Denied | yes: 403 `not_for_agents` |
+| `GET /_clax/{*path}` | Denied | no |
+| `GET /a/{aid}` | Denied | yes: 403 `not_for_agents` |
+| `GET /a/{aid}/` | Denied | yes: 403 `not_for_agents` |
+| `GET /a/{aid}/v/{n}` | Denied | yes: 403 `not_for_agents` |
+| `GET /a/{aid}/{*rest}` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/admin/perf/calibrate` | Denied | no |
+| `POST /api/admin/shutdown` | Denied | no |
+| `DELETE /api/agents/{handle}` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/agents/{handle}` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/agents/{handle}/elevate` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/agents/{handle}/elevate` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/agents/{handle}/narrow` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/approvals` | Denied | no |
+| `POST /api/approvals/requests/{rid}/decide` | Denied | no |
+| `DELETE /api/approvals/{id}` | Denied | no |
+| `GET /api/artifacts/{aid}/approves-first` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/artifacts/{aid}/room` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/artifacts/{aid}/sample` | Denied | no |
+| `POST /api/artifacts/{aid}/sample` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/artifacts/{aid}/sample/{call}/tool_result` | Denied | no |
+| `GET /api/events` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/extension` | Denied | no |
+| `DELETE /api/extension/credentials` | Denied | no |
+| `POST /api/extension/credentials` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/grants` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/grants` | Grant | — |
+| `DELETE /api/grants/{gid}` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/grants/{gid}/approve` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/grants/{gid}/continue` | Grant | — |
+| `POST /api/grants/{gid}/continue` | Grant | — |
+| `POST /api/grants/{gid}/deny` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/grants/{gid}/token` | Grant | — |
+| `GET /api/inbox` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/inbox/read` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/inbox/summary` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/inbox/{id}` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/inbox/{id}/read` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/inbox/{id}/unread` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/live/pages` | Denied | no |
+| `GET /api/live/rules` | Denied | no |
+| `POST /api/live/rules` | Denied | no |
+| `DELETE /api/live/rules/{id}` | Denied | no |
+| `GET /api/live/site` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/live/sites` | Denied | no |
+| `POST /api/live/sites/answer` | Denied | no |
+| `POST /api/live/sites/join` | Denied | no |
+| `POST /api/live/sites/split` | Denied | no |
+| `GET /api/live/sites/suggest` | Denied | no |
+| `POST /api/live/snapshots` | Denied | no |
+| `POST /api/live/threads` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/live/threads/{tid}/move` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/people` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/people/invites` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/people/invites` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/people/invites/{id}` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/people/me` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/people/me/grants/{gid}/narrow` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/people/me/raises` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/people/{pid}` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/people/{pid}/rights` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/push` | Denied | no |
+| `GET /api/questions` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/questions/{qid}` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/questions/{qid}/answer` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/questions/{qid}/decline` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/questions/{qid}/release` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/sample` | Denied | no |
+| `DELETE /api/sessions/{id}/live-watches` | Denied | no |
+| `PUT /api/sessions/{id}/live-watches` | Denied | no |
+| `GET /api/stream` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/stream/{id}` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/token` | Denied | no |
+| `POST /api/tool-calls` | Denied | no |
+| `GET /api/toolpath/export` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/toolpath/status` | Denied | no |
+| `GET /api/viewers` | Denied | no |
+| `GET /api/viewers/me` | Denied | no |
+| `PUT /api/viewers/me` | Denied | no |
+| `GET /api/viewers/me/attention` | Denied | no |
+| `PUT /api/viewers/me/looked` | Denied | no |
+| `PUT /api/viewers/me/presence` | Denied | no |
+| `GET /api/viewers/me/seen` | Denied | no |
+| `PUT /api/viewers/me/seen` | Denied | no |
+| `GET /c/{aid}/v/{n}` | Denied | no |
+| `GET /c/{aid}/v/{n}/` | Denied | yes: 403 `not_for_agents` |
+| `GET /c/{aid}/v/{n}/{*path}` | Denied | yes: 403 `not_for_agents` |
+| `GET /connect/b/{code}` | Denied | no |
+| `GET /healthz` | Denied | no |
+| `GET /inbox` | Denied | no |
+| `ANY /mcp` | Denied | no |
+| `GET /people` | Denied | no |
+<!-- route-table:end -->
+
+Beyond the table:
+
+- A person's agent creates, edits, publishes, uploads, deletes and writes
+  threads from a session (400 `no_session` without one), as its person,
+  never with `x-clax-via: page` (400 `invalid_via_page`). Documents it may
+  write without a session (the remote `clax db …`).
+- `GET /api/artifacts` and the working roster leave out what the agent may
+  not `read`; for a person's agent, also live pages, which only the
+  owner's agents see.
+- `GET /api/threads` lists across artifacts for the owner's agents only; a
+  person's agent lists per artifact.
+- Creating a thread anchored on a file the agent may not see answers as an
+  anchor on a file the version lacks (400 `invalid_anchor`).
+- A send to an agent that may not `read` the artifact is 400
+  `agent_cannot_read`.
+- The daemon's `/mcp` serves the token only; its internal client sends
+  `X-Clax-Channel: agent`, so its tools are the owner's agent's, filtered.
+
+### What reaches an agent
+
+Content carries its **authors**, the people whose words it holds: a
+viewer's comment its writer (anonymous and unattributed comments count as
+`*unconnected`); a comment, document or upload a page wrote, its writer
+and every author of the page's current version; an agent's comment its
+person; a thread's anchor and clip the authors of the anchored file (and
+the thread's first commenter, for the clip); a version's files the authors
+of each file (a file carried forward keeps its authors); a version's label
+and note its publisher; an artifact's title, description, icon and
+`capabilities` whoever last set each; a document every writer it ever had
+until it is deleted; a working message its session's person. Names of
+people, agents and machines are not filtered.
+
+An agent sees a field when every author of it is its own person, Clax
+itself, or an author its person approved there. Anything else is replaced,
+never dropped:
+
+- **A comment:** `"body": null, "withheld": true`; its ID, author name and
+  time stay.
+- **A thread:** a withheld anchor has `quote`, `prefix`, `suffix`,
+  `selector`, `custom_name`, `file` and `html_hash` null, its `area`
+  without `tag`, `text` and `children`, and `"anchor_withheld": true`; a
+  withheld clip has `clip_path` null and `"clip_withheld": true`, and its
+  route answers 403 `withheld`; a withheld `resolved_by` or batch note is
+  null. The thread carries `"withheld": {"count", "authors": [{"public_id",
+  "name"}], "approval": "none" | "requested" | "declined"}` whenever any
+  field of it is withheld.
+- **An artifact:** each of `title`, `description`, `icon` and
+  `capabilities` null when withheld, with `"withheld": {"authors": […]}`.
+- **A version:** `label` and `note` null; each withheld file left out of
+  `files`, with `"files_withheld": n` and `content_sha256` null; its file
+  route answers 403 `withheld` for a withheld file and, while the version
+  withholds any, for a path it lacks.
+- **A document:** `{"doc_id", "version", "withheld": {"authors": […]}}`,
+  no `data`. Listings and queries run over visible documents only and
+  carry `"withheld_count": n`. A write whose outcome depends on a withheld
+  document's content (`str_replace`, every merge) is 403 `withheld`,
+  naming the authors, before anything is evaluated; a blind write is
+  allowed and adds the writer to its authors.
+- **An asset:** `name`, `content_type`, `ext` and `size` null, `"withheld":
+  true`.
+
+A sent comment whose body is withheld is not delivered: the session is
+told once per author and thread, in the result's `withheld` array and its
+text:
+
+```
+[clax] 2 comments from Mia on "Quarterly Review" (thread 01J9…) are withheld until your person approves them. Your person has been asked.
+```
+
+ending instead `To ask your person, call ask with {"approval":
+{"thread_id": "01J9…"}}.` when no request is open. The title reads `an
+artifact by <name>` when it is withheld too. A delivered comment's
+withheld parts read `Anchored on: (withheld: page by <name>)`, `Clip:
+withheld` and `Note: (note withheld)`. The held comments are delivered by
+the usual tiers once approved. Rows on an artifact the agent may no longer
+read are held and not told of. Approvals and rights are read again at
+every take, so a decision or revocation reaches even a waiting
+`wait_for_feedback`.
+
+The filter is a guarantee about what Clax hands an agent through its agent
+channels (tools, hooks, every feedback tier and notice, the sessionless
+`/mcp`, and `clax` run under a harness). It is not an access-control
+boundary on the LAN: pages and threads stay readable to any LAN viewer,
+so an agent that opens them with a web or browser tool, or an owner agent
+that runs the CLI by hand or reads `~/.clax`, goes around it. The skills
+tell agents not to.
+
+### Approvals
+
+An approval says "agents of `approver` may see `author`'s content at
+`scope`": one thread (including the author's later replies there), one
+artifact, or everywhere. Only the agent's own person approves for it.
+Approvals are per person, not per agent.
+
+- **Requests.** A send naming an agent (the picker, `to`, `@name`, a
+  handoff, a batch naming one, or a page's `sendToClaude` naming one)
+  whose person has not approved an author of the thread makes a request to
+  that person at once. A send naming no agent asks no one; other people's
+  watching agents get the placeholder and may ask. An agent asks with
+  `ask` and `approval` (see "Agent questions"): `POST
+  /api/sessions/<sid>/approvals {artifact_id?, thread_id?, author?}` makes
+  or joins one request per withheld author there and `GET
+  …/approvals/<rid>?wait=<s>` waits on it. 400 `nothing_withheld`; 400
+  `recently_declined` within ten minutes of a decline there; 429
+  `limit_reached` at 100 open requests per approver or 20 per approver and
+  author. Requests batch per approver, author, artifact and thread. A
+  request is withdrawn when its thread is resolved or deleted, its
+  artifact deleted, an `ask` request's session ends, or its approver or
+  author is revoked.
+- **Deciding.** In the approver's browser only: the inbox's `approval`
+  card (this thread, including later replies; this page; everywhere;
+  decline), `POST /api/approvals/requests/<rid>/decide {scope: "thread" |
+  "artifact" | "everywhere" | "decline"}` (409 `request_closed`, 400
+  `invalid_scope`), or People's "Always allow", `POST /api/approvals
+  {author, scope, artifact_id?, thread_id?}`. `DELETE /api/approvals/<id>`
+  revokes: from the next take or read, what it covered is withheld again;
+  what was delivered stays delivered.
+- **Reading.** `GET /api/approvals` and `GET
+  /api/approvals/requests?status=open|all` list the caller's person's own
+  (an agent's lists leave out artifacts its rights exclude, and never carry
+  the withheld content). On People the owner also sees, on each person's
+  card, that person's live approvals of the owner's content
+  (`approvals_of_yours` in `GET /api/people`); a person's approvals of
+  anyone else's content are never shown to the owner, and no person reads
+  another's. `clax approvals` lists; approving and revoking are in the
+  browser.
+- **Viewers who are not connected.** The owner holds one approval of the
+  author `*unconnected` everywhere: comments from LAN viewers who are not
+  connected people reach the owner's agents, as before people existed.
+  People shows it as a switch: "Comments from people on your LAN who are
+  not connected reach your agents without asking. This includes connected
+  people commenting from a browser or script that is not signed in as
+  them." Their names, and unattributed history's, read `<name> (not
+  connected)` in everything an agent gets.
+
+The Send menu lists each live agent that may receive a thread, other
+people's under their person, and says "Sam approves first" where a send
+would ask: `GET /api/artifacts/<aid>/approves-first?threads=<tid,…>` →
+`{approves_first: [<public ID> | null]}` (`null` the owner; at most 200
+threads, 400 `invalid_query`; 404 for a thread of another artifact). The
+owner's browser learns it for every person; a connected person for their
+own agents, and for others' only about content they wrote; LAN viewers,
+anonymous callers and agents get 403 `forbidden`. A thread's waiting
+state for each reader is under "What the person sees".
+
+### Names
+
+Each agent has a name, `[a-z0-9][a-z0-9._-]{0,31}`, unique (ignoring case)
+among live agents. A new session is named from its repository (the common
+git directory's, so a worktree takes its repository's name) and branch:
+`<repo>` on `main`, `master` or a detached head, else `<repo>-<the
+branch's last path segment>`, lowercased, other characters as `-`, cut to
+32; taken, `<base>-<harness>`, then `<base>-2`, `<base>-3`, …; no
+repository, the harness. `agent`, `owner`, `clax`, `me`, `everyone`, and
+the owner's and every connected person's display name in token form
+(lowercased, diacritics removed, spaces as `-`) are reserved.
+
+- An agent names itself with `status {"name": "fix-chart-axis"}` (409
+  `name_taken`; 400 `invalid_name`, which includes a name ending in `.`,
+  `_` or `-`). Once its person renames it, the name is theirs (409
+  `name_locked`).
+- Its person, or the owner, renames it in People or the roster: `PUT
+  /api/agents/<handle> {name}` (a browser, or the owner's CLI with the
+  token; the owner's agents get 403 `not_for_agents`).
+- `@<name>` in a comment, as a whole token, sends the thread to that agent
+  and gives it a watch when it has none; a name that names no live agent
+  sends nothing, and the response lists it in `unresolved_mentions`.
+  `@agent` keeps its meaning. A page's comment sends nothing by `@`.
+- Display names may use any script. One that looks like the owner's, a
+  connected person's or a live agent's (the same UTS #39 confusable
+  skeleton of its token form) is 409 `name_taken`, and one holding a
+  bidirectional embedding, override or isolate control is 400
+  `invalid_name`.
+
+`GET /api/agents` lists the caller's person's agents in full and others by
+name, person, state and time (see "The inbox"); `clax agents` prints
+yours.
+
+### Thread ownership
+
+A sent thread has one owner agent, `thread.owner: {handle, name, person,
+live, person_name}` (`handle` only to the owner and to the owning agent's
+own person). A send naming an agent (`to`, `@name`, a handoff) makes it
+the owner. An untargeted send goes to the first of the sending person's
+agents to take it (or reply having seen it), which becomes the owner;
+that person's other agents' undelivered rows for it are deleted. Another
+person's agent becomes the owner only by a send naming it or a handoff.
+
+An agent reading a thread another live agent owns sees `"taken_by":
+"<name>"`; its reply, resolve or handoff there is 409 `thread_taken`,
+naming the owner in `taken_by`. A thread with no owner, or an ended one,
+accepts any agent with the rights. `comments_handoff {url_or_id,
+thread_id, to?}` (`POST /api/sessions/<sid>/threads/<tid>/handoff`) by the
+owner agent, or, while the thread has no owner, by an agent that could
+take it, sends the thread to the agent `to` names (it needs `clax-comments`
+`send` too, and the target must be able to read and watch the artifact),
+which becomes the owner; without `to` it releases the thread. People take
+a thread over by sending it again.
+
+### When an agent's session ends
+
+Its open questions and `ask` approval requests are withdrawn, the threads
+it owns are released, its narrowing, raises and secret are cleared, its
+name is freed, and its watches and working records end. When it owned
+threads or had open questions or requests, its person's inbox gets one
+`ended` note (`clax-claude ended · released 2 threads · withdrew 1
+question`). Revoking an approval never ends a session.
 
 ## Live pages
 
@@ -4649,6 +5361,19 @@ it with Ajv (draft 2020-12, formats asserted;
   owner's session row, and `owner_session_id` (with each version's
   `session_id`) only with the token. Content and asset URLs are readable by anyone who can
   reach the daemon and knows the unguessable artifact or asset ID.
+- A connected person's machine holds no token: its agents and CLI sign
+  each request with the machine's key (`Authorization: Clax-Grant`, see
+  "Signed requests"), which a sniffed request or token cannot reuse, and
+  reach only the routes the route table opens to them, with their
+  person's rights. Connecting, approving, rights, raises and narrowing
+  need the owner's or the person's browser on a same-origin request (403
+  `browser_required` for the token alone), so no Clax tool, CLI command
+  or remote agent changes them. An owner agent with a shell runs as the
+  owner's OS user and can fetch the owner's browser credential
+  (`/api/token`): it is trusted at the owner's level, and the skills tell
+  agents never to. Clax traffic on the LAN is not encrypted: use a
+  trusted LAN. A connected person's browser cookie, sniffed, acts as that
+  person in the browser.
 - Live pages (see "Live pages") are visible only to a loopback peer or a
   request with the token; to anyone else they do not exist (404, left out
   of lists and of the stream), and their snapshots are served with a policy
@@ -4755,7 +5480,8 @@ it with Ajv (draft 2020-12, formats asserted;
   Outside the cookie a viewer is named by its public ID (`u_` and 22
   lowercase hex digits, assigned once and never changed): `GET`/`PUT
   /api/viewers/me` answer `{"viewer": {"public_id", "display_name",
-  "created_at"}}`, and a viewer's resolve records `resolved_by`
+  "created_at"}}`, plus `"owner": true` for the owner's browser (as does
+  the `/a/<id>` bootstrap's `viewer`), and a viewer's resolve records `resolved_by`
   `viewer:<public ID>`. Comment threads never carry a session ID: an
   agent's resolve records `agent:<harness>` and its comments `via_harness`.
   Viewers name agents by agent handle (`a_` and 22 lowercase hex digits).
@@ -4973,6 +5699,24 @@ it with Ajv (draft 2020-12, formats asserted;
 - `GET /api/viewers/me/attention` costs work in proportion to the threads a
   viewer is in across every artifact; with `?artifact=<aid>`, the threads of
   that artifact.
+
+- People (see "People and their agents"): the daemon serves plain HTTP,
+  so a LAN observer reads everything that crosses it. The visibility
+  filter governs what Clax's agent channels hand an agent, not what an
+  agent can fetch as a LAN viewer with a web or browser tool. Revoking an
+  approval stops future delivery and cannot unread anything; content an
+  agent writes after reading becomes its person's, and a page running in
+  a person's browser can copy what it reads into a comment or document as
+  that person. Approvals are per person, not per agent. Agent names are
+  unique only among live agents. Per-agent narrowing and raises bind
+  against mistakes and well-behaved agents, not a hostile agent with a
+  shell on the same machine: narrow the machine to bind all its agents.
+  Names of people, agents and machines reach other agents unfiltered,
+  quoted. Remote Codex sessions have no tier 5, and agents of another
+  machine have no live pages. A sniffed access token without its key
+  makes no verified request, but can hold its machine's large-body
+  permit for as long as an unverified read may last (10 seconds plus 1
+  second per MiB), again and again.
 
 Open follow-ups, and the checks that still need a real harness or GitHub,
 are listed in [`docs/follow-ups.md`](follow-ups.md).

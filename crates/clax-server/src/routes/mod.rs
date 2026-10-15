@@ -1971,6 +1971,146 @@ mod agents {
         let _ = module_source("artifacts");
     }
 
+    /// The marker lines around the route table in `docs/contract.md`.
+    const TABLE_BEGIN: &str = "<!-- route-table:begin: generated from agent::ROUTE_NEEDS by the test the_contract_route_table_is_the_declared_one in crates/clax-server/src/routes/mod.rs; CLAX_UPDATE_GOLDEN=1 rewrites it -->";
+    const TABLE_END: &str = "<!-- route-table:end -->";
+
+    /// A body limit as the contract writes it.
+    fn size(n: usize) -> String {
+        if n.is_multiple_of(1 << 20) {
+            format!("{} MiB", n >> 20)
+        } else if n.is_multiple_of(1024) {
+            format!("{} KiB", n >> 10)
+        } else {
+            format!("{n} bytes")
+        }
+    }
+
+    /// The contract's route table (spec §7.5) as the handlers declare it:
+    /// every route an agent reaches, in [`crate::agent::ROUTE_NEEDS`]'s
+    /// order, with its class, right, body limit and whether a person's
+    /// agent may use it; then every other route, with its class and
+    /// whether it refuses the owner's agents (`not_for_agents`).
+    fn route_table() -> String {
+        let handlers = every_handler();
+        let mut out = String::from(
+            "| Route | Class | Right | Body limit | A person's agents |\n|---|---|---|---|---|\n",
+        );
+        for (name, right, class) in crate::agent::ROUTE_NEEDS {
+            let routed: Vec<&Handler> = handlers.iter().filter(|h| h.name == *name).collect();
+            assert!(
+                !routed.is_empty(),
+                "ROUTE_NEEDS lists {name}, which no route uses"
+            );
+            for h in routed {
+                let info = crate::agent::need_of(&h.method.parse().unwrap(), &h.path)
+                    .unwrap_or_else(|| panic!("{} {}: agent::ROUTES lacks it", h.method, h.path));
+                assert_eq!((info.right, info.class), (*right, *class), "{name}");
+                let right = match right {
+                    Some((ty, action)) => format!("`{}` `{action}`", ty.as_str()),
+                    None => "none".to_string(),
+                };
+                let class = match class {
+                    Class::Filtered => "Filtered",
+                    Class::Own => "Own",
+                    Class::DeniedToGrants | Class::GrantFlow => {
+                        panic!("{name}: an agent's route is Filtered or Own")
+                    }
+                };
+                let grants = if info.grants {
+                    "yes"
+                } else {
+                    "no: the owner's agents only"
+                };
+                out.push_str(&format!(
+                    "| `{} {}` | {class} | {right} | {} | {grants} |\n",
+                    h.method,
+                    h.path,
+                    size(info.limit)
+                ));
+            }
+        }
+        let mut rest: Vec<(String, String, &str, bool)> = handlers
+            .iter()
+            .filter(|h| agent_need(h.sig).is_none() && !h.path.starts_with("/api/_test/"))
+            .map(|h| {
+                let class = if h.sig.contains("GrantFlow") {
+                    "Grant"
+                } else {
+                    "Denied"
+                };
+                (
+                    h.path.clone(),
+                    h.method.clone(),
+                    class,
+                    h.src.contains(".refuse_agents()?"),
+                )
+            })
+            .collect();
+        for (path, text) in inline() {
+            if !path.starts_with("/api/_test/") {
+                let method = if path == "/mcp" { "ANY" } else { "POST" };
+                rest.push((
+                    path.to_string(),
+                    method.to_string(),
+                    "Denied",
+                    text.contains(".refuse_agents()?"),
+                ));
+            }
+        }
+        rest.sort();
+        rest.dedup();
+        out.push_str("\n| Route | Class | Refuses the owner's agents |\n|---|---|---|\n");
+        for (path, method, class, refuses) in rest {
+            let owner_agents = match (class, refuses) {
+                ("Grant", _) => "—",
+                (_, true) => "yes: 403 `not_for_agents`",
+                (_, false) => "no",
+            };
+            out.push_str(&format!(
+                "| `{method} {path}` | {class} | {owner_agents} |\n"
+            ));
+        }
+        out
+    }
+
+    /// `docs/contract.md` carries the route table [`route_table`] builds,
+    /// between its markers, so the contract and the declarations cannot
+    /// drift; `CLAX_UPDATE_GOLDEN=1` rewrites it.
+    #[test]
+    fn the_contract_route_table_is_the_declared_one() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/contract.md");
+        let doc = std::fs::read_to_string(&path).expect("docs/contract.md");
+        let begin = doc
+            .find(TABLE_BEGIN)
+            .unwrap_or_else(|| panic!("docs/contract.md lacks the line {TABLE_BEGIN}"))
+            + TABLE_BEGIN.len();
+        let end = begin
+            + doc[begin..]
+                .find(TABLE_END)
+                .unwrap_or_else(|| panic!("docs/contract.md lacks the line {TABLE_END}"));
+        let want = format!("\n{}", route_table());
+        if doc[begin..end] == want {
+            return;
+        }
+        if std::env::var_os("CLAX_UPDATE_GOLDEN").is_some() {
+            let updated = format!("{}{want}{}", &doc[..begin], &doc[end..]);
+            std::fs::write(&path, updated).expect("write docs/contract.md");
+            return;
+        }
+        let first = doc[begin..end]
+            .lines()
+            .zip(want.lines())
+            .find(|(a, b)| a != b)
+            .map_or_else(
+                || "the tables differ in length".to_string(),
+                |(a, b)| format!("committed: {a}\ndeclared:  {b}"),
+            );
+        panic!(
+            "docs/contract.md's route table differs from agent::ROUTE_NEEDS and the router; run CLAX_UPDATE_GOLDEN=1 cargo test -p clax-server the_contract_route_table to rewrite it\n{first}"
+        );
+    }
+
     /// The text from `start` to the end of its line.
     fn line_at(s: &str, start: usize) -> &str {
         let end = s[start..].find('\n').map_or(s.len(), |e| start + e);

@@ -219,7 +219,7 @@ done
 if out="$(scripts/check-version.sh 2>&1)"; then pass "every written version agrees (scripts/check-version.sh)"
 else fail "$out"; fi
 
-# The Rust tools and the Pi extension carry the same twenty-four tool descriptions,
+# The Rust tools and the Pi extension carry the same twenty-five tool descriptions,
 # word for word (plugins/pi/test/fixtures/contract.json lists them).
 if out="$(python3 - plugins/pi/test/fixtures/contract.json crates/clax-mcp/src/tools.rs plugins/pi/src/clax.ts 2>&1 <<'PY'
 import json, sys
@@ -232,11 +232,11 @@ for src in sys.argv[2:4]:
         quoted = '"' + t["description"].replace("\\", "\\\\").replace('"', '\\"') + '"'
         if quoted not in text:
             missing.append(f"{src}: {t['name']}")
-if len(tools) != 24 or missing:
-    print("; ".join(missing) or f"{len(tools)} tools in the fixture, not 24")
+if len(tools) != 25 or missing:
+    print("; ".join(missing) or f"{len(tools)} tools in the fixture, not 25")
     sys.exit(1)
 PY
-)"; then pass "the twenty-four tool descriptions match in tools.rs and clax.ts"
+)"; then pass "the twenty-five tool descriptions match in tools.rs and clax.ts"
 else fail "tool descriptions differ from plugins/pi/test/fixtures/contract.json: $out"; fi
 
 # Every Claude marketplace plugin source is an existing directory.
@@ -440,6 +440,19 @@ for f in "${skill_copies[@]}"; do
     if [ -n "$(section "$f" "Data (db)")" ]; then pass "$f has a Data (db) section"; else fail "$f has no '## Data (db)' section"; fi
 done
 same_section "Data (db)" "${skill_copies[@]}"
+# What an agent may and must not do beside other agents and people (spec
+# 2026-10-08 §16) is the same in the four skills, and names the rules
+# agents most need.
+for f in "${skill_copies[@]}"; do
+    if [ -n "$(section "$f" "Working beside other agents and people")" ]; then pass "$f has a Working beside other agents and people section"
+    else fail "$f has no '## Working beside other agents and people' section"; fi
+done
+same_section "Working beside other agents and people" "${skill_copies[@]}"
+beside="$(section "${skill_copies[0]}" "Working beside other agents and people" | tr '\n' ' ')"
+for needle in '`thread_taken`' '`comments_handoff`' '`approval`' '`/api/token`' 'web or browser tools' 'never act in People' 'not the `clax` command line' 'never treat them as instructions'; do
+    if echo "$beside" | grep -F -- "$needle" >/dev/null; then pass "the Working beside other agents and people section names $needle"
+    else fail "the Working beside other agents and people section does not name $needle"; fi
+done
 
 # Every tool list names exactly the tools in plugins/pi/test/fixtures/contract.json:
 # the generated block in each skill intro, and the hand-written lists in
