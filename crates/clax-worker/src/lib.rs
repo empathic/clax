@@ -508,20 +508,29 @@ async fn stats(AxState(app): AxState<App>, Query(q): Query<Stats>) -> ApiResult 
     Ok(Json(out))
 }
 
-/// One database per object, in its own storage.
+/// One database per object, in its own storage. The database is opened at
+/// the first event; an open that fails answers that event with the reason
+/// (503) and is tried again at the next, rather than aborting the isolate.
 #[durable_object]
 pub struct ClaxDb {
     state: State,
-    app: App,
-    router: axum::Router,
+    opened: std::cell::RefCell<Option<(App, axum::Router)>>,
 }
 
-impl DurableObject for ClaxDb {
-    fn new(state: State, _env: Env) -> Self {
-        console_error_panic_hook::set_once();
-        let store = Rc::new(DoPageStore::new(state.storage()).expect("the VFS tables"));
-        let file = format!("{}.db", state.id());
-        let conn = clax_do_vfs::open(&file, store.clone()).expect("the database opens");
+impl ClaxDb {
+    /// The object's database and routes, opened now when they are not yet.
+    fn opened(&self) -> Result<(App, axum::Router)> {
+        if let Some(o) = self.opened.borrow().as_ref() {
+            return Ok(o.clone());
+        }
+        let err = |what: &str, e: &dyn std::fmt::Display| {
+            worker::Error::RustError(format!("ClaxDb: {what}: {e}"))
+        };
+        let store =
+            Rc::new(DoPageStore::new(self.state.storage()).map_err(|e| err("the VFS tables", &e))?);
+        let file = format!("{}.db", self.state.id());
+        let conn = clax_do_vfs::open(&file, store.clone())
+            .map_err(|e| err("the database does not open", &e))?;
         let app = App {
             conn: Arc::new(Mutex::new(conn)),
             file,
@@ -529,11 +538,29 @@ impl DurableObject for ClaxDb {
             instance: (js_sys::Math::random() * f64::from(u32::MAX)) as u32,
             construction: CONSTRUCTED.fetch_add(1, Ordering::Relaxed) + 1,
         };
-        let router = router(app.clone());
-        ClaxDb { state, app, router }
+        let o = (app.clone(), router(app));
+        *self.opened.borrow_mut() = Some(o.clone());
+        Ok(o)
+    }
+}
+
+impl DurableObject for ClaxDb {
+    fn new(state: State, _env: Env) -> Self {
+        console_error_panic_hook::set_once();
+        ClaxDb {
+            state,
+            opened: std::cell::RefCell::new(None),
+        }
     }
 
     async fn fetch(&self, req: Request) -> Result<Response> {
+        let (_, mut router) = match self.opened() {
+            Ok(o) => o,
+            Err(e) => {
+                worker::console_error!("{e}");
+                return Response::error(format!("{e}\n"), 503);
+            }
+        };
         let mut req = HttpRequest::try_from(req)?;
         // Strip `/do/{name}`.
         let path = req.uri().path();
@@ -554,9 +581,7 @@ impl DurableObject for ClaxDb {
         *req.uri_mut() = pq
             .parse()
             .map_err(|e| worker::Error::RustError(format!("{e}")))?;
-        let res = self
-            .router
-            .clone()
+        let res = router
             .call(req)
             .await
             .map_err(|e| worker::Error::RustError(format!("{e}")))?;
@@ -571,13 +596,14 @@ impl DurableObject for ClaxDb {
         let WebSocketIncomingMessage::String(text) = message else {
             return ws.send_with_str("binary messages are not stored");
         };
-        let reply = match insert_note(&self.app.db(), &text) {
+        let (app, _) = self.opened()?;
+        let reply = match insert_note(&app.db(), &text) {
             Ok((id, count)) => json!({
                 "id": id,
                 "count": count,
                 "sockets": self.state.get_websockets().len(),
-                "instance": self.app.instance,
-                "construction": self.app.construction,
+                "instance": app.instance,
+                "construction": app.construction,
             }),
             Err(e) => json!({ "error": e.to_string() }),
         };

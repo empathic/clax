@@ -1353,3 +1353,64 @@ async fn a_links_tokens_are_limited_per_client_on_the_clock() {
     h.clock.advance(120);
     assert_eq!(h.mint(&aid, "read", None).await.0, 200);
 }
+
+impl Hosted {
+    /// A person invited with `rights` and signed in, with their session
+    /// cookie and public ID.
+    async fn member(&self, owner: &str, name: &str, rights: Value) -> (String, String) {
+        let (s, v, _) = self
+            .send(
+                reqwest::Method::POST,
+                "/api/people/invites",
+                Some(owner),
+                Some(json!({"name": name, "rights": rights})),
+            )
+            .await;
+        assert_eq!(s, 201, "{v}");
+        let url = v["invite"]["url"].as_str().unwrap();
+        let code = url.rsplit('/').next().unwrap();
+        let (s, v, c) = self
+            .send(
+                reqwest::Method::POST,
+                &format!("/api/hosted/invites/{code}/accept"),
+                None,
+                Some(json!({})),
+            )
+            .await;
+        assert_eq!(s, 200, "{v}");
+        let pid = v["person"]["public_id"].as_str().unwrap().to_string();
+        (c.unwrap(), pid)
+    }
+}
+
+#[tokio::test]
+async fn a_person_who_reads_a_page_through_its_link_loses_its_tokens_when_sharing_stops() {
+    let h = Hosted::new().await;
+    let owner = h.owner().await;
+    let aid = aid_of(&h.ts.publish("Plan", &[("index.html", "<p>one</p>")]).await);
+    let other = aid_of(&h.ts.publish("Other", &[("index.html", "<p>two</p>")]).await);
+    // Mia's rights read Other alone; Sam's read Plan.
+    let reads =
+        |a: &str| json!([{"type": "clax-artifacts", "actions": ["read"], "locations": [a]}]);
+    let (mia, mia_id) = h.member(&owner, "Mia", reads(&other)).await;
+    let (sam, sam_id) = h.member(&owner, "Sam", reads(&aid)).await;
+    assert_eq!(h.mint(&aid, "read", Some(&mia)).await.0, 404);
+    h.share(&owner, &aid, Some("viewer")).await;
+    let mut held = Vec::new();
+    for (cookie, pid) in [(&mia, &mia_id), (&sam, &sam_id)] {
+        let (s, v) = h.mint(&aid, "read", Some(cookie)).await;
+        assert_eq!(s, 200, "{v}");
+        let row = h.fake.rows().pop().unwrap();
+        assert_eq!(row.holder.person.as_deref(), Some(pid.as_str()), "{row:?}");
+        held.push(row.id);
+    }
+    // A change of the link's access keeps the read it gives.
+    h.share(&owner, &aid, Some("commenter")).await;
+    assert!(!h.fake.row(&held[0]).revoked);
+    // Stopping sharing revokes Mia's, whose read came from the link, before
+    // it answers; Sam's own rights keep his.
+    h.share(&owner, &aid, None).await;
+    assert!(h.fake.row(&held[0]).revoked, "Mia's");
+    assert!(!h.fake.row(&held[1]).revoked, "Sam's");
+    assert_eq!(h.mint(&aid, "read", Some(&mia)).await.0, 404);
+}

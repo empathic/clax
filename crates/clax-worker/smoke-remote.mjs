@@ -570,7 +570,7 @@ async function local(o) {
   mkdirSync(dir, { recursive: true });
   const port = await freePort();
   const secret = `smoke secret ${RUN}`;
-  const token = `smoke-owner-${RUN}-${Math.random().toString(36).slice(2)}`;
+  const token = `smoke-owner-${RUN}-${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
   const remoteArtifacts = flag("--remote-artifacts");
   const config = writeConfig(dir, {
     HOSTED: "1",

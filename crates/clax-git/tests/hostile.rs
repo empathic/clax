@@ -380,6 +380,46 @@ async fn a_push_unpacking_past_the_limit_is_refused_at_unpack() {
     assert!(repo.refs().await.unwrap().is_empty());
 }
 
+/// A push whose pack holds more entries than `max_objects` is refused at
+/// unpacking, however few bytes they are, and one at the bound is taken.
+#[tokio::test]
+async fn a_push_of_more_objects_than_the_limit_is_refused_at_unpack() {
+    let (_host, repo) = empty_repo().await;
+    let blobs: Vec<Object> = (0..6u8).map(|i| Object::blob(vec![i])).collect();
+    let files: Vec<(String, ObjectId)> = blobs
+        .iter()
+        .enumerate()
+        .map(|(i, b)| (format!("f{i}"), b.id()))
+        .collect();
+    let named: Vec<(&str, Mode, ObjectId)> = files
+        .iter()
+        .map(|(n, id)| (n.as_str(), Mode::FILE, *id))
+        .collect();
+    let t = tree(&named);
+    let c = commit(t.id(), vec![], "many\n");
+    let mut entries: Vec<Raw> = blobs.into_iter().map(Raw::Whole).collect();
+    entries.push(Raw::Whole(t));
+    entries.push(Raw::Whole(c.clone()));
+    let body = push_body(
+        &[RefUpdate::new(MAIN, None, Some(c.id()))],
+        &pack_of(&entries),
+    );
+    let refused = ReceiveOptions {
+        max_objects: 7,
+        ..ReceiveOptions::default()
+    };
+    let out = receive_pack(&repo, &body, &refused).await;
+    let lines = report(&out.body);
+    assert!(lines[0].contains("more than 7 objects"), "{lines:?}");
+    assert!(repo.refs().await.unwrap().is_empty());
+    let taken = ReceiveOptions {
+        max_objects: 8,
+        ..ReceiveOptions::default()
+    };
+    let out = receive_pack(&repo, &body, &taken).await;
+    assert_eq!(report(&out.body)[0], "unpack ok", "{:?}", report(&out.body));
+}
+
 // ── Upload-pack ─────────────────────────────────────────────────────────────
 
 /// A stateless client sends its wants again in every request; when a

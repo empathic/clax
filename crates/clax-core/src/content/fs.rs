@@ -14,7 +14,7 @@
 //! Deleting an artifact removes its whole directory.
 
 use super::{AssetKey, ContentStore, VersionWrite, missing, present, superseded};
-use crate::publish::INDEX;
+use crate::publish::{INDEX, check_path};
 use crate::{ArtifactId, Home, Result, new_ulid};
 use std::path::{Path, PathBuf};
 
@@ -157,11 +157,26 @@ fn copy_file(from: &Path, to: &Path) -> std::io::Result<()> {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl ContentStore for FsContent {
+    /// A path that is not a safe relative one ([`check_path`]) names no
+    /// file: nothing outside the version's directory is read.
     async fn read_file(&self, id: &ArtifactId, n: u32, path: &str) -> Result<Option<Vec<u8>>> {
+        if check_path(path).is_err() {
+            return Ok(None);
+        }
         read_if_present(&file_path(&self.home, id, n, path))
     }
 
+    /// Refuses (`invalid_path`) a version naming a path that is not a safe
+    /// relative one ([`check_path`]) before anything is written.
     async fn write_version(&self, id: &ArtifactId, n: u32, write: &VersionWrite<'_>) -> Result<()> {
+        for path in write
+            .carry
+            .iter()
+            .copied()
+            .chain(write.put.iter().map(|f| f.path))
+        {
+            check_path(path)?;
+        }
         self.check_new(id, n)?;
         let staging = self.stage(id)?;
         if !write.carry.is_empty() {
@@ -192,6 +207,9 @@ impl ContentStore for FsContent {
         to: &ArtifactId,
         to_n: u32,
     ) -> Result<()> {
+        for path in paths {
+            check_path(path)?;
+        }
         self.check_new(to, to_n)?;
         let staging = self.stage(to)?;
         let src = self.home.version_dir(from, from_n);
@@ -259,12 +277,15 @@ impl ContentStore for FsContent {
         remove_file_if_present(&self.home.clip_path(id, thread))
     }
 
+    /// The file when it is there and `path` is a safe relative one.
     fn local_file(&self, id: &ArtifactId, n: u32, path: &str) -> Option<PathBuf> {
-        Some(file_path(&self.home, id, n, path))
+        check_path(path).ok()?;
+        Some(file_path(&self.home, id, n, path)).filter(|p| p.is_file())
     }
 
+    /// The clip's file when it is there.
     fn local_clip(&self, id: &ArtifactId, thread: &str) -> Option<PathBuf> {
-        Some(self.home.clip_path(id, thread))
+        Some(self.home.clip_path(id, thread)).filter(|p| p.is_file())
     }
 }
 
@@ -327,6 +348,67 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(versions, ["1"], "no staging directory is left");
+    }
+
+    #[test]
+    fn paths_that_leave_the_version_read_nothing_and_write_nothing() {
+        let (_d, home, c) = content();
+        let id = ArtifactId::generate();
+        let put = |path, bytes| NewFile {
+            path,
+            bytes,
+            content_type: "text/plain",
+        };
+        let w = VersionWrite {
+            carry: Vec::new(),
+            put: vec![put("index.html", b"<p>1")],
+            ..Default::default()
+        };
+        wait(c.write_version(&id, 1, &w)).unwrap();
+        // `files/../index.html` is the version's own index.html on disk.
+        for bad in ["../index.html", "/etc/hosts", "a//b", "a/./b", ""] {
+            assert_eq!(wait(c.read_file(&id, 1, bad)).unwrap(), None, "{bad}");
+            assert_eq!(c.local_file(&id, 1, bad), None, "{bad}");
+        }
+        let w = VersionWrite {
+            carry: Vec::new(),
+            put: vec![put("index.html", b"<p>2"), put("../../escape", b"x")],
+            ..Default::default()
+        };
+        let e = wait(c.write_version(&id, 2, &w)).unwrap_err();
+        assert!(e.to_string().contains("not a safe relative path"), "{e}");
+        let w = VersionWrite {
+            carry: vec!["../index.html"],
+            put: vec![put("index.html", b"<p>2")],
+            ..Default::default()
+        };
+        assert!(wait(c.write_version(&id, 2, &w)).is_err());
+        let e = wait(c.copy_version(&id, 1, &["../index.html"], &id, 2)).unwrap_err();
+        assert!(e.to_string().contains("not a safe relative path"), "{e}");
+        assert!(!home.artifact_dir(&id).join("escape").exists());
+        assert!(!c.has_version(&id, 2));
+    }
+
+    #[test]
+    fn local_paths_name_only_files_that_are_there() {
+        let (_d, _home, c) = content();
+        let id = ArtifactId::generate();
+        let w = VersionWrite {
+            carry: Vec::new(),
+            put: vec![NewFile {
+                path: "index.html",
+                bytes: b"<p>1",
+                content_type: "text/html",
+            }],
+            ..Default::default()
+        };
+        wait(c.write_version(&id, 1, &w)).unwrap();
+        assert!(c.local_file(&id, 1, "index.html").is_some());
+        assert_eq!(c.local_file(&id, 1, "gone.css"), None);
+        assert_eq!(c.local_file(&id, 2, "index.html"), None);
+        assert_eq!(c.local_clip(&id, "01M4X6ZZJ3CCAQC3SVGKDD8NTX"), None);
+        wait(c.put_clip(&id, "01M4X6ZZJ3CCAQC3SVGKDD8NTX", b"png")).unwrap();
+        assert!(c.local_clip(&id, "01M4X6ZZJ3CCAQC3SVGKDD8NTX").is_some());
     }
 
     #[test]

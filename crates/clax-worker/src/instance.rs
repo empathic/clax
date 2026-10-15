@@ -307,11 +307,31 @@ fn kv_put(state: &State, key: &str, value: &str) -> Result<()> {
     )
 }
 
-/// The owner's token: `CLAX_TOKEN` when set, else the one the object keeps
-/// in its storage, made on first use.
+/// The fewest characters a set `CLAX_TOKEN` may have: the owner's
+/// credential of a public Worker must not be guessable (the one the object
+/// makes is 64 hex digits).
+const MIN_TOKEN_CHARS: usize = 32;
+
+/// `set`, a `CLAX_TOKEN`, when it is long enough to be the owner's token;
+/// otherwise why not.
+fn checked_token(set: &str) -> std::result::Result<(), String> {
+    if set.chars().count() < MIN_TOKEN_CHARS {
+        return Err(format!(
+            "CLAX_TOKEN must be at least {MIN_TOKEN_CHARS} characters (it has {}); \
+             set a random one, or unset it and the instance makes its own",
+            set.chars().count()
+        ));
+    }
+    Ok(())
+}
+
+/// The owner's token: `CLAX_TOKEN` when set (refused when shorter than
+/// [`MIN_TOKEN_CHARS`]), else the one the object keeps in its storage, made
+/// on first use.
 fn owner_token(state: &State, env: &Env) -> Result<String> {
     let set = secret(env, "CLAX_TOKEN");
     if !set.is_empty() {
+        checked_token(&set).map_err(worker::Error::RustError)?;
         return Ok(set);
     }
     if let Some(t) = kv_get(state, "token")? {
@@ -1297,6 +1317,15 @@ impl InstanceDo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_set_owner_token_must_be_long_enough_to_be_unguessable() {
+        assert!(checked_token("hunter2").is_err());
+        assert!(checked_token(&"a".repeat(MIN_TOKEN_CHARS - 1)).is_err());
+        let e = checked_token("short").unwrap_err();
+        assert!(e.contains("CLAX_TOKEN") && e.contains("32"), "{e}");
+        assert!(checked_token(&"a".repeat(MIN_TOKEN_CHARS)).is_ok());
+    }
 
     #[test]
     fn request_bodies_share_one_budget_and_give_it_back_when_dropped() {

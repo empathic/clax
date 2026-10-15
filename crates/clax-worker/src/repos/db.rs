@@ -63,6 +63,12 @@ pub type Result<T> = clax_git::Result<T>;
 /// part-way is refused whole, with a reason, before it starts.
 pub const MAX_WRITE_BYTES: usize = 12 << 20;
 
+/// What each object costs an [`apply`] beyond its bytes, counted against
+/// [`MAX_WRITE_BYTES`]: its two rows (`git_objects`, `git_held`) with their
+/// IDs and index entries, so many tiny objects cannot pass a write the
+/// transaction cap refuses.
+pub const OBJECT_ROW_BYTES: usize = 64;
+
 fn sql(e: rusqlite::Error) -> GitError {
     GitError::RepoUnavailable(format!("The repository store failed: {e}"))
 }
@@ -289,8 +295,8 @@ fn ref_at(conn: &Connection, repo: &str, name: &str) -> rusqlite::Result<ObjectI
 /// Writes `objects` into `repo`, then applies `updates`, each only when
 /// its ref holds `old`; with `atomic`, all or none. The semantics of
 /// [`clax_git::Repo::apply`], in one transaction. Objects over
-/// [`MAX_WRITE_BYTES`] in all are refused, `invalid_argument`, and nothing
-/// is written.
+/// [`MAX_WRITE_BYTES`] in all, each counted with [`OBJECT_ROW_BYTES`], are
+/// refused, `invalid_argument`, and nothing is written.
 pub fn apply(
     conn: &Connection,
     repo: &str,
@@ -299,7 +305,10 @@ pub fn apply(
     atomic: bool,
 ) -> Result<Vec<RefStatus>> {
     require(conn, repo)?;
-    let bytes: usize = objects.iter().map(|o| o.data.len()).sum();
+    let bytes: usize = objects
+        .iter()
+        .map(|o| o.data.len() + OBJECT_ROW_BYTES)
+        .sum();
     if bytes > MAX_WRITE_BYTES {
         return Err(GitError::InvalidArgument(format!(
             "The repository stand-in writes at most {MAX_WRITE_BYTES} bytes of objects at once; this write has {bytes}"

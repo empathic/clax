@@ -160,6 +160,10 @@ pub struct InboxQuery {
     /// Mark-all only: items up to this `seq` (the newest the owner was
     /// shown), so an item made since is not marked read unseen.
     pub upto: Option<i64>,
+    /// Artifacts whose comment text the recipient may not read: the search
+    /// text matches none of their `reply`, `version` and `finished` items,
+    /// whose index entries hold comment text, so a search cannot probe it.
+    pub text_withheld_at: Vec<String>,
 }
 
 /// One change to `inbox_items` in a committed transaction: the item `seq`
@@ -436,6 +440,22 @@ fn build(q: &InboxQuery, shape: Shape, now: &str) -> Built {
     if let Some(a) = &q.artifact {
         let p = arg(Sql::Text(a.clone()), &mut args);
         wh.push(format!("{}i.artifact_id = {p}", on(Driver::Artifact)));
+    }
+    if text.is_some() && !q.text_withheld_at.is_empty() {
+        let ps: Vec<String> = q
+            .text_withheld_at
+            .iter()
+            .map(|a| arg(Sql::Text(a.clone()), &mut args))
+            .collect();
+        let ks: Vec<String> = [Kind::Reply, Kind::Version, Kind::Finished]
+            .iter()
+            .map(|k| arg(Sql::Text(k.as_str().into()), &mut args))
+            .collect();
+        wh.push(format!(
+            "NOT (+i.artifact_id IN ({}) AND +i.kind IN ({}))",
+            ps.join(", "),
+            ks.join(", ")
+        ));
     }
     match &q.agent {
         Some(Agent::Harness(h)) => {
@@ -1471,6 +1491,21 @@ impl Store {
         let b = build(q, Shape::Count(cap), "");
         self.with_read(|c| Ok(c.query_row(&b.sql, params_from_iter(b.args.iter()), |r| r.get(0))?))
             .map_err(|e| search_error(e, b.searched))
+    }
+
+    /// The artifacts `recipient`'s items are about (`None`: the owner's),
+    /// each once.
+    pub fn inbox_artifacts(&self, recipient: Option<&str>) -> Result<Vec<String>> {
+        self.with_read(|c| {
+            let mut st = c.prepare_cached(
+                "SELECT DISTINCT artifact_id FROM inbox_items
+                 WHERE COALESCE(recipient, '') = ?1 AND artifact_id IS NOT NULL",
+            )?;
+            let ids = st
+                .query_map(params![recipient_key(recipient)], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()?;
+            Ok(ids)
+        })
     }
 
     /// The number of `recipient`'s unread items (`None`: the owner's).

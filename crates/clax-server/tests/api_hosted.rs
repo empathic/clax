@@ -3398,7 +3398,7 @@ async fn a_token_client_initializing_again_keeps_the_narrowing_of_its_name() {
     // recently seen: the next writer-a still starts narrowed, and the cap
     // then ends the oldest.
     let mut fillers = Vec::new();
-    for n in 0..clax_core::Store::BEARER_SESSION_CAP - 4 {
+    for n in 0..clax_store::Store::BEARER_SESSION_CAP - 4 {
         let mut f = client(None);
         assert_eq!(f.initialize(&format!("filler-{n}")).await, 200);
         fillers.push(f);
@@ -3466,6 +3466,85 @@ async fn batch_naming(ws: &mut Ws, person: &str) -> Value {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn a_person_who_may_no_longer_read_comments_gets_inbox_items_without_comment_text() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let sid = site.ts.register_session("claude", "h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let plan = site.ts.publish_as(&sid, "Plan", "<h1>Plan</h1>").await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let reads = json!({"type": "clax-artifacts", "actions": ["read"], "locations": [plan]});
+    let (mia, mia_id) = site
+        .person_with(
+            &owner,
+            "Mia",
+            json!([reads, {"type": "clax-comments", "actions": ["read", "write", "reply"], "locations": [plan]}]),
+        )
+        .await;
+    let (s, t) = site.thread(&mia, &plan, "secret question").await;
+    assert_eq!(s, 201, "{t}");
+    let tid = t["thread"]["id"].as_str().unwrap().to_string();
+    let (s, v) = site
+        .post(
+            &owner,
+            &format!("/api/artifacts/{plan}/threads/{tid}/send"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    site.ts
+        .reply_as_agent(&sid, &plan, &tid, "secret answer")
+        .await;
+    let reply = |v: &Value| {
+        v["items"]
+            .as_array()
+            .unwrap_or_else(|| panic!("items: {v}"))
+            .iter()
+            .find(|i| i["kind"] == "reply")
+            .cloned()
+            .unwrap_or_else(|| panic!("a reply item: {v}"))
+    };
+    let (s, v) = site.get(&mia, "/api/inbox").await;
+    assert_eq!(s, 200, "{v}");
+    let item = reply(&v);
+    assert_eq!(item["reply"]["body"], "secret answer", "{item}");
+    let (s, v) = site.get(&mia, "/api/inbox?q=secret").await;
+    assert_eq!((s, v["total"].as_u64()), (200, Some(1)), "{v}");
+    assert!(item["thread"]["summary"].is_string(), "{item}");
+    // The owner takes Mia's comment read at Plan away.
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::PUT,
+            &format!("/api/people/{mia_id}/rights"),
+            json!({"rights": [reads]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = site.get(&mia, "/api/inbox").await;
+    assert_eq!(s, 200, "{v}");
+    let item = reply(&v);
+    assert_eq!(item["thread"]["id"], tid.as_str(), "{item}");
+    assert_eq!(item["reply"]["body"], Value::Null, "{item}");
+    assert_eq!(item["thread"]["summary"], Value::Null, "{item}");
+    assert!(!v.to_string().contains("secret"), "{v}");
+    let (s, v) = site.get(&mia, "/api/inbox/summary").await;
+    assert_eq!(s, 200, "{v}");
+    assert!(!v.to_string().contains("secret"), "{v}");
+    // A search does not match the text withheld from her, so it cannot be
+    // probed word by word; marking a search's items read marks none.
+    let (s, v) = site.get(&mia, "/api/inbox?q=secret").await;
+    assert_eq!((s, v["total"].as_u64()), (200, Some(0)), "{v}");
+    assert_eq!(v["items"], json!([]), "{v}");
+    let (s, v) = site.get(&mia, "/api/inbox?q=answer&kind=reply").await;
+    assert_eq!((s, v["total"].as_u64()), (200, Some(0)), "{v}");
 }
 
 #[tokio::test]

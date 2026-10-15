@@ -51,26 +51,101 @@ pub async fn recipient_of(s: &AppState, who: &Identity) -> Result<Option<String>
 /// per item.
 pub const MAX_ITEM_EVENTS: usize = 50;
 
-/// The view of spec §7.6 for `i`.
-pub fn view(st: &Store, i: &ItemRow) -> clax_core::Result<Value> {
-    Ok(views(st, std::slice::from_ref(i))?.remove(0))
+/// The view of spec §7.6 for `i`, on a hosted daemon when `hosted`.
+pub fn view(st: &Store, i: &ItemRow, hosted: bool) -> clax_core::Result<Value> {
+    Ok(views(st, std::slice::from_ref(i), hosted)?.remove(0))
 }
 
-/// The views of `items`, in the same order. Their sources are read in
-/// one snapshot ([`Store::inbox_sources`]); a question item's question is
-/// read after it.
-pub fn views(st: &Store, items: &[ItemRow]) -> clax_core::Result<Vec<Value>> {
+/// The views of `items`, in the same order, on a hosted daemon when
+/// `hosted`. Their sources are read in one snapshot
+/// ([`Store::inbox_sources`]); a question item's question is read after
+/// it. On a hosted daemon a connected person's view carries no comment
+/// text (a thread's summary, a reply's body) of an artifact whose comments
+/// they may not read ([`crate::hosted::reads_comments`]), as the threads
+/// route, the stream, the snapshot and the live socket withhold it.
+pub fn views(st: &Store, items: &[ItemRow], hosted: bool) -> clax_core::Result<Vec<Value>> {
     let sources = st.inbox_sources(items)?;
     let mut names = HashMap::new();
+    let mut rights = HashMap::new();
     items
         .iter()
         .zip(sources)
-        .map(|(i, s)| render(st, &mut names, i, s))
+        .map(|(i, s)| {
+            let comments = !hosted
+                || reads_comments(
+                    st,
+                    &mut rights,
+                    i.recipient.as_deref(),
+                    i.artifact_id.as_deref(),
+                )?;
+            render(st, &mut names, i, s, comments)
+        })
         .collect()
 }
 
-fn thread_json(t: &ThreadRef) -> Value {
-    json!({"id": t.id, "summary": t.summary})
+/// The artifacts among `recipient`'s items (a connected person's on a
+/// hosted daemon) whose comments they may not read, as
+/// [`views`] withholds their text: what a search of their inbox leaves
+/// unmatched ([`clax_store::inbox::InboxQuery::text_withheld_at`]).
+/// Empty for the owner and on a local daemon.
+///
+/// # Errors
+/// The store's.
+pub fn text_withheld_at(
+    st: &Store,
+    recipient: Option<&str>,
+    hosted: bool,
+) -> clax_core::Result<Vec<String>> {
+    let Some(pid) = recipient.filter(|_| hosted) else {
+        return Ok(Vec::new());
+    };
+    let mut rights = std::collections::HashMap::new();
+    let mut out = Vec::new();
+    for aid in st.inbox_artifacts(Some(pid))? {
+        if !reads_comments(st, &mut rights, Some(pid), Some(&aid))? {
+            out.push(aid);
+        }
+    }
+    Ok(out)
+}
+
+/// Whether `recipient`, a connected person, may read the comments on
+/// `artifact`: by their rights or the page's link, as the threads route
+/// decides. The owner and an item about no artifact are not limited, nor a
+/// recipient who is no person (a guest, whose link always reads comments);
+/// an unknown recipient reads none. `rights` keeps each person's rights
+/// across the items of one call.
+fn reads_comments(
+    st: &Store,
+    rights: &mut std::collections::HashMap<String, Option<crate::hosted::MemberRights>>,
+    recipient: Option<&str>,
+    artifact: Option<&str>,
+) -> clax_core::Result<bool> {
+    let (Some(pid), Some(aid)) = (recipient, artifact) else {
+        return Ok(true);
+    };
+    if !rights.contains_key(pid) {
+        let member = match st.person_rights(pid) {
+            Ok(r) => Some(crate::hosted::MemberRights {
+                person: pid.to_string(),
+                rights: std::sync::Arc::new(r),
+            }),
+            Err(clax_core::CoreError::Invalid {
+                code: "not_a_person",
+                ..
+            }) => None,
+            Err(clax_core::CoreError::NotFound) => return Ok(false),
+            Err(e) => return Err(e),
+        };
+        rights.insert(pid.to_string(), member);
+    }
+    crate::hosted::reads_comments(st, rights[pid].as_ref(), aid)
+}
+
+/// `t` as an item names it; its summary, comment text, only when its
+/// reader may read the artifact's comments (`comments`).
+fn thread_json(t: &ThreadRef, comments: bool) -> Value {
+    json!({"id": t.id, "summary": if comments { json!(t.summary) } else { Value::Null }})
 }
 
 /// The last component of a working directory.
@@ -98,12 +173,16 @@ fn person_name(
 
 /// `i`'s view from its sources `s`. A missing source makes the item `gone`;
 /// the view then keeps what the item holds (kind, time, agent, IDs).
+/// Without `comments` (its reader may not read the artifact's comments) a
+/// thread's summary and a reply's body are `null`.
 fn render(
     st: &Store,
     names: &mut HashMap<Option<String>, String>,
     i: &ItemRow,
     s: Sources,
+    comments: bool,
 ) -> clax_core::Result<Value> {
+    let text = |t: Value| if comments { t } else { Value::Null };
     // An agent's project goes to the owner and to the agent's own person
     // alone (spec §13).
     // Its person, and whether it is the recipient's own person's, name it
@@ -177,12 +256,14 @@ fn render(
         Kind::Reply => {
             let tid = i.thread_id.as_deref().unwrap_or_default();
             v["thread"] = match &s.thread {
-                Some(t) => json!({"id": t.id, "summary": t.summary, "status": t.status}),
+                Some(t) => {
+                    json!({"id": t.id, "summary": text(json!(t.summary)), "status": t.status})
+                }
                 None => json!({"id": tid, "summary": null, "status": null}),
             };
             v["reply"] = match &s.reply {
                 Some(r) => {
-                    json!({"comment_id": i.comment_id, "body": r.body, "addressed": r.addressed})
+                    json!({"comment_id": i.comment_id, "body": text(json!(r.body)), "addressed": r.addressed})
                 }
                 None => json!({"comment_id": i.comment_id, "body": null, "addressed": false}),
             };
@@ -195,7 +276,7 @@ fn render(
                 Some(x) => json!({
                     "n": n,
                     "note": x.note,
-                    "addressed": x.addressed.iter().map(thread_json).collect::<Vec<_>>(),
+                    "addressed": x.addressed.iter().map(|t| thread_json(t, comments)).collect::<Vec<_>>(),
                 }),
                 None => json!({"n": n, "note": null, "addressed": []}),
             };
@@ -226,7 +307,7 @@ fn render(
                 .map_or(Value::Null, |d| d["message"].clone());
             v["work"] = json!({
                 "message": message,
-                "threads": s.threads.iter().map(thread_json).collect::<Vec<_>>(),
+                "threads": s.threads.iter().map(|t| thread_json(t, comments)).collect::<Vec<_>>(),
             });
             !live
         }
@@ -334,6 +415,7 @@ fn announcement(
     db: &Store,
     changes: &[InboxChange],
     held: &std::collections::HashSet<String>,
+    hosted: bool,
 ) -> clax_core::Result<Vec<Announce>> {
     use clax_store::inbox::recipient_key;
     let seqs: Vec<i64> = changes.iter().map(|c| c.seq).collect();
@@ -360,7 +442,7 @@ fn announcement(
     }
     for (r, rows) in by {
         let unread = db.inbox_unread(r.as_deref())?;
-        out.push(Announce::Items(r, views(db, &rows)?, unread));
+        out.push(Announce::Items(r, views(db, &rows, hosted)?, unread));
     }
     Ok(out)
 }
@@ -383,6 +465,7 @@ pub fn listen(s: &AppState) {
         let _ = tx.send(c);
     }));
     let st = s.clone();
+    let hosted = s.hosted.is_some();
     clax_rt::spawn(async move {
         while let Some(changes) = rx.recv().await {
             // Nobody to tell: no view is read or rendered.
@@ -392,7 +475,7 @@ pub fn listen(s: &AppState) {
             }
             let out = st
                 .store
-                .call(move |db| announcement(db, &changes, &held))
+                .call(move |db| announcement(db, &changes, &held, hosted))
                 .await;
             match out {
                 Ok(batches) => {
@@ -499,6 +582,7 @@ mod tests {
             &mut HashMap::new(),
             &item(Kind::Finished, Some("u_sam")),
             sources("live", None),
+            true,
         )
         .unwrap();
         let text = v.to_string();
@@ -516,6 +600,7 @@ mod tests {
             &mut HashMap::new(),
             &item(Kind::Finished, None),
             sources("live", None),
+            true,
         )
         .unwrap();
         assert_eq!(v["work"]["message"], "LIVECANARYmessage");
@@ -526,6 +611,7 @@ mod tests {
                 &mut HashMap::new(),
                 &item(Kind::Finished, recipient),
                 sources("html", person),
+                true,
             )
             .unwrap()["agent"]["project"]
                 .clone()
@@ -541,6 +627,7 @@ mod tests {
                 &mut HashMap::new(),
                 &item(Kind::Reply, None),
                 sources("html", person),
+                true,
             )
             .unwrap()["agent"]
                 .clone()

@@ -60,6 +60,11 @@ pub const DEFAULT_MAX_OBJECT_BYTES: usize = 256 * 1024 * 1024;
 /// inflated plus the objects its deltas make.
 pub const DEFAULT_MAX_UNPACKED_BYTES: usize = 1024 * 1024 * 1024;
 
+/// The most entries a pack may hold, by default. Each costs its reader
+/// memory beyond its bytes (an entry, an offset slot, an ID and a resolved
+/// copy), so a pack of many tiny objects is bounded by count as well.
+pub const DEFAULT_MAX_OBJECTS: usize = 50_000;
+
 #[derive(Clone, Debug)]
 enum Entry {
     Whole(Object),
@@ -153,10 +158,22 @@ impl ParsedPack {
     /// [`ParsedPack::resolve`] makes from deltas bounded by
     /// `max_total_bytes`: past it, either refuses the pack. (Resolving also
     /// copies each whole entry once, so memory peaks near twice the bound.)
+    /// The pack may hold [`DEFAULT_MAX_OBJECTS`] entries.
     pub fn parse_bounded(
         pack: &[u8],
         max_object_bytes: usize,
         max_total_bytes: usize,
+    ) -> Result<ParsedPack> {
+        ParsedPack::parse_within(pack, max_object_bytes, max_total_bytes, DEFAULT_MAX_OBJECTS)
+    }
+
+    /// [`ParsedPack::parse_bounded`], refusing a pack whose header declares
+    /// more than `max_objects` entries before any is read.
+    pub fn parse_within(
+        pack: &[u8],
+        max_object_bytes: usize,
+        max_total_bytes: usize,
+        max_objects: usize,
     ) -> Result<ParsedPack> {
         if pack.len() < 32 || &pack[..4] != b"PACK" {
             return Err(bad("no PACK header"));
@@ -166,6 +183,11 @@ impl ParsedPack {
             return Err(bad("unsupported version"));
         }
         let count = u32::from_be_bytes(pack[8..12].try_into().expect("4 bytes")) as usize;
+        if count > max_objects {
+            return Err(GitError::invalid(format!(
+                "A pushed pack holds more than {max_objects} objects"
+            )));
+        }
         let body_end = pack.len() - 20;
         if ObjectId::sha1(&pack[..body_end]).as_bytes() != &pack[body_end..] {
             return Err(bad("its checksum does not match"));

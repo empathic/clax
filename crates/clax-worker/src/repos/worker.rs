@@ -279,14 +279,68 @@ impl TokenHost for DoTokenHost {
 }
 
 /// The stand-in's repositories and the token ledger: one instance,
-/// [`REPO_INSTANCE`].
+/// [`REPO_INSTANCE`]. Its parts are built at the first event; a build that
+/// fails (the database does not open, `REPO_STORE` names no store, or names
+/// `artifacts` with no `ARTIFACTS` binding) answers that event 503 with the
+/// reason and is tried again at the next, rather than aborting the isolate.
 #[durable_object]
 pub struct RepoDO {
     state: State,
     env: Env,
+    built: std::cell::RefCell<Option<Rc<Built>>>,
+}
+
+/// What [`RepoDO`] serves with, once built.
+struct Built {
     service: RepoService<clax_do_vfs::Database, DoTokenHost>,
     serving: bool,
     options: ServeOptions,
+}
+
+impl Built {
+    fn new(state: &State, env: &Env) -> Result<Built> {
+        let err = |what: &str, e: &dyn std::fmt::Display| {
+            worker::Error::RustError(format!("RepoDO: {what}: {e}"))
+        };
+        let pages =
+            Rc::new(DoPageStore::new(state.storage()).map_err(|e| err("the VFS tables", &e))?);
+        let file = format!("repos-{}.db", state.id());
+        let db = clax_do_vfs::open(&file, pages)
+            .map_err(|e| err("the repository database does not open", &e))?;
+        let host = LocalHost::new(db).map_err(|e| err("the repository tables", &e))?;
+        let tokens = match repo_store(env)? {
+            RepoStore::Memory => DoTokenHost::Local(LocalTokens {
+                host: host.clone(),
+                public_origin: var(env, "PUBLIC_ORIGIN").unwrap_or_default(),
+            }),
+            RepoStore::Artifacts => DoTokenHost::Artifacts(ArtifactsTokens {
+                api: artifacts_binding(env)?,
+            }),
+        };
+        Ok(Built {
+            serving: git_http_serving(env),
+            service: RepoService {
+                host,
+                tokens,
+                clock: Arc::new(SystemClock),
+            },
+            options: serve_options(),
+        })
+    }
+}
+
+impl RepoDO {
+    /// The object's parts, built now when they are not yet (see the type).
+    fn built(&self) -> Result<Rc<Built>> {
+        if let Some(b) = self.built.borrow().as_ref() {
+            return Ok(b.clone());
+        }
+        let b = Rc::new(Built::new(&self.state, &self.env).inspect_err(|e| {
+            worker::console_error!("{e}");
+        })?);
+        *self.built.borrow_mut() = Some(b.clone());
+        Ok(b)
+    }
 }
 
 fn http_response(r: clax_git::http::HttpResponse) -> Result<Response> {
@@ -314,11 +368,11 @@ async fn read_capped(req: &Request, limit: usize) -> Result<Option<Vec<u8>>> {
 }
 
 impl RepoDO {
-    async fn schedule_retry(&self) {
-        let due = self
+    async fn schedule_retry(&self, b: &Built) {
+        let due = b
             .service
             .host
-            .with(|c| super::db::due(c, self.service.now_ms()))
+            .with(|c| super::db::due(c, b.service.now_ms()))
             .map(|d| !d.is_empty())
             .unwrap_or(false);
         if !due {
@@ -361,34 +415,18 @@ impl RepoDO {
 impl DurableObject for RepoDO {
     fn new(state: State, env: Env) -> Self {
         console_error_panic_hook::set_once();
-        let pages = Rc::new(DoPageStore::new(state.storage()).expect("the VFS tables"));
-        let file = format!("repos-{}.db", state.id());
-        let db = clax_do_vfs::open(&file, pages).expect("the repository database opens");
-        let host = LocalHost::new(db).expect("the repository tables");
-        let store = repo_store(&env).unwrap_or(RepoStore::Memory);
-        let tokens = match store {
-            RepoStore::Memory => DoTokenHost::Local(LocalTokens {
-                host: host.clone(),
-                public_origin: var(&env, "PUBLIC_ORIGIN").unwrap_or_default(),
-            }),
-            RepoStore::Artifacts => DoTokenHost::Artifacts(ArtifactsTokens {
-                api: artifacts_binding(&env).expect("the ARTIFACTS binding"),
-            }),
-        };
         RepoDO {
             state,
-            env: env.clone(),
-            serving: git_http_serving(&env),
-            service: RepoService {
-                host,
-                tokens,
-                clock: Arc::new(SystemClock),
-            },
-            options: serve_options(),
+            env,
+            built: std::cell::RefCell::new(None),
         }
     }
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
+        let b = match self.built() {
+            Ok(b) => b,
+            Err(e) => return Response::error(format!("{e}\n"), 503),
+        };
         let url = req.url()?;
         let path = url.path().to_string();
         let query = url.query().map(String::from);
@@ -396,7 +434,7 @@ impl DurableObject for RepoDO {
         if let Some(op) = path.strip_prefix("/_repos/").filter(|_| internal) {
             let body = req.bytes().await?;
             let method = req.method().to_string();
-            let r = self
+            let r = b
                 .service
                 .serve(&InternalRequest {
                     method: &method,
@@ -406,30 +444,30 @@ impl DurableObject for RepoDO {
                 })
                 .await;
             if op == "token/revoke" || op == "token/revoke-held" {
-                self.schedule_retry().await;
+                self.schedule_retry(&b).await;
             }
             return http_response(r);
         }
-        if path.starts_with("/git/") && self.serving {
+        if path.starts_with("/git/") && b.serving {
             let authorization = req.headers().get("authorization")?;
             // One time for the whole request: the token that was live when
             // it was checked names the push's pusher, however long the
             // body took, never the owner because it lapsed meanwhile.
-            let now = self.service.now_ms();
+            let now = b.service.now_ms();
             // The token first, so no body is read for a caller without one.
-            match authorize(&self.service.host, &path, authorization.as_deref(), now) {
+            match authorize(&b.service.host, &path, authorization.as_deref(), now) {
                 Ok(Some(_)) => {}
                 Ok(None) => return http_response(clax_git::server::unauthorized()),
                 Err(e) => return Response::error(format!("{e}\n"), 503),
             }
-            let limit = super::git_http::body_limit(&path, &self.options).unwrap_or(0);
+            let limit = super::git_http::body_limit(&path, &b.options).unwrap_or(0);
             let Some(body) = read_capped(&req, limit).await? else {
                 return http_response(clax_git::server::too_large(limit));
             };
             let method = req.method().to_string();
             let content_encoding = req.headers().get("content-encoding")?;
             let served = serve_git(
-                &self.service.host,
+                &b.service.host,
                 &GitHttpRequest {
                     method: &method,
                     path: &path,
@@ -438,14 +476,14 @@ impl DurableObject for RepoDO {
                     content_encoding: content_encoding.as_deref(),
                     body: &body,
                 },
-                &self.options,
+                &b.options,
                 now,
             )
             .await;
             // Entered before the next await, so no reconcile reads the
             // pushed commits without their pusher.
             let noted = tokens::note_push(
-                &self.service.host,
+                &b.service.host,
                 &path,
                 authorization.as_deref(),
                 &served.pushed,
@@ -462,18 +500,13 @@ impl DurableObject for RepoDO {
     }
 
     async fn alarm(&self) -> Result<Response> {
-        match tokens::retry_due(
-            &self.service.host,
-            &self.service.tokens,
-            self.service.now_ms(),
-        )
-        .await
-        {
+        let b = self.built()?;
+        match tokens::retry_due(&b.service.host, &b.service.tokens, b.service.now_ms()).await {
             Ok(0) => {}
-            Ok(_) => self.schedule_retry().await,
+            Ok(_) => self.schedule_retry(&b).await,
             Err(e) => {
                 worker::console_error!("RepoDO: retrying revocations failed: {e}");
-                self.schedule_retry().await;
+                self.schedule_retry(&b).await;
             }
         }
         Response::ok("")

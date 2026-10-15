@@ -147,7 +147,8 @@ npx wrangler secret put CLAX_TOKEN     # the owner's bearer token for the CLI (o
 `SETUP_SECRET`, `/setup` stays closed. Without `CLAX_TOKEN` the
 instance makes a token and keeps it in its storage, where nothing hands it
 out: set one if you mean to use the CLI against the instance. Use a long
-random value for both.
+random value for both; a `CLAX_TOKEN` under 32 characters is refused and
+the instance does not start.
 
 ### Deploying by hand
 

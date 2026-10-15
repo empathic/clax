@@ -24,7 +24,7 @@ const require = createRequire(join(HERE, "../../web/package.json"));
 const { chromium } = require("@playwright/test");
 
 const ROOT = join(HERE, "target/e2e");
-const TOKEN = "e2e-owner-token-" + Math.random().toString(36).slice(2);
+const TOKEN = "e2e-owner-token-" + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 const LIMIT = 15_000;
 const SHOTS = process.env.CLAX_E2E_SHOTS ?? "";
 
