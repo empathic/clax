@@ -9,7 +9,8 @@
 // session cookie alone. Wide, the top bar's Clone opens the dialog; at phone
 // width the more menu's Clone with git does. Each makes a read token, and
 // the dialog's git clone command, run as shown, clones the artifact. Sam,
-// a member Ada invites, may only read Ada's artifact; a browser with no
+// a member Ada invites and shares the artifact with (Can view), may only
+// read it; a browser with no
 // session gets no token until Ada shares the artifact by link, and then a
 // read token alone (15 minutes), whose command clones it too. Screenshots of each go to
 // target/e2e-clone/<run>/shots (or CLAX_E2E_SHOTS). Prints one line per
@@ -152,7 +153,19 @@ async function main() {
         await ctx.close();
       }
     }
-    // Sam, a member: Ada's artifact is his to read, not to push to.
+    // Sam, a member Ada shares the artifact with (Can view): his to read,
+    // not to push to.
+    const shctx = await browser.newContext({ storageState: adaState });
+    const shp = await shctx.newPage();
+    await shp.goto(`${origin}/a/${id}`);
+    const toSam = await shp.evaluate(async (aid) => {
+      const s = await (await fetch(`/api/hosted/artifacts/${aid}/sharing`)).json();
+      const who = s.suggestions.find((p) => p.name === "Sam");
+      const r = await fetch(`/api/hosted/artifacts/${aid}/shares`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ person: who.person, access: "viewer" }) });
+      return r.status;
+    }, id);
+    check(toSam === 200, "Ada shares the artifact with Sam, Can view", toSam);
+    await shctx.close();
     const sctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, storageState: samState });
     const sp = await sctx.newPage();
     const offered = sp.waitForResponse((r) => r.url().endsWith(`/api/artifacts/${id}/git-token`), { timeout: LIMIT });
