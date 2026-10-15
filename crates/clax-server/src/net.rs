@@ -443,7 +443,7 @@ impl Net {
     }
 
     /// Fetches `req`, reaching only hosts `allows` accepts, under the
-    /// module's rules, within [`TIMEOUT`].
+    /// module's rules, within [`TIMEOUT`], without the cache.
     ///
     /// # Errors
     /// [`NetError`], naming the first rule the fetch broke.
@@ -452,26 +452,46 @@ impl Net {
         allows: &(dyn Fn(&str) -> bool + Send + Sync),
         req: FetchRequest,
     ) -> Result<FetchResponse, NetError> {
-        self.fetch_within(allows, req, TIMEOUT).await
+        self.fetch_within(None, allows, req, TIMEOUT).await
     }
 
-    /// [`Net::fetch`] with another deadline.
+    /// [`Net::fetch`] for the artifact `app`, answered from the cache when
+    /// cacheable: each artifact has entries of its own, so no app can see
+    /// what another fetched.
+    ///
+    /// # Errors
+    /// As [`Net::fetch`].
+    pub async fn fetch_for(
+        &self,
+        app: &str,
+        allows: &(dyn Fn(&str) -> bool + Send + Sync),
+        req: FetchRequest,
+    ) -> Result<FetchResponse, NetError> {
+        self.fetch_within(Some(app), allows, req, TIMEOUT).await
+    }
+
+    /// [`Net::fetch_for`] (or, without `app`, [`Net::fetch`]) with another deadline.
     ///
     /// # Errors
     /// As [`Net::fetch`].
     pub async fn fetch_within(
         &self,
+        app: Option<&str>,
         allows: &(dyn Fn(&str) -> bool + Send + Sync),
         req: FetchRequest,
         limit: Duration,
     ) -> Result<FetchResponse, NetError> {
         let start = tokio::time::Instant::now();
         let work = async {
-            match (&self.cache, net_cache::key_of(&req)) {
+            let key = app.and_then(|a| net_cache::key_of(a, &req));
+            match (&self.cache, key) {
                 (Some(cache), Some(key)) => {
                     self.cached(cache, &key, allows, req, start, limit).await
                 }
-                _ => self.run(allows, req, start, limit).await.map(|(r, _)| r),
+                _ => self
+                    .run(allows, req, &[], start, limit)
+                    .await
+                    .map(|(r, _)| r),
             }
         };
         tokio::time::timeout(limit, work)
@@ -481,13 +501,16 @@ impl Net {
 
     /// A cacheable request: the host check first, then a fresh entry, or a
     /// fetch (revalidating a stale entry), whose answer the cache keeps when
-    /// [`net_cache::storable`].
+    /// [`net_cache::storable`]. The entry's validators go to its own URL
+    /// only, never past a redirect, and a `304` that cannot be answered
+    /// from the entry is fetched again without them, so a page that sent no
+    /// conditional request never sees one.
     async fn cached(
         &self,
         cache: &NetCache,
         key: &str,
         allows: &(dyn Fn(&str) -> bool + Send + Sync),
-        mut req: FetchRequest,
+        req: FetchRequest,
         start: tokio::time::Instant,
         limit: Duration,
     ) -> Result<FetchResponse, NetError> {
@@ -500,19 +523,30 @@ impl Net {
             });
         }
         let found = cache.get(key).await;
+        let mut conditional = req.clone();
+        let mut added = Vec::new();
         if let Some((entry, body)) = &found {
             if entry.fresh(cache.now()) {
                 return Ok(entry.response(body.clone(), cache.now()));
             }
-            req.headers.extend(entry.validators());
+            for (k, v) in entry.validators() {
+                added.push(k.clone());
+                conditional.headers.push((k, v));
+            }
         }
-        let (res, set_cookie) = self.run(allows, req, start, limit).await?;
-        let same_url = res.url == url.as_str();
-        if let (304, true, Some((entry, body))) = (res.status, same_url, found) {
-            let now = cache.now();
-            let entry = entry.refreshed(&res.headers, now);
-            cache.put(key, &entry, &body).await;
-            return Ok(entry.response(body, now));
+        let (mut res, mut set_cookie) = self.run(allows, conditional, &added, start, limit).await?;
+        let mut same_url = res.url == url.as_str();
+        if res.status == 304 {
+            if let (true, Some((entry, body))) = (same_url, found) {
+                let now = cache.now();
+                let entry = entry.refreshed(&res.headers, now);
+                cache.put(key, &entry, &body).await;
+                return Ok(entry.response(body, now));
+            }
+            if !added.is_empty() {
+                (res, set_cookie) = self.run(allows, req, &[], start, limit).await?;
+                same_url = res.url == url.as_str();
+            }
         }
         if same_url && net_cache::storable(res.status, set_cookie, &res.headers) {
             let entry = net_cache::Entry {
@@ -520,6 +554,7 @@ impl Net {
                 status: res.status,
                 headers: res.headers.clone(),
                 received: cache.now().timestamp(),
+                body_len: res.body.len() as u64,
             };
             cache.put(key, &entry, &res.body).await;
         } else {
@@ -528,11 +563,13 @@ impl Net {
         Ok(res)
     }
 
-    /// The fetch, and whether its final answer set a cookie.
+    /// The fetch, and whether its final answer set a cookie. The headers
+    /// named in `first_hop_only` go to the first hop only.
     async fn run(
         &self,
         allows: &(dyn Fn(&str) -> bool + Send + Sync),
         req: FetchRequest,
+        first_hop_only: &[String],
         start: tokio::time::Instant,
         limit: Duration,
     ) -> Result<(FetchResponse, bool), NetError> {
@@ -610,6 +647,7 @@ impl Net {
                 ));
             };
             redirects += 1;
+            headers.retain(|(k, _)| !first_hop_only.contains(k));
             if redirects > MAX_REDIRECTS {
                 return Err(NetError::TooManyRedirects);
             }
@@ -1009,6 +1047,7 @@ mod tests {
         );
         let e = net
             .fetch_within(
+                None,
                 &allows,
                 get("https://api.example.com/"),
                 Duration::from_millis(1),
