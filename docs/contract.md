@@ -2351,8 +2351,9 @@ or `{ok: false, error}`.
 published, rendered and read like any other, but hidden. All of its routes
 need the token:
 
-- `POST /api/drafts` with `{of, title, capabilities, files}` (`of` the
-  app's ID, absent or `null` for a new app; each file a string or a
+- `POST /api/drafts` with `{of, title, capabilities, files, inherit_net?}`
+  (`inherit_net` false keeps the draft offline, see "Fetching from the
+  network"; `of` the app's ID, absent or `null` for a new app; each file a string or a
   publish's `{content, encoding, content_type}`) answers 201 `{draft: {id,
   of, version, docs_copied, docs_truncated}}`: its version 1 holds
   `files`, and it starts with a copy of `of`'s documents as the owner reads
@@ -5470,8 +5471,9 @@ A draft (see "Drafts") holds no grants: `PUT` and `DELETE` on one are 403
 reachable while the draft declares it, the live app's current version
 declares it, and the owner's grant to the live app names it, so revoking
 the app's grants refuses the draft's next fetch. A new app's draft has no
-live app and every fetch is `not_granted`. `GET` on a draft shows those
-inherited grants.
+live app and every fetch is `not_granted`, as is every fetch of a draft
+made with `inherit_net: false` (a bundle update's check). `GET` on a draft
+shows those inherited grants.
 
 **Fetching.** `POST /api/artifacts/<id>/net:fetch` (token), body `{url,
 method?, headers?, body?}` (`method` `GET` when absent, `headers` an object
