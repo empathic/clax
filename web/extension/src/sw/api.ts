@@ -184,6 +184,14 @@ export class Api {
   split(origin: string) { return this.send<{ split: boolean; site: SiteInfo }>("POST", "/api/live/sites/split", { origin }); }
   /** The owner's answer to a suggested join: never, or not now. */
   answer(origin: string, withOrigin: string, answer: "never" | "later") { return this.send<unknown>("POST", "/api/live/sites/answer", { origin, with: withOrigin, answer }); }
+  /** Who approves a send of threads `tids` of live page `aid` first, by
+   * public ID (null: the owner), as the owner learns it (spec 2026-10-08
+   * §10); an answer of another shape is none. */
+  async approvesFirst(aid: string, tids: string[]): Promise<(string | null)[]> {
+    ids(aid, tids);
+    const r = await this.json<{ approves_first?: unknown }>(`/api/artifacts/${aid}/approves-first?threads=${tids.join(",")}`);
+    return Array.isArray(r.approves_first) ? r.approves_first : [];
+  }
   /** Who is on the live page now. */
   async presenceOf(aid: string) { ids(aid); return this.json<{ people?: PresenceView[] }>(`/api/artifacts/${aid}/presence`); }
 

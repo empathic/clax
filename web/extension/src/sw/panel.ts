@@ -2,9 +2,9 @@
 // took acts on the tab the panel shows. Thread actions go to the daemon for
 // the tab's live page, or for the page of its site the thread is on (§7.1),
 // and the thread the daemon answers with is applied at once (the stream
-// brings it too). A thread's clip, and the agents and versions of another
-// page of the site, are fetched here, with the credential, for the panel,
-// which holds none. A failure is told to the panel as
+// brings it too). A thread's clip, the agents and versions of another
+// page of the site, and who approves a send first, are fetched here, with
+// the credential, for the panel, which holds none. A failure is told to the panel as
 // `failed {code, message}`; one a new pairing can fix is also kept as the
 // tab's error, so the panel's Retry pairs again for it. The owner's
 // questions and inbox act on no tab (spec 2026-10-06-agent-questions-and-inbox
@@ -18,7 +18,7 @@ import type { Sites } from "./site";
 import type { Tabs } from "./tabs";
 
 export type PanelDeps = {
-  api: Pick<Api, "sendThread" | "sendBatch" | "comment" | "resolve" | "reopen" | "looked" | "setName" | "move" | "addRule" | "deleteRule" | "suggest" | "sites" | "join" | "split" | "answer" | "clip" | "artifact" | "closeQuestion" | "markItem" | "markItems">;
+  api: Pick<Api, "sendThread" | "sendBatch" | "comment" | "resolve" | "reopen" | "looked" | "setName" | "move" | "addRule" | "deleteRule" | "suggest" | "sites" | "join" | "split" | "answer" | "clip" | "artifact" | "approvesFirst" | "closeQuestion" | "markItem" | "markItems">;
   tabs: Pick<Tabs, "ready" | "state" | "admits" | "route" | "applied" | "fail" | "setViewer" | "select" | "setCommentMode" | "commentOn" | "openThread" | "opening" | "onTabs">;
   sites: Pick<Sites, "load" | "origins" | "view" | "applied">;
   /** The owner's questions and inbox. */
@@ -152,6 +152,15 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: 
         // Only what a version tag reads: no files, notes or labels cross.
         versions: art.versions.map(v => ({ n: v.n, created_at: v.created_at, agent_harness: v.agent_harness ?? null })),
       } : null });
+      return;
+    }
+    case "firsts": {
+      // Threads of one page, the tab's or another of its site; the panel's
+      // menu goes without the hint when the daemon does not answer.
+      const ts = m.threadIds.map(id => s?.threads.find(x => x.id === id) ?? siteThread(d, s?.on, id));
+      const aid = ts[0]?.artifact_id;
+      const one = !!aid && ts.every(t => t?.artifact_id === aid);
+      reply({ t: "firsts", req: m.req, firsts: one ? await d.api.approvesFirst(aid, m.threadIds).catch(() => null) : null });
       return;
     }
     case "clip": {

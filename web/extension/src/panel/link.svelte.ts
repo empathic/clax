@@ -19,7 +19,7 @@ export type Ask = { t: "rule"; origin: string; pattern: string } | { t: "unrule"
   | { t: "join"; origin: string; with: string } | { t: "split"; origin: string };
 /** A question or inbox request, without its `req`. */
 type Req<M = PanelToWorker> = M extends { req: number } ? Omit<M, "req"> : never;
-export type InboxReq = Exclude<Req, Ask | { t: "clip" | "far-page" }>;
+export type InboxReq = Exclude<Req, Ask | { t: "clip" | "far-page" | "firsts" }>;
 /** How long a request waits for the worker's answer (one batch of at most 200 threads). */
 export const REQUEST_MS = 120_000;
 type Step = { moved: number; remaining: number };
@@ -60,7 +60,7 @@ export class PanelLink {
   private items = new Set<(item: InboxItem | null) => void>();
   private reqs = 0;
   private asked = new Map<number, { ok(m: WorkerToPanel): void; fail(e: Failure): void }>();
-  /** The lookups (`clip`, `far-page`) asked for and not yet answered, by request number: null when it failed. */
+  /** The lookups (`clip`, `far-page`, `firsts`) asked for and not yet answered, by request number: null when it failed. */
   private lookups = new Map<number, (m: WorkerToPanel | null) => void>();
   private port: Port;
   private tabId: number | null = null;
@@ -159,7 +159,7 @@ export class PanelLink {
 
   post(m: PanelToWorker): void {
     if (this.closed) return;
-    if (m.t !== "ping" && m.t !== "visible" && m.t !== "watch-tab" && m.t !== "clip" && m.t !== "far-page") this.failure = null;
+    if (m.t !== "ping" && m.t !== "visible" && m.t !== "watch-tab" && m.t !== "clip" && m.t !== "far-page" && m.t !== "firsts") this.failure = null;
     try { this.port.postMessage(m); } catch { /* the port closed; the link connects again */ }
   }
 
@@ -193,7 +193,7 @@ export class PanelLink {
 
   /** Asks the worker `m` with a request number of its own; answered by its
    * answer, or null on a failure, a lost worker or no answer in `REQUEST_MS`. */
-  private lookup(m: { t: "clip" | "far-page"; threadId: string }): Promise<WorkerToPanel | null> {
+  private lookup(m: { t: "clip" | "far-page"; threadId: string } | { t: "firsts"; threadIds: string[] }): Promise<WorkerToPanel | null> {
     const req = ++this.reqs;
     return new Promise(ok => {
       const timer = setTimeout(() => { if (this.lookups.delete(req)) ok(null); }, REQUEST_MS);
@@ -214,6 +214,13 @@ export class PanelLink {
   async farPage(threadId: string): Promise<FarPage | null> {
     const a = await this.lookup({ t: "far-page", threadId });
     return a?.t === "far-page" ? a.page : null;
+  }
+
+  /** Who approves a send of threads `threadIds` (of one page) first, as the
+   * worker asks the daemon; null when it could not tell. */
+  async firsts(threadIds: string[]): Promise<(string | null)[] | null> {
+    const a = await this.lookup({ t: "firsts", threadIds });
+    return a?.t === "firsts" ? a.firsts : null;
   }
 
   /** Stops the link (tests). */

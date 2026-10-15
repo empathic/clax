@@ -5,21 +5,30 @@
 // authors first says so ("Sam approves first").
 import type { AgentView } from "./working-model";
 
+/** Who approves a send of threads `threads` of artifact `aid` first (null:
+ * the owner), as the daemon answers this viewer; null for no answer. */
+export type AskFirsts = (aid: string, threads: string[]) => Promise<(string | null)[] | null>;
+/** How the Send menu asks: unset, it fetches the route from the page's own
+ * origin; a host whose origin is not the daemon's (the extension's panel)
+ * sets its own. */
+export const firstsVia: { ask: AskFirsts | null } = { ask: null };
+
 /** `person`: "Sam's agent" for another person's agent, else null. */
 export type SendItem = { handle: string; name: string; person: string | null; first: string | null };
 export type SendGroup = { label: string; mine: boolean; agents: SendItem[] };
 
 /** The live `agents` in groups, each by its name (else `names`', else its
  * harness). `me` is this viewer's public ID (an
- * agent whose person has it is "yours"); `undefined` when unknown, where
- * the owner's agents are taken as yours (the extension's panel is the
- * owner's). `firsts` is the thread's `approves_first` (null: the owner). */
+ * agent whose person has it is "yours", as is one without a person, from a
+ * daemon before people, as `ownTarget` takes it); `undefined` when
+ * unknown, where the owner's agents are taken as yours. `firsts` is the
+ * thread's `approves_first` (null: the owner). */
 export function sendGroups(agents: AgentView[], me: string | null | undefined, firsts: (string | null)[] = [], names?: Map<string, string>): SendGroup[] {
   const groups = new Map<string, SendGroup>();
   for (const a of agents.filter(x => x.live)) {
     const p = a.person;
     const owners = !p || !!p.owner;
-    const mine = me === undefined ? owners : !!p && p.public_id === me;
+    const mine = !p || (me === undefined ? owners : p.public_id === me);
     const key = mine ? "" : p?.public_id ?? "?";
     const who = p?.name ?? "Another person";
     const g = groups.get(key) ?? { label: mine ? "Your agents" : `${who}'s agents`, mine, agents: [] };

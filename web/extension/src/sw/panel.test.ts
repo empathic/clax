@@ -43,6 +43,7 @@ function setup(over: { closed?: boolean; remaining?: number; page?: typeof page 
       suggest: api("suggest", { origin: "http://localhost:5173", site: SITE, suggestions: [{ origin: "http://localhost:7702", site: { ...SITE, origins: [{ origin: "http://localhost:7702", joined_at: null, last_used_at: null }] }, reason: "path", path: "/app" }] }),
       sites: api("sites", { sites: [{ site: SITE }] }),
       clip: api("clip", "data:image/png;base64,iVBORw0KGgo="),
+      approvesFirst: api("approvesFirst", [null, "p_sam"]),
       artifact: api("artifact", { artifact: { participants: { people: [], agents: [{ handle: `a_${"1".repeat(22)}`, harness: "claude", live: true }] } }, versions: [{ artifact_id: "x", n: 1, created_at: "t", label: "l", note: "n", files: { "index.html": {} }, agent_harness: "claude" }] }),
       closeQuestion: api("closeQuestion", { question: { id: Q }, closed: over.closed ?? false }),
       markItem: api("markItem", { item: { id: T1, read: true }, unread: 3 }),
@@ -129,6 +130,24 @@ describe("panelAction on the tab's site", () => {
       { t: "far-page", req: 7, page: { artifactId: FAR_AID, agents: [{ handle: `a_${"1".repeat(22)}`, harness: "claude", live: true }], versions: [{ n: 1, created_at: "t", agent_harness: "claude" }] } },
       { t: "far-page", req: 8, page: null },
     ]);
+  });
+
+  it("asks the daemon who approves first for threads of one page, the tab's or another of its site, and answers null for threads it does not know or of two pages", async () => {
+    const s = setup({ far: [{ id: T3, artifact_id: FAR_AID, clip_url: null }] });
+    await s.run({ t: "firsts", req: 1, threadIds: [T1] });
+    await s.run({ t: "firsts", req: 2, threadIds: [T3] });
+    await s.run({ t: "firsts", req: 3, threadIds: [T1, T3] });
+    await s.run({ t: "firsts", req: 4, threadIds: ["01J9DDDDDDDDDDDDDDDDDDDDDD"] });
+    expect(s.calls).toEqual([`approvesFirst "${AID}" ["${T1}"]`, `approvesFirst "${FAR_AID}" ["${T3}"]`]);
+    expect(s.out).toEqual([
+      { t: "firsts", req: 1, firsts: [null, "p_sam"] }, { t: "firsts", req: 2, firsts: [null, "p_sam"] },
+      { t: "firsts", req: 3, firsts: null }, { t: "firsts", req: 4, firsts: null },
+    ]);
+    // A refusal (an older daemon, say) is no answer, never the tab's failure.
+    const failing = setup({ fail: "approvesFirst" });
+    await failing.run({ t: "firsts", req: 5, threadIds: [T1] });
+    expect(failing.out).toEqual([{ t: "firsts", req: 5, firsts: null }]);
+    expect(failing.calls).toEqual([`approvesFirst "${AID}" ["${T1}"]`]);
   });
 
   it("fetches a thread's clip for the panel, of the tab's page or another page of its site, and answers null for one without", async () => {

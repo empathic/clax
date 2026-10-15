@@ -21,6 +21,7 @@
   import { agentName } from "../../../shell/src/view/history-model";
   import { presenceMap, roster } from "../../../shell/src/view/presence-model";
   import { unsent } from "../../../shell/src/view/batch-model";
+  import { firstsVia, ownTarget } from "../../../shell/src/view/send-menu";
   import { sidebarSections } from "../../../shell/src/view/sidebar-model";
   import { type FarPage, type PanelState, type PanelToWorker, RETRYABLE, type SiteChoice, type SiteView, type Suggestion } from "../messages";
   import { asPages, pageOfRoute } from "./adapt";
@@ -40,6 +41,7 @@
     state: PanelState | null; up?: boolean; site?: SiteView | null; failures?: number; post(m: PanelToWorker): void; request?(m: Ask): Promise<Step>;
     clip?(threadId: string): Promise<string | null>;
     farPage?(threadId: string): Promise<FarPage | null>;
+    firsts?(threadIds: string[]): Promise<(string | null)[] | null>;
     suggestion?: { origin: string; suggestion: Suggestion | null } | null; sites?: SiteChoice[] | null;
   } & Partial<Pick<PanelLink, "inbox" | "questions" | "ask" | "onItem">>;
   type Area = Parameters<typeof loadPrefs>[0];
@@ -58,8 +60,13 @@
   /** The agent the person picked in a Send button's menu, while it stays on the page. */
   let chosen = $state<string | null>(null);
   const agents = $derived(s?.participants?.agents ?? []);
-  const live = $derived(agents.find(a => a.live) ?? null);
-  const sendTo = $derived(agents.some(a => a.handle === chosen) ? chosen : (live?.handle ?? null));
+  /** The owner (the extension is the owner's browser, unless the daemon said otherwise), as the shell's cards and menus take it. */
+  const me = $derived(s?.viewer ? { ...s.viewer, created_at: "", owner: link.inbox?.owner !== false } : null);
+  // Send goes to the agent picked, else the owner's own most recent live
+  // agent; with only other people's live, Send opens the menu (spec 2026-10-08 §10).
+  const sendTo = $derived(agents.some(a => a.handle === chosen) ? chosen : ownTarget(agents, me?.public_id));
+  // The Send menu asks who approves first through the worker: the panel's own origin is not the daemon's.
+  firstsVia.ask = (_aid, threads) => link.firsts?.(threads) ?? Promise.resolve(null);
   const sendHarness = $derived(agents.find(a => a.handle === sendTo)?.harness ?? null);
   const threads = $derived(s ? asPages(s.threads) : []);
   /** The tab's site, whose filter and collapsed groups are remembered. */
@@ -303,7 +310,7 @@
       <div class="threads">
         <Sidebar
           threads={shown} {numbers} resolved={s.resolved} selected={s.selected} file={pageOfRoute(s.route)} {now}
-          versions={s.versions} shown={s.page.current_version} agent={agentName(sendHarness)} me={s.viewer ? { ...s.viewer, created_at: "" } : null}
+          versions={s.versions} shown={s.page.current_version} agent={agentName(sendHarness)} {me}
           working={s.working} {agents} {sendTo} commenting={s.commentMode}
           onSelect={select}
           onSend={t => link.post({ t: "send", threadId: t.id, to: sendTo })}
@@ -318,7 +325,7 @@
     {/if}
     {#if s.enabled && anyFar}
       <Elsewhere groups={far} resolved={s.resolved} selected={s.selected} collapsed={prefs.collapsed} {now} {targets}
-        me={s.viewer ? { ...s.viewer, created_at: "" } : null} {clip} pages={farPages} failed={farFailed} {chosen} {unfolded} onFreshen={freshen}
+        {me} {clip} pages={farPages} failed={farFailed} {chosen} {unfolded} onFreshen={freshen}
         onFold={(id, o) => (unfolded = o ? [...unfolded, id] : unfolded.filter(x => x !== id))}
         onToggle={toggleGroup} onOpen={openThread} onUnfold={unfold} onMove={move} onReply={reply} onResolve={toggleResolved}
         onSend={(t, to) => link.post({ t: "send", threadId: t.id, to })} onChoose={h => (chosen = h)}

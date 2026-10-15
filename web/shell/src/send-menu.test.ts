@@ -37,6 +37,8 @@ describe("the Send menu", () => {
     expect(sendGroups(AGENTS, "u_sam", [null]).map(g => [g.label, g.agents[0].first])).toEqual([["Your agents", null], ["Alex's agents", "Alex approves first"], ["Mia's agents", null]]);
     // A viewer who has no agents: every group is someone's.
     expect(sendGroups(AGENTS, "u_lan", []).map(g => g.label)).toEqual(["Sam's agents", "Alex's agents", "Mia's agents"]);
+    // A daemon from before people names no person: its agents are this viewer's, as the one-press Send takes them.
+    expect(sendGroups([{ handle: "a_old", harness: "claude", live: true }], "u_alex")).toEqual([{ label: "Your agents", mine: true, agents: [{ handle: "a_old", name: "claude", person: null, first: null }] }]);
   });
 
   it("lists Your agents, then Sam's agents, by name, in the caret's menu", async () => {

@@ -233,6 +233,9 @@ fn rule<'a>(m: &Method, path: &'a str) -> Option<Rule<'a>> {
         ["api", "artifacts", aid, "threads" | "working" | "presence"] if get => {
             Some(Rule::Live(aid))
         }
+        // The panel's Send menu: who approves a send first, which the
+        // owner learns for every person (spec 2026-10-08 §10).
+        ["api", "artifacts", aid, "approves-first"] if get => Some(Rule::Live(aid)),
         ["api", "artifacts", aid, "threads:send"] if post => Some(Rule::Live(aid)),
         ["api", "artifacts", aid, "threads", _] if get || del => Some(Rule::Live(aid)),
         ["api", "artifacts", aid, "threads", _, "clip"] if get => Some(Rule::Live(aid)),
@@ -582,6 +585,8 @@ mod tests {
             (&g, "/api/artifacts/A/threads", Some(Rule::Live("A"))),
             (&g, "/api/artifacts/A/working", Some(Rule::Live("A"))),
             (&g, "/api/artifacts/A/presence", Some(Rule::Live("A"))),
+            (&g, "/api/artifacts/A/approves-first", Some(Rule::Live("A"))),
+            (&p, "/api/artifacts/A/approves-first", None),
             (&p, "/api/artifacts/A/threads:send", Some(Rule::Live("A"))),
             (&g, "/api/artifacts/A/threads/T", Some(Rule::Live("A"))),
             (&d, "/api/artifacts/A/threads/T", Some(Rule::Live("A"))),

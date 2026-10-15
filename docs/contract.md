@@ -5451,7 +5451,8 @@ it with Ajv (draft 2020-12, formats asserted;
   `GET`/`PUT /api/viewers/me`, `PUT /api/viewers/me/looked` and
   `/api/viewers/me/presence`, `GET /api/stream` and `POST
   /api/stream/<stream>`, and, for live pages only, `GET
-  /api/artifacts/<id>`, its `threads`, `working` and `presence`, `GET` and
+  /api/artifacts/<id>`, its `threads`, `working`, `presence` and
+  `approves-first`, `GET` and
   `DELETE .../threads/<tid>`, `GET .../threads/<tid>/clip`, `POST
   .../threads/<tid>/comments`, `/send`, `/resolve` and `/reopen`, and `POST
   .../threads:send`. Anything else from that origin is 403 `forbidden`; a

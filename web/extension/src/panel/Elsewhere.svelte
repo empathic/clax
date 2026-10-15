@@ -7,7 +7,8 @@
   // thread is read, answered, resolved or reopened and sent to the agent
   // without the tab moving; "Go to page ↗" opens it on its own page in this
   // tab. An open card asks for its page's live agents (its Send picker, as on
-  // that page) and versions (its comments' tags), and again when hovered or
+  // that page: Send goes to the owner's own agent, never by default to
+  // another person's, spec 2026-10-08 §10) and versions (its comments' tags), and again when hovered or
   // focused once that read is 30 s old, so the picker follows agents that
   // came or went; a read that failed says so beside Send, with Retry. Any number of cards may be
   // open at once. "Pinned here" says its anchor was found on this screen
@@ -19,6 +20,7 @@
   import ThreadCard from "../../../shell/src/ui/ThreadCard.svelte";
   import { ticker } from "../../../shell/src/ui/ticker.svelte";
   import { agentName, historyOf } from "../../../shell/src/view/history-model";
+  import { ownTarget } from "../../../shell/src/view/send-menu";
   import { agentNames } from "../../../shell/src/view/working-model";
   import type { FarPage } from "../messages";
   import MoveTo from "./MoveTo.svelte";
@@ -84,10 +86,12 @@
   const names = (t: Thread) => (by: string) => by.startsWith("agent:") ? agentName(by.slice(6)) : resolvedByLabel(by, me, t.resolved_by_name);
   const versionsOf = (t: Thread) => pages[t.artifact_id]?.versions ?? [];
   const agentsOf = (t: Thread) => pages[t.artifact_id]?.agents ?? [];
-  /** As on the thread's own page: the agent picked, when live there, else its first live agent. */
-  const targetOf = (t: Thread) => {
-    const live = agentsOf(t).filter(a => a.live);
-    return live.some(a => a.handle === chosen) ? chosen : (live[0]?.handle ?? null);
+  /** As on the thread's own page: the agent picked, when live there, else the owner's own most recent live agent. */
+  const targetOf = (t: Thread) => agentsOf(t).some(a => a.live && a.handle === chosen) ? chosen : ownTarget(agentsOf(t), me?.public_id);
+  /** Send's name for `to`: another person's agent with its person; with none while agents are live, Send opens the menu ("…"). */
+  const toName = (t: Thread, to: string | null, by: Map<string, string>) => {
+    const p = agentsOf(t).find(a => a.handle === to)?.person;
+    return to ? `${by.get(to)}${p && p.public_id !== me?.public_id ? ` (${p.name}'s)` : ""}` : agentsOf(t).some(a => a.live) ? "…" : "agent";
   };
   const noop = () => {};
 </script>
@@ -124,7 +128,8 @@
               {@const known = !!pages[t.artifact_id]}
               {@const by = agentNames([], agentsOf(t))}
               {@const to = targetOf(t)}
-              <SendButton label={`Send to ${(to && by.get(to)) || "agent"}`} agents={agentsOf(t)} names={by} target={to} disabled={!known}
+              <SendButton label={`Send to ${toName(t, to, by)}`} agents={agentsOf(t)} names={by} target={to} disabled={!known}
+                me={me?.public_id} aid={me?.owner ? t.artifact_id : undefined} threads={[t.id]}
                 onSend={e => guard(e, () => onSend(t, to))} {onChoose} />
               {#if !known && failed[t.artifact_id]}
                 <span class="far-err" role="status">Could not load this page's agents.

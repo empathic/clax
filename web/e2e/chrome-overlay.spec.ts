@@ -11,11 +11,13 @@
 import type { CDPSession, Locator, Page } from "@playwright/test";
 import { spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "vite";
 import { type Live, expect as baseExpect, freePort, test } from "./extension-fixtures";
 import { publishAs } from "./fixtures";
+import { ownerCookie } from "./questions-helpers";
 
 // Each test here runs Chromium, a daemon and a dev server of its own, and
 // most waits are a round trip through all three, the first through the
@@ -1046,4 +1048,133 @@ test("the panel shows the live page's questions above its threads, answers one, 
   await expect.poll(unread).toBe(before - 1);
   await expect.poll(tabLabel).toBe(await counted());
   await shot("inbox-marked-light");
+});
+
+test.describe("with a person connected on the LAN", () => {
+  test.use({ bind: "0.0.0.0" });
+
+  // Spec 2026-10-08-multi-agent-multi-person §9.5, §10, §17. Sam connects
+  // with an invite and comments, from his browser, on a page the owner's
+  // agent published; the owner sends the thread to that agent, which waits
+  // for the owner's approval. The extension's panel names the owner's
+  // agents on the live page (a person's agents never see live pages, L10),
+  // sends to the owner's own, and asks who approves first through the
+  // worker; its Inbox tab lists the approval request as a row that opens
+  // the shell's inbox at its card, leaving it unread.
+  test("the panel's Send names the owner's agents, asks who approves first through the worker, and an approval item opens the shell's inbox", async ({ live }) => {
+    const { siteUrl, daemon: d } = live;
+    const home = `${new URL(siteUrl).origin}/`;
+    const h = hook(live);
+    const bin = process.env.CLAX_E2E_BIN!;
+    const asOwner = { cookie: ownerCookie(d.base, d.token), origin: d.base, "content-type": "application/json" };
+    const made = await fetch(`${d.base}/api/people/invites`, { method: "POST", headers: asOwner, body: JSON.stringify({ name: "Sam" }) });
+    const invite = await made.json();
+    test.skip(made.status === 409 && invite.error?.code === "not_on_lan", `no LAN address here: ${invite.error?.message}`);
+    expect(made.status, JSON.stringify(invite)).toBe(201);
+    const samHome = mkdtempSync(join(tmpdir(), "clax-e2e-sam-"));
+    try {
+      const env: NodeJS.ProcessEnv = { ...process.env, CLAX_HOME: samHome };
+      for (const k of ["CLAX_CHANNEL", "CLAUDECODE", "CODEX_SESSION_ID", "CLAX_PORT"]) delete env[k];
+      const out = spawnSync(bin, ["connect", invite.invite.command.replace(/^clax connect /, ""), "--name", "sam-laptop", "--no-browser"], { env, encoding: "utf8", timeout: WAIT_MS });
+      expect(out.status, out.stderr).toBe(0);
+      const link = /http:\/\/\S+\/connect\/b\/\S+/.exec(out.stdout + out.stderr)![0];
+      const lan = new URL(link).origin;
+
+      // The owner's agents: one publishes a page; both watch the dev server.
+      const agent = async (harness: string, cwd: string) => {
+        const r = await api(live, "/api/sessions", { method: "POST", body: JSON.stringify({ harness, harness_session_id: `e2e-${harness}`, cwd, pid: null, parent_pid: null }) });
+        const id: string = r.session?.id ?? r.id;
+        await api(live, `/api/sessions/${id}/live-watches`, { method: "PUT", body: JSON.stringify({ url: siteUrl }) });
+        return id;
+      };
+      const docs = await agent("codex", "/tmp/clax-e2e/docs-site");
+      await agent("claude", "/tmp/clax-e2e/main-app");
+      const { artifact } = await publishAs(d.base, d.token, docs, "Quarterly Review", { "index.html": "<main><h1>Quarterly Review</h1><h2>Quarterly goals</h2></main>" });
+
+      // Sam's browser, made his by the link, comments on that page.
+      const samPage = await live.ctx.newPage();
+      await samPage.goto(link);
+      await samPage.waitForURL(/\/people$/);
+      const samThread = await samPage.evaluate(async aid => {
+        const form = new FormData();
+        form.set("anchor", JSON.stringify({ kind: "element", selector: "body > main > h2", quote: "Quarterly goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" }));
+        form.set("body", "The goals need a Q4 column.");
+        form.set("version", "1");
+        const r = await fetch(`/api/artifacts/${aid}/threads`, { method: "POST", body: form });
+        return (await r.json()).thread.id as string;
+      }, artifact.id);
+      await samPage.close();
+      expect(new URL(samPage.url()).origin).toBe(lan);
+      const handle = (await api(live, `/api/artifacts/${artifact.id}`)).artifact.participants.agents.find((a: { harness: string }) => a.harness === "codex").handle as string;
+      const sent = await fetch(`${d.base}/api/artifacts/${artifact.id}/threads/${samThread}/send`, { method: "POST", headers: asOwner, body: JSON.stringify({ to: handle }) });
+      expect(sent.status, await sent.text()).toBe(200);
+      const approval = await until(async () => ((await api(live, "/api/inbox")).items as { kind: string; id: string; url: string; read: boolean }[]).find(i => i.kind === "approval"));
+      expect(approval.url).toMatch(/^\/inbox\?approval=[0-9A-Z]{26}$/);
+
+      // The live page, with a thread of the owner's, in the panel.
+      const tid = await liveThread(live, home, "#save", "Save", "Home button note");
+      const aid: string = (await api(live, `/api/live/pages?url=${encodeURIComponent(home)}`)).page.artifact_id;
+      const names = new Map(((await api(live, `/api/artifacts/${aid}`)).artifact.participants.agents as { handle: string; name: string; harness: string }[]).map(a => [a.harness, a.name]));
+      expect([...names.keys()].sort()).toEqual(["claude", "codex"]);
+      const page = await live.ctx.newPage();
+      await page.goto(home);
+      const tabId = await tabIdOf(live, home);
+      await h.comment(tabId, home);
+      const panel = await SidePanel.open(live, page, tabId);
+      const scheme = (v: "light" | "dark") => panel.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: v }] });
+      // At the side panel's narrowest, its usual (spec §9.6: 360 px) and a wide one, light and dark.
+      const shots = async (name: string) => {
+        for (const width of [320, 360, 520]) for (const v of ["light", "dark"] as const) {
+          await panel.send("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 2, mobile: false });
+          await scheme(v);
+          await panel.eval<void>("Promise.all(document.getAnimations().map(a => a.finished)).then(() => {})");
+          await panel.shot(`${name}-${width}-${v}`);
+        }
+        await scheme("light");
+      };
+      await panel.send("Emulation.setDeviceMetricsOverride", { width: 360, height: 900, deviceScaleFactor: 2, mobile: false });
+      await expect.poll(() => panel.text()).toContain("Home button note");
+
+      // Send names the owner's own most recently active agent; the menu, every live agent by name.
+      const sendLabel = `Send to ${names.get("claude")}`;
+      await expect.poll(() => panel.eval<string[]>(`[...document.querySelectorAll(".send button.primary:not(.caret)")].map(b => b.textContent.trim())`)).toContain(sendLabel);
+      await panel.click(/^Choose the agent/);
+      await expect.poll(() => panel.eval<string[]>(`[...document.querySelectorAll(".send-menu [role=menuitemradio] .send-name")].map(e => e.textContent)`)).toEqual([names.get("claude"), names.get("codex")]);
+      await shots("send-menu");
+      // Who approves first, as the worker asks it with the extension's own credential, from its own origin.
+      const firsts = await live.sw.evaluate(async ([a, t]) => {
+        const p = await (globalThis as unknown as { claxTest: { pairer: { current(): Promise<{ daemon: string; credential: string }> } } }).claxTest.pairer.current();
+        const r = await fetch(`${p.daemon}/api/artifacts/${a}/approves-first?threads=${t}`, { headers: { authorization: `Clax-Extension ${p.credential}` } });
+        return { status: r.status, body: await r.json() };
+      }, [aid, tid] as const);
+      expect(firsts).toEqual({ status: 200, body: { approves_first: [] } });
+      await panel.eval("document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))");
+      await panel.eval<void>(`(() => { const b = [...document.querySelectorAll(".send button.primary:not(.caret)")].find(b => b.textContent.trim() === ${JSON.stringify(sendLabel)}); setTimeout(() => b.click()); })()`);
+      await expect.poll(async () => (await api(live, `/api/artifacts/${aid}/threads/${tid}`)).thread.sent_to_agent).toBe(true);
+      const owner = (await api(live, `/api/artifacts/${aid}/threads/${tid}`)).thread.owner;
+      expect(owner.name).toBe(names.get("claude"));
+
+      // The Inbox tab: the approval request is a row that opens the shell's inbox at its card.
+      await panel.click(/^Inbox/);
+      await expect.poll(() => panel.text()).toContain("Decide in Clax's inbox ↗");
+      expect(await panel.text()).toMatch(/Sam wants to reach your agent/);
+      expect(await panel.eval<number>("document.querySelectorAll('.acard').length")).toBe(0);
+      await shots("inbox-approval");
+      await panel.click(/Sam wants to reach your agent/);
+      const shell = await until(() => live.ctx.pages().find(p => p.url().endsWith(approval.url)) ?? null);
+      // On the paired daemon, as the owner.
+      expect(new URL(shell.url()).port).toBe(String(d.port));
+      await expect(shell.locator(".acard")).toBeFocused();
+      await expect(shell.locator(".acard .ahead")).toContainText("Sam wants to reach your agent");
+      // Unread until decided.
+      expect(((await api(live, "/api/inbox")).items as { id: string; read: boolean }[]).find(i => i.id === approval.id)?.read).toBe(false);
+      const dir = process.env.CLAX_E2E_SHOTS;
+      if (dir) for (const v of ["light", "dark"] as const) {
+        await shell.emulateMedia({ colorScheme: v });
+        await shell.screenshot({ path: join(dir, `shell-inbox-approval-${v}.png`) });
+      }
+    } finally {
+      rmSync(samHome, { recursive: true, force: true });
+    }
+  });
 });
