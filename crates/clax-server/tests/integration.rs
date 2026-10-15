@@ -26,6 +26,7 @@ mod api_grants;
 mod api_host;
 mod api_hosted;
 mod api_hosted_content;
+mod api_hosted_github;
 mod api_inbox;
 mod api_live;
 mod api_live_layers;

@@ -251,7 +251,12 @@ impl AppState {
             grant_auth,
             agent_gate: Arc::new(crate::agent::Gate::new(p.agent_timer)),
             vis_gen,
-            hosted: p.hosted,
+            hosted: {
+                if let Some(h) = &p.hosted {
+                    p.store.set_member_caps(Some(h.member_caps));
+                }
+                p.hosted
+            },
             git_remotes: Arc::default(),
             store: p.store,
         })

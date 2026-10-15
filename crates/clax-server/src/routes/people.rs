@@ -304,10 +304,18 @@ fn agent_view(a: &AgentRights) -> Value {
 }
 
 /// A person's view for the owner's People: their rights, machines and live
-/// agents; `revoked_at` once revoked (their row stays as history).
-fn person_view(p: &PersonRow, grants: &[Grant], agents: &[AgentRights]) -> Value {
+/// agents; `revoked_at` once revoked (their row stays as history); and
+/// the GitHub account they sign in with (`{id, login, avatar_url,
+/// blocked_at}`), or `null`.
+fn person_view(
+    p: &PersonRow,
+    grants: &[Grant],
+    agents: &[AgentRights],
+    github: &std::collections::HashMap<String, clax_core::store::github::GitHubLink>,
+) -> Value {
     let id = Some(p.viewer.public_id.clone());
     json!({
+        "github": github.get(&p.viewer.public_id),
         "public_id": p.viewer.public_id,
         "display_name": p.viewer.display_name,
         "revoked_at": p.viewer.person_revoked_at,
@@ -324,7 +332,12 @@ fn person_of(st: &Store, public_id: &str) -> clax_core::Result<Value> {
         .into_iter()
         .find(|p| p.viewer.public_id == public_id)
         .ok_or(CoreError::NotFound)?;
-    Ok(person_view(&p, &st.list_grants()?, &st.live_agents()?))
+    Ok(person_view(
+        &p,
+        &st.list_grants()?,
+        &st.live_agents()?,
+        &st.github_links()?,
+    ))
 }
 
 /// The owner's `*unconnected` switch (spec §9.6): on while the owner's
@@ -361,10 +374,11 @@ pub async fn list_people(
     let v = s
         .store_call(|st| {
             let (grants, agents) = (st.list_grants()?, st.live_agents()?);
+            let github = st.github_links()?;
             let people: Vec<Value> = st
                 .people()?
                 .iter()
-                .map(|p| person_view(p, &grants, &agents))
+                .map(|p| person_view(p, &grants, &agents, &github))
                 .collect();
             Ok(json!({"people": people, "unconnected": unconnected_switch(st)?}))
         })

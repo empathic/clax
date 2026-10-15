@@ -141,7 +141,9 @@ impl From<CoreError> for ApiError {
                 message,
             } => ApiError::new(StatusCode::UNAUTHORIZED, code, message),
             CoreError::Invalid {
-                code: code @ ("denied" | "foreign_session"),
+                code:
+                    code @ ("denied" | "foreign_session" | "quota_exceeded" | "github_blocked"
+                    | "github_not_owner"),
                 message,
             } => ApiError::new(StatusCode::FORBIDDEN, code, message),
             CoreError::Invalid { code, message } => ApiError::bad_request(code, message),

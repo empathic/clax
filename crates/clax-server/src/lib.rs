@@ -152,6 +152,7 @@ pub mod error;
 pub mod extension;
 pub mod feedback;
 pub mod git_remotes;
+pub mod github;
 pub mod grant_auth;
 pub mod host;
 pub mod hosted;
