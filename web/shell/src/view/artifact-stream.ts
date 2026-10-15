@@ -61,6 +61,9 @@ export class ArtifactStream {
   private docs: (() => void) | null = null;
   private questions: (() => void) | null = null;
   private stopped = false;
+  /** Delivery states heard for threads this view does not hold yet, kept
+   * until the thread arrives (a state may come before its thread). */
+  private readonly early = new Map<string, FeedbackState | null>();
 
   constructor(private readonly id: string, private readonly v: ArtifactStreamView) {
     this.main = pageStream().watch([`artifact:${id}`, `presence:${id}`, `working:${id}`], e => this.on(e));
@@ -92,11 +95,19 @@ export class ArtifactStream {
       if (e.topic === `artifact:${this.id}`) v.event({ type: "resync", topic: e.topic });
       return;
     }
+    if (e.type === "resync" || e.type === "ready") this.early.clear();
+    if (e.type === "feedback_state") {
+      const f = e as unknown as { thread_id: string } & FeedbackState;
+      if (!v.threads().some(t => t.id === f.thread_id)) { this.early.set(f.thread_id, stateOf(f)); return; }
+    }
     if (e.type === "thread") {
       const raw = (e as unknown as { thread: ThreadDelta }).thread;
       // A thread event carries no delivery state: the thread keeps the one
-      // this viewer read (`feedback_state` events bring each its own).
-      const d = raw;
+      // this viewer read (`feedback_state` events bring each its own), or
+      // takes one heard before the thread itself.
+      const early = this.early.get(raw.id);
+      this.early.delete(raw.id);
+      const d = early !== undefined && raw.feedback_state === undefined ? { ...raw, feedback_state: early } : raw;
       const r = applyThread(v.threads(), d);
       v.changeThreads(ts => applyThread(ts, d).threads);
       v.page({ type: "thread", artifact_id: this.id, thread: r.thread });
@@ -191,8 +202,10 @@ export function keepState(prev: Thread | undefined, next: Thread): Thread {
 }
 
 /** The delivery state a `feedback_state` event carries: this viewer's own
- * (whose approval and `mine` included, for those who read them). */
-export function stateOf(e: { thread_id: string } & FeedbackState): FeedbackState {
+ * (whose approval and `mine` included, for those who read them); `null`
+ * (`state: null`) once the thread has no delivery left. */
+export function stateOf(e: { thread_id: string } & FeedbackState): FeedbackState | null {
+  if (e.state === null) return null;
   const { thread_id, state, tier, since, resends, exhausted, approver, mine } = e;
   return { thread_id, state, tier, since, resends, exhausted, ...(approver === undefined ? {} : { approver }), ...(mine ? { mine } : {}) };
 }

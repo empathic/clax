@@ -535,7 +535,9 @@ pub(crate) fn create_thread_now(
 /// comment `mention`s one, and to each live agent `named` (the comment's
 /// body, `None` for a page's) names with `@name` ([`resolve_named`]),
 /// announces it, and answers it as it is then and the `@name`s that
-/// reached no agent. Sends are recorded under `audit`.
+/// reached no agent. Sends are recorded under `audit`. The thread's `thread`
+/// event goes out before its delivery states ([`apply`]), so every client
+/// holds the thread when its state arrives.
 pub(crate) fn announce_new_thread(
     st: &Store,
     ctx: &crate::feedback::FeedbackCtx,
@@ -545,6 +547,7 @@ pub(crate) fn announce_new_thread(
     named: Option<&str>,
     live_page: bool,
 ) -> clax_core::Result<(Thread, Vec<String>)> {
+    let mut all = clax_core::feedback::Touched::default();
     if mention {
         // `@agent` routes to every agent it reaches (M18).
         let (sent, touched, _) = st.send_routed(
@@ -555,7 +558,7 @@ pub(crate) fn announce_new_thread(
             false,
         )?;
         thread = sent;
-        apply(ctx, st, &touched);
+        all.merge(touched);
     }
     let mut unresolved = Vec::new();
     if let Some(body) = named {
@@ -565,10 +568,11 @@ pub(crate) fn announce_new_thread(
         if !sids.is_empty() {
             let (sent, touched) = st.send_to_named(audit, &thread.id, &sids)?;
             thread = sent;
-            apply(ctx, st, &touched);
+            all.merge(touched);
         }
     }
     publish_thread(ctx, st, &thread)?;
+    apply(ctx, st, &all);
     Ok((thread, unresolved))
 }
 
@@ -1270,8 +1274,9 @@ struct ResolveBody {
 /// owner's for an owner credential; else the cookie's viewer, its row created
 /// for a cookie seen for the first time), `viewer:anonymous` without either,
 /// or `agent:<harness>`: never the cookie or a session ID. Undelivered feedback on the thread is withdrawn; a
-/// `feedback_state` event follows when delivered rows remain, and when none
-/// remain the `thread` event carries `feedback_state: null`. An agent resolve
+/// `feedback_state` event follows: each reader's state of the delivered rows
+/// that remain, or, when none remain, `state: null` to the owner's and
+/// every connected person's streams (spec 2026-10-08 §10). An agent resolve
 /// lists a thread no version lists yet as addressed: in the artifact's current
 /// version, or, on a live page, in the page's next snapshot (a pending
 /// address). A request with a foreign `Origin` is refused ([`SameOrigin`]).

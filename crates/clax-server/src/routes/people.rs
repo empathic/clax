@@ -109,7 +109,10 @@ fn project(cwd: &str) -> &str {
 /// browser, sees every agent in full; a connected person, and an agent
 /// (the owner's, or a person's, with or without a session), sees its
 /// person's agents in full and every other agent by `name`, `person`,
-/// `live`, `state` and `since` alone, the rest null (never a handle). An
+/// `live`, `state` and `since` alone, the rest null (never a handle); an
+/// agent reads the approval requests in `blocked` of its own session only,
+/// so a sibling's counts only its questions ("Own threads only", spec
+/// 2026-10-08 §10). An
 /// agent's `working` leaves out artifacts its rights exclude and carries no
 /// titles, its messages filtered for its reader, and its `unread` is null;
 /// a person's view leaves out live pages (L10). `unread` counts the
@@ -134,6 +137,7 @@ pub async fn list_agents(
         a.caller,
         Caller::OwnerAgent { .. } | Caller::PersonAgent { .. }
     );
+    let caller_session = a.caller.session().map(str::to_string);
     let recipient = match &a.caller {
         Caller::Person { viewer } => Some(viewer.public_id.clone()),
         _ => None,
@@ -207,9 +211,19 @@ pub async fn list_agents(
                         json!({"artifact_id": w.artifact_id, "title": title, "message": v["message"]})
                     })
                     .collect();
-                let blocked = r.blocked_since.as_ref().map(|since| {
-                    json!({"since": since, "questions": r.questions, "approvals": r.approvals})
-                });
+                // An agent reads approval waits of its own session only
+                // ("Own threads only", spec §10): a sibling's would time
+                // holds on threads not sent to it.
+                let sibling = agent && caller_session.as_deref() != Some(x.id.as_str());
+                let blocked = if sibling {
+                    r.questions_since.as_ref().map(|since| {
+                        json!({"since": since, "questions": r.questions, "approvals": 0})
+                    })
+                } else {
+                    r.blocked_since.as_ref().map(|since| {
+                        json!({"since": since, "questions": r.questions, "approvals": r.approvals})
+                    })
+                };
                 out.push(json!({
                     "handle": x.agent_handle, "name": x.name, "person": x.person,
                     "harness": x.harness, "project": project(&x.cwd),

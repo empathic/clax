@@ -52,7 +52,7 @@ function threadChange(name: string, data: Record<string, unknown>): ThreadChange
     case "thread": return ts => applyThread(ts, data.thread as ThreadDelta).threads;
     case "thread_deleted": return ts => ts.filter(t => t.id !== data.thread_id);
     case "feedback_state": {
-      const fs = Object.fromEntries(FEEDBACK.filter(k => k in data).map(k => [k, data[k]])) as FeedbackState;
+      const fs = data.state === null ? null : Object.fromEntries(FEEDBACK.filter(k => k in data).map(k => [k, data[k]])) as FeedbackState;
       return ts => ts.map(t => (t.id === data.thread_id ? { ...t, feedback_state: fs } : t));
     }
     default: return null;

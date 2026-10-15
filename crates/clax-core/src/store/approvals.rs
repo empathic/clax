@@ -2303,6 +2303,12 @@ mod tests {
         st.revoke_invite(DAEMON, &invite.id).unwrap();
         bumps(&st, "a lapsed person returning to a viewer", 1);
         st.create_invite(DAEMON, InvitePerson::Owner, None).unwrap();
+        bumps(
+            &st,
+            "an invite for the owner's machine making the owner's row",
+            1,
+        );
+        st.create_invite(DAEMON, InvitePerson::Owner, None).unwrap();
         bumps(&st, "an invite for the owner's own machine", 0);
         // A request approved into a new person.
         let (req, _, user_code) = pending(&st, KEY_B);

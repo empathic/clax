@@ -452,7 +452,8 @@ pub fn publish_states(ctx: &FeedbackCtx, st: &Store, touched: &Touched) {
 
 /// [`publish_states`] for an approval decision (made, declined, revoked)
 /// by `parties[0]` about `parties[1]`'s content (recipient keys: empty for
-/// the owner): to the owner and those two alone, each as they read it. A
+/// the owner): to the owner, those two and that content's co-authors
+/// ([`clax_core::Delivery::decision_people`]) alone, each as they read it. A
 /// decision stamps no row, and no one else reads a held state, so no one
 /// else hears of it (spec §10).
 pub fn publish_decision(ctx: &FeedbackCtx, st: &Store, touched: &Touched, parties: &[String]) {
@@ -472,13 +473,24 @@ fn publish(ctx: &FeedbackCtx, st: &Store, touched: &Touched, parties: Option<&[S
         }
     };
     for (aid, tid) in &touched.threads {
-        let Some(d) = all.remove(tid) else { continue };
-        let mut views: Vec<(String, FeedbackState)> = Vec::new();
+        let Some(d) = all.remove(tid) else {
+            // No row left (a resolve withdrew them): no one reads a state
+            // any more, the owner and people are told so.
+            ctx.events.publish(Event::FeedbackState {
+                artifact_id: aid.clone(),
+                thread_id: tid.clone(),
+                views: vec![(clax_core::events::EVERY_PERSON.to_string(), None)],
+            });
+            continue;
+        };
+        let mut views: Vec<(String, Option<FeedbackState>)> = Vec::new();
         if let Some(s) = d.view(&DeliveryViewer::Owner) {
-            views.push((String::new(), s));
+            views.push((String::new(), Some(s)));
         }
         let people: Vec<String> = match parties {
-            Some(p) => p.iter().filter(|k| !k.is_empty()).cloned().collect(),
+            // The decider and the author decided about, with that
+            // content's co-authors (a page's other authors).
+            Some(p) => d.decision_people(p).into_iter().collect(),
             None => d.people().into_iter().collect(),
         };
         for p in people {
@@ -489,7 +501,7 @@ fn publish(ctx: &FeedbackCtx, st: &Store, touched: &Touched, parties: Option<&[S
             if let Some(s) = d.view(&v)
                 && !views.iter().any(|(k, _)| *k == p)
             {
-                views.push((p, s));
+                views.push((p, Some(s)));
             }
         }
         if !views.is_empty() {

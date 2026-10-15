@@ -516,6 +516,7 @@ async fn viewer_resolve_withdraws_undelivered_feedback() {
     let t = ts.thread(&aid, 1, "@agent fix").await;
     let tid = t["id"].as_str().unwrap();
     let mut ev = ts.events(&format!("?artifact={aid}")).await;
+    let mut owner = ts.stream_as_owner(&[&format!("artifact:{aid}")]).await;
     let v: Value = ts
         .client
         .post(format!(
@@ -529,6 +530,13 @@ async fn viewer_resolve_withdraws_undelivered_feedback() {
         .await
         .unwrap();
     assert_eq!(v["thread"]["feedback_state"], Value::Null, "no rows remain");
+    // Open cards hear it: the owner's stream is told the state is gone.
+    let fs = owner.next_named("feedback_state").await;
+    assert_eq!(
+        (fs["thread_id"].as_str(), fs["state"].clone()),
+        (Some(tid), Value::Null),
+        "{fs}"
+    );
     ev.next_named("thread_resolved").await;
     assert_eq!(
         ev.next_named("thread").await["thread"]["feedback_state"],
@@ -2115,4 +2123,24 @@ async fn first_take_has_one_winner_over_http() {
         let owner = ts.store.thread_owner(&tid).unwrap().unwrap();
         assert_eq!(&owner.session_id, winner, "round {i}");
     }
+}
+
+/// A new thread's `thread` event comes before its delivery state on the
+/// owner's stream, so a client holds the thread when its state arrives.
+#[tokio::test]
+async fn a_new_threads_event_precedes_its_delivery_state() {
+    let ts = TestServer::spawn().await;
+    let (_sid, aid) = setup(&ts).await;
+    let mut owner = ts.stream_as_owner(&[&format!("artifact:{aid}")]).await;
+    let t = ts.thread(&aid, 1, "@agent two columns").await;
+    let tid = t["id"].as_str().unwrap().to_string();
+    let mut seen = Vec::new();
+    while seen.len() < 2 {
+        let (name, ev) = owner.next().await;
+        let of = ev["thread_id"] == json!(tid) || ev["thread"]["id"] == json!(tid);
+        if of && (name == "thread" || name == "feedback_state") {
+            seen.push(name);
+        }
+    }
+    assert_eq!(seen, ["thread", "feedback_state"]);
 }

@@ -873,12 +873,16 @@ impl Store {
                     id
                 }
                 InvitePerson::Owner => {
-                    tx.execute(
+                    if tx.execute(
                         "INSERT INTO viewers (id, public_id, display_name, created_at, owner, claimed)
                          SELECT ?1, ?2, NULL, ?3, 1, 0
                          WHERE NOT EXISTS (SELECT 1 FROM viewers WHERE owner = 1)",
                         params![new_ulid(), new_public_id(), now],
-                    )?;
+                    )? > 0
+                    {
+                        // The owner is connected from now on (§9.6).
+                        self.visibility_changed();
+                    }
                     tx.query_row("SELECT id FROM viewers WHERE owner = 1", [], |r| r.get(0))?
                 }
             };
