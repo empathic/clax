@@ -240,6 +240,8 @@ clax push <ID> --to clax.example       # name the public Clax when there are sev
 clax push <ID> --follow                # also let agents push its new versions without asking
 clax push <ID> --fork                  # the public copy moved: push onto a fork of it
 clax push <ID> --new                   # or publish it again as a new public artifact
+clax remote comments <ID> download-only  # keep threads started here local (two-way is the default)
+clax remote unlink <ID>                # end an artifact's link; its threads stay here, read-only
 clax remote remove clax.example        # forget it, revoking its token there
 ```
 
@@ -259,7 +261,16 @@ again: the public Clax answers the version it already made. When an
 automatic push (`--follow`) is refused, your inbox says why.
 If someone published on the public copy since your last push, the push is
 refused and nothing is overwritten: push onto a fork of it, or as a new
-artifact. Comments on the public copy stay there.
+artifact.
+
+Once pushed, the artifact's comment threads are linked both ways: a comment
+on the public copy shows up on your local page tagged with where it came
+from and who wrote it there, reaches your agents as a local comment does
+(`wait_for_feedback`, channel notifications), and their replies and resolves
+go back to the public thread, once each. Threads you start locally go up
+too, as you, unless the link is download only. While the public Clax cannot
+be reached, what you write waits, marked "Sending…", then "Not sent" with
+Retry after five minutes; nothing local waits on it.
 
 On an artifact's page, Publish to `<host>` does the same in the browser
 (and Push v`<N>` once it is public, beside a link to its public copy). An

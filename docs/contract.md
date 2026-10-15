@@ -958,8 +958,8 @@ someone published on the public copy since this Clax's last push, the push
 is refused 409 `remote_moved` and nothing is overwritten; `mode:
 "fork"` forks the public copy at the version this Clax pushed last and
 continues on the fork, `mode: "new"` publishes every version as a new
-public artifact; either moves the link. Comments on the public copy stay
-there. Assets: each of the artifact's assets that a pushed version's text
+public artifact; either moves the link. Comment threads follow the link
+(**Linked threads**, below). Assets: each of the artifact's assets that a pushed version's text
 file (HTML, CSS, JavaScript, JSON, SVG, other text) references as
 `/_blob/<asset ID>`, alone or after an `http(s)://` origin, is uploaded to
 the public artifact once, and those references are rewritten to the
@@ -977,6 +977,66 @@ anything, pointed at `publish_public`; an agent of another machine is
 refused. An automatic push (a link that follows) that is refused leaves a
 `push` item in the owner's inbox (`push: {n, origin, code, message,
 url}`).
+
+**Linked threads** (spec 2026-10-15-linked-threads-design). A local daemon
+keeps each linked artifact's comment threads in step with its public
+copy's, both ways, acting only with the remote's agent token over the
+routes above and below: one task per remote with a link registers a session
+there (the `clax` harness), watches the public artifacts and long-polls
+`GET /api/sessions/<sid>/feedback?tier=wait` for liveness; each answer, and
+each local write on a linked artifact, starts a cycle reading the threads
+changed since the link's cursor (`since`, below), and every 60 s it reads
+them all.
+
+- Every public thread the token's person may see comes down as a thread
+  of the local artifact, on the local version that public version is the
+  twin of (pushes record each pair); a public version with no twin keeps
+  its number and the thread is placed on the version pushed last. Its
+  comments come down as comments, their authors kept beside them (kind,
+  public ID and name there) for display only: never a local person, agent
+  or right (under the visibility filter, of the unconnected class, which
+  the owner and the owner's agents see). A thread sent to an agent there is
+  sent to the owner's agents here, and agents read a remote author as
+  `<name> (on <remote>)`.
+- Threads made here on a linked artifact after its first push, and every
+  reply, resolve and reopen on a linked thread, go up in order (an outbox,
+  per thread) with an idempotency key made here. Comments the owner wrote go
+  up as the token's person; an agent's reply or resolve goes up as that
+  person's agent in a session named as the local agent (the sync hands the
+  thread to that session first), or as the person on a thread not sent to an
+  agent there. A thread on a local version never pushed waits for that
+  version's push; one on the whole artifact goes up on the public copy's
+  latest. Comments that came down never go back up.
+- A clip of a thread that came down is fetched over the public clip route
+  with the token, by a path the daemon builds, and cached at
+  `<home>/remote-cache/clips/<local thread ID>.png`; `clip_path` names
+  that file, never a path a remote sent.
+- An unreachable remote backs the task off, doubling from 1 s to 5 min;
+  once at 5 min the waiting writes are marked not sent until Retry.
+- Thread views carry `linked: {remote_id, remote, remote_origin, url,
+  origin ("remote" | "local"), remote_version, twin, unlinked, state
+  (null | "pending" | "held" | "failed"), error}` and each linked comment
+  `linked: {origin, remote, author_kind, author_name, state}`.
+- `GET /api/artifacts/<id>/remotes` adds, per link, `download_only`,
+  `sync: {unreachable_since, last_error, synced_at}`, `pending` and `failed`
+  counts, and `unsent`: the writes not sent to a remote the artifact is no
+  longer linked to. `PATCH /api/artifacts/<id>/remotes/<remote>
+  {download_only}` (the owner; `clax remote comments <artifact>
+  two-way|download-only`) keeps new local threads local while replies and
+  resolves on linked threads still go up; `POST …/retry` tries the
+  writes not sent again; `DELETE …` (`clax remote unlink <artifact>`) ends
+  the link: its threads stay as read-only history (`unlinked: true`; a
+  reply, resolve or reopen there is 409 `thread_unlinked`) and its unsent
+  writes stay until `POST /api/artifacts/<id>/unsent:drop` (the owner's
+  confirmation) drops them. Removing the remote does the same for all its
+  links.
+- The public side: `POST /api/artifacts/<id>/threads` and `POST
+  …/threads/<tid>/comments` by an agent token may name an
+  `Idempotency-Key` (as a publish's): a request naming it again answers
+  what the first made (a comment's key names its thread: 400
+  `invalid_args` on another). `GET /api/artifacts/<id>/threads?since=<time>`
+  (agent tokens only, else 400 `invalid_query`) lists only the threads made,
+  commented on or resolved at or after `since`.
 
 ## Sessions
 
