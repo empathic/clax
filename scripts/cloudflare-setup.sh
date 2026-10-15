@@ -8,7 +8,7 @@
 #
 #   scripts/cloudflare-setup.sh --zone example.com                    # dry run
 #   scripts/cloudflare-setup.sh --zone example.com --i-know-what-i-am-doing
-#   scripts/cloudflare-setup.sh --public clax.example.com --content clax-content.example.com --i-know-what-i-am-doing
+#   scripts/cloudflare-setup.sh --public example.com --content content.example.com --i-know-what-i-am-doing
 #   scripts/cloudflare-setup.sh --zone example.com --smoke --i-know-what-i-am-doing  # deploy, then smoke it
 #   scripts/cloudflare-setup.sh --login                               # only sign in to Cloudflare
 #

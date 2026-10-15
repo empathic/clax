@@ -1,8 +1,8 @@
 // Deploys hosted Clax to the Cloudflare account `wrangler login` signed in
 // to, in one command (README.md, "Deploy to Cloudflare"):
 //
-//   node deploy.mjs --zone example.com            # clax.example.com, clax-content.example.com
-//   node deploy.mjs --public clax.example.com --content clax-content.example.com
+//   node deploy.mjs --zone example.com            # example.com, content.example.com
+//   node deploy.mjs --public example.com --content content.example.com
 //   node deploy.mjs --dry-run ...                 # no account changes; ends at `wrangler deploy --dry-run`
 //   node deploy.mjs --store memory ...            # versions in the RepoDO stand-in, no Artifacts
 //
@@ -151,8 +151,8 @@ async function hostnames(o) {
   if (!o.public && !zone) {
     zone = hostOf(await ask(o, "The zone (a domain on this Cloudflare account) to serve Clax under, e.g. example.com"));
   }
-  const pub = hostOf(o.public ?? (await ask(o, "Public hostname", `clax.${zone}`)));
-  const content = hostOf(o.content ?? (await ask(o, "Content hostname (a host of its own)", `clax-content.${zone ?? pub.split(".").slice(1).join(".")}`)));
+  const pub = hostOf(o.public ?? (await ask(o, "Public hostname", zone)));
+  const content = hostOf(o.content ?? (await ask(o, "Content hostname (a host of its own)", `content.${zone ?? pub}`)));
   if (pub === content) throw new Error("the content hostname must differ from the public one");
   if (content.endsWith(`.${pub}`)) {
     info(`note: ${content} is under ${pub}; Universal SSL covers one level of subdomain, the custom domain gets its own certificate`);

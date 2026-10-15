@@ -52,12 +52,12 @@ Or step by step, in this directory:
 ```sh
 npx wrangler login                      # once, in this directory (npm install first)
 just hosted-deploy --zone example.com   # or: node deploy.mjs --zone example.com
-node smoke-remote.mjs --deploy .deploy/clax.example.com.json
+node smoke-remote.mjs --deploy .deploy/example.com.json
 ```
 
 `deploy.mjs` (its header lists every option) checks the login, takes the
 two hostnames (`--public`, `--content`; with `--zone example.com` it offers
-`clax.example.com` and `clax-content.example.com`, asking on a terminal),
+`example.com` and `content.example.com`, asking on a terminal),
 creates what is missing (the R2 bucket; with Artifacts the queue and the
 namespace, which also proves the account has Artifacts), generates
 `SETUP_SECRET` and `CLAX_TOKEN` when the Worker has neither and uploads
