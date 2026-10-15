@@ -2973,9 +2973,9 @@ test fails when it differs:
 | `DELETE /api/agents/{handle}/elevate` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/agents/{handle}/elevate` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/agents/{handle}/narrow` | Denied | yes: 403 `not_for_agents` |
-| `POST /api/approvals` | Denied | no |
-| `POST /api/approvals/requests/{rid}/decide` | Denied | no |
-| `DELETE /api/approvals/{id}` | Denied | no |
+| `POST /api/approvals` | Denied | yes: 403 `browser_required` |
+| `POST /api/approvals/requests/{rid}/decide` | Denied | yes: 403 `browser_required` |
+| `DELETE /api/approvals/{id}` | Denied | yes: 403 `browser_required` |
 | `GET /api/artifacts/{aid}/approves-first` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/artifacts/{aid}/room` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/artifacts/{aid}/sample` | Denied | no |
