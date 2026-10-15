@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 # Prints a one-use link, good for ten minutes, that signs your browser in as
 # the owner of a deployed hosted Clax. It uses the owner token deploy.mjs kept
-# in crates/clax-worker/.deploy/<public host>.json. Run it from any directory:
+# in ~/.config/clax/deploy/<public host>.json. Run it from any directory:
 #
 #   scripts/clax-owner-signin.sh              # the newest deploy record
 #   scripts/clax-owner-signin.sh clax.dev     # that host's record
 set -euo pipefail
-root="$(cd "$(dirname "$0")/.." && pwd)"
-records="$root/crates/clax-worker/.deploy"
+records="${CLAX_DEPLOY_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/clax/deploy}"
 if [ $# -gt 0 ]; then record="$records/$1.json"; else record="$(ls -t "$records"/*.json 2>/dev/null | head -1)"; fi
 [ -n "${record:-}" ] && [ -f "$record" ] || { echo "clax-owner-signin: no deploy record in $records" >&2; exit 1; }
 node --input-type=module - "$record" <<'JS'

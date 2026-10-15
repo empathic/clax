@@ -1,7 +1,7 @@
 // A short smoke of a deployed hosted Clax on the real platform, step by
 // step with timings, built to say which call misbehaves:
 //
-//   node smoke-remote.mjs --deploy .deploy/clax.example.com.json   # deploy.mjs's record
+//   node smoke-remote.mjs --deploy ~/.config/clax/deploy/example.com.json   # deploy.mjs's record
 //   node smoke-remote.mjs --url https://clax.example.com --setup-secret … --token …
 //   node smoke-remote.mjs --url … --session <the clax session cookie's value> --token …
 //   node smoke-remote.mjs --local [--no-build]   # against a fresh `wrangler dev --local`, REPO_STORE=memory

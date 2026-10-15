@@ -52,7 +52,7 @@ Or step by step, in this directory:
 ```sh
 npx wrangler login                      # once, in this directory (npm install first)
 just hosted-deploy --zone example.com   # or: node deploy.mjs --zone example.com
-node smoke-remote.mjs --deploy .deploy/example.com.json
+node smoke-remote.mjs --deploy ~/.config/clax/deploy/example.com.json
 ```
 
 `deploy.mjs` (its header lists every option) checks the login, takes the
@@ -62,8 +62,8 @@ creates what is missing (the R2 bucket; with Artifacts the queue and the
 namespace, which also proves the account has Artifacts), generates
 `SETUP_SECRET` and `CLAX_TOKEN` when the Worker has neither and uploads
 them with the first version (printed once, and kept with the origins in
-`.deploy/<public host>.json`, 0600 and ignored by git), writes
-`wrangler.deploy.jsonc` (this file's config with `HOSTED=1`, both origins,
+`~/.config/clax/deploy/<public host>.json`, 0600, outside the
+repository), writes `target/deploy/wrangler.deploy.jsonc` (this file's config with `HOSTED=1`, both origins,
 the store, both hosts as custom domains, `workers_dev` and preview URLs
 off, Workers Logs on, `CLAX_DIAG_ROUTES=1`), builds the web UI and the
 Worker, deploys, waits for `/healthz` on the public host (saying whether it
@@ -207,7 +207,7 @@ npx wrangler deploy
 
 `wrangler deploy` runs `build.sh` (worker-build, release, wasm-opt). `npm
 run size` prints the upload size without deploying. `deploy.mjs` does this
-with its generated `wrangler.deploy.jsonc` instead.
+with its generated `target/deploy/wrangler.deploy.jsonc` instead.
 
 ### DNS for the two origins
 
