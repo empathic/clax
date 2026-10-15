@@ -17,11 +17,13 @@
   // Fork (the shown version, into an artifact of the viewer's) comes with the
   // more menu, for the owner's shell and a viewer who may fork (`may_fork`); on a phone it is a more
   // menu item. Neither shows on a live page or a deleted one; a spectator,
-  // who reads, forks too.
+  // who reads, forks too. Publish (to a public Clax this Clax is signed in
+  // to) comes with the more menu too, in the owner's shell of a local daemon
+  // only; on a phone it is a more menu item.
   import { fromStore } from "svelte/store";
   import { getToken } from "../api";
   import { type ArtifactController, viewReady } from "../view/artifact-controller";
-  import { clone, cloneOpen, moreMenu, who } from "./more-menu.svelte";
+  import { clone, cloneOpen, moreMenu, publish, publishOpen, who } from "./more-menu.svelte";
   import SampleCount from "./SampleCount.svelte";
   import ThemeSwitch from "./ThemeSwitch.svelte";
   import VersionMenu from "./VersionMenu.svelte";
@@ -34,6 +36,7 @@
   const MoreMenu = $derived(moreMenu.current);
   const Who = $derived(who.current);
   const Clone = $derived(clone.current);
+  const Publish = $derived(publish.current);
   let forking = $state(false);
   // The owner's shell (it holds the token) may always fork; anyone else as
   // the daemon says (`may_fork`).
@@ -64,8 +67,9 @@
   {@const forkable = !!MoreMenu && (ownerShell || !!s.data.artifact.may_fork) && !live && !s.deleted}
   {#if forkable}<button class="fork hide-sm" disabled={forking} title={`Fork v${shown} into an artifact of your own`} onclick={() => fork(shown)}>Fork</button>{/if}
   {#if Clone && !live && !s.deleted}<Clone id={ctl.id} />{/if}
+  {#if Publish && ownerShell && !live && !s.deleted}<Publish id={ctl.id} title={s.data.artifact.title} {latest} />{/if}
   {#if MoreMenu}
-    <MoreMenu rawHref={s.deleted ? null : ctl.rawHref(s)} canCopy={!!navigator.clipboard && !s.deleted} onCopy={() => ctl.copyLink()} onVersions={() => ctl.openMenu("versions")} pageHref={live?.page_url} onFork={forkable && !forking ? () => fork(shown) : undefined} onClone={live || s.deleted ? null : cloneOpen.current} />
+    <MoreMenu rawHref={s.deleted ? null : ctl.rawHref(s)} canCopy={!!navigator.clipboard && !s.deleted} onCopy={() => ctl.copyLink()} onVersions={() => ctl.openMenu("versions")} pageHref={live?.page_url} onFork={forkable && !forking ? () => fork(shown) : undefined} onClone={live || s.deleted ? null : cloneOpen.current} onPublish={live || s.deleted ? null : publishOpen.current} />
   {:else}
     <span class="more-slot"></span>
   {/if}

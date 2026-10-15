@@ -392,6 +392,12 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             post(artifacts::publish.layer(publish_limit)),
         )
         .route("/api/artifacts/{aid}/fork", post(artifacts::fork))
+        // Remotes and pushes wait on a public Clax.
+        .route("/api/remotes", get(remotes::list).post(remotes::add))
+        .route("/api/remotes/{id}", delete(remotes::remove))
+        .route("/api/remotes/{id}/poll", post(remotes::poll))
+        .route("/api/artifacts/{aid}/remotes", get(remotes::for_artifact))
+        .route("/api/artifacts/{aid}/push", post(remotes::push))
         .route(
             "/api/artifacts/{aid}/assets",
             post(assets::upload.layer(asset_limit)),

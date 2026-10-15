@@ -6,7 +6,7 @@ import { agentLabel, answerText, cutHeader } from "./model";
 import { whose } from "../view/working-model";
 
 /** The kinds the inbox page filters by. */
-export const INBOX_KINDS: readonly InboxKind[] = ["reply", "version", "published", "question", "finished", "approval", "connection", "ended"];
+export const INBOX_KINDS: readonly InboxKind[] = ["reply", "version", "published", "question", "finished", "approval", "connection", "ended", "push"];
 
 /** The longest notification body, in characters, "…" included. */
 export const NOTIFY_BODY = 180;
@@ -83,6 +83,7 @@ export function itemTitle(i: InboxItem, others: InboxItem[] = []): string {
       return `${personName(a.author)} wants to reach your ${a.agent ? `agent ${a.agent.name}` : "agents"}`;
     }
     case "ended": return `${who} ended`;
+    case "push": return `${i.push?.origin ?? "A public Clax"} refused v${i.push?.n ?? "?"} of ${pageOf(i)}`;
   }
 }
 
@@ -105,6 +106,7 @@ export function itemText(i: InboxItem): string {
     : i.kind === "finished" ? i.work?.message
     // What the end cleaned up: the note's line after "<name> ended".
     : i.kind === "ended" ? i.ended?.text.split(" · ").slice(1).join(" · ")
+    : i.kind === "push" ? i.push?.message
     : null;
   return (t ?? "").replace(/\s+/g, " ").trim();
 }

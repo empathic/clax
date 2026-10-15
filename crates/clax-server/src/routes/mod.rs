@@ -25,6 +25,7 @@ pub mod mcp_http;
 pub mod people;
 pub mod perf;
 pub mod questions;
+pub mod remotes;
 pub mod room;
 pub mod sample;
 pub mod sessions;

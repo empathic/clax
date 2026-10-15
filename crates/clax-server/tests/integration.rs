@@ -87,6 +87,8 @@ mod api_push;
 mod api_pushes;
 #[cfg(any(not(clax_split), clax_split = "api_questions"))]
 mod api_questions;
+#[cfg(any(not(clax_split), clax_split = "api_remotes"))]
+mod api_remotes;
 #[cfg(any(not(clax_split), clax_split = "api_room"))]
 mod api_room;
 #[cfg(any(not(clax_split), clax_split = "api_sample"))]

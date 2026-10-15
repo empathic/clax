@@ -386,3 +386,49 @@ test("a member's token agent is named in the owner's Send menu, and the member a
     await d.stop();
   }
 });
+
+test("another machine's Clax signs in by device code: the page names it, warns when it asked from elsewhere, and approves it", async ({ browser }) => {
+  const { d, origin } = await hostedDaemon();
+  try {
+    const owner = await page(browser);
+    await owner.goto(`${origin}/setup?secret=${encodeURIComponent(SECRET)}`);
+    await owner.getByLabel("Your name").fill("Ada");
+    await owner.getByRole("button", { name: "Create the first person" }).click();
+    await owner.waitForURL(`${origin}/`);
+    // The machine asks for a code, with no credential.
+    const start = await fetch(`${origin}/api/hosted/device/code`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ client_name: "Clax on alex-laptop" }) });
+    expect(start.status).toBe(200);
+    const { user_code, verification_uri_complete } = await start.json();
+    // Asked from another address than the browser's: the page warns.
+    await owner.route("**/api/hosted/device/*", async r => {
+      if (r.request().method() !== "GET") return r.continue();
+      const res = await r.fetch();
+      await r.fulfill({ response: res, json: { ...(await res.json()), same_address: false, peer_ip: "203.0.113.9" } });
+    });
+    await owner.goto(verification_uri_complete);
+    await expect(owner).toHaveURL(`${origin}/device`);
+    await expect(owner.getByRole("heading", { name: "Connect a Clax" })).toBeVisible();
+    await expect(owner.locator(".signin")).toContainText("Clax on alex-laptop, from 203.0.113.9, asks to publish here as you, Ada.");
+    await expect(owner.locator(".signin code")).toHaveText(user_code);
+    await expect(owner.getByTestId("other-address")).toContainText("Approve only if you started this sign-in yourself");
+    await shots(owner, "device-other-address");
+    // From the browser's own address: no warning.
+    await owner.unroute("**/api/hosted/device/*");
+    await owner.goto(verification_uri_complete);
+    await expect(owner.locator(".signin")).toContainText("Clax on alex-laptop, from ");
+    await expect(owner.getByTestId("other-address")).toHaveCount(0);
+    await owner.getByRole("button", { name: "Approve" }).click();
+    await expect(owner.locator(".signin")).toContainText("Clax on alex-laptop is signed in as you.");
+    await shots(owner, "device-approved");
+    // A refused automatic push, as the owner's inbox lists it.
+    const item = { id: "01JA00000000000000000000PU", seq: 9, kind: "push", read: false, created_at: new Date().toISOString(), agent: null, artifact: { id: "7q3k9mzx2b4t", title: "Tide tables", kind: "html", page_url: null }, thread: null, reply: null, version: null, published: null, question: null, work: null, gone: false, url: "/a/7q3k9mzx2b4t", push: { n: 4, origin: "https://clax.example", code: "remote_moved", message: "the public copy is at version 5, past version 4 this Clax pushed last: someone published there since", url: "https://clax.example/a/k3m9q2w8x1ab" } };
+    await owner.route(/\/api\/inbox(\?.*)?$/, r => (r.request().url().includes("group=agent") ? r.continue() : r.fulfill({ json: { items: [item], next_cursor: null, unread: 1 } })));
+    await owner.goto(`${origin}/inbox`);
+    await expect(owner.locator(`[data-item="${item.id}"]`)).toContainText("https://clax.example refused v4 of Tide tables");
+    await expect(owner.locator(`[data-item="${item.id}"]`)).toContainText("someone published there since");
+    await expect(owner.getByRole("button", { name: "Pushes" })).toBeVisible();
+    await shots(owner, "inbox-push");
+  } finally {
+    await d.stop();
+  }
+});

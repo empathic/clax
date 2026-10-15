@@ -14,6 +14,13 @@ describe("inbox model", () => {
     expect(itemTitle(item("finished"))).toBe("claude finished on Quarterly Review");
   });
 
+  it("titles a refused automatic push by its public Clax and version", () => {
+    const push = { n: 4, origin: "https://clax.example", code: "remote_moved", message: "the public copy is at version 5", url: "https://clax.example/a/k3m9q2w8x1ab" };
+    expect(itemTitle(item("push", { push }))).toBe("https://clax.example refused v4 of Quarterly Review");
+    expect(itemText(item("push", { push }))).toBe("the public copy is at version 5");
+    expect(itemTitle(item("push", { push: undefined }))).toBe("A public Clax refused v? of Quarterly Review");
+  });
+
   it("titles a connection, an approval request and an ended agent", () => {
     expect(itemTitle(item("connection"))).toBe("Connection request from sam-mbp (192.168.1.40)");
     expect(itemText(item("connection"))).toBe("Key SHA256:9f2c");

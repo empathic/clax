@@ -357,6 +357,18 @@ fn render(
             v["ended"] = ended_view(st, i)?;
             false
         }
+        // A refused automatic push: the remote, the refusal, and the
+        // public copy's address.
+        Kind::Push => {
+            v["push"] = json!({
+                "n": i.version_n,
+                "origin": i.detail.as_ref().map_or(Value::Null, |d| d["origin"].clone()),
+                "code": i.detail.as_ref().map_or(Value::Null, |d| d["code"].clone()),
+                "message": i.detail.as_ref().map_or(Value::Null, |d| d["message"].clone()),
+                "url": i.detail.as_ref().map_or(Value::Null, |d| d["url"].clone()),
+            });
+            !live
+        }
     };
     v["gone"] = json!(gone);
     Ok(v)

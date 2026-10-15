@@ -1,4 +1,4 @@
-//! The Clax MCP tool set: twenty-seven tools that call the daemon's REST API.
+//! The Clax MCP tool set: twenty-eight tools that call the daemon's REST API.
 
 use crate::client::{ClientError, DaemonClient};
 use crate::render;
@@ -149,6 +149,26 @@ pub struct ForkArgs {
     pub url_or_id: String,
     /// Version to fork; defaults to the URL's version, else the current version.
     pub version: Option<u32>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PublishPublicArgs {
+    /// Artifact URL or ID (an artifact of this Clax).
+    pub url_or_id: String,
+    /// The public Clax (its name or origin, as `clax remote list` shows
+    /// them); defaults to the only one this Clax is signed in to.
+    pub remote: Option<String>,
+    /// `update` (default): publish it, or push its new versions to its
+    /// public copy. `fork`: push onto a fork of the public copy. `new`:
+    /// publish it again as a new public artifact.
+    pub mode: Option<String>,
+    /// The approval question an earlier call returned, to keep waiting on
+    /// it.
+    pub question_id: Option<String>,
+    /// Seconds to wait for the person's answer (default 600, 50 under
+    /// Codex).
+    pub timeout_s: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
@@ -1510,6 +1530,67 @@ impl ClaxTools {
         }))
     }
 
+    async fn do_publish_public(&self, a: PublishPublicArgs) -> Outcome {
+        if let Some(m) = &a.mode
+            && !["update", "new", "fork"].contains(&m.as_str())
+        {
+            return Err(invalid("mode is update, new or fork"));
+        }
+        if let Some(q) = &a.question_id
+            && !clax_core::is_ulid(q)
+        {
+            return Err(invalid(format!("'{q}' is not a question ID")));
+        }
+        let session = self.require_session().await?;
+        let id = self.resolve_id(&a.url_or_id).await?;
+        let wait = a
+            .timeout_s
+            .unwrap_or_else(|| default_ask_wait(&session.harness))
+            .clamp(MIN_WAIT_S, max_ask_wait(&session.harness));
+        let started = std::time::Instant::now();
+        let mut body = json!({"remote": a.remote, "mode": a.mode, "question_id": a.question_id});
+        loop {
+            let res = self
+                .client
+                .push(&id, &body)
+                .await
+                .map_err(|e| self.fail(e))?;
+            if res["status"] != "approval_pending" {
+                return Ok(json!({
+                    "status": "published",
+                    "url": res["url"],
+                    "remote": res["remote"]["origin"],
+                    "pushed": res["pushed"],
+                    "follows_new_versions": res["link"]["auto"],
+                    "assets_not_pushed": res["assets_not_pushed"],
+                }));
+            }
+            let qid = res["question_id"].as_str().unwrap_or_default().to_string();
+            let left = wait.saturating_sub(started.elapsed().as_secs());
+            let pending = || {
+                json!({
+                    "status": "approval_pending",
+                    "question_id": qid,
+                    "url": res["inbox_url"],
+                    "call_again": true,
+                    "note": "The person has not answered yet: call publish_public again with this question_id to keep waiting.",
+                })
+            };
+            if left == 0 {
+                return Ok(pending());
+            }
+            let q = self
+                .client
+                .ask_wait(&qid, left)
+                .await
+                .map_err(|e| self.fail(e))?;
+            if q["question"]["status"] == "open" {
+                return Ok(pending());
+            }
+            body["question_id"] = json!(qid);
+        }
+    }
+
     async fn do_open(&self, a: TargetArgs) -> Outcome {
         let id = self.resolve_id(&a.url_or_id).await?;
         self.client.get(&id).await.map_err(|e| self.fail(e))?;
@@ -2668,6 +2749,7 @@ direct_tools!(
     list,
     delete,
     fork,
+    publish_public,
     open,
     pin,
     unpin,
@@ -2762,6 +2844,22 @@ impl ClaxTools {
         Parameters(args): Parameters<ForkArgs>,
     ) -> Result<CallToolResult, McpError> {
         self.finish(self.do_fork(args).await).await
+    }
+
+    #[tool(
+        description = "Publish an artifact on a public Clax this Clax is signed in to (`clax remote add`), or push its new versions to its public copy there. Making it public is the person's decision: the call asks them in Clax and waits for their answer (up to `timeout_s`; when it returns `call_again`, call again with its `question_id`), and publishes only if they approve. New versions of an artifact they let follow are pushed without asking. Returns the public URL. Refused `remote_moved` when someone published on the public copy since: pass `mode` `fork` or `new` then.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    pub async fn publish_public(
+        &self,
+        Parameters(args): Parameters<PublishPublicArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.finish(self.do_publish_public(args).await).await
     }
 
     #[tool(

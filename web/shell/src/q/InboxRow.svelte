@@ -31,7 +31,7 @@
   const undecided = $derived(!p.item.read && approvalOf(p.item)?.status === "open");
   const mark = $derived(undecided ? "Unread until decided" : p.item.read ? "Mark unread" : "Mark read");
   const released = $derived(p.item.kind === "ended" ? p.item.ended?.threads ?? [] : []);
-  const KIND_NAMES = { reply: "Reply", version: "Version", published: "Published", question: "Question", finished: "Finished", approval: "Approval", connection: "Connection", ended: "Ended" } as const;
+  const KIND_NAMES = { reply: "Reply", version: "Version", published: "Published", question: "Question", finished: "Finished", approval: "Approval", connection: "Connection", ended: "Ended", push: "Push" } as const;
   // One path per kind (an SVG fragment would need the runtime's SVG templates).
   const ICONS = {
     reply: "M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z",
@@ -42,6 +42,7 @@
     approval: "M8 2.5l5 2v3.5c0 3-2.2 5-5 5.5c-2.8-.5-5-2.5-5-5.5V4.5z",
     connection: "M3 5.5h10v6H3zM6 13.5h4M8 11.5v2",
     ended: "M2.5 8a5.5 5.5 0 1 0 11 0a5.5 5.5 0 1 0-11 0M5.5 8h5",
+    push: "M8 13.5V3M4.5 6.5L8 3l3.5 3.5",
   } as const;
 </script>
 

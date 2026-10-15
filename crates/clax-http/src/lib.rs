@@ -27,6 +27,7 @@ pub mod identity;
 pub mod limits;
 pub mod live_access;
 pub mod perf;
+pub mod public;
 pub mod pushes;
 pub mod seats;
 pub mod socket_caps;

@@ -47,5 +47,10 @@ export const signOut = () => call<unknown>("/api/hosted/signout", "POST");
 export const tokens = () => call<{ tokens: AgentToken[] }>("/api/hosted/agent-tokens");
 export const mintToken = (label: string) => call<NewAgentToken>("/api/hosted/agent-tokens", "POST", { label });
 export const revokeToken = (id: string) => call<{ token: AgentToken | null }>(`/api/hosted/agent-tokens/${e(id)}`, "DELETE");
+/** A waiting device sign-in: the machine it names. */
+export type DeviceRequest = { client_name: string; peer_ip: string; created_at: string; expires_at: string; same_address?: boolean };
+export const peekDevice = (code: string) => call<DeviceRequest>(`/api/hosted/device/${e(code)}`);
+export const approveDevice = (code: string) => call<{ token: AgentToken }>(`/api/hosted/device/${e(code)}/approve`, "POST");
+export const denyDevice = (code: string) => call<unknown>(`/api/hosted/device/${e(code)}/deny`, "POST");
 export const links = () => call<{ links: SharedLink[] }>("/api/hosted/links");
 export const setLink = (aid: string, access: LinkAccess | null) => call<{ artifact_id: string; access: LinkAccess | null; url: string }>(`/api/hosted/artifacts/${e(aid)}/link`, "PUT", { access });

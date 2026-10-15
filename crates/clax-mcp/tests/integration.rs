@@ -23,6 +23,8 @@ mod open;
 mod open_status;
 #[cfg(any(not(clax_split), clax_split = "people"))]
 mod people;
+#[cfg(any(not(clax_split), clax_split = "publish_public"))]
+mod publish_public;
 #[cfg(any(not(clax_split), clax_split = "remote"))]
 mod remote;
 #[cfg(any(not(clax_split), clax_split = "shim"))]

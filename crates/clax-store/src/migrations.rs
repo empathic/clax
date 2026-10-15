@@ -805,6 +805,129 @@ pub const MIGRATIONS: &[&str] = &[
     // starts within the narrowings of its live sessions of the same name.
     // NULL for every other session, and for one registered before.
     "ALTER TABLE sessions ADD COLUMN client_name TEXT;",
+    // 30: publishing to a public Clax (`crate::device`,
+    // `crate::remotes`). On a hosted daemon, `device_codes` holds
+    // the device sign-ins of other machines' Clax (the SHA-256 of the
+    // device code each polls with and of the user code a person types),
+    // the machine's own name, and the person who approved it with the
+    // bearer grant made for it. On a local daemon, `remotes` holds each
+    // public Clax this one signed in to and the agent token it holds
+    // there (an outbound credential, so kept as it is: the database is in
+    // the home, which only its user reads); `remote_links` each local
+    // artifact's public twin, the last local version pushed and the public
+    // version that push made; `remote_assets` the public address each
+    // asset was uploaded to on a public artifact; `push_approvals` the
+    // owner's question each agent's push waits on and the version it asked
+    // about. On a hosted daemon, `publish_keys` holds the idempotency key
+    // an agent token's publish named and the version it made, so a retried
+    // push answers that version again. A daemon writes only its own side's
+    // tables. The inbox is rebuilt as migration 26 left it, its kinds with
+    // `push` (an automatic push that a public Clax refused).
+    "CREATE TABLE device_codes (
+        id TEXT PRIMARY KEY,
+        device_sha256 TEXT NOT NULL UNIQUE,
+        user_sha256 TEXT NOT NULL UNIQUE,
+        client_name TEXT NOT NULL,
+        peer_ip TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending'
+            CHECK (status IN ('pending', 'approved', 'denied', 'issued')),
+        viewer_id TEXT,
+        grant_id TEXT,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        decided_at TEXT,
+        polled_at TEXT
+    );
+    CREATE INDEX device_codes_by_expiry ON device_codes(expires_at);
+    CREATE TABLE remotes (
+        id TEXT PRIMARY KEY,
+        origin TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'connected')),
+        token TEXT,
+        device_code TEXT,
+        user_code TEXT,
+        verification_url TEXT,
+        sign_in_expires_at TEXT,
+        poll_interval_s INTEGER,
+        person_public_id TEXT,
+        person_name TEXT,
+        grant_id TEXT,
+        created_at TEXT NOT NULL,
+        connected_at TEXT
+    );
+    CREATE TABLE remote_links (
+        artifact_id TEXT NOT NULL,
+        remote_id TEXT NOT NULL,
+        remote_artifact_id TEXT NOT NULL,
+        url TEXT NOT NULL,
+        pushed_n INTEGER NOT NULL,
+        remote_n INTEGER NOT NULL,
+        auto INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        pushed_at TEXT NOT NULL,
+        PRIMARY KEY (artifact_id, remote_id)
+    );
+    CREATE TABLE remote_assets (
+        remote_id TEXT NOT NULL,
+        remote_artifact_id TEXT NOT NULL,
+        asset_id TEXT NOT NULL,
+        url TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (remote_id, remote_artifact_id, asset_id)
+    );
+    CREATE TABLE push_approvals (
+        question_id TEXT PRIMARY KEY,
+        artifact_id TEXT NOT NULL,
+        remote_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        upto INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        used_at TEXT
+    );
+    CREATE TABLE publish_keys (
+        grant_id TEXT NOT NULL,
+        key TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        n INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (grant_id, key)
+    );
+    CREATE TABLE inbox_items_30 (
+        seq INTEGER PRIMARY KEY,
+        id TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL CHECK (kind IN ('reply', 'version', 'published', 'question', 'finished',
+                                           'approval', 'connection', 'ended', 'push')),
+        key TEXT NOT NULL UNIQUE,
+        recipient TEXT,
+        artifact_id TEXT,
+        thread_id TEXT,
+        comment_id TEXT,
+        version_n INTEGER,
+        question_id TEXT,
+        session_id TEXT,
+        harness TEXT,
+        request_id TEXT,
+        grant_id TEXT,
+        detail_json TEXT,
+        created_at TEXT NOT NULL,
+        read_at TEXT
+    );
+    INSERT INTO inbox_items_30 SELECT seq, id, kind, key, recipient, artifact_id, thread_id,
+        comment_id, version_n, question_id, session_id, harness, request_id, grant_id, detail_json,
+        created_at, read_at FROM inbox_items;
+    DROP TABLE inbox_items;
+    ALTER TABLE inbox_items_30 RENAME TO inbox_items;
+    CREATE INDEX inbox_unread ON inbox_items(COALESCE(recipient, ''), seq) WHERE read_at IS NULL;
+    CREATE INDEX inbox_by_recipient ON inbox_items(COALESCE(recipient, ''), seq);
+    CREATE INDEX inbox_by_artifact ON inbox_items(COALESCE(recipient, ''), artifact_id, seq);
+    CREATE INDEX inbox_by_kind ON inbox_items(COALESCE(recipient, ''), kind, seq);
+    CREATE INDEX inbox_by_harness ON inbox_items(COALESCE(recipient, ''), harness, seq);
+    CREATE INDEX inbox_by_session ON inbox_items(COALESCE(recipient, ''), session_id, seq);
+    CREATE INDEX inbox_by_created ON inbox_items(created_at, seq);
+    CREATE INDEX inbox_by_thread ON inbox_items(thread_id) WHERE thread_id IS NOT NULL;
+    CREATE INDEX inbox_by_question ON inbox_items(question_id) WHERE question_id IS NOT NULL;
+    CREATE INDEX inbox_by_request ON inbox_items(request_id) WHERE request_id IS NOT NULL;",
 ];
 
 /// The audit journal's migration, as a schema version (the

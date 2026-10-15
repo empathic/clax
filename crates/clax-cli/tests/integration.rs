@@ -47,6 +47,8 @@ mod mcp_preflight;
 mod native_host;
 #[cfg(any(not(clax_split), clax_split = "people"))]
 mod people;
+#[cfg(any(not(clax_split), clax_split = "remote_push"))]
+mod remote_push;
 #[cfg(any(not(clax_split), clax_split = "standdown"))]
 mod standdown;
 #[cfg(any(not(clax_split), clax_split = "switch"))]

@@ -570,6 +570,14 @@ export class DaemonClient {
     return this.json(`/api/artifacts/${id}/fork`, this.jsonBody("POST", body, PUBLISH_TIMEOUT_MS));
   }
 
+  /** `POST /api/artifacts/<id>/push`: publishes it to a public Clax
+   * (`{remote?, mode?, question_id?}`); `{status: "pushed", url, …}`, or
+   * `{status: "approval_pending", question_id, inbox_url}` while the owner
+   * has not answered. */
+  push(id: string, body: unknown): Promise<any> {
+    return this.json(`/api/artifacts/${id}/push`, this.jsonBody("POST", body, PUBLISH_TIMEOUT_MS));
+  }
+
   /** `DELETE /api/artifacts/<id>`. */
   async delete(id: string): Promise<void> {
     await this.request(`/api/artifacts/${id}`, { method: "DELETE" });

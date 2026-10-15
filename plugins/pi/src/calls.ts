@@ -30,6 +30,7 @@ export const GIT_TOOLS: ReadonlySet<string> = new Set([
   "unpin",
   "working",
   "ask",
+  "publish_public",
 ]);
 
 /** `v` in the JSON Canonicalization Scheme (RFC 8785): object keys sorted by

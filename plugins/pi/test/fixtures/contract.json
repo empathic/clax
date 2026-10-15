@@ -484,6 +484,16 @@
       }
     },
     {
+      "name": "publish_public",
+      "description": "Publish an artifact on a public Clax this Clax is signed in to (`clax remote add`), or push its new versions to its public copy there. Making it public is the person's decision: the call asks them in Clax and waits for their answer (up to `timeout_s`; when it returns `call_again`, call again with its `question_id`), and publishes only if they approve. New versions of an artifact they let follow are pushed without asking. Returns the public URL. Refused `remote_moved` when someone published on the public copy since: pass `mode` `fork` or `new` then.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
       "name": "asset_upload",
       "description": "Upload local files (images, video, fonts, data) as assets of an artifact. Returns each asset's URL for the page to reference.",
       "annotations": {
