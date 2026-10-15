@@ -352,7 +352,7 @@ class AppPanel extends StatelessWidget {
               ? TextButton(
                   key: ValueKey('resend-${t.id}'),
                   onPressed: () => onResend(t.id),
-                  child: const Text('Send'),
+                  child: const Text('Send to Clax'),
                 )
               : null,
           onTap: () => onThread(t.id),
