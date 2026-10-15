@@ -593,6 +593,38 @@ pub async fn resolve(
         .map_err(ApiError::from)?
 }
 
+/// [`resolve`], and for a person's agent whether its rights allow `right`
+/// at that artifact (`own`: one its person created), read in the same
+/// store call; `None` when not asked or not a person's agent.
+async fn resolve_allowed(
+    s: &AppState,
+    id: Identity,
+    path_session: Option<String>,
+    right: Option<((RightType, &'static str), ArtifactId)>,
+) -> Result<(Caller, Option<bool>), ApiError> {
+    if let Some(c) = id.quick_caller(path_session.as_deref()) {
+        return Ok((c, None));
+    }
+    s.store
+        .call(move |st| {
+            Ok(id.caller(st, path_session.as_deref()).map(|c| {
+                let allowed = match (&c, &right) {
+                    (Caller::PersonAgent { person, rights, .. }, Some(((kind, action), aid))) => {
+                        let own = |x: &str| {
+                            st.artifact_created_by(x, person.as_deref())
+                                .unwrap_or(false)
+                        };
+                        Some(rights.allows(*kind, action, Some(aid.as_str()), &own))
+                    }
+                    _ => None,
+                };
+                (c, allowed)
+            }))
+        })
+        .await
+        .map_err(ApiError::from)?
+}
+
 impl FromRequestParts<AppState> for Caller {
     type Rejection = ApiError;
 
@@ -686,10 +718,15 @@ impl<N: Need> Agent<N> {
     /// Which artifacts the caller may read, for a listing to leave out the
     /// others (spec §7.5: listing under location-limited rights).
     pub fn read_rights(&self) -> ReadRights {
-        ReadRights(match &self.caller {
-            Caller::PersonAgent { person, rights, .. } => Some((rights.clone(), person.clone())),
-            _ => None,
-        })
+        match &self.caller {
+            Caller::PersonAgent {
+                person,
+                rights,
+                generation,
+                ..
+            } => ReadRights(Some((rights.clone(), person.clone())), *generation),
+            _ => ReadRights(None, 0),
+        }
     }
 
     /// For a person's agent, that its rights allow `right` at artifact `id`
@@ -713,9 +750,13 @@ impl<N: Need> Agent<N> {
 }
 
 /// Which artifacts a caller may read ([`Agent::read_rights`]): a person's
-/// agent's rights and person; every other caller reads every artifact.
+/// agent's rights and person, with the visibility generation read before
+/// they were; every other caller reads every artifact.
 #[derive(Clone)]
-pub struct ReadRights(Option<(Arc<clax_core::rights::Rights>, Option<String>)>);
+pub struct ReadRights(
+    Option<(Arc<clax_core::rights::Rights>, Option<String>)>,
+    u64,
+);
 
 impl ReadRights {
     /// Whether the caller may read artifact `a` (`own`: one its person
@@ -736,9 +777,11 @@ impl ReadRights {
         self.0.is_some()
     }
 
-    /// A person's agent's rights as the store holds them now, for grant
-    /// `grant`'s session `session` (rights follow the visibility generation,
-    /// M17); every other caller's as they are.
+    /// A person's agent's rights as of visibility generation `seen` (read
+    /// before calling), for grant `grant`'s session `session`: these when
+    /// they were read at `seen`, else read again from the store (rights
+    /// follow the visibility generation, M17); every other caller's as
+    /// they are. So a request reads them once unless the generation moves.
     ///
     /// # Errors
     /// `grant_revoked` once the grant has ended; the store's.
@@ -747,11 +790,12 @@ impl ReadRights {
         st: &clax_core::Store,
         grant: Option<&str>,
         session: &str,
+        seen: u64,
     ) -> clax_core::Result<ReadRights> {
         match grant {
-            Some(g) if self.is_person_agent() => {
+            Some(g) if self.is_person_agent() && self.1 != seen => {
                 let gc = st.grant_caller(g, Some(session))?;
-                Ok(ReadRights(Some((Arc::new(gc.rights), gc.person))))
+                Ok(ReadRights(Some((Arc::new(gc.rights), gc.person)), seen))
             }
             _ => Ok(self.clone()),
         }
@@ -945,7 +989,13 @@ impl<N: Need> FromRequestParts<AppState> for Agent<N> {
                     .find(|(k, _)| *k == "aid")
                     .map(|(_, v)| v.to_string())
             });
-        let caller = resolve(s, id, ps).await?;
+        // The right at the path's artifact is read with the caller.
+        let right = N::RIGHT.zip(
+            raw_artifact
+                .as_deref()
+                .and_then(|a| ArtifactId::parse(a).ok()),
+        );
+        let (caller, allowed) = resolve_allowed(s, id, ps, right).await?;
         if let Caller::PersonAgent { person, rights, .. } = &caller {
             if !N::GRANTS {
                 return Err(crate::auth::grants_refused());
@@ -964,7 +1014,10 @@ impl<N: Need> FromRequestParts<AppState> for Agent<N> {
             }
             if let Some((kind, action)) = N::RIGHT {
                 let allowed = match &artifact {
-                    Some(a) => allowed_at(s, rights, person, (kind, action), a).await?,
+                    Some(a) => match allowed {
+                        Some(b) => b,
+                        None => allowed_at(s, rights, person, (kind, action), a).await?,
+                    },
                     None if action == "create" => rights.allows(kind, action, None, &|_| false),
                     None => rights.allows_somewhere(kind, action),
                 };

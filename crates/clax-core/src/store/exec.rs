@@ -48,10 +48,16 @@ pub fn reader_count() -> usize {
         .clamp(2, MAX_READERS)
 }
 
+/// Statements each connection keeps prepared ([`Connection::prepare_cached`]):
+/// room for every cached statement in the store, so a request's reads are
+/// not parsed again because others pushed them out (rusqlite keeps 16).
+const STATEMENT_CACHE: usize = 512;
+
 /// Opens a connection with the settings every connection shares: a busy
-/// timeout and foreign keys.
+/// timeout, foreign keys and a statement cache of [`STATEMENT_CACHE`].
 fn open(path: &Path) -> Result<Connection> {
     let c = Connection::open(path)?;
+    c.set_prepared_statement_cache_capacity(STATEMENT_CACHE);
     c.busy_timeout(BUSY_TIMEOUT)?;
     c.execute_batch("PRAGMA foreign_keys=ON;")?;
     Ok(c)

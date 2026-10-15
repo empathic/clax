@@ -693,11 +693,8 @@ pub(crate) fn threads_of_many(c: &Connection, ids: &[String]) -> Result<Vec<Thre
 /// The thread `thread_id` of a live artifact, with its comments.
 pub(crate) fn thread_in(c: &Connection, thread_id: &str) -> Result<Option<Thread>> {
     let row = c
-        .query_row(
-            &format!("{THREAD_SELECT} AND t.id = ?1"),
-            params![thread_id],
-            row_to_thread_row,
-        )
+        .prepare_cached(&format!("{THREAD_SELECT} AND t.id = ?1"))?
+        .query_row(params![thread_id], row_to_thread_row)
         .optional()?;
     match row {
         None => Ok(None),

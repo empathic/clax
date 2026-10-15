@@ -74,12 +74,11 @@ fn created_by(c: &Connection, aid: &str, granter: &str) -> Result<bool> {
 /// connected, unrevoked person; `None` once they are not.
 fn granter_rights(c: &Connection, granter: &str) -> Result<Option<Rights>> {
     let row: Option<String> = c
-        .query_row(
+        .prepare_cached(
             "SELECT id FROM viewers WHERE public_id = ?1 AND person = 1 AND owner = 0
                AND person_revoked_at IS NULL",
-            params![granter],
-            |r| r.get(0),
-        )
+        )?
+        .query_row(params![granter], |r| r.get(0))
         .optional()?;
     row.map(|id| super::people::rights_of_row(c, &id))
         .transpose()
@@ -96,13 +95,20 @@ fn gives(c: &Connection, e: &Elevation) -> Result<Rights> {
         return Ok(Rights::default());
     };
     // A creator's elevation names artifact IDs only (checked when given);
-    // any other location gives nothing.
-    let mut created = std::collections::HashSet::new();
-    for id in e.access.artifact_ids().unwrap_or_default() {
-        if created_by(c, &id, g)? {
-            created.insert(id);
-        }
-    }
+    // any other location gives nothing. Which of them the granter created
+    // and still exist, in one indexed read.
+    let ids = e.access.artifact_ids().unwrap_or_default();
+    let created: std::collections::HashSet<String> = if ids.is_empty() {
+        Default::default()
+    } else {
+        let mut stmt = c.prepare_cached(
+            "SELECT a.id FROM json_each(?1) j CROSS JOIN artifacts a ON a.id = j.value
+              WHERE a.person = ?2 AND a.deleted_at IS NULL",
+        )?;
+        let ids = serde_json::to_string(&ids).expect("strings serialise");
+        stmt.query_map(params![ids, g], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?
+    };
     Ok(creator_elevation(&e.access, &rights, &|aid| {
         created.contains(aid)
     }))

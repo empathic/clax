@@ -33,6 +33,9 @@ pub enum Caller {
         grant: String,
         session: Option<String>,
         rights: Arc<Rights>,
+        /// The visibility generation read before `rights` were (M17): a
+        /// handler reuses them while the generation has not moved.
+        generation: u64,
     },
     /// A `clax_viewer` cookie naming a connected, unrevoked person.
     Person { viewer: Viewer },
