@@ -2027,7 +2027,8 @@ String anchorLine(Map<String, Object?> anchor, int version) =>
 /// `the whole artifact` for an `artifact` anchor; otherwise the route and
 /// ` › ` when there is one, the file and ` › ` when it is not `index.html`,
 /// the selector (`custom:<name>`, or `area in <selector> (W × H)`), then
-/// the quote in `«»`, whitespace collapsed and cut to 120 characters.
+/// the quote (its `label` when it has one) in `«»`, whitespace collapsed and
+/// cut to 120 characters.
 String anchorSummary(Map<String, Object?> anchor) {
   final kind = anchor['kind'] as String? ?? 'artifact';
   if (kind == 'artifact') return 'the whole artifact';
@@ -2044,7 +2045,9 @@ String anchorSummary(Map<String, Object?> anchor) {
   final file = anchor['file'] as String? ?? 'index.html';
   if (file != 'index.html') target = '$file › $target';
   if (anchor['route'] case final String route) target = '$route › $target';
-  final quote = _collapse(anchor['quote'] as String? ?? '');
+  final quote = _collapse(
+    anchor['label'] as String? ?? anchor['quote'] as String? ?? '',
+  );
   if (quote.isEmpty) return target;
   return '$target  «${_cap(quote.replaceAll(RegExp('[«»]'), '"'), 120)}»';
 }

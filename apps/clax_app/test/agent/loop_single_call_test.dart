@@ -1259,6 +1259,15 @@ void main() {
       );
       expect(
         anchorLine(const {
+          'kind': 'element',
+          'selector': 'div',
+          'quote': 'Mon5 km',
+          'label': 'Mon 5 km',
+        }, 1),
+        'div  «Mon 5 km»  (v1)',
+      );
+      expect(
+        anchorLine(const {
           'kind': 'area',
           'selector': 'main',
           'file': 'index.html',

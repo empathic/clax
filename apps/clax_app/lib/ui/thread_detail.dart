@@ -46,12 +46,12 @@ ThreadStatus threadStatus(ThreadView t) {
 }
 
 /// What [anchor] is about, in a person's words, for a thread the shell
-/// gave no label for: "Whole app", the quoted text, "this area" or "this
-/// spot". The shell's own label (`ThreadSummary.label`) says more and is
+/// gave no label for: "Whole app", the quoted text (the anchor's spaced
+/// `label` when it has one), "this area" or "this spot". The shell's own label (`ThreadSummary.label`) says more and is
 /// preferred.
 String anchorWords(Map<String, Object?> anchor) {
   if (anchor['kind'] == 'artifact') return 'Whole app';
-  final quote = anchor['quote'];
+  final quote = anchor['label'] ?? anchor['quote'];
   if (quote is String) {
     final q = quote.replaceAll(RegExp(r'\s+'), ' ').trim();
     if (q.isNotEmpty) {
