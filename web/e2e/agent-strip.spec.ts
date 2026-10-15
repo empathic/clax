@@ -137,8 +137,9 @@ test("the inbox groups by agent, threads name their owners and wait for approval
     expect(refused).toEqual([]);
     await expect(lanMenu.locator(".send-first")).toHaveCount(0);
     await expect(l.locator(".thread-approval")).toHaveCount(0);
-    // The thread waiting for Sam reads plain "sent" to a LAN viewer (owner decision 2026-10-14).
-    await expect(l.locator(`.thread-card[data-thread="${tid}"] .waiting`)).toContainText("sent, waiting for the agent");
+    // The thread waiting for Sam reads only that it was sent, to whom, to a
+    // LAN viewer (owner decision 2026-10-14, "Only \"sent\"").
+    await expect(l.locator(`.thread-card[data-thread="${tid}"] .waiting`)).toHaveText("sent to sam-notes");
 
     // Sam's browser: his approval card above the thread, and his agent by name only.
     const s = await samCtx.newPage();

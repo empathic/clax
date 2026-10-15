@@ -7,7 +7,7 @@ use crate::agent::{Agent, TokenOrAgent, person_agent_session};
 use crate::audit::DeferredAudit;
 use crate::auth::Caller;
 use crate::error::ApiError;
-use crate::feedback::{VisFor, apply, thread_view, thread_views};
+use crate::feedback::{VisFor, apply, thread_event_views};
 use crate::identity::Identity;
 use crate::state::AppState;
 use crate::viewer::{SameOrigin, acting_viewer, author};
@@ -60,14 +60,17 @@ pub fn mentions_agent(body: &str) -> bool {
     })
 }
 
-/// Broadcasts the `thread` event. `/api/events` needs no token, so the view is
-/// always built without `clip_path`, whoever made the change.
+/// Broadcasts the `thread` event. It reaches every subscriber, so its view
+/// ([`crate::feedback::thread_event_views`]) has no `clip_path` and no
+/// delivery state, whoever made the change.
 pub(crate) fn publish_thread(
     ctx: &crate::feedback::FeedbackCtx,
     st: &Store,
     t: &Thread,
 ) -> clax_core::Result<()> {
-    let view = thread_view(st, t, ctx.codex_push(), false)?;
+    let view = thread_event_views(st, std::slice::from_ref(t), ctx.codex_push())?
+        .pop()
+        .expect("one view per thread");
     ctx.events.publish(Event::Thread {
         artifact_id: t.artifact_id.clone(),
         thread: view,
@@ -1239,7 +1242,7 @@ pub async fn send_batch(
                 .iter()
                 .map(|tid| thread_of(st, &id, tid))
                 .collect::<clax_core::Result<Vec<_>>>()?;
-            let public = thread_views(st, &sent, ctx.codex_push(), false)?;
+            let public = thread_event_views(st, &sent, ctx.codex_push())?;
             for (t, view) in sent.iter().zip(&public) {
                 ctx.events.publish(Event::Thread {
                     artifact_id: t.artifact_id.clone(),

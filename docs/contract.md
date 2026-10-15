@@ -1934,7 +1934,9 @@ cut to 80 characters.
 
 ### What the person sees
 
-The thread's waiting indicator follows the `feedback_state` event:
+The thread's waiting indicator follows the viewer's own `feedback_state`
+(each reader reads the rows of the thread it may: see "Who reads a
+delivery state" below):
 
 | State | Indicator |
 |---|---|
@@ -1942,6 +1944,18 @@ The thread's waiting indicator follows the `feedback_state` event:
 | `delivered` | "delivered via <tier> · <elapsed> ago · not yet acknowledged" (then "· resent once" or "· resent N times"); "delivered, not acknowledged" after three resends |
 | `acknowledged` | "seen by the agent" |
 | `agent_ended` | "agent session ended; waiting for a new one" |
+| `withheld` | "waiting for <person>'s approval", or "waiting for your approval" for that person (no name to an agent) |
+| `declined` | "declined by <person>", or "you declined" for that person |
+| none (`null`) on a sent thread | "sent to <agent>" |
+
+**Who reads a delivery state.** The owner reads every row of a thread; a
+connected person the rows of content they wrote (a comment, or the page
+that wrote one) and of their own agents; an agent the rows sent to its own
+session (every row while no person exists and the owner's `*unconnected`
+switch is on); a LAN viewer, an anonymous caller, any other person and any
+other agent none, so their `feedback_state` is `null` and a sent thread
+reads "sent to <agent>". Whose approval (`approver`) is named to the owner
+and people, never to an agent; `mine` is `true` when it is the reader's.
 
 A resolved thread's `resolved_by` is `viewer:<public ID>`, `viewer:anonymous`
 (a resolve without a viewer cookie), or `agent:<harness>`; it never carries a
@@ -3385,8 +3399,10 @@ event's data names its `topic`. Events carry what changed:
 - `artifact_deleted`: `{topic, artifact_id}`.
 - `thread` on `artifact:<aid>`: `{topic, artifact_id, thread}`, where
   `thread` is the thread view (as `GET /api/artifacts/<aid>/threads/<tid>`
-  answers it without the token) with `comments` replaced by `comment_count`
-  and `last_comment`, the newest comment's view (`null` for none). Every
+  answers it without the token, and with no `feedback_state`: each reader
+  keeps its own, which `feedback_state` events bring) with `comments`
+  replaced by `comment_count` and `last_comment`, the newest comment's
+  view (`null` for none). Every
   change to a thread sends it: a new thread, a comment (as `last_comment`),
   a send, a resolve or reopen, a version linked to it. The client upserts
   the thread by `thread.id` and appends `last_comment` when it does not hold
@@ -3405,7 +3421,12 @@ event's data names its `topic`. Events carry what changed:
   a client that knows `thread_moved` ignores a `thread_deleted` of a
   thread it has already moved.
 - `feedback_state`: `{topic, artifact_id, thread_id, state, tier, since,
-  resends, exhausted}`, as on `/api/events`.
+  resends, exhausted, approver?, mine?}`: the state as the stream's reader
+  reads it ("Who reads a delivery state"), only on the streams of the owner
+  and of connected people who read a row of the thread: the owner's on
+  every change, a person's when the newest change is to rows they read or
+  a decision about their content or by them. A stream is never sent the
+  state it was last sent. LAN viewers and anonymous callers never get one.
 - `working` on `working:<aid>`: `{topic, artifact_id, working: [view]}`, the
   artifact's whole list, as on `/api/events`.
 - `working` on `gallery`: `{topic, artifact_id, working: [{agent, harness,
@@ -4095,8 +4116,10 @@ ID>`. An artifact URL whose `#` fragment is neither is the artifact.
 
 `GET /api/events` is a Server-Sent Events stream of the daemon's changes:
 `version`, `artifact_deleted`, `thread`, `comment`, `thread_resolved`,
-`thread_deleted`, `feedback_state`, `working`, `presence` and `doc` events,
-each carrying the JSON of the change. The query narrows it:
+`thread_deleted`, `working`, `presence` and `doc` events,
+each carrying the JSON of the change. It carries no delivery state: a
+thread's view in a `thread` event has no `feedback_state`, and each
+reader's own comes on `/api/stream`. The query narrows it:
 `artifact=<id>[,<id>...]` keeps the events of those artifacts, and
 `types=<name>[,<name>...]` the events of those names; `ready` and `resync`
 always come.

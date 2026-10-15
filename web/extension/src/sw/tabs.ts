@@ -43,7 +43,7 @@ export const emptyTab = (tabId: number, url: string): TabState => ({
 const waiting = waitsForSnapshot;
 const pendingOf = (threads: Thread[]) => threads.some(waiting);
 
-const FEEDBACK = ["thread_id", "state", "tier", "since", "resends", "exhausted"] as const;
+const FEEDBACK = ["thread_id", "state", "tier", "since", "resends", "exhausted", "approver", "mine"] as const;
 
 /** The change a thread event makes to a thread list (idempotent and keyed
  * by thread ID, as `ThreadSync` replays it); null for other events. */
@@ -52,7 +52,7 @@ function threadChange(name: string, data: Record<string, unknown>): ThreadChange
     case "thread": return ts => applyThread(ts, data.thread as ThreadDelta).threads;
     case "thread_deleted": return ts => ts.filter(t => t.id !== data.thread_id);
     case "feedback_state": {
-      const fs = Object.fromEntries(FEEDBACK.map(k => [k, data[k]])) as FeedbackState;
+      const fs = Object.fromEntries(FEEDBACK.filter(k => k in data).map(k => [k, data[k]])) as FeedbackState;
       return ts => ts.map(t => (t.id === data.thread_id ? { ...t, feedback_state: fs } : t));
     }
     default: return null;

@@ -83,7 +83,7 @@ fn list(v: Option<String>) -> Option<BTreeSet<String>> {
 ///
 /// The stream opens with `event: ready`, then carries `version`,
 /// `artifact_deleted`, `thread`, `comment`, `thread_resolved`,
-/// `thread_deleted`, `feedback_state`, `working`, `presence`, and `doc`
+/// `thread_deleted`, `working`, `presence`, and `doc`
 /// events whose data is the JSON-serialised [`clax_core::Event`]. A `doc`
 /// event carries the path and version only; one for a private
 /// `data/users/<id>/` path reaches only that viewer, and any other reaches
@@ -141,7 +141,8 @@ pub async fn events(
     let passes = move |ev: &Event| -> bool {
         // A site's change names no artifact: only `site:` topics carry it.
         // Questions, the inbox and people are the owner's; only their stream
-        // topics carry them.
+        // topics carry them. A delivery state is its reader's alone (spec
+        // 2026-10-08 §10): only `/api/stream` carries it, to its reader.
         if matches!(
             ev,
             Event::Site { .. }
@@ -151,7 +152,7 @@ pub async fn events(
                 | Event::ApprovalRequest { .. }
                 | Event::People { .. }
                 | Event::Agents { .. }
-                | Event::HeldState { .. }
+                | Event::FeedbackState { .. }
         ) {
             return false;
         }

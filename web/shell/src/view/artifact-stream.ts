@@ -64,7 +64,6 @@ export class ArtifactStream {
 
   constructor(private readonly id: string, private readonly v: ArtifactStreamView) {
     this.main = pageStream().watch([`artifact:${id}`, `presence:${id}`, `working:${id}`], e => this.on(e));
-    document.addEventListener("clax-held-state", this.held);
     void import("./artifact-questions").then(m => { if (!this.stopped) this.questions = m.artifactQuestions(id); }, () => {});
   }
 
@@ -75,17 +74,7 @@ export class ArtifactStream {
     });
   }
 
-  /** A thread's held state changed for this viewer (`held_state`, heard on
-   * its inbox topic): the thread is fetched again, as this viewer reads it. */
-  private readonly held = (e: Event): void => {
-    const d = (e as CustomEvent<{ artifact_id: string; thread_id: string }>).detail;
-    if (this.v.disposed() || d?.artifact_id !== this.id) return;
-    const done = this.v.beginThread(d.thread_id);
-    getThread(this.id, d.thread_id).then(done, () => done(undefined));
-  };
-
   stop(): void {
-    document.removeEventListener("clax-held-state", this.held);
     this.stopped = true;
     this.questions?.();
     this.questions = null;
@@ -105,7 +94,9 @@ export class ArtifactStream {
     }
     if (e.type === "thread") {
       const raw = (e as unknown as { thread: ThreadDelta }).thread;
-      const d = "feedback_state" in raw ? { ...raw, feedback_state: keepHeld(v.threads().find(t => t.id === raw.id)?.feedback_state, raw.feedback_state) } : raw;
+      // A thread event carries no delivery state: the thread keeps the one
+      // this viewer read (`feedback_state` events bring each its own).
+      const d = raw;
       const r = applyThread(v.threads(), d);
       v.changeThreads(ts => applyThread(ts, d).threads);
       v.page({ type: "thread", artifact_id: this.id, thread: r.thread });
@@ -162,9 +153,9 @@ export function onArtifactEvent(c: ArtifactController, e: ArtifactEvent): void {
   if (e.type === "presence") { c.set({ presence: e.people }); adoptName(e.people); }
   // An agent may have started or ended: the Send target and the roster follow.
   if (e.type === "working" || e.type === "version" || e.type === "agents") c.refreshAgents();
-  if (e.type === "thread") c.changeThreads(ts => upsert(ts, { ...e.thread, feedback_state: keepHeld(ts.find(t => t.id === e.thread.id)?.feedback_state, e.thread.feedback_state) }));
+  if (e.type === "thread") c.changeThreads(ts => upsert(ts, keepState(ts.find(t => t.id === e.thread.id), e.thread)));
   if (e.type === "thread_deleted") { c.changeThreads(ts => ts.filter(t => t.id !== e.thread_id)); c.set(s => ({ selected: s.selected === e.thread_id ? null : s.selected })); }
-  if (e.type === "feedback_state") c.changeThreads(ts => ts.map(t => t.id === e.thread_id ? { ...t, feedback_state: keepHeld(t.feedback_state, { thread_id: e.thread_id, state: e.state, tier: e.tier, since: e.since, resends: e.resends, exhausted: e.exhausted }) } : t));
+  if (e.type === "feedback_state") c.changeThreads(ts => ts.map(t => t.id === e.thread_id ? { ...t, feedback_state: stateOf(e) } : t));
   // A (re)connect may follow a daemon restart that dropped events without a
   // resync; reload like a resync. The first one also covers anything
   // published between the initial load and the stream opening.
@@ -192,10 +183,16 @@ function adoptName(people: PresenceView[]): void {
   }, () => {});
 }
 
-/** `next`, unless `prev` is a held state (`withheld`, `declined`): events
- * carry the plain state everyone may read (spec 2026-10-08 §10, §18), and
- * a browser that read more keeps it until `held_state` has it fetch the
- * thread again (`clax-held-state`). */
-export function keepHeld(prev: FeedbackState | null | undefined, next: FeedbackState | null): FeedbackState | null {
-  return prev?.state === "withheld" || prev?.state === "declined" ? prev : next;
+/** `next`, keeping `prev`'s delivery state when `next` carries none: a
+ * thread event reaches every viewer, so it says nothing of delivery (spec
+ * 2026-10-08 §10); each viewer hears its own in `feedback_state` events. */
+export function keepState(prev: Thread | undefined, next: Thread): Thread {
+  return next.feedback_state === undefined ? { ...next, feedback_state: prev?.feedback_state ?? null } : next;
+}
+
+/** The delivery state a `feedback_state` event carries: this viewer's own
+ * (whose approval and `mine` included, for those who read them). */
+export function stateOf(e: { thread_id: string } & FeedbackState): FeedbackState {
+  const { thread_id, state, tier, since, resends, exhausted, approver, mine } = e;
+  return { thread_id, state, tier, since, resends, exhausted, ...(approver === undefined ? {} : { approver }), ...(mine ? { mine } : {}) };
 }

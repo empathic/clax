@@ -4,10 +4,9 @@
 
 use super::Store;
 use super::batches::ThreadSend;
-use super::feedback::{feedback_states_in, id_array};
+use super::feedback::{Delivery, deliveries_in, id_array};
 use crate::anchor::Anchor;
 use crate::audit::{AuditCtx, AuditKind, AuditRecord};
-use crate::feedback::FeedbackState;
 use crate::model::{Comment, Thread};
 use crate::{ArtifactId, CoreError, Result, new_ulid};
 use rusqlite::{Connection, OptionalExtension, Row, params};
@@ -472,7 +471,9 @@ pub(crate) fn list_threads_sql() -> String {
 /// What a thread view adds to a stored thread; see [`Store::thread_extras`].
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ThreadExtras {
-    pub feedback_state: Option<FeedbackState>,
+    /// Its delivery rows, which each reader reads as [`Delivery::view`]
+    /// says; `None` when nothing was forwarded.
+    pub delivery: Option<Delivery>,
     pub addressed_in: Vec<u32>,
     pub sends: Vec<ThreadSend>,
     pub resolved_by_name: Option<String>,
@@ -1269,7 +1270,7 @@ impl Store {
     }
 
     /// What a thread view adds to each of `threads`, in the same order: the
-    /// feedback state ([`Store::feedback_state`]), the versions addressing it
+    /// delivery rows ([`Store::deliveries`]), the versions addressing it
     /// ([`Store::addressed_in`]), its sends ([`Store::thread_sends`]), and
     /// the current display name of the viewer named by `resolved_by`.
     pub fn thread_extras(&self, threads: &[Thread], codex_push: bool) -> Result<Vec<ThreadExtras>> {
@@ -1315,7 +1316,7 @@ impl Store {
                     moves.entry(r.get(0)?).or_default().push(m);
                 }
             }
-            let mut states = feedback_states_in(c, &ids, codex_push)?;
+            let mut states = deliveries_in(c, &ids, codex_push)?;
             let mut addressed: HashMap<String, Vec<u32>> = HashMap::new();
             let mut stmt = c.prepare_cached(ADDRESSED_IN_MANY)?;
             let mut rows = stmt.query(params![arr])?;
@@ -1362,7 +1363,7 @@ impl Store {
             Ok(threads
                 .iter()
                 .map(|t| ThreadExtras {
-                    feedback_state: states.remove(&t.id),
+                    delivery: states.remove(&t.id),
                     addressed_in: addressed.remove(&t.id).unwrap_or_default(),
                     sends: sends.remove(&t.id).unwrap_or_default(),
                     resolved_by_name: t

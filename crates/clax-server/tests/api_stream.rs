@@ -171,12 +171,19 @@ async fn one_stream_carries_each_subscribed_topic_as_small_deltas() {
     ts.events.publish(clax_core::Event::FeedbackState {
         artifact_id: a.clone(),
         thread_id: "t".into(),
-        state: clax_core::FeedbackPhase::Sent,
-        tier: None,
-        since: "s".into(),
-        resends: 0,
-        exhausted: false,
-        approver: None,
+        views: vec![(
+            String::new(),
+            clax_core::FeedbackState {
+                thread_id: "t".into(),
+                state: clax_core::FeedbackPhase::Sent,
+                tier: None,
+                since: "s".into(),
+                resends: 0,
+                exhausted: false,
+                approver: None,
+                mine: false,
+            },
+        )],
     });
     assert!(r.quiet_for(300).await);
 }

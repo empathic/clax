@@ -143,18 +143,6 @@ describe("QuestionFeed", () => {
 describe("InboxFeed", () => {
   const SUMMARY = { unread: 2, questions: [], latest: [item("reply")] };
 
-  it("relays a thread's held_state to the page, for an artifact view to fetch it again", async () => {
-    stubFetch(() => [200, SUMMARY]);
-    const feed = new InboxFeed({ after: fakeClock().after });
-    const stream = await live(feed);
-    const heard: unknown[] = [];
-    const on = (e: Event) => heard.push((e as CustomEvent).detail);
-    document.addEventListener("clax-held-state", on);
-    stream.emit("held_state", { artifact_id: "7q3k9mzx2b4t", thread_id: "t1" });
-    document.removeEventListener("clax-held-state", on);
-    expect(heard).toEqual([{ artifact_id: "7q3k9mzx2b4t", thread_id: "t1" }]);
-  });
-
   it("subscribes `inbox` first, takes the unread count from every event, and fetches the summary again after a bulk change", async () => {
     const calls = stubFetch(() => [200, SUMMARY]);
     const feed = new InboxFeed({ after: fakeClock().after });

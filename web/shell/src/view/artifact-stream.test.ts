@@ -9,7 +9,7 @@ const reopens: (string | undefined)[] = [];
 vi.mock("../stream", () => ({
   pageStream: () => ({ watch: (_t: string[], f: (e: StreamEvent) => void) => { on = f; return () => { on = null; }; }, reconnect: (c?: string) => { reopens.push(c); } }),
 }));
-const { ArtifactStream, keepHeld } = await import("./artifact-stream");
+const { ArtifactStream, keepState, stateOf } = await import("./artifact-stream");
 const { getToken } = await import("../api");
 
 const A = "7q3k9mzx2b4t";
@@ -86,13 +86,17 @@ describe("the artifact stream", () => {
   });
 });
 
-describe("keepHeld", () => {
+describe("delivery states", () => {
   const s = (o: Record<string, unknown>) => ({ thread_id: "t", state: "withheld" as const, tier: null, since: "x", resends: 0, exhausted: false, ...o });
-  it("keeps a held state this view fetched over an event's plain one, until the thread is fetched again", () => {
-    const plain = s({ state: "sent", tier: "piggyback" });
-    expect(keepHeld(s({ approver: "Sam" }), plain)).toEqual(s({ approver: "Sam" }));
-    expect(keepHeld(s({ state: "declined", approver: "Sam" }), plain)).toEqual(s({ state: "declined", approver: "Sam" }));
-    expect(keepHeld(plain, s({ state: "acknowledged" }))).toEqual(s({ state: "acknowledged" }));
-    expect(keepHeld(null, plain)).toEqual(plain);
+  const thread = (o: Record<string, unknown>) => ({ id: "t", comments: [], ...o }) as unknown as Thread;
+  it("keeps the state this viewer read when a thread event carries none", () => {
+    const held = s({ approver: "Sam", mine: true });
+    expect(keepState(thread({ feedback_state: held }), thread({ status: "open" })).feedback_state).toEqual(held);
+    expect(keepState(undefined, thread({})).feedback_state).toBeNull();
+    expect(keepState(thread({ feedback_state: held }), thread({ feedback_state: null })).feedback_state).toBeNull();
+  });
+  it("takes a feedback_state event's state whole, whose approval and mine included", () => {
+    expect(stateOf({ ...s({ state: "declined", approver: "Sam", mine: true }), artifact_id: "a", topic: "artifact:a" } as never)).toEqual(s({ state: "declined", approver: "Sam", mine: true }));
+    expect(stateOf(s({ state: "sent", tier: "piggyback" }))).toEqual(s({ state: "sent", tier: "piggyback" }));
   });
 });

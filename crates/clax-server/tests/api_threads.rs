@@ -379,6 +379,8 @@ async fn events_announce_threads_comments_resolutions_and_feedback_state() {
         (e["artifact_id"].as_str(), e["thread"]["id"].as_str()),
         (Some(aid.as_str()), Some(tid.as_str()))
     );
+    // A thread event reaches every subscriber: it carries no delivery state.
+    assert!(e["thread"].get("feedback_state").is_none(), "{e}");
     ts.client
         .post(format!(
             "{}/api/artifacts/{aid}/threads/{tid}/comments",
@@ -389,13 +391,17 @@ async fn events_announce_threads_comments_resolutions_and_feedback_state() {
         .await
         .unwrap();
     assert_eq!(ev.next_named("comment").await["comment"]["body"], "second");
+    // A delivery state reaches its reader's streams alone (spec 2026-10-08
+    // §10): the owner's, never `/api/events`.
+    let mut owner = ts.stream_as_owner(&[&format!("artifact:{aid}")]).await;
     ts.send_thread(&aid, &tid).await;
-    let fs = ev.next_named("feedback_state").await;
+    let fs = owner.next_named("feedback_state").await;
     assert_eq!(
         fs,
         json!({
-            "type": "feedback_state", "artifact_id": aid, "thread_id": tid, "state": "sent",
-            "tier": "stop_hook", "since": fs["since"], "resends": 0, "exhausted": false
+            "topic": format!("artifact:{aid}"), "artifact_id": aid, "thread_id": tid,
+            "state": "sent", "tier": "stop_hook", "since": fs["since"], "resends": 0,
+            "exhausted": false
         })
     );
     ts.client
@@ -406,8 +412,14 @@ async fn events_announce_threads_comments_resolutions_and_feedback_state() {
         .send()
         .await
         .unwrap();
-    let r = ev.next_named("thread_resolved").await;
-    assert_eq!(r["thread_id"], tid);
+    loop {
+        let (name, data) = ev.next().await;
+        assert_ne!(name, "feedback_state", "{data}");
+        if name == "thread_resolved" {
+            assert_eq!(data["thread_id"], tid);
+            break;
+        }
+    }
 }
 
 #[tokio::test]

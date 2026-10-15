@@ -75,9 +75,11 @@ async fn ran(dir: &Path) -> String {
     panic!("the fake codex never ran");
 }
 
+/// Thread `tid`'s delivery state as the owner reads it (visitors read
+/// none, spec 2026-10-08 §10).
 async fn state_of(ts: &TestServer, aid: &str, tid: &str) -> Value {
     let v: Value = ts
-        .get(&format!("/api/artifacts/{aid}/threads/{tid}"))
+        .get_authed(&format!("/api/artifacts/{aid}/threads/{tid}"))
         .await
         .json()
         .await
@@ -106,7 +108,7 @@ async fn exit_0_delivers_by_queue_with_the_payload_and_codex_home() {
     let (sid, aid) = codex_owner(&ts, Some("cx-1")).await;
     let before = ts.thread(&aid, 1, "plain").await;
     assert_eq!(before["feedback_state"], Value::Null);
-    let mut ev = ts.events(&format!("?artifact={aid}")).await;
+    let mut ev = ts.stream_as_owner(&[&format!("artifact:{aid}")]).await;
     let t = ts.thread(&aid, 1, "@agent two columns").await;
     let tid = t["id"].as_str().unwrap();
     // The claim marks the row delivered before `codex queue` runs, and its
@@ -164,7 +166,7 @@ async fn non_zero_exit_releases_the_rows_and_keeps_the_session() {
     let d = tempfile::tempdir().unwrap();
     let ts = server(Some(fake_codex(d.path(), 1, 0)), Duration::from_secs(10)).await;
     let (sid, aid) = codex_owner(&ts, Some("cx-2")).await;
-    let mut ev = ts.events(&format!("?artifact={aid}")).await;
+    let mut ev = ts.stream_as_owner(&[&format!("artifact:{aid}")]).await;
     let t = ts.thread(&aid, 1, "@agent anyone?").await;
     let tid = t["id"].as_str().unwrap();
     loop {
@@ -282,7 +284,7 @@ async fn missing_binary_and_timeouts_release_rows_for_the_other_tiers() {
     ] {
         let ts = server(Some(bin), timeout).await;
         let (sid, aid) = codex_owner(&ts, Some("cx-3")).await;
-        let mut ev = ts.events(&format!("?artifact={aid}")).await;
+        let mut ev = ts.stream_as_owner(&[&format!("artifact:{aid}")]).await;
         let t = ts.thread(&aid, 1, "@agent please").await;
         let tid = t["id"].as_str().unwrap();
         // Released and marked push-failed: waiting on the in-band tiers, not on Codex.
@@ -458,7 +460,7 @@ async fn without_a_recorded_codex_home_codex_inherits_the_daemons() {
         .to_string();
     let a = ts.publish_as(&sid, "Inherited", "<h2>Goals</h2>").await;
     let aid = a["artifact"]["id"].as_str().unwrap().to_string();
-    let mut ev = ts.events(&format!("?artifact={aid}")).await;
+    let mut ev = ts.stream_as_owner(&[&format!("artifact:{aid}")]).await;
     ts.thread(&aid, 1, "@agent hi").await;
     loop {
         if ev.next_named("feedback_state").await["state"] == "delivered" {
@@ -532,7 +534,7 @@ async fn a_poll_the_client_abandoned_no_longer_holds_off_queue() {
     poll.abort();
     let _ = poll.await;
     tokio::time::sleep(Duration::from_millis(300)).await;
-    let mut ev = ts.events(&format!("?artifact={aid}")).await;
+    let mut ev = ts.stream_as_owner(&[&format!("artifact:{aid}")]).await;
     ts.thread(&aid, 1, "@agent after the poll").await;
     loop {
         let e = ev.next_named("feedback_state").await;
@@ -558,7 +560,8 @@ async fn a_queue_claim_is_announced_before_codex_queue_finishes() {
     let t = ts.thread(&aid, 1, "@agent anyone?").await;
     let tid = t["id"].as_str().unwrap();
     assert_eq!(
-        t["feedback_state"]["state"], "agent_ended",
+        state_of(&ts, &aid, tid).await["state"],
+        "agent_ended",
         "no target yet: {t}"
     );
     let res = ts.post_json("/api/sessions/join", json!({"harness": "codex", "parent_pid": 4244, "harness_session_id": "cx-m1", "cwd": "/w"})).await;
@@ -566,7 +569,7 @@ async fn a_queue_claim_is_announced_before_codex_queue_finishes() {
         .as_str()
         .unwrap()
         .to_string();
-    let mut ev = ts.events(&format!("?artifact={aid}")).await;
+    let mut ev = ts.stream_as_owner(&[&format!("artifact:{aid}")]).await;
     let started = std::time::Instant::now();
     let put = ts
         .authed(
@@ -630,7 +633,7 @@ async fn a_failed_queue_marks_nothing() {
     let d = tempfile::tempdir().unwrap();
     let ts = server(Some(fake_codex(d.path(), 1, 0)), Duration::from_secs(10)).await;
     let (_sid, aid) = codex_owner(&ts, Some("cx-w2")).await;
-    let mut ev = ts.events(&format!("?artifact={aid}")).await;
+    let mut ev = ts.stream_as_owner(&[&format!("artifact:{aid}")]).await;
     let t = ts.thread(&aid, 1, "@agent anyone?").await;
     let tid = t["id"].as_str().unwrap();
     // The release is announced as the failed queue settles.

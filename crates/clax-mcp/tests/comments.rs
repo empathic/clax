@@ -211,8 +211,9 @@ async fn comments_read_summarises_threads_and_acknowledges_them() {
         json!([]),
         "reading acknowledged it, so nothing piggybacks"
     );
+    // As the owner reads it: visitors read no delivery state.
     let got: Value = ts
-        .get(&format!("/api/artifacts/{aid}/threads/{tid}"))
+        .get_authed(&format!("/api/artifacts/{aid}/threads/{tid}"))
         .await
         .json()
         .await

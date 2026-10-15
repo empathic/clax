@@ -76,7 +76,7 @@ pub use store::attention::{
     AgentPerson, AgentView, Attention, AttentionSummary, Participants, Person,
 };
 pub use store::audit::AuditRow;
-pub use store::feedback::{SendTarget, TakeFeedback, Taken};
+pub use store::feedback::{Delivery, DeliveryViewer, SendTarget, TakeFeedback, Taken};
 pub use store::sessions::{
     EndReason, EndedSession, JoinSession, NameSource, Proved, Reaped, RegisterSession, Registered,
     Restored, RosterAgent,
