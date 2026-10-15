@@ -179,8 +179,10 @@ declare namespace ClaxExtensions {
      *   offers Open settings.
      * - `stopped` (`location.watch`): the watch ended because the app left
      *   the screen (or the person stopped it); start it again from a tap.
+     * - `dismissed`: the person closed the question without answering;
+     *   nothing is kept, and the next call (from a tap) asks again.
      */
-    type ErrorCode = "not_granted" | "cancelled" | "unavailable" | "bad_request" | "too_large" | "no_gesture" | "system_denied" | "location_off" | "stopped";
+    type ErrorCode = "not_granted" | "cancelled" | "unavailable" | "bad_request" | "too_large" | "no_gesture" | "system_denied" | "location_off" | "stopped" | "dismissed";
 
     /** A file's bytes, as base64. */
     interface FileData {
@@ -270,10 +272,13 @@ declare namespace ClaxExtensions {
       /** Where the device is now. */
       current(): Promise<Position>;
       /** Follows the device while the app is on screen: `onUpdate` gets a
-       * position at most once a second and once per `minDistance` (an
-       * approximate one only when the area changes). Call it from a click
-       * handler; at most 4 at once. Clax shows a location pill while it
-       * runs. Returns `stop`. */
+       * position at once, then at most once a second and once per
+       * `minDistance`. An approximate one reports a new area only after
+       * the device has stayed well inside it for minutes, at most every
+       * 10 minutes. Call it from a click handler: one tap starts one
+       * location call, and after a watch ends a new tap is needed. At
+       * most 4 at once. Clax shows a location pill while it runs. Returns
+       * `stop`. */
       watch(onUpdate: (p: Position) => void, opts?: WatchOptions): () => void;
     }
   }
