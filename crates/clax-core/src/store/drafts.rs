@@ -103,7 +103,12 @@ pub(crate) fn is_hidden_in(c: &Connection, id: &str) -> Result<bool> {
 /// returns how many it copied and whether any were left. When `of`'s rules
 /// do not parse, it copies nothing and says documents were left (when the
 /// app has any).
-fn copy_docs(c: &Connection, of: &ArtifactId, draft: &ArtifactId) -> Result<(usize, bool)> {
+fn copy_docs(
+    c: &Connection,
+    of: &ArtifactId,
+    draft: &ArtifactId,
+    now: &str,
+) -> Result<(usize, bool)> {
     let Ok(rules) = Rules::from_capabilities(&caps_in(c, of)?) else {
         let any: bool = c.query_row(
             "SELECT EXISTS(SELECT 1 FROM docs WHERE artifact_id = ?1)",
@@ -112,17 +117,13 @@ fn copy_docs(c: &Connection, of: &ArtifactId, draft: &ArtifactId) -> Result<(usi
         )?;
         return Ok((0, any));
     };
-    let owner = Caller {
-        level: Level::Owner,
-        viewer: None,
-    };
+    let owner = Caller::new(Level::Owner, None);
     let mut read =
         c.prepare("SELECT path, collection, json FROM docs WHERE artifact_id = ?1 ORDER BY path")?;
     let mut write = c.prepare(
         "INSERT INTO docs (artifact_id, path, collection, json, version, updated_at)
          VALUES (?1, ?2, ?3, ?4, 1, ?5)",
     )?;
-    let now = Store::now();
     let (mut copied, mut bytes) = (0usize, 0usize);
     let mut rows = read.query(params![of.as_str()])?;
     while let Some(r) = rows.next()? {
@@ -206,7 +207,7 @@ impl Store {
             })?;
         }
         let id = ArtifactId::generate();
-        let now = Store::now();
+        let now = self.now();
         let title = p
             .title
             .clone()
@@ -236,7 +237,7 @@ impl Store {
         self.hidden.insert(id.as_str());
         let written =
             self.write_version_then(ctx, &id, 0, &p, &BTreeMap::new(), None, |tx, _| match of {
-                Some(of) => copy_docs(tx, of, &id),
+                Some(of) => copy_docs(tx, of, &id, &now),
                 None => Ok((0, false)),
             });
         match written {
@@ -334,7 +335,7 @@ impl Store {
                 self.record_audit(
                     tx,
                     ctx,
-                    delete_record(&Store::now(), id.as_str(), &title, current),
+                    delete_record(&self.now(), id.as_str(), &title, current),
                 )?;
             }
             Ok(true)
@@ -423,6 +424,8 @@ mod tests {
     const OWNER: Caller = Caller {
         level: Level::Owner,
         viewer: None,
+        person: crate::visibility::Author::Owner,
+        via_page: false,
     };
 
     fn publish(title: &str, caps: Option<Value>) -> ValidatedPublish {
@@ -457,10 +460,7 @@ mod tests {
         set(&st, &app, "notes/n1", json!({"t": 2}), &OWNER);
         set(&st, &app, "runs/r1", json!({}), &OWNER);
         let me = "u_00000000000000000000aa";
-        let viewer = Caller {
-            level: Level::Interact,
-            viewer: Some(me.into()),
-        };
+        let viewer = Caller::new(Level::Interact, Some(me.into()));
         set(&st, &app, &format!("data/users/{me}/x"), json!({}), &viewer);
 
         let d = st
@@ -809,9 +809,11 @@ mod tests {
         let did = ArtifactId::parse(&d.artifact.id).unwrap();
         // What a session's first version of an artifact makes, refused here.
         let made = st
-            .with_tx(|tx| super::super::inbox::note_version(tx, did.as_str(), 1, Some(&sid), None))
+            .with_tx(|tx| {
+                super::super::inbox::note_version(tx, did.as_str(), 1, Some(&sid), None, &st.now())
+            })
             .unwrap();
-        assert_eq!(made, None);
+        assert!(made.is_empty());
         assert_eq!(
             count(
                 &st,

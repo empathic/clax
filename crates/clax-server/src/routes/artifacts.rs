@@ -817,7 +817,7 @@ pub struct RestoreBody {
 /// `X-Clax-Session` must name a live session, which the version records.
 pub async fn restore(
     State(s): State<AppState>,
-    _t: RequireToken,
+    _t: crate::auth::RequireToken,
     audit: AuditCtx,
     headers: HeaderMap,
     aid: Result<Path<String>, PathRejection>,
@@ -841,7 +841,7 @@ pub async fn restore(
     let events = s.events.clone();
     let (artifact, version) = s
         .store_call(move |st| {
-            let session = publishing_session(st, &session)?;
+            let session = publishing_session(st, &session, None)?;
             let (artifact, version) =
                 st.restore_version(&audit, &id, n, if_version, session.as_deref())?;
             events.publish(Event::Version {

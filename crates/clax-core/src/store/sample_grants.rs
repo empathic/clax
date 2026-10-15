@@ -13,8 +13,8 @@ use rusqlite::{OptionalExtension, params};
 
 /// The `artifact.update` record of a grant change: the field
 /// `sample_grant` holds `"grant"` or `"revoke"`.
-fn grant_record(id: &ArtifactId, op: &str) -> AuditRecord {
-    let mut rec = AuditRecord::new(AuditKind::ArtifactUpdate, Store::now())
+fn grant_record(now: String, id: &ArtifactId, op: &str) -> AuditRecord {
+    let mut rec = AuditRecord::new(AuditKind::ArtifactUpdate, now)
         .with("fields", serde_json::json!({"sample_grant": op}));
     rec.ids.artifact = Some(id.as_str().to_string());
     rec
@@ -31,10 +31,10 @@ impl Store {
             caps_in(tx, id)?;
             let n = tx.execute(
                 "INSERT OR IGNORE INTO sample_grants (artifact_id, granted_at) VALUES (?1, ?2)",
-                params![id.as_str(), Store::now()],
+                params![id.as_str(), self.now()],
             )?;
             if n > 0 {
-                self.record_audit(tx, audit, grant_record(id, "grant"))?;
+                self.record_audit(tx, audit, grant_record(self.now(), id, "grant"))?;
             }
             Ok(tx.query_row(
                 "SELECT granted_at FROM sample_grants WHERE artifact_id = ?1",
@@ -57,7 +57,7 @@ impl Store {
                 params![id.as_str()],
             )?;
             if n > 0 {
-                self.record_audit(tx, audit, grant_record(id, "revoke"))?;
+                self.record_audit(tx, audit, grant_record(self.now(), id, "revoke"))?;
             }
             Ok(n > 0)
         })

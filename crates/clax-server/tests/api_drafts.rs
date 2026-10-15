@@ -300,10 +300,7 @@ async fn draft_copy_stops_at_cap() {
     let ts = TestServer::spawn().await;
     let a = app(&ts, "Big", json!({"db": {}})).await;
     let aid = ArtifactId::parse(&a).unwrap();
-    let owner = Caller {
-        level: Level::Owner,
-        viewer: None,
-    };
+    let owner = Caller::new(Level::Owner, None);
     let paths: Vec<String> = (0..2001).map(|i| format!("items/i{i:04}")).collect();
     for chunk in paths.chunks(50) {
         let writes = chunk

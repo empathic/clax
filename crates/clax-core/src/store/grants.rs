@@ -41,8 +41,8 @@ pub enum ReadAccess {
 
 /// The `artifact.update` record of a grant change on `reader`: the field
 /// `db_read_grants` holds `{"grant": source}` or `{"revoke": source}`.
-fn grant_record(reader: &ArtifactId, source: &ArtifactId, op: &str) -> AuditRecord {
-    let mut rec = AuditRecord::new(AuditKind::ArtifactUpdate, Store::now()).with(
+fn grant_record(now: String, reader: &ArtifactId, source: &ArtifactId, op: &str) -> AuditRecord {
+    let mut rec = AuditRecord::new(AuditKind::ArtifactUpdate, now).with(
         "fields",
         serde_json::json!({"db_read_grants": {op: source.as_str()}}),
     );
@@ -92,7 +92,11 @@ impl Store {
                 params![reader.as_str(), source],
             )?;
             let source = ArtifactId::parse(source)?;
-            self.record_audit(tx, audit, grant_record(reader, &source, "revoke"))?;
+            self.record_audit(
+                tx,
+                audit,
+                grant_record(self.now(), reader, &source, "revoke"),
+            )?;
         }
         Ok(())
     }
@@ -114,10 +118,10 @@ impl Store {
             check_pair(tx, reader, source)?;
             let n = tx.execute(
                 "INSERT OR IGNORE INTO db_read_grants (reader_id, source_id, granted_at) VALUES (?1, ?2, ?3)",
-                params![reader.as_str(), source.as_str(), Store::now()],
+                params![reader.as_str(), source.as_str(), self.now()],
             )?;
             if n > 0 {
-                self.record_audit(tx, audit, grant_record(reader, source, "grant"))?;
+                self.record_audit(tx, audit, grant_record(self.now(), reader, source, "grant"))?;
             }
             Ok(())
         })
@@ -143,7 +147,11 @@ impl Store {
                 params![reader.as_str(), source.as_str()],
             )?;
             if n > 0 {
-                self.record_audit(tx, audit, grant_record(reader, source, "revoke"))?;
+                self.record_audit(
+                    tx,
+                    audit,
+                    grant_record(self.now(), reader, source, "revoke"),
+                )?;
             }
             Ok(n > 0)
         })
@@ -481,15 +489,9 @@ mod tests {
             &st,
             json!({"db": {"rules": [{"path": "votes/{self}", "read": "view", "write": "interact"}]}}),
         );
-        let owner = Caller {
-            level: Level::Owner,
-            viewer: None,
-        };
+        let owner = Caller::new(Level::Owner, None);
         let me = "u_00000000000000000000aa";
-        let viewer = Caller {
-            level: Level::Interact,
-            viewer: Some(me.into()),
-        };
+        let viewer = Caller::new(Level::Interact, Some(me.into()));
         let lww = Pin {
             if_version: None,
             lww: true,

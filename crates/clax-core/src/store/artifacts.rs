@@ -1098,6 +1098,8 @@ impl Store {
             note_truncated: false,
             addresses: Vec::new(),
             working_threads: Vec::new(),
+            person: None,
+            hidden: Vec::new(),
             by_page: false,
         };
         let previous = self
@@ -1989,6 +1991,8 @@ mod tests {
             note_truncated: false,
             addresses: Vec::new(),
             working_threads: Vec::new(),
+            person: None,
+            hidden: Vec::new(),
             by_page: false,
         };
         let seq = store.events_after(0, 100).unwrap().last().unwrap().seq;

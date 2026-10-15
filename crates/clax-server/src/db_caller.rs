@@ -25,8 +25,8 @@ use crate::state::AppState;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use clax_core::db::{Caller, Level};
-use clax_core::visibility::Author;
 use clax_core::store::grants::ReadAccess;
+use clax_core::visibility::Author;
 use clax_core::{ArtifactId, CoreError, Store};
 
 /// The header naming the app a request reads another app's documents for.
