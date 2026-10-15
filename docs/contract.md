@@ -3131,9 +3131,11 @@ is withheld too. A delivered comment's
 withheld parts read `Anchored on: (withheld: page by <name>)`, `Clip:
 withheld` and `Note: (note withheld)`. The held comments are delivered by
 the usual tiers once approved. Comments on an artifact the agent may no
-longer read (its person's rights or a narrowing changed since) are held,
-whatever their authors, and the session is told once per thread, with the
-thread's ID and the count only:
+longer read (its rights there changed since: its person's rights, a
+narrowing, or a raise removed) are held, whatever their authors, and the
+session is told once per thread, with the thread's and the artifact's IDs
+and the count only (the line names the thread; the result's `withheld`
+entry adds `artifact_id`):
 
 ```
 [clax] 2 comments in thread 01J9… are held: you no longer have access to this page.
