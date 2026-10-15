@@ -1,7 +1,7 @@
 {
   "bridgeBaseline": 32861,
-  "gallery": 27960,
-  "artifact": 65472,
+  "gallery": 28096,
+  "artifact": 65536,
   "host": 8000,
   "questions": 16384,
   "bridge": 6144,
