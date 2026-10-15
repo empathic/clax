@@ -13,7 +13,7 @@ const sam: ShareRow = { id: "s1", access: "viewer", github_login: "sam-lee", per
 const octo: ShareRow = { id: "s2", access: "commenter", github_login: "octo", person: null, name: null, pending: true };
 const open = (over: Partial<Open> = {}): Open => ({
   artifact_id: ID, can_share: true, general: "restricted", link_access: null, url: `https://clax.test/a/${ID}`,
-  people: [sam], suggestions: [{ person: "u_sam", name: "Sam Lee", github_login: "sam-lee" }, { person: "u_mia", name: "Mia Chen", github_login: null }],
+  public_gallery: true, people: [sam], suggestions: [{ person: "u_sam", name: "Sam Lee", github_login: "sam-lee" }, { person: "u_mia", name: "Mia Chen", github_login: null }],
   ...over,
 });
 
@@ -183,6 +183,15 @@ describe("Share dialog", () => {
     m.unmount();
   });
 
+  it("offers no Public while the public gallery is off", () => {
+    const state = { sharing: open({ public_gallery: false }) as Sharing };
+    serve(state);
+    const m = mount(ShareDialog, { id: ID, title: "Plan", initial: open({ public_gallery: false }), onClose: vi.fn() });
+    const general = m.root.querySelector<HTMLSelectElement>("select[aria-label='General access']")!;
+    expect([...general.options].map(o => o.textContent)).toEqual(["Restricted", "Anyone with the link"]);
+    m.unmount();
+  });
+
   it("says what the daemon refused", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: { code: "forbidden", message: "only the owner or the page's maker shares it" } }), { status: 403 })));
     const m = mount(ShareDialog, { id: ID, title: "Plan", initial: open(), onClose: vi.fn() });
@@ -191,6 +200,15 @@ describe("Share dialog", () => {
     flush(() => m.root.querySelector<HTMLFormElement>("form.add")!.requestSubmit());
     const err = await until(() => m.root.querySelector("[role=alert]"));
     expect(err.textContent).toBe("only the owner or the page's maker shares it");
+    m.unmount();
+  });
+
+  it("offers no Public while the public gallery is off", () => {
+    const state = { sharing: open({ public_gallery: false }) as Sharing };
+    serve(state);
+    const m = mount(ShareDialog, { id: ID, title: "Plan", initial: open({ public_gallery: false }), onClose: vi.fn() });
+    const general = m.root.querySelector<HTMLSelectElement>("select[aria-label='General access']")!;
+    expect([...general.options].map(o => o.textContent)).toEqual(["Restricted", "Anyone with the link"]);
     m.unmount();
   });
 });

@@ -140,7 +140,7 @@
     <h3>General access</h3>
     <div class="general">
       <select aria-label="General access" onchange={e => { void setGeneral(e.currentTarget.value as api.GeneralAccess, linkAccess); }}>
-        {#each GENERALS as g (g)}<option value={g} selected={g === data.general}>{GENERAL_LABEL[g]}</option>{/each}
+        {#each GENERALS.filter(g => g !== "public" || data.public_gallery || data.general === "public") as g (g)}<option value={g} selected={g === data.general}>{GENERAL_LABEL[g]}</option>{/each}
       </select>
       {#if data.general !== "restricted"}
         <select aria-label="What anyone with the link may do" onchange={e => { void setGeneral(data.general, e.currentTarget.value as api.LinkAccess); }}>

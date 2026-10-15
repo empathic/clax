@@ -42,6 +42,23 @@ impl Site {
         Site { ts, clock, origin }
     }
 
+    /// [`Site::new`] with the public gallery on.
+    async fn with_public_gallery() -> Site {
+        let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+        let ts = TestServer::spawn_hosted_with(clock.clone(), Some(SECRET), |s| {
+            s.hosted = s.hosted.take().map(|h| {
+                Arc::new(
+                    Arc::try_unwrap(h)
+                        .expect("hosted is not shared yet")
+                        .with_public_gallery(true),
+                )
+            });
+        })
+        .await;
+        let origin = format!("http://localhost:{}", ts.addr.port());
+        Site { ts, clock, origin }
+    }
+
     fn url(&self, path: &str) -> String {
         format!("{}{path}", self.ts.base)
     }
@@ -4279,7 +4296,7 @@ async fn an_artifact_shared_with_a_person_opens_to_them_at_its_access_alone() {
 
 #[tokio::test]
 async fn the_public_gallery_lists_public_artifacts_alone_to_anyone() {
-    let site = Site::new().await;
+    let site = Site::with_public_gallery().await;
     let owner = site.owner().await;
     let anon = Browser::default();
     let plan = site.titled("Plan").await;
@@ -4361,4 +4378,36 @@ async fn the_public_gallery_lists_public_artifacts_alone_to_anyone() {
         )
         .await;
     assert_eq!(s, 403);
+}
+
+#[tokio::test]
+async fn with_the_public_gallery_off_no_one_lists_a_page() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let anon = Browser::default();
+    let plan = site.titled("Plan").await;
+    let link = format!("/api/hosted/artifacts/{plan}/link");
+    let (s, v) = site
+        .put(&owner, &link, json!({"access": "viewer", "listed": true}))
+        .await;
+    assert_eq!((s, code(&v)), (403, "public_gallery_off"), "{v}");
+    let (s, v) = site
+        .put(&owner, &link, json!({"access": "viewer", "listed": false}))
+        .await;
+    assert_eq!((s, &v["listed"]), (200, &json!(false)), "{v}");
+    let (_, v) = site
+        .get(&owner, &format!("/api/hosted/artifacts/{plan}/sharing"))
+        .await;
+    assert_eq!(
+        (&v["general"], &v["public_gallery"]),
+        (&json!("link"), &json!(false)),
+        "{v}"
+    );
+    let (s, v) = site.get(&anon, "/api/hosted/public").await;
+    assert_eq!((s, v), (200, json!({"artifacts": []})));
+    // A signed-out visitor still opens it through its link.
+    assert_eq!(
+        site.get(&anon, &format!("/api/artifacts/{plan}")).await.0,
+        200
+    );
 }

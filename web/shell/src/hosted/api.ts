@@ -32,7 +32,7 @@ export type ShareCandidate = { person: string; name: string | null; github_login
 /** `GET /api/hosted/artifacts/<id>/sharing`: everything for whoever may share it, else `can_share: false` alone. */
 export type Sharing =
   | { artifact_id: string; can_share: false }
-  | { artifact_id: string; can_share: true; general: GeneralAccess; link_access: LinkAccess | null; url: string; people: Share[]; suggestions: ShareCandidate[] };
+  | { artifact_id: string; can_share: true; general: GeneralAccess; public_gallery?: boolean; link_access: LinkAccess | null; url: string; people: Share[]; suggestions: ShareCandidate[] };
 /** An artifact in the public gallery. */
 export type PublicArtifact = { artifact_id: string; title: string; url: string };
 

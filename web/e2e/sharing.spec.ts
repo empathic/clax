@@ -3,9 +3,11 @@
 // invites Sam, whose invite gives them their own space alone; on the
 // artifact the owner opens Share, adds a GitHub login no one has signed in
 // with (it waits) and Sam (a suggestion), and Sam's gallery then holds the
-// artifact, with no Share of Sam's there. The owner makes it Public and
-// copies its link; a signed-out browser finds it under "Public on Clax" on
-// the sign-in page and opens it; made Restricted, it is gone from there.
+// artifact, with no Share of Sam's there. The public gallery is off (the
+// default), so the dialog offers no Public. The owner shares it with anyone
+// with the link and copies the link; a signed-out browser sees no "Public on
+// Clax" on the sign-in page but opens the link; made Restricted, the link
+// is closed.
 // With CLAX_E2E_SHOTS set it writes screenshots to target/share-shots/.
 import { createServer } from "node:net";
 import { type Browser, type Page } from "@playwright/test";
@@ -45,7 +47,7 @@ async function shots(p: Page, name: string) {
   await p.emulateMedia({ colorScheme: "light" });
 }
 
-test("the owner shares one artifact with one person and a login, makes it public, and a signed-out browser finds it", async ({ browser }) => {
+test("the owner shares one artifact with one person and a login, shares it by link with no public listing, and a signed-out browser opens the link", async ({ browser }) => {
   const port = await freePort();
   const origin = `http://localhost:${port}`;
   const config = `${NO_KEY_CONFIG}[hosted]\npublic_origin = "${origin}"\nsetup_secret_env = "CLAX_E2E_SETUP_SECRET"\n`;
@@ -118,31 +120,32 @@ test("the owner shares one artifact with one person and a login, makes it public
     await expect(sam.locator(".topbar button.clone, .topbar .reload")).toHaveCount(0);
     await expect(sam.getByRole("button", { name: "Share", exact: true })).toHaveCount(0);
 
-    // Public, Can view; Copy link.
-    await dialog.getByRole("combobox", { name: "General access" }).selectOption("public");
-    await expect(dialog.getByTestId("general-note")).toContainText("listed on this Clax's public page");
+    // No Public while the gallery is off; anyone with the link, Can view; Copy link.
+    const general = dialog.getByRole("combobox", { name: "General access" });
+    await expect(general.locator("option")).toHaveText(["Restricted", "Anyone with the link"]);
+    await general.selectOption("link");
+    await expect(dialog.getByTestId("general-note")).not.toContainText("public page");
     await expect(dialog.getByRole("combobox", { name: "What anyone with the link may do" })).toHaveValue("viewer");
     await dialog.getByRole("button", { name: "Copy link" }).click();
     await expect(dialog.getByRole("button", { name: "Copied" })).toBeVisible();
     expect(await owner.evaluate(() => navigator.clipboard.readText())).toBe(`${origin}/a/${artifact.id}`);
-    await shots(owner, "dialog-public");
+    await shots(owner, "dialog-link");
     await dialog.getByRole("button", { name: "Done" }).click();
     await expect(dialog).toHaveCount(0);
     await expect(share).toBeFocused();
     await shots(owner, "artifact-owner");
 
-    // A signed-out browser finds it on the public page, and opens it.
+    // A signed-out browser sees no public listing, and opens the link.
     const anon = await page(browser);
     await anon.goto(`${origin}/`);
     await anon.waitForURL(`${origin}/signin`);
-    const pub = anon.getByRole("region", { name: "Public on Clax" });
-    await expect(pub.getByRole("link", { name: "Launch plan" })).toBeVisible();
-    await shots(anon, "signin-public");
-    await pub.getByRole("link", { name: "Launch plan" }).click();
-    await anon.waitForURL(`${origin}/a/${artifact.id}`);
+    await expect(anon.getByText("You are not signed in.")).toBeVisible();
+    await expect(anon.getByRole("region", { name: "Public on Clax" })).toHaveCount(0);
+    await shots(anon, "signin");
+    await anon.goto(`${origin}/a/${artifact.id}`);
     await expect(anon.frameLocator("iframe.frame").locator("h1")).toHaveText("Launch plan");
 
-    // Restricted again: gone from the public page, and closed to the link.
+    // Restricted again: closed to the link.
     await share.click();
     await owner.getByRole("dialog").getByRole("combobox", { name: "General access" }).selectOption("restricted");
     await expect(owner.getByRole("dialog").getByTestId("general-note")).toHaveText("Only the people added can open it.");

@@ -144,6 +144,9 @@ pub struct HostedConfig {
     /// (`member_max_artifacts`, [`crate::store::github::DEFAULT_MAX_ARTIFACTS`]
     /// when absent).
     pub member_max_artifacts: u64,
+    /// Whether pages may be listed in the public gallery that signed-out
+    /// visitors see (`public_gallery`, false when absent).
+    pub public_gallery: bool,
 }
 
 /// `[hosted]`'s GitHub sign-in: a GitHub OAuth App's client ID, the
@@ -178,6 +181,7 @@ struct HostedTable {
     github_api_base: Option<String>,
     github_oauth_base: Option<String>,
     member_max_artifacts: Option<u64>,
+    public_gallery: Option<bool>,
 }
 
 /// `origin` as hosted mode takes it ([`HostedConfig::public_origin`]): its
@@ -425,6 +429,7 @@ impl HomeConfig {
             member_max_artifacts: t
                 .member_max_artifacts
                 .unwrap_or(crate::store::github::DEFAULT_MAX_ARTIFACTS),
+            public_gallery: t.public_gallery.unwrap_or(false),
         }))
     }
 }
