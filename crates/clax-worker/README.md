@@ -34,16 +34,16 @@ Each takes `--no-build` to skip `build.sh`.
 On an account with Workers Paid (and the Artifacts beta, for
 `REPO_STORE=artifacts`), with a zone on it for the two hostnames:
 
-From the repository root, `scripts/cloudflare-setup.sh` does all of it and is
+`scripts/cloudflare-setup.sh` does all of it, from any directory, and is
 safe to run again: it checks the tools (Node 26, rustup's wasm32 target, an
 LLVM that targets wasm32), installs the npm packages when their lockfiles
-changed, stops and asks you to sign in when you aren't, then runs
-`deploy.mjs`, which creates only what is missing:
+changed, starts `wrangler login` for you to finish in the browser when you
+aren't signed in, then runs `deploy.mjs`, which creates only what is missing:
 
 ```sh
-(cd crates/clax-worker && npx wrangler login)            # yourself, once
 scripts/cloudflare-setup.sh --zone example.com --dry-run # changes nothing on the account
-scripts/cloudflare-setup.sh --zone example.com --smoke   # deploy, smoke it, redeploy without diagnostics
+scripts/cloudflare-setup.sh --zone example.com --smoke   # sign in if needed, deploy, smoke it, redeploy without diagnostics
+scripts/cloudflare-setup.sh --login                      # only sign in
 ```
 
 Or step by step, in this directory:

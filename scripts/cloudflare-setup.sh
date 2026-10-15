@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Sets up and deploys hosted Clax on your Cloudflare account. Run it yourself,
-# from the repository root; it is safe to run again at any time.
+# from any directory; it is safe to run again at any time.
 #
 #   scripts/cloudflare-setup.sh --zone example.com
 #   scripts/cloudflare-setup.sh --public clax.example.com --content clax-content.example.com
 #   scripts/cloudflare-setup.sh --zone example.com --dry-run   # changes nothing on the account
 #   scripts/cloudflare-setup.sh --zone example.com --smoke     # deploy, then smoke the deployment
+#   scripts/cloudflare-setup.sh --login                        # only sign in to Cloudflare
 #
 # Every other option is passed to crates/clax-worker/deploy.mjs (see the top of
 # that file), e.g. --store memory, --account <ID>, --rotate-secrets, --yes.
@@ -17,8 +18,9 @@
 #    missing, adding only the rustup target itself, which is per-user;
 # 2. installs the web UI's and the Worker's npm packages when their
 #    lockfiles changed since the last install;
-# 3. checks `wrangler whoami`: when you are not signed in it stops and tells
-#    you to run `npx wrangler login` in crates/clax-worker yourself (a
+# 3. checks `wrangler whoami`: when you are not signed in and the script runs
+#    on a terminal, it starts `wrangler login` for you to complete in the
+#    browser (`--login` does only that); otherwise it stops and says so (a
 #    --dry-run goes on without a login);
 # 4. runs deploy.mjs, which creates only what is missing (the R2 bucket, the
 #    Queue, the Artifacts namespace), keeps the secrets it made before,
@@ -33,12 +35,14 @@ worker="$root/crates/clax-worker"
 
 smoke=0
 dry=0
+login_only=0
 args=()
 for a in "$@"; do
   case "$a" in
     --smoke) smoke=1 ;;
+    --login) login_only=1 ;;
     --dry-run) dry=1; args+=("$a") ;;
-    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
     *) args+=("$a") ;;
   esac
 done
@@ -80,17 +84,22 @@ say "Installing packages"
 npm_install "$root/web"
 npm_install "$worker"
 
+wrangler() { (cd "$worker" && ./node_modules/.bin/wrangler "$@"); }
+signed_in() { ! wrangler whoami 2>&1 | grep -qi "not authenticated\|You are not logged in"; }
+
 say "Checking the Cloudflare login"
-if (cd "$worker" && ./node_modules/.bin/wrangler whoami 2>&1) | grep -qi "not authenticated\|You are not logged in"; then
-  if [ "$dry" = 1 ]; then
-    echo "not signed in; a dry run goes on without account calls"
-  else
-    fail "not signed in to Cloudflare. Run this yourself, then run this script again:
-    cd crates/clax-worker && npx wrangler login"
-  fi
-else
+if signed_in; then
   echo "signed in"
+elif [ "$dry" = 1 ] && [ "$login_only" = 0 ]; then
+  echo "not signed in; a dry run goes on without account calls"
+elif [ -t 0 ] && [ -t 1 ]; then
+  echo "not signed in: starting wrangler login; finish it in your browser"
+  wrangler login
+  signed_in || fail "still not signed in to Cloudflare"
+else
+  fail "not signed in to Cloudflare, and not on a terminal to sign in. Run: $0 --login"
 fi
+[ "$login_only" = 1 ] && { say "Done"; exit 0; }
 
 say "Deploying"
 (cd "$worker" && node deploy.mjs ${args[@]+"${args[@]}"})
