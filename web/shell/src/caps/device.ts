@@ -14,9 +14,15 @@
 // `location`/`update` and `location`/`end` events under the page's ID.
 // `location.unwatch({watch})` stops one (no gesture needed). When the
 // frame's document leaves, every watch it started is stopped.
+//
+// A location call spends the person's tap: `location.current` and
+// `location.watch` each need a press on the frame (attested by the app,
+// `hostArrival.presses`) newer than the one the last of them used, and newer
+// than the end of a watch (the person stopping it with the app's pill, or
+// leaving the app), so one tap starts at most one.
 import { type DeviceCap, deviceLink } from "./device-link";
 import { CapError } from "./errors";
-import { frameGesture } from "./gesture";
+import { frameGesture, hostArrival } from "./gesture";
 import type { HandlerFactory } from "./host";
 
 export const DEVICE_METHODS: Record<DeviceCap, readonly string[]> = {
@@ -48,6 +54,8 @@ export function deviceHandler(cap: DeviceCap): HandlerFactory {
   return env => {
     // The running watches: the app's ID → the page's.
     const watches = new Map<string, string>();
+    // The attested press the last location call (or a watch's end) used up.
+    let spent = -1;
     const onEvent = (a: unknown) => {
       const e = (a && typeof a === "object" ? a : {}) as { watch?: unknown; kind?: unknown; value?: unknown; error?: { code?: unknown; message?: unknown } };
       const page = typeof e.watch === "string" ? watches.get(e.watch) : undefined;
@@ -55,6 +63,7 @@ export function deviceHandler(cap: DeviceCap): HandlerFactory {
       if (e.kind === "update") env.post({ type: "clax:event", ns: "location", topic: "update", data: { watch: page, value: e.value } });
       else if (e.kind === "end") {
         watches.delete(e.watch as string);
+        spent = hostArrival.presses;
         const code = e.error?.code, message = e.error?.message;
         env.post({ type: "clax:event", ns: "location", topic: "end", data: { watch: page, code: typeof code === "string" ? code : "unavailable", message: typeof message === "string" ? message : "location stopped" } });
       }
@@ -76,6 +85,10 @@ export function deviceHandler(cap: DeviceCap): HandlerFactory {
         if (!plain(args)) return Promise.reject(new CapError("bad_request", `${cap}.${method} takes plain data (strings, numbers, objects)`));
         const call = deviceLink.call;
         if (!call) return Promise.reject(new CapError("unavailable", `${cap} is available only in the Clax app`));
+        if (cap === "location" && method !== "unwatch") {
+          if (hostArrival.presses <= spent) return Promise.reject(new CapError("no_gesture", `location.${method} needs a new tap: one tap starts one location call`));
+          spent = hostArrival.presses;
+        }
         if (method !== "watch" && method !== "unwatch") return call(cap, method, args);
         const a = args[0] as { watch?: unknown; minDistance?: unknown } | undefined;
         const page = a?.watch;

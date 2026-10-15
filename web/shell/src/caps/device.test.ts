@@ -3,6 +3,7 @@ import type { ShellToBridge } from "../../../bridge/src/protocol";
 import { type DeviceCall, deviceLink } from "./device-link";
 import { CapError } from "./errors";
 import { CapabilityHost, type CapEnv } from "./host";
+import { hostArrival } from "./gesture";
 import { REGISTRY } from "./registry";
 
 /** Whether the viewer's gesture in the page holds, as `frameGesture` says. */
@@ -134,6 +135,7 @@ describe("the device capabilities", () => {
     const { e, posted } = env({ location: {} });
     const host = new CapabilityHost(Promise.resolve(e), REGISTRY, null);
     for (const [i, w] of ["a", "b"].entries()) {
+      hostArrival.presses++;
       const p = host.handle({ type: "clax:call", id: w, ns: "location", method: "watch", args: [{ watch: w }] });
       await vi.waitFor(() => expect(sent).toHaveLength(i + 1));
       sent.at(-1)!.resolve({ watching: true });
@@ -147,5 +149,34 @@ describe("the device capabilities", () => {
     host.dispose();
     expect(sent.slice(2)).toEqual([expect.objectContaining({ method: "unwatch", args: [{ watch: idB }] })]);
     expect(deviceLink.events.size).toBe(listeners - 1);
+  });
+
+  it("a location call spends the tap: one press starts one, and after a watch ends a new press is needed", async () => {
+    const sent = link();
+    const { e, posted } = env({ location: {} });
+    const host = new CapabilityHost(Promise.resolve(e), REGISTRY, null);
+    const codes = () => posted.filter(m => m.type === "clax:call-result" && !m.ok).map(m => (m as { error: { code: string } }).error.code);
+    hostArrival.presses++;
+    const started = host.handle({ type: "clax:call", id: "c1", ns: "location", method: "watch", args: [{ watch: "w1" }] });
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    // The same tap: neither a second watch nor a one-shot call.
+    await host.handle({ type: "clax:call", id: "c2", ns: "location", method: "watch", args: [{ watch: "w2" }] });
+    await host.handle({ type: "clax:call", id: "c3", ns: "location", method: "current", args: [] });
+    expect(codes()).toEqual(["no_gesture", "no_gesture"]);
+    sent[0].resolve({ watching: true });
+    await started;
+    // The person taps the page again, then stops the watch with the pill.
+    hostArrival.presses++;
+    const appId = (sent[0].args[0] as { watch: string }).watch;
+    for (const f of deviceLink.events) f({ watch: appId, kind: "end", error: { code: "stopped", message: "stopped" } });
+    await host.handle({ type: "clax:call", id: "c4", ns: "location", method: "watch", args: [{ watch: "w3" }] });
+    expect(codes()).toEqual(["no_gesture", "no_gesture", "no_gesture"]);
+    // A tap after the stop starts it again.
+    hostArrival.presses++;
+    const again = host.handle({ type: "clax:call", id: "c5", ns: "location", method: "watch", args: [{ watch: "w4" }] });
+    await vi.waitFor(() => expect(sent).toHaveLength(2));
+    sent[1].resolve({ watching: true });
+    await again;
+    host.dispose();
   });
 });
