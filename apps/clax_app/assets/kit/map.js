@@ -10,6 +10,10 @@
 // The app declares the tile host: {"net": {"hosts": ["tile.openstreetmap.org"]}}.
 // The first tile asks the owner once for it (the shell's consent dialog);
 // after Allow the map fills in, and without it the map says why it is empty.
+// An app that declares {"location": {}} gets a "Show my location" button: a
+// tap follows the device (location.watch) with a dot and its accuracy
+// circle, or only the circle for an approximate position.
+//
 // In the app's inspect view (the agent's renders and tests), where nobody is
 // asked, a map without tiles draws a stand-in grid under its markers and
 // controls, captioned "Map preview", rather than the permission note.
@@ -207,6 +211,11 @@ const CSS = `
   box-shadow: var(--k-shadow-2, 0 2px 8px rgba(0,0,0,.15)); }
 .k-map-here { position: absolute; left: 0; top: 0; pointer-events: none; }
 .k-map-here-ring { position: absolute; border-radius: 50%; background: rgba(10,132,255,.16); border: 1px solid rgba(10,132,255,.4); }
+.k-map-here-area { background: rgba(10,132,255,.12); border: 2px dashed rgba(10,132,255,.55); }
+.k-map-locate { position: absolute; right: 10px; top: 92px; z-index: 3; width: 36px; height: 36px; display: grid; place-items: center;
+  border: 0; padding: 0; margin: 0; border-radius: 10px; background: var(--k-surface, #fff); color: var(--k-fg, #111); cursor: pointer;
+  box-shadow: var(--k-shadow-2, 0 2px 8px rgba(0,0,0,.15)); }
+.k-map-locate[aria-pressed="true"] { color: #0a84ff; }
 .k-map-here-dot { position: absolute; width: 16px; height: 16px; left: -8px; top: -8px; border-radius: 50%;
   background: #0a84ff; border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.35); box-sizing: border-box; }
 .k-map-zoom { position: absolute; right: 10px; top: 10px; display: flex; flex-direction: column; border-radius: 10px;
@@ -261,20 +270,31 @@ const NOTES = {
   not_declared: ['Map tiles are not declared', (h) => `The app must declare ${h} in capabilities.net.hosts.`],
 };
 
+/** What the map says when following the device fails (`location.watch`'s onError codes). */
+const LOC_ERRORS = {
+  not_granted: 'Location is not allowed for this app.',
+  system_denied: 'Location is off for Clax in settings.',
+  location_off: "The device's location is off.",
+  unavailable: 'Your location is not available.',
+};
+
 let seq = 0;
 
 /**
  * A slippy map. `center` `[lat, lng]` and `zoom` set the view (and move it when they change);
  * `fit` (points) fits the view to them instead. `markers: [{lat, lng, label, color, icon,
- * selected, onClick}]`, `here: {lat, lon|lng, accuracy}` (the location capability's
- * `current()`) draws a "you are here" dot, `onMove({center, zoom, bounds})` follows the person's
+ * selected, onClick}]`, `here: {lat, lon|lng, accuracy, precise}` (the location capability's
+ * `current()`) draws a "you are here" dot (only its accuracy circle when `precise` is false).
+ * When the app declares `location` and `locate` is not false, a "Show my location" button
+ * follows the device from a tap (`location.watch`), centring on the first position and
+ * stopping on unmount or a second tap. `onMove({center, zoom, bounds})` follows the person's
  * panning and zooming once it settles. `tiles` (an https `{z}/{x}/{y}` template) and
  * `attribution` swap the tile source; `height` in pixels, `maxZoom`, `darkTiles` (dim the tiles
  * in dark mode; default true).
  */
 export function MapView({
   center, zoom = 13, fit, markers = [], here, onMove, height = 320, tiles = OSM.tiles,
-  attribution, minZoom = 1, maxZoom, darkTiles = true, label = 'Map', class: cls, style,
+  attribution, minZoom = 1, maxZoom, darkTiles = true, label = 'Map', class: cls, style, locate = true,
 }) {
   addStyles();
   const ref = useRef(null);
@@ -432,6 +452,60 @@ export function MapView({
   };
   const stop = (e) => e.stopPropagation();
 
+  // The device's position, followed from a tap on the locate button.
+  const [locCap, setLocCap] = useState(null);
+  const [mine, setMine] = useState(null);
+  const [locMsg, setLocMsg] = useState('');
+  const [watching, setWatching] = useState(false);
+  const watchStop = useRef(null);
+  const recentre = useRef(false);
+  useEffect(() => {
+    let alive = true;
+    if (locate && typeof window !== 'undefined' && window.claude && window.claude.use) {
+      window.claude.use('location').then((l) => { if (alive) setLocCap(l); }, () => {});
+    }
+    return () => { alive = false; if (watchStop.current) watchStop.current(); watchStop.current = null; };
+  }, [locate]);
+  const endWatch = () => { if (watchStop.current) watchStop.current(); watchStop.current = null; setMine(null); setWatching(false); };
+  const onLocate = (e) => {
+    e.stopPropagation();
+    setLocMsg('');
+    if (watchStop.current) { endWatch(); return; }
+    recentre.current = true;
+    let ended = false;
+    let wasPrecise = null;
+    const s = locCap.watch((p) => {
+      if (ended) return;
+      setMine(p);
+      // The view moves to the first position, and to an approximate one's whole area when
+      // the position turns approximate; the person's own panning is left alone otherwise.
+      const precise = p.precise !== false;
+      if (recentre.current || (!precise && wasPrecise !== false)) {
+        recentre.current = false;
+        const [x, y] = project(p.lat, p.lon);
+        let z = Math.max(live.current.view.z, 15);
+        if (!precise) {
+          const { w: sw, h: sh } = live.current.size;
+          const fitR = 0.4 * Math.min(sw || 320, sh || 320);
+          z = Math.floor(Math.log2((fitR * EARTH * Math.cos((p.lat * Math.PI) / 180)) / (TILE * Math.max(p.accuracy, 1))));
+        }
+        setView({ x, y, z }, false);
+      }
+      wasPrecise = precise;
+    }, {
+      minDistance: 10,
+      onError: (err) => {
+        ended = true;
+        watchStop.current = null;
+        setMine(null);
+        setWatching(false);
+        const c = err && err.code;
+        if (c !== 'stopped') setLocMsg(LOC_ERRORS[c] || 'Your location is not available.');
+      },
+    });
+    if (!ended) { watchStop.current = s; setWatching(true); }
+  };
+
   // The tiles in view, nearest the center first.
   const { w, h } = size;
   const z = clamp(Math.round(view.z), 0, topZoom);
@@ -485,17 +559,23 @@ export function MapView({
   };
   const inView = ([x, y], m = 60) => x > -m && x < w + m && y > -m && y < h + m;
 
+  // The followed position, else the `here` prop: a dot and its accuracy circle, or for an
+  // approximate position only the circle of the area it is in.
   let hereEl = null;
-  if (here && w) {
-    const p = pt(here);
+  const at = mine || here;
+  if (at && w) {
+    const p = pt(at);
     if (valid(p)) {
       const s = screen(p.lat, p.lng);
       const metres = EARTH * Math.cos((p.lat * Math.PI) / 180) / (TILE * k);
-      const r = here.accuracy > 0 ? here.accuracy / metres : 0;
+      const r = at.accuracy > 0 ? at.accuracy / metres : 0;
+      const area = at.precise === false;
       if (inView(s, r + 20)) {
         hereEl = html`<div class="k-map-here" style=${`transform:translate(${s[0]}px,${s[1]}px)`}>
-          ${r > 10 ? html`<div class="k-map-here-ring" style=${`width:${2 * r}px;height:${2 * r}px;left:${-r}px;top:${-r}px`} />` : null}
-          <div class="k-map-here-dot" role="img" aria-label="You are here" />
+          ${area || r > 10 ? html`<div class=${area ? 'k-map-here-ring k-map-here-area' : 'k-map-here-ring'}
+            role=${area ? 'img' : undefined} aria-label=${area ? 'You are in this area' : undefined}
+            style=${`width:${2 * Math.max(r, 12)}px;height:${2 * Math.max(r, 12)}px;left:${-Math.max(r, 12)}px;top:${-Math.max(r, 12)}px`} />` : null}
+          ${area ? null : html`<div class="k-map-here-dot" role="img" aria-label="You are here" />`}
         </div>`;
       }
     }
@@ -533,6 +613,8 @@ export function MapView({
     const [title, body] = NOTES[code] || ['Map tiles cannot load', () => `Requests to ${host} were refused (${code}).`];
     note = html`<div class="k-map-note" role="status">${html`<span dangerouslySetInnerHTML=${{ __html: icon('map', { size: 26 }) }} />`}
       <b>${title}</b><span>${typeof body === 'function' ? body(host) : body}</span></div>`;
+  } else if (locMsg) {
+    note = html`<div class="k-map-note k-map-note-top" role="status">${locMsg}</div>`;
   } else if (items.length && items.some((t) => cache.get(t.url)?.fail) && !items.some((t) => cache.get(t.url)?.src)) {
     note = html`<div class="k-map-note k-map-note-top" role="status">Map tiles did not load; retrying.</div>`;
   }
@@ -551,6 +633,9 @@ export function MapView({
       <button type="button" aria-label="Zoom out" onClick=${() => zoomAt(Math.round(live.current.view.z) - 1, w / 2, h / 2)}
         dangerouslySetInnerHTML=${{ __html: icon('minus', { size: 18, stroke: 2.4 }) }} />
     </div>
+    ${locCap && locate ? html`<button type="button" class="k-map-locate" onPointerDown=${stop} onClick=${onLocate}
+      aria-label=${watching ? 'Stop showing my location' : 'Show my location'} aria-pressed=${watching ? 'true' : 'false'}
+      dangerouslySetInnerHTML=${{ __html: icon('target', { size: 18, stroke: 2.2 }) }} />` : null}
     ${attr ? html`<div class="k-map-attr" onPointerDown=${stop}>${attr}</div>` : null}
   </div>`;
 }
