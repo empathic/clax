@@ -2611,13 +2611,22 @@ mod tests {
         let again = w.send_to_sam(&tid);
         assert_eq!(again.len(), 2);
         assert_eq!(w.open(Some(&w.sam)).len(), 2);
-        // Mia's later reply on the sent thread counts into her request and
-        // re-announces its item.
+        // Open requests' items stay unread whoever marks them (spec §9.5).
         let q = crate::store::inbox::InboxQuery {
             recipient: Some(w.sam.clone()),
             ..Default::default()
         };
         w.st.inbox_mark_all(&q).unwrap();
+        assert_eq!(w.unread_approvals(Some(&w.sam)), 2);
+        // Mia's later reply on the sent thread counts into her request and
+        // re-announces its item: one read before that rule is unread again.
+        w.st.with_tx(|tx| {
+            Ok(tx.execute(
+                "UPDATE inbox_items SET read_at = 'x' WHERE kind = 'approval'",
+                [],
+            )?)
+        })
+        .unwrap();
         assert_eq!(w.unread_approvals(Some(&w.sam)), 0);
         w.comment_by(&tid, &w.mia, "and the axis");
         w.st.send_to_agent(DAEMON, &tid).unwrap();

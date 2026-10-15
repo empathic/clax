@@ -28,7 +28,7 @@
   import { ticker } from "../ui/ticker.svelte";
   import { after } from "../clock";
   import type { InboxFeed, QuestionFeed } from "./feed.svelte";
-  import { INBOX_KINDS, filterFromUrl, filterToUrl, newestSeq } from "./inbox-model";
+  import { INBOX_KINDS, approvalOf, filterFromUrl, filterToUrl, newestSeq } from "./inbox-model";
   import ApprovalCard from "../people/ApprovalCard.svelte";
   import ConnectionCard from "../people/ConnectionCard.svelte";
   import InboxRow from "./InboxRow.svelte";
@@ -266,7 +266,7 @@
     <span class="icnt">{inbox.unread.toLocaleString("en-US")} unread</span>
     <span class="sp"></span>
     {#if perm === "default"}<button type="button" onclick={askNotify}>Notify me</button>{/if}
-    <button type="button" class="primary" disabled={busy || !unread?.items.some(i => !i.read)} onclick={markAll}>Mark all read</button>
+    <button type="button" class="primary" disabled={busy || !unread?.items.some(i => !i.read && approvalOf(i)?.status !== "open")} onclick={markAll}>Mark all read</button>
   </header>
   {#if perm === "denied"}<p class="quiet">Notifications are blocked for this site. The unread count shows in the tab's title.</p>{/if}
   <AgentStrip agents={strip} now={clock.now} selected={filter.agent ?? null} onPick={h => apply({ ...filter, agent: h ?? undefined })} />

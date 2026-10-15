@@ -217,6 +217,26 @@ describe("Panel: the Send menu", () => {
     expect(l.sent.at(-1)).toEqual({ t: "send", threadId: thread.id, to: SAMS });
   });
 
+  it("sends to the owner's own agent while the daemon has not named the panel's viewer", async () => {
+    const { l } = sendLink([both[1]]);
+    render(Panel, { props: { link: { ...l, state: { ...l.state, viewer: null } } as never, now: NOW } });
+    await fireEvent.click(screen.getByRole("button", { name: "Send to clax-main" }), { detail: 1 });
+    expect(l.sent).toContainEqual({ t: "send", threadId: thread.id, to: MINE });
+  });
+
+  it("drops a chosen agent once it is no longer live, sending to the owner's own live one", async () => {
+    const codex = { handle: SAMS, harness: "codex", live: true, name: "clax-docs", person: alex };
+    const { l } = sendLink([both[1], codex]);
+    const { rerender } = render(Panel, { props: { link: l as never, now: NOW } });
+    await fireEvent.click(screen.getByRole("button", { name: "Choose the agent" }));
+    await import("../../../shell/src/ui/SendMenu.svelte");
+    await fireEvent.click(await screen.findByRole("menuitemradio", { name: "clax-docs" }));
+    expect(screen.getByRole("button", { name: "Send to clax-docs" })).toBeTruthy();
+    await rerender({ link: { ...l, state: state({ participants: { people: [], agents: [both[1], { ...codex, live: false }] } as never }) } as never, now: NOW });
+    await fireEvent.click(screen.getByRole("button", { name: "Send to clax-main" }), { detail: 1 });
+    expect(l.sent.at(-1)).toEqual({ t: "send", threadId: thread.id, to: MINE });
+  });
+
   it("opens the menu rather than sending when only other people's agents are live", async () => {
     const { l } = sendLink([both[0], { ...both[1], live: false }]);
     render(Panel, { props: { link: l as never, now: NOW } });
@@ -855,6 +875,27 @@ describe("Panel for the owner's questions and inbox", () => {
     expect(done.textContent).not.toContain("Decide");
     await fireEvent.click(done);
     await vi.waitFor(() => expect(l.sent.at(-1)).toEqual({ t: "open-url", url: decided.url, pageUrl: null }));
+  });
+
+  it("Mark all read leaves an undecided approval request unread, as the daemon keeps it", async () => {
+    const a = fixtures.item("approval", { id: "01JA00000000000000000000AP", seq: 7 });
+    const r = fixtures.item("reply", { seq: 8 });
+    let marked = false;
+    const { l, asked } = owner({ pages: m => ((m as { filter: { read: string } }).filter.read === "unread"
+      ? { items: marked ? [a] : [r, a], next_cursor: null, unread: marked ? 1 : 2, total: marked ? 1 : 2 } : { items: marked ? [{ ...r, read: true }] : [], next_cursor: null, unread: 1, total: marked ? 1 : 0 }) });
+    const ask = l.ask.bind(l);
+    l.ask = async m => { if (m.t === "inbox-mark-all") marked = true; return ask(m); };
+    const { container } = render(Panel, { props: { link: l as never, now: NOW } });
+    await fireEvent.click(screen.getByRole("tab", { name: /Inbox/ }));
+    await vi.waitFor(() => expect(container.querySelectorAll(".irow[data-unread]")).toHaveLength(2));
+    // Its dot cannot mark it read either.
+    expect(container.querySelector<HTMLButtonElement>(`[data-item="${a.id}"] .dot`)!.disabled).toBe(true);
+    await fireEvent.click(screen.getByRole("button", { name: "Mark all read" }));
+    expect(asked).toContainEqual({ t: "inbox-mark-all", filter: null, upto: 8 });
+    await vi.waitFor(() => expect([...container.querySelectorAll(".irow[data-unread]")].map(e => e.getAttribute("data-item"))).toEqual([a.id]));
+    expect(screen.getByText("Decide in Clax's inbox ↗")).toBeTruthy();
+    // Nothing left that it could read.
+    expect((screen.getByRole("button", { name: "Mark all read" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("opens a question item whose link does not decode through the worker", async () => {

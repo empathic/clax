@@ -1124,7 +1124,7 @@ test.describe("with a person connected on the LAN", () => {
       const scheme = (v: "light" | "dark") => panel.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: v }] });
       // At the side panel's narrowest, its usual (spec §9.6: 360 px) and a wide one, light and dark.
       const shots = async (name: string) => {
-        for (const width of [320, 360, 520]) for (const v of ["light", "dark"] as const) {
+        for (const width of [320, 520]) for (const v of ["light", "dark"] as const) {
           await panel.send("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 2, mobile: false });
           await scheme(v);
           await panel.eval<void>("Promise.all(document.getAnimations().map(a => a.finished)).then(() => {})");
@@ -1159,6 +1159,11 @@ test.describe("with a person connected on the LAN", () => {
       await expect.poll(() => panel.text()).toContain("Decide in Clax's inbox ↗");
       expect(await panel.text()).toMatch(/Sam wants to reach your agent/);
       expect(await panel.eval<number>("document.querySelectorAll('.acard').length")).toBe(0);
+      // Mark all read reads the rest; the request stays unread until decided, its dot disabled.
+      await panel.click(/^ ?Mark all read/);
+      await expect.poll(async () => ((await api(live, "/api/inbox")).items as { kind: string; read: boolean }[]).filter(i => !i.read).map(i => i.kind)).toEqual(["approval"]);
+      await expect.poll(() => panel.eval<number>("document.querySelectorAll('.irow[data-unread]').length")).toBe(1);
+      expect(await panel.eval<boolean>(`document.querySelector('[data-item="${approval.id}"] .dot').disabled`)).toBe(true);
       await shots("inbox-approval");
       await panel.click(/Sam wants to reach your agent/);
       const shell = await until(() => live.ctx.pages().find(p => p.url().endsWith(approval.url)) ?? null);

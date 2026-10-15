@@ -12,7 +12,7 @@
   // its state shows in data attributes (see `QuestionCard`).
   import type { InboxItem } from "../api";
   import { relativeTime } from "../format";
-  import { itemText, itemTitle } from "./inbox-model";
+  import { approvalOf, itemText, itemTitle } from "./inbox-model";
 
   type Props = {
     item: InboxItem;
@@ -27,7 +27,9 @@
   const p: Props = $props();
   const title = $derived(itemTitle(p.item, p.others ?? []));
   const text = $derived(p.item.gone ? "(deleted)" : itemText(p.item));
-  const mark = $derived(p.item.read ? "Mark unread" : "Mark read");
+  // An approval request stays unread until it is decided (spec 2026-10-08 §9.5).
+  const undecided = $derived(!p.item.read && approvalOf(p.item)?.status === "open");
+  const mark = $derived(undecided ? "Unread until decided" : p.item.read ? "Mark unread" : "Mark read");
   const released = $derived(p.item.kind === "ended" ? p.item.ended?.threads ?? [] : []);
   const KIND_NAMES = { reply: "Reply", version: "Version", published: "Published", question: "Question", finished: "Finished", approval: "Approval", connection: "Connection", ended: "Ended" } as const;
   // One path per kind (an SVG fragment would need the runtime's SVG templates).
@@ -56,8 +58,8 @@
     </span>
     <time datetime={p.item.created_at}>{relativeTime(p.item.created_at, p.now ?? new Date())}</time>
   </button>
-  <button type="button" class="dot" aria-describedby={`irow-${p.item.id}`} aria-label={mark} title={mark}
-    onclick={() => p.onToggle(p.item)}><span aria-hidden="true"></span></button>
+  <button type="button" class="dot" aria-describedby={`irow-${p.item.id}`} aria-label={mark} title={mark} disabled={undecided}
+    onclick={() => { if (!undecided) p.onToggle(p.item); }}><span aria-hidden="true"></span></button>
   {#if released.length}
     <ul class="released" aria-label="Released threads">
       {#each released as t (t.id)}<li><a href={t.url}>{t.title ?? "a deleted page"}</a> <span class="tid">· thread {t.id.slice(-6)}</span></li>{/each}

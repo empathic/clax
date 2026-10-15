@@ -178,7 +178,7 @@
 <div class="inbox-tab" bind:this={root} onclick={onClick}>
   <div class="ibar">
     <input type="search" placeholder="Search the inbox" aria-label="Search the inbox" value={search} oninput={e => onSearch(e.currentTarget.value)} />
-    <button type="button" disabled={busy || !unread?.items.some(i => !i.read)} onclick={markAll}>Mark all read</button>
+    <button type="button" disabled={busy || !unread?.items.some(i => !i.read && approvalOf(i)?.status !== "open")} onclick={markAll}>Mark all read</button>
   </div>
   {#if error}<p class="err" role="alert">{error}</p>{/if}
 

@@ -21,7 +21,8 @@
   import { agentName } from "../../../shell/src/view/history-model";
   import { presenceMap, roster } from "../../../shell/src/view/presence-model";
   import { unsent } from "../../../shell/src/view/batch-model";
-  import { firstsVia, ownTarget } from "../../../shell/src/view/send-menu";
+  import { type AskFirsts, firstsVia, ownTarget } from "../../../shell/src/view/send-menu";
+  import { ownerOf } from "./adapt";
   import { sidebarSections } from "../../../shell/src/view/sidebar-model";
   import { type FarPage, type PanelState, type PanelToWorker, RETRYABLE, type SiteChoice, type SiteView, type Suggestion } from "../messages";
   import { asPages, pageOfRoute } from "./adapt";
@@ -62,11 +63,18 @@
   const agents = $derived(s?.participants?.agents ?? []);
   /** The owner (the extension is the owner's browser, unless the daemon said otherwise), as the shell's cards and menus take it. */
   const me = $derived(s?.viewer ? { ...s.viewer, created_at: "", owner: link.inbox?.owner !== false } : null);
-  // Send goes to the agent picked, else the owner's own most recent live
-  // agent; with only other people's live, Send opens the menu (spec 2026-10-08 §10).
-  const sendTo = $derived(agents.some(a => a.handle === chosen) ? chosen : ownTarget(agents, me?.public_id));
-  // The Send menu asks who approves first through the worker: the panel's own origin is not the daemon's.
-  firstsVia.ask = (_aid, threads) => link.firsts?.(threads) ?? Promise.resolve(null);
+  // Send goes to the agent picked while it is live, else the owner's own
+  // most recent live agent (the owner's agents are the panel's own, its
+  // viewer known or not); with only other people's live, Send opens the
+  // menu (spec 2026-10-08 §10).
+  const sendTo = $derived(agents.some(a => a.live && a.handle === chosen) ? chosen : ownTarget(agents, ownerOf(agents, me)));
+  // The Send menu asks who approves first through the worker (the panel's
+  // own origin is not the daemon's), while this panel is mounted.
+  $effect(() => {
+    const ask: AskFirsts = (_aid, ids) => link.firsts?.(ids) ?? Promise.resolve(null);
+    firstsVia.ask = ask;
+    return () => { if (firstsVia.ask === ask) firstsVia.ask = null; };
+  });
   const sendHarness = $derived(agents.find(a => a.handle === sendTo)?.harness ?? null);
   const threads = $derived(s ? asPages(s.threads) : []);
   /** The tab's site, whose filter and collapsed groups are remembered. */
