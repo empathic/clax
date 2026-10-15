@@ -928,7 +928,7 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE INDEX inbox_by_thread ON inbox_items(thread_id) WHERE thread_id IS NOT NULL;
     CREATE INDEX inbox_by_question ON inbox_items(question_id) WHERE question_id IS NOT NULL;
     CREATE INDEX inbox_by_request ON inbox_items(request_id) WHERE request_id IS NOT NULL;",
-    // 31: GitHub sign-in on a hosted daemon (`crate::store::github`).
+    // 31: GitHub sign-in on a hosted daemon (`crate::github`).
     // `github_identities` links a GitHub account, by its numeric user ID
     // (stable across renames), to the viewer row it signs in as: the
     // owner's, or a person made at their first sign-in. `login`, `name`
@@ -946,6 +946,30 @@ pub const MIGRATIONS: &[&str] = &[
         signed_in_at TEXT NOT NULL,
         blocked_at TEXT
     );",
+    // 32: one artifact shared with one person (`crate::shares`).
+    // A share names its person by viewer row (`viewer_id`), or, until that
+    // GitHub account first signs in, by its login alone (`github_login`,
+    // lowercased; kept for display once bound). `access` is what the person
+    // may do there. `artifacts.link_listed` lists an artifact shared by link
+    // in the public gallery. No foreign key on `viewer_id`, as for
+    // `github_identities`; a purged artifact takes its shares with it.
+    "CREATE TABLE artifact_shares (
+        id TEXT PRIMARY KEY,
+        artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+        viewer_id TEXT,
+        github_login TEXT CHECK (github_login IS NULL OR github_login = lower(github_login)),
+        access TEXT NOT NULL CHECK (access IN ('viewer', 'commenter', 'editor')),
+        created_at TEXT NOT NULL,
+        created_by TEXT,
+        CHECK (viewer_id IS NOT NULL OR github_login IS NOT NULL)
+    );
+    CREATE UNIQUE INDEX artifact_shares_by_viewer ON artifact_shares(artifact_id, viewer_id)
+        WHERE viewer_id IS NOT NULL;
+    CREATE UNIQUE INDEX artifact_shares_pending ON artifact_shares(artifact_id, github_login)
+        WHERE viewer_id IS NULL;
+    CREATE INDEX artifact_shares_of_viewer ON artifact_shares(viewer_id) WHERE viewer_id IS NOT NULL;
+    CREATE INDEX artifact_shares_of_login ON artifact_shares(github_login) WHERE viewer_id IS NULL;
+    ALTER TABLE artifacts ADD COLUMN link_listed INTEGER NOT NULL DEFAULT 0;",
 ];
 
 /// The audit journal's migration, as a schema version (the

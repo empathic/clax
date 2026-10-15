@@ -343,8 +343,10 @@ fn anchor_class(field: &str) -> Class {
 
 fn fields_class(field: &str) -> Class {
     match field {
-        "icon" | "pinned" | "link_access" => Class::Safe,
+        "icon" | "pinned" | "link_access" | "link_listed" => Class::Safe,
         "title" | "description" | "capabilities" => Class::Text,
+        // A share names a person by public ID and a GitHub login.
+        "share" => Class::Name,
         _ => Class::Unclassified,
     }
 }
