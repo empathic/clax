@@ -47,6 +47,17 @@ describe("InviteDialog", () => {
     expect(m.root.querySelector('[role="switch"]')).toBeNull();
   });
 
+  it("on a hosted daemon offers no rights and sends none: the person gets their own space", async () => {
+    const calls = stubFetch({ "POST /api/people/invites": { invite: { ...made.invite, url: "https://clax.test/join/ABCD" } } });
+    const m = mount(InviteDialog, { first: false, unconnected: { on: true, approval_id: "ap1" }, now, onMade: vi.fn(), onClose: vi.fn(), onSwitched: vi.fn(), hosted: true });
+    expect(m.root.querySelector("select")).toBeNull();
+    expect(m.root.textContent).toContain("They get their own space");
+    type(m.root.querySelector<HTMLInputElement>('input[name="name"]')!, "Sam");
+    submit(m.root);
+    await settle();
+    expect(calls.at(-1)!.body).toEqual({ name: "Sam" });
+  });
+
   it("says what the daemon says when it listens on this machine only, and makes no invite", async () => {
     const msg = "Clax listens on this machine only: restart it with `clax serve --bind 0.0.0.0` to invite people";
     stubFetch({ "POST /api/people/invites": [409, { error: { code: "not_on_lan", message: msg } }] });

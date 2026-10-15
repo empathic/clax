@@ -95,7 +95,8 @@ test("setup, an invite joined in a second browser, a sign-in link for a third, a
     await expect(sam.getByText("You have been invited as Sam.", { exact: false })).toBeVisible();
     await sam.getByRole("button", { name: "Join as Sam" }).click();
     await sam.waitForURL(`${origin}/`);
-    await expect(sam.locator("a.card")).toContainText("Launch plan");
+    // An invite gives Sam their own space: the owner's page is not shared with Sam.
+    await expect(sam.locator("a.card")).toHaveCount(0);
     // The invite is spent.
     const again = await page(browser);
     await again.goto(join);
@@ -337,7 +338,7 @@ test("a member's token agent is named in the owner's Send menu, and the member a
     await owner.getByRole("button", { name: "Create the first person" }).click();
     await owner.waitForURL(`${origin}/`);
     const made = await owner.evaluate(async () => {
-      const r = await fetch("/api/people/invites", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Sam" }) });
+      const r = await fetch("/api/people/invites", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Sam", rights: "clax:collaborator" }) });
       return (await r.json()).invite.url as string;
     });
     const sam = await page(browser);

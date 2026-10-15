@@ -11,7 +11,8 @@
   // message says how to restart it; no invite is made then. Opened, the
   // keyboard's focus is on Name; made, on Copy. A hosted daemon's invite is
   // a link to send, which the person opens in their browser, with no LAN
-  // warning.
+  // warning, and its person gets their own space (the daemon's default for
+  // a hosted invite): no Rights choice is offered there.
   import { onMount, tick } from "svelte";
   import type { NewInvite } from "../api";
   import * as api from "./api";
@@ -44,7 +45,7 @@
     if (busy) return;
     busy = true; err = null;
     try {
-      made = (await api.invite(who === "me" ? { me: true } : { name: name.trim() }, who === "me" ? undefined : preset)).invite;
+      made = (await api.invite(who === "me" ? { me: true } : { name: name.trim() }, who === "me" || hosted ? undefined : preset)).invite;
       onMade();
       await tick();
       document.querySelector<HTMLElement>(".invite .cmd button")?.focus();
@@ -79,10 +80,11 @@
       {#if who === "name"}
         <div class="row">
           <label class="field">Name <input name="name" autocomplete="off" required maxlength="60" value={name} oninput={e => { name = e.currentTarget.value; }} /></label>
-          <label class="field">Rights <select onchange={e => { preset = e.currentTarget.value; }}>
+          {#if !hosted}<label class="field">Rights <select onchange={e => { preset = e.currentTarget.value; }}>
             {#each Object.keys(PRESET_NAMES) as v (v)}<option value={v} selected={v === preset}>{PRESET_NAMES[v]}</option>{/each}
-          </select></label>
+          </select></label>{/if}
         </div>
+        {#if hosted}<p class="meta">They get their own space: their own pages, and the pages shared with them one at a time from each page's Share.</p>{/if}
       {/if}
       <div class="row"><button class="primary" type="submit" disabled={who === "name" && !name.trim()}>Create invite</button></div>
     </form>

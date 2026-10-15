@@ -14,7 +14,9 @@
   // code it showed), naming the machine and the address it asked from, or
   // denies it. A code is redeemed only by
   // the button, never by loading the page, so a link preview spends
-  // nothing. Signed in, the browser goes to the gallery. The gallery's entry
+  // nothing. Signed in, the browser goes to the gallery. Signed out, `/signin`
+  // also lists the public gallery ("Public on Clax"), each artifact opening
+  // through its link. The gallery's entry
   // loads this as a chunk of its own on these paths; the header's mark is
   // written out, as importing the gallery's `Mark` here would move it out
   // of the gallery's entry into a chunk both load.
@@ -34,6 +36,7 @@
   })();
 
   let me = $state<api.HostedMe | null>(null);
+  let publicList = $state<api.PublicArtifact[]>([]);
   let invite = $state<{ name: string | null } | null | false>(null);
   let link = $state<{ public_id: string; name: string | null; owner: boolean } | null | false>(null);
   let name = $state("");
@@ -92,6 +95,9 @@
       if (q !== null) { deviceCode = q; history.replaceState(null, "", "/device"); }
     }
     try { me = await api.me(); } catch (x) { err = msg(x); }
+    if (page.kind === "status" && !me?.person) {
+      try { publicList = (await api.publicArtifacts()).artifacts; } catch { publicList = []; }
+    }
     if (page.kind === "device" && deviceCode && me?.person && !me.person.guest) await lookUp();
     if (page.kind === "join") {
       try { invite = await api.peekInvite(page.code); } catch { invite = false; }
@@ -186,6 +192,14 @@
     {/if}
     {#if err}<p class="err" role="alert">{err}</p>{/if}
   </section>
+  {#if page.kind === "status" && !me?.person && publicList.length}
+    <section class="sicard pub" aria-labelledby="pub-h">
+      <h2 id="pub-h">Public on Clax</h2>
+      <ul>
+        {#each publicList as a (a.artifact_id)}<li><a href={`/a/${a.artifact_id}`}>{a.title}</a></li>{/each}
+      </ul>
+    </section>
+  {/if}
 </main>
 
 <style>
@@ -207,6 +221,12 @@
     .signin a.gh { align-self: flex-start; display: inline-flex; align-items: center; gap: 10px; padding: 10px 16px; border-radius: var(--radius-sm); background: var(--fg); color: var(--bg); font-weight: 600; font-size: 15px; text-decoration: none; min-height: 44px; box-sizing: border-box; }
     .signin a.gh:hover { opacity: .9; }
     .signin a.gh:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+    .signin .pub { margin-top: 16px; }
+    .signin .pub h2 { font-size: 17px; }
+    .signin .pub ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+    .signin .pub li + li { border-top: 1px solid var(--border); }
+    .signin .pub li a { display: block; padding: 10px 0; font-size: 14.5px; font-weight: 500; text-decoration: none; overflow-wrap: anywhere; }
+    .signin .pub li a:hover { text-decoration: underline; }
     .signin .now { border-inline-start: 3px solid var(--accent); padding: 6px 10px; background: var(--bg); border-radius: 4px; }
     @media (max-width: 520px) {
       .signin { padding-top: 24px; }

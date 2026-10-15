@@ -1,6 +1,7 @@
 // A hosted daemon's sign-in routes (crates/clax-server/src/hosted.rs): the
 // first person's setup, invites redeemed in the browser, one-use sign-in
-// links, sign out, agent tokens and pages shared by link. A local daemon
+// links, sign out, agent tokens, pages shared by link or with one person,
+// and the public gallery. A local daemon
 // answers none of them (404). Every change is the browser's: the session
 // cookie, from the public origin. A refusal throws `Refused` with the
 // daemon's own message, which the page shows as it is. Names and titles
@@ -18,8 +19,22 @@ export type AgentToken = { id: string; label: string; status: string; created_at
 /** A new agent token: `token` and the commands that carry it are shown this once. */
 export type NewAgentToken = { id: string; label: string; created_at: string; token: string; mcp_url: string; claude_command: string; codex_config: string };
 export type LinkAccess = "viewer" | "commenter";
-/** A page shared by link. */
-export type SharedLink = { artifact_id: string; title: string; access: LinkAccess; url: string };
+/** A page shared by link; `listed` when the public gallery lists it. */
+export type SharedLink = { artifact_id: string; title: string; access: LinkAccess; url: string; listed?: boolean };
+/** What one person may do at a shared artifact. */
+export type ShareAccess = "viewer" | "commenter" | "editor";
+/** Who may open an artifact beyond its people: only them, anyone with its link, or the public gallery too. */
+export type GeneralAccess = "restricted" | "link" | "public";
+/** One person an artifact is shared with; `pending` until their GitHub login first signs in. */
+export type Share = { id: string; access: ShareAccess; github_login: string | null; person: string | null; name: string | null; pending: boolean };
+/** A person the owner's sharing dialog suggests. */
+export type ShareCandidate = { person: string; name: string | null; github_login: string | null };
+/** `GET /api/hosted/artifacts/<id>/sharing`: everything for whoever may share it, else `can_share: false` alone. */
+export type Sharing =
+  | { artifact_id: string; can_share: false }
+  | { artifact_id: string; can_share: true; general: GeneralAccess; link_access: LinkAccess | null; url: string; people: Share[]; suggestions: ShareCandidate[] };
+/** An artifact in the public gallery. */
+export type PublicArtifact = { artifact_id: string; title: string; url: string };
 
 async function call<T>(path: string, method = "GET", body?: unknown): Promise<T> {
   const res = await fetch(path, method === "GET" ? { cache: "no-store" } : { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}) });
@@ -53,4 +68,13 @@ export const peekDevice = (code: string) => call<DeviceRequest>(`/api/hosted/dev
 export const approveDevice = (code: string) => call<{ token: AgentToken }>(`/api/hosted/device/${e(code)}/approve`, "POST");
 export const denyDevice = (code: string) => call<unknown>(`/api/hosted/device/${e(code)}/deny`, "POST");
 export const links = () => call<{ links: SharedLink[] }>("/api/hosted/links");
-export const setLink = (aid: string, access: LinkAccess | null) => call<{ artifact_id: string; access: LinkAccess | null; url: string }>(`/api/hosted/artifacts/${e(aid)}/link`, "PUT", { access });
+/** Shares `aid` by link at `access` (null stops, which unlists it too); `listed` lists it in the public gallery or not (absent keeps it). */
+export const setLink = (aid: string, access: LinkAccess | null, listed?: boolean) =>
+  call<{ artifact_id: string; access: LinkAccess | null; listed: boolean; url: string }>(`/api/hosted/artifacts/${e(aid)}/link`, "PUT", listed === undefined ? { access } : { access, listed });
+export const sharing = (aid: string) => call<Sharing>(`/api/hosted/artifacts/${e(aid)}/sharing`);
+/** Shares `aid` with a GitHub login or a person (by public ID), or changes their access. */
+export const share = (aid: string, to: { github_login: string } | { person: string }, access: ShareAccess) =>
+  call<{ share: Share }>(`/api/hosted/artifacts/${e(aid)}/shares`, "PUT", { ...to, access });
+export const unshare = (aid: string, id: string) => call<{ share: Share }>(`/api/hosted/artifacts/${e(aid)}/shares/${e(id)}`, "DELETE");
+/** The public gallery, answered to anyone. */
+export const publicArtifacts = () => call<{ artifacts: PublicArtifact[] }>("/api/hosted/public");
