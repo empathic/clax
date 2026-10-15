@@ -222,7 +222,18 @@ test("the locate button follows the device: a dot and its circle, only a circle 
   const locate = frame.getByRole("button", { name: "Show my location" });
   // After the Allow click the shell shields the page until the pointer moves onto it.
   await reach(page, locate);
-  await locate.click();
+  // A finger's tap, as the app plays it: the host attests the press on the
+  // frame (each location call spends one attested press), then the click.
+  let finger = 0;
+  const tap = async () => {
+    const b = (await locate.boundingBox())!;
+    const [x, y] = [b.x + b.width / 2, b.y + b.height / 2];
+    finger++;
+    await host(page, `attestPointer({ pointer: ${finger}, phase: "down", x: ${x}, y: ${y} })`);
+    await locate.click();
+    await host(page, `attestPointer({ pointer: ${finger}, phase: "up", x: ${x}, y: ${y} })`);
+  };
+  await tap();
   await expect.poll(async () => (await deviceCalls(page)).filter(c => c.method === "watch").length).toBe(1);
   const watch = (await deviceCalls(page)).find(c => c.method === "watch")!;
   expect([watch.cap, watch.args[0].minDistance]).toEqual(["location", 10]);
@@ -259,12 +270,12 @@ test("the locate button follows the device: a dot and its circle, only a circle 
   await expect(frame.getByRole("status")).toHaveCount(0);
 
   // A refused start says why; a second tap on a running watch stops it.
-  await locate.click();
+  await tap();
   await expect.poll(async () => (await deviceCalls(page)).filter(c => c.method === "watch").length).toBe(2);
   const second = (await deviceCalls(page)).filter(c => c.method === "watch")[1];
   await host(page, `deviceResult(${JSON.stringify({ id: second.id, ok: false, error: { code: "not_granted", message: "no" } })})`);
   await expect(frame.getByRole("status")).toContainText("Location is not allowed for this app.");
-  await locate.click();
+  await tap();
   await expect.poll(async () => (await deviceCalls(page)).filter(c => c.method === "watch").length).toBe(3);
   await frame.getByRole("button", { name: "Stop showing my location" }).click();
   await expect.poll(async () => (await deviceCalls(page)).filter(c => c.method === "unwatch").length).toBe(1);
