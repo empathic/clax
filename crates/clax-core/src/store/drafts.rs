@@ -170,6 +170,23 @@ impl Store {
         of: Option<&ArtifactId>,
         p: ValidatedPublish,
     ) -> Result<NewDraft> {
+        self.create_draft_with(ctx, of, p, true)
+    }
+
+    /// [`Store::create_draft`], with `inherit_net` saying whether the
+    /// draft's fetches use `of`'s network grants
+    /// ([`Store::net_access`]); false keeps it offline (a bundle update's
+    /// check draft).
+    ///
+    /// # Errors
+    /// As [`Store::create_draft`].
+    pub fn create_draft_with(
+        &self,
+        ctx: &AuditCtx,
+        of: Option<&ArtifactId>,
+        p: ValidatedPublish,
+        inherit_net: bool,
+    ) -> Result<NewDraft> {
         if !p.addresses.is_empty() {
             return Err(CoreError::invalid(
                 "invalid_args",
@@ -199,8 +216,9 @@ impl Store {
         self.with_tx(|tx| {
             tx.execute(
                 "INSERT INTO artifacts (id, title, description, icon, created_at, updated_at, current_version,
-                    pinned, capabilities_json, contract_version, owner_session_id, draft_of, hidden)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?5, 0, 0, ?6, ?7, NULL, ?8, 1)",
+                    pinned, capabilities_json, contract_version, owner_session_id, draft_of, hidden,
+                    draft_inherit_net)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5, 0, 0, ?6, ?7, NULL, ?8, 1, ?9)",
                 params![
                     id.as_str(),
                     title,
@@ -209,7 +227,8 @@ impl Store {
                     now,
                     caps.to_string(),
                     CONTRACT_VERSION,
-                    of.map(ArtifactId::as_str)
+                    of.map(ArtifactId::as_str),
+                    inherit_net
                 ],
             )?;
             Ok(())

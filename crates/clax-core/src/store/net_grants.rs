@@ -58,12 +58,12 @@ fn grant_record(id: &ArtifactId, op: &str, hosts: &[String]) -> AuditRecord {
     rec
 }
 
-/// The app `id` is a draft of, when it is a draft of one (a new app's
-/// draft is of nothing).
+/// The app whose grants the draft `id` uses: the one it is a draft of,
+/// unless it was made offline (a new app's draft is of nothing).
 fn live_app_in(c: &Connection, id: &ArtifactId) -> Result<Option<ArtifactId>> {
     let of: Option<String> = c
         .query_row(
-            "SELECT draft_of FROM artifacts WHERE id = ?1 AND hidden = 1",
+            "SELECT draft_of FROM artifacts WHERE id = ?1 AND hidden = 1 AND draft_inherit_net = 1",
             params![id.as_str()],
             |r| r.get(0),
         )
@@ -76,7 +76,8 @@ fn live_app_in(c: &Connection, id: &ArtifactId) -> Result<Option<ArtifactId>> {
 /// §5.1) has no grants of its own: its `grants` are its live app's grants
 /// for the hosts that app's current version declares, so a host is allowed
 /// only while the draft declares it and the owner's grant to the app stands.
-/// A new app's draft, or a draft whose app is gone, has none.
+/// A new app's draft, a draft made offline ([`Store::create_draft_with`]),
+/// or a draft whose app is gone, has none.
 fn access_in(c: &Connection, id: &ArtifactId) -> Result<NetAccess> {
     if !super::drafts::is_hidden_in(c, id.as_str())? {
         return own_access_in(c, id);
@@ -302,6 +303,37 @@ mod tests {
 
         let fresh = draft(&st, None, caps);
         assert!(st.net_access(&fresh).unwrap().grants.is_empty());
+    }
+
+    #[test]
+    fn an_offline_draft_or_one_whose_app_is_gone_reaches_nothing() {
+        let (_d, st) = store();
+        let app = artifact_with_caps(&st, json!({"net": {"hosts": ["a.example.com"]}}));
+        st.grant_net(DAEMON, &app, &hosts(&["a.example.com"]))
+            .unwrap();
+        let caps = json!({"net": {"hosts": ["a.example.com"]}});
+        let req = serde_json::from_value(json!({
+            "title": "Check",
+            "capabilities": caps,
+            "files": {"index.html": {"content": "<main></main>", "encoding": "utf8"}}
+        }))
+        .unwrap();
+        let d = st
+            .create_draft_with(
+                DAEMON,
+                Some(&app),
+                crate::publish::validate(req).unwrap(),
+                false,
+            )
+            .unwrap();
+        let offline = ArtifactId::parse(&d.artifact.id).unwrap();
+        assert!(!st.net_access(&offline).unwrap().allows("a.example.com"));
+
+        let inherits = draft(&st, Some(&app), caps);
+        assert!(st.net_access(&inherits).unwrap().allows("a.example.com"));
+        st.delete_artifact(DAEMON, &app).unwrap();
+        let acc = st.net_access(&inherits).unwrap();
+        assert!(acc.grants.is_empty() && !acc.allows("a.example.com"));
     }
 
     #[test]
