@@ -301,6 +301,8 @@ struct Answer {
     version: u32,
     /// The merge rule whose canonical page it is.
     rule: Option<LiveRule>,
+    /// The `@name`s of the comment that reached no live agent.
+    unresolved: Vec<String>,
 }
 
 /// A repeat of a comment: the thread pick `pick` made on the live page
@@ -333,6 +335,7 @@ fn replay(
         artifact,
         version,
         rule: rule.cloned(),
+        unresolved: Vec::new(),
     }))
 }
 
@@ -347,8 +350,9 @@ fn replay(
 /// viewer, with the anchor's `route` from `url` and `clip` as its
 /// screenshot; an `@agent` mention sends it. An `artifact` anchor is
 /// refused (`invalid_anchor`): it is made in the Clax view. Answers `201 {thread, page,
-/// version, clip_error?}`; a clip failing `clip_problem` is dropped and
-/// reported.
+/// version, clip_error?, unresolved_mentions?}`; a clip failing
+/// `clip_problem` is dropped and reported, and `unresolved_mentions` lists
+/// the `@name`s that reached no live agent.
 ///
 /// With `pick_id` (32 lowercase hex digits), a repeat of the request within
 /// [`PICK_TTL`](clax_core::store::live::PICK_TTL) whose pick already made a thread on the page writes and
@@ -468,7 +472,7 @@ pub async fn thread(
                 .first()
                 .map(|c| c.body.clone())
                 .unwrap_or_default();
-            let (thread, _) =
+            let (thread, unresolved) =
                 announce_new_thread(st, &ctx, &audit, thread, mention, Some(&named), true)?;
             let view = thread_view(st, &thread, ctx.codex_push(), with_path)?;
             let page = st.live_page_of(&id)?.ok_or(CoreError::NotFound)?;
@@ -479,6 +483,7 @@ pub async fn thread(
                 artifact: e.artifact,
                 version: e.version.n,
                 rule: resolved.rule.clone(),
+                unresolved,
             })
         })
         .await?;
@@ -492,6 +497,9 @@ pub async fn thread(
     }
     if let Some(e) = clip_error {
         out["clip_error"] = json!(e);
+    }
+    if !a.unresolved.is_empty() {
+        out["unresolved_mentions"] = json!(a.unresolved);
     }
     Ok((StatusCode::CREATED, Json(out)))
 }

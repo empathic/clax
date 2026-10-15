@@ -21,6 +21,10 @@ async fn live_watch(ts: &TestServer, sid: &str, url: &str) -> Value {
 }
 
 async fn comment(ts: &TestServer, cookie: &str, url: &str) -> Value {
+    comment_saying(ts, cookie, url, "Look").await
+}
+
+async fn comment_saying(ts: &TestServer, cookie: &str, url: &str, body: &str) -> Value {
     let form = reqwest::multipart::Form::new()
         .text("url", url.to_string())
         .text("title", "P")
@@ -28,7 +32,7 @@ async fn comment(ts: &TestServer, cookie: &str, url: &str) -> Value {
             "anchor",
             json!({"kind": "element", "selector": "body", "file": "index.html"}).to_string(),
         )
-        .text("body", "Look")
+        .text("body", body.to_string())
         .text("pending", "[]")
         .text("snapshot", "<!doctype html><p>x")
         .part(
@@ -355,4 +359,16 @@ async fn a_scope_watch_for_an_unknown_session_makes_no_page() {
         .await
         .unwrap();
     assert!(found["page"].is_null());
+}
+
+#[tokio::test]
+async fn a_live_threads_answer_names_the_at_names_that_reached_no_agent() {
+    let ts = TestServer::spawn().await;
+    let s = ts.register_session("claude", "w-1").await;
+    live_watch(&ts, s["id"].as_str().unwrap(), "http://localhost:5173/").await;
+    let v = ts.viewer(Some("Alex")).await;
+    let c = comment_saying(&ts, &v.cookie, "http://localhost:5173/a", "@nobody, look").await;
+    assert_eq!(c["unresolved_mentions"], json!(["nobody"]), "{c}");
+    let c = comment(&ts, &v.cookie, "http://localhost:5173/b").await;
+    assert!(c.get("unresolved_mentions").is_none(), "{c}");
 }

@@ -411,7 +411,8 @@ impl<'a> RealClients<'a> {
 
     /// The Pi extension under Node, loaded by Pi's own TypeScript loader
     /// (jiti): its tools, `/clax` command and feedback messages for a Pi
-    /// session.
+    /// session. Panics when the driver exits non-zero or ran no tool (no
+    /// `plugins/pi/node_modules`, a broken extension).
     pub async fn pi(&self) -> Out {
         let driver = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pi-agent.mjs");
         let ext = repo().join("plugins/pi/src/clax.ts");
@@ -431,7 +432,14 @@ impl<'a> RealClients<'a> {
             &[("CLAX_BIN", clax_bin().to_str().unwrap())],
         );
         c.current_dir(repo().join("plugins/pi"));
-        let (text, _) = self.run(c, "").await;
+        let (text, status) = self.run(c, "").await;
+        // A driver that failed to load prints only its error, which holds no
+        // canary: the sweep must not pass on that.
+        assert_eq!(status, 0, "the Pi driver failed: {text}");
+        assert!(
+            text.contains("clax_list: ") && text.contains(&self.w.read.artifact),
+            "the Pi driver ran no tool: {text}"
+        );
         Out {
             channel: "the Pi extension".into(),
             text,
