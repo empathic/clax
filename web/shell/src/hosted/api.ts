@@ -36,9 +36,13 @@ export async function me(): Promise<HostedMe | null> {
 }
 export const setup = (secret: string, name: string) => call<{ person: HostedPerson }>("/api/hosted/setup", "POST", { secret, name });
 export const peekInvite = (code: string) => call<{ name: string | null; expires_at: string }>(`/api/hosted/invites/${e(code)}`);
-export const acceptInvite = (code: string) => call<{ person: HostedPerson }>(`/api/hosted/invites/${e(code)}/accept`, "POST");
+/** Redeems an invite; `replace` confirms ending the browser's current session (else 409 `session_exists`). */
+export const acceptInvite = (code: string, replace = false) => call<{ person: HostedPerson }>(`/api/hosted/invites/${e(code)}/accept`, "POST", { replace });
 export const signinLink = () => call<{ url: string; expires_at: string }>("/api/hosted/signin-links", "POST");
-export const acceptSignin = (code: string) => call<{ person: HostedPerson }>(`/api/hosted/signin-links/${e(code)}/accept`, "POST");
+/** Whose account a live sign-in link signs into; spends nothing. */
+export const peekSignin = (code: string) => call<{ public_id: string; name: string | null; owner: boolean; expires_at: string }>(`/api/hosted/signin-links/${e(code)}`);
+/** Redeems a sign-in link; `replace` confirms ending the browser's session of someone else (else 409 `session_exists`). */
+export const acceptSignin = (code: string, replace = false) => call<{ person: HostedPerson }>(`/api/hosted/signin-links/${e(code)}/accept`, "POST", { replace });
 export const signOut = () => call<unknown>("/api/hosted/signout", "POST");
 export const tokens = () => call<{ tokens: AgentToken[] }>("/api/hosted/agent-tokens");
 export const mintToken = (label: string) => call<NewAgentToken>("/api/hosted/agent-tokens", "POST", { label });

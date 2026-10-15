@@ -545,6 +545,107 @@ async fn a_signin_link_signs_in_another_browser_once_within_ten_minutes() {
 }
 
 #[tokio::test]
+async fn a_sign_in_link_says_whose_account_it_is_and_replaces_a_session_only_when_confirmed() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let sam = site.person(&owner, "Sam").await;
+    let (_, v) = site.post(&sam, "/api/hosted/signin-links", json!({})).await;
+    let code_ = v["url"]
+        .as_str()
+        .unwrap()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let peek = format!("/api/hosted/signin-links/{code_}");
+    let accept = format!("{peek}/accept");
+    // The peek names the account and spends nothing, for anyone.
+    for _ in 0..2 {
+        let (s, v) = site.get(&Browser::default(), &peek).await;
+        assert_eq!(s, 200, "{v}");
+        assert_eq!(v["name"].as_str(), Some("Sam"));
+        assert_eq!(v["owner"], json!(false));
+        assert_eq!(v["expires_at"], "2026-10-12T10:10:00.000Z");
+        assert!(v["public_id"].as_str().is_some_and(|p| !p.is_empty()));
+    }
+    let (s, v) = site
+        .get(&Browser::default(), "/api/hosted/signin-links/cxl_nope")
+        .await;
+    assert_eq!((s, code(&v)), (404, "not_found"));
+    // The owner's browser is not signed in as Sam by the link alone.
+    let (s, v) = site.post(&owner, &accept, json!({})).await;
+    assert_eq!((s, code(&v)), (409, "session_exists"), "{v}");
+    assert_eq!(v["error"]["current"]["owner"], json!(true));
+    let (s, me) = site.get(&owner, "/api/hosted/me").await;
+    assert_eq!((s, me["person"]["owner"].clone()), (200, json!(true)));
+    let (s, v) = site.get(&Browser::default(), &peek).await;
+    assert_eq!(s, 200, "the refused redemption spent nothing: {v}");
+    let (s, v) = site.post(&owner, &accept, json!({"nope": 1})).await;
+    assert_eq!((s, code(&v)), (400, "invalid_json"), "{v}");
+    // Sam's own browser redeems Sam's link without confirming.
+    let mut again = sam.clone();
+    let v = site.sign_in(&mut again, &accept, json!({})).await;
+    assert_eq!(v["person"]["display_name"].as_str(), Some("Sam"));
+    // Confirmed, the redemption replaces the session.
+    let (_, v) = site
+        .post(&again, "/api/hosted/signin-links", json!({}))
+        .await;
+    let code2 = v["url"]
+        .as_str()
+        .unwrap()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let mut swapped = owner.clone();
+    let v = site
+        .sign_in(
+            &mut swapped,
+            &format!("/api/hosted/signin-links/{code2}/accept"),
+            json!({"replace": true}),
+        )
+        .await;
+    assert_eq!(v["person"]["display_name"].as_str(), Some("Sam"));
+    assert_eq!(
+        site.get(&owner, "/api/hosted/me").await.1["signed_in"],
+        json!(false)
+    );
+}
+
+#[tokio::test]
+async fn an_invite_replaces_a_browsers_session_only_when_confirmed() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let (s, v) = site
+        .post(&owner, "/api/people/invites", json!({"name": "Rae"}))
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let code_ = v["invite"]["url"]
+        .as_str()
+        .unwrap()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let accept = format!("/api/hosted/invites/{code_}/accept");
+    let (s, v) = site.post(&owner, &accept, json!({})).await;
+    assert_eq!((s, code(&v)), (409, "session_exists"), "{v}");
+    let (s, v) = site
+        .get(&Browser::default(), &format!("/api/hosted/invites/{code_}"))
+        .await;
+    assert_eq!(
+        (s, v["name"].as_str()),
+        (200, Some("Rae")),
+        "the invite is still live"
+    );
+    let mut b = owner.clone();
+    let v = site
+        .sign_in(&mut b, &accept, json!({"replace": true}))
+        .await;
+    assert_eq!(v["person"]["display_name"].as_str(), Some("Rae"));
+}
+
+#[tokio::test]
 async fn signing_out_ends_the_session_and_clears_the_cookie() {
     let site = Site::new().await;
     let owner = site.owner().await;
@@ -1661,7 +1762,7 @@ async fn signing_in_anew_ends_the_browsers_previous_session() {
     site.sign_in(
         &mut b,
         &format!("/api/hosted/invites/{code_}/accept"),
-        json!({}),
+        json!({"replace": true}),
     )
     .await;
     let (_, me) = site.get(&guest, "/api/hosted/me").await;

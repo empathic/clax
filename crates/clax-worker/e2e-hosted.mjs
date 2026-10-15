@@ -318,7 +318,7 @@ async function main() {
     const laptop = await newPage(browser, "laptop");
     pages.push(laptop);
     await laptop.goto(link);
-    await laptop.getByRole("button", { name: "Sign in on this device" }).click();
+    await laptop.getByRole("button", { name: "Sign in as Sam" }).click();
     await laptop.waitForURL(`${origin}/`);
     await laptop.goto(`${origin}/people`);
     await laptop.locator(".hosted-me", { hasText: "Signed in as Sam" }).waitFor({ timeout: LIMIT });

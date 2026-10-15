@@ -14,6 +14,13 @@
 //! - a guest is someone with the link of a page shared by link who gave a
 //!   name (`PUT /api/viewers/me`), capped at commenting there.
 //!
+//! The sign-in pages say whose account a code signs into before it is
+//! redeemed (`GET /api/hosted/invites/<code>`, `GET
+//! /api/hosted/signin-links/<code>`), and a redemption that would end the
+//! browser's live session of someone else answers 409 `session_exists`
+//! unless its body confirms it (`{"replace": true}`): a link someone sent
+//! cannot sign a browser in as them behind its person's back.
+//!
 //! A browser carries the session cookie: `HttpOnly`, `SameSite=Lax`,
 //! `Path=/`, host-only, thirty days; on an `https` origin `Secure` and named
 //! `__Host-clax_session`, else `clax_session`.
@@ -1642,20 +1649,68 @@ async fn peek_invite(
     }
 }
 
-/// `POST /api/hosted/invites/<code>/accept`: redeems the invite, making a
-/// connected person under its name, and signs the browser in as them. 404
-/// `not_found` for an invite that is not live (one answer for every case).
+/// The body of a redemption (an invite's, a sign-in link's): `{replace}`,
+/// or none. `replace` confirms ending the browser's current session.
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RedeemBody {
+    #[serde(default)]
+    replace: bool,
+}
+
+fn redeem_body(bytes: &[u8]) -> Result<RedeemBody, ApiError> {
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return Ok(RedeemBody::default());
+    }
+    serde_json::from_slice(bytes).map_err(|e| {
+        ApiError::bad_request(
+            "invalid_json",
+            format!("send {{\"replace\": true}} or nothing: {e}"),
+        )
+    })
+}
+
+/// 409 `session_exists`: the browser is signed in as `current`, whose
+/// session a redemption would end; it is redone with `{"replace": true}`
+/// once the person confirmed. `current` is the person as `GET
+/// /api/hosted/me` names them.
+fn session_exists(current: &SessionViewer) -> ApiError {
+    let name = current
+        .viewer
+        .display_name
+        .as_deref()
+        .unwrap_or("an unnamed person");
+    let mut e = ApiError::new(
+        StatusCode::CONFLICT,
+        "session_exists",
+        format!("this browser is signed in as {name}: confirm to sign out of {name} first"),
+    );
+    e.extra.insert("current".into(), person_view(current));
+    e
+}
+
+/// `POST /api/hosted/invites/<code>/accept {replace?}`: redeems the invite,
+/// making a connected person under its name, and signs the browser in as
+/// them. 404 `not_found` for an invite that is not live (one answer for
+/// every case); 409 [`session_exists`] while the browser holds a live
+/// session and `replace` is not set, spending nothing.
 async fn accept_invite(
     State(s): State<AppState>,
     headers: HeaderMap,
     extensions: axum::http::Extensions,
+    Extension(r): Extension<HostedRequest>,
     audit: crate::audit::DeferredAudit,
     code: Result<Path<String>, PathRejection>,
+    body: axum::body::Bytes,
 ) -> Result<Response, ApiError> {
     browser_only(&headers)?;
     let h = hosted_of(&s);
     h.attempt(Attempt::SignIn, &headers, &extensions)?;
     let code = crate::routes::artifacts::path(code)?;
+    let b = redeem_body(&body)?;
+    if let Some(current) = r.session.as_ref().filter(|_| !b.replace) {
+        return Err(session_exists(current));
+    }
     let old = session_token(&headers, h.cookie_name());
     let signed = s
         .store_call(move |st| {
@@ -1697,20 +1752,50 @@ async fn create_signin_link(
     ))
 }
 
-/// `POST /api/hosted/signin-links/<code>/accept`: signs this browser in as
-/// the link's member, once. 404 `not_found` for an unknown, used or expired
-/// link.
+/// `GET /api/hosted/signin-links/<code>` → `{public_id, name, owner,
+/// expires_at}`: whose account the live link signs into, spending
+/// nothing; else 404 `not_found`.
+async fn peek_signin_link(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    extensions: axum::http::Extensions,
+    code: Result<Path<String>, PathRejection>,
+) -> Result<Response, ApiError> {
+    hosted_of(&s).attempt(Attempt::SignIn, &headers, &extensions)?;
+    let code = crate::routes::artifacts::path(code)?;
+    match s.store_call(move |st| st.peek_signin_link(&code)).await? {
+        Some(p) => Ok(no_store(Json(json!(p)).into_response())),
+        None => Err(ApiError::not_found()),
+    }
+}
+
+/// `POST /api/hosted/signin-links/<code>/accept {replace?}`: signs this
+/// browser in as the link's member, once. 404 `not_found` for an unknown,
+/// used or expired link; 409 [`session_exists`] while the browser holds a
+/// live session of someone else and `replace` is not set, spending
+/// nothing (so a link someone sent cannot swap the browser's person
+/// without the page saying whose account it signs into).
 async fn accept_signin_link(
     State(s): State<AppState>,
     headers: HeaderMap,
     extensions: axum::http::Extensions,
+    Extension(r): Extension<HostedRequest>,
     audit: crate::audit::DeferredAudit,
     code: Result<Path<String>, PathRejection>,
+    body: axum::body::Bytes,
 ) -> Result<Response, ApiError> {
     browser_only(&headers)?;
     let h = hosted_of(&s);
     h.attempt(Attempt::SignIn, &headers, &extensions)?;
     let code = crate::routes::artifacts::path(code)?;
+    let b = redeem_body(&body)?;
+    if let Some(current) = r.session.clone().filter(|_| !b.replace) {
+        let peek = code.clone();
+        let target = s.store_call(move |st| st.peek_signin_link(&peek)).await?;
+        if target.is_some_and(|t| t.public_id != current.viewer.public_id) {
+            return Err(session_exists(&current));
+        }
+    }
     let old = session_token(&headers, h.cookie_name());
     let signed = s
         .store_call(move |st| {
@@ -2009,6 +2094,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/hosted/invites/{code}", get(peek_invite))
         .route("/api/hosted/invites/{code}/accept", post(accept_invite))
         .route("/api/hosted/signin-links", post(create_signin_link))
+        .route("/api/hosted/signin-links/{code}", get(peek_signin_link))
         .route(
             "/api/hosted/signin-links/{code}/accept",
             post(accept_signin_link),

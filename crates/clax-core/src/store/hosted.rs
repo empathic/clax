@@ -144,6 +144,19 @@ pub struct InvitePeek {
     pub expires_at: String,
 }
 
+/// What a sign-in link says before it is redeemed (the sign-in page):
+/// whose account it signs into.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct SigninPeek {
+    /// The member's public ID.
+    pub public_id: String,
+    /// The member's display name.
+    pub name: Option<String>,
+    /// Whether the member is the owner.
+    pub owner: bool,
+    pub expires_at: String,
+}
+
 /// An agent token, without its token: a bearer grant.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct AgentToken {
@@ -507,6 +520,39 @@ impl Store {
                 params![code.sha256_hex(), viewer_id, self.now(), expires],
             )?;
             Ok((code, expires))
+        })
+    }
+
+    /// The live sign-in link (unused, unexpired, its member still one)
+    /// whose code is `code`: whose account it signs into. Reading it spends
+    /// nothing.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn peek_signin_link(&self, code: &str) -> Result<Option<SigninPeek>> {
+        let hash = sha256_hex(code);
+        self.with_read(|c| {
+            let row: Option<(String, String)> = c
+                .query_row(
+                    "SELECT viewer_id, expires_at FROM signin_links WHERE sha256 = ?1 AND used_at IS NULL",
+                    params![hash],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            let Some((viewer_id, expires_at)) = row else {
+                return Ok(None);
+            };
+            if expires_at <= self.now() {
+                return Ok(None);
+            }
+            Ok(session_viewer(c, &viewer_id)?
+                .filter(SessionViewer::member)
+                .map(|who| SigninPeek {
+                    public_id: who.viewer.public_id,
+                    name: who.viewer.display_name,
+                    owner: who.owner,
+                    expires_at,
+                }))
         })
     }
 

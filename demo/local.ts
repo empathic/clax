@@ -249,7 +249,7 @@ Run the demo agents again with:
 
 Try it (live seats for people: ${opts.seats}; the owner and the people an artifact names always get one):
   1. Open ${s.owner.name}'s and ${s.editor.name}'s sign-in links in two browser profiles, click
-     Sign in on this device, and open the Brief in both: each shows the other here in its
+     Sign in as ${s.owner.name} (or ${s.editor.name}), and open the Brief in both: each shows the other here in its
      people panel, and a pointer moved or text selected in one is drawn over
      the page in the other, in that person's colour.
   2. Press Enter here to start ${s.agents} demo agent(s) on the Brief: watch their
