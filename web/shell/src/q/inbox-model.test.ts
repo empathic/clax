@@ -31,6 +31,15 @@ describe("inbox model", () => {
     expect(itemText(item("ended", { ended: null }))).toBe("");
   });
 
+  it("names a reply's agent with its person and harness (spec §11)", () => {
+    const own = item("reply", { agent: { handle: "a_1", harness: "claude", project: "p", name: "clax-web", person: null, person_name: "Alex", own: true } });
+    expect(itemTitle(own)).toBe("clax-web (agent, via claude) replied on Quarterly Review");
+    const sams = item("reply", { agent: { handle: "a_2", harness: "pi", project: null, name: "web", person: "u_sam", person_name: "Sam", own: false } });
+    expect(itemTitle(sams)).toBe("web (Sam's agent, via pi) replied on Quarterly Review");
+    // Other kinds name the agent alone.
+    expect(itemTitle(item("finished", { agent: sams.agent }))).toBe("web finished on Quarterly Review");
+  });
+
   it("names a second agent of a harness, and a deleted page", () => {
     const other = item("reply", { agent: { handle: "a_9c2b00", harness: "claude", project: "p" } });
     expect(itemTitle(item("reply"), [item("reply"), other])).toBe("claude 1f3a replied on Quarterly Review");

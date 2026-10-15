@@ -1,7 +1,7 @@
 // The inbox's model (spec 2026-10-06-agent-questions-and-inbox §3.3, §9.2,
 // §9.7): an item's title and one-line text, the search kept in `/inbox`'s
 // URL, and a notification's text. Pure: no DOM.
-import type { CardPerson, InboxApproval, InboxFilter, InboxItem, InboxKind } from "../api";
+import type { CardPerson, InboxApproval, InboxFilter, InboxItem, InboxKind, QAgent } from "../api";
 import { agentLabel, answerText, cutHeader } from "./model";
 
 /** The kinds the inbox page filters by. */
@@ -40,13 +40,21 @@ export const heldCount = (a: InboxApproval): string =>
 export const heldAnchor = (i: InboxItem, a: InboxApproval): string | undefined =>
   (a.thread_id ? /«[^»]*»\s*$/.exec(i.thread?.summary ?? "")?.[0]?.trim() : undefined);
 
+/** A reply's author line (spec 2026-10-08 §11 "Display"): `<name> (agent,
+ * via <harness>)` for the recipient's own person's agent, else `<name>
+ * (<person>'s agent, via <harness>)`; null for an agent with no name. */
+function replier(a: QAgent | null): string | null {
+  if (!a?.name || a.own === undefined) return null;
+  return a.own ? `${a.name} (agent, via ${a.harness})` : `${a.name} (${a.person_name ?? "another person"}'s agent, via ${a.harness})`;
+}
+
 /** An item's title: who did what, on which page ("claude replied on
  * Quarterly Review"). `others` are the items listed beside it, which
  * decide whether an agent is named by its harness alone. */
 export function itemTitle(i: InboxItem, others: InboxItem[] = []): string {
   const who = agentLabel(i.agent, others.map(o => o.agent));
   switch (i.kind) {
-    case "reply": return `${who} replied on ${pageOf(i)}`;
+    case "reply": return `${replier(i.agent) ?? who} replied on ${pageOf(i)}`;
     case "version": {
       const n = i.version?.addressed.length ?? 0;
       const addressed = n ? ` · addressed ${n === 1 ? "1 of your threads" : `${n} of your threads`}` : "";

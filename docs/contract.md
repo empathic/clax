@@ -1705,8 +1705,9 @@ its text's author line, a batch's `sent_by`, `resolved_by_name`, and an
 artifact's `participants`. Through a session, reading acknowledges the returned comments of sent threads
 for that session (a comment added after the read stays pending).
 
-`comments_reply` posts the reply as the agent; the person's page shows it
-under the harness's name (`claude`). An agent reads a reply's
+`comments_reply` posts the reply as the agent; people's views carry its
+agent and person, from which the page shows `<name> (agent, via
+<harness>)` or `<name> (<person>'s agent, via <harness>)` for its viewer. An agent reads a reply's
 `author_name` as `<name> (agent, via <harness>)` when the replying agent is
 its own person's (`clax-claude (agent, via claude)`), and as `<name>
 (<person>'s agent, via <harness>)` when it is another person's (`web (Sam's
@@ -2011,7 +2012,14 @@ viewer has none or an agent resolved it.
 The card's history line ends with the resolve: the viewer's own name when it
 resolved the thread and has one, else `resolved_by_name`, else "Viewer"; or
 the agent's harness. An agent comment carries `via_harness` (the replying
-session's harness, e.g. `claude`; `null` on viewer comments).
+session's harness, e.g. `claude`; `null` on viewer comments) and, in
+people's views and events when its session has an agent name, `agent:
+{name, person, person_name}` (`person` the agent's person's public ID, the
+owner's for the owner's agents); agents get the rendered `author_name`
+instead (see `comments_reply`). The card names such a reply `<name>
+(agent, via <harness>)` when `agent.person` is the viewer, else `<name>
+(<person_name>'s agent, via <harness>)`, and a reply without `agent` by
+its harness.
 
 An open thread a working record names shows "<agent> is working on it"
 (the agent's name, or its harness when it has none, such as "clax-claude
@@ -2404,7 +2412,8 @@ The item view:
   "kind": "reply",
   "read": false,
   "created_at": "2026-10-07T09:12:03.120Z",
-  "agent": {"handle": "a_…", "name": "clax-claude", "harness": "claude", "project": "clax"},
+  "agent": {"handle": "a_…", "name": "clax-claude", "harness": "claude", "project": "clax",
+            "person": null, "person_name": "Alex", "own": true},
   "artifact": {"id": "7q3k9mzx2b4t", "title": "Quarterly Review", "kind": "html", "page_url": null},
   "thread": {"id": "01J9…", "summary": "body > main > h2  «Quarterly goals»", "status": "open"},
   "reply": {"comment_id": "01J9…", "body": "Done: two columns now.", "addressed": false},
@@ -2425,6 +2434,11 @@ Each kind fills its own fields:
   `addressed` lists only the owner's threads.
 - **`published`** fills `published: {description}`.
 - **`question`** fills `question` with the question's view.
+- `agent.person` is the agent's person's public ID (null: the owner's
+  agent), `person_name` that person's name, and `own` whether the agent
+  is the recipient's own person's; the inbox titles a reply `<name>
+  (agent, via <harness>) replied on …` for an own agent and `<name>
+  (<person>'s agent, via <harness>) …` otherwise (spec §11 "Display").
 - `agent.project` is null in a connected person's view of another
   person's agent (spec 2026-10-08-multi-agent-multi-person §13); a
   person's item about a live page is gone, with `artifact` and every

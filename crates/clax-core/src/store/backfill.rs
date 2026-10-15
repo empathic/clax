@@ -1237,7 +1237,7 @@ fn comment_add(c: &Connection, at: &str, cid: &str) -> Result<Option<AuditRecord
                     created_at: at.to_string(),
                     page_authors: Vec::new(),
                     agent_person: None,
-                    agent_name: None,
+                    agent: None,
                 },
                 r.get::<_, Option<String>>(5)?,
             ))

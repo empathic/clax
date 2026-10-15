@@ -17,6 +17,7 @@ use crate::state::AppState;
 use clax_core::store::inbox::{InboxChange, ItemRow, Kind, Sources, ThreadRef};
 use clax_core::{Event, Store};
 use serde_json::{Value, json};
+use std::collections::HashMap;
 
 /// Whose inbox and questions a request reads (spec §6.1, §18): `None` for
 /// the owner (an owner browser credential, or the token outside an agent
@@ -59,10 +60,11 @@ pub fn view(st: &Store, i: &ItemRow) -> clax_core::Result<Value> {
 /// read after it.
 pub fn views(st: &Store, items: &[ItemRow]) -> clax_core::Result<Vec<Value>> {
     let sources = st.inbox_sources(items)?;
+    let mut names = HashMap::new();
     items
         .iter()
         .zip(sources)
-        .map(|(i, s)| render(st, i, s))
+        .map(|(i, s)| render(st, &mut names, i, s))
         .collect()
 }
 
@@ -78,16 +80,50 @@ fn project(cwd: &str) -> &str {
         .unwrap_or("")
 }
 
+/// The name of an agent's person (`None`: the owner) as views give it,
+/// read once per page into `names`.
+fn person_name(
+    st: &Store,
+    names: &mut HashMap<Option<String>, String>,
+    person: &Option<String>,
+) -> clax_core::Result<String> {
+    if let Some(n) = names.get(person) {
+        return Ok(n.clone());
+    }
+    let raw = match person {
+        Some(p) => st.viewer_by_public_id(p)?.and_then(|v| v.display_name),
+        None => st.owner()?.and_then(|v| v.display_name),
+    };
+    let n = clax_core::feedback::person_name(raw.as_deref(), person.is_none());
+    names.insert(person.clone(), n.clone());
+    Ok(n)
+}
+
 /// `i`'s view from its sources `s`. A missing source makes the item `gone`;
 /// the view then keeps what the item holds (kind, time, agent, IDs).
-fn render(st: &Store, i: &ItemRow, s: Sources) -> clax_core::Result<Value> {
+fn render(
+    st: &Store,
+    names: &mut HashMap<Option<String>, String>,
+    i: &ItemRow,
+    s: Sources,
+) -> clax_core::Result<Value> {
     // An agent's project goes to the owner and to the agent's own person
     // alone (spec §13).
-    let agent = s.agent.as_ref().map(|a| {
-        let shown = i.recipient.is_none() || i.recipient == a.person;
-        json!({"handle": a.handle, "name": a.name, "harness": a.harness,
-               "project": shown.then(|| project(&a.cwd))})
-    });
+    // Its person, and whether it is the recipient's own person's, name it
+    // in the author line (spec §11 "Display").
+    let agent = match s.agent.as_ref() {
+        Some(a) => {
+            let shown = i.recipient.is_none() || i.recipient == a.person;
+            let person_name = person_name(st, names, &a.person)?;
+            Some(
+                json!({"handle": a.handle, "name": a.name, "harness": a.harness,
+                   "project": shown.then(|| project(&a.cwd)),
+                   "person": a.person, "person_name": person_name,
+                   "own": i.recipient == a.person}),
+            )
+        }
+        None => None,
+    };
     // A live page is the owner's alone (L10): a person, whose browser may
     // not see live pages, gets an item about one with nothing of it, its
     // ID, link and payload left out, and gone.
@@ -462,6 +498,7 @@ mod tests {
         // A person's item about a live page carries nothing of the page.
         let v = render(
             &st,
+            &mut HashMap::new(),
             &item(Kind::Finished, Some("u_sam")),
             sources("live", None),
         )
@@ -476,12 +513,19 @@ mod tests {
             (Some(true), Some("/inbox"))
         );
         // The owner's keeps it.
-        let v = render(&st, &item(Kind::Finished, None), sources("live", None)).unwrap();
+        let v = render(
+            &st,
+            &mut HashMap::new(),
+            &item(Kind::Finished, None),
+            sources("live", None),
+        )
+        .unwrap();
         assert_eq!(v["work"]["message"], "LIVECANARYmessage");
         // An agent's project: the owner's view and its own person's only.
         let project = |recipient: Option<&str>, person: Option<&str>| {
             render(
                 &st,
+                &mut HashMap::new(),
                 &item(Kind::Finished, recipient),
                 sources("html", person),
             )
@@ -492,5 +536,22 @@ mod tests {
         assert_eq!(project(Some("u_sam"), Some("u_sam")), "secret-project");
         assert_eq!(project(Some("u_sam"), None), Value::Null);
         assert_eq!(project(Some("u_sam"), Some("u_mia")), Value::Null);
+        // Its person, for the author line (spec §11 "Display").
+        let agent = |person: Option<&str>| {
+            render(
+                &st,
+                &mut HashMap::new(),
+                &item(Kind::Reply, None),
+                sources("html", person),
+            )
+            .unwrap()["agent"]
+                .clone()
+        };
+        assert_eq!(agent(Some("u_sam"))["person"], "u_sam");
+        assert_eq!(agent(None)["person"], Value::Null);
+        assert_eq!(agent(None)["person_name"], "The owner");
+        // Whether it is the recipient's own person's agent.
+        assert_eq!(agent(None)["own"], true);
+        assert_eq!(agent(Some("u_sam"))["own"], false);
     }
 }

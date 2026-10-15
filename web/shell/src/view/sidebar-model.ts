@@ -1,5 +1,5 @@
 import { type AnchorResult, INDEX_FILE } from "../../../bridge/src/protocol";
-import type { Comment, Thread } from "../threads";
+import type { Comment, Thread, Viewer } from "../threads";
 import { hasElapsedLabel } from "../waiting";
 import { agentName } from "./history-model";
 
@@ -37,9 +37,18 @@ export function needsTicking(threads: Thread[]): boolean {
   return threads.some(t => t.status === "open" && t.sent_to_agent && hasElapsedLabel(t.feedback_state));
 }
 
-/** A comment's author line: an agent's name (its harness), else the person's name. */
-export function authorLabel(c: Comment): string {
-  return c.author_kind === "agent" ? agentName(c.via_harness) : c.author_name;
+/** A comment's author line (spec 2026-10-08 §11 "Display"): an agent's
+ * reply as `<name> (agent, via <harness>)` when the agent's person is the
+ * viewer (by public ID: the owner's for the owner's agents), else `<name> (<person>'s
+ * agent, via <harness>)`; a reply from before agent names by its harness;
+ * a person's comment by their name. Text, never markup. */
+export function authorLabel(c: Comment, me?: Viewer | null): string {
+  if (c.author_kind !== "agent") return c.author_name;
+  const via = agentName(c.via_harness);
+  const a = c.agent;
+  if (!a) return via;
+  const own = a.person !== null ? a.person === me?.public_id : !!me?.owner;
+  return own ? `${a.name} (agent, via ${via})` : `${a.name} (${a.person_name}'s agent, via ${via})`;
 }
 
 /** A page as people read it: percent-encoding decoded, or the page as
