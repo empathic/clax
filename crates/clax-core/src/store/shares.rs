@@ -886,5 +886,16 @@ mod tests {
         st.set_general_access(DAEMON, a, Some(LinkAccess::Viewer), None)
             .unwrap();
         assert!(ids(&st).is_empty(), "sharing by link again does not relist");
+        // Stopping through the older link setter unlists too.
+        st.set_general_access(DAEMON, b, Some(LinkAccess::Viewer), Some(true))
+            .unwrap();
+        st.set_link_access(DAEMON, b, None).unwrap();
+        assert!(!st.link_listed(b).unwrap());
+        st.set_link_access(DAEMON, b, Some(LinkAccess::Viewer))
+            .unwrap();
+        assert!(
+            ids(&st).is_empty(),
+            "a link stopped then given again is not listed"
+        );
     }
 }

@@ -2154,7 +2154,8 @@ struct LinkBody {
 /// artifact's git tokens (on stopping, every held token: a fork's need
 /// read up its lineage) are rechecked before it answers
 /// ([`crate::git_remotes::recheck`]). 400 `invalid_args` for another
-/// access, 404 for no such artifact, 403 `forbidden` for anyone else.
+/// access, 404 for no such artifact or one the caller may not read, 403
+/// `forbidden` for anyone else.
 async fn set_link(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -2213,14 +2214,16 @@ pub fn may_share(st: &clax_core::Store, who: &SessionViewer, aid: &str) -> clax_
     Ok(who.member() && (who.owner || st.artifact_created_by(aid, Some(&who.viewer.public_id))?))
 }
 
-/// `NotFound` without live artifact `aid`; `forbidden` when `who` may not
-/// share it ([`may_share`]).
+/// `NotFound` without live artifact `aid`, or when `who` may not read it
+/// ([`session_reads`]: an artifact they may not read is not there, as at
+/// its own routes); `forbidden` when `who` reads it but may not share it
+/// ([`may_share`]).
 fn sharer(
     st: &clax_core::Store,
     who: &SessionViewer,
     aid: &clax_core::ArtifactId,
 ) -> clax_core::Result<()> {
-    if st.get_artifact(aid)?.is_none() {
+    if st.get_artifact(aid)?.is_none() || !session_reads(st, who, aid.as_str())? {
         return Err(CoreError::NotFound);
     }
     if !may_share(st, who, aid.as_str())? {
@@ -2338,8 +2341,8 @@ struct ShareBody {
 /// `{share}`. A login no one has signed in with yet waits for its first
 /// GitHub sign-in (`pending`). 400 `invalid_args` for no subject, both, or
 /// another access; 400 `invalid_login`, `unknown_person` or
-/// `already_owner`; 404 for no such artifact; 403 `forbidden` for anyone
-/// who may not share it.
+/// `already_owner`; 404 for no such artifact or one the caller may not
+/// read; 403 `forbidden` for anyone else who may not share it.
 async fn put_share(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -2392,8 +2395,8 @@ async fn put_share(
 /// `DELETE /api/hosted/artifacts/<aid>/shares/<share_id>` (whoever may
 /// share it, [`may_share`]): removes that share. → 200 `{share}`. Every
 /// held git token is rechecked (a fork's need read up its lineage). 404
-/// for no such artifact or share; 403 `forbidden` for anyone who may not
-/// share it.
+/// for no such artifact or share, or an artifact the caller may not read;
+/// 403 `forbidden` for anyone else who may not share it.
 async fn delete_share(
     State(s): State<AppState>,
     headers: HeaderMap,

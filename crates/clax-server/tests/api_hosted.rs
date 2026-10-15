@@ -4230,6 +4230,33 @@ async fn an_artifact_shared_with_a_person_opens_to_them_at_its_access_alone() {
     let mia_pid = site.pid(&mia).await;
     let (_, v) = site.get(&mia, "/api/artifacts").await;
     assert_eq!(listed(&v), Vec::<String>::new());
+    // An artifact Mia may not read is not there to her sharing routes
+    // either: 404, as from its own routes, never 403.
+    let (s, v) = site
+        .put(
+            &mia,
+            &shares,
+            json!({"github_login": "friend", "access": "viewer"}),
+        )
+        .await;
+    assert_eq!(s, 404, "{v}");
+    let (s, v) = site
+        .put(
+            &mia,
+            &format!("/api/hosted/artifacts/{plan}/link"),
+            json!({"access": "viewer"}),
+        )
+        .await;
+    assert_eq!(s, 404, "{v}");
+    let (s, v) = site
+        .send(
+            &mia,
+            reqwest::Method::DELETE,
+            &format!("/api/hosted/artifacts/{plan}/shares/{share_id}"),
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, 404, "{v}");
     let (s, v) = site
         .get(&sam, &format!("/api/hosted/artifacts/{notes}/sharing"))
         .await;

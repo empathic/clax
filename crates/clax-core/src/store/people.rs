@@ -400,8 +400,6 @@ pub(super) fn check_person_name(
     Ok(name.to_string())
 }
 
-/// The rights of the person behind viewer row `viewer_id`: everything for
-/// the owner, else the stored rights or the collaborator preset.
 /// The rights of viewer row `viewer_id`: its stored rights
 /// ([`stored_rights_of_row`]), and what its artifact shares hold
 /// ([`super::shares::share_rights`]). The owner's are every right.
