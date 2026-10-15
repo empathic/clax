@@ -3,7 +3,7 @@
 
 use crate::anchor::{Anchor, cap, collapse};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// How a feedback row reached its session (spec §10 "Delivery tiers").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -217,15 +217,23 @@ pub struct FeedbackBatch {
 pub struct Touched {
     pub targets: BTreeSet<String>,
     pub threads: BTreeSet<(String, String)>,
+    /// For each thread whose rows the change withdrew, by thread ID: the
+    /// people (public IDs) who read a row of it
+    /// ([`crate::Delivery::people`]), read before the rows went. The owner
+    /// read them too. When no row is left, they alone are told so.
+    pub withdrawn: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl Touched {
     pub fn merge(&mut self, other: Touched) {
         self.targets.extend(other.targets);
         self.threads.extend(other.threads);
+        for (tid, people) in other.withdrawn {
+            self.withdrawn.entry(tid).or_default().extend(people);
+        }
     }
     pub fn is_empty(&self) -> bool {
-        self.targets.is_empty() && self.threads.is_empty()
+        self.targets.is_empty() && self.threads.is_empty() && self.withdrawn.is_empty()
     }
 }
 
