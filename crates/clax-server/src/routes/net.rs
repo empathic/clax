@@ -5,7 +5,8 @@
 //!
 //! - `POST /api/artifacts/<id>/net:fetch`: one fetch under [`crate::net`]'s
 //!   rules, to a host the live version declares in `capabilities.net.hosts`
-//!   and the owner granted.
+//!   and the owner granted. A draft uses its live app's grants
+//!   ([`clax_core::store::Store::net_access`]) and is never granted itself.
 //! - `GET /api/artifacts/<id>/net-grants`: the declared hosts and grants.
 //! - `PUT /api/artifacts/<id>/net-grants`: grants every declared host.
 //! - `DELETE /api/artifacts/<id>/net-grants`: revokes every grant.
@@ -61,7 +62,8 @@ fn net_error(e: &NetError) -> ApiError {
 /// final URL after redirects, `body` the response as text when it is UTF-8;
 /// any other response (an image, say) comes as `body_base64` instead. 404 for an unknown artifact; 403 `not_declared` when
 /// the live version does not declare the URL's host, `not_granted` when the
-/// owner has not allowed it, `redirect_refused` or `blocked_address`; 400
+/// owner has not allowed it (for a draft: has not allowed its live app),
+/// `redirect_refused` or `blocked_address`; 400
 /// `invalid_argument` or `https_only`; 413 `too_large`; 504 `timeout`; 502
 /// `too_many_redirects` or `upstream_error`.
 pub async fn fetch(
@@ -131,7 +133,8 @@ pub struct GrantBody {
 /// the hosts the owner was shown: the owner lets the app fetch from each of
 /// them its live version declares (others are ignored); answers as
 /// [`grants`]. 404 for an unknown artifact, 400 `not_declared` when it
-/// declares none, 400 `invalid_argument` without `hosts`.
+/// declares none, 400 `invalid_argument` without `hosts`, 403 `draft` for a
+/// draft.
 pub async fn grant(
     State(s): State<AppState>,
     _t: RequireToken,
@@ -151,7 +154,7 @@ pub async fn grant(
 
 /// `DELETE /api/artifacts/<id>/net-grants` (token): removes every network
 /// grant of the app: `{revoked}`, how many there were. 404 for an unknown
-/// artifact.
+/// artifact, 403 `draft` for a draft.
 pub async fn revoke(
     State(s): State<AppState>,
     _t: RequireToken,

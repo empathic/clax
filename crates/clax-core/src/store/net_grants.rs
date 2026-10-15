@@ -14,7 +14,7 @@ use super::docs::caps_in;
 use crate::audit::{AuditCtx, AuditKind, AuditRecord};
 use crate::capabilities::net_hosts;
 use crate::{ArtifactId, CoreError, Result};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
 /// One host the owner let the artifact fetch from.
@@ -58,7 +58,61 @@ fn grant_record(id: &ArtifactId, op: &str, hosts: &[String]) -> AuditRecord {
     rec
 }
 
+/// The app `id` is a draft of, when it is a draft of one (a new app's
+/// draft is of nothing).
+fn live_app_in(c: &Connection, id: &ArtifactId) -> Result<Option<ArtifactId>> {
+    let of: Option<String> = c
+        .query_row(
+            "SELECT draft_of FROM artifacts WHERE id = ?1 AND hidden = 1",
+            params![id.as_str()],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(of.and_then(|s| ArtifactId::parse(&s).ok()))
+}
+
+/// The artifact's access. A draft (spec 2026-10-12-flutter-app-round2-design
+/// §5.1) has no grants of its own: its `grants` are its live app's grants
+/// for the hosts that app's current version declares, so a host is allowed
+/// only while the draft declares it and the owner's grant to the app stands.
+/// A new app's draft, or a draft whose app is gone, has none.
 fn access_in(c: &Connection, id: &ArtifactId) -> Result<NetAccess> {
+    if !super::drafts::is_hidden_in(c, id.as_str())? {
+        return own_access_in(c, id);
+    }
+    let declared = net_hosts(&caps_in(c, id)?)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let grants = match live_app_in(c, id)? {
+        Some(app) => match own_access_in(c, &app) {
+            Ok(live) => live
+                .grants
+                .iter()
+                .filter(|g| live.allows(&g.host))
+                .cloned()
+                .collect(),
+            Err(CoreError::NotFound) => Vec::new(),
+            Err(e) => return Err(e),
+        },
+        None => Vec::new(),
+    };
+    Ok(NetAccess { declared, grants })
+}
+
+fn refuse_draft(c: &Connection, id: &ArtifactId) -> Result<()> {
+    if super::drafts::is_hidden_in(c, id.as_str())? {
+        return Err(CoreError::invalid(
+            "draft",
+            "a draft takes no network grants; it uses its app's",
+        ));
+    }
+    Ok(())
+}
+
+/// `id`'s own declaration and grant rows.
+fn own_access_in(c: &Connection, id: &ArtifactId) -> Result<NetAccess> {
     let caps = caps_in(c, id)?;
     let declared = net_hosts(&caps).ok().flatten().unwrap_or_default();
     let mut stmt = c.prepare(
@@ -84,7 +138,8 @@ impl Store {
     ///
     /// # Errors
     /// `NotFound` when the artifact is missing or deleted; `not_declared`
-    /// (invalid) when it declares no `net`.
+    /// (invalid) when it declares no `net`; `draft` (invalid) for a draft,
+    /// which uses its app's grants and is never granted itself.
     pub fn grant_net(
         &self,
         audit: &AuditCtx,
@@ -92,6 +147,7 @@ impl Store {
         hosts: &[String],
     ) -> Result<NetAccess> {
         self.with_tx(|tx| {
+            refuse_draft(tx, id)?;
             let before = access_in(tx, id)?;
             if before.declared.is_empty() {
                 return Err(CoreError::invalid(
@@ -121,9 +177,12 @@ impl Store {
     /// A removal is recorded as `artifact.update` under `audit`.
     ///
     /// # Errors
-    /// `NotFound` when the artifact is missing or deleted.
+    /// `NotFound` when the artifact is missing or deleted; `draft` (invalid)
+    /// for a draft, which holds no grants (revoke its app's).
     pub fn revoke_net(&self, audit: &AuditCtx, id: &ArtifactId) -> Result<usize> {
         self.with_tx(|tx| {
+            caps_in(tx, id)?;
+            refuse_draft(tx, id)?;
             let before = access_in(tx, id)?;
             let n = tx.execute(
                 "DELETE FROM net_grants WHERE artifact_id = ?1",
@@ -137,7 +196,8 @@ impl Store {
         })
     }
 
-    /// The artifact's declared hosts and the owner's network grants.
+    /// The artifact's declared hosts and the owner's network grants (for a
+    /// draft, its live app's grants on hosts that app declares).
     ///
     /// # Errors
     /// `NotFound` when the artifact is missing or deleted.
@@ -185,6 +245,95 @@ mod tests {
         assert_eq!(acc.grants.len(), 1, "an undeclared host is never stored");
         let acc = st.grant_net(DAEMON, &a, &hosts(&[])).unwrap();
         assert_eq!(acc.grants.len(), 1);
+    }
+
+    fn draft(st: &Store, of: Option<&ArtifactId>, caps: Value) -> ArtifactId {
+        let req = serde_json::from_value(json!({
+            "title": "Draft",
+            "capabilities": caps,
+            "files": {"index.html": {"content": "<main></main>", "encoding": "utf8"}}
+        }))
+        .unwrap();
+        let d = st
+            .create_draft(DAEMON, of, crate::publish::validate(req).unwrap())
+            .unwrap();
+        ArtifactId::parse(&d.artifact.id).unwrap()
+    }
+
+    #[test]
+    fn a_draft_uses_its_live_apps_grants_for_hosts_both_declare() {
+        let (_d, st) = store();
+        let app = artifact_with_caps(
+            &st,
+            json!({"net": {"hosts": ["a.example.com", "b.example.com"]}}),
+        );
+        st.grant_net(DAEMON, &app, &hosts(&["a.example.com"]))
+            .unwrap();
+        let caps = json!({"net": {"hosts": ["a.example.com", "c.example.com"]}});
+        let d = draft(&st, Some(&app), caps.clone());
+        let acc = st.net_access(&d).unwrap();
+        assert!(acc.allows("a.example.com"), "the app's grant carries over");
+        assert!(
+            !acc.allows("b.example.com"),
+            "the draft does not declare it"
+        );
+        assert!(!acc.allows("c.example.com"), "the app has no grant for it");
+
+        let narrow = draft(
+            &st,
+            Some(&app),
+            json!({"net": {"hosts": ["b.example.com"]}}),
+        );
+        assert!(!st.net_access(&narrow).unwrap().allows("a.example.com"));
+
+        set_caps(&st, &app, json!({"net": {"hosts": ["b.example.com"]}}));
+        assert!(
+            !st.net_access(&d).unwrap().allows("a.example.com"),
+            "a host the app no longer declares reaches nothing"
+        );
+        set_caps(&st, &app, json!({"net": {"hosts": ["a.example.com"]}}));
+        assert!(st.net_access(&d).unwrap().allows("a.example.com"));
+
+        st.revoke_net(DAEMON, &app).unwrap();
+        assert!(
+            !st.net_access(&d).unwrap().allows("a.example.com"),
+            "a revocation reaches the draft on its next check"
+        );
+
+        let fresh = draft(&st, None, caps);
+        assert!(st.net_access(&fresh).unwrap().grants.is_empty());
+    }
+
+    #[test]
+    fn a_draft_is_never_granted_and_reads_no_other_app() {
+        let (_d, st) = store();
+        let app = artifact_with_caps(&st, json!({"net": {"hosts": ["a.example.com"]}}));
+        let caps = json!({"net": {"hosts": ["a.example.com"]}});
+        for d in [
+            draft(&st, Some(&app), caps.clone()),
+            draft(&st, None, caps.clone()),
+        ] {
+            for r in [
+                st.grant_net(DAEMON, &d, &hosts(&["a.example.com"]))
+                    .map(|_| ()),
+                st.revoke_net(DAEMON, &d).map(|_| ()),
+            ] {
+                assert!(matches!(r, Err(CoreError::Invalid { code: "draft", .. })));
+            }
+        }
+        assert_eq!(rows(&st), 0, "no grant rows were made");
+        assert!(!st.net_access(&app).unwrap().allows("a.example.com"));
+
+        let source = artifact_with_caps(&st, json!({"db": {}}));
+        let reader_caps = json!({"db": {"read": [source.as_str()]}});
+        let reader = artifact_with_caps(&st, reader_caps.clone());
+        st.grant_read(DAEMON, &reader, &source).unwrap();
+        let d = draft(&st, Some(&reader), reader_caps);
+        assert_eq!(
+            st.may_read(&d, &source).unwrap(),
+            crate::store::grants::ReadAccess::NotGranted,
+            "cross-app reads stay refused in a draft"
+        );
     }
 
     fn rows(st: &Store) -> i64 {
