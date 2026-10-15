@@ -4411,3 +4411,220 @@ async fn with_the_public_gallery_off_no_one_lists_a_page() {
         200
     );
 }
+
+impl Site {
+    /// `b`'s `/api/stream`, as the shell opens it, subscribed to `topics`.
+    async fn stream(&self, b: &Browser, topics: &[&str]) -> clax_server::testing::EventReader {
+        let res = self
+            .req(b, reqwest::Method::GET, "/api/stream")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let mut events = clax_server::testing::EventReader::from_response(res);
+        let sid = events.next_named("ready").await["stream"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let (s, v) = self
+            .post(
+                b,
+                &format!("/api/stream/{sid}"),
+                json!({"subscribe": topics}),
+            )
+            .await;
+        assert_eq!(s, 200, "{v}");
+        events
+    }
+
+    /// The IDs of `b`'s open questions (`GET /api/questions`).
+    async fn open_questions(&self, b: &Browser) -> Vec<String> {
+        let (s, v) = self.get(b, "/api/questions").await;
+        assert_eq!(s, 200, "{v}");
+        v["questions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|q| q["id"].as_str().unwrap().to_string())
+            .collect()
+    }
+}
+
+/// The `questions` argument of an `ask` with two options.
+fn ask_which(question: &str) -> Value {
+    json!([{"question": question, "header": "Pick",
+        "options": [{"label": "A"}, {"label": "B"}]}])
+}
+
+/// The question view of the next `question` event on `stream`, which must
+/// come while `ask` (an `ask` tool call) is still waiting; a call that
+/// returns first fails the test with its result.
+async fn asked_while_waiting<F>(
+    ask: &mut std::pin::Pin<&mut F>,
+    stream: &mut clax_server::testing::EventReader,
+) -> Value
+where
+    F: std::future::Future<Output = (u16, Value)>,
+{
+    tokio::select! {
+        r = ask.as_mut() => panic!("ask returned before its question was announced: {r:?}"),
+        d = stream.next_named("question") => d["question"].clone(),
+    }
+}
+
+/// Sam's agent token asks over the MCP adapter; Kim, another person who
+/// may ask, watches their own questions throughout. The question is Sam's
+/// alone: it reaches Sam's list and stream, never Kim's, and Sam's answer
+/// is what the blocked `ask` returns. Kim's own agent's question is the
+/// first `question` event Kim's stream carries, so nothing of Sam's came
+/// before it.
+#[tokio::test]
+async fn an_agent_tokens_ask_reaches_its_person_alone_and_returns_their_answer() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    // A member's default rights leave out clax-ask: Sam and Kim are given it.
+    let may_ask = json!([{"type": "clax-ask", "actions": ["ask"]}]);
+    let (sam, _) = site.person_with(&owner, "Sam", may_ask.clone()).await;
+    let (kim, _) = site.person_with(&owner, "Kim", may_ask).await;
+    let mut sam_stream = site.stream(&sam, &["questions"]).await;
+    let mut kim_stream = site.stream(&kim, &["questions"]).await;
+    let mut agent = site.token_agent(&sam, "sam-laptop").await;
+    assert_eq!(agent.initialize("planner").await, 200);
+    let ask = agent.call(
+        "ask",
+        json!({"questions": ask_which("Which plan?"), "timeout_s": 30}),
+    );
+    tokio::pin!(ask);
+    let q = asked_while_waiting(&mut ask, &mut sam_stream).await;
+    let qid = q["id"].as_str().unwrap().to_string();
+    assert_eq!(q["status"], "open", "{q}");
+    assert!(q["artifact"].is_null(), "{q}");
+    // The ask is held before Sam answers, so the answer is what it returns
+    // rather than what a later poll picks up.
+    site.ts.wait_question_waiters(&qid, 1).await;
+    assert_eq!(site.open_questions(&sam).await, vec![qid.clone()]);
+    assert_eq!(site.open_questions(&kim).await, Vec::<String>::new());
+    // Kim neither reads nor answers it.
+    let (s, _) = site.get(&kim, &format!("/api/questions/{qid}")).await;
+    assert_eq!(s, 404);
+    let (s, _) = site
+        .post(
+            &kim,
+            &format!("/api/questions/{qid}/answer"),
+            json!({"answers": [{"selected": ["B"]}]}),
+        )
+        .await;
+    assert_eq!(s, 404);
+    let (s, v) = site
+        .post(
+            &sam,
+            &format!("/api/questions/{qid}/answer"),
+            json!({"answers": [{"selected": ["A"]}]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["question"]["status"], "answered", "{v}");
+    let (s, r) = ask.await;
+    assert_eq!((s, tool_code(&r).as_str()), (200, ""), "{r}");
+    let out = tool_json(&r);
+    assert_eq!(
+        (&out["question_id"], &out["status"]),
+        (&json!(qid), &json!("answered")),
+        "{out}"
+    );
+    assert_eq!(out["reply"][0]["question"], "Which plan?", "{out}");
+    assert_eq!(out["reply"][0]["selected"], json!(["A"]), "{out}");
+    // Sam's stream tells of the answer too.
+    let q = sam_stream.next_named("question").await["question"].clone();
+    assert_eq!((&q["id"], &q["status"]), (&json!(qid), &json!("answered")));
+    assert_eq!(site.open_questions(&sam).await, Vec::<String>::new());
+    // Kim's own agent asks, and Kim declines: the first question Kim's
+    // stream carries is that one.
+    let mut kims = site.token_agent(&kim, "kim-laptop").await;
+    assert_eq!(kims.initialize("planner").await, 200);
+    let ask = kims.call(
+        "ask",
+        json!({"questions": ask_which("Which budget?"), "timeout_s": 30}),
+    );
+    tokio::pin!(ask);
+    let q = asked_while_waiting(&mut ask, &mut kim_stream).await;
+    let kid = q["id"].as_str().unwrap().to_string();
+    assert_ne!(kid, qid, "Sam's question reached Kim's stream");
+    site.ts.wait_question_waiters(&kid, 1).await;
+    assert_eq!(site.open_questions(&kim).await, vec![kid.clone()]);
+    let (s, v) = site
+        .post(&kim, &format!("/api/questions/{kid}/decline"), json!({}))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (_, r) = ask.await;
+    let out = tool_json(&r);
+    assert_eq!(
+        (&out["question_id"], &out["status"], &out["reply"]),
+        (&json!(kid), &json!("declined"), &Value::Null),
+        "{out}"
+    );
+}
+
+/// An agent token's `ask` about an artifact its person may read names that
+/// artifact in the question; about one they may not read it is refused and
+/// nothing is asked.
+#[tokio::test]
+async fn an_agent_tokens_ask_about_an_artifact_names_it_within_its_persons_rights() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let plan = site.titled("Plan").await;
+    let budget = site.titled("Budget").await;
+    let (sam, _) = site
+        .person_with(
+            &owner,
+            "Sam",
+            json!([
+                {"type": "clax-artifacts", "actions": ["read"], "locations": [budget]},
+                {"type": "clax-ask", "actions": ["ask"]},
+            ]),
+        )
+        .await;
+    let mut agent = site.token_agent(&sam, "sam-laptop").await;
+    assert_eq!(agent.initialize("planner").await, 200);
+    let (_, r) = agent
+        .call(
+            "ask",
+            json!({"questions": ask_which("Which plan?"), "url_or_id": plan, "timeout_s": 30}),
+        )
+        .await;
+    assert_eq!(tool_code(&r), "not_permitted", "{r}");
+    assert_eq!(site.open_questions(&sam).await, Vec::<String>::new());
+    let mut sam_stream = site.stream(&sam, &["questions"]).await;
+    let ask = agent.call(
+        "ask",
+        json!({"questions": ask_which("Which line?"), "url_or_id": budget, "timeout_s": 30}),
+    );
+    tokio::pin!(ask);
+    let q = asked_while_waiting(&mut ask, &mut sam_stream).await;
+    assert_eq!(q["artifact"]["id"], budget, "{q}");
+    assert_eq!(q["artifact"]["title"], "Budget", "{q}");
+    let qid = q["id"].as_str().unwrap().to_string();
+    site.ts.wait_question_waiters(&qid, 1).await;
+    let (s, v) = site.get(&sam, "/api/questions").await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["questions"][0]["id"], json!(qid), "{v}");
+    assert_eq!(v["questions"][0]["artifact"]["id"], budget, "{v}");
+    let (s, v) = site
+        .post(
+            &sam,
+            &format!("/api/questions/{qid}/answer"),
+            json!({"answers": [{"text": "the second line"}]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, r) = ask.await;
+    assert_eq!((s, tool_code(&r).as_str()), (200, ""), "{r}");
+    let out = tool_json(&r);
+    assert_eq!(
+        (&out["question_id"], &out["status"]),
+        (&json!(qid), &json!("answered")),
+        "{out}"
+    );
+    assert_eq!(out["reply"][0]["question"], "Which line?", "{out}");
+    assert_eq!(out["reply"][0]["text"], "the second line", "{out}");
+}
