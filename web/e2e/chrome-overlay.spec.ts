@@ -219,6 +219,14 @@ test("comment on a dev server page, reach the agent, and follow a hot reload", a
   const fb = await api(live, `/api/sessions/${sid}/feedback?tier=wait&wait=10`);
   expect(fb.text).toContain(`live page ${siteUrl}`);
   expect(fb.text).toContain("Snapshot: ");
+  // The agent's reply reads as the owner's own agent's (spec 2026-10-08 §11
+  // "Display"): its name, then its harness.
+  const agentName: string = session.session?.name ?? session.name;
+  expect(agentName, JSON.stringify(session)).toBeTruthy();
+  const reply = await api(live, `/api/artifacts/${aid}/threads/${tid}/comments`, { method: "POST", body: JSON.stringify({ body: "Wider now", author_kind: "agent" }) }, sid);
+  expect(reply.comment?.body, JSON.stringify(reply)).toBe("Wider now");
+  await expect.poll(() => panel.text()).toContain(`${agentName} (agent, via claude)`);
+  await panel.shot("panel-agent-reply");
 
   // A hot update keeps the pin; removing the button detaches it.
   const main = join(live.siteDir, "main.js");

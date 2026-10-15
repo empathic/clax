@@ -167,7 +167,9 @@ export type QAnswer = { selected: string[]; text: string | null };
 export type AnswerBody = { answers: QAnswer[] };
 /** The asking agent; `project` is the last component of its working
  * directory; `name` its agent name (spec 2026-10-08 §11), when it has one. */
-export type QAgent = { handle: string; harness: string; project: string; name?: string | null };
+export type QAgent = { handle: string; harness: string; project: string | null; name?: string | null;
+  /** Inbox items: its person's public ID (null: the owner's) and name, and whether it is the recipient's own person's agent (spec 2026-10-08 §11). */
+  person?: string | null; person_name?: string; own?: boolean };
 export type QuestionStatus = "open" | "answered" | "declined" | "released" | "withdrawn";
 /** The question view, as every owner route and `question` event gives it. */
 export type QuestionView = {

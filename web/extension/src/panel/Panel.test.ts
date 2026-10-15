@@ -37,6 +37,17 @@ describe("Panel", () => {
     expect(l.sent).toContainEqual({ t: "send", threadId: thread.id, to: `a_${"1".repeat(22)}` });
   });
 
+  it("names agents' replies by agent, person and harness, the owner's own as its agent (spec §11)", () => {
+    const reply = (id: string, person: string, person_name: string, name: string) => ({
+      id, thread_id: thread.id, author_kind: "agent", author_name: "claude", via_harness: "claude", body: `reply ${id}`,
+      created_at: "2026-10-05T10:00:30.000Z", agent: { name, person, person_name },
+    });
+    const t = { ...thread, comments: [...thread.comments, reply("c2", "u_x", "Alex", "clax-web"), reply("c3", "u_sam", "Sam", "sam-notes")] };
+    render(Panel, { props: { link: link(state({ threads: [t as never] })) as never, now: new Date("2026-10-05T10:01:00.000Z") } });
+    expect(screen.getByText("clax-web (agent, via claude)")).toBeTruthy();
+    expect(screen.getByText("sam-notes (Sam's agent, via claude)")).toBeTruthy();
+  });
+
   it("asks for the owner's name while the owner has none", async () => {
     const l = link(state({ viewer: { public_id: "u_x", display_name: null } }));
     render(Panel, { props: { link: l as never, now: new Date("2026-10-05T10:01:00.000Z") } });

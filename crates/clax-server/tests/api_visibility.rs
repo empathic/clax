@@ -2808,9 +2808,37 @@ async fn an_agent_reply_names_the_agent_its_person_and_its_harness() {
             format!("{sam_agent_name} (agent, via claude)"),
         ]
     );
-    // The owner's own view keeps the stored name.
-    let v: Value = w.ts.get(&list).await.json().await.unwrap();
+    // Agents read the rendered line, with no `agent` object.
+    assert!(
+        v["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["comments"][1].get("agent").is_none()),
+        "{v}"
+    );
+    // People's views keep the stored name, with the agent's name and
+    // person for the shell to render the line by its reader.
+    let v: Value = w.ts.owner_browser().get(&list).await.json().await.unwrap();
     assert_eq!(replies(&v), ["claude", "claude"]);
+    let agent = |tid: &str| {
+        v["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["id"] == json!(tid))
+            .unwrap()["comments"][1]["agent"]
+            .clone()
+    };
+    assert_eq!(
+        agent(&tids[0]),
+        json!({"name": owner_agent_name, "person": w.ts.store.owner_viewer(false).unwrap().public_id,
+               "person_name": owner_name})
+    );
+    assert_eq!(
+        agent(&tids[1]),
+        json!({"name": sam_agent_name, "person": sam_public(&w), "person_name": "Sam"})
+    );
 }
 
 /// Spec §7.5: feedback on an artifact a person's agent may no longer read

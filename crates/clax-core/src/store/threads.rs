@@ -557,7 +557,30 @@ fn row_to_comment(r: &Row<'_>) -> rusqlite::Result<Comment> {
         created_at: r.get("created_at")?,
         page_authors: json_list(r.get("page_authors")?),
         agent_person: r.get("agent_person")?,
-        agent_name: r.get("agent_name")?,
+        agent: comment_agent(
+            r.get("agent_name")?,
+            r.get::<_, Option<String>>("agent_person")?.is_none(),
+            r.get("agent_person_id")?,
+            r.get("agent_person_name")?,
+        ),
+    })
+}
+
+/// The [`CommentAgent`] of a comment whose session is named `name`, of
+/// the owner (`owner`) or a person, whose public ID is `person` and whose
+/// name is `raw`; `None` with no name.
+fn comment_agent(
+    name: Option<String>,
+    owner: bool,
+    person: Option<String>,
+    raw: Option<String>,
+) -> Option<crate::model::CommentAgent> {
+    let name = name?;
+    let person_name = crate::feedback::person_name(raw.as_deref(), owner);
+    Some(crate::model::CommentAgent {
+        name,
+        person,
+        person_name,
     })
 }
 
@@ -588,7 +611,11 @@ pub(crate) fn add_page_authors(
 const COMMENT_SELECT: &str = "SELECT c.id, c.thread_id, c.author_kind, c.author_name, c.author_public_id, s.harness AS via_harness, c.via_page, c.body, c.created_at,
         CASE WHEN c.via_page THEN (SELECT json_group_array(pa.author) FROM page_authors pa
                                    WHERE pa.kind = 'comment' AND pa.id = c.id) END AS page_authors,
-        s.person AS agent_person, s.name AS agent_name
+        s.person AS agent_person, s.name AS agent_name,
+        CASE WHEN s.id IS NULL THEN NULL WHEN s.person IS NULL THEN (SELECT display_name FROM viewers WHERE owner = 1)
+             ELSE (SELECT display_name FROM viewers WHERE public_id = s.person) END AS agent_person_name,
+        CASE WHEN s.id IS NULL THEN NULL ELSE COALESCE(s.person, (SELECT public_id FROM viewers WHERE owner = 1)) END
+            AS agent_person_id
      FROM comments c LEFT JOIN sessions s ON s.id = c.via_session_id";
 
 fn load_comments(c: &Connection, thread_id: &str) -> Result<Vec<Comment>> {
@@ -604,7 +631,11 @@ fn load_comments(c: &Connection, thread_id: &str) -> Result<Vec<Comment>> {
 pub(crate) const COMMENTS_OF_MANY: &str = "SELECT c.id, c.thread_id, c.author_kind, c.author_name, c.author_public_id, s.harness AS via_harness, c.via_page, c.body, c.created_at,
         CASE WHEN c.via_page THEN (SELECT json_group_array(pa.author) FROM page_authors pa
                                    WHERE pa.kind = 'comment' AND pa.id = c.id) END AS page_authors,
-        s.person AS agent_person, s.name AS agent_name
+        s.person AS agent_person, s.name AS agent_name,
+        CASE WHEN s.id IS NULL THEN NULL WHEN s.person IS NULL THEN (SELECT display_name FROM viewers WHERE owner = 1)
+             ELSE (SELECT display_name FROM viewers WHERE public_id = s.person) END AS agent_person_name,
+        CASE WHEN s.id IS NULL THEN NULL ELSE COALESCE(s.person, (SELECT public_id FROM viewers WHERE owner = 1)) END
+            AS agent_person_id
      FROM json_each(?1) j CROSS JOIN comments c ON c.thread_id = j.value
      LEFT JOIN sessions s ON s.id = c.via_session_id
      ORDER BY c.thread_id, c.created_at, c.id";
@@ -919,7 +950,7 @@ impl Store {
                 created_at: now.clone(),
                 page_authors,
                 agent_person: None,
-                agent_name: None,
+                agent: None,
             };
             self.record_audit(tx, ctx, comment_record(id.as_str(), &first))?;
             for rec in after {
@@ -1114,7 +1145,7 @@ impl Store {
             created_at: self.now(),
             page_authors: Vec::new(),
             agent_person: None,
-            agent_name: None,
+            agent: None,
         };
         self.with_tx(|tx| {
             let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
@@ -1128,18 +1159,30 @@ impl Store {
                 comment.page_authors = super::artifacts::page_authors_in(tx, &t.artifact_id)?;
                 add_page_authors(tx, "comment", &comment.id, &comment.page_authors)?;
             }
-            (comment.via_harness, comment.agent_person, comment.agent_name) =
-                match &c.via_session_id {
-                    Some(sid) => tx
-                        .query_row(
-                            "SELECT harness, person, name FROM sessions WHERE id = ?1",
-                            params![sid],
-                            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                        )
-                        .optional()?
-                        .map_or((None, None, None), |(h, p, n)| (Some(h), p, n)),
-                    None => (None, None, None),
-                };
+            if let Some(sid) = &c.via_session_id
+                && let Some((h, p, n, raw)) = tx
+                    .query_row(
+                        "SELECT s.harness, s.person, s.name,
+                                CASE WHEN s.person IS NULL THEN (SELECT display_name FROM viewers WHERE owner = 1)
+                                     ELSE (SELECT display_name FROM viewers WHERE public_id = s.person) END,
+                                COALESCE(s.person, (SELECT public_id FROM viewers WHERE owner = 1))
+                           FROM sessions s WHERE s.id = ?1",
+                        params![sid],
+                        |r| {
+                            Ok((
+                                r.get::<_, String>(0)?,
+                                r.get::<_, Option<String>>(1)?,
+                                r.get::<_, Option<String>>(2)?,
+                                (r.get::<_, Option<String>>(3)?, r.get::<_, Option<String>>(4)?),
+                            ))
+                        },
+                    )
+                    .optional()?
+            {
+                comment.via_harness = Some(h);
+                comment.agent = comment_agent(n, p.is_none(), raw.1, raw.0);
+                comment.agent_person = p;
+            }
             if comment.author_kind == AUTHOR_AGENT {
                 super::inbox::note_reply(
                     tx,
@@ -2002,6 +2045,7 @@ mod tests {
     #[test]
     fn agent_comments_name_the_harness_never_the_session() {
         let (_d, st) = store();
+        let owner = st.owner_viewer(false).unwrap().public_id;
         let sid = crate::store::test_util::session(&st, "codex", "cx");
         let aid = artifact(&st, None);
         let t = st
@@ -2028,6 +2072,25 @@ mod tests {
         let json = serde_json::to_string(&got).unwrap() + &serde_json::to_string(&c).unwrap();
         assert!(!json.contains(&sid), "{json}");
         assert!(!json.contains("via_session_id"), "{json}");
+        // Its agent, for people's author lines (spec §11 "Display"): the
+        // session's name and person, never the session.
+        let name = st.get_session(&sid).unwrap().unwrap().name.unwrap();
+        let want = crate::model::CommentAgent {
+            name,
+            person: Some(owner),
+            person_name: "The owner".into(),
+        };
+        assert_eq!(c.agent.as_ref(), Some(&want));
+        assert_eq!(got.comments[1].agent.as_ref(), Some(&want));
+        assert_eq!(got.comments[0].agent, None);
+        let v = serde_json::to_value(&got.comments[1]).unwrap();
+        assert_eq!(v["agent"]["person_name"], "The owner", "{v}");
+        assert!(
+            serde_json::to_value(&got.comments[0])
+                .unwrap()
+                .get("agent")
+                .is_none()
+        );
     }
 
     #[test]

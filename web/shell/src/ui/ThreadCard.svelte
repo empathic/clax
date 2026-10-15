@@ -127,7 +127,7 @@
   {#if !open}
     <div class="fold-sum" id={body}>
       <p class="fold-body">{t.comments[0]?.body ?? ""}</p>
-      <p class="fold-meta"><span>{t.comments[0] ? authorLabel(t.comments[0]) : ""}</span>{#if replies > 0}<span>{replies} {replies === 1 ? "reply" : "replies"}</span>{/if}{@render meta?.()}</p>
+      <p class="fold-meta"><span>{t.comments[0] ? authorLabel(t.comments[0], me) : ""}</span>{#if replies > 0}<span>{replies} {replies === 1 ? "reply" : "replies"}</span>{/if}{@render meta?.()}</p>
     </div>
   {:else}
     <div class="card-body" id={body}>
@@ -136,7 +136,7 @@
       {@const note = addressedNote(t, c, versions)}
       {@const v = commentVersion(t, c, versions)}
       <div class={["msg", c.author_kind === "agent" ? "agent" : "you"]}>
-        <p class="by"><b class="author">{authorLabel(c)}{#if note}<span class="addressed muted">{` · addressed in v${note}`}</span>{/if}{#if c.via_page}<span class="via-page muted small">{" · via the page"}</span>{/if}</b
+        <p class="by"><b class="author">{authorLabel(c, me)}{#if note}<span class="addressed muted">{` · addressed in v${note}`}</span>{/if}{#if c.via_page}<span class="via-page muted small">{" · via the page"}</span>{/if}</b
           >{#if v !== null}<span class="vt">v{v}</span>{/if}<time class="muted small" datetime={c.created_at} title={new Date(c.created_at).toLocaleString()}>{relativeTime(c.created_at, now)}</time></p>
         <p class="body">{c.body}</p>
       </div>

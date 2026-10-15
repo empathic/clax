@@ -752,83 +752,42 @@ fn views_and_senders(
         .map(|views| (views, senders, owners))
 }
 
-/// The display names of agents' people, each read once (`None`: the
-/// owner), for agent reply author lines.
-struct AgentPeople<'a> {
-    st: &'a Store,
-    names: HashMap<Option<String>, String>,
-}
-
-impl<'a> AgentPeople<'a> {
-    fn new(st: &'a Store) -> AgentPeople<'a> {
-        AgentPeople {
-            st,
-            names: HashMap::new(),
-        }
-    }
-
-    fn name(&mut self, person: Option<&str>) -> clax_core::Result<String> {
-        let key = person.map(str::to_string);
-        if let Some(n) = self.names.get(&key) {
-            return Ok(n.clone());
-        }
-        let n = self.st.agent_person(person)?.name;
-        self.names.insert(key, n.clone());
-        Ok(n)
-    }
-}
-
 /// Comment `c`'s view `view` as an agent reads it: a viewer's name says
 /// `(not connected)` when the viewer is not (spec §9.6, §19 item 7); an
 /// agent's reply from a named session reads `<name> (agent, via
 /// <harness>)` when the agent is the reader's own person's, else `<name>
 /// (<person>'s agent, via <harness>)` (spec §11 "Display", §19 item 1),
-/// and one from a session with no name keeps its stored name.
-fn mark_comment(
-    vis: &Visibility,
-    people: &mut AgentPeople<'_>,
-    c: &Comment,
-    view: &mut Value,
-) -> clax_core::Result<()> {
+/// with no `agent` object; one from a session with no name keeps its
+/// stored name.
+fn mark_comment(vis: &Visibility, c: &Comment, view: &mut Value) {
     if c.author_kind == clax_core::store::threads::AUTHOR_AGENT {
-        if let (Some(name), Some(harness)) = (&c.agent_name, &c.via_harness) {
+        if let (Some(a), Some(harness)) = (&c.agent, &c.via_harness) {
             let reader = match vis.reader() {
                 Some(Reader::Person(p)) => Some(p.as_str()),
                 _ => None,
             };
-            let person = if c.agent_person.as_deref() == reader {
-                None
-            } else {
-                Some(people.name(c.agent_person.as_deref())?)
-            };
-            view["author_name"] = json!(clax_core::feedback::agent_author(
-                name,
-                person.as_deref(),
-                harness
-            ));
+            let person = (c.agent_person.as_deref() != reader).then_some(a.person_name.as_str());
+            view["author_name"] =
+                json!(clax_core::feedback::agent_author(&a.name, person, harness));
         }
-        return Ok(());
+        if let Some(o) = view.as_object_mut() {
+            o.remove("agent");
+        }
+        return;
     }
     let author = Author::of_viewer(c.author_public_id.as_deref());
     if let Some(name) = view["author_name"].as_str() {
         view["author_name"] = json!(vis.label(name, &author));
     }
-    Ok(())
 }
 
 /// Thread `t`'s view `view` as an agent reads it: every name of an author
 /// who is not connected says so (spec §9.6): its viewers' comments, its
 /// batches' senders (`senders`, in `sends` order) and the viewer who
 /// resolved it; its agents' replies name their agents ([`mark_comment`]).
-fn mark_thread(
-    vis: &Visibility,
-    people: &mut AgentPeople<'_>,
-    t: &Thread,
-    view: &mut Value,
-    senders: &[Option<String>],
-) -> clax_core::Result<()> {
+fn mark_thread(vis: &Visibility, t: &Thread, view: &mut Value, senders: &[Option<String>]) {
     for (i, c) in t.comments.iter().enumerate() {
-        mark_comment(vis, people, c, &mut view["comments"][i])?;
+        mark_comment(vis, c, &mut view["comments"][i]);
     }
     for (i, sender) in senders.iter().enumerate() {
         let send = &mut view["sends"][i];
@@ -852,7 +811,6 @@ fn mark_thread(
         };
         view["resolved_by_name"] = json!(name);
     }
-    Ok(())
 }
 
 /// Viewer views `people` (each with its public ID at `id_key` and its
@@ -1068,9 +1026,8 @@ impl Vis {
             }
         }
         if let Some(vis) = &self.vis {
-            let mut people = AgentPeople::new(st);
             for ((t, view), senders) in threads.iter().zip(&mut views).zip(&senders) {
-                mark_thread(vis, &mut people, t, view, senders)?;
+                mark_thread(vis, t, view, senders);
             }
         }
         Ok(views)
@@ -1095,20 +1052,17 @@ impl Vis {
 
     /// Comment `c` of a thread of artifact `aid`, its body withheld and
     /// its author named as in its thread's view.
-    ///
-    /// # Errors
-    /// The store's.
-    pub fn filter_comment(&self, st: &Store, aid: &str, c: &Comment) -> clax_core::Result<Value> {
+    pub fn filter_comment(&self, aid: &str, c: &Comment) -> Value {
         let mut v = json!(c);
         if let Some(vis) = &self.vis {
-            mark_comment(vis, &mut AgentPeople::new(st), c, &mut v)?;
+            mark_comment(vis, c, &mut v);
         }
         if let Some(vis) = self.filtering()
             && !vis.sees(&visibility::authors_of_comment(c), aid, Some(&c.thread_id))
         {
             placeholder::comment(&mut v);
         }
-        Ok(v)
+        v
     }
 
     /// The authors withholding thread `t`'s clip from the reader, `None`

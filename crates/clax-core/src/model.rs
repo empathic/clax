@@ -195,10 +195,23 @@ pub struct Comment {
     /// agent). For the visibility filter; never served.
     #[serde(skip)]
     pub agent_person: Option<String>,
-    /// For an agent comment, its session's agent name (spec §11), when it
-    /// has one. For the author line agents read; never served as is.
-    #[serde(skip)]
-    pub agent_name: Option<String>,
+    /// For an agent comment from a session with an agent name (spec §11
+    /// "Display"), the agent: its name and person, from which each reader's
+    /// author line is made. Absent otherwise (viewers' comments, and
+    /// replies from before agent names).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<CommentAgent>,
+}
+
+/// An agent comment's agent (spec 2026-10-08 §11 "Display"): its current
+/// name, its person's public ID (the owner's for the owner's agents;
+/// `None` only while the owner has no viewer row) and that person's name
+/// as views give it ([`crate::feedback::person_name`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CommentAgent {
+    pub name: String,
+    pub person: Option<String>,
+    pub person_name: String,
 }
 
 /// A session's watch on an artifact; `replies_armed` gates the Stop-hook and
