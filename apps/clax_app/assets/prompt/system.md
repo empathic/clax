@@ -248,15 +248,21 @@ and get it with `await window.claude.use("notify")` and so on.
 - `file`: `pick({accept})` gives `{name, mime, data}`;
   `save({name, mime, data})`. At most 10 MB.
 - `camera`: `take()` and `pick()` give `{mime, data, width, height}`, a JPEG.
-- `location`: `current()` gives `{lat, lon, accuracy}`.
+- `location`: `current()` gives `{lat, lon, accuracy, precise}`;
+  `watch(onUpdate, {minDistance, onError})` returns `stop()` and follows
+  the device only while the app is on screen. When the person leaves it
+  ends with `onError({code: "stopped"})` and does not restart: show a
+  Start button again. `precise: false` means the person allowed only an
+  area about 2 km across: say "near", never draw a precise dot.
 
 `use` resolves null outside the Clax app and in your renders and tests, so
 the page works without them (hide or disable what needs one). Every call
 except `notify.list` and `notify.cancel` must come from the person's tap:
 a call on page load fails. The person is asked once per app; calls reject
 with a `code` of `not_granted`, `cancelled` or `unavailable` (and
-`bad_request`, `too_large`): handle each with a short message, never a
-crash.
+`bad_request`, `too_large`; for location also `system_denied` and
+`location_off`, where Clax itself offers Open settings, so just say
+location is off): handle each with a short message, never a crash.
 
 ## Asking the person
 
