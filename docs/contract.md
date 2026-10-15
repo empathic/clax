@@ -5505,7 +5505,7 @@ body that is not (an image, say) comes as `body_base64` instead, byte for
 byte. A request without a `User-Agent` carries `Clax/<version>
 (+https://github.com/empathic/clax)`. A `GET` whose only headers are
 `Accept`, `Accept-Language` and `User-Agent` may be answered from the
-daemon's HTTP cache, shared by every app, which keeps a `200` with a
+daemon's HTTP cache, kept apart per artifact (a draft has its own), which keeps a `200` with a
 lifetime or validator and no `Set-Cookie`, `Vary: *`, `no-store` or
 `private`, serves it while fresh after the same host checks, and
 revalidates it when stale (at most 100 MiB under `CLAX_HOME/net-cache`).
