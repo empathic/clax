@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'package:clax_app/agent/failure.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/ui/theme.dart';
@@ -317,6 +318,51 @@ void main() {
       await pumpDetail(tester, rig, tid);
       expect(find.byKey(const ValueKey('thread-retry')), findsNothing);
       expect(find.text('Clax replied'), findsOneWidget);
+    });
+
+    testWidgets('a limit stop offers Keep going, which calls onRetry, with '
+        'the reason without the agent\'s words', (tester) async {
+      final (rig, tid) = await failed(
+        limitFailureReply(
+          '10 turns',
+          leftUsd: 6,
+          agentSaid: 'I ran out of room in this run',
+        ),
+      );
+      await pumpDetail(tester, rig, tid);
+      expect(find.byKey(const ValueKey('thread-retry')), findsNothing);
+      expect(
+        find.text(
+          'It was too big for one go — it needed more than 10 steps. '
+          '$keepGoingHint',
+        ),
+        findsOneWidget,
+      );
+      await tester.tap(find.byKey(const ValueKey('thread-keep-going')));
+      await tester.pump();
+      await tester.pump();
+      expect(rig.retries, [tid]);
+      expect(find.text('Keeping going'), findsOneWidget);
+    });
+
+    testWidgets('a limit stop that published part of the change offers Keep '
+        'going too', (tester) async {
+      final (rig, tid) = await failed(
+        limitLandedReply('120 seconds', leftUsd: 2, agentSaid: 'Adding it'),
+      );
+      await pumpDetail(tester, rig, tid);
+      expect(find.text('Clax replied'), findsOneWidget);
+      expect(find.byKey(const ValueKey('thread-keep-going')), findsOneWidget);
+    });
+
+    testWidgets('a change that spent its \$6 offers no Keep going', (
+      tester,
+    ) async {
+      final (rig, tid) = await failed(
+        limitFailureReply('10 turns', leftUsd: 0),
+      );
+      await pumpDetail(tester, rig, tid);
+      expect(find.byKey(const ValueKey('thread-keep-going')), findsNothing);
     });
 
     testWidgets('not shown when the person wrote after the failure', (
