@@ -382,7 +382,12 @@ fn hosted(env: &Env) -> Result<Option<Arc<clax_server::hosted::Hosted>>> {
     let max_artifacts = opt("MEMBER_MAX_ARTIFACTS")
         .and_then(|v| v.parse().ok())
         .unwrap_or(clax_core::store::github::DEFAULT_MAX_ARTIFACTS);
-    let h = h.with_github(github, max_artifacts);
+    // The public gallery that signed-out visitors see: on only with
+    // `PUBLIC_GALLERY=1`.
+    let public_gallery = opt("PUBLIC_GALLERY").is_some_and(|v| v == "1");
+    let h = h
+        .with_github(github, max_artifacts)
+        .with_public_gallery(public_gallery);
     Ok(Some(Arc::new(h)))
 }
 

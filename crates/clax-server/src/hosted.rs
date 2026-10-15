@@ -128,6 +128,10 @@ pub struct Hosted {
     pub github: Option<crate::github::GitHub>,
     /// Each GitHub member's caps.
     pub member_caps: clax_core::store::github::MemberCaps,
+    /// Whether pages may be listed in the public gallery
+    /// ([`Hosted::with_public_gallery`]); off, nothing is listed and no
+    /// one may list a page.
+    pub public_gallery: bool,
 }
 
 impl std::fmt::Debug for Hosted {
@@ -303,6 +307,7 @@ impl Hosted {
             content: None,
             github: None,
             member_caps: Default::default(),
+            public_gallery: false,
         })
     }
 
@@ -350,6 +355,16 @@ impl Hosted {
         }
     }
 
+    /// This hosted mode with the public gallery on or off (`on`). Off, the
+    /// default, `GET /api/hosted/public` lists nothing, a page's sharing
+    /// state never reads `public`, and listing a page is refused.
+    pub fn with_public_gallery(self, on: bool) -> Hosted {
+        Hosted {
+            public_gallery: on,
+            ..self
+        }
+    }
+
     /// This hosted mode with its attempts counted on `clock`.
     pub fn with_clock(self, clock: std::sync::Arc<dyn clax_core::working::Clock>) -> Hosted {
         Hosted {
@@ -384,6 +399,7 @@ impl Hosted {
         Hosted::new(&c.public_origin, secret.as_deref()).map(|h| {
             h.behind_cloudflare(c.behind_cloudflare)
                 .with_github(github, c.member_max_artifacts)
+                .with_public_gallery(c.public_gallery)
         })
     }
 
@@ -2104,6 +2120,7 @@ async fn list_links(
     browser_only(&headers)?;
     let who = member_of(&r, "list shared links")?.clone();
     let h = hosted_of(&s);
+    let gallery = h.public_gallery;
     let links = s
         .store_call(move |st| {
             let mut out = Vec::new();
@@ -2115,7 +2132,7 @@ async fn list_links(
                     continue;
                 }
                 if let Some(a) = st.get_artifact(&id)? {
-                    let listed = st.link_listed(&aid)?;
+                    let listed = gallery && st.link_listed(&aid)?;
                     out.push((aid, a.title, access, listed));
                 }
             }
@@ -2155,7 +2172,8 @@ struct LinkBody {
 /// read up its lineage) are rechecked before it answers
 /// ([`crate::git_remotes::recheck`]). 400 `invalid_args` for another
 /// access, 404 for no such artifact or one the caller may not read, 403
-/// `forbidden` for anyone else.
+/// `forbidden` for anyone else, 403 `public_gallery_off` for `listed:
+/// true` while the public gallery is off.
 async fn set_link(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -2175,8 +2193,15 @@ async fn set_link(
             ApiError::bad_request("invalid_args", "access is viewer, commenter or null")
         })?),
     };
+    if b.listed == Some(true) && !h.public_gallery {
+        return Err(ApiError::forbidden(
+            "public_gallery_off",
+            "this Clax lists no pages publicly",
+        ));
+    }
     let id = aid.as_str().to_string();
     let listed = b.listed;
+    let gallery = h.public_gallery;
     let (_, listed) = s
         .store_call(move |st| {
             sharer(st, &who, &aid)?;
@@ -2198,7 +2223,7 @@ async fn set_link(
         Json(json!({
             "artifact_id": id,
             "access": access,
-            "listed": listed,
+            "listed": listed && gallery,
             "url": h.url(&format!("/a/{id}")),
         }))
         .into_response(),
@@ -2280,6 +2305,7 @@ async fn get_sharing(
 ) -> Result<Response, ApiError> {
     browser_only(&headers)?;
     let h = hosted_of(&s);
+    let gallery = h.public_gallery;
     let who = member_of(&r, "share pages")?.clone();
     let member = r.member.clone();
     let aid = crate::routes::artifacts::parse_id(&crate::routes::artifacts::path(aid)?)?;
@@ -2301,7 +2327,7 @@ async fn get_sharing(
                 return Ok(json!({"artifact_id": id, "can_share": false}));
             }
             let access = st.link_access(id)?;
-            let listed = st.link_listed(id)?;
+            let listed = gallery && st.link_listed(id)?;
             let people: Vec<Value> = st.artifact_shares(id)?.iter().map(share_view).collect();
             let suggestions = if who.owner {
                 json!(st.share_candidates()?)
@@ -2312,6 +2338,7 @@ async fn get_sharing(
                 "artifact_id": id,
                 "can_share": true,
                 "general": general_of(access, listed),
+                "public_gallery": gallery,
                 "link_access": access,
                 "url": url,
                 "people": people,
@@ -2425,10 +2452,14 @@ async fn delete_share(
 
 /// `GET /api/hosted/public` (anyone, signed in or not) → `{artifacts:
 /// [{artifact_id, title, url}]}`: the public gallery, the artifacts shared
-/// by link and listed, most recently updated first. Each opens through its
+/// by link and listed, most recently updated first; none while the public
+/// gallery is off ([`Hosted::with_public_gallery`]). Each opens through its
 /// link, as any page shared by link does.
 async fn public_list(State(s): State<AppState>) -> Result<Response, ApiError> {
     let h = hosted_of(&s);
+    if !h.public_gallery {
+        return Ok(no_store(Json(json!({"artifacts": []})).into_response()));
+    }
     let rows = s.store_call(|st| st.public_artifacts()).await?;
     let artifacts: Vec<Value> = rows
         .iter()
