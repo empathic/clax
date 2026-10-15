@@ -1313,12 +1313,26 @@ labelled "on <file>", and opening one takes the frame to that page and scrolls
 to the thread. A thread detaches only when its anchor is not found on its own
 page.
 
+An element or range anchor's `quote` is the page's text nodes joined as they
+are, which re-anchoring matches, so text that runs from one element into
+another reads run together (`<b>Mon</b><span>5 km</span>` quotes `Mon5 km`).
+The bridge then also sends `label`, the quote as a reader sees it, with a
+space where its text runs into another element (`Mon 5 km`), whitespace
+collapsed; it is left out when it would read as the quote. The daemon stores
+it with the anchor and returns it with the thread; it is optional, at most
+2000 characters with no control characters or line separators, and must read
+as the quote, or its start, with only whitespace and control characters
+changed, or the thread is refused with `invalid_anchor`. Thread cards, the
+composer, the app's thread labels and the anchor summary show the label in
+place of the quote when there is one, and the quote otherwise (as for
+threads made before it existed).
+
 A comment can also be about the whole artifact ("make the colours warmer")
 rather than a spot on it. The threads panel opens with a **New comment** box
 for it: pressing it opens the usual composer in the panel, labelled "The
 whole artifact", with no screenshot. Its thread's anchor is `{"kind":
 "artifact"}`: every target field (`selector`, `quote`, `prefix`, `suffix`,
-`html_hash`, `rect`, `custom_name`, `area`, `route`) is null and `file` is
+`html_hash`, `rect`, `custom_name`, `area`, `route`, `label`) is null and `file` is
 empty, `""`, since it is on no page. A create may send the anchor without
 `file` (read as `index.html`) or with `file: ""`; the daemon stores `""`.
 An `artifact` anchor with any target field or another `file` is refused
@@ -2443,7 +2457,7 @@ selector (`custom:<name>` for a custom anchor; `area in <selector> (<w>% ×
 <h>%)` for a drawn area, its share of the element's width and height in whole
 percent, `<1%` for a share under half a percent, e.g. `area in main >
 section:nth-of-type(2) (42% × 18%)`) and, when there is one, the
-quote with whitespace collapsed, `«` and `»` replaced by `"`, and cut to 120
+quote (the anchor's `label` when it has one) with whitespace collapsed, `«` and `»` replaced by `"`, and cut to 120
 characters followed by `…`. Author names lose control characters, `"` and `:`, and are cut to
 40 characters (`Viewer` when empty). A comment the page wrote through the
 `comments` capability, as the viewer, has ` (written by the page)` after the
