@@ -120,8 +120,9 @@ class DaemonStopped implements Exception {
 ///
 /// An exit the supervisor did not ask for (or a failed start) restarts the
 /// daemon after [backoff] (5 s from the fifth on); five within sixty
-/// seconds, or [startFailAfter] starts in a row that never come up, is
-/// [Failed]. After [stop] nothing restarts until [ensureUp].
+/// seconds, [startFailAfter] starts in a row that never come up, or one
+/// exit with [migrationFailedExit], is [Failed]. After [stop] nothing
+/// restarts until [ensureUp].
 class DaemonSupervisor {
   DaemonSupervisor({
     required this._exe,
@@ -177,6 +178,12 @@ complex = "claude-sonnet-5-5"
   /// Starts in a row that never come up (exit, no answer within
   /// [healthLimit], or no process) before [Failed].
   static const startFailAfter = 3;
+
+  /// The status `clax` exits with when it could not bring its database's
+  /// schema up to date. That repeats on every start, so the first such
+  /// exit is [Failed] at once, with the daemon's output (its error) in the
+  /// tail, rather than restarted.
+  static const migrationFailedExit = 65;
   static const tailLines = 50;
 
   final ExeLocator _exe;
@@ -211,6 +218,9 @@ complex = "claude-sonnet-5-5"
   int _failedStarts = 0;
   String _lastReason = 'unknown';
 
+  /// The last exit was [migrationFailedExit].
+  bool _migrationFailed = false;
+
   /// The loop is running (between `ensureUp` and its end on stop or
   /// failure).
   Completer<void>? _loopDone;
@@ -242,6 +252,7 @@ complex = "claude-sonnet-5-5"
       _exits.clear();
       _attempt = 0;
       _failedStarts = 0;
+      _migrationFailed = false;
       unawaited(_loop());
     }
     return w.future;
@@ -330,6 +341,7 @@ complex = "claude-sonnet-5-5"
           }
           // A kill by onResume keeps the reason it gave.
           if (!_skipBackoff) _lastReason = 'exited with code $code';
+          _noteMigrationExit(code);
           if (_clock.now().difference(upAt) >= failWindow) _attempt = 0;
         }
         final now = _clock.now();
@@ -339,7 +351,9 @@ complex = "claude-sonnet-5-5"
         _attempt++;
         if (started == null) _failedStarts++;
         final String? failure;
-        if (_failedStarts >= startFailAfter) {
+        if (_migrationFailed) {
+          failure = 'clax could not upgrade its database; last: $_lastReason';
+        } else if (_failedStarts >= startFailAfter) {
           failure =
               'clax did not come up $_failedStarts times in a row; last: $_lastReason';
         } else if (_exits.length >= failAfter) {
@@ -350,6 +364,10 @@ complex = "claude-sonnet-5-5"
         }
         if (failure != null) {
           final reason = failure;
+          // The daemon's last words (its error) may follow its exit.
+          if (_migrationFailed) {
+            await Future.any([_outputDone, _clock.delay(termGrace)]);
+          }
           final tail = List<String>.unmodifiable(_tail);
           _set(Failed(reason, tail));
           final w = _waiter;
@@ -463,9 +481,14 @@ complex = "claude-sonnet-5-5"
     int code,
   ) {
     _lastReason = 'exited with code $code while starting';
+    _noteMigrationExit(code);
     _proc = null;
     _forgetDaemonJson(proc.pid);
     return null;
+  }
+
+  void _noteMigrationExit(int code) {
+    _migrationFailed = code == migrationFailedExit;
   }
 
   /// SIGTERM, then SIGKILL after [termGrace]; completes once [p] exited.
@@ -538,13 +561,19 @@ complex = "claude-sonnet-5-5"
   /// Keeps the last lines of both of [p]'s output streams; reading stdout
   /// also keeps a full pipe from blocking the daemon.
   void _keepTail(RunningProcess p) {
-    for (final stream in [p.stdout, p.stderr]) {
-      stream
-          .transform(const Utf8Decoder(allowMalformed: true))
-          .transform(const LineSplitter())
-          .listen(_addTail, onError: (Object _) {});
-    }
+    _outputDone = Future.wait([
+      for (final stream in [p.stdout, p.stderr])
+        stream
+            .transform(const Utf8Decoder(allowMalformed: true))
+            .transform(const LineSplitter())
+            .listen(_addTail, onError: (Object _) {})
+            .asFuture<void>()
+            .catchError((Object _) {}),
+    ]);
   }
+
+  /// Both output streams of the last daemon started have ended.
+  Future<void> _outputDone = Future.value();
 
   void _addTail(String line) {
     _tail.addLast(line);

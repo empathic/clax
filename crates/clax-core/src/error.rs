@@ -89,6 +89,13 @@ pub enum CoreError {
         "this database's schema is version {found}, newer than this clax knows (version {known}); upgrade clax"
     )]
     SchemaNewer { found: u32, known: u32 },
+    /// Bringing the database's schema up to date failed at schema version
+    /// `at`, or the copy taken before it ([`crate::store::backup`]) could
+    /// not be made. The migration that failed was rolled back: the database
+    /// is left at `at`, and opening it again fails the same way, so a
+    /// supervisor stops restarting on it.
+    #[error("could not upgrade the database from schema version {at}: {detail}")]
+    MigrationFailed { at: u32, detail: String },
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
