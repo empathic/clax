@@ -158,10 +158,14 @@ const kitApi = <String, String>{
       r'kit/map.js exports MapView {center: [lat, lng], zoom, fit: points '
       r'(fits the view to them; points are [lat, lng] or {lat, lng}), '
       r'markers: [{lat, lng, label, color, icon, selected, onClick(marker)}], '
-      r"here: {lat, lon, accuracy} (the location capability's current(), a "
-      r'"you are here" dot), onMove({center, zoom, bounds: {north, south, '
+      r"here: {lat, lon, accuracy, precise} (the location capability's "
+      r'current(), a "you are here" dot, only a circle when precise is '
+      r'false), onMove({center, zoom, bounds: {north, south, '
       r'east, west}}), height, tiles: "https://host/{z}/{x}/{y}.png", '
-      r'attribution, maxZoom, darkTiles}; people drag, pinch, scroll, '
+      r'attribution, maxZoom, darkTiles, locate}; when the app declares '
+      r'{"location": {}} the map has a "Show my location" button that '
+      r'follows the device from a tap (location.watch) and stops on unmount '
+      r'(locate: false hides it); people drag, pinch, scroll, '
       r'double-tap and use the arrow keys. Tiles come through the net '
       r'capability as blob: images, so the app declares {"net": {"hosts": '
       r'["tile.openstreetmap.org"]}} (or the host of its tiles): the owner is asked '
