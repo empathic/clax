@@ -4656,8 +4656,10 @@ resolves `null` for them.
   downscaled to at most 1600 px a side.
 - `location`: `current()` → `{lat, lon, accuracy, precise}` (degrees,
   metres). `watch(onUpdate, {minDistance?, onError?})` → `stop()`: a
-  position at most once a second and once per `minDistance` metres (10
-  when absent, 5 to 10000), at most 4 watches at once. A watch runs only
+  position at once, then at most once a second (the latest of a burst at
+  the second's end) and once per `minDistance` metres (10 when absent, 5
+  to 10000), at most 4 watches at once. One tap starts one location call
+  (`current` or `watch`); after a watch ends, a new tap is needed. A watch runs only
   while the app is on screen: when the app screen is hidden (Clax in the
   background, another screen or dialog over the app, the app closed) or
   the page's document goes, it ends with `onError({code: "stopped"})`
@@ -4674,13 +4676,19 @@ the shell; a watch's updates and its end come back by `deviceEvent`, under
 a watch ID of the shell's own. The app asks the person once per app and
 capability ("Let “Plants” see where your device is?") and keeps the
 answer, Allow or Don't allow, until it is revoked in the app inspector's
-Permissions (revoking `notify` cancels that app's reminders; deleting the
-app does too). For location the answers are Precise, Approximate and
+Permissions (revoking `notify` cancels that app's reminders, revoking
+`location` ends its running watches with `not_granted`; deleting the app
+does both). Closing the question without answering keeps nothing: the call
+rejects `dismissed` and the next one asks again. For location the answers are Precise, Approximate and
 Don't allow, and the inspector shows which. An app allowed Approximate,
 and any app while Android allows Clax only approximate location, gets the
-centre of a cell about 2 km across (on a grid shifted at random for each
-app, kept until its location answer is revoked or the app deleted), `accuracy` at least 2000 and `precise: false`; the same anywhere in
-the cell, and a watch reports it only when the cell changes. Android asks
+centre of a cell about 2 km across (on a grid shifted at random once per
+install and never redrawn), `accuracy` at least 2000 and `precise:
+false`; the same anywhere in the cell. After its first position, an
+approximate watch reports a new cell only once the device has been well
+inside it (a fifth of a cell from every edge) for 3 minutes, and at most
+once per 10 minutes, so an update marks neither when nor where an edge
+was crossed. Android asks
 its own runtime permission on top (notifications, location). Calls reject
 `{code, message}` with `not_granted` (not allowed, or the system
 permission refused), `cancelled` (the person closed the picker, sheet or
