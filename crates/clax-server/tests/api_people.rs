@@ -2472,3 +2472,105 @@ async fn a_stale_creators_change_never_restores_a_removed_raise() {
         "{list}"
     );
 }
+
+/// A person's agent reaches the daemon at its LAN address; every comment
+/// handed to it, by every tier and by the follower's notices, links there,
+/// never to the daemon's loopback address, which on the person's machine is
+/// their own.
+#[tokio::test]
+async fn a_persons_agent_gets_links_on_the_address_it_reached() {
+    let p = people().await;
+    let lee =
+        p.ts.connect_person("Lee", "clax:collaborator")
+            .await
+            .on_lan_address();
+    let lan_base = lee.reached_base();
+    assert!(lan_base.starts_with("http://192.0.2.1:"), "{lan_base}");
+    let sid = id(&lee.register("claude", "lee-h1").await);
+    let lee_public =
+        p.ts.store
+            .viewer_of_grant(&lee.grant_id())
+            .unwrap()
+            .public_id;
+    p.ts.store
+        .approve(
+            &AuditCtx::DAEMON,
+            Some(&lee_public),
+            &p.ts.owner_public_id().await,
+            Scope::Everywhere,
+            Via::Connect,
+        )
+        .unwrap();
+    let a = p.ts.publish("Review", &[("index.html", "<p>v1</p>")]).await;
+    let aid = a["artifact"]["id"].as_str().unwrap().to_string();
+    let r = lee
+        .agent(
+            "PUT",
+            &format!("/api/sessions/{sid}/watches/{aid}"),
+            Some(&sid),
+            None,
+        )
+        .await;
+    assert_eq!(r.status(), 200);
+    let h = p.ts.store.get_session(&sid).unwrap().unwrap().agent_handle;
+    let lan_url = format!("{lan_base}/a/{aid}");
+    let loopback = p.ts.base.clone();
+    let send = |body: &'static str| {
+        let (p, aid, h) = (&p, aid.clone(), h.clone());
+        async move {
+            let t = p.ts.thread_as_owner(&aid, body).await;
+            let tid = t["id"].as_str().unwrap().to_string();
+            let (status, v) = p
+                .owner(
+                    "POST",
+                    &format!("/api/artifacts/{aid}/threads/{tid}/send"),
+                    Some(json!({"to": h})),
+                )
+                .await;
+            assert_eq!(status, 200, "{v}");
+        }
+    };
+    // The follower's notice (tier 5's announcement) first: a take would
+    // hand the row over before it is announced.
+    send("a notice").await;
+    let (status, v) = json_of(
+        lee.agent(
+            "GET",
+            &format!("/api/sessions/{sid}/notices?wait=0"),
+            Some(&sid),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    assert!(!v["notices"].as_array().unwrap().is_empty(), "{v}");
+    for n in v["notices"].as_array().unwrap() {
+        assert_eq!(n["url"], json!(lan_url), "{v}");
+    }
+    assert!(!v.to_string().contains(&loopback), "{v}");
+    for tier in ["wait", "piggyback", "stop_hook", "prompt_hook", "inject"] {
+        send("please fix the chart").await;
+        let (status, v) = json_of(
+            lee.agent(
+                "GET",
+                &format!("/api/sessions/{sid}/feedback?tier={tier}"),
+                Some(&sid),
+                None,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, 200, "{tier}: {v}");
+        let items = v["feedback"].as_array().unwrap();
+        assert!(!items.is_empty(), "{tier}: {v}");
+        for i in items {
+            assert_eq!(i["url"], json!(lan_url), "{tier}: {v}");
+        }
+        assert!(
+            v["text"].as_str().unwrap().contains(&lan_url),
+            "{tier}: {v}"
+        );
+        assert!(!v.to_string().contains(&loopback), "{tier}: {v}");
+    }
+}

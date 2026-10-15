@@ -155,6 +155,22 @@ fn view_at(
     }
 }
 
+/// The base URL the links handed to an agent start with: for an agent of
+/// another machine (`grant`), `http://` and the `Host` its signed request
+/// named, the address that machine reaches the daemon at (the API answers
+/// only to a local name or the address the connection arrived on); else
+/// the daemon's own browser base, which is this machine's.
+fn agent_base(s: &AppState, grant: bool, headers: &HeaderMap) -> String {
+    let host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .filter(|h| !h.is_empty());
+    match host {
+        Some(h) if grant => format!("http://{h}"),
+        _ => s.browser_base.clone(),
+    }
+}
+
 #[derive(Deserialize)]
 pub struct FeedbackQuery {
     #[serde(default)]
@@ -226,6 +242,7 @@ pub async fn poll(
     };
     let mut rights = a.read_rights();
     let grant = a.grant().map(str::to_string);
+    let base = agent_base(&s, grant.is_some(), &headers);
     // Built with the first view: the poll's deliveries are recorded as
     // this session's agent.
     let mut audit: Option<std::sync::Arc<clax_core::audit::AuditCtx>> = None;
@@ -298,14 +315,14 @@ pub async fn poll(
         let (held, clock) = (s.questions.clone(), s.question_clock.clone());
         let audit = audit_now;
         let (view_now, readable_rights) = (view.clone(), rights_now.clone());
+        let base = base.clone();
         let (taken, (answers, late)) = s
             .store_call(move |st| {
                 let rights = readable_rights;
                 let readable = |a: &Artifact| rights.allows(a);
                 let readable: Option<&(dyn Fn(&Artifact) -> bool + Sync)> =
                     rights.is_person_agent().then_some(&readable);
-                let taken =
-                    st.take_feedback_readable(&audit, &t, &ctx.browser_base, &view_now, readable)?;
+                let taken = st.take_feedback_readable(&audit, &t, &base, &view_now, readable)?;
                 if taken.stale {
                     return Ok((taken, Default::default()));
                 }
@@ -412,6 +429,7 @@ pub struct NoticesQuery {
 pub async fn notices(
     State(s): State<AppState>,
     TokenOrAgent(a): TokenOrAgent<FeedbackNotices>,
+    headers: HeaderMap,
     sid: Result<Path<String>, PathRejection>,
     q: Result<Query<NoticesQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -443,7 +461,7 @@ pub async fn notices(
         if s.feedback_waiters.is_waiting(&sid) {
             return Ok(empty(0));
         }
-        let base = s.browser_base.clone();
+        let base = agent_base(&s, grant.is_some(), &headers);
         let who = sid.clone();
         let prior = vis.take();
         let (prior_rights, grant) = (rights.clone(), grant.clone());

@@ -2781,7 +2781,10 @@ and `haiku` act on this machine. Every other command prints `` `clax
 <url>): do it on the owner's machine, or in your browser; `CLAX_REMOTE=0
 clax <command>` uses this machine's own Clax `` and exits 2.
 
-A clip on another machine is fetched, signed, into
+Links handed to an agent of another machine (each feedback item's `url`,
+the payload's and notices' lines) start with the address its requests
+reached the daemon at (`http://` and their signed `Host`), never the
+daemon's loopback address. A clip on another machine is fetched, signed, into
 `<home>/remote-cache/clips/`, and the payload's `Clip:` line names the
 local file, or reads `Clip: unavailable (<reason>)`. `codex queue` is not
 attempted for a remote session, and its `push` says so.
