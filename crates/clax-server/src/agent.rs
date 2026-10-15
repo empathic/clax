@@ -1604,11 +1604,14 @@ pub async fn verify_layer(State(s): State<AppState>, mut req: Request, next: Nex
             Err(e) => return e.into_response(),
         }
     };
-    if !sig::verify(
+    let started = std::time::Instant::now();
+    let verified = sig::verify(
         &g.key,
         &grant_auth::input(&g.head, &body, Some(g.token.expose()), agent),
         &g.head.header.sig,
-    ) {
+    );
+    s.verify_times.record(started.elapsed());
+    if !verified {
         return grant_auth::refuse(SigError::Bad, st).into_response();
     }
     let now = st.now_utc().timestamp();

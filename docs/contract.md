@@ -2967,6 +2967,7 @@ test fails when it differs:
 | `GET /a/{aid}/v/{n}` | Denied | yes: 403 `not_for_agents` |
 | `GET /a/{aid}/{*rest}` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/admin/perf/calibrate` | Denied | no |
+| `GET /api/admin/perf/verify` | Denied | no |
 | `POST /api/admin/shutdown` | Denied | no |
 | `DELETE /api/agents/{handle}` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/agents/{handle}` | Denied | yes: 403 `not_for_agents` |

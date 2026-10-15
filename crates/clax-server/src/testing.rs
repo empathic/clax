@@ -249,6 +249,7 @@ impl TestServer {
             question_clock: clock,
             terminal_after_s: clax_core::config::TERMINAL_AFTER_S,
             calibration: Arc::default(),
+            verify_times: Arc::default(),
             audit_wake: crate::audit::AuditWake::new(),
             // No appender; tests of the journal start their own.
             journal: crate::audit::JournalStatus::off(None),
