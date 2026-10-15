@@ -435,9 +435,14 @@ class FeedbackWorker {
     return false;
   }
 
-  /// Takes up [appId]'s stopped or failed build again.
+  /// Takes up [appId]'s stopped, failed or capped build again. A build
+  /// that spent [buildCapUsd] starts a new budget: Resume is the person's
+  /// own action.
   Future<void> resumeBuild(String appId) async {
-    await _quietPlan(() => _loop.plans.setStopped(appId, false));
+    final p = await _quietPlan(() => _loop.plans.setStopped(appId, false));
+    if (p != null && p.spentUsd >= buildCapUsd) {
+      await _quietPlan(() => _loop.plans.freshBudget(appId));
+    }
     startBuild(appId);
   }
 
@@ -1221,6 +1226,11 @@ class FeedbackWorker {
         _queue.addAll(jobs);
         _kick();
       }
+      await _pruneUnfinished({
+        for (final at in all)
+          for (final t in at.threads)
+            if (t.isOpen) t.id,
+      });
       await _recoverBuilds();
       // Late answers kept before a quit, a failed daemon or a cancelled
       // run.
@@ -1239,6 +1249,22 @@ class FeedbackWorker {
       }
     } finally {
       _recovering--;
+    }
+  }
+
+  /// Forgets the kept unfinished changes ([AgentLoop.unfinished]) whose
+  /// threads are no longer among the [open] threads: the thread was
+  /// resolved, or its app deleted.
+  Future<void> _pruneUnfinished(Set<String> open) async {
+    try {
+      final kept = await _loop.unfinished.all();
+      final gone = [
+        for (final t in kept.keys)
+          if (!open.contains(t)) t,
+      ];
+      if (gone.isNotEmpty) await _loop.unfinished.remove(gone);
+    } on Object catch (e) {
+      _log('pruning unfinished changes failed: $e');
     }
   }
 

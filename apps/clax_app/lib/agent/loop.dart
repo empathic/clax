@@ -662,7 +662,7 @@ class AgentLoop {
           at: _clock.now(),
           notes: [...ran.narrations, ?ran.giveUp.givenReason],
           edits: edits,
-          before: {for (final p in edits.keys) p: from[p]},
+          before: {for (final p in edits.keys) p: fingerprint(from[p])},
           title: title,
           capabilities: caps,
         ),
@@ -919,7 +919,7 @@ class AgentLoop {
     _Resume? resume;
     if (kept != null) {
       final holds = kept.before.entries.every(
-        (e) => snap.files[e.key] == e.value,
+        (e) => fingerprint(snap.files[e.key]) == e.value,
       );
       resume = kept.expiredAt(_clock.now())
           ? _Resume.expired
@@ -1017,6 +1017,7 @@ class AgentLoop {
         aid,
         request: snap.artifact.title,
         seen: plan?.revision,
+        freshBuild: true,
       ),
       start: start,
       startTitle: resume == _Resume.draft ? kept?.title : null,

@@ -246,7 +246,25 @@ class PromptBuilder {
     _writeFiles(b, files);
     _writeOwn(b, documents, toolLoop: true);
     _writeOtherApps(b, others, fromBundle, _writeOtherNames);
-    if (plan != null) _writePlan(b, plan);
+    if (plan != null) {
+      _writePlan(b, plan);
+      if (plan.todo.isNotEmpty &&
+          (plan.stopped || plan.spentUsd >= buildCapUsd)) {
+        b.writeln(
+          plan.stopped
+              ? 'The person stopped this build: features in the plan are not '
+                    'built until they tap Resume on the build.'
+              : 'This build has spent its \$${buildCapUsd.toStringAsFixed(0)}: '
+                    'features in the plan are not built until the person '
+                    'taps Resume on the build, which starts a new budget.',
+        );
+        b.writeln(
+          'A big change you plan now waits with them: say so plainly in '
+          'reply (it is planned, and Resume on the build builds it), never '
+          'that it is being built.',
+        );
+      }
+    }
     _writeComments(b, comments);
     if (answers != null) {
       b
@@ -300,6 +318,10 @@ class PromptBuilder {
         'The draft already holds that run\'s unfinished edits, shown in the '
         'files above (${paths.map(jsonEncode).join(', ')}); they have not '
         'been rendered. Render first, then finish what is left.',
+      );
+      b.writeln(
+        'Document writes that run staged were not kept: stage again any the '
+        'files rely on.',
       );
     } else {
       b.writeln(

@@ -260,13 +260,11 @@ class RunBudget {
     return null;
   }
 
-  /// The cap a run that ends now ended at or near, named as [hardStop]
-  /// names it ("10 turns", "3 renders", …): the hard cap reached; else,
-  /// once [softNote] applies or no render is left, the cap most nearly
-  /// spent; else null.
-  String? get nearLimit {
+  /// The cap most nearly spent, named as [hardStop] names it ("10 turns",
+  /// "3 renders", …): the hard cap reached, else the one with the largest
+  /// share spent.
+  String get mostSpent {
     if (hardStop case final cap?) return cap;
-    if (softNote == null && canRender) return null;
     final spent = <String, double>{
       '${caps.turns} turns': _turns / caps.turns,
       '${caps.renders} renders': _renders / caps.renders,

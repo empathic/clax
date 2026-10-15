@@ -170,4 +170,71 @@ void main() {
     expect(runner.seen, hasLength(2));
     expect((await plans.get(aid))!.feature('s1')!.status, FeatureStatus.done);
   });
+
+  test('a continue run that finishes its plan and adds a feature stays '
+      'inside its build\'s budget', () async {
+    await plans.set(aid, const [
+      PlanFeature(id: 'f1', title: 'Log', status: FeatureStatus.done),
+      PlanFeature(id: 'f2', title: 'Chart'),
+    ], request: 'a run tracker');
+    await plans.spend(aid, 5.9);
+    workerWith([
+      [
+        const ScriptedCall('plan_mark', {'id': 'f2', 'status': 'done'}),
+        const ScriptedCall('plan_set', {
+          'features': [
+            {'id': 'f1', 'title': 'Log', 'detail': '', 'status': 'done'},
+            {'id': 'f2', 'title': 'Chart', 'detail': '', 'status': 'done'},
+            {'id': 'f3', 'title': 'Polish', 'detail': '', 'status': 'todo'},
+          ],
+        }),
+        const ScriptedCall('finish', {'reply': 'Built f2.', 'resolve': true}),
+      ],
+    ]).start();
+    await idle();
+    worker.startBuild(aid);
+    await until(() => runner.seen.isNotEmpty);
+    await idle();
+    final p = (await plans.get(aid))!;
+    expect(p.feature('f3')!.status, FeatureStatus.todo);
+    expect(p.spentUsd, closeTo(5.9, 1e-9));
+  });
+
+  test(r'Resume of a build that spent its $6 starts a new budget', () async {
+    await plans.set(aid, const [
+      PlanFeature(id: 'f1', title: 'Log', status: FeatureStatus.done),
+      PlanFeature(id: 's1', title: 'Stats'),
+    ], request: 'a run tracker');
+    await plans.spend(aid, buildCapUsd);
+    workerWith([
+      [
+        const ScriptedCall('plan_mark', {'id': 's1', 'status': 'done'}),
+        const ScriptedCall('finish', {'reply': 'Built s1.', 'resolve': true}),
+      ],
+    ]).start();
+    await idle();
+    await worker.resumeBuild(aid);
+    await until(() => worker.buildOf(aid)?.phase == BuildPhase.done);
+    expect(runner.seen, hasLength(1));
+    expect((await plans.get(aid))!.spentUsd, 0);
+  });
+
+  test('recovery forgets a kept change whose thread is resolved', () async {
+    final item = api.sendComment(aid, 'Rename Save', queue: false);
+    await unfinished.put(
+      UnfinishedChange(
+        artifactId: aid,
+        threadIds: [item.threadId],
+        commentIds: [item.commentId],
+        limit: '10 turns',
+        spentUsd: 1,
+        at: DateTime.utc(2026, 10, 12),
+      ),
+    );
+    await api.registerAppSession(installId: 'install', pid: 1);
+    await api.resolveAsAgent(aid, item.threadId);
+    workerWith([]).start();
+    await idle();
+    expect(await unfinished.get(item.threadId), isNull);
+  });
 }

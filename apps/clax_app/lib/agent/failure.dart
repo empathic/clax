@@ -51,7 +51,7 @@ String limitWords(String cap) {
       .firstMatch(cap);
   if (m == null) {
     return cap.startsWith(r'$')
-        ? 'more than $cap of model time'
+        ? 'more than its $cap a run'
         : 'more than one go allows ($cap)';
   }
   final n = int.parse(m[1]!);

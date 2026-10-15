@@ -275,19 +275,23 @@ class PlanStore {
       p ?? (throw StateError('app $appId has no plan'));
 
   /// Sets the whole feature list of [appId] (the agent's `plan_set`),
-  /// keeping the request, cost and stop of a plan it already has. A plan
-  /// with nothing left to build that gains features to build (a change
-  /// that planned a big request) starts a new build: its cost and stop are
-  /// cleared, so the new build has its own [buildCapUsd].
+  /// keeping the request, cost and stop of a plan it already has. With
+  /// [freshBuild] (a change in answer to the person's comment planned a big
+  /// request), a plan with nothing left to build that gains features to
+  /// build starts a new build: its cost and stop are cleared, so the new
+  /// build has its own [buildCapUsd]. Without it (a build's own runs) the
+  /// cost is kept, so a build never renews its own budget.
   Future<Plan> set(
     String appId,
     List<PlanFeature> features, {
     String request = '',
+    bool freshBuild = false,
   }) => _write(appId, (old) {
     if (old == null) {
       return Plan(request: request, features: features, updatedAt: clock.now());
     }
     final fresh =
+        freshBuild &&
         old.todo.isEmpty &&
         features.any(
           (f) =>
@@ -392,6 +396,13 @@ class PlanStore {
     return _write(appId, (old) => old!.copyWith(spentUsd: old.spentUsd + usd));
   }
 
+  /// Starts a new build budget of [appId]: its cost goes back to 0, at the
+  /// person's own action (Resume of a build that spent [buildCapUsd]).
+  Future<Plan?> freshBudget(String appId) async {
+    if (await get(appId) == null) return null;
+    return _write(appId, (old) => old!.copyWith(spentUsd: 0));
+  }
+
   /// Marks the build stopped or not; a stopped build's features that were
   /// being built go back to todo.
   Future<Plan?> setStopped(String appId, bool stopped) async {
@@ -447,9 +458,20 @@ enum RunKind {
 /// plan is kept under, and the plan revision the run last saw, so
 /// `plan_set` never writes over an edit the person made meanwhile.
 class RunPlan {
-  RunPlan(this.store, this.key, {required this.request, this.seen});
+  RunPlan(
+    this.store,
+    this.key, {
+    required this.request,
+    this.seen,
+    this.freshBuild = false,
+  });
 
   final PlanStore store;
+
+  /// Whether this run's `plan_set` may start a new build on a plan with
+  /// nothing left to build ([PlanStore.set]): only a change in answer to
+  /// the person's comment.
+  final bool freshBuild;
 
   /// The app's ID, or a first run's provisional key.
   String key;
@@ -571,7 +593,12 @@ class PlanSetTool implements Tool {
         'be done here).',
       );
     }
-    final saved = await plan.store.set(plan.key, kept, request: plan.request);
+    final saved = await plan.store.set(
+      plan.key,
+      kept,
+      request: plan.request,
+      freshBuild: plan.freshBuild,
+    );
     plan.seen = saved.revision;
     return ToolOk({
       'features': saved.features.length,

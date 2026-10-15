@@ -11,12 +11,30 @@ import 'dart:io';
 /// over from the live app with the agent's notes.
 const unfinishedDraftAge = Duration(hours: 1);
 
+/// How long an unfinished change is kept at all: after it, its notes and
+/// cost are forgotten too.
+const unfinishedKeepAge = Duration(hours: 24);
+
+/// A short fingerprint of a file's text (FNV-1a over its UTF-8 bytes, with
+/// its length), or null for no file: what [UnfinishedChange.before] keeps
+/// instead of the whole text.
+String? fingerprint(String? text) {
+  if (text == null) return null;
+  final bytes = utf8.encode(text);
+  var h = 0xcbf29ce484222325;
+  for (final b in bytes) {
+    h ^= b;
+    h *= 0x100000001b3;
+  }
+  return '${bytes.length}:${h.toUnsigned(64).toRadixString(16)}';
+}
+
 /// One change that stopped at a limit: its app and comments, what its
 /// runs cost, the agent's notes, and its unfinished draft as edits on the
 /// app: [edits] (path to the draft's text, null for a file the draft
-/// deleted) over [before] (each of those paths as the app held it then,
-/// null where it had none), so a later run applies them only where the
-/// app still holds [before].
+/// deleted) over [before] (the [fingerprint] of each of those paths as
+/// the app held it then, null where it had none), so a later run applies
+/// them only where the app still holds what they were made on.
 class UnfinishedChange {
   const UnfinishedChange({
     required this.artifactId,
@@ -80,6 +98,21 @@ class UnfinishedChange {
   /// Whether its draft is older than [unfinishedDraftAge] at [now].
   bool expiredAt(DateTime now) => now.difference(at) > unfinishedDraftAge;
 
+  /// Whether it is older than [unfinishedKeepAge] at [now].
+  bool staleAt(DateTime now) => now.difference(at) > unfinishedKeepAge;
+
+  /// The same change with its draft dropped, once it expired: its notes
+  /// and cost stay.
+  UnfinishedChange withoutDraft() => UnfinishedChange(
+    artifactId: artifactId,
+    threadIds: threadIds,
+    commentIds: commentIds,
+    limit: limit,
+    spentUsd: spentUsd,
+    at: at,
+    notes: notes,
+  );
+
   Map<String, Object?> toJson() => {
     'artifact': artifactId,
     'threads': threadIds,
@@ -100,6 +133,9 @@ class UnfinishedChange {
 abstract interface class UnfinishedChanges {
   Future<UnfinishedChange?> get(String threadId);
 
+  /// Every kept change, by thread ID.
+  Future<Map<String, UnfinishedChange>> all();
+
   /// Keeps [c] under each of its threads.
   Future<void> put(UnfinishedChange c);
 
@@ -112,6 +148,9 @@ class MemoryUnfinishedChanges implements UnfinishedChanges {
 
   @override
   Future<UnfinishedChange?> get(String threadId) async => _byThread[threadId];
+
+  @override
+  Future<Map<String, UnfinishedChange>> all() async => Map.of(_byThread);
 
   @override
   Future<void> put(UnfinishedChange c) async {
@@ -129,16 +168,27 @@ class MemoryUnfinishedChanges implements UnfinishedChanges {
 }
 
 /// [UnfinishedChanges] kept in [file] as `{"version": 1, "threads": {tid:
-/// change}}`, written whole through a temporary file and a rename; a file
-/// that does not parse reads as empty, and a change that does not parse
-/// is left out.
+/// change}}`, read once and written whole through a temporary file and a
+/// rename; a file that does not parse reads as empty, and a change that
+/// does not parse is left out. The file stays small (a draft's edited
+/// files once, with fingerprints of what they replaced, for a day at
+/// most), so it is read and written synchronously, as [FileStoppedThreads]
+/// is: the worker never waits on the event loop for it. Each read and
+/// write drops what is older than [unfinishedKeepAge] and the draft of
+/// what is older than [unfinishedDraftAge], at [now].
 class FileUnfinishedChanges implements UnfinishedChanges {
-  FileUnfinishedChanges(this.file);
+  FileUnfinishedChanges(this.file, {DateTime Function()? now})
+    : _now = now ?? DateTime.now;
 
   final File file;
+  final DateTime Function() _now;
   Map<String, UnfinishedChange>? _byThread;
 
-  Map<String, UnfinishedChange> get _all => _byThread ??= _read();
+  Map<String, UnfinishedChange> get _all {
+    final m = _byThread ??= _read();
+    if (_prune(m)) _save(m);
+    return m;
+  }
 
   Map<String, UnfinishedChange> _read() {
     final out = <String, UnfinishedChange>{};
@@ -162,13 +212,31 @@ class FileUnfinishedChanges implements UnfinishedChanges {
     return out;
   }
 
-  void _save() {
+  /// Drops what is stale and the drafts that expired; answers whether
+  /// anything changed.
+  bool _prune(Map<String, UnfinishedChange> m) {
+    final now = _now();
+    var changed = false;
+    for (final t in m.keys.toList()) {
+      final c = m[t]!;
+      if (c.staleAt(now)) {
+        m.remove(t);
+        changed = true;
+      } else if (c.expiredAt(now) && c.edits.isNotEmpty) {
+        m[t] = c.withoutDraft();
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  void _save(Map<String, UnfinishedChange> m) {
     file.parent.createSync(recursive: true);
     final tmp = File('${file.path}.tmp');
     tmp.writeAsStringSync(
       jsonEncode({
         'version': 1,
-        'threads': {for (final e in _all.entries) e.key: e.value.toJson()},
+        'threads': {for (final e in m.entries) e.key: e.value.toJson()},
       }),
       flush: true,
     );
@@ -179,19 +247,24 @@ class FileUnfinishedChanges implements UnfinishedChanges {
   Future<UnfinishedChange?> get(String threadId) async => _all[threadId];
 
   @override
+  Future<Map<String, UnfinishedChange>> all() async => Map.of(_all);
+
+  @override
   Future<void> put(UnfinishedChange c) async {
+    final m = _all;
     for (final t in c.threadIds) {
-      _all[t] = c;
+      m[t] = c;
     }
-    _save();
+    _save(m);
   }
 
   @override
   Future<void> remove(Iterable<String> threadIds) async {
+    final m = _all;
     var changed = false;
     for (final t in threadIds) {
-      changed = _all.remove(t) != null || changed;
+      changed = m.remove(t) != null || changed;
     }
-    if (changed) _save();
+    if (changed) _save(m);
   }
 }

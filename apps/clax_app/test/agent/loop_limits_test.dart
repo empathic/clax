@@ -6,6 +6,7 @@ import 'package:clax_app/agent/plan.dart';
 import 'package:clax_app/agent/prompt.dart';
 import 'package:clax_app/agent/runner/scripted_runner.dart';
 import 'package:clax_app/agent/unfinished.dart';
+import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/clax/models.dart';
 import 'package:flutter/services.dart';
@@ -84,8 +85,7 @@ void main() {
       expect(
         reply,
         "Couldn't make that change: it was too big for one go — it needed "
-        'more than 10 steps. $keepGoingHint\n\n'
-        'The agent said: Renaming the button',
+        'more than 10 steps. $keepGoingHint',
       );
       expect(isFailureText(reply), isTrue);
       expect(offersKeepGoing((out as ChangeFailed).reason), isTrue);
@@ -97,17 +97,18 @@ void main() {
       expect(kept.commentIds, [item.commentId]);
       expect(kept.notes, ['Renaming the button']);
       expect(kept.edits['index.html'], contains('<button>Keep</button>'));
-      expect(kept.before['index.html'], page);
+      expect(kept.before['index.html'], fingerprint(page));
     },
   );
 
-  test('a give_up near a cap names the limit and quotes the agent', () async {
+  test('a give_up out of room names the limit and quotes the agent', () async {
     final item = api.sendComment(aid, 'Rename Save', queue: false);
     await loopWith([
       [
         for (var i = 0; i < 8; i++) const ScriptedCall('list_files', {}),
         const ScriptedCall('give_up', {
           'reason': 'I ran out of room in this run',
+          'out_of_room': true,
         }),
       ],
     ]).change(aid, [item], session: sid);
@@ -121,6 +122,23 @@ void main() {
     expect((await unfinished.get(item.threadId))!.notes, [
       'I ran out of room in this run',
     ]);
+  });
+
+  test('a give_up near a cap without out_of_room replies the plain failure '
+      'and keeps nothing', () async {
+    final item = api.sendComment(aid, 'Use the camera', queue: false);
+    await loopWith([
+      [
+        for (var i = 0; i < 8; i++) const ScriptedCall('list_files', {}),
+        const ScriptedCall('give_up', {
+          'reason': 'it needs the camera',
+          'out_of_room': false,
+        }),
+      ],
+    ]).change(aid, [item], session: sid);
+    expect(bodies(item.threadId).last, failureReply('it needs the camera'));
+    expect(offersKeepGoing(bodies(item.threadId).last), isFalse);
+    expect(await unfinished.get(item.threadId), isNull);
   });
 
   test('a give_up far from every cap replies as before and keeps '
@@ -159,12 +177,81 @@ void main() {
     expect(
       bodies(item.threadId).last,
       'This change was too big for one go — it needed more than 10 steps — '
-      'so this version has only part of it. $keepGoingHint\n\n'
-      'The agent said: Renaming the button',
+      'so this version has only part of it. $keepGoingHint',
     );
     final kept = (await unfinished.get(item.threadId))!;
-    expect(kept.before['index.html'], contains('<button>Keep</button>'));
+    expect(
+      kept.before['index.html'],
+      fingerprint(api.filesOf(aid, 2)['index.html']),
+    );
     expect(kept.edits['index.html'], contains('class="red"'));
+  });
+
+  test('Keep going after a partial publish starts from the kept edits on '
+      'the published version', () async {
+    final item = api.sendComment(aid, 'Rename and recolour', queue: false);
+    final loop = loopWith([
+      [
+        const ScriptedCall('str_replace', {
+          'path': 'index.html',
+          'old_str': 'Save',
+          'new_str': 'Keep',
+        }),
+        const ScriptedCall('render', {'file': null}),
+        const ScriptedCall('str_replace', {
+          'path': 'index.html',
+          'old_str': '<button>',
+          'new_str': '<button class="red">',
+        }),
+        for (var i = 0; i < 8; i++) const ScriptedCall('list_files', {}),
+      ],
+      [
+        const ScriptedCall('render', {'file': null}),
+        const ScriptedCall('finish', {'reply': 'Recoloured.', 'resolve': true}),
+      ],
+    ]);
+    await loop.change(aid, [item], session: sid);
+    expect(api.currentVersion(aid), 2);
+    await loop.change(aid, [item], session: sid, keepGoing: true);
+    expect(
+      runner.states[1].draft.files['index.html'],
+      contains('<button class="red">Keep'),
+    );
+    expect(runner.text(1), contains('already holds that run'));
+    expect(api.filesOf(aid, 3)['index.html'], contains('class="red"'));
+  });
+
+  test('Keep going on an app that changed under the draft starts over with '
+      'the notes', () async {
+    final item = api.sendComment(aid, 'Rename Save', queue: false);
+    final loop = loopWith([
+      unfinishedRun(),
+      [
+        const ScriptedCall('finish', {
+          'reply': 'Started over.',
+          'resolve': false,
+        }),
+      ],
+    ]);
+    await loop.change(aid, [item], session: sid);
+    // Another version lands on the edited path meanwhile.
+    await api.publish(
+      aid,
+      PublishRequest(
+        ifVersion: api.currentVersion(aid),
+        files: {'index.html': '<!doctype html><button>Other</button>'},
+      ),
+    );
+    await loop.change(aid, [item], session: sid, keepGoing: true);
+    expect(
+      runner.states[1].draft.files['index.html'],
+      '<!doctype html><button>Other</button>',
+    );
+    expect(
+      runner.text(1),
+      contains('the app changed under its unfinished draft'),
+    );
+    expect(runner.text(1), contains('"Renaming the button"'));
   });
 
   test('Keep going starts from the kept draft, tells the agent what the '
@@ -181,7 +268,7 @@ void main() {
         at: clock.now(),
         notes: const ['Renaming the button'],
         edits: {'index.html': page.replaceFirst('Save', 'Keep')},
-        before: const {'index.html': page},
+        before: {'index.html': fingerprint(page)},
       ),
     );
     final loop = loopWith([
@@ -200,6 +287,7 @@ void main() {
     expect(first, contains('Keep going'));
     expect(first, contains('"Renaming the button"'));
     expect(first, contains('already holds that run'));
+    expect(first, contains('stage again any the files rely on'));
     expect(await unfinished.get(item.threadId), isNull);
   });
 
@@ -235,7 +323,7 @@ void main() {
         at: clock.now().subtract(const Duration(hours: 2)),
         notes: const ['Renaming the button'],
         edits: {'index.html': page.replaceFirst('Save', 'Keep')},
-        before: const {'index.html': page},
+        before: {'index.html': fingerprint(page)},
       ),
     );
     final loop = loopWith([
@@ -267,7 +355,7 @@ void main() {
         spentUsd: 5.9,
         at: clock.now(),
         edits: {'index.html': page.replaceFirst('Save', 'Keep')},
-        before: const {'index.html': page},
+        before: {'index.html': fingerprint(page)},
       ),
     );
     final loop = loopWith([
@@ -300,9 +388,57 @@ void main() {
     expect(first, contains('plan_set'));
   });
 
+  test(
+    'the change prompt says plainly when the build has spent its \$6',
+    () async {
+      await plans.set(aid, const [
+        PlanFeature(id: 'f1', title: 'Log', status: FeatureStatus.done),
+        PlanFeature(id: 'f2', title: 'Chart'),
+      ], request: 'runs');
+      await plans.spend(aid, buildCapUsd);
+      final item = api.sendComment(aid, 'Add a stats screen', queue: false);
+      await loopWith([changeCalls()]).change(aid, [item], session: sid);
+      expect(runner.text(0), contains(r'This build has spent its $6'));
+      expect(runner.text(0), contains('never that it is being built'));
+    },
+  );
+
+  test(
+    'the unfinished file drops a stale change and an expired draft',
+    () async {
+      final dir = await _tempDir();
+      final now = DateTime.utc(2026, 10, 15, 12);
+      UnfinishedChange at(String t, DateTime when) => UnfinishedChange(
+        artifactId: 'a',
+        threadIds: [t],
+        commentIds: const ['c'],
+        limit: '10 turns',
+        spentUsd: 1,
+        at: when,
+        notes: const ['n'],
+        edits: const {'index.html': 'x'},
+        before: const {'index.html': null},
+      );
+      final f = FileUnfinishedChanges(dir.file('u.json'), now: () => now);
+      await f.put(at('old', now.subtract(const Duration(hours: 25))));
+      await f.put(at('expired', now.subtract(const Duration(hours: 2))));
+      await f.put(at('fresh', now));
+      final again = FileUnfinishedChanges(dir.file('u.json'), now: () => now);
+      expect(await again.get('old'), isNull);
+      final expired = (await again.get('expired'))!;
+      expect(expired.edits, isEmpty);
+      expect(expired.notes, ['n']);
+      expect((await again.get('fresh'))!.edits, isNotEmpty);
+    },
+  );
+
   test('the unfinished file keeps a change across instances', () async {
     final dir = await _tempDir();
-    final file = FileUnfinishedChanges(dir.file('unfinished.json'));
+    final at = DateTime.utc(2026, 10, 15);
+    final file = FileUnfinishedChanges(
+      dir.file('unfinished.json'),
+      now: () => at,
+    );
     final c = UnfinishedChange(
       artifactId: 'a',
       threadIds: const ['t1', 't2'],
@@ -316,12 +452,18 @@ void main() {
       title: 'T',
     );
     await file.put(c);
-    final again = FileUnfinishedChanges(dir.file('unfinished.json'));
+    final again = FileUnfinishedChanges(
+      dir.file('unfinished.json'),
+      now: () => at,
+    );
     final read = (await again.get('t2'))!;
     expect(read.toJson(), c.toJson());
     await again.remove(['t1', 't2']);
     expect(
-      await FileUnfinishedChanges(dir.file('unfinished.json')).get('t1'),
+      await FileUnfinishedChanges(
+        dir.file('unfinished.json'),
+        now: () => at,
+      ).get('t1'),
       isNull,
     );
   });
@@ -338,7 +480,7 @@ void main() {
         'more writing than one go '
         'allows',
       );
-      expect(limitWords(r'$1.50'), r'more than $1.50 of model time');
+      expect(limitWords(r'$1.50'), r'more than its $1.50 a run');
     });
 
     test('Keep going says what is left once under half, and is not offered '
