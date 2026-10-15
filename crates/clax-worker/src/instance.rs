@@ -368,6 +368,21 @@ fn hosted(env: &Env) -> Result<Option<Arc<clax_http::hosted::Hosted>>> {
             ))
         })?
     };
+    // GitHub sign-in: on with `GITHUB_CLIENT_ID` and the secret
+    // `GITHUB_CLIENT_SECRET`; `OWNER_GITHUB` names the owner's login;
+    // `GITHUB_OAUTH_BASE` and `GITHUB_API_BASE` point a test at a fake.
+    let opt = |name: &str| Some(var(env, name)).filter(|v| !v.is_empty());
+    let github = clax_server::github::GitHub::new(
+        &var(env, "GITHUB_CLIENT_ID"),
+        &secret(env, "GITHUB_CLIENT_SECRET"),
+        opt("OWNER_GITHUB").as_deref(),
+        opt("GITHUB_OAUTH_BASE").as_deref(),
+        opt("GITHUB_API_BASE").as_deref(),
+    );
+    let max_artifacts = opt("MEMBER_MAX_ARTIFACTS")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(clax_store::github::DEFAULT_MAX_ARTIFACTS);
+    let h = h.with_github(github, max_artifacts);
     Ok(Some(Arc::new(h)))
 }
 

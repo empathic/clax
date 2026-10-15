@@ -124,6 +124,10 @@ pub struct Hosted {
     /// The content origin ([`Hosted::with_content_origin`]): its origin and
     /// its authority as a `Host` header names it.
     content: Option<(String, String)>,
+    /// GitHub sign-in ([`crate::github`], [`Hosted::with_github`]).
+    pub github: Option<crate::github::GitHub>,
+    /// Each GitHub member's caps.
+    pub member_caps: clax_store::github::MemberCaps,
 }
 
 impl std::fmt::Debug for Hosted {
@@ -133,6 +137,7 @@ impl std::fmt::Debug for Hosted {
             .field("content_origin", &self.content_origin())
             .field("setup_open", &self.setup_secret.is_some())
             .field("behind_cloudflare", &self.behind_cloudflare)
+            .field("github", &self.github)
             .finish()
     }
 }
@@ -157,6 +162,8 @@ pub enum Attempt {
     /// A read git token minted for a page's link (a guest, or no
     /// session): a token at the repository host each.
     GitToken,
+    /// A GitHub sign-in that makes a new person ([`crate::github`]).
+    SignUp,
 }
 
 impl Attempt {
@@ -168,6 +175,7 @@ impl Attempt {
             Attempt::Guest | Attempt::GitToken => (5.0, 120.0),
             Attempt::Device => (5.0, 60.0),
             Attempt::DevicePoll => (30.0, 2.0),
+            Attempt::SignUp => (5.0, 600.0),
         }
     }
 }
@@ -293,6 +301,8 @@ impl Hosted {
             behind_cloudflare: false,
             limits: Limits::new(std::sync::Arc::new(clax_core::working::SystemClock)),
             content: None,
+            github: None,
+            member_caps: Default::default(),
         })
     }
 
@@ -329,6 +339,17 @@ impl Hosted {
             .is_some_and(|(_, h)| h.eq_ignore_ascii_case(host))
     }
 
+    /// This hosted mode signing people in with GitHub too, `github`
+    /// ([`crate::github`]), each GitHub member keeping at most
+    /// `max_artifacts` artifacts.
+    pub fn with_github(self, github: Option<crate::github::GitHub>, max_artifacts: u64) -> Hosted {
+        Hosted {
+            github,
+            member_caps: clax_store::github::MemberCaps { max_artifacts },
+            ..self
+        }
+    }
+
     /// This hosted mode with its attempts counted on `clock`.
     pub fn with_clock(self, clock: std::sync::Arc<dyn clax_core::working::Clock>) -> Hosted {
         Hosted {
@@ -350,8 +371,20 @@ impl Hosted {
     /// environment variable it names.
     pub fn from_config(c: &clax_core::config::HostedConfig) -> Option<Hosted> {
         let secret = std::env::var(&c.setup_secret_env).ok();
-        Hosted::new(&c.public_origin, secret.as_deref())
-            .map(|h| h.behind_cloudflare(c.behind_cloudflare))
+        let github = c.github.as_ref().and_then(|g| {
+            let secret = std::env::var(&g.client_secret_env).unwrap_or_default();
+            crate::github::GitHub::new(
+                &g.client_id,
+                &secret,
+                g.owner_login.as_deref(),
+                g.oauth_base.as_deref(),
+                g.api_base.as_deref(),
+            )
+        });
+        Hosted::new(&c.public_origin, secret.as_deref()).map(|h| {
+            h.behind_cloudflare(c.behind_cloudflare)
+                .with_github(github, c.member_max_artifacts)
+        })
     }
 
     /// The client a request comes from: behind Cloudflare, the address its
@@ -467,6 +500,10 @@ fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
 /// The first 128 bits of the HMAC of `msg` under a key of `label`'s, made
 /// from the daemon token `token`, in lowercase hex: a capability only this
 /// daemon mints. A new token makes every one worthless.
+pub(crate) fn keyed_mac(token: &str, label: &str, msg: &str) -> String {
+    keyed(token, label, msg)
+}
+
 fn keyed(token: &str, label: &str, msg: &str) -> String {
     let key = Sha256::new()
         .chain_update(label.as_bytes())
@@ -954,6 +991,12 @@ impl HostedRequest {
 /// The value of the one session cookie (named `name`) in `headers`; `None`
 /// when there is none, or more than one (another page set a cookie of the
 /// name).
+/// The value of the one cookie named `name`; `None` without one, or with
+/// more than one.
+pub(crate) fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    session_token(headers, name)
+}
+
 fn session_token(headers: &HeaderMap, name: &str) -> Option<String> {
     let mut found = headers
         .get_all(header::COOKIE)
@@ -1423,7 +1466,9 @@ pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Re
         || path == "/signin"
         || path == "/device"
         || path.starts_with("/signin/")
-        || path.starts_with("/join/");
+        || path.starts_with("/join/")
+        || path == "/auth/github"
+        || path == crate::github::CALLBACK_PATH;
     if let Some(m) = member.as_ref().filter(|_| !open && !own) {
         return member_gate(&s, m, req, next).await;
     }
@@ -1645,6 +1690,7 @@ async fn me(
         Json(json!({
             "origin": h.origin,
             "setup_open": open,
+            "github": h.github.is_some(),
             "signed_in": r.session.is_some(),
             "person": r.session.as_ref().map(person_view),
         }))
@@ -2381,7 +2427,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/hosted/invites/{code}", get(peek_invite))
         .route("/api/hosted/invites/{code}/accept", post(accept_invite))
         .route("/api/hosted/signin-links", post(create_signin_link))
-        .route("/api/hosted/owner-signin-link", post(create_owner_signin_link))
+        .route(
+            "/api/hosted/owner-signin-link",
+            post(create_owner_signin_link),
+        )
         .route("/api/hosted/signin-links/{code}", get(peek_signin_link))
         .route(
             "/api/hosted/signin-links/{code}/accept",
@@ -2399,6 +2448,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/hosted/links", get(list_links))
         .route("/api/hosted/artifacts/{aid}/link", put(set_link))
         .route("/device", get(signin_page))
+        .route("/auth/github", get(crate::github::start))
+        .route(crate::github::CALLBACK_PATH, get(crate::github::callback))
         .route("/api/hosted/agent-token", delete(revoke_own_token))
         .route("/api/hosted/device/code", post(device_code))
         .route("/api/hosted/device/token", post(device_token))

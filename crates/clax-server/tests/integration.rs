@@ -55,6 +55,8 @@ mod api_host;
 mod api_hosted;
 #[cfg(any(not(clax_split), clax_split = "api_hosted_content"))]
 mod api_hosted_content;
+#[cfg(any(not(clax_split), clax_split = "api_hosted_github"))]
+mod api_hosted_github;
 #[cfg(any(not(clax_split), clax_split = "api_inbox"))]
 mod api_inbox;
 #[cfg(any(not(clax_split), clax_split = "api_live"))]
