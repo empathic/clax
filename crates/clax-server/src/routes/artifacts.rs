@@ -817,6 +817,7 @@ pub struct RestoreBody {
 /// `X-Clax-Session` must name a live session, which the version records.
 pub async fn restore(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _t: crate::auth::RequireToken,
     audit: AuditCtx,
     headers: HeaderMap,

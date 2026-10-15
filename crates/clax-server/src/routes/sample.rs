@@ -384,6 +384,7 @@ pub async fn daemon(
 /// daily_cost_cap_usd}`. 404 for an unknown artifact.
 pub async fn grant_status(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _t: RequireToken,
     Path(aid): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
@@ -395,6 +396,7 @@ pub async fn grant_status(
 /// artifact must declare `sample` (403 `not_declared`).
 pub async fn grant(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _t: RequireToken,
     audit: AuditCtx,
     Path(aid): Path<String>,
@@ -409,6 +411,7 @@ pub async fn grant(
 /// grant: `{revoked}` (`false` when there was none). The day's spend stays.
 pub async fn revoke(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _t: RequireToken,
     audit: AuditCtx,
     Path(aid): Path<String>,

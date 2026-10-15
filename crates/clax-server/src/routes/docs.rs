@@ -528,6 +528,7 @@ pub async fn acquire(
 /// `not_granted`: the listing ignores the read rules, so it is the owner's.
 pub async fn collections(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _t: RequireToken,
     headers: HeaderMap,
     aid: Result<Path<String>, PathRejection>,
@@ -552,6 +553,7 @@ type GrantParams = Result<Path<(String, String)>, PathRejection>;
 /// 404 for an unknown artifact, 400 `invalid_args` when both are one.
 pub async fn grant(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _t: RequireToken,
     audit: AuditCtx,
     p: GrantParams,
@@ -575,6 +577,7 @@ pub async fn grant(
 /// source declares is not a grant and stays. Errors as [`grant`].
 pub async fn revoke(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _t: RequireToken,
     audit: AuditCtx,
     p: GrantParams,
@@ -592,6 +595,7 @@ pub async fn revoke(
 /// unknown artifact.
 pub async fn grants(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _t: RequireToken,
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
