@@ -366,4 +366,24 @@ async fn a_draft_fetches_under_its_live_apps_grants() {
         "the app's revocation reaches the draft"
     );
     assert_eq!(echo.0.lock().unwrap().len(), 1, "one fetch went out");
+
+    // A draft made offline (a bundle update's check) reaches nothing, even
+    // a host its app is granted.
+    let (status, _) =
+        send(authed(&ts, Method::PUT, &grants).json(&json!({"hosts": ["api.example.com"]}))).await;
+    assert_eq!(status, 200);
+    let (status, body) = send(authed(&ts, Method::POST, "/api/drafts").json(&json!({
+        "of": aid, "title": "Check", "inherit_net": false,
+        "capabilities": {"net": {"hosts": ["api.example.com"]}},
+        "files": {"index.html": "<p>d</p>"}
+    })))
+    .await;
+    assert_eq!(status, 201, "{body}");
+    let offline = body["draft"]["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        code(fetch(&ts, &offline, get("api.example.com")).await),
+        (403, "not_granted".into())
+    );
+    let (status, _) = fetch(&ts, &did, get("api.example.com")).await;
+    assert_eq!(status, 200, "the agent's draft still inherits");
 }

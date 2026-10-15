@@ -41,12 +41,17 @@ struct CreateBody {
     capabilities: Option<Value>,
     #[serde(default)]
     files: BTreeMap<String, DraftFile>,
+    /// Whether the draft's fetches use `of`'s network grants (default
+    /// true); false keeps it offline.
+    #[serde(default)]
+    inherit_net: Option<bool>,
 }
 
-/// `POST /api/drafts` `{of, title, capabilities, files}`: a draft of the
-/// app `of` (or of a new app) whose version 1 holds `files` (each a string,
-/// or a publish's `{content, encoding, content_type}`), with a copy of
-/// `of`'s documents. 201 `{draft: {id, of, version, docs_copied,
+/// `POST /api/drafts` `{of, title, capabilities, files, inherit_net?}`: a
+/// draft of the app `of` (or of a new app) whose version 1 holds `files`
+/// (each a string, or a publish's `{content, encoding, content_type}`),
+/// with a copy of `of`'s documents. Its fetches use `of`'s network grants
+/// unless `inherit_net` is false. 201 `{draft: {id, of, version, docs_copied,
 /// docs_truncated}}`; 404 when `of` is missing, 400 `invalid_args` when it
 /// is a draft, and a publish's validation errors.
 pub async fn create(
@@ -55,8 +60,9 @@ pub async fn create(
     audit: AuditCtx,
     req: Result<JsonBytes, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let (of, p) = parse_body(req, "the publish limit", |b: CreateBody| {
+    let (of, p, inherit_net) = parse_body(req, "the publish limit", |b: CreateBody| {
         let of = b.of.as_deref().map(parse_id).transpose()?;
+        let inherit_net = b.inherit_net.unwrap_or(true);
         let files = b
             .files
             .into_iter()
@@ -78,11 +84,11 @@ pub async fn create(
             files,
             ..PublishRequest::default()
         })?;
-        Ok((of, p))
+        Ok((of, p, inherit_net))
     })
     .await?;
     let d = s
-        .store_call(move |st| st.create_draft(&audit, of.as_ref(), p))
+        .store_call(move |st| st.create_draft_with(&audit, of.as_ref(), p, inherit_net))
         .await?;
     Ok((
         StatusCode::CREATED,
