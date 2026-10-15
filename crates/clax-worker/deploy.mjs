@@ -39,6 +39,13 @@
 // --rotate-secrets, --diag (--no-diag, the default, keeps them off),
 // --no-build, --wait <s> (default 600),
 // --dry-run, --yes (no questions; fails on what it would ask).
+//
+// GitHub sign-in: --github-client-id <ID> (a GitHub OAuth App's) and
+// --owner-github <login> (whoever signs in as that GitHub account is the
+// owner), both kept in the record so later deploys keep them; the client
+// secret is read from GITHUB_CLIENT_SECRET, else asked on a terminal, and
+// uploaded with the deploy when given or when the Worker has none yet.
+// The OAuth App's callback URL is https://<public host>/auth/github/callback.
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -58,7 +65,7 @@ const PAID_LIMIT_KIB = 10 * 1024;
 
 function parseArgs(argv) {
   const o = { store: "artifacts", name: "clax", wait: 600, diag: false, build: true, dryRun: false, yes: false, rotate: false };
-  const takes = new Set(["--public", "--content", "--zone", "--store", "--name", "--account", "--wait"]);
+  const takes = new Set(["--public", "--content", "--zone", "--store", "--name", "--account", "--wait", "--github-client-id", "--owner-github"]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const [flag, inline] = a.includes("=") ? a.split(/=(.*)/s) : [a, undefined];
@@ -229,7 +236,7 @@ async function secretNames(account) {
   }
 }
 
-function deployConfig(o, pub, content, account) {
+function deployConfig(o, pub, content, account, github) {
   const c = baseConfig();
   delete c.$schema;
   // deploy.mjs builds once, before wrangler runs.
@@ -253,6 +260,8 @@ function deployConfig(o, pub, content, account) {
     CLAX_TEST_ROUTES: "0",
     REPO_DEV_ROUTES: "0",
     CLAX_DIAG_ROUTES: o.diag ? "1" : "0",
+    ...(github.client_id ? { GITHUB_CLIENT_ID: github.client_id } : {}),
+    ...(github.owner ? { OWNER_GITHUB: github.owner } : {}),
   };
   if (o.store === "memory") {
     // No Artifacts: neither its binding nor its events' queue.
@@ -368,7 +377,13 @@ async function main() {
   info(`content https://${content}`);
 
   step("Deploy config");
-  const config = deployConfig(o, pub, content, account);
+  const early = readRecord(pub);
+  const github = {
+    client_id: o["github-client-id"] ?? early.github_client_id,
+    owner: o["owner-github"] ?? early.owner_github,
+  };
+  if (github.client_id) info(`GitHub sign-in: OAuth App ${github.client_id}, owner ${github.owner ? `@${github.owner}` : "(none named)"}`);
+  const config = deployConfig(o, pub, content, account, github);
   info(`wrote ${DEPLOY_CONFIG} (worker ${config.name}, REPO_STORE=${o.store}, diagnostics ${o.diag ? "on" : "off"})`);
   if (o.diag) diagReminder(pub);
 
@@ -409,6 +424,16 @@ async function main() {
     if (needed.includes("SETUP_SECRET")) secrets.SETUP_SECRET = randomBytes(24).toString("base64url");
     if (needed.includes("CLAX_TOKEN")) secrets.CLAX_TOKEN = randomBytes(32).toString("hex");
     info(`generated ${needed.join(" and ")}; uploaded with the deploy`);
+  }
+  if (github.client_id) {
+    let gh = process.env.GITHUB_CLIENT_SECRET?.trim();
+    const missing = who && !have.includes("GITHUB_CLIENT_SECRET");
+    if (!gh && missing && !o.dryRun) gh = (await ask(o, "GitHub OAuth App client secret (GITHUB_CLIENT_SECRET)"))?.trim();
+    if (gh && !o.dryRun) {
+      secrets = { ...(secrets ?? {}), GITHUB_CLIENT_SECRET: gh };
+      info("GITHUB_CLIENT_SECRET uploaded with the deploy");
+    } else if (gh) info("would upload GITHUB_CLIENT_SECRET with the deploy");
+    else info(missing ? "no GITHUB_CLIENT_SECRET: GitHub sign-in stays off until one is set" : "the Worker has GITHUB_CLIENT_SECRET; kept");
   }
 
   const buildWorker = () => run(join(HERE, "build.sh"), [], { CARGO_INCREMENTAL: process.env.CARGO_INCREMENTAL ?? "0" });
@@ -472,6 +497,8 @@ async function main() {
     store: o.store,
     diag: o.diag,
     deployed_at: new Date().toISOString(),
+    ...(github.client_id ? { github_client_id: github.client_id } : {}),
+    ...(github.owner ? { owner_github: github.owner } : {}),
     ...(secrets?.SETUP_SECRET ? { setup_secret: secrets.SETUP_SECRET, setup_done: false } : {}),
     ...(secrets?.CLAX_TOKEN ? { owner_token: secrets.CLAX_TOKEN } : {}),
   };

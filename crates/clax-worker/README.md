@@ -146,6 +146,11 @@ npx wrangler queues subscription create clax-artifacts-events --source artifacts
 | `CLAX_TEST_ROUTES`, `REPO_DEV_ROUTES` | `0` | Test-only routes; never `1` on a deploy |
 | `CLAX_DIAG_ROUTES` | `0`; `1` (`deploy.mjs --diag`) only until the smoke is green | `/_diag/` for the owner token (`src/diag.rs`): what the platform's bindings answer |
 
+| `GITHUB_CLIENT_ID` | the OAuth App's client ID (`deploy.mjs --github-client-id`) | GitHub sign-in; off without it or without `GITHUB_CLIENT_SECRET` |
+| `OWNER_GITHUB` | the owner's GitHub login (`deploy.mjs --owner-github`) | Whoever signs in as that account (case-insensitive) is the owner |
+| `MEMBER_MAX_ARTIFACTS` | empty | The most live artifacts a GitHub member keeps; empty takes 200 |
+| `GITHUB_OAUTH_BASE`, `GITHUB_API_BASE` | empty | Tests only: a fake GitHub's bases |
+
 Set them in `wrangler.jsonc`'s `vars` or with `--var` on `wrangler deploy`.
 A hosted instance whose `PUBLIC_ORIGIN` is not an `https://` origin (or
 `http://` on localhost), or whose `CONTENT_ORIGIN` shares its host, does not
@@ -164,6 +169,34 @@ instance makes a token and keeps it in its storage, where nothing hands it
 out: set one if you mean to use the CLI against the instance. Use a long
 random value for both; a `CLAX_TOKEN` under 32 characters is refused and
 the instance does not start.
+
+### Sign in with GitHub
+
+Anyone with a GitHub account can sign up: their first sign-in makes a
+person of their own, who may create artifacts and do everything at the
+ones they made (publish, comment, their db, agent tokens and MCP), and
+sees anyone else's only where a link or the owner shares it. The account
+named as the owner's signs in as the owner (on an instance whose owner was
+made by setup, the first such sign-in links that GitHub account to it and
+renames the owner after it; from then on no other account, whatever its
+login, is the owner). Sign-ups are rate limited per client address, a
+member keeps at most `MEMBER_MAX_ARTIFACTS` artifacts, and revoking a
+person on People blocks their GitHub account from signing in or up again.
+
+1. On GitHub: Settings → Developer settings → OAuth Apps → New OAuth App.
+   Homepage URL `https://clax.example.com`; Authorization callback URL
+   `https://clax.example.com/auth/github/callback`. Register it, note the
+   Client ID, and generate a client secret.
+2. Deploy with both (the client ID and owner are kept in the deploy record,
+   so later deploys keep them; the secret is uploaded as the Worker secret
+   `GITHUB_CLIENT_SECRET`, from the environment or asked on the terminal):
+
+   ```sh
+   GITHUB_CLIENT_SECRET=… scripts/cloudflare-setup.sh --zone clax.example.com \
+     --github-client-id Ov23li… --owner-github <your login> --i-know-what-i-am-doing
+   ```
+3. Open `https://clax.example.com/signin` and choose **Sign in with
+   GitHub**.
 
 ### Deploying by hand
 

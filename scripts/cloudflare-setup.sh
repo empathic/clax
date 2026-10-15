@@ -13,7 +13,9 @@
 #   scripts/cloudflare-setup.sh --login                               # only sign in to Cloudflare
 #
 # Every other option is passed to crates/clax-worker/deploy.mjs (see the top of
-# that file), e.g. --store memory, --account <ID>, --rotate-secrets, --yes.
+# that file), e.g. --store memory, --account <ID>, --rotate-secrets, --yes,
+# --github-client-id <ID> --owner-github <login> (GitHub sign-in; the client
+# secret from GITHUB_CLIENT_SECRET, else asked).
 #
 # You sign in yourself, in your browser. In order, it
 #
@@ -47,7 +49,7 @@ for a in "$@"; do
     --login) login_only=1 ;;
     --i-know-what-i-am-doing) dry=0 ;;
     --dry-run) ;;
-    -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,35p' "$0"; exit 0 ;;
     *) args+=("$a") ;;
   esac
 done
