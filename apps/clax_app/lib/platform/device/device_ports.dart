@@ -6,7 +6,10 @@ library;
 import 'dart:typed_data';
 
 /// A device call's coded failure, which the page's call rejects with:
-/// `not_granted`, `cancelled`, `unavailable`, `bad_request` or `too_large`
+/// `not_granted`, `cancelled`, `unavailable`, `bad_request`, `too_large`,
+/// and for location `system_denied` (Android will not ask again: only
+/// system settings can allow it), `location_off` (the device's location is
+/// off) and `stopped` (a watch ended because the app left the screen)
 /// (`web/contract/clax-extensions.d.ts`, `Device.ErrorCode`).
 class DeviceError implements Exception {
   const DeviceError(this.code, this.message);
@@ -102,9 +105,47 @@ abstract interface class CameraPort {
   Future<Photo?> pick();
 }
 
+/// How exactly an app may see where the device is: within metres, or
+/// only the area (a cell of about 2 km).
+enum Precision { precise, approximate }
+
+/// Where the device is: degrees, [accuracy] in metres, and whether the fix
+/// is [precise] (false when it was asked approximate, or the system lets
+/// Clax have only an approximate location).
+class LocationFix {
+  const LocationFix(this.lat, this.lon, this.accuracy, {required this.precise});
+  final double lat;
+  final double lon;
+  final double accuracy;
+  final bool precise;
+
+  @override
+  String toString() => 'LocationFix($lat, $lon, ±$accuracy, precise: $precise)';
+}
+
+/// Which system settings page [LocationPort.openSettings] opens: Clax's
+/// own (its permissions) or the device's location switch.
+enum LocationSettingsPage { app, location }
+
 abstract interface class LocationPort {
-  /// Where the device is now. Throws [DeviceError] `not_granted` when the
-  /// system permission is refused, `unavailable` when location is off or
-  /// does not answer.
-  Future<({double lat, double lon, double accuracy})> current();
+  /// Where the device is now, asked at [precision]. Throws [DeviceError]
+  /// `not_granted` when the system permission is refused, `system_denied`
+  /// when Android will not ask again, `location_off` when the device's
+  /// location is off, `unavailable` when there is none or it does not
+  /// answer.
+  Future<LocationFix> current(Precision precision);
+
+  /// Follows the device: completes, once the permission and the device's
+  /// location are checked (throwing as [current] does), with a stream of
+  /// fixes, at most about one a second and one per [minDistance] metres
+  /// moved. The stream's errors are [DeviceError]s; cancelling it stops
+  /// the updates.
+  Future<Stream<LocationFix>> watch(
+    Precision precision, {
+    required double minDistance,
+  });
+
+  /// Opens the system settings [page], where the person can allow
+  /// location for Clax or turn the device's location on.
+  Future<void> openSettings(LocationSettingsPage page);
 }
