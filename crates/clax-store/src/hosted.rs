@@ -887,8 +887,9 @@ impl Store {
         })
     }
 
-    /// Shares artifact `aid` by link with `access`, or stops (`None`),
-    /// recording `artifact.update` of its `link_access` under `ctx`.
+    /// Shares artifact `aid` by link with `access`, or stops (`None`, which
+    /// also unlists it from the public gallery), keeping its listing
+    /// otherwise: [`Store::set_general_access`] without `listed`.
     ///
     /// # Errors
     /// `NotFound` when the artifact does not exist.
@@ -898,21 +899,7 @@ impl Store {
         aid: &str,
         access: Option<LinkAccess>,
     ) -> Result<()> {
-        self.with_tx(|tx| {
-            let value = access.map(LinkAccess::as_str);
-            if tx.execute(
-                "UPDATE artifacts SET link_access = ?2 WHERE id = ?1 AND deleted_at IS NULL",
-                params![aid, value],
-            )? == 0
-            {
-                return Err(not_found());
-            }
-            let mut rec = AuditRecord::new(AuditKind::ArtifactUpdate, self.now())
-                .with("fields", serde_json::json!({ "link_access": value }));
-            rec.ids.artifact = Some(aid.to_string());
-            self.record_audit(tx, ctx, rec)?;
-            Ok(())
-        })
+        self.set_general_access(ctx, aid, access, None).map(drop)
     }
 
     /// Every artifact shared by link, with its access.
