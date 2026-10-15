@@ -3425,8 +3425,12 @@ event's data names its `topic`. Events carry what changed:
   reads it ("Who reads a delivery state"), only on the streams of the owner
   and of connected people who read a row of the thread: the owner's on
   every change, a person's when the newest change is to rows they read or
-  a decision about their content or by them. A stream is never sent the
-  state it was last sent. LAN viewers and anonymous callers never get one.
+  a decision about their content or by them. `state: null` when no row is
+  left (a resolve withdrew them all). A stream is never sent the state it
+  was last sent, unless it subscribed or reconnected since. A new thread's
+  `thread` event comes before its first state; a client keeps a state for
+  a thread it does not hold yet until the thread arrives. LAN viewers and
+  anonymous callers never get one.
 - `working` on `working:<aid>`: `{topic, artifact_id, working: [view]}`, the
   artifact's whole list, as on `/api/events`.
 - `working` on `gallery`: `{topic, artifact_id, working: [{agent, harness,

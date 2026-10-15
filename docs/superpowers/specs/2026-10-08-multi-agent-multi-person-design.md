@@ -1621,16 +1621,30 @@ again.
     every change; to a connected person when the newest change is to
     rows they read; and on a decision (approve, decline, revoke, the
     `*unconnected` switch), which changes no row's time, to the owner,
-    the deciding person and the author decided about, alone. A stream
-    is never sent the state it was last sent. `/api/events` carries
-    none, and `thread` events carry no delivery state. So no one else
-    sees a decision as an event or a change of state.
+    the deciding person, the author decided about and that content's
+    co-authors (a page's other authors), alone. When no row is left (a
+    resolve withdrew them all), `state: null` goes to the owner's and
+    every connected person's streams. A stream is never sent the state
+    it was last sent, unless it subscribed or reconnected since. A new
+    thread's `thread` event goes before its first state, and a client
+    keeps a state heard for a thread it does not hold yet until the
+    thread arrives. `/api/events` carries none, and `thread` events
+    carry no delivery state. So no one else sees a decision as an event
+    or a change of state.
   - A request's change pings the `agents` topic of its approver and the
     owner only; of everyone only for an agent's `ask`, which shows in
-    that agent's state (§13).
-  - What an agent does after an approval lets content through (its
-    replies, its working state) stays as visible as any agent's work
-    (§13).
+    that agent's state (§13). In the agents list an agent reads the
+    approval requests in `blocked` of its own session only; a sibling's
+    `blocked` counts its questions alone.
+  - Accepted risk (owner decision 2026-10-14, "Accept it"): what an
+    agent does after an approval lets content through stays as visible
+    as any agent's work (§13). An approval wakes the agent, and its take
+    of the released content marks it working at once, on the `working`,
+    `gallery` and `agents` topics everyone may hear; so anyone may see
+    an agent start work right after a decision they cannot read. It
+    tells them neither that anything was held, nor whose approval it
+    was, nor that a decision was made, and its replies stay ordinary
+    replies.
 - A send to an agent that may not `read` the artifact is 400
   `agent_cannot_read`.
 - A page's `@name` sends nothing (as its `@agent` sends nothing today); a
@@ -2613,3 +2627,10 @@ task, with recommendations; the owner took every recommendation
   owner. §17 and §18 point at the table; §19 lists the change for LAN
   viewers (item 9). The plain state is no longer served to anyone who
   reads no row.
+- **Amendment** (2026-10-15, Task 22 re-review 4): §10: a decision also
+  reaches the content's co-authors; a thread left with no row tells the
+  owner and people `state: null`; a new thread's `thread` event precedes
+  its state, and clients keep an early state; the repeat suppression
+  forgets on subscribe and reconnect; an agent reads only its own
+  session's approval waits in the agents list. The working signal after
+  an approval is stated as an accepted risk (owner decision, "Accept it").
