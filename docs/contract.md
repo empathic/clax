@@ -2381,7 +2381,10 @@ declares, reading, listing or writing them without the token is 404, and
 no app reads a draft through `X-Clax-Reader`. A draft reads no other app's
 documents either, whatever its app may read (403 `not_granted`): what a
 render reads reaches the agent, and an app's grant is not the owner's
-consent to that.
+consent to that. Its `net.fetch` alone uses its app's grants: a host is
+reachable while the draft declares it and the owner's grant to the live
+app stands (see "Fetching from the network"); nobody is asked, and a new
+app's draft reaches nothing.
 
 **Navigation.** The app lets the top level of its WebView be only the
 shell's app view on the daemon's own origin: the path `/a/<id>[/v/<n>][/<file>]`
@@ -5461,6 +5464,14 @@ of the artifact (`fields.net_grants`). A host is reachable while the live
 version declares it and a grant names it: a host a new version adds waits
 for consent; one it drops reaches nothing. Deleting the artifact removes
 its grants.
+
+A draft (see "Drafts") holds no grants: `PUT` and `DELETE` on one are 403
+`draft`. It uses its live app's grants, checked on each fetch: a host is
+reachable while the draft declares it, the live app's current version
+declares it, and the owner's grant to the live app names it, so revoking
+the app's grants refuses the draft's next fetch. A new app's draft has no
+live app and every fetch is `not_granted`. `GET` on a draft shows those
+inherited grants.
 
 **Fetching.** `POST /api/artifacts/<id>/net:fetch` (token), body `{url,
 method?, headers?, body?}` (`method` `GET` when absent, `headers` an object
