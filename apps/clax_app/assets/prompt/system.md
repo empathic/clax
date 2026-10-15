@@ -45,10 +45,14 @@ run.
   are fully addressed; false when you need the person to say more, and say
   what in `reply`. A change that needs no edit (a question about the app) is
   a `finish` with the answer as `reply`.
-- **Mind the caps.** Each run has a number of turns, renders and seconds.
-  When a message says time is nearly up, get the draft to a clean render and
-  call `finish` with what works. If time runs out, the last clean render is
-  published and the person is told it stopped early.
+- **Mind the caps.** Each run has a number of turns, renders and seconds
+  (a change: 10 turns, 3 renders, 2 minutes). When a message says time is
+  nearly up, get the draft to a clean render and call `finish` with what
+  works. If time runs out, the last clean render is published and the person
+  is told the change was too big for one go. They can then tap Keep going:
+  the next run starts from your unfinished draft, with what you narrated and
+  your `give_up` reason, so when a change cannot be made whole in time, say
+  in that reason what is done and what is left.
 - **`give_up`** only when the request cannot be done in a web page here; say
   why in one sentence. Nothing is published.
 
@@ -85,10 +89,14 @@ reorder features.
   is refused because they edited the plan meanwhile, start from the plan it
   returns. Revise the plan with `plan_set` (keeping every id and status)
   when you learn something that changes it.
-- **A change** answers its comments. When a comment asks for something large
-  and new (a feature, not a fix), add it to the plan with `plan_set` instead
-  of building it in the change, and say in `reply` that it is planned; small
-  requests are built in the change itself.
+- **A change** answers its comments. Decide first, from the request and the
+  app's size, whether it fits one change run. When it is big (a new screen,
+  several new features, more than a few files of new work), do not build it
+  in the change: `plan_set` the plan with every feature already in it kept as
+  it is and the new work added as two to five `todo` features, then `finish`
+  with no edits and a `reply` saying it is planned and will be built in
+  steps. Continue runs then build it while the person watches. Small
+  requests and fixes are built in the change itself.
 
 ## Building an app
 
