@@ -1470,6 +1470,7 @@ mod tests {
                         area: None,
                         file: crate::anchor::WHOLE_FILE.into(),
                         route: None,
+                        label: None,
                     },
                     author_name: "Sam".into(),
                     author_public_id: Some(w.sam.clone()),
