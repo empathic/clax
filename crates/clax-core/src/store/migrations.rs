@@ -759,7 +759,7 @@ pub const MIGRATIONS: &[&str] = &[
         WHERE status = 'open';
     CREATE INDEX questions_closed_by_person ON questions(COALESCE(person, ''), closed_at, id)
         WHERE status <> 'open';",
-    // 24: cross-app read grants (spec 2026-10-12-flutter-app-design §3.8): the
+    // 27: cross-app read grants (spec 2026-10-12-flutter-app-design §3.8): the
     // owner let `reader_id` read `source_id`'s documents. Deleting either
     // artifact removes the row: the foreign keys on a row delete, the trigger
     // on the soft delete (`deleted_at` set), which is how artifacts are deleted.
@@ -775,14 +775,14 @@ pub const MIGRATIONS: &[&str] = &[
     BEGIN
         DELETE FROM db_read_grants WHERE reader_id = NEW.id OR source_id = NEW.id;
     END;",
-    // 25: draft artifacts (spec 2026-10-12-flutter-app-round2-design §5.1):
+    // 28: draft artifacts (spec 2026-10-12-flutter-app-round2-design §5.1):
     // an agent's work in progress, rendered but never listed. `hidden` keeps
     // a row out of every listing; `draft_of` names the app a draft changes
     // (NULL for a new app's draft), whose documents it copies.
     "ALTER TABLE artifacts ADD COLUMN draft_of TEXT;
     ALTER TABLE artifacts ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
     CREATE INDEX artifacts_hidden ON artifacts(hidden, created_at) WHERE hidden = 1;",
-    // 26: network grants (spec 2026-10-12-flutter-real-apps-design C6): the
+    // 29: network grants (spec 2026-10-12-flutter-real-apps-design C6): the
     // owner let `artifact_id` fetch from `host`, one of the hosts its
     // `capabilities.net.hosts` declared when the owner allowed it. Deleting
     // the artifact removes its rows (the foreign key on a row delete, the
@@ -798,7 +798,7 @@ pub const MIGRATIONS: &[&str] = &[
     BEGIN
         DELETE FROM net_grants WHERE artifact_id = NEW.id;
     END;",
-    // 27: model use by apps (spec 2026-10-12-flutter-real-apps-design C7):
+    // 30: model use by apps (spec 2026-10-12-flutter-real-apps-design C7):
     // the owner let `artifact_id` call `sample()` (kept until revoked), and
     // what its calls cost each local day, in millionths of a US dollar, for
     // the daily cost cap. Deleting the artifact removes its rows (the
@@ -819,7 +819,7 @@ pub const MIGRATIONS: &[&str] = &[
         DELETE FROM sample_grants WHERE artifact_id = NEW.id;
         DELETE FROM sample_spend WHERE artifact_id = NEW.id;
     END;",
-    // 28: whether a draft fetches under its live app's network grants
+    // 31: whether a draft fetches under its live app's network grants
     // (spec 2026-10-12-flutter-real-apps-design C6): 1 for the agent's
     // drafts, 0 for a bundle update's check draft, which stays offline.
     // Meaningless for an artifact that is no draft.
@@ -1567,19 +1567,19 @@ mod tests {
         }
     }
 
-    /// Migration 25 adds the draft columns: every artifact it finds stays
+    /// Migration 28 adds the draft columns: every artifact it finds stays
     /// listed (`hidden = 0`) and is a draft of nothing.
     #[test]
-    fn migration_25_keeps_every_artifact_listed() {
+    fn migration_28_keeps_every_artifact_listed() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         home.ensure_dirs().unwrap();
         {
             let c = Connection::open(home.db_path()).unwrap();
-            for sql in &MIGRATIONS[..24] {
+            for sql in &MIGRATIONS[..27] {
                 c.execute_batch(sql).unwrap();
             }
-            c.pragma_update(None, "user_version", 24).unwrap();
+            c.pragma_update(None, "user_version", 27).unwrap();
             c.execute_batch(
                 "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
                     VALUES ('7q3k9mzx2b4t', 't', 'x', 'x', 1, '0');",
