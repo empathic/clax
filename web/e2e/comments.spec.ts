@@ -68,6 +68,26 @@ test("range thread quotes the selected text", async ({ page }) => {
   expect("Grow revenue and keep costs flat this quarter.").toContain((await quote.textContent())!.replace(/[«»]/g, "").trim());
 });
 
+test("a picked row of elements keeps its spaced label after a reload", async ({ page }) => {
+  const html = `<main><div id="row"><b>Mon</b><span>5 km</span></div></main>`;
+  const { artifact } = await publish(d.base, d.token, "Spaced", { "index.html": html });
+  await page.goto(`${d.base}/a/${artifact.id}`);
+  const frame = await contentFrame(page, artifact.id, 1);
+  await page.getByRole("button", { name: "Comment", exact: true }).click();
+  await commentModeIn(frame);
+  await frame.locator("#row").hover();
+  await frame.locator("#row").click();
+  const composer = page.locator(".composer");
+  await expect(composer.locator(".composer-quote")).toHaveText("«Mon 5 km»");
+  await composer.locator("textarea").fill("Longer runs.");
+  await composer.getByRole("button", { name: "Post comment" }).click();
+  await expect(page.locator(".section-open .thread-card")).toContainText("Longer runs.");
+  const [t] = (await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads`)).threads;
+  expect(t.anchor).toMatchObject({ quote: "Mon5 km", label: "Mon 5 km" });
+  await page.reload();
+  await expect(page.locator(".section-open .thread-card .anchor-label")).toHaveText("«Mon 5 km»");
+});
+
 test("republish re-anchors kept elements and detaches removed ones", async ({ page }) => {
   const { artifact } = await publish(d.base, d.token, "Detach", { "index.html": "<main><h2>Keep me</h2><p>Gone soon</p></main>" });
   const mk = async (selector: string, quote: string, body: string) => {

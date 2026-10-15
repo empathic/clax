@@ -108,6 +108,21 @@ describe("Sidebar", () => {
     root.remove();
   });
 
+  it("labels a card with its anchor's spaced label, else its quote", () => {
+    const threads: Thread[] = [
+      { ...base, id: "a", anchor: { ...anchor, quote: "Mon5 km", label: "Mon 5 km" }, status: "open", sent_to_agent: false, comments: [comment("1", "viewer", "Alex", "x")] },
+      { ...base, id: "b", anchor: { ...anchor, quote: "Tue6 km" }, status: "open", sent_to_agent: false, comments: [comment("2", "viewer", "Alex", "y")] },
+      { ...base, id: "c", anchor: { ...anchor, quote: "Wed7 km", label: "Thu 7 km" }, status: "open", sent_to_agent: false, comments: [comment("3", "viewer", "Alex", "z")] },
+    ];
+    const root = document.createElement("div");
+    document.body.appendChild(root);
+    const view = mount(Sidebar, { versions: [], shown: 1, agent: "claude", threads, resolved: {}, now: new Date(base.created_at), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() }, root);
+    const label = (id: string) => root.querySelector(`[data-thread="${id}"] .anchor-label`)!.textContent;
+    expect([label("a"), label("b"), label("c")]).toEqual(["«Mon 5 km»", "«Tue6 km»", "«Wed7 km»"]);
+    view.unmount();
+    root.remove();
+  });
+
   it("says which comments the page wrote", () => {
     const t: Thread = { ...base, id: "p", anchor, status: "open", sent_to_agent: false, comments: [{ ...comment("1", "viewer", "Alex", "from the page"), via_page: true }, comment("2", "viewer", "Alex", "by hand")] };
     const root = document.createElement("div");

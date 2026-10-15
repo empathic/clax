@@ -1,5 +1,7 @@
 import type { Anchor } from "../../../bridge/src/protocol";
-import { areaLabel } from "../threads";
+import { areaLabel, respaced } from "../threads";
+
+export { respaced };
 
 /** A pick being commented on; `pickId` keys the composer so each pick starts
  * empty. `label` is a page's words for the spot, shown in place of the quote. */
@@ -35,21 +37,12 @@ export function withClip(dr: Draft | null, token: string, clip: Blob | null, cli
   return dr && dr.clipToken === token ? { ...dr, clip, clipError, capturing: false, clipToken: undefined } : dr;
 }
 
-/** `text`, when it reads as `quote` with only its whitespace changed (it may
- * stop short of a long quote's end): a picked element's spaced text, shown in
- * place of its quote; else null. */
-export function respaced(quote: string | null | undefined, text: unknown): string | null {
-  if (!quote || typeof text !== "string") return null;
-  const squash = (s: string) => s.replace(/\s+/g, "");
-  const t = squash(text);
-  return t && squash(quote).startsWith(t) ? text : null;
-}
-
 /** What the composer shows for its target: the page's label, else the quote
- * (its `shown` text when it has one; whitespace collapsed, cut at 160 characters), else the custom anchor's
+ * (its anchor's `label`, else its `shown` text, when it has one; whitespace collapsed, cut at 160 characters), else the custom anchor's
  * name, an area's label, or the element's selector. */
 export function composerQuote(draft: Draft): string {
-  const quote = (respaced(draft.anchor.quote, draft.shown) ?? draft.anchor.quote)?.replace(/\s+/g, " ").trim();
+  const q = draft.anchor.quote;
+  const quote = (respaced(q, draft.anchor.label) ?? respaced(q, draft.shown) ?? q)?.replace(/\s+/g, " ").trim();
   if (draft.label !== undefined) return draft.label;
   if (quote) return `«${quote.length > 160 ? `${quote.slice(0, 160)}…` : quote}»`;
   if (draft.anchor.kind === "custom") return draft.anchor.custom_name ?? "";
