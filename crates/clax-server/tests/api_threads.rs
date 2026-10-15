@@ -2144,3 +2144,41 @@ async fn a_new_threads_event_precedes_its_delivery_state() {
     }
     assert_eq!(seen, ["thread", "feedback_state"]);
 }
+
+/// A feedback poll answers before its take's delivery state goes out: the
+/// owner still hears it, after the send's, and reading the thread then
+/// gives the same state.
+#[tokio::test]
+async fn a_polls_delivery_state_reaches_the_owner_after_its_answer() {
+    let ts = TestServer::spawn().await;
+    let (sid, aid) = setup(&ts).await;
+    let mut owner = ts.stream_as_owner(&[&format!("artifact:{aid}")]).await;
+    let t = ts.thread(&aid, 1, "two columns").await;
+    let tid = t["id"].as_str().unwrap().to_string();
+    ts.send_thread(&aid, &tid).await;
+    assert_eq!(take(&ts, &sid).await.len(), 1);
+    let mut states = Vec::new();
+    while states.last().is_none_or(|s: &Value| s == "sent") {
+        let fs = owner.next_named("feedback_state").await;
+        if fs["thread_id"] == json!(tid) {
+            states.push(fs["state"].clone());
+        }
+    }
+    assert_eq!(states.first(), Some(&json!("sent")), "{states:?}");
+    let v: Value = ts
+        .authed(
+            ts.client
+                .get(format!("{}/api/artifacts/{aid}/threads/{tid}", ts.base)),
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        Some(&v["thread"]["feedback_state"]["state"]),
+        states.last(),
+        "{v}"
+    );
+}

@@ -295,6 +295,7 @@ pub async fn poll(
             .stop_at(&take.session_id, crate::feedback::Stop::BeforeTake)
             .await;
         let ctx = s.feedback_ctx();
+        let ctx_after = ctx.clone();
         let t = take.clone();
         let (held, clock) = (s.questions.clone(), s.question_clock.clone());
         let audit = audit.clone();
@@ -310,7 +311,8 @@ pub async fn poll(
                 if taken.stale {
                     return Ok((taken, Default::default()));
                 }
-                apply(&ctx, st, &taken.touched);
+                // Its states go out once the poll has answered (below).
+                crate::feedback::wake(&ctx, st, &taken.touched);
                 crate::working::renew_for_tier(&ctx, &t.session_id, t.tier);
                 if t.tier == Tier::Queue {
                     return Ok((taken, Default::default()));
@@ -322,6 +324,7 @@ pub async fn poll(
             .await?;
         vis = Some(view);
         rights = rights_now;
+        crate::feedback::publish_states_after(&ctx_after, taken.touched.clone());
         if taken.stale {
             // An approval or revocation committed after the view was
             // built: refresh it and take again.

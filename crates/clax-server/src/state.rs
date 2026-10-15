@@ -82,6 +82,9 @@ pub struct AppState {
     pub feedback_waiters: Arc<crate::feedback::FeedbackWaiters>,
     /// Sessions with a `clax feedback follow` connected (Grok's tier 5).
     pub followers: Arc<crate::feedback::Followers>,
+    /// Held while delivery states are read and sent
+    /// ([`crate::feedback::FeedbackCtx::states`]).
+    pub feedback_states: Arc<std::sync::Mutex<()>>,
     /// Where the daemon's `codex` is; Codex tier 5 is off without it.
     pub codex: Arc<crate::push::CodexPush>,
     /// Working records (spec §10 "Working"), in memory.
