@@ -1,6 +1,6 @@
 # Linked threads: a local artifact's comments in step with its clax.dev copy
 
-Status: draft for the owner's review.
+Status: approved by the owner, 2026-10-15.
 
 ## Problem
 
@@ -26,6 +26,10 @@ published and loses live notifications.
   - The hosted daemon's own rules (rights, approvals, the visibility
     filter) decide what reaches the link at all. The link sees what the
     owner's device token sees.
+- **A per-link switch:** each link is two-way by default. The owner can
+  set it to download only (`clax remote` and the link's row in the local
+  shell). Then local threads stay local, while replies and resolves on
+  threads that came from the remote still go up.
 - **Shown inline:**
   - Mirrored threads sit in the same Threads list and inbox as local ones.
   - Each carries a small tag naming the remote ("clax.dev") and the
@@ -139,8 +143,3 @@ published and loses live notifications.
 - **Browser:** the tag on a mirrored thread, the pending and failed
   states, and replying from local shown on the hosted page; at 1280 and
   390 wide, light and dark.
-
-## Open
-
-- Should the owner be able to turn two-way off per link (download only),
-  for pages where local threads are meant to stay private?
