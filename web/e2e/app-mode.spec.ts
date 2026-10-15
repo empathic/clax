@@ -138,16 +138,26 @@ test(`a long-press picks and Send sends to the app session${frames ? "" : ", wit
   await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
   const cdp = await page.context().newCDPSession(page);
   await holdOn(page, cdp, frame.locator("#t"), "#t");
-  await expect.poll(async () => (await ofType(page, "state")).at(-1)?.draft ?? null).toMatchObject({ label: "“Quarterly goals”" });
-  await expect(page.getByRole("button", { name: "Send", exact: true })).toBeVisible();
-  await host(page, `setDraftText("make it blue")`);
-  await expect(page.locator(".composer textarea")).toHaveValue("make it blue");
-  await host(page, "submitDraft()");
+  await expect.poll(async () => (await ofType(page, "state")).at(-1)?.draft ?? null).toMatchObject({ kind: "element", label: "“Quarterly goals”", quote: "Quarterly goals" });
+  // The app's composer is the send box: the shell's is not shown.
+  await expect(page.locator(".composer")).toBeAttached();
+  await expect(page.locator(".composer")).toBeHidden();
+  await expect(page.getByRole("button", { name: "Send", exact: true })).toHaveCount(0);
+  // The pick's screenshot goes to the app for its preview.
+  const key = ((await ofType(page, "state")).at(-1)!.draft as { key: string }).key;
+  await expect.poll(async () => (await ofType(page, "draftClip")).map(m => m.key)).toEqual([key]);
+  const png = Buffer.from((await ofType(page, "draftClip"))[0].png as string, "base64");
+  expect(png.subarray(1, 4).toString("latin1")).toBe("PNG");
+  await host(page, `setDraftText("make it", { composer: true })`);
+  await host(page, `submitDraft({ text: "make it blue" })`);
   await expect.poll(async () => (await ofType(page, "sent")).length).toBe(1);
   const thread = (await ofType(page, "sent"))[0].thread as string;
-  const t = await api(d.base, d.token, `/api/artifacts/${id}/threads/${thread}`) as { thread: { sent_to_agent: boolean; comments: { body: string }[] } };
+  const t = await api(d.base, d.token, `/api/artifacts/${id}/threads/${thread}`) as { thread: { sent_to_agent: boolean; has_clip: boolean; anchor: { kind: string; quote: string }; comments: { body: string }[] } };
   expect(t.thread.sent_to_agent).toBe(true);
   expect(t.thread.comments[0].body).toBe("make it blue");
+  expect(t.thread.anchor).toMatchObject({ kind: "element", quote: "Quarterly goals" });
+  expect(t.thread.has_clip).toBe(true);
+  await expect.poll(async () => ((await ofType(page, "threads")).at(-1)?.threads as { id: string; clip: boolean }[] | undefined)?.find(x => x.id === thread)?.clip).toBe(true);
   // The app's thread list names what the thread is on, in words.
   await expect.poll(async () => ((await ofType(page, "threads")).at(-1)?.threads as { id: string; label: string }[] | undefined)?.find(x => x.id === thread)?.label).toBe("“Quarterly goals”");
   // The app session's feedback poll hands it the comment.
@@ -164,8 +174,7 @@ test("a picked row of elements is labelled with a space between their texts, as 
   await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
   const cdp = await page.context().newCDPSession(page);
   await holdOn(page, cdp, frame.locator("#row"), "#row");
-  await expect.poll(async () => (await ofType(page, "state")).at(-1)?.draft ?? null).toMatchObject({ label: "“Mon 5 km”" });
-  await expect(page.locator(".composer-quote")).toHaveText("“Mon 5 km”");
+  await expect.poll(async () => (await ofType(page, "state")).at(-1)?.draft ?? null).toMatchObject({ label: "“Mon 5 km”", quote: "Mon 5 km" });
 });
 
 /** A page that keeps one note in its documents: Add writes it, and the page
@@ -249,12 +258,12 @@ claude.use("permissions").then(async perm => { document.getElementById("out").te
   await expect(frame.locator("#out")).toHaveText(JSON.stringify({ comments: "granted" }));
 });
 
-// The view the app's WebView has on a phone with the keyboard up: the page
-// area left above the keyboard and the composer's peek.
+// A phone's WebView with the app's composer and keyboard over the page's
+// lower part: the page keeps its size, and the shell shows no composer.
 test.describe("a short view", () => {
   test.use({ viewport: { width: 390, height: 380 } });
 
-  test("comment mode frames the page; a tap picks, and the composer keeps its one Send and Cancel in view", async ({ page }) => {
+  test("comment mode frames the page; a tap picks, the shell shows no Send, and the app's Send sends", async ({ page }) => {
     const { frame } = await openApp(page, "App short view", "subdomain");
     await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
     const framed = () => page.locator(".stage").evaluate(el => getComputedStyle(el, "::after").boxShadow !== "none");
@@ -263,17 +272,10 @@ test.describe("a short view", () => {
     await expect.poll(framed).toBe(true);
     await frame.locator("#t").tap();
     await expect.poll(async () => (await ofType(page, "state")).at(-1)?.draft ?? null).toMatchObject({ label: "“Quarterly goals”" });
-    await page.locator(".composer textarea").fill("make it blue");
-    // The screenshot is in (or given up) before the layout is judged.
-    await expect(page.locator(".composer .clip, .composer [role=status]").first()).toBeAttached();
-    await expect(page.locator(".composer [aria-disabled=true]")).toHaveCount(0);
-    const sends = page.getByRole("button", { name: "Send", exact: true });
-    await expect(sends).toHaveCount(1);
-    for (const b of [sends, page.getByRole("button", { name: "Cancel", exact: true })]) {
-      await expect(b).toBeInViewport({ ratio: 1 });
-    }
-    await expect(page.locator(".composer textarea")).toBeInViewport({ ratio: 1 });
-    await sends.tap();
+    await expect(page.locator(".composer")).toBeHidden();
+    await expect(page.getByRole("button", { name: "Send", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Cancel", exact: true })).toHaveCount(0);
+    await host(page, `submitDraft({ text: "make it blue" })`);
     await expect.poll(async () => (await ofType(page, "sent")).length).toBe(1);
   });
 });

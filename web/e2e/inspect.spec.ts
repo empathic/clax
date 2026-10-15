@@ -179,11 +179,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await view(page, artifact.id, "app=1", mode);
     await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
     await host(page, "composeArtifact()");
-    const composer = page.locator(".composer");
-    await expect(composer.locator(".composer-quote")).toHaveText("The whole app");
-    await expect.poll(async () => (await ofType(page, "state")).at(-1)?.draft).toEqual({ label: "The whole app", text: "", clip: "none" });
-    await composer.locator("textarea").fill("Make it darker");
-    await composer.getByRole("button", { name: "Send", exact: true }).click();
+    await expect.poll(async () => (await ofType(page, "state")).at(-1)?.draft).toMatchObject({ kind: "artifact", label: "The whole app", quote: null, text: "", clip: "none" });
+    await host(page, `submitDraft({ text: "Make it darker" })`);
     const threads = async () => ((await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads`)) as { threads: { anchor: { kind: string } }[] }).threads;
     await expect.poll(async () => (await threads()).length).toBe(1);
     const t = (await threads())[0];

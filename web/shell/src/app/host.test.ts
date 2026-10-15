@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { dispatchTrusted } from "../../../bridge/test/trusted";
 import { workerWith } from "../test/fake-worker";
 import { MOUNT_TIMEOUT_MS } from "../test/timeouts";
@@ -85,6 +85,14 @@ function framePosts(frame: HTMLIFrameElement): Posted[] {
   return posted;
 }
 const hello = (frame: HTMLIFrameElement, version: number, file = "index.html") => fromFrame(frame.contentWindow!, { type: "clax:hello", artifact: ID, version, file });
+/** jsdom has no object URLs, which the composer's screenshot takes. */
+function blobUrls() {
+  const u = URL as unknown as { createObjectURL?: unknown; revokeObjectURL?: unknown };
+  if (u.createObjectURL) return;
+  u.createObjectURL = () => "blob:clip";
+  u.revokeObjectURL = () => {};
+  onTestFinished(() => { delete u.createObjectURL; delete u.revokeObjectURL; });
+}
 const ofType = <T extends HostMessage["type"]>(t: T) => toHost.filter((m): m is Extract<HostMessage, { type: T }> => m.type === t);
 
 describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
@@ -132,6 +140,7 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
   });
 
   it("state follows the draft: label, text, clip pending then ready", async () => {
+    blobUrls();
     const { frame, host } = await appView();
     hello(frame, 1);
     host.enterCommentMode();
@@ -139,13 +148,22 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const p = pick("p1", "Quarterly goals");
     fromFrame(frame.contentWindow!, startOf(p));
     await waitFor(() => ofType("state").at(-1)?.draft, "a draft");
-    expect(ofType("state").at(-1)).toEqual({ type: "state", commenting: false, draft: { label: "“Quarterly goals”", text: "", clip: "pending" }, busy: false });
+    const draft = { key: "p1", kind: "element", label: "“Quarterly goals”", quote: "Quarterly goals" };
+    expect(ofType("state").at(-1)).toEqual({ type: "state", commenting: false, draft: { ...draft, text: "", clip: "pending" }, busy: false });
     const textarea = await waitFor(() => document.querySelector<HTMLTextAreaElement>(".composer textarea"), "composer");
     textarea.value = "bigger";
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
-    expect(ofType("state").at(-1)!.draft).toEqual({ label: "“Quarterly goals”", text: "bigger", clip: "pending" });
+    expect(ofType("state").at(-1)!.draft).toEqual({ ...draft, text: "bigger", clip: "pending" });
+    expect(ofType("draftClip")).toEqual([]);
     fromFrame(frame.contentWindow!, { ...p, clipPng: new Uint8Array([1, 2, 3]).buffer });
-    expect(ofType("state").at(-1)!.draft).toEqual({ label: "“Quarterly goals”", text: "bigger", clip: "ready" });
+    expect(ofType("state").at(-1)!.draft).toEqual({ ...draft, text: "bigger", clip: "ready" });
+    // The screenshot goes to the app once, as base64, under the composer's key.
+    await waitFor(() => ofType("draftClip").length, "the clip");
+    expect(ofType("draftClip")).toEqual([{ type: "draftClip", key: "p1", png: "AQID" }]);
+    textarea.value = "bigger still";
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    expect(ofType("draftClip").length).toBe(1);
     host.cancelDraft();
     // Comment mode comes back once the composer has closed.
     await waitFor(() => ofType("state").at(-1)?.commenting, "comment mode back");
@@ -207,7 +225,7 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(posts[1].body).toEqual({ to: "app-agent" });
     expect(ctl.state.get().draft).toBeNull();
     await waitFor(() => ctl.state.get().threads.find(t => t.id === "t9")?.sent_to_agent, "the sent thread");
-    expect(ofType("threads").at(-1)!.threads).toEqual([{ id: "t9", status: "open", summary: "make it blue", label: "“Quarterly goals”", sent: true, comments: 1, version: 1 }]);
+    expect(ofType("threads").at(-1)!.threads).toEqual([{ id: "t9", status: "open", summary: "make it blue", label: "“Quarterly goals”", sent: true, comments: 1, version: 1, clip: false }]);
   });
 
   it("a send that fails shows the notice and posts no sent", async () => {
@@ -228,6 +246,30 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await waitFor(() => ofType("notice").length, "notice");
     expect(ofType("notice")[0].text).toContain("Could not send to the agent");
     expect(ofType("sent")).toEqual([]);
+  });
+
+  it("submitDraft({text}) sends the app composer's text on the pick's anchor and screenshot", async () => {
+    blobUrls();
+    const posted = thread("t9");
+    const { frame, host } = await appView({
+      comments: (url, init) => {
+        if (init?.method !== "POST") return undefined;
+        if (url === `/api/artifacts/${ID}/threads`) return new Response(JSON.stringify({ thread: posted }));
+        if (url === `/api/artifacts/${ID}/threads/t9/send`) return new Response(JSON.stringify({ thread: { ...posted, sent_to_agent: true } }));
+        return undefined;
+      },
+    });
+    hello(frame, 1);
+    host.enterCommentMode();
+    viewerPick(frame, { ...pick("p1", "Quarterly goals"), clipPng: new Uint8Array([1, 2, 3]).buffer });
+    await waitFor(() => document.querySelector<HTMLFormElement>(".composer"), "composer");
+    await waitFor(() => ofType("state").at(-1)?.draft?.clip === "ready", "the clip");
+    host.submitDraft({ text: "make it blue" });
+    await waitFor(() => ofType("sent").length, "sent");
+    const body = requests.find(r => r.method === "POST")!.body as FormData;
+    expect(body.get("body")).toBe("make it blue");
+    expect(JSON.parse(body.get("anchor") as string)).toMatchObject({ kind: "element", quote: "Quarterly goals" });
+    expect(body.get("clip")).toBeInstanceOf(Blob);
   });
 
   it("loadVersion(n) shows version n and loadVersion(null) the latest, keeping app mode", async () => {
@@ -361,7 +403,7 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const { ctl, frame, host } = await appView({ threads: [thread("t1")] });
     hello(frame, 1);
     await waitFor(() => ctl.state.get().threads.length, "threads");
-    expect(ofType("threads").at(-1)!.threads).toEqual([{ id: "t1", status: "open", summary: "make it blue", label: "“Quarterly goals”", sent: false, comments: 1, version: 1 }]);
+    expect(ofType("threads").at(-1)!.threads).toEqual([{ id: "t1", status: "open", summary: "make it blue", label: "“Quarterly goals”", sent: false, comments: 1, version: 1, clip: false }]);
     host.openThread("nope");
     expect(ctl.state.get().selected).toBeNull();
     host.openThread("t1");
@@ -1031,7 +1073,7 @@ describe("app mode's whole-app comment", { timeout: MOUNT_TIMEOUT_MS }, () => {
     hello(frame, 1);
     host.composeArtifact();
     await waitFor(() => ofType("state").at(-1)?.draft, "a draft");
-    expect(ofType("state").at(-1)!.draft).toEqual({ label: "The whole app", text: "", clip: "none" });
+    expect(ofType("state").at(-1)!.draft).toMatchObject({ kind: "artifact", label: "The whole app", quote: null, text: "", clip: "none" });
     expect(ctl.state.get().draft!.anchor.kind).toBe("artifact");
     await waitFor(() => document.querySelector(".composer textarea"), "composer");
     // No pick, so nothing is asked of the page.
