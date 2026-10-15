@@ -5339,8 +5339,8 @@ Permissions (revoking `notify` cancels that app's reminders; deleting the
 app does too). For location the answers are Precise, Approximate and
 Don't allow, and the inspector shows which. An app allowed Approximate,
 and any app while Android allows Clax only approximate location, gets the
-centre of a cell about 2 km across (on a grid shifted once per run of
-Clax), `accuracy` at least 2000 and `precise: false`; the same anywhere in
+centre of a cell about 2 km across (on a grid shifted at random for each
+app, kept until its location answer is revoked or the app deleted), `accuracy` at least 2000 and `precise: false`; the same anywhere in
 the cell, and a watch reports it only when the cell changes. Android asks
 its own runtime permission on top (notifications, location). Calls reject
 `{code, message}` with `not_granted` (not allowed, or the system
