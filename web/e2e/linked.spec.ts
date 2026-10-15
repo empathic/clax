@@ -145,7 +145,7 @@ test("a public comment comes down tagged, a local reply goes up, and an outage s
       const v = await api(local.base, local.token, `/api/artifacts/${artifact.id}/threads`) as { threads: { comments: { body: string; linked?: { state: string | null } }[] }[] };
       return v.threads[0]?.comments.some(c => c.body.startsWith("Also") && c.linked?.state === "pending");
     }, 40_000);
-    await expect(card.locator(".link-state")).toHaveText(`Sending to ${host}…`);
+    await expect(card.locator(".link-state > span")).toHaveText(`Sending to ${host}…`);
     await shoot(page, "pending", async phone => { await page.reload(); if (phone) await threads(page); await card.locator(".link-state").waitFor(); });
 
     // Past the backoff's cap its row is marked not sent (here, on the scratch
@@ -155,8 +155,10 @@ test("a public comment comes down tagged, a local reply goes up, and an outage s
     expect(r.status, String(r.stderr)).toBe(0);
     await page.reload();
     await threads(page);
-    await expect(card.locator(".link-state")).toHaveText(`Not sent: ${host} unreachable`);
-    await expect(card.getByRole("button", { name: "Retry" })).toBeVisible();
+    // Said once, under the comment not sent, with Retry beside it.
+    await expect(card.locator(".link-state > span")).toHaveText(`Not sent: ${host} unreachable`);
+    await expect(card.getByText(`Not sent: ${host} unreachable`)).toHaveCount(1);
+    await expect(card.locator(".link-state").getByRole("button", { name: "Retry" })).toBeVisible();
     await shoot(page, "failed", async phone => { await page.reload(); if (phone) await threads(page); await card.getByRole("button", { name: "Retry" }).waitFor(); });
 
     // The link row: the comments mode, the outage and what was not sent.
@@ -178,6 +180,17 @@ test("a public comment comes down tagged, a local reply goes up, and an outage s
     await shoot(page, "link-row", openLink);
     await dialog.getByRole("button", { name: "Download only" }).click();
     await expect(page.getByRole("dialog").getByRole("button", { name: "Download only" })).toHaveAttribute("aria-pressed", "true");
+
+    // Retry on the card: the comment reads as sending again at once, and
+    // still does when read afresh, with the remote still away.
+    await page.reload();
+    await threads(page);
+    await card.locator(".link-state").getByRole("button", { name: "Retry" }).click();
+    await expect(card.locator(".link-state > span")).toHaveText(`Sending to ${host}…`);
+    await expect(card.getByRole("button", { name: "Retry" })).toHaveCount(0);
+    await page.reload();
+    await threads(page);
+    await expect(card.locator(".link-state > span")).toHaveText(`Sending to ${host}…`);
   } finally {
     if (hostedUp) await hosted.stop();
     await local.stop();

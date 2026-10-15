@@ -82,6 +82,16 @@ describe("theme", () => {
     }
   });
 
+  it("sets no text on a --danger fill: no token reads on it in both themes, and dark mode's is light", () => {
+    // Danger is text (on --card, --bg, --raised, --hover or --danger-tint), as `.ppl button.danger` sets it.
+    expect(ratio("#ffffff", hex(dark, "--danger"))).toBeLessThan(4.5);
+    for (const src of [css, ...svelte]) {
+      for (const [, sel, body] of src.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        if (/background(-color)?:\s*var\(--danger\)/.test(body)) expect(body, sel.trim()).not.toMatch(/(^|[;\s])color:/);
+      }
+    }
+  });
+
   it("sets buttons in the sans, rounded, sentence case, and stops faux bold", () => {
     expect(block("button")).toMatch(/font:\s*500 14px\/1(\.\d+)? var\(--font\)/);
     expect(block("button")).toMatch(/border-radius:\s*var\(--radius-sm\)/);

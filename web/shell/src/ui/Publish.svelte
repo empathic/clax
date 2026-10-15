@@ -210,7 +210,7 @@
   .seg button[aria-pressed="true"] { background: var(--accent-tint); color: var(--accent-ink); font-weight: 600; }
   .unsent { margin: 0; padding-left: 18px; font-size: 13px; color: var(--muted); }
   .unsent li { overflow-wrap: anywhere; }
-  .pub-acts .danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+  .pub-acts .danger { color: var(--danger); border-color: var(--danger); }
   .pub-acts .quiet:first-child { margin-left: auto; }
   @media (max-width: 700px) {
     .pub { position: static; }

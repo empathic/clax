@@ -52,3 +52,28 @@ export function remoteAuthor(c: Comment): { name: string; remote: string } | nul
 export function anyFailed(t: Thread): boolean {
   return t.linked?.state === "failed" || t.comments.some(c => c.linked?.state === "failed");
 }
+
+export type LinkLine = { text: string; failed: boolean; retry: boolean };
+
+/** What a thread card says of its up-sends: the thread's own line, and a
+ * line under each comment that waits. Retry is offered once, on the
+ * thread's line when its own write was not sent, else under its first
+ * comment not sent. `retried`: Retry was taken since this view of the
+ * thread came, so what was not sent reads as sending again. */
+export function cardLinkLines(t: Thread, retried = false): { thread: LinkLine | null; comments: Map<string, LinkLine> } {
+  const l = t.linked;
+  const comments = new Map<string, LinkLine>();
+  if (!l || l.unlinked) return { thread: null, comments };
+  const sending = (remote: string): LinkLine => ({ text: `Sending to ${remote}…`, failed: false, retry: false });
+  const own = threadLinkState(t);
+  const thread: LinkLine | null = !own ? null : own.failed && retried ? sending(l.remote) : { text: own.text, failed: own.failed, retry: own.retry };
+  let offered = !!thread?.retry;
+  for (const c of t.comments) {
+    const cs = commentLinkState(c);
+    if (!cs) continue;
+    if (cs.failed && retried) { comments.set(c.id, sending(c.linked!.remote)); continue; }
+    comments.set(c.id, { text: cs.text, failed: cs.failed, retry: cs.failed && !offered });
+    if (cs.failed) offered = true;
+  }
+  return { thread, comments };
+}

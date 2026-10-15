@@ -12,7 +12,7 @@
   import { guardedAction, keyboardTrail } from "../view/trail";
   import { waitingLabel } from "../waiting";
   import { clock, midName, whose } from "../view/working-model";
-  import { commentLinkState, linkTag, remoteAuthor, remoteVersion, threadLinkState } from "../view/linked-model";
+  import { cardLinkLines, linkTag, remoteAuthor, remoteVersion } from "../view/linked-model";
 
   type Props = {
     t: Thread; n?: number; now: Date; me?: Viewer | null; selected: string | null; file: string | null;
@@ -62,12 +62,16 @@
   const readOnly = $derived(ro || !!t.linked?.unlinked);
   const tag = $derived(linkTag(t));
   const elsewhere = $derived(remoteVersion(t));
-  const linkState = $derived(threadLinkState(t));
   let retrying = $state(false);
+  // The view of the thread Retry was taken on: until a newer view comes,
+  // what was not sent reads as sending again (the retry moves no event).
+  let retriedOn = $state.raw<Thread | null>(null);
+  const lines = $derived(cardLinkLines(t, retriedOn === t));
   const retry = async () => {
     if (!t.linked || retrying) return;
     retrying = true;
-    try { const { retryLink } = await import("./publish-api"); await retryLink(t.artifact_id, t.linked.remote_id); } catch { /* the card shows the state it is in */ } finally { retrying = false; }
+    const on = t;
+    try { const { retryLink } = await import("./publish-api"); await retryLink(t.artifact_id, t.linked.remote_id); retriedOn = on; } catch { /* the card shows the state it is in */ } finally { retrying = false; }
   };
   // A thread about the whole artifact (anchor kind `artifact`) has no spot to name.
   const anchorLabel = (a: Thread["anchor"]) => (a.kind === "artifact" ? "The whole artifact" : pickLabel(a));
@@ -158,23 +162,19 @@
       {@const note = addressedNote(t, c, versions)}
       {@const v = commentVersion(t, c, versions)}
       {@const ra = remoteAuthor(c)}
-      {@const cs = commentLinkState(c)}
+      {@const cs = lines.comments.get(c.id)}
       <div class={["msg", c.author_kind === "agent" ? "agent" : "you"]}>
         <p class="by"><b class="author">{ra ? ra.name : authorLabel(c, me)}{#if ra}<span class="link-tag sm" title={`On ${ra.remote}`}>{ra.remote}</span>{/if}{#if note}<span class="addressed muted">{` · addressed in v${note}`}</span>{/if}{#if c.via_page}<span class="via-page muted small">{" · via the page"}</span>{/if}</b
           >{#if v !== null}<span class="vt">v{v}</span>{/if}<time class="muted small" datetime={c.created_at} title={new Date(c.created_at).toLocaleString()}>{relativeTime(c.created_at, now)}</time></p>
         <p class="body">{c.body}</p>
-        {#if cs}<p class={["link-state small", cs.failed && "failed"]}>{cs.text}</p>{/if}
+        {#if cs}<p class={["link-state small", cs.failed && "failed"]}><span>{cs.text}</span>{#if cs.retry}{@render retryButton()}{/if}</p>{/if}
       </div>
     {/each}
     {@render writers?.(t.id)}
     {#if marker}<p class="st ag"><span class="tok a work sm" aria-hidden="true"></span>{marker.text}<small>{clock(marker.since, now)}</small></p>
     {:else if label}<p class="st waiting">{label}</p>{/if}
-    {#if linkState || (t.linked && !t.linked.unlinked && t.comments.some(c => c.linked?.state === "failed"))}
-      <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
-      <p class={["st link", (linkState?.failed || !linkState) && "failed"]} onclick={e => e.stopPropagation()}>
-        <span>{linkState ? linkState.text : `Not sent: ${t.linked?.remote} unreachable`}</span>
-        {#if !linkState || linkState.retry}<button type="button" class="retry" disabled={retrying} onclick={retry}>{retrying ? "Retrying…" : "Retry"}</button>{/if}
-      </p>
+    {#if lines.thread}
+      <p class={["st link", lines.thread.failed && "failed"]}><span>{lines.thread.text}</span>{#if lines.thread.retry}{@render retryButton()}{/if}</p>
     {/if}
     {#if history.length}
       <ul class="hist" aria-label="History">
@@ -201,6 +201,8 @@
 </article>
 
 {#snippet chip()}{#if tag}<span class={["link-tag", tag.unlinked && "unlinked"]} title={tag.title}>{tag.label}</span>{/if}{#if owner}<span class="owner-chip" title={`${owner.name ?? "agent"}, ${mine ? "your agent" : `${whose(owner.person_name ?? "")} agent`}`}><span class="on">{owner.name}</span>{#if !mine}<span class="op">{` · ${midName(owner.person_name ?? "")}`}</span>{/if}</span>{/if}{/snippet}
+
+{#snippet retryButton()}<button type="button" class="retry" disabled={retrying} onclick={e => { e.stopPropagation(); void retry(); }}>{retrying ? "Retrying…" : "Retry"}</button>{/snippet}
 
 {#snippet actions()}
   <!-- Only stops a click on these controls from also selecting the card. -->
@@ -274,7 +276,8 @@
     .thread-card .link-where a:hover { text-decoration: underline; }
     .thread-card .link-state { margin: 0; color: var(--muted); font-style: italic; }
     .thread-card .link-state.failed, .thread-card .st.link.failed { color: var(--danger); font-style: normal; }
-    .thread-card .st.link .retry { margin-left: auto; min-height: 0; padding: 2px 10px; font-size: 12px; }
+    .thread-card .link-state.failed { display: flex; align-items: center; gap: 8px; }
+    .thread-card .retry { margin-left: auto; min-height: 24px; padding: 2px 10px; font-size: 12px; font-style: normal; color: var(--fg); }
     .thread-check { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); flex: none; cursor: pointer; }
     .thread-card:has(.thread-check:checked) { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
   }

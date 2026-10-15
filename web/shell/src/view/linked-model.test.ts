@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Comment, Thread, ThreadLink } from "../threads";
-import { anyFailed, commentLinkState, linkTag, remoteAuthor, remoteVersion, threadLinkState } from "./linked-model";
+import { anyFailed, cardLinkLines, commentLinkState, linkTag, remoteAuthor, remoteVersion, threadLinkState } from "./linked-model";
 
 const link = (o: Partial<ThreadLink> = {}): ThreadLink => ({
   remote_id: "r_1", remote: "clax.dev", remote_origin: "https://clax.dev", url: "https://clax.dev/a/abc",
@@ -45,5 +45,25 @@ describe("linked threads", () => {
     expect(remoteAuthor(comment())).toBeNull();
     const c = comment({ author_name: "Ada (not connected)", linked: { origin: "remote", remote: "clax.dev", author_kind: "viewer", author_name: "Ada", state: null } });
     expect(remoteAuthor(c)).toEqual({ name: "Ada", remote: "clax.dev" });
+  });
+
+  it("says a comment not sent once, with Retry under the first, and as sending again once retried", () => {
+    const failed = (id: string) => comment({ id, linked: { origin: "local", remote: "clax.dev", author_kind: null, author_name: null, state: "failed" } });
+    const t = thread(link({ origin: "local" }), [comment(), failed("c2"), failed("c3")]);
+    const l = cardLinkLines(t);
+    expect(l.thread).toBeNull();
+    expect([...l.comments]).toEqual([
+      ["c2", { text: "Not sent: clax.dev unreachable", failed: true, retry: true }],
+      ["c3", { text: "Not sent: clax.dev unreachable", failed: true, retry: false }],
+    ]);
+    const again = cardLinkLines(t, true);
+    expect([...again.comments.values()].map(c => [c.text, c.retry])).toEqual([["Sending to clax.dev…", false], ["Sending to clax.dev…", false]]);
+    // The thread's own write not sent carries Retry; its comments' lines do not.
+    const own = cardLinkLines(thread(link({ state: "failed" }), [failed("c2")]));
+    expect(own.thread).toEqual({ text: "Not sent: clax.dev unreachable", failed: true, retry: true });
+    expect(own.comments.get("c2")?.retry).toBe(false);
+    expect(cardLinkLines(thread(link({ state: "failed" })), true).thread).toEqual({ text: "Sending to clax.dev…", failed: false, retry: false });
+    expect(cardLinkLines(thread(link({ state: "held" }))).thread?.text).toBe("Waiting for v2 to be pushed to clax.dev");
+    expect(cardLinkLines(thread(link({ unlinked: true }), [failed("c2")])).comments.size).toBe(0);
   });
 });
