@@ -1990,6 +1990,7 @@ delivery state" below):
 | `agent_ended` | "agent session ended; waiting for a new one" |
 | `withheld` | "waiting for <person>'s approval", or "waiting for your approval" for that person (no name to an agent) |
 | `declined` | "declined by <person>", or "you declined" for that person |
+| `no_access` | "held: the agent no longer has access" (the owner, and the person whose agent it is; others read the plain state, "sent" until the agent may read the page again) |
 | none (`null`) on a sent thread | "sent to <agent>" |
 
 **Who reads a delivery state.** The owner reads every row of a thread; a
@@ -3124,8 +3125,11 @@ thread's ID and the count only:
 [clax] 2 comments in thread 01J9… are held: you no longer have access to this page.
 ```
 
-They are delivered by the usual tiers if the agent may read the artifact
-again. Approvals and rights are read again at
+Such a thread reads `no_access` to the owner and to the person whose agent
+it is (see "What the person sees"). If the agent may read the artifact
+again, the comments are delivered by the usual tiers, or, where their text
+is withheld, told of as withheld and delivered once approved; losing access
+again tells again. Approvals and rights are read again at
 every take, so a decision or revocation reaches even a waiting
 `wait_for_feedback`.
 

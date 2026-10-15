@@ -7,7 +7,7 @@ export type Tier = "piggyback" | "stop_hook" | "prompt_hook" | "wait" | "queue" 
  * §10). Only the people concerned read these, with `mine` for the approver
  * themself; agents read `withheld` without a name; everyone else, the plain
  * state. */
-export type FeedbackState = { thread_id: string; state: "sent" | "withheld" | "declined" | "delivered" | "acknowledged" | "agent_ended"; tier: Tier | null; since: string; resends: number; exhausted: boolean; approver?: string; mine?: boolean };
+export type FeedbackState = { thread_id: string; state: "sent" | "withheld" | "declined" | "no_access" | "delivered" | "acknowledged" | "agent_ended"; tier: Tier | null; since: string; resends: number; exhausted: boolean; approver?: string; mine?: boolean };
 /** `via_page`: the page wrote it through the `comments` capability, as the viewer. */
 export type Comment = { id: string; thread_id: string; author_kind: "viewer" | "agent"; author_name: string; author_public_id?: string | null; via_harness: string | null; via_page?: boolean; body: string; created_at: string };
 export type Thread = {

@@ -41,6 +41,9 @@ export function waitingLabel(s: FeedbackState | null, now: Date): string | null 
       return s.mine ? "waiting for your approval" : s.approver ? `waiting for ${s.approver}'s approval` : "waiting for approval";
     case "declined":
       return s.mine ? "you declined" : `declined by ${s.approver ?? "its person"}`;
+    // Only to the owner and the agent's person (spec 2026-10-08 §7.5, §10).
+    case "no_access":
+      return "held: the agent no longer has access";
     case "delivered":
       if (s.exhausted) return "delivered, not acknowledged";
       return `delivered via ${DELIVERED_VIA[s.tier ?? "piggyback"]} · ${elapsed(s.since, now)} ago · not yet acknowledged${s.resends === 1 ? " · resent once" : s.resends ? ` · resent ${s.resends} times` : ""}`;

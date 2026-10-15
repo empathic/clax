@@ -2878,6 +2878,30 @@ async fn a_persons_agent_that_may_no_longer_read_a_page_is_told_once_on_every_ti
         let v = poll().await;
         assert_eq!(v["text"], Value::Null, "{tier}: {v}");
         assert!(v.get("withheld").is_none(), "{tier}: {v}");
+        // The owner reads the hold; Mia, its author, reads it as sent.
+        let state = |v: Value| v["thread"]["feedback_state"]["state"].clone();
+        let one = format!("/api/artifacts/{aid}/threads/{}", w.read.thread);
+        let owner: Value = w.ts.owner_browser().get(&one).await.json().await.unwrap();
+        assert_eq!(state(owner), json!("no_access"), "{tier}");
+        let r = w.mia_browser(w.ts.client.get(format!("{}{one}", w.ts.base)));
+        let mia: Value = r.send().await.unwrap().json().await.unwrap();
+        assert_eq!(state(mia), json!("sent"), "{tier}");
+        // Readable again: Mia's words are withheld, and told so; approved,
+        // they are delivered.
+        sam_rights(&w, "clax:full");
+        let v = poll().await;
+        assert!(
+            v["text"].as_str().unwrap_or_default().contains(&format!(
+                "1 comment from Mia on \"an artifact by Mia\" (thread {}) is withheld",
+                w.read.thread
+            )),
+            "{tier}: {v}"
+        );
+        let owner: Value = w.ts.owner_browser().get(&one).await.json().await.unwrap();
+        assert_eq!(state(owner), json!("withheld"), "{tier}");
+        approve(&w.ts, Some(&sam_public(&w)), &w.mia_public);
+        let v = poll().await;
+        assert!(v.to_string().contains("Mia to Sam"), "{tier}: {v}");
     }
 }
 
