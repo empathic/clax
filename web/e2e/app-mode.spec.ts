@@ -236,3 +236,32 @@ claude.use("permissions").then(async perm => { document.getElementById("out").te
   await allow.tap();
   await expect(frame.locator("#out")).toHaveText(JSON.stringify({ comments: "granted" }));
 });
+
+// The view the app's WebView has on a phone with the keyboard up: the page
+// area left above the keyboard and the composer's peek.
+test.describe("a short view", () => {
+  test.use({ viewport: { width: 390, height: 380 } });
+
+  test("comment mode frames the page; a tap picks, and the composer keeps its one Send and Cancel in view", async ({ page }) => {
+    const { frame } = await openApp(page, "App short view", "subdomain");
+    await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
+    const framed = () => page.locator(".stage").evaluate(el => getComputedStyle(el, "::after").boxShadow !== "none");
+    expect(await framed()).toBe(false);
+    await host(page, "enterCommentMode()");
+    await expect.poll(framed).toBe(true);
+    await frame.locator("#t").tap();
+    await expect.poll(async () => (await ofType(page, "state")).at(-1)?.draft ?? null).toMatchObject({ label: "“Quarterly goals”" });
+    await page.locator(".composer textarea").fill("make it blue");
+    // The screenshot is in (or given up) before the layout is judged.
+    await expect(page.locator(".composer .clip, .composer [role=status]").first()).toBeAttached();
+    await expect(page.locator(".composer [aria-disabled=true]")).toHaveCount(0);
+    const sends = page.getByRole("button", { name: "Send", exact: true });
+    await expect(sends).toHaveCount(1);
+    for (const b of [sends, page.getByRole("button", { name: "Cancel", exact: true })]) {
+      await expect(b).toBeInViewport({ ratio: 1 });
+    }
+    await expect(page.locator(".composer textarea")).toBeInViewport({ ratio: 1 });
+    await sends.tap();
+    await expect.poll(async () => (await ofType(page, "sent")).length).toBe(1);
+  });
+});
