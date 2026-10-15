@@ -518,6 +518,9 @@ impl Store {
     /// `session.join`;
     /// a refresh that changes none of them records nothing. Either is the
     /// session's own agent's, through `ctx`'s channel, git state and call.
+    /// A new row of an agent token (a bearer grant) starts within the
+    /// narrowings of the token's live sessions of the same client name
+    /// (`repo`, the MCP client's `clientInfo.name`), spec 2026-10-08 §6.9.
     ///
     /// # Errors
     /// `grant_revoked` when `r.grant_id` names no approved grant.
@@ -675,6 +678,9 @@ impl Store {
                 ],
             )?;
             self.record_session(tx, ctx, AuditKind::SessionStart, &id, &r.harness)?;
+            // An agent token's client initializing again never widens
+            // itself (spec §6.9).
+            self.inherit_token_narrowing_in(tx, ctx, &id, r.repo.as_deref())?;
             let restored = self.restore_in(tx, ctx, &id)?;
             Ok(Registered {
                 session: fetch(tx, &id)?,

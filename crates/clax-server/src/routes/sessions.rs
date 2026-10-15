@@ -63,10 +63,14 @@ pub async fn register(
     let (ctx, state) = (s.feedback_ctx(), s.clone());
     let reg = s
         .store_call(move |st| {
+            let gid = r.grant_id.clone();
+            let reg = st.register_session_proved(&audit, r, Proved::Session(proved.as_deref()))?;
             // An agent token holds at most `BEARER_SESSION_CAP` live
-            // sessions: room is made for this one.
-            if let Some(gid) = &r.grant_id {
-                let over = st.end_bearer_sessions_beyond(gid, Store::BEARER_SESSION_CAP - 1)?;
+            // sessions: the least recently seen beyond them end once this
+            // one stands, so a narrowed one it inherits from (spec §6.9)
+            // is still live as it registers.
+            if let Some(gid) = &gid {
+                let over = st.end_bearer_sessions_beyond(gid, Store::BEARER_SESSION_CAP)?;
                 if !over.ended.is_empty() {
                     let ttl =
                         clax_core::audit::AuditCtx::system(clax_core::audit::SystemReason::Ttl);
@@ -81,7 +85,7 @@ pub async fn register(
                     );
                 }
             }
-            st.register_session_proved(&audit, r, Proved::Session(proved.as_deref()))
+            Ok(reg)
         })
         .await?;
     restored_note(&s, &reg.session, reg.restored);

@@ -770,6 +770,11 @@ pub const MIGRATIONS: &[&str] = &[
     // that is not a fork.
     "ALTER TABLE artifacts ADD COLUMN forked_from_id TEXT;
     ALTER TABLE artifacts ADD COLUMN forked_from_version INTEGER;",
+    // 29: the MCP client name an agent token's session registered under
+    // (`clientInfo.name`, spec 2026-10-08 §6.9): a new session of the token
+    // starts within the narrowings of its live sessions of the same name.
+    // NULL for every other session, and for one registered before.
+    "ALTER TABLE sessions ADD COLUMN client_name TEXT;",
 ];
 
 /// The audit journal's migration, as a schema version (the
