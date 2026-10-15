@@ -3347,6 +3347,73 @@ async fn a_member_narrows_and_ends_one_token_agent_session_from_people() {
     assert!(people.to_string().contains(&b_handle), "{people}");
 }
 
+#[tokio::test]
+async fn a_token_client_initializing_again_keeps_the_narrowing_of_its_name() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let budget = site.titled("Budget").await;
+    let (sam, _, a, a_handle) = site.sam_with_agent(&owner, &budget, "writer-a").await;
+    let client = |session| TokenAgent {
+        site: &site,
+        token: a.token.clone(),
+        session,
+    };
+    let mut b = client(None);
+    assert_eq!(b.initialize("writer-b").await, 200);
+    // Sam narrows writer-a to comments alone.
+    let (s, v) = site
+        .send(
+            &sam,
+            reqwest::Method::PUT,
+            &format!("/api/agents/{a_handle}/narrow"),
+            json!({"access": [{"type": "clax-comments", "actions": ["read"], "locations": [budget]}]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    // writer-a initializes again while its narrowed session stands: the new
+    // session starts within that narrowing, recorded as inherited.
+    let mut a2 = client(None);
+    assert_eq!(a2.initialize("writer-a").await, 200);
+    assert_ne!(a2.sid(), a.sid());
+    let (_, r) = a2.call("read", json!({"url_or_id": budget})).await;
+    assert_eq!(tool_code(&r), "not_permitted", "{r}");
+    let db = rusqlite::Connection::open(site.ts.home.db_path()).unwrap();
+    db.busy_timeout(std::time::Duration::from_secs(10)).unwrap();
+    let inherited: Vec<Value> = db
+        .prepare("SELECT body FROM audit_events WHERE kind = 'agent.narrow' ORDER BY seq")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(|b| serde_json::from_str(&b.unwrap()).unwrap())
+        .filter(|b: &Value| b["session"] == json!(a2.sid()))
+        .collect();
+    assert_eq!(inherited.len(), 1, "{inherited:?}");
+    assert_eq!(inherited[0]["inherited"], json!(true), "{inherited:?}");
+    // Another client name of the token inherits nothing.
+    let mut b2 = client(None);
+    assert_eq!(b2.initialize("writer-b").await, 200);
+    let (_, r) = b2.call("read", json!({"url_or_id": budget})).await;
+    assert_eq!(tool_code(&r), "withheld", "{r}");
+    // The token's live sessions fill its cap, the narrowed ones least
+    // recently seen: the next writer-a still starts narrowed, and the cap
+    // then ends the oldest.
+    let mut fillers = Vec::new();
+    for n in 0..clax_core::Store::BEARER_SESSION_CAP - 4 {
+        let mut f = client(None);
+        assert_eq!(f.initialize(&format!("filler-{n}")).await, 200);
+        fillers.push(f);
+    }
+    let mut a3 = client(None);
+    assert_eq!(a3.initialize("writer-a").await, 200);
+    let (_, r) = a3.call("read", json!({"url_or_id": budget})).await;
+    assert_eq!(tool_code(&r), "not_permitted", "{r}");
+    let (s, _) = client(a.session.clone())
+        .call("read", json!({"url_or_id": budget}))
+        .await;
+    assert_eq!(s, 404, "the least recently seen session ended");
+    drop((b, fillers));
+}
+
 type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 

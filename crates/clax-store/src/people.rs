@@ -2392,6 +2392,70 @@ fn sessionless_narrow(c: &rusqlite::Connection, gid: &str) -> Result<Option<Righ
     Ok(all)
 }
 
+impl Store {
+    /// Gives new session `sid` of an agent token (a bearer grant) its MCP
+    /// client's name (`client`, the `clientInfo.name` it registered under,
+    /// kept as `client_name`) and the narrowings in force on the token's
+    /// other live sessions of that name: their intersection, as
+    /// [`sessionless_narrow`] takes it (spec 2026-10-08 §6.9,
+    /// "Re-initializing"). So a client that sends `initialize` again while
+    /// a narrowed session of its name stands starts within that narrowing;
+    /// the token's own narrowing binds every session already. Recorded as
+    /// `agent.narrow {session, access, inherited: true}` under `ctx` when
+    /// there is one. A signed grant's session, or the daemon token's, is
+    /// left alone.
+    pub(crate) fn inherit_token_narrowing_in(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+        sid: &str,
+        client: Option<&str>,
+    ) -> Result<()> {
+        let named = tx.execute(
+            "UPDATE sessions SET client_name = ?2
+              WHERE id = ?1 AND grant_id IN (SELECT id FROM grants WHERE bearer = 1)",
+            params![sid, client],
+        )? > 0;
+        if !named {
+            return Ok(());
+        }
+        let narrowings: Vec<String> = {
+            let mut stmt = tx.prepare_cached(
+                "SELECT o.narrow_json FROM sessions n
+                   JOIN sessions o ON o.grant_id = n.grant_id AND o.id <> n.id
+                  WHERE n.id = ?1 AND o.ended_at IS NULL AND o.narrow_json IS NOT NULL
+                    AND o.client_name IS n.client_name
+                  ORDER BY o.id",
+            )?;
+            stmt.query_map(params![sid], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let mut all: Option<Rights> = None;
+        for n in narrowings {
+            let n = read_rights(&n)?;
+            all = Some(match all {
+                Some(a) => a.intersect(&n),
+                None => n,
+            });
+        }
+        let Some(narrow) = all else {
+            return Ok(());
+        };
+        tx.execute(
+            "UPDATE sessions SET narrow_json = ?2 WHERE id = ?1",
+            params![sid, write_rights(&narrow)],
+        )?;
+        let mut rec = AuditRecord::new(AuditKind::AgentNarrow, self.now())
+            .with("session", sid)
+            .with("access", narrow.to_json())
+            .with("inherited", true);
+        rec.ids.session = Some(sid.to_string());
+        self.record_audit(tx, ctx, rec)?;
+        self.visibility_changed();
+        Ok(())
+    }
+}
+
 /// [`Store::grant_caller`], read on `c`.
 pub(crate) fn grant_caller_in(
     c: &rusqlite::Connection,
