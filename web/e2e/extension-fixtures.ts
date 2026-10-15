@@ -148,7 +148,7 @@ async function browserCdp(profile: string, method: string, params: object): Prom
   }
 }
 
-export const test = base.extend<{ live: Live; variant: Variant; gesture: boolean }, { warm: void }>({
+export const test = base.extend<{ live: Live; variant: Variant; gesture: boolean; bind: string }, { warm: void }>({
   // Once per worker, before any daemon starts: the binary's first run, so
   // the first-exec scan is not paid inside a daemon's start.
   // oxlint-disable-next-line no-empty-pattern
@@ -160,7 +160,9 @@ export const test = base.extend<{ live: Live; variant: Variant; gesture: boolean
   variant: ["all-urls", { option: true }],
   /** Chromium takes real toolbar clicks over CDP (`iconClick`). */
   gesture: [false, { option: true }],
-  live: async ({ variant, gesture }, use, testInfo) => {
+  /** The address the daemon listens on: every interface for a test that invites a person on the LAN. */
+  bind: ["127.0.0.1", { option: true }],
+  live: async ({ variant, gesture, bind }, use, testInfo) => {
     // The daemon's start has its own bound, beyond the test's.
     testInfo.setTimeout(testInfo.timeout + DAEMON_START_MS);
     if (!existsSync(join(EXT_DIR, "manifest.json"))) throw new Error("web/dist-extension-test is missing: run `npm run build` in web/");
@@ -186,7 +188,7 @@ export const test = base.extend<{ live: Live; variant: Variant; gesture: boolean
       spawnSync(join(host, "launch.sh"), [], { stdio: "ignore", timeout: DAEMON_START_MS });
       rmSync(join(WORKER_HOME, "logs"), { recursive: true, force: true });
     }
-    const daemon = await startDaemon({ home: WORKER_HOME, config, startMs: DAEMON_START_MS });
+    const daemon = await startDaemon({ home: WORKER_HOME, config, startMs: DAEMON_START_MS, bind });
     // The real path: macOS reports file changes under /private/var, not /var.
     const siteDir = realpathSync(mkdtempSync(join(tmpdir(), "clax-live-site-")));
     cpSync(join(web, "e2e/live-site"), siteDir, { recursive: true });
@@ -213,7 +215,7 @@ export const test = base.extend<{ live: Live; variant: Variant; gesture: boolean
       daemon, ctx: first.ctx, sw: first.sw, extId: new URL(first.sw.url()).host, site, siteDir, siteUrl, daemonExtId,
       async restartDaemon() {
         await l.daemon.stop({ keepHome: true });
-        l.daemon = await startDaemon({ home: l.daemon.home, config, startMs: DAEMON_START_MS });
+        l.daemon = await startDaemon({ home: l.daemon.home, config, startMs: DAEMON_START_MS, bind });
       },
       async restartBrowser() {
         await l.ctx.close();

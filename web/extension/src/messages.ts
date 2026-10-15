@@ -28,6 +28,10 @@ export const PICK_ID = /^[0-9a-f]{32}$/;
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const HANDLE = /^a_[0-9a-f]{22}$/;
 const ARTIFACT_ID = /^[0-9a-hjkmnp-tv-z]{12}$/;
+/** A viewer's public ID (`u_` and 22 lowercase hex digits). */
+const PUBLIC_ID = /^u_[0-9a-f]{22}$/;
+/** The most threads one `firsts` names (the daemon's bound), and people one answers with. */
+const MAX_FIRSTS = 200;
 /** An inbox item's ID: a ULID, or `b` and 24 hex digits for an item filled in from the history. */
 export const ITEM_ID = /^(?:[0-9A-HJKMNP-TV-Z]{26}|b[0-9a-f]{24})$/;
 /** The most item IDs one bulk mark names (the daemon's bound). */
@@ -174,6 +178,10 @@ export type WorkerToPanel =
   | { t: "clip"; req: number; url: string | null }
   /** The page `far-page` asked for: its live agents and versions; null when the thread is not in the site's listing or the page could not be read. */
   | { t: "far-page"; req: number; page: FarPage | null }
+  /** Who approves a send of the threads `firsts` named first, by public ID
+   * (null: the owner); null when the threads are not of one known page, or
+   * the daemon did not answer. */
+  | { t: "firsts"; req: number; firsts: (string | null)[] | null }
   /** The owner's inbox (spec 2026-10-06-agent-questions-and-inbox §9.6),
    * told on a panel's connect and whenever it is fetched again: whether the
    * daemon takes the extension as the owner (null until it answered), the
@@ -218,6 +226,10 @@ export type PanelToWorker =
   | { t: "clip"; req: number; threadId: string }
   /** The live agents and versions of the page of a thread of the site's listing: answered by `far-page`. */
   | { t: "far-page"; req: number; threadId: string }
+  /** Who approves a send of these threads first (the Send menu's "Sam
+   * approves first", spec 2026-10-08 §10): threads of the tab's page, or of
+   * one other page of its site. Answered by `firsts`. */
+  | { t: "firsts"; req: number; threadIds: string[] }
   /** Moves a thread of the site to the page `pageUrl` names (of the tab's origin). */
   | { t: "move"; threadId: string; pageUrl: string }
   /** One batch of a new merge rule for `origin`, which must be the origin
@@ -397,6 +409,8 @@ export function isToPanel(m: unknown): m is WorkerToPanel {
     case "sites": return has("sites") && Array.isArray(m.sites) && m.sites.length <= MAX_SITES && m.sites.every(siteChoice);
     case "clip": return has("req", "url") && count(m.req) && (m.url === null || (str(m.url, MAX_CLIP_URL) && m.url.startsWith("data:image/png;base64,")));
     case "far-page": return has("req", "page") && count(m.req) && (m.page === null || farPage(m.page));
+    case "firsts": return has("req", "firsts") && count(m.req) && (m.firsts === null
+      || (Array.isArray(m.firsts) && m.firsts.length <= MAX_FIRSTS && m.firsts.every(p => p === null || (typeof p === "string" && PUBLIC_ID.test(p)))));
     case "inbox": return has("owner", "unread", "questions") && (m.owner === null || bool(m.owner)) && count(m.unread) && Array.isArray(m.questions) && m.questions.every(obj);
     case "q-event": return has("question") && obj(m.question);
     case "inbox-event": return has("item", "unread") && (m.item === null || obj(m.item)) && count(m.unread);
@@ -480,6 +494,8 @@ export function isFromPanel(m: unknown): m is PanelToWorker {
     case "turn-off": return has("tabId") && count(m.tabId);
     case "open-thread": return has("threadId") && ulid(m.threadId);
     case "clip": case "far-page": return has("req", "threadId") && count(m.req) && ulid(m.threadId);
+    case "firsts": return has("req", "threadIds") && count(m.req) && Array.isArray(m.threadIds) && m.threadIds.length >= 1
+      && m.threadIds.length <= MAX_FIRSTS && m.threadIds.every(ulid);
     case "move": return has("threadId", "pageUrl") && ulid(m.threadId) && url(m.pageUrl);
     case "rule": return has("req", "origin", "pattern") && count(m.req) && origin(m.origin)
       && typeof m.pattern === "string" && m.pattern.length <= MAX_PATTERN && /^\/[\x21-\x7e]*$/.test(m.pattern);

@@ -168,6 +168,17 @@ describe("Api", () => {
     await expect(s.api.presenceOf("../x")).rejects.toMatchObject({ code: "invalid_id" });
   });
 
+  it("asks who approves first for threads of a live page, and keeps only the people the daemon names", async () => {
+    const SAM = `u_${"a".repeat(22)}`;
+    const s = setup([ok({ approves_first: [null, SAM] }), ok({ approves_first: "nobody" })]);
+    expect(await s.api.approvesFirst(AID, [TID, TID])).toEqual([null, SAM]);
+    expect(s.calls[0].url).toBe(`${A.daemon}/api/artifacts/${AID}/approves-first?threads=${TID},${TID}`);
+    expect(await s.api.approvesFirst(AID, [TID])).toEqual([]);
+    await expect(s.api.approvesFirst("../x", [TID])).rejects.toMatchObject({ code: "invalid_id" });
+    await expect(s.api.approvesFirst(AID, ["x"])).rejects.toMatchObject({ code: "invalid_id" });
+    expect(s.calls).toHaveLength(2);
+  });
+
   it("names the pending threads a snapshot covers, an empty list when none", async () => {
     const s = setup([ok({}), ok({}), new Response("{}", { status: 401 }), ok({})]);
     const form = () => { const f = new FormData(); f.set("url", "http://localhost:5173/"); return f; };

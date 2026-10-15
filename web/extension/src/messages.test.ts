@@ -146,6 +146,14 @@ describe("messages", () => {
     expect(isToPanel({ t: "far-page", req: 2, page: null })).toBe(true);
     for (const page of [{ ...fp, artifactId: "x" }, { ...fp, agents: [{ handle: "<b>", harness: "claude", live: true }] }, { ...fp, versions: "v1" }, { ...fp, extra: 1 }, { ...fp, versions: [{ n: 1, created_at: "t", agent_harness: null, files: {} }] }]) expect(isToPanel({ t: "far-page", req: 2, page })).toBe(false);
     for (const url of ["http://localhost:7480/x.png", "data:text/html;base64,PGI+", "data:image/svg+xml;base64,PHN2Zz4=", `data:image/png;base64,${"A".repeat(7_000_000)}`]) expect(isToPanel({ t: "clip", req: 1, url })).toBe(false);
+    // Who approves first for one page's threads (at most 200), answered with public IDs and null (the owner), or null.
+    const SAM = `u_${"a".repeat(22)}`;
+    expect(isFromPanel({ t: "firsts", req: 3, threadIds: [ULID] })).toBe(true);
+    for (const threadIds of [[], ["x"], Array(201).fill(ULID), ULID]) expect(isFromPanel({ t: "firsts", req: 3, threadIds })).toBe(false);
+    expect(isFromPanel({ t: "firsts", threadIds: [ULID] })).toBe(false);
+    expect(isToPanel({ t: "firsts", req: 3, firsts: [null, SAM] })).toBe(true);
+    expect(isToPanel({ t: "firsts", req: 3, firsts: null })).toBe(true);
+    for (const firsts of [["<b>"], [3], "u", Array(201).fill(SAM)]) expect(isToPanel({ t: "firsts", req: 3, firsts })).toBe(false);
     expect(isFromPanel({ t: "open-thread", threadId: "x" })).toBe(false);
     expect(isFromPanel({ t: "open-thread", threadId: ULID, url: "http://localhost:5173/" })).toBe(false);
     expect(isFromPanel({ t: "move", threadId: ULID, pageUrl: "http://localhost:5173/users/7" })).toBe(true);

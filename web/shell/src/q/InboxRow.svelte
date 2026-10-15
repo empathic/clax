@@ -21,6 +21,8 @@
     now?: Date;
     onOpen(i: InboxItem): void;
     onToggle(i: InboxItem): void;
+    /** Where opening it leads, below its text (the extension's panel: an approval request is decided in the shell's inbox). */
+    hint?: string;
   };
   const p: Props = $props();
   const title = $derived(itemTitle(p.item, p.others ?? []));
@@ -50,6 +52,7 @@
     <span class="main">
       <span class="title" id={`irow-${p.item.id}`}>{title}</span>
       {#if text}<span class="text" data-gone={p.item.gone ? "" : undefined} data-wrap={p.item.kind === "ended" ? "" : undefined}>{text}</span>{/if}
+      {#if p.hint}<span class="hint">{p.hint}</span>{/if}
     </span>
     <time datetime={p.item.created_at}>{relativeTime(p.item.created_at, p.now ?? new Date())}</time>
   </button>
@@ -76,6 +79,7 @@
     .irow .text { color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .irow .text[data-gone] { font-style: italic; }
     .irow .text[data-wrap] { white-space: normal; overflow-wrap: anywhere; }
+    .irow .hint { color: var(--agent-ink); font-size: 12.5px; font-weight: 500; }
     .irow { flex-wrap: wrap; }
     .irow .released { flex-basis: 100%; margin: -4px 0 8px; padding: 0 40px 0 40px; display: grid; gap: 2px; font: 400 12.5px/1.4 var(--font); }
     .irow .released li { list-style: none; min-width: 0; overflow-wrap: anywhere; color: var(--muted); }

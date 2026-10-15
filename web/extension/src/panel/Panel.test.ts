@@ -184,6 +184,52 @@ describe("Panel", () => {
   });
 });
 
+describe("Panel: the Send menu", () => {
+  const NOW = new Date("2026-10-05T10:01:00.000Z");
+  const MINE = `a_${"1".repeat(22)}`, SAMS = `a_${"2".repeat(22)}`;
+  const SAM = `u_${"a".repeat(22)}`;
+  const alex = { public_id: "u_x", name: "Alex", owner: true };
+  const sam = { public_id: SAM, name: "Sam" };
+  // The daemon lists the most recently active agent first: Sam's.
+  const both = [{ handle: SAMS, harness: "codex", live: true, name: "clax-sam", person: sam }, { handle: MINE, harness: "claude", live: true, name: "clax-main", person: alex }];
+  function sendLink(agents: object[]) {
+    const asked: string[][] = [];
+    const l = { ...link(state({ participants: { people: [], agents } as never })), firsts: async (ids: string[]) => { asked.push(ids); return [SAM]; } };
+    return { l, asked };
+  }
+
+  it("send menu names agents: Send goes to the owner's own agent, and the menu groups the agents by person, saying who approves first as the worker answers", async () => {
+    const { l, asked } = sendLink(both);
+    render(Panel, { props: { link: l as never, now: NOW } });
+    await fireEvent.click(screen.getByRole("button", { name: "Send to clax-main" }), { detail: 1 });
+    expect(l.sent).toContainEqual({ t: "send", threadId: thread.id, to: MINE });
+    await fireEvent.click(screen.getByRole("button", { name: "Choose the agent" }));
+    // The menu loads on first open (loaded first here, so a busy run does not outwait the query).
+    await import("../../../shell/src/ui/SendMenu.svelte");
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getAllByRole("group").map(g => g.getAttribute("aria-label"))).toEqual(["Your agents", "Sam's agents"]);
+    expect(within(menu).getByRole("menuitemradio", { name: "clax-main" }).getAttribute("aria-checked")).toBe("true");
+    await vi.waitFor(() => expect(within(menu).getByRole("menuitemradio", { name: /^clax-sam/ }).textContent).toBe("clax-sam Sam's agent Sam approves first"));
+    expect(asked).toEqual([[thread.id]]);
+    // Chosen, Sam's agent is named with its person.
+    await fireEvent.click(within(menu).getByRole("menuitemradio", { name: /^clax-sam/ }));
+    await fireEvent.click(screen.getByRole("button", { name: "Send to clax-sam (Sam's)" }), { detail: 1 });
+    expect(l.sent.at(-1)).toEqual({ t: "send", threadId: thread.id, to: SAMS });
+  });
+
+  it("opens the menu rather than sending when only other people's agents are live", async () => {
+    const { l } = sendLink([both[0], { ...both[1], live: false }]);
+    render(Panel, { props: { link: l as never, now: NOW } });
+    const send = screen.getByRole("button", { name: "Send to …" });
+    expect(send.getAttribute("aria-haspopup")).toBe("menu");
+    await fireEvent.click(send, { detail: 1 });
+    await import("../../../shell/src/ui/SendMenu.svelte");
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getAllByRole("group").map(g => g.getAttribute("aria-label"))).toEqual(["Sam's agents"]);
+    expect(l.sent.filter(m => m.t === "send")).toEqual([]);
+  });
+});
+
 describe("Panel: the site's other pages", () => {
   const O = "http://localhost:5173";
   const far = (id: string, aid: string, path: string, body: string, at: string, extra: object = {}) => ({
@@ -282,6 +328,37 @@ describe("Panel: the site's other pages", () => {
     await fireEvent.click(old.querySelector(".card-head")!);
     await fireEvent.click(within(old).getByRole("button", { name: "Reopen" }), { detail: 1 });
     expect(l.sent.at(-1)).toEqual({ t: "reopen", threadId: T2 });
+  });
+
+  it("sends another page's thread to the owner's own agent there, never by default to another person's, and asks who approves first for it", async () => {
+    const A1 = `a_${"1".repeat(22)}`, A2 = `a_${"2".repeat(22)}`, SAM = `u_${"a".repeat(22)}`;
+    const firsts: string[][] = [];
+    const page = (agents: object[]) => ({ artifactId: "9s5n1pza4d6w", agents, versions: [] });
+    const sams = { handle: A2, harness: "codex", live: true, name: "clax-sam", person: { public_id: SAM, name: "Sam" } };
+    let agents: object[] = [sams, { handle: A1, harness: "claude", live: true, name: "clax-main", person: { public_id: "u_x", name: "Alex", owner: true } }];
+    const l = { ...siteLink(), farPage: async () => page(agents), firsts: async (ids: string[]) => { firsts.push(ids); return [SAM]; } };
+    const { container } = render(Panel, { props: { link: l as never, now: NOW, store: area() } });
+    await fireEvent.click(container.querySelector<HTMLButtonElement>(`[data-thread="${T3}"] .card-head`)!);
+    await settle();
+    const card = container.querySelector<HTMLElement>(`[data-thread="${T3}"]`)!;
+    await fireEvent.click(within(card).getByRole("button", { name: "Send to clax-main" }), { detail: 1 });
+    expect(l.sent.filter(m => m.t === "send")).toEqual([{ t: "send", threadId: T3, to: A1 }]);
+    await fireEvent.click(within(card).getByRole("button", { name: "Choose the agent" }));
+    await import("../../../shell/src/ui/SendMenu.svelte");
+    await vi.waitFor(() => expect(within(card).getByRole("menuitemradio", { name: /^clax-sam/ }).textContent).toBe("clax-sam Sam's agent Sam approves first"));
+    expect(firsts).toEqual([[T3]]);
+    await fireEvent.click(within(card).getByRole("menuitemradio", { name: /^clax-sam/ }));
+    expect(within(card).getByRole("button", { name: "Send to clax-sam (Sam's)" })).toBeTruthy();
+    cleanup();
+    // With only Sam's agent live there, Send opens the menu.
+    agents = [sams];
+    const again = render(Panel, { props: { link: l as never, now: NOW, store: area() } });
+    await fireEvent.click(again.container.querySelector<HTMLButtonElement>(`[data-thread="${T3}"] .card-head`)!);
+    await settle();
+    const send = within(again.container.querySelector<HTMLElement>(`[data-thread="${T3}"]`)!).getByRole("button", { name: "Send to …" });
+    await fireEvent.click(send, { detail: 1 });
+    expect(l.sent.filter(m => m.t === "send")).toHaveLength(1);
+    expect(await within(again.container).findByRole("menu")).toBeTruthy();
   });
 
   it("marks another page's thread looked once its open card is seen, never while folded", async () => {
@@ -755,6 +832,29 @@ describe("Panel for the owner's questions and inbox", () => {
     await fireEvent.click(about);
     expect(l.sent.at(-1)).toEqual({ t: "open-url", url: `/a/${AID}`, pageUrl: null });
     // A question's item whose ID does not decode opens through the worker, without throwing.
+  });
+
+  it("an approval item opens the shell's inbox, where it is decided, and stays unread until then", async () => {
+    const open = fixtures.item("approval", { id: "01JA00000000000000000000AP", seq: 7 });
+    const decided = fixtures.item("approval", { id: "01JA00000000000000000000AQ", seq: 6, read: true, approval: fixtures.approvalCard({ id: "01J9R0000000000000000000AB", status: "approved", scope: "thread" }), url: "/inbox?approval=01J9R0000000000000000000AB" });
+    const { l, asked } = owner({ pages: m => ((m as { filter: { read: string } }).filter.read === "unread"
+      ? { items: [open], next_cursor: null, unread: 1, total: 1 } : { items: [decided], next_cursor: null, unread: 1, total: 1 }) });
+    const { container } = render(Panel, { props: { link: l as never, now: NOW } });
+    await fireEvent.click(screen.getByRole("tab", { name: /Inbox/ }));
+    const row = await screen.findByRole("button", { name: /Mia wants to reach your agent clax-multi-person/ });
+    // A row, never a card: the panel decides nothing (spec 2026-10-08 §9.5).
+    expect(container.querySelector(".acard")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Allow|Decline/ })).toBeNull();
+    expect(row.textContent).toContain("Decide in Clax's inbox ↗");
+    await fireEvent.click(row);
+    await vi.waitFor(() => expect(l.sent.at(-1)).toEqual({ t: "open-url", url: "/inbox?approval=01J9R0000000000000000000AA", pageUrl: null }));
+    expect(asked.filter(m => m.t === "inbox-mark")).toEqual([]);
+    // One decided says so in the shell's words, and opens there too.
+    await fireEvent.click(screen.getByRole("button", { name: "Show 1 read item" }));
+    const done = container.querySelector<HTMLElement>(`[data-item="${decided.id}"] .open`)!;
+    expect(done.textContent).not.toContain("Decide");
+    await fireEvent.click(done);
+    await vi.waitFor(() => expect(l.sent.at(-1)).toEqual({ t: "open-url", url: decided.url, pageUrl: null }));
   });
 
   it("opens a question item whose link does not decode through the worker", async () => {

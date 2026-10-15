@@ -8,19 +8,22 @@
   // person, and says so when that person approves the threads' authors
   // first, as the daemon answers for this viewer (`GET
   // /api/artifacts/{aid}/approves-first`, the owner's and connected
-  // people's browsers only). Escape closes it. Names are text.
+  // people's browsers only; a host may ask its own way, `firstsVia`).
+  // Escape closes it. Names are text.
   import type { AgentView } from "../view/working-model";
-  import { sendGroups } from "../view/send-menu";
+  import { type AskFirsts, firstsVia, sendGroups } from "../view/send-menu";
 
   let { agents, names, me, aid, threads, target, onChoose, onClose }: {
     agents: AgentView[]; names?: Map<string, string>; me: string | null | undefined; aid?: string; threads?: string[]; target: string | null; onChoose(h: string): void; onClose(): void;
   } = $props();
+  const ask: AskFirsts = firstsVia.ask ?? ((a, ts) =>
+    fetch(`/api/artifacts/${encodeURIComponent(a)}/approves-first?threads=${ts.map(encodeURIComponent).join(",")}`)
+      .then(r => (r.ok ? r.json() : null)).then(b => (Array.isArray(b?.approves_first) ? b.approves_first : null)));
   let firsts = $state<(string | null)[]>([]);
   $effect(() => {
     if (!aid || !threads?.length) return;
     let live = true;
-    void fetch(`/api/artifacts/${encodeURIComponent(aid)}/approves-first?threads=${threads.map(encodeURIComponent).join(",")}`)
-      .then(r => (r.ok ? r.json() : null)).then(b => { if (live && Array.isArray(b?.approves_first)) firsts = b.approves_first; }, () => {});
+    void ask(aid, threads).then(f => { if (live && f) firsts = f; }, () => {});
     return () => { live = false; };
   });
   const groups = $derived(sendGroups(agents, me, firsts, names));

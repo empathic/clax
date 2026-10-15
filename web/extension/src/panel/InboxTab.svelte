@@ -9,14 +9,17 @@
   // unread item they do not show. A row marks its item read and opens it: a
   // live page's item in the tab showing that page, when one does, anything
   // else on the daemon in a new tab; a question's item goes to its card when
-  // it shows. The dot marks an item read or unread without opening it. Every
+  // it shows. An approval request's row says it is decided in the shell's
+  // inbox and opens it there (spec 2026-10-08 §9.5: the panel shows no
+  // approval cards), leaving it unread: it is read once decided. The dot
+  // marks an item read or unread without opening it. Every
   // request goes through the worker. The shell's rows and cards, and their
   // styles, are reused; their links to Clax pages open through the worker.
   import { onMount } from "svelte";
   import type { InboxFilter, InboxItem, InboxPage } from "../../../shell/src/api";
   import InboxRow from "../../../shell/src/q/InboxRow.svelte";
   import QuestionList from "../../../shell/src/q/QuestionList.svelte";
-  import { newestSeq } from "../../../shell/src/q/inbox-model";
+  import { approvalOf, newestSeq } from "../../../shell/src/q/inbox-model";
   import type { PanelToWorker, WorkerToPanel } from "../messages";
   import type { InboxReq } from "./link.svelte";
   import type { PanelQuestions } from "./questions";
@@ -147,9 +150,11 @@
     const qid = q && decoded(q[1]);
     if (!qid || !toCard(qid)) p.link.post({ t: "open-url", url, pageUrl });
   };
+  /** An approval request still to decide: decided in the shell's inbox. */
+  const hint = (i: InboxItem) => (approvalOf(i)?.status === "open" ? "Decide in Clax's inbox ↗" : undefined);
   const open = (i: InboxItem) => {
-    // A failed mark does not keep the person from the item.
-    const marked = i.read ? Promise.resolve() : mark(i, true).catch(() => {});
+    // A failed mark does not keep the person from the item; an approval request stays unread until decided.
+    const marked = i.read || i.kind === "approval" ? Promise.resolve() : mark(i, true).catch(() => {});
     void marked.then(() => go(i.url, i.artifact?.page_url ?? null));
   };
   // A card's links to Clax pages are daemon paths: the worker opens them.
@@ -184,7 +189,7 @@
     {:else}
       <QuestionList list={cards} feed={p.link.questions} now={p.now} />
       {#if rows.length}
-        <ul class="rows">{#each rows as i (i.id)}<InboxRow item={i} others={unread.items} now={p.now} onOpen={open} onToggle={toggle} />{/each}</ul>
+        <ul class="rows">{#each rows as i (i.id)}<InboxRow item={i} others={unread.items} now={p.now} hint={hint(i)} onOpen={open} onToggle={toggle} />{/each}</ul>
       {/if}
       {#if !unread.items.length}<p class="note">{filtered ? "No unread items match." : "Nothing unread."}</p>{/if}
       {#if unread.next}<button type="button" class="more" onclick={() => more("unread")}>Show more</button>{/if}
@@ -198,7 +203,7 @@
       </button>
       {#if readOpen}
         <div id="ptab-read">
-          <ul class="rows">{#each read.items as i (i.id)}<InboxRow item={i} others={read.items} now={p.now} onOpen={open} onToggle={toggle} />{/each}</ul>
+          <ul class="rows">{#each read.items as i (i.id)}<InboxRow item={i} others={read.items} now={p.now} hint={hint(i)} onOpen={open} onToggle={toggle} />{/each}</ul>
           {#if read.next}<button type="button" class="more" onclick={() => more("read")}>Show more</button>{/if}
         </div>
       {/if}

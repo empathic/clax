@@ -231,6 +231,11 @@ async fn the_extension_acts_as_the_owner_on_live_pages() {
             format!("/api/artifacts/{aid}/presence"),
             Value::Null,
         ),
+        (
+            Method::GET,
+            format!("/api/artifacts/{aid}/approves-first?threads={tid}"),
+            Value::Null,
+        ),
         (Method::GET, format!("/api/artifacts/{aid}"), Value::Null),
         (
             Method::GET,
@@ -286,6 +291,11 @@ async fn everything_else_is_refused() {
         (Method::GET, "/api/live/pages/".to_string(), 403),
         (Method::GET, format!("/api/artifacts/{hid}"), 404),
         (Method::GET, format!("/api/artifacts/{hid}/threads"), 404),
+        (
+            Method::GET,
+            format!("/api/artifacts/{hid}/approves-first?threads={tid}"),
+            404,
+        ),
         (
             Method::GET,
             format!("/api/artifacts/{hid}/threads/{tid}"),
