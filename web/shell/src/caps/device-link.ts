@@ -11,5 +11,11 @@ export type DeviceCap = "notify" | "share" | "file" | "camera" | "location";
 export type DeviceCall = { id: string; cap: DeviceCap; method: string; args: unknown[] };
 
 /** `call` asks the app to make `cap.method(...args)`: it resolves the app's
- * value or rejects with its coded error (a `CapError`). */
-export const deviceLink: { call: ((cap: DeviceCap, method: string, args: unknown[]) => Promise<unknown>) | null } = { call: null };
+ * value or rejects with its coded error (a `CapError`). `events` hears what
+ * the app pushes for a running `location.watch`, as the app sent it (the
+ * host calls each; caps/device.ts checks the shape): `{watch, kind:
+ * "update", value}` or `{watch, kind: "end", error: {code, message}}`. */
+export const deviceLink: {
+  call: ((cap: DeviceCap, method: string, args: unknown[]) => Promise<unknown>) | null;
+  events: Set<(e: unknown) => void>;
+} = { call: null, events: new Set() };

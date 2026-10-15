@@ -7,6 +7,13 @@
 // arguments are plain data, and that a call that acts came from the viewer's
 // gesture in the page (`frameGesture`, gesture.ts; `no_gesture`
 // otherwise); the app checks the arguments' shape.
+//
+// `location.watch({watch, minDistance})` starts a watch under the page's
+// own ID; the shell gives the app an ID of its own (random per load), and
+// passes the app's pushes for it (`deviceEvent`) to the page as
+// `location`/`update` and `location`/`end` events under the page's ID.
+// `location.unwatch({watch})` stops one (no gesture needed). When the
+// frame's document leaves, every watch it started is stopped.
 import { type DeviceCap, deviceLink } from "./device-link";
 import { CapError } from "./errors";
 import { frameGesture } from "./gesture";
@@ -17,8 +24,15 @@ export const DEVICE_METHODS: Record<DeviceCap, readonly string[]> = {
   share: ["text", "file"],
   file: ["pick", "save"],
   camera: ["take", "pick"],
-  location: ["current"],
+  location: ["current", "watch", "unwatch"],
 };
+
+/** Calls that need no gesture: reading and cancelling reminders, and
+ * stopping a watch. */
+const NO_GESTURE = new Set(["notify.list", "notify.cancel", "location.unwatch"]);
+
+const watchPrefix = Array.from(crypto.getRandomValues(new Uint8Array(4)), b => b.toString(16).padStart(2, "0")).join("");
+let watchSeq = 0;
 
 /** Whether `v` survives JSON as it is (the app's channel is JSON). */
 function plain(v: unknown, depth = 0): boolean {
@@ -31,18 +45,60 @@ function plain(v: unknown, depth = 0): boolean {
 }
 
 export function deviceHandler(cap: DeviceCap): HandlerFactory {
-  return () => ({
-    call(method, args) {
-      if (!DEVICE_METHODS[cap].includes(method)) return Promise.reject(new CapError("capability_removed", `${cap}.${String(method)} is not part of this runtime`));
-      // Everything but reading and cancelling reminders acts on the device
-      // or opens a system sheet: only from the viewer's tap or key in the page.
-      if (!(cap === "notify" && (method === "list" || method === "cancel")) && !frameGesture()) {
-        return Promise.reject(new CapError("no_gesture", `${cap}.${method} needs the person's tap or key press in the page; call it from a click handler`));
+  return env => {
+    // The running watches: the app's ID → the page's.
+    const watches = new Map<string, string>();
+    const onEvent = (a: unknown) => {
+      const e = (a && typeof a === "object" ? a : {}) as { watch?: unknown; kind?: unknown; value?: unknown; error?: { code?: unknown; message?: unknown } };
+      const page = typeof e.watch === "string" ? watches.get(e.watch) : undefined;
+      if (page === undefined) return;
+      if (e.kind === "update") env.post({ type: "clax:event", ns: "location", topic: "update", data: { watch: page, value: e.value } });
+      else if (e.kind === "end") {
+        watches.delete(e.watch as string);
+        const code = e.error?.code, message = e.error?.message;
+        env.post({ type: "clax:event", ns: "location", topic: "end", data: { watch: page, code: typeof code === "string" ? code : "unavailable", message: typeof message === "string" ? message : "location stopped" } });
       }
-      if (!plain(args)) return Promise.reject(new CapError("bad_request", `${cap}.${method} takes plain data (strings, numbers, objects)`));
-      const call = deviceLink.call;
-      if (!call) return Promise.reject(new CapError("unavailable", `${cap} is available only in the Clax app`));
-      return call(cap, method, args);
-    },
-  });
+    };
+    if (cap === "location") deviceLink.events.add(onEvent);
+    /** Stops every watch this document started; the page hears nothing. */
+    const stopAll = () => {
+      for (const id of watches.keys()) void deviceLink.call?.("location", "unwatch", [{ watch: id }]).catch(() => {});
+      watches.clear();
+    };
+    return {
+      call(method, args) {
+        if (!DEVICE_METHODS[cap].includes(method)) return Promise.reject(new CapError("capability_removed", `${cap}.${String(method)} is not part of this runtime`));
+        // Everything else acts on the device or opens a system sheet: only
+        // from the viewer's tap or key in the page.
+        if (!NO_GESTURE.has(`${cap}.${method}`) && !frameGesture()) {
+          return Promise.reject(new CapError("no_gesture", `${cap}.${method} needs the person's tap or key press in the page; call it from a click handler`));
+        }
+        if (!plain(args)) return Promise.reject(new CapError("bad_request", `${cap}.${method} takes plain data (strings, numbers, objects)`));
+        const call = deviceLink.call;
+        if (!call) return Promise.reject(new CapError("unavailable", `${cap} is available only in the Clax app`));
+        if (method !== "watch" && method !== "unwatch") return call(cap, method, args);
+        const a = args[0] as { watch?: unknown; minDistance?: unknown } | undefined;
+        const page = a?.watch;
+        if (typeof page !== "string") return Promise.reject(new CapError("bad_request", `location.${method} takes {watch}`));
+        if (method === "unwatch") {
+          const id = [...watches].find(([, p]) => p === page)?.[0];
+          if (id === undefined) return Promise.resolve({ stopped: false });
+          watches.delete(id);
+          return call(cap, method, [{ watch: id }]);
+        }
+        const id = `${watchPrefix}-${++watchSeq}`;
+        watches.set(id, page);
+        return call(cap, method, [{ watch: id, minDistance: a?.minDistance }]).catch((e: unknown) => {
+          watches.delete(id);
+          throw e;
+        });
+      },
+      leave: stopAll,
+      reset: stopAll,
+      dispose() {
+        stopAll();
+        deviceLink.events.delete(onEvent);
+      },
+    };
+  };
 }

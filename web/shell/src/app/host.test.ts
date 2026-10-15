@@ -1611,6 +1611,24 @@ describe("app mode's device link", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await expect(later).rejects.toMatchObject({ code: "cancelled" });
   });
 
+  it("passes the app's watch news to the device listeners", async () => {
+    const { deviceLink } = await import("../caps/device-link");
+    const { host } = await appView();
+    const heard: unknown[] = [];
+    const f = (e: unknown) => heard.push(e);
+    deviceLink.events.add(f);
+    try {
+      host.deviceEvent({ cap: "location", watch: "w1", kind: "update", value: { lat: 1 } });
+      host.deviceEvent({ cap: "location", watch: "w1", kind: "end", error: { code: "stopped", message: "left" } });
+      expect(heard).toEqual([
+        { cap: "location", watch: "w1", kind: "update", value: { lat: 1 } },
+        { cap: "location", watch: "w1", kind: "end", error: { code: "stopped", message: "left" } },
+      ]);
+    } finally {
+      deviceLink.events.delete(f);
+    }
+  });
+
   it("links nothing in the inspect view, and on uninstall unlinks and rejects the calls still waiting", async () => {
     const { deviceLink } = await import("../caps/device-link");
     const { uninstall } = await appView();

@@ -99,7 +99,10 @@
 //   `camera` and `location`. Each call the page makes is posted as `device
 //   {id, cap, method, args}` (calls made before `init` wait for it), and the
 //   app answers with `deviceResult({id, ok, value})` or `deviceResult({id,
-//   ok: false, error: {code, message}})`. The inspect view links nothing, so
+//   ok: false, error: {code, message}})`. A running `location.watch` gets
+//   the app's news by `deviceEvent({cap: "location", watch, kind: "update",
+//   value})` and, once, `deviceEvent({cap: "location", watch, kind: "end",
+//   error: {code, message}})`. The inspect view links nothing, so
 //   there `use()` resolves null for them.
 // - `openRoute(hash)` moves the page to a fragment (`#route`), as a
 //   notification's tap asks.
@@ -246,6 +249,9 @@ export type ClaxHost = {
   /** The app's answer to a `device` message: `{id, ok: true, value}` or
    * `{id, ok: false, error: {code, message}}`. */
   deviceResult(a: unknown): void;
+  /** The app's news for a running `location.watch` (see Device capabilities
+   * above). */
+  deviceEvent(a: unknown): void;
   /** Moves the page to fragment `hash` (`#` and at most 512 characters). */
   openRoute(hash: string): void;
 };
@@ -925,6 +931,8 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       const e = (error && typeof error === "object" ? error : {}) as { code?: unknown; message?: unknown };
       p.reject(new CapError(typeof e.code === "string" ? e.code : "unavailable", typeof e.message === "string" ? e.message : "the device call failed"));
     },
+    // The device listeners (caps/device.ts) check the news's shape.
+    deviceEvent: a => { for (const f of [...deviceLink.events]) f(a); },
     openRoute: hash => {
       if (typeof hash !== "string" || !hash.startsWith("#") || hash.length > 512) return;
       win.location.hash = hash;
