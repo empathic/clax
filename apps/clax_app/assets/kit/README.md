@@ -28,7 +28,15 @@ tile is tried again after 1 s, then twice as long each time, up to 15 s.
 OpenStreetMap's tile policy wants its attribution visible, an identifying
 client and cached tiles: the map always shows it, the daemon sends
 `User-Agent: Clax/<version> (+https://github.com/empathic/clax)`, and the
-daemon's HTTP cache keeps tiles by their cache headers.
+daemon's HTTP cache keeps tiles by their cache headers, per app.
+
+An app that declares `{"location": {}}` gets a "Show my location" button
+on the map (`locate: false` hides it): a tap starts `location.watch`
+(every 10 m), the map centres on the first position and draws a dot with
+its accuracy circle, or for an approximate position only the area's
+circle, zoomed to show it. The watch ends on a second tap or when the map
+unmounts; a `stopped` end leaves the button to tap again, and a refusal
+shows a short message.
 
 Each vendored file opens with a comment naming its packages, versions,
 licences and copyright holders; `LICENSES.txt` holds the full licence
