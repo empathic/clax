@@ -175,7 +175,13 @@
       <p>You are a guest named <strong>{me.person.display_name}</strong>. Guests see only the pages shared with them by link, and may comment on those that allow it.</p>
       <div class="acts"><button type="button" onclick={signOut} disabled={busy}>Sign out</button></div>
     {:else}
-      <p>You are not signed in. Ask someone here for an invite, or, on a device that is signed in, make a sign-in link on People.</p>
+      {#if me?.github}
+        <p>Sign in with your GitHub account. New here? Signing in makes your own space: publish your pages, connect your agents, and see what others share with you.</p>
+        <a class="gh primary" href="/auth/github" data-testid="github-signin"><svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>Sign in with GitHub</a>
+        <p class="hint">Or ask someone here for an invite, or, on a device that is signed in, make a sign-in link on People.</p>
+      {:else}
+        <p>You are not signed in. Ask someone here for an invite, or, on a device that is signed in, make a sign-in link on People.</p>
+      {/if}
       {#if me?.setup_open}<p class="hint">Setting up this Clax? Open <a href="/setup">/setup</a> with its secret.</p>{/if}
     {/if}
     {#if err}<p class="err" role="alert">{err}</p>{/if}
@@ -198,6 +204,9 @@
     .signin .acts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
     .signin a { color: var(--fg); }
     .signin .err { color: var(--danger); font-size: 13.5px; }
+    .signin a.gh { align-self: flex-start; display: inline-flex; align-items: center; gap: 10px; padding: 10px 16px; border-radius: var(--radius-sm); background: var(--fg); color: var(--bg); font-weight: 600; font-size: 15px; text-decoration: none; min-height: 44px; box-sizing: border-box; }
+    .signin a.gh:hover { opacity: .9; }
+    .signin a.gh:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
     .signin .now { border-inline-start: 3px solid var(--accent); padding: 6px 10px; background: var(--bg); border-radius: 4px; }
     @media (max-width: 520px) {
       .signin { padding-top: 24px; }

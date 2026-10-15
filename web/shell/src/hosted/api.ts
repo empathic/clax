@@ -12,7 +12,7 @@ export { Refused };
 /** Who the browser is signed in as. */
 export type HostedPerson = { public_id: string; display_name: string | null; owner: boolean; guest: boolean };
 /** `GET /api/hosted/me`. */
-export type HostedMe = { origin: string; setup_open: boolean; signed_in: boolean; person: HostedPerson | null };
+export type HostedMe = { origin: string; setup_open: boolean; signed_in: boolean; person: HostedPerson | null; github?: boolean };
 /** An agent token, without its token. */
 export type AgentToken = { id: string; label: string; status: string; created_at: string; last_used_at: string | null; ended_at: string | null };
 /** A new agent token: `token` and the commands that carry it are shown this once. */

@@ -20,11 +20,11 @@
   // `token_agent`). Each change goes to the daemon at once; a refusal is
   // shown as the daemon words it. Names are text.
   import { tick } from "svelte";
-  import type { PeopleAgent, PeopleApproval, PeopleElevation, PeopleGrant, PeopleRequest, Rights } from "../api";
+  import type { PeopleAgent, PeopleApproval, PeopleElevation, PeopleGrant, PeopleRequest, Rights, PeopleGitHub } from "../api";
   import * as api from "./api";
   import { agentCaps, CAPS, elevation, elevationsOf, MACHINE_BOUNDARY, machineCaps, narrowAgent, narrowGrant, othersRaises, ownerRaisedAt, PRESET_NAMES, presetOf, raiseCaps, waitText } from "./model";
 
-  type Who = { public_id: string | null; display_name: string | null; revoked_at: string | null; rights: Rights; grants: PeopleGrant[]; agents: PeopleAgent[] };
+  type Who = { public_id: string | null; display_name: string | null; revoked_at: string | null; rights: Rights; grants: PeopleGrant[]; agents: PeopleAgent[]; github?: PeopleGitHub | null };
   type Props = {
     view: "owner" | "self";
     who: Who;
@@ -138,6 +138,7 @@
 <article class="pcard person" data-person={who.public_id} aria-busy={busy}>
   <header>
     <h3 tabindex="-1">{name}{#if view === "self" && who.display_name}<span class="you">{" (you)"}</span>{/if}</h3>
+    {#if who.github}<a class="ghlogin" href="https://github.com/{encodeURIComponent(who.github.login)}" rel="noopener noreferrer" target="_blank" data-testid="github-login">@{who.github.login}</a>{/if}
     <span class="sp"></span>
     {#if view === "owner"}
       <label class="pick">Rights
@@ -146,7 +147,7 @@
           {#each Object.keys(PRESET_NAMES) as v (v)}<option value={v} selected={v === preset}>{PRESET_NAMES[v]}</option>{/each}
         </select>
       </label>
-      <button type="button" class="danger" aria-label="Revoke {name}" onclick={e => act(() => api.revokePerson(who.public_id!), { ask: `Revoke ${name}? Their machines disconnect and their agents end. What they wrote stays theirs.`, to: (e.currentTarget as Element).closest(".ppl")?.querySelector("h2") })}>Revoke</button>
+      <button type="button" class="danger" aria-label="{who.github ? "Block" : "Revoke"} {name}" onclick={e => act(() => api.revokePerson(who.public_id!), { ask: who.github ? `Block ${name}? They are signed out, their machines disconnect and their agents end, and their GitHub account @${who.github.login} cannot sign in or sign up again. What they wrote stays theirs.` : `Revoke ${name}? Their machines disconnect and their agents end. What they wrote stays theirs.`, to: (e.currentTarget as Element).closest(".ppl")?.querySelector("h2") })}>{who.github ? "Block" : "Revoke"}</button>
     {/if}
   </header>
   {#if err}<p class="err" role="alert">{err}</p>{/if}

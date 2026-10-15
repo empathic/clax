@@ -288,11 +288,14 @@ export type PeopleAgent = {
   narrow: Rights | null; elevate: Rights | null; elevations?: PeopleElevation[]; rights: Rights | null;
 };
 /** A person as the owner's People lists them; `revoked_at` once revoked. */
+export type PeopleGitHub = { id: number; login: string; avatar_url: string | null; blocked_at: string | null };
 export type PeoplePerson = {
   public_id: string; display_name: string | null; revoked_at: string | null;
   rights: Rights; grants: PeopleGrant[]; agents: PeopleAgent[];
   /** Their live approvals of the owner's content (O12). */
   approvals_of_yours?: PeopleApproval[];
+  /** The GitHub account they sign in with, on a hosted daemon. */
+  github?: PeopleGitHub | null;
 };
 /** `GET /api/people/me/raises`: the caller's own raises; with `?artifact=`,
  * whether they created it, what they may give there, and the handles of
