@@ -2739,6 +2739,80 @@ async fn the_codex_queue_sends_only_filtered_visible_rows() {
     );
 }
 
+/// Spec §11 "Display": an agent's reply reads `<name> (agent, via
+/// <harness>)` to its own person's agents and `<name> (<person>'s agent,
+/// via <harness>)` to other people's; people's own views keep the stored
+/// author name.
+#[tokio::test]
+async fn an_agent_reply_names_the_agent_its_person_and_its_harness() {
+    let w = World::two_people().await;
+    sam_rights(&w, "clax:full");
+    let aid = w.ts.any_artifact().await;
+    let mut tids = Vec::new();
+    for body in ["for the owner's agent", "for Sam's agent"] {
+        let tid = owner_thread(&w.ts, &aid, 1, "index.html", body).await;
+        w.ts.send_thread(&aid, &tid).await;
+        tids.push(tid);
+    }
+    let reply = json!({"body": "done", "author_kind": "agent"});
+    let path = |tid: &str| format!("/api/artifacts/{aid}/threads/{tid}/comments");
+    let (status, mine) = owner_agent(&w, "POST", &path(&tids[0]), Some(reply.clone())).await;
+    assert_eq!(status, 201, "{mine}");
+    let (status, sams) = sam(&w, "POST", &path(&tids[1]), Some(reply)).await;
+    assert_eq!(status, 201, "{sams}");
+    let name = |sid: &str| w.ts.store.get_session(sid).unwrap().unwrap().name.unwrap();
+    let (owner_agent_name, sam_agent_name) = (name(&w.owner_session), name(&w.sam_session));
+    let owner_name = w.ts.store.agent_person(None).unwrap().name;
+    assert_eq!(
+        mine["comment"]["author_name"],
+        format!("{owner_agent_name} (agent, via claude)"),
+        "{mine}"
+    );
+    assert_eq!(
+        sams["comment"]["author_name"],
+        format!("{sam_agent_name} (agent, via claude)"),
+        "{sams}"
+    );
+    let replies = |v: &Value| -> Vec<String> {
+        tids.iter()
+            .map(|tid| {
+                let t = v["threads"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|t| t["id"] == json!(tid))
+                    .unwrap_or_else(|| panic!("{tid}: {v}"));
+                t["comments"][1]["author_name"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    };
+    let list = format!("/api/artifacts/{aid}/threads");
+    let (status, v) = owner_agent(&w, "GET", &list, None).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(
+        replies(&v),
+        [
+            format!("{owner_agent_name} (agent, via claude)"),
+            format!("{sam_agent_name} (Sam's agent, via claude)"),
+        ]
+    );
+    let (status, v) = sam(&w, "GET", &list, None).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(
+        replies(&v),
+        [
+            format!("{owner_agent_name} ({owner_name}'s agent, via claude)"),
+            format!("{sam_agent_name} (agent, via claude)"),
+        ]
+    );
+    // The owner's own view keeps the stored name.
+    let v: Value = w.ts.get(&list).await.json().await.unwrap();
+    assert_eq!(replies(&v), ["claude", "claude"]);
+}
+
 /// Spec §7.5: feedback on an artifact a person's agent may no longer read
 /// is held, and each in-band tier tells the agent once that it no longer
 /// has access to the page, with nothing of the page or its comments.

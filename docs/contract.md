@@ -1704,8 +1704,13 @@ its text's author line, a batch's `sent_by`, `resolved_by_name`, and an
 artifact's `participants`. Through a session, reading acknowledges the returned comments of sent threads
 for that session (a comment added after the read stays pending).
 
-`comments_reply` posts the reply as the agent; the person sees it under the
-harness's name (`claude`). Replying to or resolving a thread acknowledges its
+`comments_reply` posts the reply as the agent; the person's page shows it
+under the harness's name (`claude`). An agent reads a reply's
+`author_name` as `<name> (agent, via <harness>)` when the replying agent is
+its own person's (`clax-claude (agent, via claude)`), and as `<name>
+(<person>'s agent, via <harness>)` when it is another person's (`web (Sam's
+agent, via pi)`); a reply from a session that has no name (one from before
+agent names) keeps the harness's name. Replying to or resolving a thread acknowledges its
 comments for the session. Resolving a thread withdraws its comments that no
 session has been handed yet. When a later viewer comment reopens a sent
 thread, the comments a viewer resolve withdrew are sent again with it (no
@@ -2579,7 +2584,8 @@ too: every Clax agent channel filters what it hands them.
 
 A single-owner install, with no person ever connected, changes in nine
 ways and no others (spec §19): agents have names, shown where the harness
-was; `@<name>` sends a thread to that agent; with several of the owner's
+was and in the reply author lines agents read (`clax-claude (agent, via
+claude)`); `@<name>` sends a thread to that agent; with several of the owner's
 agents watching one artifact, an untargeted send goes to the first to take
 it; that agent then owns the thread (`thread_taken` for the others); an
 ended session that held something leaves one `ended` inbox note; views

@@ -195,6 +195,10 @@ pub struct Comment {
     /// agent). For the visibility filter; never served.
     #[serde(skip)]
     pub agent_person: Option<String>,
+    /// For an agent comment, its session's agent name (spec §11), when it
+    /// has one. For the author line agents read; never served as is.
+    #[serde(skip)]
+    pub agent_name: Option<String>,
 }
 
 /// A session's watch on an artifact; `replies_armed` gates the Stop-hook and
