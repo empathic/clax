@@ -172,8 +172,15 @@ declare namespace ClaxExtensions {
      *   `file.save`).
      * - `no_gesture`: called outside the person's tap or key press in the
      *   page; call it from a click handler.
+     * - `system_denied` (location): location is off for Clax in Android's
+     *   settings and Android will not ask again; Clax offers the person
+     *   Open settings. Say that location is off for Clax.
+     * - `location_off` (location): the device's location is off; Clax
+     *   offers Open settings.
+     * - `stopped` (`location.watch`): the watch ended because the app left
+     *   the screen (or the person stopped it); start it again from a tap.
      */
-    type ErrorCode = "not_granted" | "cancelled" | "unavailable" | "bad_request" | "too_large" | "no_gesture";
+    type ErrorCode = "not_granted" | "cancelled" | "unavailable" | "bad_request" | "too_large" | "no_gesture" | "system_denied" | "location_off" | "stopped";
 
     /** A file's bytes, as base64. */
     interface FileData {
@@ -235,9 +242,39 @@ declare namespace ClaxExtensions {
       pick(): Promise<Photo>;
     }
 
+    /** Where the device is: degrees, and `accuracy` in metres. `precise`
+     * is false when the person allowed the app only Approximate location
+     * (or Android allows Clax only that): then the position is the centre
+     * of an area about 2 km across, `accuracy` is at least 2000, and it
+     * stays the same anywhere in that area. */
+    interface Position {
+      lat: number;
+      lon: number;
+      accuracy: number;
+      precise: boolean;
+    }
+
+    interface WatchOptions {
+      /** Metres the device moves between updates: 10 when absent, 5 to
+       * 10000. */
+      minDistance?: number;
+      /** Called once when the watch ends without `stop()`: `stopped` (the
+       * app left the screen, or the person stopped location; it never
+       * starts again by itself), or a refused or failed start
+       * (`not_granted`, `system_denied`, `location_off`, `unavailable`,
+       * `no_gesture`, `bad_request`). No update follows it. */
+      onError?(e: { code: ErrorCode; message: string }): void;
+    }
+
     interface Location {
-      /** Where the device is now: degrees, and accuracy in metres. */
-      current(): Promise<{ lat: number; lon: number; accuracy: number }>;
+      /** Where the device is now. */
+      current(): Promise<Position>;
+      /** Follows the device while the app is on screen: `onUpdate` gets a
+       * position at most once a second and once per `minDistance` (an
+       * approximate one only when the area changes). Call it from a click
+       * handler; at most 4 at once. Clax shows a location pill while it
+       * runs. Returns `stop`. */
+      watch(onUpdate: (p: Position) => void, opts?: WatchOptions): () => void;
     }
   }
 
