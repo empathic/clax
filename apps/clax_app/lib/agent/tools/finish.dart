@@ -257,8 +257,8 @@ class FinishTool implements Tool {
   /// of time (`<cap>`)." [attach] makes it the Toolbox's cap handler.
   ///
   /// A change in answer to comments ([RunContext.changeSpentUsd] set)
-  /// replies in Clax's words naming the limit instead, with the agent's
-  /// [narration] under it ([limitLandedReply], [limitFailureReply]), and
+  /// replies in Clax's words naming the limit instead ([limitLandedReply],
+  /// [limitFailureReply]; [narration], a step in progress, is left out), and
   /// its outcome carries [cap] (`limit`) so the change can Keep going.
   Future<RunOutcome> capStop(String cap, {String? narration}) async {
     final s = _state ?? (throw StateError('capStop before attach'));
@@ -283,7 +283,7 @@ class FinishTool implements Tool {
         await _fail(
           s,
           limitFailureReason(cap, leftUsd: left),
-          reply: limitFailureReply(cap, leftUsd: left, agentSaid: narration),
+          reply: limitFailureReply(cap, leftUsd: left),
           limit: cap,
         ),
       );
@@ -294,7 +294,6 @@ class FinishTool implements Tool {
         ? limitLandedReply(
             cap,
             leftUsd: changeCapUsd - spent - s.budget.costUsd,
-            agentSaid: narration,
             checksFailed: checksFailed,
           )
         : checksFailed
@@ -705,10 +704,12 @@ class FinishTool implements Tool {
 /// `give_up`: publishes nothing, replies "Couldn't make that change:
 /// `<reason>`" on the change's threads (they stay open), acknowledges the
 /// comments, clears the working mark, deletes the draft artifact and ends
-/// the run as [RunGaveUp]. A change's `give_up` at or near a cap
-/// ([RunBudget.nearLimit]) is the limit's doing: the reply names the limit
-/// in Clax's words with the reason as the agent's ([limitFailureReply]),
-/// and the outcome carries the limit, so the change can Keep going.
+/// the run as [RunGaveUp]. A change's `give_up` with `out_of_room` true
+/// (more steps would finish it) is the limit's doing: the reply names the
+/// cap most nearly spent ([RunBudget.mostSpent]) in Clax's words with the
+/// reason as the agent's ([limitFailureReply]), and the outcome carries
+/// the limit, so the change can Keep going. Any other `give_up` replies
+/// "Couldn't make that change: `<reason>`" and offers no Keep going.
 class GiveUpTool implements Tool {
   GiveUpTool(this.api, {required this.render, void Function(String)? log})
     : _log = log ?? ((_) {});
@@ -725,9 +726,12 @@ class GiveUpTool implements Tool {
     'give_up',
     'Ends the run without publishing: the threads get "Couldn\'t make '
         'that change: <reason>" and stay open. reason: one short sentence '
-        'the person can act on.',
+        'the person can act on. out_of_room: true only when the change can '
+        'be made here and more steps would finish it (the person can then '
+        'tap Keep going); then reason says what is done and what is left.',
     objectSchema({
       'reason': {'type': 'string'},
+      'out_of_room': optional('boolean'),
     }),
   );
 
@@ -738,10 +742,17 @@ class GiveUpTool implements Tool {
     // microtask queue.
     await Future<void>.value();
     for (final k in input.keys) {
-      if (k != 'reason') {
-        throw ToolInputError('give_up takes no "$k"; it takes reason.');
+      if (k != 'reason' && k != 'out_of_room') {
+        throw ToolInputError(
+          'give_up takes no "$k"; it takes reason and out_of_room.',
+        );
       }
     }
+    final outOfRoom = switch (input['out_of_room']) {
+      null || false => false,
+      true => true,
+      _ => throw const ToolInputError('out_of_room must be true or false.'),
+    };
     final reason = switch (input['reason']) {
       final String r when r.trim().isNotEmpty => r.trim(),
       _ => throw const ToolInputError('reason must be a non-empty string.'),
@@ -752,10 +763,10 @@ class GiveUpTool implements Tool {
       s.outcome ??= const RunCancelled();
       return const ToolOk({'replied': <String>[]});
     }
-    // A give_up at or near a cap of a change is the limit's doing: Clax
-    // names the limit, with the agent's reason as its words.
+    // A change's give_up out of room is the limit's doing: Clax names the
+    // limit nearest spent, with the agent's reason as its words.
     final spent = s.ctx.changeSpentUsd;
-    final limit = spent == null ? null : s.budget.nearLimit;
+    final limit = spent == null || !outOfRoom ? null : s.budget.mostSpent;
     final left = changeCapUsd - (spent ?? 0) - s.budget.costUsd;
     final e = limit == null
         ? await _failWith(api, render, _log, s, reason)

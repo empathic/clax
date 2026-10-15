@@ -155,8 +155,8 @@ final class RunGaveUp extends RunOutcome {
   final String reason;
   final bool answered;
 
-  /// The cap the run stopped at or near ([RunBudget.nearLimit]) when a
-  /// change ended at a limit, which the person can Keep going from; else
+  /// The cap a change stopped at, or gave up out of room near
+  /// ([RunBudget.mostSpent]), which the person can Keep going from; else
   /// null.
   final String? limit;
 }

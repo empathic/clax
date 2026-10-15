@@ -504,11 +504,7 @@ void main() {
         expect(out, isA<ChangeFailed>());
         expect(bodies(aid, item.threadId), [
           'x',
-          limitFailureReply(
-            '10 turns',
-            leftUsd: changeCapUsd,
-            agentSaid: 'Looking',
-          ),
+          limitFailureReply('10 turns', leftUsd: changeCapUsd),
         ]);
         expect(api.currentVersion(aid), 1);
       },
@@ -530,11 +526,7 @@ void main() {
       expect(out, isA<ChangeLanded>().having((o) => o.version, 'version', 2));
       expect(
         bodies(aid, item.threadId).last,
-        limitLandedReply(
-          '10 turns',
-          leftUsd: changeCapUsd,
-          agentSaid: 'Renaming the button',
-        ),
+        limitLandedReply('10 turns', leftUsd: changeCapUsd),
       );
       expect(api.threadOf(aid, item.threadId).status, 'open');
       expect(await api.listDrafts(), isEmpty);
