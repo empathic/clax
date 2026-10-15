@@ -94,6 +94,11 @@ pub struct FeedbackState {
     pub approver: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mine: bool,
+    /// For `withheld` and `declined`, read by the owner and the agent's
+    /// person only: the agent may no longer read the artifact either
+    /// ("waiting for Sam's approval · the agent no longer has access").
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_access: bool,
 }
 
 /// One forwarded comment as an agent receives it: its body always, and each

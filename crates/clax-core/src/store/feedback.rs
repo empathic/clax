@@ -1948,13 +1948,11 @@ impl StateRow {
     /// an open request or told of (`placeholder_at`) with no decline in
     /// force. An approval releases it (`placeholder_at` cleared as the
     /// content becomes visible); a decline keeps it held but waiting for
-    /// nothing.
+    /// nothing. Whether its agent may still read the artifact does not
+    /// change it: an author's reading never follows the approver's rights.
     fn waits_for_approval(&self) -> bool {
         self.pending()
-            && (self.requested
-                || (self.placeholder_at.is_some()
-                    && self.declined.is_none()
-                    && self.no_access_at.is_none()))
+            && (self.requested || (self.placeholder_at.is_some() && self.declined.is_none()))
     }
 
     /// Whether its person declined it (spec §10, "declined by Mia"):
@@ -2251,12 +2249,17 @@ pub(crate) fn deliveries_in(
 /// ([`StateRow::was_declined`]); else `no_access` while a row `knows`
 /// lets its reader know of is held for lost access
 /// ([`StateRow::lost_access`]); else the plain state ([`plain_state`]).
+/// A withheld or declined reading carries `no_access` when such a row is
+/// held for lost access too (spec §10).
 fn state_of(
     thread_id: &str,
     all: &[&StateRow],
     codex_push: bool,
     knows: &dyn Fn(&StateRow) -> bool,
 ) -> (FeedbackState, Option<Option<String>>) {
+    // Whether a reader that may know of it reads a hold for lost access
+    // beside a withheld or declined reading.
+    let gone = all.iter().any(|r| r.lost_access() && knows(r));
     let held = |phase, r: &StateRow, since: &str| {
         let s = FeedbackState {
             thread_id: thread_id.to_string(),
@@ -2269,6 +2272,7 @@ fn state_of(
                 r.person_name.as_deref().unwrap_or(""),
             )),
             mine: false,
+            no_access: gone,
         };
         (s, Some(r.person.clone()))
     };
@@ -2296,6 +2300,7 @@ fn state_of(
             exhausted: false,
             approver: None,
             mine: false,
+            no_access: false,
         };
         return (s, None);
     }
@@ -2323,6 +2328,7 @@ fn plain_state(thread_id: &str, all: &[&StateRow], codex_push: bool) -> Feedback
         exhausted,
         approver: None,
         mine: false,
+        no_access: false,
     };
     if let Some((r, at)) = rows
         .iter()
@@ -2448,8 +2454,12 @@ mod tests {
         }
     }
 
+    /// Spec §10 (owner ruling on 9c75976c): an author's reading never
+    /// changes because of the approver's rights. A row told as withheld
+    /// whose agent then lost access reads, for its author, as withheld;
+    /// the owner and the agent's person read both.
     #[test]
-    fn a_row_held_for_lost_access_reads_no_access_before_any_approval() {
+    fn a_withheld_row_whose_agent_lost_access_still_waits_for_approval_for_its_author() {
         let mut r = row("c1", &["u_mia"], Some("u_sam"));
         // Told it was withheld, no request open, then access was lost.
         r.requested = false;
@@ -2460,14 +2470,84 @@ mod tests {
             rows: vec![r],
             codex_push: false,
         };
+        let mia = d.view(&DeliveryViewer::Person("u_mia".into())).unwrap();
+        assert_eq!(mia.state, FeedbackPhase::Withheld);
+        assert_eq!(mia.approver.as_deref(), Some("Sam"));
+        assert!(
+            !mia.no_access,
+            "the author is not told of the agent's access"
+        );
+        let owner = d.view(&DeliveryViewer::Owner).unwrap();
+        assert_eq!(
+            (owner.state, owner.no_access),
+            (FeedbackPhase::Withheld, true)
+        );
+        let sam = d.view(&DeliveryViewer::Person("u_sam".into())).unwrap();
+        assert_eq!(
+            (sam.state, sam.no_access, sam.mine),
+            (FeedbackPhase::Withheld, true, true)
+        );
+        // The agent reads it as withheld, with no name and no access note.
+        let agent = d
+            .view(&DeliveryViewer::Agent {
+                session: Some("s".into()),
+                every: false,
+            })
+            .unwrap();
+        assert_eq!(
+            (agent.state, agent.no_access),
+            (FeedbackPhase::Withheld, false)
+        );
+    }
+
+    /// Spec §10 (a7145e76): with an approval request open, the owner and
+    /// the agent's person read the hold for lost access beside the wait.
+    #[test]
+    fn an_open_request_on_a_row_whose_agent_lost_access_reads_both() {
+        let mut r = row("c1", &["u_mia"], Some("u_sam"));
+        r.no_access_at = Some("2026-10-15T00:02:00Z".into());
+        let d = Delivery {
+            thread_id: "t".into(),
+            rows: vec![r],
+            codex_push: false,
+        };
+        let owner = d.view(&DeliveryViewer::Owner).unwrap();
+        assert_eq!(
+            (owner.state, owner.no_access),
+            (FeedbackPhase::Withheld, true)
+        );
+        let mia = d.view(&DeliveryViewer::Person("u_mia".into())).unwrap();
+        assert_eq!((mia.state, mia.no_access), (FeedbackPhase::Withheld, false));
+    }
+
+    /// A row held only for lost access reads `no_access` to the owner and
+    /// the agent's person, and plainly "sent" to everyone else, never seen
+    /// or delivered.
+    #[test]
+    fn a_row_held_only_for_lost_access_reads_sent_to_its_author() {
+        let mut r = row("c1", &["u_mia"], Some("u_sam"));
+        r.requested = false;
+        r.no_access_at = Some("2026-10-15T00:02:00Z".into());
+        let d = Delivery {
+            thread_id: "t".into(),
+            rows: vec![r],
+            codex_push: false,
+        };
         let owner = d.view(&DeliveryViewer::Owner).unwrap();
         assert_eq!(owner.state, FeedbackPhase::NoAccess);
         assert_eq!(owner.since, "2026-10-15T00:02:00Z");
-        let sam = d.view(&DeliveryViewer::Person("u_sam".into())).unwrap();
-        assert_eq!(sam.state, FeedbackPhase::NoAccess);
-        // The author reads it as told, not as waiting for an approval.
-        let mia = d.view(&DeliveryViewer::Person("u_mia".into())).unwrap();
-        assert_eq!(mia.state, FeedbackPhase::Acknowledged);
+        assert_eq!(
+            d.view(&DeliveryViewer::Person("u_sam".into()))
+                .unwrap()
+                .state,
+            FeedbackPhase::NoAccess
+        );
+        assert_eq!(
+            d.view(&DeliveryViewer::Person("u_mia".into()))
+                .unwrap()
+                .state,
+            FeedbackPhase::Sent
+        );
     }
 
     #[test]
@@ -4305,10 +4385,15 @@ mod delivery {
             "{:?}",
             r.placeholders
         );
+        // Told as withheld and now held for lost access too: the owner
+        // reads both, Mia the wait for Sam's approval alone (9c75976c).
+        let owner = d(&DeliveryViewer::Owner).unwrap();
         assert_eq!(
-            d(&DeliveryViewer::Owner).unwrap().state,
-            FeedbackPhase::NoAccess
+            (owner.state, owner.no_access),
+            (FeedbackPhase::Withheld, true)
         );
+        let mia = d(&DeliveryViewer::Person(w.mia.clone())).unwrap();
+        assert_eq!((mia.state, mia.no_access), (FeedbackPhase::Withheld, false));
         // Approved and readable: delivered.
         w.approve(&w.mia, Scope::Thread(tid.clone()));
         let vis = w.sam_vis();

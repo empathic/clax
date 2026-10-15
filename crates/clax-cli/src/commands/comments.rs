@@ -470,13 +470,20 @@ fn delivery(t: &Value) -> String {
         Some("acknowledged") => "sent to agent, read".into(),
         Some("agent_ended") => "sent to agent, whose session ended".into(),
         Some("no_access") => "sent to agent, held: the agent no longer has access".into(),
-        Some("withheld") => match t["feedback_state"]["approver"].as_str() {
-            Some(who) => format!(
-                "sent to agent, waiting for {}'s approval",
-                term::snippet(who, 40)
-            ),
-            None => "sent to agent, waiting for an approval".into(),
-        },
+        Some("withheld") => {
+            let wait = match t["feedback_state"]["approver"].as_str() {
+                Some(who) => format!(
+                    "sent to agent, waiting for {}'s approval",
+                    term::snippet(who, 40)
+                ),
+                None => "sent to agent, waiting for an approval".into(),
+            };
+            if t["feedback_state"]["no_access"] == true {
+                format!("{wait}; the agent no longer has access")
+            } else {
+                wait
+            }
+        }
         _ => "sent to agent".into(),
     }
 }
@@ -847,6 +854,15 @@ fn name(cli: &crate::Cli, home: &Home, a: &NameArgs) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wait_whose_agent_lost_access_says_both() {
+        let t = serde_json::json!({"feedback_state": {"state": "withheld", "approver": "Sam", "no_access": true}});
+        assert_eq!(
+            delivery(&t),
+            "sent to agent, waiting for Sam's approval; the agent no longer has access"
+        );
+    }
 
     #[test]
     fn a_thread_held_for_lost_access_reads_held() {

@@ -1989,9 +1989,9 @@ delivery state" below):
 | `delivered` | "delivered via <tier> · <elapsed> ago · not yet acknowledged" (then "· resent once" or "· resent N times"); "delivered, not acknowledged" after three resends |
 | `acknowledged` | "seen by the agent" |
 | `agent_ended` | "agent session ended; waiting for a new one" |
-| `withheld` | "waiting for <person>'s approval", or "waiting for your approval" for that person (no name to an agent) |
-| `declined` | "declined by <person>", or "you declined" for that person |
-| `no_access` | "held: the agent no longer has access" (the owner, and the person whose agent it is; others read the plain state, "sent" until the agent may read the page again) |
+| `withheld` | "waiting for <person>'s approval", or "waiting for your approval" for that person (no name to an agent); with `no_access: true` (the owner and the agent's person only) followed by " · the agent no longer has access" |
+| `declined` | "declined by <person>", or "you declined" for that person; with `no_access: true` followed as for `withheld` |
+| `no_access` | "held: the agent no longer has access" (the owner, and the person whose agent it is; everyone else reads the row as if access were never lost: withheld or declined as below, else "sent", never "seen by the agent") |
 | none (`null`) on a sent thread | "sent to <agent>" |
 
 **Who reads a delivery state.** The owner reads every row of a thread; a
@@ -3140,7 +3140,9 @@ thread's ID and the count only:
 ```
 
 Such a thread reads `no_access` to the owner and to the person whose agent
-it is (see "What the person sees"). If the agent may read the artifact
+it is, or, beside a wait for approval or a decline, adds `no_access: true`
+to that reading; everyone else reads it as if access were never lost (see
+"What the person sees"). If the agent may read the artifact
 again, the comments are delivered by the usual tiers, or, where their text
 is withheld, told of as withheld and delivered once approved; losing access
 again tells again. Approvals and rights are read again at
