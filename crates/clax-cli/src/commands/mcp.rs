@@ -64,9 +64,11 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         rt.shutdown_timeout(Duration::from_millis(100));
         return result;
     }
-    // Stdout is the MCP channel: diagnostics go to stderr only.
+    // Stdout is the MCP channel: diagnostics go to stderr only, and a
+    // stderr the harness closed first loses them rather than the session.
     tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
+        .with_writer(|| QuietStderr)
+        .log_internal_errors(false)
         .with_ansi(false)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -126,6 +128,35 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     // The stdin reader may still be parked on a blocking thread; do not wait for it.
     rt.shutdown_timeout(Duration::from_millis(100));
     result
+}
+
+/// Standard error for the shim's log, which drops what it cannot write
+/// because the pipe is gone (`BrokenPipe`): the harness that reads it may
+/// exit while a call is in flight, and the shim still has to end its
+/// session. `eprintln!` would panic there.
+struct QuietStderr;
+
+impl QuietStderr {
+    fn quiet(r: std::io::Result<usize>, len: usize) -> std::io::Result<usize> {
+        match r {
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(len),
+            r => r,
+        }
+    }
+}
+
+impl std::io::Write for QuietStderr {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        Self::quiet(std::io::stderr().write(buf), buf.len())
+    }
+
+    fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
+        Self::quiet(std::io::stderr().write_all(buf).map(|()| 0), 0).map(|_| ())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Self::quiet(std::io::stderr().flush().map(|()| 0), 0).map(|_| ())
+    }
 }
 
 /// `text` on one line: its lines trimmed, blank ones dropped, joined by spaces.
