@@ -13,6 +13,10 @@ import { respaced } from "../view/composer-model";
 const QUOTE_CHARS = 60;
 /** The longest element name shown, in characters. */
 const NAME_CHARS = 40;
+/** The longest quote a draft carries for the app's preview of what a
+ * comment is on, in characters. */
+export const PREVIEW_CHARS = 280;
+const QUOTE_MARKS = /["“”„‟«»‹›＂〝〞〟‚]/g;
 
 /** The noun for an element of tag or role `w`, with its article: "a" for an
  * unnamed one, the noun alone for a named one ("the " is added). */
@@ -32,7 +36,7 @@ const NOUNS: Record<string, string> = {
  * quote marks made ', cut at `max` characters; null when nothing is left. */
 const clean = (s: unknown, max: number): string | null => {
   if (typeof s !== "string") return null;
-  const t = cleanLabel(s)?.replace(/["“”„‟«»‹›＂〝〞〟‚]/g, "'");
+  const t = cleanLabel(s)?.replace(QUOTE_MARKS, "'");
   if (!t) return null;
   const chars = [...t];
   return chars.length > max ? `${chars.slice(0, max).join("").trimEnd()}…` : t;
@@ -51,6 +55,21 @@ function elementWords(tag: string | null, role: string | null, name: string | nu
   const noun = (role && NOUNS[role]) || (tag && NOUNS[tag]) || null;
   if (noun) return name ? `the ${noun} “${name}”` : `${article(noun)} ${noun}`;
   return name ? `“${name}”` : null;
+}
+
+/** The text `anchor` quotes as a reader sees it (its `label`, else the
+ * description's spaced `text`, else the quote), for the app to show in its
+ * own quote marks: format and control characters dropped, spaces
+ * collapsed, quote marks made ', cut at `max` characters with "…"; null
+ * when it quotes nothing with a letter or digit. */
+export function anchorQuote(anchor: Anchor, desc?: Partial<PickDesc> | null, max = PREVIEW_CHARS): string | null {
+  const d = desc && typeof desc === "object" ? desc : null;
+  const raw = respaced(anchor.quote, anchor.label) ?? respaced(anchor.quote, d?.text) ?? anchor.quote;
+  if (typeof raw !== "string") return null;
+  const t = raw.replace(/\p{Cf}/gu, "").replace(/\s+/g, " ").replace(/\p{Cc}/gu, "").trim().replace(QUOTE_MARKS, "'");
+  if (!/[\p{L}\p{N}]/u.test(t)) return null;
+  const chars = [...t];
+  return chars.length > max ? `${chars.slice(0, max).join("").trimEnd()}…` : t;
 }
 
 /** The words for `anchor`, with the bridge's description of a picked

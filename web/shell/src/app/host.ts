@@ -18,6 +18,11 @@
 //   agent (`sendTo`), in one press. A send that fails leaves the thread
 //   posted and unsent: the host hears `sendFailed`, and `resend(id)` tries
 //   again.
+// - The app's composer is the send box: app mode hides the shell's own
+//   (`app.css`), which stays in the document holding the draft. The app
+//   shows what the comment is on from `state.draft` (`kind`, `label`,
+//   `quote`) and the screenshot from `draftClip`, keeps the text, and sends
+//   it with `submitDraft({text})`.
 //
 // The channel protocol (what the app, plan Task F8, relies on):
 // - The host is installed only in the top-level document at a shell path
@@ -120,21 +125,30 @@ import { visibility } from "../visibility";
 import { now } from "../clock";
 import { SEND_FAILED, failureText, report, scopedNotice } from "../failure";
 import { type Thread, sendToAgent, upsert } from "../threads";
-import { INDEX_FILE, type InspectError, type PickDesc } from "../../../bridge/src/protocol";
+import { type Anchor, INDEX_FILE, type InspectError, type PickDesc } from "../../../bridge/src/protocol";
 import type { ArtifactController, ViewState } from "../view/artifact-controller";
-import { anchorLabel } from "./label";
+import { anchorLabel, anchorQuote } from "./label";
 import { respaced } from "../view/composer-model";
 import { appQuery, inspectQuery, migrateQuery, parseShellPath } from "../route";
 import { setUrl } from "../view/url";
 
 export type HostMessage =
   | { type: "ready"; artifact: string; version: number; latest: number; file: string }
-  /** `draft.label`: what the composer's anchor is, in words (`label.ts`),
-   * or the label the page gave a composer it opened; `byPage`: the page
-   * opened this composer (its comments capability), not the viewer's pick. */
-  | { type: "state"; commenting: boolean; draft: { label: string; text: string; clip: "pending" | "ready" | "none"; byPage?: true } | null; busy: boolean }
-  /** `label`: what each thread's anchor is, in words (`label.ts`). */
-  | { type: "threads"; threads: { id: string; status: string; summary: string; label: string; sent: boolean; comments: number; version: number }[] }
+  /** `draft.key`: the composer's identity (a new one for each pick; a
+   * page's composer moved to another area keeps it); `kind`: its anchor's
+   * kind; `label`: what the composer's anchor is, in words (`label.ts`),
+   * or the label the page gave a composer it opened; `quote`: the text it
+   * quotes as a reader sees it, for the app's own quote marks
+   * (`anchorQuote`), null when none; `byPage`: the page opened this
+   * composer (its comments capability), not the viewer's pick. */
+  | { type: "state"; commenting: boolean; draft: { key: string; kind: Anchor["kind"]; label: string; quote: string | null; text: string; clip: "pending" | "ready" | "none"; byPage?: true } | null; busy: boolean }
+  /** The open composer's screenshot (`png`, base64), once for each
+   * screenshot it takes, while composer `key` is open; at `init`, the open
+   * one's again. */
+  | { type: "draftClip"; key: string; png: string }
+  /** `label`: what each thread's anchor is, in words (`label.ts`); `clip`:
+   * the thread has a screenshot (the daemon's `/clip`). */
+  | { type: "threads"; threads: { id: string; status: string; summary: string; label: string; sent: boolean; comments: number; version: number; clip: boolean }[] }
   | { type: "sent"; thread: string }
   | { type: "landed"; version: number }
   | { type: "notice"; text: string }
@@ -187,10 +201,13 @@ export type ClaxHost = {
   loadVersion(n: number | null): void;
   /** Loads the latest version in place, keeping page, fragment and scroll. */
   reloadLatest(): void;
-  /** Replaces the open composer's text; nothing without one. */
-  setDraftText(text: string): void;
-  /** Presses Send on the open composer (waiting for its screenshot as Send does). */
-  submitDraft(): void;
+  /** Replaces the open composer's text; nothing without one. A focused text
+   * field of the questions sheet takes it instead, unless `composer` (the
+   * app's composer, whose text the composer's always is). */
+  setDraftText(text: string, p?: { composer?: boolean }): void;
+  /** Presses Send on the open composer (waiting for its screenshot as Send
+   * does), with `text` as its comment when given (the app's composer). */
+  submitDraft(p?: { text?: string }): void;
   cancelDraft(): void;
   /** Selects the thread and brings it into view. */
   openThread(id: string): void;
@@ -506,13 +523,33 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     const m: HostMessage = {
       type: "state",
       commenting: v.commenting,
-      draft: d ? { label: d.label ?? anchorLabel(d.anchor, picked.get(d.pickId)), text: ctl.composerText, clip: d.capturing ? "pending" : d.clip ? "ready" : "none", ...(d.byPage ? { byPage: true as const } : {}) } : null,
+      draft: d ? {
+        key: d.pickId, kind: d.anchor.kind, label: d.label ?? anchorLabel(d.anchor, picked.get(d.pickId)), quote: anchorQuote(d.anchor, picked.get(d.pickId)),
+        text: ctl.composerText, clip: d.capturing ? "pending" : d.clip ? "ready" : "none", ...(d.byPage ? { byPage: true as const } : {}),
+      } : null,
       busy: v.busy > 0,
     };
     const json = JSON.stringify(m);
-    if (json === lastState) return;
-    lastState = json;
-    post(m);
+    if (json !== lastState) {
+      lastState = json;
+      post(m);
+    }
+    postClip(d);
+  };
+  // The screenshot last posted (or being read to post).
+  let lastClip: Blob | null = null;
+  const postClip = (d: ViewState["draft"]) => {
+    const clip = d?.clip ?? null;
+    if (!d || !clip || clip === lastClip || nonce === null) return;
+    lastClip = clip;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const open = s().draft;
+      const url = typeof reader.result === "string" ? reader.result : "";
+      const png = url.slice(url.indexOf(",") + 1);
+      if (open?.clip === clip && png) post({ type: "draftClip", key: open.pickId, png });
+    };
+    reader.readAsDataURL(clip);
   };
   // The shell's own composer shows the same words for a pick (its quote line
   // reads a draft's `label` first), so no selector is shown in the app.
@@ -538,7 +575,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     postState(v);
     if (v.threads !== lastThreads) {
       lastThreads = v.threads;
-      post({ type: "threads", threads: v.threads.map(t => ({ id: t.id, status: t.status, summary: summary(t), label: anchorLabel(t.anchor, shownFor(t.anchor)), sent: t.sent_to_agent, comments: t.comments.length, version: t.version_n })) });
+      post({ type: "threads", threads: v.threads.map(t => ({ id: t.id, status: t.status, summary: summary(t), label: anchorLabel(t.anchor, shownFor(t.anchor)), sent: t.sent_to_agent, comments: t.comments.length, version: t.version_n, clip: t.has_clip })) });
     }
     if (v.notice !== lastNotice) {
       lastNotice = v.notice;
@@ -787,6 +824,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       nonce = n;
       visibleNow(!wanted);
       lastState = "";
+      lastClip = null;
       lastThreads = null;
       lastNotice = null;
       onState(s());
@@ -802,10 +840,11 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       else if (Number.isInteger(n) && n > 0) ctl.chooseVersion(n);
     },
     reloadLatest: () => { void follow(true); },
-    setDraftText: text => {
-      // A text field of a question card in the shown sheet, when it has focus.
+    setDraftText: (text, p) => {
+      // A text field of a question card in the shown sheet, when it has
+      // focus, unless the app's composer is typing.
       const a = doc.activeElement;
-      if (dock && !dock.hidden && dock.contains(a) && (a instanceof HTMLTextAreaElement || (a instanceof HTMLInputElement && a.type === "text"))) {
+      if (p?.composer !== true && dock && !dock.hidden && dock.contains(a) && (a instanceof HTMLTextAreaElement || (a instanceof HTMLInputElement && a.type === "text"))) {
         a.value = String(text);
         a.dispatchEvent(new Event("input", { bubbles: true }));
         return;
@@ -815,7 +854,17 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       ta.value = String(text);
       ta.dispatchEvent(new Event("input", { bubbles: true }));
     },
-    submitDraft: () => { if (s().draft) composer()?.requestSubmit(); },
+    submitDraft: p => {
+      const form = composer();
+      if (!s().draft || !form) return;
+      const text = p?.text;
+      const ta = form.querySelector("textarea");
+      if (typeof text === "string" && ta) {
+        ta.value = text;
+        ta.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      form.requestSubmit();
+    },
     cancelDraft: () => ctl.cancelDraft(),
     openThread: id => {
       const t = s().threads.find(x => x.id === id);

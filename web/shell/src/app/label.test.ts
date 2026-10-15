@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Anchor } from "../../../bridge/src/protocol";
-import { anchorLabel } from "./label";
+import { anchorLabel, anchorQuote } from "./label";
 
 const anchor = (over: Partial<Anchor> = {}): Anchor => ({ kind: "element", selector: "body > main > div.run:nth-of-type(2)", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html", ...over });
 
@@ -44,5 +44,20 @@ describe("anchorLabel", () => {
     // Bidi, format and control characters are dropped.
     expect(anchorLabel(anchor({ quote: "abc\u202Edef\u200B\u0007" }))).toBe("“abcdef”");
     expect(anchorLabel(anchor(), { tag: "img", role: null, name: "\u202E\u2066" })).toBe("an image");
+  });
+});
+
+describe("anchorQuote", () => {
+  it("is the quoted text as a reader sees it, tidied, fenced-safe and cut at 280 characters", () => {
+    expect(anchorQuote(anchor({ quote: "Mon5 km", label: "Mon 5 km" }))).toBe("Mon 5 km");
+    expect(anchorQuote(anchor({ quote: "Mon5 km" }), { text: "Mon 5 km" })).toBe("Mon 5 km");
+    expect(anchorQuote(anchor({ kind: "range", quote: "  say \"hi\"\n\u202Ethere " }))).toBe("say 'hi' there");
+    expect(anchorQuote(anchor({ kind: "range", quote: "x".repeat(300) }))).toBe(`${"x".repeat(280)}…`);
+    expect(anchorQuote(anchor({ quote: "x".repeat(100) }))).toBe("x".repeat(100));
+  });
+  it("is null for an anchor that quotes nothing", () => {
+    expect(anchorQuote(anchor())).toBeNull();
+    expect(anchorQuote(anchor({ quote: " \u200B " }))).toBeNull();
+    expect(anchorQuote(anchor({ kind: "artifact", selector: null, file: "" }))).toBeNull();
   });
 });

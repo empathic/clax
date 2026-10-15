@@ -206,8 +206,10 @@ test.describe("app mode", () => {
       expect(PARA.startsWith(pick.anchor.quote.trim())).toBe(true);
       expect(pick.clipError).toBeUndefined();
       await expect(frame.locator("clax-overlay .c")).toBeHidden();
-      // The composer shows the words the drag selected.
-      await expect(page.locator(".composer .composer-quote")).toContainText(pick.anchor.quote.trim());
+      // The app's composer shows the words the drag selected.
+      await expect.poll(async () => ((await ofType(page, "state")).at(-1)?.draft as { kind?: string } | undefined)?.kind).toBe("range");
+      const draft = (await ofType(page, "state")).at(-1)!.draft as { quote: string };
+      expect(draft.quote).toBe(pick.anchor.quote.replace(/\s+/g, " ").trim());
     });
   }
 
@@ -225,8 +227,7 @@ test.describe("app mode", () => {
     for (const [k, v] of Object.entries({ x: from.x - fb.x, y: from.y - fb.y, w: 150, h: 120 })) expect(Math.abs(pick.anchor.rect[k] - v), k).toBeLessThanOrEqual(1);
     expect(pick.clipError).toBeUndefined();
     expect(await frame.evaluate(() => scrollY)).toBe(0);
-    await expect(page.locator(".composer .composer-quote")).toHaveText("this area");
-    await expect.poll(async () => ((await ofType(page, "state")).at(-1)?.draft as { label?: string } | undefined)?.label).toBe("this area");
+    await expect.poll(async () => (await ofType(page, "state")).at(-1)?.draft).toMatchObject({ kind: "area", label: "this area", quote: null });
   });
 
   test("a drag with no attested press is refused", async ({ page }) => {
