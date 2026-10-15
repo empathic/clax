@@ -26,6 +26,7 @@ import 'agent/runner/messages_runner.dart';
 import 'agent/runner/scripted_runner.dart';
 import 'agent/runner/turn.dart';
 import 'agent/timings.dart';
+import 'agent/unfinished.dart';
 import 'agent/worker.dart';
 import 'bundle/doc_snapshot.dart';
 import 'bundle/exporter.dart';
@@ -688,6 +689,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
 
   late final _asked = _s.asked ?? MemoryAskedQuestions();
   late final _plans = _s.plans ?? PlanStore();
+  late final _unfinished = FileUnfinishedChanges(
+    File('${_s.supportDir}/unfinished.json'),
+  );
 
   /// The plans and the worker's builds, for the build view, the Working
   /// chip, the launcher and the inspector.
@@ -892,6 +896,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       ledger: _s.ledger,
       asked: _asked,
       plans: _plans,
+      unfinished: _unfinished,
       inspector: _s.inspector,
       baseUrl: () => _currentEndpoint().base,
       readConsent: _consent,
