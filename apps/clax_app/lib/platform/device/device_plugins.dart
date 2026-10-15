@@ -208,38 +208,126 @@ class PluginCamera implements CameraPort {
   Future<Photo?> pick() => _get(ImageSource.gallery);
 }
 
-/// Location through geolocator, on Android only (macOS: `unavailable`).
+/// Location through geolocator, on Android only. On macOS every call is
+/// `unavailable`: Mac location needs a usage description, the location
+/// entitlement and a signed build, which Clax does not have yet.
+///
+/// Precise asks for high accuracy, Approximate for low power (Android's
+/// coarse location). A fix is precise only when it was asked precise and
+/// Android lets Clax have a precise location (the person may grant
+/// approximate only).
 class PluginLocation implements LocationPort {
-  @override
-  Future<({double lat, double lon, double accuracy})> current() async {
+  /// Checks the platform, the device's location and Clax's permission,
+  /// asking for it when Android still may.
+  Future<void> _ready() async {
     if (!_android) {
-      throw const DeviceError.unavailable(
-        'location is not available on this platform',
+      throw DeviceError.unavailable(
+        _macOS
+            ? 'location is not available in Clax on macOS yet; it works in '
+                  'Clax on Android'
+            : 'location is not available on this platform',
       );
     }
     if (!await Geolocator.isLocationServiceEnabled()) {
-      throw const DeviceError.unavailable('location is off on this device');
+      throw const DeviceError(
+        'location_off',
+        'location is off on this device; turn it on in settings',
+      );
     }
     var p = await Geolocator.checkPermission();
     if (p == LocationPermission.denied) {
       p = await Geolocator.requestPermission();
     }
+    if (p == LocationPermission.deniedForever) {
+      throw const DeviceError(
+        'system_denied',
+        'location is off for Clax in system settings, and Android will not '
+            'ask again',
+      );
+    }
     if (p == LocationPermission.denied ||
-        p == LocationPermission.deniedForever) {
+        p == LocationPermission.unableToDetermine) {
       throw const DeviceError.notGranted('location is not allowed for Clax');
     }
+  }
+
+  /// Whether a fix asked at [precision] is precise.
+  static Future<bool> _precise(Precision precision) async =>
+      precision == Precision.precise &&
+      await Geolocator.getLocationAccuracy() == LocationAccuracyStatus.precise;
+
+  static LocationAccuracy _accuracy(Precision p) =>
+      p == Precision.precise ? LocationAccuracy.high : LocationAccuracy.low;
+
+  @override
+  Future<LocationFix> current(Precision precision) async {
+    await _ready();
+    final precise = await _precise(precision);
     try {
       final pos = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
-          timeLimit: Duration(seconds: 20),
+        locationSettings: LocationSettings(
+          accuracy: _accuracy(precision),
+          timeLimit: const Duration(seconds: 20),
         ),
       );
-      return (lat: pos.latitude, lon: pos.longitude, accuracy: pos.accuracy);
+      return LocationFix(
+        pos.latitude,
+        pos.longitude,
+        pos.accuracy,
+        precise: precise,
+      );
     } on TimeoutException {
       throw const DeviceError.unavailable(
         'the device did not find its location in time',
       );
+    }
+  }
+
+  @override
+  Future<Stream<LocationFix>> watch(
+    Precision precision, {
+    required double minDistance,
+  }) async {
+    await _ready();
+    final precise = await _precise(precision);
+    return Geolocator.getPositionStream(
+      locationSettings: AndroidSettings(
+        accuracy: _accuracy(precision),
+        distanceFilter: minDistance.round(),
+        intervalDuration: const Duration(seconds: 1),
+      ),
+    ).transform(
+      StreamTransformer.fromHandlers(
+        handleData: (pos, sink) => sink.add(
+          LocationFix(
+            pos.latitude,
+            pos.longitude,
+            pos.accuracy,
+            precise: precise,
+          ),
+        ),
+        handleError: (e, st, sink) => sink.addError(switch (e) {
+          LocationServiceDisabledException() => const DeviceError(
+            'location_off',
+            'location was turned off on this device',
+          ),
+          PermissionDeniedException() => const DeviceError.notGranted(
+            'location is no longer allowed for Clax',
+          ),
+          _ => DeviceError.unavailable('$e'),
+        }),
+      ),
+    );
+  }
+
+  @override
+  Future<void> openSettings(LocationSettingsPage page) async {
+    if (!_android) return;
+    switch (page) {
+      case LocationSettingsPage.app:
+        await Geolocator.openAppSettings();
+      case LocationSettingsPage.location:
+        await Geolocator.openLocationSettings();
     }
   }
 }

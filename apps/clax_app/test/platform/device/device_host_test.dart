@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -102,18 +103,64 @@ class FakeCamera implements CameraPort {
 
 class FakeLocation implements LocationPort {
   DeviceError? error;
+
+  /// Whether the system lets Clax have a precise location.
+  var systemPrecise = true;
+  final asked = <Precision>[];
+  final opened = <LocationSettingsPage>[];
+
+  /// The running watch's fixes; null when none runs.
+  StreamController<LocationFix>? stream;
+  double? distance;
+
+  LocationFix _fix(Precision p, double lat, double lon, double accuracy) =>
+      LocationFix(
+        lat,
+        lon,
+        accuracy,
+        precise: p == Precision.precise && systemPrecise,
+      );
+
   @override
-  Future<({double lat, double lon, double accuracy})> current() async {
+  Future<LocationFix> current(Precision precision) async {
+    asked.add(precision);
     if (error case final e?) throw e;
-    return (lat: 52.5, lon: 13.4, accuracy: 12.0);
+    return _fix(precision, 52.5, 13.4, 12.0);
   }
+
+  @override
+  Future<Stream<LocationFix>> watch(
+    Precision precision, {
+    required double minDistance,
+  }) async {
+    asked.add(precision);
+    if (error case final e?) throw e;
+    distance = minDistance;
+    final c = stream = StreamController<LocationFix>();
+    c.onCancel = () => stream = null;
+    return c.stream;
+  }
+
+  /// A fix the running watch sees.
+  void move(double lat, double lon, {double accuracy = 8}) => stream!.add(
+    LocationFix(
+      lat,
+      lon,
+      accuracy,
+      precise: asked.last == Precision.precise && systemPrecise,
+    ),
+  );
+
+  @override
+  Future<void> openSettings(LocationSettingsPage page) async =>
+      opened.add(page);
 }
 
 class FakeConsent implements DeviceConsent {
-  var answer = true;
+  var answer = DeviceAnswer.allow;
   final asked = <(String, String)>[];
   @override
-  Future<bool> ask(String aid, String cap) async {
+  Future<DeviceAnswer> ask(String aid, String cap) async {
     asked.add((aid, cap));
     return answer;
   }
@@ -178,7 +225,12 @@ void main() {
         final s = setup();
         final r1 = await s.host.handle(aid, req('location', 'current'));
         expect(r1.code, isNull);
-        expect(r1.value, {'lat': 52.5, 'lon': 13.4, 'accuracy': 12.0});
+        expect(r1.value, {
+          'lat': 52.5,
+          'lon': 13.4,
+          'accuracy': 12.0,
+          'precise': true,
+        });
         await s.host.handle(aid, req('location', 'current'));
         expect(s.consent.asked, [(aid, 'location')]);
         expect((await s.grants.list(aid)).keys, ['location']);
@@ -191,7 +243,7 @@ void main() {
     test(
       'a refusal answers not_granted, is kept, and asks again once revoked',
       () async {
-        final s = setup()..consent.answer = false;
+        final s = setup()..consent.answer = DeviceAnswer.deny;
         final r = await s.host.handle(aid, req('camera', 'take'));
         expect((r.code, r.value), ('not_granted', null));
         expect(
@@ -201,7 +253,7 @@ void main() {
         expect(s.consent.asked, hasLength(1));
         expect((await s.grants.list(aid))['camera']?.allowed, isFalse);
         await s.host.revoke(aid, 'camera');
-        s.consent.answer = true;
+        s.consent.answer = DeviceAnswer.allow;
         s.camera.next = Photo('image/jpeg', Uint8List(1), 1, 1);
         expect((await s.host.handle(aid, req('camera', 'take'))).code, isNull);
         expect(s.consent.asked, hasLength(2));

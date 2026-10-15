@@ -130,6 +130,16 @@ import 'working_chip.dart';
 ///   calls [AppScreen.onRetry], and is not offered without one.
 /// - **Versions.** Tap to preview, Restore (or Undo) to republish an
 ///   earlier version (`restoreVersion`), then `reloadLatest`.
+/// - **Device.** The page's device calls go to [AppScreen.device] with
+///   this screen's [DeviceView]. A `location.watch` runs only while the
+///   screen shows the app: it stops (the page hears `stopped`) when the
+///   screen is hidden (the app in the background, another route on top,
+///   the screen closed) or a new document loads, and does not start again
+///   by itself. While one runs a small location pill sits at the top left,
+///   in the status bar's band; a tap on it stops location. A location call
+///   that fails because Android will not ask again (`system_denied`) or the
+///   device's location is off (`location_off`) shows a toast with Open
+///   settings.
 ///
 /// The screen owns [surface] and disposes it.
 class AppScreen extends StatefulWidget {
@@ -475,6 +485,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     if (visible == _toldVisible) return;
     _toldVisible = visible;
     widget.surface.setVisible(visible);
+    if (!visible) widget.device?.stopWatches(_deviceView);
     if (visible) {
       unawaited(_showNotice());
     } else {
@@ -568,6 +579,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    widget.device?.stopWatches(_deviceView, asking: true);
+    _deviceView.watching.dispose();
     _updates.dispose();
     WidgetsBinding.instance.removeObserver(this);
     widget.notice?.clear(this);
@@ -592,6 +605,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     if (!mounted) return;
     switch (m) {
       case Ready():
+        // A new document: the watches of the one before are over.
+        widget.device?.stopWatches(_deviceView, asking: true);
         setState(() {
           _ready = m;
           _covered = false;
@@ -674,6 +689,19 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     }
   }
 
+  /// This screen's side of the device calls that outlive their answer.
+  late final DeviceView _deviceView = DeviceView(
+    send: (e) {
+      if (!mounted) return;
+      _call(e);
+      if (e.code case final code?) _locationToast(code);
+    },
+    shown: () async {
+      await WidgetsBinding.instance.endOfFrame;
+      return mounted && _toldVisible == true;
+    },
+  );
+
   /// Makes the page's device call [r] and answers it in the page.
   void _device(DeviceRequest r) {
     final d = widget.device;
@@ -681,11 +709,58 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         ? Future.value(
             DeviceResult.error(r.id, 'unavailable', 'no device features here'),
           )
-        : d.handle(widget.aid, r);
+        : d.handle(widget.aid, r, view: _deviceView);
     unawaited(
       answer.then((a) {
-        if (mounted) unawaited(widget.surface.call(a));
+        if (!mounted) return;
+        unawaited(widget.surface.call(a));
+        if (r.cap == 'location' && a.code != null) _locationToast(a.code!);
       }),
+    );
+  }
+
+  /// A toast with Open settings for a location error only system settings
+  /// clear; nothing for any other [code].
+  void _locationToast(String code) {
+    final text = switch (code) {
+      'system_denied' => 'Location is off for Clax in Android settings',
+      'location_off' => 'Location is off on this device',
+      _ => null,
+    };
+    final d = widget.device;
+    if (text == null || d == null || _toldVisible != true) return;
+    ScaffoldMessenger.maybeOf(context)
+      ?..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          key: const ValueKey('location-settings-toast'),
+          content: Text(text),
+          duration: toastFor,
+          persist: false,
+          behavior: SnackBarBehavior.floating,
+          action: SnackBarAction(
+            label: 'Open settings',
+            onPressed: () => unawaited(d.openLocationSettings(code)),
+          ),
+        ),
+      );
+  }
+
+  /// The location pill while a watch runs: at the top left, in the status
+  /// bar's band; a tap stops location.
+  Widget _locationPill(BuildContext context) {
+    final inset = MediaQuery.paddingOf(context).top;
+    final h = (inset - 4).clamp(20.0, 28.0);
+    return Positioned(
+      top: inset >= 22 ? (inset - h) / 2 : 4,
+      left: 12,
+      child: LocationPill(
+        height: h,
+        onTap: () => widget.device?.stopWatches(
+          _deviceView,
+          message: 'the person stopped location; start it again from a tap',
+        ),
+      ),
     );
   }
 
@@ -1259,6 +1334,13 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
                   ),
                   if (_buildChip && !_buildOpen) _buildPill(context),
                   if (_changeChip && !_changeOpen) _changePill(context),
+                  if (widget.device != null)
+                    ValueListenableBuilder<int>(
+                      valueListenable: _deviceView.watching,
+                      builder: (context, n, _) => n > 0
+                          ? _locationPill(context)
+                          : const SizedBox.shrink(),
+                    ),
                 ],
               ),
             ),
@@ -1508,4 +1590,44 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
 /// A notifier the screen fires on each of its rebuilds.
 class _Updates extends ChangeNotifier {
   void fire() => notifyListeners();
+}
+
+/// Location is in use: a small pill with the location icon. A tap on it
+/// stops location.
+class LocationPill extends StatelessWidget {
+  const LocationPill({super.key, required this.onTap, this.height = 24});
+
+  final VoidCallback onTap;
+  final double height;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Semantics(
+      button: true,
+      label: 'Location in use',
+      onTapHint: 'Stop location',
+      excludeSemantics: true,
+      child: Material(
+        key: const ValueKey('location-pill'),
+        color: scheme.inverseSurface.withValues(alpha: 0.88),
+        shape: const StadiumBorder(),
+        child: InkWell(
+          customBorder: const StadiumBorder(),
+          onTap: onTap,
+          child: SizedBox(
+            height: height,
+            child: Padding(
+              padding: EdgeInsets.symmetric(horizontal: height * 0.35),
+              child: Icon(
+                Icons.near_me_rounded,
+                size: height * 0.6,
+                color: scheme.onInverseSurface,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }

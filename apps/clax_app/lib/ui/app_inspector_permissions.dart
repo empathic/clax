@@ -211,7 +211,8 @@ class AgentReadPermissions implements PermissionSource {
 }
 
 /// The person's answers to the app's device capabilities (notifications,
-/// sharing, files, camera, location), Allow or Don't allow. Revoking one
+/// sharing, files, camera, location), Allow or Don't allow, and how exactly
+/// an allowed location is seen (precise or approximate). Revoking one
 /// forgets it, so the app's next call asks again; revoking notifications
 /// also cancels the app's reminders.
 class DevicePermissions implements PermissionSource {
@@ -232,6 +233,13 @@ class DevicePermissions implements PermissionSource {
   @override
   IconData get icon => Icons.phone_android_rounded;
 
+  /// How exactly an allowed location is seen, after its label.
+  static String _precision(DeviceDecision d) => switch (d.precision) {
+    Precision.precise => ': precise',
+    Precision.approximate => ': approximate, within about 2 km',
+    null => '',
+  };
+
   static String _capitalised(String s) =>
       s.isEmpty ? s : '${s[0].toUpperCase()}${s.substring(1)}';
 
@@ -242,7 +250,7 @@ class DevicePermissions implements PermissionSource {
     )).entries)
       Permission(
         label: d.allowed
-            ? _capitalised(deviceCapWords[cap] ?? cap)
+            ? _capitalised(deviceCapWords[cap] ?? cap) + _precision(d)
             : 'Not allowed to ${deviceCapWords[cap] ?? 'use $cap'}',
         detail: d.allowed
             ? 'You allowed this ${versionDay(d.at.toIso8601String())}'

@@ -51,7 +51,7 @@ void main() {
         ],
       ),
     );
-    consent.answer = false;
+    consent.answer = DeviceAnswer.deny;
     await device.handle(
       aid,
       const DeviceRequest(
@@ -74,6 +74,54 @@ void main() {
     await ps.last.revoke!();
     expect(await source.load(app(aid)), isEmpty);
   });
+
+  test(
+    'Device shows how exactly location is allowed, and revokes it',
+    () async {
+      final consent = FakeConsent()..answer = DeviceAnswer.approximate;
+      final device = DeviceHost(
+        grants: MemoryDeviceGrants(now: () => DateTime.utc(2026, 10, 12)),
+        consent: consent,
+        reminders: Reminders(FakeNotifier()),
+        share: FakeShare(),
+        files: FakeFiles(),
+        camera: FakeCamera(),
+        location: FakeLocation(),
+      );
+      const aid = 'abcdefghjkmn';
+      await device.handle(
+        aid,
+        const DeviceRequest(
+          id: 'a',
+          cap: 'location',
+          method: 'current',
+          args: [],
+        ),
+      );
+      final source = DevicePermissions(device);
+      final ps = await source.load(app(aid));
+      expect(
+        ps.single.label,
+        'See where your device is: approximate, within about 2 km',
+      );
+      await ps.single.revoke!();
+      expect(await source.load(app(aid)), isEmpty);
+      consent.answer = DeviceAnswer.allow;
+      await device.handle(
+        aid,
+        const DeviceRequest(
+          id: 'b',
+          cap: 'location',
+          method: 'current',
+          args: [],
+        ),
+      );
+      expect(
+        (await source.load(app(aid))).single.label,
+        'See where your device is: precise',
+      );
+    },
+  );
 
   test('Network lists the granted hosts and revokes them all', () async {
     final api = FakeClaxApi();

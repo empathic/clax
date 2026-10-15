@@ -678,6 +678,36 @@ final class DeviceResult extends HostCall {
   }
 }
 
+/// A running `location.watch`'s news for the page, under the page's
+/// [watch] ID: an update ([value], `{lat, lon, accuracy, precise}`), or its
+/// end ([code], [message]; `stopped` when the app left the screen), after
+/// which nothing more comes for it.
+final class DeviceEvent extends HostCall {
+  const DeviceEvent.update(this.watch, Map<String, Object?> this.value)
+    : code = null,
+      message = null;
+  const DeviceEvent.end(this.watch, String this.code, String this.message)
+    : value = null;
+
+  final String watch;
+  final Map<String, Object?>? value;
+  final String? code;
+  final String? message;
+
+  @override
+  String toJs() {
+    final a = code == null
+        ? {'cap': 'location', 'watch': watch, 'kind': 'update', 'value': value}
+        : {
+            'cap': 'location',
+            'watch': watch,
+            'kind': 'end',
+            'error': {'code': code, 'message': message},
+          };
+    return 'window.claxHost?.deviceEvent(JSON.parse(${jsString(jsonEncode(a))}))';
+  }
+}
+
 /// Moves the page to fragment [hash] (`#…`), as a notification's tap asks.
 final class OpenRoute extends HostCall {
   const OpenRoute(this.hash);

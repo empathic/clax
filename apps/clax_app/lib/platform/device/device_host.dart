@@ -3,26 +3,72 @@
 /// each [DeviceRequest] the shell forwards is checked, asked of the person
 /// once per app and capability, made through the ports, and answered with
 /// a [DeviceResult].
+///
+/// Location is asked as Precise, Approximate or Don't allow. An app allowed
+/// Approximate (or any app, when Android lets Clax have only an approximate
+/// location) gets fixes snapped to a cell of about 2 km ([Coarsener]),
+/// marked `precise: false`. `location.watch` follows the device for the
+/// app screen's [DeviceView] while the screen shows the app: the screen
+/// stops it ([DeviceHost.stopWatches]) when it leaves, and it does not
+/// start again by itself.
 library;
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
+
+import 'package:flutter/foundation.dart';
 
 import '../../ui/host_protocol.dart';
 import 'device_grants.dart';
 import 'device_ports.dart';
+import 'location_coarsen.dart';
 import 'reminders.dart';
 
-export 'device_ports.dart' show DeviceError;
+export 'device_ports.dart'
+    show DeviceError, LocationFix, LocationSettingsPage, Precision;
 export 'reminders.dart' show ReminderTap;
 
 /// The largest file a page may pick, share or save.
 const deviceMaxBytes = 4 * 1024 * 1024;
 
+/// The person's answer to a device consent: Don't allow, Allow (for
+/// location: Precise), or for location only, Approximate.
+enum DeviceAnswer { deny, allow, approximate }
+
 /// Asks the person whether app [aid] may use [cap].
 abstract interface class DeviceConsent {
-  Future<bool> ask(String aid, String cap);
+  Future<DeviceAnswer> ask(String aid, String cap);
+}
+
+/// One app screen's side of the device calls that outlive their answer
+/// (`location.watch`): [send] carries each watch's updates and its end to
+/// the page, and [shown] says whether the screen shows the app once its
+/// layout has settled (a watch that finishes starting while it does not is
+/// stopped at once).
+class DeviceView {
+  DeviceView({required this.send, required this.shown});
+
+  final void Function(DeviceEvent e) send;
+  final Future<bool> Function() shown;
+
+  /// How many watches run now; the screen shows that location is in use
+  /// while any does.
+  final watching = ValueNotifier<int>(0);
+
+  final _watches = <String, _Watch>{};
+}
+
+enum _Phase { asking, starting, running }
+
+class _Watch {
+  _Watch(this.id);
+  final String id;
+  var phase = _Phase.asking;
+  var cancelled = false;
+  var precision = Precision.precise;
+  StreamSubscription<LocationFix>? sub;
+  DateTime? lastAt;
+  (int, int)? lastCell;
 }
 
 class DeviceHost {
@@ -34,7 +80,10 @@ class DeviceHost {
     required this.files,
     required this.camera,
     required this.location,
-  });
+    Coarsener? coarsener,
+    DateTime Function()? now,
+  }) : coarsener = coarsener ?? Coarsener.random(),
+       _now = now ?? DateTime.now;
 
   final DeviceGrants grants;
   final DeviceConsent consent;
@@ -44,13 +93,29 @@ class DeviceHost {
   final CameraPort camera;
   final LocationPort location;
 
+  /// The grid approximate fixes snap to, one per run of Clax.
+  final Coarsener coarsener;
+  final DateTime Function() _now;
+
+  /// The watches a view may run at once.
+  static const maxWatches = 4;
+
+  /// The least time between two updates of a watch.
+  static const minInterval = Duration(seconds: 1);
+
+  /// A watch's distance filter when the page gives none, and its bounds,
+  /// in metres.
+  static const defaultDistance = 10.0;
+  static const minDistance = 5.0;
+  static const maxDistance = 10000.0;
+
   NotifierPort get _notifier => reminders.port;
 
   final _taps = StreamController<ReminderTap>.broadcast();
 
   /// The consent asked now, by app and capability, so calls made together
   /// share one dialog.
-  final _asking = <(String, String), Future<bool>>{};
+  final _asking = <(String, String), Future<DeviceAnswer>>{};
   var _started = false;
 
   /// The reminders the person taps: open the app at the route.
@@ -86,10 +151,15 @@ class DeviceHost {
     await grants.forget(aid);
   }
 
-  /// Makes request [r] of app [aid] and answers it.
-  Future<DeviceResult> handle(String aid, DeviceRequest r) async {
+  /// Makes request [r] of app [aid] and answers it; [view] is the app
+  /// screen's, which `location.watch` needs.
+  Future<DeviceResult> handle(
+    String aid,
+    DeviceRequest r, {
+    DeviceView? view,
+  }) async {
     try {
-      final value = await _call(aid, r);
+      final value = await _call(aid, r, view);
       return DeviceResult.ok(r.id, value);
     } on DeviceError catch (e) {
       return DeviceResult.error(r.id, e.code, e.message);
@@ -98,7 +168,7 @@ class DeviceHost {
     }
   }
 
-  Future<Object?> _call(String aid, DeviceRequest r) async {
+  Future<Object?> _call(String aid, DeviceRequest r, DeviceView? view) async {
     if (!deviceCaps.contains(r.cap)) {
       throw DeviceError(
         'capability_removed',
@@ -107,7 +177,13 @@ class DeviceHost {
     }
     final arg = r.args.firstOrNull;
     _checkMethod(r);
-    await _allow(aid, r.cap);
+    switch ((r.cap, r.method)) {
+      case ('location', 'watch'):
+        return _watch(aid, arg, view);
+      case ('location', 'unwatch'):
+        return {'stopped': view != null && _unwatch(view, arg)};
+    }
+    final decision = await _allow(aid, r.cap);
     switch ((r.cap, r.method)) {
       case ('notify', 'schedule'):
         if (!await _notifier.requestPermission()) {
@@ -158,8 +234,8 @@ class DeviceHost {
           'height': p.height,
         };
       case ('location', 'current'):
-        final l = await location.current();
-        return {'lat': l.lat, 'lon': l.lon, 'accuracy': l.accuracy};
+        final p = decision.precision ?? Precision.precise;
+        return _fixJson(_shown(await location.current(p), p));
     }
     throw DeviceError(
       'capability_removed',
@@ -172,7 +248,7 @@ class DeviceHost {
     'share': ['text', 'file'],
     'file': ['pick', 'save'],
     'camera': ['take', 'pick'],
-    'location': ['current'],
+    'location': ['current', 'watch', 'unwatch'],
   };
 
   static void _checkMethod(DeviceRequest r) {
@@ -187,9 +263,9 @@ class DeviceHost {
   /// Asks the person unless they answered for app [aid] and [cap] before;
   /// throws `not_granted` when they do not allow it. The answer is kept
   /// either way, until revoked.
-  Future<void> _allow(String aid, String cap) async {
+  Future<DeviceDecision> _allow(String aid, String cap) async {
     final before = await grants.decision(aid, cap);
-    if (before?.allowed == true) return;
+    if (before?.allowed == true) return before!;
     if (before != null) {
       throw DeviceError.notGranted(
         'the person did not allow $cap for this app',
@@ -198,18 +274,185 @@ class DeviceHost {
     final key = (aid, cap);
     // The cleanup returns nothing: whenComplete would wait on a returned
     // future, and the removed value is this very one.
-    final ok = await (_asking[key] ??= consent.ask(aid, cap).whenComplete(() {
-      _asking.remove(key);
-    }));
-    if ((await grants.decision(aid, cap))?.allowed != ok) {
-      await grants.decide(aid, cap, allowed: ok);
+    final answer = await (_asking[key] ??= consent.ask(aid, cap).whenComplete(
+      () {
+        _asking.remove(key);
+      },
+    ));
+    final ok = answer != DeviceAnswer.deny;
+    final precision = answer == DeviceAnswer.approximate
+        ? Precision.approximate
+        : Precision.precise;
+    final kept = await grants.decision(aid, cap);
+    if (kept == null || kept.allowed != ok) {
+      await grants.decide(aid, cap, allowed: ok, precision: precision);
     }
     if (!ok) {
       throw DeviceError.notGranted(
         'the person did not allow $cap for this app',
       );
     }
+    return (await grants.decision(aid, cap)) ??
+        DeviceDecision(
+          allowed: true,
+          at: _now(),
+          precision: cap == 'location' ? precision : null,
+        );
   }
+
+  // --- location ---
+
+  /// [fix] as an app allowed [precision] sees it: snapped to its cell
+  /// unless both the app and the system allow precise.
+  LocationFix _shown(LocationFix fix, Precision precision) =>
+      fix.precise && precision == Precision.precise
+      ? fix
+      : coarsener.coarsen(fix);
+
+  static Map<String, Object?> _fixJson(LocationFix f) => {
+    'lat': f.lat,
+    'lon': f.lon,
+    'accuracy': f.accuracy,
+    'precise': f.precise,
+  };
+
+  static const _stoppedMessage =
+      'location stopped because the app left the screen; start it again '
+      'from a tap';
+
+  /// Starts `location.watch` `{watch, minDistance?}` for [view]: answers
+  /// `{watching: true}` once updates flow, which [view] then gets as
+  /// [DeviceEvent]s under the page's `watch` ID.
+  Future<Object?> _watch(String aid, Object? arg, DeviceView? view) async {
+    if (view == null) {
+      throw const DeviceError.unavailable(
+        'location.watch runs only in an app screen',
+      );
+    }
+    final id = arg is Map ? arg['watch'] : null;
+    if (id is! String || id.isEmpty || id.length > 64) {
+      throw const DeviceError.badRequest(
+        'watch takes {watch, minDistance?} with watch an ID of 1 to 64 '
+        'characters',
+      );
+    }
+    final md = (arg as Map)['minDistance'];
+    if (md != null && (md is! num || !md.isFinite)) {
+      throw const DeviceError.badRequest('minDistance is a number of metres');
+    }
+    final distance = ((md as num?)?.toDouble() ?? defaultDistance).clamp(
+      minDistance,
+      maxDistance,
+    );
+    if (view._watches.containsKey(id)) {
+      throw DeviceError.badRequest('watch $id is already running');
+    }
+    if (view._watches.length >= maxWatches) {
+      throw const DeviceError.badRequest(
+        'at most $maxWatches location watches at once',
+      );
+    }
+    final w = _Watch(id);
+    view._watches[id] = w;
+    try {
+      final d = await _allow(aid, 'location');
+      if (w.cancelled) throw const DeviceError('stopped', _stoppedMessage);
+      w
+        ..phase = _Phase.starting
+        ..precision = d.precision ?? Precision.precise;
+      final stream = await location.watch(w.precision, minDistance: distance);
+      if (w.cancelled || !await view.shown() || w.cancelled) {
+        throw const DeviceError('stopped', _stoppedMessage);
+      }
+      w
+        ..phase = _Phase.running
+        ..sub = stream.listen(
+          (f) => _update(view, w, f),
+          onError: (Object e) => _end(
+            view,
+            w,
+            e is DeviceError ? e : DeviceError.unavailable('$e'),
+          ),
+        );
+      _count(view);
+      return {'watching': true};
+    } on Object {
+      if (view._watches[id] == w) view._watches.remove(id);
+      rethrow;
+    }
+  }
+
+  /// A fix for watch [w]: sent unless one went less than [minInterval]
+  /// ago, or, for an approximate watch, it is in the cell last sent.
+  void _update(DeviceView view, _Watch w, LocationFix fix) {
+    if (w.cancelled) return;
+    final shown = _shown(fix, w.precision);
+    (int, int)? cell;
+    if (!shown.precise) {
+      final c = coarsener.cell(fix.lat, fix.lon);
+      cell = (c.row, c.col);
+      if (cell == w.lastCell) return;
+    }
+    final now = _now();
+    if (w.lastAt case final last? when now.difference(last) < minInterval) {
+      return;
+    }
+    w
+      ..lastAt = now
+      ..lastCell = cell;
+    view.send(DeviceEvent.update(w.id, _fixJson(shown)));
+  }
+
+  /// Watch [w] failed with [e]: it ends, and the page hears why.
+  void _end(DeviceView view, _Watch w, DeviceError e) {
+    if (w.cancelled) return;
+    _drop(view, w);
+    view.send(DeviceEvent.end(w.id, e.code, e.message));
+  }
+
+  void _drop(DeviceView view, _Watch w) {
+    w.cancelled = true;
+    unawaited(w.sub?.cancel());
+    if (view._watches[w.id] == w) view._watches.remove(w.id);
+    _count(view);
+  }
+
+  void _count(DeviceView view) => view.watching.value = view._watches.values
+      .where((w) => w.phase == _Phase.running)
+      .length;
+
+  /// The page stopped watch `{watch}`: no end is sent. Whether it ran.
+  bool _unwatch(DeviceView view, Object? arg) {
+    final id = arg is Map ? arg['watch'] : null;
+    final w = id is String ? view._watches[id] : null;
+    if (w == null) return false;
+    _drop(view, w);
+    return true;
+  }
+
+  /// Stops [view]'s watches, each ending in the page with `stopped`
+  /// ([message], when given): those running or starting, and with
+  /// [asking] those still waiting on the person's consent too (the page
+  /// that made them is gone).
+  void stopWatches(DeviceView view, {bool asking = false, String? message}) {
+    for (final w in view._watches.values.toList()) {
+      if (w.phase == _Phase.asking && !asking) continue;
+      final running = w.phase == _Phase.running;
+      _drop(view, w);
+      if (running) {
+        view.send(DeviceEvent.end(w.id, 'stopped', message ?? _stoppedMessage));
+      }
+    }
+  }
+
+  /// Opens the system settings that clear a location error [code]: the
+  /// device's location switch for `location_off`, Clax's own permissions
+  /// otherwise.
+  Future<void> openLocationSettings(String code) => location.openSettings(
+    code == 'location_off'
+        ? LocationSettingsPage.location
+        : LocationSettingsPage.app,
+  );
 
   static ({String name, String mime, Uint8List data}) _file(Object? f) {
     if (f is! Map || f['name'] is! String || f['data'] is! String) {

@@ -1,5 +1,6 @@
 /// What the person answered each app for each device capability, Allow or
-/// Don't allow, kept until they revoke it (the app inspector lists the
+/// Don't allow (for location: Precise, Approximate or Don't allow), kept
+/// until they revoke it (the app inspector lists the
 /// answers with [DeviceGrants.list] and revokes with
 /// [DeviceGrants.revoke]; then the next call asks again).
 library;
@@ -7,6 +8,10 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+
+import 'device_ports.dart' show Precision;
+
+export 'device_ports.dart' show Precision;
 
 /// The device capabilities, in the order they are listed.
 const deviceCaps = ['notify', 'share', 'file', 'camera', 'location'];
@@ -20,31 +25,52 @@ const deviceCapWords = {
   'location': 'see where your device is',
 };
 
-/// The person's answer for one app and capability, and when.
+/// The person's answer for one app and capability, and when; for an
+/// allowed `location`, the [precision] it was allowed at (null otherwise).
 class DeviceDecision {
-  const DeviceDecision({required this.allowed, required this.at});
+  const DeviceDecision({
+    required this.allowed,
+    required this.at,
+    this.precision,
+  });
 
   final bool allowed;
   final DateTime at;
+  final Precision? precision;
 
   @override
   bool operator ==(Object other) =>
-      other is DeviceDecision && other.allowed == allowed && other.at == at;
+      other is DeviceDecision &&
+      other.allowed == allowed &&
+      other.at == at &&
+      other.precision == precision;
 
   @override
-  int get hashCode => Object.hash(allowed, at);
+  int get hashCode => Object.hash(allowed, at, precision);
 
   @override
-  String toString() => 'DeviceDecision(allowed: $allowed, at: $at)';
+  String toString() =>
+      'DeviceDecision(allowed: $allowed, at: $at, precision: $precision)';
 }
+
+/// [precision] as kept for [cap]: an allowed location's, Precise when not
+/// given; null for anything else.
+Precision? _precisionFor(String cap, bool allowed, Precision? precision) =>
+    cap == 'location' && allowed ? (precision ?? Precision.precise) : null;
 
 abstract interface class DeviceGrants {
   /// The person's answer for app [aid] and [cap]; null when never asked
   /// (or revoked since).
   Future<DeviceDecision?> decision(String aid, String cap);
 
-  /// Keeps the person's answer for app [aid] and [cap].
-  Future<void> decide(String aid, String cap, {required bool allowed});
+  /// Keeps the person's answer for app [aid] and [cap]; an allowed
+  /// `location` keeps [precision] (Precise when null).
+  Future<void> decide(
+    String aid,
+    String cap, {
+    required bool allowed,
+    Precision? precision,
+  });
 
   /// Forgets app [aid]'s answer for [cap]; its next call asks again.
   Future<void> revoke(String aid, String cap);
@@ -76,8 +102,17 @@ class MemoryDeviceGrants implements DeviceGrants {
       _all[aid]?[cap];
 
   @override
-  Future<void> decide(String aid, String cap, {required bool allowed}) async {
-    (_all[aid] ??= {})[cap] = DeviceDecision(allowed: allowed, at: _now());
+  Future<void> decide(
+    String aid,
+    String cap, {
+    required bool allowed,
+    Precision? precision,
+  }) async {
+    (_all[aid] ??= {})[cap] = DeviceDecision(
+      allowed: allowed,
+      at: _now(),
+      precision: _precisionFor(cap, allowed, precision),
+    );
     _changes.add(aid);
   }
 
@@ -100,7 +135,10 @@ class MemoryDeviceGrants implements DeviceGrants {
 }
 
 /// [DeviceGrants] in one JSON file (`<support>/device-grants.json`):
-/// `{"<app ID>": {"<capability>": {"allowed": bool, "at": "<ISO time>"}}}`.
+/// `{"<app ID>": {"<capability>": {"allowed": bool, "at": "<ISO time>"}}}`,
+/// with `"precision": "precise" | "approximate"` on an allowed `location`.
+/// An allowed `location` kept before precisions existed (no `precision`)
+/// reads as Precise, and is written with it on the next save.
 /// A save writes a sibling temporary file and renames it over the old one.
 class FileDeviceGrants implements DeviceGrants {
   FileDeviceGrants(this.file, {DateTime Function()? now})
@@ -110,12 +148,21 @@ class FileDeviceGrants implements DeviceGrants {
   final DateTime Function() _now;
   final _changes = StreamController<String>.broadcast();
 
-  static DeviceDecision? _parse(Object? v) {
+  static DeviceDecision? _parse(String cap, Object? v) {
     if (v is! Map || v['allowed'] is! bool || v['at'] is! String) return null;
     final at = DateTime.tryParse(v['at'] as String);
+    final allowed = v['allowed'] as bool;
     return at == null
         ? null
-        : DeviceDecision(allowed: v['allowed'] as bool, at: at);
+        : DeviceDecision(
+            allowed: allowed,
+            at: at,
+            precision: _precisionFor(
+              cap,
+              allowed,
+              v['precision'] == 'approximate' ? Precision.approximate : null,
+            ),
+          );
   }
 
   Map<String, Map<String, DeviceDecision>> _read() {
@@ -127,7 +174,7 @@ class FileDeviceGrants implements DeviceGrants {
           if (key is String && value is Map)
             key: {
               for (final MapEntry(key: c, value: d) in value.entries)
-                if (c is String && deviceCaps.contains(c)) c: ?_parse(d),
+                if (c is String && deviceCaps.contains(c)) c: ?_parse(c, d),
             },
       };
     } on FileSystemException {
@@ -146,7 +193,11 @@ class FileDeviceGrants implements DeviceGrants {
           if (value.isNotEmpty)
             key: {
               for (final MapEntry(key: c, value: d) in value.entries)
-                c: {'allowed': d.allowed, 'at': d.at.toUtc().toIso8601String()},
+                c: {
+                  'allowed': d.allowed,
+                  'at': d.at.toUtc().toIso8601String(),
+                  'precision': ?d.precision?.name,
+                },
             },
       }),
       flush: true,
@@ -159,9 +210,18 @@ class FileDeviceGrants implements DeviceGrants {
       _read()[aid]?[cap];
 
   @override
-  Future<void> decide(String aid, String cap, {required bool allowed}) async {
+  Future<void> decide(
+    String aid,
+    String cap, {
+    required bool allowed,
+    Precision? precision,
+  }) async {
     final all = _read();
-    (all[aid] ??= {})[cap] = DeviceDecision(allowed: allowed, at: _now());
+    (all[aid] ??= {})[cap] = DeviceDecision(
+      allowed: allowed,
+      at: _now(),
+      precision: _precisionFor(cap, allowed, precision),
+    );
     _write(all);
     _changes.add(aid);
   }
