@@ -697,10 +697,28 @@ class _ThreadDetailState extends State<ThreadDetail> {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     var status = threadStatus(t);
-    final retrying = _retriedAt != null && status == ThreadStatus.failed;
+    // A change that stopped at a limit offers Keep going, whether it
+    // published part of itself (replied) or nothing (failed).
+    final keepGoing =
+        widget.onRetry != null &&
+        t.comments.isNotEmpty &&
+        isKeepGoingReply(t.comments.last) &&
+        (status == ThreadStatus.failed || status == ThreadStatus.replied);
+    final retrying =
+        _retriedAt != null && (status == ThreadStatus.failed || keepGoing);
     if (retrying) status = ThreadStatus.working;
+    // The reason's first paragraph: a limit stop's reply has the agent's
+    // own words after it, which the thread shows.
     final failedReason = status == ThreadStatus.failed
-        ? _sentence(t.comments.last.body.split(':').skip(1).join(':').trim())
+        ? _sentence(
+            t.comments.last.body
+                .split('\n\n')
+                .first
+                .split(':')
+                .skip(1)
+                .join(':')
+                .trim(),
+          )
         : '';
     final (
       IconData icon,
@@ -727,7 +745,9 @@ class _ThreadDetailState extends State<ThreadDetail> {
         Icons.autorenew,
         scheme.secondaryContainer,
         scheme.onSecondaryContainer,
-        retrying ? 'Trying again' : 'Clax is working on it',
+        retrying
+            ? (keepGoing ? 'Keeping going' : 'Trying again')
+            : 'Clax is working on it',
         'The app stays as it is until the change lands.',
       ),
       ThreadStatus.replied => (
@@ -735,7 +755,9 @@ class _ThreadDetailState extends State<ThreadDetail> {
         scheme.secondaryContainer,
         scheme.onSecondaryContainer,
         'Clax replied',
-        'Reply to ask for more, or resolve it.',
+        keepGoing
+            ? 'Only part of the change landed: Keep going builds the rest.'
+            : 'Reply to ask for more, or resolve it.',
       ),
       ThreadStatus.failed => (
         Icons.error_outline,
@@ -764,6 +786,13 @@ class _ThreadDetailState extends State<ThreadDetail> {
             : null,
         icon: const Icon(Icons.send, size: 18),
         label: const Text('Send to Clax'),
+      ),
+      ThreadStatus.failed ||
+      ThreadStatus.replied when keepGoing => FilledButton.icon(
+        key: const ValueKey('thread-keep-going'),
+        onPressed: () => unawaited(_retry()),
+        icon: const Icon(Icons.play_arrow, size: 18),
+        label: const Text('Keep going'),
       ),
       ThreadStatus.failed when widget.onRetry != null => FilledButton.icon(
         key: const ValueKey('thread-retry'),
