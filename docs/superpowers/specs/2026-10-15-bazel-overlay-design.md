@@ -1,11 +1,13 @@
 # Bazel as an optional overlay over Cargo and npm
 
 Date: 2026-10-15
-Status: proposed; design only, nothing is converted yet
+Status: approved with the owner's decisions of 2026-10-15 (§18); plan:
+`docs/superpowers/plans/2026-10-15-bazel-migration.md`
 
-Owner decision (2026-10-15): Clax moves its builds and tests to Bazel, as an
+Owner decisions (2026-10-15): Clax moves its builds and tests to Bazel, as an
 optional overlay over the native tools, the way `../changelist` does
-(its `docs/bazel.md`).
+(its `docs/bazel.md`); the migration lands all at once and CI switches to
+Bazel with it; and the compile cache is shared with other projects (§18).
 
 ## 1. Problem and goal
 
@@ -17,7 +19,7 @@ only thing that frees its `target/`, and the next worktree pays for the
 whole build again.
 
 Goal: worktrees share one compile cache, so a new worktree at a commit
-another has built runs every check without compiling, without `npm ci`, and
+another has built runs every check without compiling, without a package install, and
 with almost no disk of its own; while nothing that works today stops working
 without Bazel.
 
@@ -34,8 +36,8 @@ without Bazel.
 - Cargo, `Cargo.lock`, `package.json` and the lockfiles stay the source of
   truth; Bazel derives from them and a check fails when the derived files
   are stale.
-- Lands in phases (Rust, then web, then CI), each shippable, without
-  blocking the multi-person branch or anything else merging into main.
+- Lands as one change, with CI gating on Bazel from that change on, built
+  on the multi-person work so it blocks nothing merging into main.
 
 ### Non-goals
 
@@ -54,14 +56,14 @@ Changelist's setup, read in full for this design (`docs/bazel.md`,
 | Changelist | Clax |
 |---|---|
 | `scripts/run.sh` picks Bazel when Bazelisk (or a `bazel` at `.bazelversion`) is on `PATH`, else the native tools, and says so before and after; `CHANGELIST_BUILD=bazel\|native\|auto` overrides; every recipe has a `-native` twin | The same, with `CLAX_BUILD` (§4) |
-| One disk cache, `~/.cache/bazel-disk`, 20 GB and 7 days, trimmed by Bazel when idle and by `scripts/bazel-gc.sh` | Its own cache with its own budget (§9, Q2) |
+| One disk cache, `~/.cache/bazel-disk`, 20 GB and 7 days, trimmed by Bazel when idle and by `scripts/bazel-gc.sh` | The same cache, shared with changelist, under one bound both repositories state (§9.3) |
 | Third-party crates from `Cargo.lock` through crate_universe; `bazel/workspace.bzl` derived from `cargo metadata`; `scripts/bazel-sync.sh --check` fails on drift | The same; Clax also derives `[workspace.lints]` (changelist has none) and the test-only features of its own crates (§5) |
 | `cargo_package()` globs `tests/*.rs`, one test target each | Clax's crates set `autotests = false` and name one or two test binaries each; targets come from the `[[test]]` entries (§5.3) |
 | Integration tests that run the server binary compile outside the sandbox and outside the cache (`no-sandbox`, `no-cache`) for an absolute `CARGO_BIN_EXE_` | Clax's tests take the binary at run time (`CLAX_TEST_BIN`), so they stay sandboxed and cached (§6) |
 | No browser tests; Postgres as an optional pass | Playwright, the Chrome extension's browser tests, the real Pi, and three perf gates (§8) |
-| pnpm; rules_js reads `pnpm-lock.yaml` | npm today; the lockfile question is Q1 (§7) |
+| pnpm; rules_js reads `pnpm-lock.yaml` | npm today; Clax moves to pnpm (§7, Q1) |
 | Lints and format through rules_rust's clippy and rustfmt aspects | The same |
-| CI gates on Bazel on Blacksmith runners with a sticky disk per job; the native checks are a manual workflow | Clax's CI runs on GitHub-hosted runners today; runner and cache are Q3 |
+| CI gates on Bazel on Blacksmith runners with a sticky disk per job; the native checks are a manual workflow | CI gates on Bazel on GitHub-hosted runners with `actions/cache`; the native checks are a manual workflow (§14) |
 | Deploys still build with Cargo; a Bazel image build exists but is off | Releases keep Cargo (§11) |
 | Nothing about macOS first-run assessment | Central for Clax (§6) |
 
@@ -85,14 +87,14 @@ Changelist's setup, read in full for this design (`docs/bazel.md`,
 | B14 | Tests get the `clax` binary at run time: `CLAX_TEST_BIN` and `CARGO_BIN_EXE_clax` name the Bazel-built `clax` in the test's runfiles, and the tests' one helper makes it absolute at first use. Every `Command::cargo_bin("clax")` goes through that helper. | Changelist's `CARGO_BIN_EXE_` route compiles each such test outside the sandbox and the cache. Clax's tests already take the binary from `CLAX_TEST_BIN`; only the path's form changes. |
 | B15 | macOS first-run assessment: each Bazel-built `clax` is run once by a warm-up action (§6) before any test can start, and tests depend on its stamp. Test helper programs keep their content-keyed store across runs through `CLAX_FAKE_EXE_DIR` (§6.3). | The assessment belongs to the file. Bazel makes a new file per output base per build; the warm-up pays for it once, outside every test's limits, as `scripts/stable-bin.sh` does today. |
 | B16 | The web side builds and tests under rules_js, as changelist's does: each project's `package.json` scripts run over the whole project, with Node and packages Bazel fetches by the lockfile's checksums. Nothing is restated: a target names a script. | Changelist's runner (`bazel/js/npm_script.mjs`) and macros (`bazel/js/defs.bzl`) already solve Vite under Bazel, the copy-not-link question and stale-file safety. Granularity per project needs no per-file BUILD upkeep. |
-| B17 | The web build (`//web:dist`, which writes `dist`, `dist-extension` and `dist-extension-test`) and Pi's packages (`//plugins/pi:node_modules`) are part of the Rust phase, because the Rust tests read them. | `clax-server`'s shell tests read the built web UI; the real-Pi tests (the canary sweep on the multi-person branch, `crates/clax-server/tests/common/clients.rs` there) run `plugins/pi/node_modules/@mariozechner/pi-coding-agent/dist/cli.js`. A Rust phase without them would leave those tests native-only. |
+| B17 | The web build (`//web:dist`, which writes `dist`, `dist-extension` and `dist-extension-test`) and Pi's packages (`//plugins/pi:node_modules`) are inputs of the Rust tests, built before them. | `clax-server`'s shell tests read the built web UI; the real-Pi tests (`RealClients::run_pi` in `crates/clax-server/tests/common/clients.rs`) run `plugins/pi/node_modules/@mariozechner/pi-coding-agent/dist/cli.js`. |
 | B18 | Which tests are Bazel targets, and which stay native with a reason, is §8's table. Browser tests and perf gates are Bazel targets; tests that need a real harness CLI, a model or credentials stay native. | Clax's daemons, browsers and Pi runs already use scratch homes and port 0; nothing in them reads the person's machine. Real harness sessions do. |
-| B19 | Disk: Clax's own disk cache, `~/.cache/clax-bazel-disk`, trimmed to 30 GB and 7 days; per-worktree real disk under Bazel below 0.5 GB for a worktree that builds main and below 3 GB after edits; `just bazel-gc` removes output bases of removed worktrees (§9). | Measured `target/` sizes are 10–16 GB per worktree. The budgets are what Phase 1 must show before Bazel becomes the default for a task. |
-| B20 | Speed: on a warm cache, a Bazel task takes no longer than its native twin, and the whole suite stays under two minutes. A recipe defaults to Bazel only once Phase 1's (or 2's) measurements show that (§10). | The owner's rule: the check suite stays under two minutes. Disk savings do not pay for a slower loop (Q5 if the two conflict). |
+| B19 | Disk: the disk cache is the one changelist uses, `~/.cache/bazel-disk`, under one bound both repositories' `.bazelrc` state: 40 GB and 7 days, sized from measurements (§9.3). Per-worktree real disk under Bazel stays below 0.5 GB for a worktree that builds main and below 3 GB after edits; `just bazel-gc` removes output bases of removed worktrees (§9). | Owner decision (2026-10-15): "Use a shared cache with other projects, there's no reason to have a dedicated cache". Measured `target/` sizes are 10–16 GB per worktree. The budgets are measured before the migration merges. |
+| B20 | Speed: on a warm cache, every Bazel task takes no longer than its native twin, and the whole suite stays under two minutes. Both are measured before the migration merges, for every recipe; a task that misses them blocks the merge until fixed (§10). | The owner's rule: the check suite stays under two minutes. Disk savings do not pay for a slower loop (Q5). |
 | B21 | The dev loop stays native: `just dev`, `just watch`, `just serve`, `just stop`, `just doctor`, `just install`, `just demo-room-sample`, and rust-analyzer. | Cargo's incremental compilation and cargo-watch, Vite's rebuilds, and a debug binary reading `web/dist` from disk are what the loop is built on. |
 | B22 | Releases build with Cargo, unchanged; `scripts/test-release.sh` becomes a Bazel test (§11). | Static musl binaries on four native runners, the real `CLAX_BUILD_COMMIT`, and a release that reads no build state anything else wrote. |
 | B23 | No `unsafe` and no hard links stay true under Bazel, and both are checked (§13). | Owner rules. |
-| B24 | Phases: 1 Rust (with the two inputs of B17), 2a web, Pi and script gates, 2b browsers and perf, 3 CI. Each is shippable; CI changes only in phase 3, so main's gate stays `scripts/quality_gates.sh` until then (§15). | Bazel must not block the multi-person branch or anything else merging into main. |
+| B24 | One migration: everything in this spec lands together on branch `bazel`, built on the multi-person work, and CI gates on Bazel from that merge on. The native checks stay for local use (no Bazel installed, the dev loop) and as a manual CI workflow (§15). | Owner decision (2026-10-15): "Just migrate us all the way to bazel at once and switch CI over". |
 
 ## 4. The overlay
 
@@ -103,7 +105,7 @@ Changelist's setup, read in full for this design (`docs/bazel.md`,
 | On `PATH` | `CLAX_BUILD=auto` runs |
 |---|---|
 | Bazelisk, or a `bazel` at `.bazelversion`'s version | Bazel |
-| Neither (a `bazel` of another version is not used) | The native tools: Cargo, cargo-nextest when installed, Node and npm (or pnpm, Q1) |
+| Neither (a `bazel` of another version is not used) | The native tools: Cargo, cargo-nextest when installed, Node and pnpm |
 | Neither Bazel nor the native tools | Nothing; one message names both ways to install |
 
 `scripts/run.sh <task>` is the only caller. `scripts/run.sh which` says what
@@ -132,12 +134,11 @@ back.
 | `just bazel-sync`, `just bazel-gc` | new (§5.2, §9) | — |
 
 `just web` with Bazel exists for the dev loop's first start: a fresh
-worktree takes the web build from the cache instead of running `npm ci` and
+worktree takes the web build from the cache instead of running `pnpm install` and
 Vite. The dev loop itself (B21) has no Bazel path.
 
-A recipe moves to Bazel in the phase that ports its checks, and only after
-that phase's measurements (§10, §15). Until then it is native whether or not
-Bazel is installed, and the overlay says nothing.
+Every recipe above routes through the overlay from the migration's merge
+on; §10's measurements are taken before it merges.
 
 ## 5. Rust under Bazel
 
@@ -163,8 +164,7 @@ Bazel is installed, and the overlay says nothing.
 Most changes need nothing: a new source file, a new module under `tests/`,
 or a new use of a crate already in `Cargo.toml`. A change to any
 `Cargo.toml` or `Cargo.lock` needs `just bazel-sync` committed with it.
-Until phase 3 a stale sync breaks only Bazel runs (the overlay names the
-command); from phase 3, CI fails on it. `bazel-test.sh` and CI never rewrite
+CI fails on a stale sync, and a local Bazel run names the command. `bazel-test.sh` and CI never rewrite
 derived files. A merge conflict in a derived file is resolved by running the
 sync on the merged manifests, never by hand.
 
@@ -239,7 +239,7 @@ Chromium from its pinned repository (§8). A test that needs Homebrew's `just`
 (`scripts/test-justfile.sh`) runs outside Bazel (§8).
 
 `test --test_env=RUST_TEST_THREADS` and `TOKIO_WORKER_THREADS` are set as in
-changelist; values come from Phase 1's measurements.
+changelist; values come from the speed measurements (§10).
 
 ## 6. Executables and macOS first-run assessment
 
@@ -307,7 +307,7 @@ correct, only slower on a loaded machine. Sharing is safe: entries are keyed
 by their text, read-only, and the warm-up run is idempotent, so a test's
 result cannot depend on what an earlier one stored.
 
-### 6.4 What phase 1 measures before relying on this
+### 6.4 What is measured before relying on this
 
 - A fresh `clax` under Bazel's macOS sandbox: one assessment, paid in
   `clax_warm`, and no test's first exec of `clax` over 1 s (logged by the
@@ -317,8 +317,8 @@ result cannot depend on what an earlier one stored.
 - A full test run with the machine loaded by another worktree's build: no
   timeout attributable to a first run.
 
-If the per-worktree assessment is still too slow, Q4's other option keeps
-one copy per content per machine.
+If the per-worktree assessment is still too slow, the alternative in §17
+keeps one copy per content per machine.
 
 ## 7. The web side and Pi
 
@@ -333,11 +333,12 @@ native bundler needs). Copied as they are, with their tests
 (`scripts/bazel-web.test.sh`: a deleted module, test or package is really
 gone).
 
-rules_js reads `pnpm-lock.yaml`. Clax's projects use npm
-(`package-lock.json`), so the lockfile is Q1: switch both projects to pnpm,
-as changelist did, or keep npm with a `pnpm-lock.yaml` derived from each
-`package-lock.json` and checked by `bazel-sync --check`. Q1 must be
-answered before phase 1 starts, since the web build is part of it (B17).
+rules_js reads `pnpm-lock.yaml`. Clax's projects move from npm to pnpm, as changelist's
+did (Q1): each has one `pnpm-lock.yaml`, nothing is derived, the native
+gates run `pnpm install --frozen-lockfile`, and
+`scripts/pnpm-lock-check.py` (changelist's) checks each `package.json`
+against its lockfile, as `--frozen-lockfile` would. Each project's
+`pnpm-workspace.yaml` says `allowBuilds: {}`, as changelist's do.
 
 Node is pinned in `MODULE.bazel` at an exact 22.x release, the major CI uses
 (`actions/setup-node`, `node-version: 22`). `.bazelrc` sets `DO_NOT_TRACK`,
@@ -347,13 +348,13 @@ as changelist's does.
 
 | `quality_gates.sh` gate | Bazel |
 |---|---|
-| web npm ci | `//web:node_modules`, `//plugins/pi:node_modules` (no install in the worktree) |
+| web npm ci (`pnpm install` after Q1) | `//web:node_modules`, `//plugins/pi:node_modules` (no install in the worktree) |
 | web build | `//web:dist` (`npm run build`: `dist`, `dist-extension`, `dist-extension-test`) |
 | web unit | `//web:unit` (`npm test`) |
 | web lint | `//web:lint` (`npm run lint`, oxlint) |
 | web typecheck | `//web:typecheck` |
 | web bundle size | `//web:bundle_size` (`node scripts/bundle-size.mjs` over `//web:dist`) |
-| pi npm ci, pi extension | `//plugins/pi:typecheck`, `//plugins/pi:test` (with `:clax` and `:clax_warm` as data, `CLAX_TEST_BIN` set) |
+| pi npm ci (`pnpm install`), pi extension | `//plugins/pi:typecheck`, `//plugins/pi:test` (with `:clax` and `:clax_warm` as data, `CLAX_TEST_BIN` set) |
 | web e2e, time to usable | §8 |
 
 The bundle gate is a test over the build's output and
@@ -376,15 +377,15 @@ today.
 
 | Suite | Under Bazel | Tags and resources | Reason |
 |---|---|---|---|
-| Rust tests starting in-process or child daemons (`TestServer`, `clax serve --port 0`) | Bazel test (phase 1) | sandboxed; network allowed | Scratch homes and port 0 already; nothing reads the person's machine |
-| Real-Pi and canary tests (`RealClients` on the multi-person branch: the MCP shim, hooks, `/mcp`, the real Pi with a scripted model) | Bazel test (phase 1) | data: `//plugins/pi:node_modules`, the Node toolchain, `:clax_warm` | Pi runs `--offline` with a scripted model; every input is a declared file |
-| Pi extension tests (`plugins/pi/test`) | Bazel test (phase 2a) | as above | Same daemon fixture, scratch homes |
-| Script gates: release scripts, installer, plugin wrapper, tool hook, extension signing, stable bin, dev scripts, comment loop, hard links, pipefail | `sh_test`s (phase 2a) with their files declared | fakes through `CLAX_FAKE_EXE_DIR` | Each runs in a scratch directory with fakes and a 127.0.0.1 server |
+| Rust tests starting in-process or child daemons (`TestServer`, `clax serve --port 0`) | Bazel test | sandboxed; network allowed | Scratch homes and port 0 already; nothing reads the person's machine |
+| Real-Pi and canary tests (`RealClients` on the multi-person branch: the MCP shim, hooks, `/mcp`, the real Pi with a scripted model) | Bazel test | data: `//plugins/pi:node_modules`, the Node toolchain, `:clax_warm` | Pi runs `--offline` with a scripted model; every input is a declared file |
+| Pi extension tests (`plugins/pi/test`) | Bazel test | as above | Same daemon fixture, scratch homes |
+| Script gates: release scripts, installer, plugin wrapper, tool hook, extension signing, stable bin, dev scripts, comment loop, hard links, pipefail | `sh_test`s with their files declared | fakes through `CLAX_FAKE_EXE_DIR` | Each runs in a scratch directory with fakes and a 127.0.0.1 server |
 | Plugin structure (`scripts/test-plugins.sh`) | run by `bazel-test.sh`, not a Bazel test | — | It compares the pinned release with the newest `v*` git tag: it reads the repository's history, which is not a file Bazel can declare |
 | `scripts/test-justfile.sh` | run by `bazel-test.sh`, not a Bazel test | — | It runs `just`, which is Homebrew's (§5.6) |
-| Playwright browser tests (`web/e2e`) | Bazel tests (phase 2b), one per Playwright project (`gesture`, `chrome-overlay`, `rest`) | `no-sandbox`; a CPU reservation per target; Chromium from a pinned repository | Each worker starts its own daemon on port 0. Outside the sandbox because Chromium applies its own macOS sandbox profile and runs a GPU and helper process tree; phase 2b confirms whether the sandbox can stay on |
-| Time to usable (`web/perf`) | Bazel test (phase 2b) | `exclusive`, `no-sandbox` | It measures latency, so nothing else may run beside it |
-| Daemon latency, realtime clients (`scripts/perf-daemon.sh`, `perf-clients.sh`) | Bazel tests (phase 2b), quick mode in `--ci`, full mode `manual` for `just perf` | `exclusive`, `no-sandbox`; the release `clax` (`-c opt`) as data | Same; `exclusive` is today's "alone, one at a time" |
+| Playwright browser tests (`web/e2e`) | Bazel tests, one per Playwright project (`gesture`, `chrome-overlay`, `rest`) | `no-sandbox`; a CPU reservation per target; Chromium from a pinned repository | Each worker starts its own daemon on port 0. Outside the sandbox because Chromium applies its own macOS sandbox profile and runs a GPU and helper process tree; the migration's measurements confirm whether the sandbox can stay on |
+| Time to usable (`web/perf`) | Bazel test | `exclusive`, `no-sandbox` | It measures latency, so nothing else may run beside it |
+| Daemon latency, realtime clients (`scripts/perf-daemon.sh`, `perf-clients.sh`) | Bazel tests, quick mode in `--ci`, full mode `manual` for `just perf` | `exclusive`, `no-sandbox`; the release `clax` (`-c opt`) as data | Same; `exclusive` is today's "alone, one at a time" |
 | `scripts/smoke-*.sh` (Claude, Codex, Grok, Pi, push, ask, capabilities, release binary) | native only, manual | — | Real harness CLIs, a model and the person's credentials |
 | `scripts/verify-harnesses.sh` | native only, manual | — | The real `claude`, `codex` and `pi` on `PATH` |
 | `scripts/demo-room-sample.sh` | native only | — | A demo, not a check |
@@ -399,7 +400,8 @@ Bazelisk), as `playwright install --with-deps` does today.
 
 A failing test's result is never cached. A passing one is cached on its
 inputs; for the perf gates that is the release binary, the scripts and the
-budget files (Q6).
+budget files (Q6: passed perf gates are cached; `--nocache_test_results`
+measures again).
 
 Bazel runs `exclusive` tests after the others, one at a time, which is the
 order `quality_gates.sh` uses today. Tests in other worktrees still load the
@@ -409,11 +411,11 @@ machine, as today.
 
 ### 9.1 Where Bazel keeps files
 
-- **The disk cache**, `~/.cache/clax-bazel-disk` (B19, Q2): every action's
-  outputs, shared by every Clax worktree. `.bazelrc`:
-  `--disk_cache=~/.cache/clax-bazel-disk`,
-  `--experimental_disk_cache_gc_max_size=30G`,
-  `--experimental_disk_cache_gc_max_age=7d`.
+- **The disk cache**, `~/.cache/bazel-disk` (B19, Q2): every action's
+  outputs, shared by every Clax worktree and every changelist worktree.
+  `.bazelrc`: `--disk_cache=~/.cache/bazel-disk`,
+  `--experimental_disk_cache_gc_max_size=40G`,
+  `--experimental_disk_cache_gc_max_age=7d` (§9.3).
 - **One output base per worktree** under Bazel's user root
   (`~/Library/Caches/bazel/_bazel_$USER/` on macOS). Its files come from the
   cache as clones, which `du` counts and the disk does not (changelist's
@@ -426,18 +428,48 @@ machine, as today.
 
 | What | Budget | Enforced by |
 |---|---|---|
-| Disk cache | 30 GB, entries unused for 7 days removed | Bazel while idle; `scripts/bazel-gc.sh` at any time |
-| A worktree at a commit some worktree has built | under 0.5 GB of real disk | Phase 1 measurement |
-| A worktree after edits, all tests built | under 3 GB of real disk | Phase 1 measurement; naming one test target builds one test binary |
+| Disk cache, Clax and changelist together | 40 GB, entries unused for 7 days removed | Bazel while idle; either repository's `bazel-gc.sh` at any time |
+| A worktree at a commit some worktree has built | under 0.5 GB of real disk | measured before merge |
+| A worktree after edits, all tests built | under 3 GB of real disk | measured before merge; naming one test target builds one test binary |
 | Output bases of removed worktrees | 0 after `just bazel-gc` | `scripts/bazel-gc.sh` |
 | `target/` in a worktree that only runs checks | none | Bazel writes none; only the dev loop and rust-analyzer make one |
-| All of Clax's Bazel state on a machine with 20 worktrees | under 60 GB | `scripts/bazel-gc.sh --report` prints the real total |
+| All Bazel state on the machine (the shared cache, output bases, downloads) with 20 Clax worktrees | under 70 GB | `scripts/bazel-gc.sh --report` prints the real total |
 
-The 30 GB figure is a starting point: phase 1 measures what one build of
-main and one edit of each crate add to the cache and sets the bound to hold
-about five edited worktrees beside main's build.
+§9.3 says where 40 GB comes from and how it is confirmed.
 
-### 9.3 `just bazel-gc`
+### 9.3 One bound for a shared cache
+
+Measured on 2026-10-15: `~/.cache/bazel-disk` held 21.0 GB in 41,128
+files, of which 14.0 GB had been used within 7 days, the changelist
+working set its own bound (20 GB) keeps. Changelist's `docs/bazel.md`
+measured 14.3 GB for nine worktrees that each edited the server. For Clax,
+a Cargo worktree's `target/debug/deps` (every dependency and test binary of
+one debug build) is 6.2 GB on the multi-person branch; Bazel's build of main
+is expected near that, and each edited worktree adds its relinked test
+binaries (about 1.5 GB, to be measured). Five edited Clax worktrees beside
+main's build come to about 14 GB; with changelist's 14 GB working set and
+headroom for both to grow, the shared bound is **40 GB**, 7 days. The
+migration measures Clax's real numbers (one build of main, then one edit of
+each crate) and sets the bound from them before merging; the figure and the
+measurement go in `docs/bazel.md`.
+
+Bazel trims the cache to the bound of whichever server trims it, so both
+repositories must state the same bound, or the smaller one wins in effect.
+How they agree:
+
+- Both `.bazelrc` files carry the same three lines (`--disk_cache`, the
+  size and the age), under a comment naming the other repository.
+- Both `scripts/bazel-gc.sh` default to the same bound, read from those
+  `.bazelrc` lines rather than a constant of their own.
+- Clax's `bazel-sync.sh --check` fails if `.bazelrc`'s lines and
+  `bazel-gc.sh`'s reading of them disagree; and `bazel-gc.sh` warns when a
+  sibling `../changelist/.bazelrc` exists and names a different bound,
+  naming both values.
+- Changing the bound changes both repositories. Changelist's side of this
+  (raising its `.bazelrc` and `bazel-gc.sh` default from 20 GB) is a change
+  to another repository (Q10).
+
+### 9.4 `just bazel-gc`
 
 Changelist's `scripts/bazel-gc.sh`, adapted: removes output bases whose
 workspace directory is gone, was inside this repository's checkouts, and
@@ -464,9 +496,9 @@ in changelist.
 | `just ci` after an edit (one crate, or `web/shell`) | under 2 min, and no slower than `just ci-native` after the same edit |
 | `just test` after an edit to one crate | no slower than `just test-native` |
 
-Measured on the owner's machine, idle, in phase 1 (Rust) and 2 (all), each
-recorded in `docs/bazel.md` with the commands. A recipe switches its
-default to Bazel only when its rows hold (B20).
+Measured on the owner's machine, idle, before the migration merges, each
+recorded in `docs/bazel.md` with the commands. Every row must hold for
+every recipe before merge (B20, Q5).
 
 ### 10.2 Why an edit can be slower, and what is done
 
@@ -480,11 +512,11 @@ its Rust half after a server edit. Clax's measures, in order of cost:
 - shards for the large integration binaries (§5.4);
 - the clippy pass and the test build run in one `bazel` invocation, so they
   share the machine instead of queueing;
-- no symbol stripping or debug-info change until Q7 is answered.
+- debug information as Cargo's dev profile (Q7): line tables for the
+  workspace's crates, none for dependencies.
 
-If an edit still runs past the budget, the task stays native by default
-(Q5); the shared cache still serves every worktree that has not edited
-Rust.
+If an edit still runs past the budget, the migration does not merge until
+it is fixed (Q5): speed wins over disk.
 
 ## 11. Releases
 
@@ -520,7 +552,7 @@ fresh worktree's first `just dev`; after that the dev loop rebuilds it.
 **No `unsafe`.** Bazel compiles every workspace crate with the flags
 derived from `[workspace.lints]` (B7), today `-F unsafe_code`; the drift
 check fails when they differ. The source scan runs as an `sh_test`. The
-enabling changes (§15.1) add no `unsafe`; in particular they pass paths to
+enabling changes (§15) add no `unsafe`; in particular they pass paths to
 children with `Command::env`, never `std::env::set_var`.
 
 **No hard links.** Clax's Bazel files and scripts make none: the copy rules
@@ -532,7 +564,7 @@ ends by checking that the worktree's output base and the disk cache hold no
 regular file with more than one link (`find -type f -links +1`). On
 2026-10-15 changelist's output base, Bazel's shared download cache and its
 install base on this machine held none, with rules_js and rules_rust in use.
-Whether the rule covers files that Bazel's own rules create is Q8.
+The rule covers files Bazel's own rules create (Q8).
 
 **No `pgrep -f`.** `bazel-gc.sh` and `bazel-test.sh` find processes by PID
 files and the PIDs they start.
@@ -542,91 +574,50 @@ clocks, perf in the perf gates.
 
 ## 14. CI
 
-From phase 3, `ci.yml` runs `scripts/bazel-test.sh --ci` on Linux and gates
+From the migration's merge, `ci.yml` runs `scripts/bazel-test.sh --ci` on Linux and gates
 on it. It installs Bazelisk, Chromium's system libraries and, only for
 `cargo metadata` in `bazel-sync.sh --check`, the Rust toolchain; Node, npm
 packages and the compiler come from Bazel. It keeps `fetch-depth: 0` for the
 plugin pin check. A failing run uploads `bazel-testlogs/**/test.log`,
 `test.xml` and Playwright's results.
 
-Persistence (Q3): with GitHub-hosted runners, Bazel's disk cache and
+Persistence (Q3): on GitHub-hosted runners, Bazel's disk cache and
 repository cache are an `actions/cache` entry keyed by `.bazelversion` and
 the lockfiles, restored by prefix, and saved only by a push to main that
 passed every step. A pull request reads main's cache and writes nothing.
 `common:ci` sets `--lockfile_mode=error` and a 5-minute test timeout, as
 changelist's does.
 
-The native gate (`quality_gates.sh`) runs beside it on every pull request
-until the parity check (§15, phase 3) has passed on 20 consecutive main
-runs, then becomes a manual workflow (Q9).
+CI gates on Bazel only (Q9). The native gate (`quality_gates.sh`) is a
+manual workflow, `native-check.yml`, as changelist's: it shows by hand that
+the native path still works.
 
 `release.yml` does not change.
 
 ## 15. Migration
 
-### 15.1 Enablers on main first
+One change (B24), on branch `bazel`, built on the multi-person branch. The
+implementation plan (`docs/superpowers/plans/2026-10-15-bazel-migration.md`)
+orders it; what matters here is what must be true when it merges:
 
-Small, native-neutral changes to shared files, each its own commit, landed
-on main early so that the multi-person branch and others rebase over them
-once rather than conflicting with a long-lived branch:
-
-1. rust-embed folders through variables with today's paths as defaults
-   (B10).
-2. The `clax_embedded` cfg around the debug disk reads in
-   `routes/shell.rs` (B11); a no-op under Cargo.
-3. One test helper for the `clax` binary (`CLAX_TEST_BIN`, made absolute);
-   `Command::cargo_bin("clax")` callers moved to it (B14).
-4. Repository paths made absolute before reaching a child process (B12).
-5. `CLAX_FAKE_EXE_DIR` in the three fake-executable helpers (§6.3).
-6. `CLAX_TEST_NODE` in the real-Pi driver, once the multi-person branch has
-   landed it (§5.6).
-
-Each passes `scripts/quality_gates.sh` unchanged.
-
-### 15.2 Phases
-
-**Phase 1: Rust.** Everything in §5 and §6; rules_js for `//web:dist` and
-`//plugins/pi:node_modules` only (B17); `scripts/run.sh`,
-`build-system.sh`, `run.test.sh`, `bazel-sync.sh`, `bazel-test.sh --rust`,
-`bazel-gc.sh` and their tests; `just test`, `just lint`, `just build`,
-`just bazel-sync`, `just bazel-gc` and the `-native` twins; `docs/bazel.md`.
-`just ci` stays `quality_gates.sh`. CI unchanged.
-*Ships when:* every Rust test passes under Bazel on macOS and Linux; the
-parity script (changelist's `bazel-parity.py`, adapted to nextest's list)
-shows the same test names passing natively and under Bazel; §6.4, §9.2 and
-§10.1's Rust rows are measured and hold; the output base has no hard links.
-Q1 must be answered before it starts.
-
-**Phase 2a: web, Pi and script gates.** §7.2 and §8's script and Pi rows;
-`just web-test`, `just pi-test`, `just web`; `bazel-test.sh --ci` covers
-every `quality_gates.sh` gate but browser tests and perf.
-*Ships when:* those gates pass under Bazel, and a deleted module, test or
-package is gone (`bazel-web.test.sh`).
-
-**Phase 2b: browsers and perf.** Pinned Chromium, the e2e and time-to-usable
-targets, the perf targets on the opt build; `just web-e2e`, `just perf`;
-`just ci` and `just check` move to the overlay.
-*Ships when:* `bazel-test.sh --ci` is a gate-for-gate match of
-`quality_gates.sh` (a table in `docs/bazel.md`), the perf gates' quick runs
-pass within budget under Bazel, and §10.1 holds for the whole suite.
-
-**Phase 3: CI.** §14. *Ships when:* a Bazel CI run passes on main and its
-cache restores on the next run.
-
-### 15.3 Working beside the multi-person branch
-
-- Bazel's files are additive: `MODULE.bazel`, `bazel/`, `BUILD.bazel` files,
-  new scripts. The overlap with other branches is the justfile, the
-  enablers (§15.1), and `Cargo.toml` changes that need a sync.
-- BUILD files glob sources and tests, so new test modules (the multi-person
-  branch adds many under `crates/clax-server/tests/`) need nothing; its new
-  dependencies (`ring`) need only `just bazel-sync`.
-- Until phase 3, nothing on main runs Bazel, so a branch that forgets the
-  sync breaks no one's gate; the overlay names the command at the next Bazel
+- Every `quality_gates.sh` gate has its Bazel counterpart in
+  `scripts/bazel-test.sh --ci`, gate for gate (a table in `docs/bazel.md`),
+  or is listed in §8 as run outside Bazel with its reason.
+- The parity script (changelist's `bazel-parity.py`, adapted to nextest's
+  list) shows the same Rust test names passing natively and under Bazel.
+- §6.4, §9.2, §9.3 and §10.1 are measured and hold.
+- No hard link in the output base or the disk cache (§13).
+- CI's Bazel run passes on the branch, and its cache restores on a second
   run.
-- The `bazel` branch rebases onto main after each large merge; phase 1
-  lands after the multi-person branch if the two are ready together, since
-  the canary tests are part of phase 1's parity.
+- `just ci-native` still passes: the overlay keeps the native path.
+
+The changes to shared files that Bazel needs (the embed variables, the
+`clax_embedded` cfg, the one test helper for the `clax` binary, absolute
+repository paths, `CLAX_FAKE_EXE_DIR`, `CLAX_TEST_NODE`, the pnpm move) come
+first in the plan and pass `scripts/quality_gates.sh` on their own, so the
+branch can rebase over late multi-person fixes with conflicts confined to
+those commits. A new crate dependency from a rebase needs only
+`just bazel-sync`; new test modules need nothing.
 
 ## 16. Differences from Cargo
 
@@ -640,8 +631,8 @@ cache restores on the next run.
   `cargo test --workspace` the features unify across the workspace, so the
   `clax` at `CARGO_BIN_EXE_clax` is built with `clax-server`'s test
   features; under Bazel the `clax` a test runs never has them (and neither
-  does `quality_gates.sh`'s `CLAX_TEST_BIN`). Phase 1 finds any test that
-  relied on the difference.
+  does `quality_gates.sh`'s `CLAX_TEST_BIN`). The migration finds any test
+  that relied on the difference.
 - **`CARGO_MANIFEST_DIR`** is the crate's path from the workspace root, not
   absolute; tests run from the runfiles root (B12).
 - **`CARGO`** names nothing under Bazel (§5.3).
@@ -655,8 +646,14 @@ cache restores on the next run.
   their own `HOME` and temporary directory, and only declared files.
 - **Build scripts** run in a sandbox with declared inputs; `rerun-if-changed`
   has no effect.
-- **Debug information** follows Q7; Cargo's dev profile keeps line tables for
-  the workspace's crates and none for dependencies.
+- **Dev-dependency features reach the `clax` tests run.** crate_universe
+  resolves one feature set per crate for the whole workspace, so
+  dev-dependencies' features of third-party crates (`tokio`'s `test-util`,
+  asked for by `clax-server`'s tests) are on in every Bazel build of those
+  crates, the test `clax` included. Releases (Cargo) are unaffected; the
+  sync's allowlist names each such crate.
+- **Debug information** matches Cargo's dev profile (Q7): line tables for
+  the workspace's crates, none for dependencies.
 - **Clippy** reads one `clippy.toml` per command; Clax has one, at the root.
 
 ## 17. Alternatives not taken
@@ -671,78 +668,70 @@ cache restores on the next run.
   absolute path, and a debug binary would still read outside its sandbox.
 - **rules_rust's rust-analyzer project generation.** The Cargo workspace
   already serves rust-analyzer, and the dev loop stays native.
-- **Sharing changelist's disk cache.** Different compilers (1.94.0 and
-  1.98.1) produce no common entries for Rust, so sharing only merges two
-  budgets into one that either repository's trim can empty (Q2).
+- **A disk cache of Clax's own.** Different compilers (1.94.0 and 1.98.1)
+  produce no common Rust entries, but the owner chose one shared cache
+  (Q2); one bound for the machine is simpler to reason about.
+- **A machine-wide copy of the test `clax` per content**
+  (`scripts/stable-bin.sh`'s store, shared by all worktrees), named to tests
+  by a file the warm-up writes: one assessment per content per machine, but
+  tests would run a file outside Bazel's control that could be pruned
+  between build and test (Q4). Revisit if §6.4's measurements show stalls.
+- **Running the native gate beside Bazel in CI** until they agree for a
+  while: the owner chose to switch CI over at once (Q9).
 
-## 18. Open questions for the owner
+## 18. Decisions on the questions
 
-**Q1. npm or pnpm for `web/` and `plugins/pi/`.** rules_js builds from
-`pnpm-lock.yaml`.
-(a) Switch both projects to pnpm, as changelist did: one lockfile per
-project, nothing derived; `npm ci` becomes `pnpm install --frozen-lockfile`
-in the native gates, and `bump-version.sh`, `test-release.sh` and `check-version.sh` follow
-`plugins/pi`'s lockfile change. The published Pi package is unaffected.
-(b) Keep npm and commit a `pnpm-lock.yaml` per project derived from
-`package-lock.json`, checked by `bazel-sync --check`: two lockfiles to keep
-in step.
-Recommendation: (a). Needed before phase 1.
+Each was an open question in the first draft of this spec. Q2, Q9 and the
+single migration are the owner's words (2026-10-15); the others are the
+coordinator's readings of the owner's direction, which the owner did not
+override.
 
-**Q2. Which disk cache.**
-(a) Clax's own, `~/.cache/clax-bazel-disk`, 30 GB and 7 days.
-(b) Changelist's `~/.cache/bazel-disk`, one bound for both (changelist's is
-20 GB and already at 20 GB on this machine).
-Recommendation: (a): the two repositories share no Rust outputs, and each
-keeps a predictable budget.
+**Q1. npm or pnpm for `web/` and `plugins/pi/`.** Decided: pnpm, as
+changelist (§7.1). `bump-version.sh`, `check-version.sh` and
+`test-release.sh` follow `plugins/pi`'s lockfile change; the published Pi
+package is unaffected.
 
-**Q3. CI runner and cache for Bazel.**
-(a) GitHub-hosted runners as today, with Bazel's disk cache in
-`actions/cache` (10 GB per repository, downloaded and uploaded per run).
-(b) Blacksmith runners with a sticky disk per job, as changelist.
-Recommendation: (a) for phase 3, measured; (b) if a cached run's restore
-takes more than a minute or the cache outgrows 10 GB.
+**Q2. Which disk cache.** Decided by the owner: "Use a shared cache with
+other projects, there's no reason to have a dedicated cache".
+`~/.cache/bazel-disk`, with one bound both repositories state (§9.3).
 
-**Q4. Where the `clax` that tests run lives.**
-(a) In each worktree's output base, run once by the warm-up action: one
-assessment per build per worktree, entirely inside Bazel.
-(b) A machine-wide copy per content (`scripts/stable-bin.sh`'s store,
-shared by all worktrees), named to the tests by a file the warm-up writes:
-one assessment per content per machine, but tests run a file outside
-Bazel's control, which can be pruned between build and test.
-Recommendation: (a), and (b) only if §6.4's measurements show stalls.
+**Q3. CI runner and cache for Bazel.** Decided: GitHub-hosted runners with
+`actions/cache` (§14).
 
-**Q5. When Bazel saves disk but an edit runs slower than Cargo.**
-(a) Speed wins: the task stays native by default until Bazel matches it.
-(b) Disk wins: Bazel becomes the default within two minutes even if slower
-than Cargo.
-Recommendation: (a), per B20.
+**Q4. Where the `clax` that tests run lives.** Decided: in each worktree's
+output base, run once by the warm-up action (§6.2). The machine-wide copy
+is in §17.
 
-**Q6. Cached perf results.** A passed perf gate whose inputs (release
-binary, scripts, budgets) are unchanged is not rerun.
-(a) Cache them like any test.
-(b) Never cache perf gates (`no-cache`): every `just ci` measures again.
-Recommendation: (a): the gates judge the code, and unchanged code measured
-on the same machine has passed; `--nocache_test_results` remeasures.
+**Q5. When Bazel saves disk but an edit runs slower than Cargo.** Decided:
+speed wins. Every task meets the two-minute rule and its native twin's
+speed before the migration merges (§10).
 
-**Q7. Debug information in Bazel's test binaries.**
-(a) Match Cargo's dev profile: line tables for the workspace's crates, none
-for dependencies.
-(b) Strip symbols, as changelist does (it measured 1.1 GB instead of 1.8 GB
-per edited worktree's tests); a panic still names file and line, a
-backtrace needs `-c dbg`.
-Recommendation: (a), so a failing test's backtrace reads as under Cargo;
-(b) if §9.2's edited-worktree budget is not met.
+**Q6. Cached perf results.** Decided: a passed perf gate is cached on its
+inputs like any test (§8).
 
-**Q8. Hard links made by Bazel's own rules.** Clax's files and scripts make
-none (§13).
-(a) The rule covers every file in Bazel's directories too: the check after
-each `--ci` run fails on any, and a rule found making them is configured off
-or replaced.
-(b) It covers Clax's code, tests and scripts only.
-Recommendation: (a): it costs one `find`, and none exist today.
+**Q7. Debug information in Bazel's test binaries.** Decided: as Cargo's
+dev profile (§10.2).
 
-**Q9. The native gate in CI after phase 3.**
-(a) Run both on every pull request until 20 consecutive main runs agree,
-then the native gate becomes a manual workflow, as changelist's.
-(b) Keep both on every pull request for good.
-Recommendation: (a).
+**Q8. Hard links made by Bazel's own rules.** Decided: the rule covers
+every file in Bazel's directories too, and `bazel-test.sh --ci` checks it
+(§13).
+
+**Q9. The native gate in CI.** Decided by the owner: "Just migrate us all
+the way to bazel at once and switch CI over". CI gates on Bazel only; the
+native gate is a manual workflow (§14).
+
+## 19. Open questions for the owner
+
+**Q10. Raising changelist's side of the shared bound.** The shared cache
+works only if `../changelist`'s `.bazelrc` and `scripts/bazel-gc.sh` state
+the same bound as Clax's (§9.3); today they state 20 GB, and either
+repository's trim to its own bound evicts the other's entries.
+(a) Change changelist's `.bazelrc` and `bazel-gc.sh` default to 40 GB in a
+commit to that repository, made with the Clax migration.
+(b) Leave changelist alone; Clax states 40 GB, and the effective bound is
+20 GB whenever changelist's server or `just bazel-gc` trims.
+(c) Move the bound out of both repositories into `~/.bazelrc`, which Bazel
+reads after a workspace's `.bazelrc`, and have both `bazel-gc.sh` read it
+there.
+Recommendation: (a): it keeps each repository self-contained, and the
+check in §9.3 then holds on every machine with both checkouts.
