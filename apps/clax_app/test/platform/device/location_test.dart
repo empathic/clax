@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:clax_app/daemon/clock.dart';
 import 'package:clax_app/platform/device/device_grants.dart';
 import 'package:clax_app/platform/device/device_host.dart';
 import 'package:clax_app/platform/device/location_coarsen.dart';
@@ -34,6 +35,39 @@ class FixedRandom implements math.Random {
   bool nextBool() => false;
 }
 
+/// A clock that moves only when told: [advance] runs each delay that
+/// falls due, in order, at its own time.
+class TestClock implements Clock {
+  TestClock(this.t);
+  DateTime t;
+  final _waits = <(DateTime, Completer<void>)>[];
+
+  @override
+  DateTime now() => t;
+
+  @override
+  Future<void> delay(Duration d) {
+    final c = Completer<void>();
+    _waits.add((t.add(d), c));
+    return c.future;
+  }
+
+  Future<void> advance(Duration d) async {
+    final end = t.add(d);
+    while (true) {
+      _waits.sort((a, b) => a.$1.compareTo(b.$1));
+      final due = _waits.where((w) => !w.$1.isAfter(end)).firstOrNull;
+      if (due == null) break;
+      _waits.remove(due);
+      if (due.$1.isAfter(t)) t = due.$1;
+      due.$2.complete();
+      await pumpEventQueue();
+    }
+    t = end;
+    await pumpEventQueue();
+  }
+}
+
 class Rig {
   Rig({DeviceGrants? grants, math.Random? random})
     : grants = grants ?? MemoryDeviceGrants() {
@@ -46,7 +80,7 @@ class Rig {
       camera: FakeCamera(),
       location: location,
       random: random ?? FixedRandom(),
-      now: () => now,
+      clock: clock,
     );
     view = DeviceView(send: sent.add, shown: () async => shown);
   }
@@ -58,7 +92,7 @@ class Rig {
   late final DeviceView view;
   final sent = <DeviceEvent>[];
   var shown = true;
-  var now = DateTime(2026, 10, 14, 9);
+  final clock = TestClock(DateTime(2026, 10, 14, 9));
   var _n = 0;
 
   Future<DeviceResult> call(String method, [Object? arg]) => host.handle(
@@ -77,7 +111,7 @@ class Rig {
 
   /// A fix on the running watch, [seconds] after the last.
   Future<void> move(double lat, double lon, {int seconds = 2}) async {
-    now = now.add(Duration(seconds: seconds));
+    await clock.advance(Duration(seconds: seconds));
     location.move(lat, lon);
     await pumpEventQueue();
   }
@@ -136,6 +170,16 @@ void main() {
         expect(r.consent.asked, hasLength(1));
       },
     );
+
+    test('a dismissed question answers dismissed, keeps nothing, and the '
+        'next call asks again', () async {
+      final r = Rig()..consent.answer = DeviceAnswer.dismissed;
+      expect((await r.call('current')).code, 'dismissed');
+      expect(await r.grants.decision(aid, 'location'), isNull);
+      r.consent.answer = DeviceAnswer.approximate;
+      expect((await r.call('current')).code, isNull);
+      expect(r.consent.asked, hasLength(2));
+    });
 
     test('a Precise app gets an approximate fix, marked so, when Android '
         'allows Clax only approximate', () async {
@@ -200,10 +244,15 @@ void main() {
       expect(r.location.distance, DeviceHost.minDistance);
       expect(r.view.watching.value, 1);
       await r.move(52.5, 13.4);
-      // Less than a second after the last: dropped.
+      // Less than a second after the last: held, and only the latest held
+      // goes, as the second ends.
       await r.move(52.5001, 13.4, seconds: 0);
+      await r.move(52.50015, 13.4, seconds: 0);
+      expect(r.updates, [(52.5, 13.4)]);
+      await r.clock.advance(const Duration(seconds: 1));
+      expect(r.updates, [(52.5, 13.4), (52.50015, 13.4)]);
       await r.move(52.5002, 13.4);
-      expect(r.updates, [(52.5, 13.4), (52.5002, 13.4)]);
+      expect(r.updates.last, (52.5002, 13.4));
       expect(r.sent.first.watch, 'w1');
       expect((await r.call('unwatch', {'watch': 'w1'})).value, {
         'stopped': true,
@@ -213,16 +262,67 @@ void main() {
       expect(r.sent.where((e) => e.code != null), isEmpty);
     });
 
-    test('an approximate watch sends only when the cell changes', () async {
+    // With the install's shift (0.25, 0.75), the row edge north of 52.5
+    // is at 52.515; a point is well inside the next row from 52.519.
+    test('an approximate watch reports a new cell only after the hold, '
+        'never at the crossing, and ignores jitter at an edge', () async {
       final r = Rig()..consent.answer = DeviceAnswer.approximate;
       await r.watch('w');
       await r.move(52.5, 13.4);
-      await r.move(52.5005, 13.4005);
-      await r.move(52.5009, 13.4001);
-      await r.move(52.56, 13.4);
+      expect(r.updates, hasLength(1), reason: 'the first fix is at once');
+      // Standing at the edge: GPS noise across it changes nothing.
+      for (var i = 0; i < 20; i++) {
+        await r.move(i.isEven ? 52.5152 : 52.5148, 13.4, seconds: 5);
+      }
+      expect(r.updates, hasLength(1));
+      // Well past the longest wait since the first update.
+      await r.clock.advance(const Duration(minutes: 15));
+      // Walking north across the edge and well into the next row.
+      await r.move(52.516, 13.4, seconds: 30);
+      await r.move(52.52, 13.4, seconds: 30);
+      final crossed = r.clock.now();
+      expect(r.updates, hasLength(1), reason: 'nothing at the crossing');
+      await r.clock.advance(DeviceHost.approxHold - const Duration(seconds: 1));
+      expect(r.updates, hasLength(1));
+      await r.clock.advance(const Duration(seconds: 1));
       expect(r.updates, hasLength(2));
+      expect(r.clock.now().difference(crossed), DeviceHost.approxHold);
       expect(r.sent.every((e) => e.value!['precise'] == false), true);
       expect(r.sent.every((e) => e.value!['accuracy'] == 2000.0), true);
+    });
+
+    test('an approximate watch reports at most once per interval, and a '
+        'return before the hold reports nothing', () async {
+      final r = Rig()..consent.answer = DeviceAnswer.approximate;
+      await r.watch('w');
+      await r.move(52.5, 13.4);
+      // Into the next row and back within the hold: nothing.
+      await r.move(52.52, 13.4, seconds: 10);
+      await r.clock.advance(const Duration(minutes: 1));
+      await r.move(52.5, 13.4);
+      await r.clock.advance(const Duration(minutes: 30));
+      expect(r.updates, hasLength(1));
+      // A new cell held 3 minutes goes; the next one waits out 10 minutes
+      // from it.
+      await r.move(52.52, 13.4);
+      await r.clock.advance(DeviceHost.approxHold);
+      expect(r.updates, hasLength(2));
+      final second = r.clock.now();
+      await r.move(52.54, 13.4); // 2 s on
+      await r.clock.advance(const Duration(minutes: 9, seconds: 57));
+      expect(r.updates, hasLength(2));
+      await r.clock.advance(const Duration(seconds: 1));
+      expect(r.updates, hasLength(3));
+      expect(r.clock.now().difference(second), DeviceHost.approxInterval);
+    });
+
+    test('revoking location stops its running watches at once', () async {
+      final r = Rig();
+      await r.watch('w');
+      await r.host.revoke(aid, 'location');
+      expect((r.sent.last.watch, r.sent.last.code), ('w', 'not_granted'));
+      expect(r.location.stream, isNull);
+      expect(r.view.watching.value, 0);
     });
 
     test(
@@ -357,35 +457,9 @@ void main() {
     setUp(() => dir = Directory.systemTemp.createTempSync('grants'));
     tearDown(() => dir.deleteSync(recursive: true));
 
-    test('an app keeps its grid shift across restarts until its grant is '
-        'revoked', () async {
-      final file = File('${dir.path}/device-grants.json');
-      Future<Object?> approx(Rig r) async => (await r.call('current')).value;
-      final first = Rig(grants: FileDeviceGrants(file))
-        ..consent.answer = DeviceAnswer.approximate;
-      final a = await approx(first);
-      final shift = (await first.grants.decision(aid, 'location'))!.shift;
-      expect(shift, (0.25, 0.75));
-      // A restart: a new host over the same file, drawing other shifts.
-      final second = Rig(
-        grants: FileDeviceGrants(file),
-        random: FixedRandom(2),
-      );
-      expect(await approx(second), a);
-      expect(second.consent.asked, isEmpty);
-      // Revoked, then allowed again: a new shift, so a new centre.
-      await second.host.revoke(aid, 'location');
-      second.consent.answer = DeviceAnswer.approximate;
-      final b = await approx(second);
-      expect(
-        (await second.grants.decision(aid, 'location'))!.shift,
-        isNot(shift),
-      );
-      expect(b, isNot(a));
-    });
-
     test(
-      'a location grant kept without a shift gets one, kept from then on',
+      'one grid shift per install: the same across restarts and apps, '
+      'kept through a revoke, and an earlier per-app shift dropped',
       () async {
         final file = File('${dir.path}/device-grants.json')
           ..writeAsStringSync(
@@ -395,18 +469,31 @@ void main() {
                   'allowed': true,
                   'at': '2026-10-12T00:00:00.000Z',
                   'precision': 'approximate',
+                  'shift': [0.9, 0.4],
                 },
               },
             }),
           );
-        final r = Rig(grants: FileDeviceGrants(file));
-        final a = (await r.call('current')).value;
-        final d = (await FileDeviceGrants(file).decision(aid, 'location'))!;
-        expect((d.shift, d.at), ((0.25, 0.75), DateTime.utc(2026, 10, 12)));
-        expect(
-          (await Rig(grants: FileDeviceGrants(file)).call('current')).value,
-          a,
+        Future<Object?> approx(Rig r) async => (await r.call('current')).value;
+        final first = Rig(grants: FileDeviceGrants(file));
+        final a = await approx(first);
+        expect(await FileDeviceGrants(file).gridShift(() => (0, 0)), (
+          0.25,
+          0.75,
+        ));
+        // A restart, drawing other numbers: the same cell for the same place.
+        final second = Rig(
+          grants: FileDeviceGrants(file),
+          random: FixedRandom(2),
         );
+        expect(await approx(second), a);
+        // Revoked and allowed again: still the same grid.
+        await second.host.revoke(aid, 'location');
+        second.consent.answer = DeviceAnswer.approximate;
+        expect(await approx(second), a);
+        final j = jsonDecode(file.readAsStringSync()) as Map;
+        expect(j['_grid'], [0.25, 0.75]);
+        expect((j[aid] as Map)['location'].containsKey('shift'), false);
       },
     );
 

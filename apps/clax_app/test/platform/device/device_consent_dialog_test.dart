@@ -81,7 +81,7 @@ void main() {
   });
 
   testWidgets('another capability offers Allow and Don\'t allow; '
-      'dismissing is Don\'t allow', (tester) async {
+      'dismissing is no answer', (tester) async {
     var answers = await _show(tester, 'camera');
     expect(find.byKey(const ValueKey('consent-approximate')), findsNothing);
     await tester.tap(find.text('Allow'));
@@ -90,7 +90,7 @@ void main() {
     answers = await _show(tester, 'camera');
     await tester.tapAt(const Offset(5, 5));
     await tester.pumpAndSettle();
-    expect(answers, [DeviceAnswer.deny]);
+    expect(answers, [DeviceAnswer.dismissed]);
   });
 
   for (final dark in [false, true]) {
