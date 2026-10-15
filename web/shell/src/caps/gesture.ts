@@ -574,6 +574,9 @@ const attestWaiters = new Set<() => void>();
  * release. Both never, until `app/host.ts` sets them; it calls `attested`
  * after each attestation it counts. */
 export const hostArrival = {
+  /** How many presses on the frame the host has attested: a call that
+   * spends the person's tap (`caps/device.ts`) waits for a new one. */
+  presses: 0,
   fresh: (_since: number): boolean => false,
   pending: (): boolean => false,
   attested(): void { for (const f of [...attestWaiters]) f(); },

@@ -833,7 +833,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
         const at = doc.elementFromPoint(x, y);
         const t = now();
         const onShell = shellPresses.some(q => t - q.at < ATTEST_MS && Math.abs(q.x - x) <= NEAR_PX && Math.abs(q.y - y) <= NEAR_PX);
-        if (at && at === ctl.frame?.el && !onShell) { pressed.set(pointer, t); attestedAt = t; hostArrival.attested(); } else pressed.delete(pointer);
+        if (at && at === ctl.frame?.el && !onShell) { pressed.set(pointer, t); attestedAt = t; hostArrival.presses++; hostArrival.attested(); } else pressed.delete(pointer);
       } else if (phase === "up") {
         if (live().delete(pointer)) { attestedAt = now(); hostArrival.attested(); }
       } else if (phase === "cancel") {
