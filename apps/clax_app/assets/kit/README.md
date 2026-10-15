@@ -21,10 +21,14 @@ each `{z}/{x}/{y}` tile with `net.fetch`, keeps up to 300 as `blob:` URLs
 (least recently used are revoked), runs 6 fetches at a time and never
 starts one for a tile no map shows any more. The app declares the tile host
 (`{"net": {"hosts": ["tile.openstreetmap.org"]}}`); the first tile asks
-the owner, and a refusal shows a note in the map instead of tiles.
-OpenStreetMap's tile policy wants its attribution visible and an
-identifying client: the map always shows it, and the daemon sends
-`User-Agent: Clax/<version>`.
+the owner, and a refusal shows a note in the map instead of tiles. In the
+app's inspect view (the agent's renders), where nobody is asked, a map
+without tiles draws a grey grid captioned "Map preview" instead. A failed
+tile is tried again after 1 s, then twice as long each time, up to 15 s.
+OpenStreetMap's tile policy wants its attribution visible, an identifying
+client and cached tiles: the map always shows it, the daemon sends
+`User-Agent: Clax/<version> (+https://github.com/empathic/clax)`, and the
+daemon's HTTP cache keeps tiles by their cache headers.
 
 Each vendored file opens with a comment naming its packages, versions,
 licences and copyright holders; `LICENSES.txt` holds the full licence
