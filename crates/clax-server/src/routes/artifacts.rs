@@ -166,7 +166,10 @@ pub const IDEMPOTENCY_HEADER: &str = "idempotency-key";
 /// 400 `invalid_args` for a key over
 /// [`MAX_PUBLISH_KEY`](clax_store::remotes::MAX_PUBLISH_KEY) bytes or
 /// with anything but printable ASCII.
-fn publish_key(headers: &HeaderMap, grant: Option<&str>) -> Result<Option<String>, ApiError> {
+pub(crate) fn publish_key(
+    headers: &HeaderMap,
+    grant: Option<&str>,
+) -> Result<Option<String>, ApiError> {
     let (Some(_), Some(v)) = (grant, headers.get(IDEMPOTENCY_HEADER)) else {
         return Ok(None);
     };

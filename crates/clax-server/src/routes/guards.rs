@@ -379,6 +379,22 @@ mod l10 {
             "forgets a public Clax's token here; its revocation there is audited there",
         ),
         (
+            "remotes::patch_link",
+            "a link's sync setting; what the sync then writes is audited where it is written",
+        ),
+        (
+            "remotes::unlink",
+            "ends a link's sync; its threads stay as they are, and nothing is written there",
+        ),
+        (
+            "remotes::retry",
+            "wakes a link's sync; what it then writes is audited where it is written",
+        ),
+        (
+            "remotes::drop_unsent",
+            "drops writes that never reached a public Clax; the comments stay here",
+        ),
+        (
             "drafts::delete",
             "an agent's work in progress, kept in memory and never published (hosted spec §16.4)",
         ),

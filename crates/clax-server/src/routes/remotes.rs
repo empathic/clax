@@ -261,13 +261,19 @@ pub async fn remove(
     };
     let id = r.id.clone();
     let r = s.store_call(move |st| st.remove_remote(&id)).await?;
+    s.linked.links_changed();
     Ok(Json(json!({"remote": remote_view(&r), "revoked": revoked})))
 }
 
 /// `GET /api/artifacts/<aid>/remotes` → `{links: [{remote_id, remote_name,
-/// origin, url, pushed_n, remote_n, auto, behind}], remotes}`: the
-/// artifact's public twins (`behind`: local versions not pushed yet) and
-/// every connected remote.
+/// origin, url, pushed_n, remote_n, auto, behind, download_only, sync,
+/// pending, failed}], remotes, unsent}`: the artifact's public twins
+/// (`behind`: local versions not pushed yet; `download_only`: local threads
+/// stay local; `sync`: how its linked threads' sync stands, with
+/// `unreachable_since`; `pending` and `failed`: its writes waiting to go
+/// up, and those not sent), every connected remote, and `unsent`: the
+/// writes not sent to a remote the artifact is no longer linked to, which
+/// the owner may drop (`POST /api/artifacts/<aid>/unsent:drop`).
 pub async fn for_artifact(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -278,13 +284,24 @@ pub async fn for_artifact(
     who.require_owner("publishes to a public Clax")?;
     asker(&s, &d).await?;
     let id = parse_id(&path(aid)?)?;
-    let (links, remotes, current) = s
+    let (links, remotes, current, outbox, unsent) = s
         .store_call(move |st| {
             let a = st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
+            let links = st.remote_links(id.as_str())?;
+            let mut outbox = Vec::new();
+            for l in &links {
+                outbox.extend(
+                    st.outbox_of(&l.remote_id)?
+                        .into_iter()
+                        .filter(|o| o.artifact_id == id.as_str()),
+                );
+            }
             Ok((
-                st.remote_links(id.as_str())?,
+                links,
                 st.remotes()?,
                 a.current_version,
+                outbox,
+                st.unsent_of(id.as_str())?,
             ))
         })
         .await?;
@@ -292,6 +309,9 @@ pub async fn for_artifact(
         .iter()
         .map(|l| {
             let r = remotes.iter().find(|r| r.id == l.remote_id);
+            let mine = outbox.iter().filter(|o| o.remote_id == l.remote_id);
+            let failed = mine.clone().filter(|o| o.failed_at.is_some()).count();
+            let pending = mine.count() - failed;
             json!({
                 "remote_id": l.remote_id,
                 "remote_name": r.map(|r| r.name.clone()),
@@ -303,6 +323,10 @@ pub async fn for_artifact(
                 "auto": l.auto,
                 "behind": current.saturating_sub(l.pushed_n),
                 "pushed_at": l.pushed_at,
+                "download_only": l.download_only,
+                "sync": s.linked.status(&l.remote_id),
+                "pending": pending,
+                "failed": failed,
             })
         })
         .collect();
@@ -311,7 +335,130 @@ pub async fn for_artifact(
         .filter(|r| r.status == "connected")
         .map(remote_view)
         .collect();
-    Ok(Json(json!({"links": links, "remotes": connected})))
+    Ok(Json(
+        json!({"links": links, "remotes": connected, "unsent": unsent}),
+    ))
+}
+
+/// The link of `aid` on the remote `rid` names (its ID, name or origin),
+/// for the owner.
+async fn owned_link(
+    s: &AppState,
+    d: &DeniedToGrants,
+    who: &Identity,
+    aid: Result<Path<(String, String)>, PathRejection>,
+) -> Result<(ArtifactId, Remote), ApiError> {
+    local_only(s)?;
+    d.refuse_agents()?;
+    who.require_owner("links to a public Clax")?;
+    if !matches!(asker(s, d).await?, Asker::Owner) {
+        return Err(ApiError::forbidden(
+            "forbidden",
+            "a link's settings are the owner's",
+        ));
+    }
+    let (aid, rid) = path(aid)?;
+    let id = parse_id(&aid)?;
+    let r = remote_named(s, rid).await?;
+    let (a2, r2) = (id.as_str().to_string(), r.id.clone());
+    s.store_call(move |st| st.remote_link(&a2, &r2))
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    Ok((id, r))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinkPatch {
+    /// Local threads stay local; replies and resolves on linked threads
+    /// still go up.
+    download_only: bool,
+}
+
+/// `PATCH /api/artifacts/<aid>/remotes/<remote> {download_only}` (the
+/// owner) → `{download_only}`: makes the link download only, or two-way
+/// again. 404 for no such link.
+pub async fn patch_link(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    who: Identity,
+    _o: SameOrigin,
+    p: Result<Path<(String, String)>, PathRejection>,
+    req: Result<Json<LinkPatch>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let (id, r) = owned_link(&s, &d, &who, p).await?;
+    let b = body(req)?;
+    let on = b.download_only;
+    let rid = r.id.clone();
+    s.store_call(move |st| st.set_link_download_only(id.as_str(), &rid, on))
+        .await?;
+    s.linked.kick(Some(&r.id));
+    Ok(Json(json!({"download_only": on})))
+}
+
+/// `DELETE /api/artifacts/<aid>/remotes/<remote>` (the owner) → `{unlinked:
+/// true, unsent}`: ends the link. Its public copy stays there; its mirrored
+/// threads stay here as read-only history, and its writes not sent yet
+/// (`unsent`) wait for the owner to drop them.
+pub async fn unlink(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    who: Identity,
+    _o: SameOrigin,
+    p: Result<Path<(String, String)>, PathRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let (id, r) = owned_link(&s, &d, &who, p).await?;
+    let rid = r.id.clone();
+    let unsent = s
+        .store_call(move |st| {
+            st.unlink_remote(id.as_str(), &rid)?;
+            st.unsent_of(id.as_str())
+        })
+        .await?;
+    s.linked.links_changed();
+    Ok(Json(json!({"unlinked": true, "unsent": unsent})))
+}
+
+/// `POST /api/artifacts/<aid>/remotes/<remote>/retry` (the owner) →
+/// `{retried}`: tries the link's writes not sent again now.
+pub async fn retry(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    who: Identity,
+    _o: SameOrigin,
+    p: Result<Path<(String, String)>, PathRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let (id, r) = owned_link(&s, &d, &who, p).await?;
+    let rid = r.id.clone();
+    let n = s
+        .store_call(move |st| st.outbox_retry(&rid, Some(id.as_str())))
+        .await?;
+    s.linked.retry(&r.id);
+    Ok(Json(json!({"retried": n})))
+}
+
+/// `POST /api/artifacts/<aid>/unsent:drop` (the owner) → `{dropped}`: drops
+/// the writes not sent to a remote the artifact is no longer linked to,
+/// once the owner confirms.
+pub async fn drop_unsent(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    who: Identity,
+    _o: SameOrigin,
+    aid: Result<Path<String>, PathRejection>,
+) -> Result<Json<Value>, ApiError> {
+    local_only(&s)?;
+    d.refuse_agents()?;
+    who.require_owner("links to a public Clax")?;
+    if !matches!(asker(&s, &d).await?, Asker::Owner) {
+        return Err(ApiError::forbidden(
+            "forbidden",
+            "dropping unsent comments is the owner's",
+        ));
+    }
+    let id = parse_id(&path(aid)?)?;
+    let n = s.store_call(move |st| st.drop_unsent(id.as_str())).await?;
+    Ok(Json(json!({"dropped": n})))
 }
 
 #[derive(Deserialize, Default)]

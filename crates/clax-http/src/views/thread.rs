@@ -148,6 +148,19 @@ fn views_and_senders(
                 Some((harness, at)) => json!({"harness": harness, "at": at}),
                 None => Value::Null,
             };
+            // Its twin on a remote: the thread's, then each comment's.
+            if let Some(l) = &x.linked {
+                for (i, c) in t.comments.iter().enumerate() {
+                    if let Some(lc) = l.comments.get(&c.id) {
+                        v["comments"][i]["linked"] = json!(lc);
+                    }
+                }
+                let mut lv = json!(l);
+                if let Some(m) = lv.as_object_mut() {
+                    m.remove("comments");
+                }
+                v["linked"] = lv;
+            }
             // The owner's handle only through [`Vis`], to those it may name.
             if let Some(o) = &x.owner {
                 v["owner"] = json!({"name": o.name, "person": o.person, "live": o.live,
@@ -188,6 +201,16 @@ fn views_and_senders(
 /// with no `agent` object; one from a session with no name keeps its
 /// stored name.
 fn mark_comment(vis: &Visibility, c: &Comment, view: &mut Value) {
+    if view["linked"]["origin"] == "remote" {
+        // A remote's author says where they are, never a local person.
+        if let (Some(name), Some(remote)) = (
+            view["linked"]["author_name"].as_str(),
+            view["linked"]["remote"].as_str(),
+        ) {
+            view["author_name"] = json!(clax_store::linked::remote_label(name, remote));
+        }
+        return;
+    }
     if c.author_kind == clax_store::threads::AUTHOR_AGENT {
         if let (Some(a), Some(harness)) = (&c.agent, &c.via_harness) {
             let reader = match vis.reader() {

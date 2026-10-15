@@ -60,7 +60,7 @@ pub fn clip_problem(bytes: &[u8]) -> Option<String> {
     None
 }
 
-fn check_body(body: &str) -> Result<()> {
+pub(super) fn check_body(body: &str) -> Result<()> {
     if body.trim().is_empty() {
         return Err(CoreError::invalid(
             "invalid_comment",
@@ -486,6 +486,8 @@ pub struct ThreadExtras {
     pub moves: Vec<ThreadMove>,
     /// Its owner agent, live or ended, when it has one (M23).
     pub owner: Option<ThreadOwner>,
+    /// Its twin on a remote, when it is linked ([`super::linked`]).
+    pub linked: Option<super::linked::LinkedView>,
 }
 
 struct ThreadRow {
@@ -986,15 +988,25 @@ impl Store {
         if has != Some(true) {
             return Ok(None);
         }
-        self.content.read_clip(id, tid).await
+        match self.content.read_clip(id, tid).await? {
+            Some(b) => Ok(Some(b)),
+            // A mirrored thread's clip is cached apart (`store::linked`).
+            None => Ok(self
+                .cached_remote_clip(tid)
+                .and_then(|p| std::fs::read(p).ok())),
+        }
     }
 
     /// The file on this machine holding the clip of thread `tid` of `id`,
     /// when the content store keeps clips in files
     /// ([`crate::content::ContentStore::local_clip`]), for an agent on the
     /// same machine.
+    /// A mirrored thread's is its cached copy under the home
+    /// ([`Store::remote_clip_file`]), never a path a remote sent.
     pub fn local_clip(&self, id: &ArtifactId, tid: &str) -> Option<std::path::PathBuf> {
-        self.content.local_clip(id, tid)
+        self.content
+            .local_clip(id, tid)
+            .or_else(|| self.cached_remote_clip(tid))
     }
 
     /// Adds a comment. A viewer comment on a resolved thread reopens it; an
@@ -1357,6 +1369,7 @@ impl Store {
             return Ok(Vec::new());
         }
         let ids: Vec<String> = threads.iter().map(|t| t.id.clone()).collect();
+        let mut linked = self.linked_views(threads)?;
         let mut resolvers: Vec<String> = threads
             .iter()
             .filter_map(|t| t.resolved_by.as_deref()?.strip_prefix("viewer:"))
@@ -1452,6 +1465,7 @@ impl Store {
                         .and_then(|p| names.get(p).cloned().flatten()),
                     addressed_pending: pending.remove(&t.id),
                     owner: owners.remove(&t.id),
+                    linked: linked.remove(&t.id),
                     live_path: live_paths.remove(&t.id),
                     moves: moves
                         .remove(&t.id)

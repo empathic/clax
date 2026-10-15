@@ -1307,8 +1307,7 @@ impl Store {
                         if remote {
                             Some(clax_core::clips::reference(aid.as_str(), &p.thread_id))
                         } else {
-                            self.content
-                                .local_clip(&aid, &p.thread_id)
+                            self.local_clip(&aid, &p.thread_id)
                                 .map(|path| path.to_string_lossy().into_owned())
                         }
                     })
@@ -1420,9 +1419,19 @@ impl Store {
                 .insert((p.artifact_id.clone(), p.thread_id.clone()));
         }
         let mut items = Vec::with_capacity(pending.len());
+        let remote = self.remote_author_labels(
+            &pending
+                .iter()
+                .map(|(p, ..)| p.comment_id.clone())
+                .collect::<Vec<_>>(),
+        )?;
         for (mut p, anchor, clip_path, live, withheld) in pending {
-            // Names of authors who are not connected say so (spec §9.6).
-            p.author = vis.label(&p.author, &p.writer);
+            // Names of authors who are not connected say so (spec §9.6); a
+            // remote's say where they are.
+            p.author = match remote.get(&p.comment_id) {
+                Some(l) => l.clone(),
+                None => vis.label(&p.author, &p.writer),
+            };
             if let Some(b) = p.batch.as_mut() {
                 for a in visibility::authors_of_batch_note(b.sender.as_deref()) {
                     b.sent_by = vis.label(&b.sent_by, &a);

@@ -78,9 +78,33 @@ pub fn views(st: &Store, items: &[ItemRow], hosted: bool) -> clax_core::Result<V
                     i.recipient.as_deref(),
                     i.artifact_id.as_deref(),
                 )?;
-            render(st, &mut names, i, s, comments)
+            let mut v = render(st, &mut names, i, s, comments)?;
+            if !hosted {
+                linked_tag(st, i, &mut v)?;
+            }
+            Ok(v)
         })
         .collect()
+}
+
+/// On a local daemon, an item on a thread linked to a remote carries
+/// `linked: {remote, unlinked, author}`: the remote's name, whether the
+/// link ended, and for a reply that came from there, its author there
+/// ([`clax_store::linked`]).
+fn linked_tag(st: &Store, i: &ItemRow, v: &mut Value) -> clax_core::Result<()> {
+    let Some(tid) = i.thread_id.as_deref() else {
+        return Ok(());
+    };
+    let Some(lt) = st.linked_thread(tid)? else {
+        return Ok(());
+    };
+    let author = match i.comment_id.as_deref() {
+        Some(cid) => st.remote_author_labels(&[cid.to_string()])?.remove(cid),
+        None => None,
+    };
+    v["linked"] =
+        json!({"remote": lt.remote_name, "unlinked": lt.unlinked_at.is_some(), "author": author});
+    Ok(())
 }
 
 /// The artifacts among `recipient`'s items (a connected person's on a
@@ -582,6 +606,102 @@ mod tests {
             page_url: Some("http://localhost:5173/LIVECANARYpath".into()),
             ..Sources::default()
         }
+    }
+
+    #[test]
+    fn an_item_on_a_mirrored_thread_names_its_remote_and_author_there() {
+        use clax_core::audit::AuditCtx;
+        use clax_store::linked::{MirrorComment, MirrorThread, RemoteAuthor};
+        use clax_store::remotes::{PendingSignIn, SignedInAs};
+        let dir = tempfile::tempdir().unwrap();
+        let st = Store::open(&clax_core::Home::at(dir.path().join("ax"))).unwrap();
+        let r = st
+            .add_pending_remote(
+                "https://clax.dev",
+                "clax.dev",
+                &PendingSignIn {
+                    device_code: clax_core::Secret::new("cxd".into()),
+                    user_code: "WXYZ-4821".into(),
+                    verification_url: "https://clax.dev/device".into(),
+                    expires_at: "2099-01-01T00:00:00.000Z".into(),
+                    interval_s: 5,
+                },
+            )
+            .unwrap();
+        st.connect_remote(
+            &r.id,
+            &SignedInAs {
+                token: clax_core::Secret::new("cxa".into()),
+                person_public_id: "p1".into(),
+                person_name: Some("Ada".into()),
+                grant_id: "g1".into(),
+            },
+        )
+        .unwrap();
+        let p = clax_core::publish::validate(
+            serde_json::from_value(json!({"title": "T",
+                "files": {"index.html": {"content": "<p>x</p>", "encoding": "utf8"}}}))
+            .unwrap(),
+        )
+        .unwrap();
+        let (a, _) = st.create_artifact(&AuditCtx::DAEMON, p, None).unwrap();
+        let link = st
+            .record_remote_push(
+                &a.id,
+                &r.id,
+                "pub1",
+                "https://clax.dev/a/pub1",
+                (1, 1),
+                None,
+            )
+            .unwrap();
+        let mc = |id: &str, kind: &str, name: &str| MirrorComment {
+            remote_comment_id: id.into(),
+            author: RemoteAuthor {
+                kind: kind.into(),
+                public_id: None,
+                name: name.into(),
+            },
+            body: "words".into(),
+        };
+        let t = st
+            .mirror_thread(
+                &AuditCtx::DAEMON,
+                &link,
+                ("clax.dev", "https://clax.dev"),
+                1,
+                true,
+                MirrorThread {
+                    remote_thread_id: "rt1".into(),
+                    remote_version: 1,
+                    anchor: serde_json::from_value(json!({"kind": "artifact"})).unwrap(),
+                    first: mc("rc1", "viewer", "Sam"),
+                },
+            )
+            .unwrap();
+        let c = st
+            .mirror_comment(
+                &AuditCtx::DAEMON,
+                &t.id,
+                &r.id,
+                &mc("rc2", "agent", "Fixer"),
+            )
+            .unwrap()
+            .unwrap();
+        let mut i = item(Kind::Reply, None);
+        i.thread_id = Some(t.id.clone());
+        i.comment_id = Some(c.id.clone());
+        let mut v = json!({});
+        linked_tag(&st, &i, &mut v).unwrap();
+        assert_eq!(
+            v["linked"],
+            json!({"remote": "clax.dev", "unlinked": false, "author": "Fixer (on clax.dev)"})
+        );
+        // An item on a local thread carries none.
+        i.thread_id = Some("t_local".into());
+        let mut v = json!({});
+        linked_tag(&st, &i, &mut v).unwrap();
+        assert!(v.get("linked").is_none());
     }
 
     #[test]

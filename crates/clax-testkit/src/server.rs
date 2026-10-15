@@ -543,6 +543,9 @@ impl TestServer {
             web: web_ui(),
             hosted: None,
             git_remotes: Arc::default(),
+            linked: Arc::new(crate::linked::Linked::new(Arc::new(
+                crate::questions::TokioSleeper,
+            ))),
         };
         f(&mut state);
         state.audit_wake.install(&state.store);
@@ -555,6 +558,7 @@ impl TestServer {
         clax_server::routes::people::listen(&state);
         clax_http::pushes::listen(&state);
         clax_http::git_remotes::listen(&state);
+        crate::linked::listen(&state);
         let events = state.events.clone();
         let store = state.store.clone();
         let working = state.working.clone();

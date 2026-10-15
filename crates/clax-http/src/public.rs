@@ -252,7 +252,7 @@ impl Client {
 
     /// `method` `path` with `body`, answered as JSON; a 2xx answer's body,
     /// else the remote's refusal.
-    async fn call(
+    pub(crate) async fn call(
         &self,
         method: reqwest::Method,
         path: &str,
@@ -267,7 +267,7 @@ impl Client {
 
     /// `method` `path`, its body and headers set by `with`, as
     /// [`Client::call`] answers.
-    async fn send(
+    pub(crate) async fn send(
         &self,
         method: reqwest::Method,
         path: &str,
@@ -326,12 +326,17 @@ impl Client {
         Err(fail(Some(status), &code, message, v))
     }
 
-    async fn post(&self, path: &str, body: &Value) -> Result<Value, RemoteFail> {
+    pub(crate) async fn post(&self, path: &str, body: &Value) -> Result<Value, RemoteFail> {
         self.call(reqwest::Method::POST, path, Some(body)).await
     }
 
     /// POST `body` to `path` with idempotency key `key`.
-    async fn post_keyed(&self, path: &str, body: &Value, key: &str) -> Result<Value, RemoteFail> {
+    pub(crate) async fn post_keyed(
+        &self,
+        path: &str,
+        body: &Value,
+        key: &str,
+    ) -> Result<Value, RemoteFail> {
         self.send(reqwest::Method::POST, path, |r| {
             r.header(IDEMPOTENCY, key).json(body)
         })
@@ -377,8 +382,79 @@ impl Client {
         Ok(url)
     }
 
-    async fn get(&self, path: &str) -> Result<Value, RemoteFail> {
+    pub(crate) async fn get(&self, path: &str) -> Result<Value, RemoteFail> {
         self.call(reqwest::Method::GET, path, None).await
+    }
+
+    /// The session this client speaks for, if any: its ID and secret.
+    pub(crate) fn session(&self) -> Option<&(String, Secret)> {
+        self.session.as_ref()
+    }
+
+    /// The bytes `GET path` answers, at most `max` of them, with the
+    /// answer's content type; else the remote's refusal.
+    pub(crate) async fn get_bytes(
+        &self,
+        path: &str,
+        max: usize,
+    ) -> Result<(Vec<u8>, String), RemoteFail> {
+        let mut r = self.http.get(format!("{}{path}", self.origin));
+        if let Some(t) = &self.token {
+            r = r.bearer_auth(t.expose());
+        }
+        let fail = |status, code: &str, message: String| RemoteFail {
+            origin: self.origin.clone(),
+            status,
+            code: code.to_string(),
+            message,
+            body: Value::Null,
+        };
+        let res = timeout(r)
+            .send()
+            .await
+            .map_err(|e| fail(None, "unreachable", e.to_string()))?;
+        let status = res.status().as_u16();
+        if !(200..300).contains(&status) {
+            return Err(fail(Some(status), "error", format!("HTTP {status}")));
+        }
+        if res.content_length().is_some_and(|n| n > max as u64) {
+            return Err(fail(
+                Some(status),
+                "too_large",
+                "the answer is too large".into(),
+            ));
+        }
+        let ct = res
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        let bytes = res
+            .bytes()
+            .await
+            .map_err(|e| fail(None, "unreachable", e.to_string()))?;
+        if bytes.len() > max {
+            return Err(fail(
+                Some(status),
+                "too_large",
+                "the answer is too large".into(),
+            ));
+        }
+        Ok((bytes.to_vec(), ct))
+    }
+
+    /// POSTs multipart `form` to `path` with idempotency key `key`.
+    pub(crate) async fn post_form_keyed(
+        &self,
+        path: &str,
+        form: reqwest::multipart::Form,
+        key: &str,
+    ) -> Result<Value, RemoteFail> {
+        self.send(reqwest::Method::POST, path, |r| {
+            r.header(IDEMPOTENCY, key).multipart(form)
+        })
+        .await
     }
 
     /// Registers a remote session for the local agent `name` of `harness`
@@ -386,7 +462,11 @@ impl Client {
     /// remote's versions; one the remote refuses (taken there) leaves the
     /// session the remote's own name. The by-hand harness, which a public
     /// Clax older than it refuses, falls back to `claude` there.
-    async fn session_for(&mut self, harness: &str, name: &str) -> Result<(), RemoteFail> {
+    pub(crate) async fn session_for(
+        &mut self,
+        harness: &str,
+        name: &str,
+    ) -> Result<(), RemoteFail> {
         self.end_session().await;
         let v = match self
             .post("/api/sessions", &json!({"harness": harness, "cwd": ""}))
@@ -412,7 +492,7 @@ impl Client {
     }
 
     /// Ends the remote session this client speaks for, if any.
-    async fn end_session(&mut self) {
+    pub(crate) async fn end_session(&mut self) {
         if let Some((sid, _)) = self.session.clone() {
             let _ = self
                 .call(
@@ -797,8 +877,27 @@ impl Run<'_> {
     }
 
     /// Records that local version `local_n` made public version `n` of
-    /// public artifact `tid`.
-    async fn record(&mut self, tid: &str, local_n: u32, n: u32) -> Result<(), ApiError> {
+    /// public artifact `tid`, and that `n` is `local_n`'s twin
+    /// ([`clax_store::linked`]) unless it is a stand-in (`twin`
+    /// false: a new public artifact's first version, made before its
+    /// assets could be).
+    async fn record(
+        &mut self,
+        tid: &str,
+        local_n: u32,
+        n: u32,
+        twin: bool,
+    ) -> Result<(), ApiError> {
+        if twin {
+            let (r2, a2, t2) = (
+                self.remote.id.clone(),
+                self.aid.as_str().to_string(),
+                tid.to_string(),
+            );
+            self.s
+                .store_call(move |st| st.record_remote_twin(&r2, &a2, &t2, local_n, n))
+                .await?;
+        }
         let url = format!("{}/a/{tid}", self.remote.origin);
         let (a2, r2, t2, auto) = (
             self.aid.as_str().to_string(),
@@ -1058,7 +1157,7 @@ pub async fn push(
                 )
                 .await?;
             let fid = remote_id(&v, &remote.origin)?;
-            run.record(&fid, l.pushed_n, 1).await?;
+            run.record(&fid, l.pushed_n, 1, true).await?;
             l.pushed_n + 1
         }
     };
@@ -1098,12 +1197,12 @@ pub async fn push(
                 // then, so a push cut short sends it again.
                 let key = version_key(aid.as_str(), v.n, &new_target);
                 let (tid, n) = run.send(v, false, &meta, &key).await?;
-                run.record(&tid, v.n - 1, n).await?;
+                run.record(&tid, v.n - 1, n, false).await?;
             }
             run.upload(&refs).await?;
             let key = version_key(aid.as_str(), v.n, &new_target);
             let (tid, n) = run.send(v, true, &meta, &key).await?;
-            run.record(&tid, v.n, n).await?;
+            run.record(&tid, v.n, n, true).await?;
             pushed.push((v.n, n));
         }
         Ok::<_, ApiError>(())
@@ -1138,6 +1237,10 @@ pub async fn push(
                 .ok_or_else(ApiError::not_found)?
         }
     };
+    // The link's threads follow: a new link starts its sync, and a thread
+    // held for a version pushed now goes up.
+    s.linked.links_changed();
+    s.linked.kick(Some(&rid));
     Ok(Pushed {
         link,
         versions: pushed,

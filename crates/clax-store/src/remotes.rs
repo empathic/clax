@@ -117,10 +117,15 @@ pub struct RemoteLink {
     pub auto: bool,
     pub created_at: String,
     pub pushed_at: String,
+    /// Local threads stay local; replies and resolves on linked threads
+    /// still go up ([`crate::linked`]).
+    pub download_only: bool,
+    /// The newest activity time read from the public copy's threads.
+    pub sync_cursor: Option<String>,
 }
 
 const LINK_COLS: &str = "artifact_id, remote_id, remote_artifact_id, url, pushed_n, remote_n,
-    auto, created_at, pushed_at";
+    auto, created_at, pushed_at, download_only, sync_cursor";
 
 fn row_link(r: &Row<'_>) -> rusqlite::Result<RemoteLink> {
     Ok(RemoteLink {
@@ -133,6 +138,8 @@ fn row_link(r: &Row<'_>) -> rusqlite::Result<RemoteLink> {
         auto: r.get(6)?,
         created_at: r.get(7)?,
         pushed_at: r.get(8)?,
+        download_only: r.get(9)?,
+        sync_cursor: r.get(10)?,
     })
 }
 
@@ -327,8 +334,10 @@ impl Store {
         })
     }
 
-    /// Forgets remote `id`, with its links and waiting approvals. The
-    /// agent token stays live there until revoked on its People page.
+    /// Forgets remote `id`, with its links and waiting approvals. Its
+    /// linked threads stay as read-only history, and their unsent writes
+    /// wait for the owner ([`crate::linked`]). The agent token stays
+    /// live there until revoked on its People page.
     ///
     /// # Errors
     /// `NotFound` for no such remote.
@@ -342,6 +351,10 @@ impl Store {
                 )
                 .optional()?
                 .ok_or(CoreError::NotFound)?;
+            tx.execute(
+                "UPDATE linked_threads SET unlinked_at = ?2 WHERE remote_id = ?1 AND unlinked_at IS NULL",
+                params![id, self.now()],
+            )?;
             tx.execute("DELETE FROM remote_links WHERE remote_id = ?1", params![id])?;
             tx.execute(
                 "DELETE FROM remote_assets WHERE remote_id = ?1",
@@ -353,6 +366,18 @@ impl Store {
             )?;
             tx.execute("DELETE FROM remotes WHERE id = ?1", params![id])?;
             Ok(r)
+        })
+    }
+
+    /// Every link, oldest first.
+    pub fn all_remote_links(&self) -> Result<Vec<RemoteLink>> {
+        self.with_read(|c| {
+            let mut stmt = c.prepare(&format!(
+                "SELECT {LINK_COLS} FROM remote_links ORDER BY created_at, artifact_id, remote_id"
+            ))?;
+            Ok(stmt
+                .query_map([], row_link)?
+                .collect::<rusqlite::Result<_>>()?)
         })
     }
 

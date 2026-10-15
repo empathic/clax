@@ -111,6 +111,7 @@ pub mod github;
 pub mod hosted;
 pub mod inbox;
 pub mod joined;
+pub mod linked;
 pub mod live;
 pub mod migrations;
 pub mod people;

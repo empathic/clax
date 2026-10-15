@@ -172,6 +172,9 @@ pub struct AppState {
     /// The host's git remotes ([`crate::git_remotes`]), once it installs
     /// them; empty on the native daemon.
     pub git_remotes: Arc<crate::git_remotes::Slot>,
+    /// Linked threads' sync with remotes ([`crate::linked`]); idle on a
+    /// hosted daemon.
+    pub linked: Arc<crate::linked::Linked>,
     /// Debug builds: whether this is the testkit's daemon, which honours
     /// the `x-clax-test-delay-ms` header (so a test can make a real route
     /// slow) and serves `GET /api/_test/audit/ctx` (`clax_server::router`).
@@ -320,6 +323,9 @@ impl AppState {
             test_daemon: false,
             web: p.web,
             git_remotes: Arc::default(),
+            linked: Arc::new(crate::linked::Linked::new(Arc::new(
+                crate::questions::TokioSleeper,
+            ))),
             store: p.store,
         })
     }
@@ -380,6 +386,7 @@ impl AppState {
         crate::routes::people::listen(self);
         crate::pushes::listen(self);
         crate::git_remotes::listen(self);
+        crate::linked::listen(self);
     }
 }
 

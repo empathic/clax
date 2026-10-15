@@ -397,6 +397,18 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/api/remotes/{id}", delete(remotes::remove))
         .route("/api/remotes/{id}/poll", post(remotes::poll))
         .route("/api/artifacts/{aid}/remotes", get(remotes::for_artifact))
+        .route(
+            "/api/artifacts/{aid}/remotes/{rid}",
+            axum::routing::patch(remotes::patch_link).delete(remotes::unlink),
+        )
+        .route(
+            "/api/artifacts/{aid}/remotes/{rid}/retry",
+            post(remotes::retry),
+        )
+        .route(
+            "/api/artifacts/{aid}/unsent:drop",
+            post(remotes::drop_unsent),
+        )
         .route("/api/artifacts/{aid}/push", post(remotes::push))
         .route(
             "/api/artifacts/{aid}/assets",

@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 const SECRET: &str = "the setup secret";
 
-async fn json_of(r: reqwest::Response) -> (u16, Value) {
+pub(crate) async fn json_of(r: reqwest::Response) -> (u16, Value) {
     let status = r.status().as_u16();
     let text = r.text().await.unwrap();
     (status, serde_json::from_str(&text).unwrap_or(json!(text)))
@@ -24,15 +24,15 @@ fn code(v: &Value) -> &str {
 }
 
 /// A hosted daemon and its owner's browser.
-struct Public {
-    ts: TestServer,
-    clock: Arc<ManualClock>,
-    origin: String,
-    cookie: String,
+pub(crate) struct Public {
+    pub(crate) ts: TestServer,
+    pub(crate) clock: Arc<ManualClock>,
+    pub(crate) origin: String,
+    pub(crate) cookie: String,
 }
 
 impl Public {
-    async fn new() -> Public {
+    pub(crate) async fn new() -> Public {
         let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
         let ts = TestServer::spawn_hosted(clock.clone(), Some(SECRET)).await;
         let origin = format!("http://localhost:{}", ts.addr.port());
@@ -64,7 +64,12 @@ impl Public {
     }
 
     /// A request of the owner's browser at the public origin.
-    async fn browser(&self, method: reqwest::Method, path: &str, body: Value) -> (u16, Value) {
+    pub(crate) async fn browser(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Value,
+    ) -> (u16, Value) {
         let mut r = self
             .ts
             .client
@@ -79,7 +84,7 @@ impl Public {
 
     /// Invites a person named `name` and makes the browser theirs: its
     /// later requests are that person's. Their public ID.
-    async fn become_person(&mut self, name: &str) -> String {
+    pub(crate) async fn become_person(&mut self, name: &str) -> String {
         let (s, v) = self
             .browser(
                 reqwest::Method::POST,
@@ -121,7 +126,12 @@ impl Public {
     }
 
     /// A request of the owner's CLI there (the daemon token).
-    async fn cli(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> (u16, Value) {
+    pub(crate) async fn cli(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> (u16, Value) {
         let mut r = self
             .ts
             .client
@@ -135,7 +145,7 @@ impl Public {
     }
 }
 
-async fn local_req(
+pub(crate) async fn local_req(
     ts: &TestServer,
     method: reqwest::Method,
     path: &str,
@@ -151,13 +161,13 @@ async fn local_req(
     json_of(r.send().await.unwrap()).await
 }
 
-async fn post(ts: &TestServer, path: &str, body: Value) -> (u16, Value) {
+pub(crate) async fn post(ts: &TestServer, path: &str, body: Value) -> (u16, Value) {
     local_req(ts, reqwest::Method::POST, path, body, None).await
 }
 
 /// Signs `local` in to `public` by device code, the public owner
 /// approving; the remote's view.
-async fn connect(local: &TestServer, public: &Public) -> Value {
+pub(crate) async fn connect(local: &TestServer, public: &Public) -> Value {
     let (s, v) = post(local, "/api/remotes", json!({"url": public.origin})).await;
     assert_eq!(s, 201, "{v}");
     let uc = v["user_code"].as_str().unwrap().to_string();

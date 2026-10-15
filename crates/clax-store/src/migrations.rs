@@ -970,6 +970,93 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE INDEX artifact_shares_of_viewer ON artifact_shares(viewer_id) WHERE viewer_id IS NOT NULL;
     CREATE INDEX artifact_shares_of_login ON artifact_shares(github_login) WHERE viewer_id IS NULL;
     ALTER TABLE artifacts ADD COLUMN link_listed INTEGER NOT NULL DEFAULT 0;",
+    // 33: linked threads (`crate::linked`): a local artifact's
+    // comments kept in step with its public twin's. On a local daemon,
+    // `remote_versions` records each local version a push made into a
+    // public version (the anchor translation); `linked_threads` pairs a
+    // local thread with its twin on a remote (`origin`: the side it started
+    // on; `remote_thread_id` is NULL until an up-sent thread is
+    // acknowledged; `remote_version` and `twin` say which public version
+    // it is on and whether a local version is that one's twin;
+    // `synced_status` the status both sides last agreed on; `unlinked_at`
+    // once the link or remote is gone, when it is read-only history;
+    // `remote_name` and `remote_origin` kept for that history);
+    // `linked_comments` pairs comments the same way, with the idempotency
+    // key an up-send carries and, for a comment from the remote, its
+    // author there (display only: never a local person); `linked_outbox`
+    // holds the local writes not yet acknowledged by the remote, in order.
+    // `remote_links` gains the download-only switch and the sync cursor.
+    // On a hosted daemon, `comment_keys` holds the idempotency key an
+    // agent token's comment or thread named and what it made, so a resend
+    // answers that again. A daemon writes only its own side's tables.
+    "CREATE TABLE remote_versions (
+        remote_id TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        remote_artifact_id TEXT NOT NULL,
+        local_n INTEGER NOT NULL,
+        remote_n INTEGER NOT NULL,
+        PRIMARY KEY (remote_id, remote_artifact_id, remote_n)
+    );
+    CREATE INDEX remote_versions_by_local ON remote_versions(remote_id, artifact_id, local_n);
+    CREATE TABLE linked_threads (
+        thread_id TEXT PRIMARY KEY,
+        remote_id TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        remote_artifact_id TEXT NOT NULL,
+        remote_thread_id TEXT,
+        origin TEXT NOT NULL CHECK (origin IN ('remote', 'local')),
+        remote_version INTEGER,
+        twin INTEGER NOT NULL DEFAULT 1,
+        synced_status TEXT NOT NULL DEFAULT 'open',
+        remote_name TEXT NOT NULL,
+        remote_origin TEXT NOT NULL,
+        unlinked_at TEXT,
+        created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX linked_threads_by_remote ON linked_threads(remote_id, remote_thread_id)
+        WHERE remote_thread_id IS NOT NULL;
+    CREATE INDEX linked_threads_by_artifact ON linked_threads(artifact_id, remote_id);
+    CREATE TABLE linked_comments (
+        comment_id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL,
+        remote_id TEXT NOT NULL,
+        remote_comment_id TEXT,
+        idem_key TEXT NOT NULL UNIQUE,
+        origin TEXT NOT NULL CHECK (origin IN ('remote', 'local')),
+        author_kind TEXT,
+        author_public_id TEXT,
+        author_name TEXT,
+        created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX linked_comments_by_remote ON linked_comments(remote_id, remote_comment_id)
+        WHERE remote_comment_id IS NOT NULL;
+    CREATE INDEX linked_comments_by_thread ON linked_comments(thread_id);
+    CREATE TABLE linked_outbox (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        remote_id TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('thread', 'comment', 'resolve', 'reopen')),
+        comment_id TEXT,
+        idem_key TEXT NOT NULL UNIQUE,
+        agent_name TEXT,
+        agent_harness TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        failed_at TEXT,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX linked_outbox_by_thread ON linked_outbox(thread_id, seq);
+    ALTER TABLE remote_links ADD COLUMN download_only INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE remote_links ADD COLUMN sync_cursor TEXT;
+    CREATE TABLE comment_keys (
+        grant_id TEXT NOT NULL,
+        key TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        comment_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (grant_id, key)
+    );",
 ];
 
 /// The audit journal's migration, as a schema version (the

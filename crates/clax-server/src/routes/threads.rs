@@ -120,6 +120,22 @@ fn acting(c: &Caller) -> (Option<String>, Option<String>) {
     (c.session().map(str::to_string), grant)
 }
 
+/// An agent token's grant and the idempotency key its comment or new
+/// thread names (`Idempotency-Key`, as a publish's): `None` without one,
+/// and for every other caller, whose writes are as before.
+///
+/// # Errors
+/// 400 `invalid_args` for a key that is not one.
+fn comment_key(
+    c: &Caller,
+    headers: &axum::http::HeaderMap,
+) -> Result<Option<(String, String)>, ApiError> {
+    let Caller::PersonAgent { grant, .. } = c else {
+        return Ok(None);
+    };
+    Ok(super::artifacts::publish_key(headers, Some(grant))?.map(|k| (grant.clone(), k)))
+}
+
 /// What a person's agent's comment needs (spec §6.7): a session, since a
 /// person's own comments are written in their browser and agent replies
 /// come from agent sessions (400 `no_session`); and no `via_page`, which
@@ -227,6 +243,25 @@ pub struct ListQuery {
     include_resolved: bool,
     cursor: Option<String>,
     limit: Option<usize>,
+    /// An agent token's: only threads with activity (made, commented on or
+    /// resolved) at or after this time, as the daemon writes times.
+    since: Option<String>,
+}
+
+/// The newest time thread `t` was made, commented on or resolved.
+pub fn activity_of(t: &Thread) -> &str {
+    let mut at = t.created_at.as_str();
+    for c in &t.comments {
+        if c.created_at.as_str() > at {
+            at = &c.created_at;
+        }
+    }
+    if let Some(r) = t.resolved_at.as_deref()
+        && r > at
+    {
+        at = r;
+    }
+    at
 }
 
 pub async fn list(
@@ -237,6 +272,12 @@ pub async fn list(
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
+    if q.since.is_some() && !a.caller.is_agent() {
+        return Err(ApiError::bad_request(
+            "invalid_query",
+            "since is for an agent token's reads",
+        ));
+    }
     let with_path = a.holds_token();
     let codex = s.feedback_ctx().codex_push();
     let limit = q.limit.unwrap_or(DEFAULT_THREAD_PAGE).clamp(1, 200);
@@ -244,8 +285,11 @@ pub async fn list(
     let (threads, next) = s
         .store_call(move |st| {
             let vis = vf.build(st)?;
-            let (ts, next) =
+            let (mut ts, next) =
                 st.list_threads(&id, q.include_resolved, q.cursor.as_deref(), limit)?;
+            if let Some(since) = q.since.as_deref() {
+                ts.retain(|t| activity_of(t) >= since);
+            }
             Ok((vis.filter_threads(st, &ts, codex, with_path)?, next))
         })
         .await?;
@@ -633,12 +677,37 @@ pub async fn create(
     _o: SameOrigin,
     who: Identity,
     audit: DeferredAudit,
+    headers: axum::http::HeaderMap,
     aid: Result<Path<String>, PathRejection>,
     mp: Result<Multipart, MultipartRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let id = parse_id(&path(aid)?)?;
     refuse_merged_away(&s, id.as_str()).await?;
     clax_http::seats::require_seat(&s, &a.caller, &id).await?;
+    let key = comment_key(&a.caller, &headers)?;
+    if let Some((grant, k)) = key.clone() {
+        // A resend of a keyed thread answers the thread it made.
+        let vf = VisFor::of(&a.caller, &s);
+        let codex = s.feedback_ctx().codex_push();
+        let id2 = id.clone();
+        let made = s
+            .store_call(move |st| match st.comment_key(&grant, &k)? {
+                Some((tid, _)) => {
+                    let vis = vf.build(st)?;
+                    Ok(Some(vis.filter_thread(
+                        st,
+                        &thread_of(st, &id2, &tid)?,
+                        codex,
+                        false,
+                    )?))
+                }
+                None => Ok(None),
+            })
+            .await?;
+        if let Some(view) = made {
+            return Ok((StatusCode::CREATED, Json(json!({"thread": view}))));
+        }
+    }
     let mut mp = mp.map_err(|e| multipart_error(e.status(), e.body_text()))?;
     let (mut anchor, mut text, mut version, mut clip) = (None, None, None, None);
     let mut via_page = false;
@@ -771,6 +840,9 @@ pub async fn create(
                 &hidden,
             )
             .await?;
+            if let (Some((grant, k)), Some(first)) = (&key, thread.comments.first()) {
+                st.record_comment_key(grant, k, &thread.id, &first.id)?;
+            }
             let view = vis.filter_thread(st, &thread, ctx.codex_push(), with_path)?;
             Ok((view, unresolved))
         })
@@ -783,6 +855,28 @@ pub async fn create(
         out["unresolved_mentions"] = json!(unresolved);
     }
     Ok((StatusCode::CREATED, Json(out)))
+}
+
+/// 409 `thread_unlinked` for a thread mirrored from a remote the artifact
+/// is no longer linked to: it is read-only history there
+/// ([`clax_store::linked`]).
+async fn refuse_unlinked(s: &AppState, tid: &str) -> Result<(), ApiError> {
+    if s.hosted.is_some() {
+        return Ok(());
+    }
+    let t = tid.to_string();
+    let lt = s.store_call(move |st| st.linked_thread(&t)).await?;
+    match lt {
+        Some(lt) if lt.unlinked_at.is_some() => Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "thread_unlinked",
+            format!(
+                "this thread is history of {}, which this artifact is no longer linked to: it is read-only",
+                lt.remote_name
+            ),
+        )),
+        _ => Ok(()),
+    }
 }
 
 #[derive(Deserialize)]
@@ -830,6 +924,7 @@ pub async fn comment(
     _o: SameOrigin,
     who: Identity,
     audit: DeferredAudit,
+    headers: axum::http::HeaderMap,
     p: Result<Path<(String, String)>, PathRejection>,
     req: Result<Json<CommentBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
@@ -837,7 +932,37 @@ pub async fn comment(
     let reads = a.read_rights();
     let id = parse_id(&aid)?;
     clax_http::seats::require_seat(&s, &a.caller, &id).await?;
+    refuse_unlinked(&s, &tid).await?;
     let b = body(req)?;
+    let key = comment_key(&a.caller, &headers)?;
+    if let Some((grant, k)) = key.clone() {
+        // A resend of a keyed comment answers the comment it made.
+        let vf = VisFor::of(&a.caller, &s);
+        let codex = s.feedback_ctx().codex_push();
+        let (id2, tid2, aid2) = (id.clone(), tid.clone(), aid.clone());
+        let made = s
+            .store_call(move |st| match st.comment_key(&grant, &k)? {
+                Some((ktid, cid)) if ktid == tid2 => {
+                    let vis = vf.build(st)?;
+                    let t = thread_of(st, &id2, &tid2)?;
+                    let Some(c) = t.comments.iter().find(|c| c.id == cid) else {
+                        return Ok(None);
+                    };
+                    let comment = vis.filter_comment(&aid2, c);
+                    Ok(Some(json!({"comment": comment,
+                        "thread": vis.filter_thread(st, &t, codex, false)?})))
+                }
+                Some(_) => Err(CoreError::invalid(
+                    "invalid_args",
+                    "this Idempotency-Key made a comment on another thread",
+                )),
+                None => Ok(None),
+            })
+            .await?;
+        if let Some(v) = made {
+            return Ok((StatusCode::CREATED, Json(v)).into_response());
+        }
+    }
     let agent = match b.author_kind.as_deref() {
         None | Some("viewer") => false,
         Some("agent") => true,
@@ -971,6 +1096,9 @@ pub async fn comment(
                 }
                 c
             };
+            if let Some((grant, k)) = &key {
+                st.record_comment_key(grant, k, &tid, &c.id)?;
+            }
             ctx.events.publish(Event::Comment {
                 artifact_id: aid.clone(),
                 thread_id: tid.clone(),
@@ -1311,6 +1439,7 @@ pub async fn resolve(
     let reads = a.read_rights();
     let id = parse_id(&aid)?;
     clax_http::seats::require_seat(&s, &a.caller, &id).await?;
+    refuse_unlinked(&s, &tid).await?;
     let agent = acting_as(&raw)?;
     if agent && !may_act_as_agent(&a) {
         return Err(ApiError::unauthorized());
@@ -1449,6 +1578,7 @@ pub async fn reopen(
     let (aid, tid) = path(p)?;
     let id = parse_id(&aid)?;
     clax_http::seats::require_seat(&s, &a.caller, &id).await?;
+    refuse_unlinked(&s, &tid).await?;
     let agent = acting_as(&raw)?;
     let authed = may_act_as_agent(&a);
     if agent && !authed {
