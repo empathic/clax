@@ -64,6 +64,10 @@ pub enum FeedbackPhase {
     /// Held from its agent because its person declined its author there
     /// (spec 2026-10-08 §9.3, §10): waiting for nothing.
     Declined,
+    /// Held from its agent because the agent may no longer read the
+    /// artifact (spec 2026-10-08 §7.5): read by the owner and the agent's
+    /// person only, others reading its plain state.
+    NoAccess,
     Delivered,
     Acknowledged,
     AgentEnded,
@@ -72,7 +76,8 @@ pub enum FeedbackPhase {
 /// Where a thread's latest forwarded comment stands, for the shell's waiting
 /// indicator, as one reader reads it ([`crate::Delivery::view`]).
 /// `tier` is the tier waited on (`sent`), the delivering tier (`delivered`,
-/// `acknowledged`), or `None` (`agent_ended`, `withheld`, `declined`).
+/// `acknowledged`), or `None` (`agent_ended`, `withheld`, `declined`,
+/// `no_access`).
 /// `approver` names, for `withheld`, the person whose approval the comment
 /// waits for, and for `declined` the person who declined; it is absent
 /// otherwise and for agents. `mine` is set when that person is the reader

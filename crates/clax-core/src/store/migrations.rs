@@ -675,6 +675,7 @@ pub const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (kind, id, author)
     );
     ALTER TABLE feedback ADD COLUMN placeholder_at TEXT;
+    ALTER TABLE feedback ADD COLUMN no_access_at TEXT;
     ALTER TABLE artifacts ADD COLUMN text_authors_json TEXT;
     ALTER TABLE send_batches ADD COLUMN sender TEXT;
     ALTER TABLE threads ADD COLUMN resolved_by_person TEXT;",

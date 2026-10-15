@@ -469,6 +469,7 @@ fn delivery(t: &Value) -> String {
         Some("delivered") => "sent to agent, delivered".into(),
         Some("acknowledged") => "sent to agent, read".into(),
         Some("agent_ended") => "sent to agent, whose session ended".into(),
+        Some("no_access") => "sent to agent, held: the agent no longer has access".into(),
         Some("withheld") => match t["feedback_state"]["approver"].as_str() {
             Some(who) => format!(
                 "sent to agent, waiting for {}'s approval",
@@ -846,6 +847,15 @@ fn name(cli: &crate::Cli, home: &Home, a: &NameArgs) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_thread_held_for_lost_access_reads_held() {
+        let t = serde_json::json!({"feedback_state": {"state": "no_access"}});
+        assert_eq!(
+            delivery(&t),
+            "sent to agent, held: the agent no longer has access"
+        );
+    }
 
     #[test]
     fn thread_references_name_a_number_or_an_id() {

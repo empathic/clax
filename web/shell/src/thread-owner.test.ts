@@ -129,6 +129,10 @@ describe("a thread's owner and delivery state", () => {
     expect(waitingLabel({ ...withheld, approver: undefined }, new Date())).toBe("waiting for approval");
   });
 
+  it("reads a thread held for lost access as held, naming no approval", () => {
+    expect(waitingLabel({ ...withheld, state: "no_access", approver: undefined }, new Date())).toBe("held: the agent no longer has access");
+  });
+
   it("asks for no approval card where the host shows none (the extension's panel), for a thread never sent, or in a browser with no inbox", async () => {
     const f = vi.fn(async () => new Response("{}"));
     vi.stubGlobal("fetch", f);

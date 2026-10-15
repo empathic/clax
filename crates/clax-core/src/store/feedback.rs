@@ -383,6 +383,9 @@ struct Pending {
     batch: Option<FeedbackBatch>,
     /// A take held it and told the session (`placeholder_at`).
     told: bool,
+    /// A take held it because the session may no longer read its
+    /// artifact, and told the session so (`no_access_at`).
+    gone_told: bool,
     /// The comment's author as the filter reads it: its viewer, or for an
     /// agent's comment, [`Author::System`] (an agent's name is never
     /// marked).
@@ -628,8 +631,9 @@ impl Held {
     /// Stamps `placeholder_at` on each counted row at `now`, and the
     /// placeholders: each with its artifact's title as `vis` (the take's
     /// view) lets its reader see it, and whether the reader's person has
-    /// been asked there; then one `no_access` placeholder per thread on an
-    /// artifact the session may no longer read.
+    /// been asked there; then stamps `no_access_at` on each row on an
+    /// artifact the session may no longer read, with one `no_access`
+    /// placeholder per thread.
     fn finish(
         self,
         sight: &mut Sight<'_>,
@@ -700,7 +704,7 @@ impl Held {
         for (tid, ids) in self.gone {
             for id in &ids {
                 sight.c.execute(
-                    "UPDATE feedback SET placeholder_at = ?2 WHERE id = ?1",
+                    "UPDATE feedback SET no_access_at = ?2 WHERE id = ?1",
                     params![id, now],
                 )?;
             }
@@ -1158,8 +1162,10 @@ impl Store {
     /// over; each undelivered one not yet told of is counted in one
     /// `no_access` [`Placeholder`] per thread ("you no longer have access
     /// to this page", nothing of the page or its comments) and gets
-    /// `placeholder_at`, so the session is told once, as for withheld
-    /// bodies; `queue` tells of none. `None` reads every artifact.
+    /// `no_access_at`, so the session is told once; `queue` tells of none.
+    /// A row the session may read again loses `no_access_at`, and is
+    /// handed over or held as withheld as any other. `None` reads every
+    /// artifact.
     pub fn take_feedback_readable(
         &self,
         ctx: &AuditCtx,
@@ -1222,6 +1228,7 @@ impl Store {
                                 None => None,
                             },
                             told: r.get(18)?,
+                            gone_told: r.get(21)?,
                             writer: if r.get::<_, String>(19)? == AUTHOR_AGENT {
                                 Author::System
                             } else {
@@ -1255,12 +1262,19 @@ impl Store {
                     match sight.artifact(&p.artifact_id)? {
                         Some(a) if may(&a) => {}
                         _ => {
-                            if !p.delivered && !p.told && q.tier != Tier::Queue {
+                            if !p.delivered && !p.gone_told && q.tier != Tier::Queue {
                                 held.add_gone(&p);
                             }
                             continue;
                         }
                     }
+                }
+                // Readable (again): a later loss of access is told again.
+                if p.gone_told {
+                    tx.execute(
+                        "UPDATE feedback SET no_access_at = NULL WHERE id = ?1",
+                        params![p.id],
+                    )?;
                 }
                 let withheld = if vis.is_all() {
                     None
@@ -1825,7 +1839,7 @@ pub(crate) const TAKE_FEEDBACK: &str = "SELECT f.id, f.thread_id, f.comment_id, 
                         t.artifact_id, a.title, t.version_n, t.anchor_json, t.has_clip,
                         c.author_name, c.body, c.created_at, c.via_page,
                         f.batch_id, b.size, b.note, b.sent_by, b.sender, f.placeholder_at IS NOT NULL,
-                        c.author_kind, c.author_public_id
+                        c.author_kind, c.author_public_id, f.no_access_at IS NOT NULL
                  FROM feedback f
                  LEFT JOIN send_batches b ON b.id = f.batch_id
                  JOIN threads t ON t.id = f.thread_id
@@ -1877,7 +1891,8 @@ pub(crate) const FEEDBACK_STATES: &str =
                 SELECT CASE pa.author WHEN '*owner'
                          THEN (SELECT public_id FROM viewers WHERE owner = 1)
                          ELSE pa.author END
-                  FROM page_authors pa WHERE pa.kind = 'comment' AND pa.id = f.comment_id))
+                  FROM page_authors pa WHERE pa.kind = 'comment' AND pa.id = f.comment_id)),
+            f.no_access_at
        FROM json_each(?1) j
       CROSS JOIN feedback f ON f.thread_id = j.value
        JOIN threads t ON t.id = f.thread_id
@@ -1902,6 +1917,9 @@ struct StateRow {
     push_failed: bool,
     /// When a take held it from its session and told it so.
     placeholder_at: Option<String>,
+    /// When a take held it because its session may no longer read the
+    /// artifact, and told it so.
+    no_access_at: Option<String>,
     /// The display name of its session's person.
     person_name: Option<String>,
     /// Undelivered, and an open approval request of its session's person
@@ -1933,13 +1951,22 @@ impl StateRow {
     /// nothing.
     fn waits_for_approval(&self) -> bool {
         self.pending()
-            && (self.requested || (self.placeholder_at.is_some() && self.declined.is_none()))
+            && (self.requested
+                || (self.placeholder_at.is_some()
+                    && self.declined.is_none()
+                    && self.no_access_at.is_none()))
     }
 
     /// Whether its person declined it (spec §10, "declined by Mia"):
     /// pending, no request open, and a decline of its author there in force.
     fn was_declined(&self) -> bool {
         self.pending() && !self.requested && self.declined.is_some()
+    }
+
+    /// Whether it is held because its session may no longer read the
+    /// artifact (spec §7.5): pending, and told so (`no_access_at`).
+    fn lost_access(&self) -> bool {
+        self.pending() && self.no_access_at.is_some()
     }
 
     /// When a take held it from its session and told it so, while it is
@@ -1957,6 +1984,7 @@ impl StateRow {
             self.delivered_at.as_deref(),
             self.acknowledged_at.as_deref(),
             self.placeholder_at.as_deref(),
+            self.no_access_at.as_deref(),
             self.untargeted_at.as_deref(),
             self.last_sent_at.as_deref(),
             self.ended_at.as_deref(),
@@ -2028,6 +2056,8 @@ impl Delivery {
     /// §10, §18):
     /// - the owner and a person: `withheld` and `declined` with whose
     ///   approval, `mine` when it is theirs;
+    /// - the owner and the person whose agent lost access: `no_access`,
+    ///   with no approver;
     /// - an agent: `withheld` with no approver, and a declined thread's
     ///   plain state ([`plain_state`]);
     /// - a visitor: nothing.
@@ -2036,7 +2066,15 @@ impl Delivery {
         if rows.is_empty() {
             return None;
         }
-        let (mut s, by) = state_of(&self.thread_id, &rows, self.codex_push);
+        // Who reads a hold for lost access (spec §7.5, §10): the owner, and
+        // the person whose agent lost it; everyone else, the agent
+        // included, reads such a row's plain state.
+        let knows = |r: &StateRow| match v {
+            DeliveryViewer::Owner => true,
+            DeliveryViewer::Person(p) => r.person.as_deref() == Some(p.as_str()),
+            _ => false,
+        };
+        let (mut s, by) = state_of(&self.thread_id, &rows, self.codex_push, &knows);
         match v {
             DeliveryViewer::Owner => s.mine = by.is_some_and(|p| p.is_none()),
             DeliveryViewer::Person(p) => {
@@ -2182,6 +2220,7 @@ pub(crate) fn deliveries_in(
             armed: r.get::<_, i64>(11)? != 0,
             push_failed: r.get(12)?,
             placeholder_at: r.get(13)?,
+            no_access_at: r.get(21)?,
             person_name: r.get(14)?,
             requested,
             declined,
@@ -2209,11 +2248,14 @@ pub(crate) fn deliveries_in(
 /// comments, waits for its person's approval
 /// ([`StateRow::waits_for_approval`]; even when a later comment went
 /// through); else `declined` while any row was declined
-/// ([`StateRow::was_declined`]); else the plain state ([`plain_state`]).
+/// ([`StateRow::was_declined`]); else `no_access` while a row `knows`
+/// lets its reader know of is held for lost access
+/// ([`StateRow::lost_access`]); else the plain state ([`plain_state`]).
 fn state_of(
     thread_id: &str,
     all: &[&StateRow],
     codex_push: bool,
+    knows: &dyn Fn(&StateRow) -> bool,
 ) -> (FeedbackState, Option<Option<String>>) {
     let held = |phase, r: &StateRow, since: &str| {
         let s = FeedbackState {
@@ -2243,6 +2285,19 @@ fn state_of(
             r,
             r.declined.as_deref().unwrap_or(&r.created_at),
         );
+    }
+    if let Some(r) = all.iter().find(|r| r.lost_access() && knows(r)) {
+        let s = FeedbackState {
+            thread_id: thread_id.to_string(),
+            state: FeedbackPhase::NoAccess,
+            tier: None,
+            since: r.no_access_at.clone().unwrap_or_default(),
+            resends: 0,
+            exhausted: false,
+            approver: None,
+            mine: false,
+        };
+        return (s, None);
     }
     (plain_state(thread_id, all, codex_push), None)
 }
@@ -2383,6 +2438,7 @@ mod tests {
             armed: false,
             push_failed: false,
             placeholder_at: None,
+            no_access_at: None,
             person_name: Some("Sam".into()),
             requested: true,
             declined: None,
@@ -2390,6 +2446,28 @@ mod tests {
             comment_id: comment.into(),
             authors: authors.iter().map(|a| a.to_string()).collect(),
         }
+    }
+
+    #[test]
+    fn a_row_held_for_lost_access_reads_no_access_before_any_approval() {
+        let mut r = row("c1", &["u_mia"], Some("u_sam"));
+        // Told it was withheld, no request open, then access was lost.
+        r.requested = false;
+        r.placeholder_at = Some("2026-10-15T00:01:00Z".into());
+        r.no_access_at = Some("2026-10-15T00:02:00Z".into());
+        let d = Delivery {
+            thread_id: "t".into(),
+            rows: vec![r],
+            codex_push: false,
+        };
+        let owner = d.view(&DeliveryViewer::Owner).unwrap();
+        assert_eq!(owner.state, FeedbackPhase::NoAccess);
+        assert_eq!(owner.since, "2026-10-15T00:02:00Z");
+        let sam = d.view(&DeliveryViewer::Person("u_sam".into())).unwrap();
+        assert_eq!(sam.state, FeedbackPhase::NoAccess);
+        // The author reads it as told, not as waiting for an approval.
+        let mia = d.view(&DeliveryViewer::Person("u_mia".into())).unwrap();
+        assert_eq!(mia.state, FeedbackPhase::Acknowledged);
     }
 
     #[test]
@@ -4140,6 +4218,103 @@ mod delivery {
         // Held, not delivered: readable again, the rows are handed over.
         assert!(w.rows(&tid).iter().all(|f| f.delivered_at.is_none()));
         assert_eq!(w.take(Tier::Piggyback, &vis).items.len(), 2);
+    }
+
+    /// Spec §7.5, §10: a hold for lost access has its own mark, read as
+    /// `no_access` by the owner and the agent's person only; when access
+    /// returns, a body still withheld is told as withheld, and delivered
+    /// once approved.
+    #[test]
+    fn a_no_access_hold_has_its_own_state_and_access_back_tells_the_withheld_line() {
+        let w = two_people();
+        let tid = mia_sends_to_sams_agent(&w, 1);
+        let vis = w.sam_vis();
+        let q = TakeFeedback {
+            session_id: w.sid.clone(),
+            tier: Tier::Piggyback,
+            artifact_id: None,
+            include_resends: true,
+        };
+        let none = |_: &Artifact| false;
+        let r =
+            w.st.take_feedback_readable(DAEMON, &q, BASE, &vis, Some(&none))
+                .unwrap();
+        assert_eq!(r.placeholders.len(), 1);
+        assert!(r.placeholders[0].no_access);
+        let marks = || -> (Option<String>, Option<String>) {
+            w.st.with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT placeholder_at, no_access_at FROM feedback WHERE thread_id = ?1",
+                    params![tid],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?)
+            })
+            .unwrap()
+        };
+        let (told, gone) = marks();
+        assert!(told.is_none() && gone.is_some(), "{told:?} {gone:?}");
+        let d = |v: &DeliveryViewer| {
+            w.st.deliveries(std::slice::from_ref(&tid), false)
+                .unwrap()
+                .remove(&tid)
+                .unwrap()
+                .view(v)
+        };
+        let owner = d(&DeliveryViewer::Owner).unwrap();
+        assert_eq!(owner.state, FeedbackPhase::NoAccess);
+        assert_eq!((owner.approver.clone(), owner.mine), (None, false));
+        assert_eq!(
+            d(&DeliveryViewer::Person(w.sam.clone())).unwrap().state,
+            FeedbackPhase::NoAccess
+        );
+        // The author and the agent read it as plainly sent; a visitor
+        // reads nothing.
+        assert_eq!(
+            d(&DeliveryViewer::Person(w.mia.clone())).unwrap().state,
+            FeedbackPhase::Sent
+        );
+        let agent = DeliveryViewer::Agent {
+            session: Some(w.sid.clone()),
+            every: false,
+        };
+        assert_eq!(d(&agent).unwrap().state, FeedbackPhase::Sent);
+        assert!(d(&DeliveryViewer::Visitor).is_none());
+        // Readable again: the mark goes, and the withheld line is told.
+        let r = w.take(Tier::Piggyback, &vis);
+        assert!(r.items.is_empty());
+        assert_eq!(r.placeholders.len(), 1, "{:?}", r.placeholders);
+        assert!(!r.placeholders[0].no_access);
+        assert!(
+            r.placeholders[0]
+                .line()
+                .contains("is withheld until your person approves it"),
+            "{}",
+            r.placeholders[0].line()
+        );
+        assert!(marks().1.is_none());
+        assert_eq!(
+            d(&DeliveryViewer::Owner).unwrap().state,
+            FeedbackPhase::Withheld
+        );
+        // Losing access again tells again.
+        let r =
+            w.st.take_feedback_readable(DAEMON, &q, BASE, &vis, Some(&none))
+                .unwrap();
+        assert!(
+            r.placeholders.iter().any(|p| p.no_access),
+            "{:?}",
+            r.placeholders
+        );
+        assert_eq!(
+            d(&DeliveryViewer::Owner).unwrap().state,
+            FeedbackPhase::NoAccess
+        );
+        // Approved and readable: delivered.
+        w.approve(&w.mia, Scope::Thread(tid.clone()));
+        let vis = w.sam_vis();
+        let r = w.take(Tier::Piggyback, &vis);
+        assert_eq!(r.items.len(), 1, "{:?}", r.placeholders);
+        assert_eq!(r.items[0].body, "MIACANARY");
     }
 
     #[test]
