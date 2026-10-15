@@ -593,9 +593,19 @@ impl<'a> Sight<'a> {
 #[derive(Default)]
 struct Held {
     groups: Vec<(String, String, Vec<Author>, Vec<String>)>,
+    /// Rows on artifacts the session may no longer read, per thread.
+    gone: Vec<(String, Vec<String>)>,
 }
 
 impl Held {
+    /// Counts row `p`, on an artifact the session may no longer read.
+    fn add_gone(&mut self, p: &Pending) {
+        match self.gone.iter_mut().find(|g| g.0 == p.thread_id) {
+            Some(g) => g.1.push(p.id.clone()),
+            None => self.gone.push((p.thread_id.clone(), vec![p.id.clone()])),
+        }
+    }
+
     /// Counts row `p`, whose body `authors` withhold.
     fn add(&mut self, sight: &mut Sight<'_>, p: &Pending, authors: &[Author]) -> Result<()> {
         let names = sight.names(authors)?;
@@ -618,7 +628,8 @@ impl Held {
     /// Stamps `placeholder_at` on each counted row at `now`, and the
     /// placeholders: each with its artifact's title as `vis` (the take's
     /// view) lets its reader see it, and whether the reader's person has
-    /// been asked there.
+    /// been asked there; then one `no_access` placeholder per thread on an
+    /// artifact the session may no longer read.
     fn finish(
         self,
         sight: &mut Sight<'_>,
@@ -680,9 +691,30 @@ impl Held {
                 thread_id: tid,
                 artifact_id: aid,
                 count: ids.len(),
-                author,
-                title,
+                author: Some(author),
+                title: Some(title),
                 asked,
+                no_access: false,
+            });
+        }
+        for (tid, ids) in self.gone {
+            for id in &ids {
+                sight.c.execute(
+                    "UPDATE feedback SET placeholder_at = ?2 WHERE id = ?1",
+                    params![id, now],
+                )?;
+            }
+            let Some(t) = sight.thread(&tid)? else {
+                continue;
+            };
+            out.push(Placeholder {
+                thread_id: tid,
+                artifact_id: t.artifact_id.clone(),
+                count: ids.len(),
+                author: None,
+                title: None,
+                asked: false,
+                no_access: true,
             });
         }
         Ok(out)
@@ -1122,8 +1154,12 @@ impl Store {
 
     /// [`Store::take_feedback`], holding as well every row on an artifact
     /// `readable` says the session may not read (a person's agent whose
-    /// rights were narrowed since): such rows are neither handed over nor
-    /// told of. `None` reads every artifact.
+    /// rights were narrowed since, spec §7.5): such rows are never handed
+    /// over; each undelivered one not yet told of is counted in one
+    /// `no_access` [`Placeholder`] per thread ("you no longer have access
+    /// to this page", nothing of the page or its comments) and gets
+    /// `placeholder_at`, so the session is told once, as for withheld
+    /// bodies; `queue` tells of none. `None` reads every artifact.
     pub fn take_feedback_readable(
         &self,
         ctx: &AuditCtx,
@@ -1218,7 +1254,12 @@ impl Store {
                 if let Some(may) = readable {
                     match sight.artifact(&p.artifact_id)? {
                         Some(a) if may(&a) => {}
-                        _ => continue,
+                        _ => {
+                            if !p.delivered && !p.told && q.tier != Tier::Queue {
+                                held.add_gone(&p);
+                            }
+                            continue;
+                        }
                     }
                 }
                 let withheld = if vis.is_all() {
@@ -4048,20 +4089,46 @@ mod delivery {
     }
 
     #[test]
-    fn rows_on_an_artifact_the_session_may_not_read_are_held_untold() {
+    fn rows_on_an_artifact_the_session_may_not_read_are_held_and_told_once() {
         let w = two_people();
         let aid = w.publish(&w.sam, "Sam's plan", "Sam's words");
-        let tid = w.thread(&aid, &w.sam, "Sam's own note", "Sam's words", 1);
+        let tid = w.thread(&aid, &w.sam, "Sam's own note", "Sam's words", 2);
         let vis = w.sam_vis();
-        let q = TakeFeedback {
+        let q = |tier| TakeFeedback {
             session_id: w.sid.clone(),
-            tier: Tier::Piggyback,
+            tier,
             artifact_id: None,
             include_resends: true,
         };
         let none = |_: &Artifact| false;
+        // `queue` tells of none.
         let r =
-            w.st.take_feedback_readable(DAEMON, &q, BASE, &vis, Some(&none))
+            w.st.take_feedback_readable(DAEMON, &q(Tier::Queue), BASE, &vis, Some(&none))
+                .unwrap();
+        assert!(r.items.is_empty() && r.placeholders.is_empty());
+        let r =
+            w.st.take_feedback_readable(DAEMON, &q(Tier::Piggyback), BASE, &vis, Some(&none))
+                .unwrap();
+        assert!(r.items.is_empty());
+        assert_eq!(r.placeholders.len(), 1, "{:?}", r.placeholders);
+        let p = &r.placeholders[0];
+        assert!(p.no_access);
+        assert_eq!(
+            p.line(),
+            format!(
+                "[clax] 2 comments in thread {tid} are held: you no longer have access to this page."
+            )
+        );
+        // Nothing of the page or its comments: IDs and the count only.
+        assert_eq!(
+            serde_json::to_value(p).unwrap(),
+            serde_json::json!({"thread_id": tid, "artifact_id": aid.as_str(), "count": 2,
+                               "asked": false, "no_access": true})
+        );
+        assert!(r.touched.threads.iter().any(|(_, t)| t == &tid));
+        // Told once.
+        let r =
+            w.st.take_feedback_readable(DAEMON, &q(Tier::Wait), BASE, &vis, Some(&none))
                 .unwrap();
         assert!(r.items.is_empty() && r.placeholders.is_empty());
         assert!(
@@ -4070,8 +4137,9 @@ mod delivery {
                 .notices
                 .is_empty()
         );
-        assert!(w.rows(&tid)[0].delivered_at.is_none());
-        assert_eq!(w.take(Tier::Piggyback, &vis).items.len(), 1);
+        // Held, not delivered: readable again, the rows are handed over.
+        assert!(w.rows(&tid).iter().all(|f| f.delivered_at.is_none()));
+        assert_eq!(w.take(Tier::Piggyback, &vis).items.len(), 2);
     }
 
     #[test]

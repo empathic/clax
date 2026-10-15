@@ -2583,7 +2583,10 @@ async fn revocation_during_wait_for_feedback_holds_rows() {
     let text = v["text"].as_str().unwrap();
     assert!(!text.contains(late), "{text}");
     assert!(
-        text.contains("[clax] 1 comments from Mia on \"an artifact by Mia\""),
+        text.contains(&format!(
+            "[clax] 1 comment from Mia on \"an artifact by Mia\" (thread {}) is withheld until your person approves it.",
+            w.read.thread
+        )),
         "{text}"
     );
     assert_eq!(v["withheld"][0]["count"], 1, "{v}");
@@ -2736,6 +2739,74 @@ async fn the_codex_queue_sends_only_filtered_visible_rows() {
     );
 }
 
+/// Spec §7.5: feedback on an artifact a person's agent may no longer read
+/// is held, and each in-band tier tells the agent once that it no longer
+/// has access to the page, with nothing of the page or its comments.
+#[tokio::test]
+async fn a_persons_agent_that_may_no_longer_read_a_page_is_told_once_on_every_tier() {
+    for tier in ["piggyback", "stop_hook", "prompt_hook", "wait", "inject"] {
+        let w = World::two_people().await;
+        sam_rights(&w, "clax:full");
+        let aid = w.read.artifact.clone();
+        let (status, v) = sam(
+            &w,
+            "PUT",
+            &format!("/api/sessions/{}/watches/{aid}", w.sam_session),
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{v}");
+        w.mia_comments(&aid, &w.read.thread, "Mia to Sam").await;
+        // Sam's agents may now read another artifact only.
+        let rights = clax_core::rights::Rights::parse(&json!([
+            {"type": "clax-artifacts", "actions": ["read"], "locations": [w.scratch.artifact]},
+            {"type": "clax-comments", "actions": ["read", "reply", "watch"], "locations": ["*"]},
+            {"type": "clax-ask", "actions": ["ask"], "locations": ["*"]}
+        ]))
+        .unwrap();
+        w.ts.store
+            .set_person_rights(&AuditCtx::DAEMON, &sam_public(&w), Some(rights))
+            .unwrap();
+        let poll = || async {
+            let (status, v) = sam(
+                &w,
+                "GET",
+                &format!(
+                    "/api/sessions/{}/feedback?tier={tier}&wait=0",
+                    w.sam_session
+                ),
+                None,
+            )
+            .await;
+            assert_eq!(status, 200, "{tier}: {v}");
+            v
+        };
+        let v = poll().await;
+        let text = v.to_string();
+        no_canary_at_all(tier, &text);
+        assert!(!text.contains("Mia to Sam"), "{tier}: {text}");
+        assert_eq!(v["feedback"], json!([]), "{tier}: {v}");
+        assert_eq!(
+            v["text"],
+            json!(format!(
+                "[clax] 1 comment in thread {} is held: you no longer have access to this page.",
+                w.read.thread
+            )),
+            "{tier}: {v}"
+        );
+        assert_eq!(
+            v["withheld"],
+            json!([{"thread_id": w.read.thread, "artifact_id": aid, "count": 1,
+                    "asked": false, "no_access": true}]),
+            "{tier}: {v}"
+        );
+        // Told once.
+        let v = poll().await;
+        assert_eq!(v["text"], Value::Null, "{tier}: {v}");
+        assert!(v.get("withheld").is_none(), "{tier}: {v}");
+    }
+}
+
 #[tokio::test]
 async fn a_persons_agent_gets_placeholders_and_never_takes_untargeted_feedback_by_watching() {
     let w = World::two_people().await;
@@ -2857,7 +2928,7 @@ async fn no_doc_event_reaches_a_waiting_agent() {
 }
 
 #[tokio::test]
-async fn rights_narrowed_during_a_wait_hold_rows_on_artifacts_no_longer_readable() {
+async fn rights_narrowed_during_a_wait_hold_rows_on_artifacts_no_longer_readable_and_tell_once() {
     let w = World::two_people().await;
     sam_rights(&w, "clax:full");
     // Sam approved the owner: the owner's words reach Sam's agent.
@@ -2889,14 +2960,20 @@ async fn rights_narrowed_during_a_wait_hold_rows_on_artifacts_no_longer_readable
         w.ts.wait_parked_feedback_polls(&sid, "wait", 1).await;
         let tid = owner_thread(&w.ts, &aid, 1, "index.html", "the owner, to Sam's agent").await;
         w.ts.send_thread(&aid, &tid).await;
-        // The send woke the poll; it held the row and waits again.
-        w.ts.wait_parked_feedback_polls(&sid, "wait", 1).await;
-        w.ts.expire_feedback(&sid).await;
+        // The send woke the poll; it held the row and told of it.
+        tid
     };
-    let ((status, v), ()) = tokio::join!(poll, control);
+    let ((status, v), tid) = tokio::join!(poll, control);
     assert_eq!(status, 200, "{v}");
     assert_eq!(v["feedback"], json!([]), "{v}");
-    assert!(v.get("withheld").is_none(), "held untold: {v}");
+    assert!(!v.to_string().contains("the owner, to Sam's agent"), "{v}");
+    assert_eq!(
+        v["text"],
+        json!(format!(
+            "[clax] 1 comment in thread {tid} is held: you no longer have access to this page."
+        )),
+        "{v}"
+    );
     // Readable again: the row is delivered.
     narrow_sam(&w, None);
     let (_, v) = sam(
@@ -2935,15 +3012,14 @@ async fn rights_narrowed_before_a_polls_first_take_hold_its_rows() {
         let tid = owner_thread(&w.ts, &aid, 1, "index.html", "the owner, to Sam's agent").await;
         w.ts.send_thread(&aid, &tid).await;
         w.ts.hold_feedback_at(&sid, false, "first_take").await;
-        // Held untold, the poll waits; a poll on the old rights would
-        // have answered with the row.
-        w.ts.wait_parked_feedback_polls(&sid, "wait", 1).await;
-        w.ts.expire_feedback(&sid).await;
+        // Held and told; a poll on the old rights would have answered
+        // with the row.
     };
     let ((status, v), ()) = tokio::join!(poll, control);
     assert_eq!(status, 200, "{v}");
     assert_eq!(v["feedback"], json!([]), "{v}");
     assert!(!v.to_string().contains("the owner, to Sam's agent"), "{v}");
+    assert_eq!(v["withheld"][0]["no_access"], true, "{v}");
 }
 
 #[tokio::test]

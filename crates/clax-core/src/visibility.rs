@@ -771,7 +771,9 @@ pub mod placeholder {
     /// The feedback line for `n` withheld comments by `author` in thread
     /// `thread_id` of the artifact titled `title` (as the reader may see
     /// it: [`title_by`] when it is withheld), saying whether the reader's
-    /// person has been asked. The title is quoted as a JSON string and the
+    /// person has been asked. One comment reads `1 comment … is withheld
+    /// until your person approves it`, more `N comments … are withheld
+    /// until your person approves them`. The title is quoted as a JSON string and the
     /// name made safe ([`crate::feedback::display_name`]), so neither can
     /// break the line.
     pub fn withheld_comments_line(
@@ -788,11 +790,32 @@ pub mod placeholder {
                 "To ask your person, call ask with {{\"approval\": {{\"thread_id\": \"{thread_id}\"}}}}."
             )
         };
+        let (comments, are, them) = counted(n);
         format!(
-            "[clax] {n} comments from {author} on {title} (thread {thread_id}) are withheld until your person approves them. {then}",
+            "[clax] {n} {comments} from {author} on {title} (thread {thread_id}) {are} withheld until your person approves {them}. {then}",
             author = crate::feedback::display_name(author),
             title = crate::feedback::quoted(title),
         )
+    }
+
+    /// The feedback line for `n` comments in thread `thread_id` held
+    /// because the reader may no longer read their artifact (spec §7.5):
+    /// nothing of the page or the comments, only the count and the
+    /// thread's ID.
+    pub fn no_access_line(n: usize, thread_id: &str) -> String {
+        let (comments, are, _) = counted(n);
+        format!(
+            "[clax] {n} {comments} in thread {thread_id} {are} held: you no longer have access to this page."
+        )
+    }
+
+    /// `comments`, `are` and `them` agreeing with `n`.
+    fn counted(n: usize) -> (&'static str, &'static str, &'static str) {
+        if n == 1 {
+            ("comment", "is", "it")
+        } else {
+            ("comments", "are", "them")
+        }
     }
 
     /// A delivered comment's anchor line when its anchor is withheld.
@@ -2269,7 +2292,7 @@ mod tests {
         );
         assert_eq!(
             withheld_comments_line(1, "Mia", &title_by("Sam"), "t1", true),
-            "[clax] 1 comments from Mia on \"an artifact by Sam\" (thread t1) are withheld until your person approves them. Your person has been asked."
+            "[clax] 1 comment from Mia on \"an artifact by Sam\" (thread t1) is withheld until your person approves it. Your person has been asked."
         );
         assert_eq!(anchored_on("Mia"), "Anchored on: (withheld: page by Mia)");
         assert_eq!((CLIP, NOTE), ("Clip: withheld", "(note withheld)"));

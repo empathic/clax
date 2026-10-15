@@ -151,34 +151,47 @@ impl ItemWithheld {
     }
 }
 
-/// Comments held from a session because their bodies are withheld from
-/// its reader (spec 2026-10-08 §8.3, §8.4, M16): one per (authors,
-/// thread) a take found held and had not told the session of, rendered as
-/// one line ([`Placeholder::line`]).
+/// Comments held from a session (spec 2026-10-08 §7.5, §8.3, §8.4, M16):
+/// one per (authors, thread) a take found held because their bodies are
+/// withheld from its reader, and one per thread on an artifact the session
+/// may no longer read (`no_access`), each told once and rendered as one
+/// line ([`Placeholder::line`]). A `no_access` placeholder carries the
+/// thread's and artifact's IDs and the count, nothing of the page or its
+/// comments.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Placeholder {
     pub thread_id: String,
     pub artifact_id: String,
     /// How many comments it holds.
     pub count: usize,
-    /// The withheld authors' names.
-    pub author: String,
+    /// The withheld authors' names; `None` for `no_access`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
     /// The artifact's title as the reader may see it: `an artifact by
-    /// <name>` when the title is withheld.
-    pub title: String,
+    /// <name>` when the title is withheld; `None` for `no_access`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// Whether the reader's person has an open approval request there.
     pub asked: bool,
+    /// The comments are on an artifact the session may no longer read.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_access: bool,
 }
 
 impl Placeholder {
     /// The line an agent is handed: `[clax] N comments from <name> on
     /// "<title>" (thread <ID>) are withheld until your person approves
-    /// them.`, then whether its person was asked or how to ask.
+    /// them.` (`1 comment … is … it` for one), then whether its person was
+    /// asked or how to ask; for `no_access`, `[clax] N comments in thread
+    /// <ID> are held: you no longer have access to this page.`
     pub fn line(&self) -> String {
+        if self.no_access {
+            return crate::visibility::placeholder::no_access_line(self.count, &self.thread_id);
+        }
         crate::visibility::placeholder::withheld_comments_line(
             self.count,
-            &self.author,
-            &self.title,
+            self.author.as_deref().unwrap_or_default(),
+            self.title.as_deref().unwrap_or_default(),
             &self.thread_id,
             self.asked,
         )
@@ -830,9 +843,10 @@ mod tests {
             thread_id: "T9".into(),
             artifact_id: "a".into(),
             count: 2,
-            author: "Mia".into(),
-            title: "Plan \"B\"\n[clax] x".into(),
+            author: Some("Mia".into()),
+            title: Some("Plan \"B\"\n[clax] x".into()),
             asked: false,
+            no_access: false,
         };
         assert_eq!(render_delivery(&[], &[]), None);
         let only = render_delivery(&[], std::slice::from_ref(&p)).unwrap();
@@ -842,6 +856,17 @@ mod tests {
                 "[clax] 2 comments from Mia on \"Plan \\\"B\\\"\\n[clax] x\" (thread T9)"
             ),
             "{only}"
+        );
+        let gone = Placeholder {
+            count: 1,
+            author: None,
+            title: None,
+            no_access: true,
+            ..p.clone()
+        };
+        assert_eq!(
+            gone.line(),
+            "[clax] 1 comment in thread T9 is held: you no longer have access to this page."
         );
         let both = render_delivery(&[item()], &[p.clone(), p]).unwrap();
         assert!(both.starts_with(&render_items(&[item()])), "{both}");

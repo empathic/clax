@@ -119,8 +119,10 @@ the daemon has no value for is `null`.
 Beside `feedback`, a result may carry `answers` (late answers to your
 questions, see "Agent questions"), `withheld` (one entry per author and
 thread whose comments sent to you are withheld until your person approves
-them: `{thread_id, artifact_id, count, author, title, asked}`, see "What
-reaches an agent") and `notes` (notes from Clax itself, such as what a
+them: `{thread_id, artifact_id, count, author, title, asked}`; and one per
+thread whose comments are held because you may no longer read its
+artifact: `{thread_id, artifact_id, count, asked: false, no_access: true}`;
+see "What reaches an agent") and `notes` (notes from Clax itself, such as what a
 session's idle end released), each present only when not empty, and each
 also told in the trailing text block.
 
@@ -3100,12 +3102,23 @@ text:
 ```
 
 ending instead `To ask your person, call ask with {"approval":
-{"thread_id": "01J9…"}}.` when no request is open. The title reads `an
-artifact by <name>` when it is withheld too. A delivered comment's
+{"thread_id": "01J9…"}}.` when no request is open. One comment reads `1
+comment from Mia on "Quarterly Review" (thread 01J9…) is withheld until
+your person approves it.` The title reads `an artifact by <name>` when it
+is withheld too. A delivered comment's
 withheld parts read `Anchored on: (withheld: page by <name>)`, `Clip:
 withheld` and `Note: (note withheld)`. The held comments are delivered by
-the usual tiers once approved. Rows on an artifact the agent may no longer
-read are held and not told of. Approvals and rights are read again at
+the usual tiers once approved. Comments on an artifact the agent may no
+longer read (its person's rights or a narrowing changed since) are held,
+whatever their authors, and the session is told once per thread, with the
+thread's ID and the count only:
+
+```
+[clax] 2 comments in thread 01J9… are held: you no longer have access to this page.
+```
+
+They are delivered by the usual tiers if the agent may read the artifact
+again. Approvals and rights are read again at
 every take, so a decision or revocation reaches even a waiting
 `wait_for_feedback`.
 
