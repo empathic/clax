@@ -18,6 +18,7 @@ pub mod identity;
 pub mod inbox;
 pub mod live;
 pub mod net;
+pub mod net_cache;
 pub mod presence;
 pub mod push;
 pub mod questions;
