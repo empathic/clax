@@ -27,9 +27,11 @@ class Dictation {
 }
 
 /// The threads and versions panel over an app. While the shell has a
-/// composer open ([draft]) it is only its peek: the mic and Send for that
-/// composer, and, with [onAddToPlan], Add to plan (the comment becomes a
-/// feature of the app's plan instead of a change now).
+/// composer open ([draft]) it is only its peek: what the composer is on,
+/// the mic and what dictation heard, and, with [onAddToPlan], Add to plan
+/// (the comment becomes a feature of the app's plan instead of a change
+/// now). Send and Cancel are the composer's own, in the page above the
+/// peek, so there is one Send.
 class AppPanel extends StatelessWidget {
   const AppPanel({
     super.key,
@@ -41,7 +43,6 @@ class AppPanel extends StatelessWidget {
     required this.busy,
     required this.dictation,
     required this.onMic,
-    required this.onSend,
     required this.threads,
     required this.onThread,
     required this.onResend,
@@ -60,7 +61,6 @@ class AppPanel extends StatelessWidget {
   final bool busy;
   final Dictation dictation;
   final VoidCallback onMic;
-  final VoidCallback onSend;
   final List<ThreadSummary> threads;
   final ValueChanged<String> onThread;
 
@@ -75,7 +75,7 @@ class AppPanel extends StatelessWidget {
   final VoidCallback? onAddToPlan;
 
   /// The peek's height above the bottom inset.
-  static const peekHeight = 76.0;
+  static const peekHeight = 88.0;
 
   /// The space between the peek's label and its status.
   static const _peekGap = 2.0;
@@ -283,21 +283,6 @@ class AppPanel extends StatelessWidget {
                 ),
               const SizedBox(width: 6),
             ],
-            // At large text scales the label would take the status's room.
-            if (MediaQuery.textScalerOf(context).scale(14) > 22)
-              IconButton.filled(
-                key: const ValueKey('send'),
-                tooltip: 'Send',
-                onPressed: busy ? null : onSend,
-                icon: const Icon(Icons.send),
-              )
-            else
-              FilledButton.icon(
-                key: const ValueKey('send'),
-                onPressed: busy ? null : onSend,
-                icon: const Icon(Icons.send, size: 18),
-                label: const Text('Send'),
-              ),
           ],
         ),
       ),

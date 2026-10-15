@@ -44,7 +44,10 @@ void main() {
         ),
       ),
     );
-    expect(find.text('Hold on what you want changed'), findsOneWidget);
+    // A tap on the page is the default; the general comment is one
+    // labelled button.
+    expect(find.text('Tap anything to comment on it'), findsOneWidget);
+    expect(find.text('Comment on the whole app'), findsOneWidget);
     expect(find.text('Threads (2)'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('comment-whole-app')));
     await tester.tap(find.byKey(const ValueKey('comment-threads')));
@@ -95,34 +98,56 @@ void main() {
           ),
         );
         for (final t in [
-          'Whole app',
-          'Threads (12)',
-          'Hold on what you want changed',
+          'Comment on the whole app',
+          'Tap anything to comment on it',
         ]) {
           final p = tester.renderObject<RenderParagraph>(find.text(t));
           expect(p.didExceedMaxLines, isFalse, reason: '"$t" is cut');
         }
+        // Threads keeps its label where it fits beside the general
+        // comment's, else it is an icon named by its tooltip.
+        if (find.text('Threads (12)').evaluate().isNotEmpty) {
+          final p = tester.renderObject<RenderParagraph>(
+            find.text('Threads (12)'),
+          );
+          expect(p.didExceedMaxLines, isFalse, reason: 'Threads is cut');
+        } else {
+          expect(find.byTooltip('Threads (12)'), findsOneWidget);
+          expect(width, lessThan(CommentBar.wideWidth));
+        }
         final bar = tester.getRect(find.byKey(const ValueKey('comment-bar')));
-        // The composer's peek takes the bar's place at the same height.
-        expect(bar.height, AppPanel.peekHeight + 34);
-        // The actions end the bar, at any width.
-        final close = tester.getRect(
-          find.byKey(const ValueKey('comment-bar-close')),
+        // On a phone the composer's peek takes the bar's place at the
+        // same height; wide, the bar is one line.
+        expect(
+          bar.height,
+          (width < CommentBar.wideWidth
+                  ? AppPanel.peekHeight
+                  : CommentBar.wideHeight) +
+              34,
         );
-        expect(close.right, greaterThan(width - 16));
-        final threads = tester.getRect(
-          find.byKey(const ValueKey('comment-threads')),
-        );
-        expect(threads.right, lessThanOrEqualTo(close.left));
-        // Voice ends the actions, or the hint's line when they are tight.
-        final voice = tester.getRect(
-          find.byKey(const ValueKey('comment-voice')),
-        );
-        expect(bar.top, lessThanOrEqualTo(voice.top));
-        expect(voice.bottom, lessThanOrEqualTo(bar.bottom - 34));
-        expect(voice.overlaps(threads), isFalse);
-        expect(voice.overlaps(close), isFalse);
-        expect(voice.right, lessThanOrEqualTo(width));
+        final rects = [
+          for (final k in [
+            'comment-hint',
+            'comment-whole-app',
+            'comment-threads',
+            'comment-voice',
+            'comment-bar-close',
+          ])
+            tester.getRect(find.byKey(ValueKey(k))),
+        ];
+        // Everything is in the bar, above the inset, and nothing overlaps.
+        for (final (i, r) in rects.indexed) {
+          expect(r.left, greaterThanOrEqualTo(0));
+          expect(r.right, lessThanOrEqualTo(width));
+          expect(r.top, greaterThanOrEqualTo(bar.top));
+          expect(r.bottom, lessThanOrEqualTo(bar.bottom - 34));
+          for (final o in rects.skip(i + 1)) {
+            expect(r.overlaps(o), isFalse, reason: '$r overlaps $o');
+          }
+        }
+        // The general comment's button is a real target.
+        expect(rects[1].height, greaterThanOrEqualTo(36));
+        expect(tester.takeException(), isNull);
       }, skip: _fonts == null);
     }
   });

@@ -414,10 +414,9 @@ void main() {
       await tester.pumpAndSettle();
       expect(rig.voice.listens, 2);
 
-      // Send presses the composer's Send.
-      await tester.tap(find.byKey(const ValueKey('send')));
-      await tester.pump();
-      expect(rig.surface.js.last, 'window.claxHost?.submitDraft()');
+      // The composer in the page has the one Send: the peek has none.
+      expect(find.byKey(const ValueKey('send')), findsNothing);
+      expect(find.text('Send'), findsNothing);
 
       // The composer closing ends the peek and the listen.
       rig.surface.push(_Rig.noDraft);
@@ -1351,7 +1350,7 @@ void main() {
     });
 
     testWidgets(
-      'Whole app composes on the whole app and dictates; after it the bar is back',
+      'Comment on the whole app composes on the whole app and dictates; after it the bar is back',
       (tester) async {
         final rig = await pumpScreen(tester);
         rig.surface.push(rig.ready());
@@ -1377,8 +1376,7 @@ void main() {
         expect(find.text('The whole app'), findsOneWidget);
         expect(bar, findsNothing, reason: "the peek's controls take over");
 
-        await tester.tap(find.byKey(const ValueKey('send')));
-        await tester.pump();
+        // The composer's Send, in the page.
         rig.surface.push(const Sent('t9'));
         rig.surface.push(_Rig.noDraft);
         // Working spins on, so the frames are counted out.
@@ -1389,27 +1387,32 @@ void main() {
       },
     );
 
-    testWidgets('without Dictate comments Whole app waits for the mic', (
-      tester,
-    ) async {
-      final rig = await pumpScreen(
-        tester,
-        settings: AppSettings(dictateComments: false),
-      );
-      rig.surface.push(rig.ready());
-      await tester.pump();
-      await comment(tester, rig);
-      await tester.tap(find.byKey(const ValueKey('comment-whole-app')));
-      rig.surface.push(
-        const StateMsg(
-          commenting: false,
-          draft: Draft(label: 'The whole app', text: '', clip: DraftClip.none),
-          busy: false,
-        ),
-      );
-      await tester.pumpAndSettle();
-      expect(rig.voice.listens, 0);
-    });
+    testWidgets(
+      'without Dictate comments the whole-app composer waits for the mic',
+      (tester) async {
+        final rig = await pumpScreen(
+          tester,
+          settings: AppSettings(dictateComments: false),
+        );
+        rig.surface.push(rig.ready());
+        await tester.pump();
+        await comment(tester, rig);
+        await tester.tap(find.byKey(const ValueKey('comment-whole-app')));
+        rig.surface.push(
+          const StateMsg(
+            commenting: false,
+            draft: Draft(
+              label: 'The whole app',
+              text: '',
+              clip: DraftClip.none,
+            ),
+            busy: false,
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(rig.voice.listens, 0);
+      },
+    );
 
     testWidgets("the bar's Voice turns dictation on a pick off and on, and "
         'reports it', (tester) async {
@@ -1470,7 +1473,13 @@ void main() {
         );
         await tester.pump();
         await comment(tester, rig);
-        expect(find.text('Threads (1)'), findsOneWidget);
+        // Labelled, or an icon named by its tooltip where the label does
+        // not fit (the test font's glyphs are a full em wide).
+        expect(
+          find.text('Threads (1)').evaluate().length +
+              find.byTooltip('Threads (1)').evaluate().length,
+          1,
+        );
         await tester.tap(find.byKey(const ValueKey('comment-threads')));
         await tester.pumpAndSettle();
         expect(panel, findsOneWidget);
