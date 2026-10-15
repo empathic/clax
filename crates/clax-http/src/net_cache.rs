@@ -11,10 +11,10 @@
 //!   for (no redirect), without `Set-Cookie`, `Vary: *`, or `Cache-Control`
 //!   `no-store` or `private`, with a lifetime (`s-maxage`, `max-age`,
 //!   `Expires`) or a validator (`ETag`, `Last-Modified`).
-//! - **Shared across apps:** the key is the URL and those headers, not the
-//!   app; only answers marked `public` or carrying no privacy directive are
-//!   kept, and a cached answer is served only after the asking app's own
-//!   host check passes.
+//! - **Per app:** the key is the asking artifact's ID (a draft's own, not
+//!   its live app's), the parsed URL and those headers, so one app never
+//!   sees what another fetched; a cached answer is served only after the
+//!   app's own host check passes.
 //! - **Use:** a fresh entry answers without a request; a stale one is
 //!   revalidated with `If-None-Match`/`If-Modified-Since`, and a `304`
 //!   refreshes its headers and serves its body.
@@ -36,12 +36,16 @@ pub const DEFAULT_MAX_BYTES: u64 = 100 << 20;
 /// The request headers a cacheable request may carry; each is part of the key.
 const KEYED: &[&str] = &["accept", "accept-language", "user-agent"];
 
-/// The cache key of `req`, or `None` when the cache must not answer it.
+/// The cache key of `req` asked for by the artifact `app`, or `None` when
+/// the cache must not answer it. The key hashes the app, the URL as the
+/// `url` crate serializes it (the form that is fetched) and each header,
+/// every field prefixed by its length, so no field can spell another.
 #[must_use]
-pub fn key_of(req: &FetchRequest) -> Option<String> {
+pub fn key_of(app: &str, req: &FetchRequest) -> Option<String> {
     if !req.method.eq_ignore_ascii_case("GET") || req.body.is_some() {
         return None;
     }
+    let url = crate::net::https_url(&req.url).ok()?;
     let mut hs: Vec<(String, &str)> = Vec::new();
     for (k, v) in &req.headers {
         let k = k.to_ascii_lowercase();
@@ -52,12 +56,16 @@ pub fn key_of(req: &FetchRequest) -> Option<String> {
     }
     hs.sort();
     let mut h = Sha256::new();
-    h.update(req.url.as_bytes());
-    for (k, v) in hs {
-        h.update(b"\n");
-        h.update(k.as_bytes());
-        h.update(b": ");
-        h.update(v.as_bytes());
+    let mut field = |b: &[u8]| {
+        h.update((b.len() as u64).to_le_bytes());
+        h.update(b);
+    };
+    field(app.as_bytes());
+    field(url.as_str().as_bytes());
+    field(&(hs.len() as u64).to_le_bytes());
+    for (k, v) in &hs {
+        field(k.as_bytes());
+        field(v.as_bytes());
     }
     Some(
         h.finalize()
@@ -138,6 +146,8 @@ pub struct Entry {
     pub headers: BTreeMap<String, String>,
     /// When the response (or its last revalidation) arrived, Unix seconds.
     pub received: i64,
+    /// The body's length: a file whose body differs (cut short) is dropped.
+    pub body_len: u64,
 }
 
 impl Entry {
@@ -326,7 +336,8 @@ impl NetCache {
         let parsed = read.and_then(|raw| {
             let nl = raw.iter().position(|&b| b == b'\n')?;
             let entry: Entry = serde_json::from_slice(&raw[..nl]).ok()?;
-            Some((entry, raw[nl + 1..].to_vec()))
+            let body = &raw[nl + 1..];
+            (body.len() as u64 == entry.body_len).then(|| (entry, body.to_vec()))
         });
         let mut index = self.index.lock().unwrap();
         if parsed.is_some() {
@@ -342,7 +353,11 @@ impl NetCache {
     /// used entries past the budget. An entry over the whole budget is not
     /// kept. Failures leave the cache without the entry.
     pub async fn put(&self, key: &str, entry: &Entry, body: &[u8]) {
-        let Ok(mut raw) = serde_json::to_vec(entry) else {
+        let entry = Entry {
+            body_len: body.len() as u64,
+            ..entry.clone()
+        };
+        let Ok(mut raw) = serde_json::to_vec(&entry) else {
             return;
         };
         raw.push(b'\n');
@@ -357,7 +372,16 @@ impl NetCache {
         let tmp_name = format!("{k}.{:016x}.tmp", rand::random::<u64>());
         let written = tokio::task::spawn_blocking(move || {
             let tmp = dir.join(tmp_name);
-            std::fs::write(&tmp, &raw)?;
+            let write = || {
+                use std::io::Write;
+                let mut f = std::fs::File::create(&tmp)?;
+                f.write_all(&raw)?;
+                f.sync_all()
+            };
+            if let Err(e) = write() {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(e);
+            }
             std::fs::rename(&tmp, dir.join(&k)).inspect_err(|_| {
                 let _ = std::fs::remove_file(&tmp);
             })
@@ -492,6 +516,15 @@ mod tests {
             headers: &[(&str, &str)],
             allows: &(dyn Fn(&str) -> bool + Send + Sync),
         ) -> Result<FetchResponse, NetError> {
+            self.fetch_as("app-a", url, headers, allows).await
+        }
+        async fn fetch_as(
+            &self,
+            app: &str,
+            url: &str,
+            headers: &[(&str, &str)],
+            allows: &(dyn Fn(&str) -> bool + Send + Sync),
+        ) -> Result<FetchResponse, NetError> {
             let req = FetchRequest {
                 url: url.into(),
                 method: "GET".into(),
@@ -501,7 +534,7 @@ mod tests {
                     .collect(),
                 body: None,
             };
-            self.net.fetch(allows, req).await
+            self.net.fetch_for(app, allows, req).await
         }
     }
 
@@ -649,7 +682,7 @@ mod tests {
             headers: vec![],
             body: Some(b"x".to_vec()),
         };
-        assert!(key_of(&post).is_none());
+        assert!(key_of("app-a", &post).is_none());
     }
 
     #[tokio::test]
@@ -717,5 +750,143 @@ mod tests {
         );
         assert_eq!(lifetime(&h(&[("expires", "0")])), Some(0));
         assert_eq!(lifetime(&h(&[("etag", "\"x\"")])), None);
+    }
+
+    #[tokio::test]
+    async fn no_url_or_header_can_spell_another_requests_key() {
+        // A newline in the URL is stripped by the URL parser, so the raw
+        // string must never be what is hashed.
+        let injected = FetchRequest {
+            url: format!("{TILE}\naccept: image/png"),
+            method: "GET".into(),
+            headers: vec![],
+            body: None,
+        };
+        let plain = FetchRequest {
+            url: TILE.into(),
+            method: "GET".into(),
+            headers: vec![("accept".into(), "image/png".into())],
+            body: None,
+        };
+        assert_ne!(key_of("a", &injected), key_of("a", &plain));
+        let r = rig(DEFAULT_MAX_BYTES);
+        r.answer(answer(200, &[("cache-control", "max-age=600")], "planted"));
+        r.get(&format!("{TILE}\naccept: image/png"), &[]).await;
+        r.answer(answer(200, &[("cache-control", "max-age=600")], "real"));
+        assert_eq!(r.get(TILE, &[("accept", "image/png")]).await.body, b"real");
+        assert_eq!(r.sent(), 2);
+        // Equal URLs in different spellings share an entry.
+        let spelled = FetchRequest {
+            url: "HTTPS://Tile.Example.org/1/0/0.png".into(),
+            ..plain.clone()
+        };
+        assert_eq!(key_of("a", &spelled), key_of("a", &plain));
+    }
+
+    #[tokio::test]
+    async fn one_app_never_gets_another_apps_entry() {
+        let r = rig(DEFAULT_MAX_BYTES);
+        r.answer(answer(
+            200,
+            &[("cache-control", "public, max-age=600")],
+            "a's",
+        ));
+        r.fetch_as("app-a", TILE, &[], &|_| true).await.unwrap();
+        r.answer(answer(
+            200,
+            &[("cache-control", "public, max-age=600")],
+            "b's",
+        ));
+        let b = r.fetch_as("app-b", TILE, &[], &|_| true).await.unwrap();
+        assert_eq!(
+            (b.body.as_slice(), r.sent()),
+            (&b"b's"[..], 2),
+            "app B misses after A's fill"
+        );
+        assert_eq!(
+            r.fetch_as("app-a", TILE, &[], &|_| true)
+                .await
+                .unwrap()
+                .body,
+            b"a's"
+        );
+        assert_eq!(r.sent(), 2);
+        // Without an app (Net::fetch) the cache is not used.
+        r.answer(answer(
+            200,
+            &[("cache-control", "public, max-age=600")],
+            "bare",
+        ));
+        let bare = FetchRequest {
+            url: TILE.into(),
+            method: "GET".into(),
+            headers: vec![],
+            body: None,
+        };
+        assert_eq!(r.net.fetch(&|_| true, bare).await.unwrap().body, b"bare");
+    }
+
+    #[tokio::test]
+    async fn validators_never_follow_a_redirect_and_a_page_never_gets_a_bare_304() {
+        let r = rig(DEFAULT_MAX_BYTES);
+        r.answer(answer(
+            200,
+            &[("cache-control", "max-age=60"), ("etag", "\"v1\"")],
+            "tile",
+        ));
+        r.get(TILE, &[]).await;
+        r.clock.advance(120);
+        // The URL now redirects within its host, and the target answers 304
+        // (as if to a conditional request); the page asked for none.
+        r.answer(answer(301, &[("location", "/moved.png")], ""));
+        r.answer(answer(304, &[], ""));
+        r.answer(answer(301, &[("location", "/moved.png")], ""));
+        r.answer(answer(200, &[("cache-control", "max-age=60")], "moved"));
+        let res = r.get(TILE, &[]).await;
+        assert_eq!((res.status, res.body.as_slice()), (200, &b"moved"[..]));
+        let hops = r.script.hops.lock().unwrap().clone();
+        assert!(
+            hops[1].headers.iter().any(|(k, _)| k == "if-none-match"),
+            "the entry's own URL is asked conditionally"
+        );
+        for hop in &hops[2..] {
+            assert!(
+                !hop.headers.iter().any(|(k, _)| k.starts_with("if-")),
+                "{:?}",
+                hop.url
+            );
+        }
+        assert_eq!(r.cache.bytes(), 0, "a redirected answer is not kept");
+    }
+
+    #[tokio::test]
+    async fn an_entry_cut_short_is_dropped_and_fetched_again() {
+        let r = rig(DEFAULT_MAX_BYTES);
+        r.answer(answer(
+            200,
+            &[("cache-control", "max-age=600")],
+            "a whole tile",
+        ));
+        r.get(TILE, &[]).await;
+        let file = std::fs::read_dir(&r.cache.dir)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let raw = std::fs::read(&file).unwrap();
+        std::fs::write(&file, &raw[..raw.len() - 4]).unwrap();
+        r.answer(answer(
+            200,
+            &[("cache-control", "max-age=600")],
+            "a whole tile",
+        ));
+        assert_eq!(r.get(TILE, &[]).await.body, b"a whole tile");
+        assert_eq!(r.sent(), 2);
+        assert_eq!(
+            std::fs::read(&file).unwrap(),
+            raw,
+            "the refetched entry replaces it"
+        );
     }
 }

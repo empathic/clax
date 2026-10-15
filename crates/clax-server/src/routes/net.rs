@@ -74,6 +74,8 @@ pub async fn fetch(
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
     let Json(b) = body.map_err(|e| ApiError::bad_request("invalid_argument", e.body_text()))?;
+    // The cache keeps a draft's entries apart from its live app's too.
+    let app = id.to_string();
     let access = s.store_call(move |st| st.net_access(&id)).await?;
     if access.declared.is_empty() {
         return Err(ApiError::forbidden(
@@ -97,7 +99,7 @@ pub async fn fetch(
     };
     let res = s
         .net
-        .fetch(&|h: &str| access.allows(h), req)
+        .fetch_for(&app, &|h: &str| access.allows(h), req)
         .await
         .map_err(|e| net_error(&e))?;
     let mut out = json!({"url": res.url, "status": res.status, "headers": res.headers});
