@@ -1808,6 +1808,34 @@ async fn create_signin_link(
     ))
 }
 
+/// `POST /api/hosted/owner-signin-link` (the daemon token, in
+/// `Authorization: Bearer`) → `{url, expires_at}`: a one-use link, good for
+/// ten minutes, that signs a browser in as the owner. It is how the owner
+/// gets back in from the machine that holds the deploy's owner token, when
+/// no browser of theirs is signed in.
+async fn create_owner_signin_link(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    if !crate::auth::has_token(&headers, &s.token) {
+        return Err(ApiError::unauthorized());
+    }
+    let h = hosted_of(&s);
+    let (code, expires_at) = s
+        .store_call(move |st| {
+            let owner = st.owner_viewer(true)?;
+            st.create_signin_link(&owner.id)
+        })
+        .await?;
+    Ok(no_store(
+        Json(json!({
+            "url": h.url(&format!("/signin/{}", code.expose())),
+            "expires_at": expires_at,
+        }))
+        .into_response(),
+    ))
+}
+
 /// `GET /api/hosted/signin-links/<code>` → `{public_id, name, owner,
 /// expires_at}`: whose account the live link signs into, spending
 /// nothing; else 404 `not_found`.
@@ -2353,6 +2381,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/hosted/invites/{code}", get(peek_invite))
         .route("/api/hosted/invites/{code}/accept", post(accept_invite))
         .route("/api/hosted/signin-links", post(create_signin_link))
+        .route("/api/hosted/owner-signin-link", post(create_owner_signin_link))
         .route("/api/hosted/signin-links/{code}", get(peek_signin_link))
         .route(
             "/api/hosted/signin-links/{code}/accept",
