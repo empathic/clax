@@ -105,7 +105,7 @@
 </script>
 
 <header class="gbar">
-  <Mark playful /><h1>Clax</h1><span class="sub hide-sm">{site ?? "local artifacts"}{#if me}{` · seen as ${me}`}{/if}</span>
+  <Mark /><h1>Clax</h1><span class="sub hide-sm">{site ?? "local artifacts"}{#if me}{` · seen as ${me}`}{/if}</span>
   {#if !inbox && !people}<input type="search" class="search" placeholder="Search artifacts" aria-label="Search artifacts" value={query} oninput={e => { query = e.currentTarget.value; }} />{/if}
   {#if Q}<Q.InboxLink current={inbox} />{/if}
   {#if lm}<lm.PeopleLink current={people} owner={!!token} {viewer} />{/if}

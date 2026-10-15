@@ -103,7 +103,7 @@ a press on a shell control (main spec §8, "Consequential actions").
 
 ### Motion
 
-The mark's halves meet over 300 ms; a working agent's dot breathes; a 2px
+The mark never moves; a working agent's dot breathes; a 2px
 green sweep runs under the top bar while an agent works. Under reduced
 motion nothing moves.
 
@@ -112,9 +112,10 @@ motion nothing moves.
 - **Rally of 10.** At an artifact's tenth version only (not every tenth): a
   muted chip on its gallery card, and once per browser in the top bar's
   summary.
-- **The mark.** Clicking the gallery's mark makes its halves meet; a second
-  click parts them. In the artifact view the mark is a plain link to the
-  gallery.
+- **The mark** is not one: it does nothing when clicked in the gallery, and
+  in the artifact view it is a plain link to the gallery. (Amended
+  2026-10-14: the halves no longer meet on a click, and the symbol is drawn
+  wider, its arcs well clear of the dot.)
 
 ## 3. Echo: the screens
 
@@ -295,8 +296,8 @@ own name is edited here, with a "Share where I'm looking" switch.
   one. There is no "publishing" state: a publish takes milliseconds and has
   no reliable start signal.
 - **Q9. Easter eggs.** Rally of 10 fires at v10 only: a gallery chip, and
-  once per browser in the top bar. The mark's halves meet only on the
-  gallery's mark.
+  once per browser in the top bar. (The mark's click, once here too, was
+  removed on 2026-10-14.)
 - **Q10. Resolving.** Any viewer may resolve a thread, and an agent may
   resolve threads sent to it. The history records who.
 - **Q11. The returning viewer's summary** goes in the top bar's summary line

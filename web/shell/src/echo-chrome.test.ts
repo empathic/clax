@@ -7,22 +7,10 @@ import { MARK_SVG } from "./view/mark";
 import ThemeSwitch from "./ui/ThemeSwitch.svelte";
 
 describe("Echo chrome", () => {
-  it("a playful mark's halves meet on one click and part on the next", () => {
-    const m = mount(Mark, { playful: true });
-    const b = m.root.querySelector("button.mark") as HTMLButtonElement;
-    expect(b.getAttribute("aria-pressed")).toBe("false");
-    flush(() => b.click());
-    expect(b.getAttribute("aria-pressed")).toBe("true");
-    flush(() => b.click());
-    expect(b.getAttribute("aria-pressed")).toBe("false");
-    m.unmount();
-  });
-
   it("draws the same symbol as MARK_SVG, as decoration inside a named element", () => {
     const want = document.createElement("div");
     want.innerHTML = MARK_SVG;
-    // The image says the product's name; the button, beside the "Clax" heading, names itself.
-    for (const [props, name] of [[{}, "Clax"], [{ playful: true }, "Clax mark"]] as const) {
+    for (const [props, name] of [[{}, "Clax"]] as const) {
       const m = mount(Mark, props);
       const svg = m.root.querySelector("svg.mk")!;
       expect(svg.outerHTML).toBe(want.querySelector("svg")!.outerHTML);
