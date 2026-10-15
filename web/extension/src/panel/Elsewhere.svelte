@@ -23,6 +23,7 @@
   import { ownTarget } from "../../../shell/src/view/send-menu";
   import { agentNames } from "../../../shell/src/view/working-model";
   import type { FarPage } from "../messages";
+  import { ownerOf } from "./adapt";
   import MoveTo from "./MoveTo.svelte";
   import { type Group, type Status, lastActivity, statusOf } from "./site-model";
 
@@ -87,11 +88,11 @@
   const versionsOf = (t: Thread) => pages[t.artifact_id]?.versions ?? [];
   const agentsOf = (t: Thread) => pages[t.artifact_id]?.agents ?? [];
   /** As on the thread's own page: the agent picked, when live there, else the owner's own most recent live agent. */
-  const targetOf = (t: Thread) => agentsOf(t).some(a => a.live && a.handle === chosen) ? chosen : ownTarget(agentsOf(t), me?.public_id);
+  const targetOf = (t: Thread) => agentsOf(t).some(a => a.live && a.handle === chosen) ? chosen : ownTarget(agentsOf(t), ownerOf(agentsOf(t), me));
   /** Send's name for `to`: another person's agent with its person; with none while agents are live, Send opens the menu ("…"). */
   const toName = (t: Thread, to: string | null, by: Map<string, string>) => {
     const p = agentsOf(t).find(a => a.handle === to)?.person;
-    return to ? `${by.get(to)}${p && p.public_id !== me?.public_id ? ` (${p.name}'s)` : ""}` : agentsOf(t).some(a => a.live) ? "…" : "agent";
+    return to ? `${by.get(to)}${p && p.public_id !== ownerOf(agentsOf(t), me) ? ` (${p.name}'s)` : ""}` : agentsOf(t).some(a => a.live) ? "…" : "agent";
   };
   const noop = () => {};
 </script>

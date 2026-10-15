@@ -700,6 +700,46 @@ async fn decline_keeps_rows_held_and_asks_again_only_after_ten_minutes() {
 }
 
 #[tokio::test]
+async fn an_approval_item_stays_unread_until_decided_whoever_marks_it() {
+    let t = Two::new().await;
+    let tid = t.mia_thread("a").await;
+    t.mia_sends_to_sam(&tid).await;
+    let unread = || async {
+        let (_, v) = t
+            .sam_browser()
+            .call("GET", "/api/inbox?kind=approval&read=unread", None)
+            .await;
+        v["items"].as_array().unwrap().clone()
+    };
+    let items = unread().await;
+    assert_eq!(items.len(), 1);
+    let id = items[0]["id"].as_str().unwrap().to_string();
+    // Mark all read, and the item's own read, leave it unread, and the count with it.
+    let (status, v) = t
+        .sam_browser()
+        .call("POST", "/api/inbox/read", Some(json!({"all": true})))
+        .await;
+    assert_eq!(status, 200, "{v}");
+    let left = v["unread"].clone();
+    let (status, v) = t
+        .sam_browser()
+        .call("POST", &format!("/api/inbox/{id}/read"), Some(json!({})))
+        .await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["item"]["read"], json!(false), "{v}");
+    assert_eq!(v["unread"], left, "{v}");
+    assert_eq!(unread().await.len(), 1);
+    // Decided, it is read.
+    let rid = t.sams_requests().await[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, v) = t.sam_decides(&rid, "thread").await;
+    assert_eq!(status, 200, "{v}");
+    assert!(unread().await.is_empty());
+}
+
+#[tokio::test]
 async fn approving_everywhere_closes_the_authors_other_requests() {
     let t = Two::new().await;
     let a = t.mia_thread("a").await;

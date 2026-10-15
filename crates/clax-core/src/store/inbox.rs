@@ -384,6 +384,9 @@ fn build(q: &InboxQuery, shape: Shape, now: &str) -> Built {
                 let p = arg(Sql::Integer(u), &mut args);
                 wh.push(format!("i.seq <= {p}"));
             }
+            // An approval item stays unread until its request is decided
+            // (spec 2026-10-08 §9.5): deciding reads it.
+            wh.push(format!("NOT {UNDECIDED}"));
         }
         Shape::Page | Shape::Count(_) => {
             let what = if shape == Shape::Page { COLUMNS } else { "1" };
@@ -525,10 +528,24 @@ pub(super) const BY_SEQS: &str = concat!(
 /// The recipients of the items with the `seq`s `?1` (a JSON array).
 pub(super) const RECIPIENTS_OF: &str = "SELECT DISTINCT i.recipient
     FROM json_each(?1) j CROSS JOIN inbox_items i ON i.seq = j.value";
-/// Marks recipient `?3`'s items `?1` (a JSON array of IDs) read at `?2`.
-pub(super) const MARK_READ: &str = "UPDATE inbox_items SET read_at = ?2
+/// Whether item `i` is an approval item whose request is still open: it
+/// stays unread until the request is decided or withdrawn (spec 2026-10-08
+/// §9.5), which reads it ([`approval_closed`]).
+macro_rules! undecided {
+    () => {
+        "(+i.kind = 'approval' AND EXISTS (SELECT 1 FROM approval_requests a
+            WHERE a.id = i.request_id AND a.status = 'open'))"
+    };
+}
+const UNDECIDED: &str = undecided!();
+/// Marks recipient `?3`'s items `?1` (a JSON array of IDs) read at `?2`,
+/// leaving undecided approval items unread.
+pub(super) const MARK_READ: &str = concat!(
+    "UPDATE inbox_items AS i SET read_at = ?2
     WHERE id IN (SELECT value FROM json_each(?1)) AND +COALESCE(recipient, '') = ?3
-      AND read_at IS NULL";
+      AND read_at IS NULL AND NOT ",
+    undecided!()
+);
 /// Marks recipient `?2`'s items `?1` unread.
 pub(super) const MARK_UNREAD: &str = "UPDATE inbox_items SET read_at = NULL
     WHERE id IN (SELECT value FROM json_each(?1)) AND +COALESCE(recipient, '') = ?2
@@ -3215,6 +3232,62 @@ mod tests {
         };
         assert_eq!(st.inbox_mark_all(&q).unwrap(), 1);
         assert_eq!(st.inbox_unread(None).unwrap(), 1);
+    }
+
+    #[test]
+    fn an_undecided_approval_item_stays_unread_whoever_marks_it() {
+        let (_d, st) = store();
+        let sid = session(&st, "claude", "h1");
+        ask(&st, &sid, None);
+        let now = st.now();
+        st.with_tx(|tx| {
+            for rid in ["R1", "R2"] {
+                tx.execute(
+                    "INSERT INTO approval_requests (id, approver, author, artifact_id, thread_id, cause, created_at, updated_at)
+                     VALUES (?1, NULL, 'u_0000000000000000000000m', 'aaaaaaaaaaaa', ?1, 'routing', ?2, ?2)",
+                    params![rid, now],
+                )?;
+                note_approval(tx, rid, None, "aaaaaaaaaaaa", None, Some(&sid), "Mia", None, &now)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        let approval = |rid: &str| {
+            all(&st)
+                .into_iter()
+                .find(|i| i.request_id.as_deref() == Some(rid))
+                .unwrap()
+        };
+        assert_eq!(st.inbox_unread(None).unwrap(), 3);
+        // Mark all read reads the question, never an open request's item.
+        assert_eq!(st.inbox_mark_all(&InboxQuery::default()).unwrap(), 1);
+        assert_eq!(st.inbox_unread(None).unwrap(), 2);
+        // Marked read one by one, it stays unread too.
+        assert_eq!(st.inbox_mark(&[approval("R1").id], true, None).unwrap(), 0);
+        assert!(approval("R1").read_at.is_none());
+        // Decided, it is read; withdrawn, too; and either may be marked unread and read again.
+        st.with_tx(|tx| {
+            tx.execute(
+                "UPDATE approval_requests SET status = 'approved' WHERE id = 'R1'",
+                [],
+            )?;
+            approval_closed(tx, "R1", &now)?;
+            tx.execute(
+                "UPDATE approval_requests SET status = 'withdrawn' WHERE id = 'R2'",
+                [],
+            )?;
+            approval_closed(tx, "R2", &now)
+        })
+        .unwrap();
+        assert_eq!(st.inbox_unread(None).unwrap(), 0);
+        let r1 = approval("R1").id;
+        assert_eq!(
+            st.inbox_mark(std::slice::from_ref(&r1), false, None)
+                .unwrap(),
+            1
+        );
+        assert_eq!(st.inbox_mark(&[r1], true, None).unwrap(), 1);
+        assert_eq!(st.inbox_unread(None).unwrap(), 0);
     }
 
     #[test]

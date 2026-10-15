@@ -21,6 +21,25 @@ afterEach(() => { link?.close(); link = null; vi.useRealTimers(); });
 const ENV = (f: ReturnType<typeof fakes>) => ({ runtime: f.runtime as never, tabs: f.tabs as never, search: "", doc: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} } as never });
 
 describe("PanelLink", () => {
+  it("asks the worker who approves first, and takes its answer, or none on a failure or a lost worker", async () => {
+    const f = fakes();
+    link = new PanelLink(2, ENV(f));
+    await settle();
+    const p = f.ports[0];
+    const T = "01J9AAAAAAAAAAAAAAAAAAAAAA", SAM = `u_${"a".repeat(22)}`;
+    const asked = link.firsts([T]);
+    const sent = p.sent.at(-1) as { t: string; req: number };
+    expect(sent).toEqual({ t: "firsts", req: sent.req, threadIds: [T] });
+    p.onMessage.fire({ t: "firsts", req: sent.req, firsts: [null, SAM] });
+    expect(await asked).toEqual([null, SAM]);
+    const failed = link.firsts([T]);
+    p.onMessage.fire({ t: "failed", code: "no_tab", message: "m", req: (p.sent.at(-1) as { req: number }).req });
+    expect(await failed).toBeNull();
+    const lost = link.firsts([T]);
+    p.onDisconnect.fire();
+    expect(await lost).toBeNull();
+  });
+
   it("keeps the inbox as the worker tells it, and the open questions in its question feed", () => {
     const f = fakes();
     link = new PanelLink(2, ENV(f));

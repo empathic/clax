@@ -35,6 +35,19 @@ describe("InboxRow", () => {
     m.unmount();
   });
 
+  it("keeps an undecided approval request's dot from marking it read, and lets a decided one be marked", () => {
+    const onToggle = vi.fn();
+    const open = item("approval");
+    const m = mount(InboxRow, { item: open, now, onOpen: vi.fn(), onToggle });
+    const dot = m.root.querySelector<HTMLButtonElement>(".dot")!;
+    expect([dot.disabled, dot.getAttribute("aria-label")]).toEqual([true, "Unread until decided"]);
+    click(dot);
+    expect(onToggle).not.toHaveBeenCalled();
+    m.update({ item: item("approval", { read: true }), now, onOpen: vi.fn(), onToggle });
+    expect([dot.disabled, dot.getAttribute("aria-label")]).toEqual([false, "Mark unread"]);
+    m.unmount();
+  });
+
   it("opens on the row and toggles on the dot alone", () => {
     const onOpen = vi.fn();
     const onToggle = vi.fn();

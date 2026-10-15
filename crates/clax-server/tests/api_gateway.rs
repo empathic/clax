@@ -270,6 +270,11 @@ async fn everything_else_is_refused() {
     let cred = credential(&ts).await;
     let html = ts.publish("T", &[("index.html", "<p>")]).await;
     let hid = html["artifact"]["id"].as_str().unwrap();
+    // A thread of that page: only the gateway, never the handler, refuses it.
+    let htid = ts.thread(hid, 1, "on a published page").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let (aid, tid) = live_thread(&ts, &cred).await;
     for (m, path, want) in [
         (Method::GET, "/api/artifacts".to_string(), 403),
@@ -293,7 +298,7 @@ async fn everything_else_is_refused() {
         (Method::GET, format!("/api/artifacts/{hid}/threads"), 404),
         (
             Method::GET,
-            format!("/api/artifacts/{hid}/approves-first?threads={tid}"),
+            format!("/api/artifacts/{hid}/approves-first?threads={htid}"),
             404,
         ),
         (

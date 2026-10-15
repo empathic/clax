@@ -9,3 +9,10 @@ import type { Thread } from "../../../shell/src/threads";
 export const pageOfRoute = (route: string | null): string => route ?? INDEX_FILE;
 export const asPages = (threads: Thread[]): Thread[] =>
   threads.map(t => ({ ...t, anchor: { ...t.anchor, file: pageOfRoute(t.anchor.route ?? null) } }));
+
+/** The panel's own public ID for its Send: its viewer's, else, while the
+ * daemon has not named it, the one the owner's agents carry (the panel is
+ * the owner's browser), so Send never waits on the viewer to go to the
+ * owner's own agent. */
+export const ownerOf = (agents: { person?: { public_id: string | null; owner?: boolean } }[], me: { public_id: string } | null | undefined): string | undefined =>
+  me?.public_id ?? agents.find(a => a.person?.owner)?.person?.public_id ?? undefined;

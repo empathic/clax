@@ -219,6 +219,14 @@ describe("InboxPage", () => {
     expect(unread.querySelector('.irow[data-item="IE"] .released a')!.textContent).toBe("Quarterly Review");
   });
 
+  it("offers Mark all read only while something unread could be read: an open approval request stays unread until decided", async () => {
+    stubRoutes({ "": [item("approval", { id: "IA", seq: 5 })] });
+    const { m } = page();
+    await settle();
+    const markAll = [...m.root.querySelectorAll("button")].find(b => b.textContent === "Mark all read") as HTMLButtonElement;
+    expect(markAll.disabled).toBe(true);
+  });
+
   it("keeps an approval's card where it is once decided, through a refetch, once, with the counts moved", async () => {
     const A = item("approval", { id: "IA", seq: 6 });
     const lists: Record<string, InboxItem[]> = { "": [A, R] };

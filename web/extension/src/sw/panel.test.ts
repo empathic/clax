@@ -11,6 +11,7 @@ const page = { artifact_id: AID, origin: "http://localhost:5173", path: "/app", 
 const thread = (id: string, status = "open") => ({ id, artifact_id: AID, status });
 const FAR_AID = "9x8w7v6t5s4r";
 const T3 = "01J9CCCCCCCCCCCCCCCCCCCCCC";
+const SAM_ID = `u_${"a".repeat(22)}`;
 
 const Q = "01J9QQQQQQQQQQQQQQQQQQQQQQ";
 const SITE = { key: "http://localhost:5173", name: "http://localhost:5174", joined: true, origins: [{ origin: "http://localhost:5174", joined_at: "t", last_used_at: "t2" }, { origin: "http://localhost:5173", joined_at: "t", last_used_at: "t1" }] };
@@ -43,7 +44,7 @@ function setup(over: { closed?: boolean; remaining?: number; page?: typeof page 
       suggest: api("suggest", { origin: "http://localhost:5173", site: SITE, suggestions: [{ origin: "http://localhost:7702", site: { ...SITE, origins: [{ origin: "http://localhost:7702", joined_at: null, last_used_at: null }] }, reason: "path", path: "/app" }] }),
       sites: api("sites", { sites: [{ site: SITE }] }),
       clip: api("clip", "data:image/png;base64,iVBORw0KGgo="),
-      approvesFirst: api("approvesFirst", [null, "p_sam"]),
+      approvesFirst: api("approvesFirst", [null, SAM_ID]),
       artifact: api("artifact", { artifact: { participants: { people: [], agents: [{ handle: `a_${"1".repeat(22)}`, harness: "claude", live: true }] } }, versions: [{ artifact_id: "x", n: 1, created_at: "t", label: "l", note: "n", files: { "index.html": {} }, agent_harness: "claude" }] }),
       closeQuestion: api("closeQuestion", { question: { id: Q }, closed: over.closed ?? false }),
       markItem: api("markItem", { item: { id: T1, read: true }, unread: 3 }),
@@ -140,7 +141,7 @@ describe("panelAction on the tab's site", () => {
     await s.run({ t: "firsts", req: 4, threadIds: ["01J9DDDDDDDDDDDDDDDDDDDDDD"] });
     expect(s.calls).toEqual([`approvesFirst "${AID}" ["${T1}"]`, `approvesFirst "${FAR_AID}" ["${T3}"]`]);
     expect(s.out).toEqual([
-      { t: "firsts", req: 1, firsts: [null, "p_sam"] }, { t: "firsts", req: 2, firsts: [null, "p_sam"] },
+      { t: "firsts", req: 1, firsts: [null, SAM_ID] }, { t: "firsts", req: 2, firsts: [null, SAM_ID] },
       { t: "firsts", req: 3, firsts: null }, { t: "firsts", req: 4, firsts: null },
     ]);
     // A refusal (an older daemon, say) is no answer, never the tab's failure.
