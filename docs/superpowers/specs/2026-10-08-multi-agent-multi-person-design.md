@@ -1575,7 +1575,8 @@ again.
 - Sending to it (button, `to`, `@name`) stores the send and makes the
   routing request (§9.2).
 - **The thread's delivery state** (owner decisions, 2026-10-14). Its
-  rows (one per comment and target session) make three readings:
+  rows (one per comment and target session) make three readings, each
+  over the rows its reader reads (below):
   - *Withheld*: a row of any of its comments, undelivered for a live
     session, is held under an open request of that session's person, or
     a take told the session of it and no decline of its author is in
@@ -1587,26 +1588,49 @@ again.
     author stays declined; a handoff deletes the old target's rows and
     the thread reads as the new target's; when the session ends its rows
     count no longer and the thread reads "agent session ended".
-  - *Plain*: the delivery state of its newest comment's rows as if
+  - *Plain*: the delivery state of the newest comment's rows as if
     nothing were held, where a row a take held and told its session of
     reads as seen by the agent: "sent" until the agent takes, then "seen
     by the agent".
-- **Who reads which** (owner decisions, 2026-10-14):
-  - The owner's browser, and the people concerned (the approver or
-    decliner, and the thread's authors, as connected people), read
-    withheld and declined with the person ("declined by Mia", and "you
-    declined" or "waiting for your approval" for that person themself).
-  - Agents, the owner's included, never read an approver: withheld reads
-    "waiting for approval" with no name, and a declined thread reads its
-    plain state.
-  - LAN viewers, anonymous callers and connected people a thread does not
-    concern read the plain state, in views, in the page's boot payload
-    and in events: "sent" until delivery, never withheld or declined.
-  - Events carry the plain state alone, and a decision (approve,
-    decline, revoke) publishes none: it reaches the people concerned as
-    `held_state` on their `inbox` topic, and their views fetch the
-    thread again. So no one else sees a decision as an event or a
-    change of timing.
+- **Who reads which** (owner decisions, 2026-10-14: "Only \"sent\"", "Own
+  threads only", "Only the held content's author"). A reader reads the
+  rows the table gives it, and nothing of the others; a reader with no
+  row reads no delivery state (`feedback_state: null`), and the shell
+  reads a sent thread as "sent to <agent>" from its `sent_to_agent` and
+  owner chip. A person who is both an approver and an author reads the
+  rows of both.
+
+  | Reader | Rows it reads | What it reads of a sent thread |
+  |---|---|---|
+  | The owner (browser, CLI by hand) | every row | progress; withheld and declined with the person, and "waiting for your approval" or "you declined" for its own agents' rows |
+  | An approver: a connected person whose agent a row is sent to | the rows sent to their own agents | their progress; "waiting for your approval", "you declined" |
+  | An author: a connected person who wrote a comment, or the page that wrote one (so the held content's author, when it is held) | the rows of that content | their progress; "waiting for Sam's approval", "declined by Sam" |
+  | Another connected person (one who only commented on the thread, say) | none | "sent to <agent>" |
+  | A LAN viewer, an anonymous caller | none | "sent to <agent>" |
+  | The agent the thread is sent to | the rows sent to that session | progress; "waiting for approval" with no name; a declined thread's plain state |
+  | Any other agent, the owner's included | none | no delivery state; the owner chip |
+
+  - While nothing can be held (no person, and the owner's `*unconnected`
+    switch on: §8.7's fast path), every agent reads every row, as before
+    people existed (§19).
+  - One function maps a thread's rows and a reader to what it reads
+    (`Delivery::view`); views, the page's boot payload, events and
+    agents' reads all go through it.
+  - Events: `feedback_state` goes on the `artifact` stream topic to each
+    reader's own streams, carrying that reader's state: to the owner on
+    every change; to a connected person when the newest change is to
+    rows they read; and on a decision (approve, decline, revoke, the
+    `*unconnected` switch), which changes no row's time, to the owner,
+    the deciding person and the author decided about, alone. A stream
+    is never sent the state it was last sent. `/api/events` carries
+    none, and `thread` events carry no delivery state. So no one else
+    sees a decision as an event or a change of state.
+  - A request's change pings the `agents` topic of its approver and the
+    owner only; of everyone only for an agent's `ask`, which shows in
+    that agent's state (§13).
+  - What an agent does after an approval lets content through (its
+    replies, its working state) stays as visible as any agent's work
+    (§13).
 - A send to an agent that may not `read` the artifact is 400
   `agent_cannot_read`.
 - A page's `@name` sends nothing (as its `@agent` sends nothing today); a
@@ -1907,9 +1931,10 @@ The route table (§7.5) is the agents' contract. New routes:
   own lazy chunk.
 - **Inbox:** `approval` and `connection` cards, `ended` rows, the agent
   strip.
-- **Threads:** the owner chip, the `withheld` and `declined` delivery
-  states as §10 says who reads them (plain "sent" to visitors; owner
-  decision 2026-10-14), the Send menu by name and person.
+- **Threads:** the owner chip, each viewer's delivery state as §10's
+  table gives it (`withheld` and `declined` with the person to the owner
+  and the people concerned; "sent to <agent>" to everyone with no row of
+  it), the Send menu by name and person.
 - **Extension panel:** agent names in its Send menu; approval items link
   to the shell's inbox.
 - Every UI change is verified in a real browser with screenshots, at phone
@@ -1923,7 +1948,8 @@ The route table (§7.5) is the agents' contract. New routes:
 | Gallery, artifacts, threads | all | filtered for the owner | all | filtered for the person | all |
 | Live pages | yes (local) | yes (local) | never | never | never |
 | Inbox, questions | own | own questions | own | own questions | none |
-| People, approvals | everyone, and each person's approvals of the owner's content (O12); removes any raise; changes in the browser | none (no approver, ever: §10) | self, who approves first and whose approval a thread waits for only about their own content or threads (§10), every raise of their own agents with its granter (removable), and their own raises on what they created (O11); changes in the browser | none | none (plain delivery states: §10) |
+| People, approvals | everyone, and each person's approvals of the owner's content (O12); removes any raise; changes in the browser | none (no approver, ever: §10) | self, who approves first only about their own content (§10), every raise of their own agents with its granter (removable), and their own raises on what they created (O11); changes in the browser | none | none |
+| Delivery states (§10's table) | every row, whose approval named | the rows sent to that agent (every row while nothing can be held), no name | the rows of their own content and of their own agents, whose approval named | the rows sent to that agent, no name | none: "sent to <agent>" |
 | Agents roster | every agent | own (`status`) | own agents; others' names and states | own (`status`) | names on threads |
 
 A person's inbox and question views are not filtered by Visibility; they
@@ -1966,6 +1992,16 @@ nothing else:
    bidirectional embedding, override or isolate control is 400
    `invalid_name`.
 
+9. **Delivery states for visitors** (owner decision 2026-10-14, "Only
+   \"sent\""): a LAN viewer's and an anonymous caller's thread views and
+   boot payload carry `feedback_state: null`, and the shell reads a sent
+   thread as "sent to <agent>" where it read its progress ("sent,
+   waiting for the agent", "seen by the agent"); `/api/events` carries
+   no `feedback_state`, and `thread` events carry no `feedback_state`
+   field. The owner's browser hears its own on `/api/stream` (§10).
+   Agent-facing output does not change: with no person, every agent
+   reads every row.
+
 §19 covers agent-facing output and existing behaviour. New UI (the People
 link and page, the agent strip, owner chips, the Send menu's grouping) is
 additive and not listed.
@@ -1997,7 +2033,7 @@ store's `now()` and `register_session`'s time) and the collector, no
 behaviour change, so it captures main's behaviour at the branch point.
 If main moves before this branch merges, Task 0 is rebased onto the new
 main and the golden regenerated there, before any later task; that is the
-only regeneration allowed. Items 3, 4 and 8 are tested on their own.
+only regeneration allowed. Items 3, 4, 8 and 9 are tested on their own.
 
 ## 20. The Toolpath audit journal
 
@@ -2564,3 +2600,16 @@ task, with recommendations; the owner took every recommendation
   raise changed since, and the artifact's raise panel always names it and
   refreshes when it opens and on focus, so a stale panel never restores a
   removed raise.
+- **Amendment** (2026-10-14, owner decisions "Only \"sent\"", "Own threads
+  only" and "Only the held content's author"): §10 states who reads which
+  delivery state once, as a table of readers and the rows each reads:
+  the owner every row; a connected person the rows of content they wrote
+  and of their own agents; an agent the rows sent to it (every row while
+  nothing can be held); visitors, other people and other agents none
+  ("sent to <agent>"). `feedback_state` events go to each reader's own
+  streams with its own state, and on a decision to the owner, the
+  decider and the author alone; `/api/events` and `thread` events carry
+  none; request changes ping the `agents` topic of the approver and the
+  owner. §17 and §18 point at the table; §19 lists the change for LAN
+  viewers (item 9). The plain state is no longer served to anyone who
+  reads no row.
