@@ -691,6 +691,15 @@ same signature and do not ask.
   (read-only), Data (collections and documents as JSON), Permissions
   (reads of other apps, the agent's remembered read consents, device
   capabilities, network hosts and AI use, each revocable) and Plan.
+- **Location.** The first time an app asks where you are, Clax offers
+  Precise, Approximate (only your area, about 2 km across) or Don't allow,
+  and keeps the answer until you revoke it in the inspector's Permissions.
+  An app may follow your location only while it is on screen: a small
+  location pill shows at the top left meanwhile, a tap on it stops it, and
+  leaving the app stops it for good until the app asks again from a tap.
+  When Android will not ask again, or the phone's location is off, a toast
+  offers Open settings. Location is Android-only for now; on the Mac apps
+  are told it is not available.
 - **Sharing an app.** Share app (Export… on the Mac) on a tile's long
   press or on the inspector's Overview makes the app a `.clax` file and
   hands it to the share sheet (on the Mac, a save panel). The sheet says
