@@ -314,7 +314,7 @@ fn read_rights(json: &str) -> Result<Rights> {
     Rights::parse_internal(&v)
 }
 
-fn write_rights(r: &Rights) -> String {
+pub(super) fn write_rights(r: &Rights) -> String {
     r.to_json().to_string()
 }
 
@@ -358,7 +358,11 @@ pub(super) fn new_grant_id() -> String {
 /// invited and not revoked (other than viewer `except`; a revoked person's
 /// or a lapsed invite's name is free again), nor a live agent's name.
 /// Returns it trimmed.
-fn check_person_name(tx: &Transaction<'_>, name: &str, except: Option<&str>) -> Result<String> {
+pub(super) fn check_person_name(
+    tx: &Transaction<'_>,
+    name: &str,
+    except: Option<&str>,
+) -> Result<String> {
     let Some(name) = checked_name(name)? else {
         return Err(CoreError::invalid("invalid_name", "a person needs a name"));
     };
@@ -1659,6 +1663,8 @@ impl Store {
                 "UPDATE viewers SET person_revoked_at = ?2 WHERE id = ?1 AND person_revoked_at IS NULL",
                 params![id, now],
             )?;
+            // A GitHub account's person revoked: the account is blocked.
+            super::github::block_in(tx, &id, &now)?;
             if n > 0 {
                 super::approvals::withdraw_person_in(self, tx, ctx, public_id, &now)?;
                 super::elevations::drop_granted_in(self, tx, ctx, public_id, "person_revoked")?;
@@ -2345,6 +2351,7 @@ fn release_unconnected(
             "UPDATE viewers SET person = 0, rights_json = NULL
              WHERE person = 1 AND owner = 0 AND person_revoked_at IS NULL AND (?1 IS NULL OR id = ?1)
                AND NOT EXISTS (SELECT 1 FROM grants g WHERE g.viewer_id = viewers.id)
+               AND NOT EXISTS (SELECT 1 FROM github_identities gi WHERE gi.viewer_id = viewers.id)
                AND NOT EXISTS (SELECT 1 FROM invites i WHERE i.viewer_id = viewers.id
                                  AND ((i.used_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > ?2)
                                       OR i.used_at IS NOT NULL))

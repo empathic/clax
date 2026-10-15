@@ -1017,6 +1017,14 @@ impl Store {
                 format!("{tid} is not a thread of the new artifact"),
             ));
         }
+        let creator = match &p.person {
+            Some(person) => Some(person.clone()),
+            None => match session_id {
+                Some(sid) => self.get_session(sid)?.and_then(|s| s.person),
+                None => None,
+            },
+        };
+        self.check_quota(creator.as_deref())?;
         self.with_tx(|tx| {
             tx.execute(
                 "INSERT INTO artifacts (id, title, description, icon, created_at, updated_at, current_version,

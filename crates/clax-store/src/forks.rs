@@ -87,6 +87,14 @@ impl Store {
         person: Option<&str>,
         session_id: Option<&str>,
     ) -> Result<(Artifact, Version)> {
+        let creator = match person {
+            Some(person) => Some(person.to_string()),
+            None => match session_id {
+                Some(sid) => self.get_session(sid)?.and_then(|s| s.person),
+                None => None,
+            },
+        };
+        self.check_quota(creator.as_deref())?;
         let id = ArtifactId::generate();
         // The source's lock keeps its version from going while it is
         // copied (a delete takes it too).

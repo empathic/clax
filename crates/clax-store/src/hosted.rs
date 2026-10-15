@@ -206,6 +206,8 @@ pub enum SignInVia {
     Link,
     /// A guest naming themselves.
     Guest,
+    /// A GitHub account ([`Store::github_sign_in`]).
+    GitHub,
 }
 
 impl SignInVia {
@@ -215,6 +217,7 @@ impl SignInVia {
             SignInVia::Invite => "invite",
             SignInVia::Link => "link",
             SignInVia::Guest => "guest",
+            SignInVia::GitHub => "github",
         }
     }
 }
@@ -353,7 +356,7 @@ impl Store {
     /// `session.start` of the browser session (harness `browser`, `how` it
     /// signed in, and `extra` fields) as that viewer, through `ctx`'s
     /// channel.
-    fn signed_in(
+    pub(super) fn signed_in(
         &self,
         tx: &Transaction<'_>,
         ctx: &AuditCtx,
@@ -406,6 +409,18 @@ impl Store {
     /// `NotFound` once setup is done; `invalid_name` for an empty or
     /// invalid name, `name_taken` for a live agent's.
     pub fn hosted_setup(&self, ctx: &AuditCtx, name: &str) -> Result<SignedIn> {
+        self.hosted_setup_via(ctx, name, SignInVia::Setup, &[])
+    }
+
+    /// [`Store::hosted_setup`], its `session.start` naming `how` and
+    /// `extra`.
+    pub(super) fn hosted_setup_via(
+        &self,
+        ctx: &AuditCtx,
+        name: &str,
+        how: SignInVia,
+        extra: &[(&str, serde_json::Value)],
+    ) -> Result<SignedIn> {
         if checked_name(name)?.is_none() {
             return Err(CoreError::invalid(
                 "invalid_name",
@@ -437,7 +452,7 @@ impl Store {
             for id in ids {
                 super::approvals::revoke_in(self, tx, &AuditCtx::DAEMON, &id, &now)?;
             }
-            self.signed_in(tx, ctx, &owner.id, SignInVia::Setup, &[])
+            self.signed_in(tx, ctx, &owner.id, how, extra)
         })?;
         Ok(signed)
     }
