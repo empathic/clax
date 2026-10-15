@@ -105,7 +105,7 @@
 </script>
 
 <header class="gbar">
-  <span class="mark" data-size="bar" role="img" aria-label="Clax"><svg class="mk" viewBox="0 0 30 24" aria-hidden="true" focusable="false"><path class="l" d="M2 2.5a9.5 9.5 0 0 1 0 19" fill="none" stroke-width="4.2"/><path class="r" d="M28 2.5a9.5 9.5 0 0 0 0 19" fill="none" stroke-width="4.2"/><circle cx="15" cy="12" r="2.6"/></svg></span><h1>Clax</h1><span class="gsp"></span><ThemeSwitch />
+  <span class="mark" data-size="bar" role="img" aria-label="Clax"><svg class="mk" viewBox="0 0 40 24" aria-hidden="true" focusable="false"><path class="l" d="M2 2.5a9.5 9.5 0 0 1 0 19" fill="none" stroke-width="4.2"/><path class="r" d="M38 2.5a9.5 9.5 0 0 0 0 19" fill="none" stroke-width="4.2"/><circle cx="20" cy="12" r="2.6"/></svg></span><h1>Clax</h1><span class="gsp"></span><ThemeSwitch />
 </header>
 <main class="signin">
   <section class="sicard" aria-labelledby="si-h">

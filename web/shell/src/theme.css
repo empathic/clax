@@ -216,17 +216,13 @@ input, select { line-height: 1.2; }
 .composer .file-label { margin: 0; }
 .composer button[aria-disabled="true"] { opacity: .55; cursor: progress; }
 .island { display: contents; }
-/* The Echo mark (spec §8). Its halves meet when a playful mark is pressed. */
+/* The Echo mark (spec §8). */
 .mark { display: inline-grid; place-items: center; flex: none; color: var(--fg); }
-/* At least 44×44, a touch target. */
-button.mark, button.mark:not(:disabled):hover { background: none; border: 0; padding: 0; min-width: 44px; min-height: 44px; width: auto; }
-.mk { display: block; width: 30px; height: 24px; overflow: visible; }
-.mark[data-size="hero"] .mk { width: 120px; height: 96px; }
-.mk path { transition: transform .3s cubic-bezier(.3,1.4,.5,1); stroke-linecap: round; }
+.mk { display: block; width: 40px; height: 24px; overflow: visible; }
+.mark[data-size="hero"] .mk { width: 160px; height: 96px; }
+.mk path { stroke-linecap: round; }
 .mk .l { stroke: var(--you); } .mk .r { stroke: var(--agent); } .mk circle { fill: var(--fg); }
-.mark[aria-pressed="true"] .l { transform: translateX(3.5px); } .mark[aria-pressed="true"] .r { transform: translateX(-3.5px); }
 .mark[data-apart] .l { transform: translateX(-4px); } .mark[data-apart] .r { transform: translateX(4px); }
-@media (prefers-reduced-motion: reduce) { .mk path { transition: none; } }
 
 /* The changelog (spec §8): no band over the page. The version menu's panel
    and the Addressed group carry their own styles. */
