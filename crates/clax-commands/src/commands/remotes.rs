@@ -1,4 +1,4 @@
-//! `clax remote add|list|remove`: the public Clax instances this Clax
+//! `clax remote add|list|remove|comments|unlink`: the public Clax instances this Clax
 //! publishes to (the daemon's `/api/remotes`). Adding one signs this Clax
 //! in there by device code: the command opens the public instance's
 //! approval page, the person signed in there approves this machine, and
@@ -24,6 +24,39 @@ pub enum Cmd {
     /// there. When the public Clax cannot revoke it, revoke it on its
     /// People page.
     Remove(RemoveArgs),
+    /// Set how a pushed artifact's comment threads follow its public copy.
+    ///
+    /// `two-way` (the default): threads, replies and resolves go both
+    /// ways. `download-only`: threads from the public copy still come here
+    /// and replies and resolves on them still go up, but threads started
+    /// here stay here.
+    Comments(CommentsArgs),
+    /// End a pushed artifact's link to its public copy. The public copy
+    /// stays; its threads stay here as read-only history.
+    Unlink(UnlinkArgs),
+}
+
+#[derive(clap::Args)]
+pub struct CommentsArgs {
+    /// The artifact (ID or URL).
+    pub target: String,
+    /// `two-way` or `download-only`.
+    #[arg(value_parser = ["two-way", "download-only"])]
+    pub mode: String,
+    /// The public Clax (name or origin); the only one it is linked to when
+    /// absent.
+    #[arg(long)]
+    pub remote: Option<String>,
+}
+
+#[derive(clap::Args)]
+pub struct UnlinkArgs {
+    /// The artifact (ID or URL).
+    pub target: String,
+    /// The public Clax (name or origin); the only one it is linked to when
+    /// absent.
+    #[arg(long)]
+    pub remote: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -47,9 +80,62 @@ pub struct RemoveArgs {
     pub remote: String,
 }
 
+/// The remote artifact `id` is linked to that `named` names, or its only
+/// link's.
+fn linked_remote(c: &Client, id: &str, named: Option<&str>) -> anyhow::Result<String> {
+    if let Some(r) = named {
+        return Ok(r.to_string());
+    }
+    let v = c.get(&format!("/api/artifacts/{id}/remotes"))?;
+    let links = v["links"].as_array().cloned().unwrap_or_default();
+    match links.as_slice() {
+        [one] => Ok(one["remote_id"].as_str().unwrap_or_default().to_string()),
+        [] => anyhow::bail!("no_link: this artifact was never pushed: `clax push` it first"),
+        _ => anyhow::bail!(
+            "remote_required: it is linked to several public Clax: name one with --remote"
+        ),
+    }
+}
+
 pub fn run(cli: &crate::Cli, home: &Home, cmd: &Cmd) -> anyhow::Result<()> {
     let c = Client::connect(home, cli.port_for(home)?)?;
     match cmd {
+        Cmd::Comments(a) => {
+            let id = super::open::id_from(&a.target)?;
+            let r = linked_remote(&c, &id, a.remote.as_deref())?;
+            let v = c.patch(
+                &format!("/api/artifacts/{id}/remotes/{}", encode(&r)),
+                &json!({"download_only": a.mode == "download-only"}),
+            )?;
+            super::print(cli, v, |j| {
+                if j["download_only"] == true {
+                    "download only: threads started here stay here; replies and resolves on linked threads still go up".into()
+                } else {
+                    "two-way: threads, replies and resolves go both ways".into()
+                }
+            });
+            Ok(())
+        }
+        Cmd::Unlink(a) => {
+            let id = super::open::id_from(&a.target)?;
+            let r = linked_remote(&c, &id, a.remote.as_deref())?;
+            let v = c.send(
+                reqwest::Method::DELETE,
+                &format!("/api/artifacts/{id}/remotes/{}", encode(&r)),
+                None,
+            )?;
+            super::print(cli, v, |j| {
+                let n = j["unsent"].as_array().map_or(0, Vec::len);
+                if n == 0 {
+                    "unlinked: its threads stay here as read-only history".into()
+                } else {
+                    format!(
+                        "unlinked: its threads stay here as read-only history; {n} comment(s) were not sent: drop them in its Publish menu"
+                    )
+                }
+            });
+            Ok(())
+        }
         Cmd::Add(a) => add(cli, &c, a),
         Cmd::List => {
             let v = c.get("/api/remotes")?;

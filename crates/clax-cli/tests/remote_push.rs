@@ -185,6 +185,47 @@ async fn remote_add_signs_in_by_device_code_and_push_publishes_every_version() {
     )
     .unwrap();
     assert!(text.starts_with("up to date: "), "{text}");
+    // The link's comments: download only, two-way again, then unlinked.
+    let v = json_out(
+        &e.cmd()
+            .args(["remote", "comments", "--json", &id, "download-only"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    );
+    assert_eq!(v["download_only"], true, "{v}");
+    let text = String::from_utf8(
+        e.cmd()
+            .args(["remote", "comments", &id, "two-way", "--remote", "pub"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .unwrap();
+    assert!(text.starts_with("two-way"), "{text}");
+    e.cmd()
+        .args(["remote", "comments", &id, "both"])
+        .assert()
+        .failure();
+    let text = String::from_utf8(
+        e.cmd()
+            .args(["remote", "unlink", &id])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .unwrap();
+    assert!(text.starts_with("unlinked"), "{text}");
+    let out = e.cmd().args(["remote", "unlink", &id]).assert().failure();
+    assert!(
+        String::from_utf8_lossy(&out.get_output().stderr).contains("no_link"),
+        "{out:?}"
+    );
     let grant = public.store.list_grants().unwrap();
     let gid = grant.iter().find(|g| g.bearer).unwrap().id.clone();
     let text = String::from_utf8(
