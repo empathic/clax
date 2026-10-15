@@ -143,3 +143,90 @@ published and loses live notifications.
 - **Browser:** the tag on a mirrored thread, the pending and failed
   states, and replying from local shown on the hosted page; at 1280 and
   390 wide, light and dark.
+
+## Questions
+
+An agent on the local Clax plugin asks with `ask`. A question about a
+linked artifact used to show only on the local daemon, never on the hosted
+copy where the owner and collaborators are looking.
+
+### Decided
+
+- **What syncs:**
+  - An `ask` question of the owner's agents whose `url_or_id` names a
+    linked artifact is asked on the hosted copy too, through the link's
+    sync task.
+  - There it is asked in the sync's session, with the device token,
+    against the public copy's artifact ID, with the same questions and
+    choices. It reaches the token's person's `/api/questions`, stream and
+    inbox, by the hosted daemon's own rules (questions are their asker's
+    person's).
+  - Questions about no artifact, about an unlinked artifact, mirrored
+    AskUserQuestion (hook) questions, and another local person's agents'
+    questions stay local.
+- **Answered there:** the answer comes back and answers the local
+  question, so the waiting `ask` returns it as if answered here. A
+  decline there declines here. The answer is untrusted: it is checked
+  against the questions as an answer given here is, and one that does not
+  fit is dropped, leaving the question open here.
+- **Closed here first:** a question answered, declined or withdrawn here
+  (by the person, by its agent, or by its session ending) has its copy
+  withdrawn there. An `ask` that times out leaves its question open, so it
+  stays open there too.
+- **Download only holds questions back,** as it holds new local threads:
+  a question asked while the link is download only stays local, also
+  after the link is made two-way again.
+- **Shown inline:** the local card carries the remote tag, "Sending to
+  clax.dev…" until the copy is acknowledged, "Not sent: clax.dev
+  unreachable" after the backoff cap (the link row's Retry sends it), and
+  "Answered on clax.dev" when the answer came from there. Its inbox row
+  carries the tag.
+
+### Design
+
+- **Storage (migration 35):**
+  - `linked_questions`, on the local daemon: the local question, its
+    remote and public artifact, the copy's ID there once acknowledged, the
+    idempotency key, tries whose answer was lost, the not-sent mark, and
+    when both sides closed.
+  - `question_keys`, on the hosted daemon: the key an agent token's
+    question named and the question it made.
+- **The same machinery as threads:**
+  - The copy is asked with an `Idempotency-Key` made here: a resend after
+    a lost answer or an outage answers the copy the first made, never a
+    second one.
+  - Each cycle (a wake-up, or the 60 s backstop) reads each open copy
+    there. An answer there wakes the sync's feedback long-poll there,
+    which carries late answers.
+  - An unreachable remote backs off with the injected clock; a local
+    question or close meanwhile is queued and shown pending.
+- **Hosted additions,** for agent tokens only:
+  - `POST /api/sessions/<sid>/questions` takes an `Idempotency-Key`: a
+    key the token named before answers 200 with the question it made,
+    whatever session asked it. Every other caller's key is ignored.
+  - A question the token keyed may be read
+    (`GET /api/sessions/<sid>/questions/<qid>`) and withdrawn
+    (`…/withdraw`) from any of the token's sessions, since the sync's
+    session there changes when it reconnects. A question asked unkeyed
+    stays its own session's.
+- **A copy withdrawn there** while the question is open here (its
+  session there ended, say) is asked again under a new key.
+- **Ending a link:** the copies of its open questions are withdrawn
+  there while the remote's task still runs; the questions stay local.
+
+### Tests
+
+- **Store:** only the owner's agents' open `ask` questions on a two-way
+  link are paired, once; a keyed question is made once per grant and is
+  reached by that grant's sessions only.
+- **Two daemons:**
+  - a local `ask` on a linked artifact is asked there; answered there,
+    the local `ask` returns that answer; declined there, it declines here;
+  - answered or withdrawn here first, the copy there is withdrawn;
+  - a lost answer, and an outage with Retry, ask there once;
+  - an artifactless, unlinked or download-only ask stays local;
+  - the keyed routes are an agent token's: another token's session
+    reaches neither a keyed nor an unkeyed question.
+- **Browser:** the local card's tag, the question on the hosted artifact
+  page and inbox, answered there, and the local card resolved, at 1280
+  and 390 wide, light and dark.

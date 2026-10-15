@@ -267,11 +267,13 @@ pub async fn remove(
 
 /// `GET /api/artifacts/<aid>/remotes` → `{links: [{remote_id, remote_name,
 /// origin, url, pushed_n, remote_n, auto, behind, download_only, sync,
-/// pending, failed}], remotes, unsent}`: the artifact's public twins
-/// (`behind`: local versions not pushed yet; `download_only`: local threads
-/// stay local; `sync`: how its linked threads' sync stands, with
-/// `unreachable_since`; `pending` and `failed`: its writes waiting to go
-/// up, and those not sent), every connected remote, and `unsent`: the
+/// pending, failed, failed_questions}], remotes, unsent}`: the artifact's
+/// public twins (`behind`: local versions not pushed yet; `download_only`:
+/// local threads stay local; `sync`: how its linked threads' sync stands,
+/// with `unreachable_since`; `pending` and `failed`: its writes waiting to
+/// go up, and those not sent; `failed_questions`: its open questions whose
+/// copies were not sent, which Retry sends too), every connected remote,
+/// and `unsent`: the
 /// writes not sent to a remote the artifact is no longer linked to, which
 /// the owner may drop (`POST /api/artifacts/<aid>/unsent:drop`).
 pub async fn for_artifact(
@@ -284,16 +286,26 @@ pub async fn for_artifact(
     who.require_owner("publishes to a public Clax")?;
     asker(&s, &d).await?;
     let id = parse_id(&path(aid)?)?;
-    let (links, remotes, current, outbox, unsent) = s
+    let (links, remotes, current, outbox, unsent, questions) = s
         .store_call(move |st| {
             let a = st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
             let links = st.remote_links(id.as_str())?;
             let mut outbox = Vec::new();
+            let mut questions = Vec::new();
             for l in &links {
                 outbox.extend(
                     st.outbox_of(&l.remote_id)?
                         .into_iter()
                         .filter(|o| o.artifact_id == id.as_str()),
+                );
+                questions.extend(
+                    st.live_linked_questions(&l.remote_id)?
+                        .into_iter()
+                        .filter(|q| {
+                            q.artifact_id == id.as_str()
+                                && q.status == "open"
+                                && q.failed_at.is_some()
+                        }),
                 );
             }
             Ok((
@@ -302,6 +314,7 @@ pub async fn for_artifact(
                 a.current_version,
                 outbox,
                 st.unsent_of(id.as_str())?,
+                questions,
             ))
         })
         .await?;
@@ -312,6 +325,10 @@ pub async fn for_artifact(
             let mine = outbox.iter().filter(|o| o.remote_id == l.remote_id);
             let failed = mine.clone().filter(|o| o.failed_at.is_some()).count();
             let pending = mine.count() - failed;
+            let failed_questions = questions
+                .iter()
+                .filter(|q| q.remote_id == l.remote_id)
+                .count();
             json!({
                 "remote_id": l.remote_id,
                 "remote_name": r.map(|r| r.name.clone()),
@@ -327,6 +344,7 @@ pub async fn for_artifact(
                 "sync": s.linked.status(&l.remote_id),
                 "pending": pending,
                 "failed": failed,
+                "failed_questions": failed_questions,
             })
         })
         .collect();
@@ -420,7 +438,8 @@ pub async fn unlink(
 }
 
 /// `POST /api/artifacts/<aid>/remotes/<remote>/retry` (the owner) →
-/// `{retried}`: tries the link's writes not sent again now.
+/// `{retried}`: tries the link's writes and question copies not sent
+/// again now.
 pub async fn retry(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -431,7 +450,10 @@ pub async fn retry(
     let (id, r) = owned_link(&s, &d, &who, p).await?;
     let rid = r.id.clone();
     let n = s
-        .store_call(move |st| st.outbox_retry(&rid, Some(id.as_str())))
+        .store_call(move |st| {
+            Ok(st.outbox_retry(&rid, Some(id.as_str()))?
+                + st.linked_questions_retry(&rid, Some(id.as_str()))?)
+        })
         .await?;
     // Their threads read as sending again, in every open tab, before the
     // sync tries them.

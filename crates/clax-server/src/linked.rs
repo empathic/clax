@@ -37,6 +37,20 @@
 //!   lost) is resent under its key as soon as the remote answers, before
 //!   anything is read from there. Local work never waits on the remote.
 //!
+//! - **Questions.** An `ask` question of the owner's agents about a linked
+//!   artifact is asked there too, while the link is two-way: in the sync's
+//!   session, against the public copy, under an Idempotency-Key made here
+//!   ([`clax_store::linked`]'s `linked_questions`), so a resend after
+//!   a lost answer answers the copy the first made. Each cycle reads each
+//!   open copy there (by the question route, which a keyed question's
+//!   token may read from any of its sessions): an answer or decline there
+//!   answers or declines the question here, so the waiting `ask` returns
+//!   it; a copy withdrawn there (its session there ended) while the
+//!   question is open here is asked again under a new key. A question
+//!   answered, declined or withdrawn here first has its copy withdrawn
+//!   there. The remote's answers are checked against the questions, as a
+//!   person's here are.
+//!
 //! The timers run on a [`Sleeper`], which tests drive. A hosted daemon runs
 //! none of this.
 
@@ -47,7 +61,10 @@ use crate::questions::Sleeper;
 use clax_http::state::AppState;
 use clax_core::audit::AuditCtx;
 use clax_store::approvals::Route;
-use clax_store::linked::{MirrorComment, MirrorThread, OutboxRow, RemoteAuthor};
+use clax_store::linked::{
+    LinkedQuestion, MirrorComment, MirrorThread, OutboxRow, RemoteAuthor,
+};
+use clax_store::questions::Close;
 use clax_store::remotes::RemoteLink;
 use clax_core::{Anchor, Event, SendTarget};
 use serde::Serialize;
@@ -216,6 +233,10 @@ pub fn listen(s: &AppState) {
                 Event::Comment { artifact_id, .. }
                 | Event::Thread { artifact_id, .. }
                 | Event::ThreadResolved { artifact_id, .. } => artifact_id.clone(),
+                Event::Question { question, .. } => match question["artifact"]["id"].as_str() {
+                    Some(a) => a.to_string(),
+                    None => continue,
+                },
                 _ => continue,
             };
             let rids = st
@@ -229,16 +250,22 @@ pub fn listen(s: &AppState) {
             for r in rids {
                 // Queued (and shown pending) now, even while a request to
                 // the remote hangs; the task sends it.
-                let r2 = r.clone();
-                if let Ok(n) = st.store_call(move |s| s.scan_linked(&r2)).await
-                    && n > 0
-                {
+                if scan(&st, &r).await {
                     publish_outbox(&st, &r).await;
                 }
                 st.linked.kick(Some(&r));
             }
         }
     });
+}
+
+/// Queues remote `rid`'s local writes and questions not queued yet;
+/// whether it queued any.
+async fn scan(s: &AppState, rid: &str) -> bool {
+    let r = rid.to_string();
+    s.store_call(move |st| Ok(st.scan_linked(&r)? + st.scan_linked_questions(&r)?))
+        .await
+        .is_ok_and(|n| n > 0)
 }
 
 /// Starts a task for each connected remote with a link, and stops the
@@ -359,7 +386,9 @@ async fn run(s: AppState, rid: String, kick: Arc<Notify>, retry: Arc<Notify>) {
                     let (r2, name) = (rid.clone(), remote_label(&s, &rid).await);
                     let _ = s
                         .store_call(move |st| {
-                            st.outbox_failed_all(&r2, &format!("Not sent: {name} unreachable"))
+                            let why = format!("Not sent: {name} unreachable");
+                            st.outbox_failed_all(&r2, &why)?;
+                            st.linked_questions_failed_all(&r2, &why)
                         })
                         .await;
                     publish_outbox(&s, &rid).await;
@@ -373,10 +402,7 @@ async fn run(s: AppState, rid: String, kick: Arc<Notify>, retry: Arc<Notify>) {
                         _ = &mut wait => break,
                         _ = retry.notified() => break,
                         _ = kick.notified() => {
-                            let r2 = rid.clone();
-                            if let Ok(n) = s.store_call(move |st| st.scan_linked(&r2)).await
-                                && n > 0
-                            {
+                            if scan(&s, &rid).await {
                                 publish_outbox(&s, &rid).await;
                             }
                         }
@@ -417,11 +443,12 @@ async fn remote_label(s: &AppState, rid: &str) -> String {
         .unwrap_or_else(|| "the remote".into())
 }
 
-/// Republishes the threads with outbox rows of remote `rid`, so the shell
-/// shows their state.
+/// Republishes the threads with outbox rows of remote `rid`, and its open
+/// questions whose copies are not done, so the shell shows their state.
 pub(crate) async fn publish_outbox(s: &AppState, rid: &str) {
     let r = rid.to_string();
     let ctx = s.feedback_ctx();
+    let st2 = s.clone();
     let _ = s
         .store_call(move |st| {
             let mut seen = HashSet::new();
@@ -432,9 +459,31 @@ pub(crate) async fn publish_outbox(s: &AppState, rid: &str) {
                     crate::routes::threads::publish_thread(&ctx, st, &t)?;
                 }
             }
-            Ok(())
+            let open: Vec<String> = st
+                .live_linked_questions(&r)?
+                .into_iter()
+                .filter(|q| q.status == "open")
+                .map(|q| q.question_id)
+                .collect();
+            publish_questions(&st2, st, &open)
         })
         .await;
+}
+
+/// Announces each of questions `qids` as it now is. Runs on a store
+/// thread.
+fn publish_questions(
+    s: &AppState,
+    st: &clax_store::Store,
+    qids: &[String],
+) -> clax_core::Result<()> {
+    for qid in qids {
+        if let Some(q) = st.question(qid)? {
+            let v = crate::questions::view(st, &q)?;
+            crate::questions::announce(s, st, &q, v);
+        }
+    }
+    Ok(())
 }
 
 /// A cycle's state between cycles.
@@ -564,13 +613,12 @@ impl Sync {
             return Err(Stop::Gone);
         }
         // Local writes queue whether or not the remote answers.
-        let rid = self.rid.clone();
-        let queued = self.s.store_call(move |st| st.scan_linked(&rid)).await?;
-        if queued > 0 {
+        if scan(&self.s, &self.rid).await {
             publish_outbox(&self.s, &self.rid).await;
         }
         self.connect(&links).await?;
         self.drain(&links).await?;
+        self.questions(&links).await?;
         for l in &links {
             self.read(l, full).await?;
         }
@@ -974,6 +1022,261 @@ impl Sync {
                 Ok(Sent::Acked)
             }
         }
+    }
+
+    /// Brings remote `rid`'s question copies in step: asks the new ones
+    /// there, reads the open ones' answers, and withdraws there those
+    /// closed here.
+    async fn questions(&mut self, links: &[RemoteLink]) -> Result<(), Stop> {
+        let rid = self.rid.clone();
+        let rows = self
+            .s
+            .store_call(move |st| st.live_linked_questions(&rid))
+            .await?;
+        let mut changed: Vec<String> = Vec::new();
+        let mut out = Ok(());
+        for row in rows {
+            match self.question(&row, links).await {
+                Ok(true) => changed.push(row.question_id.clone()),
+                Ok(false) => {}
+                Err(why) => {
+                    let (qid, w2) = (row.question_id.clone(), why.clone());
+                    self.s
+                        .store_call(move |st| st.linked_question_attempted(&qid, &w2))
+                        .await?;
+                    changed.push(row.question_id.clone());
+                    out = Err(Stop::Unreachable(why));
+                    break;
+                }
+            }
+        }
+        if !changed.is_empty() {
+            let st2 = self.s.clone();
+            let _ = self
+                .s
+                .store_call(move |st| publish_questions(&st2, st, &changed))
+                .await;
+        }
+        out
+    }
+
+    /// Brings question copy `row` in step; whether its view changed here.
+    /// `Err` when the remote could not be reached.
+    async fn question(&self, row: &LinkedQuestion, links: &[RemoteLink]) -> Result<bool, String> {
+        let qid = row.question_id.clone();
+        let linked = links.iter().any(|l| l.artifact_id == row.artifact_id);
+        let mut rqid = row.remote_question_id.clone();
+        let open_here = row.status == "open" && linked;
+        if rqid.is_none() {
+            // Not asked there yet. Closed here (or unlinked) before any try
+            // could have made it: nothing there to withdraw.
+            if !open_here && row.attempts == 0 {
+                self.question_done(&qid, false).await?;
+                return Ok(true);
+            }
+            // Refused there, or not sent within the backoff: waits for
+            // Retry, unless a try may have made it.
+            if row.failed_at.is_some() && row.attempts == 0 {
+                return Ok(false);
+            }
+            match self.ask_there(row).await? {
+                Ok(made) => rqid = Some(made),
+                Err(why) => {
+                    let q2 = qid.clone();
+                    self.s
+                        .store_call(move |st| st.linked_question_failed(&q2, &why))
+                        .await
+                        .map_err(|e| e.message)?;
+                    return Ok(true);
+                }
+            }
+            if open_here {
+                return Ok(true);
+            }
+        }
+        let rqid = rqid.expect("asked there");
+        let c = self.client.as_ref().expect("connected");
+        let sid = c.session().map(|s| s.0.clone()).unwrap_or_default();
+        if !open_here {
+            // Closed here first: the copy there is withdrawn (or was
+            // closed there already).
+            let path = format!("/api/sessions/{sid}/questions/{rqid}/withdraw");
+            match clax_http::public::sendable(c.post(&path, &json!({}))).await {
+                Ok(_) => {}
+                Err(f) => {
+                    if let Some(why) = classify(&f) {
+                        return Err(why);
+                    }
+                }
+            }
+            self.question_done(&qid, false).await?;
+            return Ok(false);
+        }
+        let v = match clax_http::public::sendable(
+            c.get(&format!("/api/sessions/{sid}/questions/{rqid}?wait=0")),
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(f) => {
+                if let Some(why) = classify(&f) {
+                    return Err(why);
+                }
+                // No longer this token's to read there: asked again.
+                self.reask(&qid).await?;
+                return Ok(true);
+            }
+        };
+        let q = &v["question"];
+        match q["status"].as_str().unwrap_or("open") {
+            "answered" => {
+                let answers: Option<Vec<clax_core::questions::Answer>> =
+                    serde_json::from_value(q["answers"].clone()).ok();
+                let (q2, st2) = (qid.clone(), self.s.clone());
+                let r = self
+                    .s
+                    .store_call(move |st| {
+                        let Some(answers) = answers else {
+                            return Ok(Err("the remote's answer is not one".to_string()));
+                        };
+                        let c = Close::Answer {
+                            answers,
+                            via: "shell",
+                        };
+                        match crate::routes::questions::close(&st2, st, &AuditCtx::DAEMON, &q2, c) {
+                            Ok(closed) => Ok(Ok(matches!(
+                                closed,
+                                crate::routes::questions::Closed::Done(_)
+                            ))),
+                            Err(clax_core::CoreError::Invalid { message, .. }) => Ok(Err(message)),
+                            Err(e) => Err(e),
+                        }
+                    })
+                    .await
+                    .map_err(|e| e.message)?;
+                match r {
+                    Ok(there) => self.question_done(&qid, there).await?,
+                    Err(why) => {
+                        // An answer that does not fit the questions here is
+                        // dropped; the question stays open here, its copy
+                        // done.
+                        tracing::warn!(
+                            question = qid.as_str(),
+                            error = why.as_str(),
+                            "a remote answer was refused"
+                        );
+                        let q2 = qid.clone();
+                        self.s
+                            .store_call(move |st| {
+                                st.linked_question_attempted(&q2, &format!("Not answered: {why}"))?;
+                                st.linked_question_done(&q2, false)
+                            })
+                            .await
+                            .map_err(|e| e.message)?;
+                    }
+                }
+                Ok(true)
+            }
+            "declined" => {
+                let (q2, st2) = (qid.clone(), self.s.clone());
+                let there = self
+                    .s
+                    .store_call(move |st| {
+                        crate::routes::questions::close(
+                            &st2,
+                            st,
+                            &AuditCtx::DAEMON,
+                            &q2,
+                            Close::Decline,
+                        )
+                        .map(|c| matches!(c, crate::routes::questions::Closed::Done(_)))
+                    })
+                    .await
+                    .map_err(|e| e.message)?;
+                self.question_done(&qid, there).await?;
+                Ok(true)
+            }
+            "open" => Ok(false),
+            // Withdrawn there (its session there ended) while open here.
+            _ => {
+                self.reask(&qid).await?;
+                Ok(true)
+            }
+        }
+    }
+
+    /// Asks question copy `row` there under its key: `Ok(Ok(id))` with the
+    /// copy's ID there, `Ok(Err(why))` when the remote refused it, `Err`
+    /// when it could not be reached.
+    async fn ask_there(&self, row: &LinkedQuestion) -> Result<Result<String, String>, String> {
+        let qid = row.question_id.clone();
+        let q = self
+            .s
+            .store_call(move |st| st.question(&qid))
+            .await
+            .map_err(|e| e.message)?;
+        let Some(q) = q else {
+            return Ok(Err("the question is gone".into()));
+        };
+        let c = self.client.as_ref().expect("connected");
+        let sid = c.session().map(|s| s.0.clone()).unwrap_or_default();
+        let body = json!({
+            "questions": q.questions,
+            "artifact_id": row.remote_artifact_id,
+            "source": "ask",
+        });
+        let q2 = row.question_id.clone();
+        self.s
+            .store_call(move |st| st.linked_question_trying(&q2))
+            .await
+            .map_err(|e| e.message)?;
+        let v = match clax_http::public::sendable(c.post_keyed(
+            &format!("/api/sessions/{sid}/questions"),
+            &body,
+            &row.idem_key,
+        ))
+        .await
+        {
+            Ok(v) => v,
+            Err(f) => {
+                return match classify(&f) {
+                    Some(why) => Err(why),
+                    None => Ok(Err(format!("{}: {}", f.code, f.message))),
+                };
+            }
+        };
+        if self.lose_answer() {
+            return Err("the answer was lost".into());
+        }
+        let Some(rqid) = v["question"]["id"]
+            .as_str()
+            .filter(|x| safe_id(x))
+            .map(str::to_string)
+        else {
+            return Ok(Err("the remote answered no question".into()));
+        };
+        let (q2, r2) = (row.question_id.clone(), rqid.clone());
+        self.s
+            .store_call(move |st| st.linked_question_made(&q2, &r2))
+            .await
+            .map_err(|e| e.message)?;
+        Ok(Ok(rqid))
+    }
+
+    async fn question_done(&self, qid: &str, answered_there: bool) -> Result<(), String> {
+        let q = qid.to_string();
+        self.s
+            .store_call(move |st| st.linked_question_done(&q, answered_there))
+            .await
+            .map_err(|e| e.message)
+    }
+
+    async fn reask(&self, qid: &str) -> Result<(), String> {
+        let q = qid.to_string();
+        self.s
+            .store_call(move |st| st.linked_question_reask(&q))
+            .await
+            .map_err(|e| e.message)
     }
 
     /// Reads link `l`'s public threads (those changed since its cursor,

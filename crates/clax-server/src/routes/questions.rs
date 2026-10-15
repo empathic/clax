@@ -72,6 +72,16 @@ impl IntoResponse for QuestionError {
     }
 }
 
+/// The grant of an agent token's caller: whose keyed questions
+/// ([`Store::session_or_keyed_question`]) its sessions may read and
+/// withdraw. `None` for every other caller.
+fn grant_of(c: &Caller) -> Option<String> {
+    match c {
+        Caller::PersonAgent { grant, .. } => Some(grant.clone()),
+        _ => None,
+    }
+}
+
 /// Checks that session `sid` exists (404) and is live (400
 /// `unknown_session`), as every session route does (spec §6.1).
 fn live(db: &Store, sid: &str) -> clax_core::Result<()> {
@@ -157,7 +167,12 @@ pub struct CreateBody {
 
 /// `POST /api/sessions/<sid>/questions`: records a question set for live
 /// session `sid` → 201 `{question, mode, terminal_after_s, surface_open}`
-/// (200 with the first question for a `tool_use_id` seen before). A hook
+/// (200 with the first question for a `tool_use_id` seen before). An agent
+/// token may name an `Idempotency-Key` (as a publish does): a request whose
+/// token named that key before answers 200 with the question it made,
+/// whatever session asked it, and makes none; the token's sessions may
+/// then read and withdraw that question (another Clax's linked questions:
+/// `crate::linked`). Every other caller's key is ignored. A hook
 /// question takes Claude Code's AskUserQuestion input as it is, and when it
 /// names no artifact, the artifact of the session's newest working record,
 /// else the session's artifact (`Store::session_artifact`); it is created
@@ -170,11 +185,14 @@ pub async fn create(
     State(s): State<AppState>,
     TokenOrAgent(a): TokenOrAgent<clax_http::agent::QuestionsCreate>,
     audit: DeferredAudit,
+    headers: axum::http::HeaderMap,
     p: Result<Path<String>, PathRejection>,
     req: Result<Json<CreateBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     let sid = path(p)?;
     let b = body_within(req, "128 KiB")?;
+    let grant = grant_of(&a.caller);
+    let key = super::artifacts::publish_key(&headers, grant.as_deref())?;
     let source = match b.source.as_str() {
         "ask" => Source::Ask,
         "hook" => Source::Hook,
@@ -262,7 +280,8 @@ pub async fn create(
             let released =
                 source == Source::Hook && (live.is_none() || !surface_open || after == 0);
             let ctx = audit.for_session(db, &sid)?;
-            let (row, made) = db.create_question(
+            let keyed = grant.as_deref().zip(key.as_deref());
+            let (row, made) = db.create_question_keyed(
                 &ctx,
                 NewQuestion {
                     session_id: sid,
@@ -272,6 +291,7 @@ pub async fn create(
                     questions,
                     released,
                 },
+                keyed,
             )?;
             let v = question_view(db, &row)?;
             if made {
@@ -304,7 +324,8 @@ pub struct WaitQuery {
     wait: u64,
 }
 
-/// `GET /api/sessions/<sid>/questions/<qid>?wait=<s>` → `{question,
+/// `GET /api/sessions/<sid>/questions/<qid>?wait=<s>` (a question `sid`
+/// asked, or one its agent token keyed) → `{question,
 /// waited_s}` as soon as the question is not open, or after `wait` seconds
 /// (at most [`MAX_WAIT_SECS`]), or when the daemon shuts down. A daemon
 /// that shuts down while a poll holds an open hook question withdraws it
@@ -330,11 +351,12 @@ pub async fn poll(
     let started = Instant::now();
     let wait = Duration::from_secs(q.wait.min(MAX_WAIT_SECS));
     let vf = VisFor::of(&a.caller, &s);
-    let (sid1, qid1) = (sid.clone(), qid.clone());
+    let grant = grant_of(&a.caller);
+    let (sid1, qid1, g1) = (sid.clone(), qid.clone(), grant.clone());
     let first = s
         .store_call(move |db| {
             live(db, &sid1)?;
-            db.session_question(&sid1, &qid1)
+            db.session_or_keyed_question(&sid1, g1.as_deref(), &qid1)
         })
         .await?;
     // Only an open mirrored question can be withdrawn for want of a poll.
@@ -343,8 +365,8 @@ pub async fn poll(
     let on_last: Option<clax_realtime::questions::OnLast> = match first.source {
         Source::Hook => (first.status == Status::Open).then(|| arm_grace(s.clone(), qid.clone())),
         Source::Ask => {
-            let (waiters, sid) = (s.feedback_waiters.clone(), sid.clone());
-            Some(Box::new(move || waiters.wake(std::iter::once(&sid))))
+            let (waiters, asker) = (s.feedback_waiters.clone(), first.session_id.clone());
+            Some(Box::new(move || waiters.wake(std::iter::once(&asker))))
         }
     };
     let Some((notify, _hold)) = s.questions.hold(&qid, on_last) else {
@@ -377,16 +399,22 @@ pub async fn poll(
         if s.questions.take_expired(&qid) {
             done = true;
         }
-        let (sid1, qid1, st, vf1) = (sid.clone(), qid.clone(), s.clone(), vf.clone());
+        let (sid1, qid1, st, vf1, g1) = (
+            sid.clone(),
+            qid.clone(),
+            s.clone(),
+            vf.clone(),
+            grant.clone(),
+        );
         let out = s
             .store_call(move |db| {
-                let mut row = db.session_question(&sid1, &qid1)?;
+                let mut row = db.session_or_keyed_question(&sid1, g1.as_deref(), &qid1)?;
                 if row.status == Status::Open && !done {
                     return Ok(None);
                 }
                 if stopped && row.status == Status::Open && row.source == Source::Hook {
                     close(&st, db, &AuditCtx::DAEMON, &row.id, Close::Shutdown)?;
-                    row = db.session_question(&sid1, &qid1)?;
+                    row = db.session_or_keyed_question(&sid1, g1.as_deref(), &qid1)?;
                 }
                 if matches!(row.status, Status::Answered | Status::Declined) {
                     db.take_question(&row.id)?;
@@ -408,11 +436,11 @@ pub async fn poll(
     }
 }
 
-/// Applies `c` to session `sid`'s question `qid`, as the session's agent
-/// whose visibility is `vf`.
+/// Applies `c` to session `sid`'s question `qid` (or one its agent token
+/// `grant` keyed), as the session's agent whose visibility is `vf`.
 async fn session_close(
     s: AppState,
-    vf: VisFor,
+    (vf, grant): (VisFor, Option<String>),
     audit: DeferredAudit,
     sid: String,
     qid: String,
@@ -422,7 +450,7 @@ async fn session_close(
     let closed = s
         .store_call(move |db| {
             live(db, &sid)?;
-            db.session_question(&sid, &qid)?;
+            db.session_or_keyed_question(&sid, grant.as_deref(), &qid)?;
             let ctx = audit.for_session(db, &sid)?;
             let c = close(&st, db, &ctx, &qid, c)?;
             closed_for_asker(db, &vf, c)
@@ -433,7 +461,8 @@ async fn session_close(
 
 /// `POST /api/sessions/<sid>/questions/<qid>/withdraw` → `{question}`; 409
 /// `question_closed` when it is not open. Records `question.withdraw`
-/// (reason `explicit`).
+/// (reason `explicit`). An agent token's session may withdraw a question
+/// another of its sessions keyed.
 pub async fn withdraw(
     State(s): State<AppState>,
     TokenOrAgent(a): TokenOrAgent<clax_http::agent::QuestionsWithdraw>,
@@ -442,7 +471,8 @@ pub async fn withdraw(
 ) -> Result<Json<Value>, QuestionError> {
     let (sid, qid) = path(p)?;
     let vf = VisFor::of(&a.caller, &s);
-    session_close(s, vf, audit, sid, qid, Close::Withdraw).await
+    let grant = grant_of(&a.caller);
+    session_close(s, (vf, grant), audit, sid, qid, Close::Withdraw).await
 }
 
 /// `POST /api/sessions/<sid>/questions/<qid>/release` → `{question}`: the
@@ -457,7 +487,7 @@ pub async fn release(
 ) -> Result<Json<Value>, QuestionError> {
     let (sid, qid) = path(p)?;
     let vf = VisFor::of(&a.caller, &s);
-    session_close(s, vf, audit, sid, qid, Close::Expire).await
+    session_close(s, (vf, None), audit, sid, qid, Close::Expire).await
 }
 
 #[derive(Deserialize)]

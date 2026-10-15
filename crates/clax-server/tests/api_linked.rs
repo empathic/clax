@@ -957,3 +957,476 @@ async fn unlinking_keeps_read_only_history_and_unsent_rows_until_dropped() {
         1
     );
 }
+
+/// An `ask` of one choice question.
+fn ask_body(artifact: Option<&str>, text: &str) -> Value {
+    let mut b = json!({"source": "ask", "questions": [{"question": text, "header": "Pick",
+        "options": [{"label": "Red"}, {"label": "Blue"}]}]});
+    if let Some(a) = artifact {
+        b["artifact_id"] = json!(a);
+    }
+    b
+}
+
+impl Pair {
+    /// Local agent `sid` asks; the question's view.
+    async fn ask(&self, sid: &str, artifact: Option<&str>, text: &str) -> Value {
+        let (s, v) = self
+            .local_req(
+                reqwest::Method::POST,
+                &format!("/api/sessions/{sid}/questions"),
+                ask_body(artifact, text),
+                Some(sid),
+            )
+            .await;
+        assert_eq!(s, 201, "{v}");
+        v["question"].clone()
+    }
+
+    /// Local agent `sid`'s poll of question `qid`, waiting up to `wait` s.
+    async fn ask_wait(&self, sid: &str, qid: &str, wait: u64) -> Value {
+        let (s, v) = self
+            .local_req(
+                reqwest::Method::GET,
+                &format!("/api/sessions/{sid}/questions/{qid}?wait={wait}"),
+                json!(null),
+                Some(sid),
+            )
+            .await;
+        assert_eq!(s, 200, "{v}");
+        v["question"].clone()
+    }
+
+    /// The local question `qid` as the owner sees it.
+    async fn local_question(&self, qid: &str) -> Value {
+        let v: Value = self
+            .local
+            .get_authed(&format!("/api/questions/{qid}"))
+            .await
+            .json()
+            .await
+            .unwrap();
+        v["question"].clone()
+    }
+
+    /// The hosted owner's questions, every status.
+    async fn hosted_questions(&self) -> Vec<Value> {
+        let (s, v) = self
+            .public
+            .browser(
+                reqwest::Method::GET,
+                "/api/questions?status=all",
+                json!(null),
+            )
+            .await;
+        assert_eq!(s, 200, "{v}");
+        v["questions"].as_array().cloned().unwrap_or_default()
+    }
+
+    /// The copy there of the question asked as `text`, once it is there.
+    async fn hosted_question(&self, text: &str) -> Value {
+        until("the question is asked there", || async {
+            self.hosted_questions()
+                .await
+                .into_iter()
+                .find(|q| q["questions"][0]["question"] == text)
+        })
+        .await
+    }
+}
+
+#[tokio::test]
+async fn a_local_ask_on_a_linked_artifact_is_asked_there_and_answered_from_there() {
+    let p = Pair::new().await;
+    let sid = p.local_agent("asker").await;
+    let q = p.ask(&sid, Some(&p.aid), "Which colour?").await;
+    let qid = q["id"].as_str().unwrap().to_string();
+    // The local agent waits, as `ask` does.
+    let waiting = {
+        let req = p
+            .local
+            .authed(p.local.client.get(format!(
+                "{}/api/sessions/{sid}/questions/{qid}?wait=30",
+                p.local.base
+            )))
+            .header("x-clax-session", &sid);
+        tokio::spawn(async move {
+            let (s, v) = json_of(req.send().await.unwrap()).await;
+            assert_eq!(s, 200, "{v}");
+            v["question"].clone()
+        })
+    };
+    // Asked there, about the public copy, with the same questions.
+    let there = p.hosted_question("Which colour?").await;
+    assert_eq!(there["status"], "open", "{there}");
+    assert_eq!(there["artifact"]["id"], p.raid.as_str(), "{there}");
+    assert_eq!(there["questions"], q["questions"], "{there}");
+    assert_eq!(there["source"], "ask");
+    // Sent: the local card says where.
+    let local = until("the copy is acknowledged here", || async {
+        let l = p.local_question(&qid).await;
+        (l["linked"]["sent"] == true).then_some(l)
+    })
+    .await;
+    assert_eq!(
+        local["linked"]["remote"],
+        format!("localhost:{}", p.public.ts.addr.port())
+    );
+    assert_eq!(local["linked"]["state"], Value::Null, "{local}");
+    // The hosted owner answers there; the local `ask` returns that answer.
+    let rqid = there["id"].as_str().unwrap();
+    let (s, v) = p
+        .public
+        .browser(
+            reqwest::Method::POST,
+            &format!("/api/questions/{rqid}/answer"),
+            json!({"answers": [{"selected": ["Blue"]}]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let answered = tokio::time::timeout(Duration::from_secs(20), waiting)
+        .await
+        .expect("the local ask returns")
+        .unwrap();
+    assert_eq!(answered["status"], "answered", "{answered}");
+    assert_eq!(
+        answered["answers"],
+        json!([{"selected": ["Blue"], "text": null}])
+    );
+    let local = p.local_question(&qid).await;
+    assert_eq!(local["linked"]["answered_there"], true, "{local}");
+    // A decline there declines here.
+    let q2 = p.ask(&sid, Some(&p.aid), "Ship it?").await;
+    let there = p.hosted_question("Ship it?").await;
+    let (s, v) = p
+        .public
+        .browser(
+            reqwest::Method::POST,
+            &format!("/api/questions/{}/decline", there["id"].as_str().unwrap()),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let declined = p.ask_wait(&sid, q2["id"].as_str().unwrap(), 20).await;
+    assert_eq!(declined["status"], "declined", "{declined}");
+    // Each was asked there once.
+    p.backstop().await;
+    p.sleeper.wait_for(BACKSTOP, 1).await;
+    assert_eq!(p.hosted_questions().await.len(), 2);
+}
+
+#[tokio::test]
+async fn a_question_closed_here_first_is_withdrawn_there() {
+    let p = Pair::new().await;
+    let sid = p.local_agent("asker").await;
+    // Answered here first.
+    let q = p.ask(&sid, Some(&p.aid), "Answered here?").await;
+    let there = p.hosted_question("Answered here?").await;
+    let (s, v) = post(
+        &p.local,
+        &format!("/api/questions/{}/answer", q["id"].as_str().unwrap()),
+        json!({"answers": [{"selected": ["Red"]}]}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let rqid = there["id"].as_str().unwrap().to_string();
+    until("the copy there is withdrawn", || async {
+        let qs = p.hosted_questions().await;
+        (qs.iter().find(|q| q["id"] == rqid.as_str())?["status"] == "withdrawn").then_some(())
+    })
+    .await;
+    // The agent withdraws its own; the copy there is withdrawn too.
+    let q = p.ask(&sid, Some(&p.aid), "Withdrawn here?").await;
+    let there = p.hosted_question("Withdrawn here?").await;
+    let (s, v) = p
+        .local_req(
+            reqwest::Method::POST,
+            &format!(
+                "/api/sessions/{sid}/questions/{}/withdraw",
+                q["id"].as_str().unwrap()
+            ),
+            json!({}),
+            Some(&sid),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let rqid = there["id"].as_str().unwrap().to_string();
+    until("the second copy there is withdrawn", || async {
+        let qs = p.hosted_questions().await;
+        (qs.iter().find(|q| q["id"] == rqid.as_str())?["status"] == "withdrawn").then_some(())
+    })
+    .await;
+    // The local answer stands.
+    let local = p.local_question(q["id"].as_str().unwrap()).await;
+    assert_eq!(local["status"], "withdrawn");
+    assert_eq!(local["linked"]["answered_there"], false);
+}
+
+#[tokio::test]
+async fn a_lost_answer_or_an_outage_asks_there_once() {
+    let p = Pair::new().await;
+    let sid = p.local_agent("asker").await;
+    // The remote's answer to the first try is lost: the resend under its
+    // key answers the same copy.
+    p.local.state.linked.lose_next_answers(1);
+    let q = p.ask(&sid, Some(&p.aid), "Lost answer?").await;
+    p.sleeper.wait_for(BACKOFF_FIRST, 1).await;
+    p.sleeper.fire(BACKOFF_FIRST);
+    let qid = q["id"].as_str().unwrap().to_string();
+    until("the copy is acknowledged", || async {
+        (p.local_question(&qid).await["linked"]["sent"] == true).then_some(())
+    })
+    .await;
+    p.backstop().await;
+    p.sleeper.wait_for(BACKSTOP, 1).await;
+    let qs = p.hosted_questions().await;
+    assert_eq!(qs.len(), 1, "{qs:?}");
+    // An outage: asked while the remote is down, pending, then not sent at
+    // the cap; Retry asks it there once.
+    p.local.state.linked.set_offline(true);
+    p.backstop().await;
+    let q = p.ask(&sid, Some(&p.aid), "During an outage?").await;
+    let qid = q["id"].as_str().unwrap().to_string();
+    let mut d = BACKOFF_FIRST;
+    p.sleeper.wait_for(d, 1).await;
+    until("the copy is pending", || async {
+        (p.local_question(&qid).await["linked"]["state"] == "pending").then_some(())
+    })
+    .await;
+    loop {
+        p.sleeper.wait_for(d, 1).await;
+        if d == BACKOFF_CAP {
+            break;
+        }
+        p.sleeper.fire(d);
+        d = (d * 2).min(BACKOFF_CAP);
+    }
+    until("the copy is not sent", || async {
+        (p.local_question(&qid).await["linked"]["state"] == "failed").then_some(())
+    })
+    .await;
+    // The link row counts it, so its Retry shows though no comment failed.
+    let (_, links) = p
+        .local_req(
+            reqwest::Method::GET,
+            &format!("/api/artifacts/{}/remotes", p.aid),
+            json!(null),
+            None,
+        )
+        .await;
+    assert_eq!(
+        (
+            &links["links"][0]["failed"],
+            &links["links"][0]["failed_questions"]
+        ),
+        (&json!(0), &json!(1)),
+        "{links}"
+    );
+    p.local.state.linked.set_offline(false);
+    let (s, v) = post(
+        &p.local,
+        &format!("/api/artifacts/{}/remotes/{}/retry", p.aid, p.remote),
+        json!({}),
+    )
+    .await;
+    assert_eq!((s, &v["retried"]), (200, &json!(1)), "{v}");
+    p.hosted_question("During an outage?").await;
+    until("the copy is acknowledged", || async {
+        (p.local_question(&qid).await["linked"]["sent"] == true).then_some(())
+    })
+    .await;
+    p.backstop().await;
+    p.sleeper.wait_for(BACKSTOP, 1).await;
+    assert_eq!(p.hosted_questions().await.len(), 2);
+}
+
+#[tokio::test]
+async fn an_unlinked_artifactless_or_download_only_ask_stays_local() {
+    let p = Pair::new().await;
+    let sid = p.local_agent("asker").await;
+    // About no artifact, and about an artifact with no link.
+    let none = p.ask(&sid, None, "About nothing?").await;
+    let other = p.local.publish("Unlinked", &[("index.html", PAGE)]).await;
+    let other = other["artifact"]["id"].as_str().unwrap().to_string();
+    let unlinked = p.ask(&sid, Some(&other), "About another?").await;
+    // Download only holds a question back, as it holds a new thread.
+    let (s, v) = p
+        .local_req(
+            reqwest::Method::PATCH,
+            &format!("/api/artifacts/{}/remotes/{}", p.aid, p.remote),
+            json!({"download_only": true}),
+            None,
+        )
+        .await;
+    assert_eq!((s, &v["download_only"]), (200, &json!(true)), "{v}");
+    let held = p.ask(&sid, Some(&p.aid), "Download only?").await;
+    p.backstop().await;
+    p.sleeper.wait_for(BACKSTOP, 1).await;
+    // Made two-way again: the question asked meanwhile stays local, a new
+    // one goes up.
+    let (s, v) = p
+        .local_req(
+            reqwest::Method::PATCH,
+            &format!("/api/artifacts/{}/remotes/{}", p.aid, p.remote),
+            json!({"download_only": false}),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    p.ask(&sid, Some(&p.aid), "Two-way again?").await;
+    p.hosted_question("Two-way again?").await;
+    p.backstop().await;
+    p.sleeper.wait_for(BACKSTOP, 1).await;
+    let qs = p.hosted_questions().await;
+    assert_eq!(qs.len(), 1, "{qs:?}");
+    for q in [&none, &unlinked, &held] {
+        let l = p.local_question(q["id"].as_str().unwrap()).await;
+        assert_eq!(l["status"], "open");
+        assert_eq!(l["linked"], Value::Null, "{l}");
+    }
+}
+
+#[tokio::test]
+async fn a_keyed_question_is_asked_once_and_only_its_tokens_sessions_reach_it() {
+    let p = Pair::new().await;
+    let ts = &p.public.ts;
+    let agent = p.local.store.remote_token(&p.remote).unwrap().unwrap();
+    let req = |bearer: &str, m: reqwest::Method, path: &str, sess: Option<&(String, String)>| {
+        let mut r = ts
+            .client
+            .request(m, format!("{}{path}", ts.base))
+            .header(HOST, format!("localhost:{}", ts.addr.port()))
+            .bearer_auth(bearer);
+        if let Some((sid, secret)) = sess {
+            r = r
+                .header("x-clax-session", sid)
+                .header(clax_core::remote::SESSION_SECRET_HEADER, secret);
+        }
+        r
+    };
+    let session = |bearer: String| async move {
+        let (s, v) = json_of(
+            req(&bearer, reqwest::Method::POST, "/api/sessions", None)
+                .json(&json!({"harness": "claude", "cwd": ""}))
+                .send()
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, 201, "{v}");
+        (
+            v["session"]["id"].as_str().unwrap().to_string(),
+            v["session_secret"].as_str().unwrap_or_default().to_string(),
+        )
+    };
+    let ask = |bearer: &str, sess: &(String, String), key: Option<&str>| {
+        let mut r = req(
+            bearer,
+            reqwest::Method::POST,
+            &format!("/api/sessions/{}/questions", sess.0),
+            Some(sess),
+        )
+        .json(&ask_body(Some(&p.raid), "Keyed?"));
+        if let Some(k) = key {
+            r = r.header("idempotency-key", k);
+        }
+        async move { json_of(r.send().await.unwrap()).await }
+    };
+    let (a, b) = (
+        session(agent.expose().to_string()).await,
+        session(agent.expose().to_string()).await,
+    );
+    // Sent twice, then from another of the token's sessions: one question.
+    let (s1, v1) = ask(agent.expose(), &a, Some("clax-linked:question:k1")).await;
+    let (s2, v2) = ask(agent.expose(), &a, Some("clax-linked:question:k1")).await;
+    let (s3, v3) = ask(agent.expose(), &b, Some("clax-linked:question:k1")).await;
+    assert_eq!((s1, s2, s3), (201, 200, 200), "{v1} {v2} {v3}");
+    let rqid = v1["question"]["id"].as_str().unwrap().to_string();
+    assert_eq!(v2["question"]["id"], rqid.as_str());
+    assert_eq!(v3["question"]["id"], rqid.as_str());
+    // The token's other session reads and withdraws the keyed question...
+    let (s, v) = json_of(
+        req(
+            agent.expose(),
+            reqwest::Method::GET,
+            &format!("/api/sessions/{}/questions/{rqid}?wait=0", b.0),
+            Some(&b),
+        )
+        .send()
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!((s, &v["question"]["status"]), (200, &json!("open")), "{v}");
+    // ... but not one its first session asked unkeyed.
+    let (_, v) = ask(agent.expose(), &a, None).await;
+    let unkeyed = v["question"]["id"].as_str().unwrap().to_string();
+    let (s, v) = json_of(
+        req(
+            agent.expose(),
+            reqwest::Method::GET,
+            &format!("/api/sessions/{}/questions/{unkeyed}?wait=0", b.0),
+            Some(&b),
+        )
+        .send()
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(s, 404, "{v}");
+    // The daemon token's key is ignored, and its session reaches neither.
+    let owner = session(ts.token.clone()).await;
+    let (s, v) = ask(&ts.token, &owner, Some("clax-linked:question:k1")).await;
+    assert_eq!(s, 201, "{v}");
+    assert_ne!(v["question"]["id"], rqid.as_str(), "{v}");
+    for path in [
+        format!("/api/sessions/{}/questions/{rqid}?wait=0", owner.0),
+        format!("/api/sessions/{}/questions/{unkeyed}?wait=0", owner.0),
+    ] {
+        let (s, v) = json_of(
+            req(&ts.token, reqwest::Method::GET, &path, Some(&owner))
+                .send()
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, 404, "{path}: {v}");
+    }
+    let (s, v) = json_of(
+        req(
+            &ts.token,
+            reqwest::Method::POST,
+            &format!("/api/sessions/{}/questions/{rqid}/withdraw", owner.0),
+            Some(&owner),
+        )
+        .send()
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(s, 404, "{v}");
+    let (s, v) = json_of(
+        req(
+            agent.expose(),
+            reqwest::Method::POST,
+            &format!("/api/sessions/{}/questions/{rqid}/withdraw", b.0),
+            Some(&b),
+        )
+        .send()
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        (s, &v["question"]["status"]),
+        (200, &json!("withdrawn")),
+        "{v}"
+    );
+    // A key that is not one is refused.
+    let (s, v) = ask(agent.expose(), &a, Some("bad key")).await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (400, Some("invalid_args")),
+        "{v}"
+    );
+}

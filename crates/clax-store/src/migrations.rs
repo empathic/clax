@@ -1062,6 +1062,44 @@ pub const MIGRATIONS: &[&str] = &[
     // two-way again, so a thread started while it was download only stays
     // local. NULL: since the link was made.
     "ALTER TABLE remote_links ADD COLUMN threads_since TEXT;",
+    // 35: linked questions (`crate::linked`). On a local daemon,
+    // `linked_questions` pairs an `ask` question of the owner's agents about
+    // a linked artifact with its copy on the remote: `idem_key` is the
+    // Idempotency-Key its creation there carries (a new one each time the
+    // copy is asked again after the remote withdrew it), `remote_question_id`
+    // is NULL until that creation is acknowledged, `attempts` counts tries
+    // whose answer was never read, `failed_at` marks it not sent (Retry),
+    // `done_at` is set once both sides are closed (`answered_there` when the
+    // remote's answer or decline closed it here). On a hosted daemon,
+    // `question_keys` holds the Idempotency-Key an agent token's question
+    // named and the question it made, so a resend answers that again and
+    // the token's other sessions may read and withdraw it.
+    "CREATE TABLE linked_questions (
+        question_id TEXT PRIMARY KEY,
+        remote_id TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        remote_artifact_id TEXT NOT NULL,
+        remote_question_id TEXT,
+        idem_key TEXT NOT NULL UNIQUE,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        failed_at TEXT,
+        answered_there INTEGER NOT NULL DEFAULT 0,
+        done_at TEXT,
+        remote_name TEXT NOT NULL,
+        remote_origin TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX linked_questions_live ON linked_questions(remote_id, question_id)
+        WHERE done_at IS NULL;
+    CREATE TABLE question_keys (
+        grant_id TEXT NOT NULL,
+        key TEXT NOT NULL,
+        question_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (grant_id, key)
+    );
+    CREATE INDEX question_keys_by_question ON question_keys(question_id, grant_id);",
 ];
 
 /// The audit journal's migration, as a schema version (the

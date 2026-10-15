@@ -170,6 +170,64 @@ fn row_out(r: &Row<'_>) -> rusqlite::Result<OutboxRow> {
     })
 }
 
+/// A local question's pairing with its copy on a remote.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkedQuestion {
+    pub question_id: String,
+    pub remote_id: String,
+    pub artifact_id: String,
+    pub remote_artifact_id: String,
+    /// `None` until the remote acknowledged the copy.
+    pub remote_question_id: Option<String>,
+    /// The Idempotency-Key the copy's creation carries.
+    pub idem_key: String,
+    /// Tries sent whose answer was never read.
+    pub attempts: i64,
+    /// Set once it was not sent within the backoff cap, or the remote
+    /// refused it: shown as not sent, with Retry.
+    pub failed_at: Option<String>,
+    /// The local question's status (`open`, `answered`, ...).
+    pub status: String,
+}
+
+const LQ_COLS: &str = "lq.question_id, lq.remote_id, lq.artifact_id, lq.remote_artifact_id,
+    lq.remote_question_id, lq.idem_key, lq.attempts, lq.failed_at, q.status";
+
+fn row_lq(r: &Row<'_>) -> rusqlite::Result<LinkedQuestion> {
+    Ok(LinkedQuestion {
+        question_id: r.get(0)?,
+        remote_id: r.get(1)?,
+        artifact_id: r.get(2)?,
+        remote_artifact_id: r.get(3)?,
+        remote_question_id: r.get(4)?,
+        idem_key: r.get(5)?,
+        attempts: r.get(6)?,
+        failed_at: r.get(7)?,
+        status: r.get(8)?,
+    })
+}
+
+/// What a question view says of its copy on a remote (`linked`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct LinkedQuestionView {
+    /// The remote's ID here (for its link's routes), name and origin.
+    pub remote_id: String,
+    pub remote: String,
+    pub remote_origin: String,
+    /// The public artifact the copy is about.
+    pub url: String,
+    /// Whether the remote acknowledged the copy.
+    pub sent: bool,
+    /// `pending` until the copy is acknowledged, `failed` when it was not
+    /// sent (Retry); `None` once sent or both sides closed.
+    pub state: Option<&'static str>,
+    pub error: Option<String>,
+    /// Whether the answer or decline came from the remote.
+    pub answered_there: bool,
+    /// The link is gone: the question is local only from then on.
+    pub unlinked: bool,
+}
+
 /// What a thread view says of its link (`linked`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct LinkedView {
@@ -1105,6 +1163,219 @@ impl Store {
         }
     }
 
+    /// Pairs, for each two-way link of remote `rid`, each open `ask`
+    /// question of the owner's agents about its artifact, asked since it
+    /// was linked (or last made two-way again) and not paired yet, with a
+    /// copy to make there under a new idempotency key. A download-only
+    /// link's questions stay local, as its new threads do; another local
+    /// person's agents' questions never go up. How many it paired.
+    pub fn scan_linked_questions(&self, rid: &str) -> Result<usize> {
+        let links = self.links_of_remote(rid)?;
+        let (rname, rorigin): (String, String) = match self.find_remote(rid)? {
+            Some(r) => (r.name, r.origin),
+            None => return Ok(0),
+        };
+        self.with_tx(|tx| {
+            let now = self.now();
+            let mut paired = 0;
+            for l in links.iter().filter(|l| !l.download_only) {
+                let mut stmt = tx.prepare_cached(
+                    "SELECT q.id FROM questions q
+                     WHERE q.artifact_id = ?1 AND q.status = 'open' AND q.source = 'ask'
+                       AND q.person IS NULL
+                       AND q.created_at >= COALESCE((SELECT threads_since FROM remote_links
+                             WHERE artifact_id = ?1 AND remote_id = ?3), ?2)
+                       AND NOT EXISTS (SELECT 1 FROM linked_questions lq WHERE lq.question_id = q.id)
+                     ORDER BY q.created_at, q.id",
+                )?;
+                let fresh: Vec<String> = stmt
+                    .query_map(params![l.artifact_id, l.created_at, rid], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?;
+                drop(stmt);
+                for qid in fresh {
+                    tx.execute(
+                        "INSERT INTO linked_questions (question_id, remote_id, artifact_id,
+                            remote_artifact_id, idem_key, remote_name, remote_origin, created_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                        params![
+                            qid,
+                            rid,
+                            l.artifact_id,
+                            l.remote_artifact_id,
+                            new_key("question"),
+                            rname,
+                            rorigin,
+                            now
+                        ],
+                    )?;
+                    paired += 1;
+                }
+            }
+            Ok(paired)
+        })
+    }
+
+    /// Remote `rid`'s question pairings not done yet, oldest first, with
+    /// each local question's status.
+    pub fn live_linked_questions(&self, rid: &str) -> Result<Vec<LinkedQuestion>> {
+        self.with_read(|c| {
+            let mut stmt = c.prepare_cached(&format!(
+                "SELECT {LQ_COLS} FROM linked_questions lq JOIN questions q ON q.id = lq.question_id
+                 WHERE lq.remote_id = ?1 AND lq.done_at IS NULL ORDER BY lq.created_at, lq.question_id"
+            ))?;
+            Ok(stmt
+                .query_map(params![rid], row_lq)?
+                .collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// Question `qid`'s pairing, if it has one.
+    pub fn linked_question(&self, qid: &str) -> Result<Option<LinkedQuestion>> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                &format!(
+                    "SELECT {LQ_COLS} FROM linked_questions lq JOIN questions q ON q.id = lq.question_id
+                     WHERE lq.question_id = ?1"
+                ),
+                params![qid],
+                row_lq,
+            )
+            .optional()?)
+        })
+    }
+
+    /// Records that question `qid`'s copy is about to be asked there: until
+    /// an answer is read, the remote may have made it.
+    pub fn linked_question_trying(&self, qid: &str) -> Result<()> {
+        self.lq_update(
+            "UPDATE linked_questions SET attempts = attempts + 1 WHERE question_id = ?1",
+            params![qid],
+        )
+    }
+
+    /// Records why a try at question `qid`'s copy got no answer.
+    pub fn linked_question_attempted(&self, qid: &str, error: &str) -> Result<()> {
+        self.lq_update(
+            "UPDATE linked_questions SET last_error = ?2 WHERE question_id = ?1",
+            params![qid, error],
+        )
+    }
+
+    /// Records that the remote made question `qid`'s copy as `rqid`.
+    pub fn linked_question_made(&self, qid: &str, rqid: &str) -> Result<()> {
+        self.lq_update(
+            "UPDATE linked_questions SET remote_question_id = ?2, attempts = 0, last_error = NULL,
+                failed_at = NULL WHERE question_id = ?1",
+            params![qid, rqid],
+        )
+    }
+
+    /// Marks question `qid`'s copy refused by the remote with `error`: it
+    /// made nothing, and the copy waits for Retry.
+    pub fn linked_question_failed(&self, qid: &str, error: &str) -> Result<()> {
+        self.lq_update(
+            "UPDATE linked_questions SET last_error = ?2, attempts = 0,
+                failed_at = COALESCE(failed_at, ?3) WHERE question_id = ?1",
+            params![qid, error, self.now()],
+        )
+    }
+
+    /// Marks every copy of remote `rid` not asked there yet not sent, with
+    /// `error`; how many.
+    pub fn linked_questions_failed_all(&self, rid: &str, error: &str) -> Result<usize> {
+        self.with_tx(|tx| {
+            Ok(tx.execute(
+                "UPDATE linked_questions SET last_error = ?2, failed_at = ?3
+                 WHERE remote_id = ?1 AND done_at IS NULL AND remote_question_id IS NULL
+                   AND failed_at IS NULL",
+                params![rid, error, self.now()],
+            )?)
+        })
+    }
+
+    /// Clears the not-sent mark of remote `rid`'s copies (on artifact `aid`
+    /// only, when given), so they are tried again; how many.
+    pub fn linked_questions_retry(&self, rid: &str, aid: Option<&str>) -> Result<usize> {
+        self.with_tx(|tx| {
+            Ok(tx.execute(
+                "UPDATE linked_questions SET failed_at = NULL
+                 WHERE remote_id = ?1 AND (?2 IS NULL OR artifact_id = ?2) AND failed_at IS NOT NULL",
+                params![rid, aid],
+            )?)
+        })
+    }
+
+    /// Records that question `qid` and its copy are both closed
+    /// (`answered_there`: the remote's answer or decline closed it here).
+    pub fn linked_question_done(&self, qid: &str, answered_there: bool) -> Result<()> {
+        self.lq_update(
+            "UPDATE linked_questions SET done_at = ?3, answered_there = ?2, failed_at = NULL
+             WHERE question_id = ?1 AND done_at IS NULL",
+            params![qid, answered_there, self.now()],
+        )
+    }
+
+    /// Asks question `qid` there again under a new key: its copy was
+    /// withdrawn there (its session there ended) while it is open here.
+    pub fn linked_question_reask(&self, qid: &str) -> Result<()> {
+        self.lq_update(
+            "UPDATE linked_questions SET remote_question_id = NULL, idem_key = ?2, attempts = 0,
+                last_error = NULL, failed_at = NULL WHERE question_id = ?1",
+            params![qid, new_key("question")],
+        )
+    }
+
+    fn lq_update(&self, sql: &str, p: impl rusqlite::Params) -> Result<()> {
+        self.with_tx(|tx| {
+            tx.execute(sql, p)?;
+            Ok(())
+        })
+    }
+
+    /// What question `qid`'s view says of its copy on a remote
+    /// (`linked`), when it has one.
+    pub fn linked_question_view(&self, qid: &str) -> Result<Option<LinkedQuestionView>> {
+        self.with_read(|c| {
+            let row: Option<LinkedQuestionView> = c
+                .query_row(
+                    "SELECT lq.remote_id, lq.remote_name, lq.remote_origin, lq.remote_artifact_id,
+                        lq.remote_question_id, lq.failed_at, lq.last_error, lq.answered_there,
+                        lq.done_at,
+                        NOT EXISTS (SELECT 1 FROM remote_links l WHERE l.artifact_id = lq.artifact_id
+                                      AND l.remote_id = lq.remote_id)
+                     FROM linked_questions lq WHERE lq.question_id = ?1",
+                    params![qid],
+                    |r| {
+                        let origin: String = r.get(2)?;
+                        let raid: String = r.get(3)?;
+                        let rqid: Option<String> = r.get(4)?;
+                        let failed: Option<String> = r.get(5)?;
+                        let done: Option<String> = r.get(8)?;
+                        let unlinked: bool = r.get(9)?;
+                        let state = match (&rqid, &failed, &done) {
+                            (_, _, Some(_)) => None,
+                            (_, Some(_), None) => Some("failed"),
+                            (None, None, None) if !unlinked => Some("pending"),
+                            _ => None,
+                        };
+                        Ok(LinkedQuestionView {
+                            remote_id: r.get(0)?,
+                            remote: r.get(1)?,
+                            url: format!("{origin}/a/{raid}"),
+                            remote_origin: origin,
+                            sent: rqid.is_some(),
+                            state,
+                            error: if state.is_some() { r.get(6)? } else { None },
+                            answered_there: r.get(7)?,
+                            unlinked,
+                        })
+                    },
+                )
+                .optional()?;
+            Ok(row)
+        })
+    }
+
     /// On a hosted daemon: the thread and comment that agent token
     /// `grant_id`'s comment or new thread keyed `key` made, if one did.
     pub fn comment_key(&self, grant_id: &str, key: &str) -> Result<Option<(String, String)>> {
@@ -1537,5 +1808,163 @@ mod tests {
             Some(("t1".into(), "c1".into()))
         );
         assert!(w.st.comment_key("g2", "k").unwrap().is_none());
+    }
+
+    #[test]
+    fn only_the_owners_agents_open_asks_on_a_two_way_link_are_paired_once() {
+        use crate::questions::{Close, NewQuestion, Source};
+        let w = world();
+        link(&w, (1, 1));
+        let qs: Vec<crate::questions::Question> = serde_json::from_value(serde_json::json!([
+            {"question": "Which?", "header": "Pick", "options": [{"label": "A"}, {"label": "B"}]}
+        ]))
+        .unwrap();
+        let session = |grant: Option<String>, h: &str| {
+            w.st.register_session(
+                &AuditCtx::DAEMON,
+                crate::RegisterSession {
+                    harness: "claude".into(),
+                    harness_session_id: Some(h.into()),
+                    cwd: "/w".into(),
+                    grant_id: grant,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .id
+        };
+        let ask = |sid: &str, artifact: Option<&str>| {
+            w.st.create_question(
+                &AuditCtx::DAEMON,
+                NewQuestion {
+                    session_id: sid.into(),
+                    artifact_id: artifact.map(Into::into),
+                    source: Source::Ask,
+                    tool_use_id: None,
+                    questions: qs.clone(),
+                    released: false,
+                },
+            )
+            .unwrap()
+            .0
+            .id
+        };
+        let owners = session(None, "h1");
+        let (g, _, _) = crate::people::tests::approved(&w.st, "Sam", [7; 32]);
+        let sams = session(Some(g), "h2");
+        let mine = ask(&owners, Some(&w.aid));
+        let _theirs = ask(&sams, Some(&w.aid));
+        let _none = ask(&owners, None);
+        let closed = ask(&owners, Some(&w.aid));
+        w.st.close_question(&AuditCtx::DAEMON, &closed, Close::Withdraw)
+            .unwrap();
+        assert_eq!(w.st.scan_linked_questions(&w.rid).unwrap(), 1);
+        assert_eq!(w.st.scan_linked_questions(&w.rid).unwrap(), 0, "once");
+        let live = w.st.live_linked_questions(&w.rid).unwrap();
+        assert_eq!(live.len(), 1);
+        assert_eq!(
+            (
+                live[0].question_id.as_str(),
+                live[0].remote_artifact_id.as_str()
+            ),
+            (mine.as_str(), "pub1")
+        );
+        let key = live[0].idem_key.clone();
+        let v = w.st.linked_question_view(&mine).unwrap().unwrap();
+        assert_eq!(
+            (v.state, v.sent, v.unlinked),
+            (Some("pending"), false, false)
+        );
+        // Acknowledged, then withdrawn there while open here: asked again
+        // under a new key.
+        w.st.linked_question_made(&mine, "rq1").unwrap();
+        assert_eq!(
+            w.st.linked_question_view(&mine).unwrap().unwrap().state,
+            None
+        );
+        w.st.linked_question_reask(&mine).unwrap();
+        let again = w.st.linked_question(&mine).unwrap().unwrap();
+        assert_eq!(again.remote_question_id, None);
+        assert_ne!(again.idem_key, key);
+        // Download only: a new question stays local.
+        w.st.set_link_download_only(&w.aid, &w.rid, true).unwrap();
+        let held = ask(&owners, Some(&w.aid));
+        assert_eq!(w.st.scan_linked_questions(&w.rid).unwrap(), 0);
+        assert!(w.st.linked_question(&held).unwrap().is_none());
+        w.st.linked_question_done(&mine, true).unwrap();
+        assert!(w.st.live_linked_questions(&w.rid).unwrap().is_empty());
+        assert!(
+            w.st.linked_question_view(&mine)
+                .unwrap()
+                .unwrap()
+                .answered_there
+        );
+    }
+
+    #[test]
+    fn a_keyed_question_is_made_once_per_grant() {
+        use crate::questions::{NewQuestion, Source};
+        let w = world();
+        let (g, _, _) = crate::people::tests::approved(&w.st, "Sam", [7; 32]);
+        let mut sids = Vec::new();
+        for h in ["h1", "h2"] {
+            sids.push(
+                w.st.register_session(
+                    &AuditCtx::DAEMON,
+                    crate::RegisterSession {
+                        harness: "claude".into(),
+                        harness_session_id: Some(h.into()),
+                        cwd: "/w".into(),
+                        grant_id: Some(g.clone()),
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+                .id,
+            );
+        }
+        let qs: Vec<crate::questions::Question> = serde_json::from_value(serde_json::json!([
+            {"question": "Which?", "header": "Pick"}
+        ]))
+        .unwrap();
+        let make = |sid: &str, key: Option<(&str, &str)>| {
+            w.st.create_question_keyed(
+                &AuditCtx::DAEMON,
+                NewQuestion {
+                    session_id: sid.into(),
+                    artifact_id: None,
+                    source: Source::Ask,
+                    tool_use_id: None,
+                    questions: qs.clone(),
+                    released: false,
+                },
+                key,
+            )
+            .unwrap()
+        };
+        let (q1, made) = make(&sids[0], Some((&g, "k")));
+        assert!(made);
+        let (q2, made) = make(&sids[1], Some((&g, "k")));
+        assert_eq!((q2.id.as_str(), made), (q1.id.as_str(), false));
+        let (q3, made) = make(&sids[1], Some(("other-grant", "k")));
+        assert!(made && q3.id != q1.id);
+        // The grant's other session reaches the keyed question only.
+        let unkeyed = make(&sids[0], None).0;
+        assert!(
+            w.st.session_or_keyed_question(&sids[1], Some(&g), &q1.id)
+                .is_ok()
+        );
+        assert!(
+            w.st.session_or_keyed_question(&sids[1], Some(&g), &unkeyed.id)
+                .is_err()
+        );
+        assert!(
+            w.st.session_or_keyed_question(&sids[1], None, &q1.id)
+                .is_err()
+        );
+        assert!(
+            w.st.session_or_keyed_question(&sids[1], Some("other-grant"), &q1.id)
+                .is_err()
+        );
     }
 }

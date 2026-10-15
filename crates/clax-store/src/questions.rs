@@ -564,6 +564,23 @@ impl Store {
     /// [`MAX_OPEN_PER_SESSION`] or [`MAX_OPEN`] open questions (a question
     /// created released does not count).
     pub fn create_question(&self, ctx: &AuditCtx, n: NewQuestion) -> Result<(QuestionRow, bool)> {
+        self.create_question_keyed(ctx, n, None)
+    }
+
+    /// [`Store::create_question`], keyed: `key`, an agent token's grant and
+    /// the Idempotency-Key it named, is recorded with the question in the
+    /// same transaction, and a request whose grant named that key before
+    /// returns the question it made and `false`, whatever session asked
+    /// it, and records nothing.
+    ///
+    /// # Errors
+    /// [`Store::create_question`]'s.
+    pub fn create_question_keyed(
+        &self,
+        ctx: &AuditCtx,
+        n: NewQuestion,
+        key: Option<(&str, &str)>,
+    ) -> Result<(QuestionRow, bool)> {
         if n.released && n.source == Source::Ask {
             return Err(not_mirrored());
         }
@@ -581,6 +598,18 @@ impl Store {
                     "unknown_session",
                     "no live session has this ID",
                 ));
+            }
+            if let Some((grant, k)) = key {
+                let made: Option<String> = tx
+                    .query_row(
+                        "SELECT question_id FROM question_keys WHERE grant_id = ?1 AND key = ?2",
+                        params![grant, k],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if let Some(q) = made.map(|id| fetch(tx, &id)).transpose()?.flatten() {
+                    return Ok((q, false));
+                }
             }
             if let Some(t) = &n.tool_use_id {
                 let existing = tx
@@ -633,6 +662,13 @@ impl Store {
                     closed_at
                 ],
             )?;
+            if let Some((grant, k)) = key {
+                tx.execute(
+                    "INSERT INTO question_keys (grant_id, key, question_id, created_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![grant, k, id, now],
+                )?;
+            }
             let q = fetch(tx, &id)?.ok_or(CoreError::NotFound)?;
             let (sid, aid) = (&q.session_id, q.artifact_id.as_deref());
             let ask = ask_record(
@@ -705,6 +741,41 @@ impl Store {
         self.question(qid)?
             .filter(|q| q.session_id == sid)
             .ok_or(CoreError::NotFound)
+    }
+
+    /// Question `qid` as session `sid` of agent token `grant` sees it: one
+    /// `sid` asked, or one any session of `grant` asked under an
+    /// Idempotency-Key ([`Store::create_question_keyed`]).
+    ///
+    /// # Errors
+    /// `NotFound` when it does not exist or is neither.
+    pub fn session_or_keyed_question(
+        &self,
+        sid: &str,
+        grant: Option<&str>,
+        qid: &str,
+    ) -> Result<QuestionRow> {
+        self.with_read(|c| {
+            let q = fetch(c, qid)?.ok_or(CoreError::NotFound)?;
+            if q.session_id == sid {
+                return Ok(q);
+            }
+            let Some(g) = grant else {
+                return Err(CoreError::NotFound);
+            };
+            let keyed: bool = c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM question_keys k
+                   JOIN sessions s ON s.id = ?3 AND s.grant_id = k.grant_id
+                 WHERE k.question_id = ?1 AND k.grant_id = ?2)",
+                params![qid, g, q.session_id],
+                |r| r.get(0),
+            )?;
+            if keyed {
+                Ok(q)
+            } else {
+                Err(CoreError::NotFound)
+            }
+        })
     }
 
     /// The question session `sid` created for tool call `tool_use_id`, if any.

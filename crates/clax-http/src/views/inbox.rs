@@ -87,11 +87,17 @@ pub fn views(st: &Store, items: &[ItemRow], hosted: bool) -> clax_core::Result<V
         .collect()
 }
 
-/// On a local daemon, an item on a thread linked to a remote carries
-/// `linked: {remote, unlinked, author}`: the remote's name, whether the
-/// link ended, and for a reply that came from there, its author there
-/// ([`clax_store::linked`]).
+/// On a local daemon, an item on a thread linked to a remote, or on a
+/// question asked on a remote too, carries `linked: {remote, unlinked,
+/// author}`: the remote's name, whether the link ended, and for a reply
+/// that came from there, its author there ([`clax_store::linked`]).
 fn linked_tag(st: &Store, i: &ItemRow, v: &mut Value) -> clax_core::Result<()> {
+    if let Some(qid) = i.question_id.as_deref()
+        && let Some(lq) = st.linked_question_view(qid)?
+    {
+        v["linked"] = json!({"remote": lq.remote, "unlinked": lq.unlinked, "author": null});
+        return Ok(());
+    }
     let Some(tid) = i.thread_id.as_deref() else {
         return Ok(());
     };
