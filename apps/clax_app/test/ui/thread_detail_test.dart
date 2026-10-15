@@ -122,6 +122,16 @@ void main() {
     final c = rig.api.sendComment(rig.aid, 'everything');
     await pumpDetail(tester, rig, c.threadId);
     expect(find.text('Whole app'), findsOneWidget);
+
+    // An anchor's spaced label reads in place of its run-together quote.
+    expect(
+      anchorWords(const {
+        'kind': 'element',
+        'quote': 'Mon5 km',
+        'label': 'Mon 5 km',
+      }),
+      '“Mon 5 km”',
+    );
   });
 
   testWidgets('shows the clip when the thread has one', (tester) async {
