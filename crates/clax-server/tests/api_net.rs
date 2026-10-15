@@ -275,3 +275,95 @@ async fn refusals_before_any_request() {
         (400, Some("invalid_capabilities"))
     );
 }
+
+/// `POST /api/drafts` of `of` declaring `caps`; the draft's ID.
+async fn draft(ts: &TestServer, of: Option<&str>, caps: Value) -> String {
+    let (status, body) = send(authed(ts, Method::POST, "/api/drafts").json(
+        &json!({"of": of, "title": "Draft", "capabilities": caps, "files": {"index.html": "<p>d</p>"}}),
+    ))
+    .await;
+    assert_eq!(status, 201, "{body}");
+    body["draft"]["id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn a_draft_fetches_under_its_live_apps_grants() {
+    let (ts, echo) = spawn().await;
+    let aid = app(
+        &ts,
+        json!({"net": {"hosts": ["api.example.com", "tiles.example.com"]}}),
+    )
+    .await;
+    let grants = format!("/api/artifacts/{aid}/net-grants");
+    let caps = json!({"net": {"hosts": ["api.example.com", "new.example.com"]}});
+    let did = draft(&ts, Some(&aid), caps.clone()).await;
+    let fresh = draft(&ts, None, caps).await;
+    let code = |r: (u16, Value)| {
+        (
+            r.0,
+            r.1["error"]["code"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        )
+    };
+    let get = |h: &str| json!({"url": format!("https://{h}/v1")});
+
+    assert_eq!(
+        code(fetch(&ts, &did, get("api.example.com")).await),
+        (403, "not_granted".into()),
+        "nothing granted yet"
+    );
+    let (status, _) = send(
+        authed(&ts, Method::PUT, &grants)
+            .json(&json!({"hosts": ["api.example.com", "tiles.example.com"]})),
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    let (status, body) = fetch(&ts, &did, get("api.example.com")).await;
+    assert_eq!(
+        (status, body["body"].as_str()),
+        (200, Some("GET https://api.example.com/v1")),
+        "{body}"
+    );
+    assert_eq!(
+        code(fetch(&ts, &did, get("tiles.example.com")).await),
+        (403, "not_declared".into()),
+        "the draft does not declare it"
+    );
+    assert_eq!(
+        code(fetch(&ts, &did, get("new.example.com")).await),
+        (403, "not_granted".into()),
+        "the app has no grant for it"
+    );
+    assert_eq!(
+        code(fetch(&ts, &fresh, get("api.example.com")).await),
+        (403, "not_granted".into()),
+        "a new app's draft has no live app"
+    );
+
+    // A draft never takes a grant of its own.
+    let (status, body) = send(
+        authed(
+            &ts,
+            Method::PUT,
+            &format!("/api/artifacts/{did}/net-grants"),
+        )
+        .json(&json!({"hosts": ["new.example.com"]})),
+    )
+    .await;
+    assert_eq!(
+        (status, body["error"]["code"].as_str()),
+        (403, Some("draft"))
+    );
+
+    let (status, _) = send(authed(&ts, Method::DELETE, &grants)).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        code(fetch(&ts, &did, get("api.example.com")).await),
+        (403, "not_granted".into()),
+        "the app's revocation reaches the draft"
+    );
+    assert_eq!(echo.0.lock().unwrap().len(), 1, "one fetch went out");
+}
