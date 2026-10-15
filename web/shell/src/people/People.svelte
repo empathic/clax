@@ -180,7 +180,7 @@
     {#if revoked.length}
       <section class="pcard revoked">
         <h3>Revoked</h3>
-        {#each revoked as p (p.public_id)}<div class="line"><span>{p.display_name ?? "Unnamed"}</span><span class="meta">revoked {p.revoked_at?.slice(0, 10)}</span></div>{/each}
+        {#each revoked as p (p.public_id)}<div class="line"><span>{p.display_name ?? "Unnamed"}</span><span class="meta">{p.github ? `@${p.github.login}, blocked` : "revoked"} {p.revoked_at?.slice(0, 10)}</span></div>{/each}
       </section>
     {/if}
   {:else if me}
@@ -215,6 +215,8 @@
     .ppl h3 { margin: 0 0 6px; font-size: 16px; overflow-wrap: anywhere; }
     .ppl .pcard > header h3 { margin: 0; }
     .ppl .you { color: var(--muted); font-weight: 400; }
+    .ppl .ghlogin { color: var(--muted); font: 12.5px var(--mono); text-decoration: none; overflow-wrap: anywhere; }
+    .ppl .ghlogin:hover { text-decoration: underline; }
     .ppl h4 { margin: 0 0 6px; font-size: 12.5px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
     .ppl .part { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
     .ppl .line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-height: 36px; min-width: 0; }

@@ -277,9 +277,12 @@ export type PeopleAgent = {
   narrow: Rights | null; elevate: Rights | null; rights: Rights | null;
 };
 /** A person as the owner's People lists them; `revoked_at` once revoked. */
+export type PeopleGitHub = { id: number; login: string; avatar_url: string | null; blocked_at: string | null };
 export type PeoplePerson = {
   public_id: string; display_name: string | null; revoked_at: string | null;
   rights: Rights; grants: PeopleGrant[]; agents: PeopleAgent[];
+  /** The GitHub account they sign in with, on a hosted daemon. */
+  github?: PeopleGitHub | null;
 };
 /** `GET /api/people/me`: the caller, their machines and their live agents. */
 export type PeopleMe = {
