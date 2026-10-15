@@ -4509,8 +4509,9 @@ capability first and light features up when it resolves.
   capabilities, served only in the Clax app and `null` everywhere else;
   their types are `ClaxExtensions.Device` in `clax-extensions.d.ts`. Call
   them from a click handler (all but `notify.list` and `notify.cancel`
-  reject `no_gesture` otherwise). See "Device capabilities in the Clax
-  app" below.
+  reject `no_gesture` otherwise). `location.watch` follows the device only
+  while the app is on screen. See "Device capabilities in the Clax app"
+  below.
 - `permissions`: `state()` and `request()`; the only prompt is the consent
   to the first page-written comment.
 
@@ -4653,22 +4654,42 @@ resolves `null` for them.
   4 MB a file (`too_large`), for `share.file` too.
 - `camera`: `take()` and `pick()` → `{mime, data, width, height}`, a JPEG
   downscaled to at most 1600 px a side.
-- `location`: `current()` → `{lat, lon, accuracy}` (degrees, metres).
+- `location`: `current()` → `{lat, lon, accuracy, precise}` (degrees,
+  metres). `watch(onUpdate, {minDistance?, onError?})` → `stop()`: a
+  position at most once a second and once per `minDistance` metres (10
+  when absent, 5 to 10000), at most 4 watches at once. A watch runs only
+  while the app is on screen: when the app screen is hidden (Clax in the
+  background, another screen or dialog over the app, the app closed) or
+  the page's document goes, it ends with `onError({code: "stopped"})`
+  and never starts again by itself; the page starts it again from a tap.
+  While one runs the app shows a small location pill in the status bar's
+  band, and a tap on it stops location (`stopped` too).
 
-Every call except `notify.list` and `notify.cancel` must come from the
-person's tap or key press in the page (the shell's gesture rule, as for
-`openComposer`), or it rejects `no_gesture`. The shell forwards each call
-to the app (the `device` message and `deviceResult` above), under request
-IDs with a random prefix per load of the shell. The app asks the person
-once per app and capability ("Let “Plants” see where your device is?") and
-keeps the answer, Allow or Don't allow, until it is revoked in the app
-inspector's Permissions (revoking `notify` cancels that app's reminders;
-deleting the app does too). Android asks its own runtime permission on top
-(notifications, location). Calls reject `{code, message}` with
-`not_granted` (not allowed, or the system permission is off), `cancelled`
-(the person closed the picker, sheet or camera), `unavailable` (no such
-feature here: macOS has no camera source and no location), `bad_request`,
-`too_large`, or `no_gesture`.
+Every call except `notify.list`, `notify.cancel` and stopping a watch
+must come from the person's tap or key press in the page (the shell's
+gesture rule, as for `openComposer`), or it rejects `no_gesture`. The
+shell forwards each call to the app (the `device` message and
+`deviceResult` above), under request IDs with a random prefix per load of
+the shell; a watch's updates and its end come back by `deviceEvent`, under
+a watch ID of the shell's own. The app asks the person once per app and
+capability ("Let “Plants” see where your device is?") and keeps the
+answer, Allow or Don't allow, until it is revoked in the app inspector's
+Permissions (revoking `notify` cancels that app's reminders; deleting the
+app does too). For location the answers are Precise, Approximate and
+Don't allow, and the inspector shows which. An app allowed Approximate,
+and any app while Android allows Clax only approximate location, gets the
+centre of a cell about 2 km across (on a grid shifted once per run of
+Clax), `accuracy` at least 2000 and `precise: false`; the same anywhere in
+the cell, and a watch reports it only when the cell changes. Android asks
+its own runtime permission on top (notifications, location). Calls reject
+`{code, message}` with `not_granted` (not allowed, or the system
+permission refused), `cancelled` (the person closed the picker, sheet or
+camera), `unavailable` (no such feature here: macOS has no camera source,
+and location is not available in Clax on macOS yet), `bad_request`,
+`too_large`, `no_gesture`, and for location `system_denied` (Android will
+not ask again) and `location_off` (the device's location is off), for
+which the app shows a toast with Open settings, and `stopped` (a watch
+ended).
 
 ### Reading another app's documents
 
