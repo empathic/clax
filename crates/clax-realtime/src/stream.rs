@@ -509,9 +509,11 @@ pub enum SubError {
 /// not show.
 pub fn live_only_admits(live: &crate::live::LiveIds, t: &Topic) -> bool {
     match t {
-        Topic::Gallery | Topic::Docs(_) | Topic::DocsRead { .. } | Topic::People | Topic::Agents => {
-            false
-        }
+        Topic::Gallery
+        | Topic::Docs(_)
+        | Topic::DocsRead { .. }
+        | Topic::People
+        | Topic::Agents => false,
         Topic::Site(_) | Topic::Questions | Topic::Inbox => true,
         Topic::Artifact(a) | Topic::ArtifactQuiet(a) | Topic::Presence(a) | Topic::Working(a) => {
             live.contains(a)

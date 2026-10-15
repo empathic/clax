@@ -51,8 +51,8 @@ impl NetAccess {
 
 /// The `artifact.update` record of a grant change: the field `net_grants`
 /// holds `{"grant": [hosts]}` or `{"revoke": [hosts]}`.
-fn grant_record(id: &ArtifactId, op: &str, hosts: &[String]) -> AuditRecord {
-    let mut rec = AuditRecord::new(AuditKind::ArtifactUpdate, Store::now())
+fn grant_record(now: String, id: &ArtifactId, op: &str, hosts: &[String]) -> AuditRecord {
+    let mut rec = AuditRecord::new(AuditKind::ArtifactUpdate, now)
         .with("fields", serde_json::json!({"net_grants": {op: hosts}}));
     rec.ids.artifact = Some(id.as_str().to_string());
     rec
@@ -156,7 +156,7 @@ impl Store {
                     "this artifact declares no network hosts (capabilities.net.hosts)",
                 ));
             }
-            let now = Store::now();
+            let now = self.now();
             let mut added = Vec::new();
             for h in before.declared.iter().filter(|h| hosts.contains(h)) {
                 let n = tx.execute(
@@ -168,7 +168,7 @@ impl Store {
                 }
             }
             if !added.is_empty() {
-                self.record_audit(tx, audit, grant_record(id, "grant", &added))?;
+                self.record_audit(tx, audit, grant_record(self.now(), id, "grant", &added))?;
             }
             access_in(tx, id)
         })
@@ -191,7 +191,7 @@ impl Store {
             )?;
             if n > 0 {
                 let hosts: Vec<String> = before.grants.into_iter().map(|g| g.host).collect();
-                self.record_audit(tx, audit, grant_record(id, "revoke", &hosts))?;
+                self.record_audit(tx, audit, grant_record(self.now(), id, "revoke", &hosts))?;
             }
             Ok(n)
         })
