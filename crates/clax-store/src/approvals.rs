@@ -469,6 +469,16 @@ impl Store {
         Ok(c)
     }
 
+    /// Whether [`Store::connected`] has been read since this store opened:
+    /// some agent's view may hold who was connected then.
+    pub(crate) fn connected_was_read(&self) -> bool {
+        self.visibility
+            .connected
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+    }
+
     /// Approves `author`'s content reaching the agents of `approver` (a
     /// person's public ID; `None`: the owner) at `scope`, or finds the live
     /// approval that already does. A new approval is recorded as
