@@ -44,6 +44,9 @@ of toolpath and clash.
   project channels). `claude.use("files")` and `claude.use("mcp")` resolve
   `null`.
 - Multi-user identity and auth. See §14 for the single-user model.
+  Connecting other people and their agents, their rights, and what
+  content reaches whose agents are specified in
+  `2026-10-08-multi-agent-multi-person-design.md`.
 - Artifact types (Slides, Docs, Design). Plain HTML pages only.
 - Harnesses beyond the three named. The daemon's HTTP MCP surface makes
   others cheap to add later.
