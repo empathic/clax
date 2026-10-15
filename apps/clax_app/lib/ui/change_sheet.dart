@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
+import '../agent/failure.dart' show offersKeepGoing;
 import '../agent/loop.dart' show pendingComments;
 import '../clax/api.dart';
 import '../daemon/clock.dart';
@@ -777,7 +778,11 @@ class _ChangeSheetState extends State<ChangeSheet> {
               onPressed: _c.retrying ? null : () => _thenClose(widget.onRetry!),
               icon: const Icon(Icons.refresh, size: 18),
               label: Text(
-                outcome == ChangeOutcome.stopped ? 'Run again' : 'Retry',
+                outcome == ChangeOutcome.stopped
+                    ? 'Run again'
+                    : offersKeepGoing(_c.outcomeText)
+                    ? 'Keep going'
+                    : 'Retry',
               ),
             )
           : null;

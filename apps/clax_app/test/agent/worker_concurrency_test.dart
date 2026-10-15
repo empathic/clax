@@ -74,6 +74,7 @@ class _GatedLoop extends AgentLoop {
     ProgressSink? onProgress,
     String? answers,
     Set<String> answering = const {},
+    bool keepGoing = false,
   }) => _run('change', aid, cancelled);
 
   @override

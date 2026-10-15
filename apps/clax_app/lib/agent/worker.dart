@@ -10,6 +10,7 @@ import 'loop.dart';
 import 'plan.dart';
 import 'progress.dart';
 import 'stops.dart';
+import 'unfinished.dart';
 
 /// What the worker is doing, for the UI. Every [WorkerWorking] is followed
 /// by any number of [WorkerProgress] events and then exactly one of the
@@ -143,6 +144,7 @@ class _Job {
     Set<String>? answers,
     List<String>? texts,
     this.build = false,
+    this.keepGoing = false,
   }) : items = items ?? [],
        recheck = recheck ?? {},
        answers = answers ?? {},
@@ -156,6 +158,10 @@ class _Job {
 
   /// A build's continue run, not a change.
   final bool build;
+
+  /// A Keep going of a change that stopped at a limit
+  /// ([AgentLoop.change]'s `keepGoing`).
+  bool keepGoing;
 
   bool names(String tid) =>
       recheck.contains(tid) || items.any((i) => i.threadId == tid);
@@ -835,6 +841,7 @@ class FeedbackWorker {
       answers: Set.of(first.answers),
       texts: List.of(first.texts),
       build: first.build,
+      keepGoing: first.keepGoing,
     );
     _queue.removeWhere((j) {
       if (j.artifactId != job.artifactId || j.build != job.build) {
@@ -844,6 +851,7 @@ class FeedbackWorker {
       job.recheck.addAll(j.recheck);
       job.answers.addAll(j.answers);
       job.texts.addAll(j.texts);
+      job.keepGoing = job.keepGoing || j.keepGoing;
       return true;
     });
     return job;
@@ -883,6 +891,7 @@ class FeedbackWorker {
           answers: texts.isEmpty ? null : texts.join('\n\n'),
           answering: late.questions.toSet(),
           cancel: cancel.future,
+          keepGoing: job.keepGoing,
         );
       } finally {
         _answering.removeAll(late.questions);
@@ -918,6 +927,7 @@ class FeedbackWorker {
     String? answers,
     Set<String> answering = const {},
     Future<void>? cancel,
+    bool keepGoing = false,
   }) async {
     final threads = {for (final i in items) i.threadId}.toList();
     final generation = _generation;
@@ -935,6 +945,7 @@ class FeedbackWorker {
       onProgress: (p) => _events.add(WorkerProgress(aid, threads, p)),
       answers: answers,
       answering: answering,
+      keepGoing: keepGoing,
     );
     if (outcome is ChangeFailed) {
       for (final t in threads) {
@@ -1107,16 +1118,48 @@ class FeedbackWorker {
   /// whether a change was queued: false when the worker is not running,
   /// the thread is already queued or running, or its last comment is not
   /// this app's failure reply (it was answered or written on since).
+  ///
+  /// Keep going: when the last comment is a limit stop's reply that offers
+  /// it ([isKeepGoingReply]) and the change is kept in
+  /// [AgentLoop.unfinished], the change's comments (on each of its
+  /// threads) are queued to go on from where it stopped. A kept change
+  /// that has spent its [changeCapUsd] runs nothing.
   Future<bool> retry(String aid, String tid) async {
     if (!_started || _known(aid, tid)) return false;
-    final ThreadView? t;
+    final List<ThreadView> all;
     try {
-      t = (await _api.threads(aid)).where((x) => x.id == tid).firstOrNull;
+      all = await _api.threads(aid);
     } on ClaxApiError catch (e) {
       _log('retry of $aid/$tid: threads unavailable: $e');
       return false;
     }
+    final t = all.where((x) => x.id == tid).firstOrNull;
     if (t == null || !t.isOpen || !_started || _known(aid, tid)) return false;
+    UnfinishedChange? unfinished;
+    try {
+      unfinished = await _loop.unfinished.get(tid);
+    } on Object catch (e) {
+      _log('retry of $aid/$tid: the unfinished change is unavailable: $e');
+    }
+    if (unfinished case final u? when u.artifactId == aid) {
+      if (changeCapUsd - u.spentUsd < minKeepGoingUsd) return false;
+      if (t.comments.isNotEmpty && isKeepGoingReply(t.comments.last)) {
+        final ids = u.commentIds.toSet();
+        final items = [
+          for (final v in all)
+            if (u.threadIds.contains(v.id) && v.isOpen)
+              for (final c in v.comments)
+                if (ids.contains(c.id)) _item(aid, v, c),
+        ];
+        if (items.isEmpty || !_started || _known(aid, tid)) return false;
+        for (final i in items) {
+          _failed.remove(i.threadId);
+        }
+        _queue.add(_Job(aid, items: items, keepGoing: true));
+        _kick();
+        return true;
+      }
+    }
     if (_stopped.containsKey(tid)) {
       // A stopped change runs again with the comments it had.
       final items = [for (final c in pendingComments(t)) _item(aid, t, c)];

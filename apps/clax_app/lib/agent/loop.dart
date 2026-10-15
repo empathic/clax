@@ -28,6 +28,7 @@ import 'tools/kit_tool.dart';
 import 'tools/render_tool.dart';
 import 'tools/tool_spec.dart';
 import 'tools/toolbox.dart';
+import 'unfinished.dart';
 
 /// The timing name of a new app's run.
 const agentNewTiming = 'agent-new';
@@ -132,7 +133,14 @@ typedef _Ran = ({
   AgentError? error,
   AskTool ask,
   RunState state,
+  List<String> narrations,
+  FinishTool finish,
+  GiveUpTool giveUp,
 });
+
+/// Where a Keep going run starts: from the stopped run's draft, or, when
+/// that draft expired or the app changed under it, over from the app.
+enum _Resume { draft, expired, changed }
 
 /// Makes new apps and changes them in answer to comments, over the
 /// daemon's API.
@@ -192,6 +200,7 @@ class AgentLoop {
     ChangeLedger? ledger,
     AskedQuestions? asked,
     PlanStore? plans,
+    UnfinishedChanges? unfinished,
     this._readConsent,
     AgentBackend? Function()? singleCall,
     this._clock = const SystemClock(),
@@ -206,6 +215,7 @@ class AgentLoop {
        ledger = ledger ?? MemoryChangeLedger(),
        asked = asked ?? MemoryAskedQuestions(),
        plans = plans ?? PlanStore(),
+       unfinished = unfinished ?? MemoryUnfinishedChanges(),
        _runner = runner,
        _singleCall = singleCall,
        _sendsImage = sendsImage ?? ((b) => imageBackends.contains(b.name)),
@@ -220,6 +230,10 @@ class AgentLoop {
 
   /// Each app's build plan; in memory unless given.
   final PlanStore plans;
+
+  /// The changes that stopped at a limit, for Keep going; in memory
+  /// unless given.
+  final UnfinishedChanges unfinished;
 
   final ClaxApi _api;
   final AgentRunner Function()? _runner;
@@ -513,6 +527,21 @@ class AgentLoop {
   /// run stops with [ChangeCancelled] and nothing is published, replied or
   /// acknowledged. [onProgress] receives the run's progress, as for
   /// [newApp].
+  ///
+  /// Limits (the tool loop): a run that ends at or near a cap of
+  /// [RunCaps.change] replies in Clax's words naming the limit, with the
+  /// agent's words under it ([limitFailureReply], [limitLandedReply]), and
+  /// is kept in [unfinished]: its comments, its unfinished draft as edits
+  /// on the app, the agent's notes and what it cost. [keepGoing] runs such
+  /// a change on: the draft starts from those edits, where the app still
+  /// holds what they were made on, and the first message carries the
+  /// notes; a draft older than [unfinishedDraftAge], or an app that changed
+  /// under it, starts over from the app with the notes, and the run is
+  /// told to say so. The change and its Keep going runs share
+  /// [changeCapUsd]: each run's cost cap is what is left of it, at most
+  /// [RunCaps.change]'s. Any other end of a run on these threads forgets
+  /// what was kept, as does a [keepGoing] whose comments are not the kept
+  /// ones (the person wrote again).
   Future<ChangeOutcome> change(
     String aid,
     List<FeedbackItem> items, {
@@ -521,18 +550,22 @@ class AgentLoop {
     ProgressSink? onProgress,
     String? answers,
     Set<String> answering = const {},
+    bool keepGoing = false,
   }) async {
     if (items.isEmpty) return const ChangeAnswered();
     final threadIds = [
       ...{for (final i in items) i.threadId},
     ];
+    final kept = keepGoing ? await _unfinishedOf(aid, items) : null;
     await _takeOverQuestions(items, session, keep: answering);
     await _quiet(
       'mark working',
       () => _api.setWorking(
         aid,
         on: true,
-        note: _workingNote(items),
+        note: kept == null
+            ? _workingNote(items)
+            : 'Keep going: ${_workingNote(items)}',
         threadIds: threadIds,
       ),
     );
@@ -557,11 +590,86 @@ class AgentLoop {
               cancelled,
               onProgress,
               answers,
+              kept,
             );
     } finally {
       await _quiet('clear working', () => _api.setWorking(aid, on: false));
     }
     return outcome;
+  }
+
+  /// The [UnfinishedChange] kept for [items]' threads on [aid], when it
+  /// answered every one of [items]; null otherwise, or when it cannot be
+  /// read.
+  Future<UnfinishedChange?> _unfinishedOf(
+    String aid,
+    List<FeedbackItem> items,
+  ) async {
+    try {
+      final c = await unfinished.get(items.first.threadId);
+      if (c == null || c.artifactId != aid) return null;
+      final ids = c.commentIds.toSet();
+      return items.every((i) => ids.contains(i.commentId)) ? c : null;
+    } on Object catch (e) {
+      _log('the unfinished change of $aid is unavailable: $e');
+      return null;
+    }
+  }
+
+  /// After a change run on [threadIds] of [aid]: keeps it in [unfinished]
+  /// when it ended at a limit, else forgets what was kept for them.
+  Future<void> _keepUnfinished(
+    String aid,
+    List<FeedbackItem> items,
+    List<String> threadIds,
+    Map<String, String> base,
+    double spentBefore,
+    _Ran ran,
+  ) async {
+    final limit = switch (ran.outcome) {
+      RunGaveUp(:final limit?) || RunFinished(:final limit?) => limit,
+      RunCancelled() || RunInterrupted() => null,
+      _ => '',
+    };
+    try {
+      if (limit == null) return;
+      if (limit.isEmpty) {
+        await unfinished.remove(threadIds);
+        return;
+      }
+      final d = ran.state.draft;
+      // What the draft holds beyond what is live now: the run's base, or
+      // the part a cap stop published.
+      final from = ran.finish.capPublished?.files ?? base;
+      final edits = <String, String?>{
+        for (final e in d.files.entries)
+          if (from[e.key] != e.value) e.key: e.value,
+        for (final p in from.keys)
+          if (!d.files.containsKey(p)) p: null,
+      };
+      final title = d.title != ran.state.ctx.title ? d.title : null;
+      final caps =
+          jsonEncode(d.capabilities) != jsonEncode(ran.state.ctx.capabilities)
+          ? d.capabilities
+          : null;
+      await unfinished.put(
+        UnfinishedChange(
+          artifactId: aid,
+          threadIds: threadIds,
+          commentIds: [for (final i in items) i.commentId],
+          limit: limit,
+          spentUsd: spentBefore + ran.state.budget.costUsd,
+          at: _clock.now(),
+          notes: [...ran.narrations, ?ran.giveUp.givenReason],
+          edits: edits,
+          before: {for (final p in edits.keys) p: from[p]},
+          title: title,
+          capabilities: caps,
+        ),
+      );
+    } on Object catch (e) {
+      _log('keeping the unfinished change of $aid failed: $e');
+    }
   }
 
   /// Runs the next features of artifact [aid]'s plan: a build's
@@ -744,6 +852,7 @@ class AgentLoop {
     Future<void>? cancelled,
     ProgressSink? onProgress,
     String? answers,
+    UnfinishedChange? kept,
   ) async {
     final cancel = CancelWatch(cancelled);
     Future<ChangeOutcome> fail(String reason) async {
@@ -804,6 +913,32 @@ class AgentLoop {
     if (cancel.isCancelled) return const ChangeCancelled();
 
     final documents = PromptBuilder.trimDocuments(snap.docs);
+    // Keep going: the stopped run's edits, where the app still holds what
+    // they were made on.
+    var start = const <String, String?>{};
+    _Resume? resume;
+    if (kept != null) {
+      final holds = kept.before.entries.every(
+        (e) => snap.files[e.key] == e.value,
+      );
+      resume = kept.expiredAt(_clock.now())
+          ? _Resume.expired
+          : holds
+          ? _Resume.draft
+          : _Resume.changed;
+      if (resume == _Resume.draft) start = kept.edits;
+    }
+    final spentBefore = kept?.spentUsd ?? 0;
+    final draftFiles = {...snap.files};
+    for (final e in start.entries) {
+      if (e.value case final v?) {
+        draftFiles[e.key] = v;
+      } else {
+        draftFiles.remove(e.key);
+      }
+    }
+    final left = changeCapUsd - spentBefore;
+    const caps = RunCaps.change;
     final scope = _RunCancel(cancelled);
     final ran = await _runTools(
       runner,
@@ -826,13 +961,20 @@ class AgentLoop {
         sessionId: session,
         cancelled: scope.future,
         clock: _clock,
+        changeSpentUsd: spentBefore,
       ),
-      RunCaps.change,
+      RunCaps(
+        turns: caps.turns,
+        renders: caps.renders,
+        outputTokens: caps.outputTokens,
+        costUsd: left < caps.costUsd ? left : caps.costUsd,
+        wallClock: caps.wallClock,
+      ),
       RunInput(
         system: system,
         first: _prompts.firstChange(
           title: snap.artifact.title,
-          files: snap.files,
+          files: draftFiles,
           comments: [
             for (var i = 0; i < items.length; i++)
               CommentContext(
@@ -848,6 +990,21 @@ class AgentLoop {
           answers: answers,
           plan: plan,
           fromBundle: bundled,
+          keepGoing: kept == null
+              ? null
+              : KeepGoingNote(
+                  limit: kept.limit,
+                  notes: kept.notes,
+                  edited: resume == _Resume.draft
+                      ? (kept.edits.keys.toList()..sort())
+                      : null,
+                  why: switch (resume!) {
+                    _Resume.draft => null,
+                    _Resume.expired => 'its unfinished draft has expired',
+                    _Resume.changed =>
+                      'the app changed under its unfinished draft',
+                  },
+                ),
         ),
       ),
       onProgress,
@@ -861,7 +1018,11 @@ class AgentLoop {
         request: snap.artifact.title,
         seen: plan?.revision,
       ),
+      start: start,
+      startTitle: resume == _Resume.draft ? kept?.title : null,
+      startCapabilities: resume == _Resume.draft ? kept?.capabilities : null,
     );
+    await _keepUnfinished(aid, items, threadIds, snap.files, spentBefore, ran);
 
     final outcome = ran.outcome;
     if (outcome is RunGaveUp || outcome is RunDropped) {
@@ -953,11 +1114,20 @@ class AgentLoop {
     required RunKind kind,
     RunPlan? plan,
     bool fromBundle = false,
+    Map<String, String?> start = const {},
+    String? startTitle,
+    Map<String, Object?>? startCapabilities,
   }) async {
     // [_requireRunner] made [runner], so the inspector is there.
     final inspector = _inspector!;
     final model = _model();
-    final sink = _guarded(onProgress);
+    final narrations = <String>[];
+    final guarded = _guarded(onProgress);
+    void sink(AgentProgress e) {
+      if (e case Narration(:final text)) narrations.add(text);
+      guarded?.call(e);
+    }
+
     final render = RenderTool(_api, inspector, baseUrl: base);
     final finish = FinishTool(_api, ledger, render: render, log: _log);
     final giveUp = GiveUpTool(_api, render: render, log: _log);
@@ -968,14 +1138,25 @@ class AgentLoop {
       maxWaitChange: askWaitChange,
       onAsked: _onAsked,
     );
+    final draft = Draft(
+      files: ctx.files,
+      title: ctx.title,
+      capabilities: ctx.capabilities,
+      baseVersion: ctx.baseVersion,
+    );
+    for (final e in start.entries) {
+      if (e.value case final v?) {
+        draft.writeFile(e.key, v);
+      } else {
+        draft.deleteFile(e.key);
+      }
+    }
+    if (startTitle != null || startCapabilities != null) {
+      draft.setMeta(title: startTitle, capabilities: startCapabilities);
+    }
     final state = RunState(
       ctx: ctx,
-      draft: Draft(
-        files: ctx.files,
-        title: ctx.title,
-        capabilities: ctx.capabilities,
-        baseVersion: ctx.baseVersion,
-      ),
+      draft: draft,
       budget: RunBudget(caps, model, _clock),
       progress: sink,
       readConsent: _readConsent,
@@ -999,7 +1180,7 @@ class AgentLoop {
       return o;
     };
 
-    sink?.call(const AttemptStarted(1));
+    sink(const AttemptStarted(1));
     _timings.start(timing);
     RunOutcome outcome;
     AgentError? error;
@@ -1063,6 +1244,9 @@ class AgentLoop {
       error: error,
       ask: ask,
       state: state,
+      narrations: narrations,
+      finish: finish,
+      giveUp: giveUp,
     );
   }
 

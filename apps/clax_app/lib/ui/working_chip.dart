@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../agent/failure.dart' show offersKeepGoing;
 import '../agent/plan.dart';
 import '../agent/worker.dart';
 import '../daemon/clock.dart';
@@ -274,6 +275,8 @@ class _WorkingChipState extends State<WorkingChip> {
                   ? 'Retrying…'
                   : outcome == ChangeOutcome.stopped
                   ? 'Run again'
+                  : offersKeepGoing(c.outcomeText)
+                  ? 'Keep going'
                   : 'Retry',
             ),
           )

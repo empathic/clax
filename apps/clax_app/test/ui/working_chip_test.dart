@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:ui' as ui;
 
+import 'package:clax_app/agent/failure.dart';
 import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/agent/timings.dart';
 import 'package:clax_app/daemon/clock.dart';
@@ -296,6 +297,19 @@ void main() {
     );
     expect(button.onPressed, isNull, reason: 'one Retry at a time');
     expect(find.text('Retrying…'), findsOneWidget);
+  });
+
+  testWidgets('a change stopped at a limit offers Keep going', (tester) async {
+    phone(tester);
+    final rig = _Rig();
+    rig.tracker
+      ..workerWorking(const ['t1'])
+      ..workerFailed(limitFailureReason('10 turns', leftUsd: 6));
+    await tester.pumpWidget(rig.build());
+    expect(find.text('Keep going'), findsOneWidget);
+    expect(find.textContaining('more than 10 steps'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('retry-change')));
+    expect(rig.log, ['retry']);
   });
 
   testWidgets('without a retry hook a failed change offers no Retry', (
