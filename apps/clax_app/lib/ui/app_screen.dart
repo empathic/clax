@@ -55,8 +55,9 @@ import 'working_chip.dart';
 ///   shows it again), a thin handle on the right edge opens the panel
 ///   instead.
 /// - **Comment mode.** Comment turns it on and puts the [CommentBar] under
-///   the page (the page shrinks above it, so none of it is covered): Whole
-///   app (`composeArtifact`), Threads (the panel) with the open count,
+///   the page (the page shrinks above it, so none of it is covered): "Tap
+///   anything to comment on it" (a tap on the page picks), Comment on the
+///   whole app (`composeArtifact`), Threads (the panel) with the open count,
 ///   Voice (whether a pick starts dictation, reported to
 ///   [AppScreen.onDictateChanged]) and ✕ (comment mode off); back, Escape
 ///   and the menu's Comment end it too, closing the panel first when it is
@@ -86,7 +87,7 @@ import 'working_chip.dart';
 ///   panel is closed has comment mode turned off again. On a narrow screen
 ///   the panel is the lower 45% with the page above it; on a wide one a
 ///   360 px side panel. While a composer is open it shrinks to a peek with
-///   the mic and Send.
+///   the mic (the composer, in the page above it, has the one Send).
 /// - **Dictation.** A pick (the composer opening) starts dictation when
 ///   [AppSettings.dictateComments] is on (or Voice turned it on); heard
 ///   words replace what
@@ -1568,7 +1569,6 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       busy: _busy,
       dictation: _dictation,
       onMic: () => unawaited(_toggleMic()),
-      onSend: () => _call(const SubmitDraft()),
       onAddToPlan: widget.build == null ? null : () => unawaited(_addToPlan()),
       threads: _threads,
       onThread: _openThread,

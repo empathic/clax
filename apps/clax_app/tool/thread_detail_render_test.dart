@@ -273,7 +273,6 @@ void main() {
                           'and the heart rate under it',
                     ),
                     onMic: () {},
-                    onSend: () {},
                     threads: const [],
                     onThread: (_) {},
                     onResend: (_) {},

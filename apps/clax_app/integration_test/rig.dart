@@ -339,7 +339,7 @@ class Rig {
 
   /// Clicks the page's heading (a real click, through the Runner's test
   /// input) to pick it, types [text] into the composer through the host
-  /// and presses the peek's Send; returns the thread the shell sent.
+  /// and presses the composer's Send; returns the thread the shell sent.
   Future<String> comment(WidgetTester tester, String text) async {
     final before = messages.length;
     final frame = await _frameRect();
@@ -366,8 +366,8 @@ class Rig {
     await untilState(tester, 'the composer', (s) => s.draft != null);
     await surface!.call(SetDraftText(text));
     await untilState(tester, 'the typed comment', (s) => s.draft?.text == text);
-    await until(tester, 'Send', () => find.byKey(const ValueKey('send')));
-    await tester.tap(find.byKey(const ValueKey('send')));
+    // The composer's Send, in the page, as the person presses it.
+    await surface!.call(const SubmitDraft());
     final sent = await until<Sent>(
       tester,
       'the shell\'s sent',
