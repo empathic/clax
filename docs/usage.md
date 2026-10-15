@@ -660,10 +660,11 @@ same signature and do not ask.
   Threads (⌘K). A two-finger swipe left opens the threads too, and when
   notifications are off, or you swiped the notice away, a thin handle on
   the right edge does. A first-run hint says where these are. Comment
-  mode puts a bar under the page: Whole app, Threads (with the open
-  count), Voice (whether a pick starts dictation) and ✕. Hold a finger on
-  what you want changed and lift it to comment there; hold, then drag, to
-  select text or draw an area. Dictate or type, then Send. The page stays
+  mode frames the page and puts a bar under it: "Tap anything to comment
+  on it", **Comment on the whole app** (a comment on no element), Threads
+  (with the open count), Voice (whether a pick starts dictation) and ✕.
+  Tap what you want changed to comment there; hold, then drag, to select
+  text or draw an area. Dictate or type, then the composer's Send. The page stays
   usable while the change runs: the Working chip narrates it and folds
   into a small pill, and a tap opens the change in progress (its
   comments, steps and latest render, Stop, and Open thread). The change
