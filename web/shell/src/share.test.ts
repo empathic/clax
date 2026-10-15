@@ -122,7 +122,7 @@ describe("Share dialog", () => {
     const idle = () => until(() => root.querySelector("[role=dialog]")!.getAttribute("aria-busy") === "false");
     expect(document.activeElement?.getAttribute("name"), "focus starts in the add field").toBe("who");
     // The people with access, each with their access.
-    const rows = root.querySelectorAll(".people li");
+    const rows = root.querySelectorAll(".shared li");
     expect(rows.length).toBe(1);
     expect(rows[0].textContent).toContain("Sam Lee");
     expect(root.querySelector<HTMLSelectElement>("select[aria-label='Access for Sam Lee']")!.value).toBe("viewer");
@@ -140,10 +140,10 @@ describe("Share dialog", () => {
     flush(() => { access.value = "commenter"; access.dispatchEvent(new Event("change", { bubbles: true })); });
     state.sharing = open({ people: [sam, octo] });
     flush(() => form.requestSubmit());
-    await until(() => root.querySelectorAll(".people li").length === 2);
+    await until(() => root.querySelectorAll(".shared li").length === 2);
     await idle();
     expect(sent.at(-1)).toEqual({ method: "PUT", url: `${BASE}/shares`, body: { github_login: "octo", access: "commenter" } });
-    expect(root.querySelectorAll(".people li")[1].textContent).toMatch(/@octo.*once they sign in with GitHub/);
+    expect(root.querySelectorAll(".shared li")[1].textContent).toMatch(/@octo.*once they sign in with GitHub/);
     expect(who.value, "the field clears").toBe("");
     // A suggestion is picked by name and shared by person.
     flush(() => { who.value = "mi"; who.dispatchEvent(new Event("input", { bubbles: true })); });
@@ -162,7 +162,7 @@ describe("Share dialog", () => {
     expect(sent[2].body).toEqual({ person: "u_sam", access: "editor" });
     state.sharing = open({ people: [octo] });
     flush(() => root.querySelector<HTMLButtonElement>("button[aria-label='Remove Sam Lee']")!.click());
-    await until(() => sent.length === 4 && root.querySelectorAll(".people li").length === 1);
+    await until(() => sent.length === 4 && root.querySelectorAll(".shared li").length === 1);
     await idle();
     expect(sent[3]).toEqual({ method: "DELETE", url: `${BASE}/shares/s1`, body: {} });
     // Public, Can view.

@@ -101,7 +101,7 @@
     </header>
 
     <form class="add" onsubmit={add} aria-label="Add people">
-      <div class="who">
+      <div class="add-who">
         <input name="who" autocomplete="off" spellcheck="false" placeholder={data.suggestions.length ? "@github-login or a name" : "@github-login"}
           aria-label="GitHub login" value={query} oninput={e => typed(e.currentTarget.value)} />
         {#if hints.length}
@@ -121,7 +121,7 @@
 
     <h3>People with access</h3>
     {#if data.people.length}
-      <ul class="people">
+      <ul class="shared">
         {#each data.people as s (s.id)}
           <li>
             <span class="av" aria-hidden="true">{shareName(s).replace(/^@/, "").slice(0, 1).toUpperCase()}</span>
@@ -169,16 +169,16 @@
   h2 .t { font-weight: 600; }
   h3 { margin: 18px 0 8px; font-size: 13px; font-weight: 600; }
   .add { display: flex; gap: 8px; align-items: flex-start; flex-wrap: wrap; }
-  .who { position: relative; flex: 1 1 220px; min-width: 0; }
-  .who input { width: 100%; box-sizing: border-box; margin: 0; }
+  .add-who { position: relative; flex: 1 1 220px; min-width: 0; }
+  .add-who input { width: 100%; box-sizing: border-box; margin: 0; }
   .hints { position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 2; list-style: none; margin: 0; padding: 4px 0; background: var(--raised); border: 1px solid var(--border-hover); border-radius: var(--radius-sm); box-shadow: var(--elev-lg); }
   .hints button { display: flex; width: 100%; gap: 8px; align-items: baseline; justify-content: flex-start; border: 0; border-radius: 0; padding: 7px 12px; min-height: 0; text-align: left; }
   .hints button:hover { background: var(--hover); }
   .nm { font-weight: 500; font-size: 14px; overflow-wrap: anywhere; }
   .lg { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
-  .people { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
-  .people li { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
-  .people li + li { border-top: 1px dashed var(--border); }
+  .shared { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+  .shared li { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
+  .shared li + li { border-top: 1px dashed var(--border); }
   .av { flex: none; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: var(--hover); border: 1px solid var(--border); font: 600 12.5px/1 var(--font); color: var(--muted); }
   .who-l { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
   .general { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -192,8 +192,8 @@
   @media (max-width: 520px) {
     .share-panel { padding: 14px 14px 16px; }
     .add select { flex: 1; }
-    .people li { flex-wrap: wrap; }
-    .people li .who-l { flex-basis: calc(100% - 38px); }
-    .people li select { margin-left: 38px; flex: 1; }
+    .shared li { flex-wrap: wrap; }
+    .shared li .who-l { flex-basis: calc(100% - 38px); }
+    .shared li select { margin-left: 38px; flex: 1; }
   }
 </style>

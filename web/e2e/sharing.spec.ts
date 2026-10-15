@@ -76,25 +76,37 @@ test("the owner shares one artifact with one person and a login, makes it public
     // The owner opens Share on the artifact.
     await owner.goto(`${origin}/a/${artifact.id}`);
     await expect(owner.frameLocator("iframe.frame").locator("h1")).toHaveText("Launch plan");
+    // The people panel first, so the styles its chunk brings are on the page.
+    await owner.locator("button.who").click();
+    const panel = owner.locator('[role="dialog"].people');
+    await expect(panel).toBeVisible();
+    await panel.getByRole("button", { name: "Close" }).click();
+    await expect(panel).toHaveCount(0);
     const share = owner.getByRole("button", { name: "Share", exact: true });
     await share.click();
     const dialog = owner.getByRole("dialog", { name: "Share Launch plan" });
     await expect(dialog).toBeVisible();
+    // The login field is drawn as the other fields are: no box around it.
+    const login = dialog.getByRole("textbox", { name: "GitHub login" });
+    await expect(login.locator("xpath=..")).toHaveCSS("border-top-style", "none");
+    await expect(login).toHaveCSS("border-radius", await dialog.getByRole("combobox", { name: "Access for the person added" }).evaluate(e => getComputedStyle(e).borderRadius));
     await expect(dialog.getByTestId("general-note")).toHaveText("Only the people added can open it.");
     // A login no one has signed in with waits for its first sign-in.
     await dialog.getByRole("textbox", { name: "GitHub login" }).fill("@octocat");
     await dialog.getByRole("combobox", { name: "Access for the person added" }).selectOption("commenter");
     await dialog.getByRole("button", { name: "Add", exact: true }).click();
-    await expect(dialog.locator(".people li")).toHaveCount(1);
-    await expect(dialog.locator(".people li").first()).toContainText("@octocat");
-    await expect(dialog.locator(".people li").first()).toContainText("once they sign in with GitHub");
+    await expect(dialog.locator(".shared li")).toHaveCount(1);
+    await expect(dialog.locator(".shared li").first()).toContainText("@octocat");
+    await expect(dialog.locator(".shared li").first()).toContainText("once they sign in with GitHub");
     // Sam, from the suggestions.
     await dialog.getByRole("textbox", { name: "GitHub login" }).fill("Sa");
     await dialog.locator(".hints button", { hasText: "Sam" }).click();
     await dialog.getByRole("combobox", { name: "Access for the person added" }).selectOption("viewer");
     await dialog.getByRole("button", { name: "Add", exact: true }).click();
-    await expect(dialog.locator(".people li")).toHaveCount(2);
+    await expect(dialog.locator(".shared li")).toHaveCount(2);
     await expect(dialog.getByRole("combobox", { name: "Access for Sam" })).toHaveValue("viewer");
+    // The list of people stays in the dialog's flow.
+    await expect(dialog.locator(".shared li").first().locator("xpath=..")).toHaveCSS("position", "static");
     await shots(owner, "dialog-people");
 
     // Sam's gallery now holds it; Sam may not share it.
