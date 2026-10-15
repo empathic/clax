@@ -3,12 +3,13 @@
 # line prefixed with its gate's name.
 #
 # The web UI is built and its unit tests run first, alone. The other
-# independent gates then run concurrently in lanes (web e2e, Rust, web, the
-# release build, Pi, scripts), each printing a line per gate as it finishes;
-# the lanes that take longest start first. The perf gates then run alone, in
-# their quick mode, on the one release binary. At the end a table gives each
-# gate's time and the total; times are reported, never judged. `just perf`
-# runs the perf gates' full versions.
+# independent gates then run concurrently in lanes (browser e2e, Rust,
+# web, the release build, Pi, scripts, the Worker, wasm32),
+# each printing a line per gate as it finishes; the lanes that take longest
+# start first. The perf gates then run alone, in their quick mode, on the one
+# release binary. At the end a table gives each gate's time and the total;
+# times are reported, never judged. `just perf` runs the perf gates' full
+# versions.
 #
 # The script is functions and one call at its end, so bash reads all of it
 # before running any of it: editing this file during a run cannot break that
@@ -89,12 +90,15 @@ lane_binary() {
 }
 # Web e2e starts once cargo has built and checked everything (at once on a
 # warm cache), so no compile loads the machine under the browser tests.
+# Worker e2e follows web e2e, one browser suite at a time.
 lane_e2e() {
     run "playwright browser"    bash -c 'cd web && $PLAYWRIGHT_INSTALL >/dev/null' &&
     await tests-built rust &&
     await linted lint &&
     await release-built release &&
-    run "web e2e"               bash -c 'cd web && npm run e2e'
+    run "web e2e"               bash -c 'cd web && npm run e2e' &&
+    await worker-built worker &&
+    run "worker e2e"            bash -c 'cd crates/clax-worker && node e2e.mjs --no-build'
 }
 # The Rust tests are built before clippy runs, so they start running as soon
 # as they can: cargo builds one thing at a time in target/, and clippy's
@@ -133,6 +137,26 @@ lane_lint() {
     run "clippy (no test features)" cargo clippy --workspace -- -D warnings &&
     mark linted
 }
+# crates/clax-worker is a workspace of its own (the Worker builds for wasm32
+# only, and its rusqlite cannot share the root's lockfile): its fmt, its
+# tests and clippy natively (the SQLite VFS's tests among them), then the
+# wasm build under `wrangler dev --local` across a restart (test-wasm.mjs).
+# The e2e lane then runs the Clax instance in two browsers on that build
+# (e2e.mjs), after the other browser suites.
+lane_worker() {
+    run "worker npm ci"         scripts/npm-ci-stamped.sh crates/clax-worker --silent &&
+    run "worker cargo fmt"      bash -c 'cd crates/clax-worker && cargo fmt --all -- --check' &&
+    run "worker cargo test"     bash -c 'cd crates/clax-worker && cargo test -q --workspace' &&
+    run "worker cargo clippy"   bash -c 'cd crates/clax-worker && cargo clippy -q --workspace --all-targets -- -D warnings' &&
+    run "worker wasm"           bash -c 'cd crates/clax-worker && node test-wasm.mjs' &&
+    mark worker-built
+}
+# The crates a hosted Worker runs, checked for wasm32-unknown-unknown with
+# warnings denied. It needs the rustup target and an LLVM with a wasm32
+# backend, and fails saying which is missing (scripts/check-wasm.sh).
+lane_wasm() {
+    run "wasm32 check"          scripts/check-wasm.sh
+}
 lane_release() {
     run "release build"         bash -c 'cargo build -q --release -p clax-cli && mkdir -p "$(dirname "$CLAX_PERF_BIN")" && kept="$(scripts/stable-bin.sh target/release/clax target/clax-bin/release)" && ln -sfn "$PWD/$kept" "$CLAX_PERF_BIN"' &&
     mark release-built
@@ -148,7 +172,7 @@ run "web unit"              bash -c 'cd web && npm test -- --reporter=dot' || ex
 
 # Web e2e runs beside the other lanes: they wait mostly on processes and
 # sockets, not the CPU, while the browser tests need the CPU.
-echo "quality gates: concurrent lanes (web e2e, Rust, web, Pi, scripts, release build)"
+echo "quality gates: concurrent lanes (browser e2e, Rust, web, Pi, scripts, the Worker, wasm32, release build)"
 lane e2e lane_e2e
 lane rust lane_rust
 lane installer lane_installer
@@ -158,7 +182,9 @@ lane scripts lane_scripts
 lane pi lane_pi
 lane web lane_web
 lane plugins lane_plugins
+lane worker lane_worker
 lane lint lane_lint
+lane wasm lane_wasm
 lane release lane_release
 FAILED=""
 for entry in $LANES; do

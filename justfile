@@ -72,6 +72,10 @@ lint:
     cargo clippy --workspace -- -D warnings
     cd web && npm run lint
 
+# Check clax-core, clax-rt, clax-mcp, clax-server and clax-content-git for wasm32-unknown-unknown (a hosted Worker's target), warnings denied; needs an LLVM clang with a wasm32 backend (brew install llvm, or $LLVM_BIN)
+check-wasm *ARGS:
+    ./scripts/check-wasm.sh {{ARGS}}
+
 # Format the Rust code (the web lint is not a formatter)
 fmt:
     cargo fmt --all
@@ -123,3 +127,13 @@ demo-room-sample:
 clean:
     cargo clean
     rm -rf web/dist/_clax web/dist/.vite web/dist/index.html web/dist/artifact.html web/node_modules
+
+# Run the hosted demo locally in one go (demo/local.ts): build the web UI and the Worker, a fresh `wrangler dev --local` in hosted mode on a free port with one live seat, seed, links, steps and a git clone command; Enter starts the demo agents (extra args: --native for the native daemon instead, --port, --seats, --agents, --pace, --no-build)
+[positional-arguments]
+hosted-demo *ARGS:
+    node demo/local.ts "$@"
+
+# Deploy hosted Clax to the Cloudflare account `npx wrangler login` signed in to (crates/clax-worker/deploy.mjs): bucket, queue, Artifacts namespace, secrets, both hosts as custom domains, build, deploy, wait for /healthz (args: --zone, --public, --content, --store artifacts|memory, --dry-run, --diag, --no-build, --rotate-secrets)
+[positional-arguments]
+hosted-deploy *ARGS:
+    cd crates/clax-worker && node deploy.mjs "$@"
