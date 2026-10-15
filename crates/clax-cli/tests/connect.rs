@@ -2019,3 +2019,73 @@ async fn remote_follow_follows_its_harness_session_across_a_restart() {
     assert!(out.status.success(), "{}", text(&out));
     assert!(text(&out).contains(&tid), "{}", text(&out));
 }
+
+/// The shim logs to stderr; a harness that goes away first leaves that pipe
+/// closed. Logging into it never panics the shim: it serves, and when its
+/// stdin closes it ends its remote session (which has no PID for the
+/// daemon to probe) and removes the session's credential file.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_remote_shim_whose_stderr_closed_still_ends_its_session() {
+    use std::io::{Read, Write};
+    let ts = lan_server().await;
+    let m = connected(&ts, "Sam").await;
+    let gid = m.remote_json()["grant_id"].as_str().unwrap().to_string();
+    let mut child = m
+        .cmd(&["mcp", "--agent", "claude"])
+        // Every startup line is logged: each write meets the closed pipe.
+        .env("RUST_LOG", "info")
+        .env("CLAUDE_CODE_SESSION_ID", "cc-gone")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stderr.take());
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let init = json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+        "protocolVersion": "2025-06-18", "capabilities": {},
+        "clientInfo": {"name": "gone", "version": "0"}}});
+    let status = tokio::task::spawn_blocking(move || {
+        writeln!(stdin, "{init}").unwrap();
+        let mut line = String::new();
+        stdout.read_line(&mut line).unwrap();
+        assert!(line.contains("\"id\":0"), "{line}");
+        writeln!(
+            stdin,
+            "{}",
+            json!({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                   "params": {"name": "status", "arguments": {}}})
+        )
+        .unwrap();
+        line.clear();
+        stdout.read_line(&mut line).unwrap();
+        assert!(line.contains("\"id\":1"), "{line}");
+        // The harness goes: stdin closes.
+        drop(stdin);
+        let mut rest = String::new();
+        let _ = stdout.read_to_string(&mut rest);
+        child.wait().unwrap()
+    });
+    let status = tokio::time::timeout(LIMIT, status)
+        .await
+        .expect("the shim did not exit")
+        .unwrap();
+    assert!(status.success(), "{status:?}");
+    let sessions: Vec<_> = ts
+        .store
+        .list_sessions(false)
+        .unwrap()
+        .into_iter()
+        .filter(|s| s.grant_id.as_deref() == Some(gid.as_str()))
+        .collect();
+    assert_eq!(sessions.len(), 1, "{sessions:?}");
+    assert!(sessions[0].ended_at.is_some(), "{sessions:?}");
+    assert!(!m.credential("claude-s-cc-gone.json").exists());
+}
