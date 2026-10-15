@@ -843,6 +843,79 @@ pub const VISIBILITY_MIGRATION: u32 = 25;
 /// version (spec 2026-10-08-multi-agent-multi-person §5.3).
 pub const INBOX_MIGRATION: u32 = 26;
 
+/// What each of the Clax app's migrations (27 to 31, in order) leaves in
+/// the schema: a table, or a column of `artifacts`.
+const APP_MIGRATION_MARKS: [(&str, &str); 5] = [
+    ("table", "db_read_grants"),
+    ("column", "draft_of"),
+    ("table", "net_grants"),
+    ("table", "sample_grants"),
+    ("column", "draft_inherit_net"),
+];
+
+/// Brings a database written by a `flutter-app` build from before that
+/// branch was rebased onto the multi-person migrations into this
+/// numbering, in `tx`; `Ok(None)` for any other database, left untouched.
+///
+/// Those builds numbered the app's migrations from 24 (cross-app read
+/// grants 24, drafts 25, network grants 26, model use 27, a draft's
+/// network inheritance 28), where this list has the multi-person ones
+/// ([`PEOPLE_MIGRATION`] to [`INBOX_MIGRATION`]) and the app's follow at
+/// 27 to 31. Such a database is recognised by its schema, not its
+/// `user_version` alone: a version from 24 to 28, the `db_read_grants`
+/// table, and no `invites` table (which migration 24 makes). Each app
+/// migration's mark ([`APP_MIGRATION_MARKS`]) must be present exactly up
+/// to the one its version names, or the database is refused
+/// ([`crate::CoreError::MigrationFailed`]) and left as it was.
+///
+/// The multi-person migrations' SQL and Rust steps run on it (they touch
+/// none of the app's tables and add no column the app's migrations add),
+/// and `user_version` becomes the app migration it already holds in this
+/// numbering (its old version plus 3). Returns that version.
+pub(super) fn adopt_pre_rebase_flutter_app(
+    tx: &rusqlite::Transaction<'_>,
+) -> crate::Result<Option<u32>> {
+    let version: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    let old_last = PEOPLE_MIGRATION + APP_MIGRATION_MARKS.len() as u32 - 1;
+    if !(PEOPLE_MIGRATION..=old_last).contains(&version)
+        || !has_mark(tx, "table", "db_read_grants")?
+        || has_mark(tx, "table", "invites")?
+    {
+        return Ok(None);
+    }
+    let held = (version - PEOPLE_MIGRATION + 1) as usize;
+    for (i, (kind, name)) in APP_MIGRATION_MARKS.iter().enumerate() {
+        if has_mark(tx, kind, name)? != (i < held) {
+            return Err(crate::CoreError::MigrationFailed {
+                at: version,
+                detail: format!(
+                    "a database from an earlier Clax app build at version {version} \
+                     {} the {kind} {name}; it was left unchanged",
+                    if i < held { "lacks" } else { "already has" }
+                ),
+            });
+        }
+    }
+    for v in PEOPLE_MIGRATION..=INBOX_MIGRATION {
+        tx.execute_batch(MIGRATIONS[v as usize - 1])?;
+        rust_step(tx, v)?;
+    }
+    let now = INBOX_MIGRATION + held as u32;
+    tx.pragma_update(None, "user_version", now)?;
+    Ok(Some(now))
+}
+
+/// Whether the schema has the table `name` (`kind` "table") or the
+/// `artifacts` column `name` (`kind` "column").
+fn has_mark(tx: &rusqlite::Transaction<'_>, kind: &str, name: &str) -> crate::Result<bool> {
+    let sql = if kind == "table" {
+        "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1)"
+    } else {
+        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('artifacts') WHERE name = ?1)"
+    };
+    Ok(tx.query_row(sql, [name], |r| r.get(0))?)
+}
+
 /// Runs the Rust part of the migration that brings the schema to
 /// `version`, in that migration's transaction, after its SQL.
 pub(super) fn rust_step(tx: &rusqlite::Transaction<'_>, version: u32) -> crate::Result<()> {
@@ -1920,5 +1993,395 @@ mod tests {
             Err::<(), _>(crate::CoreError::NotFound)
         });
         assert!(matches!(r, Err(crate::CoreError::NotFound)), "{r:?}");
+    }
+
+    /// The rows a renumbering or upgrade must keep, table by table, each
+    /// as one text per row in a stable order.
+    fn kept_rows(c: &Connection, app: usize) -> Vec<(String, Vec<String>)> {
+        let mut queries = vec![
+            (
+                "artifacts",
+                "SELECT id || '|' || title || '|' || current_version || '|' || doc_seq FROM artifacts ORDER BY id",
+            ),
+            (
+                "versions",
+                "SELECT artifact_id || '|' || n || '|' || files_json FROM versions ORDER BY 1",
+            ),
+            (
+                "docs",
+                "SELECT artifact_id || '|' || path || '|' || json || '|' || version FROM docs ORDER BY 1",
+            ),
+            (
+                "comments",
+                "SELECT id || '|' || thread_id || '|' || body FROM comments ORDER BY 1",
+            ),
+            (
+                "inbox_items",
+                "SELECT seq || '|' || id || '|' || kind || '|' || key FROM inbox_items ORDER BY seq",
+            ),
+            (
+                "db_read_grants",
+                "SELECT reader_id || '|' || source_id FROM db_read_grants ORDER BY 1",
+            ),
+        ];
+        if app >= 2 {
+            queries.push((
+                "drafts",
+                "SELECT id || '|' || hidden || '|' || coalesce(draft_of, '') FROM artifacts ORDER BY id",
+            ));
+        }
+        if app >= 3 {
+            queries.push((
+                "net_grants",
+                "SELECT artifact_id || '|' || host FROM net_grants ORDER BY 1",
+            ));
+        }
+        if app >= 4 {
+            queries.push((
+                "sample_grants",
+                "SELECT artifact_id FROM sample_grants UNION ALL
+                 SELECT artifact_id || '|' || day || '|' || micro_usd FROM sample_spend",
+            ));
+        }
+        if app >= 5 {
+            queries.push((
+                "draft_inherit_net",
+                "SELECT id || '|' || draft_inherit_net FROM artifacts ORDER BY id",
+            ));
+        }
+        queries
+            .into_iter()
+            .map(|(name, sql)| {
+                let mut stmt = c.prepare(sql).unwrap();
+                let rows = stmt
+                    .query_map([], |r| r.get::<_, String>(0))
+                    .unwrap()
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .unwrap();
+                (name.to_string(), rows)
+            })
+            .collect()
+    }
+
+    /// A database as a `flutter-app` build from before the multi-person
+    /// migrations (24 to 26) left it: migrations 1 to 23, then the first
+    /// `app` of the app's migrations (27 onwards here), numbered from 24,
+    /// with apps, versions, documents, a comment, an inbox item and the
+    /// grants and drafts those migrations hold. Returns its rows.
+    fn pre_rebase_flutter_app(home: &Home, app: usize) -> Vec<(String, Vec<String>)> {
+        home.ensure_dirs().unwrap();
+        let c = Connection::open(home.db_path()).unwrap();
+        c.pragma_update(None, "journal_mode", "wal").unwrap();
+        for sql in &MIGRATIONS[..AUDIT_MIGRATION as usize] {
+            c.execute_batch(sql).unwrap();
+        }
+        let first = INBOX_MIGRATION as usize;
+        for sql in &MIGRATIONS[first..first + app] {
+            c.execute_batch(sql).unwrap();
+        }
+        c.execute(
+            "INSERT INTO install (k, v) VALUES ('id', ?1)",
+            ["0".repeat(32)],
+        )
+        .unwrap();
+        c.pragma_update(None, "user_version", AUDIT_MIGRATION + app as u32)
+            .unwrap();
+        c.execute_batch(
+            "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version, doc_seq)
+                VALUES ('7q3k9mzx2b4t', 'Budget', 'x', 'x', 2, '0', 3),
+                       ('8r4m2nzy3c5v', 'Notes', 'x', 'x', 1, '0', 1);
+             INSERT INTO versions (artifact_id, n, created_at, files_json) VALUES
+                ('7q3k9mzx2b4t', 1, 'x', '{\"index.html\":\"a\"}'),
+                ('7q3k9mzx2b4t', 2, 'x', '{\"index.html\":\"b\"}'),
+                ('8r4m2nzy3c5v', 1, 'x', '{\"index.html\":\"c\"}');
+             INSERT INTO docs (artifact_id, path, collection, json, version, updated_at) VALUES
+                ('7q3k9mzx2b4t', 'rows/1', 'rows', '{\"amount\":12}', 2, 'x'),
+                ('7q3k9mzx2b4t', 'rows/2', 'rows', '{\"amount\":30}', 3, 'x'),
+                ('8r4m2nzy3c5v', 'notes/1', 'notes', '{\"text\":\"hi\"}', 1, 'x');
+             INSERT INTO threads (id, artifact_id, version_n, anchor_json, created_at)
+                VALUES ('t1', '7q3k9mzx2b4t', 1, '{}', 'x');
+             INSERT INTO comments (id, thread_id, author_kind, author_name, body, created_at)
+                VALUES ('c1', 't1', 'viewer', 'Alex', 'make it green', 'x');
+             INSERT INTO inbox_items (id, kind, key, artifact_id, created_at)
+                VALUES ('b1', 'published', 'published:7q3k9mzx2b4t', '7q3k9mzx2b4t', 'x');
+             INSERT INTO db_read_grants (reader_id, source_id, granted_at)
+                VALUES ('8r4m2nzy3c5v', '7q3k9mzx2b4t', 'x');",
+        )
+        .unwrap();
+        if app >= 2 {
+            c.execute_batch(
+                "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version, draft_of, hidden)
+                    VALUES ('9s5n3pza4d6w', 'Budget draft', 'x', 'x', 1, '0', '7q3k9mzx2b4t', 1);
+                 INSERT INTO versions (artifact_id, n, created_at, files_json)
+                    VALUES ('9s5n3pza4d6w', 1, 'x', '{\"index.html\":\"d\"}');",
+            )
+            .unwrap();
+        }
+        if app >= 3 {
+            c.execute_batch(
+                "INSERT INTO net_grants (artifact_id, host, granted_at)
+                    VALUES ('7q3k9mzx2b4t', 'api.example.com', 'x');",
+            )
+            .unwrap();
+        }
+        if app >= 4 {
+            c.execute_batch(
+                "INSERT INTO sample_grants (artifact_id, granted_at) VALUES ('7q3k9mzx2b4t', 'x');
+                 INSERT INTO sample_spend (artifact_id, day, micro_usd)
+                    VALUES ('7q3k9mzx2b4t', '2026-10-14', 1200);",
+            )
+            .unwrap();
+        }
+        if app >= 5 {
+            c.execute_batch(
+                "UPDATE artifacts SET draft_inherit_net = 0 WHERE id = '9s5n3pza4d6w';",
+            )
+            .unwrap();
+        }
+        kept_rows(&c, app)
+    }
+
+    fn assert_pre_rebase_flutter_app_upgrades(app: usize) {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let before = pre_rebase_flutter_app(&home, app);
+        let old = AUDIT_MIGRATION + app as u32;
+        let st = Store::open(&home).unwrap();
+        let (version, after, marks) = st
+            .with_read(|c| {
+                let v: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+                let marks: i64 = c.query_row(
+                    "SELECT (SELECT COUNT(*) FROM sqlite_schema WHERE name IN
+                                ('invites', 'grants', 'approvals', 'doc_authors'))
+                          + (SELECT COUNT(*) FROM pragma_table_info('inbox_items')
+                                WHERE name = 'recipient')
+                          + (SELECT COUNT(*) FROM pragma_table_info('artifacts')
+                                WHERE name IN ('person', 'text_authors_json', 'draft_inherit_net'))",
+                    [],
+                    |r| r.get(0),
+                )?;
+                Ok((v, kept_rows(c, app), marks))
+            })
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as u32, "from {old}");
+        assert_eq!(after, before, "every row kept from {old}");
+        assert_eq!(marks, 8, "the multi-person and app schema, from {old}");
+        let listed = st.list_artifacts().unwrap().len();
+        assert_eq!(listed, 2, "the draft stays unlisted, from {old}");
+        let approvals: i64 = st
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT COUNT(*) FROM approvals WHERE created_via = 'migration'",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(approvals, 1, "migration 25's Rust step ran, from {old}");
+        drop(st);
+        let copies = crate::store::backup::list(&crate::store::backup::dir(&home));
+        assert_eq!(copies.len(), 1, "{copies:?}");
+        let name = copies[0].file_name().unwrap().to_str().unwrap().to_string();
+        assert!(name.starts_with(&format!("clax-{old}-")), "{name}");
+        let copy = Connection::open(&copies[0]).unwrap();
+        let v: u32 = copy
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, old);
+        assert_eq!(kept_rows(&copy, app), before, "the copy holds the old rows");
+    }
+
+    #[test]
+    fn a_pre_rebase_flutter_app_database_at_27_keeps_every_row_and_is_copied_first() {
+        assert_pre_rebase_flutter_app_upgrades(4);
+    }
+
+    #[test]
+    fn a_pre_rebase_flutter_app_database_at_28_keeps_every_row_and_is_copied_first() {
+        assert_pre_rebase_flutter_app_upgrades(5);
+    }
+
+    #[test]
+    fn pre_rebase_flutter_app_databases_at_24_to_26_upgrade() {
+        for app in 1..=3 {
+            assert_pre_rebase_flutter_app_upgrades(app);
+        }
+    }
+
+    #[test]
+    fn the_app_migrations_follow_the_inbox_migration_in_this_order() {
+        let first = INBOX_MIGRATION as usize;
+        assert!(MIGRATIONS[first].contains("CREATE TABLE db_read_grants"));
+        assert!(MIGRATIONS[first + 1].contains("ADD COLUMN draft_of"));
+        assert!(MIGRATIONS[first + 2].contains("CREATE TABLE net_grants"));
+        assert!(MIGRATIONS[first + 3].contains("CREATE TABLE sample_grants"));
+        assert!(MIGRATIONS[first + 4].contains("ADD COLUMN draft_inherit_net"));
+    }
+
+    #[test]
+    fn a_pre_rebase_database_whose_schema_disagrees_with_its_version_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        // Version 27 names sample grants, which this database lacks.
+        pre_rebase_flutter_app(&home, 3);
+        {
+            let c = Connection::open(home.db_path()).unwrap();
+            c.pragma_update(None, "user_version", 27).unwrap();
+        }
+        let err = match Store::open(&home) {
+            Ok(_) => panic!("an inconsistent database must be refused"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(&err, crate::CoreError::MigrationFailed { at: 27, detail }
+                if detail.contains("sample_grants")),
+            "{err:?}"
+        );
+        let c = Connection::open(home.db_path()).unwrap();
+        let (v, invites): (u32, i64) = c
+            .query_row(
+                "SELECT (SELECT user_version FROM pragma_user_version),
+                        (SELECT COUNT(*) FROM sqlite_schema WHERE name = 'invites')",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((v, invites), (27, 0));
+    }
+
+    #[test]
+    fn a_failing_migration_is_reported_and_rolled_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        let at = INBOX_MIGRATION as usize;
+        {
+            let c = Connection::open(home.db_path()).unwrap();
+            for sql in &MIGRATIONS[..at] {
+                c.execute_batch(sql).unwrap();
+            }
+            c.execute(
+                "INSERT INTO install (k, v) VALUES ('id', ?1)",
+                ["0".repeat(32)],
+            )
+            .unwrap();
+            // Migration 28 adds this column: it fails.
+            c.execute_batch("ALTER TABLE artifacts ADD COLUMN draft_of TEXT;")
+                .unwrap();
+            c.pragma_update(None, "user_version", at as u32).unwrap();
+        }
+        let err = match Store::open(&home) {
+            Ok(_) => panic!("the migration must fail"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(&err, crate::CoreError::MigrationFailed { at: 27, detail }
+                if detail.contains("draft_of")),
+            "{err:?}"
+        );
+        let c = Connection::open(home.db_path()).unwrap();
+        let v: u32 = c
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 27, "migration 27 committed, 28 rolled back");
+    }
+
+    #[test]
+    fn a_base_database_at_26_upgrades_and_is_copied_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        let at = INBOX_MIGRATION as usize;
+        {
+            let c = Connection::open(home.db_path()).unwrap();
+            for sql in &MIGRATIONS[..at] {
+                c.execute_batch(sql).unwrap();
+            }
+            c.execute(
+                "INSERT INTO install (k, v) VALUES ('id', ?1)",
+                ["0".repeat(32)],
+            )
+            .unwrap();
+            c.pragma_update(None, "user_version", at as u32).unwrap();
+            c.execute_batch(
+                "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
+                    VALUES ('7q3k9mzx2b4t', 't', 'x', 'x', 1, '0');
+                 INSERT INTO docs (artifact_id, path, collection, json, version, updated_at)
+                    VALUES ('7q3k9mzx2b4t', 'rows/1', 'rows', '{}', 1, 'x');",
+            )
+            .unwrap();
+        }
+        let st = Store::open(&home).unwrap();
+        let (v, docs, inherit): (u32, i64, i64) = st
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT (SELECT user_version FROM pragma_user_version),
+                            (SELECT COUNT(*) FROM docs),
+                            (SELECT draft_inherit_net FROM artifacts)",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )?)
+            })
+            .unwrap();
+        assert_eq!((v, docs, inherit), (MIGRATIONS.len() as u32, 1, 1));
+        assert_eq!(st.list_artifacts().unwrap().len(), 1);
+        let copies = crate::store::backup::list(&crate::store::backup::dir(&home));
+        assert_eq!(copies.len(), 1, "{copies:?}");
+    }
+
+    #[test]
+    fn a_fresh_database_migrates_without_a_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let st = Store::open(&home).unwrap();
+        let v: u32 = st
+            .with_read(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
+            .unwrap();
+        assert_eq!(v, MIGRATIONS.len() as u32);
+        drop(st);
+        assert!(!crate::store::backup::dir(&home).exists());
+        drop(Store::open(&home).unwrap());
+        assert!(
+            !crate::store::backup::dir(&home).exists(),
+            "nothing to migrate"
+        );
+    }
+
+    #[test]
+    fn upgrades_keep_the_newest_three_copies() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        let backups = crate::store::backup::dir(&home);
+        std::fs::create_dir_all(&backups).unwrap();
+        for at in [
+            "20261001T000000000Z",
+            "20261002T000000000Z",
+            "20261003T000000000Z",
+        ] {
+            std::fs::write(backups.join(format!("clax-20-{at}.db")), b"old").unwrap();
+        }
+        std::fs::write(backups.join("notes.txt"), b"kept").unwrap();
+        {
+            let c = Connection::open(home.db_path()).unwrap();
+            c.execute_batch(MIGRATIONS[0]).unwrap();
+            c.pragma_update(None, "user_version", 1).unwrap();
+        }
+        let clock: std::sync::Arc<dyn crate::working::Clock> =
+            std::sync::Arc::new(crate::working::ManualClock::at("2026-10-15T12:00:00Z"));
+        drop(Store::open_with_clock(&home, clock).unwrap());
+        let names: Vec<String> = crate::store::backup::list(&backups)
+            .iter()
+            .map(|p| p.file_name().unwrap().to_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "clax-20-20261002T000000000Z.db",
+                "clax-20-20261003T000000000Z.db",
+                "clax-1-20261015T120000000Z.db",
+            ]
+        );
+        assert!(backups.join("notes.txt").exists());
     }
 }

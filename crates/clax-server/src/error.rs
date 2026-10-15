@@ -186,6 +186,14 @@ impl From<CoreError> for ApiError {
                     e.to_string(),
                 )
             }
+            e @ CoreError::MigrationFailed { .. } => {
+                tracing::error!(error = %e, "database upgrade failed");
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "migration_failed",
+                    e.to_string(),
+                )
+            }
             CoreError::TaskFailed => ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal",

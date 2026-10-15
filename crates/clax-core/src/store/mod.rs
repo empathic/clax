@@ -51,6 +51,7 @@ pub mod assets;
 pub mod attention;
 pub mod audit;
 pub mod backfill;
+pub mod backup;
 pub mod batches;
 pub mod changelog;
 pub mod docs;
@@ -184,6 +185,12 @@ impl Store {
         home.ensure_dirs()?;
         let path = home.db_path();
         let mut conn = exec::open_writer(&path)?;
+        backup::before_migrate(
+            &conn,
+            home,
+            migrations::MIGRATIONS.len() as u32,
+            clock.now(),
+        )?;
         migrate(&mut conn)?;
         backfill::run(&mut conn, home, report)?;
         approvals::record_migration_approval(&mut conn)?;
@@ -434,9 +441,38 @@ pub fn schema_version(home: &Home) -> Result<Option<u32>> {
 /// SQL, then its [Rust step](migrations::rust_step)) in its
 /// own `IMMEDIATE` transaction that re-reads the version under the write
 /// lock, so two processes opening the database at once apply each migration
-/// once. Refuses a database whose schema is newer than this binary knows
+/// once. A database an earlier Clax app build numbered differently is first
+/// brought into this numbering
+/// ([`migrations::adopt_pre_rebase_flutter_app`]), in a transaction of its
+/// own. Refuses a database whose schema is newer than this binary knows
 /// ([`CoreError::SchemaNewer`]) without changing it.
+///
+/// # Errors
+/// A migration that fails is rolled back, leaving the database at the
+/// version before it, and reported as [`CoreError::MigrationFailed`]
+/// (except a busy or locked database, reported as itself, since it may
+/// pass on a retry).
 fn migrate(conn: &mut Connection) -> Result<()> {
+    migrate_steps(conn).map_err(|e| match e {
+        e @ (CoreError::SchemaNewer { .. } | CoreError::MigrationFailed { .. }) => e,
+        CoreError::Db(rusqlite::Error::SqliteFailure(f, m))
+            if matches!(
+                f.code,
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+            ) =>
+        {
+            CoreError::Db(rusqlite::Error::SqliteFailure(f, m))
+        }
+        other => CoreError::MigrationFailed {
+            at: conn
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap_or(0),
+            detail: other.to_string(),
+        },
+    })
+}
+
+fn migrate_steps(conn: &mut Connection) -> Result<()> {
     let known = migrations::MIGRATIONS.len() as u32;
     let check = |version: u32| {
         if version > known {
@@ -452,6 +488,17 @@ fn migrate(conn: &mut Connection) -> Result<()> {
     check(version)?;
     if version == known {
         return Ok(());
+    }
+    {
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if let Some(now) = migrations::adopt_pre_rebase_flutter_app(&tx)? {
+            tx.commit()?;
+            tracing::warn!(
+                from = version,
+                to = now,
+                "renumbered a database from an earlier Clax app build"
+            );
+        }
     }
     loop {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;

@@ -412,13 +412,48 @@ fn main() {
             std::process::exit(2);
         }
         eprintln!("error: {e:#}");
-        std::process::exit(1);
+        std::process::exit(exit_code(&e));
     }
+}
+
+/// The status `clax` exits with when its database's schema could not be
+/// brought up to date ([`clax_core::CoreError::MigrationFailed`]): a
+/// failure that repeats on every start until the database or the binary
+/// changes, so a supervisor stops restarting on it (the Clax app's
+/// `DaemonSupervisor.migrationFailedExit`).
+const MIGRATION_FAILED_EXIT: i32 = 65;
+
+/// The exit status for a command that failed with `e`:
+/// [`MIGRATION_FAILED_EXIT`] for a failed migration, otherwise 1.
+fn exit_code(e: &anyhow::Error) -> i32 {
+    let migration = e.chain().any(|c| {
+        matches!(
+            c.downcast_ref::<clax_core::CoreError>(),
+            Some(clax_core::CoreError::MigrationFailed { .. })
+        )
+    });
+    if migration { MIGRATION_FAILED_EXIT } else { 1 }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_migration_exits_with_its_own_status() {
+        let e = anyhow::Error::from(clax_core::CoreError::MigrationFailed {
+            at: 27,
+            detail: "duplicate column name: draft_of".into(),
+        })
+        .context("starting the daemon");
+        assert_eq!(exit_code(&e), MIGRATION_FAILED_EXIT);
+        assert_eq!(exit_code(&anyhow::anyhow!("other")), 1);
+        let newer = clax_core::CoreError::SchemaNewer {
+            found: 40,
+            known: 31,
+        };
+        assert_eq!(exit_code(&anyhow::Error::from(newer)), 1);
+    }
 
     fn cli(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).unwrap()

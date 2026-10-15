@@ -827,6 +827,35 @@ void main() {
     expect(r.attempt, 1);
   });
 
+  test(
+    'an exit for a failed database upgrade is Failed at once, with the error',
+    () async {
+      rig = Rig();
+      rig.health.answers = false;
+      Object? error;
+      unawaited(
+        rig.sup.ensureUp().then((_) {}, onError: (Object e) => error = e),
+      );
+      await rig.clock.advance(const Duration(milliseconds: 100));
+      rig.starter.last
+        ..writeErr(
+          'error: could not upgrade the database from schema version 27: '
+          'duplicate column name: draft_of\n',
+        )
+        ..exit(DaemonSupervisor.migrationFailedExit);
+      await rig.clock.advance(Duration.zero);
+      expect(rig.sup.state, isNot(isA<Restarting>()));
+      // Its output never ends here: the tail is taken after the grace.
+      await rig.clock.advance(DaemonSupervisor.termGrace);
+      final failed = rig.sup.state as Failed;
+      expect(failed.reason, contains('could not upgrade its database'));
+      expect(failed.stderrTail.join('\n'), contains('schema version 27'));
+      expect(error, isA<DaemonFailure>());
+      await rig.clock.advance(const Duration(seconds: 30));
+      expect(rig.starter.calls, hasLength(1), reason: 'not restarted');
+    },
+  );
+
   test('three starts in a row that never come up is Failed', () async {
     rig = Rig();
     rig.health.answers = false;
