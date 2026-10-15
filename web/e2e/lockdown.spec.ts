@@ -203,7 +203,7 @@ const post = (k, v) => parent.postMessage({ framed: "${tag}", k, v }, "*");
 post("ran", true);
 fetch("${away}/${tag}-fetch").then(() => post("fetch", "reached"), () => post("fetch", "refused"));
 const i = new Image(); i.onload = () => post("img", "loaded"); i.onerror = () => post("img", "refused"); i.src = "${away}/${tag}-img.svg";
-</` + `script>`;
+</script>`;
 
 for (const engine of [chromium, webkit]) {
   for (const mode of ["subdomain", "sandbox"] as const) {
@@ -218,7 +218,7 @@ for (const engine of [chromium, webkit]) {
         }) as { artifact: { id: string } };
         const p = await browser.newPage();
         const f = await openArtifact(p, d.base, artifact.id, 1, mode);
-        const out = await f.evaluate(async ({ blobDoc, dataDoc, away }) => {
+        const out = await f.evaluate(async ({ blobDoc, dataDoc, awayUrl }) => {
           const got: Record<string, unknown> = {};
           (window as unknown as { framedGot: unknown }).framedGot = got;
           addEventListener("message", e => { const m = e.data as { framed?: string; k: string; v: unknown }; if (m?.framed) got[`${m.framed}.${m.k}`] = m.v; });
@@ -227,7 +227,7 @@ for (const engine of [chromium, webkit]) {
           await frame(`data:text/html,${encodeURIComponent(dataDoc)}`);
           let borrowed: string;
           try {
-            borrowed = await (blobFrame.contentWindow as Window).fetch(`${away}/borrowed`).then(() => "reached", () => "refused");
+            borrowed = await (blobFrame.contentWindow as Window).fetch(`${awayUrl}/borrowed`).then(() => "reached", () => "refused");
           } catch {
             borrowed = "unreachable";
           }
@@ -235,12 +235,12 @@ for (const engine of [chromium, webkit]) {
             const s = document.createElement("script");
             s.onload = () => r("ran");
             s.onerror = () => r("refused");
-            s.src = URL.createObjectURL(new Blob([`window.blobScript = fetch("${away}/script-fetch").then(() => "reached", () => "refused");`], { type: "text/javascript" }));
+            s.src = URL.createObjectURL(new Blob([`window.blobScript = fetch("${awayUrl}/script-fetch").then(() => "reached", () => "refused");`], { type: "text/javascript" }));
             document.head.append(s);
           });
           const scriptFetch = script === "ran" ? await (window as unknown as { blobScript: Promise<string> }).blobScript : "not run";
           return { borrowed, script, scriptFetch };
-        }, { blobDoc: FRAMED(away.url, "blob"), dataDoc: FRAMED(away.url, "data"), away: away.url });
+        }, { blobDoc: FRAMED(away.url, "blob"), dataDoc: FRAMED(away.url, "data"), awayUrl: away.url });
         expect(out.borrowed).not.toBe("reached");
         expect(out.scriptFetch).not.toBe("reached");
         // A frame whose script ran settles both its attempts, refused.
