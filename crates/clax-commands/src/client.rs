@@ -1868,10 +1868,12 @@ srv.serve_forever()
         unmeasured: Duration::from_secs(60),
     };
 
-    /// As [`QUICK`], with a start window a slow start outlasts: 3 s.
+    /// As [`QUICK`] (5 s to report anything), with 5 s between reports, so
+    /// a start that reports every 200 ms keeps within it however loaded the
+    /// machine is; a slow start outlasts the start window.
     const SHORT_START: StartWindows = StartWindows {
-        start: Duration::from_secs(3),
-        progress: Duration::from_secs(1),
+        start: Duration::from_secs(5),
+        progress: Duration::from_secs(5),
         unmeasured: Duration::from_secs(60),
     };
 
@@ -1880,14 +1882,14 @@ srv.serve_forever()
         let dir = Scratch::new();
         let old_exe = fake_exe(dir.path(), "old", "0.0.1", false, None);
         let (home, old) = running(dir.path(), &old_exe, "127.0.0.1");
-        // 4.4 s of backfill, past the start window, reported every 200 ms.
+        // 6 s of backfill, past the start window, reported every 200 ms.
         let slow = fake_exe_with(
             dir.path(),
             "slow",
             "0.0.2",
             false,
             None,
-            "for i in range(22):\n    starting('recording', i, 22)\n    time.sleep(0.2)",
+            "for i in range(30):\n    starting('recording', i, 30)\n    time.sleep(0.2)",
         );
         let new = Client::replace_within(&home, &old, &slow, |_| false, None, SHORT_START)
             .expect("the slow start is waited for");
