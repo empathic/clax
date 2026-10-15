@@ -81,6 +81,20 @@ describe("range anchors", () => {
   });
 });
 
+describe("labels", () => {
+  it("space the quote where its text runs from one element into another, and are left out when it needs none", () => {
+    document.body.innerHTML = `<div><b>Mon</b><span>5 km</span></div><p>Run <b>far</b>, then rest.</p>`;
+    const div = document.querySelector("div")!;
+    expect(buildElementAnchor(document, div)).toMatchObject({ quote: "Mon5 km", label: "Mon 5 km" });
+    expect("label" in buildElementAnchor(document, document.querySelector("p")!)).toBe(false);
+    const r = document.createRange();
+    r.setStart(div.querySelector("b")!.firstChild!, 1);
+    r.setEnd(div.querySelector("span")!.firstChild!, 1);
+    expect(buildRangeAnchor(document, r)).toMatchObject({ quote: "on5", label: "on 5" });
+    expect("label" in buildElementAnchor(document, div.querySelector("b")!)).toBe(false);
+  });
+});
+
 it("text index skips scripts, styles, and the overlay", () => {
   document.body.innerHTML = `<script>var x = "Quarterly goals"</script><style>p{}</style><p>Quarterly goals</p>`;
   const overlay = document.createElement("clax-overlay");

@@ -31,6 +31,10 @@ export interface Anchor {
   file: string;
   /** A live page's route (`?query#/hash-route`), set by the daemon; absent on artifacts. */
   route?: string;
+  /** The quote as a reader sees it, spaced where its text runs from one
+   * element into another (the quote is not, for re-anchoring); shown in
+   * place of the quote. Absent when it would read as the quote. */
+  label?: string;
 }
 /** A rectangle in the content frame's viewport pixels. */
 export interface Box { x: number; y: number; w: number; h: number }

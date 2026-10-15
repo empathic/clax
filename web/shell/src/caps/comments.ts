@@ -28,7 +28,7 @@ import { type Anchor, type AnchorRect, type Box, INDEX_FILE } from "../../../bri
 import { nameProblem, textProblem } from "../../../bridge/src/text-rule";
 import { ApiError, getArtifact } from "../api";
 import type { ArtifactEvent } from "../events";
-import { type Thread, createThread, deleteThread, reopenThread, resolveThread, sendToAgent } from "../threads";
+import { type Thread, createThread, deleteThread, reopenThread, resolveThread, respaced, sendToAgent } from "../threads";
 import { declaredConfig } from "./availability";
 import { seconds, takeSlot } from "./budget";
 import { CapError } from "./errors";
@@ -102,7 +102,8 @@ const optText = (v: unknown, max: number, name: string): string | null => {
 const finite = (v: unknown) => typeof v === "number" && Number.isFinite(v);
 
 /** A DOM anchor the page built (element or range), rebuilt field by field on
- * page `file`; `invalid` for anything else. */
+ * page `file`, keeping its `label` only when it reads as its quote respaced;
+ * `invalid` for anything else. */
 export function pageAnchor(a: unknown, file: string): Anchor {
   if (!a || typeof a !== "object") throw invalid("anchor is an object");
   const x = a as Record<string, unknown>;
@@ -119,16 +120,19 @@ export function pageAnchor(a: unknown, file: string): Anchor {
     if (typeof r !== "object" || !keys.every(k => finite(r[k]))) throw invalid("anchor.rect holds finite numbers");
     rect = Object.fromEntries(keys.map(k => [k, r[k]])) as unknown as AnchorRect;
   }
+  const quote = optText(x.quote, MAX_QUOTE, "quote");
+  const label = respaced(quote, optText(x.label, MAX_QUOTE, "label"));
   return {
     kind: x.kind,
     selector: x.selector,
-    quote: optText(x.quote, MAX_QUOTE, "quote"),
+    quote,
     prefix: optText(x.prefix, AFFIX, "prefix"),
     suffix: optText(x.suffix, AFFIX, "suffix"),
     html_hash: (hash as string | null | undefined) ?? null,
     rect,
     custom_name: null,
     file,
+    ...(label && !CONTROL.test(label) ? { label } : {}),
   };
 }
 

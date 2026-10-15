@@ -55,11 +55,12 @@ function elementWords(tag: string | null, role: string | null, name: string | nu
 
 /** The words for `anchor`, with the bridge's description of a picked
  * element when there is one (`desc`, the page's own and so checked here):
- * its `text`, the quote spaced between elements, is shown in its place. */
+ * the anchor's `label`, else the description's `text`, the quote spaced
+ * between elements, is shown in its place. */
 export function anchorLabel(anchor: Anchor, desc?: Partial<PickDesc> | null): string {
   if (anchor.kind === "artifact") return "Whole app";
   const d = desc && typeof desc === "object" ? desc : null;
-  const quote = clean(respaced(anchor.quote, d?.text), QUOTE_CHARS) ?? clean(anchor.quote, QUOTE_CHARS);
+  const quote = clean(respaced(anchor.quote, anchor.label) ?? respaced(anchor.quote, d?.text), QUOTE_CHARS) ?? clean(anchor.quote, QUOTE_CHARS);
   if (quote) return `“${quote}”`;
   if (anchor.kind === "custom") {
     const n = clean(anchor.custom_name, NAME_CHARS);

@@ -315,11 +315,12 @@ function area(v: unknown): boolean {
 }
 /** An anchor as the overlay builds one (spec main §9 "Anchors"); the daemon validates it again. */
 export function isAnchor(v: unknown): v is Anchor {
-  if (!shape(v, ANCHOR, ["area"]) || typeof v.kind !== "string" || !KINDS.has(v.kind) || v.file !== "index.html") return false;
+  if (!shape(v, ANCHOR, ["area", "label"]) || typeof v.kind !== "string" || !KINDS.has(v.kind) || v.file !== "index.html") return false;
   if (!strOrNull(v.selector, 1024) || !strOrNull(v.quote, 2000) || !strOrNull(v.prefix, 64) || !strOrNull(v.suffix, 64)) return false;
   if (!strOrNull(v.html_hash, 80) || v.custom_name !== null) return false;
   if (v.rect !== null && !(shape(v.rect, ANCHOR_RECT) && ANCHOR_RECT.every(k => num((v.rect as Obj)[k])))) return false;
   if (Object.hasOwn(v, "area") && !area(v.area)) return false;
+  if (Object.hasOwn(v, "label") && !str(v.label, 2000)) return false;
   return true;
 }
 

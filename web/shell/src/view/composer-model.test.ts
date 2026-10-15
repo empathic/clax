@@ -8,6 +8,7 @@ describe("composerQuote", () => {
     expect(composerQuote(d({ quote: "x" }, "Chart"))).toBe("Chart");
     expect(composerQuote(d({ quote: "  a\n  b " }))).toBe("«a b»");
     expect(composerQuote({ ...d({ quote: "Mon5 km" }), shown: "Mon 5 km" })).toBe("«Mon 5 km»");
+    expect(composerQuote(d({ quote: "Mon5 km", label: "Mon 5 km" }))).toBe("«Mon 5 km»");
     expect(composerQuote(d({ quote: "q".repeat(200) }))).toBe(`«${"q".repeat(160)}…»`);
     expect(composerQuote(d({ kind: "custom", custom_name: "Row 3" }))).toBe("Row 3");
     expect(composerQuote(d({ kind: "area", selector: "main", area: { x: 0, y: 0, w: 0.5, h: 0.25 } }))).toBe("Area in main (50% × 25%)");
