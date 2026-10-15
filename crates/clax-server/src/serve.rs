@@ -305,7 +305,7 @@ pub async fn serve(
 
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let events_shutdown = shutdown_tx.subscribe();
-    let state = AppState::assemble(clax_http::state::StateParts {
+    let mut state = AppState::assemble(clax_http::state::StateParts {
         store,
         home: cfg.home.clone(),
         token,
@@ -327,6 +327,8 @@ pub async fn serve(
         hosted: cfg.hosted.clone(),
         web: cfg.web.clone(),
     })?;
+    // The daemon's `net` keeps a shared disk cache in the home.
+    state.net = Arc::new(clax_http::net_cache::daemon_net(cfg.home.root()));
     state.audit_wake.install(&state.store);
     // The appender recovers the journal and catches it up on its own
     // thread, so the daemon serves at once.

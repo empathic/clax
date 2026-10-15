@@ -17,8 +17,11 @@
 //! whole fetch, redirects included, at [`TIMEOUT`]. Cookies, `Authorization`
 //! on a redirect to another host, and hop-by-hop headers never pass; no
 //! proxy is used. The resolver and the transport are traits so tests can
-//! drive every rule without a network.
+//! drive every rule without a network. With a [`NetCache`]
+//! ([`Net::with_cache`]), a cacheable `GET` is answered from it or
+//! revalidated, after the same host check.
 
+use crate::net_cache::{self, NetCache};
 use futures::future::BoxFuture;
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -33,8 +36,13 @@ pub const TIMEOUT: Duration = Duration::from_secs(20);
 /// Most redirects one fetch follows.
 pub const MAX_REDIRECTS: usize = 3;
 /// The `User-Agent` a fetch carries when the page sets none: tile and API
-/// servers (OpenStreetMap's among them) ask clients to identify themselves.
-pub const USER_AGENT: &str = concat!("Clax/", env!("CARGO_PKG_VERSION"));
+/// servers (OpenStreetMap's among them) ask clients to identify themselves
+/// and say where to reach their operator.
+pub const USER_AGENT: &str = concat!(
+    "Clax/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/empathic/clax)"
+);
 
 /// Why a fetch did not produce a response.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -402,11 +410,12 @@ pub fn https_url(raw: &str) -> Result<Url, NetError> {
     Ok(url)
 }
 
-/// The fetcher: a resolver and a transport.
+/// The fetcher: a resolver, a transport and, in the daemon, a cache.
 #[derive(Clone)]
 pub struct Net {
     resolver: Arc<dyn Resolver>,
     transport: Arc<dyn Transport>,
+    cache: Option<Arc<NetCache>>,
 }
 
 impl Default for Net {
@@ -421,7 +430,16 @@ impl Net {
         Net {
             resolver,
             transport,
+            cache: None,
         }
+    }
+
+    /// This fetcher, answering cacheable requests from `cache`
+    /// ([`crate::net_cache`]).
+    #[must_use]
+    pub fn with_cache(mut self, cache: Arc<NetCache>) -> Net {
+        self.cache = Some(cache);
+        self
     }
 
     /// Fetches `req`, reaching only hosts `allows` accepts, under the
@@ -448,18 +466,76 @@ impl Net {
         limit: Duration,
     ) -> Result<FetchResponse, NetError> {
         let start = tokio::time::Instant::now();
-        tokio::time::timeout(limit, self.run(allows, req, start, limit))
+        let work = async {
+            match (&self.cache, net_cache::key_of(&req)) {
+                (Some(cache), Some(key)) => {
+                    self.cached(cache, &key, allows, req, start, limit).await
+                }
+                _ => self.run(allows, req, start, limit).await.map(|(r, _)| r),
+            }
+        };
+        tokio::time::timeout(limit, work)
             .await
             .unwrap_or(Err(NetError::Timeout))
     }
 
+    /// A cacheable request: the host check first, then a fresh entry, or a
+    /// fetch (revalidating a stale entry), whose answer the cache keeps when
+    /// [`net_cache::storable`].
+    async fn cached(
+        &self,
+        cache: &NetCache,
+        key: &str,
+        allows: &(dyn Fn(&str) -> bool + Send + Sync),
+        mut req: FetchRequest,
+        start: tokio::time::Instant,
+        limit: Duration,
+    ) -> Result<FetchResponse, NetError> {
+        let url = https_url(&req.url)?;
+        let host = url.host_str().unwrap_or_default();
+        if !allows(host) {
+            return Err(NetError::HostRefused {
+                host: host.to_string(),
+                redirect: false,
+            });
+        }
+        let found = cache.get(key).await;
+        if let Some((entry, body)) = &found {
+            if entry.fresh(cache.now()) {
+                return Ok(entry.response(body.clone(), cache.now()));
+            }
+            req.headers.extend(entry.validators());
+        }
+        let (res, set_cookie) = self.run(allows, req, start, limit).await?;
+        let same_url = res.url == url.as_str();
+        if let (304, true, Some((entry, body))) = (res.status, same_url, found) {
+            let now = cache.now();
+            let entry = entry.refreshed(&res.headers, now);
+            cache.put(key, &entry, &body).await;
+            return Ok(entry.response(body, now));
+        }
+        if same_url && net_cache::storable(res.status, set_cookie, &res.headers) {
+            let entry = net_cache::Entry {
+                url: res.url.clone(),
+                status: res.status,
+                headers: res.headers.clone(),
+                received: cache.now().timestamp(),
+            };
+            cache.put(key, &entry, &res.body).await;
+        } else {
+            cache.remove(key).await;
+        }
+        Ok(res)
+    }
+
+    /// The fetch, and whether its final answer set a cookie.
     async fn run(
         &self,
         allows: &(dyn Fn(&str) -> bool + Send + Sync),
         req: FetchRequest,
         start: tokio::time::Instant,
         limit: Duration,
-    ) -> Result<FetchResponse, NetError> {
+    ) -> Result<(FetchResponse, bool), NetError> {
         let method = req.method.to_ascii_uppercase();
         if reqwest::Method::from_bytes(method.as_bytes()).is_err()
             || method == "CONNECT"
@@ -519,12 +595,19 @@ impl Net {
                 .map(|(_, v)| v.clone());
             let redirect = matches!(res.status, 301 | 302 | 303 | 307 | 308);
             let (true, Some(location)) = (redirect, location) else {
-                return Ok(FetchResponse {
-                    url: url.to_string(),
-                    status: res.status,
-                    headers: response_headers(&res.headers),
-                    body: res.body,
-                });
+                let set_cookie = res
+                    .headers
+                    .iter()
+                    .any(|(k, _)| k.eq_ignore_ascii_case("set-cookie"));
+                return Ok((
+                    FetchResponse {
+                        url: url.to_string(),
+                        status: res.status,
+                        headers: response_headers(&res.headers),
+                        body: res.body,
+                    },
+                    set_cookie,
+                ));
             };
             redirects += 1;
             if redirects > MAX_REDIRECTS {
@@ -757,6 +840,7 @@ mod tests {
     #[tokio::test]
     async fn the_daemon_names_itself_unless_the_page_does() {
         assert!(USER_AGENT.starts_with("Clax/"));
+        assert!(USER_AGENT.ends_with(" (+https://github.com/empathic/clax)"));
         let (net, script) = setup(vec![answer(200, &[], ""), answer(200, &[], "")]);
         net.fetch(&allows, get("https://api.example.com/"))
             .await
