@@ -22,18 +22,22 @@
 //! A module of clax-server's `integration` test binary; it changes no
 //! process-wide state, and uses no shared test module.
 //!
-//! Until plan Task 25 compares it on every run, each task checks the golden
-//! by hand with `the_golden_differs_only_as_section_19_lists` (ignored; run
-//! it with `--ignored --exact
-//! golden_single_owner::the_golden_differs_only_as_section_19_lists` and an
-//! absolute `CLAX_TEST_BIN`). It collects the outputs now and compares them
-//! with the committed golden ([`compare_with_section_19`]): §19 item 6's
-//! additive keys are left out on both sides, and every other difference
-//! must be item 7's ` (not connected)` mark inserted after a name. The marks
-//! are counted per name and compared with [`EXPECTED_MARKS`], so a mark on
-//! an author the fixture does not hold unattributed or as a LAN viewer
-//! fails; a mark on a comment the owner's public ID wrote fails whatever the
-//! counts.
+//! `the_golden_differs_only_as_section_19_lists` runs on every test run. It
+//! collects the outputs now and compares them with the committed golden
+//! ([`compare_with_section_19`]): a key of §19 item 6 that the golden lacks
+//! must hold its single-owner value ([`solo_value`]), and every other
+//! difference must be item 7's ` (not connected)` mark inserted after a
+//! name. The marks are counted per name and compared with
+//! [`EXPECTED_MARKS`], so a mark on an author the fixture does not hold
+//! unattributed or as a LAN viewer fails; a mark on a comment the owner's
+//! public ID wrote fails whatever the counts. Item 1's derived names show
+//! only in item 6's `name` keys here, since the fixture's live agent was
+//! registered before names existed; items 2 to 5, 8 and 9 change nothing
+//! the collection takes and are tested on their own.
+//!
+//! The golden is regenerated (`write_golden`) only on a rebased base, at
+//! the collector's own commit, before any later change: never to make this
+//! comparison pass.
 
 use clax_core::Tier;
 use clax_core::model::Session;
@@ -884,8 +888,35 @@ async fn golden_now() -> Value {
     Value::Object(out)
 }
 
-/// §19 item 6's additive keys, left out of both sides of a comparison.
+/// §19 item 6's additive keys: where the golden lacks one, its value now
+/// must be the single-owner value [`solo_value`] accepts.
 pub const ADDITIVE_KEYS: [&str; 6] = ["owner", "taken_by", "name", "person", "withheld", "rights"];
+
+/// Whether `v`, the value of item 6's key `key` that the golden lacks, is
+/// what a single-owner install shows (spec §19 item 6): `withheld` absent or
+/// null; `name` null or a name; `person` null or the owner (`owner: true`,
+/// the owner's public ID); a thread's `owner` or `taken_by` null or one of
+/// the owner's agents (`person` null); `rights` the owner's, `clax:full`.
+pub fn solo_value(key: &str, v: &Value, owner: &str) -> bool {
+    let owners_agent = |a: &Value| {
+        a.is_null()
+            || (a["person"].is_null()
+                && a["handle"].as_str().is_some_and(|h| h.starts_with("a_"))
+                && a.get("person_name").is_none_or(Value::is_string)
+                && (a["name"].is_null() || a["name"].is_string()))
+    };
+    match key {
+        "withheld" => v.is_null(),
+        "name" => v.is_null() || v.as_str().is_some_and(|n| !n.is_empty()),
+        "person" => {
+            v.is_null()
+                || (v["owner"] == json!(true) && v["public_id"].as_str() == Some(owner))
+        }
+        "owner" | "taken_by" => owners_agent(v),
+        "rights" => *v == clax_core::rights::Rights::full().to_json(),
+        _ => false,
+    }
+}
 
 /// §19 item 7's mark.
 const NOT_CONNECTED: &str = " (not connected)";
@@ -907,25 +938,26 @@ pub struct Section19 {
     pub other: Vec<String>,
 }
 
-/// Compares `now` with the `committed` golden as §19 allows: item 6's keys
-/// left out on both sides, item 7's marks counted per name (the word before
-/// each), and anything else listed in [`Section19::other`]. A mark inside
-/// an object whose `author_public_id` is `owner` is listed in
-/// [`Section19::on_owner`].
+/// Compares `now` with the `committed` golden as §19 allows: an item 6 key
+/// only `now` has must hold its single-owner value ([`solo_value`]), item
+/// 7's marks are counted per name (the word before each), and anything else
+/// is listed in [`Section19::other`]. A mark inside an object whose
+/// `author_public_id` is `owner` is listed in [`Section19::on_owner`].
 pub fn compare_with_section_19(committed: &Value, now: &Value, owner: &str) -> Section19 {
     fn walk(a: &Value, b: &Value, path: &str, owned: bool, owner: &str, out: &mut Section19) {
         match (a, b) {
             (Value::Object(x), Value::Object(y)) => {
                 let owned =
                     owned || y.get("author_public_id").and_then(Value::as_str) == Some(owner);
-                let keys: std::collections::BTreeSet<&String> = x
-                    .keys()
-                    .chain(y.keys())
-                    .filter(|k| !ADDITIVE_KEYS.contains(&k.as_str()))
-                    .collect();
+                let keys: std::collections::BTreeSet<&String> = x.keys().chain(y.keys()).collect();
                 for k in keys {
                     match (x.get(k), y.get(k)) {
                         (Some(p), Some(q)) => walk(p, q, &format!("{path}/{k}"), owned, owner, out),
+                        (None, Some(q)) if ADDITIVE_KEYS.contains(&k.as_str()) => {
+                            if !solo_value(k, q, owner) {
+                                out.other.push(format!("{path}/{k}: not a single owner's: {q}"));
+                            }
+                        }
                         _ => out.other.push(format!("{path}/{k}: on one side only")),
                     }
                 }
@@ -972,7 +1004,9 @@ fn the_section_19_comparison_counts_marks_per_name_and_flags_the_owners() {
     let mut now = committed.clone();
     now["comments"][0]["author_name"] = json!("Alex (not connected)");
     now["comments"][1]["author_name"] = json!("Mia (not connected)");
-    now["comments"][1]["owner"] = json!({"name": "claude"});
+    now["comments"][1]["owner"] = json!({"handle": "a_1", "live": true, "name": null, "person": null, "person_name": "Alex"});
+    now["comments"][1]["withheld"] = Value::Null;
+    now["person"] = json!({"name": "Alex", "owner": true, "public_id": "u_owner"});
     now["text"] = json!("Mia (not connected): \"y\"\nsent together by Alex (not connected). Note");
     let got = compare_with_section_19(&committed, &now, "u_owner");
     assert_eq!(
@@ -986,13 +1020,28 @@ fn the_section_19_comparison_counts_marks_per_name_and_flags_the_owners() {
     let got = compare_with_section_19(&committed, &now, "u_owner");
     assert_eq!(got.on_owner, ["/comments[2]/author_name"]);
     assert_eq!(got.other.len(), 1, "{:?}", got.other);
+    // Item 6's keys with values no single owner has: another person's
+    // agent, withheld content, another person.
+    now["comments"][2]["body"] = json!("z");
+    now["comments"][1]["owner"]["person"] = json!("u_sam");
+    now["comments"][1]["withheld"] = json!({"count": 1});
+    now["person"]["public_id"] = json!("u_sam");
+    let got = compare_with_section_19(&committed, &now, "u_owner");
+    assert_eq!(
+        got.other,
+        [
+            "/comments[1]/owner: not a single owner's: {\"handle\":\"a_1\",\"live\":true,\"name\":null,\"person\":\"u_sam\",\"person_name\":\"Alex\"}",
+            "/comments[1]/withheld: not a single owner's: {\"count\":1}",
+            "/person: not a single owner's: {\"name\":\"Alex\",\"owner\":true,\"public_id\":\"u_sam\"}",
+        ]
+    );
 }
 
-/// The per-task golden check (module docs): the outputs now differ from
-/// the committed golden only as §19 lists, with exactly
-/// [`EXPECTED_MARKS`]'s marks and none on the owner's attributed comments.
+/// The golden check (module docs): the outputs now differ from the
+/// committed golden only as §19 lists, item 6's keys with their
+/// single-owner values, exactly [`EXPECTED_MARKS`]'s marks and none on the
+/// owner's attributed comments.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "collects every tier: run by hand as each task's golden check"]
 async fn the_golden_differs_only_as_section_19_lists() {
     let committed: Value =
         serde_json::from_str(&std::fs::read_to_string(fixtures_dir().join(GOLDEN)).unwrap())
