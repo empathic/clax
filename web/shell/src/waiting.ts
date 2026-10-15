@@ -37,10 +37,12 @@ export function waitingLabel(s: FeedbackState | null, now: Date): string | null 
     case "sent":
       return `sent, waiting for the agent · ${elapsed(s.since, now)} · waiting on ${WAITING_ON[s.tier ?? "piggyback"]}`;
     // Whose approval, only for the people concerned (spec 2026-10-08 §10, §18).
+    // A hold for lost access shows beside a wait or a decline, to the
+    // owner and the agent's person only (spec 2026-10-08 §7.5, §10).
     case "withheld":
-      return s.mine ? "waiting for your approval" : s.approver ? `waiting for ${s.approver}'s approval` : "waiting for approval";
+      return `waiting for ${s.mine ? "your " : s.approver ? `${s.approver}'s ` : ""}approval${s.no_access ? " · the agent no longer has access" : ""}`;
     case "declined":
-      return s.mine ? "you declined" : `declined by ${s.approver ?? "its person"}`;
+      return `${s.mine ? "you declined" : `declined by ${s.approver ?? "its person"}`}${s.no_access ? " · the agent no longer has access" : ""}`;
     // Only to the owner and the agent's person (spec 2026-10-08 §7.5, §10).
     case "no_access":
       return "held: the agent no longer has access";

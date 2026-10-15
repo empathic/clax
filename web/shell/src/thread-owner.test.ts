@@ -129,6 +129,12 @@ describe("a thread's owner and delivery state", () => {
     expect(waitingLabel({ ...withheld, approver: undefined }, new Date())).toBe("waiting for approval");
   });
 
+  it("reads a hold for lost access beside a wait or a decline, to those who may know of it", () => {
+    expect(waitingLabel({ ...withheld, no_access: true }, new Date())).toBe("waiting for Sam's approval · the agent no longer has access");
+    expect(waitingLabel({ ...withheld, mine: true, no_access: true }, new Date())).toBe("waiting for your approval · the agent no longer has access");
+    expect(waitingLabel({ ...withheld, state: "declined", no_access: true }, new Date())).toBe("declined by Sam · the agent no longer has access");
+  });
+
   it("reads a thread held for lost access as held, naming no approval", () => {
     expect(waitingLabel({ ...withheld, state: "no_access", approver: undefined }, new Date())).toBe("held: the agent no longer has access");
   });

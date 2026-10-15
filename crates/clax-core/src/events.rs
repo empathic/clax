@@ -438,6 +438,7 @@ mod tests {
             exhausted: false,
             approver: None,
             mine: false,
+            no_access: false,
         };
         for ev in [
             Event::Thread {

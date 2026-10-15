@@ -182,6 +182,7 @@ async fn one_stream_carries_each_subscribed_topic_as_small_deltas() {
                 exhausted: false,
                 approver: None,
                 mine: false,
+                no_access: false,
             }),
         )],
     });

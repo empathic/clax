@@ -1592,6 +1592,16 @@ again.
     nothing were held, where a row a take held and told its session of
     reads as seen by the agent: "sent" until the agent takes, then "seen
     by the agent".
+  - *Held for lost access* (§7.5): a row a take held because its session
+    may no longer read the artifact. Only the owner and the person whose
+    agent it is read it: alone, "held: the agent no longer has access";
+    beside a Withheld or Declined reading, that reading followed by "·
+    the agent no longer has access" ("waiting for Sam's approval · the
+    agent no longer has access"). Everyone else reads the row as if
+    access were never lost: Withheld or Declined as above, else plain
+    "sent", never "seen by the agent" or "delivered" (owner ruling
+    2026-10-15: an author's reading never changes because of the
+    approver's rights).
 - **Who reads which** (owner decisions, 2026-10-14: "Only \"sent\"", "Own
   threads only", "Only the held content's author"). A reader reads the
   rows the table gives it, and nothing of the others; a reader with no
@@ -2639,3 +2649,8 @@ task, with recommendations; the owner took every recommendation
   with no row tells `state: null` only to those who read a row of it
   before the resolve (the owner, and each person who read one), not to
   every connected person.
+- **Amendment** (2026-10-15, Task 24 review): §10 adds the reading of a
+  row held for lost access (§7.5): read by the owner and the agent's
+  person alone, and beside a Withheld or Declined reading; every other
+  reader reads such a row as if access were never lost (owner ruling:
+  an author's reading never changes because of the approver's rights).
