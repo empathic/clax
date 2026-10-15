@@ -919,6 +919,31 @@ async fn remote_cli_commands_work_as_listed() {
     assert!(!m.home().join("daemon.json").exists());
 }
 
+/// Spec §11, M20: a connected person renames their agents in their
+/// browser; the CLI prints the People link there and changes nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_agents_rename_prints_the_people_link() {
+    let w = World::two_people().await;
+    let m = sams_machine(&w);
+    let sams = w.ts.store.get_session(&w.sam_session).unwrap().unwrap();
+    let name = sams.name.clone().unwrap();
+    for args in [
+        vec!["agents", "rename", &name, "sams-task"],
+        vec!["agents", "narrow", &name],
+        vec!["approvals", "revoke", "a_1"],
+    ] {
+        let out = m.run(&args).await;
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", text(&out));
+        assert!(
+            text(&out).contains(&format!("{}/people", loopback(&w.ts))),
+            "{args:?}: {}",
+            text(&out)
+        );
+    }
+    let now = w.ts.store.get_session(&w.sam_session).unwrap().unwrap();
+    assert_eq!(now.name, Some(name));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn remote_comment_reply_without_a_session_is_no_session() {
     let w = World::two_people().await;

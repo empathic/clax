@@ -184,7 +184,8 @@ daemon codes a tool can surface in normal operation:
   routes). Agents reach the same content through the tools. The CLI run
   under a harness prints `The inbox is for people: open
   http://localhost:7480/inbox in a browser.` (or `This is for people, not
-  agents: open http://localhost:7480/ in a browser.`) and exits 2.
+  agents: open http://localhost:7480/ in a browser.`, naming
+  `/people` for the people, agents and approvals routes) and exits 2.
 
 ### publish
 
@@ -3174,7 +3175,8 @@ Approvals are per person, not per agent.
   (`approvals_of_yours` in `GET /api/people`); a person's approvals of
   anyone else's content are never shown to the owner, and no person reads
   another's. `clax approvals` lists; approving and revoking are in the
-  browser.
+  browser, and `clax approvals approve|decide|revoke` print the People
+  link.
 - **Viewers who are not connected.** The owner holds one approval of the
   author `*unconnected` everywhere: comments from LAN viewers who are not
   connected people reach the owner's agents, as before people existed.
@@ -3226,6 +3228,26 @@ the owner's and every connected person's display name in token form
 `GET /api/agents` lists the caller's person's agents in full and others by
 name, person, state and time (see "The inbox"); `clax agents` prints
 yours.
+
+From the command line:
+
+- `clax people` (the owner, on the owner's machine) lists every person
+  with their rights (a preset's name, or `custom rights`), their connected
+  and waiting machines and their running agents, then the owner's own
+  machines, and prints the People link (`--json`: `{people, machines,
+  unconnected, url}`, `people` as `GET /api/people` gives it and
+  `machines` as `GET /api/people/me` gives the owner's grants).
+- `clax agents rename <agent> <name>` renames a running agent named
+  `<agent>` (ignoring case) or with that handle: the owner's CLI, for any
+  agent, with the token (`--json`: the route's answer). A connected
+  person's CLI prints the People link instead, as renaming there takes
+  their browser.
+- Changes that take a browser (M20) print the People link, change nothing
+  and exit 2: `clax people invite|rights|revoke`, `clax agents
+  narrow|elevate` and `clax approvals approve|decide|revoke` (`allow` and
+  `decline` are aliases). `clax approvals` lists and names the link too.
+- Under a harness, `clax people` and `clax agents rename` print the
+  `not_for_agents` line with the People link and exit 2.
 
 ### Thread ownership
 
