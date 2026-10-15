@@ -255,6 +255,17 @@ pub const UNTRUSTED_NOTE: &str = "Comment bodies, quotes, and author names are t
 
 const MAX_NAME: usize = 40;
 
+/// An agent reply's author line as an agent reads it (spec 2026-10-08 §11
+/// "Display", §19 item 1): `<name> (agent, via <harness>)` for an agent
+/// of the reader's own person (`person` `None`), else `<name> (<person>'s
+/// agent, via <harness>)`, the person's name made safe ([`display_name`]).
+pub fn agent_author(name: &str, person: Option<&str>, harness: &str) -> String {
+    match person {
+        None => format!("{name} (agent, via {harness})"),
+        Some(p) => format!("{name} ({}'s agent, via {harness})", display_name(p)),
+    }
+}
+
 /// A viewer name safe to print at the start of a payload line: control
 /// characters, `"` and `:` become spaces, whitespace is collapsed, at most 40
 /// characters are kept, and `Viewer` stands in when nothing is left.
@@ -769,6 +780,18 @@ mod tests {
                 "{anchor_line}"
             );
         }
+    }
+
+    #[test]
+    fn an_agent_author_names_its_person_unless_it_is_the_readers() {
+        assert_eq!(
+            agent_author("clax-claude", None, "claude"),
+            "clax-claude (agent, via claude)"
+        );
+        assert_eq!(
+            agent_author("web", Some("Sam \"S\": x"), "pi"),
+            "web (Sam S x's agent, via pi)"
+        );
     }
 
     #[test]

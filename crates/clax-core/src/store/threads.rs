@@ -557,6 +557,7 @@ fn row_to_comment(r: &Row<'_>) -> rusqlite::Result<Comment> {
         created_at: r.get("created_at")?,
         page_authors: json_list(r.get("page_authors")?),
         agent_person: r.get("agent_person")?,
+        agent_name: r.get("agent_name")?,
     })
 }
 
@@ -587,7 +588,7 @@ pub(crate) fn add_page_authors(
 const COMMENT_SELECT: &str = "SELECT c.id, c.thread_id, c.author_kind, c.author_name, c.author_public_id, s.harness AS via_harness, c.via_page, c.body, c.created_at,
         CASE WHEN c.via_page THEN (SELECT json_group_array(pa.author) FROM page_authors pa
                                    WHERE pa.kind = 'comment' AND pa.id = c.id) END AS page_authors,
-        s.person AS agent_person
+        s.person AS agent_person, s.name AS agent_name
      FROM comments c LEFT JOIN sessions s ON s.id = c.via_session_id";
 
 fn load_comments(c: &Connection, thread_id: &str) -> Result<Vec<Comment>> {
@@ -603,7 +604,7 @@ fn load_comments(c: &Connection, thread_id: &str) -> Result<Vec<Comment>> {
 pub(crate) const COMMENTS_OF_MANY: &str = "SELECT c.id, c.thread_id, c.author_kind, c.author_name, c.author_public_id, s.harness AS via_harness, c.via_page, c.body, c.created_at,
         CASE WHEN c.via_page THEN (SELECT json_group_array(pa.author) FROM page_authors pa
                                    WHERE pa.kind = 'comment' AND pa.id = c.id) END AS page_authors,
-        s.person AS agent_person
+        s.person AS agent_person, s.name AS agent_name
      FROM json_each(?1) j CROSS JOIN comments c ON c.thread_id = j.value
      LEFT JOIN sessions s ON s.id = c.via_session_id
      ORDER BY c.thread_id, c.created_at, c.id";
@@ -918,6 +919,7 @@ impl Store {
                 created_at: now.clone(),
                 page_authors,
                 agent_person: None,
+                agent_name: None,
             };
             self.record_audit(tx, ctx, comment_record(id.as_str(), &first))?;
             for rec in after {
@@ -1112,6 +1114,7 @@ impl Store {
             created_at: self.now(),
             page_authors: Vec::new(),
             agent_person: None,
+            agent_name: None,
         };
         self.with_tx(|tx| {
             let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
@@ -1125,17 +1128,18 @@ impl Store {
                 comment.page_authors = super::artifacts::page_authors_in(tx, &t.artifact_id)?;
                 add_page_authors(tx, "comment", &comment.id, &comment.page_authors)?;
             }
-            (comment.via_harness, comment.agent_person) = match &c.via_session_id {
-                Some(sid) => tx
-                    .query_row(
-                        "SELECT harness, person FROM sessions WHERE id = ?1",
-                        params![sid],
-                        |r| Ok((r.get(0)?, r.get(1)?)),
-                    )
-                    .optional()?
-                    .map_or((None, None), |(h, p)| (Some(h), p)),
-                None => (None, None),
-            };
+            (comment.via_harness, comment.agent_person, comment.agent_name) =
+                match &c.via_session_id {
+                    Some(sid) => tx
+                        .query_row(
+                            "SELECT harness, person, name FROM sessions WHERE id = ?1",
+                            params![sid],
+                            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                        )
+                        .optional()?
+                        .map_or((None, None, None), |(h, p, n)| (Some(h), p, n)),
+                    None => (None, None, None),
+                };
             if comment.author_kind == AUTHOR_AGENT {
                 super::inbox::note_reply(
                     tx,

@@ -965,7 +965,7 @@ pub async fn comment(
             let t = thread_of(st, &id, &tid)?;
             publish_thread(&ctx, st, &t)?;
             let view = vis.filter_thread(st, &t, ctx.codex_push(), with_path)?;
-            let mut out = json!({"comment": vis.filter_comment(&aid, &c), "thread": view});
+            let mut out = json!({"comment": vis.filter_comment(st, &aid, &c)?, "thread": view});
             if addressed {
                 out["addressed"] = json!("pending");
             }

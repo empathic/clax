@@ -2470,7 +2470,7 @@ impl ClaxTools {
     }
 
     #[tool(
-        description = "Reply to a comment thread as the agent; the person sees it under its harness's name, such as `claude`. Only threads the person sent to the agent accept agent replies: on other threads the result has `replied: false` and `guidance`, and nothing is written. On a live page, pass `addressed: true` once the page shows your fix.",
+        description = "Reply to a comment thread as the agent; the person's page shows it under your harness's name, such as `claude`, and agents read its author as your name, your person and your harness, such as `clax-claude (agent, via claude)`. Only threads the person sent to the agent accept agent replies: on other threads the result has `replied: false` and `guidance`, and nothing is written. On a live page, pass `addressed: true` once the page shows your fix.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

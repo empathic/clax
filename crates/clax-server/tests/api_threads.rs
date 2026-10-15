@@ -246,7 +246,7 @@ async fn agent_replies_need_the_token_and_a_sent_thread() {
     assert_eq!(res.status(), 201);
     let v: Value = res.json().await.unwrap();
     assert_eq!(v["comment"]["author_kind"], "agent");
-    assert_eq!(v["comment"]["author_name"], "claude");
+    assert_eq!(v["comment"]["author_name"], "claude (agent, via claude)");
     assert_eq!(v["comment"]["via_harness"], "claude");
     assert_eq!(
         v["thread"]["feedback_state"]["state"], "acknowledged",
