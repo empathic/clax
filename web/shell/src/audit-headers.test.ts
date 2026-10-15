@@ -25,6 +25,8 @@ const PAGE_WRITERS = ["caps/artifact.ts", "caps/assets.ts", "caps/db.ts", "caps/
 /** Capability handlers that send a write method and why they need no marker. */
 const NOT_PAGE_CONTENT: Record<string, string> = {
   "caps/sample.ts": "a model request: it writes no content of the page's into the store",
+  "caps/cross-read.ts": "the owner's read grant, saved after the owner allows it in the shell's prompt: no content of the page's",
+  "caps/net.ts": "the owner's network grant, saved after the owner allows it, and a fetch the daemon makes for the page: no content of the page's into the store",
 };
 
 describe("x-clax request headers", () => {
