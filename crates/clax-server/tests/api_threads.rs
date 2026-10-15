@@ -2182,3 +2182,75 @@ async fn a_polls_delivery_state_reaches_the_owner_after_its_answer() {
         "{v}"
     );
 }
+
+/// Two publishes of one thread's delivery state race: the first reads
+/// (`sent`) and stops before sending; meanwhile a take delivers the row
+/// and a second publish starts. The second waits for the first to send,
+/// so the reader hears `sent` and then the newer state, never the older
+/// one last.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn racing_publishes_of_a_threads_state_send_in_read_order() {
+    use clax_core::events::Event;
+    use clax_core::feedback::{Tier, Touched};
+    use std::sync::{Arc, Mutex, mpsc};
+    let ts = TestServer::spawn().await;
+    let (sid, aid) = setup(&ts).await;
+    let t = ts.thread(&aid, 1, "two columns").await;
+    let tid = t["id"].as_str().unwrap().to_string();
+    ts.send_thread(&aid, &tid).await;
+    let mut rx = ts.events.subscribe();
+    let touched = Touched {
+        threads: [(aid.clone(), tid.clone())].into(),
+        ..Touched::default()
+    };
+    // The first publish stops after its read until `go`.
+    let (read_tx, read_rx) = mpsc::channel::<()>();
+    let (go_tx, go_rx) = mpsc::channel::<()>();
+    let gate = Arc::new(Mutex::new(Some((read_tx, go_rx))));
+    let mut first = ts.feedback.clone();
+    first.between = Some(Arc::new(move || {
+        if let Some((read, go)) = gate.lock().unwrap().take() {
+            read.send(()).unwrap();
+            go.recv().unwrap();
+        }
+    }));
+    let (st, t1) = (ts.store.clone(), touched.clone());
+    let a = std::thread::spawn(move || clax_server::feedback::publish_states(&first, &st, &t1));
+    read_rx.recv().unwrap();
+    // Between its read and its send the first holds the order: a second
+    // publish cannot read yet.
+    assert!(ts.feedback.states.try_lock().is_err());
+    let vis = clax_core::visibility::Visibility::for_session(&ts.store, &sid).unwrap();
+    let q = clax_core::store::feedback::TakeFeedback {
+        session_id: sid.clone(),
+        tier: Tier::Piggyback,
+        artifact_id: None,
+        include_resends: false,
+    };
+    let taken = ts
+        .store
+        .take_feedback(&clax_core::audit::AuditCtx::DAEMON, &q, "http://h", &vis)
+        .unwrap();
+    assert_eq!(taken.items.len(), 1);
+    let (second, st) = (ts.feedback.clone(), ts.store.clone());
+    let b =
+        std::thread::spawn(move || clax_server::feedback::publish_states(&second, &st, &touched));
+    go_tx.send(()).unwrap();
+    a.join().unwrap();
+    b.join().unwrap();
+    let mut heard = Vec::new();
+    while heard.len() < 2 {
+        let e = rx.recv().await.unwrap();
+        if let Event::FeedbackState {
+            thread_id, views, ..
+        } = e.event
+            && thread_id == tid
+        {
+            let owner = views.iter().find(|(k, _)| k.is_empty()).unwrap();
+            heard.push(owner.1.as_ref().map(|s| s.state));
+        }
+    }
+    let sent = Some(clax_core::feedback::FeedbackPhase::Sent);
+    assert_eq!(heard[0], sent, "{heard:?}");
+    assert_ne!(heard[1], sent, "the newer state is heard last: {heard:?}");
+}
