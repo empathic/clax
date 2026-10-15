@@ -193,6 +193,73 @@ for (const engine of [chromium, webkit]) {
   }
 }
 
+// A document the page makes from bytes of its own (a frame at a blob: or a
+// data: URL of text/html, or a blob: script) keeps the page's policy, in
+// both engines and frame modes: what its script fetches or loads from
+// another host never arrives there, nor does a fetch the page makes through
+// the blob frame's window. Each frame posts what its own attempts came to.
+const FRAMED = (away: string, tag: string) => `<!doctype html><script>
+const post = (k, v) => parent.postMessage({ framed: "${tag}", k, v }, "*");
+post("ran", true);
+fetch("${away}/${tag}-fetch").then(() => post("fetch", "reached"), () => post("fetch", "refused"));
+const i = new Image(); i.onload = () => post("img", "loaded"); i.onerror = () => post("img", "refused"); i.src = "${away}/${tag}-img.svg";
+</` + `script>`;
+
+for (const engine of [chromium, webkit]) {
+  for (const mode of ["subdomain", "sandbox"] as const) {
+    test(`${engine.name()} ${mode}: blob: and data: frames of text/html, and a blob: script, reach no other host`, async () => {
+      test.skip(!existsSync(engine.executablePath()), `${engine.name()} is not installed`);
+      const away = await elsewhere();
+      const browser: Browser = await engine.launch();
+      try {
+        const { artifact } = await api(d.base, d.token, "/api/artifacts", {
+          method: "POST",
+          body: JSON.stringify({ title: `Framed ${engine.name()} ${mode}`, files: { "index.html": { content: "<!doctype html><title>Framed</title><p>framed</p>", encoding: "utf8" } } }),
+        }) as { artifact: { id: string } };
+        const p = await browser.newPage();
+        const f = await openArtifact(p, d.base, artifact.id, 1, mode);
+        const out = await f.evaluate(async ({ blobDoc, dataDoc, away }) => {
+          const got: Record<string, unknown> = {};
+          (window as unknown as { framedGot: unknown }).framedGot = got;
+          addEventListener("message", e => { const m = e.data as { framed?: string; k: string; v: unknown }; if (m?.framed) got[`${m.framed}.${m.k}`] = m.v; });
+          const frame = (src: string) => new Promise<HTMLIFrameElement>(r => { const fr = document.createElement("iframe"); fr.onload = () => r(fr); fr.src = src; document.body.append(fr); });
+          const blobFrame = await frame(URL.createObjectURL(new Blob([blobDoc], { type: "text/html" })));
+          await frame(`data:text/html,${encodeURIComponent(dataDoc)}`);
+          let borrowed: string;
+          try {
+            borrowed = await (blobFrame.contentWindow as Window).fetch(`${away}/borrowed`).then(() => "reached", () => "refused");
+          } catch {
+            borrowed = "unreachable";
+          }
+          const script = await new Promise<string>(r => {
+            const s = document.createElement("script");
+            s.onload = () => r("ran");
+            s.onerror = () => r("refused");
+            s.src = URL.createObjectURL(new Blob([`window.blobScript = fetch("${away}/script-fetch").then(() => "reached", () => "refused");`], { type: "text/javascript" }));
+            document.head.append(s);
+          });
+          const scriptFetch = script === "ran" ? await (window as unknown as { blobScript: Promise<string> }).blobScript : "not run";
+          return { borrowed, script, scriptFetch };
+        }, { blobDoc: FRAMED(away.url, "blob"), dataDoc: FRAMED(away.url, "data"), away: away.url });
+        expect(out.borrowed).not.toBe("reached");
+        expect(out.scriptFetch).not.toBe("reached");
+        // A frame whose script ran settles both its attempts, refused.
+        const got = () => f.evaluate(() => (window as unknown as { framedGot: Record<string, unknown> }).framedGot);
+        for (const tag of ["blob", "data"]) {
+          await expect.poll(async () => { const g = await got(); return !g[`${tag}.ran`] || (`${tag}.fetch` in g && `${tag}.img` in g); }, { message: tag }).toBe(true);
+          const g = await got();
+          expect(g[`${tag}.fetch`], tag).not.toBe("reached");
+          expect(g[`${tag}.img`], tag).not.toBe("loaded");
+        }
+        expect(away.hits()).toBe(0);
+      } finally {
+        await browser.close();
+        away.close();
+      }
+    });
+  }
+}
+
 /** Uploads an SVG asset of `fill` to artifact `id`; its URL as the daemon gives it. */
 async function uploadAsset(id: string, fill: string): Promise<{ id: string; url: string }> {
   const form = new FormData();
