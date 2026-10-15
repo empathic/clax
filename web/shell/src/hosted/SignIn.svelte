@@ -5,7 +5,10 @@
   // path: `/setup` makes the first person with the setup secret (prefilled
   // from `?secret=`, which leaves the address bar at once); `/join/<code>`
   // shows the name an invite gives and joins under it; `/signin/<code>`
-  // signs this browser in with a one-use link; `/signin` says who the
+  // names whose account a one-use link signs into and signs this browser
+  // in with it. Both say who the browser is signed in as now, and that the
+  // button signs them out of it: the click is the confirmation the server
+  // asks before it replaces a session (`replace`). `/signin` says who the
   // browser is signed in as, or how to get in. A code is redeemed only by
   // the button, never by loading the page, so a link preview spends
   // nothing. Signed in, the browser goes to the gallery. The gallery's entry
@@ -28,6 +31,7 @@
 
   let me = $state<api.HostedMe | null>(null);
   let invite = $state<{ name: string | null } | null | false>(null);
+  let link = $state<{ public_id: string; name: string | null; owner: boolean } | null | false>(null);
   let name = $state("");
   let secret = $state("");
   let busy = $state(false);
@@ -42,8 +46,11 @@
     try { await fn(); location.assign("/"); } catch (x) { err = msg(x); busy = false; }
   }
   const submitSetup = (e: Event) => { e.preventDefault(); void run(() => api.setup(secret, name.trim())); };
-  const join = () => run(() => page.kind === "join" ? api.acceptInvite(page.code) : Promise.resolve());
-  const signin = () => run(() => page.kind === "signin" ? api.acceptSignin(page.code) : Promise.resolve());
+  const current = $derived(me?.person ?? null);
+  const join = () => run(() => page.kind === "join" ? api.acceptInvite(page.code, current !== null) : Promise.resolve());
+  const signin = () => run(() => page.kind === "signin" ? api.acceptSignin(page.code, current !== null) : Promise.resolve());
+  const linkName = $derived(link ? (link.name ?? "an unnamed person") : "");
+  const currentName = $derived(current?.display_name ?? "an unnamed person");
   async function signOut() {
     busy = true;
     try { await api.signOut(); me = await api.me(); } catch (x) { err = msg(x); } finally { busy = false; }
@@ -59,6 +66,9 @@
     try { me = await api.me(); } catch (x) { err = msg(x); }
     if (page.kind === "join") {
       try { invite = await api.peekInvite(page.code); } catch { invite = false; }
+    }
+    if (page.kind === "signin") {
+      try { link = await api.peekSignin(page.code); } catch { link = false; }
     }
     await tick();
     document.querySelector<HTMLElement>(".signin input, .signin button.primary")?.focus();
@@ -86,11 +96,27 @@
         <p>This invite is not valid. It may have been used, or its day passed: ask for a new one.</p>
       {:else}
         <p>You have been invited as <strong>{invite.name ?? "a new person"}</strong>. Joining signs this browser in; you can sign in other devices from People.</p>
-        <button class="primary" type="button" onclick={join}>Join as {invite.name ?? "a new person"}</button>
+        {#if current}
+          <p class="now" data-testid="signed-in-now">You are signed in here as <strong>{currentName}</strong>{current.guest ? " (a guest)" : current.owner ? ", the owner" : ""}. Joining signs you out of {currentName}.</p>
+        {/if}
+        <button class="primary" type="button" onclick={join} disabled={busy}>Join as {invite.name ?? "a new person"}</button>
       {/if}
     {:else if page.kind === "signin"}
-      <p>This link signs this browser in, once. It works for ten minutes after it was made.</p>
-      <button class="primary" type="button" onclick={signin}>Sign in on this device</button>
+      {#if link === null}
+        <p class="muted">Reading the link…</p>
+      {:else if link === false}
+        <p>This sign-in link is not valid. It may have been used, or its ten minutes passed: make a new one on People, on a device that is signed in.</p>
+        {#if current}<p class="hint">You are signed in here as <strong>{currentName}</strong>.</p>{/if}
+      {:else if current && current.public_id === link.public_id}
+        <p>This browser is already signed in as <strong>{linkName}</strong>. The link is not needed here.</p>
+        <div class="acts"><a class="go" href="/">Open the gallery</a></div>
+      {:else}
+        <p>This link signs this browser in as <strong>{linkName}</strong>{link.owner ? ", the owner" : ""}, once. Everything you do here afterwards is done as {linkName}. Use it only if you made it yourself.</p>
+        {#if current}
+          <p class="now" data-testid="signed-in-now">You are signed in here as <strong>{currentName}</strong>{current.guest ? " (a guest)" : current.owner ? ", the owner" : ""}. Signing in as {linkName} signs you out of {currentName}.</p>
+        {/if}
+        <button class="primary" type="button" onclick={signin} disabled={busy}>Sign in as {linkName}</button>
+      {/if}
     {:else if me?.person && !me.person.guest}
       <p>You are signed in as <strong>{me.person.display_name ?? "an unnamed person"}</strong>{me.person.owner ? ", the owner" : ""}.</p>
       <div class="acts"><a class="go" href="/">Open the gallery</a><button type="button" onclick={signOut} disabled={busy}>Sign out</button></div>
@@ -121,6 +147,7 @@
     .signin .acts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
     .signin a { color: var(--fg); }
     .signin .err { color: var(--danger); font-size: 13.5px; }
+    .signin .now { border-inline-start: 3px solid var(--accent); padding: 6px 10px; background: var(--bg); border-radius: 4px; }
     @media (max-width: 520px) {
       .signin { padding-top: 24px; }
       .signin .sicard { padding: 18px 16px 20px; }

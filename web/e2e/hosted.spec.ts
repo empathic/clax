@@ -106,16 +106,27 @@ test("setup, an invite joined in a second browser, a sign-in link for a third, a
     await sam.getByRole("button", { name: "Sign in another device" }).click();
     const link = (await sam.locator(".hosted-me code").textContent())!;
     expect(link).toMatch(new RegExp(`^${origin}/signin/cxl_`));
+    // Opened in a browser signed in as someone else, the link says whose
+    // account it is and that it would sign them out; nothing is spent
+    // without the click.
+    await owner.goto(link);
+    await expect(owner.getByText("This link signs this browser in as Sam, once.", { exact: false })).toBeVisible();
+    await expect(owner.getByTestId("signed-in-now")).toHaveText("You are signed in here as Ada, the owner. Signing in as Sam signs you out of Ada.");
+    await expect(owner.getByRole("button", { name: "Sign in as Sam" })).toBeVisible();
+    const unconfirmed = await owner.request.post(`${origin}/api/hosted/signin-links/${link.split("/").pop()}/accept`, { headers: { origin }, data: {} });
+    expect(unconfirmed.status()).toBe(409);
+    expect((await unconfirmed.json()).error.code).toBe("session_exists");
     const phone = await page(browser);
     await phone.goto(link);
-    await phone.getByRole("button", { name: "Sign in on this device" }).click();
+    await expect(phone.getByTestId("signed-in-now")).toHaveCount(0);
+    await phone.getByRole("button", { name: "Sign in as Sam" }).click();
     await phone.waitForURL(`${origin}/`);
     await phone.goto(`${origin}/people`);
     await expect(phone.locator(".hosted-me")).toContainText("Signed in as Sam");
     const spent = await page(browser);
     await spent.goto(link);
-    await spent.getByRole("button", { name: "Sign in on this device" }).click();
-    await expect(spent.getByRole("alert")).toBeVisible();
+    await expect(spent.getByText("This sign-in link is not valid.", { exact: false })).toBeVisible();
+    await expect(spent.getByRole("button", { name: "Sign in as Sam" })).toHaveCount(0);
 
     // An agent token, with the command Claude Code takes.
     await phone.getByLabel("Machine").fill("sam-laptop");
@@ -124,7 +135,7 @@ test("setup, an invite joined in a second browser, a sign-in link for a third, a
     await expect(phone.locator(".hosted-tokens .tok")).toContainText("sam-laptop");
 
     // The owner shares the page by link, for comments.
-    await owner.reload();
+    await owner.goto(`${origin}/people`);
     await owner.getByRole("combobox", { name: "Page to share" }).selectOption({ label: "Launch plan" });
     await owner.getByRole("combobox", { name: "What its link allows" }).selectOption("commenter");
     await owner.getByRole("button", { name: "Share by link" }).click();
