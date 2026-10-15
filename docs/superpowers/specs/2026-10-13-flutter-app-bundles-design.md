@@ -518,8 +518,10 @@ Refused while the agent is building or changing the app ("Wait for the
 change in progress to land"), from the make service's busy state.
 
 1. `base` = the live version. `createDraft(of: aid, title, capabilities,
-   entries)`: the update's files with a copy of the recipient's documents
-   (`docs_truncated` noted).
+   entries, inheritNet: false)`: the update's files with a copy of the
+   recipient's documents (`docs_truncated` noted). The check runs offline:
+   unlike the agent's drafts, this draft does not use the app's network
+   grants, so the unpublished code fetches nothing.
 2. **Migrate**, when `files` has `migrate.js`: the inspector loads the
    draft and runs it (§8.3) with `from` = the installed version, `to` =
    N, 30 s. An error or a timeout fails the check.
