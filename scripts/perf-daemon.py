@@ -47,7 +47,8 @@ times, alone, as Sam's agent: an artifact's threads (`vis.timed_threads`
 threads of `vis.timed_comments_per_thread` comments, by all four) and a
 feedback poll of `vis.feedback_rows` rows, half the owner's (delivered) and
 half Mia's (withheld; Mia resolves those threads after each poll, so the
-held rows do not pile up). A second agent of Sam's polls its feedback and
+held rows do not pile up); and, as the owner's own agent, a feedback poll
+of `vis.feedback_rows` of the owner's rows, people present. A second agent of Sam's polls its feedback and
 reads those threads every 50 ms, signed, from a process of its own, beside
 every load phase. Last, Mia raises Sam's agent on `vis.raised_artifacts` of
 her agent's artifacts and the owner on the timed one, and the threads are
@@ -110,7 +111,8 @@ Budgets live in scripts/perf-daemon-budget.json:
   cheap_p95_ms, at most `max_scale`: a cheap request may wait as long as
   the galleries' own requests, but not `queue_ratio` times as long;
 - `vis_baseline`, `vis_threads_margin_ms`, `vis_feedback_poll_margin_ms`:
-  the threads (raised or not) and the poll as Sam's agent, the median over
+  the threads (raised or not) and the poll as Sam's agent, and the owner's
+  agent's poll with people present (on the poll's limit), the median over
   rounds of each round's median, within the baseline plus the margin
   (spec §23: 2 ms and 1 ms), scaled as above; one over is measured once
   more at once and fails only if over again;
@@ -1183,6 +1185,13 @@ class People:
             c.session, c.secret, c.handle = v["session"]["id"], v["session_secret"], v["session"]["agent_handle"]
             return c
         self.sam_agent = agent(self.sam_m, "perf-sam-1")
+        # The owner's own agent, with the daemon token.
+        self.owner_agent = Client(d.port, d.token)
+        s, body, _, _ = self.owner_agent.req("POST", "/api/sessions", {"harness": "claude", "harness_session_id": "perf-owner", "cwd": "/tmp/perf-owner"})
+        expect(s in (200, 201), f"register the owner's agent: {s} {body[:200]!r}")
+        v = json.loads(body)["session"]
+        self.owner_sid, self.owner_handle = v["id"], v["agent_handle"]
+        self.owner_headers = {"X-Clax-Session": self.owner_sid, "X-Clax-Channel": "agent"}
         self.poller = agent(self.sam_m, "perf-sam-2")
         self.mia_agent = agent(self.mia_m, "perf-mia-1")
         s, body, _, _ = self.owner.req("GET", "/api/people")
@@ -1208,6 +1217,8 @@ class People:
         a = self.sam_agent
         s, body, _, _ = a.req("PUT", f"/api/sessions/{a.session}/watches/{self.board}")
         expect(s in (200, 201, 204), f"Sam's agent watches: {s} {body[:200]!r}")
+        s, body, _, _ = self.owner_agent.req("PUT", f"/api/sessions/{self.owner_sid}/watches/{self.board}", headers=self.owner_headers)
+        expect(s in (200, 201, 204), f"the owner's agent watches: {s} {body[:200]!r}")
         self.seed_s = time.perf_counter() - t0
         c.close()
         aids = st["aids"]
@@ -1245,10 +1256,23 @@ class People:
             expect(st == 200, f"Mia resolves: {st} {d[:200]!r}")
         return dt * 1000
 
+    def owner_poll(self, n):
+        """Sends `feedback_rows` new threads from the owner's browser to
+        the owner's own agent, then times its poll, people present."""
+        rows = self.cfg["feedback_rows"]
+        for i in range(rows):
+            send(self.owner, self.board, new_thread(self.owner, self.board, f"owner poll {n} row {i}"), self.owner_handle)
+        s, body, dt, _ = self.owner_agent.req("GET", f"/api/sessions/{self.owner_sid}/feedback?tier=wait", headers=self.owner_headers)
+        expect(s == 200, f"{VIS_POLL} as the owner's agent: {s} {body[:200]!r}")
+        got = len(json.loads(body)["feedback"])
+        expect(got == rows, f"{VIS_POLL} as the owner's agent took {got} rows, not {rows}")
+        return dt * 1000
+
     def measure(self, samples):
         self.threads()  # warm-up
         return {"threads_ms": statistics.median(self.threads() for _ in range(samples)),
-                "feedback_poll_ms": statistics.median(self.poll(n) for n in range(samples))}
+                "feedback_poll_ms": statistics.median(self.poll(n) for n in range(samples)),
+                "owner_poll_ms": statistics.median(self.owner_poll(n) for n in range(samples))}
 
     def raise_sam(self):
         """Mia's agent publishes `raised_artifacts` artifacts, and Mia raises
@@ -1270,7 +1294,7 @@ class People:
         return json.loads(body)
 
     def close(self):
-        for c in (self.sam_agent, self.poller, self.mia_agent):
+        for c in (self.sam_agent, self.poller, self.mia_agent, self.owner_agent):
             c.close()
         for b in (self.owner, self.sam, self.mia):
             b.close()
@@ -1373,7 +1397,8 @@ def vis_over(cfg, runs):
     """Whether a median over `runs` is over its unscaled limit."""
     lim_t, lim_p = vis_limits(cfg)
     return (statistics.median(r["threads_ms"] for r in runs) > lim_t
-            or statistics.median(r["feedback_poll_ms"] for r in runs) > lim_p)
+            or statistics.median(r["feedback_poll_ms"] for r in runs) > lim_p
+            or statistics.median(r.get("owner_poll_ms", 0) for r in runs) > lim_p)
 
 
 def judge_vis(cfg, scale, vis_runs, raised, verified, signed_runs, confirm):
@@ -1394,7 +1419,9 @@ def judge_vis(cfg, scale, vis_runs, raised, verified, signed_runs, confirm):
     rows = [("vis_threads_ms", VIS_THREADS, med(r["threads_ms"] for r in vis_runs), lim_t, n, confirm.get("threads_ms")),
             ("vis_feedback_poll_ms", VIS_POLL, med(r["feedback_poll_ms"] for r in vis_runs), lim_p, n, confirm.get("feedback_poll_ms")),
             ("vis_threads_ms (raised)", VIS_THREADS + " raised", med(raised), lim_t, len(raised) * cfg["vis_samples"],
-             confirm.get("raised_threads_ms"))]
+             confirm.get("raised_threads_ms")),
+            ("vis_owner_poll_ms", VIS_POLL + " owner's", med(r["owner_poll_ms"] for r in vis_runs), lim_p, n,
+             confirm.get("owner_poll_ms"))]
     for key, label, v, lim, k, again in rows:
         ok = v <= lim or (again is not None and again <= lim)
         if not ok:
@@ -1413,7 +1440,8 @@ def judge_vis(cfg, scale, vis_runs, raised, verified, signed_runs, confirm):
           + (f"; answers other than 200: {bad}" if bad else "")
           + f". Per round as Sam's agent: threads " + ", ".join(f"{r['threads_ms']:.2f}" for r in vis_runs)
           + " ms; poll " + ", ".join(f"{r['feedback_poll_ms']:.2f}" for r in vis_runs)
-          + " ms; raised threads " + ", ".join(f"{v:.2f}" for v in raised) + " ms")
+          + " ms; raised threads " + ", ".join(f"{v:.2f}" for v in raised)
+          + " ms; as the owner's agent, poll " + ", ".join(f"{r['owner_poll_ms']:.2f}" for r in vis_runs) + " ms")
     return failed
 
 
@@ -1481,7 +1509,8 @@ def main(binary, budget_path, quick):
             print(f"round {r + 1}/{rounds}: {time.perf_counter() - t0:.1f} s, calibration {calib.cal_trip:.2f} ms "
                   f"({calib.cal_inside:.2f} ms inside the daemon), gallery alone "
                   + ", ".join(f"{p} {a.ms:.1f} ms (x{a.ratio:.2f})" for p, a in gallery_each.items()) + "; inbox alone " + ", ".join(f"{p} {v:.1f} ms" for p, v in inbox_each.items())
-                  + (f"; as Sam's agent, threads {vis_runs[-1]['threads_ms']:.2f} ms, poll {vis_runs[-1]['feedback_poll_ms']:.2f} ms" if people else ""),
+                  + (f"; as Sam's agent, threads {vis_runs[-1]['threads_ms']:.2f} ms, poll {vis_runs[-1]['feedback_poll_ms']:.2f} ms"
+                     f"; as the owner's agent, poll {vis_runs[-1]['owner_poll_ms']:.2f} ms" if people else ""),
                   flush=True)
         # A ratio over its budget is measured once more, at once: a real
         # regression is over again, a burst of the machine's other work
