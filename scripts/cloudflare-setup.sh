@@ -2,16 +2,20 @@
 # Sets up and deploys hosted Clax on your Cloudflare account. Run it yourself,
 # from any directory; it is safe to run again at any time.
 #
-#   scripts/cloudflare-setup.sh --zone example.com
-#   scripts/cloudflare-setup.sh --public clax.example.com --content clax-content.example.com
-#   scripts/cloudflare-setup.sh --zone example.com --dry-run   # changes nothing on the account
-#   scripts/cloudflare-setup.sh --zone example.com --smoke     # deploy, then smoke the deployment
-#   scripts/cloudflare-setup.sh --login                        # only sign in to Cloudflare
+# Without --i-know-what-i-am-doing it is a dry run: it checks, installs and
+# builds locally and ends at `wrangler deploy --dry-run`, changing nothing on
+# the account.
+#
+#   scripts/cloudflare-setup.sh --zone example.com                    # dry run
+#   scripts/cloudflare-setup.sh --zone example.com --i-know-what-i-am-doing
+#   scripts/cloudflare-setup.sh --public clax.example.com --content clax-content.example.com --i-know-what-i-am-doing
+#   scripts/cloudflare-setup.sh --zone example.com --smoke --i-know-what-i-am-doing  # deploy, then smoke it
+#   scripts/cloudflare-setup.sh --login                               # only sign in to Cloudflare
 #
 # Every other option is passed to crates/clax-worker/deploy.mjs (see the top of
 # that file), e.g. --store memory, --account <ID>, --rotate-secrets, --yes.
 #
-# It never signs in for you. In order, it
+# You sign in yourself, in your browser. In order, it
 #
 # 1. checks the tools it needs (node 26, rustup with the wasm32 target, an
 #    LLVM whose clang targets wasm32, git) and says how to get any that is
@@ -21,12 +25,12 @@
 # 3. checks `wrangler whoami`: when you are not signed in and the script runs
 #    on a terminal, it starts `wrangler login` for you to complete in the
 #    browser (`--login` does only that); otherwise it stops and says so (a
-#    --dry-run goes on without a login);
+#    dry run goes on without a login);
 # 4. runs deploy.mjs, which creates only what is missing (the R2 bucket, the
 #    Queue, the Artifacts namespace), keeps the secrets it made before,
 #    builds, deploys and waits for /healthz;
 # 5. with --smoke, runs smoke-remote.mjs against the deployment, and then
-#    deploys again without its diagnostics routes.
+#    deploys again without its diagnostics routes (not in a dry run).
 
 set -euo pipefail
 
@@ -34,21 +38,25 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 worker="$root/crates/clax-worker"
 
 smoke=0
-dry=0
+dry=1
 login_only=0
 args=()
 for a in "$@"; do
   case "$a" in
     --smoke) smoke=1 ;;
     --login) login_only=1 ;;
-    --dry-run) dry=1; args+=("$a") ;;
-    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
+    --i-know-what-i-am-doing) dry=0 ;;
+    --dry-run) ;;
+    -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
     *) args+=("$a") ;;
   esac
 done
 
 say() { printf '\n== %s\n' "$*"; }
 fail() { printf 'cloudflare-setup: %s\n' "$*" >&2; exit 1; }
+
+[ "$dry" = 1 ] && [ "$login_only" = 0 ] && args+=("--dry-run")
+[ "$dry" = 1 ] && [ "$login_only" = 0 ] && echo "Dry run: nothing changes on the Cloudflare account. Add --i-know-what-i-am-doing to deploy."
 
 say "Checking tools"
 command -v git >/dev/null || fail "git is missing"
@@ -117,4 +125,8 @@ if [ "$smoke" = 1 ] && [ "$dry" = 0 ]; then
 fi
 
 say "Done"
-echo "Open the setup page deploy.mjs printed, or the sign-in link the smoke printed, to make your browser the owner."
+if [ "$dry" = 1 ]; then
+  echo "That was a dry run. To deploy: $0 ${*:+$* }--i-know-what-i-am-doing"
+else
+  echo "Open the setup page deploy.mjs printed, or the sign-in link the smoke printed, to make your browser the owner."
+fi
