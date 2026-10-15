@@ -260,9 +260,11 @@ the page works without them (hide or disable what needs one). Every call
 except `notify.list` and `notify.cancel` must come from the person's tap:
 a call on page load fails. The person is asked once per app; calls reject
 with a `code` of `not_granted`, `cancelled` or `unavailable` (and
-`bad_request`, `too_large`; for location also `system_denied` and
+`bad_request`, `too_large`, `dismissed` (closed without an answer: offer
+the button again); for location also `system_denied` and
 `location_off`, where Clax itself offers Open settings, so just say
-location is off): handle each with a short message, never a crash.
+location is off): handle each with a short message, never a crash. One
+tap makes one location call.
 
 ## Asking the person
 
