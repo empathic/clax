@@ -24,6 +24,7 @@ mod init;
 mod journal;
 mod mcp_preflight;
 mod native_host;
+mod people;
 mod standdown;
 mod switch;
 mod verify_harnesses;

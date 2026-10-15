@@ -918,7 +918,9 @@ impl Client {
     }
 
     /// [`Client::check`] for a request to `path`, with a `not_for_agents`
-    /// refusal as [`NotForAgents`].
+    /// refusal as [`NotForAgents`], naming the inbox for the inbox's
+    /// routes, the People page for people's and agents' (M20), else the
+    /// gallery.
     fn finish(
         &self,
         path: &str,
@@ -928,8 +930,16 @@ impl Client {
             let body: serde_json::Value = res.json().unwrap_or(serde_json::json!({}));
             if body["error"]["code"] == "not_for_agents" {
                 let inbox = path.starts_with("/api/inbox");
+                let people = ["/api/people", "/api/agents", "/api/approvals"]
+                    .iter()
+                    .any(|p| path.starts_with(p));
+                let page = match (inbox, people) {
+                    (true, _) => "/inbox",
+                    (_, true) => "/people",
+                    _ => "/",
+                };
                 return Err(NotForAgents {
-                    url: self.browser_url(if inbox { "/inbox" } else { "/" }),
+                    url: self.browser_url(page),
                     inbox,
                 }
                 .into());

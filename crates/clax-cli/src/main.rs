@@ -157,12 +157,35 @@ pub enum Cmd {
     /// (`CLAX_REMOTE=0` turns that off). Writes `remote.json` and
     /// `remote.key` (0600) in the Clax home.
     Connect(commands::connect::Args),
+    /// List the people connected to this Clax, with their machines and
+    /// running agents, your own machines, and the People link (the
+    /// owner's).
+    ///
+    /// Inviting people, setting their rights and revoking them take your
+    /// browser, on the People page: `invite`, `rights` and `revoke` print
+    /// its link and change nothing.
+    People {
+        #[command(subcommand)]
+        cmd: Option<commands::people::PeopleCmd>,
+    },
     /// List your agents that are running: the owner's here, or, connected
-    /// to another machine's Clax, this machine's.
-    Agents,
-    /// List your approvals and approval requests (approve and revoke them
-    /// in your browser, on the People page).
-    Approvals,
+    /// to another machine's Clax, this machine's; or rename one.
+    ///
+    /// Narrowing and elevating agents take your browser, on the People
+    /// page: `narrow` and `elevate` print its link and change nothing.
+    Agents {
+        #[command(subcommand)]
+        cmd: Option<commands::people::AgentsCmd>,
+    },
+    /// List your approvals and approval requests.
+    ///
+    /// Deciding requests, approving and revoking take your browser, on the
+    /// People page: `approve`, `decide` and `revoke` print its link and
+    /// change nothing.
+    Approvals {
+        #[command(subcommand)]
+        cmd: Option<commands::people::ApprovalsCmd>,
+    },
     /// The Chrome native messaging host for the Clax extension (Chrome runs it).
     #[command(hide = true)]
     NativeHost(commands::native_host::Args),
@@ -225,7 +248,8 @@ pub fn env_port(env: Option<std::ffi::OsString>) -> Option<anyhow::Result<u16>> 
 /// Whether `cmd` runs while this home is connected to another machine's
 /// Clax (spec §6.7): the commands that list, read and act through the
 /// remote daemon as the person (`list`, `read`, `open`, `versions`, `db`,
-/// `comments`, `agents`, `approvals`, `status`, `connect`), the agent
+/// `comments`, `agents`, `approvals`, `status`, `connect`; `agents` and
+/// `approvals` changes print the remote People link), the agent
 /// sides that run over it (`mcp`, `hook`, `feedback`), and this machine's
 /// own (its local daemon with `serve` and `stop`, installing, `doctor`,
 /// `bin`, `version`, `haiku`). Every other command says it is not
@@ -238,8 +262,8 @@ fn remote_ok(cmd: &Cmd) -> bool {
         | Cmd::Versions(_)
         | Cmd::Db(_)
         | Cmd::Comments(_)
-        | Cmd::Agents
-        | Cmd::Approvals
+        | Cmd::Agents { .. }
+        | Cmd::Approvals { .. }
         | Cmd::Status(_)
         | Cmd::Connect(_) => true,
         Cmd::Mcp(_) | Cmd::Hook(_) | Cmd::Feedback(_) => true,
@@ -259,6 +283,7 @@ fn remote_ok(cmd: &Cmd) -> bool {
         | Cmd::Unpin(_)
         | Cmd::Extension(_)
         | Cmd::Toolpath(_)
+        | Cmd::People { .. }
         | Cmd::NativeHost(_) => false,
     }
 }
@@ -368,8 +393,9 @@ fn main() {
         Cmd::Version(a) => commands::version::run(&cli, a),
         Cmd::NativeHost(a) => commands::native_host::run(&cli, &home, a),
         Cmd::Connect(a) => commands::connect::run(&cli, &home, a),
-        Cmd::Agents => commands::people::agents(&cli, &home),
-        Cmd::Approvals => commands::people::approvals(&cli, &home),
+        Cmd::People { cmd } => commands::people::people(&cli, &home, cmd.as_ref()),
+        Cmd::Agents { cmd } => commands::people::agents(&cli, &home, cmd.as_ref()),
+        Cmd::Approvals { cmd } => commands::people::approvals(&cli, &home, cmd.as_ref()),
     };
     if let Err(e) = result {
         if let Some(n) = e.downcast_ref::<client::NotForAgents>() {
