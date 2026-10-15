@@ -416,6 +416,10 @@ pub struct FeedbackCtx {
     pub working: Arc<clax_core::working::Working>,
     /// The runtime `codex queue` runs on; dispatch may be called from blocking threads.
     pub handle: tokio::runtime::Handle,
+    /// Held while a publish reads delivery states and sends them
+    /// ([`publish_states`]), so states go out in the order they were read
+    /// and the last one a reader hears is the newest.
+    pub states: Arc<Mutex<()>>,
 }
 
 impl FeedbackCtx {
@@ -436,6 +440,7 @@ impl AppState {
             codex: self.codex.clone(),
             working: self.working.clone(),
             handle: tokio::runtime::Handle::current(),
+            states: self.feedback_states.clone(),
         }
     }
 }
@@ -449,6 +454,29 @@ impl AppState {
 /// logged; the change itself has happened.
 pub fn publish_states(ctx: &FeedbackCtx, st: &Store, touched: &Touched) {
     publish(ctx, st, touched, None);
+}
+
+/// [`publish_states`] in a store job of its own, started now and not
+/// awaited: for a caller that answers first (a feedback poll's take), so
+/// the answer does not wait on its readers' states. The states are read
+/// when the job runs, so they are the newest then; a thread event the
+/// caller published went out before.
+pub fn publish_states_after(ctx: &FeedbackCtx, touched: Touched) {
+    if touched.threads.is_empty() {
+        return;
+    }
+    let (c, store) = (ctx.clone(), ctx.store.clone());
+    ctx.handle.spawn(async move {
+        if let Err(e) = store
+            .call(move |st| {
+                publish_states(&c, st, &touched);
+                Ok(())
+            })
+            .await
+        {
+            tracing::warn!(error = %e, "feedback states not published");
+        }
+    });
 }
 
 /// [`publish_states`] for an approval decision (made, declined, revoked)
@@ -465,6 +493,9 @@ fn publish(ctx: &FeedbackCtx, st: &Store, touched: &Touched, parties: Option<&[S
     if touched.threads.is_empty() {
         return;
     }
+    // Read and sent in one hold: a publish that read earlier never sends
+    // after one that read later.
+    let _order = ctx.states.lock().unwrap_or_else(|e| e.into_inner());
     let ids: Vec<String> = touched.threads.iter().map(|(_, t)| t.clone()).collect();
     let mut all = match st.deliveries(&ids, ctx.codex_push()) {
         Ok(all) => all,
@@ -566,6 +597,13 @@ pub fn sessions_stop(
 /// targets ([`crate::push::dispatch`]). Call after the change is committed.
 pub fn apply(ctx: &FeedbackCtx, st: &Store, touched: &Touched) {
     publish_states(ctx, st, touched);
+    wake(ctx, st, touched);
+}
+
+/// [`apply`] without the states: wakes the targets' long-polls and pushes
+/// to Codex targets. A caller publishes the states itself
+/// ([`publish_states_after`]).
+pub fn wake(ctx: &FeedbackCtx, st: &Store, touched: &Touched) {
     ctx.waiters.wake(&touched.targets);
     crate::push::dispatch(ctx, st, &touched.targets);
 }

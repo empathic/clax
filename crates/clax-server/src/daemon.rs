@@ -552,6 +552,7 @@ pub async fn serve(
         browser_base: format!("http://{}:{port}", browser_host(&info.bind)),
         feedback_waiters: Arc::new(Default::default()),
         followers: Arc::new(Default::default()),
+        feedback_states: Arc::new(Default::default()),
         codex: Arc::new(cfg.codex.clone()),
         working: Arc::new(clax_core::working::Working::new(Arc::new(
             clax_core::working::SystemClock,
