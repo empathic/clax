@@ -49,12 +49,17 @@ run.
   (a change: 10 turns, 3 renders, 2 minutes). When a message says time is
   nearly up, get the draft to a clean render and call `finish` with what
   works. If time runs out, the last clean render is published and the person
-  is told the change was too big for one go. They can then tap Keep going:
-  the next run starts from your unfinished draft, with what you narrated and
-  your `give_up` reason, so when a change cannot be made whole in time, say
-  in that reason what is done and what is left.
-- **`give_up`** only when the request cannot be done in a web page here; say
-  why in one sentence. Nothing is published.
+  is told the change was too big for one go; they can tap Keep going, and the
+  next run starts from your unfinished draft and what you narrated.
+- **`give_up`** ends a run without publishing. Two cases, and only these:
+  - **Out of room:** a change that can be made here but will not be whole
+    in the time left, with no clean render worth publishing. Call `give_up`
+    with `out_of_room` true and a `reason` saying what is done and what is
+    left; the person can tap Keep going, and the next run starts from your
+    draft with that reason.
+  - **Cannot be done:** the request cannot be done in a web page here. Call
+    `give_up` without `out_of_room`, saying why in one sentence. Nothing is
+    published and Keep going is not offered.
 
 ## The plan
 
