@@ -11,6 +11,9 @@ describe("anchorLabel", () => {
   });
   it("is what the element is, from its role, tag and name, when it quotes nothing", () => {
     expect(anchorLabel(anchor(), { tag: "button", role: null, name: "Save" })).toBe("the button “Save”");
+    expect(anchorLabel(anchor({ quote: "Mon5 km" }), { tag: "div", role: null, name: null, text: " Mon  5 km" })).toBe("“Mon 5 km”");
+    expect(anchorLabel(anchor({ quote: "Mon5 km" }), { text: "Mon 5 km" })).toBe("“Mon 5 km”");
+    expect(anchorLabel(anchor({ quote: "Mon5 km" }), { text: "\u200B" })).toBe("“Mon5 km”");
     expect(anchorLabel(anchor(), { tag: "div", role: "button", name: null })).toBe("a button");
     expect(anchorLabel(anchor(), { tag: "img", role: null, name: null })).toBe("an image");
     expect(anchorLabel(anchor(), { tag: "img", role: null, name: "A cat" })).toBe("the image “A cat”");

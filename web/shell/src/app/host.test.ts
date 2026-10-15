@@ -839,6 +839,21 @@ describe("app mode's host channel", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await waitFor(() => document.querySelector(".composer-quote")?.textContent === "the button “Delete run”", "the composer's words");
   });
 
+  it("shows a pick's spaced text in place of its run-together quote, for its draft and the threads with that quote", async () => {
+    const { ctl, frame, host } = await appView();
+    hello(frame, 1);
+    host.enterCommentMode();
+    gestureIn(frame);
+    const row = { kind: "element", selector: "body > div", quote: "Mon5 km", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
+    fromFrame(frame.contentWindow!, { type: "clax:pick-start", pickId: "m1", version: 1, anchor: row, desc: { tag: "div", role: null, name: null, text: "Mon 5 km" } });
+    await waitFor(() => ofType("state").at(-1)?.draft, "a draft");
+    expect(ofType("state").at(-1)!.draft!.label).toBe("“Mon 5 km”");
+    await waitFor(() => document.querySelector(".composer-quote")?.textContent === "“Mon 5 km”", "the composer's words");
+    ctl.changeThreads(ts => [...ts, thread("t5", "longer", { anchor: row }), thread("t6", "other", { anchor: { ...row, quote: "Tue6 km" } })] as typeof ts);
+    await waitFor(() => ofType("threads").at(-1)?.threads.length === 2, "threads");
+    expect(ofType("threads").at(-1)!.threads.map(t => t.label)).toEqual(["“Mon 5 km”", "“Tue6 km”"]);
+  });
+
   it("refuses a press attestation where the shell itself saw a trusted press moments before", async () => {
     let t = 50_000;
     vi.spyOn(performance, "now").mockImplementation(() => t);

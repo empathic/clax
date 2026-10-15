@@ -136,8 +136,10 @@ export interface TestResults { passed: number; failed: { name: string; error: st
 export type MigrationResult = { ok: true } | { ok: false; error: string };
 
 /** What a picked element is, for the app's words about it (`describe.ts`):
- * its tag, its ARIA role and its accessible name, as the page gives them. */
-export interface PickDesc { tag: string; role: string | null; name: string | null }
+ * its tag, its ARIA role and its accessible name, as the page gives them, and
+ * `text`, its text spaced where it runs from one element into another (the
+ * anchor's quote is not), for showing in place of the quote. */
+export interface PickDesc { tag: string; role: string | null; name: string | null; text?: string | null }
 
 export type BridgeToShell =
   | { type: "clax:hello"; artifact: string; version: number; file: string }

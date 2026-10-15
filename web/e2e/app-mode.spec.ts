@@ -156,6 +156,18 @@ test(`a long-press picks and Send sends to the app session${frames ? "" : ", wit
 });
 }
 
+test("a picked row of elements is labelled with a space between their texts, as its quote is not", async ({ page }) => {
+  const html = PAGE.replace('<p>Grow', '<div id="row" style="padding-left:80px"><b>Mon</b><span>5 km</span></div><p>Grow');
+  const { frame } = await openApp(page, "App spaced label", "subdomain", true, { html });
+  await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
+  await host(page, "enterCommentMode()");
+  await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
+  const cdp = await page.context().newCDPSession(page);
+  await holdOn(page, cdp, frame.locator("#row"), "#row");
+  await expect.poll(async () => (await ofType(page, "state")).at(-1)?.draft ?? null).toMatchObject({ label: "“Mon 5 km”" });
+  await expect(page.locator(".composer-quote")).toHaveText("“Mon 5 km”");
+});
+
 /** A page that keeps one note in its documents: Add writes it, and the page
  * shows it while it exists. */
 const NOTES = `<!doctype html><html><head><title>Notes</title><style>body{margin:0;font:18px/28px sans-serif}main{padding:24px}h2{margin:0 0 24px}.tall{height:3000px}</style>
