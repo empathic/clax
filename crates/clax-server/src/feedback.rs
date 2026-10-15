@@ -420,6 +420,10 @@ pub struct FeedbackCtx {
     /// ([`publish_states`]), so states go out in the order they were read
     /// and the last one a reader hears is the newest.
     pub states: Arc<Mutex<()>>,
+    /// Debug builds: called by every publish between reading the states
+    /// and sending them, for tests that race two publishes.
+    #[cfg(debug_assertions)]
+    pub between: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl FeedbackCtx {
@@ -441,6 +445,8 @@ impl AppState {
             working: self.working.clone(),
             handle: tokio::runtime::Handle::current(),
             states: self.feedback_states.clone(),
+            #[cfg(debug_assertions)]
+            between: None,
         }
     }
 }
@@ -504,6 +510,10 @@ fn publish(ctx: &FeedbackCtx, st: &Store, touched: &Touched, parties: Option<&[S
             return;
         }
     };
+    #[cfg(debug_assertions)]
+    if let Some(between) = &ctx.between {
+        between();
+    }
     for (aid, tid) in &touched.threads {
         let Some(d) = all.remove(tid) else {
             // No row left (a resolve withdrew them): those who read one,
