@@ -14,13 +14,50 @@ html.app .composer {
   position: fixed;
   inset: auto 0 0 0;
   width: auto;
-  max-height: 50dvh;
-  overflow: auto;
+  max-height: max(50dvh, min(260px, 100dvh));
   border-radius: var(--radius) var(--radius) 0 0;
   border-left: 0;
   border-right: 0;
   border-bottom: 0;
   padding-bottom: calc(12px + env(safe-area-inset-bottom));
+  /* A column whose Cancel and Send always show: on a short view (the
+     keyboard up) the screenshot gives up its room first, then the textarea
+     down to two lines; the quote is at most three. Nothing scrolls the
+     buttons away. */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+html.app .composer > * { flex: none; }
+html.app .composer .composer-quote {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+html.app .composer .clip { flex: 0 1000 auto; min-height: 0; max-height: 120px; }
+html.app .composer textarea { flex: 0 1 auto; min-height: calc(2lh + 12px); resize: none; }
+@media (max-height: 420px) {
+  html.app .composer .clip { display: none; }
+  html.app .composer .composer-quote { -webkit-line-clamp: 2; }
+}
+/* Comment mode in the app: the page is framed in the pin colour, which
+   pulses twice as the mode turns on, so a tap on the page reads as the way
+   to comment. The frame takes no input. */
+html.app .page:has(> .topbar.commenting) .stage::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 2px var(--pin);
+  animation: app-comment-on .7s ease-out 2;
+}
+@keyframes app-comment-on {
+  50% { box-shadow: inset 0 0 0 4px var(--pin), inset 0 0 32px color-mix(in srgb, var(--pin) 40%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  html.app .page:has(> .topbar.commenting) .stage::after { animation: none; }
 }
 /* The questions sheet (`.app-questions`, made by `host.ts`): the owner's
    open questions about the app, docked at the bottom over the composer,
