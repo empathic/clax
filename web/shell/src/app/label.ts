@@ -7,6 +7,7 @@
 // read as the app's own words or close its quotes.
 import type { Anchor, PickDesc } from "../../../bridge/src/protocol";
 import { cleanLabel } from "../caps/comments";
+import { respaced } from "../view/composer-model";
 
 /** The longest quote shown, in characters. */
 const QUOTE_CHARS = 60;
@@ -53,16 +54,17 @@ function elementWords(tag: string | null, role: string | null, name: string | nu
 }
 
 /** The words for `anchor`, with the bridge's description of a picked
- * element when there is one (`desc`, the page's own and so checked here). */
-export function anchorLabel(anchor: Anchor, desc?: PickDesc | null): string {
+ * element when there is one (`desc`, the page's own and so checked here):
+ * its `text`, the quote spaced between elements, is shown in its place. */
+export function anchorLabel(anchor: Anchor, desc?: Partial<PickDesc> | null): string {
   if (anchor.kind === "artifact") return "Whole app";
-  const quote = clean(anchor.quote, QUOTE_CHARS);
+  const d = desc && typeof desc === "object" ? desc : null;
+  const quote = clean(respaced(anchor.quote, d?.text), QUOTE_CHARS) ?? clean(anchor.quote, QUOTE_CHARS);
   if (quote) return `“${quote}”`;
   if (anchor.kind === "custom") {
     const n = clean(anchor.custom_name, NAME_CHARS);
     if (n) return `“${n}”`;
   }
-  const d = desc && typeof desc === "object" ? desc : null;
   const tag = word(d?.tag) ?? word(anchor.area?.tag) ?? tagOf(anchor.selector);
   const words = elementWords(tag, word(d?.role), clean(d?.name, NAME_CHARS));
   if (anchor.kind === "area") return words ? `part of ${words}` : "this area";

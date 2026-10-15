@@ -5,10 +5,12 @@ import { areaLabel } from "../threads";
  * empty. `label` is a page's words for the spot, shown in place of the quote. */
 /** `capturing`: its screenshot is still being taken, and arrives under
  * `clipToken` (`attachClip`). */
+/** `shown`: the picked element's text spaced between elements (the bridge's
+ * `PickDesc.text`), shown in place of its run-together quote. */
 /** `byPage`: the page opened (or moved) this composer through the `comments`
  * capability, not the viewer's own pick, so its Post takes only a pointer's
  * click (`guardedAction`). */
-export type Draft = { pickId: string; anchor: Anchor; version: number; clip: Blob | null; clipError?: string; label?: string; capturing?: boolean; clipToken?: string; byPage?: boolean };
+export type Draft = { pickId: string; anchor: Anchor; version: number; clip: Blob | null; clipError?: string; label?: string; capturing?: boolean; clipToken?: string; byPage?: boolean; shown?: string };
 
 /** How long a composer waits for a screenshot still being taken before it
  * says none was taken (the bridge's clip limit plus a margin; settable for tests). */
@@ -33,11 +35,21 @@ export function withClip(dr: Draft | null, token: string, clip: Blob | null, cli
   return dr && dr.clipToken === token ? { ...dr, clip, clipError, capturing: false, clipToken: undefined } : dr;
 }
 
+/** `text`, when it reads as `quote` with only its whitespace changed (it may
+ * stop short of a long quote's end): a picked element's spaced text, shown in
+ * place of its quote; else null. */
+export function respaced(quote: string | null | undefined, text: unknown): string | null {
+  if (!quote || typeof text !== "string") return null;
+  const squash = (s: string) => s.replace(/\s+/g, "");
+  const t = squash(text);
+  return t && squash(quote).startsWith(t) ? text : null;
+}
+
 /** What the composer shows for its target: the page's label, else the quote
- * (whitespace collapsed, cut at 160 characters), else the custom anchor's
+ * (its `shown` text when it has one; whitespace collapsed, cut at 160 characters), else the custom anchor's
  * name, an area's label, or the element's selector. */
 export function composerQuote(draft: Draft): string {
-  const quote = draft.anchor.quote?.replace(/\s+/g, " ").trim();
+  const quote = (respaced(draft.anchor.quote, draft.shown) ?? draft.anchor.quote)?.replace(/\s+/g, " ").trim();
   if (draft.label !== undefined) return draft.label;
   if (quote) return `«${quote.length > 160 ? `${quote.slice(0, 160)}…` : quote}»`;
   if (draft.anchor.kind === "custom") return draft.anchor.custom_name ?? "";

@@ -123,6 +123,7 @@ import { type Thread, sendToAgent, upsert } from "../threads";
 import { INDEX_FILE, type InspectError, type PickDesc } from "../../../bridge/src/protocol";
 import type { ArtifactController, ViewState } from "../view/artifact-controller";
 import { anchorLabel } from "./label";
+import { respaced } from "../view/composer-model";
 import { appQuery, inspectQuery, migrateQuery, parseShellPath } from "../route";
 import { setUrl } from "../view/url";
 
@@ -410,6 +411,10 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   const scrolled = new Map<string, number>();
   // The latest pick start's element description (the bridge's), by pick ID.
   const picked = new Map<string, PickDesc>();
+  // The spaced text of the elements picked in this load, by their quote: a
+  // thread on one is labelled with it, not its run-together quote.
+  const shown = new Map<string, string>();
+  const shownFor = (a: Thread["anchor"]) => (a.quote ? { text: shown.get(a.quote) } : null);
   // The scroll position the first welcome after a newer version loaded asks
   // the page to restore, and the version whose page's greeting is `landed`.
   let restore: { file: string; y: number } | null = null;
@@ -514,6 +519,8 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   const labelled = new Set<string>();
   const labelDraft = (v: ViewState): boolean => {
     const d = v.draft;
+    const text = d?.anchor.quote && respaced(d.anchor.quote, picked.get(d.pickId)?.text);
+    if (d?.anchor.quote && text) shown.set(d.anchor.quote, text);
     // A page's composer keeps a label the page gave it; one without gets these words too.
     if (!d || (d.label !== undefined && !labelled.has(d.pickId))) return false;
     const label = anchorLabel(d.anchor, picked.get(d.pickId));
@@ -531,7 +538,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     postState(v);
     if (v.threads !== lastThreads) {
       lastThreads = v.threads;
-      post({ type: "threads", threads: v.threads.map(t => ({ id: t.id, status: t.status, summary: summary(t), label: anchorLabel(t.anchor), sent: t.sent_to_agent, comments: t.comments.length, version: t.version_n })) });
+      post({ type: "threads", threads: v.threads.map(t => ({ id: t.id, status: t.status, summary: summary(t), label: anchorLabel(t.anchor, shownFor(t.anchor)), sent: t.sent_to_agent, comments: t.comments.length, version: t.version_n })) });
     }
     if (v.notice !== lastNotice) {
       lastNotice = v.notice;
