@@ -22,6 +22,15 @@ describe("InboxRow", () => {
     m.unmount();
   });
 
+  it("tags an item on a linked thread with its remote, and names a remote reply's author there", () => {
+    const m = mount(InboxRow, { item: item("reply", { agent: null, linked: { remote: "clax.dev", unlinked: false, author: "Ada (on clax.dev)" } }), now, onOpen: vi.fn(), onToggle: vi.fn() });
+    expect(m.root.querySelector(".title")!.textContent).toBe("Ada (on clax.dev) replied on Quarterly Reviewclax.dev");
+    expect(m.root.querySelector(".link-tag")!.textContent).toBe("clax.dev");
+    m.update({ item: item("reply", { linked: { remote: "clax.dev", unlinked: true, author: null } }), now, onOpen: vi.fn(), onToggle: vi.fn() });
+    expect(m.root.querySelector(".link-tag")!.textContent).toBe("clax.dev · unlinked");
+    m.unmount();
+  });
+
   it("links an ended agent's released threads below its row, and wraps its text", () => {
     const onOpen = vi.fn();
     const m = mount(InboxRow, { item: item("ended"), now, onOpen, onToggle: vi.fn() });

@@ -9,10 +9,19 @@ export type Tier = "piggyback" | "stop_hook" | "prompt_hook" | "wait" | "queue" 
  * state. */
 export type FeedbackState = { thread_id: string; state: "sent" | "withheld" | "declined" | "no_access" | "delivered" | "acknowledged" | "agent_ended"; tier: Tier | null; since: string; resends: number; exhausted: boolean; approver?: string; mine?: boolean; no_access?: boolean };
 /** `via_page`: the page wrote it through the `comments` capability, as the viewer. */
+/** A comment's twin on a remote (linked threads): where it started, and
+ * for one from the remote, its author there; `state` while its up-send waits. */
+export type CommentLink = { origin: "remote" | "local"; remote: string; author_kind: string | null; author_name: string | null; state: "pending" | "failed" | null };
 export type Comment = { id: string; thread_id: string; author_kind: "viewer" | "agent"; author_name: string; author_public_id?: string | null; via_harness: string | null; via_page?: boolean; body: string; created_at: string;
   /** An agent's reply from a named session: the agent, and its person's public ID (null: the owner's agent) and display name as stored (spec 2026-10-08 §11). */
-  agent?: CommentAgent | null };
+  agent?: CommentAgent | null; linked?: CommentLink };
 export type CommentAgent = { name: string; person: string | null; person_name: string };
+/** A thread's twin on a remote (linked threads, spec 2026-10-15). */
+export type ThreadLink = {
+  remote_id: string; remote: string; remote_origin: string; url: string; origin: "remote" | "local";
+  remote_version: number | null; twin: boolean; unlinked: boolean;
+  state: "pending" | "held" | "failed" | null; error: string | null;
+};
 export type Thread = {
   id: string; artifact_id: string; version_n: number; anchor: Anchor; status: "open" | "resolved"; sent_to_agent: boolean;
   has_clip: boolean; clip_url: string | null; created_at: string; resolved_at: string | null; resolved_by: string | null;
@@ -32,6 +41,8 @@ export type Thread = {
   /** On a live page: the path the thread was made at, and the URL to open for it (origin, that path and its route). */
   page_path?: string;
   page_url?: string;
+  /** Its twin on a remote, when the artifact is linked to one. */
+  linked?: ThreadLink;
 };
 /** The daemon's view of this viewer; `public_id` names it in `resolved_by`, the cookie never leaves the daemon. */
 export type Viewer = { public_id: string; display_name: string | null; created_at: string;
@@ -50,6 +61,10 @@ async function ok<T>(res: Response): Promise<T> {
 const post = (url: string, body?: unknown) =>
   fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
 
+/** One thread of the artifact, with all its comments. */
+export async function fetchThread(aid: string, tid: string): Promise<Thread> {
+  return (await ok<{ thread: Thread }>(await fetch(`/api/artifacts/${aid}/threads/${tid}`))).thread;
+}
 /** Every thread of the artifact, resolved ones included, oldest first. */
 export async function listThreads(aid: string): Promise<Thread[]> {
   const out: Thread[] = [];

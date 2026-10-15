@@ -218,6 +218,9 @@ export type InboxItem = {
   gone: boolean;
   /** Where opening the item leads (a path on the daemon). */
   url: string;
+  /** On a local daemon, an item on a thread linked to a remote: its name,
+   * whether the link ended, and a reply's author there (`Ada (on clax.dev)`). */
+  linked?: { remote: string; unlinked: boolean; author: string | null };
 };
 /** An `ended` item's note (spec 2026-10-08 §14, M25). */
 export type InboxEnded = {

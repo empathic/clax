@@ -53,7 +53,8 @@ function named(a: QAgent | null, others: InboxItem[]): string {
  * Quarterly Review"). `others` are the items listed beside it, which
  * decide whether an agent is named by its harness alone. */
 export function itemTitle(i: InboxItem, others: InboxItem[] = []): string {
-  const who = named(i.agent, others);
+  // A reply that came from a remote is named by its author there.
+  const who = i.kind === "reply" && !i.agent && i.linked?.author ? i.linked.author : named(i.agent, others);
   switch (i.kind) {
     case "reply": return `${who} replied on ${pageOf(i)}`;
     case "version": {

@@ -6,14 +6,25 @@ import { ApiError, getToken } from "../api";
 /** A public Clax this Clax is signed in to (never its token). */
 export type Remote = { id: string; origin: string; name: string; status: string; person_name: string | null };
 
-/** An artifact's public twin on one remote. */
+/** How a link's threads' sync stands. */
+export type Sync = { unreachable_since: string | null; last_error: string | null; synced_at: string | null };
+
+/** An artifact's public twin on one remote; its threads follow it (linked threads). */
 export type Link = {
   remote_id: string; remote_name: string | null; origin: string | null; url: string;
   pushed_n: number; remote_n: number; auto: boolean; behind: number;
+  /** Local threads stay local; replies and resolves on linked threads still go up. */
+  download_only?: boolean;
+  sync?: Sync;
+  /** Writes waiting to go up, and those not sent. */
+  pending?: number; failed?: number;
 };
 
+/** A write not sent to a remote the artifact is no longer linked to. */
+export type Unsent = { seq: number; kind: string; thread_id: string; body: string | null };
+
 /** `GET /api/artifacts/<id>/remotes`. */
-export type Remotes = { links: Link[]; remotes: Remote[] };
+export type Remotes = { links: Link[]; remotes: Remote[]; unsent?: Unsent[] };
 
 /** `POST /api/artifacts/<id>/push`'s answer. */
 export type Pushed = { status: "pushed"; url: string; link: Link; pushed: { n: number; remote_n: number }[]; assets_not_pushed: number };
@@ -57,4 +68,30 @@ export async function push(id: string, remote: string, mode: Mode, auto?: boolea
 export function hostOf(origin: string | null): string {
   if (!origin) return "the public Clax";
   try { return new URL(origin).host; } catch { return origin; }
+}
+
+async function send<T>(method: string, url: string, body?: unknown): Promise<T> {
+  return answer<T>(await fetch(url, {
+    method, headers: await headers(body !== undefined), body: body === undefined ? undefined : JSON.stringify(body),
+  }));
+}
+
+/** Makes `id`'s link on `remote` download only, or two-way again. */
+export function setDownloadOnly(id: string, remote: string, on: boolean): Promise<{ download_only: boolean }> {
+  return send("PATCH", `/api/artifacts/${id}/remotes/${encodeURIComponent(remote)}`, { download_only: on });
+}
+
+/** Tries `id`'s writes not sent to `remote` again now. */
+export function retryLink(id: string, remote: string): Promise<{ retried: number }> {
+  return send("POST", `/api/artifacts/${id}/remotes/${encodeURIComponent(remote)}/retry`, {});
+}
+
+/** Ends `id`'s link on `remote`: its threads stay here, read-only. */
+export function unlink(id: string, remote: string): Promise<{ unlinked: boolean; unsent: Unsent[] }> {
+  return send("DELETE", `/api/artifacts/${id}/remotes/${encodeURIComponent(remote)}`);
+}
+
+/** Drops `id`'s writes not sent to a remote it is no longer linked to. */
+export function dropUnsent(id: string): Promise<{ dropped: number }> {
+  return send("POST", `/api/artifacts/${id}/unsent:drop`, {});
 }

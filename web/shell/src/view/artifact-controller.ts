@@ -14,7 +14,7 @@ import { LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REOPEN_FAILED, RESO
 import { nav } from "../nav";
 import { artifactOrigin, cachedOriginOk, pageSrc, probeOrigin } from "../origin";
 import { parseShellPath, shellPath } from "../route";
-import { type Thread, type Viewer, addComment, createThread, currentViewer, getViewer, listThreads, onViewer, reopenThread, resolveThread, seedViewer, sendBatch, sendToAgent, upsert } from "../threads";
+import { type Thread, type Viewer, addComment, createThread, currentViewer, fetchThread, getViewer, listThreads, onViewer, reopenThread, resolveThread, seedViewer, sendBatch, sendToAgent, upsert } from "../threads";
 import { after } from "../clock";
 import { afterPaint } from "./after-paint";
 import { EMPTY_SELECTION, type Selection, prune, toggle, unsent } from "./batch-model";
@@ -1467,7 +1467,13 @@ export class ArtifactController {
   }
 
   private saveThread(p: Promise<Thread>, prefix: string): void {
-    void report(this.whileBusy(p), prefix, this.noticeFor(prefix)).then(t => { if (t) this.changeThreads(ts => upsert(ts, t)); });
+    void report(this.whileBusy(p), prefix, this.noticeFor(prefix)).then(t => {
+      if (!t) return;
+      this.changeThreads(ts => upsert(ts, t));
+      // A linked thread's write is queued to go up beside this answer; the
+      // event saying so may have come first, so the thread is read again.
+      if (t.linked && !t.linked.unlinked) void fetchThread(this.id, t.id).then(now => this.changeThreads(ts => upsert(ts, now)), () => {});
+    });
   }
 
   // ---- intents ----
