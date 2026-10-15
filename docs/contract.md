@@ -5479,7 +5479,14 @@ of strings, `body` a string), answers `{url, status, headers, body}`: the
 final URL, the status (4xx and 5xx included), the headers (lowercase
 names, repeats joined with `, `) and the body as text when it is UTF-8; a
 body that is not (an image, say) comes as `body_base64` instead, byte for
-byte. A request without a `User-Agent` carries `Clax/<version>`. The daemon, for the first request and each redirect:
+byte. A request without a `User-Agent` carries `Clax/<version>
+(+https://github.com/empathic/clax)`. A `GET` whose only headers are
+`Accept`, `Accept-Language` and `User-Agent` may be answered from the
+daemon's HTTP cache, shared by every app, which keeps a `200` with a
+lifetime or validator and no `Set-Cookie`, `Vary: *`, `no-store` or
+`private`, serves it while fresh after the same host checks, and
+revalidates it when stale (at most 100 MiB under `CLAX_HOME/net-cache`).
+The daemon, for the first request and each redirect:
 
 - takes only `https` URLs without a user name or password;
 - takes only a host the live version declares and the owner granted;
