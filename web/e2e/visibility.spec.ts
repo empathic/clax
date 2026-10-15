@@ -25,6 +25,7 @@
 //
 // The daemon listens on every interface; on a machine with no LAN address
 // it refuses invites (`not_on_lan`) and each test says so and skips.
+import type { Page } from "@playwright/test";
 import { expect, publish, startDaemon, test } from "./fixtures";
 import { Agent, type Person, connect, handleOf, invite, leave, ownerThread, people, project, sendFrom, threadFrom, threadPage } from "./people-helpers";
 
@@ -150,7 +151,7 @@ test("Mia declines Sam's comment: those concerned read it declined by Mia, a vis
     await expect(acard.locator(".ahead")).toHaveText(/^Sam wants to reach your agent mia-notes/);
     await acard.getByRole("button", { name: "Decline" }).click();
     await expect(acard.locator(".outcome")).toHaveText("Declined");
-    const waiting = (p: typeof mia.page, origin: string) => p.goto(threadPage(origin, aid, tid)).then(() => p.locator(`.thread-card[data-thread="${tid}"] .waiting`));
+    const waiting = (p: Page, origin: string) => p.goto(threadPage(origin, aid, tid)).then(() => p.locator(`.thread-card[data-thread="${tid}"] .waiting`));
     await expect(await waiting(sam.page, sam.lan)).toHaveText("declined by Mia");
     await expect(await waiting(mia.page, mia.lan)).toHaveText("you declined");
     const owner = await ownerCtx.newPage();
@@ -166,7 +167,7 @@ test("Mia declines Sam's comment: those concerned read it declined by Mia, a vis
     await expect.poll(() => miaAgent.waitBriefly()).toContain("Please add a legend.");
     await miaAgent.call("comments_reply", { url_or_id: aid, thread_id: ownersTid, text: "Added a legend." });
     await owner.goto(threadPage(d.base, aid, ownersTid));
-    const reply = (p: typeof owner) => p.locator(`.thread-card[data-thread="${ownersTid}"] .msg.agent .author`);
+    const reply = (p: Page) => p.locator(`.thread-card[data-thread="${ownersTid}"] .msg.agent .author`);
     await expect(reply(owner)).toHaveText(/^mia-notes \(Mia's agent, via \S.*\)$/);
     await mia.page.goto(threadPage(mia.lan, aid, ownersTid));
     await expect(reply(mia.page)).toHaveText(/^mia-notes \(agent, via \S.*\)$/);

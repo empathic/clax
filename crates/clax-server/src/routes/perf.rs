@@ -84,7 +84,10 @@ impl VerifyTimes {
     /// Keeps `d`, dropping the oldest beyond [`VerifyTimes::KEPT`].
     pub fn record(&self, d: Duration) {
         let us = u32::try_from(d.as_micros()).unwrap_or(u32::MAX);
-        let mut q = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut q = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if q.len() == Self::KEPT {
             q.pop_front();
         }
