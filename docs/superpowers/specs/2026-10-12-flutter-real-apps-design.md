@@ -85,6 +85,20 @@ The engine:
 - Caps: first 14 turns / 4 renders / 150 s / 48k output tokens; continue
   18 turns / 5 renders / 240 s / 64k; change 10 turns / 3 renders / 120 s
   / 32k; $1.50 a run and $6 a build.
+- Limits of a change (owner, 2026-10-15): the change run decides first,
+  from the request and the app's size, whether it fits one run; a big one
+  becomes plan features (`plan_set`) and a `finish` saying so, and the
+  worker builds them in continue runs (a plan with nothing left to build
+  that gains features starts a new build, with its own $6). A change that
+  ends at or near a cap (or `give_up`s there) gets Clax's reply naming the
+  limit, the agent's words under it as detail, keeping the failure prefix
+  when nothing was published. It is kept per thread (`unfinished.json`:
+  comments, the draft's edits over what the app held, the agent's notes,
+  cost), and the thread offers **Keep going** (the Retry hook): a change
+  run that starts from those edits where the app still holds what they
+  were made on, else (after an hour, or the app changed) from the app,
+  with the notes either way. A change and its Keep goings share $6; each
+  run's cost cap is what is left, at most $1.50.
 - The system prompt is rewritten for depth: a real plan, the kit, a
   designed look, tests for logic, several screens where the app needs
   them, finishing a feature fully before the next.
