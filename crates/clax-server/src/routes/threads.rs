@@ -1275,8 +1275,9 @@ struct ResolveBody {
 /// for a cookie seen for the first time), `viewer:anonymous` without either,
 /// or `agent:<harness>`: never the cookie or a session ID. Undelivered feedback on the thread is withdrawn; a
 /// `feedback_state` event follows: each reader's state of the delivered rows
-/// that remain, or, when none remain, `state: null` to the owner's and
-/// every connected person's streams (spec 2026-10-08 §10). An agent resolve
+/// that remain, or, when none remain, `state: null` to the streams of
+/// those who read a row before (the owner's and each such person's; spec
+/// 2026-10-08 §10). An agent resolve
 /// lists a thread no version lists yet as addressed: in the artifact's current
 /// version, or, on a live page, in the page's next snapshot (a pending
 /// address). A request with a foreign `Origin` is refused ([`SameOrigin`]).

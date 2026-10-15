@@ -255,9 +255,6 @@ enum Gate {
     /// owner) a stream was opened for (a delivery state as that person
     /// reads it, spec 2026-10-08 §10).
     Person(String),
-    /// Only the streams of the owner and of connected people (any
-    /// recipient key).
-    People,
     /// Only subscribers on this machine or holding the token (a live page's
     /// gallery event; see [`crate::live::sees_live_pages`]).
     Local,
@@ -274,7 +271,6 @@ impl Gate {
         match self {
             Gate::Any => true,
             Gate::Person(p) => person == Some(p.as_str()),
-            Gate::People => person.is_some(),
             Gate::Local => local,
             Gate::Level { min, unless } => level >= *min && unless.is_none_or(|u| level < u),
         }
@@ -519,14 +515,7 @@ fn routes(ev: &Event) -> Vec<(Chan, Gate)> {
         // Each reader's state to its own streams; no one else's.
         Event::FeedbackState { views, .. } => views
             .iter()
-            .map(|(key, _)| {
-                let gate = if key == clax_core::events::EVERY_PERSON {
-                    Gate::People
-                } else {
-                    Gate::Person(key.clone())
-                };
-                (Chan::Artifact(a.clone()), gate)
-            })
+            .map(|(key, _)| (Chan::Artifact(a.clone()), Gate::Person(key.clone())))
             .collect(),
         Event::Working { .. } => vec![
             (Chan::Gallery, Gate::Any),
@@ -681,18 +670,12 @@ fn project(
             },
             _,
         ) => {
-            // A person's own streams; a live page's site, the owner's; or
-            // the owner's and every person's, once no row is left.
+            // A person's own streams; a live page's site, the owner's.
             let key = match gate {
                 Gate::Person(k) => k.as_str(),
-                Gate::People => clax_core::events::EVERY_PERSON,
                 _ => "",
             };
-            let (_, state) = views.iter().find(|(k, _)| k == key).or_else(|| {
-                views
-                    .iter()
-                    .find(|(k, _)| k == clax_core::events::EVERY_PERSON)
-            })?;
+            let (_, state) = views.iter().find(|(k, _)| k == key)?;
             let mut v = json!({"topic": topic, "artifact_id": artifact_id, "thread_id": thread_id});
             match state {
                 Some(s) => {
@@ -702,12 +685,8 @@ fn project(
                         m.extend(st);
                     }
                 }
-                // No state: what a visitor reads.
+                // No row left: no state.
                 None => v["state"] = Value::Null,
-            }
-            if matches!(gate, Gate::People) {
-                // Every person's memory of this thread is now out of date.
-                ch.delivery.retain(|(_, t), _| t != thread_id);
             }
             let last = ch
                 .delivery
@@ -1520,6 +1499,40 @@ mod tests {
         assert!(back.resumed);
         hub.dispatch(&delivery(&[("u_mia", "acknowledged")]));
         assert_eq!(drain(&mut back).len(), 1);
+    }
+
+    #[test]
+    fn no_state_left_reaches_its_readers_alone_never_a_visitor() {
+        let hub = Hub::new(Arc::default());
+        let open = |level: Level, viewer: Option<&str>, person: Option<&str>| {
+            let c = self::viewer(level, viewer);
+            let o = hub.open_for(c.clone(), false, None, None, person.map(str::to_string));
+            hub.update(&o.id, &c, &[Topic::Artifact(A.into())], &[])
+                .unwrap();
+            o
+        };
+        let mut owner = open(Level::Admin, None, Some(""));
+        let mut mia = open(Level::Interact, Some("v_mia"), Some("u_mia"));
+        let mut sam = open(Level::Interact, Some("v_sam"), Some("u_sam"));
+        let mut lan = open(Level::Interact, Some("v_lan"), None);
+        let mut anon = open(Level::View, None, None);
+        // The thread's last rows went: its readers, the owner and Mia, are
+        // told no state is left.
+        hub.dispatch(&Event::FeedbackState {
+            artifact_id: A.into(),
+            thread_id: "t".into(),
+            views: vec![(String::new(), None), ("u_mia".into(), None)],
+        });
+        for (who, o) in [("the owner", &mut owner), ("Mia", &mut mia)] {
+            let got = drain(o);
+            assert!(
+                got.len() == 1 && got[0].1.contains("\"state\":null"),
+                "{who}: {got:?}"
+            );
+        }
+        assert!(drain(&mut sam).is_empty(), "a person who read no row");
+        assert!(drain(&mut lan).is_empty(), "a LAN viewer");
+        assert!(drain(&mut anon).is_empty(), "a caller with no cookie");
     }
 
     #[test]

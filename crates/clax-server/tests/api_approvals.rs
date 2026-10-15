@@ -3300,3 +3300,51 @@ async fn an_agent_reads_no_siblings_approval_waits_in_the_roster() {
         "codex reads no approval wait of claude's: {sibling}"
     );
 }
+
+/// A resolve that withdraws a thread's every row tells `state: null` to
+/// those who read a row of it alone (spec 2026-10-08 §10): the owner and
+/// the held content's author. Another connected person, a LAN viewer and
+/// a caller with no cookie hear no state of it.
+#[tokio::test]
+async fn a_resolve_that_withdraws_every_row_tells_its_readers_alone() {
+    let t = Two::new().await;
+    let tid = t.mia_thread("held for the owner").await;
+    mia_sends_to_the_owners_agent(&t, &tid).await;
+    let other = sentinel_thread(&t).await;
+    let topic = format!("artifact:{}", t.aid);
+    let mut owner = t.owner_browser().stream(&[&topic]).await;
+    let mut mia = t.mia_browser().stream(&[&topic]).await;
+    let mut sam = t.sam_browser().stream(&[&topic]).await;
+    let mut lucy = lan_browser(&t, "Lucy").await.stream(&[&topic]).await;
+    let mut anon = nobody(&t).stream(&[&topic]).await;
+    let (status, v) = t
+        .owner_browser()
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{tid}/resolve", t.aid),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["thread"]["feedback_state"], Value::Null, "no row left");
+    for (who, s) in [("the owner", &mut owner), ("Mia", &mut mia)] {
+        let ev = feedback_event(s, &tid).await;
+        assert_eq!(ev["state"], Value::Null, "{who}: {ev}");
+    }
+    // Sam reads no row of it, though his agent is sent the sentinel's
+    // comment (a state of that thread is his).
+    drain(&t, &mut [&mut lucy, &mut anon], &other).await;
+    within("the sentinel's thread event", async {
+        loop {
+            let (name, ev) = sam.next().await;
+            assert!(
+                !(name == "feedback_state" && ev["thread_id"] == json!(tid)),
+                "Sam: {ev}"
+            );
+            if name == "thread" && ev["thread"]["id"] == json!(other) {
+                break;
+            }
+        }
+    })
+    .await;
+}

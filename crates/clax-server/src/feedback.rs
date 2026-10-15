@@ -474,12 +474,19 @@ fn publish(ctx: &FeedbackCtx, st: &Store, touched: &Touched, parties: Option<&[S
     };
     for (aid, tid) in &touched.threads {
         let Some(d) = all.remove(tid) else {
-            // No row left (a resolve withdrew them): no one reads a state
-            // any more, the owner and people are told so.
+            // No row left (a resolve withdrew them): those who read one,
+            // the owner and the people who read a row before they went
+            // (`Touched::withdrawn`), are told no state is left; no one
+            // else is.
+            let readers = touched.withdrawn.get(tid).into_iter().flatten();
+            let views = std::iter::once(String::new())
+                .chain(readers.cloned())
+                .map(|k| (k, None))
+                .collect();
             ctx.events.publish(Event::FeedbackState {
                 artifact_id: aid.clone(),
                 thread_id: tid.clone(),
-                views: vec![(clax_core::events::EVERY_PERSON.to_string(), None)],
+                views,
             });
             continue;
         };

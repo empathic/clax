@@ -1623,8 +1623,9 @@ again.
     `*unconnected` switch), which changes no row's time, to the owner,
     the deciding person, the author decided about and that content's
     co-authors (a page's other authors), alone. When no row is left (a
-    resolve withdrew them all), `state: null` goes to the owner's and
-    every connected person's streams. A stream is never sent the state
+    resolve withdrew them all), `state: null` goes to the streams of
+    those who read a row of it before (the owner, and each person who
+    read one), never to anyone else. A stream is never sent the state
     it was last sent, unless it subscribed or reconnected since. A new
     thread's `thread` event goes before its first state, and a client
     keeps a state heard for a thread it does not hold yet until the
@@ -2634,3 +2635,7 @@ task, with recommendations; the owner took every recommendation
   forgets on subscribe and reconnect; an agent reads only its own
   session's approval waits in the agents list. The working signal after
   an approval is stated as an accepted risk (owner decision, "Accept it").
+- **Amendment** (2026-10-15, Task 22 re-review 5): §10: a thread left
+  with no row tells `state: null` only to those who read a row of it
+  before the resolve (the owner, and each person who read one), not to
+  every connected person.

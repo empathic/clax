@@ -62,7 +62,10 @@ export class ArtifactStream {
   private questions: (() => void) | null = null;
   private stopped = false;
   /** Delivery states heard for threads this view does not hold yet, kept
-   * until the thread arrives (a state may come before its thread). */
+   * until the thread arrives (a state may come before its thread). One is
+   * given to its thread only when a thread event adds it: once the view
+   * holds the thread (a load brought it, with its own newer state), the
+   * kept one is dropped unused. */
   private readonly early = new Map<string, FeedbackState | null>();
 
   constructor(private readonly id: string, private readonly v: ArtifactStreamView) {
@@ -99,15 +102,17 @@ export class ArtifactStream {
     if (e.type === "feedback_state") {
       const f = e as unknown as { thread_id: string } & FeedbackState;
       if (!v.threads().some(t => t.id === f.thread_id)) { this.early.set(f.thread_id, stateOf(f)); return; }
+      this.early.delete(f.thread_id);
     }
     if (e.type === "thread") {
       const raw = (e as unknown as { thread: ThreadDelta }).thread;
       // A thread event carries no delivery state: the thread keeps the one
       // this viewer read (`feedback_state` events bring each its own), or
-      // takes one heard before the thread itself.
+      // takes one heard before the thread itself when this event adds it.
       const early = this.early.get(raw.id);
       this.early.delete(raw.id);
-      const d = early !== undefined && raw.feedback_state === undefined ? { ...raw, feedback_state: early } : raw;
+      const added = !v.threads().some(t => t.id === raw.id);
+      const d = added && early !== undefined && raw.feedback_state === undefined ? { ...raw, feedback_state: early } : raw;
       const r = applyThread(v.threads(), d);
       v.changeThreads(ts => applyThread(ts, d).threads);
       v.page({ type: "thread", artifact_id: this.id, thread: r.thread });

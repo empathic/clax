@@ -90,6 +90,31 @@ describe("the artifact stream", () => {
     s.stop();
   });
 
+  it.each([["with", true], ["without", false]])("never applies a state kept early over a newer one once the first load brought its thread (%s a newer state heard)", (_, newer) => {
+    let threads: Thread[] = [];
+    const sync = new ThreadSync(f => { threads = f(threads); });
+    const s = new ArtifactStream(A, {
+      threads: () => threads, presence: () => [], changeThreads: f => sync.change(f), beginThread: tid => sync.beginThread(tid),
+      // The view applies a state for a thread it holds, as onArtifactEvent does.
+      event: e => { if (e.type === "feedback_state") sync.change(ts => ts.map(t => t.id === e.thread_id ? { ...t, feedback_state: stateOf(e) } : t)); },
+      page: () => {}, disposed: () => false,
+    });
+    const state = (since: string) => ({ thread_id: "t1", state: "sent", tier: null, since, resends: 0, exhausted: false });
+    const heard = (since: string) => on!({ type: "feedback_state", topic: `artifact:${A}`, artifact_id: A, ...state(since) } as unknown as StreamEvent);
+    on!({ type: "ready", topic: `artifact:${A}` } as unknown as StreamEvent);
+    // A state for t1 before the first load answered: no view holds t1 yet.
+    heard("1");
+    // The load brings t1 with a newer state; a newer one still may be heard.
+    sync.change(() => [{ id: "t1", status: "open", comments: [comment("c1")], feedback_state: state("2") } as unknown as Thread]);
+    if (newer) heard("3");
+    const newest = newer ? "3" : "2";
+    expect(threads[0].feedback_state?.since).toBe(newest);
+    // A reply's thread event keeps the newest state, never the one kept early.
+    on!(delta("open", 2, "c2"));
+    expect(threads[0].feedback_state?.since).toBe(newest);
+    s.stop();
+  });
+
   it("refetches when the daemon refuses the artifact's topic (it was deleted before the view subscribed)", () => {
     const heard: unknown[] = [];
     const s = new ArtifactStream(A, {

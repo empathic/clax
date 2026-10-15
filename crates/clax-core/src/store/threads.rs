@@ -1518,6 +1518,12 @@ impl Store {
                     resolved_by = COALESCE(resolved_by, ?3) WHERE id = ?1",
                 params![thread_id, now, by, person],
             )?;
+            // Who read a row before the undelivered ones go: told, alone,
+            // when none is left.
+            let readers = deliveries_in(tx, &[thread_id.to_string()], false)?
+                .remove(thread_id)
+                .map(|d| d.people())
+                .unwrap_or_default();
             let deleted = tx.execute(
                 "DELETE FROM feedback WHERE thread_id = ?1 AND delivered_at IS NULL",
                 params![thread_id],
@@ -1539,6 +1545,7 @@ impl Store {
                 touched
                     .threads
                     .insert((t.artifact_id, thread_id.to_string()));
+                touched.withdrawn.insert(thread_id.to_string(), readers);
             }
             Ok(touched)
         })?;
