@@ -537,6 +537,9 @@ impl Store {
     /// browser's identity (a later claim folds into it, see
     /// [`Store::claim_for_owner`]). Without it (the CLI acting before any
     /// browser) a row made here gives way to the first browser claimed.
+    /// Making the row bumps the visibility generation once an agent's view
+    /// of who is connected has been read ([`Store::connected`]), as that
+    /// view no longer holds.
     pub fn owner_viewer(&self, browser: bool) -> Result<Viewer> {
         if let Some((v, claimed)) = self.with_read(|c| Ok(owner_row(c)?))?
             && (claimed || !browser)
@@ -544,11 +547,18 @@ impl Store {
             return Ok(v);
         }
         self.with_tx(|tx| {
-            tx.execute(
+            let made = tx.execute(
                 "INSERT INTO viewers (id, public_id, display_name, created_at, owner, claimed)
                  SELECT ?1, ?2, NULL, ?3, 1, ?4 WHERE NOT EXISTS (SELECT 1 FROM viewers WHERE owner = 1)",
                 params![crate::new_ulid(), new_public_id(), self.now(), browser],
             )?;
+            // A new owner's row changes who is connected (spec §9.6): an
+            // agent's view read before it marks the owner's own words as
+            // an unconnected author's until the generation moves. With no
+            // view read yet, none is stale, and nothing is rechecked.
+            if made > 0 && self.connected_was_read() {
+                self.visibility_changed();
+            }
             if browser {
                 tx.execute("UPDATE viewers SET claimed = 1 WHERE owner = 1", [])?;
             }
@@ -714,6 +724,26 @@ mod tests {
     use crate::audit::Via;
     use crate::store::test_util::{DAEMON, artifact, store};
     use crate::{CoreError, new_ulid};
+
+    #[test]
+    fn the_owners_row_made_after_agents_looked_is_connected_to_them() {
+        use crate::visibility::Author;
+        let (_d, st) = store();
+        // An agent's view is read before any browser of the owner's came.
+        let before = st.connected().unwrap();
+        assert_eq!(st.owner().unwrap(), None);
+        let v = st.owner_viewer(true).unwrap();
+        assert!(before.is_unconnected(&Author::Person(v.public_id.clone())));
+        // Making the owner's row is a change to who is connected.
+        let after = st.connected().unwrap();
+        assert!(!after.is_unconnected(&Author::Person(v.public_id.clone())));
+        assert_eq!(after.label("Alex", &Author::Person(v.public_id)), "Alex");
+        // Before any view was read, making the row moves nothing.
+        let (_d2, fresh) = store();
+        let g = fresh.visibility_generation();
+        fresh.owner_viewer(true).unwrap();
+        assert_eq!(fresh.visibility_generation(), g);
+    }
 
     #[test]
     fn the_owner_is_one_viewer_no_cookie_reaches() {
