@@ -275,17 +275,30 @@ class PlanStore {
       p ?? (throw StateError('app $appId has no plan'));
 
   /// Sets the whole feature list of [appId] (the agent's `plan_set`),
-  /// keeping the request, cost and stop of a plan it already has.
+  /// keeping the request, cost and stop of a plan it already has. A plan
+  /// with nothing left to build that gains features to build (a change
+  /// that planned a big request) starts a new build: its cost and stop are
+  /// cleared, so the new build has its own [buildCapUsd].
   Future<Plan> set(
     String appId,
     List<PlanFeature> features, {
     String request = '',
-  }) => _write(
-    appId,
-    (old) =>
-        old?.copyWith(features: features) ??
-        Plan(request: request, features: features, updatedAt: clock.now()),
-  );
+  }) => _write(appId, (old) {
+    if (old == null) {
+      return Plan(request: request, features: features, updatedAt: clock.now());
+    }
+    final fresh =
+        old.todo.isEmpty &&
+        features.any(
+          (f) =>
+              f.status == FeatureStatus.todo || f.status == FeatureStatus.doing,
+        );
+    return old.copyWith(
+      features: features,
+      spentUsd: fresh ? 0 : null,
+      stopped: fresh ? false : null,
+    );
+  });
 
   /// Sets the status of feature [id]; throws [StateError] when there is no
   /// such feature. [byPerson]: the person set it, so a drop is theirs and

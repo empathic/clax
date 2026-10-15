@@ -6,6 +6,7 @@ import 'dart:typed_data';
 
 import '../../clax/models.dart' show FeedbackItem;
 import '../../daemon/clock.dart';
+import '../failure.dart' show changeCapUsd, limitFailureReply, limitLandedReply;
 import '../progress.dart';
 import '../read_consent.dart';
 import '../request.dart';
@@ -77,6 +78,7 @@ class RunContext {
     this.sessionId,
     this.cancelled,
     required this.clock,
+    this.changeSpentUsd,
   });
 
   final RequestKind kind;
@@ -108,6 +110,13 @@ class RunContext {
   /// Completes when the run is cancelled.
   final Future<void>? cancelled;
   final Clock clock;
+
+  /// For a change in answer to comments: what its earlier runs (the run
+  /// Keep going goes on from) cost, against [changeCapUsd]. A run that
+  /// ends at or near a limit then replies in Clax's words naming it
+  /// ([limitFailureReply], [limitLandedReply]). Null for a new app or a
+  /// build's continue run, which reply as before.
+  final double? changeSpentUsd;
 }
 
 /// How a run ended.
@@ -123,11 +132,16 @@ final class RunFinished extends RunOutcome {
     this.version,
     required this.answered,
     this.docsRefused,
+    this.limit,
   });
 
   final String? artifactId;
   final int? version;
   final bool answered;
+
+  /// The hard cap a cap stop published the last clean draft at ("10
+  /// turns"); null for a `finish`.
+  final String? limit;
 
   /// For a new app: why its starting documents were not written (the app
   /// was made without them), or null when they were, or there were none.
@@ -136,10 +150,15 @@ final class RunFinished extends RunOutcome {
 
 /// The run stopped without publishing, for [reason].
 final class RunGaveUp extends RunOutcome {
-  const RunGaveUp(this.reason, {required this.answered});
+  const RunGaveUp(this.reason, {required this.answered, this.limit});
 
   final String reason;
   final bool answered;
+
+  /// The cap the run stopped at or near ([RunBudget.nearLimit]) when a
+  /// change ended at a limit, which the person can Keep going from; else
+  /// null.
+  final String? limit;
 }
 
 /// The run was cancelled; nothing was published or replied.

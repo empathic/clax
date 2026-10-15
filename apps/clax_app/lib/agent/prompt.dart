@@ -15,6 +15,24 @@ typedef AppDocument = ({String path, int version, Map<String, Object?> data});
 /// holds, and the documents shown.
 typedef AppCollection = ({String path, int count, List<AppDocument> docs});
 
+/// What a Keep going run's first message says about the run it goes on
+/// from: the [limit] it stopped at, the agent's [notes], and the paths
+/// the draft already holds its unfinished edits to ([edited]); or, with
+/// [edited] null, [why] the run starts over from the app instead.
+class KeepGoingNote {
+  const KeepGoingNote({
+    required this.limit,
+    required this.notes,
+    this.edited,
+    this.why,
+  });
+
+  final String limit;
+  final List<String> notes;
+  final List<String>? edited;
+  final String? why;
+}
+
 /// Builds the agent's prompts from the bundled assets: the tool loop's
 /// system prompt and first messages ([toolSystem], [firstNew],
 /// [firstChange]), and the single structured call's ([system], [newApp],
@@ -204,6 +222,10 @@ class PromptBuilder {
   /// The person's words (comments, authors, anchors, answers) go in as
   /// JSON strings. When [fromBundle], [others] are left out and the
   /// message says why ([fromBundleNote]).
+  ///
+  /// [keepGoing]: the change stopped at a limit before and the person
+  /// asked it to keep going; [files] are then the draft's, and the message
+  /// says what the earlier run left ([KeepGoingNote]).
   List<Map<String, Object?>> firstChange({
     required String title,
     required Map<String, String> files,
@@ -213,6 +235,7 @@ class PromptBuilder {
     String? answers,
     Plan? plan,
     bool fromBundle = false,
+    KeepGoingNote? keepGoing,
   }) {
     final b = StringBuffer()
       ..writeln(
@@ -235,13 +258,19 @@ class PromptBuilder {
         )
         ..writeln(jsonEncode(answers));
     }
+    if (keepGoing != null) _writeKeepGoing(b, keepGoing);
     b
       ..writeln()
       ..writeln(
-        'Make the edits that do it, test what you changed and render it; '
-        'fix what the render or the tests show is broken; then finish. '
-        'When a comment asks for a large new feature, add it to the plan '
-        'with plan_set instead of building it now, and say so in reply.',
+        'First decide whether this change fits one run (a few edits, one '
+        'or two renders). When it is big (a new screen or several new '
+        'features, or more than a few files of new work for an app this '
+        'size), do not build it now: plan_set the plan with every feature '
+        'already in it kept as it is and the new work added as two to five '
+        'todo features, then finish with no edits and a reply saying it is '
+        'planned and will be built in steps. Otherwise make the edits that '
+        'do it, test what you changed and render it; fix what the render or '
+        'the tests show is broken; then finish.',
       );
     final clip = comments.isEmpty ? null : comments.first.clip;
     return [
@@ -256,6 +285,36 @@ class PromptBuilder {
         },
       _text(b),
     ];
+  }
+
+  static void _writeKeepGoing(StringBuffer b, KeepGoingNote k) {
+    b
+      ..writeln()
+      ..writeln(
+        'Keep going: an earlier run of this change stopped at its limit '
+        '(${k.limit}) before it finished, and the person asked it to keep '
+        'going.',
+      );
+    if (k.edited case final paths?) {
+      b.writeln(
+        'The draft already holds that run\'s unfinished edits, shown in the '
+        'files above (${paths.map(jsonEncode).join(', ')}); they have not '
+        'been rendered. Render first, then finish what is left.',
+      );
+    } else {
+      b.writeln(
+        'Its draft is gone (${k.why}), so you start over from the app as '
+        'it is. Say in reply that you started over.',
+      );
+    }
+    if (k.notes.isNotEmpty) {
+      b
+        ..writeln(
+          'What that run said as it worked and why it stopped, one JSON '
+          'string per line:',
+        )
+        ..writeln([for (final n in k.notes) jsonEncode(n)].join('\n'));
+    }
   }
 
   /// The file list of [files] (kit files marked as vendored), then their

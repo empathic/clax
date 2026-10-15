@@ -255,6 +255,11 @@ class FinishTool implements Tool {
   /// else
   /// publishes nothing and replies "Couldn't make that change: it ran out
   /// of time (`<cap>`)." [attach] makes it the Toolbox's cap handler.
+  ///
+  /// A change in answer to comments ([RunContext.changeSpentUsd] set)
+  /// replies in Clax's words naming the limit instead, with the agent's
+  /// [narration] under it ([limitLandedReply], [limitFailureReply]), and
+  /// its outcome carries [cap] (`limit`) so the change can Keep going.
   Future<RunOutcome> capStop(String cap, {String? narration}) async {
     final s = _state ?? (throw StateError('capStop before attach'));
     if (s.outcome case final o?) return o;
@@ -267,22 +272,56 @@ class FinishTool implements Tool {
             c.changedFrom(_baseFiles!, title: _baseTitle, caps: _baseCaps));
     final passed = s.draft.cleanOnBase;
     final clean = usable(passed) ? passed : s.draft.pageCleanOnBase;
+    final spent = s.ctx.changeSpentUsd;
     if (!usable(clean)) {
-      return _set(s, await _fail(s, 'it ran out of time ($cap).'));
+      if (spent == null) {
+        return _set(s, await _fail(s, 'it ran out of time ($cap).'));
+      }
+      final left = changeCapUsd - spent - s.budget.costUsd;
+      return _set(
+        s,
+        await _fail(
+          s,
+          limitFailureReason(cap, leftUsd: left),
+          reply: limitFailureReply(cap, leftUsd: left, agentSaid: narration),
+          limit: cap,
+        ),
+      );
     }
     final src = _sourceOfSnapshot(clean!);
-    final reply = identical(clean, passed)
-        ? stoppedEarlyReply(narration, cap)
-        : '${stoppedEarlyReply(narration, cap)} Some of its checks failed.';
+    final checksFailed = !identical(clean, passed);
+    final reply = spent != null
+        ? limitLandedReply(
+            cap,
+            leftUsd: changeCapUsd - spent - s.budget.costUsd,
+            agentSaid: narration,
+            checksFailed: checksFailed,
+          )
+        : checksFailed
+        ? '${stoppedEarlyReply(narration, cap)} Some of its checks failed.'
+        : stoppedEarlyReply(narration, cap);
     final step = s.ctx.kind == RequestKind.newApp
         ? await _create(s, src, reply, fallbackTitle: true)
         : await _change(s, src, reply, false, canReset: false);
     return _set(s, switch (step) {
+      _Ended(outcome: final RunFinished f) => () {
+        capPublished = clean;
+        return RunFinished(
+          artifactId: f.artifactId,
+          version: f.version,
+          answered: f.answered,
+          docsRefused: f.docsRefused,
+          limit: cap,
+        );
+      }(),
       final _Ended e => e.outcome,
       // canReset is false: a conflict there fails instead.
       _Reset() => throw StateError('unreachable'),
     });
   }
+
+  /// The snapshot [capStop] published, once it has.
+  DraftSnapshot? capPublished;
 
   RunOutcome _set(RunState s, Object step) {
     final o = switch (step) {
@@ -319,9 +358,24 @@ class FinishTool implements Tool {
     return const _Ended(RunCancelled());
   }
 
-  /// Replies "Couldn't make that change: [reason]" and gives up.
-  Future<_Ended> _fail(RunState s, String reason, {Set<String>? newer}) =>
-      _failWith(api, render, _log, s, reason, newer: newer);
+  /// Replies "Couldn't make that change: [reason]" (or [reply] when
+  /// given) and gives up, at [limit] when given.
+  Future<_Ended> _fail(
+    RunState s,
+    String reason, {
+    Set<String>? newer,
+    String? reply,
+    String? limit,
+  }) => _failWith(
+    api,
+    render,
+    _log,
+    s,
+    reason,
+    newer: newer,
+    reply: reply,
+    limit: limit,
+  );
 
   /// Clears the working mark and deletes the draft artifact.
   Future<void> _end(RunState s) => _endRun(api, render, _log, s);
@@ -651,7 +705,10 @@ class FinishTool implements Tool {
 /// `give_up`: publishes nothing, replies "Couldn't make that change:
 /// `<reason>`" on the change's threads (they stay open), acknowledges the
 /// comments, clears the working mark, deletes the draft artifact and ends
-/// the run as [RunGaveUp].
+/// the run as [RunGaveUp]. A change's `give_up` at or near a cap
+/// ([RunBudget.nearLimit]) is the limit's doing: the reply names the limit
+/// in Clax's words with the reason as the agent's ([limitFailureReply]),
+/// and the outcome carries the limit, so the change can Keep going.
 class GiveUpTool implements Tool {
   GiveUpTool(this.api, {required this.render, void Function(String)? log})
     : _log = log ?? ((_) {});
@@ -659,6 +716,9 @@ class GiveUpTool implements Tool {
   final ClaxApi api;
   final RenderTool render;
   final void Function(String) _log;
+
+  /// The agent's reason, once it called `give_up`.
+  String? givenReason;
 
   @override
   final spec = ToolSpec(
@@ -686,19 +746,36 @@ class GiveUpTool implements Tool {
       final String r when r.trim().isNotEmpty => r.trim(),
       _ => throw const ToolInputError('reason must be a non-empty string.'),
     };
+    givenReason = reason;
     if (cancel.isCancelled) {
       await _endRun(api, render, _log, s);
       s.outcome ??= const RunCancelled();
       return const ToolOk({'replied': <String>[]});
     }
-    final e = await _failWith(api, render, _log, s, reason);
+    // A give_up at or near a cap of a change is the limit's doing: Clax
+    // names the limit, with the agent's reason as its words.
+    final spent = s.ctx.changeSpentUsd;
+    final limit = spent == null ? null : s.budget.nearLimit;
+    final left = changeCapUsd - (spent ?? 0) - s.budget.costUsd;
+    final e = limit == null
+        ? await _failWith(api, render, _log, s, reason)
+        : await _failWith(
+            api,
+            render,
+            _log,
+            s,
+            limitFailureReason(limit, leftUsd: left),
+            reply: limitFailureReply(limit, leftUsd: left, agentSaid: reason),
+            limit: limit,
+          );
     s.outcome ??= e.outcome;
     return ToolOk({'replied': e.replied});
   }
 }
 
-/// Replies "Couldn't make that change: [reason]" on [s]'s threads (none
-/// for a new app), ends the run and gives up.
+/// Replies "Couldn't make that change: [reason]" (or [reply], when given)
+/// on [s]'s threads (none for a new app), ends the run and gives up, at
+/// the cap [limit] when given.
 Future<_Ended> _failWith(
   ClaxApi api,
   RenderTool render,
@@ -706,6 +783,8 @@ Future<_Ended> _failWith(
   RunState s,
   String reason, {
   Set<String>? newer,
+  String? reply,
+  String? limit,
 }) async {
   var answered = true;
   var threads = const <String>[];
@@ -714,7 +793,7 @@ Future<_Ended> _failWith(
       api,
       log,
       s,
-      failureReply(reason),
+      reply ?? failureReply(reason),
       resolve: false,
       newer: newer ?? const {},
     );
@@ -722,7 +801,10 @@ Future<_Ended> _failWith(
     threads = r.threads;
   }
   await _endRun(api, render, log, s);
-  return _Ended(RunGaveUp(reason, answered: answered), replied: threads);
+  return _Ended(
+    RunGaveUp(reason, answered: answered, limit: limit),
+    replied: threads,
+  );
 }
 
 /// Replies [body] on each of the run's threads but those with a newer

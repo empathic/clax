@@ -504,7 +504,11 @@ void main() {
         expect(out, isA<ChangeFailed>());
         expect(bodies(aid, item.threadId), [
           'x',
-          failureReply('it ran out of time (10 turns).'),
+          limitFailureReply(
+            '10 turns',
+            leftUsd: changeCapUsd,
+            agentSaid: 'Looking',
+          ),
         ]);
         expect(api.currentVersion(aid), 1);
       },
@@ -526,8 +530,11 @@ void main() {
       expect(out, isA<ChangeLanded>().having((o) => o.version, 'version', 2));
       expect(
         bodies(aid, item.threadId).last,
-        'Renaming the button. I stopped early (10 turns), so this may not be '
-        'everything you asked.',
+        limitLandedReply(
+          '10 turns',
+          leftUsd: changeCapUsd,
+          agentSaid: 'Renaming the button',
+        ),
       );
       expect(api.threadOf(aid, item.threadId).status, 'open');
       expect(await api.listDrafts(), isEmpty);
@@ -1029,7 +1036,17 @@ void main() {
         [for (final x in (await plans.get(aid))!.todo) x.id],
         ['f1', 'f2'],
       );
-      expect(runner.states.single.budget.caps, RunCaps.change);
+      final caps = runner.states.single.budget.caps;
+      expect(
+        (caps.turns, caps.renders, caps.outputTokens, caps.costUsd),
+        (
+          RunCaps.change.turns,
+          RunCaps.change.renders,
+          RunCaps.change.outputTokens,
+          RunCaps.change.costUsd,
+        ),
+      );
+      expect(caps.wallClock, RunCaps.change.wallClock);
     });
   });
 }

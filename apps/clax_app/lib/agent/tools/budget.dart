@@ -260,6 +260,24 @@ class RunBudget {
     return null;
   }
 
+  /// The cap a run that ends now ended at or near, named as [hardStop]
+  /// names it ("10 turns", "3 renders", …): the hard cap reached; else,
+  /// once [softNote] applies or no render is left, the cap most nearly
+  /// spent; else null.
+  String? get nearLimit {
+    if (hardStop case final cap?) return cap;
+    if (softNote == null && canRender) return null;
+    final spent = <String, double>{
+      '${caps.turns} turns': _turns / caps.turns,
+      '${caps.renders} renders': _renders / caps.renders,
+      '${caps.wallClock.inSeconds} seconds':
+          elapsed.inMicroseconds / caps.wallClock.inMicroseconds,
+      '${caps.outputTokens} output tokens': _usage.output / caps.outputTokens,
+      '\$${caps.costUsd.toStringAsFixed(2)}': costUsd / caps.costUsd,
+    };
+    return spent.entries.reduce((a, b) => b.value > a.value ? b : a).key;
+  }
+
   /// [softNoteText] once two turns or fewer remain, or 60% of the wall
   /// clock, the output tokens or the cost is spent; else null.
   String? get softNote {
