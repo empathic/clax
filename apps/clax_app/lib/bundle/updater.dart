@@ -288,6 +288,8 @@ class Updater {
         title: m.title,
         capabilities: m.capabilities,
         entries: entries,
+        // The update's code is not published yet: it fetches nothing.
+        inheritNet: false,
       );
     } on ClaxApiError catch (e) {
       return UpdateCheckFailed(

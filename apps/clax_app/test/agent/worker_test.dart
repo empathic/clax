@@ -1741,6 +1741,7 @@ class LostAnswerApi extends FakeClaxApi {
     Map<String, Object?>? capabilities,
     Map<String, String> files = const {},
     Map<String, FileEntry> entries = const {},
+    bool inheritNet = true,
   }) async {
     final d = await super.createDraft(
       of: of,
@@ -1748,6 +1749,7 @@ class LostAnswerApi extends FakeClaxApi {
       capabilities: capabilities,
       files: files,
       entries: entries,
+      inheritNet: inheritNet,
     );
     _drafts.add(d.id);
     return d;

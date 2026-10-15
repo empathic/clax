@@ -131,13 +131,15 @@ abstract interface class ClaxApi {
   /// a new app) at version 1 with [files] (path → text) and [entries]
   /// (text or bytes with a content type; one wins over [files] for the
   /// same path), carrying a copy of [of]'s documents (the owner's, without
-  /// `data/users/`, up to the copy's cap).
+  /// `data/users/`, up to the copy's cap). The draft's `net.fetch` uses
+  /// [of]'s network grants unless [inheritNet] is false (offline).
   Future<DraftInfo> createDraft({
     String? of,
     required String title,
     Map<String, Object?>? capabilities,
     Map<String, String> files = const {},
     Map<String, FileEntry> entries = const {},
+    bool inheritNet = true,
   });
 
   /// Publishes a new version of draft [draftId] with the token and no

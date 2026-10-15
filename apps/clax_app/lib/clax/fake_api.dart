@@ -841,8 +841,10 @@ class FakeClaxApi implements ClaxApi {
     Map<String, Object?>? capabilities,
     Map<String, String> files = const {},
     Map<String, FileEntry> entries = const {},
+    bool inheritNet = true,
   }) async {
     _call('createDraft', {
+      'inheritNet': inheritNet,
       'of': of,
       'title': title,
       'capabilities': capabilities,

@@ -45,6 +45,7 @@ class GatedApi extends FakeClaxApi {
     Map<String, Object?>? capabilities,
     Map<String, String> files = const {},
     Map<String, FileEntry> entries = const {},
+    bool inheritNet = true,
   }) async {
     if (gate case final g?) await g.future;
     return super.createDraft(
@@ -53,6 +54,7 @@ class GatedApi extends FakeClaxApi {
       capabilities: capabilities,
       files: files,
       entries: entries,
+      inheritNet: inheritNet,
     );
   }
 }
