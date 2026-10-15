@@ -1473,6 +1473,21 @@ impl TestClient {
         self
     }
 
+    /// The same client reaching the daemon at its LAN address
+    /// ([`LAN_LOCAL`] and the daemon's port) rather than the loopback
+    /// address the test connects to: its requests name and sign that
+    /// `Host`, as a machine on the LAN does.
+    pub fn on_lan_address(mut self) -> TestClient {
+        let port = self.host.rsplit_once(':').map(|(_, p)| p.to_string());
+        self.host = format!("{LAN_LOCAL}:{}", port.unwrap_or_default());
+        self
+    }
+
+    /// The `http://<host>` this client reaches the daemon at.
+    pub fn reached_base(&self) -> String {
+        format!("http://{}", self.host)
+    }
+
     /// The same client speaking from LAN address `ip`.
     pub fn from_peer(mut self, ip: IpAddr) -> TestClient {
         self.peer = Some(ip);
