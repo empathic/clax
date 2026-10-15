@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:clax_app/platform/device/device_grants.dart';
 import 'package:clax_app/platform/device/device_host.dart';
@@ -20,23 +21,37 @@ import 'device_host_test.dart'
 
 const aid = 'abcdefghjkmn';
 
+/// Shifts of (0.25, 0.75), then (0.5, 0.1), and so on: deterministic.
+class FixedRandom implements math.Random {
+  static const _values = [0.25, 0.75, 0.5, 0.1, 0.9, 0.4];
+  FixedRandom([this._i = 0]);
+  int _i;
+  @override
+  double nextDouble() => _values[_i++ % _values.length];
+  @override
+  int nextInt(int max) => 0;
+  @override
+  bool nextBool() => false;
+}
+
 class Rig {
-  Rig() {
+  Rig({DeviceGrants? grants, math.Random? random})
+    : grants = grants ?? MemoryDeviceGrants() {
     host = DeviceHost(
-      grants: grants,
+      grants: this.grants,
       consent: consent,
       reminders: Reminders(FakeNotifier()),
       share: FakeShare(),
       files: FakeFiles(),
       camera: FakeCamera(),
       location: location,
-      coarsener: Coarsener(offsetLat: 0.25, offsetLon: 0.75),
+      random: random ?? FixedRandom(),
       now: () => now,
     );
     view = DeviceView(send: sent.add, shown: () async => shown);
   }
 
-  final grants = MemoryDeviceGrants();
+  final DeviceGrants grants;
   final consent = FakeConsent();
   final location = FakeLocation();
   late final DeviceHost host;
@@ -341,6 +356,59 @@ void main() {
     late Directory dir;
     setUp(() => dir = Directory.systemTemp.createTempSync('grants'));
     tearDown(() => dir.deleteSync(recursive: true));
+
+    test('an app keeps its grid shift across restarts until its grant is '
+        'revoked', () async {
+      final file = File('${dir.path}/device-grants.json');
+      Future<Object?> approx(Rig r) async => (await r.call('current')).value;
+      final first = Rig(grants: FileDeviceGrants(file))
+        ..consent.answer = DeviceAnswer.approximate;
+      final a = await approx(first);
+      final shift = (await first.grants.decision(aid, 'location'))!.shift;
+      expect(shift, (0.25, 0.75));
+      // A restart: a new host over the same file, drawing other shifts.
+      final second = Rig(
+        grants: FileDeviceGrants(file),
+        random: FixedRandom(2),
+      );
+      expect(await approx(second), a);
+      expect(second.consent.asked, isEmpty);
+      // Revoked, then allowed again: a new shift, so a new centre.
+      await second.host.revoke(aid, 'location');
+      second.consent.answer = DeviceAnswer.approximate;
+      final b = await approx(second);
+      expect(
+        (await second.grants.decision(aid, 'location'))!.shift,
+        isNot(shift),
+      );
+      expect(b, isNot(a));
+    });
+
+    test(
+      'a location grant kept without a shift gets one, kept from then on',
+      () async {
+        final file = File('${dir.path}/device-grants.json')
+          ..writeAsStringSync(
+            jsonEncode({
+              aid: {
+                'location': {
+                  'allowed': true,
+                  'at': '2026-10-12T00:00:00.000Z',
+                  'precision': 'approximate',
+                },
+              },
+            }),
+          );
+        final r = Rig(grants: FileDeviceGrants(file));
+        final a = (await r.call('current')).value;
+        final d = (await FileDeviceGrants(file).decision(aid, 'location'))!;
+        expect((d.shift, d.at), ((0.25, 0.75), DateTime.utc(2026, 10, 12)));
+        expect(
+          (await Rig(grants: FileDeviceGrants(file)).call('current')).value,
+          a,
+        );
+      },
+    );
 
     test('an allowed location kept before precisions reads as Precise, and '
         'is written with it on the next save', () async {

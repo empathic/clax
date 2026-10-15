@@ -26,31 +26,38 @@ const deviceCapWords = {
 };
 
 /// The person's answer for one app and capability, and when; for an
-/// allowed `location`, the [precision] it was allowed at (null otherwise).
+/// allowed `location`, the [precision] it was allowed at (null otherwise)
+/// and the app's approximate-grid [shift] (fractions of a cell, from 0 to
+/// 1; `location_coarsen.dart`), kept until the answer is revoked or the
+/// app deleted, so the app's cells stay the same across runs of Clax.
 class DeviceDecision {
   const DeviceDecision({
     required this.allowed,
     required this.at,
     this.precision,
+    this.shift,
   });
 
   final bool allowed;
   final DateTime at;
   final Precision? precision;
+  final (double, double)? shift;
 
   @override
   bool operator ==(Object other) =>
       other is DeviceDecision &&
       other.allowed == allowed &&
       other.at == at &&
-      other.precision == precision;
+      other.precision == precision &&
+      other.shift == shift;
 
   @override
-  int get hashCode => Object.hash(allowed, at, precision);
+  int get hashCode => Object.hash(allowed, at, precision, shift);
 
   @override
   String toString() =>
-      'DeviceDecision(allowed: $allowed, at: $at, precision: $precision)';
+      'DeviceDecision(allowed: $allowed, at: $at, precision: $precision, '
+      'shift: $shift)';
 }
 
 /// [precision] as kept for [cap]: an allowed location's, Precise when not
@@ -58,19 +65,37 @@ class DeviceDecision {
 Precision? _precisionFor(String cap, bool allowed, Precision? precision) =>
     cap == 'location' && allowed ? (precision ?? Precision.precise) : null;
 
+DeviceDecision _withShift(DeviceDecision d, (double, double) shift) =>
+    DeviceDecision(
+      allowed: d.allowed,
+      at: d.at,
+      precision: d.precision,
+      shift: shift,
+    );
+
+(double, double)? _parseShift(Object? v) =>
+    v is List && v.length == 2 && v.every((x) => x is num && x >= 0 && x < 1)
+    ? ((v[0] as num).toDouble(), (v[1] as num).toDouble())
+    : null;
+
 abstract interface class DeviceGrants {
   /// The person's answer for app [aid] and [cap]; null when never asked
   /// (or revoked since).
   Future<DeviceDecision?> decision(String aid, String cap);
 
   /// Keeps the person's answer for app [aid] and [cap]; an allowed
-  /// `location` keeps [precision] (Precise when null).
+  /// `location` keeps [precision] (Precise when null) and [shift].
   Future<void> decide(
     String aid,
     String cap, {
     required bool allowed,
     Precision? precision,
+    (double, double)? shift,
   });
+
+  /// Gives app [aid]'s allowed location answer [shift] (one kept before
+  /// shifts existed), leaving the rest of it as it is.
+  Future<void> keepShift(String aid, (double, double) shift);
 
   /// Forgets app [aid]'s answer for [cap]; its next call asks again.
   Future<void> revoke(String aid, String cap);
@@ -107,13 +132,22 @@ class MemoryDeviceGrants implements DeviceGrants {
     String cap, {
     required bool allowed,
     Precision? precision,
+    (double, double)? shift,
   }) async {
     (_all[aid] ??= {})[cap] = DeviceDecision(
       allowed: allowed,
       at: _now(),
       precision: _precisionFor(cap, allowed, precision),
+      shift: _precisionFor(cap, allowed, precision) == null ? null : shift,
     );
     _changes.add(aid);
+  }
+
+  @override
+  Future<void> keepShift(String aid, (double, double) shift) async {
+    final d = _all[aid]?['location'];
+    if (d == null || !d.allowed) return;
+    _all[aid]!['location'] = _withShift(d, shift);
   }
 
   @override
@@ -162,6 +196,9 @@ class FileDeviceGrants implements DeviceGrants {
               allowed,
               v['precision'] == 'approximate' ? Precision.approximate : null,
             ),
+            shift: cap == 'location' && allowed
+                ? _parseShift(v['shift'])
+                : null,
           );
   }
 
@@ -197,6 +234,7 @@ class FileDeviceGrants implements DeviceGrants {
                   'allowed': d.allowed,
                   'at': d.at.toUtc().toIso8601String(),
                   'precision': ?d.precision?.name,
+                  if (d.shift case (final a, final b)) 'shift': [a, b],
                 },
             },
       }),
@@ -215,15 +253,26 @@ class FileDeviceGrants implements DeviceGrants {
     String cap, {
     required bool allowed,
     Precision? precision,
+    (double, double)? shift,
   }) async {
     final all = _read();
     (all[aid] ??= {})[cap] = DeviceDecision(
       allowed: allowed,
       at: _now(),
       precision: _precisionFor(cap, allowed, precision),
+      shift: _precisionFor(cap, allowed, precision) == null ? null : shift,
     );
     _write(all);
     _changes.add(aid);
+  }
+
+  @override
+  Future<void> keepShift(String aid, (double, double) shift) async {
+    final all = _read();
+    final d = all[aid]?['location'];
+    if (d == null || !d.allowed) return;
+    all[aid]!['location'] = _withShift(d, shift);
+    _write(all);
   }
 
   @override

@@ -10,19 +10,14 @@ import 'device_ports.dart';
 /// Snaps fixes to a grid of cells [cellDegrees] of latitude tall (0.02°,
 /// about 2.2 km) and as wide in kilometres (more degrees of longitude
 /// toward the poles). The grid is shifted by [offsetLat] and [offsetLon]
-/// (fractions of a cell, from 0 to 1), drawn once per run of Clax, so a
-/// cell's edges are not at known lines.
+/// (fractions of a cell, from 0 to 1), drawn at random for each app and
+/// kept with its location grant, so a cell's edges are not at known lines
+/// and stay put across runs of Clax.
 ///
 /// A fix inside a cell always gives the cell's centre: averaging many
-/// readings learns nothing finer, within one run.
+/// readings learns nothing finer.
 class Coarsener {
   Coarsener({required this.offsetLat, required this.offsetLon});
-
-  /// A grid shifted at random.
-  factory Coarsener.random([math.Random? random]) {
-    final r = random ?? math.Random.secure();
-    return Coarsener(offsetLat: r.nextDouble(), offsetLon: r.nextDouble());
-  }
 
   static const cellDegrees = 0.02;
 

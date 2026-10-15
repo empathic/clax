@@ -6,7 +6,9 @@
 ///
 /// Location is asked as Precise, Approximate or Don't allow. An app allowed
 /// Approximate (or any app, when Android lets Clax have only an approximate
-/// location) gets fixes snapped to a cell of about 2 km ([Coarsener]),
+/// location) gets fixes snapped to a cell of about 2 km ([Coarsener]) on a
+/// grid shifted at random for that app, kept with its grant (a new shift
+/// only once the grant is revoked or the app deleted),
 /// marked `precise: false`. `location.watch` follows the device for the
 /// app screen's [DeviceView] while the screen shows the app: the screen
 /// stops it ([DeviceHost.stopWatches]) when it leaves, and it does not
@@ -15,6 +17,7 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 
@@ -66,6 +69,7 @@ class _Watch {
   var phase = _Phase.asking;
   var cancelled = false;
   var precision = Precision.precise;
+  late Coarsener grid;
   StreamSubscription<LocationFix>? sub;
   DateTime? lastAt;
   (int, int)? lastCell;
@@ -80,9 +84,9 @@ class DeviceHost {
     required this.files,
     required this.camera,
     required this.location,
-    Coarsener? coarsener,
+    math.Random? random,
     DateTime Function()? now,
-  }) : coarsener = coarsener ?? Coarsener.random(),
+  }) : _random = random ?? math.Random.secure(),
        _now = now ?? DateTime.now;
 
   final DeviceGrants grants;
@@ -93,8 +97,8 @@ class DeviceHost {
   final CameraPort camera;
   final LocationPort location;
 
-  /// The grid approximate fixes snap to, one per run of Clax.
-  final Coarsener coarsener;
+  /// Draws each app's grid shift.
+  final math.Random _random;
   final DateTime Function() _now;
 
   /// The watches a view may run at once.
@@ -235,7 +239,8 @@ class DeviceHost {
         };
       case ('location', 'current'):
         final p = decision.precision ?? Precision.precise;
-        return _fixJson(_shown(await location.current(p), p));
+        final grid = await _grid(aid, decision);
+        return _fixJson(_shown(await location.current(p), p, grid));
     }
     throw DeviceError(
       'capability_removed',
@@ -285,7 +290,13 @@ class DeviceHost {
         : Precision.precise;
     final kept = await grants.decision(aid, cap);
     if (kept == null || kept.allowed != ok) {
-      await grants.decide(aid, cap, allowed: ok, precision: precision);
+      await grants.decide(
+        aid,
+        cap,
+        allowed: ok,
+        precision: precision,
+        shift: _newShift(),
+      );
     }
     if (!ok) {
       throw DeviceError.notGranted(
@@ -302,12 +313,23 @@ class DeviceHost {
 
   // --- location ---
 
-  /// [fix] as an app allowed [precision] sees it: snapped to its cell
-  /// unless both the app and the system allow precise.
-  LocationFix _shown(LocationFix fix, Precision precision) =>
-      fix.precise && precision == Precision.precise
-      ? fix
-      : coarsener.coarsen(fix);
+  (double, double) _newShift() => (_random.nextDouble(), _random.nextDouble());
+
+  /// App [aid]'s grid, from the shift kept with its location grant [d]; a
+  /// grant kept before shifts existed gets one now, kept from then on.
+  Future<Coarsener> _grid(String aid, DeviceDecision d) async {
+    var shift = d.shift;
+    if (shift == null) {
+      shift = _newShift();
+      await grants.keepShift(aid, shift);
+    }
+    return Coarsener(offsetLat: shift.$1, offsetLon: shift.$2);
+  }
+
+  /// [fix] as an app allowed [precision] sees it: snapped to its cell of
+  /// [grid] unless both the app and the system allow precise.
+  LocationFix _shown(LocationFix fix, Precision precision, Coarsener grid) =>
+      fix.precise && precision == Precision.precise ? fix : grid.coarsen(fix);
 
   static Map<String, Object?> _fixJson(LocationFix f) => {
     'lat': f.lat,
@@ -359,7 +381,8 @@ class DeviceHost {
       if (w.cancelled) throw const DeviceError('stopped', _stoppedMessage);
       w
         ..phase = _Phase.starting
-        ..precision = d.precision ?? Precision.precise;
+        ..precision = d.precision ?? Precision.precise
+        ..grid = await _grid(aid, d);
       final stream = await location.watch(w.precision, minDistance: distance);
       if (w.cancelled || !await view.shown() || w.cancelled) {
         throw const DeviceError('stopped', _stoppedMessage);
@@ -386,10 +409,10 @@ class DeviceHost {
   /// ago, or, for an approximate watch, it is in the cell last sent.
   void _update(DeviceView view, _Watch w, LocationFix fix) {
     if (w.cancelled) return;
-    final shown = _shown(fix, w.precision);
+    final shown = _shown(fix, w.precision, w.grid);
     (int, int)? cell;
     if (!shown.precise) {
-      final c = coarsener.cell(fix.lat, fix.lon);
+      final c = w.grid.cell(fix.lat, fix.lon);
       cell = (c.row, c.col);
       if (cell == w.lastCell) return;
     }
