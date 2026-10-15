@@ -223,6 +223,7 @@ pub async fn list(
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
     let me = recipient_of(&s, &who).await?;
+    let hosted = s.hosted.is_some();
     let q = query_of(q)?;
     match q.group.as_deref() {
         None => {}
@@ -285,8 +286,12 @@ pub async fn list(
     // reads up to the whole inbox, so it waits in the bulk lane; an
     // unfiltered page reads one page and the unread count.
     let job = move |db: &clax_core::Store| {
+        let mut iq = iq;
+        if iq.text.is_some() {
+            iq.text_withheld_at = crate::inbox::text_withheld_at(db, me.as_deref(), hosted)?;
+        }
         let (rows, next) = db.inbox_list(&iq)?;
-        let items = inbox_views(db, &rows)?;
+        let items = inbox_views(db, &rows, hosted)?;
         let unread = db.inbox_unread(me.as_deref())?;
         let mut out = json!({
             "items": items,
@@ -325,6 +330,7 @@ pub async fn summary(
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
     let me = recipient_of(&s, &who).await?;
+    let hosted = s.hosted.is_some();
     let out = s
         .store_call(move |db| {
             let (open, _) =
@@ -351,7 +357,7 @@ pub async fn summary(
             Ok(json!({
                 "unread": db.inbox_unread(me.as_deref())?,
                 "questions": questions,
-                "latest": inbox_views(db, &rows)?,
+                "latest": inbox_views(db, &rows, hosted)?,
             }))
         })
         .await?;
@@ -379,13 +385,14 @@ pub async fn get_one(
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
     let me = recipient_of(&s, &who).await?;
+    let hosted = s.hosted.is_some();
     let id = item_id(p)?;
     let item = s
         .store_call(move |db| {
             let i = db
                 .inbox_item(&id, me.as_deref())?
                 .ok_or(CoreError::NotFound)?;
-            inbox_view(db, &i)
+            inbox_view(db, &i, hosted)
         })
         .await?;
     Ok(Json(json!({"item": item})))
@@ -398,13 +405,14 @@ async fn mark_one(
     id: String,
     read: bool,
 ) -> Result<Json<Value>, ApiError> {
+    let hosted = s.hosted.is_some();
     let out = s
         .store_call(move |db| {
             let me = me.as_deref();
             db.inbox_item(&id, me)?.ok_or(CoreError::NotFound)?;
             db.inbox_mark(std::slice::from_ref(&id), read, me)?;
             let i = db.inbox_item(&id, me)?.ok_or(CoreError::NotFound)?;
-            Ok(json!({"item": inbox_view(db, &i)?, "unread": db.inbox_unread(me)?}))
+            Ok(json!({"item": inbox_view(db, &i, hosted)?, "unread": db.inbox_unread(me)?}))
         })
         .await?;
     Ok(Json(out))
@@ -493,11 +501,18 @@ pub async fn read_many(
         }
         _ => return Err(invalid("give ids, or all: true")),
     };
+    let hosted = s.hosted.is_some();
     let out = s
         .store_call(move |db| {
-            let marked = match &mark {
-                Mark::Ids(ids) => db.inbox_mark(ids, true, me.as_deref())?,
-                Mark::All(q) => db.inbox_mark_all(q)?,
+            let marked = match mark {
+                Mark::Ids(ids) => db.inbox_mark(&ids, true, me.as_deref())?,
+                Mark::All(mut q) => {
+                    if q.text.is_some() {
+                        q.text_withheld_at =
+                            crate::inbox::text_withheld_at(db, me.as_deref(), hosted)?;
+                    }
+                    db.inbox_mark_all(&q)?
+                }
             };
             Ok(json!({"marked": marked, "unread": db.inbox_unread(me.as_deref())?}))
         })

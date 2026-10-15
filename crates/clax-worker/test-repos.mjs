@@ -38,7 +38,7 @@ const STOP_LIMIT_MS = 10_000;
 /** A bound for a hung git or jj, not a time budget. */
 const HANG_MS = 120_000;
 const ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
-const TOKEN = "repos-owner-token-" + Math.random().toString(36).slice(2);
+const TOKEN = "repos-owner-token-" + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 
 function freePort() {
   return new Promise((ok, fail) => {

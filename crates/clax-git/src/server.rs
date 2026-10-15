@@ -43,7 +43,8 @@ use crate::http::HttpResponse;
 use crate::id::ObjectId;
 use crate::object::{Commit, Mode, Object, ObjectKind, parse_tree, tag_target};
 use crate::pack::{
-    DEFAULT_MAX_OBJECT_BYTES, DEFAULT_MAX_UNPACKED_BYTES, ParsedPack, Resolved, write_pack,
+    DEFAULT_MAX_OBJECT_BYTES, DEFAULT_MAX_OBJECTS, DEFAULT_MAX_UNPACKED_BYTES, ParsedPack,
+    Resolved, write_pack,
 };
 use crate::pktline::{self, FLUSH, Packet};
 use crate::repo::{ATOMIC_FAILED, RefStatus, RefUpdate, Repo};
@@ -135,6 +136,8 @@ pub struct ReceiveOptions {
     /// The most bytes a push's pack may unpack to: its entries inflated
     /// plus the objects its deltas make.
     pub max_unpacked_bytes: usize,
+    /// The most objects a push's pack may hold.
+    pub max_objects: usize,
 }
 
 impl Default for ReceiveOptions {
@@ -145,6 +148,7 @@ impl Default for ReceiveOptions {
             protect_version_tags: true,
             max_object_bytes: DEFAULT_MAX_OBJECT_BYTES,
             max_unpacked_bytes: DEFAULT_MAX_UNPACKED_BYTES,
+            max_objects: DEFAULT_MAX_OBJECTS,
         }
     }
 }
@@ -1151,7 +1155,12 @@ async fn receive(
 
 async fn unpack(repo: &impl Repo, pack: &[u8], options: &ReceiveOptions) -> Result<Vec<Object>> {
     let max_object_bytes = options.max_object_bytes;
-    let parsed = ParsedPack::parse_bounded(pack, max_object_bytes, options.max_unpacked_bytes)?;
+    let parsed = ParsedPack::parse_within(
+        pack,
+        max_object_bytes,
+        options.max_unpacked_bytes,
+        options.max_objects,
+    )?;
     let mut external = HashMap::new();
     loop {
         match parsed.resolve(&external, max_object_bytes)? {

@@ -432,6 +432,25 @@ fn a_listed_token_that_expires_leaves_the_list_without_a_revocation() {
 }
 
 #[test]
+fn many_tiny_objects_count_their_rows_against_the_bound() {
+    let h = local_host();
+    wait(async {
+        h.create("a").await.unwrap();
+        let a = h.open("a").await.unwrap().unwrap();
+        // Four bytes each: far under the bound in data, over it with rows.
+        let n = db::MAX_WRITE_BYTES / (db::OBJECT_ROW_BYTES + 4) + 1;
+        let objects: Vec<_> = (0..n as u32)
+            .map(|i| clax_git::Object::blob(i.to_be_bytes().to_vec()))
+            .collect();
+        assert!(4 * n < db::MAX_WRITE_BYTES);
+        let e = clax_git::Repo::apply(&a, objects, &[], true)
+            .await
+            .unwrap_err();
+        assert!(matches!(e, GitError::InvalidArgument(_)), "{e:?}");
+    });
+}
+
+#[test]
 fn a_write_over_the_bound_is_refused_and_writes_nothing() {
     let h = local_host();
     wait(async {

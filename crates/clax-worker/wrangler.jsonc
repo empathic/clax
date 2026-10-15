@@ -93,7 +93,8 @@
   }
   // CLAX_TOKEN, the owner's bearer token, is a secret: `wrangler secret put
   // CLAX_TOKEN` for a deploy, `.dev.vars` or `--var CLAX_TOKEN:<value>` for
-  // `wrangler dev`. Unset, the instance makes one and keeps it in its storage.
+  // `wrangler dev`; at least 32 characters. Unset, the instance makes one and
+  // keeps it in its storage.
   // SETUP_SECRET, which a hosted instance's /setup takes once, is a secret
   // the same way; unset, setup stays closed.
 }
