@@ -54,6 +54,44 @@ void main() {
       );
     });
 
+    test("a draft's key, kind and quote, and its screenshot", () {
+      final s = HostMessage.parse(
+        jsonEncode({
+          'type': 'state',
+          'commenting': false,
+          'draft': {
+            'key': 'p1',
+            'kind': 'range',
+            'label': '“Mon 5 km”',
+            'quote': 'Mon 5 km and more',
+            'text': '',
+            'clip': 'ready',
+          },
+          'busy': false,
+        }),
+      ) as StateMsg;
+      expect(s.draft!.key, 'p1');
+      expect(s.draft!.kind, 'range');
+      expect(s.draft!.quote, 'Mon 5 km and more');
+      expect(s.draft!.wholeApp, isFalse);
+      final whole = HostMessage.parse(
+        '{"type":"state","commenting":false,"draft":{"key":"w","kind":"artifact","label":"The whole app","quote":null,"text":"","clip":"none"},"busy":false}',
+      ) as StateMsg;
+      expect(whole.draft!.wholeApp, isTrue);
+      expect(whole.draft!.quote, isNull);
+
+      final clip = HostMessage.parse(
+        jsonEncode({'type': 'draftClip', 'key': 'p1', 'png': 'AQID'}),
+      ) as DraftClipMsg;
+      expect(clip.key, 'p1');
+      expect(clip.png, [1, 2, 3]);
+      expect(
+        HostMessage.parse('{"type":"draftClip","key":"p1","png":"%%"}'),
+        isNull,
+      );
+      expect(HostMessage.parse('{"type":"draftClip","key":"p1"}'), isNull);
+    });
+
     test('threads', () {
       final m = HostMessage.parse(
         jsonEncode({
@@ -66,6 +104,7 @@ void main() {
               'sent': true,
               'comments': 2,
               'version': 1,
+              'clip': true,
             },
           ],
         }),
@@ -78,6 +117,7 @@ void main() {
       expect(t.sent, isTrue);
       expect(t.comments, 2);
       expect(t.version, 1);
+      expect(t.clip, isTrue);
     });
 
     test('sent, landed, notice', () {
@@ -180,6 +220,20 @@ void main() {
         'if(h&&typeof h.setVisible==="function")h.setVisible(v)})(false)',
       );
     });
+
+    test(
+      "the app's composer sets only the composer's text and sends its own",
+      () {
+        expect(
+          const SetDraftText('a"b', composer: true).toJs(),
+          r'window.claxHost?.setDraftText("a\"b",{composer:true})',
+        );
+        expect(
+          const SubmitDraft(text: 'make it </b>').toJs(),
+          r'window.claxHost?.submitDraft({text:"make it <\/b>"})',
+        );
+      },
+    );
 
     test('SetDraftText escapes the text as a JS string', () {
       expect(

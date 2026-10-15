@@ -1,4 +1,4 @@
-// Renders the thread page and the composer peek to PNGs at phone size
+// Renders the thread page and the app's comment composer to PNGs at phone size
 // (360 x 780 and 320 x 640 at a device pixel ratio of 3), light and dark,
 // at text scales 1.0, 1.3 and 2.0, with the real Roboto and Material Icons
 // fonts. For looking at, not a gate:
@@ -12,10 +12,10 @@ import 'dart:ui' as ui;
 
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
+import 'package:clax_app/ui/comment_composer.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/thread_detail.dart';
-import 'package:clax_app/ui/threads_panel.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -245,39 +245,36 @@ void main() {
 
   for (final brightness in Brightness.values) {
     for (final scale in [1.0, 1.3, 2.0]) {
-      final name = 'peek-320-${brightness.name}-$scale';
+      final name = 'composer-320-${brightness.name}-$scale';
       testWidgets(name, (tester) async {
+        final clip = await tester.runAsync(() => _clipOnce);
+        final text = TextEditingController(
+          text:
+              'make the Monday card show the pace per kilometre and the '
+              'heart rate under it',
+        );
+        addTearDown(text.dispose);
         await frame(
           tester,
           Scaffold(
             body: Column(
               children: [
                 const Expanded(child: ColoredBox(color: Color(0xFFFFFBF5))),
-                SizedBox(
-                  height: AppPanel.peekHeight + 48,
-                  child: AppPanel(
-                    wide: false,
-                    tab: PanelTab.threads,
-                    onTab: (_) {},
-                    onClose: () {},
-                    draft: const Draft(
-                      label: 'The Mon run card',
-                      text: '',
-                      clip: DraftClip.ready,
-                    ),
-                    busy: false,
-                    dictation: const Dictation(
-                      listening: true,
-                      words:
-                          'make the Monday card show the pace per kilometre '
-                          'and the heart rate under it',
-                    ),
-                    onMic: () {},
-                    threads: const [],
-                    onThread: (_) {},
-                    onResend: (_) {},
-                    versions: const SizedBox(),
+                CommentComposer(
+                  draft: const Draft(
+                    key: 'p1',
+                    label: '“Mon 5 km · 27:40”',
+                    quote: 'Mon 5 km · 27:40',
+                    text: '',
+                    clip: DraftClip.ready,
                   ),
+                  clip: clip,
+                  controller: text,
+                  dictation: const Dictation(listening: true),
+                  onMic: () {},
+                  onSend: () {},
+                  onCancel: () {},
+                  onAddToPlan: () {},
                 ),
               ],
             ),
@@ -285,6 +282,12 @@ void main() {
           brightness: brightness,
           scale: scale,
           size: const Size(320, 640),
+        );
+        await tester.runAsync(
+          () => precacheImage(
+            MemoryImage(clip!),
+            tester.element(find.byType(CommentComposer)),
+          ),
         );
         await shot(tester, name);
       });
