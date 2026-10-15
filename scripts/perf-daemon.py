@@ -34,6 +34,31 @@ event written). A probe's p95 and max are taken per round; the gate judges the
 median over rounds, so one burst of machine load in one round does not fail
 it. Requests still in flight when a window closes are waited for and count.
 
+With two people (spec 2026-10-08-multi-agent-multi-person §23): the daemon
+listens on every interface, and the owner invites Sam and Mia, who connect
+with `clax connect` from scratch homes (saying yes to the owner's content)
+and register agents with signed requests (`Machine`, `SignedClient`: the
+machine's Ed25519 key from `remote.key`, RFC 8032 signing in Python). Their
+browsers (the browser link's cookie at the daemon's LAN address), the
+owner's and the seed's LAN viewer write `vis.comments` comments on
+`vis.threads` threads, taking turns; each person allows the other's content
+on `vis.approvals_per_person` of the seed's artifacts. Each round then
+times, alone, as Sam's agent: an artifact's threads (`vis.timed_threads`
+threads of `vis.timed_comments_per_thread` comments, by all four) and a
+feedback poll of `vis.feedback_rows` rows, half the owner's (delivered) and
+half Mia's (withheld; Mia resolves those threads after each poll, so the
+held rows do not pile up). A second agent of Sam's polls its feedback and
+reads those threads every 50 ms, signed, from a process of its own, beside
+every load phase. Last, Mia raises Sam's agent on `vis.raised_artifacts` of
+her agent's artifacts and the owner on the timed one, and the threads are
+timed again. `GET /api/admin/perf/verify` gives the gateway's median
+signature verification over the run. On a machine with no LAN address the
+daemon cannot invite, and the run says so in a NOTE: line and skips these.
+
+`--phase vis_baseline` runs only the two timed requests, as the owner's
+agent, on an install with no people; scripts/perf-vis-baseline.sh runs it
+at the commit before the visibility filter, which gives `vis_baseline`.
+
 Budgets live in scripts/perf-daemon-budget.json:
 - `cheap_p95_ms`, `cheap_max_ms`: every probe under every load;
 - `list_alone_ratio`, `attention_alone_ratio`: the gallery list and the
@@ -84,6 +109,15 @@ Budgets live in scripts/perf-daemon-budget.json:
   queue_ratio * (the gallery requests' mean latency in the same window) /
   cheap_p95_ms, at most `max_scale`: a cheap request may wait as long as
   the galleries' own requests, but not `queue_ratio` times as long;
+- `vis_baseline`, `vis_threads_margin_ms`, `vis_feedback_poll_margin_ms`:
+  the threads (raised or not) and the poll as Sam's agent, the median over
+  rounds of each round's median, within the baseline plus the margin
+  (spec §23: 2 ms and 1 ms), scaled as above; one over is measured once
+  more at once and fails only if over again;
+- `sig_verify_us`: the gateway's median signature verification, scaled;
+  every answer the signed polling client got must be 200;
+- `vis_samples`, `vis`: samples per round of each timed request, and the
+  two people's seed;
 - `rounds`, `window_s`: how many rounds, and each phase's length;
 - `seed`: the seeded home's shape;
 - `quick`: what `--quick` (quality_gates.sh) overrides: shorter windows,
@@ -128,8 +162,8 @@ class Client:
     """One keep-alive connection to the daemon; reconnects after an error.
     Not shared between threads."""
 
-    def __init__(self, port, token=None, timeout=REQUEST_TIMEOUT_S):
-        self.port, self.token, self.timeout = port, token, timeout
+    def __init__(self, port, token=None, timeout=REQUEST_TIMEOUT_S, host="127.0.0.1"):
+        self.port, self.token, self.timeout, self.host = port, token, timeout, host
         self.conn = None
 
     def req(self, method, path, body=None, headers=None, auth=True):
@@ -142,7 +176,7 @@ class Client:
             h.setdefault("Content-Type", "application/json")
         for attempt in (0, 1):
             if self.conn is None:
-                self.conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=self.timeout)
+                self.conn = http.client.HTTPConnection(self.host, self.port, timeout=self.timeout)
             t0 = time.perf_counter()
             try:
                 self.conn.request(method, path, body=body, headers=h)
@@ -248,7 +282,7 @@ class Probes:
 
 
 class Daemon:
-    def __init__(self, binary, scratch):
+    def __init__(self, binary, scratch, bind="127.0.0.1"):
         self.home = os.path.join(scratch, "home")
         os.makedirs(self.home)
         # No provider key reaches a real model; no browser opens.
@@ -258,7 +292,7 @@ class Daemon:
         env.update(CLAX_HOME=self.home, CLAX_NO_OPEN="1", CLAX_CODEX_BIN="", RUST_LOG="error")
         self.log = open(os.path.join(scratch, "daemon.log"), "w")
         self.p = subprocess.Popen(
-            [binary, "serve", "--foreground", "--bind", "127.0.0.1", "--port", "0"],
+            [binary, "serve", "--foreground", "--bind", bind, "--port", "0"],
             env=env, stdin=subprocess.DEVNULL, stdout=self.log, stderr=subprocess.STDOUT)
         try:
             self.wait_ready()
@@ -420,8 +454,9 @@ def seed_inbox(port, token, cfg, made, sessions, client):
     """The owner's inbox, about spec §14's 6,000 items: the published items
     the seed's agent artifacts already made, then the owner comments on one
     thread of each of `inbox_threads` artifacts (away from the probed ones)
-    and sends it; agents reply on those threads round-robin and publish
-    versions of those artifacts addressing them, 20 requests in flight;
+    and sends it; agents reply on those threads round-robin, each thread
+    always by the same agent, and publish versions of those artifacts
+    addressing them, 20 requests in flight;
     agents ask questions. Replies are spread over many threads because each
     reply's response carries its whole thread."""
     c = Client(port, token)
@@ -438,11 +473,16 @@ def seed_inbox(port, token, cfg, made, sessions, client):
         expect(st == 200, f"send: {st} {d[:200]!r}")
         threads.append((aid, tid))
 
+    # Each thread's replies and versions come from one agent, the thread's
+    # own: another agent of the owner's may not reply to a thread the first
+    # took (409 `thread_taken`, spec 2026-10-08-multi-agent-multi-person §19
+    # item 4).
     def reply(k):
-        aid, tid = threads[k % len(threads)]
+        i = k % len(threads)
+        aid, tid = threads[i]
         st, d, _, _ = client().req("POST", f"/api/artifacts/{aid}/threads/{tid}/comments",
                                    {"body": f"note {k} about the header", "author_kind": "agent"},
-                                   {"x-clax-session": sessions[k % len(sessions)]})
+                                   {"x-clax-session": sessions[i % len(sessions)]})
         expect(st == 201, f"agent reply: {st} {d[:200]!r}")
 
     per = cfg["inbox_versions"] // len(threads)
@@ -805,16 +845,591 @@ def sessions_alone(d, st, n):
     return out
 
 
+# --- signed requests (spec 2026-10-08-multi-agent-multi-person §6.6) ------------
+# A connected machine's agents sign every request with the machine's Ed25519
+# key. Python's standard library has no Ed25519, so this is RFC 8032's
+# reference signing (section 6), checked against its first test vector when
+# the gate starts. Signing costs a few milliseconds here, outside every timed
+# round trip.
+
+_P = 2 ** 255 - 19
+_Q = 2 ** 252 + 27742317777372353535851937790883648493
+_D = -121665 * pow(121666, _P - 2, _P) % _P
+_SQRT_M1 = pow(2, (_P - 1) // 4, _P)
+
+
+def _add(a, b):
+    x = (a[1] - a[0]) * (b[1] - b[0]) % _P
+    y = (a[1] + a[0]) * (b[1] + b[0]) % _P
+    c = 2 * a[3] * b[3] * _D % _P
+    d = 2 * a[2] * b[2] % _P
+    e, f, g, h = y - x, d - c, d + c, y + x
+    return (e * f, g * h, f * g, e * h)
+
+
+def _mul(k, pt):
+    out = (0, 1, 1, 0)
+    while k:
+        if k & 1:
+            out = _add(out, pt)
+        pt = _add(pt, pt)
+        k >>= 1
+    return out
+
+
+def _base():
+    y = 4 * pow(5, _P - 2, _P) % _P
+    x2 = (y * y - 1) * pow(_D * y * y + 1, _P - 2, _P)
+    x = pow(x2, (_P + 3) // 8, _P)
+    if (x * x - x2) % _P:
+        x = x * _SQRT_M1 % _P
+    if x & 1:
+        x = _P - x
+    return (x, y, 1, x * y % _P)
+
+
+_G = _base()
+
+
+def _compress(pt):
+    zi = pow(pt[2], _P - 2, _P)
+    x, y = pt[0] * zi % _P, pt[1] * zi % _P
+    return int.to_bytes(y | ((x & 1) << 255), 32, "little")
+
+
+def _expand(seed):
+    h = hashlib.sha512(seed).digest()
+    a = int.from_bytes(h[:32], "little")
+    a &= (1 << 254) - 8
+    a |= 1 << 254
+    return a, h[32:]
+
+
+class Ed25519:
+    """An Ed25519 key from its 32-byte seed, for signing."""
+
+    def __init__(self, seed):
+        self.a, self.prefix = _expand(seed)
+        self.public = _compress(_mul(self.a, _G))
+
+    def sign(self, msg):
+        r = int.from_bytes(hashlib.sha512(self.prefix + msg).digest(), "little") % _Q
+        big_r = _compress(_mul(r, _G))
+        h = int.from_bytes(hashlib.sha512(big_r + self.public + msg).digest(), "little") % _Q
+        return big_r + int.to_bytes((r + h * self.a) % _Q, 32, "little")
+
+
+def ed25519_self_test():
+    """RFC 8032 §7.1, TEST 1."""
+    k = Ed25519(bytes.fromhex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"))
+    want = ("e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555f"
+            "b8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b")
+    expect(k.sign(b"").hex() == want, "the Ed25519 signer fails RFC 8032's first test vector")
+
+
+def b64url(b):
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+
+AGENT_HEADERS = ["x-clax-session", "x-clax-channel", "x-clax-via", "x-clax-git", "x-clax-call"]
+
+
+class Machine:
+    """A connected machine: the `remote.json` and `remote.key` that `clax
+    connect` wrote in its scratch home."""
+
+    def __init__(self, home):
+        cfg = json.load(open(os.path.join(home, "remote.json")))
+        m = re.fullmatch(r"http://([0-9.]+):(\d+)", cfg["url"])
+        expect(m, f"remote.json names {cfg['url']!r}, not an IPv4 daemon")
+        self.ip, self.port, self.host = m.group(1), int(m.group(2)), f"{m.group(1)}:{m.group(2)}"
+        self.token = cfg["access_token"]
+        der = open(os.path.join(home, "remote.key"), "rb").read()
+        # ring's PKCS#8 v2 Ed25519 document holds the seed as an OCTET
+        # STRING inside the privateKey OCTET STRING.
+        i = der.find(b"\x04\x22\x04\x20")
+        expect(i >= 0, "remote.key holds no Ed25519 seed")
+        self.key = Ed25519(der[i + 4:i + 36])
+
+    def headers(self, method, path, body, h):
+        """`h` with the grant's credential and its `Clax-Signature`."""
+        lower = {k.lower(): v for k, v in h.items()}
+        agent = b"".join(b"-\n" if k not in lower else f"+{len(lower[k].encode())}:".encode() + lower[k].encode() + b"\n"
+                         for k in AGENT_HEADERS)
+        t, nonce = int(time.time()), b64url(os.urandom(16))
+        canonical = "\n".join([
+            "clax-ed25519 v2", method, path, self.host, str(t), nonce,
+            hashlib.sha256(body).hexdigest(), hashlib.sha256(self.token.encode()).hexdigest(),
+            hashlib.sha256(agent).hexdigest()])
+        sig = b64url(self.key.sign(canonical.encode()))
+        return {**h, "Authorization": "Clax-Grant " + self.token, "Clax-Signature": f"t={t}, n={nonce}, s={sig}"}
+
+
+class SignedClient:
+    """One keep-alive connection of a connected machine's agent, at the
+    daemon's LAN address (the host the machine signs for); every request
+    signed, naming `session` with its secret when given."""
+
+    def __init__(self, machine, session=None, secret=None):
+        self.m, self.session, self.secret = machine, session, secret
+        self.c = Client(machine.port, host=machine.ip)
+
+    def req(self, method, path, body=None, headers=None):
+        """Returns (status, body bytes, seconds, response): the seconds are
+        the round trip, signing left out."""
+        h = dict(headers or {})
+        if isinstance(body, (dict, list)):
+            body = json.dumps(body).encode()
+            h["Content-Type"] = "application/json"
+        if self.session:
+            h["X-Clax-Session"], h["X-Clax-Session-Secret"] = self.session, self.secret
+        h = self.m.headers(method, path, body or b"", h)
+        return self.c.req(method, path, body, h, auth=False)
+
+    def close(self):
+        self.c.close()
+
+
+# --- two people (spec 2026-10-08-multi-agent-multi-person §23) -------------------
+# The visibility budgets run on the seeded home with two connected people,
+# Sam and Mia: each connects with `clax connect` from a scratch home and
+# registers agents with signed requests; their browsers (the browser link's
+# cookie, at the daemon's LAN address) and the owner's, and the seed's LAN
+# viewer, write comments with mixed authors. `vis_baseline` measures the same
+# two requests on an install with no people, as the owner's agent: run at the
+# commit before the filter (scripts/perf-vis-baseline.sh), it gives the
+# budget file's `vis_baseline`.
+
+VIS_THREADS = "GET /api/artifacts/<id>/threads"
+VIS_POLL = "GET /api/sessions/<id>/feedback"
+
+
+class Browser:
+    """A browser at `host` holding `cookie`: one connection per thread, and
+    the `Origin` of a page at `host` on its writes."""
+
+    def __init__(self, port, host, cookie):
+        self.port, self.host = port, host
+        self.h = {"Cookie": cookie, "Origin": f"http://{host}:{port}"}
+        self.local = threading.local()
+        self.clients = []
+
+    def req(self, method, path, body=None, headers=None):
+        if not hasattr(self.local, "c"):
+            self.local.c = Client(self.port, host=self.host)
+            self.clients.append(self.local.c)
+        return self.local.c.req(method, path, body, {**self.h, **(headers or {})}, auth=False)
+
+    def close(self):
+        for c in self.clients:
+            c.close()
+
+
+def new_thread(b, aid, text):
+    body, ct = multipart([("anchor", None, None, ANCHOR), ("body", None, None, text.encode()), ("version", None, None, b"1")])
+    st, d, _, _ = b.req("POST", f"/api/artifacts/{aid}/threads", body, {"Content-Type": ct})
+    expect(st == 201, f"thread: {st} {d[:200]!r}")
+    return json.loads(d)["thread"]["id"]
+
+
+def reply(b, aid, tid, text):
+    st, d, _, _ = b.req("POST", f"/api/artifacts/{aid}/threads/{tid}/comments", {"body": text})
+    expect(st in (200, 201), f"reply: {st} {d[:200]!r}")
+
+
+def send(b, aid, tid, to):
+    st, d, _, _ = b.req("POST", f"/api/artifacts/{aid}/threads/{tid}/send", {"to": to})
+    expect(st == 200, f"send to {to}: {st} {d[:200]!r}")
+
+
+def owner_publish(c, title, n=0):
+    st, d, _, _ = c.req("POST", "/api/artifacts", {"title": title, "files": {"index.html": {"content": page(n), "encoding": "utf8"}}})
+    expect(st == 201, f"publish: {st} {d[:200]!r}")
+    return json.loads(d)["artifact"]["id"]
+
+
+def fill_threads(authors, aid, threads, per_thread, pool):
+    """`threads` threads of `per_thread` comments on `aid`, the authors
+    taking turns, comment by comment; `pool` runs the threads in parallel."""
+    def one(t):
+        first = authors[t % len(authors)]
+        tid = new_thread(first, aid, f"thread {t}: the header needs work")
+        for k in range(1, per_thread):
+            reply(authors[(t + k) % len(authors)], aid, tid, f"comment {k} on thread {t}")
+        return tid
+    return list(pool.map(one, range(threads)))
+
+
+class Baseline:
+    """The owner's agent on an install with no people (the `vis_baseline`
+    phase): an artifact of `timed_threads` threads of
+    `timed_comments_per_thread` comments by the owner and a LAN viewer, and
+    an artifact the owner's browser sends `feedback_rows` threads of at a
+    time to the agent."""
+
+    def __init__(self, d, cfg, viewer=None):
+        self.d, self.cfg = d, cfg
+        c = Client(d.port, d.token)
+        st, body, _, _ = c.req("POST", "/api/sessions", {"harness": "claude", "harness_session_id": "perf-vis", "cwd": "/tmp"})
+        expect(st in (200, 201), f"register session: {st} {body[:200]!r}")
+        self.sid = json.loads(body)["session"]["id"]
+        self.handle = json.loads(body)["session"]["agent_handle"]
+        self.owner = Browser(d.port, "127.0.0.1", owner_cookie(d.port, d.token)["Cookie"])
+        st, _, _, _ = self.owner.req("GET", "/api/viewers/me")
+        expect(st == 200, f"owner viewer: {st}")
+        if viewer is None:
+            st, _, _, r = c.req("GET", "/api/viewers/me", auth=False)
+            viewer = re.search(r"clax_viewer=([0-9A-Za-z]+)", r.getheader("Set-Cookie") or "").group(1)
+        lan = Browser(d.port, "127.0.0.1", "clax_viewer=" + viewer)
+        self.aid = owner_publish(c, "Visibility threads")
+        self.board = owner_publish(c, "Visibility feedback")
+        with ThreadPoolExecutor(8) as ex:
+            fill_threads([self.owner, lan], self.aid, cfg["timed_threads"], cfg["timed_comments_per_thread"], ex)
+        c.close()
+        self.agent = Client(d.port, d.token)
+        self.headers = {"X-Clax-Session": self.sid, "X-Clax-Channel": "agent"}
+        st, body, _, _ = self.agent.req("PUT", f"/api/sessions/{self.sid}/watches/{self.board}", headers=self.headers)
+        expect(st in (200, 201, 204), f"watch: {st} {body[:200]!r}")
+
+    def threads(self):
+        st, body, dt, _ = self.agent.req("GET", f"/api/artifacts/{self.aid}/threads", headers=self.headers)
+        expect(st == 200, f"{VIS_THREADS}: {st} {body[:200]!r}")
+        return dt * 1000
+
+    def poll(self, n):
+        """Sends `feedback_rows` new threads to the agent, then times its poll."""
+        rows = self.cfg["feedback_rows"]
+        for i in range(rows):
+            send(self.owner, self.board, new_thread(self.owner, self.board, f"poll {n} row {i}"), self.handle)
+        st, body, dt, _ = self.agent.req("GET", f"/api/sessions/{self.sid}/feedback?tier=wait", headers=self.headers)
+        expect(st == 200, f"{VIS_POLL}: {st} {body[:200]!r}")
+        got = len(json.loads(body)["feedback"])
+        expect(got == rows, f"{VIS_POLL} took {got} rows, not {rows}")
+        return dt * 1000
+
+    def measure(self, samples):
+        self.threads()  # warm-up
+        t = statistics.median(self.threads() for _ in range(samples))
+        p = statistics.median(self.poll(n) for n in range(samples))
+        return {"threads_ms": t, "feedback_poll_ms": p}
+
+    def close(self):
+        self.agent.close()
+        self.owner.close()
+
+
+def connect(binary, scratch, invite, name):
+    """`clax connect` from a new scratch home, as `name`'s machine, saying
+    yes to the owner's content: the home and the browser link."""
+    home = os.path.join(scratch, name.lower())
+    os.makedirs(home, mode=0o700)
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("CLAX_") and k not in ("CLAUDECODE", "CODEX_SESSION_ID")}
+    env["CLAX_HOME"] = home
+    r = subprocess.run([binary, "connect", invite, "--name", f"{name.lower()}-laptop", "--yes", "--no-browser"],
+                       env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+    expect(r.returncode == 0, f"clax connect as {name}: {r.returncode} {r.stderr[-500:]}")
+    link = re.search(r"http://\S+/connect/b/\S+", r.stdout + r.stderr)
+    expect(link, f"clax connect printed no browser link: {r.stdout[-300:]}")
+    return home, link.group(0)
+
+
+class People:
+    """Two connected people, Sam and Mia (`clax:collaborator`, saying yes to
+    the owner's content), beside the owner and the seed's LAN viewer:
+
+    - the timed artifact: `timed_threads` threads of
+      `timed_comments_per_thread` comments, and `threads` threads in all of
+      about `comments` comments over `threads / timed_threads` artifacts,
+      the four authors taking turns;
+    - `approvals_per_person` approvals each: Sam allows Mia's content, and
+      Mia Sam's, on that many of the seed's artifacts (never the timed ones);
+    - Sam's agent, which the measures speak as, and a second agent of Sam's
+      that the signed polling client speaks as;
+    - Mia's agent, which publishes the artifacts Mia raises Sam's agent on.
+
+    `None` when the daemon cannot invite (409 `not_on_lan`: no LAN address)."""
+
+    def __init__(self, d, cfg, binary, scratch, st):
+        self.d, self.cfg = d, cfg
+        self.owner = Browser(d.port, "127.0.0.1", owner_cookie(d.port, d.token)["Cookie"])
+        homes, links = {}, {}
+        for name in ("Sam", "Mia"):
+            s, body, _, _ = self.owner.req("POST", "/api/people/invites", {"name": name, "rights": "clax:collaborator"})
+            if s == 409 and b"not_on_lan" in body:
+                raise NotOnLan(json.loads(body)["error"]["message"])
+            expect(s == 201, f"invite {name}: {s} {body[:200]!r}")
+            invite = json.loads(body)["invite"]["command"].removeprefix("clax connect ")
+            homes[name], links[name] = connect(binary, scratch, invite, name)
+        self.sam_m, self.mia_m = Machine(homes["Sam"]), Machine(homes["Mia"])
+        lan_ip = self.sam_m.ip
+        cookies = {}
+        for name, link in links.items():
+            c = Client(d.port, host=lan_ip)
+            s, body, _, r = c.req("GET", urlparse_path(link), headers={"Sec-Fetch-Site": "none"}, auth=False)
+            c.close()
+            m = re.search(r"clax_viewer=([0-9A-Za-z_-]+)", r.getheader("Set-Cookie") or "")
+            expect(s == 200 and m, f"{name}'s browser link: {s} {body[:200]!r}")
+            cookies[name] = "clax_viewer=" + m.group(1)
+        self.sam = Browser(d.port, lan_ip, cookies["Sam"])
+        self.mia = Browser(d.port, lan_ip, cookies["Mia"])
+        lan = Browser(d.port, "127.0.0.1", "clax_viewer=" + st["viewer"])
+
+        def agent(m, hsid):
+            c = SignedClient(m)
+            s, body, _, _ = c.req("POST", "/api/sessions", {"harness": "claude", "harness_session_id": hsid, "cwd": f"/tmp/{hsid}"})
+            expect(s in (200, 201), f"register {hsid}: {s} {body[:200]!r}")
+            v = json.loads(body)
+            c.session, c.secret, c.handle = v["session"]["id"], v["session_secret"], v["session"]["agent_handle"]
+            return c
+        self.sam_agent = agent(self.sam_m, "perf-sam-1")
+        self.poller = agent(self.sam_m, "perf-sam-2")
+        self.mia_agent = agent(self.mia_m, "perf-mia-1")
+        s, body, _, _ = self.owner.req("GET", "/api/people")
+        expect(s == 200, f"GET /api/people: {s}")
+        people = {p["display_name"]: p for p in json.loads(body)["people"]}
+        self.public = {n: people[n]["public_id"] for n in ("Sam", "Mia")}
+        self.sam_handle, self.sam_home = self.sam_agent.handle, homes["Sam"]
+
+        c = Client(d.port, d.token)
+        authors = [self.owner, self.sam, self.mia, lan]
+        per_artifact = cfg["timed_threads"]
+        others = max(0, cfg["threads"] - per_artifact)
+        per_other = max(2, round((cfg["comments"] - per_artifact * cfg["timed_comments_per_thread"]) / max(1, others)))
+        self.aid = owner_publish(c, "Visibility threads")
+        self.board = owner_publish(c, "Visibility feedback")
+        t0 = time.perf_counter()
+        with ThreadPoolExecutor(8) as ex:
+            fill_threads(authors, self.aid, per_artifact, cfg["timed_comments_per_thread"], ex)
+            for k in range(math.ceil(others / per_artifact)):
+                n = min(per_artifact, others - k * per_artifact)
+                fill_threads(authors, owner_publish(c, f"Visibility {k}"), n, per_other, ex)
+        self.comments = per_artifact * cfg["timed_comments_per_thread"] + others * per_other
+        a = self.sam_agent
+        s, body, _, _ = a.req("PUT", f"/api/sessions/{a.session}/watches/{self.board}")
+        expect(s in (200, 201, 204), f"Sam's agent watches: {s} {body[:200]!r}")
+        self.seed_s = time.perf_counter() - t0
+        c.close()
+        aids = st["aids"]
+        for who, b, author in (("Sam", self.sam, "Mia"), ("Mia", self.mia, "Sam")):
+            for aid in aids[-cfg["approvals_per_person"]:]:
+                s, body, _, _ = b.req("POST", "/api/approvals", {"author": self.public[author], "scope": "artifact", "artifact_id": aid})
+                expect(s in (200, 201), f"{who} allows {author}: {s} {body[:200]!r}")
+
+    def threads(self):
+        s, body, dt, _ = self.sam_agent.req("GET", f"/api/artifacts/{self.aid}/threads")
+        expect(s == 200, f"{VIS_THREADS} as Sam's agent: {s} {body[:200]!r}")
+        return dt * 1000
+
+    def poll(self, n):
+        """Sends `feedback_rows` new threads to Sam's agent, half from the
+        owner's browser (allowed) and half from Mia's (withheld), then times
+        its poll."""
+        rows = self.cfg["feedback_rows"]
+        held = []
+        for i in range(rows):
+            b = self.owner if i % 2 else self.mia
+            tid = new_thread(b, self.board, f"poll {n} row {i}")
+            send(b, self.board, tid, self.sam_handle)
+            if b is self.mia:
+                held.append(tid)
+        s, body, dt, _ = self.sam_agent.req("GET", f"/api/sessions/{self.sam_agent.session}/feedback?tier=wait")
+        expect(s == 200, f"{VIS_POLL} as Sam's agent: {s} {body[:200]!r}")
+        got = len(json.loads(body)["feedback"])
+        expect(got == rows // 2, f"{VIS_POLL} took {got} rows, not the {rows // 2} allowed: {body[:300]!r}")
+        # Mia resolves her threads, which withdraws their held rows: every
+        # poll holds the same `rows / 2`. Held rows that pile up cost every
+        # later poll of the agent (each take reads them again).
+        for tid in held:
+            st, d, _, _ = self.mia.req("POST", f"/api/artifacts/{self.board}/threads/{tid}/resolve", {})
+            expect(st == 200, f"Mia resolves: {st} {d[:200]!r}")
+        return dt * 1000
+
+    def measure(self, samples):
+        self.threads()  # warm-up
+        return {"threads_ms": statistics.median(self.threads() for _ in range(samples)),
+                "feedback_poll_ms": statistics.median(self.poll(n) for n in range(samples))}
+
+    def raise_sam(self):
+        """Mia's agent publishes `raised_artifacts` artifacts, and Mia raises
+        Sam's agent to publish versions of each; the owner raises it too:
+        every request of Sam's agent then reads both raises (spec §7.2)."""
+        made = []
+        for i in range(self.cfg["raised_artifacts"]):
+            s, body, _, _ = self.mia_agent.req("POST", "/api/artifacts", {"title": f"Mia's {i}", "files": {"index.html": {"content": page(i), "encoding": "utf8"}}})
+            expect(s == 201, f"Mia's agent publishes: {s} {body[:200]!r}")
+            made.append(json.loads(body)["artifact"]["id"])
+        for who, b, where in (("Mia", self.mia, made), ("the owner", self.owner, [self.aid])):
+            s, body, _, _ = b.req("PUT", f"/api/agents/{self.sam_handle}/elevate",
+                                  {"access": [{"type": "clax-artifacts", "actions": ["update"], "locations": where}]})
+            expect(s == 200, f"{who} raises Sam's agent: {s} {body[:200]!r}")
+
+    def verify_us(self):
+        s, body, _, _ = Client(self.d.port, self.d.token).req("GET", "/api/admin/perf/verify")
+        expect(s == 200, f"GET /api/admin/perf/verify: {s} {body[:200]!r}")
+        return json.loads(body)
+
+    def close(self):
+        for c in (self.sam_agent, self.poller, self.mia_agent):
+            c.close()
+        for b in (self.owner, self.sam, self.mia):
+            b.close()
+
+
+class NotOnLan(Exception):
+    pass
+
+
+def urlparse_path(url):
+    return "/" + url.split("://", 1)[1].split("/", 1)[1]
+
+
+def signed_main(home, session, secret, aid):
+    """The signed polling client: Sam's second agent polls its feedback and
+    reads the timed artifact's threads every 50 ms until stdin says stop,
+    then prints {"n", "statuses", "p50_ms", "p95_ms"}."""
+    m = Machine(home)
+    c = SignedClient(m, session, secret)
+    stop = threading.Event()
+    ts, statuses = [], {}
+
+    def loop():
+        paths = [f"/api/sessions/{session}/feedback?tier=wait", f"/api/artifacts/{aid}/threads"]
+        i = 0
+        while not stop.is_set():
+            try:
+                s, _, dt, _ = c.req("GET", paths[i % 2])
+            except Exception as e:
+                s, dt = type(e).__name__, 0
+            ts.append(dt * 1000)
+            statuses[str(s)] = statuses.get(str(s), 0) + 1
+            i += 1
+            time.sleep(0.05)
+
+    th = threading.Thread(target=loop, daemon=True)
+    th.start()
+    print("ready", flush=True)
+    sys.stdin.readline()
+    stop.set()
+    th.join(REQUEST_TIMEOUT_S + 5)
+    s = sorted(ts) or [0]
+    print(json.dumps({"n": len(ts), "statuses": statuses, "p50_ms": statistics.median(s), "p95_ms": p95(s)}), flush=True)
+
+
+class SignedPoller:
+    """The signed polling client, in a process of its own so its signing
+    (pure Python) takes no time from the loads or the probes."""
+
+    def __init__(self, people):
+        a = people.poller
+        self.p = subprocess.Popen([sys.executable, __file__, "--signed-client", people.sam_home, a.session, a.secret, people.aid],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        expect(self.p.stdout.readline().strip() == "ready", "the signed client did not start")
+
+    def finish(self):
+        self.p.stdin.write("stop\n")
+        self.p.stdin.flush()
+        out = json.loads(self.p.stdout.readline())
+        self.p.wait(10)
+        return out
+
+    def kill(self):
+        if self.p.poll() is None:
+            self.p.kill()
+
+
+def vis_baseline_main(binary, budget_path):
+    """`--phase vis_baseline`: the two requests on an install with no
+    people, as the owner's agent; prints the budget file's `vis_baseline`."""
+    cfg = json.load(open(budget_path))
+    vis = cfg["vis"]
+    scratch = tempfile.mkdtemp(prefix="clax-perf-vis.")
+    d = None
+    try:
+        d = Daemon(binary, scratch)
+        b = Baseline(d, vis)
+        rounds = [b.measure(cfg["vis_samples"]) for _ in range(cfg["rounds"])]
+        b.close()
+    except SetupError as e:
+        print(f"perf-daemon: setup failed: {e}", file=sys.stderr)
+        return 2
+    finally:
+        if d is not None:
+            d.stop()
+        shutil.rmtree(scratch, ignore_errors=True)
+    out = {k: round(statistics.median(r[k] for r in rounds), 2) for k in ("threads_ms", "feedback_poll_ms")}
+    print("rounds: " + "; ".join(f"threads {r['threads_ms']:.2f} ms, poll {r['feedback_poll_ms']:.2f} ms" for r in rounds))
+    print("VIS_BASELINE " + json.dumps({**out, "platform": f"{platform.platform()}, {os.cpu_count()} CPUs"}))
+    return 0
+
+
+def vis_limits(cfg, scale=1.0):
+    base = cfg["vis_baseline"]
+    return ((base["threads_ms"] + cfg["vis_threads_margin_ms"]) * scale,
+            (base["feedback_poll_ms"] + cfg["vis_feedback_poll_margin_ms"]) * scale)
+
+
+def vis_over(cfg, runs):
+    """Whether a median over `runs` is over its unscaled limit."""
+    lim_t, lim_p = vis_limits(cfg)
+    return (statistics.median(r["threads_ms"] for r in runs) > lim_t
+            or statistics.median(r["feedback_poll_ms"] for r in runs) > lim_p)
+
+
+def judge_vis(cfg, scale, vis_runs, raised, verified, signed_runs, confirm):
+    """Prints the visibility rows and returns what is over its limit: the
+    threads and the poll as Sam's agent (and the threads once two creators
+    raised it) against the baseline plus their margins, each failing only
+    when its measure again (`confirm`) is over too; the gateway's median
+    signature verification; and the signed polling client's answers, which
+    must all be 200."""
+    med = statistics.median
+    base = cfg["vis_baseline"]
+    lim_t, lim_p = vis_limits(cfg, scale)
+    lim_sig = cfg["sig_verify_us"] * scale
+    n = len(vis_runs) * cfg["vis_samples"]
+    failed = []
+    print(f"{'two people':<14} {'as Sam' + chr(39) + 's agent':<28} {'n':>5} {'ms':>9} {'limit':>9}  verdict "
+          f"(baseline: threads {base['threads_ms']} ms + {cfg['vis_threads_margin_ms']}, poll {base['feedback_poll_ms']} ms + {cfg['vis_feedback_poll_margin_ms']}, scaled by {scale:.2f})")
+    rows = [("vis_threads_ms", VIS_THREADS, med(r["threads_ms"] for r in vis_runs), lim_t, n, confirm.get("threads_ms")),
+            ("vis_feedback_poll_ms", VIS_POLL, med(r["feedback_poll_ms"] for r in vis_runs), lim_p, n, confirm.get("feedback_poll_ms")),
+            ("vis_threads_ms (raised)", VIS_THREADS + " raised", med(raised), lim_t, len(raised) * cfg["vis_samples"],
+             confirm.get("raised_threads_ms"))]
+    for key, label, v, lim, k, again in rows:
+        ok = v <= lim or (again is not None and again <= lim)
+        if not ok:
+            failed.append(key)
+        print(f"{'two people':<14} {label:<28} {k:>5} {v:>9.2f} {lim:>9.2f}  {'ok' if ok else 'FAIL'}")
+    us = verified["median_us"]
+    ok = us is not None and us <= lim_sig
+    if not ok:
+        failed.append("sig_verify_us")
+    print(f"{'gateway':<14} {'signature verification':<28} {verified['count']:>5} {us if us is not None else float('nan'):>8.0f}u {lim_sig:>8.0f}u  {'ok' if ok else 'FAIL'}")
+    bad = {k: v for r in signed_runs for k, v in r["statuses"].items() if k != "200"}
+    if bad or not all(r["n"] for r in signed_runs):
+        failed.append("the signed polling client")
+    print(f"NOTE: the signed polling client beside the loads, per round: "
+          + "; ".join(f"{r['n']} requests, p50 {r['p50_ms']:.1f} ms, p95 {r['p95_ms']:.1f} ms" for r in signed_runs)
+          + (f"; answers other than 200: {bad}" if bad else "")
+          + f". Per round as Sam's agent: threads " + ", ".join(f"{r['threads_ms']:.2f}" for r in vis_runs)
+          + " ms; poll " + ", ".join(f"{r['feedback_poll_ms']:.2f}" for r in vis_runs)
+          + " ms; raised threads " + ", ".join(f"{v:.2f}" for v in raised) + " ms")
+    return failed
+
+
 def main(binary, budget_path, quick):
     cfg = json.load(open(budget_path))
     if quick:
         cfg = {**cfg, **cfg["quick"]}
     seed_cfg = cfg["seed"]
     scratch = tempfile.mkdtemp(prefix="clax-perf-daemon.")
-    d = cal = None
+    d = cal = people = poller = None
+    vis_note = None
     try:
-        d = Daemon(binary, scratch)
-        print(f"daemon on 127.0.0.1:{d.port}, scratch home {d.home}", flush=True)
+        ed25519_self_test()
+        # On every interface, so the owner can invite the two people.
+        d = Daemon(binary, scratch, bind="0.0.0.0")
+        print(f"daemon on 0.0.0.0:{d.port}, scratch home {d.home}", flush=True)
         st = seed(d.port, d.token, seed_cfg)
         print(f"seeded {len(st['aids'])} artifacts, {len(st['aids']) * seed_cfg['threads_per_artifact']} threads, "
               f"{len(st['aids']) * seed_cfg['threads_per_artifact'] * seed_cfg['comments_per_thread']} comments by one viewer, "
@@ -823,6 +1438,13 @@ def main(binary, budget_path, quick):
         print(f"seeded the inbox: {seed_cfg['inbox_replies']} agent replies on {st['inbox_threads']} owner threads, "
               f"{st['inbox_versions']} versions, {seed_cfg['inbox_questions']} questions: "
               f"{st['inbox_unread']} unread items in {st['inbox_seconds']:.1f} s", flush=True)
+        try:
+            people = People(d, cfg["vis"], binary, scratch, st)
+            print(f"seeded two people: {people.comments} comments by four authors on {cfg['vis']['threads']} threads "
+                  f"in {people.seed_s:.1f} s, {cfg['vis']['approvals_per_person']} approvals each", flush=True)
+        except NotOnLan as e:
+            vis_note = f"NOTE: the visibility measures did not run: the daemon cannot invite ({e})"
+            print(vis_note, flush=True)
         cal = Calibration(d)
         loads = Loads(d.port, d.token, st)
         rounds, window = cfg["rounds"], cfg["window_s"]
@@ -832,6 +1454,7 @@ def main(binary, budget_path, quick):
         queued = {name: [] for name in QUEUED}
         inbox = {path: [] for path in INBOX_REQUESTS}
         session_runs = []
+        vis_runs, signed_runs = [], []
         for r in range(rounds):
             t0 = time.perf_counter()
             gallery_each = gallery_alone(d, st, cal)
@@ -841,6 +1464,9 @@ def main(binary, budget_path, quick):
             for path, v in inbox_each.items():
                 inbox[path].append(v)
             session_runs.append(sessions_alone(d, st, cfg["session_samples"]))
+            if people:
+                vis_runs.append(people.measure(cfg["vis_samples"]))
+                poller = SignedPoller(people)
             for name, method in PHASES:
                 res, info = run_phase(d, loads, st, method, window)
                 if name in QUEUED:
@@ -848,10 +1474,14 @@ def main(binary, budget_path, quick):
                 for label in CHEAP:
                     per[name][label].append(res[label])
                 infos[name].append(info)
+            if poller:
+                signed_runs.append(poller.finish())
+                poller = None
             calib = next(iter(gallery_each.values()))
             print(f"round {r + 1}/{rounds}: {time.perf_counter() - t0:.1f} s, calibration {calib.cal_trip:.2f} ms "
                   f"({calib.cal_inside:.2f} ms inside the daemon), gallery alone "
-                  + ", ".join(f"{p} {a.ms:.1f} ms (x{a.ratio:.2f})" for p, a in gallery_each.items()) + "; inbox alone " + ", ".join(f"{p} {v:.1f} ms" for p, v in inbox_each.items()),
+                  + ", ".join(f"{p} {a.ms:.1f} ms (x{a.ratio:.2f})" for p, a in gallery_each.items()) + "; inbox alone " + ", ".join(f"{p} {v:.1f} ms" for p, v in inbox_each.items())
+                  + (f"; as Sam's agent, threads {vis_runs[-1]['threads_ms']:.2f} ms, poll {vis_runs[-1]['feedback_poll_ms']:.2f} ms" if people else ""),
                   flush=True)
         # A ratio over its budget is measured once more, at once: a real
         # regression is over again, a burst of the machine's other work
@@ -862,6 +1492,24 @@ def main(binary, budget_path, quick):
         if over:
             print("gallery alone over budget, measured again: "
                   + ", ".join(f"{p} {a.ms:.1f} ms (x{a.ratio:.2f})" for p, a in confirm.items()), flush=True)
+        raised, verified, vis_confirm = [], None, {}
+        if people:
+            # A median over its limit (unscaled, the least it can be) is
+            # measured once more at once, as the gallery ratios are: a real
+            # regression is over again, a burst of the machine's other work
+            # most likely not.
+            if vis_over(cfg, vis_runs):
+                vis_confirm = people.measure(cfg["vis_samples"])
+                print("visibility over budget, measured again: " + json.dumps({k: round(v, 2) for k, v in vis_confirm.items()}), flush=True)
+            # Last, as raises stay for the rest of the daemon's life.
+            people.raise_sam()
+            people.threads()
+            raised = [statistics.median(people.threads() for _ in range(cfg["vis_samples"])) for _ in range(rounds)]
+            if vis_over(cfg, [{"threads_ms": v, "feedback_poll_ms": 0} for v in raised]):
+                again = statistics.median(people.threads() for _ in range(cfg["vis_samples"]))
+                print(f"raised threads over budget, measured again: {again:.2f} ms", flush=True)
+                vis_confirm["raised_threads_ms"] = again
+            verified = people.verify_us()
     except SetupError as e:
         print(f"perf-daemon: setup failed: {e}", file=sys.stderr)
         if d is not None:
@@ -871,6 +1519,10 @@ def main(binary, budget_path, quick):
                 pass
         return 2
     finally:
+        if poller is not None:
+            poller.kill()
+        if people is not None:
+            people.close()
         if cal is not None:
             cal.close()
         if d is not None:
@@ -956,6 +1608,10 @@ def main(binary, budget_path, quick):
             failed.append(f"{label} alone")
         n = len(session_runs) * cfg["session_samples"]
         print(f"{'alone':<14} {label:<28} {n:>5} {v50:>9.1f} {v99:>9.1f}  {'FAIL ' + ', '.join(over) if over else 'ok'}")
+    if people:
+        failed += judge_vis(cfg, scale, vis_runs, raised, verified, signed_runs, vis_confirm)
+    elif vis_note:
+        print(vis_note)
     print()
     for name, _ in PHASES[1:]:
         print(f"{name}: " + "; ".join(infos[name]))
@@ -971,12 +1627,20 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--probe":
         probe_main(int(sys.argv[2]), sys.argv[3], sys.argv[4])
         sys.exit(0)
+    if len(sys.argv) > 1 and sys.argv[1] == "--signed-client":
+        signed_main(*sys.argv[2:6])
+        sys.exit(0)
     args = sys.argv[1:]
     quick = "--quick" in args
     args = [a for a in args if a != "--quick"]
-    if len(args) != 2:
-        print("usage: perf-daemon.py [--quick] <clax binary> <budget.json>", file=sys.stderr)
+    phase = None
+    if args[:1] == ["--phase"] and len(args) > 1:
+        phase, args = args[1], args[2:]
+    if len(args) != 2 or phase not in (None, "vis_baseline"):
+        print("usage: perf-daemon.py [--quick] [--phase vis_baseline] <clax binary> <budget.json>", file=sys.stderr)
         sys.exit(2)
     # A signal ends the run through `finally`, so the daemon and the scratch home go too.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    if phase == "vis_baseline":
+        sys.exit(vis_baseline_main(args[0], args[1]))
     sys.exit(main(args[0], args[1], quick))

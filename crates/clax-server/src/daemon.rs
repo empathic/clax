@@ -571,6 +571,7 @@ pub async fn serve(
         question_clock: Arc::new(clax_core::working::SystemClock),
         terminal_after_s,
         calibration: Arc::default(),
+        verify_times: Arc::default(),
         audit_wake: crate::audit::AuditWake::new(),
         journal: crate::audit::JournalStatus::off(None),
         exports: crate::routes::toolpath::Exports::new(),

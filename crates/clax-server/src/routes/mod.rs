@@ -261,6 +261,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .route("/api/artifacts/{aid}/working", get(working::for_artifact))
         .route("/api/artifacts/{aid}/presence", get(artifacts::presence))
         .route("/api/admin/perf/calibrate", post(perf::calibrate))
+        .route("/api/admin/perf/verify", get(perf::verify_times))
         .route("/api/sessions/{id}/working", get(working::for_session))
         .route("/api/sessions/{id}/working/renew", post(working::renew))
         .route("/api/sessions/{id}/working/end", post(working::end))
@@ -689,6 +690,7 @@ mod l10 {
         ("health::healthz", NoArtifact),
         ("assets::blob", SeesLive),
         ("perf::calibrate", Token),
+        ("perf::verify_times", Token),
         ("toolpath::export", Owner),
         ("toolpath::status", Owner),
         ("grants::list", Owner),

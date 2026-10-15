@@ -121,6 +121,9 @@ pub struct AppState {
     /// The latency gate's calibration database, built on first use
     /// ([`crate::routes::perf`]).
     pub calibration: crate::routes::perf::Slot,
+    /// How long the gateway's latest signature verifications took, for the
+    /// latency gate ([`crate::routes::perf::verify_times`]).
+    pub verify_times: Arc<crate::routes::perf::VerifyTimes>,
     /// The journal appender's wake-up, which `store` nudges after each
     /// commit that recorded an audit event.
     pub audit_wake: Arc<crate::audit::AuditWake>,

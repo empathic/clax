@@ -8,6 +8,15 @@
   "session_p50_ms": 10,
   "session_p99_ms": 50,
   "session_samples": 40,
+  "vis_baseline": {
+    "threads_ms": 0.84,
+    "feedback_poll_ms": 0.78,
+    "measured": "scripts/perf-vis-baseline.sh d17ba57b (the collector commit), macOS 26.6.2 arm64, 12 CPUs, 2026-10-15"
+  },
+  "vis_threads_margin_ms": 2,
+  "vis_feedback_poll_margin_ms": 1,
+  "sig_verify_us": 150,
+  "vis_samples": 30,
   "quiet_idle_p95_ms": 5,
   "max_scale": 3,
   "queue_ratio": 2,
@@ -26,8 +35,18 @@
     "inbox_versions": 1280,
     "inbox_questions": 20
   },
+  "vis": {
+    "threads": 200,
+    "comments": 6000,
+    "timed_threads": 20,
+    "timed_comments_per_thread": 10,
+    "approvals_per_person": 50,
+    "raised_artifacts": 8,
+    "feedback_rows": 20
+  },
   "quick": {
     "window_s": 0.5,
-    "session_samples": 20
+    "session_samples": 20,
+    "vis_samples": 15
   }
 }
