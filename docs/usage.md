@@ -543,7 +543,12 @@ same signature and do not ask.
   on it", **Comment on the whole app** (a comment on no element), Threads
   (with the open count), Voice (whether a pick starts dictation) and ✕.
   Tap what you want changed to comment there; hold, then drag, to select
-  text or draw an area. Dictate or type, then the composer's Send. The page stays
+  text or draw an area. Clax's composer docks at the bottom (over the
+  page, which keeps its size, and above the keyboard) and shows what the
+  comment is on: the screenshot of what you picked beside its words, the
+  selected text, or a "Whole app" chip. Dictate or type, then Send (or
+  Cancel, or Add to plan while the app builds); the threads show each
+  comment's screenshot too. The page stays
   usable while the change runs: the Working chip narrates it and folds
   into a small pill, and a tap opens the change in progress (its
   comments, steps and latest render, Stop, and Open thread). The change
