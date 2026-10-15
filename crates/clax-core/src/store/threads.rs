@@ -559,24 +559,23 @@ fn row_to_comment(r: &Row<'_>) -> rusqlite::Result<Comment> {
         agent_person: r.get("agent_person")?,
         agent: comment_agent(
             r.get("agent_name")?,
-            r.get::<_, Option<String>>("agent_person")?.is_none(),
-            r.get("agent_person_id")?,
+            r.get("agent_person")?,
             r.get("agent_person_name")?,
         ),
     })
 }
 
 /// The [`CommentAgent`] of a comment whose session is named `name`, of
-/// the owner (`owner`) or a person, whose public ID is `person` and whose
-/// name is `raw`; `None` with no name.
+/// person `person` (`None`: the owner, as `thread.owner.person` names it)
+/// whose display name is `raw`, given as stored, as browsers read names
+/// ([`super::attention::browser_name`]); `None` with no name.
 fn comment_agent(
     name: Option<String>,
-    owner: bool,
     person: Option<String>,
     raw: Option<String>,
 ) -> Option<crate::model::CommentAgent> {
     let name = name?;
-    let person_name = crate::feedback::person_name(raw.as_deref(), owner);
+    let person_name = super::attention::browser_name(raw.as_deref(), person.is_none());
     Some(crate::model::CommentAgent {
         name,
         person,
@@ -613,9 +612,7 @@ const COMMENT_SELECT: &str = "SELECT c.id, c.thread_id, c.author_kind, c.author_
                                    WHERE pa.kind = 'comment' AND pa.id = c.id) END AS page_authors,
         s.person AS agent_person, s.name AS agent_name,
         CASE WHEN s.id IS NULL THEN NULL WHEN s.person IS NULL THEN (SELECT display_name FROM viewers WHERE owner = 1)
-             ELSE (SELECT display_name FROM viewers WHERE public_id = s.person) END AS agent_person_name,
-        CASE WHEN s.id IS NULL THEN NULL ELSE COALESCE(s.person, (SELECT public_id FROM viewers WHERE owner = 1)) END
-            AS agent_person_id
+             ELSE (SELECT display_name FROM viewers WHERE public_id = s.person) END AS agent_person_name
      FROM comments c LEFT JOIN sessions s ON s.id = c.via_session_id";
 
 fn load_comments(c: &Connection, thread_id: &str) -> Result<Vec<Comment>> {
@@ -633,9 +630,7 @@ pub(crate) const COMMENTS_OF_MANY: &str = "SELECT c.id, c.thread_id, c.author_ki
                                    WHERE pa.kind = 'comment' AND pa.id = c.id) END AS page_authors,
         s.person AS agent_person, s.name AS agent_name,
         CASE WHEN s.id IS NULL THEN NULL WHEN s.person IS NULL THEN (SELECT display_name FROM viewers WHERE owner = 1)
-             ELSE (SELECT display_name FROM viewers WHERE public_id = s.person) END AS agent_person_name,
-        CASE WHEN s.id IS NULL THEN NULL ELSE COALESCE(s.person, (SELECT public_id FROM viewers WHERE owner = 1)) END
-            AS agent_person_id
+             ELSE (SELECT display_name FROM viewers WHERE public_id = s.person) END AS agent_person_name
      FROM json_each(?1) j CROSS JOIN comments c ON c.thread_id = j.value
      LEFT JOIN sessions s ON s.id = c.via_session_id
      ORDER BY c.thread_id, c.created_at, c.id";
@@ -1164,8 +1159,7 @@ impl Store {
                     .query_row(
                         "SELECT s.harness, s.person, s.name,
                                 CASE WHEN s.person IS NULL THEN (SELECT display_name FROM viewers WHERE owner = 1)
-                                     ELSE (SELECT display_name FROM viewers WHERE public_id = s.person) END,
-                                COALESCE(s.person, (SELECT public_id FROM viewers WHERE owner = 1))
+                                     ELSE (SELECT display_name FROM viewers WHERE public_id = s.person) END
                            FROM sessions s WHERE s.id = ?1",
                         params![sid],
                         |r| {
@@ -1173,14 +1167,14 @@ impl Store {
                                 r.get::<_, String>(0)?,
                                 r.get::<_, Option<String>>(1)?,
                                 r.get::<_, Option<String>>(2)?,
-                                (r.get::<_, Option<String>>(3)?, r.get::<_, Option<String>>(4)?),
+                                r.get::<_, Option<String>>(3)?,
                             ))
                         },
                     )
                     .optional()?
             {
                 comment.via_harness = Some(h);
-                comment.agent = comment_agent(n, p.is_none(), raw.1, raw.0);
+                comment.agent = comment_agent(n, p.clone(), raw);
                 comment.agent_person = p;
             }
             if comment.author_kind == AUTHOR_AGENT {
@@ -2075,9 +2069,11 @@ mod tests {
         // Its agent, for people's author lines (spec §11 "Display"): the
         // session's name and person, never the session.
         let name = st.get_session(&sid).unwrap().unwrap().name.unwrap();
+        let _ = owner;
+        // The owner's agents name no person, as `thread.owner` does.
         let want = crate::model::CommentAgent {
             name,
-            person: Some(owner),
+            person: None,
             person_name: "The owner".into(),
         };
         assert_eq!(c.agent.as_ref(), Some(&want));
@@ -2091,6 +2087,25 @@ mod tests {
                 .get("agent")
                 .is_none()
         );
+    }
+
+    /// A comment's agent's person is named as stored, for browsers
+    /// (agents read the payload-safe author line instead).
+    #[test]
+    fn a_comment_agents_person_is_named_as_stored() {
+        let a = comment_agent(
+            Some("web".into()),
+            Some("u_s".into()),
+            Some("Dr: Who".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            (a.person.as_deref(), a.person_name.as_str()),
+            (Some("u_s"), "Dr: Who")
+        );
+        let o = comment_agent(Some("web".into()), None, None).unwrap();
+        assert_eq!((o.person, o.person_name.as_str()), (None, "The owner"));
+        assert!(comment_agent(None, None, None).is_none());
     }
 
     #[test]

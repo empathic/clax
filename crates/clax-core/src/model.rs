@@ -204,9 +204,9 @@ pub struct Comment {
 }
 
 /// An agent comment's agent (spec 2026-10-08 §11 "Display"): its current
-/// name, its person's public ID (the owner's for the owner's agents;
-/// `None` only while the owner has no viewer row) and that person's name
-/// as views give it ([`crate::feedback::person_name`]).
+/// name, its person's public ID (`None`: the owner's agent, as
+/// `thread.owner.person` names it) and that person's display name as
+/// stored, as browsers read names.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CommentAgent {
     pub name: String,

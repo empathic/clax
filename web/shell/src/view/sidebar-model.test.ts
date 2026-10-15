@@ -50,16 +50,14 @@ describe("authorLabel", () => {
   const lan = { public_id: "u_lan", display_name: "Lan", created_at: "t" };
 
   it("names an agent's reply by its name, its person and its harness (spec §11)", () => {
-    expect(authorLabel(agent("u_alex", "Alex"), owner)).toBe("clax-web (agent, via claude)");
+    expect(authorLabel(agent(null, "Alex"), owner)).toBe("clax-web (agent, via claude)");
     expect(authorLabel(agent("u_sam", "Sam"), owner)).toBe("clax-web (Sam's agent, via claude)");
     expect(authorLabel(agent("u_sam", "Sam"), sam)).toBe("clax-web (agent, via claude)");
-    expect(authorLabel(agent("u_alex", "Alex"), sam)).toBe("clax-web (Alex's agent, via claude)");
-    expect(authorLabel(agent("u_alex", "Alex"), lan)).toBe("clax-web (Alex's agent, via claude)");
-    expect(authorLabel(agent("u_alex", "Alex"), null)).toBe("clax-web (Alex's agent, via claude)");
-    // The extension's panel is the owner's, by public ID, with no flag.
-    expect(authorLabel(agent("u_alex", "Alex"), { public_id: "u_alex", display_name: "Alex", created_at: "" })).toBe("clax-web (agent, via claude)");
-    // An owner with no viewer row yet: by the owner's flag.
-    expect(authorLabel(agent(null, "The owner"), owner)).toBe("clax-web (agent, via claude)");
+    expect(authorLabel(agent(null, "Alex"), sam)).toBe("clax-web (Alex's agent, via claude)");
+    expect(authorLabel(agent(null, "Alex"), lan)).toBe("clax-web (Alex's agent, via claude)");
+    expect(authorLabel(agent(null, "Alex"), null)).toBe("clax-web (Alex's agent, via claude)");
+    // Names as stored: text, never markup.
+    expect(authorLabel(agent("u_sam", "Dr: <b>Who</b>"), owner)).toBe("clax-web (Dr: <b>Who</b>'s agent, via claude)");
   });
 
   it("keeps the harness for a reply from before agent names, and a person's name", () => {

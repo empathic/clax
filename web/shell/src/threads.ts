@@ -10,7 +10,7 @@ export type Tier = "piggyback" | "stop_hook" | "prompt_hook" | "wait" | "queue" 
 export type FeedbackState = { thread_id: string; state: "sent" | "withheld" | "declined" | "no_access" | "delivered" | "acknowledged" | "agent_ended"; tier: Tier | null; since: string; resends: number; exhausted: boolean; approver?: string; mine?: boolean; no_access?: boolean };
 /** `via_page`: the page wrote it through the `comments` capability, as the viewer. */
 export type Comment = { id: string; thread_id: string; author_kind: "viewer" | "agent"; author_name: string; author_public_id?: string | null; via_harness: string | null; via_page?: boolean; body: string; created_at: string;
-  /** An agent's reply from a named session: the agent, and its person's public ID (the owner's for the owner's agents) and name (spec 2026-10-08 §11). */
+  /** An agent's reply from a named session: the agent, and its person's public ID (null: the owner's agent) and display name as stored (spec 2026-10-08 §11). */
   agent?: CommentAgent | null };
 export type CommentAgent = { name: string; person: string | null; person_name: string };
 export type Thread = {

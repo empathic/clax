@@ -446,7 +446,7 @@ pub(crate) fn agent_person(c: &Connection, pid: Option<&str>) -> Result<AgentPer
 /// A person's name as browsers show it (rendered as text): their display
 /// name as stored, or "The owner" (the owner without one) or "Viewer".
 /// Agent payloads take [`crate::feedback::display_name`] of it.
-fn browser_name(raw: Option<&str>, owner: bool) -> String {
+pub(crate) fn browser_name(raw: Option<&str>, owner: bool) -> String {
     match raw.filter(|r| !r.trim().is_empty()) {
         Some(r) => r.to_string(),
         None => crate::feedback::person_name(None, owner),
