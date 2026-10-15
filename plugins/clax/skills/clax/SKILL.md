@@ -520,8 +520,9 @@ capability first and light features up when it resolves.
   capabilities, served only in the Clax app and `null` everywhere else;
   their types are `ClaxExtensions.Device` in `clax-extensions.d.ts`. Call
   them from a click handler (all but `notify.list` and `notify.cancel`
-  reject `no_gesture` otherwise). See "Device capabilities in the Clax
-  app" below.
+  reject `no_gesture` otherwise). `location.watch` follows the device only
+  while the app is on screen. See "Device capabilities in the Clax app"
+  below.
 - `permissions`: `state()` and `request()`; the only prompt is the consent
   to the first page-written comment.
 
