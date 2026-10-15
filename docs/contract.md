@@ -2222,8 +2222,8 @@ shell in subdomain mode and an opaque origin in sandbox mode):
 | `enterCommentMode()` / `exitCommentMode()` | Turns comment mode on or off; nothing when it already is. |
 | `loadVersion(n)` | Shows version `n`, or the latest for `null`. |
 | `reloadLatest()` | Loads the latest version in place, keeping page, fragment and scroll, pinned or not, composer or not. |
-| `setDraftText(text)` | Replaces the open composer's text (dictation); nothing without a composer. |
-| `submitDraft()` | Presses Send on the open composer, waiting for its screenshot as Send does. |
+| `setDraftText(text, {composer?})` | Replaces the open composer's text; nothing without a composer. A focused text field of the questions sheet takes it instead (dictation into a question), unless `composer: true` (the app's composer typing). |
+| `submitDraft({text?})` | Presses Send on the open composer, waiting for its screenshot as Send does; with `text`, that is the comment (the app's composer). The thread is posted on the pick's anchor and screenshot. |
 | `cancelDraft()` | Closes the composer. |
 | `composeArtifact()` | Opens the composer on the whole app (an `artifact` anchor, labelled "The whole app", no screenshot), unless one holding typed text is open. |
 | `openThread(id)` | Selects the thread and brings it into view. |
@@ -2245,8 +2245,9 @@ drops them. Every message carries `nonce`:
 | `type` | Fields | When |
 |---|---|---|
 | `ready` | `artifact`, `version`, `latest`, `file` | Each document the frame loads greets. |
-| `state` | `commenting`, `draft: {label, text, clip: "pending" \| "ready" \| "none", byPage?: true} \| null`, `busy` | Any change of those. `label` says what the composer's anchor is in words (never a selector); `byPage` marks a composer the page opened. |
-| `threads` | `threads: [{id, status, summary, label, sent, comments, version}]` | Any change of the view's threads. `summary` is the first comment cut to 140 characters; `label` the anchor in words. |
+| `state` | `commenting`, `draft: {key, kind, label, quote, text, clip: "pending" \| "ready" \| "none", byPage?: true} \| null`, `busy` | Any change of those. `key` is the composer's identity (new for each pick); `kind` its anchor's kind; `label` says what the composer's anchor is in words (never a selector); `quote` is the text it quotes as a reader sees it (spaced, quote marks made `'`, at most 280 characters and "…"), or null; `byPage` marks a composer the page opened. |
+| `draftClip` | `key`, `png` (base64) | The open composer `key`'s screenshot, once per screenshot taken, and again at `init`. |
+| `threads` | `threads: [{id, status, summary, label, sent, comments, version, clip}]` | Any change of the view's threads. `summary` is the first comment cut to 140 characters; `label` the anchor in words; `clip` whether it has a screenshot. |
 | `sent` | `thread` | Send posted a thread and sent it to the agent. |
 | `sendFailed` | `thread`, `text` | The send failed; the thread stays posted and unsent until `resend`. |
 | `landed` | `version` | The page of a version auto-follow loaded has greeted. |
