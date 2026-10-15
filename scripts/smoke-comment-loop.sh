@@ -43,7 +43,7 @@ if [ -z "${CLAX_TEST_BIN:-}" ]; then
 fi
 
 python3 - "$BIN" "$SCRATCH" "$REPO" <<'PY'
-import json, os, struct, subprocess, sys, threading, time, urllib.request, uuid, zlib
+import hashlib, json, os, struct, subprocess, sys, threading, time, urllib.request, uuid, zlib
 
 BIN, SCRATCH, REPO = sys.argv[1], sys.argv[2], sys.argv[3]
 HOME = os.environ["CLAX_HOME"]
@@ -119,6 +119,13 @@ def http(method, path, body=None, ctype="application/json", token=False, session
         req.add_header("content-type", ctype)
     if token:
         req.add_header("authorization", f"Bearer {tok}")
+    else:
+        # The owner's browser: a visitor reads no delivery state (spec
+        # 2026-10-08-multi-agent-multi-person §19 item 9).
+        port = base.rsplit(":", 1)[1]
+        cookie = hashlib.sha256(b"clax owner cookie\n" + tok.encode()).hexdigest()
+        req.add_header("cookie", f"clax_owner_{port}={cookie}")
+        req.add_header("origin", base)
     if session:
         req.add_header("x-clax-session", session)
     with OPENER.open(req, timeout=20) as r:

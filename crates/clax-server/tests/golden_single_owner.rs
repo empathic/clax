@@ -909,8 +909,7 @@ pub fn solo_value(key: &str, v: &Value, owner: &str) -> bool {
         "withheld" => v.is_null(),
         "name" => v.is_null() || v.as_str().is_some_and(|n| !n.is_empty()),
         "person" => {
-            v.is_null()
-                || (v["owner"] == json!(true) && v["public_id"].as_str() == Some(owner))
+            v.is_null() || (v["owner"] == json!(true) && v["public_id"].as_str() == Some(owner))
         }
         "owner" | "taken_by" => owners_agent(v),
         "rights" => *v == clax_core::rights::Rights::full().to_json(),
@@ -955,7 +954,8 @@ pub fn compare_with_section_19(committed: &Value, now: &Value, owner: &str) -> S
                         (Some(p), Some(q)) => walk(p, q, &format!("{path}/{k}"), owned, owner, out),
                         (None, Some(q)) if ADDITIVE_KEYS.contains(&k.as_str()) => {
                             if !solo_value(k, q, owner) {
-                                out.other.push(format!("{path}/{k}: not a single owner's: {q}"));
+                                out.other
+                                    .push(format!("{path}/{k}: not a single owner's: {q}"));
                             }
                         }
                         _ => out.other.push(format!("{path}/{k}: on one side only")),
@@ -1004,7 +1004,8 @@ fn the_section_19_comparison_counts_marks_per_name_and_flags_the_owners() {
     let mut now = committed.clone();
     now["comments"][0]["author_name"] = json!("Alex (not connected)");
     now["comments"][1]["author_name"] = json!("Mia (not connected)");
-    now["comments"][1]["owner"] = json!({"handle": "a_1", "live": true, "name": null, "person": null, "person_name": "Alex"});
+    now["comments"][1]["owner"] =
+        json!({"handle": "a_1", "live": true, "name": null, "person": null, "person_name": "Alex"});
     now["comments"][1]["withheld"] = Value::Null;
     now["person"] = json!({"name": "Alex", "owner": true, "public_id": "u_owner"});
     now["text"] = json!("Mia (not connected): \"y\"\nsent together by Alex (not connected). Note");
