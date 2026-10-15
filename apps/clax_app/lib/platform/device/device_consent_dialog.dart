@@ -7,8 +7,9 @@ import 'device_host.dart';
 
 /// [DeviceConsent] in a dialog over the app: "Let “Plant care” send you
 /// notifications and reminders?" with Allow and Don't allow; for location,
-/// Precise, Approximate and Don't allow. Dismissing it is Don't allow; so
-/// is having no navigator (the app not up yet).
+/// Precise, Approximate and Don't allow, none of them set apart. Dismissing
+/// it is no answer ([DeviceAnswer.dismissed]: kept nowhere, the next call
+/// asks again); so is having no navigator (the app not up yet).
 class DialogDeviceConsent implements DeviceConsent {
   DialogDeviceConsent({required this.navigator, required this.title});
 
@@ -26,14 +27,14 @@ class DialogDeviceConsent implements DeviceConsent {
       name = '';
     }
     final nav = navigator();
-    if (nav == null || !nav.mounted) return DeviceAnswer.deny;
+    if (nav == null || !nav.mounted) return DeviceAnswer.dismissed;
     final answer = await nav.push<DeviceAnswer>(
       DialogRoute<DeviceAnswer>(
         context: nav.context,
         builder: (_) => DeviceConsentDialog(app: name, cap: cap),
       ),
     );
-    return answer ?? DeviceAnswer.deny;
+    return answer ?? DeviceAnswer.dismissed;
   }
 }
 
@@ -69,8 +70,8 @@ class DeviceConsentDialog extends StatelessWidget {
     );
   }
 
-  /// Location's three answers, one under the other, each saying how
-  /// exactly the app would see where the device is.
+  /// Location's three answers, one under the other and alike, each saying
+  /// how exactly the app would see where the device is.
   Widget _location(
     BuildContext context,
     Widget title,
@@ -83,7 +84,6 @@ class DeviceConsentDialog extends StatelessWidget {
       required String label,
       required String detail,
       required DeviceAnswer value,
-      bool filled = false,
     }) {
       final child = Row(
         children: [
@@ -110,25 +110,18 @@ class DeviceConsentDialog extends StatelessWidget {
         padding: const WidgetStatePropertyAll(
           EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         ),
-        foregroundColor: filled
-            ? null
-            : WidgetStatePropertyAll(Theme.of(context).colorScheme.onSurface),
+        foregroundColor: WidgetStatePropertyAll(
+          Theme.of(context).colorScheme.onSurface,
+        ),
       );
       return Padding(
         padding: const EdgeInsets.only(top: 8),
-        child: filled
-            ? FilledButton.tonal(
-                key: key,
-                style: style,
-                onPressed: () => answer(value),
-                child: child,
-              )
-            : OutlinedButton(
-                key: key,
-                style: style,
-                onPressed: () => answer(value),
-                child: child,
-              ),
+        child: OutlinedButton(
+          key: key,
+          style: style,
+          onPressed: () => answer(value),
+          child: child,
+        ),
       );
     }
 
@@ -144,7 +137,6 @@ class DeviceConsentDialog extends StatelessWidget {
             label: 'Precise',
             detail: 'Your exact location, within a few metres',
             value: DeviceAnswer.allow,
-            filled: true,
           ),
           choice(
             key: const ValueKey('consent-approximate'),

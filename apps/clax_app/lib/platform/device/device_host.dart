@@ -7,8 +7,7 @@
 /// Location is asked as Precise, Approximate or Don't allow. An app allowed
 /// Approximate (or any app, when Android lets Clax have only an approximate
 /// location) gets fixes snapped to a cell of about 2 km ([Coarsener]) on a
-/// grid shifted at random for that app, kept with its grant (a new shift
-/// only once the grant is revoked or the app deleted),
+/// grid shifted at random once per install ([DeviceGrants.gridShift]),
 /// marked `precise: false`. `location.watch` follows the device for the
 /// app screen's [DeviceView] while the screen shows the app: the screen
 /// stops it ([DeviceHost.stopWatches]) when it leaves, and it does not
@@ -21,6 +20,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 
+import '../../daemon/clock.dart';
 import '../../ui/host_protocol.dart';
 import 'device_grants.dart';
 import 'device_ports.dart';
@@ -35,8 +35,9 @@ export 'reminders.dart' show ReminderTap;
 const deviceMaxBytes = 4 * 1024 * 1024;
 
 /// The person's answer to a device consent: Don't allow, Allow (for
-/// location: Precise), or for location only, Approximate.
-enum DeviceAnswer { deny, allow, approximate }
+/// location: Precise), for location only Approximate, or no answer (the
+/// question dismissed), which is not kept: the next call asks again.
+enum DeviceAnswer { deny, allow, approximate, dismissed }
 
 /// Asks the person whether app [aid] may use [cap].
 abstract interface class DeviceConsent {
@@ -64,15 +65,31 @@ class DeviceView {
 enum _Phase { asking, starting, running }
 
 class _Watch {
-  _Watch(this.id);
+  _Watch(this.id, this.aid);
   final String id;
+  final String aid;
   var phase = _Phase.asking;
   var cancelled = false;
   var precision = Precision.precise;
   late Coarsener grid;
   StreamSubscription<LocationFix>? sub;
+
+  /// When the last update went to the page.
   DateTime? lastAt;
-  (int, int)? lastCell;
+
+  /// Precise: the latest fix held back by the throttle, sent at the end of
+  /// its window.
+  LocationFix? trailing;
+
+  /// Approximate: the cell last reported, and the one the device has moved
+  /// well into since, when it did, and that cell's position.
+  (int, int)? cell;
+  (int, int)? pending;
+  DateTime? pendingSince;
+  LocationFix? pendingFix;
+
+  /// Bumped to drop a scheduled send.
+  var timer = 0;
 }
 
 class DeviceHost {
@@ -85,9 +102,9 @@ class DeviceHost {
     required this.camera,
     required this.location,
     math.Random? random,
-    DateTime Function()? now,
+    Clock? clock,
   }) : _random = random ?? math.Random.secure(),
-       _now = now ?? DateTime.now;
+       clock = clock ?? const SystemClock();
 
   final DeviceGrants grants;
   final DeviceConsent consent;
@@ -97,9 +114,20 @@ class DeviceHost {
   final CameraPort camera;
   final LocationPort location;
 
-  /// Draws each app's grid shift.
+  /// Draws the install's grid shift, the first time it is needed.
   final math.Random _random;
-  final DateTime Function() _now;
+  final Clock clock;
+  DateTime _now() => clock.now();
+
+  /// An approximate watch reports a new cell only once the device has
+  /// been well inside it for [approxHold], and at most once per
+  /// [approxInterval] (Android's own approximate cadence), so neither the
+  /// time nor the place of an update marks where an edge was crossed.
+  static const approxHold = Duration(minutes: 3);
+  static const approxInterval = Duration(minutes: 10);
+
+  /// The app screens with watches, by app, so a revoke stops them.
+  final _views = <String, Set<DeviceView>>{};
 
   /// The watches a view may run at once.
   static const maxWatches = 4;
@@ -146,11 +174,13 @@ class DeviceHost {
   /// allow), cancelling its reminders when it is `notify`.
   Future<void> revoke(String aid, String cap) async {
     await grants.revoke(aid, cap);
+    if (cap == 'location') _stopApp(aid);
     if (cap == 'notify') await reminders.cancelAll(aid);
   }
 
   /// App [aid] was deleted: cancels its reminders and forgets its answers.
   Future<void> forget(String aid) async {
+    _stopApp(aid);
     await reminders.cancelAll(aid);
     await grants.forget(aid);
   }
@@ -239,7 +269,7 @@ class DeviceHost {
         };
       case ('location', 'current'):
         final p = decision.precision ?? Precision.precise;
-        final grid = await _grid(aid, decision);
+        final grid = await _grid();
         return _fixJson(_shown(await location.current(p), p, grid));
     }
     throw DeviceError(
@@ -284,19 +314,20 @@ class DeviceHost {
         _asking.remove(key);
       },
     ));
+    if (answer == DeviceAnswer.dismissed) {
+      throw const DeviceError(
+        'dismissed',
+        'the person closed the question without answering; ask again from '
+            'a tap',
+      );
+    }
     final ok = answer != DeviceAnswer.deny;
     final precision = answer == DeviceAnswer.approximate
         ? Precision.approximate
         : Precision.precise;
     final kept = await grants.decision(aid, cap);
     if (kept == null || kept.allowed != ok) {
-      await grants.decide(
-        aid,
-        cap,
-        allowed: ok,
-        precision: precision,
-        shift: _newShift(),
-      );
+      await grants.decide(aid, cap, allowed: ok, precision: precision);
     }
     if (!ok) {
       throw DeviceError.notGranted(
@@ -313,18 +344,12 @@ class DeviceHost {
 
   // --- location ---
 
-  (double, double) _newShift() => (_random.nextDouble(), _random.nextDouble());
+  Future<Coarsener>? _gridOnce;
 
-  /// App [aid]'s grid, from the shift kept with its location grant [d]; a
-  /// grant kept before shifts existed gets one now, kept from then on.
-  Future<Coarsener> _grid(String aid, DeviceDecision d) async {
-    var shift = d.shift;
-    if (shift == null) {
-      shift = _newShift();
-      await grants.keepShift(aid, shift);
-    }
-    return Coarsener(offsetLat: shift.$1, offsetLon: shift.$2);
-  }
+  /// The install's grid.
+  Future<Coarsener> _grid() => _gridOnce ??= grants
+      .gridShift(() => (_random.nextDouble(), _random.nextDouble()))
+      .then((s) => Coarsener(offsetLat: s.$1, offsetLon: s.$2));
 
   /// [fix] as an app allowed [precision] sees it: snapped to its cell of
   /// [grid] unless both the app and the system allow precise.
@@ -374,15 +399,16 @@ class DeviceHost {
         'at most $maxWatches location watches at once',
       );
     }
-    final w = _Watch(id);
+    final w = _Watch(id, aid);
     view._watches[id] = w;
+    (_views[aid] ??= {}).add(view);
     try {
       final d = await _allow(aid, 'location');
       if (w.cancelled) throw const DeviceError('stopped', _stoppedMessage);
       w
         ..phase = _Phase.starting
         ..precision = d.precision ?? Precision.precise
-        ..grid = await _grid(aid, d);
+        ..grid = await _grid();
       final stream = await location.watch(w.precision, minDistance: distance);
       if (w.cancelled || !await view.shown() || w.cancelled) {
         throw const DeviceError('stopped', _stoppedMessage);
@@ -405,25 +431,104 @@ class DeviceHost {
     }
   }
 
-  /// A fix for watch [w]: sent unless one went less than [minInterval]
-  /// ago, or, for an approximate watch, it is in the cell last sent.
+  /// A fix for watch [w]. Precise: sent, or when one went less than
+  /// [minInterval] ago, held and sent (the latest held) as the window
+  /// ends. Approximate: the first sent at once; after it a new cell only
+  /// once the device has been [Coarsener.margin] inside it for
+  /// [approxHold], and at most once per [approxInterval].
   void _update(DeviceView view, _Watch w, LocationFix fix) {
     if (w.cancelled) return;
     final shown = _shown(fix, w.precision, w.grid);
-    (int, int)? cell;
-    if (!shown.precise) {
-      final c = w.grid.cell(fix.lat, fix.lon);
-      cell = (c.row, c.col);
-      if (cell == w.lastCell) return;
+    if (shown.precise) {
+      _precise(view, w, shown);
+    } else {
+      _approximate(view, w, fix, shown);
     }
+  }
+
+  void _send(DeviceView view, _Watch w, LocationFix f) {
+    w.lastAt = _now();
+    view.send(DeviceEvent.update(w.id, _fixJson(f)));
+  }
+
+  /// Runs [f] after [d] on [clock], unless [w] ends or schedules again.
+  void _after(_Watch w, Duration d, void Function() f) {
+    final t = ++w.timer;
+    unawaited(
+      clock.delay(d).then((_) {
+        if (!w.cancelled && t == w.timer) f();
+      }),
+    );
+  }
+
+  void _precise(DeviceView view, _Watch w, LocationFix f) {
+    final last = w.lastAt;
     final now = _now();
-    if (w.lastAt case final last? when now.difference(last) < minInterval) {
+    if (last == null || now.difference(last) >= minInterval) {
+      w
+        ..trailing = null
+        ..timer += 1;
+      _send(view, w, f);
       return;
     }
+    final waiting = w.trailing != null;
+    w.trailing = f;
+    if (waiting) return;
+    _after(w, last.add(minInterval).difference(now), () {
+      if (w.trailing case final t?) {
+        w.trailing = null;
+        _send(view, w, t);
+      }
+    });
+  }
+
+  void _approximate(
+    DeviceView view,
+    _Watch w,
+    LocationFix fix,
+    LocationFix shown,
+  ) {
+    final c = w.grid.cell(fix.lat, fix.lon);
+    final key = (c.row, c.col);
+    if (w.cell == null) {
+      w.cell = key;
+      _send(view, w, shown);
+      return;
+    }
+    if (key == w.cell) {
+      // Back in the reported cell: whatever was pending is off.
+      w
+        ..pending = null
+        ..timer += 1;
+      return;
+    }
+    // Near an edge of another cell, or still in the pending one: no change.
+    if (!c.deep || key == w.pending) return;
     w
-      ..lastAt = now
-      ..lastCell = cell;
-    view.send(DeviceEvent.update(w.id, _fixJson(shown)));
+      ..pending = key
+      ..pendingSince = _now()
+      ..pendingFix = shown;
+    _approxDue(view, w);
+  }
+
+  /// Reports the pending cell once it is due, or waits until it is.
+  void _approxDue(DeviceView view, _Watch w) {
+    final since = w.pendingSince, fix = w.pendingFix;
+    if (w.pending == null || since == null || fix == null) return;
+    var due = since.add(approxHold);
+    if (w.lastAt case final last?) {
+      final next = last.add(approxInterval);
+      if (next.isAfter(due)) due = next;
+    }
+    final now = _now();
+    if (!now.isBefore(due)) {
+      w
+        ..cell = w.pending
+        ..pending = null;
+      _send(view, w, fix);
+      return;
+    }
+    _after(w, due.difference(now), () => _approxDue(view, w));
   }
 
   /// Watch [w] failed with [e]: it ends, and the page hears why.
@@ -437,7 +542,31 @@ class DeviceHost {
     w.cancelled = true;
     unawaited(w.sub?.cancel());
     if (view._watches[w.id] == w) view._watches.remove(w.id);
+    if (!view._watches.values.any((o) => o.aid == w.aid)) {
+      _views[w.aid]?.remove(view);
+    }
     _count(view);
+  }
+
+  /// App [aid]'s location was revoked, or the app deleted: its watches end
+  /// with `not_granted`, those still asking or starting included.
+  void _stopApp(String aid) {
+    for (final view in (_views.remove(aid) ?? const <DeviceView>{}).toList()) {
+      for (final w in view._watches.values.toList()) {
+        if (w.aid != aid) continue;
+        final running = w.phase == _Phase.running;
+        _drop(view, w);
+        if (running) {
+          view.send(
+            DeviceEvent.end(
+              w.id,
+              'not_granted',
+              'location is no longer allowed for this app',
+            ),
+          );
+        }
+      }
+    }
   }
 
   void _count(DeviceView view) => view.watching.value = view._watches.values

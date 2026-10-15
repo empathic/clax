@@ -10,9 +10,9 @@ import 'device_ports.dart';
 /// Snaps fixes to a grid of cells [cellDegrees] of latitude tall (0.02°,
 /// about 2.2 km) and as wide in kilometres (more degrees of longitude
 /// toward the poles). The grid is shifted by [offsetLat] and [offsetLon]
-/// (fractions of a cell, from 0 to 1), drawn at random for each app and
-/// kept with its location grant, so a cell's edges are not at known lines
-/// and stay put across runs of Clax.
+/// (fractions of a cell, from 0 to 1), drawn at random once per install
+/// and kept for good, so a cell's edges are not at known lines and stay
+/// put across runs of Clax and across apps.
 ///
 /// A fix inside a cell always gives the cell's centre: averaging many
 /// readings learns nothing finer.
@@ -21,15 +21,25 @@ class Coarsener {
 
   static const cellDegrees = 0.02;
 
+  /// How far inside its cell a point must be to count as having moved
+  /// there (about 450 m): GPS noise near an edge does not flip the cell.
+  static const margin = 0.2;
+
   /// The accuracy an approximate fix reports at the least, in metres.
   static const minAccuracy = 2000.0;
 
   final double offsetLat;
   final double offsetLon;
 
-  /// The cell of ([lat], [lon]): its row and column, and its centre.
-  ({int row, int col, double lat, double lon}) cell(double lat, double lon) {
-    final row = (lat / cellDegrees + offsetLat).floor();
+  /// The cell of ([lat], [lon]): its row and column, its centre, and
+  /// whether the point lies [deep] inside it (at least [margin] of a cell
+  /// from every edge).
+  ({int row, int col, double lat, double lon, bool deep}) cell(
+    double lat,
+    double lon,
+  ) {
+    final rowAt = lat / cellDegrees + offsetLat;
+    final row = rowAt.floor();
     final centreLat = ((row + 0.5 - offsetLat) * cellDegrees).clamp(
       -90.0,
       90.0,
@@ -38,11 +48,14 @@ class Coarsener {
     // away from the equator, capped near the poles.
     final cos = math.cos(centreLat * math.pi / 180).abs().clamp(0.05, 1.0);
     final width = cellDegrees / cos;
-    final col = (lon / width + offsetLon).floor();
+    final colAt = lon / width + offsetLon;
+    final col = colAt.floor();
+    bool inside(double f) => f >= margin && f <= 1 - margin;
+    final deep = inside(rowAt - row) && inside(colAt - col);
     var centreLon = (col + 0.5 - offsetLon) * width;
     if (centreLon >= 180) centreLon -= 360;
     if (centreLon < -180) centreLon += 360;
-    return (row: row, col: col, lat: centreLat, lon: centreLon);
+    return (row: row, col: col, lat: centreLat, lon: centreLon, deep: deep);
   }
 
   /// [fix] as an app allowed approximate location sees it: its cell's
