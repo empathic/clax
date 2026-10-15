@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:clax_app/agent/timings.dart';
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/platform/device/device_grants.dart';
@@ -6,7 +8,9 @@ import 'package:clax_app/platform/device/reminders.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/host_protocol.dart';
+import 'package:clax_app/ui/theme.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../platform/device/device_host_test.dart'
@@ -140,6 +144,62 @@ void main() {
       expect(find.byKey(const ValueKey('location-pill')), findsNothing);
     },
   );
+
+  // The pill's screenshot, off by default; run with
+  //   CLAX_L1_SHOTS=1 flutter test --update-goldens test/ui/app_screen_device_test.dart
+  // and look at target/flutter-app/l1/location-pill-*.png.
+  for (final dark in [false, true]) {
+    final scheme = dark ? 'dark' : 'light';
+    testWidgets(
+      'location pill, phone, $scheme',
+      skip: Platform.environment['CLAX_L1_SHOTS'] != '1',
+      (tester) async {
+        await tester.runAsync(() async {
+          final dir =
+              '${Platform.environment['FLUTTER_ROOT']}/bin/cache/artifacts/material_fonts';
+          Future<ByteData> f(String n) async =>
+              ByteData.sublistView(await File('$dir/$n').readAsBytes());
+          await (FontLoader(
+            'MaterialIcons',
+          )..addFont(f('MaterialIcons-Regular.otf'))).load();
+        });
+        tester.view.physicalSize = const Size(400, 300);
+        tester.view.devicePixelRatio = 1;
+        tester.view.padding = const FakeViewPadding(top: 32);
+        addTearDown(tester.view.reset);
+        final api = FakeClaxApi();
+        final aid = api.seedArtifact('Plants', {'index.html': '<h1>P</h1>'});
+        final surface = FakeAppSurface();
+        await tester.pumpWidget(
+          MaterialApp(
+            debugShowCheckedModeBanner: false,
+            theme: claxTheme(dark ? Brightness.dark : Brightness.light),
+            home: AppScreen(
+              aid: aid,
+              base: Uri.parse('http://127.0.0.1:7999/'),
+              api: api,
+              surface: surface,
+              voice: FakeVoice(),
+              settings: AppSettings(),
+              timings: const NoTimings(),
+              worker: const Stream.empty(),
+              device: host(FakeLocation()),
+            ),
+          ),
+        );
+        surface.push(watch('w'));
+        for (var i = 0; i < 4; i++) {
+          await tester.pump();
+        }
+        await expectLater(
+          find.byType(MaterialApp),
+          matchesGoldenFile(
+            '../../../../target/flutter-app/l1/location-pill-$scheme.png',
+          ),
+        );
+      },
+    );
+  }
 
   testWidgets('a tap on the location pill stops location', (tester) async {
     final location = FakeLocation();
