@@ -72,6 +72,24 @@ describe("the artifact stream", () => {
     expect(threads[0].status).toBe("resolved");
     s.stop();
   });
+  it("keeps a delivery state heard before its thread, and gives it to the thread when it arrives", () => {
+    let threads: Thread[] = [];
+    const sync = new ThreadSync(f => { threads = f(threads); });
+    const s = new ArtifactStream(A, {
+      threads: () => threads, presence: () => [], changeThreads: f => sync.change(f), beginThread: tid => sync.beginThread(tid),
+      event: () => {}, page: () => {}, disposed: () => false,
+    });
+    const state = { thread_id: "t1", state: "withheld", tier: null, since: "x", resends: 0, exhausted: false, approver: "Sam", mine: true };
+    on!({ type: "feedback_state", topic: `artifact:${A}`, artifact_id: A, ...state } as unknown as StreamEvent);
+    expect(threads).toEqual([]);
+    on!(delta("open", 1, "c1"));
+    expect(threads[0].feedback_state).toEqual(state);
+    // Held once only: the next thread event keeps the thread's own state.
+    on!(delta("open", 1, "c1"));
+    expect(threads[0].feedback_state).toEqual(state);
+    s.stop();
+  });
+
   it("refetches when the daemon refuses the artifact's topic (it was deleted before the view subscribed)", () => {
     const heard: unknown[] = [];
     const s = new ArtifactStream(A, {
@@ -98,5 +116,7 @@ describe("delivery states", () => {
   it("takes a feedback_state event's state whole, whose approval and mine included", () => {
     expect(stateOf({ ...s({ state: "declined", approver: "Sam", mine: true }), artifact_id: "a", topic: "artifact:a" } as never)).toEqual(s({ state: "declined", approver: "Sam", mine: true }));
     expect(stateOf(s({ state: "sent", tier: "piggyback" }))).toEqual(s({ state: "sent", tier: "piggyback" }));
+    // No delivery left (a resolve withdrew every row): no state.
+    expect(stateOf(s({ state: null }) as never)).toBeNull();
   });
 });

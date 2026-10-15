@@ -236,6 +236,17 @@ impl Chan {
     }
 }
 
+impl Channel {
+    /// Forgets the delivery states sent to `person`'s streams (empty: the
+    /// owner's), so the next state is sent whatever was sent before: a
+    /// stream that subscribes or reconnects may not hold what was sent.
+    fn forget_sent(&mut self, person: Option<&str>) {
+        if let Some(p) = person {
+            self.delivery.retain(|(k, _), _| k != p);
+        }
+    }
+}
+
 /// Which subscribers of a channel an item reaches.
 #[derive(Clone, Debug)]
 enum Gate {
@@ -244,6 +255,9 @@ enum Gate {
     /// owner) a stream was opened for (a delivery state as that person
     /// reads it, spec 2026-10-08 §10).
     Person(String),
+    /// Only the streams of the owner and of connected people (any
+    /// recipient key).
+    People,
     /// Only subscribers on this machine or holding the token (a live page's
     /// gallery event; see [`crate::live::sees_live_pages`]).
     Local,
@@ -260,6 +274,7 @@ impl Gate {
         match self {
             Gate::Any => true,
             Gate::Person(p) => person == Some(p.as_str()),
+            Gate::People => person.is_some(),
             Gate::Local => local,
             Gate::Level { min, unless } => level >= *min && unless.is_none_or(|u| level < u),
         }
@@ -504,7 +519,14 @@ fn routes(ev: &Event) -> Vec<(Chan, Gate)> {
         // Each reader's state to its own streams; no one else's.
         Event::FeedbackState { views, .. } => views
             .iter()
-            .map(|(key, _)| (Chan::Artifact(a.clone()), Gate::Person(key.clone())))
+            .map(|(key, _)| {
+                let gate = if key == clax_core::events::EVERY_PERSON {
+                    Gate::People
+                } else {
+                    Gate::Person(key.clone())
+                };
+                (Chan::Artifact(a.clone()), gate)
+            })
             .collect(),
         Event::Working { .. } => vec![
             (Chan::Gallery, Gate::Any),
@@ -659,16 +681,33 @@ fn project(
             },
             _,
         ) => {
-            // A person's own streams; a live page's site, the owner's.
+            // A person's own streams; a live page's site, the owner's; or
+            // the owner's and every person's, once no row is left.
             let key = match gate {
                 Gate::Person(k) => k.as_str(),
+                Gate::People => clax_core::events::EVERY_PERSON,
                 _ => "",
             };
-            let (_, state) = views.iter().find(|(k, _)| k == key)?;
-            let mut v = json!({"topic": topic, "artifact_id": artifact_id});
-            if let (Value::Object(m), Ok(Value::Object(st))) = (&mut v, serde_json::to_value(state))
-            {
-                m.extend(st);
+            let (_, state) = views.iter().find(|(k, _)| k == key).or_else(|| {
+                views
+                    .iter()
+                    .find(|(k, _)| k == clax_core::events::EVERY_PERSON)
+            })?;
+            let mut v = json!({"topic": topic, "artifact_id": artifact_id, "thread_id": thread_id});
+            match state {
+                Some(s) => {
+                    if let (Value::Object(m), Ok(Value::Object(st))) =
+                        (&mut v, serde_json::to_value(s))
+                    {
+                        m.extend(st);
+                    }
+                }
+                // No state: what a visitor reads.
+                None => v["state"] = Value::Null,
+            }
+            if matches!(gate, Gate::People) {
+                // Every person's memory of this thread is now out of date.
+                ch.delivery.retain(|(_, t), _| t != thread_id);
             }
             let last = ch
                 .delivery
@@ -863,6 +902,7 @@ impl Hub {
                 }
                 for c in &tchans {
                     let Some(ch) = chans.get_mut(c) else { continue };
+                    ch.forget_sent(s.person.as_deref());
                     if let Some(sub) = ch.subs.get_mut(&s.key) {
                         sub.tx = Some(tx.clone());
                         sub.lagged = false;
@@ -1001,7 +1041,9 @@ impl Hub {
             }
             s.topics.insert(t.clone(), seq);
             for c in t.chans(&s.caller, s.person.as_deref()) {
-                chans.entry(c).or_default().subs.insert(
+                let ch = chans.entry(c).or_default();
+                ch.forget_sent(s.person.as_deref());
+                ch.subs.insert(
                     s.key,
                     Sub {
                         tx: s.tx.clone(),
@@ -1430,7 +1472,7 @@ mod tests {
                         "resends": 0, "exhausted": false
                     }))
                     .unwrap();
-                    (key.to_string(), s)
+                    (key.to_string(), Some(s))
                 })
                 .collect(),
         }
@@ -1457,6 +1499,27 @@ mod tests {
         hub.dispatch(&delivery(&[("", "withheld"), ("u_mia", "acknowledged")]));
         assert!(drain(&mut owner).is_empty());
         assert_eq!(drain(&mut mia).len(), 1);
+        // A stream of Mia's that subscribes now may hold nothing: the same
+        // state reaches it, and her other stream, again.
+        let mut again = open(Some("u_mia"));
+        hub.dispatch(&delivery(&[("u_mia", "acknowledged")]));
+        assert_eq!(drain(&mut again).len(), 1);
+        assert_eq!(drain(&mut mia).len(), 1);
+        // A reconnect (a resume) forgets what was sent as well.
+        hub.dispatch(&delivery(&[("u_mia", "acknowledged")]));
+        assert!(drain(&mut again).is_empty());
+        let id = again.id.clone();
+        drop(again);
+        let mut back = hub.open_for(
+            c.clone(),
+            true,
+            None,
+            Some((&id, u64::MAX)),
+            Some("u_mia".into()),
+        );
+        assert!(back.resumed);
+        hub.dispatch(&delivery(&[("u_mia", "acknowledged")]));
+        assert_eq!(drain(&mut back).len(), 1);
     }
 
     #[test]

@@ -537,6 +537,8 @@ impl Store {
     /// browser's identity (a later claim folds into it, see
     /// [`Store::claim_for_owner`]). Without it (the CLI acting before any
     /// browser) a row made here gives way to the first browser claimed.
+    /// Making the row bumps the visibility generation: who is connected
+    /// changed ([`Store::connected`]).
     pub fn owner_viewer(&self, browser: bool) -> Result<Viewer> {
         if let Some((v, claimed)) = self.with_read(|c| Ok(owner_row(c)?))?
             && (claimed || !browser)
@@ -544,11 +546,16 @@ impl Store {
             return Ok(v);
         }
         self.with_tx(|tx| {
-            tx.execute(
+            if tx.execute(
                 "INSERT INTO viewers (id, public_id, display_name, created_at, owner, claimed)
                  SELECT ?1, ?2, NULL, ?3, 1, ?4 WHERE NOT EXISTS (SELECT 1 FROM viewers WHERE owner = 1)",
                 params![crate::new_ulid(), new_public_id(), self.now(), browser],
-            )?;
+            )? > 0
+            {
+                // The owner is connected from now on (§9.6): what agents
+                // read of its content is no longer marked.
+                self.visibility_changed();
+            }
             if browser {
                 tx.execute("UPDATE viewers SET claimed = 1 WHERE owner = 1", [])?;
             }
@@ -714,6 +721,34 @@ mod tests {
     use crate::audit::Via;
     use crate::store::test_util::{DAEMON, artifact, store};
     use crate::{CoreError, new_ulid};
+
+    #[test]
+    fn making_the_owners_row_after_an_agent_read_connects_the_owner() {
+        use crate::visibility::Author;
+        let (_d, st) = store();
+        // An agent reads first: who is connected is cached with no owner.
+        assert!(
+            st.connected()
+                .unwrap()
+                .is_unconnected(&Author::Person("u_x".into()))
+        );
+        let g = st.visibility_generation();
+        let owner = st.owner_viewer(true).unwrap();
+        assert!(
+            st.visibility_generation() > g,
+            "the owner's row bumps the generation"
+        );
+        let c = st.connected().unwrap();
+        assert_eq!(
+            c.label("Alex", &Author::Person(owner.public_id.clone())),
+            "Alex",
+            "the owner's comments are not marked not connected"
+        );
+        // Asking again makes nothing, and bumps nothing.
+        let g = st.visibility_generation();
+        st.owner_viewer(true).unwrap();
+        assert_eq!(st.visibility_generation(), g);
+    }
 
     #[test]
     fn the_owner_is_one_viewer_no_cookie_reaches() {

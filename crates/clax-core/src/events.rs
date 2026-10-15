@@ -67,15 +67,17 @@ pub enum Event {
     /// Thread `thread_id`'s delivery state changed for each reader in
     /// `views`, which holds each one's state as it reads it
     /// ([`crate::Delivery::view`]), by recipient key (empty: the owner; a
-    /// connected person's public ID). Only the `artifact` stream topic
-    /// carries it, each view to its reader's streams alone (spec 2026-10-08
-    /// §10, §18); `/api/events` never does.
+    /// connected person's public ID; [`EVERY_PERSON`]: the owner's and every
+    /// connected person's streams, used for `None` once the thread has no
+    /// delivery rows left). Only the `artifact` stream topic carries it,
+    /// each view to its reader's streams alone (spec 2026-10-08 §10, §18);
+    /// `/api/events` never does.
     FeedbackState {
         artifact_id: String,
         thread_id: String,
         /// Never serialised.
         #[serde(skip)]
-        views: Vec<(String, FeedbackState)>,
+        views: Vec<(String, Option<FeedbackState>)>,
     },
     /// The artifact's working list changed; `working` is the whole list
     /// (spec §10 "Working"), never naming a session.
@@ -186,6 +188,10 @@ pub enum Event {
         artifacts: Vec<String>,
     },
 }
+
+/// The recipient key of a `feedback_state` view meant for the owner's and
+/// every connected person's streams.
+pub const EVERY_PERSON: &str = "*";
 
 impl Event {
     pub fn artifact_id(&self) -> &str {
@@ -462,7 +468,7 @@ mod tests {
             Event::FeedbackState {
                 artifact_id: "a".into(),
                 thread_id: "t".into(),
-                views: vec![(String::new(), s)],
+                views: vec![(String::new(), Some(s))],
             },
             Event::Working {
                 artifact_id: "a".into(),

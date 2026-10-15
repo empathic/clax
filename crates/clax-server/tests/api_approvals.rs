@@ -3203,3 +3203,100 @@ async fn agents_read_the_state_of_threads_sent_to_them_alone() {
     );
     assert_eq!(sam_agent_state(&t, &tid).await, Value::Null);
 }
+
+/// A new thread naming another person's agent (`@name`) reaches that
+/// person's stream as the thread, then its state: "waiting for your
+/// approval", so a card never shows the thread without it.
+#[tokio::test]
+async fn a_new_held_name_thread_reaches_the_approver_thread_first() {
+    let t = Two::new().await;
+    let name =
+        t.w.ts
+            .store
+            .get_session(&t.w.sam_session)
+            .unwrap()
+            .unwrap()
+            .name
+            .expect("Sam's agent has a name");
+    let mut sams = t
+        .sam_browser()
+        .stream(&[&format!("artifact:{}", t.aid)])
+        .await;
+    let tid = t.mia_thread(&format!("@{name} please fix the chart")).await;
+    let mut seen = Vec::new();
+    within("the thread and its state", async {
+        while seen.len() < 2 {
+            let (n, ev) = sams.next().await;
+            let of = ev["thread_id"] == json!(tid) || ev["thread"]["id"] == json!(tid);
+            if of && (n == "thread" || n == "feedback_state") {
+                seen.push((n, ev));
+            }
+        }
+    })
+    .await;
+    assert_eq!(seen[0].0, "thread");
+    assert_eq!(seen[1].0, "feedback_state");
+    assert_eq!(
+        held(&seen[1].1),
+        (json!("withheld"), json!("Sam"), json!(true)),
+        "{}",
+        seen[1].1
+    );
+}
+
+/// An agent reads the approval waits of its own session only ("Own
+/// threads only", spec §10): Sam's thread sent to the owner's claude
+/// waits for the owner; claude's roster entry counts it, and the owner's
+/// codex reads claude with no approval wait, before and after the decline.
+#[tokio::test]
+async fn an_agent_reads_no_siblings_approval_waits_in_the_roster() {
+    let t = Two::new().await;
+    let handle = owner_agent_watches(&t).await;
+    let codex = t.w.ts.register_session("codex", "owner-codex").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let sam_cookie = t.sam_browser().cookie.replace("clax_viewer=", "");
+    let tid = t.w.ts.thread_as(&t.aid, &sam_cookie, "Sam's note").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, v) = t
+        .sam_browser()
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{tid}/send", t.aid),
+            Some(json!({"to": handle})),
+        )
+        .await;
+    assert_eq!(status, 200, "{v}");
+    let blocked_of = |session: String| {
+        let ts = &t.w.ts;
+        let handle = handle.clone();
+        async move {
+            let v: Value = ts
+                .authed(ts.client.get(format!("{}/api/agents", ts.base)))
+                .header("x-clax-session", &session)
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            v["agents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|a| a["handle"] == json!(handle))
+                .expect("claude listed")["blocked"]
+                .clone()
+        }
+    };
+    let own = blocked_of(t.w.owner_session.clone()).await;
+    assert_eq!(own["approvals"], 1, "claude reads its own wait: {own}");
+    let sibling = blocked_of(codex.clone()).await;
+    assert!(
+        sibling.is_null() || sibling["approvals"] == 0,
+        "codex reads no approval wait of claude's: {sibling}"
+    );
+}

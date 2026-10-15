@@ -2021,6 +2021,21 @@ impl Delivery {
             .collect()
     }
 
+    /// The people a decision by and about `parties` (recipient keys; the
+    /// owner's, empty, left out) concerns here: those parties, and everyone
+    /// who wrote content alongside them, the authors of each row whose
+    /// authors include a party (a page's co-authors, say).
+    pub fn decision_people(&self, parties: &[String]) -> std::collections::BTreeSet<String> {
+        let mut out: std::collections::BTreeSet<String> =
+            parties.iter().filter(|k| !k.is_empty()).cloned().collect();
+        for r in &self.rows {
+            if r.authors.iter().any(|a| parties.contains(a)) {
+                out.extend(r.authors.iter().cloned());
+            }
+        }
+        out
+    }
+
     /// Whether the newest change to the rows is one `v` sees: its rows'
     /// newest [`StateRow::stamp`] is the thread's. A change to rows `v`
     /// does not see (another author's delivery after an approval, say)
@@ -2309,6 +2324,58 @@ mod tests {
         let mut t = targets(st, tid);
         t.sort();
         t
+    }
+
+    fn row(comment: &str, authors: &[&str], person: Option<&str>) -> StateRow {
+        StateRow {
+            target: Some("s".into()),
+            created_at: "2026-10-15T00:00:00Z".into(),
+            delivered_at: None,
+            tier: None,
+            acknowledged_at: None,
+            resends: 0,
+            last_sent_at: None,
+            untargeted_at: None,
+            ended_at: None,
+            harness: Some("claude".into()),
+            has_hsid: true,
+            armed: false,
+            push_failed: false,
+            placeholder_at: None,
+            person_name: Some("Sam".into()),
+            requested: true,
+            declined: None,
+            person: person.map(str::to_string),
+            comment_id: comment.into(),
+            authors: authors.iter().map(|a| a.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn a_decision_concerns_its_parties_and_the_contents_co_authors_alone() {
+        let d = Delivery {
+            thread_id: "t".into(),
+            rows: vec![
+                row("c1", &["u_lucy", "u_mia", "u_sam"], Some("u_bob")),
+                row("c2", &["u_kim"], Some("u_bob")),
+            ],
+            codex_push: false,
+        };
+        let told = |p: &[&str]| {
+            let p: Vec<String> = p.iter().map(|s| s.to_string()).collect();
+            d.decision_people(&p).into_iter().collect::<Vec<_>>()
+        };
+        assert_eq!(
+            told(&["u_bob", "u_mia"]),
+            ["u_bob", "u_lucy", "u_mia", "u_sam"],
+            "the decider, and the page's comment's authors, not a later commenter"
+        );
+        assert_eq!(told(&["", "u_nobody"]), ["u_nobody"]);
+        // Each co-author reads the hold of that content; the other
+        // commenter reads only their own.
+        let sam = d.view(&DeliveryViewer::Person("u_sam".into())).unwrap();
+        assert_eq!(sam.state, FeedbackPhase::Withheld);
+        assert_eq!(sam.approver.as_deref(), Some("Sam"));
     }
 
     #[test]

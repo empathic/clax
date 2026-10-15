@@ -173,7 +173,7 @@ async fn one_stream_carries_each_subscribed_topic_as_small_deltas() {
         thread_id: "t".into(),
         views: vec![(
             String::new(),
-            clax_core::FeedbackState {
+            Some(clax_core::FeedbackState {
                 thread_id: "t".into(),
                 state: clax_core::FeedbackPhase::Sent,
                 tier: None,
@@ -182,7 +182,7 @@ async fn one_stream_carries_each_subscribed_topic_as_small_deltas() {
                 exhausted: false,
                 approver: None,
                 mine: false,
-            },
+            }),
         )],
     });
     assert!(r.quiet_for(300).await);

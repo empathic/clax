@@ -1429,6 +1429,8 @@ pub struct RosterAgent {
     /// oldest was made; `None` when it waits on nothing.
     pub blocked_since: Option<String>,
     pub questions: u32,
+    /// When the oldest of its open questions was made.
+    pub questions_since: Option<String>,
     pub approvals: u32,
     /// Whether it waits on its person: an open question or an open `ask`
     /// request (`state: waiting`).
@@ -1498,6 +1500,7 @@ impl Store {
                     threads_owned: owned.get(&s.id).copied().unwrap_or(0),
                     blocked_since: earliest(q.1.clone(), a.1),
                     questions: q.0,
+                    questions_since: q.1.clone(),
                     approvals: a.0,
                     asking: q.0 > 0 || a.2 > 0,
                     asking_since: earliest(q.1, a.3),
