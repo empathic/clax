@@ -148,7 +148,7 @@ pub async fn events(
     let hidden = (!clax_http::live_access::sees_live_pages(&headers, &extensions, &s.token))
         .then(|| s.live_ids.clone());
     let who = who.or_events_cookie();
-    let token = who.has_token();
+    let token = who.holds_token();
     // Resolved when the stream opens: a name set later takes effect on reconnect.
     let me = s
         .store_call(move |st| who.resolve(st))

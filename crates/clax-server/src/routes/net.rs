@@ -68,6 +68,7 @@ fn net_error(e: &NetError) -> ApiError {
 /// `too_many_redirects` or `upstream_error`.
 pub async fn fetch(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _t: RequireToken,
     aid: Result<Path<String>, PathRejection>,
     body: Result<Json<FetchBody>, JsonRejection>,
@@ -115,6 +116,7 @@ pub async fn fetch(
 /// declared host is granted. 404 for an unknown artifact.
 pub async fn grants(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _t: RequireToken,
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -139,6 +141,7 @@ pub struct GrantBody {
 /// draft.
 pub async fn grant(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _t: RequireToken,
     audit: AuditCtx,
     aid: Result<Path<String>, PathRejection>,
@@ -159,6 +162,7 @@ pub async fn grant(
 /// artifact, 403 `draft` for a draft.
 pub async fn revoke(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _t: RequireToken,
     audit: AuditCtx,
     aid: Result<Path<String>, PathRejection>,

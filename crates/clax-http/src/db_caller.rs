@@ -452,7 +452,7 @@ impl Subscriber {
     }
 
     /// Whether the subscriber holds the token.
-    pub fn has_token(&self) -> bool {
+    pub fn holds_token(&self) -> bool {
         self.token
     }
 

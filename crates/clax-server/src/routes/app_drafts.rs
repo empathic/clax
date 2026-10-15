@@ -56,6 +56,7 @@ struct CreateBody {
 /// is a draft, and a publish's validation errors.
 pub async fn create(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _t: RequireToken,
     audit: AuditCtx,
     req: Result<JsonBytes, JsonRejection>,
@@ -103,7 +104,11 @@ pub async fn create(
 }
 
 /// `GET /api/drafts`: `{drafts: [{id, of, created_at}]}`, oldest first.
-pub async fn list(State(s): State<AppState>, _t: RequireToken) -> Result<Json<Value>, ApiError> {
+pub async fn list(
+    State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
+    _t: RequireToken,
+) -> Result<Json<Value>, ApiError> {
     let drafts = s.store_call(|st| st.list_drafts()).await?;
     Ok(Json(json!({ "drafts": drafts })))
 }
@@ -112,6 +117,7 @@ pub async fn list(State(s): State<AppState>, _t: RequireToken) -> Result<Json<Va
 /// its documents for good. `{deleted: true}`; 404 when `id` is no draft.
 pub async fn delete(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _t: RequireToken,
     audit: AuditCtx,
     p: Result<Path<String>, PathRejection>,
