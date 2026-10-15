@@ -196,7 +196,7 @@ fn is_stream(k: &Kind) -> bool {
 
 /// What a socket carries, live.
 enum Carried {
-    Stream(Conn),
+    Stream(Box<Conn>),
     Live(Box<LiveSocket>),
     Room(Box<RoomSocket>),
 }
@@ -800,8 +800,12 @@ impl InstanceDo {
                 };
                 match open_stream(&inst.app, who, false, None, None, att.creds.guest).await {
                     Ok(conn) => {
+                        // Admitted once already: counted again, not refused.
+                        let client =
+                            clax_server::socket_caps::SocketClient::of_credentials(&att.creds);
+                        let conn = conn.holding(Some(inst.app.sockets.hold(&client)));
                         att.stream = conn.stream_id().to_string();
-                        Carried::Stream(conn)
+                        Carried::Stream(Box::new(conn))
                     }
                     Err(_) => {
                         let _ = ws.close(Some(1008), Some("the stream could not be reopened"));
@@ -983,7 +987,7 @@ impl InstanceDo {
             .and_then(|s| s.0.lock().unwrap_or_else(|e| e.into_inner()).take())
         {
             return Some((
-                Ok((Carried::Stream(conn), Vec::new())),
+                Ok((Carried::Stream(Box::new(conn)), Vec::new())),
                 att(Kind::Stream, String::new(), String::new(), creds),
             ));
         }

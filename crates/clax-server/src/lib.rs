@@ -170,6 +170,7 @@ pub mod routes;
 pub mod sample;
 pub mod seats;
 pub mod shell_route;
+pub mod socket_caps;
 pub mod state;
 pub mod stream;
 #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]

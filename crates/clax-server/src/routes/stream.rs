@@ -46,7 +46,10 @@ use std::convert::Infallible;
 /// opened through the extension gateway is live-only
 /// ([`crate::stream::live_only_admits`]); only requests with the credential
 /// it was opened with change or resume it, and it ends, delivering nothing
-/// more, once that credential is revoked or expires.
+/// more, once that credential is revoked or expires. On a hosted daemon a
+/// client holds at most [`crate::socket_caps`]'s caps of streams and
+/// sockets: past one, 429 `too_many_streams` (a resume of a stream whose
+/// connection is still open takes its place).
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn open(
     State(s): State<AppState>,
@@ -67,7 +70,11 @@ pub async fn open(
         .and_then(|v| v.to_str().ok())
         .and_then(parse_last_event_id);
     let guest = hosted_guest(&extensions);
-    let conn = open_stream(&s, who, local, credential, resume, guest).await?;
+    let client = crate::socket_caps::SocketClient::of_request(&s, &headers, &extensions);
+    let slot = slot_for(&s, &client, resume)?;
+    let conn = open_stream(&s, who, local, credential, resume, guest)
+        .await?
+        .holding(Some(slot));
     let chunks = futures::stream::unfold(conn, |mut c| async move {
         c.next().await.map(|b| (Ok::<_, Infallible>(b), c))
     });
@@ -203,14 +210,36 @@ pub async fn open_socket(
     });
     let resume = last.as_deref().and_then(parse_last_event_id);
     let guest = hosted_guest(&extensions);
-    let creds = crate::identity::SocketCredentials::of_request(&who, &s.token, &extensions);
-    let conn = open_stream(&s, who, local, credential, resume, guest).await?;
+    let client = crate::socket_caps::SocketClient::of_request(&s, &headers, &extensions);
+    let slot = slot_for(&s, &client, resume)?;
+    let mut creds = crate::identity::SocketCredentials::of_request(&who, &s.token, &extensions);
+    creds.address = client.address();
+    let conn = open_stream(&s, who, local, credential, resume, guest)
+        .await?
+        .holding(Some(slot));
     let mut res = StatusCode::OK.into_response();
     res.extensions_mut()
         .insert(SocketStream(std::sync::Arc::new(std::sync::Mutex::new(
             Some((conn, creds)),
         ))));
     Ok(res)
+}
+
+/// The place under `client`'s cap a stream takes ([`crate::socket_caps`]):
+/// a resume of a stream whose connection is still open takes that one's,
+/// which ends.
+///
+/// # Errors
+/// 429 `too_many_streams`.
+fn slot_for(
+    s: &AppState,
+    client: &crate::socket_caps::SocketClient,
+    resume: Option<(&str, u64)>,
+) -> Result<crate::socket_caps::SocketSlot, ApiError> {
+    if resume.is_some_and(|(id, _)| s.stream.is_attached(id)) {
+        return Ok(s.sockets.hold(client));
+    }
+    s.sockets.admit(client)
 }
 
 /// Whether the request is a hosted daemon's signed-in guest: their stream
@@ -307,9 +336,13 @@ fn topics(names: &[String]) -> Result<Vec<Topic>, ApiError> {
 /// artifact's `artifact`, `presence` or `working` topic is asked for and no
 /// live seat is free for the caller there ([`crate::seats`]: the stream
 /// holds its person's seat while it holds any of them); 400 `invalid_topic` for a name
-/// that is not a topic. On a live-only stream (the extension's), 403
+/// that is not a topic. A hosted daemon's person whose rights do not read
+/// an artifact's comments ([`crate::hosted::reads_comments`]) holds its
+/// `artifact` topic without thread events ([`Topic::ArtifactQuiet`]). On a
+/// live-only stream (the extension's), 403
 /// `forbidden` for `gallery`, a `docs` topic, or a topic of an artifact
 /// that is not a live page (`questions` and `inbox` it may take). Refuses a foreign `Origin` like the viewer routes.
+#[allow(clippy::too_many_arguments)]
 pub async fn update(
     State(s): State<AppState>,
     d: crate::agent::DeniedToGrants,
@@ -317,6 +350,7 @@ pub async fn update(
     who: crate::identity::Identity,
     sees: crate::live::SeesLive,
     via: Option<axum::Extension<crate::extension::ExtensionCredential>>,
+    hosted: Option<axum::Extension<crate::hosted::HostedRequest>>,
     p: Result<Path<String>, PathRejection>,
     req: Result<Json<UpdateBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -330,7 +364,15 @@ pub async fn update(
         ));
     }
     let add = topics(&b.subscribe)?;
-    let remove = topics(&b.unsubscribe)?;
+    let mut remove = topics(&b.unsubscribe)?;
+    // An `artifact` topic is held loud or quiet: leaving it leaves either.
+    let quiet: Vec<Topic> = remove
+        .iter()
+        .filter(|t| matches!(t, Topic::Artifact(_)))
+        .map(|t| t.clone().without_comments())
+        .collect();
+    remove.extend(quiet);
+    let member = hosted.and_then(|h| h.0.member);
     if sees.live_only
         && !add
             .iter()
@@ -376,7 +418,7 @@ pub async fn update(
     }
     let token = token_or_cookie(&who);
     let check = add.clone();
-    let (caller, claims) = s
+    let (caller, claims, add) = s
         .store_call(move |st| {
             let mut live = std::collections::BTreeSet::new();
             for t in &check {
@@ -401,7 +443,15 @@ pub async fn update(
                     }
                 }
             }
-            Ok((crate::db_caller::caller_of(st, token, &who)?, claims))
+            // Each `artifact` topic is held quiet where its comments are not
+            // the caller's to read.
+            let mut add = Vec::with_capacity(check.len());
+            for t in check {
+                let quiet = matches!(&t, Topic::Artifact(a)
+                    if !crate::hosted::reads_comments(st, member.as_ref(), a)?);
+                add.push(if quiet { t.without_comments() } else { t });
+            }
+            Ok((crate::db_caller::caller_of(st, token, &who)?, claims, add))
         })
         .await?;
     let credential = via.as_ref().map(|c| c.0.hash());

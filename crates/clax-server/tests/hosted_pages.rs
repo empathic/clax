@@ -120,3 +120,100 @@ async fn a_guest_gets_a_shared_pages_bootstrap_and_no_other() {
     assert_eq!(r.status(), 200);
     assert!(r.text().await.unwrap().contains("\"display_name\":\"Ada\""));
 }
+
+#[tokio::test]
+async fn a_person_who_may_not_read_comments_gets_a_bootstrap_without_threads() {
+    let _g = dist().await;
+    let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+    let ts = TestServer::spawn_hosted(clock, Some("s3cret")).await;
+    let origin = format!("http://localhost:{}", ts.addr.port());
+    let cookie_of = |r: &reqwest::Response| {
+        r.headers()[SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string()
+    };
+    let r = ts
+        .client
+        .post(format!("{}/api/hosted/setup", ts.base))
+        .header(ORIGIN, &origin)
+        .json(&json!({"secret": "s3cret", "name": "Ada"}))
+        .send()
+        .await
+        .unwrap();
+    let owner = cookie_of(&r);
+    let plan = ts.publish("Plan", &[("index.html", "<h1>p</h1>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let form = reqwest::multipart::Form::new()
+        .text("anchor", clax_server::testing::element_anchor().to_string())
+        .text("body", "secret words")
+        .text("version", "1");
+    let r = ts
+        .client
+        .post(format!("{}/api/artifacts/{plan}/threads", ts.base))
+        .header(ORIGIN, &origin)
+        .header(COOKIE, &owner)
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 201);
+    // A person invited with `rights`, signed in in a browser of their own.
+    let person = async |name: &str, rights: serde_json::Value| {
+        let r = ts
+            .client
+            .post(format!("{}/api/people/invites", ts.base))
+            .header(ORIGIN, &origin)
+            .header(COOKIE, &owner)
+            .json(&json!({"name": name, "rights": rights}))
+            .send()
+            .await
+            .unwrap();
+        let v: serde_json::Value = r.json().await.unwrap();
+        let code = v["invite"]["url"]
+            .as_str()
+            .unwrap()
+            .rsplit('/')
+            .next()
+            .unwrap()
+            .to_string();
+        let r = ts
+            .client
+            .post(format!("{}/api/hosted/invites/{code}/accept", ts.base))
+            .header(ORIGIN, &origin)
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        cookie_of(&r)
+    };
+    let artifacts = json!({"type": "clax-artifacts", "actions": ["read"], "locations": [plan]});
+    let sam = person("Sam", json!([artifacts])).await;
+    let mia = person(
+        "Mia",
+        json!([artifacts, {"type": "clax-comments", "actions": ["read"], "locations": [plan]}]),
+    )
+    .await;
+    let page = async |cookie: &str| {
+        let r = ts
+            .client
+            .get(format!("{}/a/{plan}", ts.base))
+            .header(COOKIE, cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        r.text().await.unwrap()
+    };
+    assert!(page(&mia).await.contains("secret words"));
+    let html = page(&sam).await;
+    assert!(html.contains("id=\"clax-boot\""), "{html}");
+    assert!(html.contains("\"threads\":[]"), "{html}");
+    assert!(!html.contains("secret words"), "{html}");
+}

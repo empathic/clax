@@ -20,7 +20,9 @@
 //!
 //! People only: agents are never spectators and read through the filtered
 //! routes (403 `not_for_agents` for the owner's, 403 `forbidden` for a
-//! person's). 404 for a missing artifact or a live page the request may not
+//! person's). A hosted daemon's person whose rights do not read comments
+//! there (`clax-comments` `read`, [`crate::hosted::reads_comments`]) gets
+//! `threads` empty: the shared build, less its threads. 404 for a missing artifact or a live page the request may not
 //! see. A caller without a seat is noted as viewing: a person or a named
 //! guest by their seat key, anyone else by `tab` (an ID its page picks,
 //! at most 32 letters, digits, `-` or `_`), counted per client address.
@@ -68,14 +70,18 @@ pub async fn snapshot(
     sees.check(&s.live_ids, id.as_str())?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let lookup = id.clone();
-    let (head, key) = s
+    let member = extensions
+        .get::<crate::hosted::HostedRequest>()
+        .and_then(|h| h.member.clone());
+    let (head, key, comments) = s
         .store_call(move |st| {
             let a = st.get_artifact(&lookup)?.ok_or(CoreError::NotFound)?;
             let key = who
                 .caller(st, None)
                 .ok()
                 .and_then(|c| crate::seats::key_for(&c));
-            Ok((a.current_version, key))
+            let comments = crate::hosted::reads_comments(st, member.as_ref(), lookup.as_str())?;
+            Ok((a.current_version, key, comments))
         })
         .await?;
     let spectator = key.or_else(|| {
@@ -92,13 +98,13 @@ pub async fn snapshot(
         s.seats.see_spectator(id.as_str(), &k);
     }
     if let Some(body) = s.seats.shared_snapshot(id.as_str(), head) {
-        return Ok(respond(body, "hit"));
+        return Ok(respond(body, "hit", comments));
     }
     // Requests that miss together share one build.
     let lock = s.seats.build_lock(id.as_str());
     let _building = lock.lock().await;
     if let Some(body) = s.seats.shared_snapshot(id.as_str(), head) {
-        return Ok(respond(body, "hit"));
+        return Ok(respond(body, "hit", comments));
     }
     let working = s.working.for_artifact(id.as_str());
     let presence = s.presence.for_artifact(id.as_str());
@@ -148,11 +154,24 @@ pub async fn snapshot(
     v["built_at"] = json!(s.seats.now_ms());
     let body = Arc::new(v.to_string().into_bytes());
     s.seats.keep_snapshot(id.as_str(), head, body.clone());
-    Ok(respond(body, "miss"))
+    Ok(respond(body, "miss", comments))
 }
 
-fn respond(body: Arc<Vec<u8>>, cache: &'static str) -> Response {
-    let mut res = (*body).clone().into_response();
+/// The shared build `body` as the answer; with `comments` false, less its
+/// threads.
+fn respond(body: Arc<Vec<u8>>, cache: &'static str, comments: bool) -> Response {
+    let bytes = if comments {
+        (*body).clone()
+    } else {
+        match serde_json::from_slice::<serde_json::Value>(&body) {
+            Ok(mut v) => {
+                v["threads"] = json!([]);
+                v.to_string().into_bytes()
+            }
+            Err(_) => b"{}".to_vec(),
+        }
+    };
+    let mut res = bytes.into_response();
     let h = res.headers_mut();
     h.insert(
         header::CONTENT_TYPE,

@@ -164,7 +164,8 @@ fn without_sessions(artifact: Value, versions: Value) -> Value {
 /// `GET /api/artifacts/<id>/threads?include_resolved=true` without the token
 /// (no `clip_path`), and `GET /api/viewers/me` for the request's existing
 /// viewer (the owner's for the owner cookie or a hosted session of the
-/// owner's, see [`crate::identity`]): never
+/// owner's, see [`crate::identity`]); no threads for a hosted daemon's
+/// person whose rights do not read comments there: never
 /// the token or a cookie, and no viewer is created (but the owner's row,
 /// made on first use).
 pub async fn assemble(
@@ -214,16 +215,20 @@ pub async fn assemble(
                 }
                 _ => crate::feedback::Handles::None,
             };
+            // A person whose rights do not read comments here gets none.
+            let comments = crate::hosted::reads_comments(st, member.as_ref(), lookup.as_str())?;
             let mut threads = Vec::new();
             let mut cursor: Option<String> = None;
-            loop {
-                let (page, next) = st.list_threads(&lookup, true, cursor.as_deref(), 200)?;
-                threads.extend(crate::feedback::thread_views_for(
-                    st, &page, codex, false, &handles,
-                )?);
-                match next {
-                    Some(c) => cursor = Some(c),
-                    None => break,
+            if comments {
+                loop {
+                    let (page, next) = st.list_threads(&lookup, true, cursor.as_deref(), 200)?;
+                    threads.extend(crate::feedback::thread_views_for(
+                        st, &page, codex, false, &handles,
+                    )?);
+                    match next {
+                        Some(c) => cursor = Some(c),
+                        None => break,
+                    }
                 }
             }
             let attention = match &viewer {

@@ -73,6 +73,12 @@ pub const MAX_DETACHED: usize = 4096;
 pub enum Topic {
     Gallery,
     Artifact(String),
+    /// `artifact:<id>` as a subscriber who may not read the artifact's
+    /// comments holds it: its thread events (which carry the newest
+    /// comment) are left out, the rest are the same. Never parsed: the
+    /// subscription route takes `artifact:<id>` as this for such a caller
+    /// ([`Topic::without_comments`]).
+    ArtifactQuiet(String),
     Presence(String),
     Working(String),
     Docs(String),
@@ -135,7 +141,7 @@ impl Topic {
     pub fn name(&self) -> String {
         match self {
             Topic::Gallery => "gallery".into(),
-            Topic::Artifact(a) => format!("artifact:{a}"),
+            Topic::Artifact(a) | Topic::ArtifactQuiet(a) => format!("artifact:{a}"),
             Topic::Presence(a) => format!("presence:{a}"),
             Topic::Working(a) => format!("working:{a}"),
             Topic::Docs(a) => format!("docs:{a}"),
@@ -157,7 +163,21 @@ impl Topic {
             | Topic::Inbox
             | Topic::People
             | Topic::Agents => None,
-            Topic::Artifact(a) | Topic::Presence(a) | Topic::Working(a) | Topic::Docs(a) => Some(a),
+            Topic::Artifact(a)
+            | Topic::ArtifactQuiet(a)
+            | Topic::Presence(a)
+            | Topic::Working(a)
+            | Topic::Docs(a) => Some(a),
+        }
+    }
+
+    /// This topic as a subscriber who may not read its artifact's comments
+    /// holds it: `artifact:<id>` becomes [`Topic::ArtifactQuiet`]; the
+    /// others are unchanged (none of them carries comments).
+    pub fn without_comments(self) -> Topic {
+        match self {
+            Topic::Artifact(a) => Topic::ArtifactQuiet(a),
+            t => t,
         }
     }
 
@@ -172,6 +192,7 @@ impl Topic {
         match self {
             Topic::Gallery => vec![Chan::Gallery],
             Topic::Artifact(a) => vec![Chan::Artifact(a.clone())],
+            Topic::ArtifactQuiet(a) => vec![Chan::ArtifactQuiet(a.clone())],
             Topic::Presence(a) => vec![Chan::Presence(a.clone())],
             // Agents' drafts ride the working topic, to signed-in people's
             // streams only: the owner's, connected people's and a hosted
@@ -213,6 +234,8 @@ impl Topic {
 enum Chan {
     Gallery,
     Artifact(String),
+    /// [`Chan::Artifact`]'s events but threads' ([`Topic::ArtifactQuiet`]).
+    ArtifactQuiet(String),
     Presence(String),
     Working(String),
     /// An artifact's `drafts` events, on its `working` topic; only the
@@ -244,7 +267,7 @@ impl Chan {
             Chan::Inbox(_) => "inbox".into(),
             Chan::People => "people".into(),
             Chan::Agents => "agents".into(),
-            Chan::Artifact(a) => format!("artifact:{a}"),
+            Chan::Artifact(a) | Chan::ArtifactQuiet(a) => format!("artifact:{a}"),
             Chan::Presence(a) => format!("presence:{a}"),
             Chan::Working(a) | Chan::Drafts(a) => format!("working:{a}"),
             Chan::DocsAt(a, _) | Chan::DocsOf(a, _) => format!("docs:{a}"),
@@ -384,7 +407,7 @@ impl Topic {
     pub fn is_live(&self) -> bool {
         matches!(
             self,
-            Topic::Artifact(_) | Topic::Presence(_) | Topic::Working(_)
+            Topic::Artifact(_) | Topic::ArtifactQuiet(_) | Topic::Presence(_) | Topic::Working(_)
         )
     }
 }
@@ -423,7 +446,9 @@ pub fn live_only_admits(live: &crate::live::LiveIds, t: &Topic) -> bool {
     match t {
         Topic::Gallery | Topic::Docs(_) | Topic::People | Topic::Agents => false,
         Topic::Site(_) | Topic::Questions | Topic::Inbox => true,
-        Topic::Artifact(a) | Topic::Presence(a) | Topic::Working(a) => live.contains(a),
+        Topic::Artifact(a) | Topic::ArtifactQuiet(a) | Topic::Presence(a) | Topic::Working(a) => {
+            live.contains(a)
+        }
     }
 }
 
@@ -557,8 +582,28 @@ fn presence_diff(old: &[PresenceView], new: &[PresenceView]) -> (Vec<PresenceVie
     (changed, gone)
 }
 
-/// The channels `ev` goes to, with each one's gate.
+/// The channels `ev` goes to, with each one's gate: each artifact channel's
+/// quiet twin too ([`Chan::ArtifactQuiet`]), but for thread events.
 fn routes(ev: &Event) -> Vec<(Chan, Gate)> {
+    let mut all = routes_loud(ev);
+    let threads = matches!(
+        ev,
+        Event::Thread { .. } | Event::ThreadDeleted { .. } | Event::ThreadMoved { .. }
+    );
+    if !threads {
+        let quiet: Vec<(Chan, Gate)> = all
+            .iter()
+            .filter_map(|(c, g)| match c {
+                Chan::Artifact(a) => Some((Chan::ArtifactQuiet(a.clone()), *g)),
+                _ => None,
+            })
+            .collect();
+        all.extend(quiet);
+    }
+    all
+}
+
+fn routes_loud(ev: &Event) -> Vec<(Chan, Gate)> {
     let a = ev.artifact_id().to_string();
     match ev {
         Event::Version { .. }
@@ -675,7 +720,7 @@ fn project(
             _,
         ) => {
             let mut v = json!({"topic": topic, "artifact_id": artifact_id, "n": n, "title": title, "at": at});
-            if *by_page && matches!(chan, Chan::Artifact(_)) {
+            if *by_page && matches!(chan, Chan::Artifact(_) | Chan::ArtifactQuiet(_)) {
                 v["by_page"] = json!(true);
             }
             v
@@ -1351,6 +1396,11 @@ impl Hub {
         Some(GRACE.saturating_sub(Instant::now().saturating_duration_since(*at)))
     }
 
+    /// Whether stream `id` has a connection open now.
+    pub fn is_attached(&self, id: &str) -> bool {
+        self.lock().streams.get(id).is_some_and(|s| s.tx.is_some())
+    }
+
     /// The caller level of each stream with a connection open, for tests.
     pub fn attached_levels(&self) -> Vec<Level> {
         let g = self.lock();
@@ -1443,6 +1493,9 @@ pub struct Conn {
     shutdown_live: bool,
     /// Whether the stream may still deliver (see [`Conn::checking`]).
     check: Option<Box<dyn Fn() -> bool + Send + Sync>>,
+    /// Its place in its client's cap ([`crate::socket_caps`]), given back
+    /// when the connection drops.
+    _slot: Option<crate::socket_caps::SocketSlot>,
 }
 
 impl Conn {
@@ -1473,7 +1526,15 @@ impl Conn {
             shutdown,
             shutdown_live: true,
             check: None,
+            _slot: None,
         }
+    }
+
+    /// This connection, holding `slot` (its client's place under the cap)
+    /// until it drops.
+    pub fn holding(mut self, slot: Option<crate::socket_caps::SocketSlot>) -> Conn {
+        self._slot = slot;
+        self
     }
 
     /// This connection, asking `still_live` before it hands out each chunk:

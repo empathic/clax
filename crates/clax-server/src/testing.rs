@@ -530,6 +530,7 @@ impl TestServer {
             sample: Arc::new(crate::sample::Sampler::disabled()),
             stream: crate::stream::Hub::new(live_ids.clone()),
             seats: crate::seats::LiveSeats::new(Default::default(), clock.clone()),
+            sockets: Arc::default(),
             live_ids,
             ext_creds,
             extension_id: clax_core::extension::extension_id_in_effect(home.root()),

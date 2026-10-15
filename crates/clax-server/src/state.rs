@@ -102,6 +102,9 @@ pub struct AppState {
     /// Every artifact's live seats (spec 2026-10-11-clax-dev-hosted-design
     /// §16.1), held by the streams once [`crate::seats::install`] has run.
     pub seats: Arc<crate::seats::LiveSeats>,
+    /// The long-lived connections each client of a hosted daemon holds
+    /// ([`crate::socket_caps`]).
+    pub sockets: Arc<crate::socket_caps::SocketCaps>,
     /// Every live page's artifact ID (spec 2026-10-05-chrome-overlay-design
     /// L10), for hiding them from the LAN and serving their snapshots.
     pub live_ids: Arc<crate::live::LiveIds>,
@@ -225,6 +228,7 @@ impl AppState {
             sample: p.sample,
             stream: crate::stream::Hub::new(live_ids.clone()),
             seats: crate::seats::LiveSeats::from_env(p.clock.clone()),
+            sockets: Arc::default(),
             live_ids,
             ext_creds,
             extension_id: p.extension_id,
