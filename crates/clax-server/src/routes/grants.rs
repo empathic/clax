@@ -241,7 +241,11 @@ fn lan_address(s: &AppState) -> Result<IpAddr, ApiError> {
 }
 
 /// `POST /api/people/invites` (owner, browser) `{name | viewer | me,
-/// rights?}` → 201 `{invite: {id, command, expires_at}}` (spec §6.2). The
+/// rights?}` → 201 `{invite: {id, command, expires_at}}` (spec §6.2).
+/// Without `rights`, a hosted daemon gives a new person (or a viewer not
+/// yet a person) the GitHub members' own space
+/// ([`clax_core::store::github::member_rights`]); a local daemon the
+/// collaborator preset. The
 /// command carries the code, shown this once. 409 `not_on_lan` when the
 /// daemon listens on loopback only.
 pub async fn create_invite(
@@ -273,6 +277,10 @@ pub async fn create_invite(
         }
     };
     let rights = b.rights.as_ref().map(Rights::parse).transpose()?;
+    // A hosted daemon's new person gets their own space, as a GitHub
+    // member does: their own artifacts, and those shared with them one at
+    // a time. A person who already has rights keeps them.
+    let own_space = rights.is_none() && s.hosted.is_some();
     // A hosted daemon's invite is redeemed in the browser, at its public
     // origin (`/join/<code>`); a local one's by `clax connect` on the LAN.
     let base = match &s.hosted {
@@ -285,6 +293,16 @@ pub async fn create_invite(
     let state = s.clone();
     let (invite, code) = s
         .store_call(move |st| {
+            let rights = match &target {
+                InvitePerson::New(_) if own_space => {
+                    Some(clax_core::store::github::member_rights())
+                }
+                InvitePerson::Viewer(pid) if own_space => st
+                    .viewer_by_public_id(pid)?
+                    .filter(|v| !v.person)
+                    .map(|_| clax_core::store::github::member_rights()),
+                _ => rights,
+            };
             let made = st.create_invite(&audit.resolve(st)?, target, rights)?;
             announce(
                 &state,
@@ -816,7 +834,8 @@ pub struct ApproveBody {
 
 /// `POST /api/grants/<gid>/approve` (owner, browser) `{user_code, name,
 /// rights?}` → `{grant}`: the request becomes a new person named `name`
-/// (spec §6.3). 400 `wrong_code` for another code (the third denies the
+/// (spec §6.3), whose rights without `rights` are, on a hosted daemon, the
+/// GitHub members' own space, else the collaborator preset. 400 `wrong_code` for another code (the third denies the
 /// request); 400 `invalid_args` for a body naming an existing viewer or the
 /// owner, which take an invite; 409 `name_taken`; 409 `not_pending`.
 pub async fn approve(
@@ -841,6 +860,11 @@ pub async fn approve(
         return Err(invalid_args("send the request's user_code and a name"));
     };
     let rights = b.rights.as_ref().map(Rights::parse).transpose()?;
+    // A hosted daemon's new person gets their own space, as an invitee's.
+    let rights = match rights {
+        None if s.hosted.is_some() => Some(clax_core::store::github::member_rights()),
+        r => r,
+    };
     let state = s.clone();
     let grant = s
         .store_call(move |st| {

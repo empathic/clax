@@ -146,11 +146,21 @@ impl Site {
         b
     }
 
-    /// Sam, invited by `owner` and joined in a new browser.
+    /// A collaborator (`clax:collaborator`, every artifact), invited by
+    /// `owner` and joined in a new browser.
     async fn person(&self, owner: &Browser, name: &str) -> Browser {
-        let (s, v) = self
-            .post(owner, "/api/people/invites", json!({"name": name}))
-            .await;
+        self.invited(owner, json!({"name": name, "rights": "clax:collaborator"}))
+            .await
+    }
+
+    /// A person invited by `owner` with the default rights (their own
+    /// space alone), joined in a new browser.
+    async fn member(&self, owner: &Browser, name: &str) -> Browser {
+        self.invited(owner, json!({"name": name})).await
+    }
+
+    async fn invited(&self, owner: &Browser, body: Value) -> Browser {
+        let (s, v) = self.post(owner, "/api/people/invites", body).await;
         assert_eq!(s, 201, "{v}");
         let url = v["invite"]["url"].as_str().unwrap();
         let code = url.rsplit('/').next().unwrap();
@@ -468,10 +478,11 @@ async fn an_invite_joins_once_in_the_browser_as_a_person() {
         .post(&sam, "/api/people/invites", json!({"name": "Wes"}))
         .await;
     assert_eq!((s, code(&v)), (403, "browser_required"));
-    // A member reads the gallery.
+    // An invite without rights gives Sam their own space: the owner's
+    // artifact is not in Sam's gallery until it is shared with Sam.
     site.artifact().await;
     let (s, v) = site.get(&sam, "/api/artifacts").await;
-    assert_eq!((s, v["artifacts"].as_array().map(Vec::len)), (200, Some(1)));
+    assert_eq!((s, v["artifacts"].as_array().map(Vec::len)), (200, Some(0)));
     // The owner revokes Sam: Sam's browser is signed out.
     let pid = me["person"]["public_id"].as_str().unwrap();
     let (s, _) = site
@@ -3972,4 +3983,355 @@ async fn a_browser_holds_at_most_its_cap_of_streams_and_sockets() {
     };
     held.push(r);
     assert_eq!(held.len(), MAX_PER_SESSION);
+}
+
+impl Site {
+    async fn put(&self, b: &Browser, path: &str, body: Value) -> (u16, Value) {
+        self.send(b, reqwest::Method::PUT, path, body).await
+    }
+
+    /// The public ID `b` is signed in as.
+    async fn pid(&self, b: &Browser) -> String {
+        let (_, v) = self.get(b, "/api/hosted/me").await;
+        v["person"]["public_id"].as_str().unwrap().to_string()
+    }
+}
+
+#[tokio::test]
+async fn an_artifact_shared_with_a_person_opens_to_them_at_its_access_alone() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let plan = site.titled("Plan").await;
+    let budget = site.titled("Budget").await;
+    // An invite without rights gives a person their own space alone.
+    let sam = site.member(&owner, "Sam").await;
+    let sam_pid = site.pid(&sam).await;
+    let (_, v) = site.get(&sam, "/api/artifacts").await;
+    assert_eq!(listed(&v), Vec::<String>::new());
+    let sharing = format!("/api/hosted/artifacts/{plan}/sharing");
+    let shares = format!("/api/hosted/artifacts/{plan}/shares");
+    let (s, _) = site.get(&sam, &sharing).await;
+    assert_eq!(s, 404, "an artifact Sam may not read is not there");
+    let (s, v) = site.get(&owner, &sharing).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        (&v["can_share"], &v["general"], &v["people"]),
+        (&json!(true), &json!("restricted"), &json!([]))
+    );
+    assert!(
+        v["suggestions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["person"] == json!(sam_pid))
+    );
+    // Can view.
+    let (s, v) = site
+        .put(
+            &owner,
+            &shares,
+            json!({"person": sam_pid, "access": "viewer"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let share_id = v["share"]["id"].as_str().unwrap().to_string();
+    let (_, v) = site.get(&sam, "/api/artifacts").await;
+    assert_eq!(
+        listed(&v),
+        vec![plan.clone()],
+        "the sharee's gallery holds it, and only it"
+    );
+    for p in [format!("/a/{plan}"), format!("/api/artifacts/{plan}")] {
+        assert_eq!(site.get(&sam, &p).await.0, 200, "{p}");
+    }
+    assert_eq!(
+        site.get(&sam, &format!("/api/artifacts/{budget}")).await.0,
+        404
+    );
+    let (s, v) = site.get(&sam, &sharing).await;
+    assert_eq!((s, &v["can_share"]), (200, &json!(false)), "{v}");
+    assert!(v.get("people").is_none(), "a non-sharer sees no one: {v}");
+    let (s, _) = site.thread(&sam, &plan, "a viewer").await;
+    assert_eq!(s, 403, "a viewer does not comment");
+    // Can comment.
+    site.put(
+        &owner,
+        &shares,
+        json!({"person": sam_pid, "access": "commenter"}),
+    )
+    .await;
+    let (s, t) = site.thread(&sam, &plan, "a commenter").await;
+    assert_eq!(s, 201, "{t}");
+    let tid = t["thread"]["id"].as_str().unwrap().to_string();
+    let resolve = format!("/api/artifacts/{plan}/threads/{tid}/resolve");
+    let (s, v) = site.post(&sam, &resolve, json!({})).await;
+    assert_eq!(
+        (s, code(&v)),
+        (403, "not_permitted"),
+        "a commenter does not resolve"
+    );
+    let mut agent = site.token_agent(&sam, "sam-laptop").await;
+    assert_eq!(agent.initialize("writer").await, 200);
+    let edit = json!({"id": plan, "html": "<h1>Sam's</h1>", "if_version": 1});
+    let (_, r) = agent.call("publish", edit.clone()).await;
+    assert_eq!(
+        tool_code(&r),
+        "not_permitted",
+        "a commenter does not publish: {r}"
+    );
+    // Can edit: resolve, publish through their agent; never share, change
+    // general access or delete.
+    let (s, v) = site
+        .put(
+            &owner,
+            &shares,
+            json!({"person": sam_pid, "access": "editor"}),
+        )
+        .await;
+    assert_eq!(
+        (s, &v["share"]["id"]),
+        (200, &json!(share_id)),
+        "one share, changed"
+    );
+    assert_eq!(site.post(&sam, &resolve, json!({})).await.0, 200);
+    let (_, r) = agent.call("publish", edit).await;
+    assert_eq!(tool_code(&r), "", "an editor's agent publishes: {r}");
+    let (_, r) = agent
+        .call(
+            "publish",
+            json!({"id": budget, "html": "<h1>no</h1>", "if_version": 1}),
+        )
+        .await;
+    assert_eq!(
+        tool_code(&r),
+        "not_permitted",
+        "not at another artifact: {r}"
+    );
+    let (s, v) = site
+        .put(
+            &sam,
+            &shares,
+            json!({"github_login": "friend", "access": "viewer"}),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (403, "forbidden"), "{v}");
+    let (s, _) = site
+        .put(
+            &sam,
+            &format!("/api/hosted/artifacts/{plan}/link"),
+            json!({"access": "viewer"}),
+        )
+        .await;
+    assert_eq!(s, 403);
+    let (s, _) = site
+        .send(
+            &sam,
+            reqwest::Method::DELETE,
+            &format!("/api/hosted/artifacts/{plan}/shares/{share_id}"),
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, 403);
+    let (s, _) = site
+        .send(
+            &sam,
+            reqwest::Method::DELETE,
+            &format!("/api/artifacts/{plan}"),
+            json!(null),
+        )
+        .await;
+    assert!(s >= 400, "an editor does not delete: {s}");
+    assert!(
+        site.ts
+            .store
+            .get_artifact(&clax_core::ArtifactId::parse(&plan).unwrap())
+            .unwrap()
+            .is_some()
+    );
+    // Bad bodies; and every change needs the public origin.
+    for body in [
+        json!({"access": "viewer"}),
+        json!({"person": sam_pid, "github_login": "x", "access": "viewer"}),
+        json!({"person": sam_pid, "access": "owner"}),
+    ] {
+        let (s, v) = site.put(&owner, &shares, body.clone()).await;
+        assert_eq!((s, code(&v)), (400, "invalid_args"), "{body}");
+    }
+    let (s, v) = site
+        .put(
+            &owner,
+            &shares,
+            json!({"github_login": "-bad", "access": "viewer"}),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (400, "invalid_login"));
+    let res = site
+        .ts
+        .client
+        .put(site.url(&shares))
+        .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+        .header(
+            COOKIE,
+            format!("clax_session={}", owner.cookie.as_deref().unwrap()),
+        )
+        .json(&json!({"github_login": "octo", "access": "viewer"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403, "no Origin, no change");
+    // A login no one signed in with waits.
+    let (s, v) = site
+        .put(
+            &owner,
+            &shares,
+            json!({"github_login": "@Octo", "access": "viewer"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        (&v["share"]["github_login"], &v["share"]["pending"]),
+        (&json!("octo"), &json!(true))
+    );
+    // Removed, the artifact is gone from Sam's view.
+    let (s, _) = site
+        .send(
+            &owner,
+            reqwest::Method::DELETE,
+            &format!("/api/hosted/artifacts/{plan}/shares/{share_id}"),
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, 200);
+    assert_eq!(
+        site.get(&sam, &format!("/api/artifacts/{plan}")).await.0,
+        404
+    );
+    let (_, v) = site.get(&sam, "/api/artifacts").await;
+    assert_eq!(listed(&v), Vec::<String>::new());
+    // The maker shares their own artifact; Mia, shared nothing, sees none
+    // of the others.
+    let (_, r) = agent
+        .call(
+            "publish",
+            json!({"html": "<h1>Sam's own</h1>", "title": "Notes"}),
+        )
+        .await;
+    assert_eq!(tool_code(&r), "", "{r}");
+    let notes = site
+        .ts
+        .store
+        .list_artifacts()
+        .unwrap()
+        .into_iter()
+        .find(|a| a.title == "Notes")
+        .unwrap()
+        .id;
+    let mia = site.member(&owner, "Mia").await;
+    let mia_pid = site.pid(&mia).await;
+    let (_, v) = site.get(&mia, "/api/artifacts").await;
+    assert_eq!(listed(&v), Vec::<String>::new());
+    let (s, v) = site
+        .get(&sam, &format!("/api/hosted/artifacts/{notes}/sharing"))
+        .await;
+    assert_eq!(
+        (s, &v["can_share"], &v["suggestions"]),
+        (200, &json!(true), &json!([])),
+        "{v}"
+    );
+    let (s, _) = site
+        .put(
+            &sam,
+            &format!("/api/hosted/artifacts/{notes}/shares"),
+            json!({"person": mia_pid, "access": "commenter"}),
+        )
+        .await;
+    assert_eq!(s, 200);
+    let (_, v) = site.get(&mia, "/api/artifacts").await;
+    assert_eq!(listed(&v), vec![notes.clone()]);
+}
+
+#[tokio::test]
+async fn the_public_gallery_lists_public_artifacts_alone_to_anyone() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let anon = Browser::default();
+    let plan = site.titled("Plan").await;
+    let budget = site.titled("Budget").await;
+    let _secret = site.titled("Secret").await;
+    let link = |aid: &str| format!("/api/hosted/artifacts/{aid}/link");
+    let (s, v) = site.get(&anon, "/api/hosted/public").await;
+    assert_eq!((s, v), (200, json!({"artifacts": []})));
+    let (s, v) = site
+        .put(
+            &owner,
+            &link(&plan),
+            json!({"access": "viewer", "listed": true}),
+        )
+        .await;
+    assert_eq!((s, &v["listed"]), (200, &json!(true)), "{v}");
+    site.put(&owner, &link(&budget), json!({"access": "commenter"}))
+        .await;
+    let (_, v) = site.get(&anon, "/api/hosted/public").await;
+    let arts = v["artifacts"].as_array().unwrap();
+    assert_eq!(arts.len(), 1, "{v}");
+    assert_eq!(arts[0]["artifact_id"], json!(plan));
+    assert_eq!(arts[0]["title"], json!("Plan"));
+    assert!(
+        arts[0]["url"]
+            .as_str()
+            .unwrap()
+            .ends_with(&format!("/a/{plan}"))
+    );
+    assert_eq!(
+        arts[0].as_object().unwrap().len(),
+        3,
+        "its ID, title and URL alone"
+    );
+    let (_, v) = site
+        .get(&owner, &format!("/api/hosted/artifacts/{plan}/sharing"))
+        .await;
+    assert_eq!(
+        (&v["general"], &v["link_access"]),
+        (&json!("public"), &json!("viewer"))
+    );
+    let (_, v) = site
+        .get(&owner, &format!("/api/hosted/artifacts/{budget}/sharing"))
+        .await;
+    assert_eq!(v["general"], json!("link"));
+    // A signed-out visitor opens it through its link.
+    assert_eq!(
+        site.get(&anon, &format!("/api/artifacts/{plan}")).await.0,
+        200
+    );
+    // Only a page shared by link is listed; stopping unlists it.
+    let (s, v) = site
+        .put(
+            &owner,
+            &link(&plan),
+            json!({"access": null, "listed": true}),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (400, "invalid_args"));
+    let (_, v) = site
+        .put(&owner, &link(&plan), json!({"access": "commenter"}))
+        .await;
+    assert_eq!(
+        v["listed"],
+        json!(true),
+        "changing the access keeps the listing"
+    );
+    site.put(&owner, &link(&plan), json!({"access": null}))
+        .await;
+    let (_, v) = site.get(&anon, "/api/hosted/public").await;
+    assert_eq!(v, json!({"artifacts": []}));
+    // Someone other than the owner or the maker may not list it.
+    let sam = site.member(&owner, "Sam").await;
+    let (s, _) = site
+        .put(
+            &sam,
+            &link(&budget),
+            json!({"access": "viewer", "listed": true}),
+        )
+        .await;
+    assert_eq!(s, 403);
 }

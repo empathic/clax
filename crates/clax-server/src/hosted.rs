@@ -2115,7 +2115,8 @@ async fn list_links(
                     continue;
                 }
                 if let Some(a) = st.get_artifact(&id)? {
-                    out.push((aid, a.title, access));
+                    let listed = st.link_listed(&aid)?;
+                    out.push((aid, a.title, access, listed));
                 }
             }
             Ok(out)
@@ -2123,10 +2124,11 @@ async fn list_links(
         .await?;
     Ok(no_store(
         Json(
-            json!({"links": links.iter().map(|(aid, title, access)| json!({
+            json!({"links": links.iter().map(|(aid, title, access, listed)| json!({
             "artifact_id": aid,
             "title": title,
             "access": access,
+            "listed": listed,
             "url": h.url(&format!("/a/{aid}")),
         })).collect::<Vec<_>>()}),
         )
@@ -2139,11 +2141,16 @@ async fn list_links(
 struct LinkBody {
     /// `viewer`, `commenter`, or `null` to stop sharing.
     access: Option<String>,
+    /// Whether the public gallery lists it (public); absent keeps it.
+    #[serde(default)]
+    listed: Option<bool>,
 }
 
-/// `PUT /api/hosted/artifacts/<aid>/link {access}` (the owner, or the
-/// person who made the artifact): shares it by link as `viewer` or
-/// `commenter`, or stops (`null`). → `{artifact_id, access, url}`. The
+/// `PUT /api/hosted/artifacts/<aid>/link {access, listed?}` (the owner,
+/// or the person who made the artifact; [`may_share`]): shares it by link
+/// as `viewer` or `commenter`, or stops (`null`, which also unlists it),
+/// and with `listed` lists it in the public gallery or not (absent keeps
+/// it). → `{artifact_id, access, listed, url}`. The
 /// artifact's git tokens (on stopping, every held token: a fork's need
 /// read up its lineage) are rechecked before it answers
 /// ([`crate::git_remotes::recheck`]). 400 `invalid_args` for another
@@ -2168,25 +2175,14 @@ async fn set_link(
         })?),
     };
     let id = aid.as_str().to_string();
-    s.store_call(move |st| {
-        if st.get_artifact(&aid)?.is_none() {
-            return Err(CoreError::NotFound);
-        }
-        let mine =
-            who.owner || st.artifact_created_by(aid.as_str(), Some(&who.viewer.public_id))?;
-        if !mine {
-            return Err(CoreError::invalid(
-                "forbidden",
-                "only the owner or the page's maker shares it by link",
-            ));
-        }
-        st.set_link_access(&audit.resolve(st)?, aid.as_str(), access)
-    })
-    .await
-    .map_err(|e| match e.code {
-        "forbidden" => ApiError::forbidden("forbidden", e.message),
-        _ => e,
-    })?;
+    let listed = b.listed;
+    let (_, listed) = s
+        .store_call(move |st| {
+            sharer(st, &who, &aid)?;
+            st.set_general_access(&audit.resolve(st)?, aid.as_str(), access, listed)
+        })
+        .await
+        .map_err(forbidden_code)?;
     // A person whose rights there came from the link, and the link's own
     // read tokens, lose their git tokens before this answers; when the
     // host fails, the next settle retries. Stopping sharing rechecks every
@@ -2201,9 +2197,244 @@ async fn set_link(
         Json(json!({
             "artifact_id": id,
             "access": access,
+            "listed": listed,
             "url": h.url(&format!("/a/{id}")),
         }))
         .into_response(),
+    ))
+}
+
+/// Whether session `who` may share artifact `aid` and set who else may
+/// open it: the owner, and the person who made it. An editor may not.
+///
+/// # Errors
+/// The store's.
+pub fn may_share(st: &clax_core::Store, who: &SessionViewer, aid: &str) -> clax_core::Result<bool> {
+    Ok(who.member() && (who.owner || st.artifact_created_by(aid, Some(&who.viewer.public_id))?))
+}
+
+/// `NotFound` without live artifact `aid`; `forbidden` when `who` may not
+/// share it ([`may_share`]).
+fn sharer(
+    st: &clax_core::Store,
+    who: &SessionViewer,
+    aid: &clax_core::ArtifactId,
+) -> clax_core::Result<()> {
+    if st.get_artifact(aid)?.is_none() {
+        return Err(CoreError::NotFound);
+    }
+    if !may_share(st, who, aid.as_str())? {
+        return Err(CoreError::invalid(
+            "forbidden",
+            "only the owner or the page's maker shares it",
+        ));
+    }
+    Ok(())
+}
+
+/// A store refusal coded `forbidden` as 403.
+fn forbidden_code(e: ApiError) -> ApiError {
+    match e.code {
+        "forbidden" => ApiError::forbidden("forbidden", e.message),
+        _ => e,
+    }
+}
+
+/// An artifact's general access as the sharing dialog names it:
+/// `restricted` (only the people added), `link` (anyone with the link) or
+/// `public` (anyone with the link, and listed in the public gallery).
+fn general_of(access: Option<LinkAccess>, listed: bool) -> &'static str {
+    match (access, listed) {
+        (None, _) => "restricted",
+        (Some(_), false) => "link",
+        (Some(_), true) => "public",
+    }
+}
+
+fn share_view(sh: &clax_core::store::shares::Share) -> Value {
+    json!({
+        "id": sh.id,
+        "access": sh.access,
+        "github_login": sh.github_login,
+        "person": sh.person,
+        "name": sh.name,
+        "pending": sh.person.is_none(),
+    })
+}
+
+/// `GET /api/hosted/artifacts/<aid>/sharing` (a member's browser) → for
+/// whoever may share it ([`may_share`]) `{artifact_id, can_share: true,
+/// general, link_access, url, people: [{id, access, github_login, person,
+/// name, pending}], suggestions}`, the suggestions (people here, with
+/// their GitHub logins) for the owner alone; for another member who may
+/// read it, `{artifact_id, can_share: false}`. 404 for an artifact the
+/// caller may not read, 401 without a session, 403 for a guest.
+async fn get_sharing(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Extension(r): Extension<HostedRequest>,
+    aid: Result<Path<String>, PathRejection>,
+) -> Result<Response, ApiError> {
+    browser_only(&headers)?;
+    let h = hosted_of(&s);
+    let who = member_of(&r, "share pages")?.clone();
+    let member = r.member.clone();
+    let aid = crate::routes::artifacts::parse_id(&crate::routes::artifacts::path(aid)?)?;
+    let url = h.url(&format!("/a/{}", aid.as_str()));
+    let v = s
+        .store_call(move |st| {
+            if st.get_artifact(&aid)?.is_none() {
+                return Err(CoreError::NotFound);
+            }
+            let id = aid.as_str();
+            if !may_share(st, &who, id)? {
+                let reads = match &member {
+                    Some(m) => m.allows_at(st, (RightType::Artifacts, "read"), id)?,
+                    None => who.owner,
+                };
+                if !reads {
+                    return Err(CoreError::NotFound);
+                }
+                return Ok(json!({"artifact_id": id, "can_share": false}));
+            }
+            let access = st.link_access(id)?;
+            let listed = st.link_listed(id)?;
+            let people: Vec<Value> = st.artifact_shares(id)?.iter().map(share_view).collect();
+            let suggestions = if who.owner {
+                json!(st.share_candidates()?)
+            } else {
+                json!([])
+            };
+            Ok(json!({
+                "artifact_id": id,
+                "can_share": true,
+                "general": general_of(access, listed),
+                "link_access": access,
+                "url": url,
+                "people": people,
+                "suggestions": suggestions,
+            }))
+        })
+        .await?;
+    Ok(no_store(Json(v).into_response()))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ShareBody {
+    /// A GitHub login (`@` optional).
+    #[serde(default)]
+    github_login: Option<String>,
+    /// A person's public ID.
+    #[serde(default)]
+    person: Option<String>,
+    /// `viewer`, `commenter` or `editor`.
+    access: String,
+}
+
+/// `PUT /api/hosted/artifacts/<aid>/shares {github_login | person,
+/// access}` (whoever may share it, [`may_share`]): shares the artifact
+/// with that person, or changes the access of their share. → 200
+/// `{share}`. A login no one has signed in with yet waits for its first
+/// GitHub sign-in (`pending`). 400 `invalid_args` for no subject, both, or
+/// another access; 400 `invalid_login`, `unknown_person` or
+/// `already_owner`; 404 for no such artifact; 403 `forbidden` for anyone
+/// who may not share it.
+async fn put_share(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Extension(r): Extension<HostedRequest>,
+    audit: crate::audit::DeferredAudit,
+    aid: Result<Path<String>, PathRejection>,
+    req: Result<Json<ShareBody>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    use clax_core::store::shares::{ShareAccess, ShareTo};
+    browser_only(&headers)?;
+    let who = member_of(&r, "share pages")?.clone();
+    let aid = crate::routes::artifacts::parse_id(&crate::routes::artifacts::path(aid)?)?;
+    let b = crate::routes::artifacts::body(req)?;
+    let access = ShareAccess::parse(&b.access).ok_or_else(|| {
+        ApiError::bad_request("invalid_args", "access is viewer, commenter or editor")
+    })?;
+    let to = match (b.github_login, b.person) {
+        (Some(l), None) => ShareTo::GitHub(l),
+        (None, Some(p)) => ShareTo::Person(p),
+        _ => {
+            return Err(ApiError::bad_request(
+                "invalid_args",
+                "name exactly one of github_login or person",
+            ));
+        }
+    };
+    let page = aid.clone();
+    let share = s
+        .store_call(move |st| {
+            sharer(st, &who, &aid)?;
+            st.share_artifact(
+                &audit.resolve(st)?,
+                aid.as_str(),
+                &to,
+                access,
+                Some(&who.viewer.public_id),
+            )
+        })
+        .await
+        .map_err(forbidden_code)?;
+    // A lowered share loses the git tokens it no longer allows.
+    if crate::git_remotes::recheck(&s, Some(&page)).await.is_err() {
+        s.git_remotes.recheck_soon();
+    }
+    Ok(no_store(
+        Json(json!({"share": share_view(&share)})).into_response(),
+    ))
+}
+
+/// `DELETE /api/hosted/artifacts/<aid>/shares/<share_id>` (whoever may
+/// share it, [`may_share`]): removes that share. → 200 `{share}`. Every
+/// held git token is rechecked (a fork's need read up its lineage). 404
+/// for no such artifact or share; 403 `forbidden` for anyone who may not
+/// share it.
+async fn delete_share(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Extension(r): Extension<HostedRequest>,
+    audit: crate::audit::DeferredAudit,
+    ids: Result<Path<(String, String)>, PathRejection>,
+) -> Result<Response, ApiError> {
+    browser_only(&headers)?;
+    let who = member_of(&r, "share pages")?.clone();
+    let (aid, sid) = crate::routes::artifacts::path(ids)?;
+    let aid = crate::routes::artifacts::parse_id(&aid)?;
+    let share = s
+        .store_call(move |st| {
+            sharer(st, &who, &aid)?;
+            st.unshare_artifact(&audit.resolve(st)?, aid.as_str(), &sid)
+        })
+        .await
+        .map_err(forbidden_code)?;
+    if crate::git_remotes::recheck(&s, None).await.is_err() {
+        s.git_remotes.recheck_soon();
+    }
+    Ok(no_store(
+        Json(json!({"share": share_view(&share)})).into_response(),
+    ))
+}
+
+/// `GET /api/hosted/public` (anyone, signed in or not) → `{artifacts:
+/// [{artifact_id, title, url}]}`: the public gallery, the artifacts shared
+/// by link and listed, most recently updated first. Each opens through its
+/// link, as any page shared by link does.
+async fn public_list(State(s): State<AppState>) -> Result<Response, ApiError> {
+    let h = hosted_of(&s);
+    let rows = s.store_call(|st| st.public_artifacts()).await?;
+    let artifacts: Vec<Value> = rows
+        .iter()
+        .map(|(aid, title)| {
+            json!({"artifact_id": aid, "title": title, "url": h.url(&format!("/a/{aid}"))})
+        })
+        .collect();
+    Ok(no_store(
+        Json(json!({"artifacts": artifacts})).into_response(),
     ))
 }
 
@@ -2447,6 +2678,13 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/hosted/links", get(list_links))
         .route("/api/hosted/artifacts/{aid}/link", put(set_link))
+        .route("/api/hosted/artifacts/{aid}/sharing", get(get_sharing))
+        .route("/api/hosted/artifacts/{aid}/shares", put(put_share))
+        .route(
+            "/api/hosted/artifacts/{aid}/shares/{sid}",
+            delete(delete_share),
+        )
+        .route("/api/hosted/public", get(public_list))
         .route("/device", get(signin_page))
         .route("/auth/github", get(crate::github::start))
         .route(crate::github::CALLBACK_PATH, get(crate::github::callback))
