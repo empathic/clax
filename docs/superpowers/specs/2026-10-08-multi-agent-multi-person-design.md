@@ -2277,6 +2277,9 @@ boundary.
   - `vis_threads_ms`: baseline + 2 ms, median, as a person's agent.
   - `vis_feedback_poll_ms`: baseline + 1 ms, median, half the rows
     withheld.
+  - `vis_owner_poll_ms`: the feedback poll's limit (baseline + 1 ms),
+    median, as the owner's own agent polling 20 of the owner's rows with
+    the two people present.
   - `sig_verify_us` 150: median signature verification in the gateway.
   - The probe loads under `cheap_p95_ms` and `cheap_max_ms` with a signed
     client polling beside them.
@@ -2654,3 +2657,7 @@ task, with recommendations; the owner took every recommendation
   person alone, and beside a Withheld or Declined reading; every other
   reader reads such a row as if access were never lost (owner ruling:
   an author's reading never changes because of the approver's rights).
+- **Amendment** (2026-10-15, Task 25 perf ruling): §23 adds
+  `vis_owner_poll_ms`, the owner's own agent's feedback poll with people
+  present, judged on `vis_feedback_poll_ms`'s limit; the budgets stay
+  (owner ruling: make the poll cheaper rather than widen the margin).
