@@ -20,7 +20,7 @@ _RUNNER_LIB = "//bazel/js:runner_lib"
 # system calls and cannot reach Vite's native code, is off: there are no
 # links to follow.
 
-def npm_script_test(name, script, data, args = [], **kwargs):
+def npm_script_test(name, script, data, args = [], skips = [], **kwargs):
     """`pnpm run <script> [args]` in this package, as a test.
 
     Args:
@@ -28,12 +28,14 @@ def npm_script_test(name, script, data, args = [], **kwargs):
       script: the script in this package's package.json.
       data: everything it reads: sources, config, `:node_modules`.
       args: arguments appended to the script's command.
+      skips: paths (from the workspace root) of declared inputs left out of
+        the runner's private copy; the script reads them from the runfiles.
       **kwargs: passed to js_test (size, timeout, tags, env).
     """
     js_test(
         name = name,
         entry_point = _RUNNER,
-        args = [native.package_name(), script] + args,
+        args = [a for skip in skips for a in ["--skip", skip]] + [native.package_name(), script] + args,
         data = data + [_RUNNER_LIB],
         patch_node_fs = False,
         # A cold runner starts Node, copies the project and type-checks or

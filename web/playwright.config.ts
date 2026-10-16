@@ -1,3 +1,4 @@
+import "./e2e/bazel-env";
 import { cpus } from "node:os";
 import { defineConfig } from "@playwright/test";
 

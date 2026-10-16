@@ -230,6 +230,19 @@
   },
   "selectedYankedVersions": {},
   "moduleExtensions": {
+    "//bazel/playwright:repo.bzl%playwright": {
+      "general": {
+        "bzlTransitiveDigest": "2weRmhqQEQzClQqyTZh/4eKB7K5ulmysaUZnDknEFaI=",
+        "usagesDigest": "5T+uIbGuA8jtIb0caxUReMFMggtAvTuAWbMBnM0pv58=",
+        "recordedInputs": [],
+        "generatedRepoSpecs": {
+          "chromium": {
+            "repoRuleId": "@@//bazel/playwright:repo.bzl%chromium_repository",
+            "attributes": {}
+          }
+        }
+      }
+    },
     "@@aspect_tools_telemetry+//:extension.bzl%telemetry": {
       "general": {
         "bzlTransitiveDigest": "ihzLOoAnQP6Y5iSYOhEjvb6uxEbA6ZgH8Qikau2lGRU=",

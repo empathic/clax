@@ -20,6 +20,12 @@
 //   module that was deleted from the checkout, and pass. The copy holds
 //   what was declared and nothing else, so a result depends on that alone.
 //
+// `--skip <path>` leaves a declared file or directory (relative to the
+// workspace) out of the copy: a binary that must be run as the file Bazel
+// ran once (macOS assesses each new file on its first run), or a browser
+// build too large to copy per test. The script finds it in the runfiles
+// (JS_BINARY__RUNFILES).
+//
 // `--out <dir>` names a directory the script writes, relative to the
 // package: it is copied back to where Bazel expects the action's output.
 import { spawn } from 'node:child_process';
@@ -45,10 +51,15 @@ import { candidates, makeScratch } from './scratch.mjs';
 
 const argv = process.argv.slice(2);
 const outs = [];
-while (argv[0] === '--out') outs.push(argv.splice(0, 2)[1]);
+const skips = [];
+for (;;) {
+  if (argv[0] === '--out') outs.push(argv.splice(0, 2)[1]);
+  else if (argv[0] === '--skip') skips.push(argv.splice(0, 2)[1]);
+  else break;
+}
 const [dir, script, ...extra] = argv;
 if (!dir || !script) {
-  console.error('usage: npm_script.mjs [--out <dir>]... <package directory> <script> [arguments...]');
+  console.error('usage: npm_script.mjs [--out <dir>]... [--skip <path>]... <package directory> <script> [arguments...]');
   process.exit(2);
 }
 
@@ -107,6 +118,8 @@ const pending = [[declared, project]];
 const done = new Set();
 function copy(from, to) {
   if (done.has(to)) return;
+  const here = relative(project, to);
+  if (skips.some((skip) => here === skip || here.startsWith(skip + sep))) return;
   const stat = lstatSync(from);
   if (stat.isSymbolicLink()) {
     const target = resolve(dirname(from), readlinkSync(from));

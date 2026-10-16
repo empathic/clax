@@ -90,6 +90,8 @@ npm_script_test(
     ],
     env = {"CLAX_TEST_BIN": "$(rootpath //crates/clax-cli:clax)"},
     script = "test",
+    # Run where Bazel ran it once (test/daemon-fixture.ts), not copied.
+    skips = ["crates/clax-cli/clax"],
 )
 
 # The Pi files the release script test copies (scripts/test-release.files).

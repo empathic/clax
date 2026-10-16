@@ -1,4 +1,5 @@
 load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
+load("@aspect_rules_js//js:defs.bzl", "js_binary")
 load("@npm_web//:defs.bzl", "npm_link_all_packages")
 load("//bazel:dirs.bzl", "pick_dir")
 load("//bazel/js:defs.bzl", "npm_script_build", "npm_script_test")
@@ -185,4 +186,89 @@ npm_script_test(
         ":node_modules",
     ],
     script = "bundle-size",
+)
+
+# The browser tests (pnpm run e2e), one target per Playwright project, on
+# the pinned Chromium (bazel/playwright) and the warmed clax. The binary and
+# the browsers are read where Bazel put them, not copied
+# (web/e2e/bazel-env.ts).
+E2E_DATA = [
+    ":dist",
+    ":dist_e2e",
+    ":dist_extension_test",
+    ":files",
+    ":node_modules",
+    "//crates/clax-cli:clax",
+    "//crates/clax-cli:clax_warm",
+    "@chromium//:browsers",
+]
+
+E2E_ENV = {
+    "CLAX_E2E_WEB_DIST": "$(rootpath :dist_e2e)",
+    "CLAX_TEST_BIN": "$(rootpath //crates/clax-cli:clax)",
+    "PLAYWRIGHT_BROWSERS_PATH": "$(rootpath @chromium//:browsers)",
+}
+
+E2E_SKIPS = ["crates/clax-cli/clax"]
+
+[npm_script_test(
+    name = "e2e_" + project.replace("-", "_"),
+    args = [
+        "--project",
+        project,
+    ],
+    data = E2E_DATA,
+    env = E2E_ENV | {"CLAX_E2E_WORKERS": "8"},
+    skips = E2E_SKIPS,
+    # The pinned browsers stay where their repository put them.
+    no_copy_to_bin = ["@chromium//:browsers"],
+    # Chromium under macOS's sandbox-exec ran the suite about twenty times
+    # slower and timed out user-activation tests (docs/bazel.md, "Browser
+    # tests"), so the browser tests run outside Bazel's sandbox.
+    tags = [
+        "cpu:8",
+        "no-sandbox",
+    ],
+    script = "e2e",
+) for project in [
+    "gesture",
+    "chrome-overlay",
+    "rest",
+]]
+
+# Time to usable (pnpm run perf), quick: alone, as a perf gate.
+npm_script_test(
+    name = "perf_usable",
+    data = E2E_DATA,
+    env = E2E_ENV | {"CLAX_PERF_QUICK": "1"},
+    skips = E2E_SKIPS,
+    # The pinned browsers stay where their repository put them.
+    no_copy_to_bin = ["@chromium//:browsers"],
+    tags = [
+        "exclusive",
+        "no-sandbox",
+    ],
+    script = "perf",
+)
+
+npm_script_test(
+    name = "perf_usable_full",
+    data = E2E_DATA,
+    env = E2E_ENV,
+    skips = E2E_SKIPS,
+    # The pinned browsers stay where their repository put them.
+    no_copy_to_bin = ["@chromium//:browsers"],
+    tags = [
+        "exclusive",
+        "manual",
+        "no-sandbox",
+    ],
+    script = "perf",
+)
+
+# The locked Playwright command line, for `install-deps` in CI.
+js_binary(
+    name = "playwright",
+    data = [":node_modules"],
+    entry_point = ":node_modules/@playwright/test/cli.js",
 )

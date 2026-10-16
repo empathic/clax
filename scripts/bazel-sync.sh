@@ -12,6 +12,8 @@
 #   bazel/release_files.bzl
 #                         the release script test's files as labels
 #                         (scripts/test-release.files)
+#   bazel/playwright/browsers.bzl
+#                         the Chromium builds the locked Playwright runs
 #   MODULE.bazel.lock     the pinned third-party crates (Cargo.lock) and
 #                         packages (each pnpm-lock.yaml)
 # Checked: the Rust version in MODULE.bazel against rust-toolchain.toml, a
@@ -53,6 +55,20 @@ if [ "$mode" = write ]; then
     printf '%s\n' "$generated" > bazel/release_files.bzl
 elif ! printf '%s\n' "$generated" | diff -q - bazel/release_files.bzl >/dev/null 2>&1; then
     _stale bazel/release_files.bzl
+fi
+
+# The pinned Chromium follows the locked Playwright. Deriving it downloads
+# each archive once for its checksum, so it is rewritten only when the
+# version moved; --check compares the versions.
+locked="$(./scripts/bazel-derive.py playwright-version)"
+pinned="$(sed -n 's/^PLAYWRIGHT_VERSION = "\(.*\)"$/\1/p' bazel/playwright/browsers.bzl 2>/dev/null || true)"
+if [ "$locked" != "$pinned" ]; then
+    if [ "$mode" = write ]; then
+        ./scripts/bazel-derive.py browsers > bazel/playwright/browsers.bzl.new &&
+            mv bazel/playwright/browsers.bzl.new bazel/playwright/browsers.bzl
+    else
+        _stale "bazel/playwright/browsers.bzl (Playwright $pinned, web/pnpm-lock.yaml locks $locked)"
+    fi
 fi
 
 # Every workspace crate has a BUILD.bazel (bazel/cargo.bzl's cargo_package).
