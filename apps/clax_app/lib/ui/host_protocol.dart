@@ -54,6 +54,8 @@ sealed class HostMessage {
         ),
         'sent' => Sent(m['thread'] as String),
         'landed' => Landed(_int(m['version'])),
+        'newer' => NewerMsg(_int(m['version'])),
+        'history' => HistoryMsg(back: m['back'] as bool),
         'notice' => Notice(m['text'] as String),
         'sendFailed' => SendFailed(
           m['thread'] as String,
@@ -274,6 +276,23 @@ final class Landed extends HostMessage {
   const Landed(this.version);
 
   final int version;
+}
+
+/// A newer [version] than the one shown is published; the shell loads it
+/// only on [ReloadLatest] (a view pinned to an earlier version is offered
+/// nothing).
+final class NewerMsg extends HostMessage {
+  const NewerMsg(this.version);
+
+  final int version;
+}
+
+/// Whether the app's page has a page or fragment of its own to go [back]
+/// to ([GoBack]).
+final class HistoryMsg extends HostMessage {
+  const HistoryMsg({required this.back});
+
+  final bool back;
 }
 
 /// A notice the shell shows (a post that failed, …).
@@ -504,6 +523,14 @@ final class ReloadLatest extends HostCall {
   const ReloadLatest();
   @override
   String toJs() => 'window.claxHost?.reloadLatest()';
+}
+
+/// Moves the app's page back to the page or fragment it showed before, in
+/// place ([HistoryMsg]).
+final class GoBack extends HostCall {
+  const GoBack();
+  @override
+  String toJs() => 'window.claxHost?.back()';
 }
 
 /// Replaces the open composer's text. Without [composer] a focused text
