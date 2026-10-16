@@ -4565,6 +4565,14 @@ capability first and light features up when it resolves.
   reject `no_gesture` otherwise). `location.watch` follows the device only
   while the app is on screen. See "Device capabilities in the Clax app"
   below.
+- `home` (Clax's own): the Clax app's home screen. Declaring it grants
+  nothing: the app serves it to the one app it shows as its home screen,
+  and `use("home")` resolves `null` for every other app, in a browser and
+  in the draft preview. `apps()`, `makes()`, `unread()`, `needsKey()`, the
+  actions `open`, `openMake`, `newApp`, `menu`, `openInbox`,
+  `openSettings` and `importApp` (from a click handler, as for the device
+  capabilities), and `on(name, fn)`. Types: `ClaxExtensions.Home` in
+  `clax-extensions.d.ts`. See "The home screen's capability" below.
 - `permissions`: `state()` and `request()`; the only prompt is the consent
   to the first page-written comment.
 
@@ -4751,6 +4759,47 @@ and location is not available in Clax on macOS yet), `bad_request`,
 not ask again) and `location_off` (the device's location is off), for
 which the app shows a toast with Open settings, and `stopped` (a watch
 ended).
+
+### The home screen's capability
+
+The Clax app's home screen is an app like any other (an artifact installed
+on the first run from the bundle the app ships, `assets/home/home.clax`),
+changed by commenting on it. The app records its artifact ID in its own
+settings (`home.json` beside `device-grants.json`, not the daemon) and
+serves `home` to that app only: the shell asks the app once per view
+(`device {cap: "home", method: "available"}`), and only a yes makes
+`use("home")` resolve. Any other app that declares `{"home": {}}` gets
+`null`, and a call it makes anyway is refused. The calls travel as the
+device capabilities' do (`device` and `deviceResult`), and events come back
+as `deviceEvent {cap: "home", name, data}`.
+
+| Call | Answer |
+|---|---|
+| `apps()` | `[{id, title, updatedAt, icon, build}]`, newest first, the home app left out. `icon` is `{url}` (the app's own icon as a `data:image/svg+xml` URL), `{emoji}`, `{word}` or `{monogram, hue}`; `build` is `null` or `{done, total}` while a build goes. |
+| `makes()` | `[{id, request, state, progress}]`: `state` one of `making`, `offline`, `waiting`, `interrupted`, `failed`; `progress` `null` or `{done, total}`. |
+| `unread()` | The inbox's unread count. |
+| `needsKey()` | Whether the Claude API key is missing. |
+| `open(id)` | Opens app `id`, as a tap on its tile. |
+| `openMake(id)` | Shows make `id`'s build view, or asks "Make it again?" for an interrupted one. |
+| `newApp()` | Shows the New app sheet; the make then appears in `makes()`. |
+| `menu(id, {x, y, w, h})` | Shows app `id`'s menu (Open, Inspect, Share app, Resume build) anchored at that rectangle, in CSS pixels from the viewport's top left. |
+| `openInbox()`, `openSettings()`, `importApp()` | Opens the inbox, Settings, or the system picker for a `.clax` file. |
+
+`on(name, fn)` hears `apps`, `makes`, `unread` and `key` (the value of
+`needsKey()`), each the topic's whole latest value, from the page's first
+`home` call on, and returns `stop`; a page that was covered hears only the
+latest value of each. The calls that open something must come from the
+person's tap or key press in the page (`no_gesture` otherwise); the reads
+need none. Calls reject `{code, message}` with `refused` (not the home
+app), `bad_request` (an unknown method, an ID not on the home screen, a
+malformed rectangle), `no_gesture` or `unavailable`.
+
+A Clax release may ship a new home bundle. At start the app compares it
+with the installed home app by the bundle trust rules ("Sharing apps"): an
+unmodified home app is updated silently, through the same check against a
+copy of its documents as any update; a home app the person changed is
+updated only when they choose "Update (replaces your changes)", and "Keep
+mine" is remembered for that release. The documents stay either way.
 
 ### Reading another app's documents
 
