@@ -10,6 +10,7 @@ import '../agent/timings.dart';
 import '../agent/worker.dart';
 import '../clax/api.dart';
 import '../daemon/clock.dart';
+import '../home/home_host.dart';
 import '../platform/app_notice.dart';
 import '../platform/device/device_host.dart';
 import '../platform/settings_store.dart';
@@ -198,6 +199,7 @@ class AppScreen extends StatefulWidget {
     this.initialComment,
     this.device,
     this.build,
+    this.home,
   });
 
   final String aid;
@@ -277,6 +279,12 @@ class AppScreen extends StatefulWidget {
 
   /// The plans and builds; null shows no build and offers no Add to plan.
   final BuildLink? build;
+
+  /// Answers the page's `home` calls, which it serves only to the home app
+  /// ([HomeHost.availableTo]); without it, or for any other app, `home`
+  /// reports itself unavailable and every call is refused. The home app
+  /// gets each of the host's [HomeHost.events].
+  final HomeHost? home;
 
   /// How tall the folded chips and the location pill are.
   static const pillHeight = 24.0;
@@ -519,6 +527,14 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       ..add(widget.surface.faults.listen(_onFault))
       ..add(widget.worker.listen(_onWorker));
     if (widget.actions case final actions?) _subs.add(actions.listen(_act));
+    if (widget.home case final h?) {
+      _subs.add(
+        h.events.listen((e) {
+          if (!mounted || !h.availableTo(widget.aid)) return;
+          unawaited(widget.surface.call(HomeDeviceEvent(e.name, e.data)));
+        }),
+      );
+    }
     if (widget.build case final b?) {
       _build = b.control.buildOf(widget.aid);
       _subs
@@ -872,8 +888,41 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     },
   );
 
+  /// Answers the page's `home` call [r]: `available` says whether this
+  /// app is the home app; every other call is the home host's, refused
+  /// for any other app.
+  Future<DeviceResult> _home(DeviceRequest r) async {
+    final h = widget.home;
+    if (r.method == 'available') {
+      return DeviceResult.ok(r.id, h?.availableTo(widget.aid) ?? false);
+    }
+    if (h == null) {
+      return DeviceResult.error(r.id, 'refused', 'not the home app');
+    }
+    try {
+      final args = switch (r.args) {
+        [] => const <String, Object?>{},
+        [final Map<String, Object?> a] => a,
+        _ => throw const HomeBadRequest('takes one object of arguments'),
+      };
+      return DeviceResult.ok(r.id, await h.call(widget.aid, r.method, args));
+    } on HomeRefused {
+      return DeviceResult.error(r.id, 'refused', 'not the home app');
+    } on HomeBadRequest catch (e) {
+      return DeviceResult.error(r.id, 'bad_request', e.message);
+    }
+  }
+
   /// Makes the page's device call [r] and answers it in the page.
   void _device(DeviceRequest r) {
+    if (r.cap == 'home') {
+      unawaited(
+        _home(r).then((a) {
+          if (mounted) unawaited(widget.surface.call(a));
+        }),
+      );
+      return;
+    }
     final d = widget.device;
     final answer = d == null
         ? Future.value(

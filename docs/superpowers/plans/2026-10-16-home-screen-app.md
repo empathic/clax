@@ -44,25 +44,31 @@
 - Test: `apps/clax_app/test/home/home_host_test.dart`, `web/shell/src/caps/home.test.ts`.
 
 **Interfaces:**
-- Produces (Dart):
+- Produces (Dart, `lib/home/home_host.dart`, `lib/home/home_settings.dart`):
 ```dart
-class HomeApp { final String id, title; final DateTime updatedAt; final Map<String,Object?> icon; final ({int done,int total})? build; }
+class HomeApp { final String id, title; final DateTime updatedAt; final Map<String,Object?> icon; final ({int done,int total})? build; Map<String,Object?> toJson(); }
 class HomeMake { final String id, request; final String state; // making|offline|waiting|interrupted|failed
-  final ({int done,int total})? progress; }
+  final ({int done,int total})? progress; Map<String,Object?> toJson(); }
 class HomeState { final List<HomeApp> apps; final List<HomeMake> makes; final int unread; final bool needsKey; }
-abstract class HomeActions { // implemented by app.dart's routing
+abstract class HomeActions { // implemented by app.dart's routing; Launcher implements its own when it keeps its host
   void open(String id); void openMake(String id); void newApp(); void menu(String id, Rect anchor);
   void openInbox(); void openSettings(); void importApp(); }
+typedef HomeEvent = ({String name, Object? data}); // name: apps|makes|unread|key; data: the topic's whole latest value
 class HomeHost extends ChangeNotifier {
-  HomeHost({required ClaxApi api, required ClaxStream stream, required MakeService makes, required BuildLink builds, required HomeSettings settings, required HomeActions actions});
-  HomeState get state;
-  Future<Object?> call(String callerAid, String method, Map<String,Object?> args); // throws HomeRefused when callerAid != settings.homeAppId
+  HomeHost({required ClaxApi api, required ClaxStream stream, required MakeService makes, required BuildLink? builds, required HomeSettings settings, required HomeActions actions,
+    AppIcons? icons, Future<void> Function(Duration)? retryDelay, bool closeStream = false, bool needsKey = false});
+  HomeState get state; Stream<HomeEvent> get events; set needsKey(bool);
+  List<ArtifactSummary>? get summaries; Object? get loadError; ({int done,int total})? buildOf(String aid); MakeSession? sessionOf(String makeId);
+  Future<void> load(); Future<void> loadUnread(); void settingsChanged(); // after homeAppId changes
+  Future<Object?> call(String callerAid, String method, Map<String,Object?> args); // HomeRefused when callerAid != settings.homeAppId; HomeBadRequest for an unknown method, or an ID not on the home screen
   bool availableTo(String aid);
 }
-class HomeSettings { String? homeAppId; bool builtin; String? keptRelease; Future<void> save(); static Future<HomeSettings> load(Directory dir); }
+class HomeSettings { HomeSettings({String? homeAppId, bool builtin = false, String? keptRelease}); String? homeAppId; bool builtin; String? keptRelease; Future<void> save(); static Future<HomeSettings> load(Directory dir); }
 ```
-- Produces (page, `clax.home`): `apps()`, `makes()`, `unread()`, `needsKey()`, `open(id)`, `openMake(id)`, `newApp()`, `menu(id, {x,y,w,h})`, `openInbox()`, `openSettings()`, `importApp()`, `on(name, fn)` for `apps|makes|unread|key`. Icon in `apps()` is `{url}` (daemon-served cached icon), `{emoji}`, `{word}` or `{monogram, hue}`.
-- Events go host → shell as the existing `device` event path (`deviceEvent {cap:"home", name, data}`); add it to `HostMessage`/`ClaxHost` in `web/shell/src/app/host.ts` and `host_protocol.dart` if the path has no events yet.
+- `AppScreen` takes `HomeHost? home`; `Launcher` takes `HomeHost? host` (without one it keeps its own, as before).
+- Produces (page): `const home = await claude.use("home")` (declared as `{"home": {}}`; `clax.home` above means this namespace, typed `ClaxExtensions.Home.Home`): `apps()`, `makes()`, `unread()`, `needsKey()`, `open(id)`, `openMake(id)`, `newApp()`, `menu(id, {x,y,w,h})`, `openInbox()`, `openSettings()`, `importApp()`, `on(name, fn)` for `apps|makes|unread|key` (returns `stop`; heard after the page's first `home` call). Icon in `apps()` is `{url}` (the cached icon as a `data:image/svg+xml` URL, no daemon route), `{emoji}`, `{word}` or `{monogram, hue}`. Calls that open something need the person's tap (`no_gesture` otherwise); reads do not. Rejections: `refused`, `bad_request`, `no_gesture`, `unavailable`.
+- Availability: the shell asks the app once per view `device {cap:"home", method:"available"}` (answered `true` only for `homeAppId`), from the lazy app host (`deviceLink.home`); `use("home")` resolves null otherwise.
+- Events go host → shell as `deviceEvent {cap:"home", name, data}` (`HomeDeviceEvent` in `host_protocol.dart`).
 
 - [ ] **Step 1: Write failing Dart tests** in `home_host_test.dart` with fakes for api/stream/makes/builds:
   - `apps()` from caller == homeAppId returns gallery newest first, home app excluded.

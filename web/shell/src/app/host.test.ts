@@ -1817,6 +1817,25 @@ describe("app mode's device link", { timeout: MOUNT_TIMEOUT_MS }, () => {
     }
   });
 
+  it("asks the app once whether the view is its home app, and a failed answer is no", async () => {
+    const { deviceLink } = await import("../caps/device-link");
+    const { host, uninstall } = await appView();
+    const asked = deviceLink.home!();
+    const again = deviceLink.home!();
+    const [q] = ofType("device");
+    expect(ofType("device")).toHaveLength(1);
+    expect(q).toMatchObject({ cap: "home", method: "available", args: [] });
+    host.deviceResult({ id: q.id, ok: true, value: true });
+    await expect(asked).resolves.toBe(true);
+    await expect(again).resolves.toBe(true);
+    uninstall();
+    expect(deviceLink.home).toBeUndefined();
+    const second = await appView();
+    const refused = deviceLink.home!();
+    second.host.deviceResult({ id: ofType("device").at(-1)!.id, ok: false, error: { code: "refused", message: "no" } });
+    await expect(refused).resolves.toBe(false);
+  });
+
   it("links nothing in the inspect view, and on uninstall unlinks and rejects the calls still waiting", async () => {
     const { deviceLink } = await import("../caps/device-link");
     const { uninstall } = await appView();

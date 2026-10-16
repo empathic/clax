@@ -1,0 +1,262 @@
+import 'dart:async';
+import 'dart:io';
+import 'dart:ui' show Rect;
+
+import 'package:clax_app/agent/plan.dart';
+import 'package:clax_app/agent/worker.dart';
+import 'package:clax_app/clax/api.dart';
+import 'package:clax_app/clax/fake_api.dart';
+import 'package:clax_app/home/home_host.dart';
+import 'package:clax_app/home/home_settings.dart';
+import 'package:clax_app/ui/build_plan.dart';
+import 'package:clax_app/ui/make_service.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+const _page = {'index.html': '<!doctype html><title>x</title>'};
+
+/// A fake whose stamps increase, so later artifacts are newer.
+FakeClaxApi _api() {
+  var t = 0;
+  return FakeClaxApi(
+    clock: () => '2026-10-12T00:00:${(t++).toString().padLeft(2, '0')}Z',
+  );
+}
+
+class _Actions implements HomeActions {
+  final calls = <(String, List<Object?>)>[];
+  @override
+  void open(String id) => calls.add(('open', [id]));
+  @override
+  void openMake(String id) => calls.add(('openMake', [id]));
+  @override
+  void newApp() => calls.add(('newApp', []));
+  @override
+  void menu(String id, Rect anchor) => calls.add(('menu', [id, anchor]));
+  @override
+  void openInbox() => calls.add(('openInbox', []));
+  @override
+  void openSettings() => calls.add(('openSettings', []));
+  @override
+  void importApp() => calls.add(('importApp', []));
+}
+
+class _Control implements BuildControl {
+  final _c = StreamController<BuildState>.broadcast(sync: true);
+  final _latest = <String, BuildState>{};
+  void push(BuildState s) {
+    _latest[s.appId] = s;
+    _c.add(s);
+  }
+
+  @override
+  Stream<BuildState> get builds => _c.stream;
+  @override
+  BuildState? buildOf(String appId) => _latest[appId];
+  @override
+  Future<void> stopBuild(String appId) async {}
+  @override
+  Future<void> resumeBuild(String appId) async {}
+}
+
+void main() {
+  late FakeClaxApi api;
+  late _Actions actions;
+  late HomeSettings settings;
+  late MakeService makes;
+  late PlanStore plans;
+  late _Control control;
+  late String home;
+  late HomeHost host;
+
+  HomeHost make() => HomeHost(
+    api: api,
+    stream: api.stream(),
+    closeStream: true,
+    makes: makes,
+    builds: BuildLink(plans: plans, control: control),
+    settings: settings,
+    actions: actions,
+  );
+
+  setUp(() async {
+    api = _api();
+    actions = _Actions();
+    makes = MakeService(
+      (r, cancel, report) => r.startsWith('boom')
+          ? Future.error(StateError('no key'))
+          : Completer<String>().future,
+    );
+    plans = PlanStore();
+    control = _Control();
+    home = api.seedArtifact('Home', _page);
+    settings = HomeSettings(homeAppId: home);
+    host = make();
+    await pumpEventQueue();
+  });
+
+  tearDown(() => host.dispose());
+
+  test('apps() answers the home app with the gallery newest first, itself left out', () async {
+    final old = api.seedArtifact('Old runs', _page);
+    final fresh = api.seedArtifact('Groceries', _page);
+    await host.load();
+    final apps = await host.call(home, 'apps', {}) as List;
+    expect([for (final a in apps) (a as Map)['id']], [fresh, old]);
+    final first = apps.first as Map;
+    expect(first['title'], 'Groceries');
+    expect(first['build'], isNull);
+    expect(first['icon'], {'monogram': 'G', 'hue': isA<int>()});
+    expect(DateTime.tryParse(first['updatedAt'] as String), isNotNull);
+    expect(host.state.apps.map((a) => a.id), [fresh, old]);
+  });
+
+  test(
+    'another app is refused every call and never sees it available',
+    () async {
+      final other = api.seedArtifact('Mimic', _page);
+      expect(host.availableTo(other), isFalse);
+      expect(host.availableTo(home), isTrue);
+      for (final m in [
+        'apps',
+        'makes',
+        'unread',
+        'needsKey',
+        'open',
+        'newApp',
+      ]) {
+        await expectLater(
+          host.call(other, m, {'id': home}),
+          throwsA(isA<HomeRefused>()),
+        );
+      }
+      // The home app's own calls first change nothing for the next caller.
+      await host.call(home, 'apps', {});
+      expect(host.availableTo(other), isFalse);
+      await expectLater(
+        host.call(other, 'apps', {}),
+        throwsA(isA<HomeRefused>()),
+      );
+      expect(actions.calls, isEmpty);
+    },
+  );
+
+  test('without a recorded home app every caller is refused', () async {
+    settings.homeAppId = null;
+    expect(host.availableTo(home), isFalse);
+    await expectLater(host.call(home, 'apps', {}), throwsA(isA<HomeRefused>()));
+  });
+
+  test('a gallery version refetches that app and notifies once; a delete removes it', () async {
+    final aid = api.seedArtifact('Runs', _page);
+    await host.load();
+    final fresh = api.seedArtifact('Fresh', _page);
+    var heard = 0;
+    host.addListener(() => heard++);
+    final told = <HomeEvent>[];
+    host.events.listen(told.add);
+    api.emit(ClaxEvent(type: 'version', data: {'artifact_id': fresh, 'n': 1}));
+    await pumpEventQueue();
+    expect(heard, 1);
+    expect(host.state.apps.map((a) => a.id), [fresh, aid]);
+    expect(told.map((e) => e.name), contains('apps'));
+    api.emit(ClaxEvent(type: 'artifact_deleted', data: {'artifact_id': aid}));
+    await pumpEventQueue();
+    expect(host.state.apps.map((a) => a.id), [fresh]);
+    expect([for (final a in told.last.data as List) (a as Map)['id']], [fresh]);
+  });
+
+  test('a make that changes while nobody listens reads as it stands', () async {
+    makes.dismiss(makes.add('Something else'));
+    final s = makes.start('boom: a tracker for my runs');
+    expect(host.state.makes.single.state, 'making');
+    await pumpEventQueue();
+    final m = host.state.makes.single;
+    expect(m.state, 'failed');
+    expect(host.sessionOf(m.id), same(s));
+    final answered = await host.call(home, 'makes', {}) as List;
+    expect(answered.single, {
+      'id': m.id,
+      'request': 'boom: a tracker for my runs',
+      'state': 'failed',
+      'progress': null,
+    });
+  });
+
+  test("a going build shows its plan's progress", () async {
+    final aid = api.seedArtifact('Runs', _page);
+    await host.load();
+    await plans.set(aid, [
+      const PlanFeature(id: 'a', title: 'A', status: FeatureStatus.done),
+      const PlanFeature(id: 'b', title: 'B'),
+      const PlanFeature(id: 'c', title: 'C'),
+    ]);
+    control.push(BuildState(aid, BuildPhase.running));
+    await pumpEventQueue();
+    expect(host.buildOf(aid), (done: 1, total: 3));
+    final apps = await host.call(home, 'apps', {}) as List;
+    expect((apps.single as Map)['build'], {'done': 1, 'total': 3});
+  });
+
+  test('unread follows the inbox', () async {
+    final aid = api.seedArtifact('Runs', _page);
+    api.pushInbox('reply', artifactId: aid, body: 'Done');
+    await pumpEventQueue();
+    expect(await host.call(home, 'unread', {}), 1);
+  });
+
+  test('open, newApp and menu call the matching action', () async {
+    final aid = api.seedArtifact('Runs', _page);
+    await host.load();
+    await host.call(home, 'open', {'id': aid});
+    await host.call(home, 'newApp', {});
+    await host.call(home, 'menu', {
+      'id': aid,
+      'rect': {'x': 1, 'y': 2, 'w': 3, 'h': 4},
+    });
+    await host.call(home, 'openInbox', {});
+    expect(actions.calls.map((c) => [c.$1, ...c.$2]), [
+      ['open', aid],
+      ['newApp'],
+      ['menu', aid, const Rect.fromLTWH(1, 2, 3, 4)],
+      ['openInbox'],
+    ]);
+  });
+
+  test(
+    'a call naming no listed app, or a bad method, is a bad request',
+    () async {
+      await host.load();
+      for (final (m, a) in [
+        ('open', {'id': home}),
+        ('open', <String, Object?>{}),
+        ('menu', {'id': 'nope', 'rect': {}}),
+        ('openMake', {'id': 'm99'}),
+        ('reboot', <String, Object?>{}),
+      ]) {
+        await expectLater(
+          host.call(home, m, a),
+          throwsA(isA<HomeBadRequest>()),
+          reason: m,
+        );
+      }
+      expect(actions.calls, isEmpty);
+    },
+  );
+
+  test('home.json keeps the home app across loads', () async {
+    final dir = await Directory.systemTemp.createTemp('home-settings');
+    addTearDown(() => dir.delete(recursive: true));
+    final s = await HomeSettings.load(dir);
+    expect(s.homeAppId, isNull);
+    s
+      ..homeAppId = 'abc123'
+      ..keptRelease = '1.2.0';
+    await s.save();
+    final again = await HomeSettings.load(dir);
+    expect(again.homeAppId, 'abc123');
+    expect(again.builtin, isFalse);
+    expect(again.keptRelease, '1.2.0');
+    await File('${dir.path}/home.json').writeAsString('{torn');
+    expect((await HomeSettings.load(dir)).homeAppId, isNull);
+  });
+}

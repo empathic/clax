@@ -284,6 +284,95 @@ declare namespace ClaxExtensions {
   }
 
   /**
+   * The home screen's capability, served by the Clax app to one app only:
+   * the one it shows as its home screen. Declare it (`{"home": {}}`) and
+   * obtain it with `await claude.use("home")`: declaring grants nothing,
+   * and it resolves `null` in a browser, in the draft preview and in every
+   * other app, so render a plain page that says to open it in the Clax app
+   * first. The home app itself is never in `apps()`.
+   *
+   * Calls that open something (`open`, `openMake`, `newApp`, `menu`,
+   * `openInbox`, `openSettings`, `importApp`) must come from the person's
+   * tap or key press in the page, or they reject `no_gesture`; the reads
+   * need none. Rejections are `{code, message}` with `code` one of
+   * `refused` (not the home app), `bad_request` (an ID not on the home
+   * screen, a malformed rect), `no_gesture` or `unavailable`.
+   */
+  namespace Home {
+    /** An app's icon: its own (`url`, an image URL to show in an `<img>`),
+     * an emoji, an icon word (`chart`, `calendar`, `recipe`, …), or one or
+     * two letters on a hue (0 to 359) of the app's own. */
+    type Icon = { url: string } | { emoji: string } | { word: string } | { monogram: string; hue: number };
+
+    interface Progress {
+      done: number;
+      total: number;
+    }
+
+    interface App {
+      id: string;
+      title: string;
+      /** ISO 8601. */
+      updatedAt: string;
+      icon: Icon;
+      /** How far its build is, while one goes. */
+      build: Progress | null;
+    }
+
+    interface Make {
+      id: string;
+      /** What the person asked for. */
+      request: string;
+      state: "making" | "offline" | "waiting" | "interrupted" | "failed";
+      /** The features its plan has done, once the plan has any. */
+      progress: Progress | null;
+    }
+
+    /** A tile's place on the page, in CSS pixels from the viewport's top left. */
+    interface Rect {
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+    }
+
+    /** What `on(name)` hears: each topic's whole latest value. */
+    interface Events {
+      apps: App[];
+      makes: Make[];
+      unread: number;
+      key: boolean;
+    }
+
+    interface Home {
+      /** The person's apps, newest first. */
+      apps(): Promise<App[]>;
+      /** The makes going on, waiting, interrupted or failed, newest first. */
+      makes(): Promise<Make[]>;
+      /** The inbox's unread count. */
+      unread(): Promise<number>;
+      /** Whether the Claude API key is missing (no app can be made). */
+      needsKey(): Promise<boolean>;
+      /** Opens app `id`, as a tap on its tile. */
+      open(id: string): Promise<void>;
+      /** Shows make `id`'s build view, or asks to make an interrupted one again. */
+      openMake(id: string): Promise<void>;
+      /** Shows the New app sheet; the make then appears in `makes()`. */
+      newApp(): Promise<void>;
+      /** Shows app `id`'s menu (Open, Inspect, Share app, Resume build) anchored at `rect`. */
+      menu(id: string, rect: Rect): Promise<void>;
+      openInbox(): Promise<void>;
+      openSettings(): Promise<void>;
+      /** Opens the system picker to import a `.clax` app. */
+      importApp(): Promise<void>;
+      /** Calls `fn` with each change of topic `name`, after the page's
+       * first `home` call; returns `stop`. A page that was covered hears
+       * only the latest value. */
+      on<K extends keyof Events>(name: K, fn: (value: Events[K]) => void): () => void;
+    }
+  }
+
+  /**
    * The network, through the Clax daemon (the page itself may not connect:
    * its content security policy keeps `connect-src 'none'`). Served to the
    * owner (in the Clax app, or the owner's browser). Declare the hosts the

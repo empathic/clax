@@ -6,10 +6,11 @@ import { assetsLocals } from "./assets";
 import { type CapsEnv, commentsLocals } from "./comments";
 import { makeDb } from "./db";
 import { downloadsLocals } from "./downloads";
+import { homeNamespace } from "./home";
 import { locationLocals } from "./location";
 import { netLocals } from "./net";
 
-export function localsFor(name: CapabilityName, rpc: Rpc, config: unknown, env: CapsEnv): Local {
+export function localsFor(name: CapabilityName | "home", rpc: Rpc, config: unknown, env: CapsEnv): Local {
   switch (name) {
     case "artifact":
       return artifactLocals(rpc);
@@ -25,6 +26,8 @@ export function localsFor(name: CapabilityName, rpc: Rpc, config: unknown, env: 
       return netLocals(rpc);
     case "location":
       return locationLocals(rpc);
+    case "home":
+      return homeNamespace(rpc) as unknown as Local;
     default:
       return {};
   }
