@@ -1532,7 +1532,7 @@ async fn write_answers_name_no_other_credentials_session() {
         (
             "PATCH",
             format!("/api/artifacts/{aid}"),
-            json!({"pinned": true}),
+            json!({"description": "Sam's"}),
         ),
         (
             "PATCH",

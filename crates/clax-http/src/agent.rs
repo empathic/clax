@@ -907,6 +907,35 @@ pub fn person_agent_session(c: &Caller) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// Whether `c` administers artifact `aid`: may change who may do what
+/// there, its pinned flag and its capabilities included. The owner and the
+/// owner's agents do, and a person and that person's agents at an artifact
+/// the person made. Another person's update right (an editor's) changes
+/// contents alone.
+///
+/// # Errors
+/// The store's.
+pub fn administers(st: &clax_core::Store, c: &Caller, aid: &str) -> clax_core::Result<bool> {
+    match c {
+        Caller::Owner { .. } | Caller::OwnerAgent { .. } => Ok(true),
+        Caller::PersonAgent { person: None, .. } => Ok(true),
+        Caller::PersonAgent {
+            person: Some(p), ..
+        } => st.artifact_created_by(aid, Some(p)),
+        Caller::Person { viewer } => st.artifact_created_by(aid, Some(&viewer.public_id)),
+        Caller::Viewer { .. } | Caller::Anonymous => Ok(false),
+    }
+}
+
+/// 403 `admin_only`: a change to an artifact's pinned flag or capabilities
+/// from a caller that does not administer it ([`administers`]).
+pub fn admin_only() -> ApiError {
+    ApiError::forbidden(
+        "admin_only",
+        "only the owner or the page's maker changes its pin or capabilities",
+    )
+}
+
 /// 400 `invalid_via_page`: the page marker (`x-clax-via: page`, or a
 /// comment's `via_page`) from a person's agent. Only a page running in a
 /// browser writes as a page; a grant's request never does.

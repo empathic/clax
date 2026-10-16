@@ -4113,6 +4113,36 @@ async fn an_artifact_shared_with_a_person_opens_to_them_at_its_access_alone() {
     assert_eq!(site.post(&sam, &resolve, json!({})).await.0, 200);
     let (_, r) = agent.call("publish", edit).await;
     assert_eq!(tool_code(&r), "", "an editor's agent publishes: {r}");
+    // Edit changes contents alone: the title, not the pin or capabilities.
+    let (_, r) = agent
+        .call(
+            "publish",
+            json!({"id": plan, "html": "<h1>Sam's</h1>", "title": "Sam's plan", "capabilities": {}, "if_version": 2}),
+        )
+        .await;
+    assert_eq!(tool_code(&r), "", "the capabilities as they are pass: {r}");
+    let (_, r) = agent
+        .call(
+            "publish",
+            json!({"id": plan, "html": "<h1>db</h1>", "capabilities": {"db": {}}, "if_version": 3}),
+        )
+        .await;
+    assert_eq!(tool_code(&r), "admin_only", "{r}");
+    let (_, r) = agent.call("pin", json!({"url_or_id": plan})).await;
+    assert_eq!(tool_code(&r), "admin_only", "{r}");
+    let (_, r) = agent.call("unpin", json!({"url_or_id": plan})).await;
+    assert_eq!(tool_code(&r), "", "unpinned already, no change: {r}");
+    let plan_id = clax_core::ArtifactId::parse(&plan).unwrap();
+    let a = site.ts.store.get_artifact(&plan_id).unwrap().unwrap();
+    assert_eq!(
+        (
+            a.title.as_str(),
+            a.pinned,
+            &a.capabilities,
+            a.current_version
+        ),
+        ("Sam's plan", false, &json!({}), 3)
+    );
     let (_, r) = agent
         .call(
             "publish",

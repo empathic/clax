@@ -525,6 +525,40 @@ pub async fn get(
     }
 }
 
+/// 403 `admin_only` when `pinned` or `capabilities` would change artifact
+/// `id`'s and `caller` does not administer it
+/// ([`crate::agent::administers`]): an editor changes contents alone. A
+/// value equal to the stored one is no change, so an editor's publish that
+/// sends the page's capabilities as they are passes.
+async fn admin_change(
+    s: &AppState,
+    caller: &crate::auth::Caller,
+    id: &ArtifactId,
+    pinned: Option<bool>,
+    capabilities: Option<Value>,
+) -> Result<(), ApiError> {
+    if pinned.is_none() && capabilities.is_none() {
+        return Ok(());
+    }
+    let (caller, id) = (caller.clone(), id.clone());
+    let allowed = s
+        .store_call(move |st| {
+            // No such artifact is the edit's own answer.
+            let Some(cur) = st.get_artifact(&id)? else {
+                return Ok(true);
+            };
+            let same = pinned.is_none_or(|p| p == cur.pinned)
+                && capabilities.as_ref().is_none_or(|c| *c == cur.capabilities);
+            Ok(same || crate::agent::administers(st, &caller, id.as_str())?)
+        })
+        .await?;
+    if allowed {
+        Ok(())
+    } else {
+        Err(crate::agent::admin_only())
+    }
+}
+
 /// Metadata edits. `capabilities` replaces the whole declaration (omitted
 /// keeps, `{}` clears) and is validated like a publish's.
 #[derive(Deserialize, Default)]
@@ -590,6 +624,7 @@ pub async fn patch(
     if let Some(c) = &b.capabilities {
         clax_core::capabilities::validate(c)?;
     }
+    admin_change(&s, &a.0.caller, &id, b.pinned, b.capabilities.clone()).await?;
     let vf = VisFor::of(&a.0.caller, &s);
     let artifact = s
         .store_call(move |st| {
@@ -709,6 +744,7 @@ pub async fn publish(
     let key = publish_key(&headers, grant.as_deref())?;
     p.by_page = by_page;
     p.person = publisher(&a.caller);
+    admin_change(&s, &a.caller, &id, None, p.capabilities.clone()).await?;
     // A person's agent's publish leaves the owner's agents' untargeted
     // feedback where it is: it is not the person's agent's to take.
     let retarget = grant.is_none();

@@ -46,8 +46,9 @@ pub enum ShareAccess {
     /// [`LinkAccess::Commenter`]'s rights.
     Commenter,
     /// Read and publish new versions, every comment action (resolving
-    /// included), and the page's data at the `interact` level. Never
-    /// delete, share or change who else has access.
+    /// included), and the page's data at the `interact` level: contents
+    /// alone. Never delete, share, change who else has access, or change
+    /// the pinned flag or capabilities (the server's admin rule).
     Editor,
 }
 
