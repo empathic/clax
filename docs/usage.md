@@ -538,11 +538,17 @@ same signature and do not ask.
   going or Retry that cannot reach it waits instead of failing: the make's
   tile reads "Offline" and its build view "Waiting for connection", and a
   change says "Waiting for connection" on its Working chip and its thread,
-  which offers Cancel. Clax probes the API every few seconds (at once when
-  it comes back to the front) and the work goes on by itself when it
-  answers, also after Clax restarts. A run that loses the connection part
-  way pauses and resumes from the turn it was on, without repeating what
-  it already did; waiting does not count against its time limit.
+  which offers Try now and Cancel (Cancel stops that comment alone; the
+  thread then reads Cancelled, with Send again). While something waits and
+  Clax is in front, it probes the API, every few seconds at first and less
+  often the longer it stays down, and at once when Clax comes back to the
+  front or you tap Try now; the work goes on by itself when it answers,
+  also after Clax restarts. A run that loses the connection part way
+  pauses and resumes from the turn it was on, without repeating what it
+  already did; waiting does not count against its time limit. A turn
+  whose connection breaks more than five times waits for Try now or for
+  Clax to come back to the front, and each broken attempt that reached the
+  API counts toward the run's turn and cost limits.
 - **Commenting.** Nothing of Clax's is drawn over an open app. On Android,
   a silent notification named after the app stays up while it is open,
   with **Comment** and **Threads**; on macOS, App › Comment (⇧⌘K) and App ›
