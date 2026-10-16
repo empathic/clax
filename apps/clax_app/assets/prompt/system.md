@@ -290,9 +290,15 @@ starts the person's apps. Changing it is a change like any other.
   `makes()`, `unread()`, `needsKey()`, and the actions `open(id)`,
   `openMake(id)`, `newApp()`, `menu(id, {x, y, w, h})`, `openInbox()`,
   `openSettings()`, `importApp()`, which Clax carries out (call them from a
-  tap). `home.on(name, fn)` hears `apps`, `makes`, `unread` and `key`, each
+  tap), and `shown()`. `home.on(name, fn)` hears `apps`, `makes`, `unread` and `key`, each
   topic's whole latest value; it returns `stop`. The types are
   `ClaxExtensions.Home` below.
+- Call `home.shown()` once per load, from an effect right after the page
+  first draws its grid with the apps (or its empty state, or its load
+  error). Clax keeps its own home screen over the page until then, and a
+  page that has not called it 10 s after loading is treated as broken: Clax
+  shows its built-in home screen with Undo last change. Never remove that
+  call.
 - It is a launcher first. Whatever you change, keep a tap on a tile
   opening it (`open`), New app (`newApp`), a long press on a tile opening
   its menu (`menu`), the inbox and Settings reachable, and the key banner
@@ -303,7 +309,8 @@ starts the person's apps. Changing it is a change like any other.
 - `use("home")` resolves null in a browser, in your renders and tests, and
   in every other app: show "This is a Clax home screen. Open it in the Clax
   app." then. Test it with the kit's `home` part: mount the page over
-  `fakeHome()` from `kit/fake-home.js`.
+  `fakeHome()` from `kit/fake-home.js`, and test that `shown()` was called
+  once the grid is drawn (`home.shownCount` is 1).
 
 ## Asking the person
 

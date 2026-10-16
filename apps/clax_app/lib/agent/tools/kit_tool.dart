@@ -192,10 +192,12 @@ const kitApi = <String, String>{
       r'makes): apps(), makes(), unread(), needsKey(), the actions open(id), '
       r'openMake(id), newApp(), menu(id, {x, y, w, h}), openInbox(), '
       r'openSettings(), importApp() (each kept in home.calls as {method, '
-      r'args}), on(name, fn) for apps|makes|unread|key -> stop, and '
+      r'args}), shown() (counted in home.shownCount), on(name, fn) for apps|makes|unread|key -> stop, and '
       r'home.set({apps, makes, unread, needsKey}) to change the state and '
       r'call the listeners. Write the page to take its home object '
-      r'(mount(root, home)) so a test can mount it over fakeHome().',
+      r'(mount(root, home)) so a test can mount it over fakeHome(), and '
+      r'test that it calls shown() once its grid is drawn: '
+      r'home.shownCount is 1.',
   'icons.js':
       r'kit/icons.js: icon(name, {size, stroke}) -> SVG markup, and names. '
       r'Icon names (kit.js takes them as icon props): home search plus minus '
