@@ -9,7 +9,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const { artifact } = await publishAs(d.base, d.token, s.id, `Echo ${mode}`, { "index.html": "<main><h2>Goals</h2></main>" });
     await openArtifact(page, d.base, artifact.id, 1, mode);
     await expect(page.locator(".topbar h1")).toHaveText(`Echo ${mode}`);
-    await expect(page.locator(".topbar .by")).toHaveText("published by claude");
+    // By the owner agent's name (spec 2026-10-08 §11), which a shared daemon may have suffixed.
+    await expect(page.locator(".topbar .by")).toHaveText(`published by ${s.name}`);
     // The title is the system sans; the page asks for no font file.
     const h1Font = await page.locator(".topbar h1").evaluate(e => getComputedStyle(e).fontFamily);
     expect(h1Font).toMatch(/^ui-sans-serif, -apple-system/);
