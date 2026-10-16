@@ -10,10 +10,18 @@
 // - The view tells the host what changed through the WebView's JavaScript
 //   channel `window.ClaxHost` (`HostMessage`, as JSON); a page without it (a
 //   browser) drops them.
-// - Auto-follow: a newer version loads in place, unless the view is pinned to
-//   a version or a composer is open (it follows once that closes), on the page
-//   and fragment the frame shows, and the page is asked to scroll back to
-//   where it last reported (`clax:scroll`), in the first welcome only.
+// - Swap with a tap: a newer version published while the view shows the
+//   latest is offered to the app (`newer {version}`, once per version, again
+//   at `init`), never loaded by itself; the app's `reloadLatest` loads it in
+//   place, on the page and fragment the frame shows, and the page is asked to
+//   scroll back to where it last reported (`clax:scroll`), in the first
+//   welcome only. A pinned view (an earlier version) is offered nothing.
+// - The app's own history (`history {back}`, `back()`): the pages and
+//   fragments the page moved through in this document (its links and its
+//   `#route`s), newest last, at most `TRAIL_MAX`. `back()` moves the frame to
+//   the one before in place, without a history entry, as the shell's own
+//   back and forward do; a version swap keeps them. `history` is posted
+//   whenever whether there is one to go back to changes, and at `init`.
 // - Send: the composer's primary button posts the thread and sends it to the
 //   agent (`sendTo`), in one press. A send that fails leaves the thread
 //   posted and unsent: the host hears `sendFailed`, and `resend(id)` tries
@@ -129,8 +137,8 @@ import { type Anchor, INDEX_FILE, type InspectError, type PickDesc } from "../..
 import type { ArtifactController, ViewState } from "../view/artifact-controller";
 import { anchorLabel, anchorQuote } from "./label";
 import { respaced } from "../view/composer-model";
-import { appQuery, inspectQuery, migrateQuery, parseShellPath } from "../route";
-import { setUrl } from "../view/url";
+import { appQuery, inspectQuery, migrateQuery, parseShellPath, shellPath } from "../route";
+import { setUrl, validHash } from "../view/url";
 
 export type HostMessage =
   | { type: "ready"; artifact: string; version: number; latest: number; file: string }
@@ -151,6 +159,12 @@ export type HostMessage =
   | { type: "threads"; threads: { id: string; status: string; summary: string; label: string; sent: boolean; comments: number; version: number; clip: boolean }[] }
   | { type: "sent"; thread: string }
   | { type: "landed"; version: number }
+  /** A newer version than the one shown is published (see Swap with a tap
+   * above); `reloadLatest` loads it. */
+  | { type: "newer"; version: number }
+  /** Whether `back()` has a page or fragment of the app to go back to (see
+   * The app's own history above). */
+  | { type: "history"; back: boolean }
   | { type: "notice"; text: string }
   /** A posted thread's send to the agent failed (`text` says why): it stays
    * unsent until `resend(thread)`. */
@@ -201,6 +215,9 @@ export type ClaxHost = {
   loadVersion(n: number | null): void;
   /** Loads the latest version in place, keeping page, fragment and scroll. */
   reloadLatest(): void;
+  /** Moves the page back to the page or fragment it showed before, in place;
+   * nothing when there is none (`history {back: false}`). */
+  back(): void;
   /** Replaces the open composer's text; nothing without one. A focused text
    * field of the questions sheet takes it instead, unless `composer` (the
    * app's composer, whose text the composer's always is). */
@@ -322,6 +339,8 @@ const MAX_PRESSES = 16;
 /** A thread's summary: its first comment, cut to this many characters. */
 const SUMMARY_CHARS = 140;
 const FOLLOW_FAILED = "Could not load the latest version";
+/** How many pages and fragments the app's own history keeps. */
+export const TRAIL_MAX = 50;
 
 type Window_ = Window & { claxHost?: ClaxHost; ClaxHost?: { postMessage(m: string): void } };
 
@@ -426,6 +445,38 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
 
   // The page's last reported scroll position, per page.
   const scrolled = new Map<string, number>();
+  // The app's own history: the pages and fragments the page showed in this
+  // document, newest last, and whether `history` last said there is one to
+  // go back to.
+  let trail: { file: string; hash: string }[] = [];
+  let toldBack: boolean | null = null;
+  const postHistory = () => {
+    const back = trail.length > 1;
+    if (nonce === null || back === toldBack) return;
+    toldBack = back;
+    post({ type: "history", back });
+  };
+  /** The page shows `file` at fragment `hash`: a new entry unless it is the
+   * newest one (a version swap, or the move `back()` made). */
+  const visit = (file: string, hash: string) => {
+    if (inspecting) return;
+    const top = trail.at(-1);
+    if (top && top.file === file && top.hash === hash) return;
+    trail = [...trail, { file, hash }].slice(-TRAIL_MAX);
+    postHistory();
+  };
+  /** Moves the frame to the entry before the newest, in place: the shell URL
+   * is replaced and the controller's own back (`popstate`) moves the frame,
+   * to another page without a history entry, or to the fragment, which the
+   * page takes in place. */
+  const goBack = () => {
+    if (trail.length < 2) return;
+    trail = trail.slice(0, -1);
+    const to = trail.at(-1)!;
+    postHistory();
+    setUrl(shellPath(ctl.id, s().pinnedVersion, to.file, ctl.shown()) + appQuery(location.search) + to.hash);
+    win.dispatchEvent(new PopStateEvent("popstate"));
+  };
   // The latest pick start's element description (the bridge's), by pick ID.
   const picked = new Map<string, PickDesc>();
   // The spaced text of the elements picked in this load, by their quote: a
@@ -455,6 +506,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     // A page greeted (each document the frame loads): `ready`, and `landed`
     // once the version auto-follow loaded greets.
     welcome: file => {
+      visit(file, ctl.frameHash);
       const version = ctl.shown();
       ready = { type: "ready", artifact: ctl.id, version, latest: ctl.latest(), file };
       post(ready);
@@ -469,10 +521,9 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     posted: t => sendThread(t.id),
   };
 
-  // Loads the latest version in place. Unless `force` (the host asked), only
-  // while the view is unpinned with no composer open.
+  // Loads the latest version in place (the app's `reloadLatest`).
   let following = false;
-  const follow = async (force: boolean) => {
+  const follow = async () => {
     if (following) return;
     following = true;
     let loaded = false;
@@ -480,7 +531,6 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       const d = await report(getArtifact(ctl.id), FOLLOW_FAILED, scopedNotice(ctl.setNotice, FOLLOW_FAILED));
       const v = s();
       if (!d || ctl.disposed || ctl.app === null) return;
-      if (!force && (v.pinnedVersion !== null || v.draft)) return;
       const n = d.artifact.current_version;
       if (v.pinnedVersion === null && n <= ctl.shown(v)) {
         if (v.newer !== null && v.newer <= n) ctl.set({ newer: null });
@@ -501,10 +551,16 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     } finally {
       following = false;
     }
-    // A version published while this one loaded is followed in turn.
-    if (loaded) followIfDue(s());
+    // A version published while this one loaded is offered in turn.
+    if (loaded) offerIfDue(s());
   };
-  const followIfDue = (v: ViewState) => { if (!inspecting && v.newer !== null && v.pinnedVersion === null && !v.draft) void follow(false); };
+  // The newest version offered to the app (`newer`), so each is offered once.
+  let offered = 0;
+  const offerIfDue = (v: ViewState) => {
+    if (inspecting || nonce === null || v.newer === null || v.pinnedVersion !== null || v.newer <= offered || v.newer <= ctl.shown(v)) return;
+    offered = v.newer;
+    post({ type: "newer", version: v.newer });
+  };
   /** In the inspect view: a consent prompt is answered "Don't allow", and a
    * composer or comment mode (the page's comments capability may open them)
    * closed. True when it changed something. */
@@ -581,7 +637,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       lastNotice = v.notice;
       if (v.notice) post({ type: "notice", text: v.notice });
     }
-    followIfDue(v);
+    offerIfDue(v);
   };
   const unsubscribe = ctl.state.subscribe(onState);
 
@@ -615,6 +671,11 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       for (const wait of journalWaits.values()) wait.reject(new CapError("unavailable", "the migration has ended"));
       journalWaits.clear();
       post(migrationMessage(m as unknown as Record<string, unknown>));
+      return;
+    }
+    if (m?.type === "clax:hash" && typeof m.hash === "string" && validHash(m.hash)) {
+      const file = s().file;
+      if (file !== null) visit(file, m.hash);
       return;
     }
     if (m?.type === "clax:pick-start" && typeof m.pickId === "string" && m.desc) {
@@ -831,6 +892,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       if (ready) post(ready);
       lastQuestions = "";
       postQuestions();
+      postHistory();
       for (const c of deviceQueue.splice(0)) post({ type: "device", ...c });
     },
     enterCommentMode: () => { if (!inspecting && !s().commenting) ctl.toggleComment(); },
@@ -839,7 +901,8 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       if (n === null) ctl.chooseVersion(ctl.latest());
       else if (Number.isInteger(n) && n > 0) ctl.chooseVersion(n);
     },
-    reloadLatest: () => { void follow(true); },
+    reloadLatest: () => { void follow(); },
+    back: () => goBack(),
     setDraftText: (text, p) => {
       // A text field of a question card in the shown sheet, when it has
       // focus, unless the app's composer is typing.

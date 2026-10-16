@@ -297,14 +297,20 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(location.search).toBe("?app=1");
   });
 
-  it("auto_follow_loads_a_newer_version_and_asks_the_bridge_to_restore_scroll", async () => {
-    const { ctl, view, frame } = await appView();
+  it("offers a newer version (newer) without loading it; reloadLatest loads it in place and asks the bridge to restore scroll", async () => {
+    const { ctl, view, frame, host } = await appView();
     hello(frame, 1);
     fromFrame(frame.contentWindow!, { type: "clax:scroll", file: "index.html", y: 1200 });
     // A report for another page than the one shown is not kept.
     fromFrame(frame.contentWindow!, { type: "clax:scroll", file: "other.html", y: 5 });
     latest = 2;
     (await waitFor(() => FakeES.last, "stream")).emit("version", { type: "version", artifact_id: ID, n: 2 });
+    await waitFor(() => ofType("newer").length, "the offer");
+    expect(ofType("newer")).toEqual([{ type: "newer", version: 2 }]);
+    await settle();
+    expect(view.root.querySelector("iframe.frame")).toBe(frame);
+    expect(ofType("landed")).toEqual([]);
+    host.reloadLatest();
     const next = await waitFor(() => { const f = view.root.querySelector<HTMLIFrameElement>("iframe.frame"); return f && f !== frame ? f : null; }, "the newer version's frame");
     expect(next.getAttribute("src")).toBe(`/c/${ID}/v/2/`);
     expect(ctl.state.get().newer).toBeNull();
@@ -318,61 +324,81 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
     hello(next, 2);
     expect(posted.filter(m => m.type === "clax:welcome").at(-1)).toEqual({ type: "clax:welcome", mode: "view", app: true });
     expect(ofType("landed")).toHaveLength(1);
+    expect(ofType("newer")).toHaveLength(1);
   });
 
-  it("follows a version published while the one before it loads", async () => {
-    const { ctl, view, frame } = await appView();
+  it("offers each newer version once, and again to a new init's channel", async () => {
+    const { frame, host } = await appView({ init: false });
     hello(frame, 1);
-    let release!: () => void;
-    held = new Promise(r => { release = r; });
     latest = 2;
     const es = await waitFor(() => FakeES.last, "stream");
     es.emit("version", { type: "version", artifact_id: ID, n: 2 });
-    await waitFor(() => requests.filter(r => r.url === `/api/artifacts/${ID}`).length >= 2, "the follow's request");
+    await settle();
+    // Nothing is posted before init; init offers what is due.
+    expect(raw).toEqual([]);
+    host.init({ nonce: NONCE });
+    expect(ofType("newer")).toEqual([{ type: "newer", version: 2 }]);
+    latest = 3;
+    es.emit("version", { type: "version", artifact_id: ID, n: 3 });
+    await waitFor(() => ofType("newer").length === 2, "the second offer");
+    es.emit("version", { type: "version", artifact_id: ID, n: 3 });
+    await settle();
+    expect(ofType("newer")).toEqual([{ type: "newer", version: 2 }, { type: "newer", version: 3 }]);
+  });
+
+  it("a version published while reloadLatest loads is offered, not loaded", async () => {
+    const { ctl, view, frame, host } = await appView();
+    hello(frame, 1);
+    latest = 2;
+    const es = await waitFor(() => FakeES.last, "stream");
+    es.emit("version", { type: "version", artifact_id: ID, n: 2 });
+    await waitFor(() => ofType("newer").length, "the offer");
+    let release!: () => void;
+    held = new Promise(r => { release = r; });
+    host.reloadLatest();
+    await waitFor(() => requests.filter(r => r.url === `/api/artifacts/${ID}`).length >= 2, "the reload's request");
     latest = 3;
     es.emit("version", { type: "version", artifact_id: ID, n: 3 });
     await waitFor(() => ctl.state.get().newer === 3, "newer 3");
     held = null;
     release();
-    await waitFor(() => view.root.querySelector("iframe.frame")?.getAttribute("src") === `/c/${ID}/v/3/`, "version 3's frame");
-    expect(frame.isConnected).toBe(false);
-    expect(ctl.state.get().newer).toBeNull();
+    await waitFor(() => view.root.querySelector("iframe.frame")?.getAttribute("src") === `/c/${ID}/v/2/`, "version 2's frame");
+    await settle();
+    expect(view.root.querySelector("iframe.frame")?.getAttribute("src")).toBe(`/c/${ID}/v/2/`);
+    expect(ofType("newer").map(m => m.version)).toEqual([2, 3]);
   });
 
-  it("auto-follow without a reported scroll asks for no restore", async () => {
-    const { view, frame } = await appView();
+  it("reloadLatest without a reported scroll asks for no restore", async () => {
+    const { view, frame, host } = await appView();
     hello(frame, 1);
     latest = 2;
     (await waitFor(() => FakeES.last, "stream")).emit("version", { type: "version", artifact_id: ID, n: 2 });
+    await waitFor(() => ofType("newer").length, "the offer");
+    host.reloadLatest();
     const next = await waitFor(() => { const f = view.root.querySelector<HTMLIFrameElement>("iframe.frame"); return f && f !== frame ? f : null; }, "the newer version's frame");
     const posted = framePosts(next);
     hello(next, 2);
     expect(posted.find(m => m.type === "clax:welcome")).toEqual({ type: "clax:welcome", mode: "view", app: true });
   });
 
-  it("auto_follow_waits_for_an_open_draft", async () => {
+  it("an offer leaves an open composer and its text in place", async () => {
     const { ctl, view, frame, host } = await appView();
     hello(frame, 1);
-    fromFrame(frame.contentWindow!, { type: "clax:scroll", file: "index.html", y: 300 });
     host.enterCommentMode();
     viewerPick(frame, { ...pick("p1", "Quarterly goals"), clipError: "none" });
     await waitFor(() => document.querySelector(".composer textarea"), "composer");
     host.setDraftText("half a thought");
     latest = 2;
     (await waitFor(() => FakeES.last, "stream")).emit("version", { type: "version", artifact_id: ID, n: 2 });
-    await waitFor(() => ctl.state.get().newer === 2, "newer");
+    await waitFor(() => ofType("newer").length, "the offer");
+    host.cancelDraft();
     await settle();
     expect(view.root.querySelector("iframe.frame")).toBe(frame);
-    expect(document.querySelector<HTMLTextAreaElement>(".composer textarea")!.value).toBe("half a thought");
-    host.cancelDraft();
-    const next = await waitFor(() => { const f = view.root.querySelector<HTMLIFrameElement>("iframe.frame"); return f && f !== frame ? f : null; }, "the newer version's frame");
-    const posted = framePosts(next);
-    hello(next, 2);
-    expect(posted.find(m => m.type === "clax:welcome")).toMatchObject({ restoreScroll: 300 });
-    expect(ofType("landed")).toEqual([{ type: "landed", version: 2 }]);
+    expect(ctl.state.get().newer).toBe(2);
+    expect(ofType("landed")).toEqual([]);
   });
 
-  it("auto_follow_never_moves_a_pinned_view", async () => {
+  it("a pinned view is offered nothing and never moves", async () => {
     latest = 1;
     const { ctl, view, frame } = await appView({ pinned: 1 });
     hello(frame, 1);
@@ -383,6 +409,53 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(view.root.querySelector("iframe.frame")).toBe(frame);
     expect(ctl.state.get().pinnedVersion).toBe(1);
     expect(ofType("landed")).toEqual([]);
+    expect(ofType("newer")).toEqual([]);
+  });
+
+  it("history: the page's fragments are the app's own history, and back() moves back through them in place", async () => {
+    const { frame, host } = await appView();
+    expect(ofType("history")).toEqual([{ type: "history", back: false }]);
+    hello(frame, 1);
+    const posted = framePosts(frame);
+    fromFrame(frame.contentWindow!, { type: "clax:hash", hash: "" });
+    await settle();
+    expect(ofType("history")).toHaveLength(1);
+    fromFrame(frame.contentWindow!, { type: "clax:hash", hash: "#/item/3" });
+    expect(ofType("history").at(-1)).toEqual({ type: "history", back: true });
+    fromFrame(frame.contentWindow!, { type: "clax:hash", hash: "#/item/4" });
+    // An invalid fragment is no entry.
+    fromFrame(frame.contentWindow!, { type: "clax:hash", hash: "item/5" });
+    host.back();
+    expect(posted.filter(m => m.type === "clax:hash").at(-1)).toEqual({ type: "clax:hash", hash: "#/item/3" });
+    expect(location.pathname + location.search + location.hash).toBe(`/a/${ID}?app=1#/item/3`);
+    // The page reports the fragment it moved to: no new entry.
+    fromFrame(frame.contentWindow!, { type: "clax:hash", hash: "#/item/3" });
+    expect(ofType("history").at(-1)).toEqual({ type: "history", back: true });
+    host.back();
+    expect(posted.filter(m => m.type === "clax:hash").at(-1)).toEqual({ type: "clax:hash", hash: "" });
+    expect(ofType("history").at(-1)).toEqual({ type: "history", back: false });
+    const sent = posted.length;
+    host.back();
+    expect(posted.length).toBe(sent);
+  });
+
+  it("history: a version swap keeps it, and back() then moves the new version's page", async () => {
+    const { view, frame, host } = await appView();
+    hello(frame, 1);
+    fromFrame(frame.contentWindow!, { type: "clax:hash", hash: "#/a" });
+    fromFrame(frame.contentWindow!, { type: "clax:hash", hash: "#/b" });
+    latest = 2;
+    (await waitFor(() => FakeES.last, "stream")).emit("version", { type: "version", artifact_id: ID, n: 2 });
+    await waitFor(() => ofType("newer").length, "the offer");
+    host.reloadLatest();
+    const next = await waitFor(() => { const f = view.root.querySelector<HTMLIFrameElement>("iframe.frame"); return f && f !== frame ? f : null; }, "the newer version's frame");
+    expect(next.getAttribute("src")).toBe(`/c/${ID}/v/2/#/b`);
+    const posted = framePosts(next);
+    hello(next, 2);
+    fromFrame(next.contentWindow!, { type: "clax:hash", hash: "#/b" });
+    expect(ofType("history").at(-1)).toEqual({ type: "history", back: true });
+    host.back();
+    expect(posted.filter(m => m.type === "clax:hash").at(-1)).toEqual({ type: "clax:hash", hash: "#/a" });
   });
 
   it("reloadLatest unpins a preview and loads the latest in place", async () => {
@@ -762,7 +835,7 @@ describe("app mode's host channel", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await settle();
     expect(raw).toEqual([]);
     host.init({ nonce: NONCE });
-    expect(toHost.map(m => m.type)).toEqual(["state", "threads", "ready"]);
+    expect(toHost.map(m => m.type)).toEqual(["state", "threads", "ready", "history"]);
     expect(toHost[0]).toMatchObject({ commenting: true });
     expect(raw.every(m => JSON.parse(m).nonce === NONCE)).toBe(true);
     // Only the first init counts.
@@ -983,9 +1056,9 @@ describe("app mode's visibility", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await waitFor(() => st.topics.includes(artifactTopic) === holds, what);
   };
 
-  it("a hidden document does not stop the app's view following: a version 60 s later still lands", async () => {
+  it("a hidden document does not stop the app's view following: a version 60 s later is still offered and lands", async () => {
     hideDocument();
-    const { view, frame } = await appView();
+    const { view, frame, host } = await appView();
     hello(frame, 1);
     await waitFor(() => FakeES.last, "stream");
     const { HIDDEN_MS } = await import("../stream");
@@ -994,6 +1067,8 @@ describe("app mode's visibility", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(await holdsArtifact()).toBe(true);
     latest = 2;
     (await waitFor(() => FakeES.last, "stream still held")).emit("version", { type: "version", artifact_id: ID, n: 2 });
+    await waitFor(() => ofType("newer").length, "the offer");
+    host.reloadLatest();
     const next = await waitFor(() => { const f = view.root.querySelector<HTMLIFrameElement>("iframe.frame"); return f && f !== frame ? f : null; }, "the newer version's frame");
     hello(next, 2);
     expect(ofType("landed")).toEqual([{ type: "landed", version: 2 }]);
