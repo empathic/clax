@@ -119,8 +119,10 @@ test("the inbox groups by agent, threads name their owners and wait for approval
     await expect(card.locator(".owner-chip")).toHaveText("sam-notes · Sam");
     await expect(card.locator(".owner-chip")).toHaveAttribute("title", "sam-notes, Sam's agent");
 
-    // A LAN viewer has no agents: Send opens the menu, which names each
-    // agent's person and never who approves first (its browser never asks).
+    // A LAN viewer has no agents of its own: one press sends to the
+    // owner's newest live agent, named on the button (single-owner
+    // behaviour); the caret's menu names each agent's person, the owner's
+    // first, and never who approves first (its browser never asks).
     const t2 = (await (await fetch(`${d.base}/api/artifacts/${aid}/threads`, { method: "POST", body: (() => { const f = new FormData(); f.set("anchor", form.get("anchor") as string); f.set("body", "Another note."); f.set("version", "1"); return f; })(), headers: { cookie: asOwner.cookie, origin: d.base } })).json()).thread.id as string;
     const l = await lanCtx.newPage();
     const refused: number[] = [];
@@ -128,11 +130,11 @@ test("the inbox groups by agent, threads name their owners and wait for approval
     await l.goto(`${lan}/a/${aid}?thread=${t2}`);
     const lanCard = l.locator(`.thread-card[data-thread="${t2}"]`);
     const lanSend = lanCard.locator(".send > button.primary:not(.caret)");
-    await expect(lanSend).toHaveText("Send to …");
-    await lanSend.click();
+    await expect(lanSend).toHaveText(/^Send to (claude|codex)$/);
+    await lanCard.getByRole("button", { name: "Choose the agent" }).click();
     const lanMenu = lanCard.getByRole("menu");
     await expect(lanMenu.locator(".send-group-h")).toHaveCount(2);
-    expect((await lanMenu.locator(".send-group-h").allTextContents()).sort()).toEqual(["Alex's agents", "Sam's agents"]);
+    expect(await lanMenu.locator(".send-group-h").allTextContents()).toEqual(["Alex's agents", "Sam's agents"]);
     await expect(lanMenu.locator(".send-person")).toHaveCount(3);
     expect(refused).toEqual([]);
     await expect(lanMenu.locator(".send-first")).toHaveCount(0);

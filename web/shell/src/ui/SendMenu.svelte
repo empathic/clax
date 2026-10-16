@@ -9,7 +9,11 @@
   // first, as the daemon answers for this viewer (`GET
   // /api/artifacts/{aid}/approves-first`, the owner's and connected
   // people's browsers only; a host may ask its own way, `firstsVia`).
-  // Escape closes it. Names are text.
+  // It takes the keyboard's focus as it opens (the checked agent, else the
+  // first); the arrow keys, Home and End move through it; Escape, there or
+  // on the button that opened it, closes it and gives focus back to that
+  // button, as choosing an agent does; Tab out of it closes it. Names are
+  // text.
   import type { AgentView } from "../view/working-model";
   import { type AskFirsts, firstsVia, sendGroups } from "../view/send-menu";
 
@@ -28,16 +32,34 @@
   });
   const groups = $derived(sendGroups(agents, me, firsts, names));
   const headed = $derived(groups.length > 1 || !groups[0]?.mine);
+  let menu: HTMLElement | undefined = $state();
+  // The button that opened it, which gets the focus back.
+  const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const items = () => [...(menu?.querySelectorAll<HTMLElement>('[role="menuitemradio"]') ?? [])];
+  $effect(() => { const all = items(); (all.find(i => i.getAttribute("aria-checked") === "true") ?? all[0])?.focus(); });
+  function close() { onClose(); opener?.focus(); }
+  function key(e: KeyboardEvent) {
+    const all = items();
+    const at = all.indexOf(document.activeElement as HTMLElement);
+    const to = e.key === "ArrowDown" ? (at + 1) % all.length : e.key === "ArrowUp" ? (at < 0 ? all.length - 1 : (at - 1 + all.length) % all.length) : e.key === "Home" ? 0 : e.key === "End" ? all.length - 1 : -1;
+    if (to >= 0 && all.length) { e.preventDefault(); all[to].focus(); }
+    else if (e.key === "Escape") { e.stopPropagation(); close(); }
+  }
+  // Tab out of it closes it, focus going where Tab took it.
+  const out = (e: FocusEvent) => { const to = e.relatedTarget as Node | null; if (to && !menu?.parentElement?.contains(to)) onClose(); };
+  // Escape with the focus on the button beside it (its caret, or a Send that opened it).
+  const away = (e: KeyboardEvent) => { if (e.key === "Escape" && menu?.parentElement?.contains(document.activeElement)) { e.stopPropagation(); close(); } };
 </script>
 
-<!-- Escape closes the menu. -->
+<svelte:window onkeydown={away} />
+
 <!-- svelte-ignore a11y_interactive_supports_focus -->
-<div class="send-menu" role="menu" tabindex="-1" onkeydown={e => { if (e.key === "Escape") { e.stopPropagation(); onClose(); } }}>
+<div class="send-menu" role="menu" tabindex="-1" bind:this={menu} onkeydown={key} onfocusout={out}>
   {#each groups as g (g.label)}
     <div role="group" aria-label={g.label}>
       {#if headed}<p class="send-group-h" aria-hidden="true">{g.label}</p>{/if}
       {#each g.agents as a (a.handle)}
-        <button type="button" role="menuitemradio" aria-checked={a.handle === target} class="ghost" onclick={() => { onChoose(a.handle); onClose(); }}
+        <button type="button" role="menuitemradio" aria-checked={a.handle === target} class="ghost" tabindex="-1" onclick={() => { onChoose(a.handle); close(); }}
           ><span class="send-name">{a.name}</span>{#if a.person}{" "}<small class="send-person">{a.person}</small>{/if}{#if a.first}{" "}<small class="send-first">{a.first}</small>{/if}</button>
       {/each}
     </div>

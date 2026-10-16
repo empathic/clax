@@ -22,6 +22,7 @@ const HOSTILE = `<img src=x onerror="window.pwned=1">`;
 await import("./people/ApprovalCard.svelte");
 await import("./ui/thread-approvals");
 await import("./ui/ThreadApproval.svelte");
+await import("./ui/NewComment.svelte");
 const settle = async () => { for (let i = 0; i < 8; i++) await new Promise(r => setTimeout(r, 0)); flush(); };
 
 function render(threads: Thread[], more: Record<string, unknown> = {}) {
@@ -94,6 +95,38 @@ describe("a thread's owner and delivery state", () => {
     expect(card.querySelector(".waiting")!.textContent).toBe("waiting for your approval");
     // Only one card, above its own thread.
     expect(m.root.querySelectorAll(".acard")).toHaveLength(1);
+  });
+
+  it("gives the keyboard's focus to the thread's card head once the decided card goes", async () => {
+    let open = true;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "POST") { open = false; return new Response(JSON.stringify({ request: { ...item("approval").approval, status: "approved", scope: "thread" }, approval: null })); }
+      return new Response(JSON.stringify({ items: open ? [item("approval")] : [], next_cursor: null, unread: 0 }));
+    }));
+    const m = shell([thread({ feedback_state: yours })], SAM);
+    await settle();
+    const allow = [...m.root.querySelectorAll<HTMLButtonElement>(".acard button")].find(b => b.textContent!.startsWith("Allow this thread"))!;
+    allow.focus();
+    flush(() => allow.click());
+    await settle();
+    // The thread goes through: its delivery state changes, the card is fetched again and is gone.
+    const s = { threads: [thread({ feedback_state: { ...yours, state: "sent" as const, since: "2026-10-09T10:04:00.000Z" } })], resolved: {}, selected: null, file: "index.html", me: SAM, data: { versions: [], artifact: { owner_harness: "claude" } }, working: [], commenting: false,
+      agents: [], attention: null, decided: null, selection: { ids: [], anchor: null }, batchNote: "", batchBusy: false, sendTo: null };
+    m.update({ ctl: { holds: () => true, shown: () => 1 } as never, s: s as never });
+    await settle();
+    expect(m.root.querySelector(".acard")).toBeNull();
+    expect(document.activeElement).toBe(m.root.querySelector(`.thread-card[data-thread="${TID}"] .card-head`));
+  });
+
+  it("says nothing waits for a decision yet when the thread waits for this viewer's approval with no request", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ items: [], next_cursor: null, unread: 0 }))));
+    const m = shell([thread({ feedback_state: yours }), thread({ id: "t2", feedback_state: withheld })], SAM);
+    await settle();
+    const notes = [...m.root.querySelectorAll(".thread-approval.none")];
+    expect(notes).toHaveLength(1);
+    expect(notes[0].textContent).toContain("Nothing to decide yet");
+    expect(notes[0].querySelector("a")!.getAttribute("href")).toBe("/inbox?kind=approval");
+    expect(m.root.querySelector(".acard")).toBeNull();
   });
 
   it("puts the card above a thread whose newest comment went through while an earlier one waits", async () => {
@@ -191,6 +224,42 @@ describe("the Send target (spec 2026-10-08 §10, §11)", () => {
     expect(button(m.root).textContent).toBe("Send to codex");
     flush(() => button(m.root).click());
     expect(calls).toEqual(["choose a_cx", `send ${TID}`]);
+  });
+
+  it("for a LAN viewer, one press sends to the owner's newest live agent, named on the button, with no caret for one agent", () => {
+    // A single-owner install: the owner's one live agent.
+    const calls: string[] = [];
+    const ctl = { chooseTarget: (h: string) => calls.push(`choose ${h}`), sendThread: (t: Thread) => calls.push(`send ${t.id}`), sendUnsent: () => calls.push("unsent") };
+    const m = shell([unsent], LAN, { agents: [{ ...mine, name: "claude" }] }, ctl);
+    expect(button(m.root).textContent).toBe("Send to claude");
+    expect(button(m.root).getAttribute("aria-haspopup")).toBeNull();
+    expect(m.root.querySelector('[aria-label="Choose the agent"]')).toBeNull();
+    flush(() => button(m.root).click());
+    expect(calls).toEqual(["choose a_cx", `send ${TID}`]);
+    m.unmount();
+    // With people: still the owner's, never Sam's listed first; the caret offers Sam's.
+    const p = shell([unsent], LAN, { agents: [sams, mine] }, ctl);
+    expect(button(p.root).textContent).toBe("Send to codex");
+    expect(p.root.querySelector('[aria-label="Choose the agent"]')).not.toBeNull();
+  });
+
+  it("for a LAN viewer with only other people's agents live, Send opens the menu", async () => {
+    await import("./ui/SendMenu.svelte");
+    const ctl = { chooseTarget: vi.fn(), sendThread: vi.fn() };
+    const m = shell([unsent], LAN, { agents: [sams] }, ctl);
+    expect(button(m.root).textContent).toBe("Send to …");
+    flush(() => button(m.root).click());
+    await settle();
+    expect(ctl.sendThread).not.toHaveBeenCalled();
+    expect(m.root.querySelector('[role="menu"] [role="menuitemradio"] .send-name')!.textContent).toBe("sam-notes");
+  });
+
+  it("heads a LAN viewer's menu with the owner's agents, then each person's, none of them yours", async () => {
+    await import("./ui/SendMenu.svelte");
+    const m = render([unsent], { me: LAN, agents: [sams, mine], sendTo: "a_cx" });
+    flush(() => m.root.querySelector<HTMLButtonElement>('.thread-card [aria-label="Choose the agent"]')!.click());
+    await settle();
+    expect([...m.root.querySelectorAll('[role="menu"] .send-group-h')].map(h => h.textContent)).toEqual(["Alex's agents", "Sam's agents"]);
   });
 
   it("never asks who approves first in a browser that may not learn it (a LAN viewer)", async () => {
