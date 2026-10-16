@@ -95,6 +95,7 @@ class TurnHolds {
     required this.pauseClock,
     required this.resumeClock,
     this.onResend,
+    this.onConnection,
   });
 
   /// Stops the run's wall clock, from `since` when given: a held turn does
@@ -107,6 +108,11 @@ class TurnHolds {
   /// Called before a held turn is sent again: what the cut attempt
   /// streamed will not be used.
   final void Function()? onResend;
+
+  /// Called with true as a hold that waits for the API's connection
+  /// starts, and with false once the connection is back (not when a
+  /// cancel ends the hold).
+  final void Function(bool waiting)? onConnection;
 }
 
 /// One model attempt of a turn and what it spent: a turn has more than one
