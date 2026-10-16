@@ -9,7 +9,7 @@
 #   scripts/run.sh web-test          the web UI's lint, type checks, unit tests and bundle gate
 #   scripts/run.sh pi-test           the Pi extension's type check and tests
 #   scripts/run.sh web-e2e           the browser tests
-#   scripts/run.sh perf              the perf gates' full versions
+#   scripts/run.sh perf              the perf benchmarks, on demand (they gate nothing)
 #   scripts/run.sh build             the clax binary
 #   scripts/run.sh web               web/dist and web/dist-extension, built
 #   scripts/run.sh which             say which build system would run, and why
@@ -136,7 +136,7 @@ _bazel() {
         web-test) _run "${b[@]}" test --lockfile_mode=error //web:lint //web:typecheck //web:unit //web:bundle_size "$@" ;;
         pi-test) _run "${b[@]}" test --lockfile_mode=error //plugins/pi:typecheck //plugins/pi:test "$@" ;;
         web-e2e) _run "${b[@]}" test --lockfile_mode=error //web:e2e_gesture //web:e2e_chrome_overlay //web:e2e_rest "$@" ;;
-        perf) _run "${b[@]}" test --lockfile_mode=error //scripts:perf_daemon_full //scripts:perf_clients_full //web:perf_usable_full "$@" ;;
+        perf) _run "${b[@]}" test --lockfile_mode=error --nocache_test_results --test_output=all //scripts:perf_daemon_full //scripts:perf_clients_full //web:perf_usable_full "$@" ;;
         build) _run "${b[@]}" build --lockfile_mode=error //crates/clax-cli:clax "$@" ;;
         web)
             _run "${b[@]}" build --lockfile_mode=error //web:dist //web:dist_extension "$@" || return $?

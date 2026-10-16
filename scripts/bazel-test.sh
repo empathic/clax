@@ -11,7 +11,8 @@
 #          its own clippy.toml
 #       3. one `bazel test`: the Rust format check and clippy with
 #          -D warnings, the Rust tests, the web and Pi checks, the script
-#          gates, then the perf gates one at a time
+#          gates (performance is measured on demand, `just perf`, and gates
+#          nothing)
 #       4. the checks that run outside Bazel (docs/bazel.md, "Run outside Bazel")
 #       5. no hard link in Bazel's output base or the disk cache
 #   scripts/bazel-test.sh [...] ARGS   # ARGS go to every `bazel test`
@@ -203,8 +204,8 @@ if [ "$ci" = 1 ]; then
     done
     # Everything else in one invocation, so builds, lints and tests share
     # the machine instead of queueing: the format check and clippy over
-    # every crate, and every test (Rust, web, Pi, script gates). Bazel runs
-    # the `exclusive` ones, the perf gates, last and one at a time.
+    # every crate, and every test (Rust, web, Pi, script gates). The perf
+    # benchmarks are `manual`: on demand only (`just perf`).
     _pass "every check" \
         '//crates/... + tests(//...) except attr(tags, "\bmanual\b", //...)' \
         --config=fmt --config=clippy "$@"

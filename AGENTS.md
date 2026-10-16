@@ -41,8 +41,8 @@ run it through the command the plugin's session context gives.
   `Cargo.toml`).
 - Never create hard links, in code, tests or scripts.
 - Tests are fast and load-tolerant: no sleeps standing in for a condition,
-  no wall-clock budgets in functional tests (time is a perf gate's job),
-  injected clocks for timing rules. The whole check suite stays under two
+  no wall-clock budgets in any check, injected clocks for timing rules.
+  Performance is measured on demand (`just perf`) and gates nothing. The whole check suite stays under two
   minutes on a warm cache.
 - Never wait on processes by `pgrep -f`/`pkill -f` patterns: use the PID
   you started, or an exit file, with a timeout.

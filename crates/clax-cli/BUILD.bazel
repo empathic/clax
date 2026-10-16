@@ -56,7 +56,9 @@ warm_binary(
 # targets, as Cargo reads it from beside Cargo.toml.
 exports_files(["clippy.toml"])
 
-# The optimized binary the perf gates run (bazel/opt.bzl), run once too.
+# The optimized binary (bazel/opt.bzl), run once too: the perf benchmarks
+# run it, and `scripts/bazel-test.sh --ci` builds it as the native checks
+# build the release binary.
 opt_binary(
     name = "clax_opt",
     binary = ":clax",

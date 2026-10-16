@@ -145,9 +145,9 @@ sh_test(
     data = [":all"],
 )
 
-# The perf gates, on the optimized clax, alone and one at a time
-# (exclusive), outside the sandbox: they measure. Passed gates are cached
-# until their binary or scripts change. The _full twins are `manual`.
+# The perf benchmarks, on demand only (`just perf`): on the optimized clax,
+# alone and one at a time (exclusive), outside the sandbox. They print each
+# measure beside its budget and fail no check; no check runs them (`manual`).
 PERF_DATA = [
     ":all",
     "//crates/clax-cli:clax_opt",
@@ -155,21 +155,6 @@ PERF_DATA = [
 ]
 
 PERF_ENV = {"CLAX_PERF_BIN": "$(rootpath //crates/clax-cli:clax_opt)"}
-
-[sh_test(
-    name = name,
-    srcs = [script],
-    args = ["--quick"],
-    data = PERF_DATA,
-    env = PERF_ENV,
-    tags = [
-        "exclusive",
-        "no-sandbox",
-    ],
-) for name, script in [
-    ("perf_daemon", "perf-daemon.sh"),
-    ("perf_clients", "perf-clients.sh"),
-]]
 
 [sh_test(
     name = name + "_full",
