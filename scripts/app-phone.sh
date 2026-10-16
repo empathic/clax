@@ -66,16 +66,36 @@ fi
 
 if [ ! -f "$apk" ]; then
     log="$root/target/app-phone/$sha.log"
-    echo "app-phone: building $sha (log: $log)"
+    echo "app-phone: building $sha from a clean copy; this takes several minutes (log: $log)"
     rm -rf "$copy"
     mkdir -p "$copy"
     git archive HEAD | tar -x -C "$copy"
     ln -s "$root/web/node_modules" "$copy/web/node_modules"
-    if ! (cd "$copy" && just app-apk) > "$log" 2>&1; then
+    (cd "$copy" && just app-apk) > "$log" 2>&1 &
+    build=$!
+    trap 'kill "$build" 2>/dev/null' INT TERM
+    # Every 15 s: the elapsed time and the log's latest line, so a long step
+    # shows as progress rather than a hang.
+    start=$SECONDS
+    while kill -0 "$build" 2>/dev/null; do
+        for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+            kill -0 "$build" 2>/dev/null || break
+            sleep 1
+        done
+        kill -0 "$build" 2>/dev/null || break
+        e=$((SECONDS - start))
+        last="$(tail -n 1 "$log" 2>/dev/null | tr -d '\r' | cut -c 1-100)"
+        printf 'app-phone: %dm%02ds  %s\n' $((e / 60)) $((e % 60)) "$last"
+    done
+    if ! wait "$build"; then
+        trap - INT TERM
         tail -20 "$log" >&2
         echo "app-phone: build failed; the whole log is $log" >&2
         exit 1
     fi
+    trap - INT TERM
+    e=$((SECONDS - start))
+    printf 'app-phone: built in %dm%02ds\n' $((e / 60)) $((e % 60))
     # Keep the newest three copies (and their logs).
     ls -1t target/app-phone | { grep -v '\.log$' || true; } | tail -n +4 | while read -r old; do
         rm -rf "target/app-phone/$old" "target/app-phone/$old.log"
@@ -87,6 +107,7 @@ adb install -r "$apk"
 adb shell monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
 
 # The daemon should come up and keep one PID; a crash loop shows as a new PID.
+echo "app-phone: opened Clax; watching its daemon for 20 s"
 first=""
 for _ in $(seq 1 10); do
     sleep 2
