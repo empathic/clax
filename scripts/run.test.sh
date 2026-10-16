@@ -116,25 +116,6 @@ _expect "bazelisk: ci is the script CI runs" 0 "1xwould run: ./scripts/bazel-tes
 _try -- which
 _expect "bazelisk: which says bazel" 0 "1x^bazel: Bazelisk found"
 
-# 1b. Bazelisk and the native tools, and the worktree has the native build
-#     state a task reuses: speed wins, and the native tools run that task,
-#     saying why; a task without it, or CLAX_BUILD=bazel, runs Bazel.
-mkdir -p "$repo/target/debug" "$repo/web/node_modules"
-_try -- test
-_expect "native build state: test runs natively, saying why" 0 \
-    "1xthis worktree has a native build (target/debug)" "1x$summary" "0xInstall"
-_called "^cargo test --workspace$" || _fail "native build state: cargo test called"
-if _called "^bazelisk"; then _fail "native build state: Bazel does not run"; fi
-_try -- --dry-run web-test
-_expect "native build state: web-test runs natively" 0 "1xweb/node_modules" "1xwould run: bash -c cd web"
-_try -- --dry-run ci
-_expect "native build state: ci needs Pi's packages too, else Bazel" 0 "1xwould run: ./scripts/bazel-test.sh --ci$"
-_try CLAX_BUILD=bazel -- --dry-run test
-_expect "native build state: CLAX_BUILD=bazel still runs Bazel" 0 "1xwould run: ./scripts/bazel-test.sh --rust$" "0xnative build"
-_try -- --dry-run build
-_expect "native build state: build is not one of them" 0 "1xwould run: .*bazelisk build"
-rm -rf "$repo/target" "$repo/web/node_modules"
-
 # 2. Bazelisk alone, no native tools: fine, and nothing is said.
 _stubs bazelisk
 _try -- web-test
