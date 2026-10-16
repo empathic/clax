@@ -114,9 +114,11 @@ files).
 
 macOS assesses every new executable on its first run, which can take
 seconds on a loaded machine. Bazel makes a new file for `clax` in each
-output base, so `warm_binary` (`bazel/warm.bzl`) runs it once in an action
-that is never taken from the disk cache (`no-remote-cache`), and every test
-that runs `clax` depends on that action's stamp. Tests then run the same
+output base, so `warm_binary` (`bazel/warm.bzl`) runs it in an action that
+is never taken from any cache (`no-cache`; `no-remote-cache` does not keep
+an action out of the disk cache), and every test that runs `clax` depends
+on that action's stamp. Once the file is assessed the action costs one
+`clax --version`, and its unchanged stamp reruns nothing. Tests then run the same
 file through runfiles links. The fake executables keep one store across
 tests and runs (`CLAX_FAKE_EXE_DIR`, set by `scripts/bazel-test.sh`). Tests
 find `clax` through `clax_fake_exe::clax_bin`, which makes `CLAX_TEST_BIN`
