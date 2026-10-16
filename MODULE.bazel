@@ -67,6 +67,16 @@ crate.annotation(
     crate_features = ["debug-embed"],
     repositories = ["crates"],
 )
+crate.annotation(
+    crate = "rust-embed-impl",
+    crate_features = ["debug-embed"],
+    repositories = ["crates"],
+)
+crate.annotation(
+    crate = "rust-embed-utils",
+    crate_features = ["debug-embed"],
+    repositories = ["crates"],
+)
 
 # The bundled SQLite's build flags, as .cargo/config.toml gives Cargo.
 crate.annotation(

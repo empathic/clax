@@ -1,0 +1,249 @@
+"""Builds a Cargo package's targets the way Cargo does.
+
+A package's BUILD.bazel calls cargo_package(). The package's facts (version,
+targets, default features, path dependencies, the features its tests turn
+on, its build script) come from bazel/workspace.bzl, which
+scripts/bazel-sync.sh derives from `cargo metadata`; its third-party
+dependencies come from its Cargo.toml through crate_universe; and its sources
+are globbed. So a BUILD file changes only for what Cargo knows by convention
+and Bazel must be told: which files outside `src/` a target reads.
+"""
+
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//cargo:defs.bzl", "cargo_build_script")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+load(":workspace.bzl", "CRATES", "WORKSPACE_RUSTC_FLAGS")
+
+_CLAX = "//crates/clax-cli:clax"
+_CLAX_WARM = "//crates/clax-cli:clax_warm"
+
+def _test_variants():
+    """{package: features} of the workspace libraries some crate's tests
+    build with more features: each gets a `<lib>_test` twin."""
+    out = {}
+    for crate in CRATES.values():
+        for package, features in crate["test_features"].items():
+            out[package] = sorted({f: True for f in out.get(package, []) + features}.keys())
+    return out
+
+_TEST_VARIANTS = _test_variants()
+
+def _test_label(label):
+    """A workspace library's label as tests link it: its `_test` twin when
+    some crate's tests turn on features of it (Cargo's workspace build
+    unifies them for every test)."""
+    package = label[2:].split(":")[0]
+    if package in _TEST_VARIANTS:
+        return label + "_test"
+    return label
+
+def cargo_package(
+        compile_data = [],
+        test_compile_data = [],
+        test_data = [],
+        tests_use_clax = [],
+        test_env = {},
+        shard_counts = {},
+        build_script_env = {},
+        build_script_data = [],
+        visibility = ["//visibility:public"]):
+    """Declares the library, binaries, build script and tests of the Cargo
+    package here.
+
+    Targets, with <lib> the library's crate name:
+      <lib>                 the library
+      <lib>_test            the library with the features tests turn on in it
+                            (only when another crate's tests name it)
+      <lib>_lib_test        its unit tests
+      <bin>                 each binary, under Cargo's name for it
+      <bin>_bin_test        each binary's unit tests
+      <test>                each [[test]] target, under its name
+      build_script          the build script, when there is one
+
+    Args:
+      compile_data: files outside `src/` that the library and binaries read
+        while they compile (include_str!, rust-embed).
+      test_compile_data: the same, for the tests only.
+      test_data: files the tests read while they run. Paths built from
+        CARGO_MANIFEST_DIR resolve as they do under Cargo.
+      tests_use_clax: the test targets (by name, including `<lib>_lib_test`
+        and `<bin>_bin_test`) that run the `clax` binary: they get it, its
+        warm-up stamp and CLAX_TEST_BIN.
+      test_env: environment variables for every test.
+      shard_counts: {test name: shards}.
+      build_script_env: environment for the build script ($(execpath) works).
+      build_script_data: files the build script reads.
+      visibility: the library's and binaries' visibility.
+    """
+    package = native.package_name()
+    crate = CRATES[package]
+    features = crate["default_features"]
+    lib = crate["lib"]
+
+    rustc_env = {
+        # rules_rust's default is the sandbox's absolute path at compile
+        # time: gone when a test runs, and different in every build, so it
+        # would poison the shared cache. The package's path from the
+        # workspace root is stable, and tests run from the workspace root.
+        "CARGO_MANIFEST_DIR": package,
+        "CARGO_PKG_NAME": crate["name"],
+        "CARGO_PKG_VERSION": crate["version"],
+        # No cargo runs under Bazel; a test's fallback that would run it
+        # fails loudly (spec §5.3).
+        "CARGO": "/nonexistent/cargo-under-bazel",
+        # Every Bazel build names no commit (spec B13).
+        "CLAX_BUILD_COMMIT": "unknown",
+    }
+    # The cfg names and features Cargo declares to rustc's check-cfg.
+    check_cfg = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature,values(%s))" % ",".join(['"%s"' % f for f in crate["features"]]),
+    ]
+    rustc_flags = WORKSPACE_RUSTC_FLAGS + check_cfg + ["--cfg", "clax_embedded"] + select({
+        # Cargo's dev profile keeps line tables, which panics and
+        # backtraces use (docs/bazel.md, "Differences from Cargo").
+        "//bazel:fastbuild": ["-Cdebuginfo=line-tables-only"],
+        "//conditions:default": [],
+    })
+    common = dict(
+        aliases = aliases(),
+        edition = crate["edition"],
+        version = crate["version"],
+        rustc_env = rustc_env,
+        rustc_flags = rustc_flags,
+    )
+
+    test_lib = None
+    build_deps = []
+    if crate["has_build_script"]:
+        cargo_build_script(
+            name = "build_script",
+            srcs = ["build.rs"],
+            build_script_env = {"CLAX_BUILD_COMMIT": "unknown"} | build_script_env,
+            data = build_script_data,
+            edition = crate["edition"],
+            deps = all_crate_deps(build = True),
+            proc_macro_deps = all_crate_deps(build_proc_macro = True),
+            rustc_flags = WORKSPACE_RUSTC_FLAGS + check_cfg,
+            version = crate["version"],
+        )
+        build_deps = [":build_script"]
+
+    normal_deps = crate["deps"] + all_crate_deps(normal = True) + build_deps
+    test_normal_deps = [_test_label(d) for d in crate["deps"]] + all_crate_deps(normal = True) + build_deps
+    dev_deps = [_test_label(d) for d in crate["dev_deps"]] + all_crate_deps(normal_dev = True)
+    macros = all_crate_deps(proc_macro = True)
+    dev_macros = all_crate_deps(proc_macro_dev = True)
+    srcs = native.glob(["src/**/*.rs"])
+    src_data = native.glob(
+        ["src/**"],
+        exclude = ["src/**/*.rs", "**/.qual"],
+        allow_empty = True,
+    ) + compile_data
+
+    # An integration test compiles no generated file, so its sources stay
+    # in the source tree, where its includes of other crates' files resolve.
+    own_data = native.glob(
+        ["src/**"],
+        exclude = ["src/**/*.rs", "**/.qual"],
+        allow_empty = True,
+    )
+
+    def test_kwargs(name, integration = False):
+        data = list(test_data)
+        env = dict(test_env)
+        if name in tests_use_clax:
+            data += [_CLAX, _CLAX_WARM]
+            env["CLAX_TEST_BIN"] = "$(rootpath %s)" % _CLAX
+        kwargs = dict(
+            common,
+            # A test may include the crate's own sources (include_str!).
+            compile_data = (own_data if integration else src_data) + srcs + test_compile_data,
+            data = data,
+            env = env,
+        )
+        if name in shard_counts:
+            kwargs["shard_count"] = shard_counts[name]
+        return kwargs
+
+    if lib:
+        rust_library(
+            name = lib,
+            srcs = srcs,
+            compile_data = src_data,
+            crate_features = features,
+            crate_name = lib,
+            crate_root = crate["lib_root"],
+            proc_macro_deps = macros,
+            visibility = visibility,
+            deps = normal_deps,
+            **common
+        )
+        test_lib = lib
+        if package in _TEST_VARIANTS:
+            test_lib = lib + "_test"
+            rust_library(
+                name = test_lib,
+                srcs = srcs,
+                compile_data = src_data,
+                crate_features = sorted({f: True for f in features + _TEST_VARIANTS[package]}.keys()),
+                crate_name = lib,
+                crate_root = crate["lib_root"],
+                proc_macro_deps = macros,
+                visibility = visibility,
+                deps = test_normal_deps,
+                **common
+            )
+        _test(
+            name = lib + "_lib_test",
+            crate = ":" + test_lib,
+            proc_macro_deps = dev_macros,
+            deps = dev_deps,
+            **test_kwargs(lib + "_lib_test")
+        )
+
+    for bin, root in crate["bins"].items():
+        rust_binary(
+            name = bin,
+            srcs = srcs,
+            compile_data = src_data,
+            crate_features = features,
+            crate_root = root,
+            proc_macro_deps = macros,
+            visibility = visibility,
+            deps = ([":" + lib] if lib else []) + normal_deps,
+            **common
+        )
+        _test(
+            name = bin + "_bin_test",
+            srcs = srcs,
+            crate_features = features,
+            crate_name = bin.replace("-", "_"),
+            crate_root = root,
+            proc_macro_deps = macros + dev_macros,
+            deps = ([":" + test_lib] if lib else []) + test_normal_deps + dev_deps,
+            **test_kwargs(bin + "_bin_test")
+        )
+
+    test_srcs = native.glob(["tests/**/*.rs"], allow_empty = True)
+    for name, root in crate["tests"].items():
+        _test(
+            name = name,
+            srcs = test_srcs,
+            crate_features = features,
+            crate_name = name.replace("-", "_"),
+            crate_root = root,
+            proc_macro_deps = macros + dev_macros,
+            deps = ([":" + test_lib] if lib else []) + test_normal_deps + dev_deps,
+            **test_kwargs(name, integration = True)
+        )
+
+def _test(name, **kwargs):
+    """A rust_test with this workspace's defaults."""
+    rust_test(
+        name = name,
+        # Bazel's default is five minutes; a loaded developer machine needs
+        # more for the largest suites. CI sets its own (.bazelrc, ci).
+        timeout = "long",
+        **kwargs
+    )

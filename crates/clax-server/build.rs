@@ -4,7 +4,9 @@
 
 fn main() {
     println!("cargo::rerun-if-env-changed=CLAX_WEB_DIST_DIR");
-    let dir = std::env::var("CLAX_WEB_DIST_DIR")
-        .unwrap_or_else(|_| format!("{}/../../web/dist/", env!("CARGO_MANIFEST_DIR")));
+    let dir = std::env::var("CLAX_WEB_DIST_DIR").unwrap_or_else(|_| {
+        let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("set by the build tool");
+        format!("{manifest}/../../web/dist/")
+    });
     println!("cargo::rustc-env=CLAX_WEB_DIST_DIR={dir}");
 }

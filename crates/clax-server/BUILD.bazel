@@ -1,0 +1,28 @@
+load("//bazel:cargo.bzl", "cargo_package")
+
+cargo_package(
+    build_script_data = ["//web:dist"],
+    # The web UI the library embeds (src/routes/shell.rs).
+    build_script_env = {"CLAX_WEB_DIST_DIR": "$(execpath //web:dist)"},
+    compile_data = [
+        "//web:contract_bin",
+        "//web:dist",
+        "//web:shell_cases_bin",
+    ],
+    test_compile_data = [
+        "//crates/clax-core:toolpath_vectors",
+        "//web:contract_files",
+        "//web:shell_cases",
+    ],
+)
+
+# The people fixture clax-cli's tests share (crates/clax-cli/tests/common),
+# and the routes' source it reads.
+filegroup(
+    name = "test_people",
+    srcs = [
+        "src/routes/mod.rs",
+        "tests/common/people.rs",
+    ],
+    visibility = ["//crates/clax-cli:__pkg__"],
+)

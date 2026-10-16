@@ -1,0 +1,16 @@
+load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
+
+# The plugin wrapper clax embeds (crates/clax-cli/src/plugin_bin.rs).
+exports_files(
+    ["ensure-clax.sh"],
+    visibility = ["//crates:__subpackages__"],
+)
+
+# A crate whose compile inputs include a generated directory has its sources
+# placed in bazel-bin by rules_rust, so its include_str!s of files outside
+# the crate resolve there: these are those files, copied beside it.
+copy_to_bin(
+    name = "ensure_clax_bin",
+    srcs = ["ensure-clax.sh"],
+    visibility = ["//crates:__subpackages__"],
+)

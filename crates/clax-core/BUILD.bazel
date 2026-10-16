@@ -1,0 +1,13 @@
+load("//bazel:cargo.bzl", "cargo_package")
+
+cargo_package(
+    build_script_data = ["//web:extension_key"],
+    compile_data = ["//web:extension/manifest.json"] + glob(["tests/toolpath/**"]),
+)
+
+# The tool path test vectors other crates' tests read.
+filegroup(
+    name = "toolpath_vectors",
+    srcs = glob(["tests/toolpath/**"]),
+    visibility = ["//visibility:public"],
+)

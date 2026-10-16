@@ -12,7 +12,8 @@
 use std::path::Path;
 
 fn main() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/extension/key");
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("set by the build tool");
+    let dir = Path::new(&manifest).join("../../web/extension/key");
     println!("cargo::rerun-if-changed={}", dir.display());
     if let Ok(text) = std::fs::read_to_string(dir.join("key.pub.b64")) {
         let text = text.trim();

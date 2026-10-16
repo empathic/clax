@@ -1,0 +1,43 @@
+load("//bazel:cargo.bzl", "cargo_package")
+load("//bazel:warm.bzl", "warm_binary")
+
+EMBEDDED = [
+    "//:marketplaces",
+    "//plugins:embedded",
+    "//plugins/pi:embedded",
+]
+
+cargo_package(
+    build_script_data = EMBEDDED + ["//web:dist_extension"],
+    # The extension build and the plugin trees the binary embeds
+    # (src/extension_files.rs, src/plugins.rs): Bazel's copies.
+    build_script_env = {
+        "CLAX_EXTENSION_DIST_DIR": "$(execpath //web:dist_extension)",
+        "CLAX_PLUGINS_DIR": "$${pwd}/$(BINDIR)/plugins",
+    },
+    # The plugin trees and other files the sources include, beside them in
+    # bazel-bin, where rules_rust places sources that compile with
+    # generated files.
+    compile_data = [
+        "//:marketplaces_bin",
+        "//plugins:embedded_bin",
+        "//plugins/pi:embedded_bin",
+        "//scripts:ensure_clax_bin",
+        "//web:dist_extension",
+        "//web:shell_cases_bin",
+    ],
+    test_compile_data = [
+        "//crates/clax-server:test_people",
+        "//scripts:ensure-clax.sh",
+    ],
+)
+
+# The binary, run once before any test runs it (bazel/warm.bzl).
+warm_binary(
+    name = "clax_warm",
+    binary = ":clax",
+    visibility = ["//visibility:public"],
+)
+# Its lints, which scripts/bazel-test.sh hands to clippy for this crate's
+# targets, as Cargo reads it from beside Cargo.toml.
+exports_files(["clippy.toml"])
