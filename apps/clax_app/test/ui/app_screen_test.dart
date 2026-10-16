@@ -2571,6 +2571,56 @@ void main() {
       expect(find.text('Launcher'), findsOneWidget);
       expect(toast(), findsNothing);
     });
+
+    testWidgets('leaving the app screen puts away only the toast, not one '
+        'queued behind it', (tester) async {
+      final rig = await pumpScreen(tester, pushed: true);
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      rig.surface.push(const NewerMsg(4));
+      await tester.pump();
+      expect(toast(), findsOneWidget);
+      tester
+          .state<ScaffoldMessengerState>(find.byType(ScaffoldMessenger))
+          .showSnackBar(const SnackBar(content: Text('Saved elsewhere')));
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.text('Launcher'), findsOneWidget);
+      expect(toast(), findsNothing);
+      expect(find.text('Saved elsewhere'), findsOneWidget);
+    });
+
+    testWidgets('leaving the app screen leaves a toast that took the '
+        'toast\'s place, and the toast queued behind it never shows', (
+      tester,
+    ) async {
+      final rig = await pumpScreen(tester, pushed: true);
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      rig.surface.push(const NewerMsg(4));
+      await tester.pump();
+      expect(toast(), findsOneWidget);
+      tester.state<ScaffoldMessengerState>(find.byType(ScaffoldMessenger))
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          const SnackBar(
+            content: Text('Saved elsewhere'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      // The toast waits behind it.
+      await tester.pumpAndSettle(const Duration(milliseconds: 100));
+      expect(find.text('Saved elsewhere'), findsOneWidget);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.text('Launcher'), findsOneWidget);
+      expect(find.text('Saved elsewhere'), findsOneWidget);
+      // It fades; the toast that waited behind it does not come up.
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pumpAndSettle();
+      expect(find.text('Saved elsewhere'), findsNothing);
+      expect(toast(), findsNothing);
+    });
   });
 
   group('back goes back in the app first', () {

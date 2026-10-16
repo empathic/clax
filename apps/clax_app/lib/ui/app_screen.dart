@@ -349,6 +349,10 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   int? _newer;
   int? _newerShown;
 
+  /// The New version toast in the messenger, up or queued, while it is
+  /// there.
+  _NewerToast? _newerToast;
+
   // The panel.
   var _open = false;
   var _tab = PanelTab.threads;
@@ -573,7 +577,6 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     super.didChangeDependencies();
     // ModalRoute.of rebuilds this when the route stops or starts being on top.
     _routeCurrent = ModalRoute.of(context)?.isCurrent ?? true;
-    _messenger = ScaffoldMessenger.maybeOf(context);
     _tellVisible();
   }
 
@@ -795,7 +798,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         // The composer takes the bottom of the screen: a showing offer waits.
         if (picked && _newerShown != null) {
           _newerShown = null;
-          ScaffoldMessenger.maybeOf(context)?.hideCurrentSnackBar();
+          _newerToast?.putAway(now: false);
+          _newerToast = null;
         }
         // The shell turns comment mode back on when a composer closes; with
         // the panel and the bar closed meanwhile, it stays off.
@@ -1312,10 +1316,17 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     if (messenger == null) return;
     _newerShown = v;
     if (!queued) messenger.hideCurrentSnackBar();
+    final toast = _newerToast = _NewerToast(messenger);
     final shown = messenger.showSnackBar(
       SnackBar(
         key: const ValueKey('newer-toast'),
-        content: const Text('New version ready'),
+        // The messenger builds only the snack bar that is up.
+        content: Builder(
+          builder: (_) {
+            toast.comesUp();
+            return const Text('New version ready');
+          },
+        ),
         duration: newerFor,
         persist: false,
         behavior: SnackBarBehavior.floating,
@@ -1327,6 +1338,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     );
     unawaited(
       shown.closed.then((reason) {
+        toast.closed = true;
+        if (identical(_newerToast, toast)) _newerToast = null;
         if (!mounted || _newerShown != v) return;
         _newerShown = null;
         if (reason == SnackBarClosedReason.hide ||
@@ -1339,26 +1352,22 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     );
   }
 
-  /// The app's messenger, kept to put the toast away as the screen goes.
-  ScaffoldMessengerState? _messenger;
-
   /// The screen is left, covered or gone: a showing or queued New version
   /// toast goes with it (the messenger is the app's, and would keep it over
   /// the launcher); it is offered again when the screen is back in front.
   /// The toast goes after this frame (the screen may be building), at
-  /// once with no animation that would outlive the screen, and the toasts
-  /// queued behind it with it; unless it was offered again meanwhile.
+  /// once with no animation that would outlive the screen; one queued
+  /// behind another toast goes as it comes up. Other toasts, up or queued,
+  /// stay.
   void _putAwayNewer() {
     if (_newerShown == null) return;
     _newerShown = null;
-    final m = _messenger;
-    if (m == null) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!m.mounted || _newerShown != null) return;
-      m
-        ..removeCurrentSnackBar()
-        ..clearSnackBars();
-    });
+    final toast = _newerToast;
+    _newerToast = null;
+    if (toast == null) return;
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => toast.putAway(now: true),
+    );
   }
 
   /// The page shows the offered version (or a newer one): the offer ends.
@@ -1366,7 +1375,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     _newer = null;
     if (_newerShown == null) return;
     _newerShown = null;
-    ScaffoldMessenger.maybeOf(context)?.hideCurrentSnackBar();
+    _newerToast?.putAway(now: false);
+    _newerToast = null;
   }
 
   // --- the panel ---
@@ -2011,5 +2021,45 @@ class LocationPill extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// A New version toast in [messenger]: whether it is up (the messenger has
+/// built it) or closed, so putting it away touches only it, never another
+/// toast that is up or queued.
+class _NewerToast {
+  _NewerToast(this.messenger);
+
+  final ScaffoldMessengerState messenger;
+  var up = false;
+  var closed = false;
+  var gone = false;
+  var goneNow = false;
+
+  /// The messenger built it: it is the snack bar up. Put away while it
+  /// waited, it goes at once.
+  void comesUp() {
+    up = true;
+    if (gone) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _remove(goneNow));
+    }
+  }
+
+  /// Takes it down if it is up ([now]: with no animation), or makes it go
+  /// as it comes up.
+  void putAway({required bool now}) {
+    if (closed || gone) return;
+    gone = true;
+    goneNow = now;
+    if (up) _remove(now);
+  }
+
+  void _remove(bool now) {
+    if (closed || !messenger.mounted) return;
+    if (now) {
+      messenger.removeCurrentSnackBar();
+    } else {
+      messenger.hideCurrentSnackBar();
+    }
   }
 }
