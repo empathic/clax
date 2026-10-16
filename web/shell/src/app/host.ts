@@ -18,9 +18,12 @@
 //   welcome only. A pinned view (an earlier version) is offered nothing.
 // - The app's own history (`history {back}`, `back()`): the pages and
 //   fragments the page moved through in this document (its links and its
-//   `#route`s), newest last, at most `TRAIL_MAX`. `back()` moves the frame to
-//   the one before in place, without a history entry, as the shell's own
-//   back and forward do; a version swap keeps them. `history` is posted
+//   `#route`s), and the routes it pushed with `history.pushState` (the
+//   bridge's `clax:route`), newest last, at most `TRAIL_MAX`. `back()` moves
+//   the frame to the one before in place, without a history entry, as the
+//   shell's own back and forward do: to a route before, by the bridge's
+//   `clax:back`. A version swap keeps the pages and fragments; a
+//   page's routes go with its document. `history` is posted
 //   whenever whether there is one to go back to changes, and at `init`.
 // - Send: the composer's primary button posts the thread and sends it to the
 //   agent (`sendTo`), in one press. A send that fails leaves the thread
@@ -445,10 +448,13 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
 
   // The page's last reported scroll position, per page.
   const scrolled = new Map<string, number>();
-  // The app's own history: the pages and fragments the page showed in this
-  // document, newest last, and whether `history` last said there is one to
-  // go back to.
-  let trail: { file: string; hash: string }[] = [];
+  // The app's own history: the pages, fragments and pushState routes the
+  // page showed in this document, newest last, and whether `history` last
+  // said there is one to go back to. `route` is the depth of the page's
+  // route (its pushes above the entry it loaded at, 0 for none) and `depth`
+  // the one the frame's document shows.
+  let trail: { file: string; hash: string; route: number }[] = [];
+  let depth = 0;
   let toldBack: boolean | null = null;
   const postHistory = () => {
     const back = trail.length > 1;
@@ -461,9 +467,25 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   const visit = (file: string, hash: string) => {
     if (inspecting) return;
     const top = trail.at(-1);
-    if (top && top.file === file && top.hash === hash) return;
-    trail = [...trail, { file, hash }].slice(-TRAIL_MAX);
+    if (top && top.file === file && top.hash === hash && top.route === depth) return;
+    trail = [...trail, { file, hash, route: depth }].slice(-TRAIL_MAX);
     postHistory();
+  };
+  /** A document greeted: the routes of the one before cannot be returned
+   * to, so they leave the trail. */
+  const newDocument = () => {
+    depth = 0;
+    trail = trail.filter(e => e.route === 0);
+  };
+  /** The page moved to its route at `to` (a push, or its own back or
+   * forward): the routes above it leave the trail, and a new one is an
+   * entry. */
+  const route = (file: string, to: number, hash: string) => {
+    if (inspecting) return;
+    depth = to;
+    while (trail.length > 1 && trail.at(-1)!.route > to) trail = trail.slice(0, -1);
+    postHistory();
+    visit(file, hash);
   };
   /** Moves the frame to the entry before the newest, in place: the shell URL
    * is replaced and the controller's own back (`popstate`) moves the frame,
@@ -471,9 +493,14 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
    * page takes in place. */
   const goBack = () => {
     if (trail.length < 2) return;
+    const from = trail.at(-1)!;
     trail = trail.slice(0, -1);
     const to = trail.at(-1)!;
     postHistory();
+    if (from.route > to.route) {
+      depth = to.route;
+      if (ctl.gate.open) ctl.send({ type: "clax:back", depth: to.route });
+    }
     setUrl(shellPath(ctl.id, s().pinnedVersion, to.file, ctl.shown()) + appQuery(location.search) + to.hash);
     win.dispatchEvent(new PopStateEvent("popstate"));
   };
@@ -506,6 +533,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     // A page greeted (each document the frame loads): `ready`, and `landed`
     // once the version auto-follow loaded greets.
     welcome: file => {
+      newDocument();
       visit(file, ctl.frameHash);
       const version = ctl.shown();
       ready = { type: "ready", artifact: ctl.id, version, latest: ctl.latest(), file };
@@ -676,6 +704,11 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     if (m?.type === "clax:hash" && typeof m.hash === "string" && validHash(m.hash)) {
       const file = s().file;
       if (file !== null) visit(file, m.hash);
+      return;
+    }
+    if (m?.type === "clax:route" && Number.isInteger(m.depth) && m.depth >= 0 && typeof m.hash === "string" && validHash(m.hash)) {
+      const file = s().file;
+      if (file !== null) route(file, m.depth, m.hash);
       return;
     }
     if (m?.type === "clax:pick-start" && typeof m.pickId === "string" && m.desc) {

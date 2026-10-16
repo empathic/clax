@@ -2,7 +2,7 @@
 // app that hosts it, messages to the app's channel (`window.ClaxHost`), Send,
 // a newer version, published or restored, offered to the app and swapped in
 // place on its reloadLatest with the page's documents and scroll kept, and
-// the app's own history of pages and fragments. The app's side is ./app-host.ts.
+// the app's own history of pages, fragments and pushState routes. The app's side is ./app-host.ts.
 import { type CDPSession, type Frame, type Locator, type Page } from "@playwright/test";
 import { hostChannel, host, initHost, NONCE, noFrames, ofType, toHost } from "./app-host";
 import { test, expect, type Daemon, api, contentFrame, publishAs, publishNext, record, registerSession, streamLive } from "./fixtures";
@@ -329,3 +329,50 @@ test("back() moves through the app's own fragments and pages in place, and acros
   await expect.poll(() => index.evaluate(() => location.hash)).toBe("");
   await expect.poll(back).toBe(false);
 });
+
+test("back() returns a page that routes with pushState to its routes before, in place, and follows the page's own back", async ({ page }) => {
+  const ROUTER = `<!doctype html><title>R</title><h1 id=view></h1><button id=go>next</button><button id=own>own back</button><script>
+const show = () => { document.getElementById("view").textContent = location.pathname.split("/").filter(Boolean).at(-1) + ":" + JSON.stringify(history.state); };
+let n = 0;
+document.getElementById("go").onclick = () => { n++; history.pushState({ n }, "", "run-" + n); show(); };
+document.getElementById("own").onclick = () => history.back();
+addEventListener("popstate", show);
+show();
+</script>`;
+  const s = await registerSession(d.base, d.token, "app");
+  const { artifact } = await publishAs(d.base, d.token, s.id, "Router", { "index.html": ROUTER });
+  const id = artifact.id;
+  await hostChannel(page);
+  await record(page);
+  await page.goto(`${d.base}/a/${id}?app=1`);
+  const f = await contentFrame(page, id, 1);
+  await initHost(page);
+  await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
+  const back = async () => (await ofType(page, "history")).at(-1)?.back;
+  const view = f.locator("#view");
+  const start = await view.textContent();
+  expect(start).toMatch(/:null$/);
+  expect(await back()).toBe(false);
+  // The routes report once the app's part has loaded with the welcome and
+  // taken over the page's pushState.
+  await expect.poll(() => f.evaluate(() => !String(history.pushState).includes("[native code]"))).toBe(true);
+  await f.locator("#go").click();
+  await expect.poll(back).toBe(true);
+  await f.locator("#go").click();
+  const top = await view.textContent();
+  await f.locator("#go").click();
+  // The page's own back: the app's history follows it.
+  await f.locator("#own").click();
+  // The shell hears where the page went before the app's back.
+  await expect.poll(() => page.evaluate(() => (window as unknown as { claxMsgs: { type: string; depth?: number }[] }).claxMsgs.filter(m => m.type === "clax:route").at(-1)?.depth)).toBe(2);
+  await expect(view).toHaveText(top!);
+  // The app's back: the route before, in place, with its state.
+  await host(page, "back()");
+  await expect(view).not.toHaveText(top!);
+  await expect(view).toHaveText(/^run-\d+:\{"n":\d+\}$/);
+  // Back to where the page loaded, then out of the app.
+  for (let i = 0; i < 10 && await back(); i++) await host(page, "back()");
+  await expect(view).toHaveText(start!);
+  await expect.poll(back).toBe(false);
+});
+

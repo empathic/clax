@@ -99,6 +99,11 @@ export type ShellToBridge =
    * after a load that brought no hello, which in Chromium can come with no
    * new document (Back or Forward across the page's own fragments). */
   | { type: "clax:greet" }
+  /** After a welcome with `app: true`: return to the page's route at
+   * `depth` (below the one it shows, as its `clax:route` reported) in place,
+   * replacing its history entry, with a `popstate` the page's router
+   * follows. */
+  | { type: "clax:back"; depth: number }
   /** `sameVersion`: the thread was made on the version the frame shows (an
    * area's element fingerprint is then not checked: its content may be live). */
   /** `highlight`: an open thread, whose quote the page highlights while its anchor resolves to text. */
@@ -222,6 +227,11 @@ export type BridgeToShell =
    * the last position of a burst always sent; only the app shell reads it
    * (`web/shell/src/app/host.ts`). */
   | { type: "clax:scroll"; file: string; y: number }
+  /** The page moved among its own `history.pushState` routes, after a
+   * welcome with `app: true` (`routes.ts`): `depth` is the number of the
+   * page's pushes above the entry it loaded at, `hash` its fragment; only the
+   * app shell reads it, for its back. */
+  | { type: "clax:route"; depth: number; hash: string }
   /** The answer to `clax:inspect` (`inspect.ts`): the viewport as a PNG,
    * the page's errors and failed loads, an outline of its text, its title
    * and height; or why there is none. The page can post this too, so the
@@ -238,5 +248,5 @@ export type BridgeToShell =
   | UseRequest
   | CallRequest;
 
-export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:hash", "clax:greet", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:inspect", "clax:test", "clax:migrate", "clax:peers", "clax:use-result", "clax:call-result", "clax:event"]);
-export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:cursor", "clax:peer-at", "clax:scroll", "clax:inspection", "clax:tests", "clax:migration", "clax:use", "clax:call"]);
+export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:hash", "clax:greet", "clax:back", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:inspect", "clax:test", "clax:migrate", "clax:peers", "clax:use-result", "clax:call-result", "clax:event"]);
+export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:cursor", "clax:peer-at", "clax:scroll", "clax:route", "clax:inspection", "clax:tests", "clax:migration", "clax:use", "clax:call"]);
