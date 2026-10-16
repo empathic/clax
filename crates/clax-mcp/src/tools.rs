@@ -1,4 +1,4 @@
-//! The Clax MCP tool set: twenty-eight tools that call the daemon's REST API.
+//! The Clax MCP tool set: twenty-nine tools that call the daemon's REST API.
 
 use crate::client::{ClientError, DaemonClient};
 use crate::render;
@@ -2765,6 +2765,7 @@ direct_tools!(
     comments_read,
     comments_reply,
     comments_resolve,
+    comments_handoff,
     watch,
     wait_for_feedback,
     working,
@@ -3413,10 +3414,11 @@ mod tests {
         }
     }
 
-    /// Spec §16: twenty-five tools, `comments_handoff` among them.
+    /// Twenty-nine tools, `comments_handoff` (spec 2026-10-08 §16) among
+    /// them.
     #[test]
-    fn tool_count_is_25() {
-        assert_eq!(ClaxTools::tool_count(), 25);
+    fn tool_count_is_29() {
+        assert_eq!(ClaxTools::tool_count(), 29);
         assert!(
             ClaxTools::tools()
                 .iter()
