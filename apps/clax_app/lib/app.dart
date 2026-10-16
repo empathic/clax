@@ -73,7 +73,9 @@ import 'ui/host_protocol.dart'
         LoadVersion,
         OpenRoute,
         OpenThread,
+        QuestionsMsg,
         Ready,
+        StateMsg,
         ThreadsMsg;
 import 'ui/inspector_surface.dart';
 import 'ui/launcher.dart';
@@ -666,6 +668,11 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
 
   /// The version of the home app's page last loaded.
   int? _homeVersion;
+
+  /// Whether the home app's page shows comment mode, a composer or the
+  /// questions sheet: none of it goes in a snapshot.
+  var _homeCommenting = false;
+  var _homeQuestions = false;
 
   /// Whether the built-in home screen was chosen when last looked at.
   var _builtinChosen = false;
@@ -2077,6 +2084,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           final aid = host.settings.homeAppId;
           final surface = _homeSurface;
           if (aid == null ||
+              _homeCommenting ||
+              _homeQuestions ||
               host.settings.builtin ||
               host.tiles == null ||
               _homeCovered ||
@@ -2103,10 +2112,19 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   }
 
   /// Follows the home app [aid]'s page on [surface]: each document it
-  /// loads forgets the tiles of the one before.
+  /// loads forgets the tiles of the one before; while it shows comment
+  /// mode, a composer or the questions sheet, no snapshot is taken.
   AppSurface _watchHomePage(String aid, AppSurface surface) {
     unawaited(_homePage?.cancel());
     _homePage = surface.messages.listen((m) {
+      switch (m) {
+        case StateMsg(:final commenting, :final draft):
+          _homeCommenting = commenting || draft != null;
+        case QuestionsMsg(:final showing):
+          _homeQuestions = showing;
+        case _:
+          break;
+      }
       if (m case Ready(:final artifact, :final version) when artifact == aid) {
         _homeVersion = version;
         _homeHost?.pageLoaded();
@@ -2273,8 +2291,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   }
 }
 
-/// Calls [onCover] when a screen is pushed over the first one (the home
-/// screen).
+/// Calls [onCover] when a screen (not a sheet or a dialog) is pushed over
+/// the first one (the home screen).
 class _HomeCoverWatch extends NavigatorObserver {
   _HomeCoverWatch(this.onCover);
 
@@ -2282,6 +2300,8 @@ class _HomeCoverWatch extends NavigatorObserver {
 
   @override
   void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    // A sheet or a dialog over the home screen is no cover.
+    if (route is PopupRoute) return;
     if (previousRoute != null && previousRoute.isFirst) onCover();
   }
 }

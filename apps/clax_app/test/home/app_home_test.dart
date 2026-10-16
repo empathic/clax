@@ -4,11 +4,13 @@ import 'package:clax_app/agent/prompt.dart';
 import 'package:clax_app/agent/timings.dart';
 import 'package:clax_app/app.dart';
 import 'package:clax_app/clax/fake_api.dart';
+import 'package:clax_app/daemon/clock.dart';
 import 'package:clax_app/daemon/supervisor.dart';
 import 'package:clax_app/home/home_settings.dart';
 import 'package:clax_app/home/home_snapshot.dart';
 import 'package:clax_app/platform/secure_key.dart';
 import 'package:clax_app/platform/settings_store.dart';
+import 'package:clax_app/ui/app_surface.dart';
 import 'package:clax_app/ui/comment_bar.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:flutter/material.dart';
@@ -21,6 +23,30 @@ import '../support/fake_surface.dart';
 import '../support/fake_voice.dart';
 
 const _page = {'index.html': '<h1>x</h1>'};
+
+/// A page whose image can be taken; it counts the takes.
+class _ShotSurface extends FakeAppSurface implements CapturableSurface {
+  var shots = 0;
+
+  @override
+  Future<SurfaceShot?> capture() async {
+    shots++;
+    return (png: Uint8List.fromList([1, 2]), width: 800.0, height: 600.0);
+  }
+}
+
+/// The test's fake time for delays, at a time the test moves.
+class _Clock implements Clock {
+  var _t = Duration.zero;
+
+  @override
+  DateTime now() => DateTime.utc(2026, 10, 16).add(_t);
+
+  @override
+  Future<void> delay(Duration d) => Future<void>.delayed(d);
+
+  void advance(Duration d) => _t += d;
+}
 
 class _Key implements SecureKey {
   @override
@@ -69,28 +95,33 @@ void main() {
   });
   tearDown(() => dir.deleteSync(recursive: true));
 
-  AppServices services({HomeSnapshot? snapshot, HomeSnapshotStore? store}) =>
-      AppServices(
-        supervisor: supervisor,
-        api: (_) => api,
-        backend: (s, k) => HeldBackend([], name: backendMessagesApi),
-        voice: FakeVoice.unsupported('No speech here'),
-        settings: SettingsStore(File('${dir.path}/settings.json')),
-        key: _Key(),
-        timings: timings,
-        agentTimings: RecordingTimings(),
-        surface: (_) {
-          final s = FakeAppSurface();
-          surfaces.add(s);
-          return s;
-        },
-        installId: 'install',
-        supportDir: dir.path,
-        prompts: PromptBuilder(rootBundle),
-        homeSnapshot: snapshot,
-        homeSnapshots: store,
-        pid: 42,
-      );
+  AppServices services({
+    HomeSnapshot? snapshot,
+    HomeSnapshotStore? store,
+    Clock clock = const SystemClock(),
+    bool shots = false,
+  }) => AppServices(
+    clock: clock,
+    supervisor: supervisor,
+    api: (_) => api,
+    backend: (s, k) => HeldBackend([], name: backendMessagesApi),
+    voice: FakeVoice.unsupported('No speech here'),
+    settings: SettingsStore(File('${dir.path}/settings.json')),
+    key: _Key(),
+    timings: timings,
+    agentTimings: RecordingTimings(),
+    surface: (_) {
+      final s = shots ? _ShotSurface() : FakeAppSurface();
+      surfaces.add(s);
+      return s;
+    },
+    installId: 'install',
+    supportDir: dir.path,
+    prompts: PromptBuilder(rootBundle),
+    homeSnapshot: snapshot,
+    homeSnapshots: store,
+    pid: 42,
+  );
 
   Future<void> recordHome(WidgetTester tester) => tester.runAsync(
     () => (HomeSettings.loadSync(Directory(dir.path))..homeAppId = home).save(),
@@ -100,9 +131,15 @@ void main() {
   Future<FakeAppSurface> start(
     WidgetTester tester, {
     HomeSnapshotStore? store,
+    Clock clock = const SystemClock(),
+    bool shots = false,
   }) async {
     await recordHome(tester);
-    await tester.pumpWidget(AppRoot(services: services(store: store)));
+    await tester.pumpWidget(
+      AppRoot(
+        services: services(store: store, clock: clock, shots: shots),
+      ),
+    );
     supervisor.set(Up(endpoint()));
     await _settle(tester);
     final page = surfaces.single;
@@ -319,6 +356,84 @@ void main() {
     await tester.runAsync(() async {
       await Future<void>.delayed(const Duration(milliseconds: 20));
       expect(await store.load(decode: false), isNull);
+    });
+    await _finish(tester);
+  });
+
+  testWidgets('no snapshot is taken in comment mode, nor when a sheet opens '
+      'over home; a screen over home takes one', (tester) async {
+    final clock = _Clock();
+    final store = HomeSnapshotStore(Directory('${dir.path}/cache'));
+    final page = await start(
+      tester,
+      store: store,
+      clock: clock,
+      shots: true,
+    ) as _ShotSurface;
+    page.push(
+      const DeviceRequest(id: 's', cap: 'home', method: 'shown', args: []),
+    );
+    page.push(
+      DeviceRequest(
+        id: 't',
+        cap: 'home',
+        method: 'tiles',
+        args: [
+          {
+            'tiles': [
+              {
+                'id': notes,
+                'rect': {'x': 0, 'y': 0, 'w': 10, 'h': 10},
+              },
+            ],
+          },
+        ],
+      ),
+    );
+    await _settle(tester);
+    clock.advance(const Duration(seconds: 1));
+    Future<void> cover() async {
+      page.push(
+        const DeviceRequest(
+          id: 'o',
+          cap: 'home',
+          method: 'openSettings',
+          args: [],
+        ),
+      );
+      await _settle(tester);
+      Navigator.of(tester.element(find.text('Settings').first)).pop();
+      await _settle(tester);
+    }
+
+    page.push(const StateMsg(commenting: true, draft: null, busy: false));
+    await cover();
+    expect(page.shots, 0, reason: 'in comment mode');
+    page.push(const StateMsg(commenting: false, draft: null, busy: false));
+
+    page.push(
+      DeviceRequest(
+        id: 'm',
+        cap: 'home',
+        method: 'menu',
+        args: [
+          {
+            'id': notes,
+            'rect': {'x': 0, 'y': 0, 'w': 10, 'h': 10},
+          },
+        ],
+      ),
+    );
+    await _settle(tester);
+    expect(page.shots, 0, reason: 'a sheet is no cover');
+    await tester.tapAt(const Offset(5, 5));
+    await _settle(tester);
+
+    await cover();
+    expect(page.shots, 1);
+    await tester.runAsync(() async {
+      await Future<void>.delayed(Duration.zero);
+      expect((await store.load(decode: false))?.tiles.single.id, notes);
     });
     await _finish(tester);
   });
