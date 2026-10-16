@@ -477,44 +477,46 @@ def seed_inbox(port, token, cfg, made, sessions, client):
     always by the same agent, and publish versions of those artifacts
     addressing them, 20 requests in flight;
     agents ask questions. Replies are spread over many threads because each
-    reply's response carries its whole thread."""
+    reply's response carries its whole thread. Each thread's replies and
+    versions come from the session that published its artifact: a thread
+    an agent has taken refuses every other agent's reply (thread_taken)."""
     c = Client(port, token)
     st, d, _, _ = c.req("GET", "/api/viewers/me", headers=owner_cookie(port, token), auth=False)
     expect(st == 200, f"no owner viewer: {st} {d[:200]!r}")
     n_threads = cfg["inbox_threads"]
     expect(len(made) >= 10 + n_threads, "too few artifacts for the inbox threads")
     threads = []
-    for aid, tids in made[10:10 + n_threads]:
+    for j, (aid, tids) in enumerate(made[10:10 + n_threads], start=10):
         tid = tids[0]
+        owner = sessions[j % len(sessions)]
         st, d, _, _ = c.req("POST", f"/api/artifacts/{aid}/threads/{tid}/comments", {"body": "please fix the header"})
         expect(st == 201, f"owner comment: {st} {d[:200]!r}")
         st, d, _, _ = c.req("POST", f"/api/artifacts/{aid}/threads/{tid}/send", {})
         expect(st == 200, f"send: {st} {d[:200]!r}")
-        threads.append((aid, tid))
+        threads.append((aid, tid, owner))
 
     # Each thread's replies and versions come from one agent, the thread's
     # own: another agent of the owner's may not reply to a thread the first
     # took (409 `thread_taken`, spec 2026-10-08-multi-agent-multi-person §19
     # item 4).
     def reply(k):
-        i = k % len(threads)
-        aid, tid = threads[i]
+        aid, tid, owner = threads[k % len(threads)]
         st, d, _, _ = client().req("POST", f"/api/artifacts/{aid}/threads/{tid}/comments",
                                    {"body": f"note {k} about the header", "author_kind": "agent"},
-                                   {"x-clax-session": sessions[i % len(sessions)]})
+                                   {"x-clax-session": owner})
         expect(st == 201, f"agent reply: {st} {d[:200]!r}")
 
     per = cfg["inbox_versions"] // len(threads)
 
     def versions(i):
-        aid, tid = threads[i]
+        aid, tid, owner = threads[i]
         cl = client()
         for n in range(1, per + 1):
             st, d, _, _ = cl.req("POST", f"/api/artifacts/{aid}/versions",
                                  {"if_version": n, "note": f"header pass {n}", "addresses": [tid],
                                   "files": {"index.html": {"content": f"<main><h2>Quarterly goals</h2><p>{n}</p></main>",
                                                            "encoding": "utf8"}}},
-                                 {"x-clax-session": sessions[i % len(sessions)]})
+                                 {"x-clax-session": owner})
             expect(st == 201, f"version: {st} {d[:200]!r}")
 
     with ThreadPoolExecutor(20) as ex:
