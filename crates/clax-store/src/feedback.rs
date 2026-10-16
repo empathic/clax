@@ -1450,6 +1450,7 @@ impl Store {
                 version: p.version_n,
                 anchor,
                 clip_path,
+                clip: None,
                 author: p.author,
                 via_page: p.via_page,
                 body: p.body,
@@ -3853,7 +3854,7 @@ mod delivery {
         // A local agent reads the clip's file, where the content is files;
         // content kept in memory (a Durable Object's) has no file to name.
         let path = mine[0].clip_path.clone();
-        if crate::store::test_util::on_one_connection() {
+        if crate::test_util::on_one_connection() {
             assert_eq!(path, None);
         } else {
             let path = path.unwrap();

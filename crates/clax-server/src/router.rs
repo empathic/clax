@@ -470,6 +470,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .merge(api_slow)
         .merge(shell_routes)
         .route("/_blob/{asset_id}", get(assets::blob))
+        .route("/_clip/{aid}/{tid}", get(threads::keyed_clip))
         .route("/connect/b/{code}", get(connect::browser_link))
         .route("/c/{aid}/v/{n}", get(content::redirect_to_slash))
         .route("/c/{aid}/v/{n}/", get(content::index))

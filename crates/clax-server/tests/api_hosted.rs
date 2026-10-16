@@ -4444,14 +4444,14 @@ async fn with_the_public_gallery_off_no_one_lists_a_page() {
 
 impl Site {
     /// `b`'s `/api/stream`, as the shell opens it, subscribed to `topics`.
-    async fn stream(&self, b: &Browser, topics: &[&str]) -> clax_server::testing::EventReader {
+    async fn stream(&self, b: &Browser, topics: &[&str]) -> clax_testkit::EventReader {
         let res = self
             .req(b, reqwest::Method::GET, "/api/stream")
             .send()
             .await
             .unwrap();
         assert_eq!(res.status(), 200);
-        let mut events = clax_server::testing::EventReader::from_response(res);
+        let mut events = clax_testkit::EventReader::from_response(res);
         let sid = events.next_named("ready").await["stream"]
             .as_str()
             .unwrap()
@@ -4491,7 +4491,7 @@ fn ask_which(question: &str) -> Value {
 /// returns first fails the test with its result.
 async fn asked_while_waiting<F>(
     ask: &mut std::pin::Pin<&mut F>,
-    stream: &mut clax_server::testing::EventReader,
+    stream: &mut clax_testkit::EventReader,
 ) -> Value
 where
     F: std::future::Future<Output = (u16, Value)>,
@@ -4708,4 +4708,263 @@ async fn an_agent_tokens_feedback_links_the_public_origin() {
         "{text}"
     );
     assert!(!text.contains(&site.ts.base), "{text}");
+}
+
+impl Site {
+    /// A thread `b` starts on `aid` with clip `png`, as the shell does: its ID.
+    async fn thread_with_clip(&self, b: &Browser, aid: &str, body: &str, png: &[u8]) -> String {
+        let form = reqwest::multipart::Form::new()
+            .text("anchor", clax_testkit::element_anchor().to_string())
+            .text("body", body.to_string())
+            .text("version", "1")
+            .part(
+                "clip",
+                reqwest::multipart::Part::bytes(png.to_vec())
+                    .file_name("clip.png")
+                    .mime_str("image/png")
+                    .unwrap(),
+            );
+        let (s, t) = json_of(
+            self.req(
+                b,
+                reqwest::Method::POST,
+                &format!("/api/artifacts/{aid}/threads"),
+            )
+            .multipart(form)
+            .send()
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(s, 201, "{t}");
+        t["thread"]["id"].as_str().unwrap().to_string()
+    }
+
+    /// Sam's browser approves the owner's content for his agents.
+    async fn approve_owner(&self, owner: &Browser, sam: &Browser) {
+        let (_, me) = self.get(owner, "/api/viewers/me").await;
+        let owner_id = me["viewer"]["public_id"].as_str().unwrap().to_string();
+        let (s, v) = self
+            .post(
+                sam,
+                "/api/approvals",
+                json!({"author": owner_id, "scope": "everywhere"}),
+            )
+            .await;
+        assert!(s == 201 || s == 200, "{v}");
+    }
+}
+
+/// The image blocks of a tool result.
+fn images(r: &Value) -> Vec<Value> {
+    r["content"]
+        .as_array()
+        .map(|c| c.iter().filter(|b| b["type"] == "image").cloned().collect())
+        .unwrap_or_default()
+}
+
+/// A PNG signature and an `IHDR` chunk of `w` by `h` pixels.
+fn png_of(w: u32, h: u32) -> Vec<u8> {
+    let mut b = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+    b.extend(w.to_be_bytes());
+    b.extend(h.to_be_bytes());
+    b.extend(b"clax-test-clip");
+    b
+}
+
+#[tokio::test]
+async fn an_agent_tokens_agent_reads_a_clip_by_link_in_listings_and_as_an_image_in_its_thread() {
+    use base64::Engine as _;
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let budget = site.titled("Budget").await;
+    let (sam, _, agent, handle) = site.sam_with_agent(&owner, &budget, "clip-reader").await;
+    site.approve_owner(&owner, &sam).await;
+    let png = png_of(640, 480);
+    let tid = site
+        .thread_with_clip(&sam, &budget, "the totals overflow", &png)
+        .await;
+    // A listing names the clip by its keyed address and a note; it attaches
+    // no image, and names neither a path nor a clip reference.
+    let (_, r) = agent
+        .call("comments_read", json!({"url_or_id": budget}))
+        .await;
+    assert_eq!(tool_code(&r), "", "{r}");
+    assert!(images(&r).is_empty(), "{r}");
+    let listed = tool_json(&r);
+    let t = &listed["threads"][0];
+    assert_eq!(t["thread_id"], json!(tid), "{listed}");
+    assert_eq!(t["clip_path"], Value::Null, "{t}");
+    let url = t["clip"]["url"].as_str().expect("a clip url").to_string();
+    assert!(
+        url.starts_with(&format!("{}/_clip/{budget}/{tid}?k=", site.origin)),
+        "{url}"
+    );
+    assert_eq!(t["clip"]["note"], clax_core::clips::LINK_NOTE, "{t}");
+    assert!(!r.to_string().contains("clax-clip:"), "{r}");
+    // The address serves the PNG with no credential, cached as immutable;
+    // a wrong key, or none, reads nothing.
+    let res = site.ts.client.get(&url).send().await.unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.headers()["content-type"], "image/png");
+    let cache = res.headers()["cache-control"].to_str().unwrap().to_string();
+    assert!(cache.contains("immutable"), "{cache}");
+    assert_eq!(res.bytes().await.unwrap().as_ref(), png.as_slice());
+    let (bare, _) = url.split_once("?k=").unwrap();
+    for wrong in [format!("{bare}?k=00"), bare.to_string()] {
+        let res = site.ts.client.get(&wrong).send().await.unwrap();
+        assert_eq!(res.status(), 404, "{wrong}");
+    }
+    // Reading the one thread attaches the clip as an image.
+    let (_, r) = agent
+        .call(
+            "comments_read",
+            json!({"url_or_id": budget, "thread_id": tid}),
+        )
+        .await;
+    assert_eq!(tool_code(&r), "", "{r}");
+    let imgs = images(&r);
+    assert_eq!(imgs.len(), 1, "{r}");
+    assert_eq!(imgs[0]["mimeType"], "image/png");
+    assert_eq!(
+        imgs[0]["data"],
+        json!(base64::engine::general_purpose::STANDARD.encode(&png))
+    );
+    let one = tool_json(&r);
+    assert_eq!(one["threads"][0]["clip"]["url"], json!(url), "{one}");
+    assert_eq!(
+        one["threads"][0]["clip"]["note"],
+        clax_core::clips::ATTACHED_NOTE
+    );
+    // Sent to the agent, the comment's payload names the clip's address,
+    // never a reference it cannot resolve.
+    let (s, v) = site
+        .post(
+            &sam,
+            &format!("/api/artifacts/{budget}/threads/{tid}/send"),
+            json!({"to": handle}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (_, r) = agent
+        .call(
+            "wait_for_feedback",
+            json!({"url_or_id": budget, "timeout_s": 5}),
+        )
+        .await;
+    let text = r.to_string();
+    assert!(text.contains("the totals overflow"), "{r}");
+    assert!(!text.contains("clax-clip:"), "{r}");
+    let out = tool_json(&r);
+    let item = &out["feedback"][0];
+    assert_eq!(item["clip_path"], Value::Null, "{item}");
+    assert_eq!(item["clip"]["url"], json!(url), "{item}");
+    assert!(
+        text.contains(&format!("Clip: {url} (")),
+        "the payload's Clip line names the address: {r}"
+    );
+}
+
+#[tokio::test]
+async fn an_oversized_clip_is_noted_and_not_attached() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let budget = site.titled("Budget").await;
+    let (sam, _, agent, _) = site.sam_with_agent(&owner, &budget, "clip-reader").await;
+    site.approve_owner(&owner, &sam).await;
+    let side = clax_core::clips::INLINE_MAX_SIDE + 1;
+    let tid = site
+        .thread_with_clip(&sam, &budget, "too wide", &png_of(side, 10))
+        .await;
+    let (_, r) = agent
+        .call(
+            "comments_read",
+            json!({"url_or_id": budget, "thread_id": tid}),
+        )
+        .await;
+    assert_eq!(tool_code(&r), "", "{r}");
+    assert!(images(&r).is_empty(), "{r}");
+    let t = &tool_json(&r)["threads"][0];
+    assert!(t["clip"]["url"].is_string(), "{t}");
+    let note = t["clip"]["note"].as_str().unwrap();
+    assert!(note.contains("not attached"), "{note}");
+    assert!(note.contains(&format!("{side}x10 pixels")), "{note}");
+}
+
+#[tokio::test]
+async fn a_clip_withheld_from_an_agent_or_on_an_artifact_it_may_not_read_reaches_it_not() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let budget = site.titled("Budget").await;
+    let plan = site.titled("Plan").await;
+    let (sam, _, agent, _) = site.sam_with_agent(&owner, &budget, "clip-reader").await;
+    // Sam has not approved the owner: the owner's clip is withheld from his
+    // agent, so no address names it and nothing is attached.
+    let tid = site
+        .thread_with_clip(&owner, &budget, "owner's note", &png_of(8, 8))
+        .await;
+    let (_, r) = agent
+        .call(
+            "comments_read",
+            json!({"url_or_id": budget, "thread_id": tid}),
+        )
+        .await;
+    assert_eq!(tool_code(&r), "", "{r}");
+    assert!(images(&r).is_empty(), "{r}");
+    let t = &tool_json(&r)["threads"][0];
+    assert_eq!(t["clip_withheld"], true, "{t}");
+    assert!(t.get("clip").is_none(), "{t}");
+    assert!(!r.to_string().contains("/_clip/"), "{r}");
+    // Plan is not Sam's to read: neither its threads nor their clips reach
+    // his agent.
+    let ptid = site
+        .thread_with_clip(&owner, &plan, "plan note", &png_of(8, 8))
+        .await;
+    let (_, r) = agent
+        .call(
+            "comments_read",
+            json!({"url_or_id": plan, "thread_id": ptid}),
+        )
+        .await;
+    assert_ne!(tool_code(&r), "", "{r}");
+    assert!(images(&r).is_empty(), "{r}");
+    assert!(!r.to_string().contains("/_clip/"), "{r}");
+    let _ = sam;
+}
+
+#[tokio::test]
+async fn a_local_daemons_agent_reads_its_clip_by_path_as_before() {
+    let ts = TestServer::spawn().await;
+    let aid = ts.publish("Doc", &[("index.html", "<h1>x</h1>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = ts
+        .create_thread(&aid, 1, "tighten", Some(clax_testkit::FAKE_PNG))
+        .await;
+    assert_eq!(res.status(), 201);
+    let t: Value = res.json().await.unwrap();
+    let tid = t["thread"]["id"].as_str().unwrap().to_string();
+    let call = json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
+        "params": {"name": "comments_read", "arguments": {"url_or_id": aid, "thread_id": tid}}});
+    let res = crate::api_mcp::mcp_post(&ts, crate::api_mcp::ADAPTER, &call)
+        .bearer_auth(&ts.token)
+        .send()
+        .await
+        .unwrap();
+    let r = crate::api_mcp::rpc_message(res).await["result"].clone();
+    assert_eq!(tool_code(&r), "", "{r}");
+    assert!(images(&r).is_empty(), "{r}");
+    let t = &tool_json(&r)["threads"][0];
+    let path = t["clip_path"].as_str().expect("the clip's file");
+    assert!(std::path::Path::new(path).is_file(), "{path}");
+    assert!(t.get("clip").is_none(), "{t}");
+    // A local daemon serves no keyed clip address.
+    let res = ts
+        .client
+        .get(format!("{}/_clip/{aid}/{tid}?k=00", ts.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404);
 }

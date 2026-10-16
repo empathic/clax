@@ -39,7 +39,9 @@
 //!   beside the session's cookie, as the daemon token;
 //! - content is served only at its key's address: a version's files at
 //!   `/c/<aid>/v/<n>/k/<key>/…` ([`content_key`]), an asset's bytes at
-//!   `/_blob/<id>?k=<key>` ([`asset_key`]), each with no referrer, else 404,
+//!   `/_blob/<id>?k=<key>` ([`asset_key`]), a thread's clip at
+//!   `/_clip/<aid>/<tid>?k=<key>` ([`clip_key`]; the address agents of
+//!   other machines read a clip at), each with no referrer, else 404,
 //!   on the public host and the content host alike; with a content origin,
 //!   there and on an artifact's content host only, never on the public
 //!   host, and the content origin serves nothing else but the UI's files
@@ -560,6 +562,33 @@ pub fn asset_url(s: &AppState, asset_id: &str) -> String {
     }
 }
 
+/// The key of thread `tid`'s clip on artifact `aid`: on a hosted daemon,
+/// the clip's PNG is served only at `/_clip/<aid>/<tid>?k=<key>`
+/// ([`clip_link`]).
+pub fn clip_key(token: &str, aid: &str, tid: &str) -> String {
+    keyed(token, "clax hosted clip key", &format!("{aid}/{tid}"))
+}
+
+/// The address a hosted daemon serves thread `tid`'s clip on artifact
+/// `aid` at, with no credential: its content origin's, else its public
+/// origin's `/_clip/<aid>/<tid>?k=<key>` ([`clip_key`]). A clip never
+/// changes once its thread has it, so the address is cached as immutable.
+/// `None` on a local daemon, which serves no such address.
+pub fn clip_link(s: &AppState, aid: &str, tid: &str) -> Option<String> {
+    s.hosted
+        .as_ref()
+        .map(|h| clip_link_at(h, &s.token, aid, tid))
+}
+
+/// [`clip_link`] on `h`, whose keys `token` makes.
+pub fn clip_link_at(h: &Hosted, token: &str, aid: &str, tid: &str) -> String {
+    format!(
+        "{}/_clip/{aid}/{tid}?k={}",
+        h.content_origin().unwrap_or(&h.origin),
+        clip_key(token, aid, tid)
+    )
+}
+
 /// On a hosted daemon, sets `content_key` on every version of view `v`
 /// (its `version` and each of its `versions`, which name their
 /// `artifact_id` and `n`), and with a content origin, `content_origin` on
@@ -673,8 +702,26 @@ fn blob_unlocked(token: &str, path: &str, query: Option<&str>) -> bool {
     clax_core::secret::constant_time_eq(given.as_bytes(), want.as_bytes())
 }
 
-/// The gate's handling of content (`/c/…`, `/_blob/…`): unlocked by its
-/// key, served with no referrer (its URL is the key); else 404.
+/// Whether `/_clip/<aid>/<tid>` with `query` carries the clip's key.
+fn clip_unlocked(token: &str, path: &str, query: Option<&str>) -> bool {
+    let Some((aid, tid)) = path.strip_prefix("/_clip/").and_then(|r| r.split_once('/')) else {
+        return false;
+    };
+    if clax_core::ArtifactId::parse(aid).is_err() || !clax_core::ids::is_ulid(tid) {
+        return false;
+    }
+    let given = query
+        .unwrap_or("")
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("k="))
+        .unwrap_or("");
+    let want = clip_key(token, aid, tid);
+    clax_core::secret::constant_time_eq(given.as_bytes(), want.as_bytes())
+}
+
+/// The gate's handling of content (`/c/…`, `/_blob/…`, `/_clip/…`):
+/// unlocked by its key, served with no referrer (its URL is the key); else
+/// 404.
 async fn serve_content(s: &AppState, mut req: Request, next: Next) -> Response {
     let path = req.uri().path().to_string();
     let query = req.uri().query().map(str::to_string);
@@ -693,6 +740,10 @@ async fn serve_content(s: &AppState, mut req: Request, next: Next) -> Response {
             Content::Slash(to) => return no_referrer(Redirect::permanent(&to).into_response()),
             Content::Draft => {}
             Content::Locked => return ApiError::not_found().into_response(),
+        }
+    } else if path.starts_with("/_clip/") {
+        if !clip_unlocked(&s.token, &path, query.as_deref()) {
+            return ApiError::not_found().into_response();
         }
     } else if !blob_unlocked(&s.token, &path, query.as_deref()) {
         return ApiError::not_found().into_response();
@@ -1365,7 +1416,8 @@ pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Re
     if path.starts_with("/connect/b/") {
         return ApiError::not_found().into_response();
     }
-    let content = path.starts_with("/c/") || path.starts_with("/_blob/");
+    let content =
+        path.starts_with("/c/") || path.starts_with("/_blob/") || path.starts_with("/_clip/");
     // The content origin serves content, the UI's files and `/healthz`
     // alone; with one, the public origin serves no content.
     if on_content && !content {
@@ -2789,6 +2841,38 @@ mod tests {
                 b"Test Using Larger Than Block-Size Key - Hash Key First"
             )),
             "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
+        );
+    }
+
+    #[test]
+    fn a_clip_opens_only_at_its_threads_key() {
+        let (aid, tid) = ("7q3k9mzx2b4t", "01J9ZZZZZZZZZZZZZZZZZZZZZZ");
+        let k = clip_key("tok", aid, tid);
+        assert_eq!(k.len(), 32);
+        assert_ne!(k, clip_key("other", aid, tid));
+        assert_ne!(k, clip_key("tok", aid, "01J9ZZZZZZZZZZZZZZZZZZZZZY"));
+        assert_ne!(k, asset_key("tok", &format!("{aid}/{tid}")));
+        let path = format!("/_clip/{aid}/{tid}");
+        assert!(clip_unlocked("tok", &path, Some(&format!("k={k}"))));
+        assert!(clip_unlocked("tok", &path, Some(&format!("v=1&k={k}"))));
+        for (p, q) in [
+            (path.clone(), None),
+            (path.clone(), Some(format!("k={k}x"))),
+            (path.clone(), Some("k=".to_string())),
+            (
+                format!("/_clip/{aid}/01J9ZZZZZZZZZZZZZZZZZZZZZY"),
+                Some(format!("k={k}")),
+            ),
+            (format!("/_clip/{aid}/{tid}/x"), Some(format!("k={k}"))),
+            (format!("/_clip/not-an-id/{tid}"), Some(format!("k={k}"))),
+            (format!("/_clip/{aid}"), Some(format!("k={k}"))),
+        ] {
+            assert!(!clip_unlocked("tok", &p, q.as_deref()), "{p} {q:?}");
+        }
+        let h = Hosted::new("https://clax.example", None).unwrap();
+        assert_eq!(
+            clip_link_at(&h, "tok", aid, tid),
+            format!("https://clax.example/_clip/{aid}/{tid}?k={k}")
         );
     }
 

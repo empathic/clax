@@ -337,13 +337,13 @@ pub mod placeholder {
         thread["anchor_withheld"] = json!(true);
     }
 
-    /// A thread's clip: no `clip`, its `clip_url` and `clip_path` (where a
-    /// view has them) null and `has_clip` false, so nothing names a clip to
-    /// fetch; and `clip_withheld: true`.
+    /// A thread's clip: no `clip`, its `clip_url`, `clip_path` and
+    /// `clip_link` (where a view has them) null and `has_clip` false, so
+    /// nothing names a clip to fetch; and `clip_withheld: true`.
     pub fn clip(thread: &mut Value) {
         if let Some(t) = thread.as_object_mut() {
             t.remove("clip");
-            for k in ["clip_url", "clip_path"] {
+            for k in ["clip_url", "clip_path", "clip_link"] {
                 if let Some(v) = t.get_mut(k) {
                     *v = Value::Null;
                 }

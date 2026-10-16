@@ -2012,7 +2012,7 @@ entry of the shell's own; copy link includes it.
 
 | Tool | Arguments | Result |
 |---|---|---|
-| `comments_read` | `url_or_id`; optional `thread_id`, `cursor`, `include_resolved` | `{artifact_id, url, threads: [{thread_id, status, sent_to_agent, version, anchor: {kind, selector, quote, custom_name, file, area, summary}, clip_path, comments: [{id, author_kind, author_name, via_page, body, created_at, withheld?}], feedback_state, addressed_pending, page_url?, snapshot_path?, owner?, taken_by?, withheld?, anchor_withheld?, clip_withheld?}], next_cursor, note}` |
+| `comments_read` | `url_or_id`; optional `thread_id`, `cursor`, `include_resolved` | `{artifact_id, url, threads: [{thread_id, status, sent_to_agent, version, anchor: {kind, selector, quote, custom_name, file, area, summary}, clip_path, clip?, comments: [{id, author_kind, author_name, via_page, body, created_at, withheld?}], feedback_state, addressed_pending, page_url?, snapshot_path?, owner?, taken_by?, withheld?, anchor_withheld?, clip_withheld?}], next_cursor, note}` |
 | `comments_reply` | `url_or_id`, `thread_id`, `text`, `addressed?` (live pages only) | `{thread_id, replied: true, comment_id, addressed?}` or `{thread_id, replied: false, guidance}` |
 | `comments_resolve` | `url_or_id`, `thread_id` | `{thread_id, resolved: true, status}` or `{thread_id, resolved: false, guidance}`; a thread no version lists yet is listed as addressed in the current version |
 | `comments_handoff` | `url_or_id`, `thread_id`; optional `to` (a live agent's name) | `{artifact_id, url, released, thread, note}`: with `to`, the thread is sent to that agent, which owns it (`thread.owner`); without, the owner releases it. `thread_taken` when another live agent owns it. |
@@ -2029,7 +2029,22 @@ its status. `quote` has its whitespace collapsed and is cut to 200
 characters followed by `…`. `area` is a drawn area's fractions (`null` for
 other anchors), and `summary` is the anchor as the payload's "Anchored on"
 line names it. `clip_path` is the absolute path of the clip, or
-`null` when none was captured. `feedback_state` is the
+`null` when none was captured. An agent whose Clax is on another machine
+reaching it through a hosted Clax's MCP adapter with an agent token (no
+shim fetches clips for it) has `clip_path` `null` and, for a clip it is
+shown, `clip: {url, note}`: `url` is the clip's keyed address
+(`<origin>/_clip/<aid>/<tid>?k=<key>`, the content origin's when the Clax
+has one, else its public origin's), which serves the PNG with no
+credential and is cached as immutable; `note` says what it is and how to
+see it. A listing attaches no image; `thread_id` attaches that thread's
+clip to the result as an MCP image block (`image/png`), unless it is over
+1 MiB or a side is over 4096 pixels, when `note` says it is not attached
+and why. Any agent of a hosted Clax reads `clip` beside its other fields.
+Claude Code takes MCP image blocks in tool results, and Codex CLI 0.162's
+MCP client has image content in its tool-result types (checked from the
+binary, not yet run live); either way `clip.url` serves the clip. Pi does
+not reach this adapter: its extension reads a remote clip by reference
+into a local file. `feedback_state` is the
 thread's delivery state (`{thread_id, state, tier, since, resends,
 exhausted}`, see "What the person sees"), or `null` when nothing on it was
 sent. `addressed_pending` is true while an agent's address of the thread
@@ -2279,8 +2294,10 @@ second text block; the Stop hook's `reason`, the prompt hook's
 `additionalContext`, `codex queue --message`, and Pi's follow-up message carry
 it without `---`. The structured form is each result's `feedback` array:
 `{feedback_id, thread_id, comment_id, artifact_id, artifact_title, url,
-version, anchor, clip_path, author, via_page, body, resent, created_at,
-batch, live}`; `via_page` is true for a comment the page wrote through the
+version, anchor, clip_path, clip?, author, via_page, body, resent,
+created_at, batch, live}`; for an agent token's session on a hosted Clax,
+`clip_path` is `null` and `clip` is `{url, note}` as `comments_read` gives
+it, and the payload's line is `Clip: <url> (<note>)`; `via_page` is true for a comment the page wrote through the
 `comments` capability, and `live` is `{page_url, snapshot_path}` for a
 comment on a live page, else `null`.
 
@@ -3434,6 +3451,7 @@ router), and a test fails when it differs:
 | `GET /` | Denied | no |
 | `GET /_blob/{asset_id}` | Denied | yes: 403 `not_for_agents` |
 | `GET /_clax/{*path}` | Denied | no |
+| `GET /_clip/{aid}/{tid}` | Denied | no |
 | `GET /a/{aid}` | Denied | yes: 403 `not_for_agents` |
 | `GET /a/{aid}/` | Denied | yes: 403 `not_for_agents` |
 | `GET /a/{aid}/v/{n}` | Denied | yes: 403 `not_for_agents` |
@@ -6068,6 +6086,11 @@ it with Ajv (draft 2020-12, formats asserted;
   requests with the token and never in `/api/events`; the clip itself
   (`GET /api/artifacts/<aid>/threads/<tid>/clip`) is served with
   `Content-Security-Policy: sandbox` and `X-Content-Type-Options: nosniff`.
+  A hosted Clax also serves it at `/_clip/<aid>/<tid>?k=<key>` (404
+  without the key, and on a local daemon), the address the thread views an
+  agent reads name in `clip_link` when the agent is shown the clip; whoever
+  saw the address keeps reading the clip, as with a version's keyed
+  content address.
   Comment text is untrusted input: tool results and the skill say so, and the
   payload quotes it as a JSON string.
 - The `db` routes (`/api/artifacts/<id>/docs...`) refuse requests whose

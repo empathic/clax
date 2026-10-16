@@ -177,6 +177,29 @@ fn agent_base(s: &AppState, grant: bool, headers: &HeaderMap) -> String {
     }
 }
 
+/// For an agent token's session on a hosted daemon, which has no shim to
+/// fetch a clip reference (`clax-clip:…`, [`clax_core::clips`]): each of
+/// `items` that names one names the clip at its keyed address instead
+/// (`clip`, with a note saying how to see it), and no `clip_path`.
+fn link_clips(s: &AppState, items: &mut [clax_core::FeedbackItem]) {
+    for i in items {
+        let Some((aid, tid)) = i
+            .clip_path
+            .as_deref()
+            .and_then(clax_core::clips::parse_reference)
+        else {
+            continue;
+        };
+        if let Some(url) = clax_http::hosted::clip_link(s, &aid, &tid) {
+            i.clip_path = None;
+            i.clip = Some(clax_core::clips::ClipLink {
+                url,
+                note: clax_core::clips::LINK_NOTE.to_string(),
+            });
+        }
+    }
+}
+
 #[derive(Deserialize)]
 pub struct FeedbackQuery {
     #[serde(default)]
@@ -194,7 +217,9 @@ pub struct FeedbackQuery {
 /// (spec 2026-10-06-agent-questions-and-inbox §6.4). A question that a
 /// question poll holds is left to that poll, so each answer is handed over
 /// once. `tier=queue` (the Codex queue) takes no answers and its `answers`
-/// is always empty.
+/// is always empty. For an agent token's session on a hosted daemon, an
+/// item's clip is named at its keyed address (`clip`), never by reference
+/// ([`link_clips`]).
 ///
 /// What is handed over is filtered for the session's person (spec
 /// 2026-10-08 §8.4, M16): a comment whose body the person's agents may not
@@ -249,6 +274,7 @@ pub async fn poll(
     let mut rights = a.read_rights();
     let grant = a.grant().map(str::to_string);
     let base = agent_base(&s, grant.is_some(), &headers);
+    let bearer = s.hosted.is_some() && clax_http::auth::is_bearer_grant_request(&headers);
     // Built with the first view: the poll's deliveries are recorded as
     // this session's agent.
     let mut audit: Option<std::sync::Arc<clax_core::audit::AuditCtx>> = None;
@@ -359,7 +385,10 @@ pub async fn poll(
         let expired = _waiting.is_some() && s.feedback_waiters.take_expired(&take.session_id);
         #[cfg(not(debug_assertions))]
         let expired = false;
-        let (items, placeholders) = (taken.items, taken.placeholders);
+        let (mut items, placeholders) = (taken.items, taken.placeholders);
+        if bearer {
+            link_clips(&s, &mut items);
+        }
         // A restored session's note (spec 2026-10-08 §6.7) goes with its
         // first poll that a harness reads.
         let note = (take.tier != Tier::Queue)

@@ -9,6 +9,12 @@
 //! placeholder or `none (…)` is rewritten to `unavailable`, so a daemon
 //! cannot point the agent's file tools at a local file such as the
 //! machine's key.
+//!
+//! An agent token's agent (on a hosted Clax's MCP adapter) has no shim to
+//! fetch a reference: it reads a clip as a [`ClipLink`], the hosted Clax's
+//! keyed, cacheable address of the PNG and a note, and receives the image
+//! itself in the result of reading that one thread, within
+//! [`INLINE_MAX_BYTES`] and [`INLINE_MAX_SIDE`].
 
 use crate::ids::{ArtifactId, is_ulid};
 use std::collections::HashMap;
@@ -131,6 +137,65 @@ pub fn cache_path(dir: &Path, aid: &str, tid: &str) -> PathBuf {
 /// The line for a remote clip that could not be fetched.
 pub fn unavailable(reason: &str) -> String {
     format!("Clip: unavailable ({})", crate::feedback::one_line(reason))
+}
+
+/// A clip as an agent of another machine reads it from a hosted Clax: its
+/// keyed, cacheable `url` (served without a credential) and a short `note`
+/// saying what it is and how to see it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ClipLink {
+    pub url: String,
+    pub note: String,
+}
+
+/// The note on a clip link in a listing or a feedback item: how to see it.
+pub const LINK_NOTE: &str = "a screenshot of what the comment is on: call comments_read with this thread_id to receive it as an image, or fetch the url";
+
+/// The note on a clip link whose image is attached to the same result.
+pub const ATTACHED_NOTE: &str =
+    "a screenshot of what the comment is on, attached to this result as an image";
+
+/// The note on a clip link whose image is not attached, and `why`.
+pub fn not_attached_note(why: &str) -> String {
+    format!(
+        "a screenshot of what the comment is on, not attached ({}): fetch the url to see it",
+        crate::feedback::one_line(why)
+    )
+}
+
+/// The most bytes a clip attached to a tool result as an image may hold.
+pub const INLINE_MAX_BYTES: usize = 1024 * 1024;
+
+/// The most pixels a side of a clip attached to a tool result may have.
+pub const INLINE_MAX_SIDE: u32 = 4096;
+
+/// A PNG's width and height, from its `IHDR` chunk; `None` when `bytes`
+/// does not start with a PNG signature and an `IHDR` chunk.
+pub fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    let ihdr = bytes.get(8..24)?;
+    if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") || &ihdr[4..8] != b"IHDR" {
+        return None;
+    }
+    let be = |b: &[u8]| u32::from_be_bytes([b[0], b[1], b[2], b[3]]);
+    Some((be(&ihdr[8..12]), be(&ihdr[12..16])))
+}
+
+/// Why clip `bytes` is not attached to a tool result as an image: over
+/// [`INLINE_MAX_BYTES`], or a side over [`INLINE_MAX_SIDE`] pixels; `None`
+/// when it may be.
+pub fn inline_problem(bytes: &[u8]) -> Option<String> {
+    if bytes.len() > INLINE_MAX_BYTES {
+        return Some(format!(
+            "{} bytes, over the {INLINE_MAX_BYTES} an attached image may hold",
+            bytes.len()
+        ));
+    }
+    match png_size(bytes) {
+        Some((w, h)) if w > INLINE_MAX_SIDE || h > INLINE_MAX_SIDE => Some(format!(
+            "{w}x{h} pixels, over the {INLINE_MAX_SIDE} a side of an attached image may have"
+        )),
+        _ => None,
+    }
 }
 
 /// What a remote daemon's `Clip:` value becomes: `None` to keep it (a
@@ -259,6 +324,35 @@ mod tests {
 
     const AID: &str = "7q3k9mzx2b4t";
     const TID: &str = "01J9ZZZZZZZZZZZZZZZZZZZZZZ";
+
+    /// A PNG signature and an `IHDR` chunk of `w` by `h`, then `pad` bytes.
+    fn png(w: u32, h: u32, pad: usize) -> Vec<u8> {
+        let mut b = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        b.extend(w.to_be_bytes());
+        b.extend(h.to_be_bytes());
+        b.extend(std::iter::repeat_n(0u8, pad));
+        b
+    }
+
+    #[test]
+    fn clips_attach_as_images_within_the_byte_and_side_caps() {
+        assert_eq!(png_size(&png(640, 480, 5)), Some((640, 480)));
+        assert_eq!(png_size(b"\x89PNG\r\n\x1a\nshort"), None);
+        assert_eq!(png_size(&b"GIF89a".repeat(5)), None);
+        assert_eq!(inline_problem(&png(640, 480, 5)), None);
+        assert_eq!(
+            inline_problem(&png(INLINE_MAX_SIDE, INLINE_MAX_SIDE, 0)),
+            None
+        );
+        // A clip with no IHDR chunk to read is attached by its size alone.
+        assert_eq!(inline_problem(b"\x89PNG\r\n\x1a\nclip"), None);
+        let wide = inline_problem(&png(INLINE_MAX_SIDE + 1, 10, 0)).unwrap();
+        assert!(wide.contains("4097x10 pixels"), "{wide}");
+        let tall = inline_problem(&png(10, INLINE_MAX_SIDE + 1, 0)).unwrap();
+        assert!(tall.contains("10x4097 pixels"), "{tall}");
+        let big = inline_problem(&png(10, 10, INLINE_MAX_BYTES)).unwrap();
+        assert!(big.contains("bytes, over"), "{big}");
+    }
 
     #[test]
     fn references_name_an_artifact_and_a_thread_only() {

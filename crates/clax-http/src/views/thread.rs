@@ -310,6 +310,40 @@ pub struct VisFor {
     pub handles: Handles,
     /// How thread views read their delivery state ([`clax_store::Delivery::view`]).
     pub viewer: DeliveryViewer,
+    /// For an agent on a hosted daemon: how its thread views name a shown
+    /// clip's keyed address (`clip_link`).
+    pub clip_links: Option<ClipLinks>,
+}
+
+/// How a hosted daemon names a thread's clip at its keyed address
+/// ([`crate::hosted::clip_link`]) in the thread views an agent reads.
+#[derive(Clone)]
+pub struct ClipLinks {
+    hosted: std::sync::Arc<crate::hosted::Hosted>,
+    token: String,
+}
+
+impl ClipLinks {
+    /// On a hosted daemon, its clip links; `None` on a local one.
+    pub fn of(s: &AppState) -> Option<ClipLinks> {
+        s.hosted.as_ref().map(|h| ClipLinks {
+            hosted: h.clone(),
+            token: s.token.clone(),
+        })
+    }
+
+    /// The keyed address of thread `tid`'s clip on artifact `aid`.
+    pub fn link(&self, aid: &str, tid: &str) -> String {
+        crate::hosted::clip_link_at(&self.hosted, &self.token, aid, tid)
+    }
+}
+
+impl std::fmt::Debug for ClipLinks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClipLinks")
+            .field("origin", &self.hosted.origin)
+            .finish_non_exhaustive()
+    }
 }
 
 /// How `caller` reads threads' delivery states (spec 2026-10-08 §10,
@@ -375,6 +409,7 @@ impl VisFor {
                 .then(|| caller.session().map(str::to_string)),
             handles: Handles::of(caller),
             viewer: delivery_viewer(caller),
+            clip_links: caller.is_agent().then(|| ClipLinks::of(s)).flatten(),
         }
     }
 
@@ -390,6 +425,7 @@ impl VisFor {
             },
             agent: self.agent.clone(),
             handles: self.handles.clone(),
+            clip_links: self.clip_links.clone(),
             viewer: match &self.viewer {
                 // While nothing can be held, every agent reads every
                 // thread's state, as before people existed (§19).
@@ -412,6 +448,7 @@ pub struct Vis {
     agent: Option<Option<String>>,
     handles: Handles,
     viewer: DeliveryViewer,
+    clip_links: Option<ClipLinks>,
 }
 
 impl Vis {
@@ -483,6 +520,15 @@ impl Vis {
         if let Some(vis) = &self.vis {
             for ((t, view), senders) in threads.iter().zip(&mut views).zip(&senders) {
                 mark_thread(vis, t, view, senders);
+            }
+        }
+        // A clip the reader is shown (its `clip_url` survived the filter)
+        // is named at its keyed address too.
+        if let Some(links) = &self.clip_links {
+            for (t, view) in threads.iter().zip(&mut views) {
+                if !view["clip_url"].is_null() {
+                    view["clip_link"] = json!(links.link(&t.artifact_id, &t.id));
+                }
             }
         }
         Ok(views)

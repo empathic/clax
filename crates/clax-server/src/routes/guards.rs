@@ -150,6 +150,7 @@ mod l10 {
         ("shell::static_file", NoArtifact),
         ("health::healthz", NoArtifact),
         ("assets::blob", SeesLive),
+        ("threads::keyed_clip", SeesLive),
         ("perf::calibrate", Token),
         ("perf::verify_times", Token),
         ("toolpath::export", Owner),

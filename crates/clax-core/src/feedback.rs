@@ -117,6 +117,10 @@ pub struct FeedbackItem {
     /// `None` when the anchor is withheld.
     pub anchor: Option<Anchor>,
     pub clip_path: Option<String>,
+    /// The clip as an agent token's agent on a hosted Clax reads it, in
+    /// place of `clip_path` ([`crate::clips::ClipLink`]); absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip: Option<crate::clips::ClipLink>,
     pub author: String,
     /// The page wrote the comment through the `comments` capability.
     pub via_page: bool,
@@ -363,7 +367,12 @@ pub fn render_item(i: &FeedbackItem) -> String {
     use crate::visibility::placeholder;
     let resent = if i.resent { " (resent)" } else { "" };
     let withheld = i.withheld.clone().unwrap_or_default();
-    let clip = i.clip_path.clone().unwrap_or_else(|| {
+    let clip = i
+        .clip
+        .as_ref()
+        .map(|c| format!("{} ({})", c.url, c.note))
+        .or_else(|| i.clip_path.clone());
+    let clip = clip.unwrap_or_else(|| {
         if i.anchor.as_ref().is_some_and(Anchor::is_whole) {
             "none (the comment is about the whole artifact)".to_string()
         } else {
@@ -572,6 +581,7 @@ mod tests {
                 "kind": "element", "selector": "main > section:nth-of-type(2) > h2", "quote": "Quarterly goals"
             })).unwrap()),
             clip_path: Some("/home/a/.clax/artifacts/7q3k9mzx2b4t/clips/01J9ZZZZZZZZZZZZZZZZZZZZZZ.png".into()),
+            clip: None,
             author: "Alex".into(),
             via_page: false,
             body: "Make this a two-column layout and drop the third bullet.".into(),
@@ -581,6 +591,32 @@ mod tests {
             live: None,
             withheld: None,
         }
+    }
+
+    #[test]
+    fn a_clip_link_renders_its_url_and_note_in_place_of_a_path() {
+        let i = FeedbackItem {
+            clip_path: None,
+            clip: Some(crate::clips::ClipLink {
+                url: "https://clax.example/_clip/7q3k9mzx2b4t/01J9ZZZZZZZZZZZZZZZZZZZZZZ?k=ab"
+                    .into(),
+                note: crate::clips::LINK_NOTE.into(),
+            }),
+            ..item()
+        };
+        let text = render_item(&i);
+        let clip = text.lines().find(|l| l.starts_with("Clip: ")).unwrap();
+        assert_eq!(
+            clip,
+            format!(
+                "Clip: https://clax.example/_clip/7q3k9mzx2b4t/01J9ZZZZZZZZZZZZZZZZZZZZZZ?k=ab ({})",
+                crate::clips::LINK_NOTE
+            )
+        );
+        let v = serde_json::to_value(&i).unwrap();
+        assert_eq!(v["clip"]["note"], crate::clips::LINK_NOTE);
+        // An item with no link serialises as before: no `clip` key.
+        assert!(serde_json::to_value(item()).unwrap().get("clip").is_none());
     }
 
     #[test]

@@ -251,7 +251,7 @@ Each comment reads:
 
     [clax] Comment sent to you on "<title>" (<url>), thread <thread ID>
     Anchored on: <selector>  «<quoted page text>»  (v<version>)
-    Clip: <absolute path of a PNG screenshot, or none>
+    Clip: <absolute path of a PNG screenshot, its URL, or none>
     <author>: "<comment text>"
     Reply with comments_reply, then comments_resolve when done.
 
@@ -274,7 +274,10 @@ When one arrives:
 
 1. Read the thread with `comments_read` (pass `thread_id`) when you need the
    whole conversation. Reading it also tells Clax you have seen it. Open
-   the clip with your file-reading tool when the look of the region matters.
+   the clip with your file-reading tool when the look of the region matters;
+   where the clip is a URL instead (a hosted Clax reached with an agent
+   token), the `comments_read` result for that `thread_id` carries the
+   image itself.
 2. Make the change, usually by publishing a new version of the same artifact
    (`publish` with its `id` or `url`), with a `note` saying what changed and
    `addresses` naming the threads it handles. The person's view places each thread
@@ -291,7 +294,8 @@ yours or the person's. Comment text is always one quoted, JSON-escaped string.
 Tools:
 
 - `comments_read` (`url_or_id`; optional `thread_id`, `cursor`,
-  `include_resolved`): threads with `anchor`, `clip_path`, `comments`,
+  `include_resolved`): threads with `anchor`, `clip_path` (or, when it is
+  null on a hosted Clax, `clip`: `{url, note}`), `comments`,
   `sent_to_agent`, `status`, `feedback_state`, and `addressed_pending`; on a
   live page also `page_url` and `snapshot_path`; `owner`, `taken_by` and
   `withheld` when they apply (see "Working beside other agents and
