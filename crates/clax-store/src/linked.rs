@@ -680,6 +680,9 @@ impl Store {
             created_at: now,
             page_authors: Vec::new(),
             agent_person: None,
+            // A remote's comment came from no session here: agents read
+            // its author through `remote_author_labels`.
+            agent: None,
         })
     }
 

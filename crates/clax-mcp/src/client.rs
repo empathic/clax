@@ -18,8 +18,8 @@ use clax_core::remote::{
 use clax_core::secret::Secret;
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -296,6 +296,7 @@ enum Reply {
     Net(reqwest::Response),
     Whole {
         status: reqwest::StatusCode,
+        headers: http::HeaderMap,
         body: bytes::Bytes,
     },
 }
@@ -308,10 +309,42 @@ impl Reply {
         }
     }
 
+    fn headers(&self) -> &http::HeaderMap {
+        match self {
+            Reply::Net(r) => r.headers(),
+            Reply::Whole { headers, .. } => headers,
+        }
+    }
+
     async fn bytes(self) -> std::result::Result<bytes::Bytes, Failure> {
         match self {
             Reply::Net(r) => r.bytes().await.map_err(transport_error),
             Reply::Whole { body, .. } => Ok(body),
+        }
+    }
+
+    /// The body, read until it passes `max` bytes (then cut there, one past
+    /// `max`, so a caller can tell it was too long).
+    async fn bytes_upto(self, max: usize) -> std::result::Result<Vec<u8>, Failure> {
+        match self {
+            #[cfg(target_arch = "wasm32")]
+            Reply::Net(r) => {
+                let body = r.bytes().await.map_err(transport_error)?;
+                Ok(body[..body.len().min(max + 1)].to_vec())
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Reply::Net(mut r) => {
+                let mut out = Vec::new();
+                while let Some(chunk) = r.chunk().await.map_err(transport_error)? {
+                    out.extend_from_slice(&chunk);
+                    if out.len() > max {
+                        out.truncate(max + 1);
+                        break;
+                    }
+                }
+                Ok(out)
+            }
+            Reply::Whole { body, .. } => Ok(body[..body.len().min(max + 1)].to_vec()),
         }
     }
 }
@@ -549,6 +582,7 @@ impl DaemonClient {
             }),
             call: self.call.clone(),
             via: self.via,
+            clip_fetch_time: self.clip_fetch_time,
             auth: self.auth.clone(),
         }
     }
@@ -1456,7 +1490,7 @@ impl DaemonClient {
     /// `BadResponse`.
     pub async fn clip_bytes(&self, aid: &str, tid: &str) -> Result<Vec<u8>> {
         let path = format!("/api/artifacts/{aid}/threads/{tid}/clip");
-        let mut res = self
+        let res = self
             .send(|c| c.request(reqwest::Method::GET, &path))
             .await?;
         let ct = res
@@ -1464,13 +1498,10 @@ impl DaemonClient {
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
-        let mut bytes = Vec::new();
-        while let Some(chunk) = res.chunk().await.map_err(|e| transport_error(e).error)? {
-            bytes.extend_from_slice(&chunk);
-            if bytes.len() > clax_core::clips::MAX_BYTES {
-                break;
-            }
-        }
+        let bytes = res
+            .bytes_upto(clax_core::clips::MAX_BYTES)
+            .await
+            .map_err(|f| f.error)?;
         clax_core::clips::check(ct.as_deref(), &bytes).map_err(ClientError::BadResponse)?;
         Ok(bytes)
     }
@@ -1507,8 +1538,19 @@ impl DaemonClient {
         }
     }
 
+    /// [`DaemonClient::fetch_clips`] on wasm32 (a hosted Worker), which is
+    /// never a remote daemon's client: nothing to fetch.
+    #[cfg(target_arch = "wasm32")]
+    async fn fetch_clips(
+        &self,
+        _refs: &[(String, String)],
+    ) -> Option<HashMap<(String, String), std::result::Result<PathBuf, String>>> {
+        None
+    }
+
     /// Each clip of `refs` fetched into the remote cache, or why not;
     /// `None` for the local daemon.
+    #[cfg(not(target_arch = "wasm32"))]
     async fn fetch_clips(
         &self,
         refs: &[(String, String)],
@@ -2058,6 +2100,7 @@ async fn attempt_in_process(
     let (parts, body) = res.into_parts();
     check(Reply::Whole {
         status: parts.status,
+        headers: parts.headers,
         body,
     })
     .await

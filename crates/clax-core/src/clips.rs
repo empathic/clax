@@ -217,11 +217,21 @@ pub fn rewrite_json(
     }
 }
 
+/// [`store`] off Unix (a hosted Worker), which keeps no clip cache.
+///
+/// # Errors
+/// Always `Unsupported`.
+#[cfg(not(unix))]
+pub fn store(_dir: &Path, _aid: &str, _tid: &str, _bytes: &[u8]) -> std::io::Result<PathBuf> {
+    Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+}
+
 /// Writes clip `bytes` to the cache file of `(aid, tid)` under `dir`
 /// (0700, files 0600, written whole), answering its path.
 ///
 /// # Errors
 /// The I/O error.
+#[cfg(unix)]
 pub fn store(dir: &Path, aid: &str, tid: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     std::fs::DirBuilder::new()

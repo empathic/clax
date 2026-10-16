@@ -616,7 +616,7 @@ fn routes(ev: &Event) -> Vec<(Chan, Gate)> {
         let quiet: Vec<(Chan, Gate)> = all
             .iter()
             .filter_map(|(c, g)| match c {
-                Chan::Artifact(a) => Some((Chan::ArtifactQuiet(a.clone()), *g)),
+                Chan::Artifact(a) => Some((Chan::ArtifactQuiet(a.clone()), g.clone())),
                 _ => None,
             })
             .collect();

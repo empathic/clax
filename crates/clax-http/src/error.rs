@@ -152,13 +152,9 @@ impl From<CoreError> for ApiError {
                 message,
             } => ApiError::new(StatusCode::NOT_FOUND, "not_raised", message),
             CoreError::Invalid {
-                code: code @ ("denied"
-                    | "foreign_session"
-                    | "not_creator"
-                    | "beyond_your_rights"
-                    | "quota_exceeded"
-                    | "github_blocked"
-                    | "github_not_owner"),
+                code:
+                    code @ ("denied" | "foreign_session" | "not_creator" | "beyond_your_rights"
+                    | "quota_exceeded" | "github_blocked" | "github_not_owner"),
                 message,
             } => ApiError::new(StatusCode::FORBIDDEN, code, message),
             CoreError::Invalid { code, message } => ApiError::bad_request(code, message),

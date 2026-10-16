@@ -63,8 +63,7 @@ impl Handover {
         let cached = |p: &str| cache.is_some_and(|c| Path::new(p).starts_with(c));
         for i in &mut self.feedback {
             if let Some(o) = i.as_object_mut() {
-                if o
-                    .get("clip_path")
+                if o.get("clip_path")
                     .is_some_and(|p| !p.as_str().is_some_and(cached))
                 {
                     o.insert("clip_path".into(), Value::Null);

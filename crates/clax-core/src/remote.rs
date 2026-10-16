@@ -968,7 +968,16 @@ impl SessionFiles {
     }
 
     /// The file `name` of the directory as written, `None` when there is
+    /// no such file. Off Unix (a hosted Worker) there are no credential
+    /// files.
+    #[cfg(not(unix))]
+    fn read_named(&self, _name: &str) -> Result<Option<CredentialFile>, CredentialUnreadable> {
+        Ok(None)
+    }
+
+    /// The file `name` of the directory as written, `None` when there is
     /// no such file.
+    #[cfg(unix)]
     fn read_named(&self, name: &str) -> Result<Option<CredentialFile>, CredentialUnreadable> {
         use nix::fcntl::OFlag;
         use std::io::Read;
@@ -1214,9 +1223,15 @@ impl SessionFiles {
         Ok(handle.into())
     }
 
+    /// [`SessionFiles::touch`] off Unix (a hosted Worker), which has no
+    /// credential files: nothing to mark.
+    #[cfg(not(unix))]
+    pub fn touch(&self, _keys: &[SessionKey<'_>], _session: &str) {}
+
     /// Marks every one of `keys`' files that holds session `session` as in
     /// use now (its modification time), so [`SessionFiles::prune`] keeps
     /// the files of a session that lives longer than [`STALE_FILE_AFTER`].
+    #[cfg(unix)]
     pub fn touch(&self, keys: &[SessionKey<'_>], session: &str) {
         use nix::fcntl::OFlag;
         let Ok(Some(dir)) = self.open_dir() else {
