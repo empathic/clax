@@ -8,6 +8,7 @@ import 'dart:typed_data';
 import 'package:flutter/services.dart' show AssetBundle, rootBundle;
 
 import '../bundle/installer.dart';
+import '../bundle/manifest.dart';
 import '../bundle/trust.dart';
 import '../clax/api.dart';
 import '../platform/bundle_key.dart';
@@ -121,19 +122,7 @@ Future<String> ensureHomeApp(
   final s = shipped ?? AssetShippedHome();
   final release = await s.release();
   final opened = await installer.open(await s.bundle());
-  final m = opened.manifest;
-  final mismatch = [
-    if (m.author.key != release.key) 'author key',
-    if (m.lineage != release.lineage) 'lineage',
-    if (m.version != release.version) 'version',
-    if (m.contentSha256 != release.hash) 'content hash',
-  ];
-  if (mismatch.isNotEmpty) {
-    throw HomeInstallError(
-      'the shipped home bundle differs from release.json in its '
-      '${mismatch.join(', ')}',
-    );
-  }
+  checkShipped(opened.manifest, release);
   final d = opened.decision;
   final aid = switch (d.answer) {
     TrustAnswer.own ||
@@ -148,6 +137,23 @@ Future<String> ensureHomeApp(
   settings.homeAppId = aid;
   await settings.save();
   return aid;
+}
+
+/// Throws [HomeInstallError] unless [m] is the bundle [release] names:
+/// its author key, lineage, version and content hash.
+void checkShipped(Manifest m, HomeRelease release) {
+  final mismatch = [
+    if (m.author.key != release.key) 'author key',
+    if (m.lineage != release.lineage) 'lineage',
+    if (m.version != release.version) 'version',
+    if (m.contentSha256 != release.hash) 'content hash',
+  ];
+  if (mismatch.isNotEmpty) {
+    throw HomeInstallError(
+      'the shipped home bundle differs from release.json in its '
+      '${mismatch.join(', ')}',
+    );
+  }
 }
 
 Future<bool> _exists(ClaxApi api, String aid) async {
