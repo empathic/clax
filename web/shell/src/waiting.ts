@@ -1,3 +1,4 @@
+import { whose } from "./view/working-model";
 import type { FeedbackState, Tier } from "./threads";
 
 // Both maps cover every tier so the types stay total, but the daemon emits
@@ -40,7 +41,7 @@ export function waitingLabel(s: FeedbackState | null, now: Date): string | null 
     // A hold for lost access shows beside a wait or a decline, to the
     // owner and the agent's person only (spec 2026-10-08 §7.5, §10).
     case "withheld":
-      return `waiting for ${s.mine ? "your " : s.approver ? `${s.approver}'s ` : ""}approval${s.no_access ? " · the agent no longer has access" : ""}`;
+      return `waiting for ${s.mine ? "your " : s.approver ? `${whose(s.approver)} ` : ""}approval${s.no_access ? " · the agent no longer has access" : ""}`;
     case "declined":
       return `${s.mine ? "you declined" : `declined by ${s.approver ?? "its person"}`}${s.no_access ? " · the agent no longer has access" : ""}`;
     // Only to the owner and the agent's person (spec 2026-10-08 §7.5, §10).

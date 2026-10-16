@@ -63,6 +63,8 @@ describe("PeoplePanel's agents", () => {
     const roster = { agents: [
       { handle: "a_cl", name: "clax-claude", person: null, live: true, state: "waiting", since: "2026-10-09T10:18:00.000Z", blocked: { since: "2026-10-09T10:18:00.000Z", questions: 1, approvals: 0 } },
       { handle: "a_sam", name: "sam-web", person: "u_sam", live: true, state: "waiting", since: "2026-10-09T10:20:00.000Z", blocked: { since: "2026-10-09T10:20:00.000Z", questions: 0, approvals: 1 } },
+      // Idle, with a routing request for the owner: it does not wait, and says what waits on you.
+      { handle: "a_mp", name: "quarterly-fix-chart", person: null, live: true, state: "idle", since: "2026-10-09T09:00:00.000Z", blocked: { since: "2026-10-09T09:34:00.000Z", questions: 0, approvals: 1 } },
     ] };
     const calls: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (url: string) => { calls.push(url); return new Response(JSON.stringify(url === "/api/agents" ? roster : { viewer: { public_id: "u_1", display_name: "Alex", created_at: "x" } })); }));
@@ -70,16 +72,18 @@ describe("PeoplePanel's agents", () => {
     const agents = [
       { handle: "a_cl", harness: "claude", live: true, name: "clax-claude", person: ALEX },
       { handle: "a_sam", harness: "codex", live: true, name: "sam-web", person: SAM },
+      { handle: "a_mp", harness: "claude", live: true, name: "quarterly-fix-chart", person: ALEX },
     ];
     const ctl = { numbers: () => new Map(), forgetReopen: vi.fn(), setNotice: vi.fn(), setMe: vi.fn(), setShareWhere: vi.fn() };
     const v = mount(PeoplePanel, { ctl: ctl as never, s: { ...s, agents, data: { artifact: { participants: { people: [], agents } }, versions: [] } } as never, onClose: vi.fn() });
     await settle();
     expect(calls).toContain("/api/agents");
     const rows = [...v.root.querySelectorAll(".prow.agent")];
-    expect(rows.map(r => r.querySelector("b")!.textContent)).toEqual(["clax-claude", "sam-web · Sam"]);
+    expect(rows.map(r => r.querySelector("b")!.textContent)).toEqual(["clax-claude", "sam-web · Sam", "quarterly-fix-chart"]);
     expect(rows[0].querySelector("p")!.textContent).toBe("Waiting on you 12 min (1 question)");
     // The owner sees Sam's agent's block in full: it waits on Sam, not on the owner.
     expect(rows[1].querySelector("p")!.textContent).toBe("Waiting on Sam 10 min (1 approval)");
+    expect(rows[2].querySelector("p")!.textContent).toBe("1 approval for you · 56 min");
     v.unmount();
   });
 });

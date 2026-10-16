@@ -14,9 +14,10 @@
   // a press outside closes it; Escape and Close return focus to
   // the roster. Loaded on first open, with its styles.
   import { tick as settled, untrack } from "svelte";
+  import { agentMark } from "../view/agent-display";
   import type { ArtifactController, Loaded, ViewState } from "../view/artifact-controller";
   import { personLine, roster } from "../view/presence-model";
-  import { agentNames, clock, newestFirst, stripText } from "../view/working-model";
+  import { agentNames, clock, midName, newestFirst, stripText, whose } from "../view/working-model";
   import type { PeopleRaises, RosterAgent } from "../api";
   import type RaiseHereT from "./RaiseHere.svelte";
   import { blockedOn, waitedFor } from "../people/strip";
@@ -59,15 +60,17 @@
   const versionOf = (handle: string) => raises?.raises.find(r => r.agent.handle === handle)?.version ?? null;
   const personOf = (handle: string) => parts.agents.find(a => a.handle === handle)?.person;
   const theirs = (handle: string) => { const p = personOf(handle); return !!p && p.public_id !== me && (!!me || !p.owner); };
-  /** What the roster says an agent waits on: its person (you, for yours), since when, and on what. */
+  /** What the roster says an agent waits on: its person (you, for yours),
+   * since when, and on what. Only an agent the roster calls `waiting` (an
+   * open question or `ask`, spec 2026-10-08 §13) waits, so every viewer
+   * reads the same; approval requests alone waiting on you say so. */
   function waiting(handle: string, name: string): string | null {
     const r = listed.find(x => x.handle === handle) ?? listed.find(x => !x.handle && x.name === name && x.live);
-    const since = r?.blocked?.since ?? (r?.state === "waiting" ? r.since : null);
-    if (!r || !since) return null;
+    if (!r) return null;
     const on = r.blocked && blockedOn(r.blocked) ? ` (${blockedOn(r.blocked)})` : "";
-    return `Waiting on ${theirs(handle) ? personOf(handle)!.name : "you"} ${waitedFor(since, tick.now)}${on}`;
+    if (r.state === "waiting" && r.since) return `Waiting on ${theirs(handle) ? midName(personOf(handle)!.name) : "you"} ${waitedFor(r.blocked?.since ?? r.since, tick.now)}${on}`;
+    return r.blocked?.approvals && !theirs(handle) ? `${blockedOn({ ...r.blocked, questions: 0 })} for you · ${waitedFor(r.blocked.since, tick.now)}` : null;
   }
-  const AGENT: Record<string, string> = { claude: "cl", codex: "cx", pi: "pi" };
   const initials = (n: string | null) => {
     const w = (n ?? "?").trim().split(/\s+/);
     return (w.length > 1 ? w[0][0] + w[1][0] : w[0].slice(0, 2)).toUpperCase();
@@ -154,8 +157,8 @@
     {@const w = newestFirst(s.working).find(x => x.agent === a.handle)}
     {@const held = waiting(a.handle, name)}
     <div class="prow agent">
-      <span class={["tok a", w && "work"]} aria-hidden="true">{AGENT[a.harness] ?? a.harness.slice(0, 2)}</span>
-      <b title={personOf(a.handle) ? `${personOf(a.handle)!.name}'s agent` : undefined}>{theirs(a.handle) ? `${name} · ${personOf(a.handle)!.name}` : name}</b>
+      <span class={["tok a", w && "work"]} aria-hidden="true">{agentMark(names.get(a.handle), a.harness)}</span>
+      <b title={personOf(a.handle) ? `${whose(personOf(a.handle)!.name)} agent` : undefined}>{theirs(a.handle) ? `${name} · ${midName(personOf(a.handle)!.name)}` : name}</b>
       {#if held}
         <p class="on">{held}</p>
       {:else if w}

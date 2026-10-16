@@ -73,3 +73,9 @@ export function stripText(w: Working, names: Map<string, string>, numbers: Map<s
 export function chips(list: Working[], names: Map<string, string>): string[] {
   return newestFirst(list).map(w => (w.thread_ids.length ? `${names.get(w.agent) ?? w.harness} working on ${w.thread_ids.length}` : `${names.get(w.agent) ?? w.harness} working`));
 }
+
+/** An agent's person's name mid-sentence: the daemon names an unnamed owner "The
+ * owner", which reads "the owner" there. */
+export const midName = (name: string): string => (name === "The owner" ? "the owner" : name);
+/** A person's name as a possessive mid-sentence: "Sam's", "the owner's". */
+export const whose = (name: string): string => `${midName(name)}'s`;

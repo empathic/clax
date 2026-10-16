@@ -185,6 +185,10 @@ async fn roster_reports_blocked_since_and_is_person_scoped() {
     let (status, strip) = r.sams_browser("/api/inbox?group=agent").await;
     assert_eq!(status, 200, "{strip}");
     assert_eq!(strip["agents"][0]["blocked"], sams["blocked"]);
+    // Its person, named, and Sam's own.
+    assert_eq!(strip["agents"][0]["person_name"], "Sam");
+    assert_eq!(strip["agents"][0]["own"], true);
+    assert!(strip["agents"][0]["person"].is_string(), "{strip}");
 
     // Sam's browser and Sam's remote CLI: his own agent in full, the
     // others by name and state, never a handle.

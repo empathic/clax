@@ -20,7 +20,7 @@
     <span class="cb2">
       <span class="v g">v{p.a.current_version}</span>
       <h3>{p.a.title}{#if p.a.pinned && !p.token}<span class="pin" title="Pinned">{" ★"}</span>{/if}</h3>
-      <span class="by">{#if p.a.owner_live}<span class="live-dot" role="img" aria-label="session is live" title="Session is live"></span>{/if}{p.a.live ? p.a.live.page_url.replace(/^\w+:\/\//, "") : p.a.owner_harness || "command line"} · {relativeTime(p.a.updated_at)}</span>
+      <span class="by">{#if p.a.owner_live}<span class="live-dot" role="img" aria-label="session is live" title="Session is live"></span>{/if}{p.a.live ? p.a.live.page_url.replace(/^\w+:\/\//, "") : p.a.owner_name || p.a.owner_harness || "command line"} · {relativeTime(p.a.updated_at)}</span>
     </span>
     {#if p.markers || rally(p.a)}
       <span class="mks">{@render p.markers?.()}{#if rally(p.a)}<span class="chip rally">rally of 10</span>{/if}</span>

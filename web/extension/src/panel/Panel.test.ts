@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PanelState, PanelToWorker, SiteView } from "../messages";
 import type { InboxItem } from "../../../shell/src/api";
@@ -127,10 +127,10 @@ describe("Panel", () => {
     expect(l.sent.slice(1)).toEqual([{ t: "navigate", route: "?tab=billing", artifactId: "7q3k9mzx2b4t" }, { t: "select", threadId: thread.id }]);
   });
 
-  it("shows who is here on the page beside its agents", () => {
+  it("shows who is here on the page beside its agents, loading the roster after the panel's first paint", async () => {
     const l = link(state({ presence: [{ public_id: "u_y", display_name: "Mia Wong", state: "here", where: null, since: "2026-10-05T10:00:00.000Z" }] }));
     const { container } = render(Panel, { props: { link: l as never, now: new Date("2026-10-05T10:01:00.000Z") } });
-    expect(container.querySelector(".tok.p.here")?.textContent).toBe("MW");
+    await waitFor(() => expect(container.querySelector(".tok.p.here")?.textContent).toBe("MW"));
     expect(container.querySelector(".tok.a")?.textContent).toBe("cl");
   });
 

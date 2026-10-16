@@ -10,6 +10,9 @@ describe("publisherText", () => {
     expect(publisherText(a("x", null, { owner_harness: null }))).toBe("published from the command line");
     expect(publisherText(a("x", null))).toBe("published from the command line");
   });
+  it("names the owner's agent by its name where it has one (spec 2026-10-08 §11)", () => {
+    expect(publisherText(a("x", null, { owner_harness: "claude", owner_name: "web" }))).toBe("published by web");
+  });
   it("names a live page by its URL", () => {
     expect(publisherText(a("x", null, { kind: "live", live: { origin: "http://localhost:5173", path: "/settings", page_url: "http://localhost:5173/settings" } }))).toBe("Live page · localhost:5173/settings");
   });

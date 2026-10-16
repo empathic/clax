@@ -102,7 +102,8 @@
   const pages = $derived([...new Map([...(filter.artifact ? [[filter.artifact, filter.artifact]] : []), ...artifacts, ...listed.flatMap(i => (i.artifact ? [[i.artifact.id, i.artifact.title ?? i.artifact.id]] : []))] as [string, string][])]);
   const agents = $derived.by(() => {
     const seen = new Map<string, string>(filter.agent ? [[filter.agent, filter.agent]] : []);
-    for (const { agent: a } of listed) if (a) seen.set(a.harness, a.harness).set(a.handle, `${a.harness} ${a.handle.slice(2, 6)} · ${a.project}`);
+    // An agent by its name (spec 2026-10-08 §11), with its person when it is not the reader's; one with none by harness and handle.
+    for (const { agent: a } of listed) if (a) seen.set(a.harness, `All ${a.harness} agents`).set(a.handle, a.name ? `${a.name}${a.own === false && a.person_name ? ` · ${a.person_name}` : ""}` : `${a.harness} ${a.handle.slice(2, 6)}${a.project ? ` · ${a.project}` : ""}`);
     return [...seen];
   });
   const cardsFrom = (items: InboxItem[]) => {

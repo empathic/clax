@@ -170,25 +170,43 @@ impl ListQuery {
     }
 }
 
-/// `strip`, the agent strip, as `GET /api/inbox?group=agent` answers it.
-fn strip_view(strip: &[clax_core::store::inbox::AgentGroup]) -> Value {
-    json!(
-        strip
-            .iter()
-            .map(|g| json!({
-                "handle": g.handle,
-                "name": g.name,
-                "harness": g.harness,
-                "live": g.live,
+/// `strip`, the agent strip, as `GET /api/inbox?group=agent` answers it
+/// to `me` (`None`: the owner): each agent with its person's public ID
+/// (null for the owner's agents) and name, and `own` for the caller's own
+/// person's agents (spec 2026-10-08 §11 "Display").
+fn strip_view(
+    db: &clax_core::Store,
+    strip: &[clax_core::store::inbox::AgentGroup],
+    me: Option<&str>,
+) -> clax_core::Result<Value> {
+    let mut names = std::collections::HashMap::new();
+    let mut out = Vec::with_capacity(strip.len());
+    for g in strip {
+        let person_name = match names.get(&g.person) {
+            Some(n) => Clone::clone(n),
+            None => {
+                let n = db.agent_person(g.person.as_deref())?.name;
+                names.insert(g.person.clone(), n.clone());
+                n
+            }
+        };
+        out.push(json!({
+            "handle": g.handle,
+            "name": g.name,
+            "harness": g.harness,
+            "person": g.person,
+            "person_name": person_name,
+            "own": g.person.as_deref() == me,
+            "live": g.live,
                 "unread": g.unread,
-                "blocked": g.blocked_since.as_ref().map(|since| json!({
-                    "since": since,
-                    "questions": g.questions,
-                    "approvals": g.approvals,
-                })),
-            }))
-            .collect::<Vec<_>>()
-    )
+            "blocked": g.blocked_since.as_ref().map(|since| json!({
+                "since": since,
+                "questions": g.questions,
+                "approvals": g.approvals,
+            })),
+        }));
+    }
+    Ok(json!(out))
 }
 
 fn query_of<T>(q: Result<Query<T>, QueryRejection>) -> Result<T, ApiError> {
@@ -200,7 +218,8 @@ fn query_of<T>(q: Result<Query<T>, QueryRejection>) -> Result<T, ApiError> {
 /// 2026-10-08-multi-agent-multi-person §13) → `{agents, unread}`: the agent
 /// strip, one entry per agent with unread items for the caller or an open
 /// question or approval request waiting on them (`{handle, name, harness,
-/// live, unread, blocked: {since, questions, approvals} | null}`), blocked
+/// person, person_name, own, live, unread, blocked: {since, questions,
+/// approvals} | null}`), blocked
 /// ones first, longest blocked first, then by newest unread item; another
 /// `group` is 400 `invalid_query`.
 ///
@@ -234,7 +253,7 @@ pub async fn list(
                 .store_call(move |db| {
                     let strip = db.inbox_agents(me.as_deref())?;
                     Ok(json!({
-                        "agents": strip_view(&strip),
+                        "agents": strip_view(db, &strip, me.as_deref())?,
                         "unread": db.inbox_unread(me.as_deref())?,
                     }))
                 })

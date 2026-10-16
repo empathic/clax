@@ -890,11 +890,19 @@ async fn golden_now() -> Value {
 
 /// §19 item 6's additive keys: where the golden lacks one, its value now
 /// must be the single-owner value [`solo_value`] accepts.
-pub const ADDITIVE_KEYS: [&str; 6] = ["owner", "taken_by", "name", "person", "withheld", "rights"];
+pub const ADDITIVE_KEYS: [&str; 7] = [
+    "owner",
+    "taken_by",
+    "name",
+    "owner_name",
+    "person",
+    "withheld",
+    "rights",
+];
 
 /// Whether `v`, the value of item 6's key `key` that the golden lacks, is
 /// what a single-owner install shows (spec §19 item 6): `withheld` absent or
-/// null; `name` null or a name; `person` null or the owner (`owner: true`,
+/// null; `name`, and an artifact's `owner_name`, null or a name; `person` null or the owner (`owner: true`,
 /// the owner's public ID); a thread's `owner` or `taken_by` null or one of
 /// the owner's agents (`person` null); `rights` the owner's, `clax:full`.
 pub fn solo_value(key: &str, v: &Value, owner: &str) -> bool {
@@ -907,7 +915,7 @@ pub fn solo_value(key: &str, v: &Value, owner: &str) -> bool {
     };
     match key {
         "withheld" => v.is_null(),
-        "name" => v.is_null() || v.as_str().is_some_and(|n| !n.is_empty()),
+        "name" | "owner_name" => v.is_null() || v.as_str().is_some_and(|n| !n.is_empty()),
         "person" => {
             v.is_null() || (v["owner"] == json!(true) && v["public_id"].as_str() == Some(owner))
         }

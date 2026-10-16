@@ -14,7 +14,6 @@
   // (spec 2026-10-06-agent-questions-and-inbox §9.6): **Page**, with the open
   // questions about the live page above its threads, and **Inbox** with the
   // unread count.
-  import Roster from "../../../shell/src/ui/Roster.svelte";
   import Sidebar from "../../../shell/src/ui/Sidebar.svelte";
   import SidebarQuestions from "../../../shell/src/q/SidebarQuestions.svelte";
   import type { Thread } from "../../../shell/src/threads";
@@ -235,7 +234,7 @@
       {/if}
     </header>
     {#if s.page && (people.length || agents.length)}
-      <div class="who"><Roster {people} {agents} working={s.working} me={s.viewer?.public_id ?? null} max={5} presence={presenceMap(s.presence ?? [])} /></div>
+      <div class="who">{#await import("../../../shell/src/ui/Roster.svelte") then { default: Roster }}<Roster {people} {agents} working={s.working} me={s.viewer?.public_id ?? null} max={5} presence={presenceMap(s.presence ?? [])} />{/await}</div>
     {/if}
     {#if owner}
       <div class="tabs" role="tablist" aria-label="Side panel">
