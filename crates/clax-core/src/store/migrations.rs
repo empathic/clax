@@ -533,7 +533,9 @@ pub const MIGRATIONS: &[&str] = &[
     // secret kept as its SHA-256 (`viewer_cookies`, §21.4); until now it was
     // the viewer's row ID, which the migration's Rust step hashes for every
     // viewer but the owner as a `legacy` cookie, so existing LAN viewers
-    // keep working until their cookie is replaced.
+    // keep working until their cookie is replaced; a replaced legacy
+    // cookie keeps naming its viewer for a short while (`replaced_at`),
+    // for the requests already in flight with it.
     "ALTER TABLE viewers ADD COLUMN person INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE viewers ADD COLUMN person_revoked_at TEXT;
     ALTER TABLE viewers ADD COLUMN rights_json TEXT;
@@ -542,7 +544,8 @@ pub const MIGRATIONS: &[&str] = &[
         sha256 TEXT PRIMARY KEY,
         viewer_id TEXT NOT NULL REFERENCES viewers(id),
         created_at TEXT NOT NULL,
-        legacy INTEGER NOT NULL DEFAULT 0
+        legacy INTEGER NOT NULL DEFAULT 0,
+        replaced_at TEXT
     );
     CREATE INDEX viewer_cookies_by_viewer ON viewer_cookies(viewer_id);
 

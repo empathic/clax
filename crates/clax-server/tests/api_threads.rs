@@ -646,8 +646,8 @@ async fn viewer_routes_refuse_foreign_origins() {
 #[tokio::test]
 async fn malformed_viewer_cookies_are_skipped_and_disagreeing_ones_name_no_one() {
     let ts = TestServer::spawn().await;
-    let a = clax_core::secret::viewer_cookie().expose().to_string();
-    let b = clax_core::secret::viewer_cookie().expose().to_string();
+    let a = ts.viewer(None).await.cookie;
+    let b = ts.viewer(None).await.cookie;
     let me = |cookies: String| {
         let ts = &ts;
         async move {
@@ -682,7 +682,7 @@ async fn malformed_viewer_cookies_are_skipped_and_disagreeing_ones_name_no_one()
 async fn the_viewer_cookie_and_session_ids_never_leave_the_daemon() {
     let ts = TestServer::spawn().await;
     let (sid, aid) = setup(&ts).await;
-    let cookie = clax_core::secret::viewer_cookie().expose().to_string();
+    let cookie = ts.viewer(None).await.cookie;
     let pair = format!("clax_viewer={cookie}");
     let mut ev = ts.events(&format!("?artifact={aid}")).await;
     let me = ts

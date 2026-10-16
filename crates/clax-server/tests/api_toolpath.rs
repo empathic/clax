@@ -116,20 +116,17 @@ async fn ctx_lan_viewer_has_public_id_and_name() {
         (&v["git"], &v["git_capture"], &v["call"]),
         (&Value::Null, &Value::Null, &Value::Null)
     );
-    // A first-time viewer is recorded under the public ID they are given.
+    // A cookie that names no viewer (one the daemon never minted) makes
+    // none: the request is anonymous, and stays so.
     let fresh = "01J9Z3K4M5N6P7Q8R9S0T1V2W3";
-    let v = ctx(lan
-        .get(&url)
-        .header("cookie", format!("clax_viewer={fresh}")))
-    .await;
-    assert_eq!(v["actor"]["type"], "viewer");
-    let pid = v["actor"]["public_id"].as_str().unwrap().to_string();
-    assert!(clax_core::is_public_id(&pid), "{v}");
-    let again = ctx(lan
-        .get(&url)
-        .header("cookie", format!("clax_viewer={fresh}")))
-    .await;
-    assert_eq!(again["actor"]["public_id"], pid.as_str());
+    for _ in 0..2 {
+        let v = ctx(lan
+            .get(&url)
+            .header("cookie", format!("clax_viewer={fresh}")))
+        .await;
+        assert_eq!(v["actor"], json!({"type": "anonymous"}), "{v}");
+    }
+    assert!(ts.store.get_viewer(fresh).unwrap().is_none());
     // No cookie: anonymous.
     let v = ctx(lan.get(&url)).await;
     assert_eq!(v["actor"], json!({"type": "anonymous"}));
@@ -2300,7 +2297,8 @@ async fn a_refused_thread_request_writes_nothing() {
     assert_eq!(viewers(), before, "no viewer row was made");
     assert_eq!(last_seq(&ts), seq);
     // Accepted by the access checks and refused by the store (an empty
-    // comment): the requester's viewer row may be made, but no event.
+    // comment): no viewer row is made for a cookie that names none, and no
+    // event.
     let res = ts
         .client
         .post(format!("{url}/comments"))
@@ -2312,8 +2310,8 @@ async fn a_refused_thread_request_writes_nothing() {
     assert_eq!(res.status(), 400);
     assert_eq!(
         viewers(),
-        before + 1,
-        "the requester's row, as ensure_viewer makes it"
+        before,
+        "a cookie that names no viewer makes none"
     );
     assert_eq!(last_seq(&ts), seq, "{:?}", events_since(&ts, seq));
 }

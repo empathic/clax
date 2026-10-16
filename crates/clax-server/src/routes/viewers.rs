@@ -44,10 +44,13 @@ async fn respond(s: AppState, who: Identity, name: Option<String>) -> Result<Res
                 };
                 return Ok((before.and_then(|v| v.display_name), after, None));
             }
-            // A browser without a cookie gets a new viewer and a fresh
-            // secret; one holding a legacy cookie (its viewer's row ID,
-            // from before migration 24) gets a fresh secret for the same
-            // viewer, or a new viewer when it names none (spec §21.4).
+            // A browser without a cookie, or with one that names no viewer
+            // (a value the daemon never minted, say one another local
+            // server planted), gets a new viewer and a fresh secret: a
+            // cookie is never adopted. One holding a legacy cookie (its
+            // viewer's row ID, from before migration 24) gets a fresh
+            // secret for the same viewer, also while that cookie's
+            // replacement is recent (spec §21.4).
             let mint = |st: &clax_core::Store| -> clax_core::Result<clax_core::secret::Secret> {
                 let c = clax_core::secret::viewer_cookie();
                 st.mint_viewer(c.expose(), who.local)?;
@@ -59,7 +62,8 @@ async fn respond(s: AppState, who: Identity, name: Option<String>) -> Result<Res
                     Some((_, secret)) => Some(secret),
                     None => Some(mint(st)?),
                 },
-                Some(_) => None,
+                Some(c) if st.get_viewer(c)?.is_some() => None,
+                Some(_) => Some(mint(st)?),
             };
             let cookie = fresh
                 .as_ref()
