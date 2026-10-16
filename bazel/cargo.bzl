@@ -72,13 +72,16 @@ def cargo_package(
         warm-up stamp and CLAX_TEST_BIN.
       test_env: environment variables for every test.
       shard_counts: {test name: shards}.
-      split_tests: {[[test]] name: [module stems of tests/ it does not
-        declare]}: each module that test's root declares, gated in the root
-        by `#[cfg(any(not(clax_split), clax_split = "<module>"))]`, becomes
-        a test target of its own, `<test>__<module>`, and the root's own
-        tests `<test>__root`; `common` is shared by all. An edit then
-        recompiles, relinks and reruns only the modules that depend on it,
-        in parallel.
+      split_tests: {[[test]] name: {"not": [module stems of tests/ it does
+        not declare], "groups": N}}: the modules that test's root declares,
+        each gated in the root by
+        `#[cfg(any(not(clax_split), clax_split = "<module>"))]`, are dealt
+        in name order into N test targets, `<test>__1` … `<test>__N`, with
+        the root's own tests in the first; `common` is in all. Each target
+        compiles and links its modules alone, so they build and run in
+        parallel, and an edit to one test file rebuilds one target. N trades
+        that against what every test binary repeats: codegen of the shared
+        dependencies' generics, and a link.
       build_script_env: environment for the build script ($(execpath) works).
       build_script_data: files the build script reads.
       visibility: the library's and binaries' visibility.
@@ -253,12 +256,17 @@ def cargo_package(
         if name in split_tests:
             stems = [f.split("/")[-1][:-len(".rs")] for f in native.glob(["tests/*.rs"], allow_empty = True)]
             stems += [f.split("/")[-2] for f in native.glob(["tests/*/mod.rs"], allow_empty = True)]
-            modules = [m for m in stems if m not in roots and m != "common" and m not in split_tests[name]]
-            for module in sorted(modules) + ["root"]:
+            spec = split_tests[name]
+            modules = ["root"] + sorted([m for m in stems if m not in roots and m != "common" and m not in spec["not"]])
+            groups = spec["groups"]
+            for g in range(groups):
+                cfgs = ["--cfg", "clax_split"]
+                for module in modules[g::groups]:
+                    cfgs += ["--cfg", 'clax_split="%s"' % module]
                 kwargs = test_kwargs(name, integration = True, uses_clax = name)
-                kwargs["rustc_flags"] = rustc_flags + ["--cfg", "clax_split", "--cfg", 'clax_split="%s"' % module]
+                kwargs["rustc_flags"] = rustc_flags + cfgs
                 _test(
-                    name = "%s__%s" % (name, module),
+                    name = "%s__%d" % (name, g + 1),
                     srcs = test_srcs,
                     crate_features = features,
                     crate_name = name.replace("-", "_"),

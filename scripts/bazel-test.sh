@@ -7,14 +7,14 @@
 #   scripts/bazel-test.sh --web        # the web UI's and Pi's checks, browser tests included
 #   scripts/bazel-test.sh --ci         # every check, in this order:
 #       1. scripts/bazel-sync.sh --check (a stale derived file stops the run)
-#       2. package.json and pnpm-lock.yaml agree; clippy on each crate with
-#          its own clippy.toml
+#       2. package.json and pnpm-lock.yaml agree
 #       3. one `bazel test`: the Rust format check and clippy with
 #          -D warnings, the Rust tests, the web and Pi checks, the script
 #          gates (performance is measured on demand, `just perf`, and gates
 #          nothing)
-#       4. the checks that run outside Bazel (docs/bazel.md, "Run outside Bazel")
-#       5. no hard link in Bazel's output base or the disk cache
+#       4. clippy on each crate with its own clippy.toml
+#       5. the checks that run outside Bazel (docs/bazel.md, "Run outside Bazel")
+#       6. no hard link in Bazel's output base or the disk cache
 #   scripts/bazel-test.sh [...] ARGS   # ARGS go to every `bazel test`
 #
 # A failing phase does not stop the later ones, but for the first. Nothing
@@ -193,15 +193,6 @@ if [ "$ci" = 1 ]; then
     # What `pnpm install --frozen-lockfile` refuses: Bazel builds from the
     # lockfile alone, so a dependency missing from it must fail here.
     _run "package.json and pnpm-lock.yaml agree" ./scripts/pnpm-lock-check.py web plugins/pi
-    # Cargo reads a crate's clippy.toml from beside its Cargo.toml. Bazel
-    # takes one for the whole command, so each crate that has one is also
-    # linted on its own, with it.
-    for toml in crates/*/clippy.toml; do
-        [ -f "$toml" ] || continue
-        crate="$(dirname "$toml")"
-        _build "rust clippy ($crate)" --config=clippy \
-            "--@rules_rust//rust/settings:clippy.toml=//$crate:clippy.toml" "//$crate/..."
-    done
     # Everything else in one invocation, so builds, lints and tests share
     # the machine instead of queueing: the format check and clippy over
     # every crate, and every test (Rust, web, Pi, script gates). The perf
@@ -209,6 +200,16 @@ if [ "$ci" = 1 ]; then
     _pass "every check" \
         '//crates/... + tests(//...) except attr(tags, "\bmanual\b", //...)' \
         --config=fmt --config=clippy "$@"
+    # Cargo reads a crate's clippy.toml from beside its Cargo.toml. Bazel
+    # takes one for the whole command, so each crate that has one is also
+    # linted on its own, with it, after the invocation above has built
+    # everything it needs.
+    for toml in crates/*/clippy.toml; do
+        [ -f "$toml" ] || continue
+        crate="$(dirname "$toml")"
+        _build "rust clippy ($crate)" --config=clippy \
+            "--@rules_rust//rust/settings:clippy.toml=//$crate:clippy.toml" "//$crate/..."
+    done
     # Outside Bazel (docs/bazel.md, "Run outside Bazel"): each reads git
     # (tags, tracked files), runs just or cargo, writes into the checkout,
     # or runs Bazel itself.
@@ -227,7 +228,11 @@ if [ "$ci" = 1 ]; then
         '*Cargo.toml' Cargo.lock '*BUILD.bazel' bazel/ 'scripts/bazel-*' scripts/test-release.files
         '*package.json' '*pnpm-lock.yaml' '*pnpm-workspace.yaml')
     _run_keyed "bazel sync" "${bazel_setup[@]}" -- ./scripts/bazel-sync.test.sh
-    _run_keyed "bazel web" "${bazel_setup[@]}" -- ./scripts/bazel-web.test.sh
+    # The web test copies the tree and runs Bazel on it, minutes: it reruns
+    # only when what it tests changes, rules_js's setup for web/.
+    _run_keyed "bazel web" .bazelrc .bazelversion MODULE.bazel MODULE.bazel.lock bazel/js/ \
+        web/BUILD.bazel web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml \
+        scripts/bazel-web.test.sh -- ./scripts/bazel-web.test.sh
     _run "no hard links in Bazel's directories" \
         ./scripts/check-bazel-no-hard-links.sh "$("$bazel" info output_base 2>/dev/null)" "$HOME/.cache/bazel-disk"
 else

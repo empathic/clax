@@ -128,14 +128,16 @@ which declares, with `<lib>` the library's crate name:
   features on in (`clax_server_test`: `test-routes`, `test-support`);
 - `<lib>_lib_test` (unit tests), each binary and its `<bin>_bin_test`,
   and each `[[test]]` under its name (`//crates/clax-cli:descriptors`);
-- for the `integration` tests of clax-server, clax-cli and clax-mcp, one
-  target per module of `tests/integration.rs` (`split_tests`):
-  `//crates/clax-server:integration__api_batch`, …, and `integration__root`
-  for the root's own tests. Each compiles the shared `common` module and its
-  own, so an edit recompiles, relinks and reruns the modules apart and in
-  parallel. The root gates each module with
-  `#[cfg(any(not(clax_split), clax_split = "<module>"))]`; Cargo sets no
-  `clax_split` and builds them all into one binary, as before;
+- for the `integration` tests of clax-server, clax-cli and clax-mcp, the
+  modules of `tests/integration.rs` dealt into a few targets (six, three
+  and two: `//crates/clax-server:integration__1` … `__6`; `split_tests`).
+  Each compiles the shared `common` module and its own modules, so the
+  groups build and run in parallel and an edit to one test file rebuilds
+  one group. More groups would repeat more of what every test binary
+  pays (codegen of the dependencies' generics, a link): one target per
+  module made a clax-core edit compile eight times as much. The root gates
+  each module with `#[cfg(any(not(clax_split), clax_split = "<module>"))]`;
+  Cargo sets no `clax_split` and builds them all into one binary, as before;
 - `build_script` when the crate has one;
 - `rust_sources`, for source scans.
 

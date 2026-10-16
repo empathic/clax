@@ -220,7 +220,7 @@ npm_script_test(
     data = [
         ":dist",
         ":dist_extension",
-        ":files_app",
+        ":files",
         ":node_modules",
     ],
     script = "bundle-size",
