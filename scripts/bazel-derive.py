@@ -1,0 +1,253 @@
+#!/usr/bin/env python3
+"""What the Bazel build derives from the Cargo workspace.
+
+Run by scripts/bazel-sync.sh, which writes or compares the output:
+
+    scripts/bazel-derive.py workspace   -> bazel/workspace.bzl
+    scripts/bazel-derive.py features    fails unless every third-party crate
+                                        Bazel builds has the version and
+                                        features Cargo gives it (features())
+
+workspace: each workspace crate's version, targets, default features, path
+dependencies, the features its tests turn on in other workspace crates, and
+whether it has a build script; and the rustc flags of
+[workspace.lints.rust].
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+import tomllib
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+HOSTS = [
+    "aarch64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+]
+
+
+def read(path):
+    return open(os.path.join(ROOT, path)).read()
+
+
+def fail(message):
+    sys.exit("error: scripts/bazel-derive.py: " + message + "; run just bazel-sync and commit the result")
+
+
+def metadata():
+    out = subprocess.run(
+        ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"],
+        cwd=ROOT, check=True, capture_output=True, text=True).stdout
+    return json.loads(out)
+
+
+def starlark(value):
+    """JSON is Starlark but for its booleans."""
+    text = json.dumps(value, indent=4, sort_keys=True)
+    return text.replace(": true", ": True").replace(": false", ": False")
+
+
+def lint_flags():
+    """rustc flags for [workspace.lints.rust]."""
+    lints = tomllib.loads(read("Cargo.toml")).get("workspace", {}).get("lints", {}).get("rust", {})
+    flags = []
+    for name, spec in sorted(lints.items()):
+        level = spec if isinstance(spec, str) else spec.get("level")
+        extra = {} if isinstance(spec, str) else {k: v for k, v in spec.items() if k not in ("level", "priority")}
+        if name == "unexpected_cfgs":
+            flags += ["--check-cfg=" + c for c in extra.pop("check-cfg", [])]
+        if extra or level not in ("forbid", "deny", "warn", "allow"):
+            sys.exit("error: scripts/bazel-derive.py: [workspace.lints.rust] %s = %r: add its mapping to scripts/bazel-derive.py" % (name, spec))
+        flags.append({"forbid": "-F", "deny": "-D", "warn": "-W", "allow": "-A"}[level] + name.replace("-", "_"))
+    return flags
+
+
+def workspace():
+    meta = metadata()
+    root = meta["workspace_root"]
+
+    def rel(path):
+        return os.path.relpath(path, root)
+
+    packages = {p["name"]: p for p in meta["packages"]}
+
+    def lib_of(p):
+        libs = [t for t in p["targets"] if "lib" in t["kind"] or "rlib" in t["kind"]]
+        if len(libs) > 1:
+            sys.exit("error: scripts/bazel-derive.py: %s has more than one library target" % p["name"])
+        return libs[0] if libs else None
+
+    def label(p):
+        return "//%s:%s" % (rel(os.path.dirname(p["manifest_path"])), lib_of(p)["name"])
+
+    crates = {}
+    for name in sorted(packages):
+        p = packages[name]
+        directory = rel(os.path.dirname(p["manifest_path"]))
+        lib = lib_of(p)
+
+        # The features `default` turns on, without the optional dependencies
+        # they pull in (crate_universe supplies every one of those).
+        enabled, todo = set(), ["default"] if "default" in p["features"] else []
+        while todo:
+            feature = todo.pop()
+            if feature in enabled or feature not in p["features"]:
+                continue
+            enabled.add(feature)
+            todo.extend(f for f in p["features"][feature] if ":" not in f and "/" not in f)
+
+        deps = {"deps": set(), "dev_deps": set()}
+        test_features = {}
+        for d in p["dependencies"]:
+            if not d.get("path"):
+                continue
+            if d["kind"] == "build":
+                sys.exit("error: scripts/bazel-derive.py: %s has a path build-dependency" % name)
+            if not d["uses_default_features"] or d["rename"] or d["optional"]:
+                sys.exit("error: scripts/bazel-derive.py: %s -> %s: only a plain path dependency is supported" % (name, d["name"]))
+            target = packages[d["name"]]
+            if d["kind"] != "dev" and d["features"]:
+                sys.exit("error: scripts/bazel-derive.py: %s -> %s: features on a normal path dependency are not supported" % (name, d["name"]))
+            if d["kind"] == "dev" and d["features"]:
+                key = rel(os.path.dirname(target["manifest_path"]))
+                test_features[key] = sorted(set(test_features.get(key, [])) | set(d["features"]))
+            if d["name"] == name:
+                continue  # a crate's own features for its tests
+            deps["dev_deps" if d["kind"] == "dev" else "deps"].add(label(target))
+        deps["dev_deps"] -= deps["deps"]
+
+        crates[directory] = {
+            "name": name,
+            "version": p["version"],
+            "edition": p["edition"],
+            "lib": lib["name"] if lib else None,
+            "lib_root": rel(lib["src_path"])[len(directory) + 1:] if lib else None,
+            "bins": {
+                t["name"]: rel(t["src_path"])[len(directory) + 1:]
+                for t in p["targets"] if "bin" in t["kind"]
+            },
+            "tests": {
+                t["name"]: rel(t["src_path"])[len(directory) + 1:]
+                for t in p["targets"] if "test" in t["kind"]
+            },
+            "default_features": sorted(enabled),
+            "deps": sorted(deps["deps"]),
+            "dev_deps": sorted(deps["dev_deps"]),
+            "test_features": test_features,
+            "has_build_script": any("custom-build" in t["kind"] for t in p["targets"]),
+        }
+
+    out = [
+        '"""The Cargo workspace, as bazel/cargo.bzl needs it.',
+        "",
+        "Generated by scripts/bazel-sync.sh from cargo metadata. Do not edit.",
+        '"""',
+        "",
+        "CRATES = " + starlark(crates).replace(": null", ": None"),
+        "",
+        "# [workspace.lints.rust] in Cargo.toml, as rustc flags.",
+        "WORKSPACE_RUSTC_FLAGS = " + starlark(lint_flags()),
+    ]
+    return "\n".join(out) + "\n"
+
+
+def bazel_features(hub, triple):
+    """{crate-version: features} Bazel builds a repository's crates with."""
+    lock = json.loads(read("MODULE.bazel.lock"))
+    extension = [v for k, v in lock["moduleExtensions"].items() if k.endswith("extensions.bzl%crate")]
+    if len(extension) != 1:
+        fail("MODULE.bazel.lock has no crate_universe section")
+    out = {}
+    for name, spec in extension[0]["general"]["generatedRepoSpecs"].items():
+        if not name.startswith(hub + "__"):
+            continue
+        build = spec["attributes"].get("build_file_content", "")
+        rule = re.search(r"\nrust_(?:library|proc_macro)\(.*?\n\)\n", build, re.S)
+        if not rule:
+            continue
+        # crate_features = [common] + select({platform: [more]}), either part optional.
+        found = re.search(r"\n    crate_features = (\[.*?\])?(?: \+ )?(?:select\(\{(.*?)\n    \}\))?,\n", rule.group(0), re.S)
+        features = set()
+        if found and found.group(1):
+            features |= set(re.findall(r'"([^"]+)"', found.group(1)))
+        if found and found.group(2):
+            platform = re.search(r'"@rules_rust//rust/platform:%s": \[(.*?)\]' % re.escape(triple), found.group(2), re.S)
+            if platform:
+                features |= set(re.findall(r'"([^"]+)",', platform.group(1)))
+        out[name[len(hub) + 2:]] = features
+    return out
+
+
+def cargo_features(args):
+    """{crate-version: features} of a Cargo build, by `cargo tree`."""
+    tree = subprocess.run(
+        ["cargo", "tree", "--locked", "--prefix", "none", "-f", "{p}|{f}"] + args,
+        cwd=ROOT, check=True, capture_output=True, text=True).stdout
+    out = {}
+    for line in tree.splitlines():
+        if "|" not in line:
+            continue
+        package, features = line.split("|")
+        name, version = package.split()[:2]
+        if name.startswith("clax-"):
+            continue
+        # A line cargo has printed before ends " (*)".
+        features = features.replace(" (*)", "")
+        # Bazel names a version's build metadata with "-" for "+".
+        out.setdefault(name + "-" + version.lstrip("v").replace("+", "-"), set()).update(f for f in features.split(",") if f)
+    return out
+
+
+# Where Bazel's repository has more than Cargo gives a crate. crate_universe
+# keeps one feature list per crate and platform, so what a build script or a
+# proc macro asks of a crate is also what the binary gets of it; Cargo
+# builds the crate twice. Each entry is such a case, accepted for every
+# version of the crate; the check fails on any other difference and on an
+# entry that no longer applies. docs/bazel.md, "Differences from Cargo".
+NATIVE_EXTRA = {
+    # The Bazel debug build embeds the web UI (spec B11): MODULE.bazel adds
+    # debug-embed to rust-embed.
+    "rust-embed": {"debug-embed"},
+}
+
+
+def features():
+    """Fails unless Bazel's third-party crates are Cargo's: on each host, the
+    workspace build (`cargo tree --workspace`, with dev-dependencies) but
+    for NATIVE_EXTRA."""
+    problems = []
+    for host in HOSTS:
+        bazel = bazel_features("crates", host)
+        cargo = cargo_features(["--workspace", "--target", host, "-e", "normal,dev,build"])
+        used = set()
+        for crate in sorted(cargo):
+            name = crate.rsplit("-", 1)[0]
+            if crate not in bazel:
+                problems.append("crates (%s): Cargo builds %s, Bazel does not" % (host, crate))
+                continue
+            missing, extra = cargo[crate] - bazel[crate], bazel[crate] - cargo[crate]
+            if missing:
+                problems.append("crates (%s): %s lacks %s under Bazel" % (host, crate, sorted(missing)))
+            if not extra <= NATIVE_EXTRA.get(name, set()):
+                problems.append("crates (%s): %s has %s more under Bazel than under Cargo; NATIVE_EXTRA in scripts/bazel-derive.py accepts %s" % (
+                    host, crate, sorted(extra), sorted(NATIVE_EXTRA.get(name, set())) or "nothing"))
+            if extra:
+                used.add(name)
+        for name in sorted(set(NATIVE_EXTRA) - used):
+            problems.append("crates (%s): NATIVE_EXTRA lists %s, which has nothing extra any more; remove it" % (host, name))
+    for problem in problems:
+        print("error: " + problem, file=sys.stderr)
+    if problems:
+        fail("Bazel's dependencies differ from Cargo's")
+    return ""
+
+
+if __name__ == "__main__":
+    kinds = {"workspace": workspace, "features": features}
+    if len(sys.argv) != 2 or sys.argv[1] not in kinds:
+        sys.exit(__doc__)
+    sys.stdout.write(kinds[sys.argv[1]]())
