@@ -1,4 +1,3 @@
-
 import 'package:clax_app/agent/failure.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
@@ -51,6 +50,8 @@ void main() {
     String? label,
     ValueListenable<List<String>>? waiting,
     VoidCallback? onCancel,
+    VoidCallback? onTryNow,
+    bool Function(String tid)? isStopped,
   }) async {
     await tester.pumpWidget(
       MaterialApp(
@@ -73,6 +74,8 @@ void main() {
           now: () => _now,
           waitingForConnection: waiting,
           onCancel: onCancel,
+          onTryNow: onTryNow,
+          isStopped: isStopped,
         ),
       ),
     );
@@ -820,24 +823,63 @@ void main() {
     ]);
     final tid = batch.items.single.threadId;
     final waiting = ValueNotifier<List<String>>([tid]);
-    var cancels = 0;
+    var tries = 0;
     await pumpDetail(
       tester,
       rig,
       tid,
       waiting: waiting,
-      onCancel: () => cancels++,
+      onCancel: () {},
+      onTryNow: () => tries++,
     );
     expect(find.text('Waiting for connection'), findsOneWidget);
     expect(find.text('Clax is working on it'), findsNothing);
-    await tester.tap(find.byKey(const ValueKey('thread-cancel')));
-    expect(cancels, 1);
+    await tester.tap(find.byKey(const ValueKey('thread-try-now')));
+    expect(tries, 1);
 
     waiting.value = const [];
     await tester.pump();
     expect(find.text('Waiting for connection'), findsNothing);
     expect(find.text('Clax is working on it'), findsOneWidget);
     expect(find.byKey(const ValueKey('thread-cancel')), findsNothing);
+  });
+
+  testWidgets('Cancel on a waiting thread leaves it reading Cancelled, with '
+      'Send again, never working', (tester) async {
+    final rig = await _seeded();
+    rig.api.sendComment(rig.aid, 'make it blue');
+    final batch = await rig.api.pollFeedback(
+      rig.api.sessionId!,
+      wait: Duration.zero,
+    );
+    await rig.api.ackFeedback(rig.api.sessionId!, [
+      for (final i in batch.items) i.commentId,
+    ]);
+    final tid = batch.items.single.threadId;
+    final stopped = <String>{};
+    // The worker's list still names it until its change ends.
+    final waiting = ValueNotifier<List<String>>([tid]);
+    await pumpDetail(
+      tester,
+      rig,
+      tid,
+      waiting: waiting,
+      onCancel: () => stopped.add(tid),
+      isStopped: stopped.contains,
+    );
+    await tester.tap(find.byKey(const ValueKey('thread-cancel')));
+    await tester.pump();
+    expect(find.text('Cancelled'), findsOneWidget);
+    expect(find.text('Clax is working on it'), findsNothing);
+    expect(find.text('Waiting for connection'), findsNothing);
+
+    await tester.tap(find.byKey(const ValueKey('thread-send-again')));
+    await tester.pump();
+    expect(rig.retries, [tid]);
+    stopped.remove(tid);
+    waiting.value = const [];
+    await tester.pump();
+    expect(find.text('Clax is working on it'), findsOneWidget);
   });
 }
 

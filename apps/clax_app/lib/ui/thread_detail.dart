@@ -141,6 +141,8 @@ class ThreadDetail extends StatefulWidget {
     this.onRun,
     this.waitingForConnection,
     this.onCancel,
+    this.onTryNow,
+    this.isStopped,
   });
 
   /// The comment to land on and highlight.
@@ -183,11 +185,21 @@ class ThreadDetail extends StatefulWidget {
   /// The threads whose change waits for the Claude API's connection: while
   /// it names this thread and the thread reads as sent or working, the
   /// status says "Waiting for connection" (the change goes on by itself
-  /// once the connection is back), with Cancel ([onCancel]) when given.
+  /// once the connection is back), with Try now ([onTryNow]) and Cancel
+  /// ([onCancel]) when given.
   final ValueListenable<List<String>>? waitingForConnection;
 
-  /// Stops the waiting change (the app's Stop).
+  /// Stops this thread's part of the waiting change; the thread then reads
+  /// as stopped ([isStopped]).
   final VoidCallback? onCancel;
+
+  /// Tries the connection at once.
+  final VoidCallback? onTryNow;
+
+  /// Whether a thread was stopped (by Cancel, or the change's Stop) and
+  /// waits to be sent again: a sent or working one then reads "Cancelled",
+  /// with Send again ([onRetry]).
+  final bool Function(String tid)? isStopped;
 
   @override
   State<ThreadDetail> createState() => _ThreadDetailState();
@@ -722,9 +734,10 @@ class _ThreadDetailState extends State<ThreadDetail> {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     var status = threadStatus(t);
-    final waiting =
-        offline &&
-        (status == ThreadStatus.working || status == ThreadStatus.sent);
+    final pending =
+        status == ThreadStatus.working || status == ThreadStatus.sent;
+    final stopped = pending && (widget.isStopped?.call(widget.tid) ?? false);
+    final waiting = offline && pending && !stopped;
     // A change that stopped at a limit offers Keep going, whether it
     // published part of itself (replied) or nothing (failed).
     final keepGoing =
@@ -755,6 +768,13 @@ class _ThreadDetailState extends State<ThreadDetail> {
       String title,
       String line,
     ) = switch (status) {
+      _ when stopped => (
+        Icons.cancel_outlined,
+        scheme.surfaceContainerHighest,
+        scheme.onSurface,
+        'Cancelled',
+        'Clax will not make this change. Send it again to have it made.',
+      ),
       _ when waiting => (
         Icons.cloud_off_outlined,
         scheme.secondaryContainer,
@@ -810,14 +830,36 @@ class _ThreadDetailState extends State<ThreadDetail> {
       ),
     };
     final Widget? action = switch (status) {
-      _ when waiting => switch (widget.onCancel) {
-        final cancel? => OutlinedButton(
-          key: const ValueKey('thread-cancel'),
-          onPressed: cancel,
-          child: const Text('Cancel'),
+      _ when stopped =>
+        widget.onRetry == null
+            ? null
+            : FilledButton.icon(
+                key: const ValueKey('thread-send-again'),
+                onPressed: () => unawaited(_retry()),
+                icon: const Icon(Icons.send, size: 18),
+                label: const Text('Send again'),
+              ),
+      _ when waiting && (widget.onCancel != null || widget.onTryNow != null) =>
+        Wrap(
+          spacing: 8,
+          children: [
+            if (widget.onTryNow case final tryNow?)
+              TextButton(
+                key: const ValueKey('thread-try-now'),
+                onPressed: tryNow,
+                child: const Text('Try now'),
+              ),
+            if (widget.onCancel case final cancel?)
+              OutlinedButton(
+                key: const ValueKey('thread-cancel'),
+                onPressed: () {
+                  cancel();
+                  setState(() {});
+                },
+                child: const Text('Cancel'),
+              ),
+          ],
         ),
-        null => null,
-      },
       ThreadStatus.unsent => FilledButton.icon(
         key: const ValueKey('send-to-clax'),
         onPressed: _busy == null
@@ -850,7 +892,13 @@ class _ThreadDetailState extends State<ThreadDetail> {
       _ => null,
     };
     return Material(
-      key: ValueKey('thread-status-${waiting ? 'offline' : status.name}'),
+      key: ValueKey(
+        'thread-status-${stopped
+            ? 'stopped'
+            : waiting
+            ? 'offline'
+            : status.name}',
+      ),
       color: bg,
       borderRadius: BorderRadius.circular(16),
       child: Padding(
