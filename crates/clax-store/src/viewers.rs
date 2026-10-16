@@ -929,6 +929,19 @@ mod tests {
         assert_eq!(st.owner().unwrap().unwrap().public_id, a.public_id);
     }
 
+    #[test]
+    fn making_the_owner_row_marks_its_words_connected_at_once() {
+        let (_d, st) = store();
+        // Cached while there is no owner yet.
+        assert_eq!(st.connected().unwrap().as_ref(), &Default::default());
+        let owner = st.owner_viewer(true).unwrap();
+        let author = clax_core::visibility::Author::Person(owner.public_id.clone());
+        assert!(
+            !st.connected().unwrap().is_unconnected(&author),
+            "the owner's own words read as unconnected"
+        );
+    }
+
     fn private_doc(st: &crate::Store, aid: &clax_core::ArtifactId, path: &str, json: &str) {
         st.with_write(|c| {
             c.execute(
