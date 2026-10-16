@@ -80,6 +80,7 @@ class ResumingBackend implements AgentBackend {
     this.onOffline,
     this.onResume,
     this.maxResumes = 3,
+    this.maxOfflineResends = 5,
   });
 
   final AgentBackend inner;
@@ -90,17 +91,27 @@ class ResumingBackend implements AgentBackend {
   final void Function()? onResume;
   final int maxResumes;
 
+  /// How many times a run cut in front is sent again before it waits for
+  /// [ApiConnection.nudge] as well as the connection.
+  final int maxOfflineResends;
+
   @override
   String get name => inner.name;
 
   @override
   Future<EditResult> run(AgentRequest request) async {
     final cancel = CancelWatch(request.cancelled);
+    var cuts = 0;
     for (var resumes = 0; ;) {
       if (connection case final c? when !c.online) {
         cancel.check();
         (onOffline ?? onPause)?.call();
-        await Future.any([c.whenOnline, cancel.whenCancelled]);
+        if (cuts > maxOfflineResends) {
+          await Future.any([c.whenNudged, cancel.whenCancelled]);
+          cancel.check();
+          cuts = 0;
+        }
+        await c.waitOnline(cancel.whenCancelled);
         cancel.check();
         onResume?.call();
       }
@@ -114,6 +125,7 @@ class ResumingBackend implements AgentBackend {
         if (!cutByBackground) {
           final c = connection;
           if (c == null) rethrow;
+          cuts++;
           c.lost();
           continue;
         }
@@ -147,8 +159,16 @@ class ResumingBackend implements AgentBackend {
 /// turn waits until the connection is back, then the same request is sent
 /// again; a turn that starts while the API is known unreachable waits
 /// before it is sent at all. These waits are not counted against
-/// [maxResumes]. Without a [connection], a network failure in front is
-/// thrown as before.
+/// [maxResumes]; a turn cut in front more than [maxOfflineResends] times
+/// waits for [ApiConnection.nudge] (the app back in front, or the person's
+/// Try now) before it waits for the connection again, so a connection that
+/// keeps breaking, or a network that passes the probe but not the API,
+/// does not send the turn over and over. Without a [connection], a network
+/// failure in front is thrown as before.
+///
+/// Every cut attempt that reached the API (its stream sent an event) is
+/// told to [TurnHolds.onCutAttempt] before it is sent again, for the run
+/// to count what it was billed.
 ///
 /// A hold has no time limit: it ends when the app is back in the
 /// foreground or the connection is back, then the turn is sent again, or
@@ -177,6 +197,7 @@ class ResumingTurns implements TurnBackend {
     this.onOffline,
     this.onResume,
     this.maxResumes = 3,
+    this.maxOfflineResends = 5,
     this.stallAfter = defaultStallAfter,
   });
 
@@ -195,6 +216,10 @@ class ResumingTurns implements TurnBackend {
   final void Function()? onOffline;
   final void Function()? onResume;
   final int maxResumes;
+
+  /// How many times a turn cut in front is sent again before it also waits
+  /// for [ApiConnection.nudge].
+  final int maxOfflineResends;
   final Duration stallAfter;
 
   @override
@@ -211,6 +236,7 @@ class ResumingTurns implements TurnBackend {
       await _waitOnline(c, holds, cancel);
       onResume?.call();
     }
+    var cuts = 0;
     for (var resumes = 0; ;) {
       final leaves = presence.leaves;
       final watch = _StallWatch(this, holds);
@@ -255,8 +281,12 @@ class ResumingTurns implements TurnBackend {
       } finally {
         watch.stop();
       }
+      if (watch.sawActivity) holds.onCutAttempt?.call();
       if (offline) {
-        await _waitOnline(connection!, holds, cancel);
+        cuts++;
+        final nudge = cuts > maxOfflineResends;
+        if (nudge) cuts = 0;
+        await _waitOnline(connection!, holds, cancel, nudge: nudge);
       } else {
         resumes++;
         await _hold(holds, cancel);
@@ -288,18 +318,24 @@ class ResumingTurns implements TurnBackend {
     cancel.check();
   }
 
-  /// Holds until [c] is online or [cancel] fires (then throws
-  /// [AgentError.cancelled]); resumes the run's clock, which the caller
-  /// paused, however the hold ends.
+  /// Holds until [c] is online, after a [ApiConnection.nudge] first when
+  /// [nudge], or until [cancel] fires (then throws [AgentError.cancelled]);
+  /// resumes the run's clock, which the caller paused, however the hold
+  /// ends.
   Future<void> _waitOnline(
     ApiConnection c,
     TurnHolds holds,
-    CancelWatch cancel,
-  ) async {
+    CancelWatch cancel, {
+    bool nudge = false,
+  }) async {
     try {
       (onOffline ?? onPause)?.call();
       holds.onConnection?.call(true);
-      await Future.any([c.whenOnline, cancel.whenCancelled]);
+      if (nudge) {
+        await Future.any([c.whenNudged, cancel.whenCancelled]);
+        cancel.check();
+      }
+      await c.waitOnline(cancel.whenCancelled);
     } finally {
       holds.resumeClock();
     }
@@ -334,7 +370,11 @@ class _StallWatch {
   /// Whether the stall was found by a failed connection probe in front.
   var offline = false;
 
+  /// Whether the attempt's stream sent an event: it reached the API.
+  var sawActivity = false;
+
   void activity() {
+    sawActivity = true;
     _last = owner.clock.now();
     _leaves = owner.presence.leaves;
   }
