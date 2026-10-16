@@ -145,6 +145,49 @@ _run() {
     echo "── $name took $((SECONDS - start))s ──"
 }
 
+# _key <pathspec...>: a digest of the named files as they are in the working
+# tree (tracked and new, not ignored; a deleted one counts by its name), and
+# of the v* tags.
+_key() {
+    {
+        git tag -l 'v*'
+        git ls-files -co --exclude-standard -z -- "$@" | python3 -c '
+import hashlib, os, sys
+for name in sorted(set(sys.stdin.buffer.read().split(b"\0")) - {b""}):
+    if os.path.isfile(name):
+        with open(name, "rb") as f:
+            print(hashlib.sha256(f.read()).hexdigest(), name.decode(errors="replace"))
+    else:
+        print("gone", name.decode(errors="replace"))
+'
+    } | shasum -a 256 | cut -d' ' -f1
+}
+
+# _run_keyed <name> <pathspec...> -- <command...>: a check outside Bazel
+# that reads only the files its pathspecs name (and the v* tags), skipped
+# when it passed last time on the same files, as Bazel caches a passed test.
+# The record is kept under target/, so a fresh checkout (CI) runs every one.
+_run_keyed() {
+    local name="$1" specs=() key stamp
+    shift
+    while [ "$1" != "--" ]; do specs+=("$1"); shift; done
+    shift
+    key="$(_key "${specs[@]}")"
+    stamp="target/bazel-checks/$(printf '%s' "$name" | tr -c 'A-Za-z0-9\n' '-').passed"
+    if [ -n "$key" ] && [ "$(cat "$stamp" 2>/dev/null)" = "$key" ]; then
+        echo "── $name: passed on these files before (${stamp}) ──"
+        return
+    fi
+    local before="${#failed[@]}"
+    _run "$name" "$@"
+    if [ "${#failed[@]}" = "$before" ] && [ -n "$key" ]; then
+        mkdir -p "$(dirname "$stamp")"
+        printf '%s\n' "$key" > "$stamp"
+    else
+        rm -f "$stamp"
+    fi
+}
+
 if [ "$ci" = 1 ]; then
     _build "rust fmt check" --config=fmt //crates/...
     # Cargo reads a crate's clippy.toml from beside its Cargo.toml. Bazel
@@ -178,14 +221,22 @@ if [ "$ci" = 1 ]; then
     # Outside Bazel (docs/bazel.md, "Run outside Bazel"): each reads git
     # (tags, tracked files), runs just or cargo, writes into the checkout,
     # or runs Bazel itself.
-    _run "plugins" ./scripts/test-plugins.sh
+    # Each outside check that takes seconds is keyed on the files it reads
+    # (_run_keyed): a whole-tree key where they are many, as for the plugin
+    # checks, which read the plugins, skills, docs, versions and tags.
+    _run_keyed "plugins" . -- ./scripts/test-plugins.sh
     _run "justfile" ./scripts/test-justfile.sh
-    _run "dev scripts" ./scripts/test-dev.sh
+    _run_keyed "dev scripts" . -- ./scripts/test-dev.sh
     _run "extension signing" ./scripts/test-extension-signing.sh
     _run "no hard links (tracked files)" ./scripts/check-no-hard-links.sh
     _run "pipefail pipes (tracked files)" ./scripts/check-pipefail-pipes.sh
-    _run "bazel sync" ./scripts/bazel-sync.test.sh
-    _run "bazel web" ./scripts/bazel-web.test.sh
+    # These two test Bazel's setup, not the code: they rerun when a Cargo,
+    # Bazel or package manifest, or Bazel's own files, change.
+    bazel_setup=(.bazelrc .bazelversion MODULE.bazel MODULE.bazel.lock rust-toolchain.toml
+        '*Cargo.toml' Cargo.lock '*BUILD.bazel' bazel/ 'scripts/bazel-*' scripts/test-release.files
+        '*package.json' '*pnpm-lock.yaml' '*pnpm-workspace.yaml')
+    _run_keyed "bazel sync" "${bazel_setup[@]}" -- ./scripts/bazel-sync.test.sh
+    _run_keyed "bazel web" "${bazel_setup[@]}" -- ./scripts/bazel-web.test.sh
     _pass "perf gates" 'attr(tags, "\bexclusive\b", tests(//...)) except attr(tags, "\bmanual\b", //...)' "$@"
     _run "no hard links in Bazel's directories" \
         ./scripts/check-bazel-no-hard-links.sh "$("$bazel" info output_base 2>/dev/null)" "$HOME/.cache/bazel-disk"

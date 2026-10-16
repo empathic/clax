@@ -156,7 +156,13 @@ checkout, or runs Bazel itself: `scripts/test-plugins.sh` (git tags),
 `scripts/test-extension-signing.sh` (writes `web/dist-extension`),
 `scripts/check-no-hard-links.sh` and `scripts/check-pipefail-pipes.sh` over
 the tracked files (their own tests are Bazel tests),
-`scripts/bazel-sync.test.sh` and `scripts/bazel-web.test.sh`. Tests that
+`scripts/bazel-sync.test.sh` and `scripts/bazel-web.test.sh`. The slow
+ones are skipped when they passed last time on the same files, as Bazel
+caches a passed test: the plugin and dev-script checks are keyed on the
+whole working tree and the `v*` tags, the two Bazel-setup tests on the
+Cargo, Bazel and package manifests and Bazel's own files. The records live
+in `target/bazel-checks/` (delete it to rerun them); a fresh checkout, as in
+CI, runs every one. Tests that
 need a real harness CLI, a model or credentials (`scripts/verify-harnesses.sh`
 against real harnesses, the smoke scripts) stay native and manual, as
 before.
