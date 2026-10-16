@@ -97,3 +97,51 @@ npm_script_build(
     script = "build:e2e",
     visibility = ["//visibility:public"],
 )
+
+# The extension's key directory, which clax-core's build script reads
+# (crates/clax-core/build.rs).
+filegroup(
+    name = "extension_key",
+    srcs = glob(["extension/key/key.pub.b64"], allow_empty = True) + ["extension/key/.gitkeep"],
+    visibility = ["//crates/clax-core:__pkg__"],
+)
+
+# The extension's manifest, which clax-core embeds.
+exports_files(
+    ["extension/manifest.json"],
+    visibility = ["//crates:__subpackages__"],
+)
+
+# The shell's files the Rust code and its tests include, to check that both
+# sides agree (include_str! in crates/clax-server and crates/clax-cli).
+filegroup(
+    name = "shell_cases",
+    srcs = glob([
+        "shell/src/*-cases.json",
+        "shell/src/view/frame-host.ts",
+        "shell/src/view/haiku.json",
+    ]) + ["shell/artifact.html"],
+    visibility = ["//crates:__subpackages__"],
+)
+
+# The contract files clax-server embeds (src/routes/shell.rs).
+filegroup(
+    name = "contract_files",
+    srcs = glob(["contract/**"], exclude = ["**/.qual"]),
+    visibility = ["//crates:__subpackages__"],
+)
+
+# A crate whose compile inputs include a generated directory has its sources
+# placed in bazel-bin by rules_rust, so its include_str!s of files outside
+# the crate resolve there: these are those files, copied beside it.
+copy_to_bin(
+    name = "shell_cases_bin",
+    srcs = [":shell_cases"],
+    visibility = ["//crates:__subpackages__"],
+)
+
+copy_to_bin(
+    name = "contract_bin",
+    srcs = [":contract_files"],
+    visibility = ["//crates:__subpackages__"],
+)

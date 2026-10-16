@@ -19,6 +19,7 @@ CRATES = {
             "//crates/clax-fake-exe:clax_fake_exe"
         ],
         "edition": "2024",
+        "features": [],
         "has_build_script": True,
         "lib": None,
         "lib_root": None,
@@ -42,6 +43,7 @@ CRATES = {
             "//crates/clax-fake-exe:clax_fake_exe"
         ],
         "edition": "2024",
+        "features": [],
         "has_build_script": True,
         "lib": "clax_core",
         "lib_root": "src/lib.rs",
@@ -56,6 +58,7 @@ CRATES = {
         "deps": [],
         "dev_deps": [],
         "edition": "2024",
+        "features": [],
         "has_build_script": False,
         "lib": "clax_fake_exe",
         "lib_root": "src/lib.rs",
@@ -74,6 +77,7 @@ CRATES = {
             "//crates/clax-fake-exe:clax_fake_exe"
         ],
         "edition": "2024",
+        "features": [],
         "has_build_script": False,
         "lib": "clax_hooks",
         "lib_root": "src/lib.rs",
@@ -95,6 +99,7 @@ CRATES = {
             "//crates/clax-server:clax_server"
         ],
         "edition": "2024",
+        "features": [],
         "has_build_script": False,
         "lib": "clax_mcp",
         "lib_root": "src/lib.rs",
@@ -121,6 +126,10 @@ CRATES = {
             "//crates/clax-hooks:clax_hooks"
         ],
         "edition": "2024",
+        "features": [
+            "test-routes",
+            "test-support"
+        ],
         "has_build_script": True,
         "lib": "clax_server",
         "lib_root": "src/lib.rs",

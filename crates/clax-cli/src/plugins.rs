@@ -8,7 +8,9 @@
 use rust_embed::RustEmbed;
 use std::path::Path;
 
-/// One embed per embedded directory: a debug build reads embeds from disk on
+/// One embed per embedded directory, under `CLAX_PLUGINS_DIR` (set by
+/// `build.rs`: the checkout's `plugins/`, or Bazel's copy of it). A debug
+/// build reads embeds from disk on
 /// every call, so one embed of all of `plugins/` would walk
 /// `plugins/pi/node_modules` each time.
 macro_rules! plugin_dir {
@@ -22,12 +24,12 @@ macro_rules! plugin_dir {
         struct $name;
     };
 }
-plugin_dir!(ClaudeCode, "../../plugins/claude-code/", "claude-code/");
-plugin_dir!(Codex, "../../plugins/clax/", "clax/");
-plugin_dir!(Grok, "../../plugins/clax-grok/", "clax-grok/");
-plugin_dir!(PiSrc, "../../plugins/pi/src/", "pi/src/");
-plugin_dir!(PiSkills, "../../plugins/pi/skills/", "pi/skills/");
-plugin_dir!(PiScripts, "../../plugins/pi/scripts/", "pi/scripts/");
+plugin_dir!(ClaudeCode, "$CLAX_PLUGINS_DIR/claude-code/", "claude-code/");
+plugin_dir!(Codex, "$CLAX_PLUGINS_DIR/clax/", "clax/");
+plugin_dir!(Grok, "$CLAX_PLUGINS_DIR/clax-grok/", "clax-grok/");
+plugin_dir!(PiSrc, "$CLAX_PLUGINS_DIR/pi/src/", "pi/src/");
+plugin_dir!(PiSkills, "$CLAX_PLUGINS_DIR/pi/skills/", "pi/skills/");
+plugin_dir!(PiScripts, "$CLAX_PLUGINS_DIR/pi/scripts/", "pi/scripts/");
 
 const CLAUDE_MARKETPLACE: &str = include_str!("../../../.claude-plugin/marketplace.json");
 const CODEX_MARKETPLACE: &str = include_str!("../../../.agents/plugins/marketplace.json");

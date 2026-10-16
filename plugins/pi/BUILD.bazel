@@ -33,3 +33,29 @@ copy_to_bin(
     ],
     visibility = ["//visibility:public"],
 )
+
+# The files clax embeds (//plugins:embedded).
+filegroup(
+    name = "embedded",
+    srcs = glob(
+        [
+            "src/**",
+            "skills/**",
+            "scripts/**",
+        ],
+        exclude = ["**/.qual"],
+    ) + [
+        "README.md",
+        "package.json",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# A crate whose compile inputs include a generated directory has its sources
+# placed in bazel-bin by rules_rust, so its include_str!s of files outside
+# the crate resolve there: these are those files, copied beside it.
+copy_to_bin(
+    name = "embedded_bin",
+    srcs = [":embedded"],
+    visibility = ["//visibility:public"],
+)

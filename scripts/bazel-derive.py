@@ -135,6 +135,7 @@ def workspace():
                 for t in p["targets"] if "test" in t["kind"]
             },
             "default_features": sorted(enabled),
+            "features": sorted(p["features"]),
             "deps": sorted(deps["deps"]),
             "dev_deps": sorted(deps["dev_deps"]),
             "test_features": test_features,
@@ -210,8 +211,10 @@ def cargo_features(args):
 # entry that no longer applies. docs/bazel.md, "Differences from Cargo".
 NATIVE_EXTRA = {
     # The Bazel debug build embeds the web UI (spec B11): MODULE.bazel adds
-    # debug-embed to rust-embed.
+    # debug-embed to rust-embed and its two halves.
     "rust-embed": {"debug-embed"},
+    "rust-embed-impl": {"debug-embed"},
+    "rust-embed-utils": {"debug-embed"},
 }
 
 
