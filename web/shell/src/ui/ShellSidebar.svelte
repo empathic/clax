@@ -7,14 +7,15 @@
   // (spec 2026-10-08-multi-agent-multi-person §9.5), whichever of the
   // thread's comments it holds; loaded once one is sent.
   // With no target chosen, a Send goes to this viewer's own most recent
-  // live agent (`ownTarget`), chosen for it as it sends.
+  // live agent (`ownTarget`), chosen for it as it sends; a LAN viewer's, to
+  // the owner's (`sendsFor`).
   import type { Thread } from "../threads";
-  import { ownTarget } from "../view/send-menu";
+  import { ownTarget, sendsFor } from "../view/send-menu";
   import type { ArtifactController, Loaded, ViewState } from "../view/artifact-controller";
   import Sidebar from "./Sidebar.svelte";
 
   let { ctl, s }: { ctl: ArtifactController; s: ViewState & { data: Loaded } } = $props();
-  const target = $derived(s.sendTo ?? ownTarget(s.agents, s.me?.public_id));
+  const target = $derived(s.sendTo ?? ownTarget(s.agents, sendsFor(s.agents, s.me)));
   const go = (send: () => unknown) => { if (target && target !== s.sendTo) ctl.chooseTarget(target); send(); };
 </script>
 

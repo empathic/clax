@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { ownTarget } from "./send-menu";
+import { ownTarget, sendsFor } from "./send-menu";
 import { defaultTarget, liveAgents, rememberTarget } from "./send-target";
 
 // As the daemon lists them: live first, most recently active first.
@@ -37,5 +37,26 @@ describe("ownTarget (spec 2026-10-08 §10)", () => {
     expect(ownTarget([mixed[0]], "u_alex")).toBeNull();
     expect(ownTarget(mixed, undefined)).toBeNull();
     expect(ownTarget(mixed, "u_lan")).toBeNull();
+  });
+});
+
+describe("sendsFor (spec 2026-10-08 §10, O6)", () => {
+  const ALEX = { public_id: "u_alex", name: "Alex", owner: true };
+  const SAM = { public_id: "u_sam", name: "Sam", owner: false };
+  const both = [{ handle: "a_sam", harness: "claude", live: true, person: SAM }, { handle: "a_mine", harness: "claude", live: true, person: ALEX }];
+  const v = (o: object) => ({ public_id: "u_x", display_name: null, created_at: "", ...o });
+  it("is the viewer's own public ID for the owner's and a connected person's browser", () => {
+    expect(sendsFor(both, v({ public_id: "u_alex", owner: true }))).toBe("u_alex");
+    expect(sendsFor(both, v({ public_id: "u_sam", person: true }))).toBe("u_sam");
+  });
+  it("is the owner's for a LAN viewer, so one press goes to the owner's newest live agent", () => {
+    expect(sendsFor(both, v({ public_id: "u_lan" }))).toBe("u_alex");
+    expect(ownTarget(both, sendsFor(both, v({ public_id: "u_lan" })))).toBe("a_mine");
+    // With only other people's agents, none: the menu opens.
+    expect(ownTarget([both[0]], sendsFor([both[0]], v({ public_id: "u_lan" })))).toBeNull();
+  });
+  it("is unknown before the viewer is known", () => {
+    expect(sendsFor(both, null)).toBeUndefined();
+    expect(ownTarget(both, sendsFor(both, undefined))).toBeNull();
   });
 });

@@ -35,8 +35,8 @@ describe("the Send menu", () => {
     expect(sendGroups(AGENTS, "u_alex", [null])[0].agents[0].first).toBe("You approve first");
     // A connected person's browser: Sam's agents are theirs; the owner's are named.
     expect(sendGroups(AGENTS, "u_sam", [null]).map(g => [g.label, g.agents[0].first])).toEqual([["Your agents", null], ["Alex's agents", "Alex approves first"], ["Mia's agents", null]]);
-    // A viewer who has no agents: every group is someone's.
-    expect(sendGroups(AGENTS, "u_lan", []).map(g => g.label)).toEqual(["Sam's agents", "Alex's agents", "Mia's agents"]);
+    // A viewer who has no agents (a LAN viewer): every group is someone's, the owner's first.
+    expect(sendGroups(AGENTS, "u_lan", []).map(g => g.label)).toEqual(["Alex's agents", "Sam's agents", "Mia's agents"]);
     // A daemon from before people names no person: its agents are this viewer's, as the one-press Send takes them.
     expect(sendGroups([{ handle: "a_old", harness: "claude", live: true }], "u_alex")).toEqual([{ label: "Your agents", mine: true, agents: [{ handle: "a_old", name: "claude", person: null, first: null }] }]);
   });
@@ -61,6 +61,44 @@ describe("the Send menu", () => {
     flush(() => items[2].click());
     expect(onChoose).toHaveBeenCalledWith("a_sam");
     expect(m.root.querySelector('[role="menu"]')).toBeNull();
+  });
+
+  it("takes the keyboard: focus on the checked agent, arrows, Home and End, Escape back to the caret", async () => {
+    stubFirsts([]);
+    const onChoose = vi.fn();
+    const m = mount(SendButton, { label: "Send to clax-claude", agents: AGENTS, names, target: "a_mp", me: "u_alex", onSend: vi.fn(), onChoose });
+    const caret = m.root.querySelector<HTMLButtonElement>('[aria-label="Choose the agent"]')!;
+    caret.focus();
+    flush(() => caret.click());
+    await settle();
+    const name = () => (document.activeElement as HTMLElement).querySelector(".send-name")?.textContent;
+    expect(name()).toBe("clax-multi-person");
+    const press = (key: string, on: Element = document.activeElement!) => flush(() => on.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })));
+    press("ArrowDown");
+    expect(name()).toBe("sam-web");
+    press("End");
+    expect(name()).toBe("mia-docs");
+    press("ArrowDown");
+    expect(name()).toBe("clax-claude");
+    press("ArrowUp");
+    expect(name()).toBe("mia-docs");
+    press("Home");
+    expect(name()).toBe("clax-claude");
+    press("Escape");
+    expect(m.root.querySelector('[role="menu"]')).toBeNull();
+    expect(document.activeElement).toBe(caret);
+    // Opened again, Escape with the focus back on the caret closes it too.
+    flush(() => caret.click());
+    await settle();
+    caret.focus();
+    press("Escape", caret);
+    expect(m.root.querySelector('[role="menu"]')).toBeNull();
+    // Choosing gives the focus back to the caret.
+    flush(() => caret.click());
+    await settle();
+    flush(() => (document.activeElement as HTMLButtonElement).click());
+    expect(onChoose).toHaveBeenCalledWith("a_mp");
+    expect(document.activeElement).toBe(caret);
   });
 
   it("offers the caret for one live agent when it is another person's", () => {

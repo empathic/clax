@@ -22,6 +22,7 @@
   import { agentName, historyOf, isOutdated } from "../view/history-model";
   import { needsTicking, pageLabel, sidebarSections } from "../view/sidebar-model";
   import { type Working, agentNames, newestFirst, stripText, threadAgent, threadMarker } from "../view/working-model";
+  import { sendsFor } from "../view/send-menu";
   import { tick } from "svelte";
   import SendButton from "./SendButton.svelte";
   import ThreadCard from "./ThreadCard.svelte";
@@ -130,6 +131,8 @@
   });
   // The thread's people who approve a send to their agent first; for the selection, any of its threads'.
   const me = $derived(p.me ? p.me.public_id : undefined);
+  // Whose agents a Send takes as this viewer's: a LAN viewer's go to the owner's (`sendsFor`).
+  const own = $derived(sendsFor(p.agents ?? [], p.me));
   // Who approves first is asked only by a browser that may learn it (the
   // owner's, a connected person's: spec 2026-10-08 §18): its artifact.
   const asks = $derived(p.me?.owner || p.me?.person ? p.threads[0]?.artifact_id : undefined);
@@ -139,7 +142,7 @@
   // to …"); with none live, the publishing agent's name.
   const chosen = $derived(p.agents?.find(a => a.handle === p.sendTo));
   const pick = $derived(!chosen && !!p.agents?.some(a => a.live));
-  const theirs = $derived(!!chosen?.person && (me === undefined ? !chosen.person.owner : chosen.person.public_id !== me));
+  const theirs = $derived(!!chosen?.person && (own === undefined ? !chosen.person.owner : chosen.person.public_id !== own));
   const target = $derived(chosen ? `${agentsByHandle.get(chosen.handle)}${theirs ? ` (${chosen.person!.name}'s)` : ""}` : pick ? "…" : p.agent);
   const ticked = $derived(new Set(p.selection?.ids ?? []));
   // The cards in the order shown, for a Shift range: the Addressed group, Open, then Detached.
@@ -199,7 +202,7 @@
       checked={ticked.has(t.id)} onToggle={p.onToggle && selectable(t, false) ? toggleCard : undefined}
       onSelect={p.onSelect} onSend={p.onSend} onResolve={resolve} onReply={p.onReply} onHover={p.onHover}>
       {#snippet send(guard: (e: Event, act: () => void) => void)}
-        <SendButton label={`Send to ${target}`} agents={p.agents ?? []} names={agentsByHandle} target={p.sendTo ?? null} {me} aid={asks} threads={[t.id]}
+        <SendButton label={`Send to ${target}`} agents={p.agents ?? []} names={agentsByHandle} target={p.sendTo ?? null} {me} {own} aid={asks} threads={[t.id]}
           onSend={e => guard(e, () => p.onSend(t))} onChoose={h => p.onChoose?.(h)} />
       {/snippet}
     </ThreadCard>
@@ -222,7 +225,7 @@
   {/each}
   {#if unsentCount && p.onSendUnsent && pick}
     <!-- No target yet: the bar opens the Send menu to choose one. -->
-    <div class="send-unsent pick"><SendButton label={unsentLabel(unsentCount, target)} agents={p.agents ?? []} names={agentsByHandle} target={null} {me} aid={asks}
+    <div class="send-unsent pick"><SendButton label={unsentLabel(unsentCount, target)} agents={p.agents ?? []} names={agentsByHandle} target={null} {me} {own} aid={asks}
       threads={p.threads.filter(t => t.status === "open" && !t.sent_to_agent).map(t => t.id)} onSend={() => {}} onChoose={h => p.onChoose?.(h)} /></div>
   {:else if unsentCount && p.onSendUnsent}
     <button type="button" class="primary send-unsent" disabled={p.batchBusy}
@@ -234,7 +237,7 @@
       <SelectionBar count={p.selection.ids.length} note={p.batchNote ?? ""} busy={p.batchBusy ?? false}
         onNote={v => p.onNote?.(v)} onClear={() => p.onClear?.()} onSend={() => p.onSendSelection?.()}>
         {#snippet send(go: (e: Event) => void)}
-          <SendButton label={sendLabel(p.selection!.ids.length, target)} agents={p.agents ?? []} names={agentsByHandle} target={p.sendTo ?? null} {me} aid={asks} threads={p.selection!.ids}
+          <SendButton label={sendLabel(p.selection!.ids.length, target)} agents={p.agents ?? []} names={agentsByHandle} target={p.sendTo ?? null} {me} {own} aid={asks} threads={p.selection!.ids}
             disabled={p.batchBusy} onSend={go} onChoose={h => p.onChoose?.(h)} />
         {/snippet}
       </SelectionBar>
