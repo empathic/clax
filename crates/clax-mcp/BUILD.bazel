@@ -1,9 +1,8 @@
 load("//bazel:cargo.bzl", "cargo_package")
 
 cargo_package(
-    # Each module of tests/integration.rs is a test target of its own
-    # (bazel/cargo.bzl).
-    split_tests = {"integration": []},
+    # The modules of tests/integration.rs in two test targets (bazel/cargo.bzl).
+    split_tests = {"integration": {"groups": 2, "not": []}},
     test_data = ["//plugins/pi:test_fixtures"],
     tests_use_clax = [
         "clax_mcp_lib_test",

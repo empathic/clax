@@ -1,9 +1,9 @@
 load("//bazel:cargo.bzl", "cargo_package")
 
 cargo_package(
-    # Each module of tests/integration.rs is a test target of its own
-    # (bazel/cargo.bzl); these three are tests/web_dist.rs's.
-    split_tests = {"integration": ["bridge_dev", "shell_boot", "shell_entries"]},
+    # The modules of tests/integration.rs in six test targets (bazel/cargo.bzl);
+    # these three are tests/web_dist.rs's.
+    split_tests = {"integration": {"groups": 6, "not": ["bridge_dev", "shell_boot", "shell_entries"]}},
     build_script_data = ["//web:dist"],
     # The web UI the library embeds (src/routes/shell.rs).
     build_script_env = {"CLAX_WEB_DIST_DIR": "$(execpath //web:dist)"},
