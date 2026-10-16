@@ -659,6 +659,11 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   StreamSubscription<Object?>? _homeTiles;
   StreamSubscription<HostMessage>? _homePage;
 
+  /// Whether this launch may still end in the home app's first `shown`
+  /// ([homeUsable]): not once the built-in home screen or the daemon's
+  /// failure showed instead.
+  var _launchOpen = true;
+
   /// Takes the snapshot as something is pushed over the home screen.
   late final _coverWatch = _HomeCoverWatch(
     () => unawaited(_snapshotter?.take()),
@@ -1190,6 +1195,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         }
       case Failed():
         _wasUp = false;
+        _launchOpen = false;
         _nav.currentState?.popUntil((r) => r.isFirst);
       case Starting() || Restarting():
         break;
@@ -2033,14 +2039,16 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   bool get _homeInFront =>
       _presence.foreground && _nav.currentState?.canPop() == false;
 
-  /// Follows [host]'s home app: its first `shown` ends [homeUsable] (the
-  /// home route lifts the launch's snapshot), and its tile reports and
-  /// covers take the snapshot.
+  /// Follows [host]'s home app: its first `shown` ends [homeUsable] when
+  /// nothing else showed first (the home route lifts the launch's
+  /// snapshot), and its tile reports and covers take the snapshot.
   void _watchHome(HomeHost host) {
     _homeShown = host.shown.listen((aid) {
+      if (!_launchOpen) return;
+      _launchOpen = false;
       _s.timings.stop(
         homeUsable,
-        extra: {'artifact': aid, 'snapshot': _homeCover != null},
+        extra: {'artifact': aid, 'snapshot': _homeCover?.covering ?? false},
       );
     });
     if (_s.homeSnapshots case final store?) {
@@ -2176,6 +2184,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       recovery: _homeRecovery,
       snapshot: cover,
       onSnapshotPainted: _snapshotPainted,
+      onBuiltIn: () => _launchOpen = false,
       fallback: (_, banner) => Launcher(
         api: _api,
         open: _open,
