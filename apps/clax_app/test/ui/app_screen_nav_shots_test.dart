@@ -3,7 +3,8 @@
 // to look at. A stand-in status bar (clock, cutout, icons) is drawn over the
 // top inset. Off by default; run with
 //   CLAX_NAV_SHOTS=1 flutter test --update-goldens test/ui/app_screen_nav_shots_test.dart
-// and look at target/flutter-app/nav/*.png.
+// and look at target/flutter-app/nav/*.png (or CLAX_NAV_SHOTS_OUT, a
+// directory relative to this test's directory).
 import 'dart:async';
 import 'dart:io';
 
@@ -22,7 +23,9 @@ import '../support/fake_surface.dart';
 import '../support/fake_voice.dart';
 
 final _on = Platform.environment['CLAX_NAV_SHOTS'] == '1';
-const _out = '../../../../target/flutter-app/nav';
+final _out =
+    Platform.environment['CLAX_NAV_SHOTS_OUT'] ??
+    '../../../../target/flutter-app/nav';
 
 Future<void> _fonts() async {
   final root = Platform.environment['FLUTTER_ROOT']!;
@@ -51,10 +54,18 @@ class _PageSurface extends FakeAppSurface {
           height: 56,
           color: const Color(0xFF2F5D50),
           padding: const EdgeInsets.symmetric(horizontal: 16),
-          alignment: Alignment.centerLeft,
-          child: const Text(
-            'My runs',
-            style: TextStyle(color: Colors.white, fontSize: 20),
+          child: const Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'My runs',
+                  style: TextStyle(color: Colors.white, fontSize: 20),
+                ),
+              ),
+              Icon(Icons.add, color: Colors.white),
+              SizedBox(width: 16),
+              Icon(Icons.more_vert, color: Colors.white),
+            ],
           ),
         ),
         const Padding(
