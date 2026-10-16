@@ -3388,3 +3388,37 @@ async fn a_resolve_that_withdraws_every_row_tells_its_readers_alone() {
     })
     .await;
 }
+
+/// A `withheld` summary names its authors' public IDs (`author_ids`),
+/// which is what `ask`'s `approval.author` takes; its `author` is their
+/// display name, which `ask` refuses.
+#[tokio::test]
+async fn a_withheld_summary_names_the_public_ids_ask_takes() {
+    let t = Two::new().await;
+    let tid = t.mia_thread("please").await;
+    t.mia_sends_to_sam(&tid).await;
+    let fb = t.sam_feedback("tier=piggyback").await;
+    let w = &fb["withheld"][0];
+    assert_eq!(w["author"], json!("Mia"), "{fb}");
+    assert_eq!(w["author_ids"], json!([t.w.mia_public]), "{fb}");
+    let sid = t.w.sam_session.clone();
+    let ask = |author: Value| {
+        let (sid, aid, tid) = (sid.clone(), t.aid.clone(), tid.clone());
+        let t = &t;
+        async move {
+            t.sam_agent(
+                "POST",
+                &format!("/api/sessions/{sid}/approvals"),
+                Some(json!({"artifact_id": aid, "thread_id": tid, "author": author})),
+            )
+            .await
+        }
+    };
+    let (status, v) = ask(w["author"].clone()).await;
+    assert_eq!(
+        (status, v["error"]["code"].clone()),
+        (400, json!("invalid_args"))
+    );
+    let (status, v) = ask(w["author_ids"][0].clone()).await;
+    assert!((200..300).contains(&status), "{status} {v}");
+}

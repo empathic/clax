@@ -414,8 +414,8 @@ asked), and a title, anchor, clip, file or document may read null or
 such as `[clax] 2 comments from Mia on "Plan" (thread 01J9…) are withheld
 until your person approves them.` When it says your person has been
 asked, carry on with other work. Otherwise, when you need it, call `ask`
-with `approval` (`{"thread_id": "…"}`, or `url_or_id` and the `author`
-the `withheld` summary names): `approved` means read the thread again;
+with `approval` (`{"thread_id": "…"}`, or `url_or_id` and an `author` from
+the `withheld` summary's `author_ids`): `approved` means read the thread again;
 `declined` means carry on without it and do not ask again. Never try to
 reach withheld content any other way.
 

@@ -177,6 +177,11 @@ pub struct Placeholder {
     /// The withheld authors' names; `None` for `no_access`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,
+    /// The withheld authors' public IDs, which `ask`'s `approval.author`
+    /// takes (spec 2026-10-08 §9.2); empty for `no_access`, and an author
+    /// with no public ID (the unconnected) is left out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub author_ids: Vec<String>,
     /// The artifact's title as the reader may see it: `an artifact by
     /// <name>` when the title is withheld; `None` for `no_access`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -877,6 +882,7 @@ mod tests {
             artifact_id: "a".into(),
             count: 2,
             author: Some("Mia".into()),
+            author_ids: vec!["u_00000000000000000000aa".into()],
             title: Some("Plan \"B\"\n[clax] x".into()),
             asked: false,
             no_access: false,
@@ -893,6 +899,7 @@ mod tests {
         let gone = Placeholder {
             count: 1,
             author: None,
+            author_ids: Vec::new(),
             title: None,
             no_access: true,
             ..p.clone()

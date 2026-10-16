@@ -119,7 +119,8 @@ the daemon has no value for is `null`.
 Beside `feedback`, a result may carry `answers` (late answers to your
 questions, see "Agent questions"), `withheld` (one entry per author and
 thread whose comments sent to you are withheld until your person approves
-them: `{thread_id, artifact_id, count, author, title, asked}`; and one per
+them: `{thread_id, artifact_id, count, author, author_ids, title, asked}`,
+`author` their names and `author_ids` their public IDs; and one per
 thread whose comments are held because you may no longer read its
 artifact: `{thread_id, artifact_id, count, asked: false, no_access: true}`;
 see "What reaches an agent") and `notes` (notes from Clax itself, such as what a
@@ -138,10 +139,12 @@ Pi's own validation message (`Validation failed for tool ...`), not JSON.
 These come from the tool layer itself, not the daemon:
 
 - `daemon_unreachable`: the daemon could not be found, started, or connected
-  to. Extra field `log`, the daemon log path (`<CLAX_HOME>/logs/daemon.log`).
+  to. Extra field `log`, the daemon log path (`<CLAX_HOME>/logs/daemon.log`);
+  on a connected machine (remote mode) there is no `log`, and the message
+  says the daemon and its log are on the owner's machine.
 - `timeout`: a request to the daemon passed its client-side deadline. Extra
-  fields `detail` and `log`. For a publish, the outcome is unknown; read the
-  artifact before retrying.
+  fields `detail` and `log` (no `log` in remote mode). For a publish, the
+  outcome is unknown; read the artifact before retrying.
 - `bad_response`: the daemon answered with a success status but a body that
   could not be read.
 - `internal` (Pi only): an unexpected exception inside the extension.
@@ -2260,7 +2263,7 @@ nothing; the note is kept in the daemon's memory until that poll.
 | `url_or_id` | Optional, with `questions`: the artifact, or a web page's URL (its live page), the question is about. |
 | `timeout_s` | Seconds to wait, raised to 1 and capped at 600; default 600. Under Codex (whose MCP tool timeout is 60 s) the default and the cap are 50. |
 | `cancel` | With `question_id`: withdraw the question. |
-| `approval` | Instead of `questions`: ask the session's person to let the agent see what is withheld from it (spec 2026-10-08 §9.2), `{url_or_id?, thread_id?, author?}` (`author` the public ID a `withheld` summary names). |
+| `approval` | Instead of `questions`: ask the session's person to let the agent see what is withheld from it (spec 2026-10-08 §9.2), `{url_or_id?, thread_id?, author?}` (`author` a public ID from a `withheld` summary's `author_ids`). |
 | `approval_id` | Keep waiting on an approval request this session made. |
 
 ```json

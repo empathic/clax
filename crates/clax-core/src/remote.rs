@@ -470,6 +470,10 @@ pub struct Signer {
     host: String,
     clock: Clock,
     offset: AtomicI64,
+    /// The `remote.json` this signer was loaded from, if any: whether it
+    /// still exists tells a refusal's message whether `clax connect --off`
+    /// already ran.
+    config_path: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Signer {
@@ -495,7 +499,14 @@ impl Signer {
             host: u.host,
             clock: system_clock(),
             offset: AtomicI64::new(0),
+            config_path: None,
         })
+    }
+
+    /// This signer, loaded from `remote.json` at `path`.
+    pub fn loaded_from(mut self, path: PathBuf) -> Signer {
+        self.config_path = Some(path);
+        self
     }
 
     /// This signer reading `clock`.
@@ -681,10 +692,20 @@ pub fn sign_headers(
 /// signer's daemon and what to do.
 pub fn refusal_message(code: &str, message: &str, signer: &Signer) -> String {
     if code == "grant_revoked" {
-        format!(
-            "this machine was disconnected from {}: run `clax connect --off`, then connect again with a new invite",
-            signer.base()
-        )
+        // `clax connect --off` removes `remote.json`; asking for it again
+        // after it ran would send the person in a circle.
+        let off_ran = signer.config_path.as_ref().is_some_and(|p| !p.exists());
+        if off_ran {
+            format!(
+                "this machine was disconnected from {}: connect again with a new invite (`clax connect`), then restart this agent",
+                signer.base()
+            )
+        } else {
+            format!(
+                "this machine was disconnected from {}: run `clax connect --off`, then connect again with a new invite",
+                signer.base()
+            )
+        }
     } else {
         message.to_string()
     }
@@ -1095,6 +1116,7 @@ impl SessionFiles {
         cred: &SessionCredential,
     ) -> std::io::Result<()> {
         let dir = self.private_dir()?;
+        self.prune();
         let file = |parent_started_s: Option<u64>| {
             let mut bytes = serde_json::to_vec(&CredentialFile {
                 session: cred.session.clone(),
@@ -1152,6 +1174,71 @@ impl SessionFiles {
         Ok(handle.into())
     }
 
+    /// Marks every one of `keys`' files that holds session `session` as in
+    /// use now (its modification time), so [`SessionFiles::prune`] keeps
+    /// the files of a session that lives longer than [`STALE_FILE_AFTER`].
+    pub fn touch(&self, keys: &[SessionKey<'_>], session: &str) {
+        use nix::fcntl::OFlag;
+        let Ok(Some(dir)) = self.open_dir() else {
+            return;
+        };
+        for k in keys {
+            let Some(name) = k.file_name() else { continue };
+            if !matches!(self.read_file(k), Ok(Some(f)) if f.session == session) {
+                continue;
+            }
+            if let Ok(fd) = nix::fcntl::openat(
+                &dir,
+                name.as_str(),
+                no_follow() | OFlag::O_RDONLY | OFlag::O_NONBLOCK,
+                nix::sys::stat::Mode::empty(),
+            ) {
+                let _ = std::fs::File::from(fd).set_modified(std::time::SystemTime::now());
+            }
+        }
+    }
+
+    /// Removes the files no session will be found by again: a parent-PID
+    /// file whose process is gone (or whose PID now names another
+    /// process), and any file, or leftover temporary file, not written or
+    /// marked in use ([`SessionFiles::touch`]) for [`STALE_FILE_AFTER`]. A
+    /// crashed harness never removes its own. Every registration and join
+    /// that writes a file runs it ([`SessionFiles::write`]).
+    pub fn prune(&self) {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return;
+        };
+        let now = std::time::SystemTime::now();
+        for e in entries.flatten() {
+            let Ok(name) = e.file_name().into_string() else {
+                continue;
+            };
+            // Never follows a link: `symlink_metadata`, and only regular
+            // files go.
+            let Ok(meta) = std::fs::symlink_metadata(e.path()) else {
+                continue;
+            };
+            if !meta.is_file() {
+                continue;
+            }
+            let old = meta
+                .modified()
+                .ok()
+                .and_then(|m| now.duration_since(m).ok())
+                .is_some_and(|age| age > STALE_FILE_AFTER);
+            let dead_parent = parent_pid_of(&name).is_some_and(|pid| {
+                !matches!(
+                    self.read_named(&name),
+                    Ok(Some(f)) if f.parent_started_s.is_some()
+                        && f.parent_started_s == process_started(pid)
+                )
+            });
+            if old || dead_parent {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+
     /// Removes every one of `keys`' files that holds session `session`,
     /// leaving another session's file alone.
     pub fn remove(&self, keys: &[SessionKey<'_>], session: &str) {
@@ -1164,6 +1251,25 @@ impl SessionFiles {
             }
         }
     }
+}
+
+/// How long a credential file may go unwritten and unmarked before
+/// [`SessionFiles::prune`] removes it. A live shim marks its files at each
+/// heartbeat; a remote session ends after 30 minutes without contact, and
+/// one that idled out gets a new file when it registers again.
+pub const STALE_FILE_AFTER: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+
+/// The PID in a parent-PID file's name (`<harness>-p-<pid>.json`).
+fn parent_pid_of(name: &str) -> Option<u32> {
+    let (harness, rest) = name.strip_suffix(".json")?.split_once('-')?;
+    if !harness.bytes().all(|b| b.is_ascii_lowercase()) {
+        return None;
+    }
+    let pid = rest.strip_prefix("p-")?;
+    if !pid.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    pid.parse().ok().filter(|p| *p > 1)
 }
 
 /// Writes `bytes` to `name` in directory `dir`, 0600: to a new file beside
@@ -1225,7 +1331,9 @@ impl Remote {
             return Ok(None);
         };
         let key = load_key(home)?;
-        let signer = Signer::new(key, &config.url).map_err(RemoteError::JsonUnreadable)?;
+        let signer = Signer::new(key, &config.url)
+            .map_err(RemoteError::JsonUnreadable)?
+            .loaded_from(home.remote_json());
         Ok(Some(Remote {
             config,
             signer: Arc::new(signer),
@@ -1482,6 +1590,25 @@ mod tests {
         Signer::new(KeyPair::generate(), "http://192.168.1.5:7480")
             .unwrap()
             .with_clock(Arc::new(move || now))
+    }
+
+    #[test]
+    fn grant_revoked_asks_for_connect_off_only_while_the_connection_is_on_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("remote.json");
+        std::fs::write(&file, "{}").unwrap();
+        let s = signer_at(1_760_000_000).loaded_from(file.clone());
+        let on_file = refusal_message("grant_revoked", "x", &s);
+        assert!(on_file.contains("run `clax connect --off`"), "{on_file}");
+        // `clax connect --off` ran while this agent kept running.
+        std::fs::remove_file(&file).unwrap();
+        let off = refusal_message("grant_revoked", "x", &s);
+        assert!(!off.contains("--off"), "{off}");
+        assert!(off.contains("connect again with a new invite"), "{off}");
+        assert_eq!(
+            refusal_message("busy", "the daemon is busy", &s),
+            "the daemon is busy"
+        );
     }
 
     #[test]
@@ -1830,6 +1957,77 @@ mod session_file_tests_2 {
             .write("codex", Some("r2-h"), Some(me), None, &cred("R2"))
             .unwrap();
         assert_eq!(files.read(&key).unwrap().unwrap().session, "R2");
+    }
+
+    #[test]
+    fn writing_a_credential_prunes_the_files_no_session_will_use() {
+        let tmp = tempfile::tempdir().unwrap();
+        let files = SessionFiles::at(tmp.path().join("remote-sessions"));
+        let me = std::process::id();
+        let age = |name: &str, secs: u64| {
+            let f = std::fs::File::options()
+                .write(true)
+                .open(files.dir().join(name))
+                .unwrap();
+            f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(secs))
+                .unwrap();
+        };
+        // A live harness process's file, and a session file in use.
+        files
+            .write("claude", Some("live-h"), Some(me), None, &cred("L"))
+            .unwrap();
+        // A session file a crashed harness left, a week and more ago.
+        files
+            .write("claude", Some("crashed-h"), None, None, &cred("C"))
+            .unwrap();
+        age("claude-s-crashed-h.json", STALE_FILE_AFTER.as_secs() + 60);
+        // A session whose harness session ID looks like a parent-PID name.
+        files
+            .write("claude", Some("x-p-7"), None, None, &cred("X"))
+            .unwrap();
+        // A parent-PID file of a process that is gone: its PID names
+        // another process now (this one, started later).
+        files
+            .write("codex", None, Some(me), None, &cred("D"))
+            .unwrap();
+        let dead = files.dir().join(format!("codex-p-{me}.json"));
+        let mut v: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&dead).unwrap()).unwrap();
+        v["parent_started_s"] = 1.into();
+        std::fs::write(&dead, v.to_string()).unwrap();
+        // A session file older than the limit but marked in use.
+        files
+            .write("claude", Some("long-h"), None, None, &cred("G"))
+            .unwrap();
+        age("claude-s-long-h.json", STALE_FILE_AFTER.as_secs() + 60);
+        files.touch(
+            &[SessionKey::Harness {
+                harness: "claude",
+                id: "long-h",
+            }],
+            "G",
+        );
+        files
+            .write("pi", Some("new-h"), None, None, &cred("N"))
+            .unwrap();
+        let mut left: Vec<String> = std::fs::read_dir(files.dir())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            [
+                format!("claude-p-{me}.json"),
+                "claude-s-live-h.json".to_string(),
+                "claude-s-long-h.json".to_string(),
+                "claude-s-x-p-7.json".to_string(),
+                "pi-s-new-h.json".to_string(),
+            ]
+        );
+        assert_eq!(parent_pid_of("codex-p-42.json"), Some(42));
+        assert_eq!(parent_pid_of("claude-s-x-p-7.json"), None);
+        assert_eq!(parent_pid_of("codex-p-1.json"), None);
     }
 
     #[test]

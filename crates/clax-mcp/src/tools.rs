@@ -961,7 +961,13 @@ impl ClaxTools {
     }
 
     fn fail(&self, e: ClientError) -> CallToolResult {
-        render::client_error(e, &self.log_path)
+        render::client_error(e, self.daemon_log())
+    }
+
+    /// The daemon log errors name: this home's, unless the daemon is
+    /// another machine's (remote mode), whose log is there.
+    fn daemon_log(&self) -> Option<&std::path::Path> {
+        (!self.client.is_remote()).then_some(self.log_path.as_path())
     }
 
     /// What `url_or_id` names ([`crate::target::target`]), judged against
@@ -1867,7 +1873,7 @@ impl ClaxTools {
             } else {
                 json!({})
             };
-            render::client_error_with(e, &self.log_path, extra)
+            render::client_error_with(e, self.daemon_log(), extra)
         })?;
         Ok(self.ask_result(&v["question"], v["waited_s"].as_u64().unwrap_or(0)))
     }
@@ -1932,7 +1938,7 @@ impl ClaxTools {
             } else {
                 json!({})
             };
-            render::client_error_with(e, &self.log_path, extra)
+            render::client_error_with(e, self.daemon_log(), extra)
         })?;
         Ok(approval_result(&v))
     }
@@ -2561,7 +2567,7 @@ impl ClaxTools {
     }
 
     #[tool(
-        description = "Ask the person one to four questions in Clax and wait for the answers (up to `timeout_s`, default 600 s). Each question has a short `header` (at most 12 characters) and two to four `options` (`label`, optional `description`, `preview` text, `recommended`) or none for a free-text answer; `multi_select` allows several; the person may also type an \"Other\" answer. Pass `url_or_id` when the question is about a page. If the result says `call_again`, call `ask` again with `question_id`. The answers come back in `reply`, in the person's own words. To ask your person to let you see content withheld from you, pass `approval` (`url_or_id`, optional `thread_id`, and `author` from the `withheld` summary) instead of `questions`: the result's `status` is `approved`, `declined` or `open` (then call again with `approval_id`).",
+        description = "Ask the person one to four questions in Clax and wait for the answers (up to `timeout_s`, default 600 s). Each question has a short `header` (at most 12 characters) and two to four `options` (`label`, optional `description`, `preview` text, `recommended`) or none for a free-text answer; `multi_select` allows several; the person may also type an \"Other\" answer. Pass `url_or_id` when the question is about a page. If the result says `call_again`, call `ask` again with `question_id`. The answers come back in `reply`, in the person's own words. To ask your person to let you see content withheld from you, pass `approval` (`url_or_id`, optional `thread_id`, and `author`, a public ID from the `withheld` summary's `author_ids`) instead of `questions`: the result's `status` is `approved`, `declined` or `open` (then call again with `approval_id`).",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

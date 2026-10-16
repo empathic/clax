@@ -111,30 +111,42 @@ fn error_object(err: Value) -> CallToolResult {
 /// `daemon_unreachable` naming `log`; a request past its deadline is `timeout`
 /// (also naming `log`); an unparseable success body is `bad_response`; an API
 /// error passes the daemon's `error` object through unchanged (so a conflict
-/// keeps its `current`).
-pub fn client_error(e: ClientError, log: &Path) -> CallToolResult {
+/// keeps its `current`). `log` is `None` for the daemon of another machine
+/// (remote mode), whose log is there: the errors then name none and say so.
+pub fn client_error(e: ClientError, log: Option<&Path>) -> CallToolResult {
     client_error_with(e, log, json!({}))
 }
 
 /// [`client_error`] with the fields of `extra` (a JSON object) added to
 /// `error`.
-pub fn client_error_with(e: ClientError, log: &Path, extra: Value) -> CallToolResult {
+pub fn client_error_with(e: ClientError, log: Option<&Path>, extra: Value) -> CallToolResult {
     let add = |mut v: Value| {
         if let (Some(o), Value::Object(x)) = (v.as_object_mut(), extra.clone()) {
             o.extend(x);
         }
         v
     };
+    let with_log = |mut v: Value| {
+        if let (Some(o), Some(l)) = (v.as_object_mut(), log) {
+            o.insert("log".into(), json!(l.to_string_lossy()));
+        }
+        add(v)
+    };
     match e {
         ClientError::Unreachable(m) => error(
             "daemon_unreachable",
-            format!("the clax daemon did not respond ({m}); see its log"),
-            add(json!({"log": log.to_string_lossy()})),
+            match log {
+                Some(_) => format!("the clax daemon did not respond ({m}); see its log"),
+                None => format!(
+                    "the owner's clax daemon did not respond ({m}); it and its log are on the owner's machine"
+                ),
+            },
+            with_log(json!({})),
         ),
         ClientError::Timeout(m) => error(
             "timeout",
             "the daemon did not respond in time; for a publish, read the artifact before retrying",
-            add(json!({"detail": m, "log": log.to_string_lossy()})),
+            with_log(json!({"detail": m})),
         ),
         ClientError::BadResponse(m) => error(
             "bad_response",
@@ -154,6 +166,28 @@ mod tests {
             .iter()
             .filter_map(|c| c.as_text().map(|t| t.text.clone()))
             .collect()
+    }
+
+    #[test]
+    fn an_unreachable_remote_daemon_names_no_local_log() {
+        let err = |log| {
+            let r = client_error(ClientError::Unreachable("refused".into()), log);
+            let v: Value = serde_json::from_str(&texts(&r)[0]).unwrap();
+            v["error"].clone()
+        };
+        let local = err(Some(Path::new("/h/logs/daemon.log")));
+        assert_eq!(local["log"], json!("/h/logs/daemon.log"));
+        assert!(local["message"].as_str().unwrap().ends_with("see its log"));
+        let remote = err(None);
+        assert_eq!(remote["code"], json!("daemon_unreachable"));
+        assert!(remote.get("log").is_none(), "{remote}");
+        assert!(
+            remote["message"]
+                .as_str()
+                .unwrap()
+                .contains("the owner's machine"),
+            "{remote}"
+        );
     }
 
     #[test]

@@ -89,8 +89,8 @@ out="$("$bin" connect "$invite" --name "$slug-laptop" --yes --no-browser 2>&1)" 
 printf '%s\n' "$out"
 
 # One agent of the person, registered by its SessionStart hook from a
-# scratch project. A hook's join sends no repository, so the agent is named
-# after its harness (`claude`) until an MCP shim joins with the repository.
+# scratch project. The hook's join sends the project's repository and
+# branch, so the agent's derived name comes from that repository.
 project="$home/work/$slug-notes"
 mkdir -p "$project/.git"
 printf 'ref: refs/heads/main\n' > "$project/.git/HEAD"
