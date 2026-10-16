@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { HERE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
 
 const ROOT = join(HERE, "target/e2e-publish");
-const TOKEN = "e2e-owner-token-" + Math.random().toString(36).slice(2);
+const TOKEN = "e2e-owner-token-" + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 const SECRET = "e2e setup secret " + Math.random().toString(36).slice(2);
 const LIMIT = 30_000;
 const tick = (ms) => new Promise((r) => setTimeout(r, ms));
