@@ -2498,6 +2498,47 @@ void main() {
     });
   });
 
+  group('the New version toast without the stream', () {
+    Finder toast() => find.byKey(const ValueKey('newer-toast'));
+
+    testWidgets('the worker landing a version offers it with no newer from '
+        'the shell, and Reload loads it; the shell\'s later newer for it is '
+        'not offered again', (tester) async {
+      final rig = await pumpScreen(tester);
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      rig.worker.add(WorkerLanded(rig.aid, 4));
+      await tester.pump();
+      expect(toast(), findsOneWidget);
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.tap(find.text('Reload'));
+      await tester.pump();
+      expect(rig.surface.hostCalls.whereType<ReloadLatest>(), hasLength(1));
+      // It fades; the stream's newer for the same version comes late.
+      await tester.pump(const Duration(seconds: 10));
+      await tester.pumpAndSettle();
+      expect(toast(), findsNothing);
+      rig.surface.push(const NewerMsg(4));
+      await tester.pumpAndSettle();
+      expect(toast(), findsNothing);
+    });
+
+    testWidgets('leaving the app screen takes the toast with it', (
+      tester,
+    ) async {
+      final rig = await pumpScreen(tester, pushed: true);
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      rig.surface.push(const NewerMsg(4));
+      await tester.pump();
+      expect(toast(), findsOneWidget);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.text('Launcher'), findsOneWidget);
+      expect(toast(), findsNothing);
+    });
+  });
+
   group('back goes back in the app first', () {
     Future<_Rig> pushed(WidgetTester tester) async {
       final rig = await pumpScreen(tester, pushed: true);
@@ -2522,6 +2563,22 @@ void main() {
       expect(find.byType(AppScreen), findsNothing);
       expect(find.text('Launcher'), findsOneWidget);
       expect(rig.surface.hostCalls.whereType<GoBack>(), hasLength(1));
+    });
+
+    testWidgets('back with a composer open and the panel closed cancels the '
+        'draft, before the page\'s history or leaving', (tester) async {
+      final rig = await pushed(tester);
+      rig.surface.push(const HistoryMsg(back: true));
+      rig.surface.push(_Rig.draft);
+      await tester.pump();
+      // The panel closes; the composer stays.
+      await twoFingerSwipe(tester, 120);
+      expect(find.byKey(const ValueKey('app-panel')), findsNothing);
+      await tester.binding.handlePopRoute();
+      await tester.pump();
+      expect(rig.surface.hostCalls.whereType<CancelDraft>(), hasLength(1));
+      expect(rig.surface.hostCalls.whereType<GoBack>(), isEmpty);
+      expect(find.byType(AppScreen), findsOneWidget);
     });
 
     testWidgets('back closes the comment bar before going back in the page', (
