@@ -8,7 +8,6 @@ import '../agent/tools/support.dart' show StepClock;
 void main() {
   late StepClock clock;
   late bool reachable;
-  late bool foreground;
   late int probes;
 
   ApiConnection connection() => ApiConnection(
@@ -17,13 +16,11 @@ void main() {
       return reachable;
     },
     clock: clock,
-    foreground: () => foreground,
   );
 
   setUp(() {
     clock = StepClock();
     reachable = false;
-    foreground = true;
     probes = 0;
   });
 
@@ -95,15 +92,16 @@ void main() {
     unawaited(c.waitOnline());
     var nudged = false;
     unawaited(c.whenNudged.then((_) => nudged = true));
-    foreground = false;
+    c.foreground = false;
     await after(const Duration(minutes: 10));
     expect(probes, lessThanOrEqualTo(1));
     final seen = probes;
     await after(const Duration(minutes: 10));
     expect(probes, seen, reason: 'no probing in the background');
 
-    foreground = true;
-    c.nudge();
+    c
+      ..foreground = true
+      ..nudge();
     await pumpEventQueue();
     expect(probes, seen + 1, reason: 'a check at once');
     expect(nudged, isTrue);

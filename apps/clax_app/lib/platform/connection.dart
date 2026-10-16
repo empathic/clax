@@ -11,7 +11,7 @@ import '../daemon/clock.dart';
 ///
 /// It starts [online] and says so until a run reports the API unreachable
 /// ([lost]). While a run waits for it ([waitOnline]) and the app is in the
-/// foreground ([foreground]), it probes the API ([probe]) every interval,
+/// [foreground], it probes the API ([probe]) every interval,
 /// from [firstProbe] doubling up to [maxProbe] after each failed probe,
 /// until a probe answers; then every wait ends. Nothing is probed while no
 /// run waits, or in the background. A loss within [maxProbe] of the API
@@ -23,14 +23,12 @@ import '../daemon/clock.dart';
 /// run that gave up resending waits for one. Listeners hear each change of
 /// [online].
 class ApiConnection extends ChangeNotifier {
-  ApiConnection({
-    required this._probe,
-    Clock? clock,
-    bool Function()? foreground,
-  }) : _clock = clock ?? const SystemClock(),
-       _foreground = foreground ?? _always;
+  ApiConnection({required this._probe, Clock? clock})
+    : _clock = clock ?? const SystemClock();
 
-  static bool _always() => true;
+  /// Whether the app is in the foreground, which the app keeps up to date;
+  /// nothing is probed in the background.
+  bool foreground = true;
 
   /// The first wait between probes while offline.
   static const firstProbe = Duration(seconds: 2);
@@ -40,7 +38,6 @@ class ApiConnection extends ChangeNotifier {
 
   final Future<bool> Function() _probe;
   final Clock _clock;
-  final bool Function() _foreground;
   var _online = true;
   DateTime? _backAt;
   var _interval = firstProbe;
@@ -120,7 +117,7 @@ class ApiConnection extends ChangeNotifier {
   }
 
   bool get _shouldProbe =>
-      !_online && !_disposed && _waiters > 0 && _foreground();
+      !_online && !_disposed && _waiters > 0 && foreground;
 
   Future<void> _probeLoop() async {
     if (_probing || !_shouldProbe) return;

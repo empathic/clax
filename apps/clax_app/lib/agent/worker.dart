@@ -389,10 +389,58 @@ class FeedbackWorker {
       c.complete();
     }
     if (threads.isEmpty) return false;
+    await _keepStopped(appId, threads);
+    return true;
+  }
+
+  /// Stops thread [tid] of [appId] alone: its comments leave the queued
+  /// changes, and when the running change carries it, that change is
+  /// cancelled (it publishes and replies nothing, and ends
+  /// [WorkerCancelled]) and its other threads are queued to run again
+  /// without it. The thread stays open and unanswered and is kept as
+  /// stopped, as [cancelChange] keeps its threads, until [retry] runs it or
+  /// a newer comment arrives on it. Answers whether there was anything to
+  /// stop.
+  Future<bool> cancelThread(String appId, String tid) async {
+    var found = false;
+    for (final j in _queue) {
+      if (j.build || j.artifactId != appId || !j.names(tid)) continue;
+      found = true;
+      j.items.removeWhere((i) => i.threadId == tid);
+      j.recheck.remove(tid);
+    }
+    _queue.removeWhere(
+      (j) =>
+          !j.build &&
+          j.artifactId == appId &&
+          j.items.isEmpty &&
+          j.recheck.isEmpty &&
+          j.answers.isEmpty,
+    );
+    final running = _changeThreads[appId];
+    final c = _changeCancels[appId];
+    if (running != null &&
+        running.contains(tid) &&
+        c != null &&
+        !c.isCompleted) {
+      found = true;
+      final others = running.difference({tid});
+      c.complete();
+      // Checked again just before their run, as recovered threads are.
+      if (others.isNotEmpty) _queue.addFirst(_Job(appId, recheck: others));
+    }
+    if (!found) return false;
+    await _keepStopped(appId, {tid});
+    _kick();
+    return true;
+  }
+
+  /// Keeps each of [threads] of [appId] as stopped, at its newest viewer
+  /// comment.
+  Future<void> _keepStopped(String appId, Set<String> threads) async {
     for (final t in threads) {
       _stopped[t] = '';
     }
-    // Each stop is kept at the thread's newest viewer comment.
     var views = const <ThreadView>[];
     try {
       views = await _api.threads(appId);
@@ -405,8 +453,11 @@ class FeedbackWorker {
       _stopped[tid] = at ?? '';
       await _quietStops(() => _stops.put(tid, at ?? ''));
     }
-    return true;
   }
+
+  /// Whether thread [tid] is stopped ([cancelChange], [cancelThread]) and
+  /// waits for [retry] or a newer comment.
+  bool isStopped(String tid) => _stopped.containsKey(tid);
 
   static String? _newestViewer(ThreadView? t) =>
       t?.comments.where((c) => c.authorKind == 'viewer').lastOrNull?.id;
