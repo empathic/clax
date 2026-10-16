@@ -1,0 +1,9 @@
+{
+  "title": "Home",
+  "icon": "home",
+  "capabilities": { "home": {}, "db": {} },
+  "lineage": "l_wnceg6o3kdr4qxg2xo3be6bdlq",
+  "version": 1,
+  "release": "1.0.0",
+  "kit": ["preact.js", "icons.js", "kit.css", "kit.js", "fake-home.js", "LICENSES.txt"]
+}
