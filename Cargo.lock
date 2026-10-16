@@ -472,6 +472,7 @@ version = "0.4.0"
 dependencies = [
  "anyhow",
  "clax-core",
+ "clax-fake-exe",
  "reqwest",
  "serde",
  "serde_json",

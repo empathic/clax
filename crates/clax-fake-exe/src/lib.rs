@@ -27,6 +27,9 @@
 //! instead, run once there before it is returned: a first run per call,
 //! paid outside any limit the test sets.
 
+pub mod bin;
+pub use bin::{clax_bin, repo};
+
 use std::collections::HashSet;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

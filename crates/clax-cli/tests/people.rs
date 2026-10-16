@@ -6,7 +6,6 @@
 
 use crate::common::people::World;
 use serde_json::Value;
-use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
@@ -25,15 +24,6 @@ const HARNESS_ENV: [&str; 9] = [
     "CLAX_PORT",
     "CLAX_SESSION_ID",
 ];
-
-/// The `clax` binary: `CLAX_TEST_BIN` (an absolute path to a copy kept by
-/// content), else this build's.
-fn bin() -> PathBuf {
-    match std::env::var_os("CLAX_TEST_BIN") {
-        Some(b) => PathBuf::from(b),
-        None => PathBuf::from(env!("CARGO_BIN_EXE_clax")),
-    }
-}
 
 /// The owner's machine: the world's daemon home, which `daemon.json` names
 /// the test daemon in, so the CLI starts none.
@@ -63,7 +53,7 @@ impl<'a> Owner<'a> {
 
     /// Runs `clax args` with `env`, to its end, off the test's runtime.
     async fn run_with(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
-        let mut c = Command::new(bin());
+        let mut c = Command::new(crate::common::clax());
         for v in HARNESS_ENV {
             c.env_remove(v);
         }

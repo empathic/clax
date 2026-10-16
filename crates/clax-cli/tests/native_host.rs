@@ -26,7 +26,7 @@ fn only_message(stdout: &[u8]) -> Value {
 /// `clax` for the home `home`, with Chrome's sparse environment: no PATH and
 /// no HOME beyond what the test sets.
 fn clax(home: &Path) -> Command {
-    let mut c = Command::cargo_bin("clax").unwrap();
+    let mut c = Command::new(crate::common::clax());
     c.env_clear()
         .env("CLAX_HOME", home)
         .env("CLAX_NO_OPEN", "1");
@@ -161,8 +161,7 @@ fn bad_messages_get_an_error_reply_and_start_no_daemon() {
 
 #[test]
 fn no_home_is_one_error_reply() {
-    let out = Command::cargo_bin("clax")
-        .unwrap()
+    let out = Command::new(crate::common::clax())
         .env_clear()
         .args([
             "native-host",

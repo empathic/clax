@@ -15,7 +15,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const REPO: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 /// The previous product name, assembled.
 const OLD: &str = concat!("arti", "fax");
 
@@ -143,7 +142,7 @@ impl Run {
             &r.wrapper(),
             &format!(
                 "#!/bin/sh\nprintf 'clax %s\\tCLAX_HOME=%s\\tHOME=%s\\n' \"$*\" \"$CLAX_HOME\" \"$HOME\" >> \"${{0%/*}}/../clax-calls.log\"\nCLAX_BIN='{0}' exec '{0}' \"$@\"\n",
-                env!("CARGO_BIN_EXE_clax")
+                crate::common::clax().display()
             ),
         );
         // Another clax on the caller's PATH, which must never be the one found.
@@ -194,7 +193,7 @@ impl Run {
     /// value removes the variable).
     fn run(&self, tmpdir: &Path, extra: &[(&str, &str)]) -> std::process::Output {
         let mut cmd = Command::new("bash");
-        cmd.arg(format!("{REPO}/scripts/verify-harnesses.sh"))
+        cmd.arg(clax_fake_exe::repo().join("scripts/verify-harnesses.sh"))
             .env_clear()
             .env("HOME", self.p("sentinel"))
             .env("TMPDIR", tmpdir)
@@ -313,7 +312,8 @@ fn assert_scratch_only(r: &Run, root: &str, also: &[&str]) {
         assert_eq!(names, allowed, "environment of {}", c.cmd);
         assert_eq!(at("TMPDIR"), &format!("{root}/tmp"), "TMPDIR of {}", c.cmd);
         assert!(
-            [wrapper.as_str(), env!("CARGO_BIN_EXE_clax")].contains(&at("CLAX_BIN").as_str()),
+            [wrapper.as_str(), crate::common::clax().to_str().unwrap()]
+                .contains(&at("CLAX_BIN").as_str()),
             "CLAX_BIN={} in {}",
             at("CLAX_BIN"),
             c.cmd
@@ -416,7 +416,7 @@ fn without_clax_bin_the_script_builds_first_and_tests_that_build() {
     assert_eq!(out.status.code(), Some(0), "{stdout}\n{stderr}");
     let cargo = r.lines("cargo.log");
     assert_eq!(cargo.len(), 1, "{cargo:#?}");
-    let repo = std::fs::canonicalize(REPO).unwrap();
+    let repo = std::fs::canonicalize(clax_fake_exe::repo()).unwrap();
     assert_eq!(
         cargo[0],
         format!(

@@ -26,7 +26,7 @@ const HARNESS_ENV: [&str; 12] = [
 ];
 
 fn clax(home: &Path) -> Command {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_clax"));
+    let mut c = Command::new(crate::common::clax());
     for var in HARNESS_ENV {
         c.env_remove(var);
     }

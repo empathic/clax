@@ -2,7 +2,6 @@
 //! `clax mcp --agent claude` serves the stand-down server and `clax hook
 //! --agent claude` does nothing; everywhere else they act.
 
-use assert_cmd::cargo::cargo_bin;
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -22,7 +21,7 @@ const HARNESS_VARS: &[&str] = &[
 ];
 
 fn clax(home: &std::path::Path, env: &[(&str, String)]) -> Command {
-    let mut c = Command::new(cargo_bin("clax"));
+    let mut c = Command::new(crate::common::clax());
     for k in HARNESS_VARS {
         c.env_remove(k);
     }

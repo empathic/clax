@@ -4,7 +4,7 @@
 use assert_cmd::Command;
 
 fn cmd(dir: &std::path::Path) -> Command {
-    let mut c = Command::cargo_bin("clax").unwrap();
+    let mut c = Command::new(crate::common::clax());
     c.env("CLAX_HOME", dir.join("ax"))
         .env("HOME", dir)
         .env_remove("CLAX_PORT");

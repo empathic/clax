@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 
 /// The previous name, assembled so the repository's name gate finds no literal.
 const OLD: &str = concat!("arti", "fax");
-const REPO: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 
 struct Env {
     dir: tempfile::TempDir,
@@ -36,7 +35,7 @@ impl Env {
         self.p("ax/marketplace")
     }
     fn cmd(&self) -> Command {
-        let mut c = Command::cargo_bin("clax").unwrap();
+        let mut c = Command::new(crate::common::clax());
         c.env("HOME", self.dir.path())
             .env("CLAX_HOME", self.p("ax"))
             .env("CLAUDE_CONFIG_DIR", self.p("claude"))
@@ -129,7 +128,7 @@ fn init_writes_the_embedded_plugins_as_a_marketplace() {
     assert!(ok, "{v}");
     let root = e.root();
     assert_eq!(v["marketplace"], root.display().to_string());
-    let repo = Path::new(REPO);
+    let repo = clax_fake_exe::repo();
     assert_eq!(
         tree(&root.join("plugins/claude-code"), &[]),
         tree(&repo.join("plugins/claude-code"), &[])

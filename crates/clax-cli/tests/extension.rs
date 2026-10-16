@@ -34,14 +34,14 @@ impl Env {
         )
     }
     fn cmd(&self, args: &[&str]) -> Value {
-        self.cmd_in(Command::cargo_bin("clax").unwrap(), args)
+        self.cmd_in(Command::new(crate::common::clax()), args)
     }
     /// `clax <args>` under `umask 000`, so modes come from Clax alone.
     fn cmd_umask0(&self, args: &[&str]) -> Value {
         let mut c = Command::new("/bin/sh");
         c.arg("-c")
             .arg("umask 000; exec \"$0\" \"$@\"")
-            .arg(assert_cmd::cargo::cargo_bin("clax"));
+            .arg(crate::common::clax());
         self.cmd_in(c, args)
     }
     fn cmd_in(&self, mut c: Command, args: &[&str]) -> Value {
@@ -102,8 +102,7 @@ fn install_writes_the_extension_the_launcher_and_a_manifest_per_existing_browser
         assert_eq!(mode & 0o111, 0o111, "{f} is executable");
     }
     let wrapper = std::fs::read(e.p("ax/extension/host/ensure-clax.sh")).unwrap();
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../plugins/claude-code/scripts/ensure-clax.sh");
+    let repo = clax_fake_exe::repo().join("plugins/claude-code/scripts/ensure-clax.sh");
     assert_eq!(
         wrapper,
         std::fs::read(repo).unwrap(),
@@ -386,7 +385,7 @@ fn status_checks_the_launcher_and_wrapper_copy() {
 /// the real browser directories.
 #[test]
 fn scripts_that_run_init_isolate_the_browser_directories() {
-    let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts");
+    let scripts = clax_fake_exe::repo().join("scripts");
     let mut checked = 0;
     for e in std::fs::read_dir(&scripts).unwrap() {
         let p = e.unwrap().path();
@@ -441,8 +440,7 @@ fn the_installed_launcher_pairs_as_the_owner_under_a_harness_environment() {
     e.cmd(&["extension", "install"]);
     let home = e.p("ax");
     let stop = |h: &Path| {
-        let _ = Command::cargo_bin("clax")
-            .unwrap()
+        let _ = Command::new(crate::common::clax())
             .env_clear()
             .env("CLAX_HOME", h)
             .arg("stop")
@@ -460,7 +458,7 @@ fn the_installed_launcher_pairs_as_the_owner_under_a_harness_environment() {
     let out = Command::new(e.p("ax/extension/host/launch.sh"))
         .env_clear()
         .env("HOME", e.dir.path())
-        .env("CLAX_BIN", assert_cmd::cargo::cargo_bin("clax"))
+        .env("CLAX_BIN", crate::common::clax())
         .env("CLAX_NO_OPEN", "1")
         .env("CLAUDECODE", "1")
         .env("CLAX_CHANNEL", "agent")

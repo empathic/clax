@@ -48,7 +48,7 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// The fixture's file name in `tests/fixtures/`.
@@ -72,34 +72,6 @@ const CLIENT_LIMIT: Duration = Duration::from_secs(30);
 
 fn fixtures_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
-}
-
-/// The `clax` binary: `CLAX_TEST_BIN`, else built once per test process.
-fn clax_bin() -> PathBuf {
-    static BIN: OnceLock<PathBuf> = OnceLock::new();
-    BIN.get_or_init(|| {
-        if let Some(bin) = std::env::var_os("CLAX_TEST_BIN") {
-            let bin = PathBuf::from(bin);
-            assert!(bin.exists(), "CLAX_TEST_BIN {} missing", bin.display());
-            return bin;
-        }
-        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let mut cmd = std::process::Command::new(env!("CARGO"));
-        cmd.current_dir(&workspace)
-            .args(["build", "--quiet", "-p", "clax-cli", "--bin", "clax"]);
-        if !cfg!(debug_assertions) {
-            cmd.arg("--release");
-        }
-        assert!(
-            cmd.status().expect("run cargo build").success(),
-            "cargo build -p clax-cli failed"
-        );
-        let exe = std::env::current_exe().unwrap();
-        let bin = exe.parent().unwrap().parent().unwrap().join("clax");
-        assert!(bin.exists(), "{} missing", bin.display());
-        bin
-    })
-    .clone()
 }
 
 // --- collection ------------------------------------------------------------
@@ -161,7 +133,7 @@ impl Minted {
     /// `clax <args>` with a cleared environment pointing at the daemon's
     /// home, run from the scratch working directory.
     fn clax(&self, home: &Path, args: &[&str]) -> tokio::process::Command {
-        let mut c = tokio::process::Command::new(clax_bin());
+        let mut c = tokio::process::Command::new(clax_fake_exe::clax_bin(None));
         c.args(args)
             .env_clear()
             .env("PATH", "/usr/bin:/bin")

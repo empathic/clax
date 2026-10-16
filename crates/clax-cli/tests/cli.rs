@@ -88,7 +88,7 @@ fn concurrent_auto_starts_yield_one_daemon() {
             let home = e.dir.path().join("ax");
             let hd = e.dir.path().to_path_buf();
             std::thread::spawn(move || {
-                let mut c = Command::cargo_bin("clax").unwrap();
+                let mut c = Command::new(crate::common::clax());
                 c.env("CLAX_HOME", home)
                     .env("CLAX_CODEX_BIN", "")
                     .env("HOME", hd)
@@ -350,8 +350,7 @@ fn publish_dir_skips_dotfiles_and_mirrors_on_update() {
 
 #[test]
 fn missing_clax_home_and_home_is_an_error() {
-    Command::cargo_bin("clax")
-        .unwrap()
+    Command::new(crate::common::clax())
         .env_remove("CLAX_HOME")
         .env_remove("HOME")
         .args(["status", "--json"])
@@ -1013,7 +1012,7 @@ fn every_hook_run_appends_a_line_to_hooks_log() {
     let log = std::fs::read_to_string(e.dir.path().join("ax/logs/hooks.log")).unwrap();
     let lines: Vec<&str> = log.lines().collect();
     assert_eq!(lines.len(), 2, "{log}");
-    let bin = assert_cmd::cargo::cargo_bin("clax");
+    let bin = crate::common::clax();
     assert!(
         lines[0].contains(&format!(
             " hook agent=codex event=stop bin={} duration_ms=",
@@ -1057,7 +1056,7 @@ fn doctor_agent_checks_each_layer_of_the_integration() {
     let out = e
         .cmd()
         .args(["doctor", "--agent", "codex", "--json"])
-        .env("CLAX_BIN", env!("CARGO_BIN_EXE_clax"))
+        .env("CLAX_BIN", crate::common::clax())
         .env("PATH", "/usr/bin:/bin")
         .output()
         .unwrap();
@@ -1081,7 +1080,7 @@ fn doctor_agent_checks_each_layer_of_the_integration() {
     assert!(
         detail.contains(&format!(
             "the plugins run: {} (clax {}), from CLAX_BIN",
-            env!("CARGO_BIN_EXE_clax"),
+            crate::common::clax().display(),
             env!("CARGO_PKG_VERSION")
         )),
         "{detail}"
@@ -1395,7 +1394,7 @@ fn codex_session_start(e: &Env, codex_args: &[&str]) -> String {
     }
     let mut c = Command::new(&fake);
     c.args(codex_args)
-        .env("CLAX_UNDER_TEST", assert_cmd::cargo::cargo_bin("clax"))
+        .env("CLAX_UNDER_TEST", crate::common::clax())
         .env("CLAX_HOME", e.dir.path().join("ax"))
         .env("CLAX_CODEX_BIN", "")
         .env("HOME", e.dir.path())
@@ -1609,7 +1608,7 @@ fn an_interrupted_toolpath_export_removes_its_partial_file() {
     let e = Env::new();
     let _daemon = stalling_daemon(&e.dir.path().join("ax"));
     let dest = e.dir.path().join("page.path.json");
-    let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("clax"))
+    let mut child = std::process::Command::new(crate::common::clax())
         .env("CLAX_HOME", e.dir.path().join("ax"))
         .env("HOME", e.dir.path())
         .env("CLAX_CODEX_BIN", "")

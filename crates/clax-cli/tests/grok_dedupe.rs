@@ -5,7 +5,6 @@
 //! combination of the Claude Code copy and clax-grok, and that a monitor
 //! running `clax feedback follow` is told about a comment once.
 
-use assert_cmd::cargo::cargo_bin;
 use serde_json::{Map, Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -13,7 +12,6 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{RecvTimeoutError, channel};
 use std::time::{Duration, Instant};
 
-const REPO: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 const HARNESS_VARS: &[&str] = &[
     "GROK_SESSION_ID",
     "GROK_HOOK_EVENT",
@@ -28,10 +26,10 @@ const HARNESS_VARS: &[&str] = &[
 ];
 
 fn claude_copy() -> PathBuf {
-    Path::new(REPO).join("plugins/claude-code")
+    clax_fake_exe::repo().join("plugins/claude-code")
 }
 fn grok_copy() -> PathBuf {
-    Path::new(REPO).join("plugins/clax-grok")
+    clax_fake_exe::repo().join("plugins/clax-grok")
 }
 
 /// A scratch world: a home, a project, a Clax home with a daemon on a free
@@ -48,7 +46,7 @@ impl World {
         };
         std::fs::create_dir_all(w.project()).unwrap();
         let ok = w
-            .cmd(&cargo_bin("clax"))
+            .cmd(&crate::common::clax())
             .args(["--port", "0", "serve"])
             .stdout(Stdio::null())
             .status()
@@ -79,7 +77,7 @@ impl World {
             .env("CLAX_HOME", self.clax_home())
             .env("GROK_HOME", self.dir.path().join("grok-home"))
             .env("CLAUDE_CONFIG_DIR", self.dir.path().join("claude"))
-            .env("CLAX_BIN", cargo_bin("clax"))
+            .env("CLAX_BIN", crate::common::clax())
             .env("CLAX_CODEX_BIN", "")
             .env("CLAX_NO_OPEN", "1")
             .env("RUST_LOG", "error")
@@ -151,7 +149,7 @@ impl World {
 impl Drop for World {
     fn drop(&mut self) {
         let _ = self
-            .cmd(&cargo_bin("clax"))
+            .cmd(&crate::common::clax())
             .arg("stop")
             .stdout(Stdio::null())
             .status();
@@ -488,7 +486,7 @@ fn with_both_enabled_a_comment_is_announced_once_and_handed_over_once() {
             "-c",
             &format!(
                 "\"{}\" feedback follow --agent grok --harness-session 019a-loop --poll-secs 2 --grace-secs 1",
-                cargo_bin("clax").display()
+                crate::common::clax().display()
             ),
         ])
         .env("GROK_SESSION_ID", "019a-loop")

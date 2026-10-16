@@ -1,45 +1,17 @@
 //! End-to-end tests of `clax hook`: the built binary is run with fixture
 //! stdin against a daemon in a temporary `CLAX_HOME`.
 
+use clax_fake_exe::clax_bin;
 use serde_json::Value;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
 use std::time::{Duration, Instant};
-
-/// The `clax` binary: `CLAX_TEST_BIN`, else built once per test process
-/// (see `clax_bin` in `crates/clax-mcp/tests/common.rs`).
-fn clax_bin() -> PathBuf {
-    static BIN: OnceLock<PathBuf> = OnceLock::new();
-    BIN.get_or_init(|| {
-        // A prebuilt binary (quality_gates.sh builds one for the whole run):
-        // each test process would otherwise run its own `cargo build`.
-        if let Some(bin) = std::env::var_os("CLAX_TEST_BIN") {
-            let bin = PathBuf::from(bin);
-            assert!(bin.exists(), "CLAX_TEST_BIN {} missing", bin.display());
-            return bin;
-        }
-        let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let mut cmd = Command::new(env!("CARGO"));
-        cmd.current_dir(&workspace)
-            .args(["build", "--quiet", "-p", "clax-cli", "--bin", "clax"]);
-        if !cfg!(debug_assertions) {
-            cmd.arg("--release");
-        }
-        assert!(cmd.status().expect("run cargo build").success());
-        let exe = std::env::current_exe().unwrap();
-        let bin = exe.parent().unwrap().parent().unwrap().join("clax");
-        assert!(bin.exists(), "{} missing", bin.display());
-        bin
-    })
-    .clone()
-}
 
 fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures")
+        clax_fake_exe::repo()
+            .join("crates/clax-hooks/tests/fixtures")
             .join(name),
     )
     .unwrap()
@@ -60,7 +32,7 @@ const HARNESS_ENV: [&str; 9] = [
 ];
 
 fn clax(home: &Path) -> Command {
-    let mut c = Command::new(clax_bin());
+    let mut c = Command::new(clax_bin(None));
     for var in HARNESS_ENV {
         c.env_remove(var);
     }
@@ -382,7 +354,7 @@ fn hook_behind_a_wrapper_shell_joins_the_shim_row() {
         .arg("-c")
         .arg(format!(
             "'{}' hook --agent codex session-start; true",
-            clax_bin().display()
+            clax_bin(None).display()
         ))
         .env("CLAX_HOME", d.home())
         .env("CLAX_CODEX_BIN", "")

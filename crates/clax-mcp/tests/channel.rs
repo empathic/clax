@@ -3,8 +3,8 @@
 //! command line carries the launch flags under test, and the test drives the
 //! shim over raw JSON-RPC lines.
 
-use crate::common::clax_bin;
 use clax_core::Home;
+use clax_fake_exe::clax_bin;
 use clax_server::daemon::read_daemon_info;
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
@@ -58,14 +58,14 @@ impl FakeClaude {
         let dir = tempfile::tempdir().unwrap();
         let script = clax_fake_exe::install(&dir.path().join("claude"), FAKE);
         let mut cmd = Command::new(&script);
-        cmd.args(flags).env("CLAX_TEST_BIN", clax_bin());
+        cmd.args(flags).env("CLAX_TEST_BIN", clax_bin(None));
         FakeClaude::spawn(dir, cmd)
     }
 
     /// `clax --port 0 mcp --agent <agent>` run directly by the test.
     fn direct(agent: &str) -> FakeClaude {
         let dir = tempfile::tempdir().unwrap();
-        let mut cmd = Command::new(clax_bin());
+        let mut cmd = Command::new(clax_bin(None));
         cmd.args(["--port", "0", "mcp", "--agent", agent]);
         FakeClaude::spawn(dir, cmd)
     }
@@ -222,7 +222,7 @@ impl FakeClaude {
     /// Starts `clax feedback follow --once` for this session, with its stdout
     /// lines sent to the returned receiver.
     fn follow(&self, poll_secs: u64) -> (Child, Receiver<String>) {
-        let mut cmd = Command::new(clax_bin());
+        let mut cmd = Command::new(clax_bin(None));
         cmd.args([
             "feedback",
             "follow",
@@ -257,7 +257,7 @@ impl FakeClaude {
 
 impl Drop for FakeClaude {
     fn drop(&mut self) {
-        let mut stop = Command::new(clax_bin());
+        let mut stop = Command::new(clax_bin(None));
         stop.arg("stop").stdout(Stdio::null()).stderr(Stdio::null());
         scratch_env(&mut stop, self.dir.path());
         let _ = stop.status();
