@@ -654,6 +654,17 @@ same signature and do not ask.
   again. While a make or a change runs with Clax in the background,
   Android keeps a progress notification up, then posts "<title> is ready"
   (or that it changed, or couldn't); its tap opens the app.
+- **No connection.** Comments and new apps are kept on the device at once,
+  whether or not the Claude API can be reached. A make, a change, Keep
+  going or Retry that cannot reach it waits instead of failing: the make's
+  tile reads "Offline" and its build view "Waiting for connection", and a
+  change says "Waiting for connection" on its Working chip and its thread,
+  which offers Cancel. Clax probes the API every few seconds (at once when
+  it comes back to the front) and the work goes on by itself when it
+  answers, also after Clax restarts. A run that loses the connection part
+  way pauses and resumes from the turn it was on, without repeating or
+  paying again for what it already did; waiting does not count against its
+  time or cost limits.
 - **Commenting.** Nothing of Clax's is drawn over an open app. On Android,
   a silent notification named after the app stays up while it is open,
   with **Comment** and **Threads**; on macOS, App › Comment (⇧⌘K) and App ›
