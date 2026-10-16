@@ -126,7 +126,11 @@ _bazel() {
         web-test) _run "${b[@]}" test --lockfile_mode=error //web:lint //web:typecheck //web:unit //web:bundle_size "$@" ;;
         pi-test) _run "${b[@]}" test --lockfile_mode=error //plugins/pi:typecheck //plugins/pi:test "$@" ;;
         web-e2e) _run "${b[@]}" test --lockfile_mode=error //web:e2e_gesture //web:e2e_chrome_overlay //web:e2e_rest "$@" ;;
-        perf) _run "${b[@]}" test --lockfile_mode=error --nocache_test_results --test_output=all //scripts:perf_daemon_full //scripts:perf_clients_full //web:perf_usable_full "$@" ;;
+        perf)
+            _run "${b[@]}" test --lockfile_mode=error --nocache_test_results --test_output=all \
+                --test_env=CLAX_PERF_JSON="$PERF_JSON" --sandbox_writable_path="$(dirname "$PERF_JSON")" \
+                //scripts:perf_daemon_full //scripts:perf_clients_full //web:perf_usable_full //web:bundle_size "$@"
+            ;;
         build) _run "${b[@]}" build --lockfile_mode=error //crates/clax-cli:clax "$@" ;;
         web)
             _run "${b[@]}" build --lockfile_mode=error //web:dist //web:dist_extension "$@" || return $?
@@ -154,18 +158,35 @@ _native() {
         perf)
             _run bash -c 'cd web && pnpm install --frozen-lockfile' && _run ./scripts/build-web.sh &&
                 _run cargo build -q --release -p clax-cli &&
-                _run env CLAX_PERF_BIN="$PWD/target/release/clax" ./scripts/perf-daemon.sh &&
-                _run env CLAX_PERF_BIN="$PWD/target/release/clax" ./scripts/perf-clients.sh &&
-                _run bash -c 'cd web && pnpm exec playwright install chromium >/dev/null && pnpm run perf'
+                _run env CLAX_PERF_JSON="$PERF_JSON" CLAX_PERF_BIN="$PWD/target/release/clax" ./scripts/perf-daemon.sh &&
+                _run env CLAX_PERF_JSON="$PERF_JSON" CLAX_PERF_BIN="$PWD/target/release/clax" ./scripts/perf-clients.sh &&
+                _run env CLAX_PERF_JSON="$PERF_JSON" bash -c 'cd web && pnpm exec playwright install chromium >/dev/null && pnpm run perf' &&
+                _run env CLAX_PERF_JSON="$PERF_JSON" bash -c 'cd web && node scripts/bundle-size.mjs'
             ;;
         build) _run cargo build --workspace "$@" ;;
         web) _run bash -c 'cd web && pnpm install --frozen-lockfile' && _run ./scripts/build-web.sh ;;
     esac
 }
 
+# The perf benchmarks write their measures to PERF_JSON; the run's record
+# (scripts/perf-log.sh) is printed and appended to target/perf-log.jsonl,
+# never pushed.
+PERF_JSON=""
+if [ "$task" = perf ]; then
+    if [ "$dry" = 1 ]; then PERF_JSON="<a temporary directory>/metrics.jsonl"; else PERF_JSON="$(mktemp -d)/metrics.jsonl"; fi
+fi
+_perf_record() {
+    [ "$task" = perf ] && [ "$dry" = 0 ] || return 0
+    echo "── perf log record (also appended to target/perf-log.jsonl; scripts/perf-log.sh show --file target/perf-log.jsonl) ──"
+    ./scripts/perf-log.sh record --append target/perf-log.jsonl "$PERF_JSON"
+    rm -rf "$(dirname "$PERF_JSON")"
+}
+
 if [ "$BUILD_SYSTEM" = bazel ]; then
     _bazel "$@"
-    exit $?
+    status=$?
+    _perf_record
+    exit "$status"
 fi
 
 if [ "$BUILD_SYSTEM_FALLBACK" = 1 ]; then
@@ -180,6 +201,7 @@ done
 
 _native "$@"
 status=$?
+_perf_record
 
 if [ "$status" -eq 0 ]; then result="passed"; else result="failed (exit $status)"; fi
 case "$task" in build|web) result="${result/passed/done}" ;; esac

@@ -192,7 +192,10 @@ newest cache of the same lockfiles and then of any; only a passing push to
 main saves one, after `scripts/bazel-gc.sh` trims the disk cache to 6 GB
 (Bazel trims only while its server sits idle, which a job never does). `common --config=ci` (`.bazelrc`) bounds the cache to what
 fits a runner and fails on a stale lockfile. The native gates stay as a
-manual workflow (`native-check.yml`).
+manual workflow (`native-check.yml`). A second job, `perf-log`, runs the
+perf benchmarks after every green push to main and appends a record to the
+`perf-log` branch (`docs/usage.md`, "Developing Clax"); it gates nothing, and is
+the only job with write access.
 
 ## Disk
 

@@ -1,5 +1,5 @@
 import { test, type Browser } from "@playwright/test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { arch, platform } from "node:os";
 import { fileURLToPath } from "node:url";
 import { type FrameMode, contentFrame, publish, startDaemon } from "../e2e/fixtures";
@@ -303,6 +303,19 @@ function judge(mode: FrameMode, m: Metrics & Shell & { control: number }): void 
     for (const k of SHELL_KEYS) weigh(k, m[k], bud[k]);
   }
   console.log(over.length ? `${mode}: over budget (reported, not gated): ${over.join("; ")}` : `${mode}: every measure within budget`);
+  // Each measure beside its budget, for the perf log (scripts/perf-log.sh).
+  const sink = process.env.CLAX_PERF_JSON;
+  if (sink) {
+    const rows: [string, number, number | undefined][] = [
+      ["first paint", m.firstPaint, bud.firstPaint],
+      ["comment ready", m.commentReady, bud.commentReady],
+      ["frame paint", m.framePaint, bud.framePaint],
+      ["ready latency", m.readyLatency, bud.readyLatency],
+      ["cold ready latency", m.coldLatency, bud.coldLatency],
+      ["control", m.control, b.control[mode]],
+    ];
+    appendFileSync(sink, rows.map(([k, v, cap]) => JSON.stringify({ name: `usable: ${mode} ${k}`, value: Math.round(v * 1000) / 1000, budget: cap ?? null, unit: "ms" }) + "\n").join(""));
+  }
   if (RECORD === "budget") {
     const low = (next: number, cur: number | undefined) => Math.min(next, cur ?? Infinity);
     const next: Metrics & Partial<Shell> = { firstPaint: low(budgetFor(m.firstPaint), bud.firstPaint), commentReady: low(budgetFor(m.commentReady), bud.commentReady) };

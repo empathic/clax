@@ -85,6 +85,8 @@ import tempfile
 import threading
 import time
 
+from perf_metrics import metric, write as write_metrics
+
 RESERVED_PORTS = {7480, 7481, 7490}
 
 
@@ -883,6 +885,7 @@ def main(binary, budget_path, quick):
         if not ok:
             failed.append(k)
         print(f"{k:<22} {v:>10.1f} {lim:>10.1f}  {'ok' if ok else 'FAIL'}")
+        metric(k, v, lim, "")
     checks = [
         ("enough writes for p95", n_writes >= cfg["min_writes"], f"{n_writes} of {cfg['min_writes']}"),
         ("every delivery arrived", loss == 0, f"{loss} missing"),
@@ -899,6 +902,7 @@ def main(binary, budget_path, quick):
     print(f"load: {load_info}")
     print(f"slow client: {slow_info}")
     print()
+    write_metrics("clients: ")
     # A benchmark, not a gate: over budget is reported, and the run passes.
     if failed:
         print(f"realtime clients: over budget (reported, not gated): {', '.join(failed)}")

@@ -24,7 +24,7 @@
 // bytes for the same input at the same level, so a budget measured on one
 // machine failed on another by a hundred bytes. pako gives reference zlib's
 // output on every platform and Node version.
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import pako from "pako";
 
 const dist = new URL("../dist/", import.meta.url);
@@ -165,6 +165,11 @@ const EXTENSION = ["extOverlay", "extWorker", "extComposer", "extPanel", "questi
 const MEASURED = [...RECORDED, ...EXTENSION];
 const KEYS = [...MEASURED, "bridgeBaseline"];
 const budget = existsSync(budgetFile) ? JSON.parse(readFileSync(budgetFile, "utf8")) : null;
+// Each size beside its budget, for the perf log (scripts/perf-log.sh).
+if (process.env.CLAX_PERF_JSON) {
+  appendFileSync(process.env.CLAX_PERF_JSON, Object.entries(sizes).map(([k, v]) =>
+    JSON.stringify({ name: `bundle: ${k}`, value: v, budget: Number.isFinite(budget?.[k]) ? budget[k] : null, unit: "B" }) + "\n").join(""));
+}
 // A missing or non-numeric budget would turn its check off; refuse it instead.
 // Recording may add a missing recorded budget, never the baseline or an
 // extension ceiling.

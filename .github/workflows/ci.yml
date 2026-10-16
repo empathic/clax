@@ -77,3 +77,41 @@ jobs:
             ~/.cache/bazel-disk
             ~/.cache/bazel-repo
           key: ${{ steps.bazel.outputs.cache-key }}
+
+  # The perf benchmarks after every green push to main, kept in a log, never
+  # a gate (docs/usage.md, "Developing Clax"): each run appends one JSON line to
+  # perf/log.jsonl on the orphan branch `perf-log`, which
+  # `scripts/perf-log.sh show` reads. A number never fails this job; only
+  # broken tooling does.
+  perf-log:
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs: bazel
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # The one job that writes: the log branch, with GITHUB_TOKEN.
+    permissions: { contents: write }
+    # One run at a time appends; a later push waits rather than races.
+    concurrency: { group: perf-log, cancel-in-progress: false }
+    steps:
+      # Its credentials stay for scripts/perf-log.sh publish's push.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-bazel
+      - name: Install Chromium's system libraries
+        run: bazelisk run //web:playwright -- install-deps chromium
+      # The measuring may fail (a benchmark that cannot finish); the record
+      # is still made from whatever was measured.
+      - name: Run the benchmarks
+        continue-on-error: true
+        run: |
+          mkdir -p "$RUNNER_TEMP/perf"
+          bazelisk test --nocache_test_results --test_output=all --test_timeout=1800 \
+            --test_env=CLAX_PERF_JSON="$RUNNER_TEMP/perf/metrics.jsonl" \
+            --sandbox_writable_path="$RUNNER_TEMP/perf" \
+            //scripts:perf_daemon_full //scripts:perf_clients_full //web:perf_usable_full //web:bundle_size
+      - name: Append the run to the perf log
+        run: |
+          scripts/perf-log.sh record "$RUNNER_TEMP/perf/metrics.jsonl" > "$RUNNER_TEMP/perf/record.jsonl"
+          { echo '**perf log record**'; echo '```'; cat "$RUNNER_TEMP/perf/record.jsonl"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          scripts/perf-log.sh publish "$RUNNER_TEMP/perf/record.jsonl"
+      - if: always()
+        run: bazelisk shutdown || true
