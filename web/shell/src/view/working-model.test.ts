@@ -31,6 +31,8 @@ describe("working-model", () => {
     expect(summary({ ...base, working: [w({ thread_ids: ["a", "b"] })], mine: new Set(["a"]) }).line2).toBe("1 yours");
     expect(summary({ ...base, working: [w({ message: "Rebuilding the chart" })], mine: new Set() }).line1).toBe("claude: Rebuilding the chart");
     expect(summary({ ...base, working: [], mine: new Set(), idle: ["codex"] })).toEqual({ line1: "Nobody working", agent: false, line2: "3 open threads · codex idle", elapsed: null });
+    expect(summary({ ...base, working: [], mine: new Set(), idle: ["codex", "pi"] }).line2).toBe("3 open threads · codex, pi idle");
+    expect(summary({ ...base, working: [], mine: new Set(), idle: ["codex", "pi", "claude", "x"] }).line2, "past two, the count alone").toBe("3 open threads · 4 agents idle");
     expect(summary({ ...base, working: [], mine: new Set(), addressed: "v5 addressed 3" })).toEqual({ line1: "v5 addressed 3", agent: false, line2: "yours, not looked at yet", elapsed: null });
     expect(summary({ ...base, working: [], mine: new Set(), rally: true }).line2).toBe("3 open threads · rally of 10");
     expect(summary({ ...base, working: [], mine: new Set(), addressed: "v5 addressed 3", rally: true }).line2).toBe("yours, not looked at yet");

@@ -34,11 +34,17 @@ export function clock(since: string, now: Date): string {
 export const workingThreads = (list: Working[]) => new Set(list.flatMap(w => w.thread_ids));
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
+/** `names` for a one-line summary: the first two, else the first and how many more. */
+export function fewNames(names: string[]): string {
+  return names.length <= 2 ? names.join(", ") : `${names[0]} and ${names.length - 1} more`;
+}
+
 export function summary(i: SummaryInput): Summary {
-  const idle = i.idle.length ? ` · ${i.idle.join(", ")} idle` : "";
+  // Past two, the count alone: a long name would hide it behind the ellipsis.
+  const idle = !i.idle.length ? "" : i.idle.length <= 2 ? ` · ${i.idle.join(", ")} idle` : ` · ${i.idle.length} agents idle`;
   const list = newestFirst(i.working);
   if (list.length) {
-    const who = [...new Set(list.map(w => i.names.get(w.agent) ?? w.harness))].join(", ");
+    const who = fewNames([...new Set(list.map(w => i.names.get(w.agent) ?? w.harness))]);
     const threads = workingThreads(list);
     const line1 = list.length === 1 && list[0].message ? `${who}: ${list[0].message}` : threads.size ? `${who} working on ${threads.size}` : `${who} working`;
     const mine = [...threads].filter(t => i.mine.has(t)).length;

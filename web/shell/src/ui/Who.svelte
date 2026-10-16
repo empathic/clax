@@ -53,13 +53,15 @@
   :global {
     .topbar a.open-page { font: 600 14px var(--font); color: var(--accent-ink); padding: 0 6px; white-space: nowrap; }
     button.who { cursor: pointer; font: inherit; color: inherit; text-align: left; }
-    /* The summary gives way (an ellipsis) before the top bar's controls do. */
-    .who { display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 12px 0 5px; border: 1px solid var(--border); border-radius: 999px; background: var(--card); flex: 0 1 auto; min-width: 0; }
+    /* The pill gives way first (before the title) rather than the top bar overflowing: its summary lines end in an ellipsis. */
+    .who { display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 12px 0 5px; border: 1px solid var(--border); border-radius: 999px; background: var(--card); flex: 0 1000 auto; min-width: 0; overflow: hidden; }
+    .who > :not(.sum) { flex: none; }
     .who .sum { display: flex; align-items: center; gap: 8px; min-width: 0; }
-    .who .sum > * { min-width: 0; }
+    .who .sum > [role=status] { display: block; min-width: 0; }
     .who .sum b { display: block; font: 600 13px/1.2 var(--font); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .who .sum b.ag { color: var(--agent-ink); }
     .who .viewing { font: 600 11.5px/1 var(--font); color: var(--muted); white-space: nowrap; flex: none; }
     .who .sum small { display: block; font: 400 11.5px/1.3 var(--font); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .who .sum small.el { flex: none; }
     .thread-pin.onit, .thread-pin.onit:not(:disabled):hover { background: linear-gradient(90deg, var(--pin) 50%, #2f6f2a 50%); color: #fff; text-shadow: 0 0 2px #141413; }
     .topbar.working::after { content: ""; position: absolute; left: 0; bottom: -1px; height: 2px; width: 20%; background: var(--agent); animation: sweep 2.4s cubic-bezier(.4,0,.2,1) infinite; }
     @keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(400%); } }
