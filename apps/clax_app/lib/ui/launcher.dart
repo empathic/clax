@@ -542,7 +542,8 @@ class _LauncherState extends State<Launcher> {
         child: CustomScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
-            SliverAppBar.large(
+            SliverAppBar(
+              pinned: true,
               title: const Text('Clax'),
               actions: [
                 IconButton(
