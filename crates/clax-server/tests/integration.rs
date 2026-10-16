@@ -1,62 +1,118 @@
 //! The integration tests of `clax-server` in one test binary, a module per file
 //! in `tests/` (but for those of `tests/web_dist.rs`): every test binary costs
 //! a link and, on macOS, an assessment of the new executable on its first run.
+//!
+//! Bazel builds each module as its own test target instead (`clax_split`,
+//! `bazel/cargo.bzl`), so an edit recompiles, relinks and reruns each module
+//! on its own, in parallel; `clax_split = "root"` holds this file's own tests.
+//! Gate every new test module the same way.
 
+#[cfg(any(not(clax_split), clax_split = "api_agent_auth"))]
 mod api_agent_auth;
+#[cfg(any(not(clax_split), clax_split = "api_agents"))]
 mod api_agents;
+#[cfg(any(not(clax_split), clax_split = "api_approvals"))]
 mod api_approvals;
+#[cfg(any(not(clax_split), clax_split = "api_artifacts"))]
 mod api_artifacts;
+#[cfg(any(not(clax_split), clax_split = "api_assets"))]
 mod api_assets;
+#[cfg(any(not(clax_split), clax_split = "api_attention"))]
 mod api_attention;
+#[cfg(any(not(clax_split), clax_split = "api_auth"))]
 mod api_auth;
+#[cfg(any(not(clax_split), clax_split = "api_batch"))]
 mod api_batch;
+#[cfg(any(not(clax_split), clax_split = "api_caching"))]
 mod api_caching;
+#[cfg(any(not(clax_split), clax_split = "api_canary"))]
 mod api_canary;
+#[cfg(any(not(clax_split), clax_split = "api_changelog"))]
 mod api_changelog;
+#[cfg(any(not(clax_split), clax_split = "api_content"))]
 mod api_content;
+#[cfg(any(not(clax_split), clax_split = "api_docs"))]
 mod api_docs;
+#[cfg(any(not(clax_split), clax_split = "api_events"))]
 mod api_events;
+#[cfg(any(not(clax_split), clax_split = "api_extension"))]
 mod api_extension;
+#[cfg(any(not(clax_split), clax_split = "api_feedback"))]
 mod api_feedback;
+#[cfg(any(not(clax_split), clax_split = "api_gateway"))]
 mod api_gateway;
+#[cfg(any(not(clax_split), clax_split = "api_grants"))]
 mod api_grants;
+#[cfg(any(not(clax_split), clax_split = "api_host"))]
 mod api_host;
+#[cfg(any(not(clax_split), clax_split = "api_inbox"))]
 mod api_inbox;
+#[cfg(any(not(clax_split), clax_split = "api_live"))]
 mod api_live;
+#[cfg(any(not(clax_split), clax_split = "api_live_site"))]
 mod api_live_site;
+#[cfg(any(not(clax_split), clax_split = "api_live_sites"))]
 mod api_live_sites;
+#[cfg(any(not(clax_split), clax_split = "api_live_watch"))]
 mod api_live_watch;
+#[cfg(any(not(clax_split), clax_split = "api_mcp"))]
 mod api_mcp;
+#[cfg(any(not(clax_split), clax_split = "api_notices"))]
 mod api_notices;
+#[cfg(any(not(clax_split), clax_split = "api_owner"))]
 mod api_owner;
+#[cfg(any(not(clax_split), clax_split = "api_people"))]
 mod api_people;
+#[cfg(any(not(clax_split), clax_split = "api_perf"))]
 mod api_perf;
+#[cfg(any(not(clax_split), clax_split = "api_presence"))]
 mod api_presence;
+#[cfg(any(not(clax_split), clax_split = "api_push"))]
 mod api_push;
+#[cfg(any(not(clax_split), clax_split = "api_questions"))]
 mod api_questions;
+#[cfg(any(not(clax_split), clax_split = "api_room"))]
 mod api_room;
+#[cfg(any(not(clax_split), clax_split = "api_sample"))]
 mod api_sample;
+#[cfg(any(not(clax_split), clax_split = "api_sessions"))]
 mod api_sessions;
+#[cfg(any(not(clax_split), clax_split = "api_stream"))]
 mod api_stream;
+#[cfg(any(not(clax_split), clax_split = "api_threads"))]
 mod api_threads;
+#[cfg(any(not(clax_split), clax_split = "api_timeout"))]
 mod api_timeout;
+#[cfg(any(not(clax_split), clax_split = "api_tool_call_ids"))]
 mod api_tool_call_ids;
+#[cfg(any(not(clax_split), clax_split = "api_toolpath"))]
 mod api_toolpath;
+#[cfg(any(not(clax_split), clax_split = "api_viewers"))]
 mod api_viewers;
+#[cfg(any(not(clax_split), clax_split = "api_visibility"))]
 mod api_visibility;
+#[cfg(any(not(clax_split), clax_split = "api_watches"))]
 mod api_watches;
+#[cfg(any(not(clax_split), clax_split = "api_working"))]
 mod api_working;
+#[cfg(any(not(clax_split), clax_split = "api_working_auto"))]
 mod api_working_auto;
+#[cfg_attr(clax_split, allow(dead_code, unused_imports, unused_macros))]
 mod common;
+#[cfg(any(not(clax_split), clax_split = "daemon"))]
 mod daemon;
+#[cfg(any(not(clax_split), clax_split = "golden_single_owner"))]
 mod golden_single_owner;
+#[cfg(any(not(clax_split), clax_split = "harness_ids"))]
 mod harness_ids;
+#[cfg(any(not(clax_split), clax_split = "sample_anthropic"))]
 mod sample_anthropic;
 
 /// Cargo's test autodiscovery is off for this crate (`autotests = false` in
 /// its manifest), so a file in `tests/`, or a directory there with a
 /// `main.rs` or `mod.rs`, runs only once a test binary's root declares it as
 /// a module.
+#[cfg(any(not(clax_split), clax_split = "root"))]
 #[test]
 fn every_test_file_is_a_module() {
     let tests = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");

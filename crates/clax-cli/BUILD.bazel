@@ -9,6 +9,9 @@ EMBEDDED = [
 ]
 
 cargo_package(
+    # Each module of tests/integration.rs is a test target of its own
+    # (bazel/cargo.bzl).
+    split_tests = {"integration": []},
     build_script_data = EMBEDDED + ["//web:dist_extension"],
     # The extension build and the plugin trees the binary embeds
     # (src/extension_files.rs, src/plugins.rs): Bazel's copies.

@@ -17,7 +17,7 @@ repository = "https://github.com/empathic/clax"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(clax_embedded)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(clax_embedded)', 'cfg(clax_split)', 'cfg(clax_split, values(any()))'] }
 
 [workspace.dependencies]
 anyhow = "1"

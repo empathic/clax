@@ -28,9 +28,19 @@ filegroup(
     visibility = ["//crates:__subpackages__"],
 )
 
+# The plugin hook scripts clax-server's tests compare with each plugin's copy
+# (crates/clax-server/src/routes/mod.rs).
+filegroup(
+    name = "hook_scripts",
+    srcs = [
+        "ensure-clax.sh",
+        "tool-hook.sh",
+    ],
+    visibility = ["//crates:__subpackages__"],
+)
+
 # Every script, for the tests that scan or run them
-# (crates/clax-cli/tests/extension.rs, verify_harnesses.rs;
-# crates/clax-server/src/routes/mod.rs; the gates below).
+# (crates/clax-cli/tests/extension.rs, verify_harnesses.rs; the gates below).
 filegroup(
     name = "all",
     srcs = glob(

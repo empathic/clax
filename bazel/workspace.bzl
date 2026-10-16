@@ -151,6 +151,8 @@ CRATES = {
 # [workspace.lints.rust] in Cargo.toml, as rustc flags.
 WORKSPACE_RUSTC_FLAGS = [
     "--check-cfg=cfg(clax_embedded)",
+    "--check-cfg=cfg(clax_split)",
+    "--check-cfg=cfg(clax_split, values(any()))",
     "-Wunexpected_cfgs",
     "-Funsafe_code"
 ]

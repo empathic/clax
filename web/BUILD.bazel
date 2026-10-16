@@ -16,20 +16,31 @@ exports_files([
     "pnpm-workspace.yaml",
 ])
 
-# The project's own files, where the tools run.
+# The project's own files, where the tools run, in two parts that do not
+# overlap: what the build reads, and the tests. An edit to a test, a browser
+# test or a benchmark then rebuilds no web UI, and so recompiles no Rust that
+# embeds it.
+APP_DIRS = [
+    "shell/**",
+    "bridge/**",
+    "extension/**",
+    "contract/**",
+    "scripts/**",
+]
+
+TEST_FILES = [
+    "**/*.test.ts",
+    "bridge/test/**",
+    "extension/test/**",
+    "shell/src/test/**",
+    "shell/test-setup.ts",
+]
+
 copy_to_bin(
-    name = "files",
+    name = "files_app",
     srcs = glob(
-        [
-            "shell/**",
-            "bridge/**",
-            "extension/**",
-            "contract/**",
-            "e2e/**",
-            "perf/**",
-            "scripts/**",
-        ],
-        exclude = [
+        APP_DIRS,
+        exclude = TEST_FILES + [
             "**/.qual",
             "extension/key/key.pem",
         ],
@@ -48,11 +59,38 @@ copy_to_bin(
     visibility = ["//visibility:public"],
 )
 
+copy_to_bin(
+    name = "files_tests",
+    srcs = glob(
+        [d + "/" + t for d in [x[:-len("/**")] for x in APP_DIRS] for t in ["**/*.test.ts"]] + [
+            "bridge/test/**",
+            "extension/test/**",
+            "shell/src/test/**",
+            "shell/test-setup.ts",
+            "e2e/**",
+            "perf/**",
+        ],
+        exclude = ["**/.qual"],
+        # Not every directory has unit tests of its own.
+        allow_empty = True,
+    ),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "files",
+    srcs = [
+        ":files_app",
+        ":files_tests",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 # pnpm run build: the web UI, the extension and the extension's test build.
 npm_script_build(
     name = "dist_all",
     srcs = [
-        ":files",
+        ":files_app",
         ":node_modules",
         "//:cargo_toml",
     ],
@@ -91,7 +129,7 @@ npm_script_build(
     name = "dist_e2e",
     srcs = [
         ":dist",
-        ":files",
+        ":files_app",
         ":node_modules",
     ],
     out_dirs = ["dist-e2e"],
@@ -182,7 +220,7 @@ npm_script_test(
     data = [
         ":dist",
         ":dist_extension",
-        ":files",
+        ":files_app",
         ":node_modules",
     ],
     script = "bundle-size",
