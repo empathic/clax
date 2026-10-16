@@ -35,6 +35,7 @@ import 'home/home_host.dart';
 import 'home/home_install.dart';
 import 'home/home_route.dart';
 import 'home/home_settings.dart';
+import 'home/home_update.dart';
 import 'bundle/lineage_store.dart';
 import 'bundle/updater.dart';
 import 'clax/api.dart';
@@ -878,24 +879,48 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
 
   /// Installs the shipped home app when there is none ([ensureHomeApp]),
   /// after the installs a crash cut short are cleared away; the home
-  /// screen then switches to it.
+  /// screen then switches to it. Then brings it to the shipped release
+  /// ([updateHomeApp]), asking first when the person changed it.
   Future<void> _installHome() async {
     final shipped = _s.shippedHome;
     final host = _homeHost;
     if (shipped == null || host == null) return;
     final before = host.settings.homeAppId;
+    final installer = Installer(
+      api: _api,
+      store: _lineages,
+      key: homeInstallKey(),
+    );
     try {
-      await ensureHomeApp(
-        host.settings,
-        Installer(api: _api, store: _lineages, key: homeInstallKey()),
-        _api,
-        shipped: shipped,
-      );
+      await ensureHomeApp(host.settings, installer, _api, shipped: shipped);
     } on Object catch (e) {
       debugPrint('clax home: $e');
       return;
     }
     if (mounted && host.settings.homeAppId != before) host.settingsChanged();
+    final updater = _updater;
+    if (updater == null) return;
+    try {
+      await updateHomeApp(
+        host.settings,
+        installer,
+        shipped: shipped,
+        update: updater.update,
+        ask: (opened) {
+          final c = Completer<UpdateChoice?>();
+          _bundleSheet(
+            (context) async => c.complete(await askHomeUpdate(context, opened)),
+          );
+          // No screen to ask on, or the sheet failed: no answer.
+          _bundleQueue.whenComplete(() {
+            if (!c.isCompleted) c.complete(null);
+          });
+          return c.future;
+        },
+      );
+    } on Object catch (e) {
+      debugPrint('clax home: $e');
+    }
   }
 
   Future<void> _recoverBundles() async {
