@@ -36,14 +36,15 @@ class _Change {
 /// can come in either order, so a thread the worker already finished is
 /// never started again by a late `sent`.
 ///
-/// A change has landed once a frame shows the version the worker reported
-/// for it: the shell's `landed`, or a `ready` of that version or newer (a
-/// page reloaded mid-change opens the latest without `landed`). A frame of
+/// A change has landed once the view has the version the worker reported
+/// for it: the shell's `newer` offering it ([ready]), its `landed`, or a
+/// `ready` of that version or newer (a page reloaded mid-change opens the
+/// latest without `landed`). A frame of
 /// a version the worker has not reported is never credited to a change: it
 /// may be a restore's or another client's publish. When the frame comes
 /// first, the change lands (and its timing stops) on the worker's report.
 ///
-/// The long-press→landed timing runs from Send to that frame
+/// The long-press→landed timing runs from Send to that landing
 /// (docs/superpowers/specs/2026-10-12-flutter-app-design.md section 6.2).
 /// One change is timed at a time: a Send while a timed change is in
 /// flight is not timed, so each record is one change's. A Send the worker
@@ -349,6 +350,11 @@ class ChangeTracker {
     _pinned = pinned;
     if (!pinned) frame(version);
   }
+
+  /// The view can show [version] in place (the shell offers it, `newer`),
+  /// which the person loads with a tap: for a change of that version, as
+  /// good as its frame.
+  void ready(int version) => frame(version);
 
   /// A frame of the latest version, [version], loaded.
   void frame(int version) {
