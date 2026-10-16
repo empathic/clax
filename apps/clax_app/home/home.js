@@ -479,6 +479,8 @@ function PullRing({ pull, busy }) {
 }
 
 const MAX_TILES = 512;
+/** How long a burst of renders or scroll events settles before the tiles go. */
+const TILES_MS = 50;
 
 /** Tells Clax where each app's tile is (`home.tiles`), once the home
  * screen is `drawn` (after `shown`: Clax takes no tiles before it), then
@@ -490,8 +492,11 @@ function useTiles(home, drawn) {
   const last = useRef('');
   const report = useCallback(() => {
     if (!home?.tiles || !drawn) return;
-    cancelAnimationFrame(frame.current);
-    frame.current = requestAnimationFrame(() => {
+    // A short timer, not an animation frame: a WebView that is covered or
+    // in a window the system counts hidden runs no frames, and Clax still
+    // wants the tiles under its image.
+    clearTimeout(frame.current);
+    frame.current = setTimeout(() => {
       const tiles = [...document.querySelectorAll('.h-tile[data-id]')].slice(0, MAX_TILES).map((el) => {
         const r = el.getBoundingClientRect();
         return { id: el.dataset.id, rect: { x: r.x, y: r.y, w: r.width, h: r.height } };
@@ -500,14 +505,14 @@ function useTiles(home, drawn) {
       if (key === last.current) return;
       last.current = key;
       Promise.resolve(home.tiles(tiles)).catch(() => {});
-    });
+    }, TILES_MS);
   }, [home, drawn]);
   useEffect(report);
   useEffect(() => {
     addEventListener('scroll', report, { passive: true });
     addEventListener('resize', report);
     return () => {
-      cancelAnimationFrame(frame.current);
+      clearTimeout(frame.current);
       removeEventListener('scroll', report);
       removeEventListener('resize', report);
     };
