@@ -27,9 +27,10 @@ export type CapabilityName = keyof typeof CAPABILITY_METHODS;
 /** Other spellings `use()` accepts, mapped to their canonical name. */
 export const ALIASES: Readonly<Record<string, CapabilityName>> = Object.freeze({ self: "artifact" });
 
-/** Capabilities whose page side is a lazy part of its own (parts/<name>.ts):
- * the part builds the whole frozen namespace, and its member list lives there. */
-export const PART_CAPABILITIES = ["room", "sample"] as const;
+/** Capabilities whose page side is a lazy part of its own (parts/<name>.ts),
+ * or `home`, built in the caps part (caps/home.ts): the part builds the
+ * whole frozen namespace, and its member list lives there. */
+export const PART_CAPABILITIES = ["room", "sample", "home"] as const;
 export type PartCapabilityName = (typeof PART_CAPABILITIES)[number];
 export type UsableName = CapabilityName | PartCapabilityName;
 

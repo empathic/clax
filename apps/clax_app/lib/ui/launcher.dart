@@ -6,6 +6,8 @@ import 'package:flutter/material.dart';
 import '../agent/timings.dart';
 import '../bundle/lineage_store.dart' show LineageEntry;
 import '../clax/api.dart';
+import '../home/home_host.dart';
+import '../home/home_settings.dart';
 import '../platform/voice.dart';
 import '../agent/plan.dart';
 import '../agent/worker.dart';
@@ -34,13 +36,12 @@ import 'new_sheet.dart';
 /// stands; a tap shows its build view again, caught up. Back from the build
 /// view leaves the make going.
 ///
-/// The launcher follows `gallery` and `inbox` on [stream] (the app's
-/// shared stream, which it never closes), or on a stream of its own when
-/// none is given. Once subscribed it loads the list and
-/// [ClaxApi.inboxSummary]; then each `gallery` `version` refreshes its
-/// app's tile, each `artifact_deleted` removes one, and each `inbox` event
-/// carries the unread count. A topic's `resync` loads it again, as does
-/// coming back from the inbox for the count.
+/// What it shows comes from [host] (`HomeHost`, which follows `gallery`
+/// and `inbox` on the app's stream, the makes and the builds), or from a
+/// host of its own over [stream] (the app's shared stream, which it never
+/// closes; a stream of its own when none is given), [makes] and [build]
+/// when none is given. Coming back from the inbox loads the count again.
+/// The host's home app is left out of the grid.
 ///
 /// The top bar's inbox button shows the unread count and pushes
 /// [InboxScreen] on the same stream; an item opened there goes to
@@ -77,6 +78,7 @@ class Launcher extends StatefulWidget {
     this.icons,
     this.bundles,
     this.lineage,
+    this.host,
   });
 
   final ClaxApi api;
@@ -146,126 +148,75 @@ class Launcher extends StatefulWidget {
   /// none.
   final Future<LineageEntry?> Function(String aid)? lineage;
 
+  /// The home screen's sources; when null, the launcher keeps a host of
+  /// its own over [stream], [makes] (or its own), [build] and [icons],
+  /// told [needsKey], whose calls it answers itself.
+  final HomeHost? host;
+
   @override
   State<Launcher> createState() => _LauncherState();
 }
 
 class _LauncherState extends State<Launcher> {
-  List<ArtifactSummary>? _apps;
-  Object? _loadError;
   String _draft = '';
-  late final ClaxStream _stream;
-  StreamSubscription<StreamEvent>? _events;
-  int _unread = 0;
-  int _summaries = 0;
 
-  /// The topics being subscribed again after an `unsubscribed`.
-  final Set<String> _resubscribing = {};
+  late final MakeService _makes =
+      widget.host?.makes ?? widget.makes ?? MakeService(widget.make);
 
-  /// Bumped by each load, so only the newest load's answer is kept.
-  int _loads = 0;
+  late final AppIcons _icons =
+      widget.host?.icons ?? widget.icons ?? AppIcons(widget.api);
 
-  static const _topics = ['gallery', 'inbox'];
-
-  late final MakeService _makes = widget.makes ?? MakeService(widget.make);
-
-  late final AppIcons _icons = widget.icons ?? AppIcons(widget.api);
+  late final HomeHost _host =
+      widget.host ??
+      HomeHost(
+        api: widget.api,
+        stream: widget.stream ?? widget.api.stream(),
+        closeStream: widget.stream == null,
+        makes: _makes,
+        builds: widget.build,
+        settings: HomeSettings(),
+        actions: _LauncherActions(this),
+        icons: _icons,
+        retryDelay: widget.retryDelay,
+        needsKey: widget.needsKey,
+      );
 
   @override
   void initState() {
     super.initState();
-    _makes.addListener(_onMakes);
-    _stream = widget.stream ?? widget.api.stream();
-    _events = _stream.events.listen(_onEvent, onError: (Object _) {});
-    unawaited(_watch());
+    _host.addListener(_onHost);
   }
 
-  void _onMakes() {
+  @override
+  void didUpdateWidget(Launcher old) {
+    super.didUpdateWidget(old);
+    if (widget.host == null) _host.needsKey = widget.needsKey;
+  }
+
+  void _onHost() {
     if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
-    _makes.removeListener(_onMakes);
-    if (widget.makes == null) _makes.dispose();
-    if (widget.icons == null) _icons.dispose();
-    unawaited(_events?.cancel());
-    if (widget.stream == null) unawaited(_stream.close());
+    _host.removeListener(_onHost);
+    if (widget.host == null) _host.dispose();
+    if (widget.host == null && widget.makes == null) _makes.dispose();
+    if (widget.host == null && widget.icons == null) _icons.dispose();
     super.dispose();
-  }
-
-  Future<void> _watch() async {
-    try {
-      await _stream.subscribe(_topics);
-    } catch (_) {
-      // The list and count still load; they only miss live changes until
-      // the next fetch.
-    }
-    if (!mounted) return;
-    await Future.wait([_load(), _loadUnread()]);
-  }
-
-  /// Subscribes [topic] again after the launcher's own stream dropped it,
-  /// then refetches what it shows.
-  Future<void> _resubscribe(String topic) async {
-    if (!_resubscribing.add(topic)) return;
-    try {
-      final ok = await resubscribe(
-        _stream,
-        [topic],
-        delay: widget.retryDelay ?? Future.delayed,
-        alive: () => mounted,
-      );
-      if (ok && mounted) await _reload(topic);
-    } finally {
-      _resubscribing.remove(topic);
-    }
-  }
-
-  Future<void> _reload(String topic) async {
-    if (topic == 'gallery') await _load();
-    if (topic == 'inbox') await _loadUnread();
-  }
-
-  Future<void> _loadUnread() async {
-    final load = ++_summaries;
-    try {
-      final summary = await widget.api.inboxSummary();
-      if (mounted && load == _summaries) {
-        setState(() => _unread = summary.unread);
-      }
-    } catch (_) {
-      // Kept as it was; the next event or fetch corrects it.
-    }
-  }
-
-  void _onEvent(StreamEvent e) {
-    if (!mounted) return;
-    final topic = e.data['topic'];
-    switch (e.type) {
-      case 'unsubscribed' when topic is String && _topics.contains(topic):
-        unawaited(_resubscribe(topic));
-      case 'resync' when topic is String:
-        unawaited(_reload(topic));
-      case 'version' || 'artifact_deleted' when e.topic == 'gallery':
-        unawaited(_onGallery(e));
-      case _ when e.topic == 'inbox':
-        if (e.data['unread'] case final num n) {
-          // A newer count than any summary still in flight.
-          _summaries++;
-          setState(() => _unread = n.toInt());
-        }
-    }
   }
 
   Future<void> _openInbox() async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
-        builder: (_) =>
-            InboxScreen(api: widget.api, onOpen: _openItem, stream: _stream),
+        builder: (_) => InboxScreen(
+          api: widget.api,
+          onOpen: _openItem,
+          stream: _host.stream,
+        ),
       ),
     );
-    if (mounted) await _loadUnread();
+    if (mounted) await _host.loadUnread();
   }
 
   void _openItem(InboxItem item) {
@@ -291,40 +242,9 @@ class _LauncherState extends State<Launcher> {
     );
   }
 
-  Future<void> _load() async {
-    final load = ++_loads;
-    try {
-      final apps = await widget.api.listArtifacts();
-      if (!mounted || load != _loads) return;
-      setState(() {
-        _apps = _newestFirst(apps);
-        _loadError = null;
-      });
-    } catch (e) {
-      if (mounted && load == _loads) setState(() => _loadError = e);
-    }
-  }
-
-  static List<ArtifactSummary> _newestFirst(List<ArtifactSummary> apps) =>
-      List.of(apps)..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
-
-  Future<void> _onGallery(StreamEvent e) async {
-    final aid = e.data['artifact_id'];
-    if (aid is! String) return;
-    if (e.type == 'artifact_deleted') {
-      setState(() => _apps = _apps?.where((a) => a.id != aid).toList());
-      return;
-    }
-    try {
-      final summary = (await widget.api.getArtifact(aid)).artifact;
-      if (!mounted) return;
-      setState(() {
-        _apps = _newestFirst([summary, ...?_apps?.where((a) => a.id != aid)]);
-      });
-    } catch (_) {
-      // Deleted again, or the daemon is restarting; the next load catches up.
-    }
-  }
+  /// Shows make [s]'s build view, or offers an interrupted one again.
+  Future<void> _openMake(MakeSession s) =>
+      s.interrupted ? _offerAgain(s) : _showMake(s);
 
   Future<void> _newApp() async {
     final request = await showNewSheet(
@@ -396,13 +316,6 @@ class _LauncherState extends State<Launcher> {
       case null:
         _draft = s.request;
     }
-  }
-
-  /// How far a going build is, for its tile; null when none goes.
-  static ({int done, int total})? _building(Plan? plan, BuildState? state) {
-    if (!buildGoing(state) || plan == null) return null;
-    final c = planCount(plan);
-    return c.total == 0 ? null : c;
   }
 
   /// Whether [aid]'s build stopped (stopped, capped or failed) with
@@ -530,7 +443,8 @@ class _LauncherState extends State<Launcher> {
 
   @override
   Widget build(BuildContext context) {
-    final apps = _apps;
+    final apps = _host.summaries;
+    final unread = _host.unread;
     return Scaffold(
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _newApp,
@@ -538,7 +452,7 @@ class _LauncherState extends State<Launcher> {
         label: const Text('New app'),
       ),
       body: RefreshIndicator(
-        onRefresh: _load,
+        onRefresh: _host.load,
         child: CustomScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
@@ -550,8 +464,8 @@ class _LauncherState extends State<Launcher> {
                   tooltip: 'Inbox',
                   onPressed: _openInbox,
                   icon: Badge.count(
-                    count: _unread,
-                    isLabelVisible: _unread > 0,
+                    count: unread,
+                    isLabelVisible: unread > 0,
                     child: const Icon(Icons.inbox_outlined),
                   ),
                 ),
@@ -576,16 +490,16 @@ class _LauncherState extends State<Launcher> {
                 const SizedBox(width: 4),
               ],
             ),
-            if (widget.needsKey)
+            if (_host.needsKey)
               SliverToBoxAdapter(child: _KeyBanner(onAdd: widget.openSettings)),
-            if (apps == null && _loadError != null)
+            if (apps == null && _host.loadError != null)
               SliverFillRemaining(
                 hasScrollBody: false,
                 child: _Message(
                   icon: Icons.cloud_off_rounded,
                   text: "Couldn't load your apps",
                   action: TextButton(
-                    onPressed: _load,
+                    onPressed: _host.load,
                     child: const Text('Try again'),
                   ),
                 ),
@@ -623,27 +537,17 @@ class _LauncherState extends State<Launcher> {
                         key: ObjectKey(m),
                         session: m,
                         link: widget.build,
-                        onTap: () => unawaited(
-                          m.interrupted ? _offerAgain(m) : _showMake(m),
-                        ),
+                        onTap: () => unawaited(_openMake(m)),
                       );
                     }
                     i -= makes.length;
-                    Widget tile(({int done, int total})? building) => _AppTile(
+                    return _AppTile(
+                      key: ValueKey('build-${apps[i].id}'),
                       app: apps[i],
                       icons: _icons,
-                      building: building,
+                      building: _host.buildOf(apps[i].id),
                       onTap: () => widget.open(apps[i].id),
                       onLongPress: () => _menu(apps[i]),
-                    );
-                    final b = widget.build;
-                    if (b == null) return tile(null);
-                    return BuildWatch(
-                      key: ValueKey('build-${apps[i].id}'),
-                      link: b,
-                      appId: apps[i].id,
-                      builder: (context, plan, state) =>
-                          tile(_building(plan, state)),
                     );
                   },
                 ),
@@ -712,6 +616,7 @@ Widget _label(String text, TextStyle style, {int lines = 2}) => Text(
 
 class _AppTile extends StatelessWidget {
   const _AppTile({
+    super.key,
     required this.app,
     required this.onTap,
     required this.onLongPress,
@@ -1055,7 +960,11 @@ TileFace tileFace(ArtifactSummary app) {
 
 /// The seed colour of an artifact's tile: a hue taken from a hash of its
 /// [id], so each app keeps its colour and neighbours differ.
-Color tileSeed(String id) {
+Color tileSeed(String id) =>
+    HSLColor.fromAHSL(1, tileHue(id).toDouble(), 0.5, 0.5).toColor();
+
+/// The hue (0 to 359) of artifact [id]'s tile ([tileSeed]).
+int tileHue(String id) {
   var h = 0x811c9dc5;
   for (final c in id.codeUnits) {
     h = ((h ^ c) * 0x01000193) & 0xffffffff;
@@ -1067,7 +976,7 @@ Color tileSeed(String id) {
   h ^= h >> 13;
   h = (h * 0xc2b2ae35) & 0xffffffff;
   h ^= h >> 16;
-  return HSLColor.fromAHSL(1, (h % 360).toDouble(), 0.5, 0.5).toColor();
+  return h % 360;
 }
 
 final _tileSchemes = <(String, Brightness), ColorScheme>{};
@@ -1172,3 +1081,39 @@ IconData? iconFor(String? word) => switch (word?.trim().toLowerCase()) {
   'app' || 'apps' || 'widget' => Icons.widgets_rounded,
   _ => null,
 };
+
+/// The launcher's own answers to its host's calls, when it keeps the host.
+class _LauncherActions implements HomeActions {
+  _LauncherActions(this._s);
+
+  final _LauncherState _s;
+
+  @override
+  void open(String id) => _s.widget.open(id);
+
+  @override
+  void openMake(String id) {
+    if (_s._host.sessionOf(id) case final m?) unawaited(_s._openMake(m));
+  }
+
+  @override
+  void newApp() => unawaited(_s._newApp());
+
+  @override
+  void menu(String id, Rect anchor) {
+    for (final a in _s._host.summaries ?? const <ArtifactSummary>[]) {
+      if (a.id == id) unawaited(_s._menu(a));
+    }
+  }
+
+  @override
+  void openInbox() => unawaited(_s._openInbox());
+
+  @override
+  void openSettings() => _s.widget.openSettings?.call();
+
+  @override
+  void importApp() {
+    if (_s.widget.bundles case final b?) unawaited(b.importPicked(_s.context));
+  }
+}

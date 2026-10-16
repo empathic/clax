@@ -452,7 +452,7 @@ final class QuestionsMsg extends HostMessage {
 }
 
 /// A device capability call of the page (`notify`, `share`, `files`,
-/// `camera`, `location`; `web/shell/src/caps/device-link.ts`), for the app
+/// `camera`, `location`, `home`; `web/shell/src/caps/device-link.ts`), for the app
 /// to make and answer with [DeviceResult] under the same [id].
 final class DeviceRequest extends HostMessage {
   const DeviceRequest({
@@ -786,6 +786,21 @@ final class DeviceEvent extends HostCall {
             'kind': 'end',
             'error': {'code': code, 'message': message},
           };
+    return 'window.claxHost?.deviceEvent(JSON.parse(${jsString(jsonEncode(a))}))';
+  }
+}
+
+/// A change for the home app's `home` capability: topic [name] (`apps`,
+/// `makes`, `unread` or `key`) now holds [data], its whole latest value.
+final class HomeDeviceEvent extends HostCall {
+  const HomeDeviceEvent(this.name, this.data);
+
+  final String name;
+  final Object? data;
+
+  @override
+  String toJs() {
+    final a = {'cap': 'home', 'name': name, 'data': data};
     return 'window.claxHost?.deviceEvent(JSON.parse(${jsString(jsonEncode(a))}))';
   }
 }

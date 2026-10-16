@@ -119,7 +119,9 @@
 //   ok: false, error: {code, message}})`. A running `location.watch` gets
 //   the app's news by `deviceEvent({cap: "location", watch, kind: "update",
 //   value})` and, once, `deviceEvent({cap: "location", watch, kind: "end",
-//   error: {code, message}})`. The inspect view links nothing, so
+//   error: {code, message}})`. `home` takes the same way (`device {cap:
+//   "home"}`); the app pushes its changes by `deviceEvent({cap: "home",
+//   name, data})`. The inspect view links nothing, so
 //   there `use()` resolves null for them.
 // - `openRoute(hash)` moves the page to a fragment (`#route`), as a
 //   notification's tap asks.
@@ -288,8 +290,8 @@ export type ClaxHost = {
   /** The app's answer to a `device` message: `{id, ok: true, value}` or
    * `{id, ok: false, error: {code, message}}`. */
   deviceResult(a: unknown): void;
-  /** The app's news for a running `location.watch` (see Device capabilities
-   * above). */
+  /** The app's news for a running `location.watch`, or a change for
+   * `home` (see Device capabilities above). */
   deviceEvent(a: unknown): void;
   /** Moves the page to fragment `hash` (`#` and at most 512 characters). */
   openRoute(hash: string): void;
@@ -447,7 +449,11 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     if (nonce === null) deviceQueue.push(c);
     else post({ type: "device", ...c });
   });
-  if (!inspecting) deviceLink.call = deviceCall;
+  let homeAsked: Promise<boolean> | undefined;
+  if (!inspecting) {
+    deviceLink.call = deviceCall;
+    deviceLink.home = () => homeAsked ??= deviceCall("home", "available", []).then(v => v === true, () => false);
+  }
   const s = () => ctl.state.get();
 
   // The page's last reported scroll position, per page.
@@ -1103,7 +1109,10 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
 
   return () => {
     unsubscribe();
-    if (deviceLink.call === deviceCall) deviceLink.call = null;
+    if (deviceLink.call === deviceCall) {
+      deviceLink.call = null;
+      deviceLink.home = undefined;
+    }
     for (const p of devicePending.values()) p.reject(new CapError("unavailable", "the app closed this view"));
     devicePending.clear();
     win.removeEventListener("input", onInput);

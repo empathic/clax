@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CAPABILITY_METHODS } from "../src/capabilities";
+import { HOME_METHODS } from "../src/caps/home";
 import { ROOM_METHODS } from "../src/caps/room";
 import { SAMPLE_METHODS } from "../src/caps/sample";
 
@@ -61,6 +62,10 @@ describe("the namespace method lists match the 0.2.61 contract", () => {
     // `function json<T = unknown>(` is generic, so the scan reads `function name<` too.
     const declared = [...new Set([...contract("sample").matchAll(/^\s*function (\w+)[<(]/gm)].map(m => m[1]))].filter(n => n !== "sample").sort();
     expect([...SAMPLE_METHODS].sort()).toEqual(declared);
+  });
+
+  it("home (the caps part's own list, and on)", () => {
+    expect([...HOME_METHODS, "on"].sort()).toEqual(members(ext, "interface Home {"));
   });
 
   it("room (its part's own list)", () => {

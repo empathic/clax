@@ -4,14 +4,14 @@
 import { artifactHandler } from "./artifact";
 import { commentsHandler } from "./comments";
 import { dbHandler } from "./db";
-import type { DeviceCap } from "./device-link";
+import type { LinkedCap } from "./device-link";
 import type { HandlerFactory } from "./host";
 import { lazyHandler } from "./lazy";
 import { permissionsHandler } from "./permissions";
 import { userHandler } from "./user";
 
-/** A device capability's handler, its code loaded on the page's first call. */
-const device = (cap: DeviceCap) => lazyHandler(() => import("./device").then(m => m.deviceHandler(cap)));
+/** A device capability's handler (or `home`'s), its code loaded on the page's first call. */
+const device = (cap: LinkedCap) => lazyHandler(() => import("./device").then(m => m.deviceHandler(cap)));
 
 export const REGISTRY: Record<string, HandlerFactory> = {
   artifact: artifactHandler,
@@ -23,6 +23,7 @@ export const REGISTRY: Record<string, HandlerFactory> = {
   file: device("file"),
   camera: device("camera"),
   location: device("location"),
+  home: device("home"),
   downloads: lazyHandler(() => import("./downloads").then(m => m.downloadsHandler)),
   net: lazyHandler(() => import("./net").then(m => m.netHandler)),
   permissions: permissionsHandler,

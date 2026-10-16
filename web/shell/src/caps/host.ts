@@ -150,6 +150,7 @@ export class CapabilityHost {
     this.served.device = deviceLink.call !== null;
     // Only a request about sample (or permissions, which lists it) waits for the daemon's answer.
     if (named === "sample" || named === "permissions") await this.checkServed(env);
+    if (named === "home") this.served.home = await deviceLink.home?.();
     if (this.dead) return;
     const owner = env.token !== null;
     if (m.type === "clax:use") {

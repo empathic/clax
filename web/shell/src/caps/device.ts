@@ -20,9 +20,10 @@
 // `hostArrival.presses`) newer than the one the last of them used, and newer
 // than the end of a watch (the person stopping it with the app's pill, or
 // leaving the app), so one tap starts at most one.
-import { type DeviceCap, deviceLink } from "./device-link";
+import { type DeviceCap, type LinkedCap, deviceLink } from "./device-link";
 import { CapError } from "./errors";
 import { frameGesture, hostArrival } from "./gesture";
+import { homeHandler } from "./home";
 import type { HandlerFactory } from "./host";
 
 export const DEVICE_METHODS: Record<DeviceCap, readonly string[]> = {
@@ -50,7 +51,9 @@ function plain(v: unknown, depth = 0): boolean {
   return false;
 }
 
-export function deviceHandler(cap: DeviceCap): HandlerFactory {
+/** `cap`'s handler; `home` has its own (home.ts), loaded with these. */
+export function deviceHandler(cap: LinkedCap): HandlerFactory {
+  if (cap === "home") return homeHandler;
   return env => {
     // The running watches: the app's ID → the page's.
     const watches = new Map<string, string>();

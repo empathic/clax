@@ -4,7 +4,9 @@
 // `room` when declared; `sample` to the owner shell, when declared and the
 // daemon has a provider; the device capabilities (`notify`, `share`, `file`,
 // `camera`, `location`) when declared and the Clax app hosts the view
-// (device-link.ts); `net` to the owner shell when declared; claude.ai's
+// (device-link.ts); `home` when declared, the Clax app hosts the view and
+// the app says this view is its home app (`home.available`); `net` to the
+// owner shell when declared; claude.ai's
 // `files` and `mcp` never.
 
 export type Declared = Record<string, Record<string, unknown> | undefined>;
@@ -12,7 +14,7 @@ export type Declared = Record<string, Record<string, unknown> | undefined>;
 /** The declarable capabilities this runtime serves, in the order `permissions.state()` lists them. */
 /** What this daemon serves beyond the declaration: `sample` needs a provider
  * (`GET /api/artifacts/<aid>/sample`), asked when the page names it. */
-export type Served = { sample?: boolean; device?: boolean };
+export type Served = { sample?: boolean; device?: boolean; home?: boolean };
 
 export const CAPABILITIES = ["artifact", "db", "downloads", "user", "comments", "assets", "room", "sample"] as const;
 
@@ -30,6 +32,8 @@ export function isAvailable(name: string, declared: Declared, owner: boolean, se
     // The owner's browser only: the key is the owner's, and a LAN viewer cannot spend it.
     case "sample": return owner && declares(name, declared) && served.sample === true;
     case "notify": case "share": case "file": case "camera": case "location": return declares(name, declared) && served.device === true;
+    // Declaring it grants nothing: the app serves it to its home app only.
+    case "home": return declares(name, declared) && served.home === true;
     // The owner's views only: the fetch route takes the token (net.ts).
     case "net": return owner && declares(name, declared);
     default: return false;
