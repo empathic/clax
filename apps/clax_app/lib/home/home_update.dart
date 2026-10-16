@@ -85,8 +85,9 @@ Future<HomeUpdateResult> updateHomeApp(
   return HomeUpdateResult.updated;
 }
 
-/// The update sheet for a changed home app: "Keep mine" or "Update
-/// (replaces your changes)".
+/// The update sheet for a changed home app: "Keep mine (skip this
+/// update)", the next release asking again, or "Update (replaces your
+/// changes)".
 Future<UpdateChoice?> askHomeUpdate(BuildContext context, OpenedBundle opened) {
   final d = opened.decision;
   return showBundleSheet<UpdateChoice>(
@@ -101,6 +102,7 @@ Future<UpdateChoice?> askHomeUpdate(BuildContext context, OpenedBundle opened) {
         ),
       ),
       modified: true,
+      keepStopsUpdates: false,
     ),
   );
 }
