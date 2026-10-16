@@ -15,8 +15,10 @@
 #   scripts/run.sh which             say which build system would run, and why
 #   scripts/run.sh --dry-run <task>  say what would run, and run nothing
 #
-# Which build system (scripts/lib/build-system.sh): Bazel when Bazelisk is
-# on PATH, else Cargo and pnpm. CLAX_BUILD=bazel|native|auto overrides:
+# Which build system (scripts/lib/build-system.sh): the native tools for a
+# task whose native build state this worktree already has (target/debug,
+# node_modules: faster after an edit), else Bazel when Bazelisk is on PATH,
+# else Cargo and pnpm. CLAX_BUILD=bazel|native|auto overrides:
 # `bazel` fails rather than fall back, `native` never looks for Bazel. The
 # `just` recipes call this; their `-native` twins set CLAX_BUILD=native.
 #
@@ -51,12 +53,20 @@ usage() {
     exit 2
 }
 
-# What each task needs when run natively.
+# What each task needs when run natively, and the native build state that
+# makes it faster natively than under Bazel after an edit (measured in
+# docs/bazel.md, "Speed"): with all of it in the worktree, `auto` runs the
+# task natively.
+BUILD_SYSTEM_WARM=()
 case "$task" in
-    ci|check|lint|perf|which) needs=(rust web) ;;
-    test|build) needs=(rust) ;;
-    web-test|pi-test|web) needs=(web) ;;
-    web-e2e) needs=(rust web) ;;
+    ci|check) needs=(rust web); BUILD_SYSTEM_WARM=(target/debug web/node_modules plugins/pi/node_modules) ;;
+    lint|perf|which) needs=(rust web) ;;
+    test) needs=(rust); BUILD_SYSTEM_WARM=(target/debug) ;;
+    build) needs=(rust) ;;
+    web-test) needs=(web); BUILD_SYSTEM_WARM=(web/node_modules) ;;
+    pi-test) needs=(web); BUILD_SYSTEM_WARM=(plugins/pi/node_modules) ;;
+    web) needs=(web) ;;
+    web-e2e) needs=(rust web); BUILD_SYSTEM_WARM=(target/debug web/node_modules) ;;
     *) usage ;;
 esac
 
@@ -173,6 +183,9 @@ if [ "$BUILD_SYSTEM_FALLBACK" = 1 ]; then
     echo "   With Bazelisk the same command keeps its results in a cache every worktree shares,"
     echo "   needs no target/ or node_modules in the worktree, and runs the checks CI runs."
     echo "   Install it: $(build_system_install_hint)"
+fi
+if [ "$BUILD_SYSTEM_WARM_CHOSEN" = 1 ]; then
+    echo "── $BUILD_SYSTEM_WHY: running \`$task\` with the native tools (CLAX_BUILD=bazel runs it under Bazel) ──"
 fi
 for warning in "${BUILD_SYSTEM_WARNINGS[@]+"${BUILD_SYSTEM_WARNINGS[@]}"}"; do
     echo "   note: $warning"

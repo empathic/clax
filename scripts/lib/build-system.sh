@@ -8,17 +8,25 @@
 # The choice is made once, by what is installed, and CLAX_BUILD
 # overrides it:
 #
-#   auto (default)  Bazel when Bazelisk, or a `bazel` at the version
+#   auto (default)  The native tools when the caller names the native
+#                   build state a task reuses (BUILD_SYSTEM_WARM: target/debug,
+#                   web/node_modules, …) and all of it is in this worktree,
+#                   and the tools are installed: after an edit they rebuild
+#                   faster than Bazel (docs/bazel.md, "Speed"). Otherwise
+#                   Bazel when Bazelisk, or a `bazel` at the version
 #                   .bazelversion names, is on PATH. Otherwise the native
 #                   tools: Cargo for Rust, Node and pnpm for the web UI and Pi.
 #   bazel           Bazel, or an error saying how to install it. Never a
 #                   silent fallback.
 #   native          The native tools. Bazel is not looked for.
 #
-# build_system_choose sets:
+# The caller may set BUILD_SYSTEM_WARM to the directories of native build
+# state its task reuses (see auto above). build_system_choose sets:
 #   BUILD_SYSTEM          bazel | native
 #   BUILD_SYSTEM_WHY      one line: what was found
 #   BUILD_SYSTEM_FALLBACK 1 when `auto` wanted Bazel and did not find it
+#   BUILD_SYSTEM_WARM_CHOSEN 1 when `auto` chose the native tools for the
+#                         worktree's native build state
 #   BAZEL                 the command to run Bazel with, on the Bazel path
 # and returns 2, after saying what is missing, when nothing usable is
 # installed or the override cannot be met. It prints nothing otherwise:
@@ -102,6 +110,7 @@ build_system_choose() {
     BUILD_SYSTEM=""
     BUILD_SYSTEM_WHY=""
     BUILD_SYSTEM_FALLBACK=0
+    BUILD_SYSTEM_WARM_CHOSEN=0
     BUILD_SYSTEM_WARNINGS=()
     BAZEL=""
     case "$mode" in
@@ -111,6 +120,23 @@ build_system_choose() {
             return 2
             ;;
     esac
+
+    # Speed wins (docs/bazel.md, "Speed"): a worktree that already has the
+    # native build state a task reuses rebuilds after an edit faster with the
+    # native tools than Bazel does.
+    if [ "$mode" = auto ] && [ -n "${BUILD_SYSTEM_WARM[*]-}" ] && _native_usable "$@"; then
+        local warm=1 path
+        for path in "${BUILD_SYSTEM_WARM[@]+"${BUILD_SYSTEM_WARM[@]}"}"; do
+            [ -d "$path" ] || warm=0
+        done
+        if [ "$warm" = 1 ]; then
+            BUILD_SYSTEM=native
+            BUILD_SYSTEM_WARM_CHOSEN=1
+            BUILD_SYSTEM_WHY="this worktree has a native build (${BUILD_SYSTEM_WARM[*]}), which rebuilds after an edit faster than Bazel"
+            BUILD_SYSTEM_WARNINGS=("${_native_warnings[@]+"${_native_warnings[@]}"}")
+            return 0
+        fi
+    fi
 
     if [ "$mode" != native ] && _bazel_usable; then
         BUILD_SYSTEM=bazel
