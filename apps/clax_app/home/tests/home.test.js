@@ -294,3 +294,21 @@ test('tells Clax where each app tile is, again when they move', async () => {
   await wait(() => reports.length === 2);
   expect(reports[1].length).toBe(2);
 });
+
+test('says where the tiles are only after it said it was drawn, even with no apps', async () => {
+  const home = fakeHome({ makes: [], apps: [] });
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const apps = home.apps;
+  home.apps = async () => { await gate; return apps(); };
+  const order = [];
+  home.shown = async () => { order.push('shown'); };
+  home.tiles = async (list) => { order.push(list.length); };
+  mount(root(), home);
+  await ui.waitFor(() => document.querySelector('.h-fab'));
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  expect(order).toEqual([]);
+  release();
+  await wait(() => order.length === 2);
+  expect(order).toEqual(['shown', 0]);
+});
