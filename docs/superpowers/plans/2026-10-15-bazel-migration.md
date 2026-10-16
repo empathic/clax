@@ -16,7 +16,7 @@
 
 - Bazel and rules are exactly: Bazel 9.3.0 (`.bazelversion`), rules_rust 0.74.0, aspect_rules_js 3.5.1, rules_nodejs 6.7.6, bazel_lib 3.7.2, rules_shell 0.8.0 (spec B4).
 - Rust toolchain in `MODULE.bazel` equals `rust-toolchain.toml` (1.94.0), with a sha256 for every archive (spec B5).
-- The disk cache is `~/.cache/bazel-disk`, shared with changelist: `--experimental_disk_cache_gc_max_size=40G`, `--experimental_disk_cache_gc_max_age=7d` until Task 17 sets the measured bound (spec §9.3).
+- The disk cache is `~/.cache/bazel-disk`, shared with changelist, bounded at 80 GB in total, stated identically in both repositories: `--experimental_disk_cache_gc_max_size=80G`, `--experimental_disk_cache_gc_max_age=7d` (spec §9.3; owner, 2026-10-15: "Raise the total to 80GB").
 - `CLAX_BUILD=bazel|native|auto` is the only switch; `auto` is the default (spec B2).
 - No `unsafe` anywhere (`unsafe_code = "forbid"`); never `std::env::set_var` (it is `unsafe` in edition 2024).
 - No hard links in code, tests, scripts, Starlark or `.bazelrc`; bazel_lib copy rules that take `hardlink` get `hardlink = "off"`.
@@ -299,6 +299,7 @@ trap 'chmod -R u+w "$d" 2>/dev/null; rm -rf "$d"' EXIT
     export CLAX_FAKE_EXE_DIR="$d/store"
     # shellcheck source=scripts/fake-exe.sh
     . scripts/fake-exe.sh
+    mkdir -p "$d/bin"
     printf '#!/bin/sh\necho hi\n' | fake_exe "$d/bin/hi"
     [ "$("$d/bin/hi")" = hi ]
     target="$(readlink "$d/bin/hi")"
@@ -307,6 +308,7 @@ trap 'chmod -R u+w "$d" 2>/dev/null; rm -rf "$d"' EXIT
 (
     export TMPDIR="$d/tmp"; mkdir -p "$TMPDIR"; unset CLAX_FAKE_EXE_DIR
     . scripts/fake-exe.sh
+    mkdir -p "$d/bin2"
     printf '#!/bin/sh\necho hi\n' | fake_exe "$d/bin2/hi"
     case "$(readlink "$d/bin2/hi")" in "$d/tmp/clax-fake-exe/"*) ;; *) echo "FAIL: default store" >&2; exit 1 ;; esac
 )
@@ -316,7 +318,7 @@ echo "PASS: fake-exe.sh store"
 `plugins/pi/test/fake-exe.test.ts`:
 
 ```ts
-import { mkdtempSync, readlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -328,6 +330,7 @@ afterEach(() => { if (saved === undefined) delete process.env.CLAX_FAKE_EXE_DIR;
 test("the store is CLAX_FAKE_EXE_DIR when set", () => {
   const d = mkdtempSync(join(tmpdir(), "clax-fake-test-"));
   process.env.CLAX_FAKE_EXE_DIR = join(d, "store");
+  mkdirSync(join(d, "bin"), { recursive: true });
   const at = fakeExe(join(d, "bin", "hi"), "#!/bin/sh\necho hi\n");
   expect(readlinkSync(at).startsWith(join(d, "store") + "/")).toBe(true);
 });
@@ -550,7 +553,7 @@ pnpm install --frozen-lockfile "$@"
 printf '%s\n' "$want" > "$stamp"
 ```
 
-In `web/package.json` add `"build:e2e": "node scripts/build-e2e.mjs"`. Move the test-clock build out of `web/e2e/global-setup.ts` into `web/scripts/build-e2e.mjs`, which builds into `dist-e2e/` from `dist/` exactly as `global-setup.ts` does today, with `vite` run through the `vite` package's JavaScript API instead of `npx`. `global-setup.ts` then: if `process.env.CLAX_E2E_WEB_DIST` is set, use it; else run its inputs-hash check and `pnpm run build:e2e` into the cache directory as today. Its inputs list names `pnpm-lock.yaml`.
+In `web/package.json` add `"build:e2e": "node scripts/build-e2e.mjs"`. Move the test-clock build out of `web/e2e/global-setup.ts` into `web/scripts/build-e2e.mjs`, which builds from `dist/` exactly as `global-setup.ts` does today, with `vite` run through the `vite` package's JavaScript API instead of `npx`, into `--out <dir>` (default `dist-e2e`, which Task 7's `//web:dist_e2e` uses). `global-setup.ts` then: if `process.env.CLAX_E2E_WEB_DIST` is set, use it; else run its inputs-hash check and `pnpm run build:e2e -- --out node_modules/.cache/clax-e2e-dist` as today. Its inputs list names `pnpm-lock.yaml`.
 
 `bump-version.sh` and `check-version.sh`: the Pi version lives only in `plugins/pi/package.json` (a pnpm lockfile carries no package version); drop the two `package-lock.json` entries and their tests in `test-release.sh`. CI workflows: add `pnpm/action-setup` (pinned by commit SHA, the version from `packageManager`) before `actions/setup-node` and set `cache: pnpm` with `cache-dependency-path: web/pnpm-lock.yaml`.
 
@@ -575,6 +578,7 @@ git -c commit.gpgsign=false commit -m "Install the web UI's and the Pi extension
 
 **Files:**
 - Create: `.bazelversion` (`9.3.0`), `.bazelrc`, `user.bazelrc.example`, `.bazelignore`, `BUILD.bazel`, `MODULE.bazel`, `bazel/BUILD.bazel`
+- Create: `docs/bazel.md` with its section headings only (Use; Keeping Bazel in step with Cargo; Targets; macOS first runs; The web side and Pi; Browser tests; Run outside Bazel; CPU and memory; CI; Disk; Speed; For agents; Differences from Cargo), each filled by the task that builds it
 - Create: `web/BUILD.bazel` and `plugins/pi/BUILD.bazel`, each for now only `exports_files(["pnpm-lock.yaml", "package.json", "pnpm-workspace.yaml"])`, so `MODULE.bazel` can name the lockfiles (Task 7 fills them)
 - Modify: `.gitignore` (`/bazel-*`, `/user.bazelrc`)
 
@@ -609,11 +613,11 @@ Then rules_js as changelist, with `node.toolchain(node_version = "<the exact 22.
 # this machine: one directory, one bound. ../changelist/.bazelrc states the
 # same three lines; change both together (docs/bazel.md, "Disk").
 build --disk_cache=~/.cache/bazel-disk
-build --experimental_disk_cache_gc_max_size=40G
+build --experimental_disk_cache_gc_max_size=80G
 build --experimental_disk_cache_gc_max_age=7d
 ```
 
-Remove changelist's `wasm`, `postgres` configs; keep `clippy`, `fmt`, `ci`; add `build --@rules_rust//rust/settings:pipelined_compilation=True` and `build --@rules_rust//rust/settings:clippy.toml=//:clippy.toml`. No `--jobs` or `--local_resources` line.
+Remove changelist's `wasm`, `postgres` and `ci` configs (its `ci` config turns the disk cache off for a sticky disk; Task 16 writes Clax's); keep `clippy` and `fmt`; add `build --@rules_rust//rust/settings:pipelined_compilation=True` and `build --@rules_rust//rust/settings:clippy.toml=//:clippy.toml`. No `--jobs` or `--local_resources` line.
 
 `.bazelignore`:
 
@@ -648,7 +652,7 @@ Expected: no output.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add .bazelversion .bazelrc user.bazelrc.example .bazelignore .gitignore BUILD.bazel MODULE.bazel MODULE.bazel.lock bazel/BUILD.bazel web/BUILD.bazel plugins/pi/BUILD.bazel
+git add .bazelversion .bazelrc user.bazelrc.example .bazelignore .gitignore BUILD.bazel MODULE.bazel MODULE.bazel.lock bazel/BUILD.bazel web/BUILD.bazel plugins/pi/BUILD.bazel docs/bazel.md
 git -c commit.gpgsign=false commit -m "Add the Bazel workspace: toolchains, crates from Cargo.lock, and each pnpm project's packages"
 ```
 
@@ -661,7 +665,7 @@ git -c commit.gpgsign=false commit -m "Add the Bazel workspace: toolchains, crat
 
 **Interfaces:**
 - Produces: `bazel/workspace.bzl` defining `CRATES`, a dict keyed by package path (`"crates/clax-server"`) with: `name`, `version`, `edition`, `lib` (crate name, underscores), `lib_root`, `bins` (`{name: root}`), `tests` (`{name: root}` from `[[test]]`), `default_features`, `deps` and `dev_deps` (workspace labels, e.g. `"//crates/clax-core:clax_core"`), `test_features` (`{package_path: [features]}`: features of workspace crates that this crate's dev-dependencies turn on, e.g. clax-mcp: `{"crates/clax-server": ["test-support"]}`; clax-server: `{"crates/clax-server": ["test-routes", "test-support"]}`), `has_build_script` (bool); and `WORKSPACE_RUSTC_FLAGS` (from `[workspace.lints.rust]`: `["-Funsafe-code"]`, plus `--check-cfg=cfg(clax_embedded)` from `unexpected_cfgs`).
-- Produces: `scripts/bazel-sync.sh [--check]`; `--check` exits 1 naming `just bazel-sync` when any derived file is stale.
+- Produces: `scripts/bazel-sync.sh [--check]`; `--check` exits 1 naming `just bazel-sync` when any derived file is stale. Its Bazel commands go through `${BAZEL_SYNC_BAZEL:-bazelisk}`, so its test runs without starting a Bazel server per scratch copy (each would leave an output base outside any checkout, which `bazel-gc.sh` never removes).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -670,8 +674,9 @@ git -c commit.gpgsign=false commit -m "Add the Bazel workspace: toolchains, crat
 ```bash
 #!/usr/bin/env bash
 # Tests scripts/bazel-sync.sh --check in a scratch copy of the repository's
-# Cargo and Bazel files: current files pass; a new dependency, a changed
-# workspace lint, a Rust version that differs from rust-toolchain.toml, a
+# Cargo and Bazel files: current files pass; a new crate feature, a changed
+# workspace lint, a stale MODULE.bazel.lock (Bazel's error, faked), a Rust
+# version that differs from rust-toolchain.toml, a
 # workspace crate without a BUILD.bazel, and a job limit in .bazelrc each
 # fail, naming the cause; --check never writes a file.
 set -uo pipefail
@@ -688,16 +693,23 @@ fresh() {
 }
 # perl rather than sed -i: one spelling on macOS and Linux.
 edit() { perl -0pi -e "$1" "$2"; }
-check() { (cd "$T/r" && scripts/bazel-sync.sh --check) >"$T/out" 2>&1; }
+# Bazel's own lockfile and feature checks are a fake that passes, unless a
+# case makes it fail; every real run (scripts/bazel-test.sh) runs them.
+. "$HERE/scripts/fake-exe.sh"
+mkdir -p "$T/bin"
+printf '#!/bin/sh\nexit 0\n' | fake_exe "$T/bin/bazel-ok"
+printf '#!/bin/sh\necho "ERROR: MODULE.bazel.lock is not up-to-date" >&2; exit 1\n' | fake_exe "$T/bin/bazel-stale"
+check() { (cd "$T/r" && BAZEL_SYNC_BAZEL="${BAZEL:-$T/bin/bazel-ok}" scripts/bazel-sync.sh --check) >"$T/out" 2>&1; }
 
 fresh; if check; then pass "current files pass"; else fail "current files pass: $(cat "$T/out")"; fi
 
-fresh; edit 's/^anyhow = "1"\n/anyhow = "1"\nitoa = "1"\n/m' "$T/r/Cargo.toml"
-edit 's/^anyhow\.workspace = true\n/anyhow.workspace = true\nitoa.workspace = true\n/m' "$T/r/crates/clax-core/Cargo.toml"
-before="$(cd "$T/r" && find . -type f -newer Cargo.toml | sort)"
-if check; then fail "a new dependency fails"; elif grep -q 'just bazel-sync' "$T/out"; then pass "a new dependency fails, naming just bazel-sync"; else fail "message: $(cat "$T/out")"; fi
-after="$(cd "$T/r" && find . -type f -newer Cargo.toml | sort)"
-[ "$before" = "$after" ] && pass "--check writes nothing" || fail "--check wrote: $after"
+fresh; edit 's/^\[features\]\n/[features]\nextra-test = []\n/m' "$T/r/crates/clax-server/Cargo.toml"
+touch "$T/stamp"
+if check; then fail "a new crate feature fails"; elif grep -q 'just bazel-sync' "$T/out"; then pass "a new crate feature fails, naming just bazel-sync"; else fail "message: $(cat "$T/out")"; fi
+wrote="$(cd "$T/r" && find . -type f -newer "$T/stamp" | sort)"
+[ -z "$wrote" ] && pass "--check writes nothing" || fail "--check wrote: $wrote"
+
+fresh; if BAZEL="$T/bin/bazel-stale" check; then fail "a stale lockfile fails"; elif grep -q 'just bazel-sync' "$T/out"; then pass "a stale lockfile fails, naming just bazel-sync"; else fail "message: $(cat "$T/out")"; fi
 
 fresh; edit 's/unsafe_code = "forbid"/unsafe_code = "deny"/' "$T/r/Cargo.toml"
 if check; then fail "a changed lint fails"; else pass "a changed lint fails"; fi
@@ -813,7 +825,8 @@ git -c commit.gpgsign=false commit -m "Build the web UI, the extension and the P
 ### Task 8: Rust libraries, binaries, lints and the warmed `clax`
 
 **Files:**
-- Create: `bazel/cargo.bzl`, `bazel/warm.bzl`, `crates/{clax-core,clax-server,clax-cli,clax-mcp,clax-hooks,clax-fake-exe}/BUILD.bazel`
+- Create: `bazel/cargo.bzl`, `bazel/warm.bzl`, `crates/{clax-core,clax-server,clax-cli,clax-mcp,clax-hooks,clax-fake-exe}/BUILD.bazel`, `plugins/BUILD.bazel`
+- Modify: `BUILD.bazel` (`marketplaces` filegroup), `web/BUILD.bazel` (`extension_key`, `shell_cases` filegroups)
 
 **Interfaces:**
 - Consumes: `CRATES`, `WORKSPACE_RUSTC_FLAGS` (Task 6); `//web:dist`, `//web:dist_extension` (Task 7); `CLAX_WEB_DIST_DIR`, `CLAX_EXTENSION_DIST_DIR`, `clax_embedded` (Task 3).
@@ -928,7 +941,7 @@ Expected: no test targets, or failures for missing data.
 
 - [ ] **Step 2: Give tests what they read**
 
-In `cargo_package`, tests in `tests_use_clax` get `data += ["//crates/clax-cli:clax", "//crates/clax-cli:clax_warm"]` and `env = {"CLAX_TEST_BIN": "$(rootpath //crates/clax-cli:clax)"}`; every test gets `env["CLAX_TEST_NODE"] = "$(rootpath @nodejs_toolchains//:resolved_toolchain)"`-style Node path where the crate lists `//plugins/pi:node_modules` in `test_data` (use the label the Node toolchain exposes for its binary; `bazelisk query @nodejs_toolchains//...` lists it), and `timeout = "long"`. Shards: `shard_counts = {"integration": N}` sets `shard_count`; pick N from `rg -c '#\[(tokio::)?test' crates/clax-server/tests` so each shard holds about 100 tests. If rules_rust does not split a rust_test by `TEST_SHARD_INDEX`, wrap the test: `bazel/shard.sh` runs `"$TEST_BINARY" --list --format terse`, takes every `TEST_TOTAL_SHARDS`-th name from `TEST_SHARD_INDEX`, and runs them with `--exact`, touching `TEST_SHARD_STATUS_FILE`.
+Every test target of `clax-cli`, `clax-mcp`, `clax-hooks` and `clax-server` runs `clax` through Task 1's helper, so each of those crates lists all its test targets in `tests_use_clax` (a test that calls `clax_bin` without `CLAX_TEST_BIN` would reach the `CARGO` placeholder and fail loudly). In `cargo_package`, tests in `tests_use_clax` get `data += ["//crates/clax-cli:clax", "//crates/clax-cli:clax_warm"]` and `env = {"CLAX_TEST_BIN": "$(rootpath //crates/clax-cli:clax)"}`; every test gets `env["CLAX_TEST_NODE"] = "$(rootpath @nodejs_toolchains//:resolved_toolchain)"`-style Node path where the crate lists `//plugins/pi:node_modules` in `test_data` (use the label the Node toolchain exposes for its binary; `bazelisk query @nodejs_toolchains//...` lists it), and `timeout = "long"`. Shards: `shard_counts = {"integration": N}` sets `shard_count`; pick N from `rg -c '#\[(tokio::)?test' crates/clax-server/tests` so each shard holds about 100 tests. If rules_rust does not split a rust_test by `TEST_SHARD_INDEX`, wrap the test: `bazel/shard.sh` runs `"$TEST_BINARY" --list --format terse`, takes every `TEST_TOTAL_SHARDS`-th name from `TEST_SHARD_INDEX`, and runs them with `--exact`, touching `TEST_SHARD_STATUS_FILE`.
 
 Per crate (`test_data`): `clax-server` — `glob(["tests/fixtures/**"])`, `//web:dist`, `//web:contract_files`, `//plugins/pi:node_modules`, `//plugins/pi:files`, `//scripts:stable_bin`; `clax-cli` — `//plugins:embedded`, `//scripts:test_scripts` (the scripts its tests run: `ensure-clax.sh`, `stable-bin.sh`, `fake-exe.sh`), `//web:dist_extension`; `clax-mcp`, `clax-hooks` — their fixtures; `clax-core` — `glob(["tests/**"])`. A test that fails with a missing file names it: add the file to the owning filegroup and rerun.
 
@@ -981,7 +994,7 @@ Then reply on 28025fcc with the evidence (the passing `real Pi` tests under Baze
 ### Task 10: Web and Pi checks
 
 **Files:**
-- Modify: `web/BUILD.bazel`, `plugins/pi/BUILD.bazel`, `scripts/bazel-test.sh` (`--web`)
+- Modify: `web/BUILD.bazel`, `plugins/pi/BUILD.bazel`, `plugins/pi/test/daemon-fixture.ts` (absolute `CLAX_TEST_BIN`), `scripts/bazel-test.sh` (`--web`)
 - Create: `scripts/bazel-web.test.sh` (adapted from changelist's)
 
 **Interfaces:**
@@ -1012,7 +1025,7 @@ js_test(
 
 `plugins/pi/BUILD.bazel`: `npm_script_test(name = "typecheck", …)`, `npm_script_test(name = "test", script = "test", data = [":files", ":node_modules", "//crates/clax-cli:clax", "//crates/clax-cli:clax_warm"], env = {"CLAX_TEST_BIN": "$(rootpath //crates/clax-cli:clax)"}, args = ["--reporter=dot"])`. `daemon-fixture.ts` makes `CLAX_TEST_BIN` absolute against `process.cwd()` at load (`resolve(process.env.CLAX_TEST_BIN)`).
 
-`bazel-test.sh --web`: `scripts/pnpm-lock-check.py web plugins/pi`, then `_pass "web and pi checks" 'tests(//web/... + //plugins/pi/... + //bazel/js/...) except attr(tags, "\bmanual\b", //web/...)'`, then `bash scripts/bazel-web.test.sh` last.
+`bazel-test.sh --web`: `scripts/pnpm-lock-check.py web plugins/pi`, then `_pass "web and pi checks" 'tests(//web/... + //plugins/pi/... + //bazel/js/...) except attr(tags, "\b(manual|exclusive)\b", //...)'`, then `bash scripts/bazel-web.test.sh` (it runs Bazel itself, on a private copy, so it is never a Bazel test). Task 11 fixes where these phases sit in `--ci`. Task 12's browser targets join this pass through the query; Task 13's `exclusive` perf targets run in their own pass.
 
 - [ ] **Step 3: Run them**
 
@@ -1022,7 +1035,7 @@ Expected: all pass, including `bazel-web.test.sh`.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add web/BUILD.bazel web/package.json plugins/pi scripts/bazel-test.sh scripts/bazel-web.test.sh
+git add web/BUILD.bazel web/package.json plugins/pi/BUILD.bazel plugins/pi/test/daemon-fixture.ts scripts/bazel-test.sh scripts/bazel-web.test.sh
 git -c commit.gpgsign=false commit -m "Run the web UI's lint, type checks, unit tests and bundle gate, and the Pi extension's checks, under Bazel"
 ```
 
@@ -1035,10 +1048,10 @@ Implements the decision on 41e76eda.
 **Files:**
 - Create: `scripts/check-bazel-no-hard-links.sh`, `scripts/test-check-bazel-no-hard-links.sh`
 - Modify: `scripts/BUILD.bazel` (Task 9's filegroups; add the tests)
-- Modify: `scripts/check-no-hard-links.sh` (also scans `*.bzl`, `BUILD.bazel`, `MODULE.bazel`, `.bazelrc`; flags `hardlink = "on"` and `hardlink = "auto"`), `scripts/test-check-no-hard-links.sh` (cases for those), `scripts/test-release.sh` (its file list from a manifest), `scripts/bazel-test.sh` (`--ci`)
+- Modify: `scripts/check-no-hard-links.sh` (also scans `*.bzl`, `BUILD.bazel`, `MODULE.bazel`, `.bazelrc`; flags `hardlink = "on"` and `hardlink = "auto"`), `scripts/test-check-no-hard-links.sh` (cases for those), `scripts/test-release.sh` (its file list from a manifest), `scripts/bazel-sync.sh` (`--check` compares that manifest with `:release_files`), `scripts/bazel-test.sh` (`--ci`)
 
 **Interfaces:**
-- Produces: `sh_test`s `//scripts:{release,installer,plugin_wrapper,tool_hook,extension_signing,stable_bin,fake_exe,dev,comment_loop,no_unsafe,no_hard_links,pipefail_pipes,bazel_sync,run_choice}`; `scripts/check-bazel-no-hard-links.sh OUTPUT_BASE DISK_CACHE` (exit 1 listing any regular file with more than one link).
+- Produces: `sh_test`s `//scripts:{release,installer,plugin_wrapper,tool_hook,extension_signing,stable_bin,fake_exe,dev,comment_loop,no_unsafe,no_hard_links,pipefail_pipes}` (Task 14 adds `run_choice`, Task 15 `bazel_gc`; `bazel-sync.test.sh` and `bazel-web.test.sh` run Bazel themselves and stay outside it); `scripts/check-bazel-no-hard-links.sh OUTPUT_BASE DISK_CACHE` (exit 1 listing any regular file with more than one link).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1072,9 +1085,18 @@ echo "no hard links in $*"
 
 - [ ] **Step 3: Declare the sh_tests**
 
-`scripts/BUILD.bazel`: one `sh_test` per gate listed under Interfaces, each with `srcs` the gate's script and `data` the files it reads (its sourced helpers, `scripts/fake-exe.sh`, `scripts/fake-release-server.py`, `install.sh`, the plugins' wrappers, `:release_files`, and `//crates/clax-cli:clax` with `:clax_warm` plus `env = {"CLAX_TEST_BIN": "$(rootpath //crates/clax-cli:clax)"}` for `plugin_wrapper` and `comment_loop`). Each script that `cd`s to `"$(dirname "$0")/.."` already works from the runfiles tree. `run_choice` is Task 14's `run.test.sh`; declare it there.
+`scripts/BUILD.bazel`: one `sh_test` per gate listed under Interfaces, each with `srcs` the gate's script and `data` the files it reads (its sourced helpers, `scripts/fake-exe.sh`, `scripts/fake-release-server.py`, `install.sh`, the plugins' wrappers, `:release_files`, and `//crates/clax-cli:clax` with `:clax_warm` plus `env = {"CLAX_TEST_BIN": "$(rootpath //crates/clax-cli:clax)"}` for `plugin_wrapper` and `comment_loop`). Each script that `cd`s to `"$(dirname "$0")/.."` already works from the runfiles tree. `run_choice` is Task 14's `run.test.sh`; Task 14 declares it.
 
-`bazel-test.sh --ci` gains, in order: `scripts/bazel-sync.sh --check`, `_build "rust fmt check" --config=fmt //crates/...`, `_build "rust clippy" --config=clippy //crates/...`, the Rust pass, the script `sh_test`s (`_pass "script gates" 'tests(//scripts/...)'`), then the two gates run as they are, outside Bazel (spec §8): `scripts/test-plugins.sh` (reads git tags) and `scripts/test-justfile.sh` (runs `just`), and last `scripts/check-bazel-no-hard-links.sh "$(bazelisk info output_base)" ~/.cache/bazel-disk`.
+`bazel-test.sh --ci` is every check, `--rust` and `--web` its subsets. Its order, which Tasks 12 and 13 keep:
+1. `scripts/bazel-sync.sh --check` (stops the run when stale);
+2. `_build "rust fmt check" --config=fmt //crates/...`, `_build "rust clippy" --config=clippy //crates/...`;
+3. the Rust pass (Task 9);
+4. the web and Pi pass, browser tests included (Task 10's query);
+5. `_pass "script gates" 'tests(//scripts/...) except attr(tags, "\bexclusive\b", //scripts/...)'`;
+6. outside Bazel (spec §8): `scripts/test-plugins.sh` (reads git tags), `scripts/test-justfile.sh` (runs `just`), `scripts/bazel-sync.test.sh` and `scripts/bazel-web.test.sh` (each runs Bazel);
+7. the perf pass (Task 13): every `exclusive` target, one at a time;
+8. last, `scripts/check-bazel-no-hard-links.sh "$(bazelisk info output_base)" ~/.cache/bazel-disk`.
+A failing phase does not stop the later ones, except 1.
 
 - [ ] **Step 4: Run them**
 
@@ -1094,7 +1116,7 @@ git -c commit.gpgsign=false commit -m "Run the script gates and source scans as 
 
 **Files:**
 - Create: `bazel/playwright/BUILD.bazel`, `bazel/playwright/browsers.bzl` (derived), `bazel/playwright/repo.bzl`
-- Modify: `scripts/bazel-derive.py` and `scripts/bazel-sync.sh` (derive `browsers.bzl`), `MODULE.bazel` (`use_repo` of `chromium`), `web/BUILD.bazel`, `web/e2e/daemon-setup.ts`, `web/e2e/extension-fixtures.ts` (preset paths)
+- Modify: `scripts/bazel-derive.py` and `scripts/bazel-sync.sh` (derive `browsers.bzl`), `MODULE.bazel` (a module extension in `bazel/playwright/repo.bzl` and `use_repo(playwright, "chromium")`), `web/BUILD.bazel`, `web/e2e/daemon-setup.ts`, `web/e2e/extension-fixtures.ts` (preset paths), `docs/bazel.md` ("Browser tests")
 
 **Interfaces:**
 - Produces: `@chromium//:browsers` (a directory laid out as `PLAYWRIGHT_BROWSERS_PATH` expects for the locked `@playwright/test`); `//web:playwright` (`js_binary` of the locked Playwright command line, for `install-deps` in CI); `//web:e2e_gesture`, `//web:e2e_chrome_overlay`, `//web:e2e_rest`, `//web:perf_usable`.
@@ -1122,7 +1144,7 @@ Expected: all pass; `bazelisk test //web:e2e_rest` a second time reports `(cache
 - [ ] **Step 5: Commit**
 
 ```bash
-git add bazel/playwright scripts/bazel-derive.py scripts/bazel-sync.sh MODULE.bazel MODULE.bazel.lock web
+git add bazel/playwright scripts/bazel-derive.py scripts/bazel-sync.sh MODULE.bazel MODULE.bazel.lock web docs/bazel.md
 git -c commit.gpgsign=false commit -m "Run the browser tests and time to usable under Bazel with a Chromium pinned by checksum"
 ```
 
@@ -1148,7 +1170,7 @@ Expected: FAIL (no target).
 
 `bazel/opt.bzl`: a rule with an outgoing transition setting `//command_line_option:compilation_mode` to `opt`, which copies its one input to its output with `ctx.actions.symlink` (no copy, no hard link) and is executable. `clax_opt_warm = warm_binary(binary = ":clax_opt")`. The perf `sh_test`s: `srcs` the script, `args = ["--quick"]` (none for `_full`), `data` the `.py` and budget files and `:clax_opt` with its warm stamp, `env = {"CLAX_PERF_BIN": "$(rootpath //crates/clax-cli:clax_opt)"}`, `tags = ["exclusive", "no-sandbox"]` (plus `manual` for `_full`). The scripts make `CLAX_PERF_BIN` absolute at start (`BIN="$(cd "$(dirname "$BIN")" && pwd -P)/$(basename "$BIN")"`).
 
-`bazel-test.sh --ci` gains, after every other test: `_pass "perf gates" '//scripts:perf_daemon + //scripts:perf_clients + //web:perf_usable'` (Bazel runs exclusive tests one at a time, after the others).
+`bazel-test.sh --ci` gains its phase 7 (Task 11's order): `_pass "perf gates" 'attr(tags, "\bexclusive\b", tests(//...)) except attr(tags, "\bmanual\b", //...)'`, which is `//scripts:perf_daemon`, `//scripts:perf_clients` and `//web:perf_usable`; Bazel runs exclusive tests one at a time.
 
 - [ ] **Step 3: Run them, twice**
 
@@ -1167,7 +1189,8 @@ git -c commit.gpgsign=false commit -m "Run the perf gates under Bazel on an opti
 ### Task 14: The overlay: `CLAX_BUILD`, `scripts/run.sh`, recipes and docs
 
 **Files:**
-- Create: `scripts/lib/build-system.sh`, `scripts/run.sh`, `scripts/run.test.sh` (adapted from changelist's three), `docs/bazel.md`
+- Create: `scripts/lib/build-system.sh`, `scripts/run.sh`, `scripts/run.test.sh` (adapted from changelist's three)
+- Modify: `docs/bazel.md` (Task 5's skeleton)
 - Modify: `justfile`, `scripts/check.sh`, `scripts/BUILD.bazel` (`run_choice`), `AGENTS.md` ("Builds, tests and gates"), `docs/usage.md` ("Developing Clax")
 
 **Interfaces:**
@@ -1189,11 +1212,11 @@ Expected: FAIL (no `run.sh`).
 
 - [ ] **Step 2: Implement**
 
-`scripts/lib/build-system.sh`: changelist's, with `CLAX_BUILD`, needs `rust`/`web` checking `cargo`, `node`, `pnpm`. `scripts/run.sh`: changelist's structure; `_bazel`: `ci` → `scripts/bazel-test.sh --ci`; `check` → `cargo fmt --all` (when `cargo` exists) then `bazel-test.sh --ci`; `test` → `bazel-test.sh --rust`; `lint` → `bazelisk build --config=fmt //crates/... && bazelisk build --config=clippy //crates/... && bazelisk test //web:lint`; `web-test` → `bazelisk test //web:lint //web:typecheck //web:unit //web:bundle_size`; `pi-test` → `bazelisk test //plugins/pi:typecheck //plugins/pi:test`; `web-e2e` → `bazelisk test //web:e2e_gesture //web:e2e_chrome_overlay //web:e2e_rest`; `perf` → the `_full` perf targets; `build` → `bazelisk build //crates/clax-cli:clax`; `web` → `bazelisk build //web:dist //web:dist_extension`, then for each directory `rm -rf` the files under `web/<dir>` except `.gitkeep` and copy with `cp -R`, then `chmod -R u+w`. `_native`: today's recipe bodies (`quality_gates.sh`, `check.sh`, the nextest block of `just test`, etc.). Both paths wrap runs in `caffeinate -i` on macOS.
+`scripts/lib/build-system.sh`: changelist's, with `CLAX_BUILD`, needs `rust`/`web` checking `cargo`, `node`, `pnpm`. `scripts/run.sh`: changelist's structure; `_bazel`: `ci` → `scripts/bazel-test.sh --ci`; `check` → `cargo fmt --all` (when `cargo` exists) then `bazel-test.sh --ci`; `test` → `bazel-test.sh --rust`; `lint` → `bazelisk build --config=fmt //crates/... && bazelisk build --config=clippy //crates/... && bazelisk test //web:lint`; `web-test` → `bazelisk test //web:lint //web:typecheck //web:unit //web:bundle_size`; `pi-test` → `bazelisk test //plugins/pi:typecheck //plugins/pi:test`; `web-e2e` → `bazelisk test //web:e2e_gesture //web:e2e_chrome_overlay //web:e2e_rest`; `perf` → `bazelisk test //scripts:perf_daemon_full //scripts:perf_clients_full //web:perf_usable_full`; `build` → `bazelisk build //crates/clax-cli:clax`; `web` → `bazelisk build //web:dist //web:dist_extension`, then for each directory `rm -rf` the files under `web/<dir>` except `.gitkeep` and copy with `cp -R`, then `chmod -R u+w`. `_native`: the recipe bodies as Task 4 left them (pnpm, `quality_gates.sh`, `check.sh`, the nextest block of `just test`, etc.). Both paths wrap runs in `caffeinate -i` on macOS.
 
-`justfile`: each recipe of spec §4.2 calls `./scripts/run.sh <task> {{ARGS}}`, and each gets a `-native` twin `CLAX_BUILD=native ./scripts/run.sh <task> {{ARGS}}`; add `bazel-sync` and `bazel-gc` recipes. Every recipe keeps a description (`scripts/test-justfile.sh` checks it). `scripts/check.sh` keeps its native body; `run.sh check` decides.
+`justfile`: each recipe of spec §4.2 calls `./scripts/run.sh <task> {{ARGS}}`, and each gets a `-native` twin `CLAX_BUILD=native ./scripts/run.sh <task> {{ARGS}}`; add the `bazel-sync` recipe (Task 15 adds `bazel-gc` with its script). `scripts/BUILD.bazel` gains `sh_test(name = "run_choice", srcs = ["run.test.sh"], data = [...the scripts it runs and fakes...])`. Every recipe keeps a description (`scripts/test-justfile.sh` checks it). `scripts/check.sh` keeps its native body; `run.sh check` decides.
 
-`docs/bazel.md`: changelist's structure, for Clax: Use (the table of what `auto` picks; the "Instead of / Run" table), Keeping Bazel in step with Cargo, targets per crate, the macOS first-run section (spec §6), the web and Pi section, which suites run outside Bazel and why (spec §8), CPU and memory, CI (filled by Task 16), Disk and Speed (filled by Task 17), For agents, Differences from Cargo (spec §16). `AGENTS.md` and `docs/usage.md` point to it and say: run checks through the recipes; report a native result as native; `just bazel-sync` after any `Cargo.toml`/`Cargo.lock` change; `just bazel-gc` after removing worktrees.
+`docs/bazel.md` (filling Task 5's skeleton; Task 12 has filled "Browser tests"): changelist's structure, for Clax: Use (the table of what `auto` picks; the "Instead of / Run" table), Keeping Bazel in step with Cargo, targets per crate, the macOS first-run section (spec §6), the web and Pi section, which suites run outside Bazel and why (spec §8), CPU and memory, CI (filled by Task 16), Disk and Speed (filled by Task 17), For agents, Differences from Cargo (spec §16). `AGENTS.md` and `docs/usage.md` point to it and say: run checks through the recipes; report a native result as native; `just bazel-sync` after any `Cargo.toml`/`Cargo.lock` change; `just bazel-gc` after removing worktrees.
 
 - [ ] **Step 3: Run the tests and the whole suite both ways**
 
@@ -1213,11 +1236,12 @@ git -c commit.gpgsign=false commit -m "Run every check and build with Bazel when
 
 ### Task 15: `just bazel-gc` and the shared bound
 
-Implements the decision on caa4d4f2; leaves Q10 (thread 7c03cf06) to the owner.
+Implements the decisions on caa4d4f2 (a cache shared with changelist) and 7c03cf06 (owner, 2026-10-15: "Raise the total to 80GB"): the bound is 80 GB in total, stated identically in both repositories, and this task makes changelist's side of it.
 
 **Files:**
 - Create: `scripts/bazel-gc.sh`, `scripts/bazel-gc.test.sh` (adapted from changelist's)
 - Modify: `scripts/bazel-sync.sh` (`--check` compares `.bazelrc`'s three cache lines with what `bazel-gc.sh` reads), `scripts/BUILD.bazel` (`bazel_gc` sh_test), `justfile`
+- Modify, in `../changelist` (another repository; Step 5): `.bazelrc:23` (`20G` → `80G`, and a comment naming Clax), `scripts/bazel-gc.sh:15,32` (default `20` → `80`), `docs/bazel.md:165` (`20 GB` → `80 GB`, shared with Clax)
 
 **Interfaces:**
 - Produces: `scripts/bazel-gc.sh [--dry-run] [--report] [--adopt DIR]`; it reads the cache path, size and age from `.bazelrc`'s `--disk_cache`, `--experimental_disk_cache_gc_max_size`, `--experimental_disk_cache_gc_max_age` lines (`BAZEL_GC_MAX_SIZE_GB`/`BAZEL_GC_MAX_AGE_DAYS` override, whole numbers above zero); accepts a cache marked by either `.clax-bazel-cache` or changelist's `.changelist-bazel-cache`.
@@ -1225,7 +1249,7 @@ Implements the decision on caa4d4f2; leaves Q10 (thread 7c03cf06) to the owner.
 - [ ] **Step 1: Write the failing test**
 
 `scripts/bazel-gc.test.sh` (changelist's, plus):
-- A scratch checkout whose `.bazelrc` says 40G, beside a scratch `../changelist/.bazelrc` saying 20G: `bazel-gc.sh --dry-run` prints a warning naming `40` and `20` and both files; with both at 40G, no warning.
+- A scratch checkout whose `.bazelrc` says 80G, beside a scratch `../changelist/.bazelrc` saying 20G: `bazel-gc.sh --dry-run` prints a warning naming `80` and `20` and both files; with both at 80G, no warning.
 - The bound comes from `.bazelrc`: with `--experimental_disk_cache_gc_max_size=3G` and 5 GB of fake entries (sparse files are not enough: write real 1 MB files and set `BAZEL_GC_UNIT_BYTES=1048576` so "GB" means MB in the test), oldest-first deletion stops under the bound.
 - A directory marked `.changelist-bazel-cache` is trimmed; an unmarked one is refused.
 - An output base whose workspace directory is gone and whose `server/server.pid.txt` names a dead PID is removed; one whose PID is alive is kept; nothing is found by `pgrep`.
@@ -1235,12 +1259,12 @@ Expected: FAIL.
 
 - [ ] **Step 2: Implement**
 
-Adapt changelist's `scripts/bazel-gc.sh`: bounds read from `.bazelrc` as above; output bases found under `bazelisk info output_user_root`; a base is Clax's when its `README`/workspace link names a directory inside this repository's main checkout (`git rev-parse --git-common-dir`'s parent) or its worktrees; servers judged alive by `kill -0` on their PID file; the sibling check reads `"$(git rev-parse --show-toplevel)/../changelist/.bazelrc"` and, for the main checkout's worktrees, the main checkout's sibling. The `BAZEL_GC_UNIT_BYTES` variable exists only for the test and defaults to 1073741824.
+Adapt changelist's `scripts/bazel-gc.sh`: bounds read from `.bazelrc` as above, from lines with no config name (`build --…`, never `build:ci --…`, which Task 16 sets for CI alone), here and in the sibling's; output bases found under `BAZEL_GC_OUTPUT_USER_ROOT` when set (the test's scratch root), else `bazelisk info output_user_root`; a base is Clax's when its `README`/workspace link names a directory inside this repository's main checkout (`git rev-parse --git-common-dir`'s parent) or its worktrees; servers judged alive by `kill -0` on their PID file; the sibling check reads `"$(git rev-parse --show-toplevel)/../changelist/.bazelrc"` and, for the main checkout's worktrees, the main checkout's sibling. The `BAZEL_GC_UNIT_BYTES` variable exists only for the test and defaults to 1073741824.
 
 - [ ] **Step 3: Run it**
 
 Run: `bash scripts/bazel-gc.test.sh && scripts/bazel-gc.sh --dry-run --report`
-Expected: tests pass; the real run lists what it would remove and prints sizes, and warns that changelist states 20 GB until Q10 is settled.
+Expected: tests pass; the real run lists what it would remove and prints sizes. Until Step 5 it warns that changelist states 20 GB.
 
 - [ ] **Step 4: Commit**
 
@@ -1248,6 +1272,32 @@ Expected: tests pass; the real run lists what it would remove and prints sizes, 
 git add scripts/bazel-gc.sh scripts/bazel-gc.test.sh scripts/bazel-sync.sh scripts/BUILD.bazel justfile
 git -c commit.gpgsign=false commit -m "Free what Bazel leaves behind, under the bound .bazelrc states for the cache shared with changelist"
 ```
+
+- [ ] **Step 5: Make changelist's side of the bound**
+
+The owner's "Raise the total to 80GB" covers this one change in `../changelist`, unsigned, never pushed. Leave the owner's checkout and its branch untouched: work in a worktree of its own on a new branch from changelist's `main`.
+
+```bash
+cl=/Users/alex/Devel/empathic/changelist
+wt="$(mktemp -d)/changelist-80g"
+git -C "$cl" worktree add -b shared-bazel-cache-80g "$wt" main
+perl -pi -e 's/^build --experimental_disk_cache_gc_max_size=20G$/build --experimental_disk_cache_gc_max_size=80G/' "$wt/.bazelrc"
+perl -pi -e 's/BAZEL_GC_MAX_SIZE_GB:-20\}/BAZEL_GC_MAX_SIZE_GB:-80}/; s/\(default 20\)/(default 80)/' "$wt/scripts/bazel-gc.sh"
+perl -pi -e 's/^  20 GB and to entries used in the last 7 days/  80 GB and to entries used in the last 7 days/' "$wt/docs/bazel.md"
+```
+
+Then by hand: above the three cache lines in `$wt/.bazelrc`, the comment says the cache is shared with Clax (`../clax`), whose `.bazelrc` states the same bound, and that the two change together; and the sentence at `$wt/docs/bazel.md:164-165` says the 80 GB bound covers this repository and Clax together.
+
+Check: `git -C "$wt" diff --stat` shows those three files only; `(cd "$wt" && bash scripts/bazel-gc.test.sh)` passes; `(cd "$wt" && scripts/bazel-gc.sh --dry-run)` names 80 GB. Then:
+
+```bash
+git -C "$wt" add .bazelrc scripts/bazel-gc.sh docs/bazel.md
+git -C "$wt" -c commit.gpgsign=false commit -m "Bound the Bazel disk cache shared with Clax at 80 GB in total"
+git -C "$wt" log --oneline -1          # report this SHA and the branch name
+git -C "$cl" worktree remove "$wt"     # the branch and its commit stay
+```
+
+Back in Clax: `scripts/bazel-gc.sh --dry-run`, with `../changelist/.bazelrc` replaced in a scratch copy by the branch's (`git -C "$cl" show shared-bazel-cache-80g:.bazelrc`), prints no bound warning. Report the changelist branch and SHA in the task's report; the owner merges it.
 
 ---
 
@@ -1326,13 +1376,13 @@ git -c commit.gpgsign=false commit -m "Gate CI on Bazel with a cache restored fr
 
 ---
 
-### Task 17: Measure, set the cache bound, and meet the merge criteria
+### Task 17: Measure, and meet the merge criteria
 
 Implements the decision on 2f40c94c (speed wins). This task is the merge gate (spec §15); anything that fails here is fixed before merge, in the task that owns it.
 
 **Files:**
-- Modify: `docs/bazel.md` ("Disk", "Speed", the gate-for-gate table), `.bazelrc` and `user.bazelrc.example` (the measured bound), `scripts/bazel-gc.sh` defaults if they change
-- Modify: `docs/superpowers/specs/2026-10-15-bazel-overlay-design.md` §9.3 (the measured numbers, replacing the estimate)
+- Modify: `docs/bazel.md` ("Disk", "Speed", the gate-for-gate table)
+- Modify: `docs/superpowers/specs/2026-10-15-bazel-overlay-design.md` §9.3 (the measured numbers beside the estimate)
 
 - [ ] **Step 1: Speed, on an idle machine (spec §10.1)**
 
@@ -1354,7 +1404,7 @@ In a second worktree at the same commit: `scripts/bazel-test.sh --rust` must sho
 
 - [ ] **Step 3: Disk (spec §9.2, §9.3)**
 
-Record, with `scripts/bazel-gc.sh --report` and `du -sk` of the cache's `cas` and `ac` entries newer than the run's start: what one build of main adds to `~/.cache/bazel-disk`; what one edit of each crate and of `web/shell` adds; a fresh worktree's output base's real disk (use `df` before and after, since clones are not counted by `du`); an edited worktree's. Set the shared bound to changelist's measured 7-day working set (14 GB on 2026-10-15, re-measured) plus main's build plus five edited worktrees, rounded up to 5 GB; update `.bazelrc`, `user.bazelrc.example` and spec §9.3 with the numbers and the bound. Expected: fresh worktree under 0.5 GB, edited under 3 GB.
+Record, with `scripts/bazel-gc.sh --report` and `du -sk` of the cache's `cas` and `ac` entries newer than the run's start: what one build of main adds to `~/.cache/bazel-disk`; what one edit of each crate and of `web/shell` adds; a fresh worktree's output base's real disk (use `df` before and after, since clones are not counted by `du`); an edited worktree's. The bound stays 80 GB in total (the owner's); record the measurements in `docs/bazel.md` and spec §9.3 beside it, with changelist's re-measured 7-day working set, and say plainly if they show the two repositories together needing more than 80 GB. Expected: fresh worktree under 0.5 GB, edited under 3 GB.
 
 - [ ] **Step 4: The rest of the merge criteria**
 
@@ -1363,13 +1413,14 @@ Record, with `scripts/bazel-gc.sh --report` and `du -sk` of the cache's `cas` an
 - `just ci-native`: passes.
 - The gate-for-gate table in `docs/bazel.md`: every `quality_gates.sh` gate has its Bazel target, or its §8 reason.
 - CI on the branch: passed, and a re-run restored the cache (Task 16).
-- `qualifier threads --status needs-decision` lists only Q10 (7c03cf06) and the owner confirmations on the spec's threads.
+- `qualifier threads --status needs-decision` lists only the spec's ten decision threads awaiting the owner's confirmation.
+- Changelist's branch `shared-bazel-cache-80g` (Task 15 Step 5) exists with the bound commit, and both `.bazelrc` files state `80G`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add docs/bazel.md .bazelrc user.bazelrc.example scripts/bazel-gc.sh docs/superpowers/specs/2026-10-15-bazel-overlay-design.md
-git -c commit.gpgsign=false commit -m "Record Bazel's measured speed and disk use, and set the shared cache's bound from them"
+git add docs/bazel.md docs/superpowers/specs/2026-10-15-bazel-overlay-design.md
+git -c commit.gpgsign=false commit -m "Record Bazel's measured speed and disk use against the shared cache's bound"
 ```
 
 ---
@@ -1381,7 +1432,7 @@ git -c commit.gpgsign=false commit -m "Record Bazel's measured speed and disk us
 | b42d4ebf | a bare `cargo nextest run` races on `target/debug/clax` | 1 (closes, with evidence) |
 | 28025fcc | real-client tests need Node and Pi's packages | 9 (reply with evidence; the owner closes) |
 | d95eeace | Q1 pnpm | 4 |
-| caa4d4f2 | Q2 shared cache | 5, 15, 17 |
+| caa4d4f2 | Q2 shared cache | 5, 15 |
 | 8fa66311 | Q3 CI runner and cache | 16 |
 | cda148bd | Q4 warmed test binary | 8, 9 |
 | 2f40c94c | Q5 speed wins | 17 |
@@ -1389,7 +1440,7 @@ git -c commit.gpgsign=false commit -m "Record Bazel's measured speed and disk us
 | ede5fb4e | Q7 debug information | 8 |
 | 41e76eda | Q8 hard links in Bazel's directories | 11 |
 | 10092cfd | Q9 CI on Bazel only | 16 |
-| 7c03cf06 | Q10 changelist's side of the bound | not done here: the owner decides; Task 15 warns while the bounds differ |
+| 7c03cf06 | Q10 80 GB in total, both repositories | 5, 15 (changelist's side in Step 5) |
 | 39562e11 | shell unit tests may join the lanes in `quality_gates.sh` | not done here: native-gate scheduling, unchanged by this plan |
 | 0f42bd1c, e838ac28 | timing in `clax-hooks` golden tests | not done here; Task 9 reruns them under Bazel and reports any failure on those threads |
 
