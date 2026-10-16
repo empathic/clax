@@ -2081,7 +2081,10 @@ nothing else:
 6. **Additive JSON fields:** `owner`, `taken_by`, `name`, `person`,
    `withheld` (absent or null), `rights` in `status`, and an artifact's
    `owner_name` (its owner agent's name, which the shell shows where it
-   showed `owner_harness`).
+   showed `owner_harness`). Two more come with hosted Clax: an artifact
+   view's `may_fork` (whether the caller may fork it: `true` for the
+   owner's agents) and an answer's `linked` (the hosted copy a linked
+   question was answered on: `null` with no remote linked).
 7. **`(not connected)` author lines** (§9.6): in every payload and view an
    agent gets, an unconnected LAN viewer's name reads `<name> (not
    connected)`, and so does the name on unattributed history (comments

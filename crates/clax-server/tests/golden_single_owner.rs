@@ -862,7 +862,7 @@ async fn golden_now() -> Value {
 
 /// §19 item 6's additive keys: where the golden lacks one, its value now
 /// must be the single-owner value [`solo_value`] accepts.
-pub const ADDITIVE_KEYS: [&str; 7] = [
+pub const ADDITIVE_KEYS: [&str; 9] = [
     "owner",
     "taken_by",
     "name",
@@ -870,13 +870,17 @@ pub const ADDITIVE_KEYS: [&str; 7] = [
     "person",
     "withheld",
     "rights",
+    "may_fork",
+    "linked",
 ];
 
 /// Whether `v`, the value of item 6's key `key` that the golden lacks, is
 /// what a single-owner install shows (spec §19 item 6): `withheld` absent or
 /// null; `name`, and an artifact's `owner_name`, null or a name; `person` null or the owner (`owner: true`,
 /// the owner's public ID); a thread's `owner` or `taken_by` null or one of
-/// the owner's agents (`person` null); `rights` the owner's, `clax:full`.
+/// the owner's agents (`person` null); `rights` the owner's, `clax:full`;
+/// an artifact's `may_fork` true (the owner's agents may fork it); an
+/// answer's `linked` null (no remote is linked).
 pub fn solo_value(key: &str, v: &Value, owner: &str) -> bool {
     let owners_agent = |a: &Value| {
         a.is_null()
@@ -893,6 +897,8 @@ pub fn solo_value(key: &str, v: &Value, owner: &str) -> bool {
         }
         "owner" | "taken_by" => owners_agent(v),
         "rights" => *v == clax_core::rights::Rights::full().to_json(),
+        "may_fork" => *v == json!(true),
+        "linked" => v.is_null(),
         _ => false,
     }
 }
