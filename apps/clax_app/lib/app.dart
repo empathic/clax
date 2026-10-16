@@ -2041,9 +2041,11 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
 
   /// Follows [host]'s home app: its first `shown` ends [homeUsable] when
   /// nothing else showed first (the home route lifts the launch's
-  /// snapshot), and its tile reports and covers take the snapshot.
+  /// snapshot); a load shown, a cover or the background takes the
+  /// snapshot when the page changed since the last.
   void _watchHome(HomeHost host) {
     _homeShown = host.shown.listen((aid) {
+      _snapshotter?.updated();
       if (!_launchOpen) return;
       _launchOpen = false;
       _s.timings.stop(

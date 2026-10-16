@@ -180,39 +180,48 @@ void main() {
       shot = (png: Uint8List.fromList([9, 9]), width: 390.0, height: 844.0);
     });
 
-    test(
-      'a burst of tile reports takes one snapshot, once they settle',
-      () async {
-        final s = snapshotter();
-        s.tilesChanged();
-        clock.advance(const Duration(milliseconds: 500));
-        tiles = const [HomeTile('a2', Rect.fromLTWH(0, 0, 20, 20))];
-        s.tilesChanged();
-        clock.advance(const Duration(milliseconds: 500));
-        await pumpEventQueue();
-        expect(captures, 0);
-        clock.advance(const Duration(milliseconds: 300));
-        await pumpEventQueue();
-        await s.idle;
-        expect(captures, 1);
-        final kept = (await store.load(decode: false))!;
-        expect(kept.tiles.single.id, 'a2');
-        expect(kept.width, 390);
-        expect(kept.png, [9, 9]);
-      },
-    );
-
-    test('a report while the home screen is not in front takes none', () async {
+    test('tile reports alone take none; a shown load takes one once it '
+        'settles', () async {
       final s = snapshotter();
-      inFront = false;
       s.tilesChanged();
-      clock.advance(const Duration(seconds: 1));
+      clock.advance(const Duration(seconds: 10));
+      await pumpEventQueue();
+      expect(captures, 0, reason: 'a scroll or a render takes none');
+      s.updated();
+      clock.advance(const Duration(seconds: 2));
+      tiles = const [HomeTile('a2', Rect.fromLTWH(0, 0, 20, 20))];
+      s.tilesChanged();
+      s.updated();
+      clock.advance(const Duration(seconds: 2));
       await pumpEventQueue();
       expect(captures, 0);
-      // Covered or put away: taken at once.
+      clock.advance(const Duration(seconds: 1));
+      await pumpEventQueue();
+      await s.idle;
+      expect(captures, 1);
+      final kept = (await store.load(decode: false))!;
+      expect(kept.tiles.single.id, 'a2');
+      expect(kept.width, 390);
+      expect(kept.png, [9, 9]);
+    });
+
+    test('a cover or the background takes one only when the home screen '
+        'changed since the last', () async {
+      final s = snapshotter();
+      inFront = false;
+      s.updated();
+      clock.advance(const Duration(seconds: 5));
+      await pumpEventQueue();
+      expect(captures, 0, reason: 'not in front');
       await s.take();
       expect(captures, 1);
       expect(await store.load(decode: false), isNotNull);
+      await s.take();
+      expect(captures, 1, reason: 'nothing changed since');
+      s.tilesChanged();
+      clock.advance(const Duration(seconds: 1));
+      await s.take();
+      expect(captures, 2);
     });
 
     test('an image whose render changed while it was taken is dropped, and '
@@ -253,6 +262,8 @@ void main() {
       final s = snapshotter();
       await s.take();
       shot = null;
+      s.tilesChanged();
+      clock.advance(const Duration(seconds: 1));
       await s.take();
       expect(captures, 2);
       expect((await store.load(decode: false))!.png, [9, 9]);
