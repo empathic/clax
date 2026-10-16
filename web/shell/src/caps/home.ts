@@ -5,7 +5,7 @@
 // the app refuses every call from any other app). Reads (`apps`, `makes`,
 // `unread`, `needsKey`) need no gesture; every call that opens something
 // must come from the viewer's tap or key in the page (`no_gesture`
-// otherwise). Positional arguments go to the app as one object: `open(id)`
+// otherwise); `shown` needs none either. Positional arguments go to the app as one object: `open(id)`
 // and `openMake(id)` as `{id}`, `menu(id, rect)` as `{id, rect: {x, y, w,
 // h}}`. The app's changes (`deviceEvent({cap: "home", name, data})`, name
 // `apps`, `makes`, `unread` or `key`) reach the page as `home`/<name>
@@ -15,9 +15,9 @@ import { CapError } from "./errors";
 import { frameGesture } from "./gesture";
 import type { HandlerFactory } from "./host";
 
-export const HOME_METHODS = ["apps", "makes", "unread", "needsKey", "open", "openMake", "newApp", "menu", "openInbox", "openSettings", "importApp"] as const;
+export const HOME_METHODS = ["apps", "makes", "unread", "needsKey", "open", "openMake", "newApp", "menu", "openInbox", "openSettings", "importApp", "shown"] as const;
 
-const READS = new Set<string>(["apps", "makes", "unread", "needsKey"]);
+const READS = new Set<string>(["apps", "makes", "unread", "needsKey", "shown"]);
 export const HOME_EVENTS = new Set<string>(["apps", "makes", "unread", "key"]);
 
 const id = (method: string, v: unknown): string => {

@@ -1935,10 +1935,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           settings: _settings,
           actions: _homeActions.stream,
           mode: AppMode.home,
-          onReady: (r) {
-            hooks.onReady();
-            _onReady(aid, r);
-          },
+          onReady: (r) => _onReady(aid, r),
           onStoppedLoading: hooks.onStoppedLoading,
         ),
       );

@@ -4571,7 +4571,8 @@ capability first and light features up when it resolves.
   in the draft preview. `apps()`, `makes()`, `unread()`, `needsKey()`, the
   actions `open`, `openMake`, `newApp`, `menu`, `openInbox`,
   `openSettings` and `importApp` (from a click handler, as for the device
-  capabilities), and `on(name, fn)`. Types: `ClaxExtensions.Home` in
+  capabilities), `shown()` once the home screen is drawn, and
+  `on(name, fn)`. Types: `ClaxExtensions.Home` in
   `clax-extensions.d.ts`. See "The home screen's capability" below.
 - `permissions`: `state()` and `request()`; the only prompt is the consent
   to the first page-written comment.
@@ -4784,13 +4785,14 @@ as `deviceEvent {cap: "home", name, data}`.
 | `newApp()` | Shows the New app sheet; the make then appears in `makes()`. |
 | `menu(id, {x, y, w, h})` | Shows app `id`'s menu (Open, Inspect, Share app, Resume build) anchored at that rectangle, in CSS pixels from the viewport's top left. |
 | `openInbox()`, `openSettings()`, `importApp()` | Opens the inbox, Settings, or the system picker for a `.clax` file. |
+| `shown()` | Says the page has drawn the home screen (its apps, the empty state or the load error). Clax keeps its own home screen over the page until then, and shows its own with Undo last change and Reset when no `shown()` comes within 10 s of the page loading. Call it once per load, from an effect after that render. |
 
 `on(name, fn)` hears `apps`, `makes`, `unread` and `key` (the value of
 `needsKey()`), each the topic's whole latest value, from the page's first
 `home` call on, and returns `stop`; a page that was covered hears only the
 latest value of each. The calls that open something must come from the
 person's tap or key press in the page (`no_gesture` otherwise); the reads
-need none. Calls reject `{code, message}` with `refused` (not the home
+and `shown()` need none. Calls reject `{code, message}` with `refused` (not the home
 app), `bad_request` (an unknown method, an ID not on the home screen, a
 malformed rectangle), `no_gesture` or `unavailable`.
 

@@ -1,15 +1,15 @@
+import 'dart:async';
+
 import 'package:flutter/widgets.dart';
 
 import '../daemon/clock.dart';
 import 'home_host.dart';
 import 'home_recovery.dart';
 
-/// What the home app's screen tells [HomeRoute]: each `ready` of its page
-/// ([onReady]), and the page giving up ("This app stopped loading",
-/// [onStoppedLoading]).
+/// What the home app's screen tells [HomeRoute]: the page giving up
+/// ("This app stopped loading", [onStoppedLoading]).
 class HomePageHooks {
-  const HomePageHooks({required this.onReady, required this.onStoppedLoading});
-  final VoidCallback onReady;
+  const HomePageHooks({required this.onStoppedLoading});
   final VoidCallback onStoppedLoading;
 }
 
@@ -28,18 +28,22 @@ class HomeBanner {
 /// ([HomeHost.settingsChanged]).
 ///
 /// When the home app arrives while the built-in home screen shows (the
-/// first run's install landing), the built-in screen stays over the home
-/// app's loading page until that page's first `ready`, so no empty page
-/// shows between them. A home app recorded from the start shows at once.
+/// first run's install landing, or a reload after Undo or Reset), the
+/// built-in screen stays over the home app's page until the page says it
+/// has drawn the home screen with its apps ([HomeHost.shown], its
+/// `home.shown()`), so no empty grid shows between them. A home app
+/// recorded from the start shows at once.
 ///
 /// The built-in home screen comes back over the home app, with the
 /// banner's actions passed to [fallback], when the home app's page stops
-/// loading or sends no `ready` within [readyWithin] of the route loading
-/// it (on [clock]). A `ready` after that takes it away again. Undo and
-/// Reset run on [recovery]; each that lands (from the banner or from
-/// Settings) loads the home app's page again, under the built-in screen
-/// while that shows, with [readyWithin] counted again. Without [recovery]
-/// the banner is not offered.
+/// loading, or does not call `shown` within [shownWithin] of the route
+/// loading it (on [clock]): a page that loads (its frame's `ready`) but
+/// never draws its apps falls back too. A `shown` after that takes the
+/// built-in screen away again. Undo and Reset run on [recovery]; each
+/// that lands (from the banner or from Settings) loads the home app's
+/// page again, under the built-in screen while that shows, with
+/// [shownWithin] counted again. Without [recovery] the banner is not
+/// offered.
 class HomeRoute extends StatefulWidget {
   const HomeRoute({
     super.key,
@@ -48,7 +52,7 @@ class HomeRoute extends StatefulWidget {
     required this.fallback,
     this.recovery,
     this.clock = const SystemClock(),
-    this.readyWithin = const Duration(seconds: 10),
+    this.shownWithin = const Duration(seconds: 10),
   });
 
   final HomeHost host;
@@ -63,17 +67,17 @@ class HomeRoute extends StatefulWidget {
 
   final HomeRecovery? recovery;
   final Clock clock;
-  final Duration readyWithin;
+  final Duration shownWithin;
 
   @override
   State<HomeRoute> createState() => _HomeRouteState();
 }
 
 class _HomeRouteState extends State<HomeRoute> {
-  /// The page load whose `ready` arrived, as `<aid>#<load>`.
-  String? _ready;
+  /// The page load whose `shown` arrived, as `<aid>#<load>`.
+  String? _shownLoad;
 
-  /// The page load that failed (stopped loading, or no `ready` in time).
+  /// The page load that failed (stopped loading, or no `shown` in time).
   String? _failed;
 
   /// Whether the built-in home screen has shown.
@@ -82,11 +86,12 @@ class _HomeRouteState extends State<HomeRoute> {
   /// Counts the home app's page loads; a new one makes its page anew.
   var _load = 0;
 
-  /// The page load [_load] of the home app the route last built, whose
-  /// `ready` is being waited for.
+  /// The page load the route last built, whose `shown` is waited for.
   String? _waiting;
 
-  String? _shown;
+  String? _shownAid;
+
+  StreamSubscription<String>? _shownSub;
 
   late final HomeBanner _banner = HomeBanner(
     undo: () => _run((r) => r.undoLast()),
@@ -96,16 +101,27 @@ class _HomeRouteState extends State<HomeRoute> {
   @override
   void initState() {
     super.initState();
-    widget.host.addListener(_onHost);
+    _listen(widget.host);
     widget.recovery?.addListener(_onRecovered);
+  }
+
+  void _listen(HomeHost host) {
+    host.addListener(_onHost);
+    _shownSub = host.shown.listen(_onShown);
+  }
+
+  void _unlisten(HomeHost host) {
+    host.removeListener(_onHost);
+    unawaited(_shownSub?.cancel());
+    _shownSub = null;
   }
 
   @override
   void didUpdateWidget(HomeRoute old) {
     super.didUpdateWidget(old);
     if (old.host != widget.host) {
-      old.host.removeListener(_onHost);
-      widget.host.addListener(_onHost);
+      _unlisten(old.host);
+      _listen(widget.host);
     }
     if (old.recovery != widget.recovery) {
       old.recovery?.removeListener(_onRecovered);
@@ -115,7 +131,7 @@ class _HomeRouteState extends State<HomeRoute> {
 
   @override
   void dispose() {
-    widget.host.removeListener(_onHost);
+    _unlisten(widget.host);
     widget.recovery?.removeListener(_onRecovered);
     super.dispose();
   }
@@ -128,13 +144,16 @@ class _HomeRouteState extends State<HomeRoute> {
   void _onHost() {
     // Only a change of the home app rebuilds; the screens follow the
     // host's state themselves.
-    if (mounted && _home != _shown) setState(() {});
+    if (mounted && _home != _shownAid) setState(() {});
   }
 
-  void _onReady(String load) {
-    if (!mounted || _ready == load) return;
+  /// The home app [aid]'s page drew its home screen.
+  void _onShown(String aid) {
+    final load = _waiting;
+    if (!mounted || load == null || aid != _shownAid) return;
+    if (_shownLoad == load && _failed != load) return;
     setState(() {
-      _ready = load;
+      _shownLoad = load;
       if (_failed == load) _failed = null;
     });
   }
@@ -145,10 +164,10 @@ class _HomeRouteState extends State<HomeRoute> {
     }
   }
 
-  /// Waits [HomeRoute.readyWithin] for page load [load]'s `ready`.
+  /// Waits [HomeRoute.shownWithin] for page load [load]'s `shown`.
   void _time(String load) {
-    widget.clock.delay(widget.readyWithin).then((_) {
-      if (mounted && _waiting == load && _ready != load) _onFailed(load);
+    widget.clock.delay(widget.shownWithin).then((_) {
+      if (mounted && _waiting == load && _shownLoad != load) _onFailed(load);
     });
   }
 
@@ -175,7 +194,7 @@ class _HomeRouteState extends State<HomeRoute> {
 
   @override
   Widget build(BuildContext context) {
-    final aid = _shown = _home;
+    final aid = _shownAid = _home;
     final load = aid == null ? null : '$aid#$_load';
     if (load != null && load != _waiting) {
       _waiting = load;
@@ -184,7 +203,7 @@ class _HomeRouteState extends State<HomeRoute> {
       _waiting = null;
     }
     final failed = load != null && _failed == load;
-    final cover = aid == null || failed || (_fellBack && _ready != load);
+    final cover = aid == null || failed || (_fellBack && _shownLoad != load);
     if (aid == null) _fellBack = true;
     // One keyed shape throughout, so the home app's page is kept when the
     // built-in screen over it goes, and the built-in screen when the home
@@ -198,10 +217,7 @@ class _HomeRouteState extends State<HomeRoute> {
             child: widget.app(
               context,
               aid!,
-              HomePageHooks(
-                onReady: () => _onReady(load),
-                onStoppedLoading: () => _onFailed(load),
-              ),
+              HomePageHooks(onStoppedLoading: () => _onFailed(load)),
             ),
           ),
         if (cover)

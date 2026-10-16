@@ -120,17 +120,12 @@ void main() {
   tearDown(() => host.dispose());
 
   group('which home screen shows', () {
-    VoidCallback? ready;
-
     Future<void> pump(WidgetTester tester) => tester.pumpWidget(
       MaterialApp(
         home: HomeRoute(
           host: host,
           clock: _Clock(),
-          app: (context, aid, hooks) {
-            ready = hooks.onReady;
-            return _Page(aid);
-          },
+          app: (context, aid, hooks) => _Page(aid),
           fallback: (_, _) => const Text('built-in'),
         ),
       ),
@@ -161,33 +156,100 @@ void main() {
     });
 
     testWidgets('a home app installed while the built-in screen shows takes '
-        'over only at its first ready, its page kept', (tester) async {
-      await pump(tester);
+        'over only once its page says the grid is drawn: not at the '
+        "frame's ready, nor at its apps() read", (tester) async {
+      final surface = FakeAppSurface();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: HomeRoute(
+            host: host,
+            clock: _Clock(),
+            app: (context, aid, hooks) {
+              return AppScreen(
+                aid: aid,
+                base: Uri.parse('http://127.0.0.1:7999/'),
+                api: api,
+                surface: surface,
+                voice: FakeVoice(),
+                settings: AppSettings(),
+                timings: const NoTimings(),
+                worker: const Stream.empty(),
+                home: host,
+                mode: AppMode.home,
+              );
+            },
+            fallback: (_, _) => const Text('built-in'),
+          ),
+        ),
+      );
       expect(find.text('built-in'), findsOneWidget);
 
       settings.homeAppId = home;
       host.settingsChanged();
       await tester.pump();
-      // Loading under the built-in screen: nothing empty shows.
-      expect(find.text('page $home'), findsOneWidget);
+      expect(find.byType(AppScreen), findsOneWidget);
       expect(find.text('built-in'), findsOneWidget);
-      final stack = tester.widget<Stack>(
-        find.descendant(
-          of: find.byType(HomeRoute),
-          matching: find.byType(Stack),
-        ),
-      );
-      expect(
-        (stack.children.last.key as ValueKey).value,
-        'home-fallback',
-        reason: 'the built-in screen is on top',
-      );
+      final page = tester.state(find.byType(AppScreen));
+      Object? topKey() =>
+          (tester
+                      .widget<Stack>(
+                        find
+                            .descendant(
+                              of: find.byType(HomeRoute),
+                              matching: find.byType(Stack),
+                            )
+                            .first,
+                      )
+                      .children
+                      .last
+                      .key
+                  as ValueKey)
+              .value;
+      expect(topKey(), 'home-fallback', reason: 'the built-in screen on top');
 
-      ready!();
+      // The page's real order: the frame loads, then the page asks for
+      // the capability and its apps, then draws them and says so.
+      surface.push(
+        Ready(artifact: home, version: 1, latest: 1, file: 'index.html'),
+      );
+      await tester.pump();
+      expect(find.text('built-in'), findsOneWidget, reason: 'ready alone');
+      for (final (id, method) in [('1', 'available'), ('2', 'apps')]) {
+        surface.push(
+          DeviceRequest(id: id, cap: 'home', method: method, args: const []),
+        );
+        await tester.pump();
+        await tester.pump();
+      }
+      final answers = surface.hostCalls.whereType<DeviceResult>().toList();
+      expect(answers.map((a) => a.id), ['1', '2']);
+      expect(find.text('built-in'), findsOneWidget, reason: 'apps read alone');
+
+      surface.push(
+        const DeviceRequest(id: '3', cap: 'home', method: 'shown', args: []),
+      );
+      await tester.pump();
       await tester.pump();
       expect(find.text('built-in'), findsNothing);
-      expect(find.text('page $home'), findsOneWidget);
-      expect(_Page.made, 1, reason: 'the page loaded under the cover is kept');
+      expect(find.byType(AppScreen), findsOneWidget);
+      expect(
+        tester.state(find.byType(AppScreen)),
+        same(page),
+        reason: 'the page loaded under the cover is kept',
+      );
+    });
+
+    testWidgets('a shown from another app lifts nothing', (tester) async {
+      await pump(tester);
+      settings.homeAppId = home;
+      host.settingsChanged();
+      await tester.pump();
+      await expectLater(
+        host.call(other, 'shown', const {}),
+        throwsA(isA<HomeRefused>()),
+      );
+      await tester.pump();
+      expect(find.text('built-in'), findsOneWidget);
     });
   });
 
@@ -216,7 +278,6 @@ void main() {
                 worker: const Stream.empty(),
                 home: host,
                 mode: AppMode.home,
-                onReady: (_) => hooks.onReady(),
               ),
               fallback: (_, _) => const Text('built-in'),
             ),
@@ -355,7 +416,7 @@ void main() {
 
     final banner = find.text("Your home screen couldn't load");
 
-    testWidgets('no ready within 10 s: the built-in screen with the banner', (
+    testWidgets('no shown within 10 s: the built-in screen with the banner', (
       tester,
     ) async {
       await pump(tester);
@@ -372,10 +433,10 @@ void main() {
       expect(find.text('Reset'), findsOneWidget);
     });
 
-    testWidgets('ready at 9.9 s: no fallback, then or later', (tester) async {
+    testWidgets('shown at 9.9 s: no fallback, then or later', (tester) async {
       await pump(tester);
       clock.advance(const Duration(milliseconds: 9900));
-      hooks!.onReady();
+      await host.call(home, 'shown', const {});
       await tester.pump();
       clock.advance(const Duration(seconds: 30));
       await tester.pump();
@@ -383,13 +444,13 @@ void main() {
       expect(find.text('page $home'), findsOneWidget);
     });
 
-    testWidgets('a late ready takes the fallback away again', (tester) async {
+    testWidgets('a late shown takes the fallback away again', (tester) async {
       await pump(tester);
       clock.advance(const Duration(seconds: 10));
       await tester.pump();
       await tester.pump();
       expect(banner, findsOneWidget);
-      hooks!.onReady();
+      await host.call(home, 'shown', const {});
       await tester.pump();
       expect(find.byType(Launcher), findsNothing);
     });
@@ -398,7 +459,7 @@ void main() {
       tester,
     ) async {
       await pump(tester);
-      hooks!.onReady();
+      await host.call(home, 'shown', const {});
       await tester.pump();
       hooks!.onStoppedLoading();
       await tester.pump();
@@ -406,7 +467,7 @@ void main() {
     });
 
     testWidgets('Undo restores the version before the latest, and the home '
-        'app shows again at its ready', (tester) async {
+        'app shows again once its page is shown', (tester) async {
       await api.registerAppSession(installId: 'i', pid: 1);
       api.seedVersion(home, {'index.html': '<p>broken</p>'});
       await pump(tester);
@@ -424,7 +485,7 @@ void main() {
       expect(find.byType(Launcher), findsOneWidget);
       expect(banner, findsNothing);
 
-      hooks!.onReady();
+      await host.call(home, 'shown', const {});
       await tester.pump();
       expect(find.byType(Launcher), findsNothing);
       expect(find.text('page $home'), findsOneWidget);
