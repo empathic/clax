@@ -90,6 +90,8 @@ void main() {
     // and the panel shrinks to its peek; the comment is typed through the
     // host and sent with the peek's Send.
     final thread1 = await rig.comment(tester, 'Call it My runs');
+    // The new version is offered, and swapped in with a tap.
+    await rig.reloadNewer(tester, 2);
     final landed2 = await rig.until<Landed>(
       tester,
       'version 2 landing',
@@ -164,6 +166,7 @@ void main() {
     expect(after.artifact.currentVersion, 4);
     expect(after.versions.map((v) => v.n), [1, 2, 3, 4]);
     expect(held.calls, 3);
+    await rig.reloadNewer(tester, 4);
     // The restarted daemon's page is a new shell document, which keeps no
     // scroll position from the one before.
     await untilProbe(rig, tester, aid, recoveredTitle, scrolled: false);
