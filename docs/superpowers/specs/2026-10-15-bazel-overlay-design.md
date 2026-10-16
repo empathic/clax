@@ -509,14 +509,31 @@ its Rust half after a server edit. Clax's measures, in order of cost:
 - pipelined compilation and 16 codegen units (`.bazelrc`), as changelist;
 - the test-feature variant only where a crate has test features (B9), so
   most crates compile once;
-- shards for the large integration binaries (§5.4);
-- the clippy pass and the test build run in one `bazel` invocation, so they
-  share the machine instead of queueing;
+- the integration tests of clax-server, clax-cli and clax-mcp dealt into a
+  few targets each (six, three, two), which compile and run in parallel
+  (§5.4; one target per module made a clax-core edit compile eight times
+  as much);
+- the format check, clippy and every test run in one `bazel` invocation,
+  so they share the machine instead of queueing;
+- the web UI's build reads no test, browser test or benchmark, so editing
+  one rebuilds no web UI and recompiles no Rust that embeds it;
 - debug information as Cargo's dev profile (Q7): line tables for the
   workspace's crates, none for dependencies.
 
-If an edit still runs past the budget, the migration does not merge until
-it is fixed (Q5): speed wins over disk.
+Not done: rustc's incremental compilation. It cut a clax-core edit's
+compile path from about 75 s to 25 s, but rustc fills its incremental
+directory with hard links (630 files after one build), which Clax forbids
+(Q8, §13); there is no option to make it copy.
+
+The owner's decision of 2026-10-16 overrides Q5's reading: "Bazel should be
+used on all builds. A large part of this is disk savings and having
+worktrees use cargo bloats target", and the design target is "five
+worktrees running at once and someone has already built and filled the
+cache". Every recipe uses Bazel when it is installed, the dev loop and
+`just install` included (`docs/bazel.md`); an edit's time is measured and
+reported against Cargo's, and the levers above apply, but a slower edit no
+longer sends a task back to the native tools. `docs/bazel.md`, "Speed",
+has the measurements.
 
 ## 11. Releases
 
@@ -704,7 +721,10 @@ is in §17.
 
 **Q5. When Bazel saves disk but an edit runs slower than Cargo.** Decided:
 speed wins. Every task meets the two-minute rule and its native twin's
-speed before the migration merges (§10).
+speed before the migration merges (§10). Superseded by the owner
+(2026-10-16): Bazel for every build where it is installed, for the disk
+and the simplicity of many worktrees over one shared cache; edit times are
+measured and worked on, not a reason to fall back (§10.2).
 
 **Q6. Cached perf results.** Decided: a passed perf gate is cached on its
 inputs like any test (§8). Superseded by the owner (2026-10-16): perf
