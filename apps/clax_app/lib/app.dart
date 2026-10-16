@@ -41,6 +41,7 @@ import 'platform/app_notice.dart';
 import 'platform/background_work.dart';
 import 'platform/bundle_intake.dart';
 import 'platform/bundle_key.dart';
+import 'platform/connection.dart';
 import 'platform/device/device_consent_dialog.dart';
 import 'platform/device/device_host.dart';
 import 'platform/network_pause.dart';
@@ -101,11 +102,19 @@ class AppServices {
     this.bundleIntake,
     this.bundleFiles,
     PendingMake? pendingMake,
+    ApiConnection? connection,
     int? pid,
   }) : questionPage =
            questionPage ?? ((base) => WebViewQuestionPage(base: base)),
        pid = pid ?? io.pid,
-       pendingMake = pendingMake ?? PendingMake();
+       pendingMake = pendingMake ?? PendingMake(),
+       connection =
+           connection ??
+           ApiConnection(
+             probe: () =>
+                 canConnect(Uri.parse(MessagesApiBackend.defaultBaseUrl).host),
+             clock: clock,
+           );
 
   /// Starts and watches the embedded daemon.
   final DaemonSupervisor supervisor;
@@ -198,6 +207,11 @@ class AppServices {
   /// ended before it did; in memory unless given.
   final PendingMake pendingMake;
 
+  /// Whether the Claude API can be reached: runs that cannot reach it wait
+  /// for it, saying "Waiting for connection", and go on by themselves; by
+  /// default a TCP probe of the Messages API's host.
+  final ApiConnection connection;
+
   /// The install's bundle signing key; without it apps are neither shared
   /// nor imported, and Settings shows no fingerprint.
   final BundleKey? bundleKey;
@@ -238,21 +252,27 @@ AgentBackend chooseBackend(
 /// [MessagesApiRunner] whose turns wait out a background network cut
 /// ([ResumingTurns]) on [clock], which must be the clock of the runs'
 /// budgets so a held turn stops the same wall clock it is measured by.
-/// [onPause] and [onResume] are called as a hold starts and as its turn is
-/// sent again; a hold that a cancel ends calls no [onResume], so whatever
-/// [onPause] shows must also end with the run.
+/// With a [connection], a turn that cannot reach the API waits for it
+/// ([onOffline]). [onPause] and [onResume] are called as a hold starts and
+/// as its turn is sent again; a hold that a cancel ends calls no
+/// [onResume], so whatever [onPause] or [onOffline] shows must also end
+/// with the run.
 AgentRunner toolLoopRunner(
   TurnBackend backend,
   AppPresence presence, {
   required Clock clock,
+  ApiConnection? connection,
   void Function()? onPause,
+  void Function()? onOffline,
   void Function()? onResume,
 }) => MessagesApiRunner(
   ResumingTurns(
     backend,
     presence,
     clock: clock,
+    connection: connection,
     onPause: onPause,
+    onOffline: onOffline,
     onResume: onResume,
   ),
 );
@@ -610,6 +630,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       api: _api,
       loop: _loop(
         onPause: () => _stepChanges(MakeStage.paused.label),
+        onOffline: () => _stepChanges(MakeStage.offline.label),
         onResume: () => _stepChanges(MakeStage.resuming.label),
       ),
       installId: _s.installId,
@@ -878,10 +899,12 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
 
   /// A loop whose runs follow the settings at their start: the tool loop
   /// when [usesToolLoop], else the single call, each waiting out a
-  /// background network cut ([onPause], [onResume]). A single call's
-  /// backend goes through [wrap] (the making screen's stages).
+  /// background network cut ([onPause], [onResume]) or a lost connection
+  /// ([onOffline], [onResume]). A single call's backend goes through [wrap]
+  /// (the making screen's stages).
   AgentLoop _loop({
     required void Function() onPause,
+    required void Function() onOffline,
     required void Function() onResume,
     AgentBackend Function(AgentBackend backend)? wrap,
   }) {
@@ -908,7 +931,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         final resuming = ResumingBackend(
           b,
           _presence,
+          connection: _s.connection,
           onPause: onPause,
+          onOffline: onOffline,
           onResume: onResume,
         );
         return wrap == null ? resuming : wrap(resuming);
@@ -919,7 +944,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
             backend() as TurnBackend,
             _presence,
             clock: _s.clock,
+            connection: _s.connection,
             onPause: onPause,
+            onOffline: onOffline,
             onResume: onResume,
           ),
       log: (l) => debugPrint('clax agent: $l'),
@@ -980,6 +1007,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     switch (state) {
       case AppLifecycleState.resumed:
         unawaited(_s.supervisor.onResume());
+        // Back in front: work waiting for the connection need not wait out
+        // the probe's interval.
+        if (!_s.connection.online) unawaited(_s.connection.check());
         _runs.onForeground();
       case AppLifecycleState.detached:
         unawaited(_shutDown());
@@ -1070,6 +1100,11 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     void staged(MakeStage s) {
       stage(s);
       _runs.step(run, s.label);
+      // A make waiting for the connection is started again by the next
+      // launch if the app ends meanwhile.
+      if (s == MakeStage.offline || s == MakeStage.resuming) {
+        unawaited(_s.pendingMake.waiting(request, s == MakeStage.offline));
+      }
     }
 
     // The tool loop's stage follows its progress: writing from the first
@@ -1098,6 +1133,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       aid =
           await _loop(
             onPause: () => staged(MakeStage.paused),
+            onOffline: () => staged(MakeStage.offline),
             onResume: () => staged(MakeStage.resuming),
             wrap: (b) => StagedBackend(b, staged),
           ).newApp(
@@ -1149,13 +1185,13 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// Whether the launch's lost make was looked for.
   var _offeredLostMake = false;
 
-  /// Shows each make the app's last run ended before finishing as an
-  /// interrupted tile, for the person to make again or discard.
+  /// Takes up each make the app's last run ended before finishing: one
+  /// that waited for the connection starts again by itself; the others
+  /// show as interrupted tiles, for the person to make again or discard.
   Future<void> _offerLostMake() async {
-    for (final request in await _s.pendingMake.takeAll()) {
-      if (!mounted) return;
-      _makes.lost(request);
-    }
+    final left = await _s.pendingMake.takeEach();
+    if (!mounted) return;
+    _makes.recover(left);
   }
 
   /// The build view of make [s].
