@@ -22,6 +22,13 @@ describe("working UI", () => {
     m.unmount();
   });
 
+  it("the roster titles an agent with no name, or an empty one, by its harness", () => {
+    const unnamed = [{ handle: "a_1111aaaa", harness: "claude", name: "", live: true }, { handle: "a_2222bbbb", harness: "codex", name: null, live: true }];
+    const m = mount(Roster, { people: [], agents: unnamed, working: [], me: "u_me", max: 5 });
+    expect(Array.from(m.root.querySelectorAll(".agt .tok")).map(e => e.getAttribute("title"))).toEqual(["claude", "codex"]);
+    m.unmount();
+  });
+
   it("the roster overflows past max with a +n token", () => {
     const many = Array.from({ length: 7 }, (_, i) => ({ public_id: `u_${i}`, display_name: `P${i} Q`, seen: null }));
     const m = mount(Roster, { people: many, agents: [], working: [], me: null, max: 3, small: true });
