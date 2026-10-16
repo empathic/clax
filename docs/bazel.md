@@ -1,47 +1,82 @@
 # Building with Bazel
 
-Clax builds and tests with its native tools (Cargo, pnpm, Vite) or with
-Bazel. CI gates on Bazel, and the default `just` recipes run it when it is
-installed. The native tools are unchanged: `just dev`, `just watch`,
-rust-analyzer, `just install`, the release workflow and
-`scripts/quality_gates.sh` use them, and every Bazel recipe has a `-native`
-twin. Cargo, `Cargo.lock`, each `package.json` and each `pnpm-lock.yaml`
-stay the source of truth; Bazel's view of them is derived and checked.
+Clax builds everything with Bazel when Bazel is installed: every `just`
+recipe (`ci`, `check`, `test`, `web-test`, `pi-test`, `web-e2e`, `lint`,
+`build`, `web`, `dev`, `watch`, `serve`, `install`, …), in every worktree,
+and CI. The point is the whole experience in the common case: about five
+worktrees at once, with a shared cache one of them has already filled. A
+new worktree then needs no setup (no `pnpm install`, no web build, no
+warm-up step) and no `target/` or `node_modules`: `just ci` and `just test`
+work at once, from the cache, and the worktree costs next to no disk until
+it edits ("Five worktrees", below, has the numbers).
 
-Bazel is for where builds repeat: agent worktrees and CI. Every worktree
-shares one compile cache with every other (and with `../changelist`), so a
-new worktree runs every check without a compiler run, a `pnpm install`, a
-`target/` or a `node_modules`.
+Cargo, `Cargo.lock`, each `package.json` and each `pnpm-lock.yaml` stay the
+source of truth; Bazel's view of them is derived and checked. The native
+tools still work: on a machine without Bazel the recipes fall back to them
+and say so, the `-native` twins (`just ci-native`, `just test-native`, …)
+and plain `cargo`/`pnpm` commands run them on purpose, and the release
+workflow uses them.
 
 ## Use
 
-Install [Bazelisk](https://github.com/bazelbuild/bazelisk)
-(`brew install bazelisk`). It reads `.bazelversion` and fetches that Bazel.
+Install [Bazelisk](https://github.com/bazelbuild/bazelisk) (`brew install
+bazelisk`), which reads `.bazelversion` and fetches that Bazel, and
+`ibazel` (`brew install ibazel`) for `just watch`. That is all the setup.
 
-`just ci`, `just check`, `just test`, `just lint`, `just web-test`,
-`just pi-test`, `just web-e2e`, `just perf`, `just build` and `just web` go
-through `scripts/run.sh`, which picks the build system once, by what is
-installed:
+The recipes go through `scripts/run.sh`, which picks the build system by
+what is on `PATH`:
 
 | On `PATH` | What runs |
 |---|---|
-| Bazelisk, or a `bazel` at the version `.bazelversion` names | Bazel: what CI runs |
-| Neither (a `bazel` of another version is not used) | The native tools: `scripts/quality_gates.sh`, `cargo nextest`, `pnpm` |
+| `bazelisk`, or `bazel` at the version `.bazelversion` names | Bazel, for every recipe: what CI runs |
+| Neither (a `bazel` of another version is not used: it would fail far from the cause) | The native tools (`scripts/quality_gates.sh`, `cargo`, `pnpm`), saying so before the task and in its last line |
 | Neither Bazel nor the native tools | Nothing: one message names both ways to install |
 
-A native run because Bazel was not found says so before the task and in
-its last line; the exit status is the task's own. The last line of every
-native run says the result came from the native tools: CI gates on Bazel,
-and the two can differ ("Differences from Cargo").
-
 `CLAX_BUILD` overrides the choice: `bazel` uses Bazel or fails with the
-install command; `native` never looks for Bazel (the `-native` recipes:
-`just ci-native`, `just test-native`, …); `auto` is the default.
-`scripts/run.sh which` says what `auto` picks, and
-`scripts/run.sh --dry-run <task>` prints what a task would run
+install command; `native` never looks for Bazel (what the `-native` twins
+set); `auto` is the default. `scripts/run.sh which` says what `auto` picks,
+and `scripts/run.sh --dry-run <task>` prints what a task would run
 (`scripts/run.test.sh` tests the choice). CI does not go through
 `scripts/run.sh`: it calls `scripts/bazel-test.sh --ci`, so a runner
 without Bazel fails and never falls back.
+
+In a worktree, use the recipes: no `cargo build`, `cargo test` or
+`pnpm install` except through a `-native` twin. Each of those makes a
+`target/` or a `node_modules` in the worktree, gigabytes Bazel's shared
+cache does not need.
+
+### The dev loop
+
+- `just watch` runs `ibazel run //crates/clax-cli:clax -- serve …`: Bazel
+  rebuilds the debug `clax`, which embeds the web UI, and restarts it on any
+  Rust or web change; reload the browser after. Measured: about 12 s after a
+  web shell edit, 30 s after a clax-core edit, on a loaded machine. Without
+  Bazel it is the native watch (cargo-watch and Vite).
+- `just dev <harness>` runs the harness with Bazel's debug `clax`
+  (`scripts/run.sh bin` builds it and prints its path).
+- `just serve`, `just stop`, `just doctor` run that `clax`
+  (`scripts/run.sh clax …`).
+- `just install` installs Bazel's optimized `clax` (`//crates/clax-cli:clax_opt`)
+  as `$CARGO_HOME/bin/clax`, by a rename, then stops the agents' daemon if
+  it ran the old one and runs `clax init`. Its `--version` names no commit
+  ("Differences from Cargo"). `just install-native` is Cargo's build.
+
+### rust-analyzer
+
+`just rust-project` writes `rust-project.json` (git-ignored) from Bazel with
+rules_rust's `gen_rust_project`; rerun it after adding a crate or a
+dependency. Point rust-analyzer at it, and its check at Bazel, so the editor
+never runs `cargo check` into a `target/`; for VS Code, in
+`.vscode/settings.json`:
+
+```json
+{
+  "rust-analyzer.linkedProjects": ["rust-project.json"],
+  "rust-analyzer.check.overrideCommand": [
+    "bazelisk", "build", "--@rules_rust//rust/settings:error_format=json", "//crates/..."
+  ]
+}
+```
 
 | Instead of | Run |
 |---|---|
@@ -92,7 +127,15 @@ which declares, with `<lib>` the library's crate name:
 - `<lib>`, and `<lib>_test` for a library another crate's tests turn
   features on in (`clax_server_test`: `test-routes`, `test-support`);
 - `<lib>_lib_test` (unit tests), each binary and its `<bin>_bin_test`,
-  and each `[[test]]` under its name (`//crates/clax-cli:integration`);
+  and each `[[test]]` under its name (`//crates/clax-cli:descriptors`);
+- for the `integration` tests of clax-server, clax-cli and clax-mcp, one
+  target per module of `tests/integration.rs` (`split_tests`):
+  `//crates/clax-server:integration__api_batch`, …, and `integration__root`
+  for the root's own tests. Each compiles the shared `common` module and its
+  own, so an edit recompiles, relinks and reruns the modules apart and in
+  parallel. The root gates each module with
+  `#[cfg(any(not(clax_split), clax_split = "<module>"))]`; Cargo sets no
+  `clax_split` and builds them all into one binary, as before;
 - `build_script` when the crate has one;
 - `rust_sources`, for source scans.
 
@@ -174,6 +217,47 @@ need a real harness CLI, a model or credentials (`scripts/verify-harnesses.sh`
 against real harnesses, the smoke scripts) stay native and manual, as
 before.
 
+## Gate for gate
+
+What each gate of `scripts/quality_gates.sh` is under `scripts/bazel-test.sh --ci`.
+Performance gates nothing in either (`just perf` measures on demand).
+
+| `quality_gates.sh` gate | Under Bazel (`--ci`) |
+|---|---|
+| web pnpm install, pi pnpm install | `scripts/pnpm-lock-check.py web plugins/pi`; rules_js installs from each lockfile |
+| web build | `//web:dist`, `//web:dist_extension` (inputs of the tests and the binaries that embed them) |
+| web unit | `//web:unit` |
+| web bundle size | `//web:bundle_size` |
+| web lint | `//web:lint` |
+| web typecheck | `//web:typecheck` |
+| pi extension | `//plugins/pi:typecheck`, `//plugins/pi:test` |
+| playwright browser, web e2e | `//web:e2e_gesture`, `//web:e2e_chrome_overlay`, `//web:e2e_rest` (Chromium from `@chromium//:browsers`) |
+| build clax, build tests | the build of `//crates/...` in the one `bazel test` |
+| cargo nextest (or cargo test) | every Rust test target, `tests(//crates/...)`, the integration tests a target per module |
+| cargo fmt --check | `--config=fmt` over `//crates/...` |
+| cargo clippy, clippy (no test features) | `--config=clippy` over `//crates/...`: each library and binary without test features, each test target with them; `crates/clax-cli` again with its own `clippy.toml` |
+| release build | `//crates/clax-cli:clax_opt` |
+| justfile | `scripts/test-justfile.sh`, outside Bazel |
+| release scripts | `//scripts:release` |
+| tool hook gate | `//scripts:tool_hook` |
+| extension signing | `scripts/test-extension-signing.sh`, outside Bazel |
+| stable bin | `//scripts:stable_bin` |
+| fake exe | `//scripts:fake_exe` |
+| release installer | `//scripts:installer` |
+| dev scripts | `scripts/test-dev.sh`, outside Bazel |
+| plugins | `scripts/test-plugins.sh`, outside Bazel |
+| plugin wrapper | `//scripts:plugin_wrapper` |
+| comment loop | `//scripts:comment_loop` |
+| no unsafe code | `//scripts:no_unsafe` |
+| no hard links | `//scripts:no_hard_links` (the check's own test), and `scripts/check-no-hard-links.sh` over the tracked files outside Bazel |
+| pipefail pipes | `//scripts:pipefail_pipes`, and `scripts/check-pipefail-pipes.sh` over the tracked files outside Bazel |
+
+Bazel adds: `scripts/bazel-sync.sh --check` first, `//scripts:bazel_gc`,
+`//scripts:bazel_no_hard_links`, `//scripts:run_choice`,
+`//bazel/js:scratch_test`, `scripts/bazel-sync.test.sh` and
+`scripts/bazel-web.test.sh`, and no hard link in Bazel's output base or the
+disk cache.
+
 ## CPU and memory
 
 Bazel runs as many actions as there are cores. Rust tests run four libtest
@@ -199,22 +283,41 @@ the only job with write access.
 
 ## Disk
 
-Three things hold Bazel's files, all outside the repository:
+Bazel's files live outside the repository, in three places:
 
-- **The shared compile cache**, `~/.cache/bazel-disk`. Bazel trims it to
-  80 GB and to entries used in the last 7 days while a server sits idle;
-  the 80 GB bound covers this repository and `../changelist` together,
-  whose `.bazelrc` states the same bound. Change the two together.
-- **One output base per worktree**, under Bazel's user root
-  (`bazelisk info output_base`). Its files are APFS clones of cache
-  entries: `du` counts them, the disk does not.
-- **Downloads and unpacked toolchains**, shared by every output base.
+- **The shared compile cache**, `~/.cache/bazel-disk`: every action's
+  outputs, for every worktree of this repository and of `../changelist`.
+  Bazel trims it to 80 GB and to entries used in the last 7 days while a
+  server sits idle; the 80 GB bound covers both repositories, whose
+  `.bazelrc` files state the same bound. Change the two together.
+- **Bazel's user root**, `~/Library/Caches/bazel/_bazel_$USER` on macOS:
+  - one output base per worktree, of either repository (its
+    `DO_NOT_BUILD_HERE` names the worktree), holding that worktree's
+    outputs and its Bazel server. Files that came from the shared cache are
+    APFS clones of its entries, so `du` counts them and the disk mostly
+    does not;
+  - `cache/repos/v1`, shared by every output base of every repository:
+    `content_addressable` holds the downloads (toolchains, crates, npm
+    packages, Chromium), `contents` the external repositories unpacked once
+    for all output bases. Bazel removes an unpacked repository unused for
+    a while on its own; nothing in this repository trims either;
+  - `install`, Bazel's own binaries per version.
+- **The checks' pass records**, `~/.cache/clax-checks`: empty files, one
+  per passing keyed outside check ("Run outside Bazel").
 
-`just bazel-gc` (`scripts/bazel-gc.sh`) applies the cache's bounds now,
-removes the output bases of removed worktrees (their server judged dead by
-`kill -0` on its PID file), and with `--report` prints real sizes. It warns
+`just bazel-gc` (`scripts/bazel-gc.sh`) applies the shared cache's bounds
+now, removes the output bases of this repository's removed worktrees (a
+server judged dead by `kill -0` on its PID file; changelist's output bases
+are its own `bazel-gc`'s), and with `--report` prints real sizes. It warns
 when `../changelist/.bazelrc` states another bound. Run it after removing
 worktrees.
+
+A worktree that only runs the recipes has no `target/` and no
+`node_modules`: those come only from the native tools (a `-native` twin, a
+plain `cargo` or `pnpm`, or a machine without Bazel), whose state is
+per worktree and large (this branch's own worktree, used for native
+comparisons, holds a 29 GB `target/`, 18 GB of it Cargo's incremental
+state). `just clean` removes them.
 
 ## Speed
 
