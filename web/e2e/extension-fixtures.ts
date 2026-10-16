@@ -165,7 +165,7 @@ export const test = base.extend<{ live: Live; variant: Variant; gesture: boolean
   live: async ({ variant, gesture, bind }, use, testInfo) => {
     // The daemon's start has its own bound, beyond the test's.
     testInfo.setTimeout(testInfo.timeout + DAEMON_START_MS);
-    if (!existsSync(join(EXT_DIR, "manifest.json"))) throw new Error("web/dist-extension-test is missing: run `npm run build` in web/");
+    if (!existsSync(join(EXT_DIR, "manifest.json"))) throw new Error("web/dist-extension-test is missing: run `pnpm run build` in web/");
     // The native host's wrapper runs the `bin` setting's clax: this run's.
     const config = `bin = ${JSON.stringify(process.env.CLAX_E2E_BIN)}\n${NO_KEY_CONFIG}`;
     if (lastDaemon && !lastDaemon.ended()) throw new Error(`the previous test's daemon on ${WORKER_HOME} is still running`);

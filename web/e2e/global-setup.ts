@@ -1,13 +1,12 @@
 // Before any worker starts: builds the daemon (daemon-setup.ts) and the
-// browser tests' web UI, a copy of web/dist whose shell and bridge are built
-// with the test clock (CLAX_TEST_CLOCK=1, see shell/src/clock.ts). web/dist
-// itself, which the release embeds, is never written. The test build is kept
-// under node_modules/.cache and rebuilt only when its inputs change. Workers
-// find both through the environment.
+// browser tests' web UI (scripts/build-e2e.mjs: web/dist with the test clock),
+// unless CLAX_E2E_WEB_DIST names one already. The test build is kept under
+// node_modules/.cache and rebuilt only when its inputs change. Workers find
+// both through the environment.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import daemonSetup from "./daemon-setup";
 
@@ -33,7 +32,7 @@ function inputsHash(): string {
   const h = createHash("sha256");
   const inputs = [
     ...files(join(web, "shell")), ...files(join(web, "bridge", "src")), ...files(join(web, "dist")),
-    join(web, "vite.shell.config.ts"), join(web, "vite.bridge.config.ts"), join(web, "svelte.config.js"), join(web, "package-lock.json"),
+    join(web, "vite.shell.config.ts"), join(web, "vite.bridge.config.ts"), join(web, "svelte.config.js"), join(web, "pnpm-lock.yaml"), join(web, "scripts", "build-e2e.mjs"),
   ].sort();
   for (const f of inputs) h.update(relative(web, f)).update("\0").update(readFileSync(f)).update("\0");
   return h.digest("hex");
@@ -42,21 +41,18 @@ function inputsHash(): string {
 export default function globalSetup() {
   daemonSetup();
 
+  // A test build made already (Bazel's //web:dist_e2e) is used as it is.
+  if (process.env.CLAX_E2E_WEB_DIST) {
+    process.env.CLAX_E2E_WEB_DIST = resolve(process.env.CLAX_E2E_WEB_DIST);
+    return;
+  }
   // The bridge and its parts come from web/dist; build it when it is missing.
-  if (!existsSync(join(web, "dist", "_clax", "bridge.js"))) run("npm", ["run", "build"], web);
+  if (!existsSync(join(web, "dist", "_clax", "bridge.js"))) run("pnpm", ["run", "build"], web);
   const out = join(web, "node_modules", ".cache", "clax-e2e-dist");
   const stamp = join(out, ".inputs");
   const hash = inputsHash();
   if (!existsSync(stamp) || readFileSync(stamp, "utf8") !== hash) {
-    rmSync(out, { recursive: true, force: true });
-    mkdirSync(join(out, ".."), { recursive: true });
-    cpSync(join(web, "dist"), out, { recursive: true });
-    for (const p of ["index.html", "artifact.html", "_clax/shell", ".vite"]) rmSync(join(out, p), { recursive: true, force: true });
-    const env = { ...process.env, CLAX_TEST_CLOCK: "1" };
-    run("npx", ["vite", "build", "-c", "vite.shell.config.ts", "--outDir", out, "--logLevel", "warn"], web, env);
-    run("npx", ["vite", "build", "-c", "vite.bridge.config.ts", "--outDir", join(out, "_clax"), "--logLevel", "warn"], web, env);
-    const hooked = (f: string) => readFileSync(f, "utf8").includes("claxTestClock");
-    if (!hooked(join(out, "_clax", "bridge.js")) || !files(join(out, "_clax", "shell")).some(hooked)) throw new Error("the test build has no test clock");
+    run("pnpm", ["run", "build:e2e", "--out", out], web);
     writeFileSync(stamp, hash);
   }
   process.env.CLAX_E2E_WEB_DIST = out;

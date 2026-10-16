@@ -21,7 +21,6 @@ cargo = open("Cargo.toml").read()
 ws = re.search(r'^\[workspace\.package\]\s*$(.*?)(?=^\[|\Z)', cargo, re.M | re.S)
 lock = open("Cargo.lock").read()
 market = load(".claude-plugin/marketplace.json")
-pi_lock = load("plugins/pi/package-lock.json")
 versions = {
     "Cargo.toml [workspace.package]": first(r'^version\s*=\s*"([^"]+)"', ws.group(1)) if ws else None,
     "plugins/claude-code/.claude-plugin/plugin.json": load("plugins/claude-code/.claude-plugin/plugin.json").get("version"),
@@ -30,8 +29,6 @@ versions = {
     ".claude-plugin/marketplace.json version": market.get("version"),
     ".claude-plugin/marketplace.json plugins[clax]": next((p.get("version") for p in market.get("plugins", []) if p.get("name") == "clax"), None),
     "plugins/pi/package.json": load("plugins/pi/package.json").get("version"),
-    "plugins/pi/package-lock.json version": pi_lock.get("version"),
-    'plugins/pi/package-lock.json packages[""]': pi_lock.get("packages", {}).get("", {}).get("version"),
 }
 for path in ("scripts/ensure-clax.sh", "plugins/claude-code/scripts/ensure-clax.sh", "plugins/clax/scripts/ensure-clax.sh", "plugins/clax-grok/scripts/ensure-clax.sh", "plugins/pi/scripts/ensure-clax.sh"):
     versions[f"{path} CLAX_VERSION"] = first(r'^CLAX_VERSION="([^"]+)"', open(path).read())

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the web UI and the Chrome extension (`npm run build` in web/), then
+# Builds the web UI and the Chrome extension (`pnpm run build` in web/), then
 # gives each file in web/dist and web/dist-extension whose content the build
 # did not change its previous modification time back. A release build
 # embeds both and cargo goes by modification times, so an identical web UI
@@ -20,7 +20,7 @@ perl -MFile::Find -MDigest::SHA -MTime::HiRes=stat -e '
         my $sha = Digest::SHA->new(256)->addfile($_)->hexdigest;
         printf "%s\t%s\t%.9f\n", $_, $sha, (stat $_)[9];
     } }, grep { -d } "dist", "dist-extension");' > "$SNAP"
-npm run build
+pnpm run build
 perl -MDigest::SHA -MTime::HiRes=utime -e '
     open my $f, "<", $ARGV[0] or die "$ARGV[0]: $!";
     while (<$f>) {

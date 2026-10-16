@@ -23,20 +23,20 @@ build:
 
 # Install web dependencies and build the frontend bundles
 web:
-    cd web && npm ci
+    cd web && pnpm install --frozen-lockfile
     ./scripts/build-web.sh
 
 # Run the web lint, typecheck, and unit tests
 web-test:
-    cd web && npm ci && npm run lint && npm run typecheck && npm test
+    cd web && pnpm install --frozen-lockfile && pnpm run lint && pnpm run typecheck && pnpm test
 
 # Build the frontend and run the Playwright end-to-end tests
 web-e2e: web
-    cd web && npx playwright install --with-deps chromium && npm run e2e
+    cd web && pnpm exec playwright install --with-deps chromium && pnpm run e2e
 
 # Run the Pi extension tests
 pi-test:
-    cd plugins/pi && npm ci && npm run typecheck && npm test
+    cd plugins/pi && pnpm install --frozen-lockfile && pnpm run typecheck && pnpm test
 
 # Run the plugin wrapper tests (scripts/ensure-clax.sh)
 wrapper-test:
@@ -70,7 +70,7 @@ test:
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
     cargo clippy --workspace -- -D warnings
-    cd web && npm run lint
+    cd web && pnpm run lint
 
 # Format the Rust code (the web lint is not a formatter)
 fmt:
@@ -89,7 +89,7 @@ perf: web
     cargo build -q --release -p clax-cli
     CLAX_PERF_BIN="$PWD/target/release/clax" ./scripts/perf-daemon.sh
     CLAX_PERF_BIN="$PWD/target/release/clax" ./scripts/perf-clients.sh
-    cd web && npx playwright install chromium >/dev/null && npm run perf
+    cd web && pnpm exec playwright install chromium >/dev/null && pnpm run perf
 
 # Install clax from this checkout into $CARGO_HOME/bin (~/.cargo/bin), stop the agents' daemon if it runs that binary (the next agent call starts the new build), register the plugins with each harness found, and point the plugins at that binary (clax init sets the bin setting)
 install: web

@@ -146,7 +146,9 @@ fn init_writes_the_embedded_plugins_as_a_marketplace() {
                 "test",
                 "tsconfig.json",
                 "vitest.config.ts",
-                "package-lock.json"
+                "pnpm-lock.yaml",
+                "pnpm-workspace.yaml",
+                "BUILD.bazel"
             ]
         )
     );
