@@ -4502,8 +4502,9 @@ where
     }
 }
 
-/// Sam's agent token asks over the MCP adapter; Kim, another person who
-/// may ask, watches their own questions throughout. The question is Sam's
+/// Sam's agent token asks over the MCP adapter; Kim, another member,
+/// watches their own questions throughout. Both have a member's default
+/// rights (their own space), which let an agent ask its own person. The question is Sam's
 /// alone: it reaches Sam's list and stream, never Kim's, and Sam's answer
 /// is what the blocked `ask` returns. Kim's own agent's question is the
 /// first `question` event Kim's stream carries, so nothing of Sam's came
@@ -4512,10 +4513,8 @@ where
 async fn an_agent_tokens_ask_reaches_its_person_alone_and_returns_their_answer() {
     let site = Site::new().await;
     let owner = site.owner().await;
-    // A member's default rights leave out clax-ask: Sam and Kim are given it.
-    let may_ask = json!([{"type": "clax-ask", "actions": ["ask"]}]);
-    let (sam, _) = site.person_with(&owner, "Sam", may_ask.clone()).await;
-    let (kim, _) = site.person_with(&owner, "Kim", may_ask).await;
+    let sam = site.member(&owner, "Sam").await;
+    let kim = site.member(&owner, "Kim").await;
     let mut sam_stream = site.stream(&sam, &["questions"]).await;
     let mut kim_stream = site.stream(&kim, &["questions"]).await;
     let mut agent = site.token_agent(&sam, "sam-laptop").await;

@@ -90,15 +90,18 @@ pub enum GitHubOutcome {
 }
 
 /// The rights a GitHub sign-up gets: create artifacts, and every action
-/// on the artifacts they created (their comments and their db included).
-/// Nothing at anyone else's artifact: what they see beyond their own is
-/// what a page's link, or the owner, gives them.
+/// on the artifacts they created (their comments and their db included),
+/// and `clax-ask`, so their agents may ask them: a question reaches only
+/// its asking agent's own person, as every agent's does. Nothing at
+/// anyone else's artifact: what they see beyond their own is what a page's
+/// link, or the owner, gives them.
 pub fn member_rights() -> Rights {
     Rights::parse(&serde_json::json!([
         {"type": "clax-artifacts", "actions": ["create"], "locations": ["*"]},
         {"type": "clax-artifacts", "actions": ["read", "update", "delete"], "locations": ["own"]},
         {"type": "clax-comments", "actions": crate::rights::COMMENT_ACTIONS, "locations": ["own"]},
         {"type": "clax-db", "actions": ["read", "write"], "level": "admin", "locations": ["own"]},
+        {"type": "clax-ask", "actions": crate::rights::ASK_ACTIONS},
     ]))
     .expect("the GitHub member rights are well formed")
 }

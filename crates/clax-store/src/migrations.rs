@@ -1100,6 +1100,12 @@ pub const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (grant_id, key)
     );
     CREATE INDEX question_keys_by_question ON question_keys(question_id, grant_id);",
+    // 36: a member's own-space rights (`crate::store::github::member_rights`)
+    // gain `clax-ask`, so their agents may ask them. Rows holding exactly the
+    // earlier member rights, as stored, are given the new ones; rights the
+    // owner set otherwise are left as they are.
+    r#"UPDATE viewers SET rights_json = '[{"actions":["create"],"locations":["*"],"type":"clax-artifacts"},{"actions":["delete","read","update"],"locations":["own"],"type":"clax-artifacts"},{"actions":["read","reply","resolve","send","watch","write"],"locations":["own"],"type":"clax-comments"},{"actions":["read","write"],"level":"admin","locations":["own"],"type":"clax-db"},{"actions":["ask"],"type":"clax-ask"}]'
+        WHERE rights_json = '[{"actions":["create"],"locations":["*"],"type":"clax-artifacts"},{"actions":["delete","read","update"],"locations":["own"],"type":"clax-artifacts"},{"actions":["read","reply","resolve","send","watch","write"],"locations":["own"],"type":"clax-comments"},{"actions":["read","write"],"level":"admin","locations":["own"],"type":"clax-db"}]';"#,
 ];
 
 /// The audit journal's migration, as a schema version (the
@@ -1937,6 +1943,64 @@ mod tests {
             s.get("person").is_none() && s.get("name").is_none() && s.get("grant_id").is_none()
         );
     }
+    #[test]
+    fn migration_36_gives_members_with_the_earlier_own_space_rights_clax_ask() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        let before = 35;
+        assert!(MIGRATIONS[before].contains("clax-ask"));
+        let earlier = crate::rights::Rights::parse(&serde_json::json!([
+            {"type": "clax-artifacts", "actions": ["create"], "locations": ["*"]},
+            {"type": "clax-artifacts", "actions": ["read", "update", "delete"], "locations": ["own"]},
+            {"type": "clax-comments", "actions": crate::rights::COMMENT_ACTIONS, "locations": ["own"]},
+            {"type": "clax-db", "actions": ["read", "write"], "level": "admin", "locations": ["own"]},
+        ]))
+        .unwrap();
+        let custom = super::super::people::write_rights(
+            &crate::rights::Rights::preset(crate::rights::PRESET_READER).unwrap(),
+        );
+        {
+            let c = Connection::open(home.db_path()).unwrap();
+            for sql in &MIGRATIONS[..before] {
+                c.execute_batch(sql).unwrap();
+            }
+            c.execute(
+                "INSERT INTO install (k, v) VALUES ('id', ?1)",
+                ["0".repeat(32)],
+            )
+            .unwrap();
+            c.pragma_update(None, "user_version", before as u32)
+                .unwrap();
+            for (id, rights) in [
+                ("v1", Some(super::super::people::write_rights(&earlier))),
+                ("v2", Some(custom.clone())),
+                ("v3", None),
+            ] {
+                c.execute(
+                    "INSERT INTO viewers (id, public_id, display_name, created_at, person, rights_json)
+                        VALUES (?1, ?2, ?1, 'x', 1, ?3)",
+                    rusqlite::params![id, format!("u_{id}"), rights],
+                )
+                .unwrap();
+            }
+        }
+        let st = Store::open(&home).unwrap();
+        let rights = |id: &str| -> Option<String> {
+            st.with_read(|c| {
+                Ok(c.query_row("SELECT rights_json FROM viewers WHERE id = ?1", [id], |r| r.get(0))?)
+            })
+            .unwrap()
+        };
+        assert_eq!(
+            rights("v1"),
+            Some(super::super::people::write_rights(&crate::store::github::member_rights())),
+            "a member with the earlier own-space rights gets the current ones"
+        );
+        assert_eq!(rights("v2"), Some(custom), "rights set otherwise are kept");
+        assert_eq!(rights("v3"), None, "default rights stay the default");
+    }
+
     #[test]
     fn migration_25_keeps_rows_the_owners_and_lets_lan_viewers_reach_the_owners_agents() {
         let dir = tempfile::tempdir().unwrap();
