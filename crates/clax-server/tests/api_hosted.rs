@@ -4658,3 +4658,55 @@ async fn an_agent_tokens_ask_about_an_artifact_names_it_within_its_persons_right
     assert_eq!(out["reply"][0]["question"], "Which line?", "{out}");
     assert_eq!(out["reply"][0]["text"], "the second line", "{out}");
 }
+
+/// What an agent token's agent is handed links the hosted Clax at its
+/// public origin, the address its person's browser opens, never the
+/// address the daemon listens on.
+#[tokio::test]
+async fn an_agent_tokens_feedback_links_the_public_origin() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let budget = site.titled("Budget").await;
+    let (sam, _, agent, handle) = site.sam_with_agent(&owner, &budget, "summary-writer").await;
+    let (s, t) = site.thread(&owner, &budget, "please total the rows").await;
+    assert_eq!(s, 201, "{t}");
+    let tid = t["thread"]["id"].as_str().unwrap().to_string();
+    let (s, v) = site
+        .post(
+            &owner,
+            &format!("/api/artifacts/{budget}/threads/{tid}/send"),
+            json!({"to": handle}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    // Sam lets the owner's words reach his agent.
+    let (_, inbox) = site.get(&sam, "/api/inbox").await;
+    let rid = inbox["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["kind"] == "approval")
+        .map(|i| i["approval"]["id"].as_str().unwrap().to_string())
+        .unwrap_or_else(|| panic!("an approval card in {inbox}"));
+    let (s, v) = site
+        .post(
+            &sam,
+            &format!("/api/approvals/requests/{rid}/decide"),
+            json!({"scope": "thread"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (_, r) = agent
+        .call(
+            "wait_for_feedback",
+            json!({"url_or_id": budget, "timeout_s": 5}),
+        )
+        .await;
+    let text = r.to_string();
+    assert!(text.contains("please total the rows"), "{text}");
+    assert!(
+        text.contains(&format!("{}/a/{budget}", site.origin)),
+        "{text}"
+    );
+    assert!(!text.contains(&site.ts.base), "{text}");
+}

@@ -160,8 +160,13 @@ fn view_at(
 /// another machine (`grant`), `http://` and the `Host` its signed request
 /// named, the address that machine reaches the daemon at (the API answers
 /// only to a local name or the address the connection arrived on); else
-/// the daemon's own browser base, which is this machine's.
+/// the daemon's own browser base, which is this machine's. On a hosted
+/// daemon, its public origin for every agent: the address every browser,
+/// and so every agent's person, opens it at.
 fn agent_base(s: &AppState, grant: bool, headers: &HeaderMap) -> String {
+    if let Some(h) = &s.hosted {
+        return h.origin.clone();
+    }
     let host = headers
         .get(axum::http::header::HOST)
         .and_then(|v| v.to_str().ok())
