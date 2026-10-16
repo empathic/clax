@@ -1,0 +1,99 @@
+module(name = "clax")
+
+bazel_dep(name = "rules_rust", version = "0.74.0")
+
+# The same compiler as rust-toolchain.toml, for macOS (Apple silicon and
+# Intel) and Linux (x86-64 and arm64); scripts/bazel-sync.sh --check fails
+# when the versions differ. With checksums the unpacked toolchain is shared
+# between output bases (one per worktree) instead of being downloaded and
+# unpacked into each.
+rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+rust.toolchain(
+    edition = "2024",
+    sha256s = {
+        "cargo-1.94.0-aarch64-apple-darwin.tar.xz": "7497ab873993cf38b806548c85bf818ffd71d1c3cf77b5bb4c3d3f1769588a08",
+        "cargo-1.94.0-aarch64-unknown-linux-gnu.tar.xz": "d57ab7b23b52cba46e58c78327904d0c7db19892988677b0d59495c8af4bb790",
+        "cargo-1.94.0-x86_64-apple-darwin.tar.xz": "3beb7874010ebd757780284c0c9da47fc9f0b18091d7415d7b7231a8c19ec44f",
+        "cargo-1.94.0-x86_64-unknown-linux-gnu.tar.xz": "8e17624f3de39e079845bfb25ed15a042f4b50ceca78e37c56c4b9b15949b9f7",
+        "clippy-1.94.0-aarch64-apple-darwin.tar.xz": "42a683cbac0b81b96ad3b887cdade36a57ef3a131c203583ca7e3ce0be98f415",
+        "clippy-1.94.0-aarch64-unknown-linux-gnu.tar.xz": "f7450c414e394450b53be602d37c374e2a2c5a2f51be2b54faf3d1e3272160b1",
+        "clippy-1.94.0-x86_64-apple-darwin.tar.xz": "1393cc688bc4d784a9d66619d2eec683a1ddb30b263f03ab615c0a2b18053126",
+        "clippy-1.94.0-x86_64-unknown-linux-gnu.tar.xz": "935529b0b9150084fa9cc1734c6598efe86b6e7d76f31ad3f8d4bb79ebf6031a",
+        "llvm-tools-1.94.0-aarch64-apple-darwin.tar.xz": "3e1e4bf19fc4e6a84221e0fc04e69cccbd659dd49042d58f7e37dbd7d9410e90",
+        "llvm-tools-1.94.0-aarch64-unknown-linux-gnu.tar.xz": "d9780dbef8b58bf544b255785a420aec64378bc496adb770a628670a0f18171c",
+        "llvm-tools-1.94.0-x86_64-apple-darwin.tar.xz": "3f692b525f98bfd070b32303e00a95f2d5bc1d45e82c4a5b17403ecf6fbe9360",
+        "llvm-tools-1.94.0-x86_64-unknown-linux-gnu.tar.xz": "cf6b8e1d3e48ffa4db37aa59f55382b991f0d347d9b62eebc9ef1d80dffabef4",
+        "rust-std-1.94.0-aarch64-apple-darwin.tar.xz": "d3293668128b0a7838ef2544ae341eadd4437460ca22098af723349885a10ba2",
+        "rust-std-1.94.0-aarch64-unknown-linux-gnu.tar.xz": "c781b3ef4fefa5508fbe05820eddc95e46351d905a30921cc020febd9c596a2e",
+        "rust-std-1.94.0-x86_64-apple-darwin.tar.xz": "cf716b5a5fab007398ce76536a85a3449df074b66e7c762c0f5de1d6c56a1342",
+        "rust-std-1.94.0-x86_64-unknown-linux-gnu.tar.xz": "dd33653107c36e040082050d9e547e64dac5b456ba74069430d838c00c189a05",
+        "rustc-1.94.0-aarch64-apple-darwin.tar.xz": "6ba00a4f486af11826335cd7fe405592d959f50afb9489176fc1463cbe75dbf2",
+        "rustc-1.94.0-aarch64-unknown-linux-gnu.tar.xz": "7261b2fcdb88aef8b21f4b9f915d9a75c959674193f5b38e13fab4569684fc5b",
+        "rustc-1.94.0-x86_64-apple-darwin.tar.xz": "b1374b0fb63f5abcd8eb65607e43a499bfdc5e8160746d1f6f993aee9313f320",
+        "rustc-1.94.0-x86_64-unknown-linux-gnu.tar.xz": "31a0d3ac9383dfdeb4fce86eeed5ade3230131c635264c0eab7252dbf235f28e",
+        "rustfmt-1.94.0-aarch64-apple-darwin.tar.xz": "0eb716d201dc0d6d24ef8207d3ef27611d9d15d2212e3b27aa11e97286ed02ac",
+        "rustfmt-1.94.0-aarch64-unknown-linux-gnu.tar.xz": "1ac17dbe7f8f6c98db5b62cb149fcd10c7565d624a59471115fc40055db9af28",
+        "rustfmt-1.94.0-x86_64-apple-darwin.tar.xz": "e58601a10ee85e956611ea2814bf26de88934a8224c1663bb11aa23f727663ec",
+        "rustfmt-1.94.0-x86_64-unknown-linux-gnu.tar.xz": "903e768f7626f78ed2d6cb82c1820b93bd339afec8575102e847fd3a379d33e5",
+    },
+    # rustfmt from the same release, so the format check agrees with
+    # `cargo fmt`.
+    rustfmt_version = "1.94.0",
+    versions = ["1.94.0"],
+)
+use_repo(rust, "rust_toolchains")
+
+register_toolchains("@rust_toolchains//:all")
+
+# Third-party crates, resolved from the Cargo workspace and its lockfile.
+# Nothing is listed here by hand.
+crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+crate.from_cargo(
+    name = "crates",
+    cargo_lockfile = "//:Cargo.lock",
+    manifests = ["//:Cargo.toml"],
+    supported_platform_triples = [
+        "aarch64-apple-darwin",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+    ],
+)
+
+# A Bazel debug build of clax embeds its web UI, extension and plugins
+# (docs/superpowers/specs/2026-10-15-bazel-overlay-design.md B11).
+crate.annotation(
+    crate = "rust-embed",
+    crate_features = ["debug-embed"],
+    repositories = ["crates"],
+)
+
+# The bundled SQLite's build flags, as .cargo/config.toml gives Cargo.
+crate.annotation(
+    build_script_env = {"LIBSQLITE3_FLAGS": "-USQLITE_ENABLE_MEMORY_MANAGEMENT -DSQLITE_DEFAULT_MEMSTATUS=0"},
+    crate = "libsqlite3-sys",
+    repositories = ["crates"],
+)
+use_repo(crate, "crates")
+
+# The web UI and the Pi extension (docs/bazel.md, "The web side and Pi"):
+# Node, and each pnpm project's packages from its own lockfile. Nothing is
+# listed here by hand.
+bazel_dep(name = "aspect_rules_js", version = "3.5.1")
+bazel_dep(name = "rules_nodejs", version = "6.7.6")
+bazel_dep(name = "rules_shell", version = "0.8.0")
+bazel_dep(name = "bazel_lib", version = "3.7.2")
+
+node = use_extension("@rules_nodejs//nodejs:extensions.bzl", "node")
+node.toolchain(node_version = "22.22.0")
+
+npm = use_extension("@aspect_rules_js//npm:extensions.bzl", "npm")
+npm.npm_translate_lock(
+    name = "npm_web",
+    pnpm_lock = "//web:pnpm-lock.yaml",
+)
+npm.npm_translate_lock(
+    name = "npm_pi",
+    pnpm_lock = "//plugins/pi:pnpm-lock.yaml",
+)
+use_repo(npm, "npm_pi", "npm_web")

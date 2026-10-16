@@ -1,0 +1,51 @@
+# Shared settings. Machine-specific ones go in user.bazelrc (git-ignored; see
+# user.bazelrc.example), or in ~/.bazelrc to cover every worktree at once.
+
+common --enable_platform_specific_config
+
+# A worktree's server leaves after 15 idle minutes (the default is 3 hours)
+# and may not grow past 3 GB: there is one per worktree.
+startup --max_idle_secs=900
+startup --host_jvm_args=-Xmx3g
+
+# rules_js reports which rule sets and versions a build uses to its authors
+# unless told not to.
+common --repo_env=DO_NOT_TRACK=1
+
+# Actions see a fixed environment, so their results can be shared.
+build --incompatible_strict_action_env
+
+# The compile cache, shared with ../changelist and every other project on
+# this machine: one directory, one bound. ../changelist/.bazelrc states the
+# same three lines; change both together (docs/bazel.md, "Disk").
+build --disk_cache=~/.cache/bazel-disk
+build --experimental_disk_cache_gc_max_size=80G
+build --experimental_disk_cache_gc_max_age=7d
+
+# The whole machine: Bazel runs as many actions as there are cores (its
+# default). To hold a build back on a shared machine, set limits in
+# user.bazelrc (user.bazelrc.example). scripts/bazel-sync.sh --check fails
+# if a limit on jobs or cores is committed here.
+build --@rules_rust//rust/settings:extra_rustc_flag=-Ccodegen-units=16
+build --@rules_rust//rust/settings:extra_exec_rustc_flag=-Ccodegen-units=16
+build --@rules_rust//rust/settings:pipelined_compilation=True
+build --@rules_rust//rust/settings:clippy.toml=//:clippy.toml
+test --test_env=RUST_TEST_THREADS=4
+test --test_env=TOKIO_WORKER_THREADS=4
+# As .cargo/config.toml gives Cargo's tests: CLAX_PORT empty, so a port in
+# the developer's shell never moves a test daemon.
+test --test_env=CLAX_PORT=
+
+test --test_output=errors
+
+# --config=clippy: lint instead of only compiling, as `cargo clippy
+# --all-targets -- -D warnings` does. A lint is a build failure.
+build:clippy --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
+build:clippy --output_groups=+clippy_checks
+build:clippy --@rules_rust//rust/settings:clippy_flag=-Dwarnings
+
+# --config=fmt: check formatting, as `cargo fmt --all -- --check` does.
+build:fmt --aspects=@rules_rust//rust:defs.bzl%rustfmt_aspect
+build:fmt --output_groups=+rustfmt_checks
+
+try-import %workspace%/user.bazelrc

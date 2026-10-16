@@ -1,0 +1,6 @@
+# The project's package manager files, for MODULE.bazel.
+exports_files([
+    "pnpm-lock.yaml",
+    "package.json",
+    "pnpm-workspace.yaml",
+])
