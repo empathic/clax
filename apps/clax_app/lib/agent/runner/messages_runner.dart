@@ -41,8 +41,8 @@ const finishNudge = 'Call finish or give_up.';
 ///   `ResumingTurns` waiting out a background network cut or a lost
 ///   connection) does not spend the wall clock while held, and is followed
 ///   by an [AttemptStarted] when it is sent again; a cut attempt that
-///   reached the API is counted as a turn of the last turn's input; a wait
-///   for the
+///   reached the API is counted as a turn of an estimate of what it was
+///   billed, and a cap that reaches ends the run there; a wait for the
 ///   connection is told by [WaitingForConnection], and its end by
 ///   [ConnectionBack]; a failed turn is never counted and left
 ///   nothing in the history, so the resent turn is the same request;
@@ -52,6 +52,11 @@ class MessagesApiRunner implements AgentRunner {
   MessagesApiRunner(this.backend);
 
   final TurnBackend backend;
+
+  /// About how many output tokens one server-sent event of a cut attempt
+  /// carried, for its price: a delta holds a few tokens, so this errs
+  /// high.
+  static const tokensPerEvent = 10;
 
   /// The most `max_tokens` of one turn.
   static const maxTokens = 32000;
@@ -68,7 +73,7 @@ class MessagesApiRunner implements AgentRunner {
 }
 
 /// Why a turn was stopped from outside.
-enum _Stop { cancelled, timeUp }
+enum _Stop { cancelled, timeUp, capped }
 
 class _Run {
   _Run(this.backend, this.input, this.toolbox)
@@ -92,15 +97,37 @@ class _Run {
     onResend: () => _emit(AttemptStarted(++_attempt)),
     onConnection: (waiting) =>
         _emit(waiting ? const WaitingForConnection() : const ConnectionBack()),
-    // A cut attempt is billed what the turn before it was sent, at least:
-    // counted as a turn of that input, so the caps bound a run whose
-    // connection keeps breaking.
-    onCutAttempt: () => state.budget.addTurn(_sentBefore),
+    onCutAttempt: _cutAttempt,
   );
 
-  /// The input side of the last turn's usage: what resending the history
-  /// costs, about.
+  /// The input side of the last turn's usage, and the size of the request
+  /// that turn sent.
   var _sentBefore = const Usage();
+  var _sentChars = 0;
+
+  /// The characters of the request a turn sends now.
+  int _requestChars() => jsonEncode([input.system, tools, messages]).length;
+
+  /// A cut attempt that reached the API was billed for its input and for
+  /// what it streamed before the cut: it is counted as a turn of an
+  /// estimate of both (the last turn's input plus the history added since,
+  /// at about 4 characters a token, and
+  /// [MessagesApiRunner.tokensPerEvent] output tokens for
+  /// each of its [events]), so the turn and cost caps bound a run whose
+  /// connection keeps breaking. A cap that this reaches stops the run: the
+  /// held turn is not sent again.
+  void _cutAttempt(int events) {
+    final chars = _requestChars();
+    final added = ((chars - _sentChars) / 4).ceil();
+    state.budget.addTurn(
+      _sentBefore +
+          Usage(
+            input: added > 0 ? added : 0,
+            output: events * MessagesApiRunner.tokensPerEvent,
+          ),
+    );
+    if (state.budget.hardStop != null) _fire(_Stop.capped);
+  }
 
   bool get _cancelled => _stopReason == _Stop.cancelled;
   _Stop? _stopReason;
@@ -114,6 +141,8 @@ class _Run {
   void _emit(AgentProgress event) {
     if (event case Narration(:final text)) _narration = text;
     if (_cancelled) return;
+    // A run stopped at a cap while a cut turn was held waits for nothing.
+    if (_stop.isCompleted && event is WaitingForConnection) return;
     // Progress is advisory: a listener that throws never ends the run.
     try {
       state.progress?.call(event);
@@ -173,6 +202,7 @@ class _Run {
         cacheWrite: turn.usage.cacheWrite,
         cacheRead: turn.usage.cacheRead,
       );
+      _sentChars = _requestChars();
 
       if (turn.stopReason == 'refusal') {
         final category = switch (turn.stopDetails?['category']) {

@@ -116,8 +116,7 @@ class ApiConnection extends ChangeNotifier {
     notifyListeners();
   }
 
-  bool get _shouldProbe =>
-      !_online && !_disposed && _waiters > 0 && foreground;
+  bool get _shouldProbe => !_online && !_disposed && _waiters > 0 && foreground;
 
   Future<void> _probeLoop() async {
     if (_probing || !_shouldProbe) return;
