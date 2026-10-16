@@ -198,4 +198,48 @@ void main() {
     expect(published(aid), isEmpty);
     expect(model.sent, tries);
   });
+
+  test('cancelling one thread of a waiting change stops only that thread: '
+      'the others run without it, and it runs again on Retry', () async {
+    final aid = api.seedArtifact('Runs', {'index.html': page});
+    model = _Model([
+      ...changeCalls(reply: 'Keep.', edits: [('Save', 'Keep')]),
+      ...changeCalls(
+        reply: 'Red.',
+        edits: [('<button>', '<button class=red>')],
+      ),
+    ]);
+    model.net = false;
+    // One batch: one change carries both threads.
+    final keep = api.sendComment(aid, 'Say Keep', queue: false);
+    final red = api.sendComment(aid, 'Make it red', queue: false);
+    api.pushFeedback([keep, red]);
+    workerWith();
+    await until(waiting, reason: 'the change says it waits');
+    expect(
+      events.whereType<WorkerWorking>().single.threads,
+      unorderedEquals([keep.threadId, red.threadId]),
+    );
+
+    expect(await worker.cancelThread(aid, red.threadId), isTrue);
+    expect(worker.isStopped(red.threadId), isTrue);
+    expect(worker.isStopped(keep.threadId), isFalse);
+    await until(
+      () => events.whereType<WorkerWorking>().length == 2,
+      reason: 'the other thread runs again alone',
+    );
+    expect(events.whereType<WorkerWorking>().last.threads, [keep.threadId]);
+
+    await reconnect();
+    expect(published(aid), ['1']);
+    expect(api.threadOf(aid, keep.threadId).comments.last.body, 'Keep.');
+    final r = api.threadOf(aid, red.threadId);
+    expect(r.comments.last.body, 'Make it red', reason: 'not answered');
+
+    expect(await worker.retry(aid, red.threadId), isTrue);
+    expect(worker.isStopped(red.threadId), isFalse);
+    await idle();
+    expect(published(aid), ['1', '2']);
+    expect(api.threadOf(aid, red.threadId).comments.last.body, 'Red.');
+  });
 }
