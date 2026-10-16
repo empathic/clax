@@ -293,8 +293,8 @@ declare namespace ClaxExtensions {
    *
    * Calls that open something (`open`, `openMake`, `newApp`, `menu`,
    * `openInbox`, `openSettings`, `importApp`) must come from the person's
-   * tap or key press in the page, or they reject `no_gesture`; the reads
-   * and `shown` need none.
+   * tap or key press in the page, or they reject `no_gesture`; the reads,
+   * `shown` and `tiles` need none.
    *
    * Clax keeps its own home screen over the page until the page calls
    * `shown()`, and shows its own, with Undo last change and Reset, when
@@ -373,6 +373,12 @@ declare namespace ClaxExtensions {
        * the empty state or the load error. Call it once per load, after
        * the first such render (from an effect, not a tap). */
       shown(): Promise<void>;
+      /** Says where each app's tile is now, after each render that moves
+       * them (and on scroll and resize): Clax keeps the last ones with an
+       * image of the page, which it shows at once on its next start, and
+       * opens the app under a tap on that image once the page is shown. At
+       * most 512 tiles. */
+      tiles(tiles: { id: string; rect: Rect }[]): Promise<void>;
       /** Calls `fn` with each change of topic `name`, after the page's
        * first `home` call; returns `stop`. A page that was covered hears
        * only the latest value. */
