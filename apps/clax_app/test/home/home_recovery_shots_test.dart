@@ -67,6 +67,20 @@ void main() {
       tester.view.physicalSize = const Size(412 * 2, 915 * 2);
       tester.view.devicePixelRatio = 2;
       addTearDown(tester.view.reset);
+      // Real shadows, not flutter_test's outline stand-in for them; [shot]
+      // puts the stand-in back before the test ends, as flutter_test checks.
+      debugDisableShadows = false;
+    }
+
+    Future<void> shot(String name) async {
+      try {
+        await expectLater(
+          find.byType(MaterialApp),
+          matchesGoldenFile('$_out/$name-$scheme.png'),
+        );
+      } finally {
+        debugDisableShadows = true;
+      }
     }
 
     testWidgets('fallback banner, phone, $scheme', skip: !_on, (tester) async {
@@ -92,10 +106,7 @@ void main() {
       for (var i = 0; i < 5; i++) {
         await tester.pump(const Duration(milliseconds: 100));
       }
-      await expectLater(
-        find.byType(MaterialApp),
-        matchesGoldenFile('$_out/banner-phone-$scheme.png'),
-      );
+      await shot('banner-phone');
     });
 
     testWidgets('settings home screen, phone, $scheme', skip: !_on, (
@@ -146,10 +157,7 @@ void main() {
       );
       await tester.ensureVisible(find.text('Use the built-in home screen'));
       await tester.pumpAndSettle();
-      await expectLater(
-        find.byType(MaterialApp),
-        matchesGoldenFile('$_out/settings-home-phone-$scheme.png'),
-      );
+      await shot('settings-home-phone');
     });
   }
 }
