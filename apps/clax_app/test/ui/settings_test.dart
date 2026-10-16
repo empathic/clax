@@ -2,6 +2,12 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:clax_app/agent/timings.dart';
+import 'package:clax_app/bundle/installer.dart';
+import 'package:clax_app/bundle/lineage_store.dart';
+import 'package:clax_app/clax/fake_api.dart';
+import 'package:clax_app/home/home_install.dart';
+import 'package:clax_app/home/home_recovery.dart';
+import 'package:clax_app/home/home_settings.dart';
 import 'package:clax_app/platform/secure_key.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/settings_screen.dart';
@@ -157,6 +163,7 @@ void main() {
     bool cliSupported = false,
     List<TimingRecord> timings = const [],
     Future<String?> Function()? fingerprint,
+    HomeScreenControls? home,
   }) async {
     await tester.pumpWidget(
       MaterialApp(
@@ -166,6 +173,7 @@ void main() {
           cliSupported: cliSupported,
           timings: timings,
           fingerprint: fingerprint,
+          home: home,
         ),
       ),
     );
@@ -431,6 +439,112 @@ void main() {
         scrollable: _list,
       );
       expect(find.text('Your sharing key'), findsNothing);
+    });
+  });
+  group('Home screen', () {
+    late FakeClaxApi api;
+    late String aid;
+    late HomeSettings home;
+    late HomeRecovery recovery;
+    var opened = 0;
+    var changed = 0;
+
+    setUp(() {
+      api = FakeClaxApi();
+      aid = api.seedArtifact('Home', {'index.html': '<p>1</p>'});
+      api.seedVersion(aid, {'index.html': '<p>2</p>'});
+      home = HomeSettings.loadSync(dir)..homeAppId = aid;
+      recovery = HomeRecovery(
+        api: api,
+        installer: Installer(
+          api: api,
+          store: LineageStore(Directory('${dir.path}/support')),
+          key: homeInstallKey(),
+        ),
+        settings: home,
+      );
+      opened = 0;
+      changed = 0;
+    });
+
+    Future<void> pump(WidgetTester tester) => pumpSettings(
+      tester,
+      store: SettingsStore(file),
+      key: FakeKey(),
+      home: HomeScreenControls(
+        settings: home,
+        recovery: recovery,
+        open: () => opened++,
+        changed: () => changed++,
+      ),
+    );
+
+    Future<void> show(WidgetTester tester, String text) async {
+      await tester.scrollUntilVisible(find.text(text), 100, scrollable: _list);
+      await tester.ensureVisible(find.text(text));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('lists Open, Undo, Reset and the built-in switch', (
+      tester,
+    ) async {
+      await pump(tester);
+      await show(tester, 'Use the built-in home screen');
+      expect(find.text('Home screen'), findsOneWidget);
+      expect(find.text('Open'), findsOneWidget);
+      expect(find.text('Undo last change'), findsOneWidget);
+      expect(find.text("Reset to Clax's home screen"), findsOneWidget);
+    });
+
+    testWidgets('Open opens the home app (in comment mode, by the caller)', (
+      tester,
+    ) async {
+      await pump(tester);
+      await show(tester, 'Open');
+      await tester.tap(find.text('Open'));
+      expect(opened, 1);
+    });
+
+    testWidgets('Undo last change restores the version before the latest', (
+      tester,
+    ) async {
+      await pump(tester);
+      await show(tester, 'Undo last change');
+      await tester.tap(find.text('Undo last change'));
+      await tester.pump();
+      await tester.pump();
+      final r = api.calls.lastWhere((c) => c.name == 'restoreVersion');
+      expect(r.args, {'aid': aid, 'n': 1, 'ifVersion': 2});
+      expect(find.text('Undid the last change'), findsOneWidget);
+    });
+
+    testWidgets('Use the built-in home screen is saved and told', (
+      tester,
+    ) async {
+      await pump(tester);
+      await show(tester, 'Use the built-in home screen');
+      await tester.tap(find.text('Use the built-in home screen'));
+      expect(changed, 1);
+      // The save is real file I/O: wait for it outside the fake clock.
+      for (var i = 0; i < 200 && !HomeSettings.loadSync(dir).builtin; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 10)),
+        );
+        await tester.pump();
+      }
+      expect(HomeSettings.loadSync(dir).builtin, isTrue);
+    });
+
+    testWidgets('without a home app, only the switch acts', (tester) async {
+      home.homeAppId = null;
+      await pump(tester);
+      await show(tester, 'Open');
+      await tester.tap(find.text('Open'));
+      await show(tester, 'Undo last change');
+      await tester.tap(find.text('Undo last change'));
+      await tester.pump();
+      expect(opened, 0);
+      expect(api.calls.where((c) => c.name == 'restoreVersion'), isEmpty);
     });
   });
 }

@@ -195,6 +195,7 @@ class AppScreen extends StatefulWidget {
     required this.worker,
     this.clock = const SystemClock(),
     this.onReady,
+    this.onStoppedLoading,
     this.comments,
     this.notice,
     this.actions,
@@ -238,6 +239,10 @@ class AppScreen extends StatefulWidget {
   /// Each `ready` the shell posts (the say→usable timing ends on the
   /// first).
   final ValueChanged<Ready>? onReady;
+
+  /// The page gave up loading: the screen shows "This app stopped
+  /// loading" with Reload.
+  final VoidCallback? onStoppedLoading;
 
   /// The app's App › Comment and App › Threads commands, which the screen
   /// registers its toggles with while it is shown. Without it, the screen
@@ -1066,6 +1071,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       _covered = true;
       _gaveUp = f.reloading ? null : f.description;
     });
+    if (!f.reloading) widget.onStoppedLoading?.call();
   }
 
   void _reload() {
