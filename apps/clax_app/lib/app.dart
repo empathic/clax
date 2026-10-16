@@ -1738,6 +1738,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
             },
             device: _device,
             build: _build,
+            openApp: _open,
             comments: _comments,
             notice: _notice,
             actions: actions.stream,

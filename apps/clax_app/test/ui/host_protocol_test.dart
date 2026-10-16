@@ -363,6 +363,25 @@ void main() {
       expect(s.accept(msg(second.nonce)), isA<Landed>());
     });
 
+    test('the document is the artifact of the URL the shell loaded at', () {
+      final s = ShellSession(base);
+      expect(s.document, isNull);
+      s.documentStarted(shell);
+      expect(s.document, isNull, reason: 'not loaded yet');
+      s.documentLoaded(shell);
+      expect(s.document, id);
+      final other = Uri.parse('http://127.0.0.1:7999/a/zyxwvtsrqpnm?app=1');
+      s.documentStarted(other);
+      expect(s.document, isNull);
+      s.documentLoaded(other);
+      expect(s.document, 'zyxwvtsrqpnm');
+      expect(ShellSession.artifactOf(base, other), 'zyxwvtsrqpnm');
+      expect(
+        ShellSession.artifactOf(base, Uri.parse('http://127.0.0.1:7999/x')),
+        isNull,
+      );
+    });
+
     test('a document that is not the shell gets no nonce and no calls', () {
       final s = ShellSession(base);
       final page = Uri.parse('http://$id.localhost:7999/index.html');

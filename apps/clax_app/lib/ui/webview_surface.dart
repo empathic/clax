@@ -16,9 +16,11 @@ import 'host_protocol.dart';
 ///   `ClaxHost` JavaScript channel and count only with the document's
 ///   nonce, handed to the shell once it has loaded ([ShellSession]).
 /// - The top level may only be the shell's app view on [base]'s origin
-///   ([ShellSession.isShellUrl]). Any other top-level navigation is
-///   refused and its URL given to [openExternal] when it is a web or mail
-///   link off the device; frames inside the page navigate freely.
+///   ([ShellSession.isShellUrl]) of the artifact last [load]ed. The app
+///   view of another artifact is refused and its ID put on [elsewhere];
+///   any other top-level navigation is refused and its URL given to
+///   [openExternal] when it is a web or mail link off the device; frames
+///   inside the page navigate freely.
 /// - `claxHost` is called only in the shell, after its nonce.
 /// - A main frame that fails to load, or whose web content process ends,
 ///   is loaded again once; a second failure within [retryWindow] gives up
@@ -88,20 +90,29 @@ class WebViewAppSurface implements AppSurface {
 
   final _messages = StreamController<HostMessage>.broadcast();
   final _faults = StreamController<SurfaceFault>.broadcast();
+  final _elsewhere = StreamController<String>.broadcast();
   DateTime? _lastFault;
 
   /// What a navigation request gets: frames navigate, the top level only
-  /// to the shell; a refused web or mail link goes to [openExternal].
+  /// to the shell of artifact [own] (of any artifact when null); the
+  /// shell of another artifact goes to [openArtifact], a refused web or
+  /// mail link to [openExternal].
   @visibleForTesting
   static NavigationDecision decide(
     Uri base,
     String url, {
     required bool isMainFrame,
+    String? own,
     void Function(Uri url)? openExternal,
+    void Function(String aid)? openArtifact,
   }) {
     if (!isMainFrame) return NavigationDecision.navigate;
     final u = Uri.tryParse(url);
-    if (ShellSession.isShellUrl(base, u)) return NavigationDecision.navigate;
+    if (ShellSession.artifactOf(base, u) case final aid?) {
+      if (own == null || aid == own) return NavigationDecision.navigate;
+      openArtifact?.call(aid);
+      return NavigationDecision.prevent;
+    }
     if (u != null &&
         const {'http', 'https', 'mailto'}.contains(u.scheme) &&
         !_local(u.host)) {
@@ -126,7 +137,11 @@ class WebViewAppSurface implements AppSurface {
     base,
     r.url,
     isMainFrame: r.isMainFrame,
+    own: _own,
     openExternal: openExternal,
+    openArtifact: (aid) {
+      if (!_elsewhere.isClosed) _elsewhere.add(aid);
+    },
   );
 
   void _onLoaded(String url) {
@@ -161,7 +176,19 @@ class WebViewAppSurface implements AppSurface {
   );
 
   @override
-  Future<void> load(Uri url) => _loads.load(url);
+  Future<void> load(Uri url) {
+    _own = ShellSession.artifactOf(base, url);
+    return _loads.load(url);
+  }
+
+  /// The artifact last [load]ed, which the top level stays on.
+  String? _own;
+
+  @override
+  String? get document => _session.document;
+
+  @override
+  Stream<String> get elsewhere => _elsewhere.stream;
 
   @override
   Future<void> reload() => _loads.reload();
@@ -193,5 +220,6 @@ class WebViewAppSurface implements AppSurface {
     _loads.dispose();
     _messages.close();
     _faults.close();
+    _elsewhere.close();
   }
 }

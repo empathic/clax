@@ -200,6 +200,7 @@ class AppScreen extends StatefulWidget {
     this.device,
     this.build,
     this.home,
+    this.openApp,
   });
 
   final String aid;
@@ -285,6 +286,12 @@ class AppScreen extends StatefulWidget {
   /// reports itself unavailable and every call is refused. The home app
   /// gets each of the host's [HomeHost.events].
   final HomeHost? home;
+
+  /// Opens app [aid] as its own screen: where a top-level navigation of
+  /// the page to another artifact goes, since the screen's page stays on
+  /// [aid] ([AppSurface.elsewhere]); without it such a navigation does
+  /// nothing.
+  final void Function(String aid)? openApp;
 
   /// How tall the folded chips and the location pill are.
   static const pillHeight = 24.0;
@@ -527,10 +534,15 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       ..add(widget.surface.faults.listen(_onFault))
       ..add(widget.worker.listen(_onWorker));
     if (widget.actions case final actions?) _subs.add(actions.listen(_act));
+    _subs.add(
+      widget.surface.elsewhere.listen((aid) {
+        if (mounted) widget.openApp?.call(aid);
+      }),
+    );
     if (widget.home case final h?) {
       _subs.add(
         h.events.listen((e) {
-          if (!mounted || !h.availableTo(widget.aid)) return;
+          if (!mounted || !_homeServed) return;
           unawaited(widget.surface.call(HomeDeviceEvent(e.name, e.data)));
         }),
       );
@@ -888,15 +900,23 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     },
   );
 
-  /// Answers the page's `home` call [r]: `available` says whether this
-  /// app is the home app; every other call is the home host's, refused
-  /// for any other app.
+  /// Whether the page is served `home`: this screen is the home app's and
+  /// the loaded document is that app's too ([AppSurface.document], from
+  /// the URL the WebView committed), not another artifact the top level
+  /// got to.
+  bool get _homeServed =>
+      (widget.home?.availableTo(widget.aid) ?? false) &&
+      widget.surface.document == widget.aid;
+
+  /// Answers the page's `home` call [r]: `available` says whether the page
+  /// is served `home` ([_homeServed]); every other call is the home
+  /// host's, refused for any other page.
   Future<DeviceResult> _home(DeviceRequest r) async {
     final h = widget.home;
     if (r.method == 'available') {
-      return DeviceResult.ok(r.id, h?.availableTo(widget.aid) ?? false);
+      return DeviceResult.ok(r.id, _homeServed);
     }
-    if (h == null) {
+    if (h == null || !_homeServed) {
       return DeviceResult.error(r.id, 'refused', 'not the home app');
     }
     try {
