@@ -8,10 +8,18 @@ import '../daemon/clock.dart';
 /// per stopped interval:
 /// `{"name", "elapsed_ms", "at" (ISO 8601 UTC), "extra"}`.
 ///
-/// Running intervals live in memory only. A line that cannot be read is
-/// skipped. Writes are appends of one short line, made synchronously.
+/// Running intervals live in memory only; [started] are running from
+/// the start (an interval that began before the timings were made, such
+/// as at launch). A line that cannot be read is skipped. Writes are
+/// appends of one short line, made synchronously.
 class FileTimings implements Timings {
-  FileTimings(this.file, {this._clock = const SystemClock()});
+  FileTimings(
+    this.file, {
+    this._clock = const SystemClock(),
+    Map<String, DateTime> started = const {},
+  }) {
+    _started.addAll(started);
+  }
 
   final File file;
   final Clock _clock;

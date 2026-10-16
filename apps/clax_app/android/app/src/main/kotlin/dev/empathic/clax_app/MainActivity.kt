@@ -2,11 +2,16 @@ package dev.empathic.clax_app
 
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.net.Uri
 import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import io.flutter.plugins.webviewflutter.WebViewFlutterAndroidExternalApi
+import java.io.ByteArrayOutputStream
+import kotlin.concurrent.thread
 
 class MainActivity : FlutterActivity() {
     private var background: BackgroundWorkChannel? = null
@@ -24,9 +29,36 @@ class MainActivity : FlutterActivity() {
         // in system settings (its permissions among it) and answers true.
         // "openExternal" opens an http, https or mailto URL with the app
         // the person chose for it, and answers whether one took it.
+        // "snapshotWebView" {id} answers an image of the WebView that
+        // webview_flutter names `id` (`webViewIdentifier`) as it shows:
+        // {png, width, height}, its size in dp; null without one.
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dev.empathic.clax/native")
             .setMethodCallHandler { call, result ->
                 when (call.method) {
+                    "snapshotWebView" -> {
+                        val id = call.argument<Number>("id")?.toLong()
+                        @Suppress("DEPRECATION")
+                        val view = id?.let { WebViewFlutterAndroidExternalApi.getWebView(flutterEngine, it) }
+                        if (view == null || view.width <= 0 || view.height <= 0) {
+                            result.success(null)
+                        } else {
+                            val bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+                            view.draw(Canvas(bitmap))
+                            val density = resources.displayMetrics.density
+                            val width = view.width / density.toDouble()
+                            val height = view.height / density.toDouble()
+                            thread(name = "clax-snapshot") {
+                                val out = ByteArrayOutputStream()
+                                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                                bitmap.recycle()
+                                runOnUiThread {
+                                    result.success(
+                                        mapOf("png" to out.toByteArray(), "width" to width, "height" to height)
+                                    )
+                                }
+                            }
+                        }
+                    }
                     "nativeLibraryDir" -> result.success(applicationInfo.nativeLibraryDir)
                     "openAppSettings" -> {
                         startActivity(

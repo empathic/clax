@@ -496,6 +496,8 @@ class _HomeSectionState extends State<_HomeSection> {
 String timingLabel(String name) => switch (name) {
   sayUsable => 'Say → usable',
   longpressLanded => 'Long-press → landed',
+  homeUsable => 'Launch → home usable',
+  homeCover => 'Launch → home snapshot',
   _ => name,
 };
 

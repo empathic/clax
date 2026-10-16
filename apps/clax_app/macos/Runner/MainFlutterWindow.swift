@@ -1,6 +1,7 @@
 import Cocoa
 import FlutterMacOS
 import WebKit
+import webview_flutter_wkwebview
 
 class MainFlutterWindow: NSWindow {
   override func awakeFromNib() {
@@ -13,11 +14,39 @@ class MainFlutterWindow: NSWindow {
 
     // "openExternal" opens an http, https or mailto URL with the app the
     // person chose for it, and answers whether it was handed over.
+    // "snapshotWebView" {id} answers an image of the WebView that
+    // webview_flutter names `id` (`webViewIdentifier`) as it shows:
+    // {png, width, height}, its size in points; nil without one.
     let native = FlutterMethodChannel(
       name: "dev.empathic.clax/native",
       binaryMessenger: flutterViewController.engine.binaryMessenger)
-    native.setMethodCallHandler { call, result in
+    native.setMethodCallHandler { [weak flutterViewController] call, result in
       switch call.method {
+      case "snapshotWebView":
+        guard let controller = flutterViewController,
+          let id = (call.arguments as? [String: Any])?["id"] as? NSNumber,
+          let webView = FWFWebViewFlutterWKWebViewExternalAPI.webView(
+            forIdentifier: id.int64Value, withPluginRegistry: controller),
+          webView.bounds.width > 0, webView.bounds.height > 0
+        else {
+          result(nil)
+          return
+        }
+        let size = webView.bounds.size
+        webView.takeSnapshot(with: nil) { image, _ in
+          guard let image,
+            let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+            let png = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])
+          else {
+            result(nil)
+            return
+          }
+          result([
+            "png": FlutterStandardTypedData(bytes: png),
+            "width": Double(size.width),
+            "height": Double(size.height),
+          ])
+        }
       case "openExternal":
         guard let args = call.arguments as? [String: Any],
           let text = args["url"] as? String,

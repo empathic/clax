@@ -19,6 +19,7 @@ import '../ui/launcher.dart'
     show EmojiFace, IconFace, MonogramFace, tileFace, tileHue;
 import '../ui/make_service.dart';
 import 'home_settings.dart';
+import 'home_snapshot.dart' show HomeTile;
 
 /// One app on the home screen.
 ///
@@ -264,6 +265,20 @@ class HomeHost extends ChangeNotifier {
   /// goes.
   Stream<String> get shown => _shown.stream;
 
+  final _tiles = StreamController<List<HomeTile>>.broadcast(sync: true);
+  List<HomeTile>? _lastTiles;
+
+  /// Where the home app's page last said its app tiles are (its
+  /// `home.tiles` call, made after each render), in CSS pixels from its
+  /// viewport's top left; null before it said.
+  List<HomeTile>? get tiles => _lastTiles;
+
+  /// Each of the home app's `home.tiles` reports.
+  Stream<List<HomeTile>> get tileReports => _tiles.stream;
+
+  /// The most tiles one `home.tiles` call may give.
+  static const maxTiles = 512;
+
   /// Each topic's latest value, as [events] carries it: what a home app
   /// page that was covered or in the background is told when it shows
   /// again.
@@ -354,6 +369,9 @@ class HomeHost extends ChangeNotifier {
         actions.importApp();
       case 'shown':
         _shown.add(callerAid);
+      case 'tiles':
+        final t = _lastTiles = _tilesOf(args['tiles']);
+        _tiles.add(t);
       default:
         throw HomeBadRequest('home.$method is not a home method');
     }
@@ -374,7 +392,24 @@ class HomeHost extends ChangeNotifier {
     return id;
   }
 
-  static Rect _rect(Object? r) {
+  static List<HomeTile> _tilesOf(Object? v) {
+    if (v is! List || v.length > maxTiles) {
+      throw const HomeBadRequest(
+        'tiles takes a list of at most $maxTiles {id, rect}',
+      );
+    }
+    return [
+      for (final t in v)
+        switch (t) {
+          {'id': final String id, 'rect': final Object? r}
+              when id.isNotEmpty && id.length <= 64 =>
+            HomeTile(id, _rect(r, 'tiles')),
+          _ => throw const HomeBadRequest('tiles takes {id, rect} each'),
+        },
+    ];
+  }
+
+  static Rect _rect(Object? r, [String method = 'menu']) {
     if (r
         case {
           'x': final num x,
@@ -390,7 +425,7 @@ class HomeHost extends ChangeNotifier {
         h.toDouble(),
       );
     }
-    throw const HomeBadRequest('menu takes a rect {x, y, w, h}');
+    throw HomeBadRequest('$method takes a rect {x, y, w, h}');
   }
 
   /// Topic [name]'s value as the page gets it.
@@ -638,6 +673,7 @@ class HomeHost extends ChangeNotifier {
     }
     unawaited(_out.close());
     unawaited(_shown.close());
+    unawaited(_tiles.close());
     if (closeStream) unawaited(stream.close());
     super.dispose();
   }

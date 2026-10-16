@@ -7,6 +7,14 @@ const sayUsable = 'say-usable';
 /// Send in the composer to the new version's frame load.
 const longpressLanded = 'longpress-landed';
 
+/// The app's launch (its `main`) to the home app's first `shown` (its
+/// page has drawn the home screen with its apps).
+const homeUsable = 'home-usable';
+
+/// The app's launch (its `main`) to the first frame showing the home
+/// screen's last snapshot.
+const homeCover = 'home-cover';
+
 /// One measured interval.
 class TimingRecord {
   const TimingRecord({
@@ -16,7 +24,7 @@ class TimingRecord {
     this.extra = const {},
   });
 
-  /// [sayUsable] or [longpressLanded].
+  /// [sayUsable], [longpressLanded], [homeUsable] or [homeCover].
   final String name;
   final Duration elapsed;
 

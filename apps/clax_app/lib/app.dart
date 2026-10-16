@@ -37,6 +37,7 @@ import 'home/home_keeper.dart';
 import 'home/home_recovery.dart';
 import 'home/home_route.dart';
 import 'home/home_settings.dart';
+import 'home/home_snapshot.dart';
 import 'home/home_update.dart';
 import 'bundle/lineage_store.dart';
 import 'bundle/updater.dart';
@@ -109,6 +110,8 @@ class AppServices {
     this.bundleIntake,
     this.bundleFiles,
     this.shippedHome,
+    this.homeSnapshots,
+    this.homeSnapshot,
     PendingMake? pendingMake,
     ApiConnection? connection,
     int? pid,
@@ -235,6 +238,13 @@ class AppServices {
   /// The home app the app ships, installed on the first run and shown as
   /// the home screen; without it the built-in home screen is home.
   final ShippedHome? shippedHome;
+
+  /// Where the home screen's snapshot is kept; none is taken when null.
+  final HomeSnapshotStore? homeSnapshots;
+
+  /// The snapshot kept at launch, decoded, which covers the home screen
+  /// until the home app's page has drawn it.
+  final HomeSnapshot? homeSnapshot;
 
   /// The app's process ID, given to the daemon with the session.
   final int pid;
@@ -619,6 +629,33 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// Keeps the home app installed ([_installHome]), from the first Up.
   HomeKeeper? _homeKeeper;
 
+  /// The launch's snapshot over the home screen, while it shows: kept
+  /// only when it is of the recorded home app and that is home.
+  late final HomeSnapshotCover? _homeCover = () {
+    final s = _s.homeSnapshot;
+    if (s == null) return null;
+    final settings = HomeSettings.loadSync(Directory(_s.supportDir));
+    if (settings.builtin || settings.homeAppId != s.aid) return null;
+    return HomeSnapshotCover(s);
+  }();
+
+  /// Takes the home screen's snapshot, from the first Up.
+  HomeSnapshotter? _snapshotter;
+
+  /// The home app's page, as last made for the home route.
+  AppSurface? _homeSurface;
+
+  /// Whether the built-in home screen is over the home app's page.
+  var _homeCovered = true;
+
+  StreamSubscription<String>? _homeShown;
+  StreamSubscription<Object?>? _homeTiles;
+
+  /// Takes the snapshot as something is pushed over the home screen.
+  late final _coverWatch = _HomeCoverWatch(
+    () => unawaited(_snapshotter?.take()),
+  );
+
   /// What the home screen opens, over the app's navigator.
   late final _homeFlows = HomeFlows(
     contextOf: () => _nav.currentContext,
@@ -742,6 +779,10 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     _homeHost?.dispose();
     _homeRecovery?.dispose();
     _homeKeeper?.dispose();
+    _snapshotter?.dispose();
+    unawaited(_homeShown?.cancel());
+    unawaited(_homeTiles?.cancel());
+    _homeCover?.dispose();
     unawaited(_homeActions.close());
     unawaited(_stream?.close());
     if (_s.inspector case final WebViewInspector i) i.dispose();
@@ -1110,6 +1151,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
             needsKey: _needsKey,
           );
           _homeFlows.host = _homeHost!;
+          _watchHome(_homeHost!);
           _homeRecovery = HomeRecovery(
             api: _api,
             installer: Installer(
@@ -1161,6 +1203,12 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         // also a turn that stopped resending until now.
         _s.connection.nudge();
         _runs.onForeground();
+      case AppLifecycleState.inactive:
+        // On its way to the background (or behind a system sheet): the
+        // home screen as it is now is the one the next start shows.
+        if (_nav.currentState?.canPop() == false) {
+          unawaited(_snapshotter?.take());
+        }
       case AppLifecycleState.detached:
         unawaited(_shutDown());
       case _:
@@ -1812,6 +1860,11 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     }
   }
 
+  /// Opens app [aid]'s screen, at [thread] or [version] when given, and
+  /// takes [action] there once it is up. The home app shown as home (not
+  /// covered by the built-in home screen) is not opened a second time:
+  /// the screens over the home route close and [action] is taken there,
+  /// unless a thread or a version is asked for.
   void _open(
     String aid, {
     String? thread,
@@ -1821,6 +1874,14 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   }) {
     final nav = _nav.currentState;
     if (nav == null) return;
+    if (thread == null &&
+        version == null &&
+        comment == null &&
+        _homeShowsApp(aid)) {
+      nav.popUntil((r) => r.isFirst);
+      if (action != null) _homeActions.add(action);
+      return;
+    }
     unawaited(
       nav.push(
         _appRoute(
@@ -1953,24 +2014,77 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     ),
   );
 
-  /// The home app [aid]'s page, as the home screen ([AppMode.home]).
-  Widget _homeApp(BuildContext context, String aid, HomePageHooks hooks) =>
-      _AppPage(
-        aid: aid,
-        endpoint: _endpoint,
-        surface: _s.surface,
-        screen: (base, surface) => _appScreen(
-          aid: aid,
-          base: base,
-          surface: surface,
-          settings: _settings,
-          actions: _homeActions.stream,
-          mode: AppMode.home,
-          onReady: (r) => _onReady(aid, r),
-          onStoppedLoading: hooks.onStoppedLoading,
-          covered: hooks.covered,
-        ),
+  /// Whether the home route shows home app [aid]'s page.
+  bool _homeShowsApp(String aid) {
+    final s = _homeHost?.settings;
+    return s != null && !s.builtin && s.homeAppId == aid && !_homeCovered;
+  }
+
+  /// Whether the home screen is the top screen and the app is in front.
+  bool get _homeInFront =>
+      _presence.foreground && _nav.currentState?.canPop() == false;
+
+  /// Follows [host]'s home app: its first `shown` ends [homeUsable] (the
+  /// home route lifts the launch's snapshot), and its tile reports and
+  /// covers take the snapshot.
+  void _watchHome(HomeHost host) {
+    _homeShown = host.shown.listen((aid) {
+      _s.timings.stop(
+        homeUsable,
+        extra: {'artifact': aid, 'snapshot': _homeCover != null},
       );
+    });
+    if (_s.homeSnapshots case final store?) {
+      final snapshotter = _snapshotter = HomeSnapshotter(
+        store: store,
+        clock: _s.clock,
+        inFront: () => _homeInFront,
+        capture: () async {
+          final aid = host.settings.homeAppId;
+          final surface = _homeSurface;
+          if (aid == null ||
+              host.settings.builtin ||
+              host.tiles == null ||
+              _homeCovered ||
+              surface is! CapturableSurface) {
+            return null;
+          }
+          final shot = await (surface as CapturableSurface).capture();
+          final tiles = host.tiles;
+          if (shot == null || tiles == null) return null;
+          return (shot: shot, aid: aid, tiles: tiles);
+        },
+      );
+      _homeTiles = host.tileReports.listen((_) => snapshotter.tilesChanged());
+    }
+  }
+
+  /// The launch's snapshot drew its first frame.
+  void _snapshotPainted() => _s.timings.stop(
+    homeCover,
+    extra: {'artifact': ?_homeCover?.snapshot.aid},
+  );
+
+  /// The home app [aid]'s page, as the home screen ([AppMode.home]).
+  Widget _homeApp(BuildContext context, String aid, HomePageHooks hooks) {
+    _homeCovered = hooks.covered;
+    return _AppPage(
+      aid: aid,
+      endpoint: _endpoint,
+      surface: (base) => _homeSurface = _s.surface(base),
+      screen: (base, surface) => _appScreen(
+        aid: aid,
+        base: base,
+        surface: surface,
+        settings: _settings,
+        actions: _homeActions.stream,
+        mode: AppMode.home,
+        onReady: (r) => _onReady(aid, r),
+        onStoppedLoading: hooks.onStoppedLoading,
+        covered: hooks.covered,
+      ),
+    );
+  }
 
   /// [surface], which once [aid]'s page is up selects [thread] (when the
   /// shell lists it) or shows [version], once.
@@ -2019,14 +2133,26 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       );
     }
     final host = _homeHost;
+    final cover = _homeCover;
     if (!_wasUp || host == null) {
+      if (cover != null && cover.covering) {
+        return HomeSnapshotView(
+          key: const ValueKey('launch-snapshot'),
+          cover: cover,
+          onPainted: _snapshotPainted,
+        );
+      }
       return const _Splash(key: ValueKey('splash'));
     }
+    // The route's own build says otherwise when it shows the home app.
+    _homeCovered = true;
     return HomeRoute(
       key: const ValueKey('home'),
       host: host,
       app: _homeApp,
       recovery: _homeRecovery,
+      snapshot: cover,
+      onSnapshotPainted: _snapshotPainted,
       fallback: (_, banner) => Launcher(
         api: _api,
         open: _open,
@@ -2060,6 +2186,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     Widget app = MaterialApp(
       title: 'Clax',
       navigatorKey: _nav,
+      navigatorObservers: [_coverWatch],
       shortcuts: macOS ? escapeShortcuts() : null,
       actions: macOS ? escapeActions(_back) : null,
       theme: claxTheme(Brightness.light),
@@ -2082,6 +2209,19 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       app = ClaxMenuBar(comments: _comments, back: _back, child: app);
     }
     return app;
+  }
+}
+
+/// Calls [onCover] when a screen is pushed over the first one (the home
+/// screen).
+class _HomeCoverWatch extends NavigatorObserver {
+  _HomeCoverWatch(this.onCover);
+
+  final VoidCallback onCover;
+
+  @override
+  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    if (previousRoute != null && previousRoute.isFirst) onCover();
   }
 }
 
