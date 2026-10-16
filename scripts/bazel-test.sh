@@ -175,9 +175,15 @@ fi
 
 if [ "$ci" = 1 ]; then
     _pass "script gates" 'tests(//scripts/...) except attr(tags, "\b(manual|exclusive)\b", //scripts/...)' "$@"
-    # Outside Bazel: each reads git tags, runs just, or runs Bazel itself.
+    # Outside Bazel (docs/bazel.md, "Run outside Bazel"): each reads git
+    # (tags, tracked files), runs just or cargo, writes into the checkout,
+    # or runs Bazel itself.
     _run "plugins" ./scripts/test-plugins.sh
     _run "justfile" ./scripts/test-justfile.sh
+    _run "dev scripts" ./scripts/test-dev.sh
+    _run "extension signing" ./scripts/test-extension-signing.sh
+    _run "no hard links (tracked files)" ./scripts/check-no-hard-links.sh
+    _run "pipefail pipes (tracked files)" ./scripts/check-pipefail-pipes.sh
     _run "bazel sync" ./scripts/bazel-sync.test.sh
     _run "bazel web" ./scripts/bazel-web.test.sh
     _pass "perf gates" 'attr(tags, "\bexclusive\b", tests(//...)) except attr(tags, "\bmanual\b", //...)' "$@"

@@ -77,6 +77,13 @@ def cargo_package(
     """
     package = native.package_name()
     crate = CRATES[package]
+
+    # Every Rust source of the crate, for source scans (//scripts:no_unsafe).
+    native.filegroup(
+        name = "rust_sources",
+        srcs = native.glob(["**/*.rs"], allow_empty = True),
+        visibility = ["//visibility:public"],
+    )
     features = crate["default_features"]
     lib = crate["lib"]
 

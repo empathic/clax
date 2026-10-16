@@ -6,3 +6,10 @@ cargo_package(
         "golden",
     ],
 )
+
+# The hook fixtures the comment loop gate feeds clax (//scripts:comment_loop).
+filegroup(
+    name = "fixtures",
+    srcs = glob(["tests/fixtures/**"]),
+    visibility = ["//scripts:__pkg__"],
+)

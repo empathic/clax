@@ -5,3 +5,12 @@ filegroup(
     srcs = ["contract.md"],
     visibility = ["//crates:__subpackages__"],
 )
+
+# The docs the release script test checks (scripts/test-release.files).
+exports_files(
+    [
+        "contract.md",
+        "usage.md",
+    ],
+    visibility = ["//scripts:__pkg__"],
+)

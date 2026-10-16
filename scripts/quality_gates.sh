@@ -116,9 +116,8 @@ lane_rust() {
     fi
 }
 lane_lint() {
-    # No `unsafe` in any Rust source (the `unsafe_code` lint forbids it too);
-    # a line counts only where the word appears before any `//` comment.
-    run "no unsafe code"        bash -c 'find crates -name "*.rs" -not -path "*/target/*" -print0 | xargs -0 perl -ne '"'"'(my $c = $_) =~ s{//.*}{}; if ($c =~ /\bunsafe\b/) { print "$ARGV:$.: $_"; $bad = 1 } close ARGV if eof; END { exit($bad ? 1 : 0) }'"'"'' &&
+    # No `unsafe` in any Rust source (the `unsafe_code` lint forbids it too).
+    run "no unsafe code"        scripts/check-no-unsafe.sh &&
     # No hard links in any source or script; a symbolic link does instead.
     run "no hard links"         bash -c "scripts/test-check-no-hard-links.sh >/dev/null && scripts/check-no-hard-links.sh" &&
     # No pipefail pipeline ends in a reader that stops early (grep -q,

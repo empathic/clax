@@ -7,6 +7,9 @@ exports_files([
     "Cargo.lock",
     "clippy.toml",
     "rust-toolchain.toml",
+    "install.sh",
+    "README.md",
+    ".claude-plugin/marketplace.json",
 ])
 
 # The workspace version, which the extension's manifest takes

@@ -9,6 +9,9 @@
 #                         features, path dependencies, test features and
 #                         build script, and the workspace lints as rustc
 #                         flags (scripts/bazel-derive.py workspace)
+#   bazel/release_files.bzl
+#                         the release script test's files as labels
+#                         (scripts/test-release.files)
 #   MODULE.bazel.lock     the pinned third-party crates (Cargo.lock) and
 #                         packages (each pnpm-lock.yaml)
 # Checked: the Rust version in MODULE.bazel against rust-toolchain.toml, a
@@ -43,6 +46,13 @@ if [ "$mode" = write ]; then
     printf '%s\n' "$generated" > bazel/workspace.bzl
 elif ! printf '%s\n' "$generated" | diff -q - bazel/workspace.bzl >/dev/null 2>&1; then
     _stale bazel/workspace.bzl
+fi
+
+generated="$(./scripts/bazel-derive.py release-files)"
+if [ "$mode" = write ]; then
+    printf '%s\n' "$generated" > bazel/release_files.bzl
+elif ! printf '%s\n' "$generated" | diff -q - bazel/release_files.bzl >/dev/null 2>&1; then
+    _stale bazel/release_files.bzl
 fi
 
 # Every workspace crate has a BUILD.bazel (bazel/cargo.bzl's cargo_package).
@@ -109,5 +119,5 @@ if [ "$stale" = 1 ]; then exit 1; fi
 if [ "$mode" = check ]; then
     echo "bazel: derived files are up to date"
 else
-    echo "bazel: wrote bazel/workspace.bzl and MODULE.bazel.lock"
+    echo "bazel: wrote bazel/workspace.bzl, bazel/release_files.bzl and MODULE.bazel.lock"
 fi

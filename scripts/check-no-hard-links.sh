@@ -2,8 +2,9 @@
 # Fails when a tracked source file or script makes a hard link: a call of
 # `hard_link` (Rust), `link`/`linkSync` (Node), `os.link` (Python) or
 # `linkat`, an `ln` (or a `$..._LN` variable naming it) without -s, or a
-# `cp -l`. Clax makes no hard links, in its code, its tests or its scripts;
-# a symbolic link does instead. With file arguments, checks those files
+# `cp -l`, or a Bazel copy rule's `hardlink = "on"` or `"auto"` (in .bzl,
+# BUILD.bazel, MODULE.bazel and .bazelrc files). Clax makes no hard links,
+# in its code, its tests or its scripts; a symbolic link does instead. With file arguments, checks those files
 # (for trying the check out); without, every tracked file of the kinds
 # below.
 set -euo pipefail
@@ -16,13 +17,16 @@ else
     while IFS= read -r -d '' f; do
         case "$f" in scripts/check-no-hard-links.sh|scripts/test-check-no-hard-links.sh) ;; *) files+=("$f") ;; esac
     done < <(git ls-files -z -- '*.rs' '*.ts' '*.tsx' '*.js' '*.mjs' '*.cjs' '*.svelte' \
-        '*.py' '*.sh' '*.bash' 'justfile' '**/justfile' 'Makefile' '**/Makefile')
+        '*.py' '*.sh' '*.bash' 'justfile' '**/justfile' 'Makefile' '**/Makefile' \
+        '*.bzl' 'BUILD.bazel' '**/BUILD.bazel' 'MODULE.bazel' '.bazelrc' '*.bazelrc')
 fi
 
 perl -ne '
     my $bad =
-        # Rust std::fs::hard_link, libc/nix linkat, a hard-link crate.
-        /\bhard_?link\b/i
+        # Rust std::fs::hard_link, libc/nix linkat, a hard-link crate, and
+        # the hardlink attribute of a Bazel copy rule set to anything but
+        # "off".
+        (/\bhard_?link\b/i && !/\bhardlink\s*=\s*"off"/)
         # Node fs.link / fs.linkSync / promises.link, Python os.link, nix
         # or libc link and linkat, and link imported from Node fs or Python
         # os; "symlinkSync" and "unlinkSync" have no word boundary before

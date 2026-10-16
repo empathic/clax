@@ -404,6 +404,8 @@ else fail "the fallback reads only top-level id and method (out=$OUT)"; fi
 # their own homes, the real ones unless set; everything else, the build
 # included, sees a scratch HOME.
 REAL_BIN="${CLAX_TEST_BIN:-}"
+# Absolute, as Bazel names it relative to where the test starts.
+case "$REAL_BIN" in "" | /*) ;; *) REAL_BIN="$PWD/$REAL_BIN" ;; esac
 if [ -z "$REAL_BIN" ]; then
     REPO="$(cd "$HERE/.." && pwd)"
     export CARGO_HOME="${CARGO_HOME:-$ORIG_HOME/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$ORIG_HOME/.rustup}"

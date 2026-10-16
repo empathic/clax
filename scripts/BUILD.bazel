@@ -1,4 +1,6 @@
 load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("//bazel:release_files.bzl", "RELEASE_FILES")
 
 # The plugin wrapper clax embeds (crates/clax-cli/src/plugin_bin.rs).
 exports_files(
@@ -26,9 +28,9 @@ filegroup(
     visibility = ["//crates:__subpackages__"],
 )
 
-# Every script, for the Rust tests that scan or run them
+# Every script, for the tests that scan or run them
 # (crates/clax-cli/tests/extension.rs, verify_harnesses.rs;
-# crates/clax-server/src/routes/mod.rs).
+# crates/clax-server/src/routes/mod.rs; the gates below).
 filegroup(
     name = "all",
     srcs = glob(
@@ -38,5 +40,107 @@ filegroup(
             "BUILD.bazel",
         ],
     ),
-    visibility = ["//crates:__subpackages__"],
+    visibility = ["//visibility:public"],
+)
+
+CLAX = [
+    "//crates/clax-cli:clax",
+    "//crates/clax-cli:clax_warm",
+]
+
+CLAX_ENV = {"CLAX_TEST_BIN": "$(rootpath //crates/clax-cli:clax)"}
+
+RUST_SOURCES = [
+    "//crates/clax-cli:rust_sources",
+    "//crates/clax-core:rust_sources",
+    "//crates/clax-fake-exe:rust_sources",
+    "//crates/clax-hooks:rust_sources",
+    "//crates/clax-mcp:rust_sources",
+    "//crates/clax-server:rust_sources",
+]
+
+# The script gates of scripts/quality_gates.sh, as Bazel tests. Each script
+# starts with `cd "$(dirname "$0")/.."`, which is the runfiles root here.
+# docs/bazel.md, "Run outside Bazel", lists the gates that stay native.
+
+sh_test(
+    name = "release",
+    srcs = ["test-release.sh"],
+    data = [":all"] + RELEASE_FILES,
+)
+
+sh_test(
+    name = "installer",
+    srcs = ["test-install.sh"],
+    data = [
+        ":all",
+        "//:install.sh",
+    ],
+)
+
+sh_test(
+    name = "tool_hook",
+    srcs = ["test-tool-hook.sh"],
+    data = [":all"],
+)
+
+sh_test(
+    name = "stable_bin",
+    srcs = ["test-stable-bin.sh"],
+    data = [":all"],
+)
+
+sh_test(
+    name = "fake_exe",
+    srcs = ["test-fake-exe.sh"],
+    data = [":all"],
+)
+
+sh_test(
+    name = "plugin_wrapper",
+    srcs = ["test-ensure-clax.sh"],
+    data = CLAX + [
+        ":all",
+        "//:Cargo.toml",
+        "//crates/clax-mcp:rust_sources",
+        "//plugins:embedded",
+        "//plugins/pi:embedded",
+    ],
+    env = CLAX_ENV,
+)
+
+sh_test(
+    name = "comment_loop",
+    srcs = ["smoke-comment-loop.sh"],
+    data = CLAX + [
+        ":all",
+        "//crates/clax-hooks:fixtures",
+    ],
+    env = CLAX_ENV,
+)
+
+sh_test(
+    name = "no_unsafe",
+    srcs = ["check-no-unsafe.sh"],
+    data = RUST_SOURCES,
+)
+
+# The checks' own tests; the scans of every tracked file read git and run
+# outside Bazel (scripts/bazel-test.sh).
+sh_test(
+    name = "no_hard_links",
+    srcs = ["test-check-no-hard-links.sh"],
+    data = [":all"],
+)
+
+sh_test(
+    name = "pipefail_pipes",
+    srcs = ["test-check-pipefail-pipes.sh"],
+    data = [":all"],
+)
+
+sh_test(
+    name = "bazel_no_hard_links",
+    srcs = ["test-check-bazel-no-hard-links.sh"],
+    data = [":all"],
 )
