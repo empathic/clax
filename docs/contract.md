@@ -3345,6 +3345,7 @@ router), and a test fails when it differs:
 | `GET /api/artifacts` | Filtered | `clax-artifacts` `read` | 2 MiB | yes |
 | `POST /api/artifacts` | Filtered | `clax-artifacts` `create` | 96 MiB | yes |
 | `GET /api/artifacts/{aid}` | Filtered | `clax-artifacts` `read` | 2 MiB | yes |
+| `POST /api/artifacts/{aid}/fork` | Filtered | `clax-artifacts` `read` | 2 MiB | yes |
 | `PATCH /api/artifacts/{aid}` | Filtered | `clax-artifacts` `update` | 2 MiB | yes |
 | `DELETE /api/artifacts/{aid}` | Own | `clax-artifacts` `delete` | 2 MiB | yes |
 | `GET /api/artifacts/{aid}/versions` | Filtered | `clax-artifacts` `read` | 2 MiB | yes |
@@ -3386,6 +3387,9 @@ router), and a test fails when it differs:
 | `POST /api/sessions/{id}/working/end` | Own | `clax-comments` `watch` | 2 MiB | yes |
 | `PUT /api/sessions/{id}/working/{aid}` | Own | `clax-comments` `watch` | 2 MiB | yes |
 | `DELETE /api/sessions/{id}/working/{aid}` | Own | `clax-comments` `watch` | 2 MiB | yes |
+| `PUT /api/sessions/{id}/drafts/{aid}` | Own | `clax-artifacts` `update` | 4 MiB | yes |
+| `DELETE /api/sessions/{id}/drafts/{aid}` | Own | `clax-artifacts` `update` | 2 MiB | yes |
+| `POST /api/sessions/{id}/git-token/{aid}` | Own | `clax-artifacts` `read` | 2 MiB | yes |
 | `GET /api/sessions/{id}/watches` | Own | `clax-comments` `watch` | 2 MiB | yes |
 | `PUT /api/sessions/{id}/watches/{aid}` | Own | `clax-comments` `watch` | 2 MiB | yes |
 | `DELETE /api/sessions/{id}/watches/{aid}` | Own | `clax-comments` `watch` | 2 MiB | yes |
@@ -3423,10 +3427,21 @@ router), and a test fails when it differs:
 | `POST /api/approvals/requests/{rid}/decide` | Denied | yes: 403 `browser_required` |
 | `DELETE /api/approvals/{id}` | Denied | yes: 403 `browser_required` |
 | `GET /api/artifacts/{aid}/approves-first` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/artifacts/{aid}/drafts` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/artifacts/{aid}/git-token` | Denied | no |
+| `POST /api/artifacts/{aid}/git-token` | Denied | no |
+| `GET /api/artifacts/{aid}/live` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/artifacts/{aid}/push` | Denied | no |
+| `GET /api/artifacts/{aid}/remotes` | Denied | no |
+| `DELETE /api/artifacts/{aid}/remotes/{rid}` | Denied | no |
+| `PATCH /api/artifacts/{aid}/remotes/{rid}` | Denied | no |
+| `POST /api/artifacts/{aid}/remotes/{rid}/retry` | Denied | no |
 | `GET /api/artifacts/{aid}/room` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/artifacts/{aid}/sample` | Denied | no |
 | `POST /api/artifacts/{aid}/sample` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/artifacts/{aid}/sample/{call}/tool_result` | Denied | no |
+| `GET /api/artifacts/{aid}/snapshot` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/artifacts/{aid}/unsent:drop` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/events` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/extension` | Denied | no |
 | `DELETE /api/extension/credentials` | Denied | no |
@@ -3473,6 +3488,10 @@ router), and a test fails when it differs:
 | `POST /api/questions/{qid}/answer` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/questions/{qid}/decline` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/questions/{qid}/release` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/remotes` | Denied | no |
+| `POST /api/remotes` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/remotes/{id}` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/remotes/{id}/poll` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/sample` | Denied | no |
 | `DELETE /api/sessions/{id}/live-watches` | Denied | no |
 | `PUT /api/sessions/{id}/live-watches` | Denied | no |
@@ -3490,6 +3509,9 @@ router), and a test fails when it differs:
 | `PUT /api/viewers/me/presence` | Denied | no |
 | `GET /api/viewers/me/seen` | Denied | no |
 | `PUT /api/viewers/me/seen` | Denied | no |
+| `GET /c/{aid}/draft/{agent}/{token}` | Denied | yes: 403 `not_for_agents` |
+| `GET /c/{aid}/draft/{agent}/{token}/` | Denied | yes: 403 `not_for_agents` |
+| `GET /c/{aid}/draft/{agent}/{token}/{*path}` | Denied | yes: 403 `not_for_agents` |
 | `GET /c/{aid}/v/{n}` | Denied | no |
 | `GET /c/{aid}/v/{n}/` | Denied | yes: 403 `not_for_agents` |
 | `GET /c/{aid}/v/{n}/{*path}` | Denied | yes: 403 `not_for_agents` |
@@ -3497,6 +3519,7 @@ router), and a test fails when it differs:
 | `GET /healthz` | Denied | no |
 | `GET /inbox` | Denied | no |
 | `ANY /mcp` | Denied | no |
+| `POST /mcp/json` | Denied | no |
 | `GET /people` | Denied | no |
 <!-- route-table:end -->
 
