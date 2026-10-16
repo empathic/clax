@@ -181,7 +181,7 @@ expect = [
     f'[clax] Comment sent to you on "Quarterly Review" ({url}), thread {t1["id"]}',
     "Anchored on: body > main > h2  «Quarterly goals»  (v1)",
 ]
-if lines[:4] != expect or not lines[4].startswith("Clip: /") or lines[5] != 'Viewer (not connected): "Make this a two-column layout and drop the third bullet."' \
+if lines[:4] != expect or not lines[4].startswith("Clip: /") or lines[5] != 'Viewer: "Make this a two-column layout and drop the third bullet."' \
         or lines[6] != "Reply with comments_reply, then comments_resolve when done.":
     fail("payload format:\n" + trailing)
 clip = listed["feedback"][0]["clip_path"]
@@ -315,7 +315,7 @@ sent = http("POST", f"/api/artifacts/{aid}/threads:send", {"thread_ids": batch, 
 if sent["sent"] != batch or sent["batch"]["note"] != "Do these before the demo":
     fail(f"batch send: {sent}")
 listed, trailing = shim.call("list", {})
-lead = f'[clax] 3 comments on "Quarterly Review", sent together by Viewer (not connected). Note: "Do these before the demo"'
+lead = f'[clax] 3 comments on "Quarterly Review", sent together by Viewer. Note: "Do these before the demo"'
 # Compare only the batch's rows: an unacknowledged earlier thread may be resent alongside.
 if [f["thread_id"] for f in listed["feedback"] if f["thread_id"] in batch] != batch or not trailing or lead not in trailing.split("\n"):
     fail("batch delivery:\n" + str(trailing))
