@@ -23,6 +23,7 @@
   import { onMount, tick } from "svelte";
   import ThemeSwitch from "../ui/ThemeSwitch.svelte";
   import * as api from "./api";
+  import { refusal } from "../people/refusal";
 
   type Page = { kind: "setup" } | { kind: "join"; code: string } | { kind: "signin"; code: string } | { kind: "device" } | { kind: "status" };
   const page: Page = (() => {
@@ -43,7 +44,7 @@
   let secret = $state("");
   let busy = $state(false);
   let err = $state<string | null>(null);
-  const msg = (x: unknown) => (x instanceof Error ? x.message : String(x));
+  const msg = refusal;
 
   const TITLE = { setup: "Set up Clax", join: "Join Clax", signin: "Sign in", device: "Connect a Clax", status: "Sign in" } as const;
 

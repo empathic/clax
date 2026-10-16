@@ -433,3 +433,27 @@ test("another machine's Clax signs in by device code: the page names it, warns w
     await d.stop();
   }
 });
+
+test("People's hosted part shows a refusal as a sentence", async ({ browser }) => {
+  const { d, origin } = await hostedDaemon();
+  try {
+    const owner = await page(browser);
+    await owner.goto(`${origin}/setup?secret=${encodeURIComponent(SECRET)}`);
+    await owner.getByLabel("Your name").fill("Ada");
+    await owner.getByRole("button", { name: "Create the first person" }).click();
+    await owner.waitForURL(`${origin}/`);
+    await owner.goto(`${origin}/people`);
+    // The daemon refuses a token in its own words, lower case and with no
+    // full stop (here, its rate limit); People says it as a sentence.
+    await owner.route("**/api/hosted/agent-tokens", r => (r.request().method() === "POST"
+      ? r.fulfill({ status: 429, contentType: "application/json", body: JSON.stringify({ error: { code: "rate_limited", message: "too many tokens made from this address" } }) })
+      : r.continue()));
+    await owner.getByLabel("Machine").fill("laptop");
+    await owner.getByRole("button", { name: "Create token" }).click();
+    const alert = owner.getByRole("alert");
+    await expect(alert).toHaveText("Too many tokens made from this address.");
+    await shots(owner, "hosted-refusal");
+  } finally {
+    await d.stop();
+  }
+});

@@ -13,6 +13,7 @@
   import { onMount } from "svelte";
   import { listArtifacts } from "../api";
   import * as api from "./api";
+  import { refusal } from "../people/refusal";
 
   let { me }: { me: api.HostedMe } = $props();
   const person = $derived(me.person);
@@ -26,7 +27,7 @@
   let pick = $state("");
   let pickAccess = $state<api.LinkAccess>("commenter");
   let copied = $state<string | null>(null);
-  const msg = (x: unknown) => (x instanceof Error ? x.message : String(x));
+  const msg = refusal;
   const ACCESS: Record<api.LinkAccess, string> = { viewer: "Can view", commenter: "Can comment" };
   // Listed by key, not by destructured entries: a destructuring `#each`
   // pulls a runtime helper into the chunk both entries load.
