@@ -916,7 +916,11 @@ impl InstanceDo {
             .wrote
             .get()
             .then(|| self.last_optimize.get() + OPTIMIZE_MS);
-        [sweep, grants, optimize]
+        let unseen = match inst.app.next_unseen().await {
+            Ok(t) => t.map(|t| t.timestamp_millis() as f64),
+            Err(_) => Some(now),
+        };
+        [sweep, grants, optimize, unseen]
             .into_iter()
             .flatten()
             .reduce(f64::min)
@@ -1240,6 +1244,15 @@ impl DurableObject for InstanceDo {
             // The sessions of grants that expired: their git tokens go
             // before the alarm ends, not from a task an eviction could drop.
             clax_http::git_remotes::settle(&inst.app).await;
+        }
+        // Agent sessions their clients left (no request for
+        // Store::REMOTE_SESSION_IDLE_SECS) end here, as the daemon's
+        // reaper ends them.
+        let unseen_due = inst.app.next_unseen().await.map_or(true, |t| {
+            t.is_some_and(|t| t.timestamp_millis() as f64 <= now)
+        });
+        if unseen_due {
+            let _ = inst.app.reap_unseen().await;
         }
         if self.wrote.get() && now - self.last_optimize.get() >= OPTIMIZE_MS {
             self.last_optimize.set(now);

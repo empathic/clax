@@ -345,6 +345,43 @@ impl AppState {
         crate::git_remotes::settle(self).await;
     }
 
+    /// Ends the sessions unseen past their idle time on a host that runs
+    /// no agent processes and is never down while a client can reach it (a
+    /// Durable Object, woken by each request): every live session unseen
+    /// for [`Store::REMOTE_SESSION_IDLE_SECS`], counted from its last
+    /// request ([`Store::reap_sessions_from`] with no resume), as the
+    /// daemon's reaper ends them (`crate::daemon::reap_idle`): the
+    /// feedback they released handed on, their working records ended and
+    /// their withdrawn questions announced. Returns how many ended.
+    ///
+    /// # Errors
+    /// The store's.
+    pub async fn reap_unseen(&self) -> clax_core::Result<usize> {
+        let ctx = self.feedback_ctx();
+        let st = self.clone();
+        self.store
+            .call(move |store| {
+                let idle = Duration::from_secs(Store::REMOTE_SESSION_IDLE_SECS);
+                let r = store.reap_sessions_from(idle, &|_| false, "")?;
+                let ttl = clax_core::audit::AuditCtx::system(clax_core::audit::SystemReason::Ttl);
+                crate::feedback::sessions_stop(&ctx, store, &ttl, &r.touched, &r.ended);
+                crate::questions::announce_ids(&st, store, &r.withdrawn_questions);
+                Ok(r.ended.len())
+            })
+            .await
+    }
+
+    /// When [`AppState::reap_unseen`] next has a session to end, or `None`
+    /// without a live session.
+    ///
+    /// # Errors
+    /// The store's.
+    pub async fn next_unseen(&self) -> clax_core::Result<Option<chrono::DateTime<chrono::Utc>>> {
+        self.store
+            .call(|st| st.sessions_next_idle(Duration::from_secs(Store::REMOTE_SESSION_IDLE_SECS)))
+            .await
+    }
+
     /// How long until [`AppState::sweep`] next has something to do (zero
     /// once it is due): the earliest of a working record lapsing, a presence
     /// report lapsing or a gone viewer dropping, a draft going idle, a

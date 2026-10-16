@@ -5,6 +5,8 @@ use clax_core::audit::{Actor, AgentActor, AuditCtx, AuditKind, AuditRecord, Syst
 use clax_core::model::Session;
 use clax_core::secret::Secret;
 use clax_core::{CoreError, Result, new_ulid};
+use chrono::{DateTime, Utc};
+
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use serde::Deserialize;
 use std::time::Duration;
@@ -1201,13 +1203,25 @@ impl Store {
     /// sessions ended, the feedback and threads released, and the questions
     /// withdrawn.
     pub fn reap_sessions(&self, idle: Duration, pid_alive: &dyn Fn(u32) -> bool) -> Result<Reaped> {
+        // A remote session could not reach the daemon while it was down or
+        // its machine slept: its idle time counts from the resume.
+        self.reap_sessions_from(idle, pid_alive, &self.resumed_at())
+    }
+
+    /// [`Store::reap_sessions`] with remote sessions' idle time counted
+    /// from no earlier than `resumed` (a stamp; `""` counts from their last
+    /// request alone, for a host that is never down while a client can
+    /// reach it, such as a Durable Object woken by each request).
+    pub fn reap_sessions_from(
+        &self,
+        idle: Duration,
+        pid_alive: &dyn Fn(u32) -> bool,
+        resumed: &str,
+    ) -> Result<Reaped> {
         let now = self.now_utc();
         let local = clax_core::time::stamp(now - idle);
         let remote =
             clax_core::time::stamp(now - Duration::from_secs(Self::REMOTE_SESSION_IDLE_SECS));
-        // A remote session could not reach the daemon while it was down or
-        // its machine slept: its idle time counts from the resume.
-        let resumed = self.resumed_at();
         let stale = self.with_read(|c| {
             let mut stmt = c.prepare(
                 "SELECT id, pid, grant_id IS NOT NULL FROM sessions WHERE ended_at IS NULL
@@ -1250,6 +1264,27 @@ impl Store {
             }
             Ok(reaped)
         })
+    }
+
+    /// When [`Store::reap_sessions_from`] with `idle` and `resumed` `""`
+    /// next has a session to end: the earliest live session's last request
+    /// plus its idle time (`idle` for a local one,
+    /// [`Store::REMOTE_SESSION_IDLE_SECS`] for a remote one), one second
+    /// late; `None` without a live session.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn sessions_next_idle(&self, idle: Duration) -> Result<Option<DateTime<Utc>>> {
+        let due: Option<i64> = self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT MIN(unixepoch(last_seen_at)
+                            + CASE WHEN grant_id IS NULL THEN ?1 ELSE ?2 END + 1)
+                   FROM sessions WHERE ended_at IS NULL",
+                params![idle.as_secs() as i64, Self::REMOTE_SESSION_IDLE_SECS as i64],
+                |r| r.get(0),
+            )?)
+        })?;
+        Ok(due.and_then(|s| DateTime::<Utc>::from_timestamp(s, 0)))
     }
 
     /// Ends the live sessions of grant `gid` beyond the `keep` most
@@ -3317,6 +3352,34 @@ mod tests {
             assert_eq!(e.released_threads, vec![t.clone()]);
             assert_eq!(w.owner_of(&t), None);
             assert!(w.ended_items().is_empty());
+        }
+
+        #[test]
+        fn a_host_never_down_counts_remote_idle_from_the_last_request_alone() {
+            let w = bare();
+            let seen = w.st.get_session(&w.sid).unwrap().unwrap().last_seen_at;
+            let seen = chrono::DateTime::parse_from_rfc3339(&seen)
+                .unwrap()
+                .timestamp();
+            let idle = Duration::from_secs(Store::REMOTE_SESSION_IDLE_SECS);
+            let due = w.st.sessions_next_idle(idle).unwrap().unwrap();
+            assert_eq!(
+                due.timestamp(),
+                seen + Store::REMOTE_SESSION_IDLE_SECS as i64 + 1
+            );
+            // A store opened anew (a Durable Object woken) marks a resume,
+            // which the daemon's reaper counts from; the host's reaper does not.
+            w.clock.advance(Store::REMOTE_SESSION_IDLE_SECS as i64 + 1);
+            w.st.mark_resumed();
+            assert!(
+                w.st.reap_sessions(idle, &|_| false)
+                    .unwrap()
+                    .ended
+                    .is_empty()
+            );
+            let r = w.st.reap_sessions_from(idle, &|_| false, "").unwrap();
+            assert_eq!(r.ended, vec![w.sid.clone()]);
+            assert_eq!(w.st.sessions_next_idle(idle).unwrap(), None);
         }
 
         #[test]
