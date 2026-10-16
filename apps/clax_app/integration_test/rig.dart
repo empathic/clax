@@ -321,6 +321,34 @@ class Rig {
     return s != null && test(s) ? s : null;
   });
 
+  /// Waits for the shell to offer [version] (`newer`) and taps Reload on
+  /// the app's New version toast, as the person does to swap it in; a page
+  /// that opened on [version] or later (a new shell document) needs none.
+  Future<void> reloadNewer(WidgetTester tester, int version) async {
+    final offered = await until<bool>(
+      tester,
+      'version $version offered or shown',
+      () {
+        for (final m in messages.reversed) {
+          if (m is NewerMsg && m.version == version) return true;
+          if (m is Ready && m.version >= version) return false;
+        }
+        return null;
+      },
+    );
+    if (!offered) return;
+    final reload = await until<Finder>(tester, 'the New version toast', () {
+      final f = find.descendant(
+        of: find.byKey(const ValueKey('newer-toast')),
+        matching: find.text('Reload'),
+      );
+      return f.evaluate().isEmpty ? null : f;
+    });
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.tap(reload);
+    await tester.pump();
+  }
+
   /// A two-finger swipe left across the page.
   Future<void> swipeLeft(WidgetTester tester) async {
     final r = tester.getRect(_appWeb);

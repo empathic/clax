@@ -75,7 +75,9 @@ void toolLoopTest() {
     await rig.untilState(tester, 'comment mode', (s) => s.commenting);
     final thread = await rig.comment(tester, 'Call it $changedLabel');
 
-    // --- The change: str_replace, render, finish; it lands in place.
+    // --- The change: str_replace, render, finish; it is offered, and
+    // lands in place with a tap.
+    await rig.reloadNewer(tester, 2);
     await rig.until<Landed>(
       tester,
       'version 2 landing',
