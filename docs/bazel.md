@@ -257,8 +257,8 @@ Performance gates nothing in either (`just perf` measures on demand).
 Bazel adds: `scripts/bazel-sync.sh --check` first, `//scripts:bazel_gc`,
 `//scripts:bazel_no_hard_links`, `//scripts:run_choice`,
 `//bazel/js:scratch_test`, `scripts/bazel-sync.test.sh` and
-`scripts/bazel-web.test.sh`, and no hard link in Bazel's output base or the
-disk cache.
+`scripts/bazel-web.test.sh`, and no hard link in Bazel's output base (and,
+in CI, the disk cache).
 
 ## CPU and memory
 
@@ -323,8 +323,52 @@ state). `just clean` removes them.
 
 ## Speed
 
-On a warm cache every Bazel recipe must be no slower than its native twin,
-and the whole suite stays under two minutes.
+Measured 2026-10-16 on the owner's 12-core machine, shared with other
+sessions' builds; each figure has the 1-minute load average beside it, and
+any figure above a load of about 15 is noise more than signal.
+
+| Case | Bazel | Native | Load |
+|---|---|---|---|
+| `just ci`, nothing changed | 12 s, 14 s, 20 s | 188 s, 192 s | 6–9, 38 / 10–49 |
+| `just ci` in a fresh worktree at a commit another built | 34 s (155 s before the outside checks' passes were shared) | 644 s (cold `target/`, 6.7 GB) | 7–33 |
+| `just test` after a clax-core comment edit | 96 s, 140 s | 86 s, 89 s | 21–35 |
+| `just web-test` after a web shell edit | 43 s, 44 s | 26 s, 27 s | 10–17 |
+| `just ci` after a clax-core edit | 433 s, 467 s | 306 s, 307 s | 7–14 |
+| `just ci` after a web shell edit | 280 s, 293 s | 155 s, 262 s | 7–37 |
+| `just watch`: restart after a web shell / clax-core edit | 12 s / 30 s | | 16–21 |
+
+Bazel wins whenever the cache has the work: nothing changed, or a new
+worktree. After an edit it is slower than Cargo. Where the time goes, after
+a clax-core comment edit (Bazel's profile against `cargo test --no-run
+--timings`, the same edit):
+
+| Unit | Cargo (incremental) | Bazel |
+|---|---|---|
+| clax-core library | 6.8 s | 9.4 s (+ 6.2 s metadata) |
+| clax-core unit tests | 8.0 s | 21.7 s |
+| clax-mcp library | 3.2 s | 7.1 s (+ 5.2 s metadata) |
+| clax-server library | 3.8 s | 31.6 s, and 31.7 s again for its test-feature variant |
+| clax-server unit tests | 5.3 s | 33.4 s |
+| clax-server integration tests | 6.0 s | 31.0 s |
+| clax-cli binary / its unit tests | 3.9 s / 3.7 s | 12.1 s / 11.1 s |
+| clax-cli, clax-mcp integration tests | 3.3 s, 3.6 s | 11.6 s, 14.1 s |
+| whole build of the tests | 24 s | critical path 73 s of compiling, then 42 s running clax-server's integration tests |
+
+The difference is rustc's incremental compilation, which Cargo's dev
+profile uses and rules_rust does not: Bazel compiles every crate that
+depends on the edited one whole. Turning it on (unsandboxed rustc with
+`-Cincremental` in the output base) cut the compile path to about 25 s, but
+rustc fills its incremental directory with hard links, which this
+repository forbids, so it is off. Every source edit changes the crate's
+metadata, so every dependent recompiles. What was done instead: the
+integration tests run as a few targets per crate (`split_tests`), the
+format check, clippy and the tests share one invocation, clax-cli's own
+clippy pass runs after it (from 70 s on the critical path to 8 s), the web
+UI's build no longer reads tests, and the slow checks outside Bazel are
+skipped when their inputs passed before. What remains is structural:
+clax-server is one 37,000-line crate, compiled twice (with and without its
+test features), and its debug build embeds the web UI, so a web edit
+recompiles it and everything after it.
 
 ## For agents
 
