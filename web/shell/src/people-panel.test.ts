@@ -88,6 +88,26 @@ describe("PeoplePanel's agents", () => {
     expect(rows[2].querySelector("p")!.textContent).toBe("1 approval for you · 56 min");
     v.unmount();
   });
+
+  it("lists an agent whose session ended under Earlier, as Ended, never as Idle", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(JSON.stringify(url === "/api/agents" ? { agents: [] } : { viewer: { public_id: "u_1", display_name: "Alex", created_at: "x" } }))));
+    const s = view(null) as unknown as Record<string, unknown>;
+    const agents = [
+      { handle: "a_cl", harness: "claude", live: true, name: "clax-claude", person: ALEX },
+      { handle: "a_sam", harness: "claude", live: false, name: "sam-helper", person: SAM },
+    ];
+    const versions = [{ n: 2, agent: "a_sam", addresses: ["t1"] }];
+    const ctl = { numbers: () => new Map([["t1", 1]]), forgetReopen: vi.fn(), setNotice: vi.fn(), setMe: vi.fn(), setShareWhere: vi.fn() };
+    const v = mount(PeoplePanel, { ctl: ctl as never, s: { ...s, agents, data: { artifact: { participants: { people: [], agents } }, versions } } as never, onClose: vi.fn() });
+    await settle();
+    expect([...v.root.querySelectorAll(".people h3")].map(h => h.textContent)).toEqual(["People · 0", "Agents · 1", "Earlier · 1"]);
+    const rows = [...v.root.querySelectorAll(".prow.agent")];
+    expect(rows.map(r => r.querySelector("b")!.textContent)).toEqual(["clax-claude", "sam-helper · Sam"]);
+    expect(rows[0].querySelector("p")!.textContent).toBe("Idle.");
+    expect(rows[1].querySelector("p")!.textContent).toBe("Ended. Addressed #1 in v2.");
+    expect(rows[1].classList.contains("ended")).toBe(true);
+    v.unmount();
+  });
 });
 
 describe("PeoplePanel's raise for the artifact's creator", () => {

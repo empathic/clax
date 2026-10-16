@@ -38,7 +38,13 @@
     .sort((a, b) => Number(b.public_id === me) - Number(a.public_id === me) || (a.at ? RANK[a.at.state] : 3) - (b.at ? RANK[b.at.state] : 3) || a.i - b.i));
   const numbers = $derived(ctl.numbers(s));
   const names = $derived(agentNames(s.working, parts.agents));
-  const agents = $derived([...names.keys()].map(handle => ({ handle, harness: parts.agents.find(a => a.handle === handle)?.harness ?? s.working.find(w => w.agent === handle)?.harness ?? "agent" })));
+  const all = $derived([...names.keys()].map(handle => {
+    const a = parts.agents.find(x => x.handle === handle);
+    // Ended: its session is over (not live) and it works on nothing here.
+    return { handle, harness: a?.harness ?? s.working.find(w => w.agent === handle)?.harness ?? "agent", ended: a?.live === false && !s.working.some(w => w.agent === handle) };
+  }));
+  const agents = $derived(all.filter(a => !a.ended));
+  const earlier = $derived(all.filter(a => a.ended));
   const mine = $derived(new Set(s.attention?.open_in ?? []));
   // The agents roster (`GET /api/agents`): a LAN viewer has none.
   let listed = $state<RosterAgent[]>([]);
@@ -88,13 +94,14 @@
     if (text.startsWith(`${name}: `)) return text.slice(name.length + 2);
     return "Working";
   }
-  /** An idle agent's line: the newest version it published that addressed threads. */
-  function idleLine(handle: string): string {
+  /** An idle (or, `ended`, an ended) agent's line: the newest version it published that addressed threads. */
+  function idleLine(handle: string, ended = false): string {
+    const state = ended ? "Ended." : "Idle.";
     const v = [...s.data.versions].reverse().find(x => x.agent === handle && x.addresses?.length);
-    if (!v) return "Idle.";
+    if (!v) return state;
     const ids = v.addresses ?? [];
     const what = ids.every(t => numbers.has(t)) && ids.length <= 3 ? ids.map(t => `#${numbers.get(t)}`).join(", ") : plural(ids.length, "thread");
-    return `Idle. Addressed ${what} in v${v.n}.`;
+    return `${state} Addressed ${what} in v${v.n}.`;
   }
   const who = () => document.querySelector<HTMLElement>("button.who");
   /** The card head of the thread the name is asked for (`s.askName`). */
@@ -152,7 +159,19 @@
     </div>
   {/each}
   <h3 class="ah"><span class="sw"></span>Agents · {agents.length}</h3>
-  {#each agents as a (a.handle)}
+  {#each agents as a (a.handle)}{@render agentRow(a)}{/each}
+  {#if earlier.length}
+    <h3 class="ah eh"><span class="sw"></span>Earlier · {earlier.length}</h3>
+    {#each earlier as a (a.handle)}
+      {@const name = names.get(a.handle) ?? a.harness}
+      <div class="prow agent ended">
+        <span class="tok a" aria-hidden="true">{agentMark(names.get(a.handle), a.harness)}</span>
+        <b title={personOf(a.handle) ? `${whose(personOf(a.handle)!.name)} agent` : undefined}>{theirs(a.handle) ? `${name} · ${midName(personOf(a.handle)!.name)}` : name}</b>
+        <p class="muted">{idleLine(a.handle, true)}</p>
+      </div>
+    {/each}
+  {/if}
+  {#snippet agentRow(a: { handle: string; harness: string })}
     {@const name = names.get(a.handle) ?? a.harness}
     {@const w = newestFirst(s.working).find(x => x.agent === a.handle)}
     {@const held = waiting(a.handle, name)}
@@ -171,7 +190,7 @@
         <Raise aid={s.data.artifact.id} handle={a.handle} {name} holds={raises.holds} mine={mineOf(a.handle)} version={versionOf(a.handle)} onChanged={loadRaises} />
       {/if}
     </div>
-  {/each}
+  {/snippet}
   <div class="prow edit">
     {#if s.askName}<p class="ask" role="status">Add your name to reopen the thread: people see it beside what you do.</p>{/if}
     <span>You are {#if s.me?.display_name}<b class="nm">{s.me.display_name}</b>{/if}</span>
@@ -186,7 +205,7 @@
   :global {
     .people { position: absolute; top: 56px; left: 16px; z-index: 20; width: 420px; max-height: 70vh; overflow: auto; background: var(--raised); border: 1px solid var(--border-hover); border-radius: var(--radius); box-shadow: var(--elev-lg); padding: 6px 0 8px; }
     .people h3 { margin: 10px 16px 6px; font: 600 13px var(--font); color: var(--muted); display: flex; align-items: center; gap: 8px; }
-    .people h3 .sw { width: 7px; height: 14px; } .people .ph .sw { border-radius: 0 7px 7px 0; background: var(--you); } .people .ah .sw { border-radius: 7px 0 0 7px; background: var(--agent); }
+    .people h3 .sw { width: 7px; height: 14px; } .people .eh .sw { opacity: .45; } .prow.ended .tok { opacity: .55; } .people .ph .sw { border-radius: 0 7px 7px 0; background: var(--you); } .people .ah .sw { border-radius: 7px 0 0 7px; background: var(--agent); }
     .prow.edit .ask { flex-basis: 100%; margin: 0; padding: 8px 10px; border-radius: var(--radius-sm); background: var(--accent-tint); color: var(--fg); font-size: 13px; line-height: 1.45; }
     .prow { display: grid; grid-template-columns: 52px 1fr; gap: 2px 10px; padding: 7px 16px; align-items: start; }
     .prow b { font: 600 14px/1.25 var(--font); } .prow b small { font: 400 12px var(--font); color: var(--muted); margin-left: 6px; }
