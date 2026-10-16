@@ -108,12 +108,22 @@ fn store(tmp: &Path, text: &str, to: &Path) {
     std::fs::rename(tmp, to).unwrap_or_else(|e| panic!("renaming {tmp:?} to {to:?}: {e}"));
 }
 
+/// The store for shared copies: `CLAX_FAKE_EXE_DIR` when set and not empty
+/// (Bazel's tests set it, so the store outlives one test's temporary
+/// directory), else `<tmp>/clax-fake-exe`.
+pub fn store_dir_from(var: Option<std::ffi::OsString>, tmp: &Path) -> PathBuf {
+    match var {
+        Some(v) if !v.is_empty() => PathBuf::from(v),
+        _ => tmp.join("clax-fake-exe"),
+    }
+}
+
 /// The shared copy of `text`, with the warm-up guard, created and run once
 /// by this process before it is returned.
 fn shared_copy(text: &str) -> PathBuf {
     static WARMED: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
     let text = with_guard(text);
-    let dir = std::env::temp_dir().join("clax-fake-exe");
+    let dir = store_dir_from(std::env::var_os("CLAX_FAKE_EXE_DIR"), &std::env::temp_dir());
     std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("creating {dir:?}: {e}"));
     let name = format!("{:016x}-{}", fnv1a(text.as_bytes()), text.len());
     let shared = dir.join(&name);
@@ -186,6 +196,22 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_store_is_clax_fake_exe_dir_when_set() {
+        assert_eq!(
+            store_dir_from(Some("/s/fakes".into()), Path::new("/tmp")),
+            PathBuf::from("/s/fakes")
+        );
+        assert_eq!(
+            store_dir_from(None, Path::new("/tmp")),
+            PathBuf::from("/tmp/clax-fake-exe")
+        );
+        assert_eq!(
+            store_dir_from(Some("".into()), Path::new("/tmp")),
+            PathBuf::from("/tmp/clax-fake-exe")
+        );
+    }
 
     #[test]
     fn installs_a_runnable_link_to_one_shared_copy() {
