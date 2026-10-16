@@ -60,7 +60,7 @@ describe("ConnectionCard", () => {
   });
 
   it("shows a wrong code's refusal and keeps the form", async () => {
-    stubFetch({ "POST /api/grants/g_abc/approve": [400, { error: { code: "wrong_code", message: "that is not the code the machine shows" } }] });
+    stubFetch({ "POST /api/grants/g_abc/approve": [400, { error: { code: "wrong_code", message: "That is not the code the machine shows" } }] });
     const m = mount(ConnectionCard, { item: item("connection"), now });
     click(button(m.root, "Approve…")!);
     await settle();
@@ -68,7 +68,7 @@ describe("ConnectionCard", () => {
     type(m.root.querySelector<HTMLInputElement>('input[name="name"]')!, "Sam");
     click(button(m.root, "Approve")!);
     await settle();
-    expect(m.root.querySelector('[role="alert"]')!.textContent).toContain("that is not the code the machine shows");
+    expect(m.root.querySelector('[role="alert"]')!.textContent).toContain("That is not the code the machine shows");
     expect(m.root.querySelector("form")).not.toBeNull();
   });
 
@@ -98,6 +98,21 @@ describe("ConnectionCard", () => {
     answer(new Response(JSON.stringify({ grant: grant({ id: "g_abc", status: "denied", via: "request", person: null }) })));
     await settle();
     expect(m.root.querySelector(".outcome")!.textContent).toContain("Denied");
+  });
+
+  it("offers Mark read on an unread request that expired, and on no pending one", () => {
+    const expired = item("connection", { read: false, connection: { ...item("connection").connection!, status: "expired" } });
+    const onRead = vi.fn();
+    const m = mount(ConnectionCard, { item: expired, now, onRead });
+    expect(m.root.querySelector(".outcome")!.textContent).toBe("Expired: the machine stopped waiting");
+    click(button(m.root, "Mark read")!);
+    expect(onRead).toHaveBeenCalledWith(expired);
+    m.unmount();
+    const pending = mount(ConnectionCard, { item: item("connection", { read: false }), now, onRead });
+    expect(button(pending.root, "Mark read")).toBeNull();
+    pending.unmount();
+    const read = mount(ConnectionCard, { item: { ...expired, read: true }, now, onRead });
+    expect(button(read.root, "Mark read")).toBeNull();
   });
 
   it("keeps the machine's name as text", () => {

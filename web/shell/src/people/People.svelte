@@ -1,6 +1,7 @@
 <svelte:options css="injected" />
 
 <script lang="ts">
+  import { peopleDenied, refusal } from "./refusal";
   // `/people` (spec 2026-10-08-multi-agent-multi-person §3.1, §3.4, §9.5,
   // §9.6, §17, §18). For the owner: invites (with the command, its expiry
   // and the LAN warning; the `*unconnected` switch beside the first),
@@ -22,7 +23,7 @@
   import type { EventStream } from "../stream";
   import * as api from "./api";
   import InviteDialog from "./InviteDialog.svelte";
-  import { elevationsOf, expiresIn, liveInvites } from "./model";
+  import { elevationsOf, expiresIn, liveInvites, waitText } from "./model";
   import PersonCard from "./PersonCard.svelte";
   import UnconnectedSwitch from "./UnconnectedSwitch.svelte";
 
@@ -46,14 +47,14 @@
   let firstInvite = $state(false);
   let gone = false;
   let off: (() => void) | null = null;
-  const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+  const msg = refusal;
 
   async function load() {
     let m: PeopleMe;
     try { m = await api.me(); } catch (e) {
       if (gone) return;
       const had = !!me;
-      denied = msg(e); me = null; list = null; invites = []; pending = []; approvals = []; requests = []; banner = null; inviting = false;
+      denied = peopleDenied(e, had && !me?.person.owner); me = null; list = null; invites = []; pending = []; approvals = []; requests = []; banner = null; inviting = false;
       if (had) dispatchEvent(new Event("clax:people-gone"));
       return;
     }
@@ -189,7 +190,7 @@
       {/each}
       {#if requests.length}
         <h4>Waiting</h4>
-        {#each requests as r (r.id)}<div class="line wait"><span>{r.count} from {authorOf(r.author)}{r.agent ? ` for ${r.agent.name}` : ""}</span></div>{/each}
+        {#each requests as r (r.id)}<a class="line wait" href="/inbox?approval={encodeURIComponent(r.id)}"><span>{waitText(r, authorOf(r.author))}</span></a>{/each}
       {/if}
     </section>
   {/if}

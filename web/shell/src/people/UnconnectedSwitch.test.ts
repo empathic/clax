@@ -22,11 +22,11 @@ describe("UnconnectedSwitch", () => {
   });
 
   it("shows the daemon's refusal and stays as it was", async () => {
-    stubFetch({ "POST /api/approvals": [403, { error: { code: "browser_required", message: "approving is done in a browser" } }] });
+    stubFetch({ "POST /api/approvals": [403, { error: { code: "browser_required", message: "Approving is done in a browser." } }] });
     const m = mount(UnconnectedSwitch, { sw: { on: false, approval_id: null }, onChanged: vi.fn() });
     click(m.root.querySelector('[role="switch"]')!);
     await settle();
-    expect(m.root.querySelector('[role="alert"]')!.textContent).toBe("approving is done in a browser");
+    expect(m.root.querySelector('[role="alert"]')!.textContent).toBe("Approving is done in a browser.");
     expect(m.root.querySelector('[role="switch"]')!.getAttribute("aria-checked")).toBe("false");
   });
 });

@@ -151,11 +151,11 @@ test("the owner invites a person who connects, narrows their machine from their 
     await expect(owner.locator(".revoked")).toContainText("Sam");
     await expect(owner.locator("article.person[data-person]").filter({ has: owner.locator("h3", { hasText: /^Sam$/ }) })).toHaveCount(0);
     await expect(owner.getByRole("heading", { name: "People", level: 2 })).toBeFocused();
-    await expect(person.locator(".ppl")).toContainText("only the owner or a connected person has People");
+    await expect(person.locator(".ppl")).toContainText("You are no longer connected: the owner disconnected you.");
     await expect(person.locator("article.person")).toHaveCount(0);
     await expect(person.locator(".gbar a.people-link")).toHaveCount(0);
     await person.reload();
-    await expect(person.locator(".ppl")).toContainText("only the owner or a connected person has People");
+    await expect(person.locator(".ppl")).toContainText("People is for the owner of this Clax and the people they connect.");
     await expect(person.locator(".gbar a.people-link")).toHaveCount(0);
   } finally {
     await ownerCtx.close();

@@ -104,7 +104,7 @@ describe("People", () => {
     const m = mount(People, {});
     await settle();
     expect(m.root.querySelector(".person")).toBeNull();
-    expect(m.root.textContent).toContain("only the owner or a connected person has People");
+    expect(m.root.textContent).toContain("People is for the owner of this Clax and the people they connect.");
   });
   it("keeps hostile names as text in invites, requests, approvals, the waiting and the revoked", async () => {
     const H = `<img src=x onerror="window.pwned=1">`;
@@ -128,7 +128,7 @@ describe("People", () => {
     const waiting = [...m.root.querySelectorAll('[data-person="p1"] .wait')];
     expect(waiting).toHaveLength(1);
     expect(waiting[0].getAttribute("href")).toBe("/inbox?approval=r1");
-    expect(waiting[0].textContent).toBe(`2 from ${H}Sam for ${H}agent`);
+    expect(waiting[0].textContent).toBe(`2 items from ${H}Sam for ${H}agent`);
   });
 
   it("shows a person only open requests as waiting, the owner named as the owner, and names as text", async () => {
@@ -147,7 +147,7 @@ describe("People", () => {
     const rows = [...m.root.querySelectorAll(".approvals .line:not(.wait)")].map(l => [...l.querySelectorAll("span")].slice(0, 2).map(s => s.textContent));
     expect(rows).toEqual([["The owner", "everywhere"], [`${H}Mia`, "in one thread on “Quarterly Review”"]]);
     expect(m.root.querySelector("img")).toBeNull();
-    expect([...m.root.querySelectorAll(".approvals .wait")].map(w => w.textContent)).toEqual(["1 from The owner"]);
+    expect([...m.root.querySelectorAll(".approvals .wait")].map(w => [w.textContent, w.getAttribute("href")])).toEqual([["1 item from the owner", "/inbox?approval=r1"]]);
   });
 
   it("marks a named owner as the owner", async () => {
@@ -181,7 +181,7 @@ describe("People", () => {
     removeEventListener("clax:people-gone", gone);
     expect(m.root.querySelector(".person")).toBeNull();
     expect(m.root.querySelector(".approvals")).toBeNull();
-    expect(m.root.textContent).toContain("only the owner or a connected person has People");
+    expect(m.root.textContent).toContain("You are no longer connected: the owner disconnected you.");
     expect(gone).toHaveBeenCalledTimes(1);
   });
 

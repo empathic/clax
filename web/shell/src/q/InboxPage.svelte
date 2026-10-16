@@ -257,7 +257,7 @@
 {#snippet decided(s: Section | null)}
   {@const list = decisions(s)}
   {#if list.length}
-    <div class="dlist">{#each list as i (i.id)}{#if i.kind === "approval"}<ApprovalCard item={i} now={p.now} />{:else}<ConnectionCard item={i} now={p.now} />{/if}{/each}</div>
+    <div class="dlist">{#each list as i (i.id)}{#if i.kind === "approval"}<ApprovalCard item={i} now={p.now} />{:else}<ConnectionCard item={i} now={p.now} onRead={toggle} />{/if}{/each}</div>
   {/if}
 {/snippet}
 

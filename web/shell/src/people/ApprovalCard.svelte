@@ -1,6 +1,7 @@
 <svelte:options css="injected" />
 
 <script lang="ts">
+  import { refusal } from "./refusal";
   // An approval request in its approver's inbox (spec
   // 2026-10-08-multi-agent-multi-person §3.3, §9.3, §9.5): who wants to
   // reach which agent of theirs ("<publisher>'s page, via <viewer>'s
@@ -93,7 +94,7 @@
       made = { status: r.request.status, scope: r.request.scope };
       // Its buttons are gone: the card keeps the keyboard's focus.
       queueMicrotask(() => self()?.focus({ preventScroll: true }));
-    } catch (x) { err = x instanceof Error ? x.message : String(x); } finally { busy = false; }
+    } catch (x) { err = refusal(x); } finally { busy = false; }
   }
 </script>
 

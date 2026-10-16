@@ -54,7 +54,7 @@ describe("InviteDialog", () => {
     type(m.root.querySelector<HTMLInputElement>('input[name="name"]')!, "Sam");
     submit(m.root);
     await settle();
-    expect(m.root.querySelector('[role="alert"]')!.textContent).toBe(msg);
+    expect(m.root.querySelector('[role="alert"]')!.textContent).toBe(`${msg}.`);
     expect(m.root.querySelector("code")).toBeNull();
   });
 });

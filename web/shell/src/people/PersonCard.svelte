@@ -1,6 +1,7 @@
 <svelte:options css="injected" />
 
 <script lang="ts">
+  import { refusal } from "./refusal";
   // One person on People (spec 2026-10-08-multi-agent-multi-person §3.4,
   // §7.4, §9.5, §17): their machines with key fingerprints, and their live
   // agents by machine. For the owner (`view` "owner"): the person's preset,
@@ -21,7 +22,7 @@
   import { tick } from "svelte";
   import type { PeopleAgent, PeopleApproval, PeopleElevation, PeopleGrant, PeopleRequest, Rights } from "../api";
   import * as api from "./api";
-  import { agentCaps, CAPS, elevation, elevationsOf, MACHINE_BOUNDARY, machineCaps, narrowAgent, narrowGrant, othersRaises, ownerRaisedAt, PRESET_NAMES, presetOf, raiseCaps } from "./model";
+  import { agentCaps, CAPS, elevation, elevationsOf, MACHINE_BOUNDARY, machineCaps, narrowAgent, narrowGrant, othersRaises, ownerRaisedAt, PRESET_NAMES, presetOf, raiseCaps, waitText } from "./model";
 
   type Who = { public_id: string | null; display_name: string | null; revoked_at: string | null; rights: Rights; grants: PeopleGrant[]; agents: PeopleAgent[] };
   type Props = {
@@ -96,7 +97,7 @@
     if (o.ask && !confirm(o.ask)) return false;
     busy = true; err = null;
     try { await fn(); onChanged(); focus(o.to); return true; } catch (e) {
-      err = e instanceof Error ? e.message : String(e);
+      err = refusal(e);
       putBack(o.el);
       return false;
     } finally { busy = false; }
@@ -253,7 +254,7 @@
       {#if wait.length}
         <h4>Waiting</h4>
         {#each wait as r (r.id)}
-          <a class="line wait" href="/inbox?approval={encodeURIComponent(r.id)}"><span>{r.count} from {name}{r.agent ? ` for ${r.agent.name}` : ""}</span></a>
+          <a class="line wait" href="/inbox?approval={encodeURIComponent(r.id)}"><span>{waitText(r, name)}</span></a>
         {/each}
       {/if}
     </section>

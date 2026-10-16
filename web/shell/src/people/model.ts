@@ -3,6 +3,7 @@
 // turns off and an elevation adds, the presets (§7.3), and the daemon's
 // comparison of rights (`Rights::is_narrower_or_equal`), so a narrowing
 // built here is one the daemon takes as narrower.
+import { midName } from "../view/working-model";
 import type { Access, PeopleAgent, PeopleElevation, PeopleGrant, PeopleInvite, Rights } from "../api";
 
 /** The line beside per-agent controls: what narrowing one agent of a
@@ -215,3 +216,8 @@ export function expiresIn(at: string, now: Date): string {
   if (min <= 0) return "now";
   return min >= 60 ? `${Math.round(min / 60)} h` : `${min} min`;
 }
+
+/** An approval request waiting on its approver, on one line: "1 comment
+ * from Mia for sam-notes", "3 items from Mia" (outside threads). */
+export const waitText = (r: { count: number; thread_id: string | null; agent: { name: string } | null }, from: string): string =>
+  `${r.count} ${r.thread_id ? (r.count === 1 ? "comment" : "comments") : r.count === 1 ? "item" : "items"} from ${midName(from)}${r.agent ? ` for ${r.agent.name}` : ""}`;

@@ -1,6 +1,7 @@
 <svelte:options css="injected" />
 
 <script lang="ts">
+  import { refusal } from "./refusal";
   // Invite a person (spec 2026-10-08-multi-agent-multi-person §3.1, §6.2):
   // a new person by name, or another machine of the owner's (**Me**), at a
   // preset (Collaborator by default). Made, it shows the `clax connect`
@@ -43,7 +44,7 @@
       onMade();
       await tick();
       document.querySelector<HTMLElement>(".invite .cmd button")?.focus();
-    } catch (x) { err = x instanceof Error ? x.message : String(x); } finally { busy = false; }
+    } catch (x) { err = refusal(x); } finally { busy = false; }
   };
   // By query, not `bind:this`: its helper would be split into a chunk the
   // artifact view's entry then loads.

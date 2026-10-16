@@ -1,6 +1,7 @@
 <svelte:options css="injected" />
 
 <script lang="ts">
+  import { refusal } from "./refusal";
   // A connection request in the owner's inbox (spec
   // 2026-10-08-multi-agent-multi-person §3.2, §6.3): the machine's name,
   // its address and its key's fingerprint, with **Approve…** and **Deny**.
@@ -19,7 +20,9 @@
   import * as api from "./api";
   import { PRESET_NAMES } from "./model";
 
-  let { item, now }: { item: InboxItem; now?: Date } = $props();
+  // `onRead` marks the item read: a request no longer waiting (expired,
+  // decided elsewhere) offers it while unread, nothing else marking it.
+  let { item, now, onRead }: { item: InboxItem; now?: Date; onRead?(i: InboxItem): void } = $props();
   // The grant as a decision made here left it, until the item itself says so.
   let made = $state<Pick<PeopleGrant, "status" | "person"> | null>(null);
   let open = $state(false);
@@ -50,7 +53,7 @@
       made = { status: r.grant.status, person: r.grant.person };
       open = false;
       queueMicrotask(() => card()?.focus({ preventScroll: true }));
-    } catch (x) { err = x instanceof Error ? x.message : String(x); } finally { busy = false; }
+    } catch (x) { err = refusal(x); } finally { busy = false; }
   }
   const approve = (e: Event) => { e.preventDefault(); if (g && ready) void run(() => api.approveGrant(g.id, { user_code: code.trim(), name: name.trim(), rights: preset })); };
   const deny = () => { if (g) void run(() => api.denyGrant(g.id)); };
@@ -100,6 +103,7 @@
     {/if}
   {:else}
     <p class="outcome" role="status">{outcome}</p>
+    {#if onRead && !item.read && !made}<div class="acts"><button type="button" class="ghost" onclick={() => onRead(item)}>Mark read</button></div>{/if}
   {/if}
   {#if err}<p class="err" role="alert">{err}</p>{/if}
 </article>

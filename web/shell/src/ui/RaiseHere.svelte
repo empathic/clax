@@ -65,7 +65,8 @@
 <style>
   :global {
     .raise-here { grid-column: 2; margin-top: 4px; font-size: 12.5px; }
-    .raise-here summary { cursor: pointer; color: var(--accent-ink); font-weight: 600; min-height: 28px; display: flex; align-items: center; }
+    /* A list item, as summaries are, so its disclosure marker shows. */
+    .raise-here summary { cursor: pointer; color: var(--accent-ink); font-weight: 600; display: list-item; line-height: 1.4; padding: 4px 0; }
     .raise-here .rnote { margin: 2px 0 6px; color: var(--muted); line-height: 1.45; }
     .raise-here .rcaps { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0 12px; }
     .raise-here label { display: flex; align-items: center; gap: 6px; color: var(--fg); min-height: 28px; }
