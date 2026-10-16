@@ -155,39 +155,55 @@ function AppFace({ app }) {
 const HOLD_MS = 500;
 const SLOP_PX = 10;
 
-/** Press handlers for a tile: a tap calls `onTap`; a hold of HOLD_MS (or a
- * context menu, as a mouse's right click or a WebView's own long press)
- * calls `onHold` once, and the click that ends that press does nothing. */
+/** Press handlers for a tile: a tap calls `onTap`. Held still for HOLD_MS,
+ * the press arms (the tile shrinks a little, `data-held`), and its release
+ * calls `onHold` once while the click that follows does nothing: the
+ * release, not the timer, is the person's gesture, so the app accepts what
+ * `onHold` asks. A context menu outside a press (a mouse's right click, the
+ * keyboard's menu key) calls `onHold` at once; one during a press is the
+ * WebView's own long press, and the press's release answers it. */
 function usePress(onTap, onHold) {
-  const s = useRef({ timer: 0, x: 0, y: 0, held: false, swallow: false });
-  const cancel = () => { clearTimeout(s.current.timer); s.current.timer = 0; };
-  useEffect(() => cancel, []);
-  const hold = (el) => {
-    cancel();
-    if (s.current.held) return;
-    s.current.held = true;
-    s.current.swallow = true;
-    onHold?.(el);
+  const s = useRef({ timer: 0, x: 0, y: 0, pressing: false, armed: false, swallow: false, el: null });
+  const disarm = () => {
+    const c = s.current;
+    clearTimeout(c.timer);
+    c.timer = 0;
+    c.pressing = false;
+    c.armed = false;
+    if (c.el) delete c.el.dataset.held;
   };
+  useEffect(() => disarm, []);
   if (!onHold) return { onClick: onTap };
   return {
     onPointerDown(e) {
       if (e.pointerType === 'mouse' && e.button !== 0) return;
-      cancel();
-      Object.assign(s.current, { x: e.clientX, y: e.clientY, held: false, swallow: false });
+      disarm();
       const el = e.currentTarget;
-      s.current.timer = setTimeout(() => hold(el), HOLD_MS);
+      Object.assign(s.current, { x: e.clientX, y: e.clientY, pressing: true, swallow: false, el });
+      s.current.timer = setTimeout(() => {
+        s.current.timer = 0;
+        s.current.armed = true;
+        el.dataset.held = '';
+      }, HOLD_MS);
     },
     onPointerMove(e) {
-      if (s.current.timer && Math.hypot(e.clientX - s.current.x, e.clientY - s.current.y) > SLOP_PX) cancel();
+      const c = s.current;
+      if (c.pressing && Math.hypot(e.clientX - c.x, e.clientY - c.y) > SLOP_PX) disarm();
     },
-    onPointerUp: cancel,
-    onPointerCancel: cancel,
-    onPointerLeave: cancel,
+    onPointerUp(e) {
+      const armed = s.current.armed;
+      disarm();
+      if (!armed) return;
+      s.current.swallow = true;
+      onHold(e.currentTarget);
+    },
+    onPointerCancel: disarm,
+    onPointerLeave(e) { if (e.pointerType === 'mouse') disarm(); },
     onContextMenu(e) {
       e.preventDefault();
-      hold(e.currentTarget);
-      s.current.held = false;
+      if (s.current.pressing) return;
+      s.current.swallow = true;
+      onHold(e.currentTarget);
     },
     onClick(e) {
       if (s.current.swallow) {
@@ -200,15 +216,19 @@ function usePress(onTap, onHold) {
   };
 }
 
-/** The viewport rectangle of `el`'s icon, in whole CSS pixels. */
+/** The viewport rectangle of `el`'s icon (its unscaled box), in whole CSS
+ * pixels. */
 function faceRect(el) {
-  const r = (el.querySelector('.h-face') || el).getBoundingClientRect();
+  const r = (el.querySelector('.h-icon') || el).getBoundingClientRect();
   return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
 }
 
-function AppTile({ app, home }) {
+function AppTile({ app, act }) {
   const b = app.build;
-  const press = usePress(() => home.open(app.id), (el) => home.menu(app.id, faceRect(el)));
+  const press = usePress(
+    () => act('open', [app.id], `open ${app.title}`),
+    (el) => act('menu', [app.id, faceRect(el)], `show ${app.title}'s menu`),
+  );
   const label = b ? `${app.title}, building, ${b.done} of ${b.total} done` : app.title;
   return html`<button type="button" class="h-tile" data-id=${app.id} aria-label=${label} ...${press}>
     <span class="h-icon">
@@ -222,13 +242,13 @@ function AppTile({ app, home }) {
 const MAKE_STATUS = { making: 'Making…', offline: 'Offline', waiting: 'Waiting…', interrupted: 'Interrupted', failed: "Couldn't make it" };
 const MAKE_GLYPH = { offline: 'cloudOff', waiting: 'hourglass', interrupted: 'rotateCcw', failed: 'alertCircle' };
 
-function MakeTile({ make, home }) {
+function MakeTile({ make, act }) {
   const state = MAKE_STATUS[make.state] ? make.state : 'making';
   const status = MAKE_STATUS[state];
   const said = state !== 'making';
   const p = make.progress;
   const spoken = state === 'offline' ? 'Waiting for connection' : status;
-  return html`<button type="button" class="h-tile" data-make=${make.id} aria-label=${`${make.request}, ${spoken}`} onClick=${() => home.openMake(make.id)}>
+  return html`<button type="button" class="h-tile" data-make=${make.id} aria-label=${`${make.request}, ${spoken}`} onClick=${() => act('openMake', [make.id], `open ${make.request}`)}>
     <span class="h-icon">
       <span class=${`h-face h-make${state === 'failed' ? ' h-failed' : ''}`} data-kind="make">
         ${!said && (p && p.total > 0 ? html`<${Ring} done=${p.done} total=${p.total} />` : html`<${Spinner} />`)}
@@ -249,7 +269,7 @@ function Message({ glyph, title, hint, action }) {
   </div>`;
 }
 
-function More({ home }) {
+function More({ act, refresh }) {
   const [open, setOpen] = useState(false);
   useEffect(() => {
     if (!open) return undefined;
@@ -263,23 +283,24 @@ function More({ home }) {
     </button>
     ${open && html`<button type="button" class="h-scrim" aria-label="Close menu" onClick=${() => setOpen(false)} />
       <div class="h-menu" role="menu">
-        <button type="button" role="menuitem" class="h-menu-item" onClick=${() => { setOpen(false); home.importApp(); }}>Import app…</button>
+        <button type="button" role="menuitem" class="h-menu-item" onClick=${() => { setOpen(false); act('importApp', [], 'import an app'); }}>Import app…</button>
+        <button type="button" role="menuitem" class="h-menu-item" onClick=${() => { setOpen(false); refresh(); }}>Refresh</button>
       </div>`}
   </span>`;
 }
 
-function Bar({ home, unread }) {
+function Bar({ act, refresh, unread }) {
   return html`<header class="h-bar">
     <h1 class="h-title">Clax</h1>
     <div class="h-actions">
-      <button type="button" class="h-action" aria-label=${unread > 0 ? `Inbox, ${unread} unread` : 'Inbox'} onClick=${() => home.openInbox()}>
+      <button type="button" class="h-action" aria-label=${unread > 0 ? `Inbox, ${unread} unread` : 'Inbox'} onClick=${() => act('openInbox', [], 'open the inbox')}>
         <span class="h-badged">
           <${Glyph} name="inbox" />
           ${unread > 0 && html`<span class="h-badge">${unread > 999 ? '999+' : unread}</span>`}
         </span>
       </button>
-      <button type="button" class="h-action" aria-label="Settings" onClick=${() => home.openSettings()}><${Glyph} name="settings" /></button>
-      <${More} home=${home} />
+      <button type="button" class="h-action" aria-label="Settings" onClick=${() => act('openSettings', [], 'open Settings')}><${Glyph} name="settings" /></button>
+      <${More} act=${act} refresh=${refresh} />
     </div>
   </header>`;
 }
@@ -288,7 +309,7 @@ function Bar({ home, unread }) {
  * px, 4 px apart (Flutter's SliverGridDelegateWithMaxCrossAxisExtent). */
 const columnsFor = (width) => Math.max(1, Math.ceil(width / (112 + 4)));
 
-function Grid({ apps, makes, home }) {
+function Grid({ apps, makes, act }) {
   const ref = useRef(null);
   const [cols, setCols] = useState(4);
   useLayoutEffect(() => {
@@ -305,26 +326,28 @@ function Grid({ apps, makes, home }) {
   }, []);
   return html`<div class="h-grid-wrap" ref=${ref}>
     <div class="h-grid" style=${`--cols:${cols}`}>
-      ${makes.map((m) => html`<${MakeTile} key=${`m:${m.id}`} make=${m} home=${home} />`)}
-      ${apps.map((a) => html`<${AppTile} key=${`a:${a.id}`} app=${a} home=${home} />`)}
+      ${makes.map((m) => html`<${MakeTile} key=${`m:${m.id}`} make=${m} act=${act} />`)}
+      ${apps.map((a) => html`<${AppTile} key=${`a:${a.id}`} app=${a} act=${act} />`)}
     </div>
   </div>`;
 }
 
 const newestFirst = (apps) => [...apps].sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
-const isRefused = (e) => e === 'refused' || e?.code === 'refused' || e?.error === 'refused';
+const codeOf = (e) => (typeof e === 'string' ? e : e?.code ?? e?.error);
+const isRefused = (e) => codeOf(e) === 'refused';
 
 /** The latest value of one topic: `load`'s answer, then each of `home`'s
  * `event`s, which carries the topic's whole value (an event without one
- * loads it again); an answer older than what is shown is dropped. */
+ * loads it again); an answer older than what is shown is dropped. `reload`
+ * resolves once its answer is in, or failed. */
 function useTopic(home, event, load, initial) {
   const [value, setValue] = useState(initial);
   const [error, setError] = useState(null);
   const seq = useRef(0);
   const reload = useCallback(() => {
-    if (!home) return;
+    if (!home) return Promise.resolve();
     const n = ++seq.current;
-    Promise.resolve()
+    return Promise.resolve()
       .then(() => load(home))
       .then((v) => { if (n === seq.current) { setValue(v); setError(null); } })
       .catch((e) => { if (n === seq.current) setError(e ?? new Error('failed')); });
@@ -349,11 +372,123 @@ function useTopic(home, event, load, initial) {
   return [value, error, reload];
 }
 
+const NOTICE_MS = 4000;
+
+/** `act(method, args, what)`: calls `home[method](...args)` and catches its
+ * rejection. `no_gesture` (the call did not come with the person's tap)
+ * keeps the call for the next tap on the page that lands on no other
+ * control, and says "Tap again to <what>"; another failure says so
+ * briefly. A new action, or a tap on another control, drops a kept one. */
+function useActions(home) {
+  const [notice, setNotice] = useState(null);
+  const pending = useRef(null);
+  const timer = useRef(0);
+  const say = (text, retry = false) => {
+    clearTimeout(timer.current);
+    setNotice({ text, retry });
+    timer.current = setTimeout(() => { setNotice(null); pending.current = null; }, NOTICE_MS);
+  };
+  const act = useCallback((method, args, what) => {
+    pending.current = null;
+    let p;
+    try {
+      p = Promise.resolve(home[method](...args));
+    } catch (e) {
+      p = Promise.reject(e);
+    }
+    return p.then(() => { setNotice(null); }, (e) => {
+      const code = codeOf(e);
+      if (code === 'no_gesture') {
+        pending.current = { method, args, what };
+        say(`Tap again to ${what}`, true);
+      } else if (code === 'bad_request' && args.length) {
+        say('That app is no longer here');
+      } else {
+        say(`Couldn't ${what}`);
+      }
+    });
+  }, [home]);
+  useEffect(() => {
+    const tap = (e) => {
+      const kept = pending.current;
+      if (!kept) return;
+      const other = e.target?.closest?.('button, a, [role=button], input, select, textarea');
+      if (other && !other.classList.contains('h-notice')) { pending.current = null; return; }
+      act(kept.method, kept.args, kept.what);
+    };
+    document.addEventListener('click', tap, true);
+    return () => { document.removeEventListener('click', tap, true); clearTimeout(timer.current); };
+  }, [act]);
+  return [act, notice];
+}
+
+const PULL_PX = 64;
+const PULL_MAX = 96;
+
+/** Pull-to-refresh, as the launcher's: a touch drag down from the top of
+ * the page shows the ring; released past PULL_PX it calls `refresh` and
+ * spins until that settles. */
+function usePull(refresh) {
+  const [pull, setPull] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const s = useRef({ y: null, d: 0 });
+  useEffect(() => {
+    const start = (e) => {
+      s.current = { y: e.touches.length === 1 && scrollY <= 0 ? e.touches[0].clientY : null, d: 0 };
+    };
+    const move = (e) => {
+      if (s.current.y == null) return;
+      const dy = e.touches[0].clientY - s.current.y;
+      if (dy <= 0) { s.current.d = 0; setPull(0); return; }
+      if (e.cancelable) e.preventDefault();
+      s.current.d = Math.min(PULL_MAX, dy * 0.5);
+      setPull(s.current.d);
+    };
+    const end = () => {
+      const far = s.current.d >= PULL_PX;
+      s.current = { y: null, d: 0 };
+      setPull(0);
+      if (!far) return;
+      setBusy(true);
+      Promise.resolve(refresh()).finally(() => setBusy(false));
+    };
+    addEventListener('touchstart', start, { passive: true });
+    addEventListener('touchmove', move, { passive: false });
+    addEventListener('touchend', end);
+    addEventListener('touchcancel', end);
+    return () => {
+      removeEventListener('touchstart', start);
+      removeEventListener('touchmove', move);
+      removeEventListener('touchend', end);
+      removeEventListener('touchcancel', end);
+    };
+  }, [refresh]);
+  return { pull, busy };
+}
+
+function PullRing({ pull, busy }) {
+  if (!busy && pull <= 0) return null;
+  const y = busy ? PULL_PX : pull;
+  const f = Math.min(1, pull / PULL_PX);
+  return html`<div class=${`h-pull${busy ? ' h-pull-busy' : ''}`} role=${busy ? 'progressbar' : undefined} aria-label=${busy ? 'Refreshing' : undefined}
+    style=${`transform:translate(-50%, ${y - 40}px);opacity:${busy ? 1 : f}`}>
+    <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
+      <circle class="h-pull-arc" cx="12" cy="12" r="9" stroke-dasharray=${busy ? '20 100' : `${f * 50} 100`} />
+    </svg>
+  </div>`;
+}
+
 function Home({ home }) {
   const [apps, appsError, reloadApps] = useTopic(home, 'apps', (h) => h.apps(), null);
-  const [makes] = useTopic(home, 'makes', (h) => h.makes(), []);
-  const [unread] = useTopic(home, 'unread', (h) => h.unread(), 0);
-  const [needsKey] = useTopic(home, 'key', (h) => h.needsKey(), false);
+  const [makes, , reloadMakes] = useTopic(home, 'makes', (h) => h.makes(), []);
+  const [unread, , reloadUnread] = useTopic(home, 'unread', (h) => h.unread(), 0);
+  const [needsKey, , reloadKey] = useTopic(home, 'key', (h) => h.needsKey(), false);
+  const refresh = useCallback(
+    () => Promise.all([reloadApps(), reloadMakes(), reloadUnread(), reloadKey()]),
+    [reloadApps, reloadMakes, reloadUnread, reloadKey],
+  );
+  const [act, notice] = useActions(home);
+  const { pull, busy } = usePull(refresh);
 
   if (!home || (appsError && isRefused(appsError))) {
     return html`<main class="h-page h-away">
@@ -371,17 +506,19 @@ function Home({ home }) {
   } else if (!list.length && !going.length) {
     body = html`<${Message} glyph="sparkles" title="Say what you want, and Clax makes it." hint="“A tracker for my runs with a weekly total”" />`;
   } else {
-    body = html`<${Grid} apps=${list} makes=${going} home=${home} />`;
+    body = html`<${Grid} apps=${list} makes=${going} act=${act} />`;
   }
   return html`<main class="h-page">
-    <${Bar} home=${home} unread=${typeof unread === 'number' ? unread : 0} />
+    <${Bar} act=${act} refresh=${refresh} unread=${typeof unread === 'number' ? unread : 0} />
+    <${PullRing} pull=${pull} busy=${busy} />
     ${needsKey === true && html`<div class="h-key">
       <${Glyph} name="key" />
       <span class="h-key-text">Add your Claude API key to start making apps</span>
-      <button type="button" class="h-text-button" onClick=${() => home.openSettings()}>Add key</button>
+      <button type="button" class="h-text-button" onClick=${() => act('openSettings', [], 'open Settings')}>Add key</button>
     </div>`}
     ${body}
-    <button type="button" class="h-fab" aria-label="New app" onClick=${() => home.newApp()}>
+    ${notice && html`<button type="button" class="h-notice" role="status">${notice.text}</button>`}
+    <button type="button" class="h-fab" aria-label="New app" onClick=${() => act('newApp', [], 'make a new app')}>
       <${Glyph} name="mic" />
       <span>New app</span>
     </button>
