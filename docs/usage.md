@@ -541,9 +541,8 @@ same signature and do not ask.
   which offers Cancel. Clax probes the API every few seconds (at once when
   it comes back to the front) and the work goes on by itself when it
   answers, also after Clax restarts. A run that loses the connection part
-  way pauses and resumes from the turn it was on, without repeating or
-  paying again for what it already did; waiting does not count against its
-  time or cost limits.
+  way pauses and resumes from the turn it was on, without repeating what
+  it already did; waiting does not count against its time limit.
 - **Commenting.** Nothing of Clax's is drawn over an open app. On Android,
   a silent notification named after the app stays up while it is open,
   with **Comment** and **Threads**; on macOS, App › Comment (⇧⌘K) and App ›
