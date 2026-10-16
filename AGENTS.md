@@ -52,6 +52,12 @@ run it through the command the plugin's session context gives.
 
 ## Builds, tests and gates on macOS
 
+- Run checks and builds through the recipes (`just ci`, `just test`,
+  `just web-test`, …): they use Bazel when Bazelisk is installed and the
+  native tools otherwise (`docs/bazel.md`). Report a native result as
+  native: CI gates on Bazel. After any `Cargo.toml` or `Cargo.lock` change
+  run `just bazel-sync` and commit the result; after removing worktrees run
+  `just bazel-gc`.
 - macOS assesses every new executable on its first run, one at a time.
   Never `cp` over an existing binary (it is killed on exec); give tests a
   binary kept by content: `CLAX_TEST_BIN="$(scripts/stable-bin.sh

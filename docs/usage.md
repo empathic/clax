@@ -267,6 +267,10 @@ stop`. `just install` stops it itself.
 
 ## Developing Clax
 
+Checks and builds run with Bazel when Bazelisk is installed and with Cargo
+and pnpm otherwise; `docs/bazel.md` has which recipe runs what, the
+`-native` twins, `just bazel-sync` and `just bazel-gc`.
+
 Two loops, both on a home of their own, `~/.clax-dev`, whose daemon listens on
 port 7481 (its `config.toml` says `[serve] port = 7481`, or the port in
 `CLAX_DEV_PORT`, written by whichever of `just watch` and `just dev` runs
