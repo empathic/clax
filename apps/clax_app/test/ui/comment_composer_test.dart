@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:clax_app/ui/comment_composer.dart';
 import 'package:clax_app/ui/host_protocol.dart';
@@ -20,6 +22,19 @@ const _element = Draft(
   text: '',
   clip: DraftClip.ready,
 );
+
+/// A plain [w] x [h] PNG.
+Future<Uint8List> _plainPng(int w, int h) async {
+  final rec = ui.PictureRecorder();
+  Canvas(rec).drawRect(
+    Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
+    Paint()..color = const Color(0xff3366cc),
+  );
+  final image = await rec.endRecording().toImage(w, h);
+  final data = await image.toByteData(format: ui.ImageByteFormat.png);
+  image.dispose();
+  return data!.buffer.asUint8List();
+}
 
 void main() {
   late TextEditingController text;
@@ -261,4 +276,45 @@ void main() {
       });
     }
   }
+
+  testWidgets(
+    'a full-size screenshot is decoded at its thumbnail size, in device pixels',
+    (tester) async {
+      tester.view.devicePixelRatio = 3;
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final png = (await tester.runAsync(() => _plainPng(1600, 800)))!;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Center(child: ClipThumb(png, maxWidth: 96, maxHeight: 72)),
+        ),
+      );
+      final provider = tester.widget<Image>(find.byType(Image)).image;
+      expect(provider, isA<ResizeImage>());
+      expect((provider as ResizeImage).width, 96 * 3);
+      expect(provider.height, 72 * 3);
+      expect(provider.policy, ResizeImagePolicy.fit);
+
+      // Decode it, then read what the thumbnail holds.
+      await tester.runAsync(() {
+        final done = Completer<void>();
+        provider
+            .resolve(
+              createLocalImageConfiguration(tester.element(find.byType(Image))),
+            )
+            .addListener(
+              ImageStreamListener(
+                (_, _) => done.isCompleted ? null : done.complete(),
+                onError: (e, s) => done.completeError(e, s),
+              ),
+            );
+        return done.future;
+      });
+      await tester.pump();
+      final decoded = tester.widget<RawImage>(find.byType(RawImage)).image!;
+      expect(decoded.width, 288);
+      expect(decoded.height, 144);
+      // It looks as it did: the whole screenshot, its proportions kept.
+      expect(tester.getSize(find.byType(RawImage)), const Size(96, 48));
+    },
+  );
 }
