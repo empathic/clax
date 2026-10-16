@@ -997,7 +997,8 @@ impl HostedRequest {
             local: false,
             events_cookie: false,
             owner_cookie: false,
-            cookie: s.filter(|s| !s.owner).map(|s| s.viewer.id.clone()),
+            cookie: None,
+            hosted_viewer: s.filter(|s| !s.owner).map(|s| s.viewer.clone()),
             hosted_owner: s.is_some_and(|s| s.owner),
             ..id
         }

@@ -70,10 +70,7 @@ fn percent_decode(raw: &str) -> Option<String> {
 /// token, the owner cookie's caller is the owner's viewer and a viewer
 /// cookie's its viewer: `interact` when that viewer has a name, else `view`.
 pub(crate) fn base_caller(st: &Store, token: bool, who: &Identity) -> clax_core::Result<Caller> {
-    let cookie_viewer = match &who.cookie {
-        Some(c) => st.get_viewer(c)?,
-        None => None,
-    };
+    let cookie_viewer = who.cookie_viewer(st)?;
     if token {
         return Ok(if who.owner_browser() || cookie_viewer.is_some() {
             Caller {

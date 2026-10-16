@@ -33,6 +33,14 @@ pub struct NameBody {
 }
 
 async fn respond(s: AppState, who: Identity, name: Option<String>) -> Result<Response, ApiError> {
+    // A hosted session's viewer is signed in already: it is answered as it
+    // is, and no `clax_viewer` cookie is minted (the hosted gate renames a
+    // guest itself).
+    if let Some(v) = &who.hosted_viewer
+        && name.is_none()
+    {
+        return Ok(Json(json!({"viewer": v})).into_response());
+    }
     let owner = who.is_owner();
     let (before, viewer, fresh) = s
         .store_call(move |st| {

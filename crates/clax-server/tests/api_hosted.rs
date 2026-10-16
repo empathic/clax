@@ -352,12 +352,12 @@ async fn nothing_is_from_this_machine_and_only_the_public_host_answers() {
     // The owner cookie of a local daemon, and a LAN viewer's cookie, count
     // for nothing: the request is anonymous, and the gallery not theirs.
     let owner_cookie = site.ts.owner_cookie();
-    let viewer = site
-        .ts
+    let lan = clax_core::secret::viewer_cookie();
+    site.ts
         .store
-        .upsert_viewer(&clax_core::new_ulid(), Some("Lan"))
+        .upsert_viewer(lan.expose(), Some("Lan"))
         .unwrap();
-    for c in [owner_cookie, format!("clax_viewer={}", viewer.id)] {
+    for c in [owner_cookie, format!("clax_viewer={}", lan.expose())] {
         let r = site
             .ts
             .client

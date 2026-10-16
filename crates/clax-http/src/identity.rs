@@ -165,6 +165,13 @@ pub struct Identity {
     /// A hosted daemon's session of the owner's row: a browser of the
     /// owner's ([`crate::hosted`]).
     pub hosted_owner: bool,
+    /// A hosted daemon's session of another viewer's row (a person's or a
+    /// guest's): the viewer it signs in as, read with the session. It
+    /// stands where a `clax_viewer` cookie's viewer would ([`cookie`] is
+    /// `None` there).
+    ///
+    /// [`cookie`]: Identity::cookie
+    pub hosted_viewer: Option<Viewer>,
 }
 
 use crate::headers::SESSION_HEADER;
@@ -200,6 +207,7 @@ impl Identity {
                 .get(CHANNEL_HEADER)
                 .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"agent")),
             hosted_owner: false,
+            hosted_viewer: None,
         }
     }
 
@@ -244,7 +252,25 @@ impl Identity {
         if self.owner_browser() {
             return Some(Caller::Owner { browser: true });
         }
-        self.cookie.is_none().then_some(Caller::Anonymous)
+        (!self.names_viewer()).then_some(Caller::Anonymous)
+    }
+
+    /// Whether the request names a viewer of its own: a `clax_viewer`
+    /// cookie, or a hosted session's viewer.
+    pub fn names_viewer(&self) -> bool {
+        self.cookie.is_some() || self.hosted_viewer.is_some()
+    }
+
+    /// The viewer the request's own credential names: a hosted session's,
+    /// else the `clax_viewer` cookie's when it has a row.
+    pub fn cookie_viewer(&self, st: &Store) -> clax_core::Result<Option<Viewer>> {
+        if let Some(v) = &self.hosted_viewer {
+            return Ok(Some(v.clone()));
+        }
+        match &self.cookie {
+            Some(c) => st.get_viewer(c),
+            None => Ok(None),
+        }
     }
 
     /// Who the request speaks for (spec §6.1, M8). `path_session` is the
@@ -335,10 +361,7 @@ impl Identity {
         if self.owner_browser() {
             return Ok(Caller::Owner { browser: true });
         }
-        let viewer = match &self.cookie {
-            Some(c) => st.get_viewer(c)?,
-            None => None,
-        };
+        let viewer = self.cookie_viewer(st)?;
         Ok(match viewer {
             Some(v) if v.person && v.person_revoked_at.is_none() => Caller::Person { viewer: v },
             Some(v) => Caller::Viewer { viewer: v },
@@ -414,17 +437,14 @@ impl Identity {
         if self.is_owner() {
             return st.owner();
         }
-        match &self.cookie {
-            Some(c) => st.get_viewer(c),
-            None => Ok(None),
-        }
+        self.cookie_viewer(st)
     }
 
     /// [`Identity::viewer`] for a browser's request (the owner or events
     /// cookie, or a viewer cookie); `None` for the token alone (an agent, the
     /// CLI), which reads data as no viewer.
     pub fn browser_viewer(&self, st: &Store) -> clax_core::Result<Option<Viewer>> {
-        if self.owner_browser() || self.cookie.is_some() {
+        if self.owner_browser() || self.names_viewer() {
             self.viewer(st)
         } else {
             Ok(None)
@@ -442,10 +462,7 @@ impl Identity {
         if self.is_owner() {
             return st.owner_viewer(self.owner_browser()).map(Some);
         }
-        match &self.cookie {
-            Some(c) => st.get_viewer(c),
-            None => Ok(None),
-        }
+        self.cookie_viewer(st)
     }
 }
 

@@ -79,7 +79,8 @@ fn owner_browser(who: Identity) -> Result<String, ApiError> {
     if who.owner_browser() {
         return Ok("owner".to_string());
     }
-    who.cookie.ok_or_else(|| {
+    let hosted = who.hosted_viewer.map(|v| v.id);
+    who.cookie.or(hosted).ok_or_else(|| {
         ApiError::forbidden(
             "forbidden",
             "sample() is spent from the owner's browser only",
