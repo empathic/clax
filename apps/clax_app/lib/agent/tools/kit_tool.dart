@@ -21,6 +21,7 @@ const kitParts = <String, List<String>>{
   'map': ['preact.js', 'icons.js', 'map.js', 'LICENSES.txt'],
   'dates': ['dates.js', 'LICENSES.txt'],
   'icons': ['icons.js', 'LICENSES.txt'],
+  'home': ['fake-home.js'],
 };
 
 /// The directory of the draft the kit files go in.
@@ -45,7 +46,8 @@ class AddKitTool implements Tool {
         'htm as kit/preact.js), kit (kit.css, the design system, and kit.js, '
         'its components; brings preact and icons), chart (SVG charts), '
         'dates (dayjs with relativeTime), icons (about 100 icons), map (a '
-        'slippy map; its tiles need the net capability). The '
+        'slippy map; its tiles need the net capability), home (a fake of '
+        'the home capability, for a home app\'s tests). The '
         'result lists the API. Pages link ./kit/kit.css and import '
         "'./kit/<part>.js'. Repeating it is harmless.",
     objectSchema({
@@ -182,6 +184,18 @@ const kitApi = <String, String>{
       r"kit/dates.js default-exports dayjs with relativeTime: "
       r"dayjs(x).fromNow(), .format('D MMM'), .add(1, 'day'), "
       r".isSame(y, 'day').",
+  'fake-home.js':
+      r'kit/fake-home.js (for tests only; the page itself uses '
+      r'await claude.use("home")) exports fakeHome(state) -> a stand-in for '
+      r'the home capability over {apps, makes, unread, needsKey} (each '
+      r'missing one from SAMPLE: eight apps with every icon kind and three '
+      r'makes): apps(), makes(), unread(), needsKey(), the actions open(id), '
+      r'openMake(id), newApp(), menu(id, {x, y, w, h}), openInbox(), '
+      r'openSettings(), importApp() (each kept in home.calls as {method, '
+      r'args}), on(name, fn) for apps|makes|unread|key -> stop, and '
+      r'home.set({apps, makes, unread, needsKey}) to change the state and '
+      r'call the listeners. Write the page to take its home object '
+      r'(mount(root, home)) so a test can mount it over fakeHome().',
   'icons.js':
       r'kit/icons.js: icon(name, {size, stroke}) -> SVG markup, and names. '
       r'Icon names (kit.js takes them as icon props): home search plus minus '

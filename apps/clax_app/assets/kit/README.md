@@ -14,6 +14,13 @@ files).
 | `kit.js` | Preact components over `kit.css` | Clax |
 | `chart.js` | SVG line, area, bar, pie, donut and sparkline charts | Clax |
 | `map.js` | `MapView`, a slippy map: tiles fetched through the `net` capability and shown as `blob:` images, markers, a "you are here" dot; its styles are added by the module | Clax |
+| `fake-home.js` | `fakeHome(state)`, a stand-in for the home screen's `home` capability with sample apps and makes, for a home app's tests and the agent's renders (`add_kit` part `home`) | Clax |
+
+The shipped home app (`apps/clax_app/home/`) carries its own copies of
+the kit files its `manifest.json` names, as they were when its bundle was
+last packed: a kit edit reaches it only with its next release (see
+`docs/usage.md`, "The home app"), and `test/home/home_bundle_test.dart`
+reports the drift without failing.
 
 The map loads nothing itself: a page may reach other hosts only through
 `net` (docs/contract.md, "Fetching from the network"), so `map.js` fetches
