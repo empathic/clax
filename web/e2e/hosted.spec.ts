@@ -235,6 +235,7 @@ test("the owner's browser has the owner's surfaces, a person's rights limit thei
 
     // A guest on a shared page names themselves in the people menu.
     await owner.goto(`${origin}/people`);
+    await expect(owner.locator(".hosted-me")).toContainText("Signed in as Ada");
     await shots(owner, "people-owner");
     await owner.getByRole("combobox", { name: "Page to share" }).selectOption({ label: "Plan" });
     await owner.getByRole("button", { name: "Share by link" }).click();
