@@ -768,19 +768,16 @@ async fn a_remote_clip_is_cached_here_and_no_remote_path_reaches_an_agent() {
         .join("remote-cache")
         .join("clips")
         .join(format!("{tid}.png"));
-    until("the clip is cached", || async {
-        cache.is_file().then_some(())
+    // The file is written before the thread is marked as having it: wait
+    // for the thread.
+    let path = format!("/api/artifacts/{}/threads/{tid}", p.aid);
+    let v: Value = until("the clip is cached", || async {
+        let v: Value = p.local.get_authed(&path).await.json().await.unwrap();
+        (cache.is_file() && v["thread"]["has_clip"] == json!(true)).then_some(v)
     })
     .await;
     assert_eq!(std::fs::read(&cache).unwrap(), png());
     // The thread names only the cached file here, and the clip route serves it.
-    let v: Value = p
-        .local
-        .get_authed(&format!("/api/artifacts/{}/threads/{tid}", p.aid))
-        .await
-        .json()
-        .await
-        .unwrap();
     assert_eq!(
         v["thread"]["clip_path"],
         cache.to_string_lossy().as_ref(),
