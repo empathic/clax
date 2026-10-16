@@ -2020,72 +2020,145 @@ async fn remote_follow_follows_its_harness_session_across_a_restart() {
     assert!(text(&out).contains(&tid), "{}", text(&out));
 }
 
+/// `clax mcp --agent claude` on machine `m` for harness session `hsid`,
+/// logging at `info`, with stderr closed at once when `close_stderr`;
+/// returns once it has answered `initialize` and a `status` call.
+struct Shim {
+    child: Child,
+    stdin: std::process::ChildStdin,
+    stdout: BufReader<std::process::ChildStdout>,
+}
+
+impl Shim {
+    async fn start(m: &Machine, hsid: &str, close_stderr: bool) -> Shim {
+        use std::io::Write;
+        let mut child = m
+            .cmd(&["mcp", "--agent", "claude"])
+            .env("RUST_LOG", "info")
+            .env("CLAUDE_CODE_SESSION_ID", hsid)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(if close_stderr {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .spawn()
+            .unwrap();
+        drop(child.stderr.take());
+        let mut stdin = child.stdin.take().unwrap();
+        let mut stdout = BufReader::new(child.stdout.take().unwrap());
+        let job = tokio::task::spawn_blocking(move || {
+            let mut line = String::new();
+            for (id, msg) in [
+                (
+                    Some(0),
+                    json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+                        "protocolVersion": "2025-06-18", "capabilities": {},
+                        "clientInfo": {"name": "test", "version": "0"}}}),
+                ),
+                (
+                    None,
+                    json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+                ),
+                (
+                    Some(1),
+                    json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                           "params": {"name": "status", "arguments": {}}}),
+                ),
+            ] {
+                writeln!(stdin, "{msg}").unwrap();
+                if let Some(id) = id {
+                    line.clear();
+                    stdout.read_line(&mut line).unwrap();
+                    assert!(line.contains(&format!("\"id\":{id}")), "{line}");
+                }
+            }
+            (stdin, stdout)
+        });
+        let (stdin, stdout) = tokio::time::timeout(LIMIT, job)
+            .await
+            .expect("the shim did not answer")
+            .unwrap();
+        Shim {
+            child,
+            stdin,
+            stdout,
+        }
+    }
+
+    /// Closes its stdin, as a harness that exits does; its exit status.
+    async fn close(self) -> std::process::ExitStatus {
+        use std::io::Read;
+        let Shim {
+            mut child,
+            stdin,
+            mut stdout,
+        } = self;
+        let job = tokio::task::spawn_blocking(move || {
+            drop(stdin);
+            let mut rest = String::new();
+            let _ = stdout.read_to_string(&mut rest);
+            child.wait().unwrap()
+        });
+        tokio::time::timeout(LIMIT, job)
+            .await
+            .expect("the shim did not exit")
+            .unwrap()
+    }
+}
+
+/// Every session of grant `gid`, live or ended.
+fn grant_sessions(ts: &TestServer, gid: &str) -> Vec<clax_core::model::Session> {
+    ts.store
+        .list_sessions(false)
+        .unwrap()
+        .into_iter()
+        .filter(|s| s.grant_id.as_deref() == Some(gid))
+        .collect()
+}
+
 /// The shim logs to stderr; a harness that goes away first leaves that pipe
 /// closed. Logging into it never panics the shim: it serves, and when its
 /// stdin closes it ends its remote session (which has no PID for the
 /// daemon to probe) and removes the session's credential file.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_remote_shim_whose_stderr_closed_still_ends_its_session() {
-    use std::io::{Read, Write};
     let ts = lan_server().await;
     let m = connected(&ts, "Sam").await;
     let gid = m.remote_json()["grant_id"].as_str().unwrap().to_string();
-    let mut child = m
-        .cmd(&["mcp", "--agent", "claude"])
-        // Every startup line is logged: each write meets the closed pipe.
-        .env("RUST_LOG", "info")
-        .env("CLAUDE_CODE_SESSION_ID", "cc-gone")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    drop(child.stderr.take());
-    let mut stdin = child.stdin.take().unwrap();
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
-    let init = json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
-        "protocolVersion": "2025-06-18", "capabilities": {},
-        "clientInfo": {"name": "gone", "version": "0"}}});
-    let status = tokio::task::spawn_blocking(move || {
-        writeln!(stdin, "{init}").unwrap();
-        let mut line = String::new();
-        stdout.read_line(&mut line).unwrap();
-        assert!(line.contains("\"id\":0"), "{line}");
-        writeln!(
-            stdin,
-            "{}",
-            json!({"jsonrpc": "2.0", "method": "notifications/initialized"})
-        )
-        .unwrap();
-        writeln!(
-            stdin,
-            "{}",
-            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                   "params": {"name": "status", "arguments": {}}})
-        )
-        .unwrap();
-        line.clear();
-        stdout.read_line(&mut line).unwrap();
-        assert!(line.contains("\"id\":1"), "{line}");
-        // The harness goes: stdin closes.
-        drop(stdin);
-        let mut rest = String::new();
-        let _ = stdout.read_to_string(&mut rest);
-        child.wait().unwrap()
-    });
-    let status = tokio::time::timeout(LIMIT, status)
-        .await
-        .expect("the shim did not exit")
-        .unwrap();
+    let shim = Shim::start(&m, "cc-gone", true).await;
+    let status = shim.close().await;
     assert!(status.success(), "{status:?}");
-    let sessions: Vec<_> = ts
-        .store
-        .list_sessions(false)
-        .unwrap()
-        .into_iter()
-        .filter(|s| s.grant_id.as_deref() == Some(gid.as_str()))
-        .collect();
+    let sessions = grant_sessions(&ts, &gid);
     assert_eq!(sessions.len(), 1, "{sessions:?}");
     assert!(sessions[0].ended_at.is_some(), "{sessions:?}");
     assert!(!m.credential("claude-s-cc-gone.json").exists());
+}
+
+/// A shim whose session already ended (the `SessionEnd` hook ran first, or
+/// the person ended it in People) has nothing to end at exit: it registers
+/// no new session to end, and leaves no credential file behind.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_remote_shim_ending_after_its_session_ended_makes_no_session() {
+    let ts = lan_server().await;
+    let m = connected(&ts, "Sam").await;
+    let gid = m.remote_json()["grant_id"].as_str().unwrap().to_string();
+    let shim = Shim::start(&m, "cc-ended", false).await;
+    let out = m
+        .hook(
+            "claude",
+            "session-end",
+            &json!({"session_id": "cc-ended", "cwd": "/w"}),
+        )
+        .await;
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(shim.close().await.success());
+    let sessions = grant_sessions(&ts, &gid);
+    assert_eq!(sessions.len(), 1, "{sessions:?}");
+    assert!(sessions[0].ended_at.is_some(), "{sessions:?}");
+    let left: Vec<_> = std::fs::read_dir(m.home().join("remote-sessions"))
+        .map(|d| d.map(|e| e.unwrap().file_name()).collect())
+        .unwrap_or_default();
+    assert!(left.is_empty(), "{left:?}");
 }

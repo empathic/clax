@@ -280,6 +280,55 @@ describe("remote clips while feedback is handed over", () => {
   });
 });
 
+describe("ending a session that already ended", () => {
+  it("registers no session just to end it, and removes the credential file", async () => {
+    const seen: string[] = [];
+    const secretOf = new Map<string, string>();
+    let n = 0;
+    let home = "";
+    let publicKey!: KeyObject;
+    const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+      const chunks: Buffer[] = [];
+      req.on("data", c => chunks.push(c));
+      req.on("end", () => {
+        const body = Buffer.concat(chunks);
+        const reply = (status: number, v: unknown) => { res.statusCode = status; res.setHeader("content-type", "application/json"); res.end(JSON.stringify(v)); };
+        const session = req.headers["x-clax-session"] as string | undefined;
+        const secret = req.headers["x-clax-session-secret"] as string | undefined;
+        seen.push(`${req.method} ${req.url}`);
+        if (!signedBy(req, body, publicKey)) return reply(401, { error: { code: "invalid_signature", message: "no" } });
+        if (session !== undefined && secretOf.get(session) !== secret) return reply(401, { error: { code: "invalid_session_proof", message: "ended" } });
+        if (req.method === "POST" && req.url === "/api/sessions") {
+          const id = `S${++n}`;
+          const s = `cxs_${"a".repeat(42)}${n}`;
+          secretOf.set(id, s);
+          return reply(201, { session: { id, harness: "pi", harness_session_id: "pi-ended-1", cwd: "/", pid: null, parent_pid: null, started_at: "", last_seen_at: "", ended_at: null, name: "pi" }, session_secret: s });
+        }
+        return reply(200, {});
+      });
+    });
+    await new Promise<void>(r => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as { port: number }).port;
+    ({ home, publicKey } = connectedHome(`http://127.0.0.1:${port}`));
+    try {
+      const pi = new FakePi();
+      claxExtension({ home, env: { ...process.env, CLAX_BIN: "/nonexistent" } })(pi.api);
+      const { ctx } = fakeContext(scratch, "pi-ended-1");
+      await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+      const file = join(home, "remote-sessions", "pi-s-pi-ended-1.json");
+      expect(existsSync(file)).toBe(true);
+      // Ended elsewhere (in People): its secret proves nothing any more.
+      secretOf.delete("S1");
+      await pi.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
+      expect(seen.filter(r => r === "POST /api/sessions")).toHaveLength(1);
+      expect(existsSync(file)).toBe(false);
+    } finally {
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+});
+
 describe("remote retries", () => {
   /** A daemon answering each request with `answer(n)` (n from 1). */
   async function daemonAnswering(answer: (n: number, res: ServerResponse) => void) {

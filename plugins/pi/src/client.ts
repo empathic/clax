@@ -486,8 +486,10 @@ export class DaemonClient {
 
   /** Sends a request after ensuring the session; on a refreshable failure,
    * refreshes and retries once. When the refresh fails, the original error is
-   * thrown. */
-  private async request(path: Path, opts: RequestOptions, find: Find = this.refreshFn, deadline?: number): Promise<RawResponse> {
+   * thrown. With `keepSession`, a refusal of the session it names
+   * ([`sessionRefused`]) is thrown as it is, never cured by registering a
+   * new session. */
+  private async request(path: Path, opts: RequestOptions, find: Find = this.refreshFn, deadline?: number, keepSession = false): Promise<RawResponse> {
     await this.ensure(find, deadline);
     const endpoint = this.endpoint;
     if (!endpoint) throw new ClientError("unreachable", "no daemon found");
@@ -504,6 +506,7 @@ export class DaemonClient {
     } catch (e) {
       if (!(e instanceof Failure)) throw e;
       if (!e.refreshable) throw e.error;
+      if (keepSession && sessionRefused(e.error.status, e.error.error)) throw e.error;
       try {
         await this.refresh(stale, find, deadline);
       } catch {
@@ -811,11 +814,18 @@ export class DaemonClient {
 
   /** `PATCH /api/sessions/<id>` `{"ended": true}` for the registered session,
    * within `timeoutMs` (default [`END_TIMEOUT_MS`]) for the requests.
-   * Never starts a daemon. `undefined` when no session was registered. */
+   * Never starts a daemon. `undefined` when no session was registered, or
+   * when the daemon says the session already ended (`unknown_session`, or a
+   * remote daemon's `invalid_session_proof`): no session is registered just
+   * to end it. */
   async endSession(timeoutMs = END_TIMEOUT_MS): Promise<Session | undefined> {
     if (!this.registeredSession) return undefined;
     try {
-      return sessionOf(await this.json(this.sessionPath, this.sessionPatch({ ended: true }), this.discoverFn, Date.now() + timeoutMs));
+      const res = await this.request(this.sessionPath, this.sessionPatch({ ended: true }), this.discoverFn, Date.now() + timeoutMs, true);
+      return sessionOf(bodyJson(res));
+    } catch (e) {
+      if (e instanceof ClientError && sessionRefused(e.status, e.error)) return undefined;
+      throw e;
     } finally {
       // A remote session's credential goes with it (spec 2026-10-08 §6.8).
       const name = this.credentialFile();

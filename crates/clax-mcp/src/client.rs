@@ -1438,19 +1438,44 @@ impl DaemonClient {
     }
 
     /// `PATCH /api/sessions/<id>` `{"ended": true}` for the registered session.
-    /// Never starts a daemon. `None` when no session was registered. For a
-    /// remote daemon, the session's credential files go with it (spec
-    /// 2026-10-08 §6.8).
+    /// Never starts a daemon. `None` when no session was registered, or when
+    /// the daemon says the session is no longer this client's to name (it
+    /// ended already: `unknown_session`, or a remote daemon's
+    /// `invalid_session_proof`): there is nothing left to end, so no
+    /// session is registered just to end it. For a remote daemon, the
+    /// session's credential files go with it (spec 2026-10-08 §6.8).
     pub async fn end_session(&self) -> Result<Option<Session>> {
         let Some(held) = self.state().session else {
             return Ok(None);
         };
-        let res = self
-            .send_with(Mode::DiscoverOnly, |c| {
-                c.request(reqwest::Method::PATCH, &c.session_path())
-                    .json(&json!({"ended": true}))
-            })
-            .await;
+        let build = |c: &Conn<'_>| {
+            c.request(reqwest::Method::PATCH, &c.session_path())
+                .json(&json!({"ended": true}))
+        };
+        self.ensure(Mode::DiscoverOnly).await?;
+        let conn = self.conn()?;
+        let res = match self.send_once(build(&conn)).await {
+            Err(f) if session_gone(&f.error) => {
+                self.forget_credentials(&held);
+                return Ok(None);
+            }
+            Err(f) if f.refreshable && self.inner.managed.is_some() => {
+                // The daemon moved (a restart on another port): end the
+                // session there.
+                let stale = Stale {
+                    endpoint: Some(conn.endpoint.clone()),
+                    session_id: conn.session_id.clone(),
+                };
+                match self.refresh(stale, Mode::DiscoverOnly).await {
+                    Ok(()) => self
+                        .send_once(build(&self.conn()?))
+                        .await
+                        .map_err(|f| f.error),
+                    Err(r) => Err(refresh_failed(f.error, r)),
+                }
+            }
+            r => r.map_err(|f| f.error),
+        };
         self.forget_credentials(&held);
         session_of(body_json(res?).await?).map(Some)
     }
@@ -1467,6 +1492,14 @@ impl DaemonClient {
         }
         remote.sessions.remove(&keys, &s.id);
     }
+}
+
+/// Whether `e` says the session a request named is no longer the client's
+/// to name: it ended (`unknown_session`), or a remote daemon refused its
+/// proof (`invalid_session_proof`, its secret cleared at the end).
+fn session_gone(e: &ClientError) -> bool {
+    matches!(e, ClientError::Api { error, .. }
+        if matches!(error["code"].as_str(), Some("unknown_session" | "invalid_session_proof")))
 }
 
 /// The longest one clip fetch may take while feedback is handed over
