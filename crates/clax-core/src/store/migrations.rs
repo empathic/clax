@@ -916,6 +916,112 @@ fn has_mark(tx: &rusqlite::Transaction<'_>, kind: &str, name: &str) -> crate::Re
     Ok(tx.query_row(sql, [name], |r| r.get(0))?)
 }
 
+/// What the final multi-person migrations ([`PEOPLE_MIGRATION`] to
+/// [`INBOX_MIGRATION`]) hold that an earlier revision of them lacked: the
+/// migration, the kind of schema object, its name, and the SQL that adds
+/// it. The earlier revision is otherwise the same, and no later migration
+/// touches these objects.
+const MULTI_PERSON_REVISIONS: [(u32, &str, &str, &str); 4] = [
+    (
+        PEOPLE_MIGRATION,
+        "table",
+        "viewer_cookies",
+        "CREATE TABLE viewer_cookies (
+            sha256 TEXT PRIMARY KEY,
+            viewer_id TEXT NOT NULL REFERENCES viewers(id),
+            created_at TEXT NOT NULL,
+            legacy INTEGER NOT NULL DEFAULT 0,
+            replaced_at TEXT
+        );
+        CREATE INDEX viewer_cookies_by_viewer ON viewer_cookies(viewer_id);",
+    ),
+    (
+        VISIBILITY_MIGRATION,
+        "index",
+        "approval_requests_by_target",
+        "CREATE INDEX approval_requests_by_target ON approval_requests(
+            COALESCE(approver, ''), artifact_id, author, status);",
+    ),
+    (
+        VISIBILITY_MIGRATION,
+        "index",
+        "approval_requests_by_thread",
+        "CREATE INDEX approval_requests_by_thread ON approval_requests(thread_id, status);",
+    ),
+    (
+        VISIBILITY_MIGRATION,
+        "feedback column",
+        "no_access_at",
+        "ALTER TABLE feedback ADD COLUMN no_access_at TEXT;",
+    ),
+];
+
+/// The revisions in [`MULTI_PERSON_REVISIONS`] a database written by an
+/// earlier revision of the multi-person migrations still lacks, recognised
+/// by its schema: a `user_version` at or past the revision's migration, the
+/// `invites` table (which [`PEOPLE_MIGRATION`] makes), and the revision's
+/// object missing. Empty for any other database.
+fn missing_multi_person_revisions(
+    c: &rusqlite::Connection,
+) -> crate::Result<Vec<&'static (u32, &'static str, &'static str, &'static str)>> {
+    let version: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    let exists = |sql: &str, name: &str| -> crate::Result<bool> {
+        Ok(c.query_row(sql, [name], |r| r.get(0))?)
+    };
+    let object = "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = ?2 AND name = ?1)";
+    if version < PEOPLE_MIGRATION
+        || !c.query_row(object, ["invites", "table"], |r| r.get::<_, bool>(0))?
+    {
+        return Ok(Vec::new());
+    }
+    let mut missing = Vec::new();
+    for rev in &MULTI_PERSON_REVISIONS {
+        let (at, kind, name, _) = rev;
+        if version < *at {
+            continue;
+        }
+        let present = if *kind == "feedback column" {
+            exists(
+                "SELECT EXISTS (SELECT 1 FROM pragma_table_info('feedback') WHERE name = ?1)",
+                name,
+            )?
+        } else {
+            c.query_row(object, [*name, *kind], |r| r.get(0))?
+        };
+        if !present {
+            missing.push(rev);
+        }
+    }
+    Ok(missing)
+}
+
+/// Whether [`repair_multi_person_revisions`] would change this database.
+pub(super) fn needs_multi_person_repair(c: &rusqlite::Connection) -> crate::Result<bool> {
+    Ok(!missing_multi_person_revisions(c)?.is_empty())
+}
+
+/// Brings a database written by an earlier revision of the multi-person
+/// migrations (the `flutter-app` branch's builds before it moved onto
+/// their final revision, which left their `user_version` unchanged) to
+/// the final revision's schema, in `tx`: it adds each object of
+/// [`MULTI_PERSON_REVISIONS`] the database lacks, and, with
+/// `viewer_cookies`, keeps every viewer's cookie (its row ID, which those
+/// revisions used) working as [`PEOPLE_MIGRATION`]'s Rust step does. It
+/// only adds; no row is changed or removed. Returns the names of the
+/// objects it added, empty for any other database.
+pub(super) fn repair_multi_person_revisions(
+    tx: &rusqlite::Transaction<'_>,
+) -> crate::Result<Vec<&'static str>> {
+    let missing = missing_multi_person_revisions(tx)?;
+    for (_, _, name, sql) in &missing {
+        tx.execute_batch(sql)?;
+        if *name == "viewer_cookies" {
+            legacy_viewer_cookies(tx)?;
+        }
+    }
+    Ok(missing.into_iter().map(|(_, _, name, _)| *name).collect())
+}
+
 /// Runs the Rust part of the migration that brings the schema to
 /// `version`, in that migration's transaction, after its SQL.
 pub(super) fn rust_step(tx: &rusqlite::Transaction<'_>, version: u32) -> crate::Result<()> {
@@ -2383,5 +2489,180 @@ mod tests {
             ]
         );
         assert!(backups.join("notes.txt").exists());
+    }
+
+    /// Every schema object outside SQLite's own, as `(type, name, sql)`
+    /// with the SQL's whitespace collapsed, in name order.
+    fn schema_of(c: &Connection) -> Vec<(String, String, String)> {
+        let mut stmt = c
+            .prepare(
+                "SELECT type, name, COALESCE(sql, '') FROM sqlite_schema
+                 WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+            )
+            .unwrap();
+        stmt.query_map([], |r| {
+            let sql: String = r.get(2)?;
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                sql.split_whitespace().collect::<Vec<_>>().join(" "),
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+    }
+
+    const LAN: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB0";
+
+    /// A database as a build of the earlier revision of the multi-person
+    /// migrations left it at the latest version: this list's schema without
+    /// what the final revision added ([`super::MULTI_PERSON_REVISIONS`]),
+    /// with an owner, a LAN viewer whose cookie is its row ID, an artifact,
+    /// a thread sent to an agent, an approval request and a read grant.
+    fn earlier_multi_person(home: &Home) {
+        drop(Store::open(home).unwrap());
+        let c = Connection::open(home.db_path()).unwrap();
+        c.execute_batch(&format!(
+            "DROP TABLE viewer_cookies;
+             DROP INDEX approval_requests_by_target;
+             DROP INDEX approval_requests_by_thread;
+             ALTER TABLE feedback DROP COLUMN no_access_at;
+             DELETE FROM viewers;
+             INSERT INTO viewers (id, public_id, display_name, created_at, owner, claimed)
+                VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FAZ', 'u_owner', 'Alex', 'x', 1, 1),
+                       ('{LAN}', 'u_lan', 'Mia', 'x', 0, 0);
+             INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version, doc_seq)
+                VALUES ('7q3k9mzx2b4t', 'Budget', 'x', 'x', 1, '0', 1),
+                       ('8r4m2nzy3c5v', 'Notes', 'x', 'x', 1, '0', 0);
+             INSERT INTO versions (artifact_id, n, created_at, files_json)
+                VALUES ('7q3k9mzx2b4t', 1, 'x', '{{\"index.html\":\"a\"}}'),
+                       ('8r4m2nzy3c5v', 1, 'x', '{{\"index.html\":\"b\"}}');
+             INSERT INTO docs (artifact_id, path, collection, json, version, updated_at)
+                VALUES ('7q3k9mzx2b4t', 'rows/1', 'rows', '{{\"amount\":12}}', 1, 'x');
+             INSERT INTO sessions (id, harness, cwd, started_at, last_seen_at)
+                VALUES ('{SID}', 'claude', '/w', 'x', 'x');
+             INSERT INTO threads (id, artifact_id, version_n, anchor_json, created_at)
+                VALUES ('t1', '7q3k9mzx2b4t', 1, '{{}}', 'x');
+             INSERT INTO comments (id, thread_id, author_kind, author_name, body, created_at)
+                VALUES ('c1', 't1', 'viewer', 'Mia', 'make it green', 'x');
+             INSERT INTO feedback (id, thread_id, comment_id, target_session_id, created_at)
+                VALUES ('f1', 't1', 'c1', '{SID}', 'x');
+             INSERT INTO approval_requests (id, author, artifact_id, thread_id, cause, created_at, updated_at)
+                VALUES ('r1', 'u_lan', '7q3k9mzx2b4t', 't1', 'routing', 'x', 'x');
+             INSERT INTO db_read_grants (reader_id, source_id, granted_at)
+                VALUES ('8r4m2nzy3c5v', '7q3k9mzx2b4t', 'x');"
+        ))
+        .unwrap();
+    }
+
+    fn earlier_rows(c: &Connection) -> Vec<String> {
+        let mut stmt = c
+            .prepare(
+                "SELECT 'viewer ' || id || ' ' || public_id FROM viewers
+                 UNION ALL SELECT 'artifact ' || id FROM artifacts
+                 UNION ALL SELECT 'doc ' || path || ' ' || json FROM docs
+                 UNION ALL SELECT 'comment ' || id || ' ' || body FROM comments
+                 UNION ALL SELECT 'feedback ' || id || ' ' || target_session_id FROM feedback
+                 UNION ALL SELECT 'request ' || id || ' ' || status FROM approval_requests
+                 UNION ALL SELECT 'grant ' || reader_id || ' ' || source_id FROM db_read_grants
+                 ORDER BY 1",
+            )
+            .unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_database_of_the_earlier_multi_person_revision_gets_the_final_schema_and_keeps_its_rows() {
+        let fresh_dir = tempfile::tempdir().unwrap();
+        let fresh_home = Home::at(fresh_dir.path().join("ax"));
+        drop(Store::open(&fresh_home).unwrap());
+        let fresh = schema_of(&Connection::open(fresh_home.db_path()).unwrap());
+
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        earlier_multi_person(&home);
+        let before = earlier_rows(&Connection::open(home.db_path()).unwrap());
+        assert_ne!(
+            schema_of(&Connection::open(home.db_path()).unwrap()),
+            fresh,
+            "the fixture lacks the final revision"
+        );
+
+        let st = Store::open(&home).unwrap();
+        let (version, schema, after, ok) = st
+            .with_read(|c| {
+                let v: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+                let ok: String = c.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+                Ok((v, schema_of(c), earlier_rows(c), ok))
+            })
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as u32);
+        assert_eq!(ok, "ok");
+        assert_eq!(schema, fresh, "the final revision's schema");
+        assert_eq!(after, before, "every row kept");
+        // The LAN viewer's cookie, its row ID, keeps naming it.
+        let v = st.get_viewer(LAN).unwrap().unwrap();
+        assert_eq!(v.public_id, "u_lan");
+        drop(st);
+
+        let copies = crate::store::backup::list(&crate::store::backup::dir(&home));
+        assert_eq!(copies.len(), 1, "copied before the repair: {copies:?}");
+        let copy = Connection::open(&copies[0]).unwrap();
+        assert_eq!(earlier_rows(&copy), before, "the copy holds the old rows");
+        assert!(
+            super::needs_multi_person_repair(&copy).unwrap(),
+            "the copy is from before the repair"
+        );
+
+        // Opening it again changes nothing and copies nothing.
+        drop(Store::open(&home).unwrap());
+        let copies = crate::store::backup::list(&crate::store::backup::dir(&home));
+        assert_eq!(copies.len(), 1, "{copies:?}");
+    }
+
+    #[test]
+    fn a_database_of_the_earlier_multi_person_revision_below_the_visibility_migration_gets_only_its_part()
+     {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        let c = Connection::open(home.db_path()).unwrap();
+        for sql in &MIGRATIONS[..PEOPLE_MIGRATION as usize] {
+            c.execute_batch(sql).unwrap();
+        }
+        c.execute(
+            "INSERT INTO install (k, v) VALUES ('id', ?1)",
+            ["0".repeat(32)],
+        )
+        .unwrap();
+        c.execute_batch(&format!(
+            "DROP TABLE viewer_cookies;
+             INSERT INTO viewers (id, public_id, display_name, created_at) VALUES ('{LAN}', 'u_lan', 'Mia', 'x');"
+        ))
+        .unwrap();
+        c.pragma_update(None, "user_version", PEOPLE_MIGRATION)
+            .unwrap();
+        drop(c);
+        let st = Store::open(&home).unwrap();
+        assert_eq!(st.get_viewer(LAN).unwrap().unwrap().public_id, "u_lan");
+        let v: u32 = st
+            .with_read(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
+            .unwrap();
+        assert_eq!(v, MIGRATIONS.len() as u32);
+    }
+
+    #[test]
+    fn the_multi_person_revisions_are_the_sql_their_migrations_hold() {
+        let squash = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        for (at, _, name, sql) in &super::MULTI_PERSON_REVISIONS {
+            assert!(
+                squash(MIGRATIONS[*at as usize - 1]).contains(&squash(sql)),
+                "{name} is not in migration {at}"
+            );
+        }
     }
 }
