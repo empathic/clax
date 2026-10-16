@@ -2,13 +2,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../agent/timings.dart';
+import '../home/home_recovery.dart';
+import '../home/home_settings.dart';
 import '../platform/secure_key.dart';
 import '../platform/settings_store.dart';
 
 /// Settings: the Claude API key, the agent (where `claude -p` can run), the
 /// model, dictation (whether it starts on its own, and its sounds and
 /// vibration), the Claude Code path, sharing (the name bundles carry and
-/// the sharing key's fingerprint), and the last ten measured timings.
+/// the sharing key's fingerprint), the home screen ([home]), and the last
+/// ten measured timings.
 ///
 /// Every choice is saved to [store] as it is made. The key is saved only
 /// through [secureKey], on Save key, and is never shown back: a saved key
@@ -21,6 +24,7 @@ class SettingsScreen extends StatefulWidget {
     required this.cliSupported,
     required this.timings,
     this.fingerprint,
+    this.home,
   });
 
   final SettingsStore store;
@@ -36,6 +40,9 @@ class SettingsScreen extends StatefulWidget {
   /// The sharing key's fingerprint (`BundleIdentity.fingerprint`), or null
   /// before the first export made the key. Read once; never makes a key.
   final Future<String?> Function()? fingerprint;
+
+  /// The home screen's section; null shows none.
+  final HomeScreenControls? home;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -259,6 +266,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       'A sharing key is made the first time you share an app',
                     ),
                   ),
+                if (widget.home case final h?) ...[
+                  const _Header('Home screen'),
+                  _HomeSection(controls: h),
+                ],
                 const _Header('Recent timings'),
                 ..._timings(context),
               ],
@@ -379,6 +390,105 @@ class _SettingsScreenState extends State<SettingsScreen> {
   static String _when(DateTime t) {
     String two(int n) => n.toString().padLeft(2, '0');
     return '${t.year}-${two(t.month)}-${two(t.day)} ${two(t.hour)}:${two(t.minute)}';
+  }
+}
+
+/// What Settings › Home screen works on: the home app's [settings], the
+/// [recovery] Undo and Reset run on, [open] (the home app in comment
+/// mode), and [changed], told as [HomeSettings.builtin] changes (before
+/// it is saved).
+class HomeScreenControls {
+  const HomeScreenControls({
+    required this.settings,
+    required this.open,
+    required this.changed,
+    this.recovery,
+  });
+
+  final HomeSettings settings;
+  final HomeRecovery? recovery;
+  final VoidCallback open;
+  final VoidCallback changed;
+}
+
+/// Open, Undo last change, Reset to Clax's home screen (each needs a home
+/// app; Undo and Reset a [HomeRecovery] too), and Use the built-in home
+/// screen, saved as [HomeSettings.builtin].
+class _HomeSection extends StatefulWidget {
+  const _HomeSection({required this.controls});
+  final HomeScreenControls controls;
+
+  @override
+  State<_HomeSection> createState() => _HomeSectionState();
+}
+
+class _HomeSectionState extends State<_HomeSection> {
+  var _busy = false;
+
+  HomeScreenControls get _c => widget.controls;
+
+  Future<void> _run(
+    Future<void> Function(HomeRecovery r) f,
+    String done,
+  ) async {
+    final r = _c.recovery;
+    if (r == null) return;
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _busy = true);
+    String text;
+    try {
+      await f(r);
+      text = done;
+    } on Object catch (e) {
+      text = recoveryFailure(e);
+    }
+    if (!mounted) return;
+    setState(() => _busy = false);
+    messenger.showSnackBar(SnackBar(content: Text(text)));
+  }
+
+  Future<void> _builtin(bool on) async {
+    setState(() => _c.settings.builtin = on);
+    _c.changed();
+    await _c.settings.save();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final has = _c.settings.homeAppId != null;
+    final can = has && _c.recovery != null && !_busy;
+    return Column(
+      children: [
+        ListTile(
+          leading: const Icon(Icons.home_outlined),
+          title: const Text('Open'),
+          subtitle: const Text('Comment on your home screen to change it'),
+          enabled: has,
+          onTap: _c.open,
+        ),
+        ListTile(
+          leading: const Icon(Icons.undo_rounded),
+          title: const Text('Undo last change'),
+          subtitle: const Text('Go back to the version before the latest'),
+          enabled: can,
+          onTap: () => _run((r) => r.undoLast(), 'Undid the last change'),
+        ),
+        ListTile(
+          leading: const Icon(Icons.restart_alt_rounded),
+          title: const Text("Reset to Clax's home screen"),
+          subtitle: const Text('Your data and comments stay'),
+          enabled: can,
+          onTap: () => _run((r) => r.reset(), "Reset to Clax's home screen"),
+        ),
+        SwitchListTile(
+          secondary: const Icon(Icons.grid_view_rounded),
+          title: const Text('Use the built-in home screen'),
+          subtitle: const Text('Until you switch this off'),
+          value: _c.settings.builtin,
+          onChanged: _builtin,
+        ),
+      ],
+    );
   }
 }
 

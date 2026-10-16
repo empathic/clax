@@ -7,6 +7,7 @@ import '../agent/timings.dart';
 import '../bundle/lineage_store.dart' show LineageEntry;
 import '../clax/api.dart';
 import '../home/home_host.dart';
+import '../home/home_route.dart' show HomeBanner;
 import '../home/home_settings.dart';
 import '../platform/voice.dart';
 import '../agent/plan.dart';
@@ -57,6 +58,9 @@ import 'new_sheet.dart';
 /// With [build], a tile whose app's build goes shows how far it is (a ring
 /// and "3/7"), the making screen is the build view, and the inspector's
 /// Plan tab shows the app's plan.
+///
+/// With [banner] (the home app failed), a banner above the apps says "Your
+/// home screen couldn't load", with Undo last change and Reset.
 class Launcher extends StatefulWidget {
   const Launcher({
     super.key,
@@ -79,6 +83,7 @@ class Launcher extends StatefulWidget {
     this.bundles,
     this.lineage,
     this.host,
+    this.banner,
   });
 
   final ClaxApi api;
@@ -152,6 +157,10 @@ class Launcher extends StatefulWidget {
   /// its own over [stream], [makes] (or its own), [build] and [icons],
   /// told [needsKey], whose calls it answers itself.
   final HomeHost? host;
+
+  /// The home app's recovery, shown as a banner above the apps; null
+  /// shows none.
+  final HomeBanner? banner;
 
   @override
   State<Launcher> createState() => _LauncherState();
@@ -271,6 +280,8 @@ class _LauncherState extends State<Launcher> {
                 const SizedBox(width: 4),
               ],
             ),
+            if (widget.banner case final b?)
+              SliverToBoxAdapter(child: _RecoveryBanner(actions: b)),
             if (_host.needsKey)
               SliverToBoxAdapter(child: _KeyBanner(onAdd: widget.openSettings)),
             if (apps == null && _host.loadError != null)
@@ -769,6 +780,114 @@ ColorScheme tileScheme(String id, Brightness b) => _tileSchemes.putIfAbsent((
   id,
   b,
 ), () => ColorScheme.fromSeed(seedColor: tileSeed(id), brightness: b));
+
+/// "Your home screen couldn't load", with Undo last change and Reset; a
+/// failed action's sentence shows under the title, and both buttons wait
+/// while one runs.
+class _RecoveryBanner extends StatefulWidget {
+  const _RecoveryBanner({required this.actions});
+
+  final HomeBanner actions;
+
+  @override
+  State<_RecoveryBanner> createState() => _RecoveryBannerState();
+}
+
+class _RecoveryBannerState extends State<_RecoveryBanner> {
+  var _busy = false;
+  String? _error;
+
+  Future<void> _run(Future<String?> Function() action) async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    final error = await action();
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _error = error;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final on = scheme.onErrorContainer;
+    return Padding(
+      key: const ValueKey('home-recovery-banner'),
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      child: Material(
+        color: scheme.errorContainer,
+        borderRadius: BorderRadius.circular(20),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 8, 6),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: Row(
+                  children: [
+                    Icon(Icons.home_repair_service_outlined, color: on),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        "Your home screen couldn't load",
+                        style: theme.textTheme.titleSmall?.copyWith(color: on),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (_error case final e?)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(36, 6, 8, 0),
+                  child: Text(
+                    e,
+                    style: theme.textTheme.bodySmall?.copyWith(color: on),
+                  ),
+                ),
+              Align(
+                alignment: Alignment.centerRight,
+                child: Wrap(
+                  spacing: 4,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    if (_busy)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: SizedBox.square(
+                          dimension: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: on,
+                          ),
+                        ),
+                      ),
+                    TextButton(
+                      style: TextButton.styleFrom(foregroundColor: on),
+                      onPressed: _busy ? null : () => _run(widget.actions.undo),
+                      child: const Text('Undo last change'),
+                    ),
+                    TextButton(
+                      style: TextButton.styleFrom(foregroundColor: on),
+                      onPressed: _busy
+                          ? null
+                          : () => _run(widget.actions.reset),
+                      child: const Text('Reset'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 class _KeyBanner extends StatelessWidget {
   const _KeyBanner({required this.onAdd});

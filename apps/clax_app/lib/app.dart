@@ -33,6 +33,7 @@ import 'bundle/exporter.dart';
 import 'bundle/installer.dart' show Installer, forgetDeleted, fromBundleOf;
 import 'home/home_host.dart';
 import 'home/home_install.dart';
+import 'home/home_recovery.dart';
 import 'home/home_route.dart';
 import 'home/home_settings.dart';
 import 'home/home_update.dart';
@@ -611,6 +612,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// screen, from the daemon's first Up.
   HomeHost? _homeHost;
 
+  /// Undo and Reset of the home app, made with [_homeHost].
+  HomeRecovery? _homeRecovery;
+
   /// What the home screen opens, over the app's navigator.
   late final _homeFlows = HomeFlows(
     contextOf: () => _nav.currentContext,
@@ -732,6 +736,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     _makes.dispose();
     unawaited(_runtime.close());
     _homeHost?.dispose();
+    _homeRecovery?.dispose();
     unawaited(_homeActions.close());
     unawaited(_stream?.close());
     if (_s.inspector case final WebViewInspector i) i.dispose();
@@ -1077,6 +1082,21 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
             needsKey: _needsKey,
           );
           _homeFlows.host = _homeHost!;
+          _homeRecovery = HomeRecovery(
+            api: _api,
+            installer: Installer(
+              api: _api,
+              store: _lineages,
+              key: homeInstallKey(),
+            ),
+            settings: _homeHost!.settings,
+            shipped: _s.shippedHome,
+            ensureSession: () => _api.registerAppSession(
+              installId: _s.installId,
+              pid: _s.pid,
+              cwd: _s.supportDir,
+            ),
+          );
         }
         if (_questionQueue.isNotEmpty) unawaited(_recheckThenNext());
         if (_pendingOpen case (:final aid, :final action)?) {
@@ -1181,6 +1201,19 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           fingerprint: _s.bundleKey == null
               ? null
               : () async => (await _s.bundleKey!.existing())?.fingerprint,
+          home: switch (_homeHost) {
+            final host? => HomeScreenControls(
+              settings: host.settings,
+              recovery: _homeRecovery,
+              open: () {
+                if (host.settings.homeAppId case final aid?) {
+                  _open(aid, action: AppAction.comment);
+                }
+              },
+              changed: host.settingsChanged,
+            ),
+            null => null,
+          },
         ),
       ),
     );
@@ -1846,6 +1879,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     required AppSettings settings,
     required Stream<AppAction> actions,
     required ValueChanged<Ready> onReady,
+    VoidCallback? onStoppedLoading,
     AppAction? action,
     String? thread,
     String? comment,
@@ -1872,6 +1906,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       initialThread: thread,
       initialComment: comment,
       onReady: onReady,
+      onStoppedLoading: onStoppedLoading,
       device: _device,
       build: _build,
       home: _homeHost,
@@ -1888,7 +1923,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   );
 
   /// The home app [aid]'s page, as the home screen ([AppMode.home]).
-  Widget _homeApp(BuildContext context, String aid, VoidCallback ready) =>
+  Widget _homeApp(BuildContext context, String aid, HomePageHooks hooks) =>
       _AppPage(
         aid: aid,
         endpoint: _endpoint,
@@ -1901,9 +1936,10 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           actions: _homeActions.stream,
           mode: AppMode.home,
           onReady: (r) {
-            ready();
+            hooks.onReady();
             _onReady(aid, r);
           },
+          onStoppedLoading: hooks.onStoppedLoading,
         ),
       );
 
@@ -1961,7 +1997,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       key: const ValueKey('home'),
       host: host,
       app: _homeApp,
-      fallback: (_) => Launcher(
+      recovery: _homeRecovery,
+      fallback: (_, banner) => Launcher(
         api: _api,
         open: _open,
         make: _make,
@@ -1980,6 +2017,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         bundles: _bundles,
         lineage: _lineages.entry,
         host: host,
+        banner: banner,
       ),
     );
   }

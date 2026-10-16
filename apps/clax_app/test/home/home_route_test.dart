@@ -1,13 +1,20 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:clax_app/agent/timings.dart';
+import 'package:clax_app/bundle/installer.dart';
+import 'package:clax_app/bundle/lineage_store.dart';
 import 'package:clax_app/clax/fake_api.dart';
+import 'package:clax_app/daemon/clock.dart';
+import 'package:clax_app/home/home_install.dart';
+import 'package:clax_app/home/home_recovery.dart';
 import 'package:clax_app/home/home_host.dart';
 import 'package:clax_app/home/home_route.dart';
 import 'package:clax_app/home/home_settings.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/host_protocol.dart';
+import 'package:clax_app/ui/launcher.dart';
 import 'package:clax_app/ui/make_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -16,6 +23,30 @@ import '../support/fake_surface.dart';
 import '../support/fake_voice.dart';
 
 const _page = {'index.html': '<h1>x</h1>'};
+
+/// A clock whose delays complete as the test advances it.
+class _Clock implements Clock {
+  var _t = Duration.zero;
+  final _waits = <(Duration, Completer<void>)>[];
+
+  @override
+  DateTime now() => DateTime.utc(2026, 10, 16).add(_t);
+
+  @override
+  Future<void> delay(Duration d) {
+    final c = Completer<void>();
+    _waits.add((_t + d, c));
+    return c.future;
+  }
+
+  void advance(Duration d) {
+    _t += d;
+    for (final w in _waits.where((w) => w.$1 <= _t).toList()) {
+      _waits.remove(w);
+      w.$2.complete();
+    }
+  }
+}
 
 class _Actions implements HomeActions {
   final menus = <(String, Rect)>[];
@@ -95,11 +126,12 @@ void main() {
       MaterialApp(
         home: HomeRoute(
           host: host,
-          app: (context, aid, onReady) {
-            ready = onReady;
+          clock: _Clock(),
+          app: (context, aid, hooks) {
+            ready = hooks.onReady;
             return _Page(aid);
           },
-          fallback: (_) => const Text('built-in'),
+          fallback: (_, _) => const Text('built-in'),
         ),
       ),
     );
@@ -172,7 +204,8 @@ void main() {
             padding: padding,
             child: HomeRoute(
               host: host,
-              app: (context, aid, onReady) => AppScreen(
+              clock: _Clock(),
+              app: (context, aid, hooks) => AppScreen(
                 aid: aid,
                 base: Uri.parse('http://127.0.0.1:7999/'),
                 api: api,
@@ -183,9 +216,9 @@ void main() {
                 worker: const Stream.empty(),
                 home: host,
                 mode: AppMode.home,
-                onReady: (_) => onReady(),
+                onReady: (_) => hooks.onReady(),
               ),
-              fallback: (_) => const Text('built-in'),
+              fallback: (_, _) => const Text('built-in'),
             ),
           ),
         ),
@@ -270,6 +303,166 @@ void main() {
       );
       expect(origin, const Offset(10, 40));
       expect(actions.menus, [(other, Rect.fromLTWH(15, 140, 60, 70))]);
+    });
+  });
+  group('the fallback when the home app fails', () {
+    late Directory tmp;
+    late _Clock clock;
+    late HomeRecovery recovery;
+    HomePageHooks? hooks;
+
+    setUp(() {
+      tmp = Directory.systemTemp.createTempSync('home-route');
+      clock = _Clock();
+      recovery = HomeRecovery(
+        api: api,
+        installer: Installer(
+          api: api,
+          store: LineageStore(Directory('${tmp.path}/support')),
+          key: homeInstallKey(),
+        ),
+        settings: settings,
+      );
+      hooks = null;
+    });
+    tearDown(() => tmp.deleteSync(recursive: true));
+
+    Future<void> pump(WidgetTester tester) async {
+      settings.homeAppId = home;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: HomeRoute(
+            host: host,
+            recovery: recovery,
+            clock: clock,
+            app: (context, aid, h) {
+              hooks = h;
+              return _Page(aid);
+            },
+            fallback: (_, banner) => Launcher(
+              api: api,
+              open: (_) {},
+              make: (r, c, s) => Completer<String>().future,
+              voice: FakeVoice.unsupported('No speech here'),
+              host: host,
+              banner: banner,
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+    }
+
+    final banner = find.text("Your home screen couldn't load");
+
+    testWidgets('no ready within 10 s: the built-in screen with the banner', (
+      tester,
+    ) async {
+      await pump(tester);
+      expect(find.byType(Launcher), findsNothing);
+      clock.advance(const Duration(milliseconds: 9999));
+      await tester.pump();
+      expect(find.byType(Launcher), findsNothing);
+      clock.advance(const Duration(milliseconds: 1));
+      await tester.pump();
+      await tester.pump();
+      expect(find.byType(Launcher), findsOneWidget);
+      expect(banner, findsOneWidget);
+      expect(find.text('Undo last change'), findsOneWidget);
+      expect(find.text('Reset'), findsOneWidget);
+    });
+
+    testWidgets('ready at 9.9 s: no fallback, then or later', (tester) async {
+      await pump(tester);
+      clock.advance(const Duration(milliseconds: 9900));
+      hooks!.onReady();
+      await tester.pump();
+      clock.advance(const Duration(seconds: 30));
+      await tester.pump();
+      expect(find.byType(Launcher), findsNothing);
+      expect(find.text('page $home'), findsOneWidget);
+    });
+
+    testWidgets('a late ready takes the fallback away again', (tester) async {
+      await pump(tester);
+      clock.advance(const Duration(seconds: 10));
+      await tester.pump();
+      await tester.pump();
+      expect(banner, findsOneWidget);
+      hooks!.onReady();
+      await tester.pump();
+      expect(find.byType(Launcher), findsNothing);
+    });
+
+    testWidgets('"This app stopped loading": the fallback with the banner', (
+      tester,
+    ) async {
+      await pump(tester);
+      hooks!.onReady();
+      await tester.pump();
+      hooks!.onStoppedLoading();
+      await tester.pump();
+      expect(banner, findsOneWidget);
+    });
+
+    testWidgets('Undo restores the version before the latest, and the home '
+        'app shows again at its ready', (tester) async {
+      await api.registerAppSession(installId: 'i', pid: 1);
+      api.seedVersion(home, {'index.html': '<p>broken</p>'});
+      await pump(tester);
+      hooks!.onStoppedLoading();
+      await tester.pump();
+      expect(_Page.made, 1);
+
+      await tester.tap(find.text('Undo last change'));
+      await tester.pump();
+      await tester.pump();
+      final restore = api.calls.lastWhere((c) => c.name == 'restoreVersion');
+      expect(restore.args, {'aid': home, 'n': 1, 'ifVersion': 2});
+      expect(_Page.made, 2, reason: 'the page loads again');
+      // Loading under the built-in screen, without the banner.
+      expect(find.byType(Launcher), findsOneWidget);
+      expect(banner, findsNothing);
+
+      hooks!.onReady();
+      await tester.pump();
+      expect(find.byType(Launcher), findsNothing);
+      expect(find.text('page $home'), findsOneWidget);
+    });
+
+    testWidgets('a failed Undo says why on the banner', (tester) async {
+      await pump(tester);
+      hooks!.onStoppedLoading();
+      await tester.pump();
+      await tester.tap(find.text('Undo last change'));
+      await tester.pump();
+      await tester.pump();
+      expect(
+        find.text('Your home screen has no earlier version.'),
+        findsOneWidget,
+      );
+      expect(banner, findsOneWidget);
+    });
+
+    testWidgets('the built-in home screen, chosen, shows without the banner '
+        'and survives a restart', (tester) async {
+      final dir = Directory('${tmp.path}/support');
+      final again = (await tester.runAsync(() async {
+        final saved = await HomeSettings.load(dir);
+        saved
+          ..homeAppId = home
+          ..builtin = true;
+        await saved.save();
+        return HomeSettings.load(dir);
+      }))!;
+      expect(again.builtin, isTrue);
+      settings.builtin = again.builtin;
+      await pump(tester);
+      clock.advance(const Duration(seconds: 10));
+      await tester.pump();
+      expect(find.byType(Launcher), findsOneWidget);
+      expect(find.byType(_Page), findsNothing);
+      expect(banner, findsNothing);
     });
   });
 }
