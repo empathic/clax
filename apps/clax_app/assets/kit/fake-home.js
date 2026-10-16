@@ -10,9 +10,11 @@
 // It answers what the real one does: `apps()` (newest first), `makes()`,
 // `unread()`, `needsKey()`, the actions `open(id)`, `openMake(id)`,
 // `newApp()`, `menu(id, {x, y, w, h})`, `openInbox()`, `openSettings()`,
-// `importApp()`, and `on(name, fn)` for `apps`, `makes`, `unread` and `key`,
-// which returns a function that stops the calls. Each action is kept in
-// `home.calls` as `{method, args}` instead of opening anything, and
+// `importApp()`, `shown()`, and `on(name, fn)` for `apps`, `makes`, `unread`
+// and `key`, which returns a function that stops the calls. Each action is
+// kept in `home.calls` as `{method, args}` instead of opening anything;
+// `home.shownCount` counts the page's `shown()` calls (a test asserts the
+// page said once that it was drawn: `home.shownCount === 1`); and
 // `home.set({apps, makes, unread, needsKey})` changes the state and calls
 // the listeners of what changed, as the app does when a make finishes or an
 // app changes.
@@ -55,6 +57,7 @@ export function fakeHome(state = {}) {
   const s = { ...copy(SAMPLE), ...copy(state) };
   const listeners = { apps: new Set(), makes: new Set(), unread: new Set(), key: new Set() };
   const calls = [];
+  let shown = 0;
   const act = (method) => async (...args) => { calls.push({ method, args: copy(args) }); return null; };
   const emit = (name, data) => { for (const fn of [...listeners[name]]) fn(copy(data)); };
   return {
@@ -69,6 +72,8 @@ export function fakeHome(state = {}) {
     openInbox: act('openInbox'),
     openSettings: act('openSettings'),
     importApp: act('importApp'),
+    shown: async () => { shown++; return null; },
+    get shownCount() { return shown; },
     on(name, fn) {
       if (!listeners[name]) throw new TypeError(`no home event named ${JSON.stringify(name)}`);
       listeners[name].add(fn);

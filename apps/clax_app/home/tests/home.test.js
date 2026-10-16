@@ -270,3 +270,12 @@ test('tells Clax once the grid is drawn, after the apps arrive', async () => {
   await wait(() => tiles().length === 2);
   expect(shown.length).toBe(1);
 });
+
+test('the shipped page calls shown() exactly once over the kit\'s fake host', async () => {
+  const home = await show({ makes: [] });
+  await wait(() => home.shownCount > 0);
+  expect(labels().length).toBe(SAMPLE.apps.length);
+  home.set({ apps: SAMPLE.apps.slice(0, 3) });
+  await wait(() => tiles().length === 3);
+  expect(home.shownCount).toBe(1);
+});

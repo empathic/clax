@@ -74,7 +74,8 @@ capability first and light features up when it resolves.
   in the draft preview. `apps()`, `makes()`, `unread()`, `needsKey()`, the
   actions `open`, `openMake`, `newApp`, `menu`, `openInbox`,
   `openSettings` and `importApp` (from a click handler, as for the device
-  capabilities), and `on(name, fn)`. Types: `ClaxExtensions.Home` in
+  capabilities), `shown()` once the home screen is drawn, and
+  `on(name, fn)`. Types: `ClaxExtensions.Home` in
   `clax-extensions.d.ts`. See "The home screen's capability" below.
 - `permissions`: `state()` and `request()`; the only prompt is the consent
   to the first page-written comment.

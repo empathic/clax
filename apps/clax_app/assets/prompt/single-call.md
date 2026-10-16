@@ -80,8 +80,11 @@ change, and it lands in place with their data kept.
 - One app declares `{"home": {}}`: Clax's home screen, reached with
   `await window.claude.use("home")` (`apps()`, `makes()`, `unread()`,
   `needsKey()`, the actions `open`, `openMake`, `newApp`, `menu`,
-  `openInbox`, `openSettings`, `importApp`, and `on(name, fn)`; types in
-  `ClaxExtensions.Home` below).
+  `openInbox`, `openSettings`, `importApp`, `shown`, and `on(name, fn)`;
+  types in `ClaxExtensions.Home` below).
+- Keep its `home.shown()` call, made once per load right after the grid
+  (or the empty state, or the load error) is drawn: without it Clax treats
+  the page as broken after 10 s and shows its built-in home screen.
 - It is a launcher first: keep opening an app by its tile, New app, the
   tile's menu on a long press, the inbox, Settings and the key banner
   reachable. Never hide an app the person did not ask to hide; keep the
