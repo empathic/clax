@@ -559,6 +559,15 @@ capability first and light features up when it resolves.
   reject `no_gesture` otherwise). `location.watch` follows the device only
   while the app is on screen. See "Device capabilities in the Clax app"
   below.
+- `home` (Clax's own): the Clax app's home screen. Declaring it grants
+  nothing: the app serves it to the one app it shows as its home screen,
+  and `use("home")` resolves `null` for every other app, in a browser and
+  in the draft preview. `apps()`, `makes()`, `unread()`, `needsKey()`, the
+  actions `open`, `openMake`, `newApp`, `menu`, `openInbox`,
+  `openSettings` and `importApp` (from a click handler, as for the device
+  capabilities), `shown()` once the home screen is drawn, `tiles(list)`
+  after each render that moves its tiles, and `on(name, fn)`. Types: `ClaxExtensions.Home` in
+  `clax-extensions.d.ts`. See "The home screen's capability" below.
 - `permissions`: `state()` and `request()`; the only prompt is the consent
   to the first page-written comment.
 
