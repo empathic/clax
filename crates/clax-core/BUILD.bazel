@@ -1,3 +1,4 @@
+load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
 load("//bazel:cargo.bzl", "cargo_package")
 
 cargo_package(
@@ -13,5 +14,13 @@ cargo_package(
 filegroup(
     name = "toolpath_vectors",
     srcs = glob(["tests/toolpath/**"]),
+    visibility = ["//visibility:public"],
+)
+
+# The same, in bazel-bin, for the web UI's and Pi's tests (rules_js reads
+# its inputs there).
+copy_to_bin(
+    name = "toolpath_vectors_bin",
+    srcs = [":toolpath_vectors"],
     visibility = ["//visibility:public"],
 )

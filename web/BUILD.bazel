@@ -1,7 +1,7 @@
 load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
 load("@npm_web//:defs.bzl", "npm_link_all_packages")
 load("//bazel:dirs.bzl", "pick_dir")
-load("//bazel/js:defs.bzl", "npm_script_build")
+load("//bazel/js:defs.bzl", "npm_script_build", "npm_script_test")
 
 # The web UI under Bazel (docs/bazel.md, "The web side and Pi"): its
 # package.json scripts, run over the whole project with packages from
@@ -144,4 +144,45 @@ copy_to_bin(
     name = "contract_bin",
     srcs = [":contract_files"],
     visibility = ["//crates:__subpackages__"],
+)
+
+# What the unit tests read outside web/.
+UNIT_DATA = [
+    ":files",
+    ":node_modules",
+    "//crates/clax-core:toolpath_vectors_bin",
+]
+
+# pnpm run lint, typecheck and test.
+npm_script_test(
+    name = "lint",
+    data = UNIT_DATA,
+    script = "lint",
+)
+
+npm_script_test(
+    name = "typecheck",
+    data = UNIT_DATA,
+    script = "typecheck",
+)
+
+npm_script_test(
+    name = "unit",
+    args = ["--reporter=dot"],
+    data = UNIT_DATA,
+    script = "test",
+)
+
+# The bundle gate: gzip sizes of the built web UI and extension against
+# web/perf/bundle-budget.json (scripts/bundle-size.mjs). Its --record mode
+# writes the budget file in the checkout and stays a native command.
+npm_script_test(
+    name = "bundle_size",
+    data = [
+        ":dist",
+        ":dist_extension",
+        ":files",
+        ":node_modules",
+    ],
+    script = "bundle-size",
 )
