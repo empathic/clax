@@ -51,4 +51,15 @@ build:clippy --@rules_rust//rust/settings:clippy_flag=-Dwarnings
 build:fmt --aspects=@rules_rust//rust:defs.bzl%rustfmt_aspect
 build:fmt --output_groups=+rustfmt_checks
 
+# --config=ci: the whole runner. CI applies it to every command
+# (`common --config=ci` in user.bazelrc, .github/actions/setup-bazel). Its
+# downloads and its disk cache are restored and saved by actions/cache, so
+# the cache is held to what fits one.
+common:ci --repository_cache=~/.cache/bazel-repo
+common:ci --lockfile_mode=error
+build:ci --experimental_disk_cache_gc_max_size=6G
+# Five minutes a test target, where a loaded developer machine gets
+# fifteen (bazel/cargo.bzl): a test that hangs must not use up the job.
+test:ci --test_timeout=300
+
 try-import %workspace%/user.bazelrc
