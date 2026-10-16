@@ -416,14 +416,16 @@ impl Identity {
     /// Like [`Identity::viewer`] for a request that acts (a comment, a
     /// resolve, a seen mark): the owner's row is made when missing, for the
     /// token alone too (the CLI acting before any browser; see
-    /// [`Store::owner_viewer`]), and the cookie's viewer row when it has none
-    /// yet. `None` only without any credential or cookie.
+    /// [`Store::owner_viewer`]); else the viewer the cookie names. A cookie
+    /// that names no viewer makes none: only `GET /api/viewers/me` makes a
+    /// viewer, with a cookie it mints (spec 2026-10-08 §21.4). `None` without
+    /// any credential, or with a cookie that names no viewer.
     pub fn ensure_viewer(&self, st: &Store) -> clax_core::Result<Option<Viewer>> {
         if self.is_owner() {
             return st.owner_viewer(self.owner_browser()).map(Some);
         }
         match &self.cookie {
-            Some(c) => st.upsert_viewer(c, None).map(Some),
+            Some(c) => st.get_viewer(c),
             None => Ok(None),
         }
     }

@@ -2049,8 +2049,10 @@ nothing else:
 10. **Viewer cookies** (§21.4): a LAN viewer's `clax_viewer` cookie, its
     row ID until now, is replaced by a random secret at that browser's
     next `GET /api/viewers/me` (a `Set-Cookie` on that answer); the
-    viewer's public ID, name and history stay. New viewers get such a
-    secret from the start.
+    viewer's public ID, name and history stay; the replaced cookie names
+    the viewer for 10 more minutes. New viewers get such a secret from the
+    start, and a cookie value the daemon did not mint is answered with a
+    new viewer and cookie, never adopted.
 
 §19 covers agent-facing output and existing behaviour. New UI (the People
 link and page, the agent strip, owner chips, the Send menu's grouping) is
@@ -2238,9 +2240,14 @@ boundary.
    invite's neighbour, say) names no one. Cookies from before migration 24
    were the viewer's row ID, a monotonic ULID; the migration keeps them
    working for anonymous LAN viewers only, as legacy hashes: the viewer's
-   next `GET /api/viewers/me` replaces such a cookie with a fresh secret,
-   and a viewer made a person loses its legacy cookies, so a guessable
-   value never carries a person's authority.
+   next `GET /api/viewers/me` replaces such a cookie with a fresh secret
+   (the replaced cookie names the same viewer for 10 more minutes, so tabs
+   and requests in flight never become new viewers), and a viewer made a
+   person loses its legacy cookies, so a guessable value never carries a
+   person's authority. A cookie the daemon did not mint is never adopted:
+   `GET /api/viewers/me` answers one that names no viewer with a new
+   viewer under a fresh secret, so a value planted in a browser (cookies
+   ignore ports) never binds to a viewer that may become a person.
 5. **Invite races.** An invite code crosses the LAN in clear inside a
    signed request; a sniffer racing it redeems first. Sam then gets
    `invalid_invite`, and the owner sees a connection from an unexpected

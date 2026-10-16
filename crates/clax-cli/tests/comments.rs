@@ -32,9 +32,6 @@ const HARNESS_ENV: [&str; 18] = [
     "CLAX_SESSION_ID",
 ];
 
-/// A viewer cookie standing for someone else's browser.
-const MARIA: &str = "cxv_MariaTheReviewer_MariaTheReviewer_MariaTheR";
-
 fn clax(home: &Path) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_clax"));
     for var in HARNESS_ENV {
@@ -52,12 +49,16 @@ fn clax(home: &Path) -> Command {
 /// A daemon in a temp home; stopped on drop.
 struct Daemon {
     dir: tempfile::TempDir,
+    /// The viewer cookie of someone else's browser (Maria's), minted by
+    /// the daemon on first use.
+    maria: std::sync::OnceLock<String>,
 }
 
 impl Daemon {
     fn start() -> Daemon {
         let d = Daemon {
             dir: tempfile::tempdir().unwrap(),
+            maria: std::sync::OnceLock::new(),
         };
         let st = clax(&d.home())
             .args(["--port", "0", "serve"])
@@ -79,6 +80,25 @@ impl Daemon {
     fn token(&self) -> String {
         self.info()["token"].as_str().unwrap().to_string()
     }
+    /// Maria's viewer cookie, as `GET /api/viewers/me` mints it.
+    fn maria(&self) -> &str {
+        self.maria.get_or_init(|| {
+            let res = self
+                .http()
+                .get(format!("{}/api/viewers/me", self.base()))
+                .send()
+                .unwrap();
+            res.headers()["set-cookie"]
+                .to_str()
+                .unwrap()
+                .split(';')
+                .next()
+                .and_then(|kv| kv.strip_prefix("clax_viewer="))
+                .expect("a viewer cookie")
+                .to_string()
+        })
+    }
+
     fn http(&self) -> reqwest::blocking::Client {
         reqwest::blocking::Client::builder()
             .no_proxy()
@@ -130,7 +150,7 @@ impl Daemon {
         let res = self
             .http()
             .put(format!("{}/api/viewers/me", self.base()))
-            .header("cookie", format!("clax_viewer={MARIA}"))
+            .header("cookie", format!("clax_viewer={}", self.maria()))
             .json(&json!({"display_name": "Maria"}))
             .send()
             .unwrap();
@@ -147,7 +167,7 @@ impl Daemon {
         let res = self
             .http()
             .post(format!("{}/api/artifacts/{aid}/threads", self.base()))
-            .header("cookie", format!("clax_viewer={MARIA}"))
+            .header("cookie", format!("clax_viewer={}", self.maria()))
             .multipart(form)
             .send()
             .unwrap();
@@ -252,7 +272,7 @@ fn world() -> World {
             "{}/api/artifacts/{review}/threads/{t1}/resolve",
             d.base()
         ))
-        .header("cookie", format!("clax_viewer={MARIA}"))
+        .header("cookie", format!("clax_viewer={}", d.maria()))
         .send()
         .unwrap();
     assert!(res.status().is_success());

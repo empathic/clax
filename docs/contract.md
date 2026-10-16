@@ -5557,9 +5557,15 @@ it with Ajv (draft 2020-12, formats asserted;
   cookies (a person's browsers). A cookie from before migration 24 was the
   viewer's row ID (a ULID); it keeps naming an anonymous LAN viewer until
   that browser's next `GET /api/viewers/me`, which replaces it with a fresh
-  secret for the same viewer (and a ULID cookie naming no one with a new
-  viewer); it never names a connected person, and a viewer made a person
-  loses such cookies. Any other value names no viewer. Neither cookie leaves the
+  secret for the same viewer. The replaced cookie keeps naming that viewer
+  for 10 minutes, so requests already in flight with it and the browser's
+  other tabs act as the same viewer, each `GET /api/viewers/me` among them
+  answered with another fresh secret; then it names no one. A legacy
+  cookie never names a connected person, and a viewer made a person loses
+  such cookies. A cookie is never adopted: `GET /api/viewers/me` answers a
+  value that names no viewer (one the daemon never minted, such as one
+  another local server planted) with a new viewer under a fresh secret,
+  and any other route takes it as no cookie. Neither cookie leaves the
   daemon: no response body, event, thread view, comment, or log carries it.
   Outside the cookie a viewer is named by its public ID (`u_` and 22
   lowercase hex digits, assigned once and never changed): `GET`/`PUT

@@ -2710,13 +2710,50 @@ async fn an_anonymous_viewers_cookie_is_a_secret_not_its_row_id() {
     assert_ne!(a.cookie[4..20], b.cookie[4..20]);
 }
 
-/// A viewer from before migration 24 holds its row ID as its cookie. It
-/// keeps working until its next `GET /api/viewers/me`, which replaces it
-/// with a fresh secret naming the same viewer; and a viewer made a person
-/// never carries a person's authority on such a cookie.
+/// The `clax_viewer` value in a response's `Set-Cookie`, if any.
+fn set_cookie_of(res: &reqwest::Response) -> Option<String> {
+    res.headers()
+        .get("set-cookie")
+        .map(|v| v.to_str().unwrap().to_string())
+        .and_then(|set| {
+            set.split(';')
+                .next()
+                .and_then(|kv| kv.strip_prefix("clax_viewer="))
+                .map(str::to_string)
+        })
+}
+
+/// `GET /api/viewers/me` from the LAN with `cookie`: the answer's cookie
+/// (when it sets one) and its viewer.
+async fn viewers_me_from_lan(ts: &TestServer, cookie: &str) -> (Option<String>, Value) {
+    let (client, base) = ts.lan();
+    let res = client
+        .get(format!("{base}/api/viewers/me"))
+        .header("cookie", format!("clax_viewer={cookie}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let set = set_cookie_of(&res);
+    (set, res.json::<Value>().await.unwrap()["viewer"].clone())
+}
+
+/// The number of viewer rows.
+fn viewer_rows(ts: &TestServer) -> i64 {
+    let db = rusqlite::Connection::open(ts.home.db_path()).unwrap();
+    db.query_row("SELECT COUNT(*) FROM viewers", [], |r| r.get(0))
+        .unwrap()
+}
+
+/// A viewer from before migration 24 holds its row ID as its cookie. Its
+/// next `GET /api/viewers/me` replaces it with a fresh secret naming the
+/// same viewer; the old cookie keeps naming that viewer for a short while
+/// (requests in flight, other tabs), then no one; and a viewer made a
+/// person never carries a person's authority on such a cookie.
 #[tokio::test]
 async fn a_legacy_viewer_cookie_is_replaced_and_never_names_a_person() {
-    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let clock = std::sync::Arc::new(clax_core::working::ManualClock::at("2026-10-11T09:00:00Z"));
+    let ts = TestServer::spawn_on_with_clock("0.0.0.0".parse().unwrap(), clock.clone()).await;
     // As a home migrated from main holds it: the row ID's hash, legacy.
     let legacy = "01J9Z3K4M5N6P7Q8R9S0T1V2W3";
     let lan = ts.store.upsert_viewer(legacy, Some("Lan")).unwrap();
@@ -2724,29 +2761,22 @@ async fn a_legacy_viewer_cookie_is_replaced_and_never_names_a_person() {
         ts.store.get_viewer(legacy).unwrap().unwrap().public_id,
         lan.public_id
     );
-    let (client, base) = ts.lan();
-    let res = client
-        .get(format!("{base}/api/viewers/me"))
-        .header("cookie", format!("clax_viewer={legacy}"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 200);
-    let set = res.headers()["set-cookie"].to_str().unwrap().to_string();
-    let fresh = set
-        .split(';')
-        .next()
-        .unwrap()
-        .strip_prefix("clax_viewer=")
-        .unwrap()
-        .to_string();
-    let v: Value = res.json().await.unwrap();
-    assert_eq!(
-        v["viewer"]["public_id"],
-        json!(lan.public_id),
-        "the same viewer"
-    );
+    let (fresh, v) = viewers_me_from_lan(&ts, legacy).await;
+    let fresh = fresh.expect("a fresh cookie");
+    assert_eq!(v["public_id"], json!(lan.public_id), "the same viewer");
     assert!(fresh.starts_with("cxv_"), "{fresh}");
+    assert_eq!(
+        ts.store.get_viewer(&fresh).unwrap().unwrap().public_id,
+        lan.public_id
+    );
+    // Within the grace window the old cookie still names the viewer.
+    clock.advance(clax_core::store::viewers::LEGACY_SWAP_GRACE_SECS - 1);
+    assert_eq!(
+        ts.store.get_viewer(legacy).unwrap().unwrap().public_id,
+        lan.public_id
+    );
+    // After it, no one; the fresh secret keeps working.
+    clock.advance(2);
     assert!(
         ts.store.get_viewer(legacy).unwrap().is_none(),
         "the old cookie names no one"
@@ -2769,4 +2799,71 @@ async fn a_legacy_viewer_cookie_is_replaced_and_never_names_a_person() {
     assert!(ts.store.get_viewer(other).unwrap().is_none());
     let (status, _) = people_me_from_lan(&ts, Some(other)).await;
     assert_eq!(status, 403);
+}
+
+/// A migrated viewer's tabs reopen together: four `GET /api/viewers/me`
+/// at once carry one legacy cookie. Every answer is that viewer, with its
+/// name, under a fresh secret that names it; no new viewer is made, and a
+/// request still carrying the old cookie acts as that viewer too.
+#[tokio::test]
+async fn parallel_swaps_of_one_legacy_cookie_keep_one_viewer() {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let legacy = "01J9Z3K4M5N6P7Q8R9S0T1V2W5";
+    let lan = ts.store.upsert_viewer(legacy, Some("Name-v2")).unwrap();
+    let rows = viewer_rows(&ts);
+    let answers = futures::future::join_all((0..4).map(|_| viewers_me_from_lan(&ts, legacy))).await;
+    let mut cookies = Vec::new();
+    for (set, v) in answers {
+        assert_eq!(v["public_id"], json!(lan.public_id), "{v}");
+        assert_eq!(v["display_name"], json!("Name-v2"), "{v}");
+        let c = set.expect("a fresh cookie for each");
+        assert_eq!(
+            ts.store.get_viewer(&c).unwrap().unwrap().public_id,
+            lan.public_id
+        );
+        cookies.push(c);
+    }
+    cookies.sort();
+    cookies.dedup();
+    assert_eq!(cookies.len(), 4, "each answer its own secret");
+    assert_eq!(viewer_rows(&ts), rows, "no new viewer");
+    // An in-flight request with the old cookie acts as the same viewer.
+    let (_, again) = viewers_me_from_lan(&ts, legacy).await;
+    assert_eq!(again["public_id"], json!(lan.public_id));
+    assert_eq!(viewer_rows(&ts), rows);
+}
+
+/// A `clax_viewer` value the daemon never minted (one another local server
+/// planted: cookies ignore ports) is never adopted: `GET /api/viewers/me`
+/// answers it with a new viewer under a fresh secret, the planted value
+/// names no one, and a write carrying it makes no viewer.
+#[tokio::test]
+async fn a_planted_cookie_never_binds_to_a_viewer() {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let planted = format!("cxv_{}", "A".repeat(43));
+    let a = ts
+        .publish("Notes", &[("index.html", "<main><p>x</p></main>")])
+        .await;
+    let aid = a["artifact"]["id"].as_str().unwrap().to_string();
+    let rows = viewer_rows(&ts);
+    let (set, v) = viewers_me_from_lan(&ts, &planted).await;
+    let fresh = set.expect("a minted cookie replaces the planted one");
+    assert_ne!(fresh, planted);
+    assert!(ts.store.get_viewer(&planted).unwrap().is_none());
+    assert_eq!(
+        ts.store.get_viewer(&fresh).unwrap().unwrap().public_id,
+        v["public_id"].as_str().unwrap()
+    );
+    assert_eq!(viewer_rows(&ts), rows + 1);
+    // A write carrying the planted value makes no viewer.
+    let (client, base) = ts.lan();
+    let _ = client
+        .put(format!("{base}/api/viewers/me/seen"))
+        .header("cookie", format!("clax_viewer={planted}"))
+        .json(&json!({"artifact_id": aid, "version": 1}))
+        .send()
+        .await
+        .unwrap();
+    assert!(ts.store.get_viewer(&planted).unwrap().is_none());
+    assert_eq!(viewer_rows(&ts), rows + 1);
 }

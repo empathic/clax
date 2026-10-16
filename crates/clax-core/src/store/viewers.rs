@@ -24,12 +24,21 @@ pub const MAX_SEARCH_SCAN: usize = 10_000;
 const VIEWER_SELECT: &str =
     "SELECT id, public_id, display_name, created_at, person, person_revoked_at FROM viewers";
 
-/// The viewer a cookie's hash (`?1`) names: never the owner's row, and
-/// never a person on a legacy cookie (spec 2026-10-08 §21.4).
+/// The viewer a cookie's hash (`?1`) names: never the owner's row, never a
+/// person on a legacy cookie (spec 2026-10-08 §21.4), and not on a legacy
+/// cookie replaced at or before `?2` ([`LEGACY_SWAP_GRACE_SECS`]).
 const VIEWER_BY_COOKIE: &str =
     "SELECT v.id, v.public_id, v.display_name, v.created_at, v.person, v.person_revoked_at
      FROM viewer_cookies c JOIN viewers v ON v.id = c.viewer_id
-     WHERE c.sha256 = ?1 AND v.owner = 0 AND (c.legacy = 0 OR v.person = 0)";
+     WHERE c.sha256 = ?1 AND v.owner = 0 AND (c.legacy = 0 OR v.person = 0)
+       AND (c.replaced_at IS NULL OR c.replaced_at > ?2)";
+
+/// How long a legacy cookie that [`Store::reissue_viewer_cookie`] replaced
+/// keeps naming its viewer: a browser's other tabs and the requests in
+/// flight when it was replaced still carry it, and each such `GET
+/// /api/viewers/me` gets a fresh secret for the same viewer rather than a
+/// new viewer.
+pub const LEGACY_SWAP_GRACE_SECS: i64 = 600;
 
 /// Whether `cookie` has a form a `clax_viewer` cookie may take: a secret
 /// the daemon mints ([`viewer_cookie`]), or a legacy ULID (a viewer's row
@@ -43,13 +52,23 @@ pub fn is_legacy_cookie(cookie: &str) -> bool {
     is_ulid(cookie)
 }
 
-fn viewer_by_cookie(c: &rusqlite::Connection, cookie: &str) -> rusqlite::Result<Option<Viewer>> {
+fn viewer_by_cookie(
+    st: &Store,
+    c: &rusqlite::Connection,
+    cookie: &str,
+) -> rusqlite::Result<Option<Viewer>> {
     c.query_row(
         VIEWER_BY_COOKIE,
-        params![crate::secret::sha256_hex(cookie)],
+        params![crate::secret::sha256_hex(cookie), swap_cutoff(st)],
         row_to_viewer,
     )
     .optional()
+}
+
+/// The replacement time at or before which a replaced legacy cookie names
+/// no one.
+fn swap_cutoff(st: &Store) -> String {
+    super::stamp(st.now_utc() - chrono::Duration::seconds(LEGACY_SWAP_GRACE_SECS))
 }
 
 /// Records `cookie` (its hash) as a cookie of viewer row `id`.
@@ -170,7 +189,7 @@ impl Store {
                 )
                 .optional()?;
             let id = match known {
-                Some(_) => viewer_by_cookie(tx, cookie)?.ok_or_else(no_viewer)?.id,
+                Some(_) => viewer_by_cookie(self, tx, cookie)?.ok_or_else(no_viewer)?.id,
                 None => {
                     let id = crate::new_ulid();
                     let now = self.now();
@@ -208,16 +227,26 @@ impl Store {
     }
 
     /// Replaces legacy cookie `old` (a ULID, see [`is_legacy_cookie`]) with
-    /// a fresh secret naming the same viewer: `None` when it names none.
-    /// The old cookie names no one afterwards.
+    /// a fresh secret naming the same viewer: `None` when it names none. The
+    /// old cookie keeps naming that viewer (never with a person's authority)
+    /// for [`LEGACY_SWAP_GRACE_SECS`] after its first replacement, and each
+    /// call in that time gets another fresh secret for the same viewer, so
+    /// requests already in flight with it, and a browser's other tabs, never
+    /// make a new viewer; after it, the old cookie names no one. Expired
+    /// replaced cookies are removed.
     pub fn reissue_viewer_cookie(&self, old: &str) -> Result<Option<(Viewer, Secret)>> {
         self.with_tx(|tx| {
-            let Some(v) = viewer_by_cookie(tx, old)? else {
+            let cutoff = swap_cutoff(self);
+            tx.execute(
+                "DELETE FROM viewer_cookies WHERE legacy = 1 AND replaced_at IS NOT NULL AND replaced_at <= ?1",
+                params![cutoff],
+            )?;
+            let Some(v) = viewer_by_cookie(self, tx, old)? else {
                 return Ok(None);
             };
             tx.execute(
-                "DELETE FROM viewer_cookies WHERE sha256 = ?1",
-                params![crate::secret::sha256_hex(old)],
+                "UPDATE viewer_cookies SET replaced_at = COALESCE(replaced_at, ?2) WHERE sha256 = ?1",
+                params![crate::secret::sha256_hex(old), self.now()],
             )?;
             let fresh = issue_cookie_in(self, tx, &v.id)?;
             Ok(Some((v, fresh)))
@@ -244,7 +273,7 @@ impl Store {
         if !is_cookie(cookie) {
             return Ok(None);
         }
-        self.with_read(|c| Ok(viewer_by_cookie(c, cookie)?))
+        self.with_read(|c| Ok(viewer_by_cookie(self, c, cookie)?))
     }
 
     /// The viewer whose public ID is `public_id`; `None` for anything else,
@@ -706,7 +735,7 @@ impl Store {
             call: None,
         };
         self.with_tx(|tx| {
-            let legacy = match viewer_by_cookie(tx, cookie)? {
+            let legacy = match viewer_by_cookie(self, tx, cookie)? {
                 Some(v) if !v.person => {
                     let local: bool = tx.query_row(
                         "SELECT minted_local = 1 FROM viewers WHERE id = ?1",
