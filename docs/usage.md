@@ -681,9 +681,16 @@ same signature and do not ask.
   Cancel, or Add to plan while the app builds); the threads show each
   comment's screenshot too. The page stays
   usable while the change runs: the Working chip narrates it and folds
-  into a small pill, and a tap opens the change in progress (its
-  comments, steps and latest render, Stop, and Open thread). The change
-  lands in place with your data kept. A toast says when Clax replied, and
+  into a small pill at the top right, just under the status bar and any
+  camera cutout, and a tap opens the change in progress (its
+  comments, steps and latest render, Stop, and Open thread).
+- **New versions.** A new version of the open app (a change, a build's
+  next feature, an update) never replaces it by itself: a toast "New
+  version ready" offers **Reload**, which swaps it in place on the page
+  and route you are on, with your data and scroll kept. While you are
+  writing a comment the toast waits until you send or cancel it; if it
+  fades, it comes back the next time you return to the app. A new app you
+  just made opens on its first version directly. A toast says when Clax replied, and
   View opens the thread at its reply; a thread's page takes replies, shows
   Retry on a failed change and opens the version that addressed it.
 - **Big changes.** A change has one run of 10 steps, 3 checks and 2
@@ -771,9 +778,13 @@ same signature and do not ask.
   sends the sender's file as you received it; if you changed it, you may
   instead share **your version as a new app**, which you then update
   yourself.
-- **Back on macOS.** Esc goes back a screen (in a text field it only
-  leaves the field), as do ⌘[ and App › Back to Apps; while an app's page
-  has the keyboard, only ⌘[ does.
+- **Back.** In an app, back (Android's back gesture or button, Esc or ⌘[
+  on macOS) first closes what is over the page (the questions sheet, the
+  composer, the threads panel, the comment bar), then goes back through
+  the app's own pages and routes, and only from where the app started
+  returns to your apps. Elsewhere it goes back a screen. On macOS Esc in a
+  text field only leaves the field, and while an app's page has the
+  keyboard only ⌘[ goes back.
 
 The app keeps its own records in its application support directory
 (inside `~/Library/Containers/dev.empathic.clax` for the sandboxed macOS
