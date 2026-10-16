@@ -161,7 +161,7 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await vi.waitFor(() => expect(focus()).not.toBeNull());
     const t2 = focus();
     // The app: the selection is not outlined, the app's focus is.
-    ctl.app = { welcome: () => ({ app: true as const }), posted: () => {} };
+    ctl.app = { welcome: () => ({ app: true as const }), posted: () => {}, dropped: () => {} };
     ctl.focusThread(null);
     expect(focus()).toBeNull();
     ctl.focusThread("t2");
@@ -1127,7 +1127,7 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     // App mode: each post is handed to the app's hook, which sends it.
     const posted = vi.fn();
     const welcome = vi.fn((_file: string) => ({ app: true as const, restoreScroll: 40 }));
-    ctl.app = { welcome, posted };
+    ctl.app = { welcome, posted, dropped: () => {} };
     await ctl.submitDraft("second", { pickId: "p2", anchor, version: 2, clip: null, capturing: false, clipToken: "p2" });
     expect(posted).toHaveBeenCalledWith(t9);
     // The welcome carries what the hook adds, for the page that greeted.
@@ -1159,7 +1159,7 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(ctl.state.get().selected).toBe("t9");
     expect(await focusAfter(() => ctl.set({ selected: null }))).toBeNull();
     // App mode: the posted thread is selected, but no panel shows it, so nothing stays outlined.
-    ctl.app = { welcome: () => ({ app: true as const }), posted: vi.fn() };
+    ctl.app = { welcome: () => ({ app: true as const }), posted: vi.fn(), dropped: () => {} };
     expect(await focusAfter(() => ctl.submitDraft("second", draft("p2")))).toBeNull();
     expect(ctl.state.get().selected).toBe("t9");
     expect(await focusAfter(() => ctl.hover(t9))).not.toBeNull();
