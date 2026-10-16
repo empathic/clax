@@ -138,6 +138,10 @@ app-eval *ARGS:
 app-apk:
     ./scripts/build-app-clax.sh android && cd apps/clax_app && flutter build apk --release --target-platform android-arm64,android-x64 -P disable-abi-filtering=true
 
+# Build HEAD's release APK in a clean copy and install it on the plugged-in phone
+app-phone:
+    ./scripts/app-phone.sh --i-know-what-i-am-doing
+
 # Build the macOS clax and the Clax app's release macOS app
 app-macos:
     ./scripts/build-app-clax.sh macos && cd apps/clax_app && flutter build macos --release
