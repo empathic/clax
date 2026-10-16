@@ -143,7 +143,10 @@ SH
 done
 printf '#!/bin/sh\necho "cargo $*" >> "${0%%/*}/../calls"\nexit 1\n' | fake_exe "$FAKE/cargo"
 printf '#!/bin/sh\necho "clax 9.9.9-dev"\n' | fake_exe "$T/clax-build"
-devrun() { : > "$T/calls"; CLAX_DEV_BIN="$T/clax-build" PATH="$FAKE:$PATH" "$HERE/dev.sh" "$@" >"$T/out" 2>"$T/err"; }
+# Every case here runs the native path: with Bazel on PATH, watch.sh would
+# start ibazel, and the recipes would build with Bazel.
+export CLAX_BUILD=native
+devrun() { : > "$T/calls"; CLAX_BUILD=native CLAX_DEV_BIN="$T/clax-build" PATH="$FAKE:$PATH" "$HERE/dev.sh" "$@" >"$T/out" 2>"$T/err"; }
 
 if [ "$(PATH="$FAKE:$PATH" command -v cargo)" != "$FAKE/cargo" ]; then
     echo "FAIL: the fake cargo is not first on PATH; not running dev.sh"; exit 1
@@ -270,8 +273,8 @@ if command -v just >/dev/null 2>&1; then
     if grep -q "serving CLAX_HOME=$HOME/.clax-dev on port 1 " "$T/out" && grep -q "cargo-watch is required" "$T/err"; then
         pass "just watch runs watch.sh on ~/.clax-dev"
     else fail "just watch ($(cat "$T/out" "$T/err"))"; fi
-    plan="$("${J[@]}" --dry-run install 2>&1 | grep -E '^CLAX_BUILD=native \./scripts/run\.sh web')"
-    if [ -n "$plan" ]; then pass "just install builds the web UI first, natively"
+    plan="$("${J[@]}" --dry-run install 2>&1 | grep -E '^\./scripts/run\.sh install')"
+    if [ -n "$plan" ]; then pass "just install builds and installs through scripts/run.sh"
     else fail "just install plan ($plan)"; fi
     # The install and uninstall recipes themselves, with a fake cargo, a fake
     # installed clax in a scratch CARGO_HOME, and a fake agents' daemon (a
@@ -295,8 +298,19 @@ if command -v just >/dev/null 2>&1; then
         exec 2>&3 3>&-
         rm -rf "$HOME/.clax"
     }
-    recipe --no-deps install
-    want="cargo install --locked --root $T/cargo --path crates/clax-cli
+    # The build is scripts/run.sh's (tested in run.test.sh); here it installs
+    # a fake that records its calls, as the build would install clax.
+    fake_exe_own "$T/clax-src" <<'SH'
+#!/bin/sh
+echo "clax $* home=${CLAX_HOME:-}" >> "${0%/*}/../../inst/calls"
+if [ "$1" = stop ]; then
+    kill "$(sed -n 's/.*"pid": *\([0-9]*\).*/\1/p' "$CLAX_HOME/daemon.json")"
+fi
+SH
+    export CLAX_INSTALL_BIN="$T/clax-src"
+    recipe install
+    unset CLAX_INSTALL_BIN
+    want="clax --version home=
 clax stop home=$HOME/.clax
 clax init home="
     if [ "$(cat "$T/inst/calls")" = "$want" ] && [ "$agent_alive" = 0 ] && grep -q "next agent call starts it again from the new build" "$T/out"; then

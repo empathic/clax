@@ -15,3 +15,6 @@ web/perf/test-results/
 /dist/
 /bazel-*
 /user.bazelrc
+rust-project.json
+.rules_rust_analyzer/
+.vscode/.rules_rust_analyzer/
