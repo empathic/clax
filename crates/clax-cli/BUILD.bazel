@@ -1,4 +1,5 @@
 load("//bazel:cargo.bzl", "cargo_package")
+load("//bazel:opt.bzl", "opt_binary")
 load("//bazel:warm.bzl", "warm_binary")
 
 EMBEDDED = [
@@ -54,3 +55,16 @@ warm_binary(
 # Its lints, which scripts/bazel-test.sh hands to clippy for this crate's
 # targets, as Cargo reads it from beside Cargo.toml.
 exports_files(["clippy.toml"])
+
+# The optimized binary the perf gates run (bazel/opt.bzl), run once too.
+opt_binary(
+    name = "clax_opt",
+    binary = ":clax",
+    visibility = ["//visibility:public"],
+)
+
+warm_binary(
+    name = "clax_opt_warm",
+    binary = ":clax_opt",
+    visibility = ["//visibility:public"],
+)

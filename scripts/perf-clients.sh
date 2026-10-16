@@ -17,6 +17,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 BIN="${CLAX_PERF_BIN:-}"
+# Absolute, as Bazel names it relative to the repository (runfiles) root.
+case "$BIN" in "" | /*) ;; *) BIN="$PWD/$BIN" ;; esac
 if [ -z "$BIN" ]; then
     if [ ! -f web/dist/index.html ] || [ ! -f web/dist/artifact.html ]; then
         echo "perf-clients: web/dist holds no built web UI; run 'cd web && pnpm run build' first" >&2
