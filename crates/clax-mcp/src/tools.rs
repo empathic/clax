@@ -1145,12 +1145,18 @@ impl ClaxTools {
         render::client_error(e, self.daemon_log())
     }
 
-    /// The daemon log errors name: this home's, unless the daemon is
-    /// another machine's (remote mode), whose log is there, or these tools
-    /// are a remote agent's ([`ClaxTools::for_remote_agent`]: no log path).
-    fn daemon_log(&self) -> Option<&std::path::Path> {
-        (!self.client.is_remote() && !self.log_path.as_os_str().is_empty())
-            .then_some(self.log_path.as_path())
+    /// Where the log errors name is: this home's, unless the daemon is
+    /// another machine's (remote mode), or these tools are a remote
+    /// agent's on the Clax serving them ([`ClaxTools::for_remote_agent`]:
+    /// no log path).
+    fn daemon_log(&self) -> render::DaemonLog<'_> {
+        if self.client.is_remote() {
+            render::DaemonLog::OwnersMachine
+        } else if self.log_path.as_os_str().is_empty() {
+            render::DaemonLog::Served
+        } else {
+            render::DaemonLog::Here(self.log_path.as_path())
+        }
     }
 
     /// What `url_or_id` names ([`crate::target::target`]), judged against
@@ -3424,6 +3430,32 @@ mod tests {
                 .iter()
                 .any(|t| t.name == "comments_handoff")
         );
+    }
+
+    /// A remote agent's tools (an agent token's, on the Clax it reached)
+    /// name no log of that Clax's machine and never say the daemon is on
+    /// the owner's machine: the Clax is the one the agent is talking to.
+    #[test]
+    fn a_remote_agents_unreachable_daemon_is_the_clax_it_reached() {
+        let t = ClaxTools::new(
+            DaemonClient::new("http://127.0.0.1:9".into(), "t".into(), None),
+            "https://clax.example".into(),
+            None,
+            PathBuf::from("/srv/clax/logs/daemon.log"),
+        );
+        let err = |t: &ClaxTools| {
+            let r = t.fail(ClientError::Unreachable("refused".into()));
+            let text = r.content[0].as_text().unwrap().text.clone();
+            serde_json::from_str::<Value>(&text).unwrap()["error"].clone()
+        };
+        let local = err(&t);
+        assert_eq!(local["log"], json!("/srv/clax/logs/daemon.log"));
+        let remote = err(&t.for_remote_agent());
+        assert_eq!(remote["code"], json!("daemon_unreachable"));
+        assert!(remote.get("log").is_none(), "{remote}");
+        let m = remote["message"].as_str().unwrap();
+        assert!(!m.contains("owner's machine") && !m.contains("log"), "{m}");
+        assert!(m.contains("Clax did not respond"), "{m}");
     }
 
     #[test]
