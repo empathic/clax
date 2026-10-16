@@ -144,6 +144,10 @@ clax doctor --fix                    # also remove stray temp files and stale ro
 clax doctor --agent codex            # also check each layer of a harness's plugin: claude, codex, pi or grok
 clax stop                            # stop the daemon
 clax serve --bind 0.0.0.0            # serve on the LAN (stop a running daemon first)
+clax connect <invite URL>            # connect this machine to someone else's Clax as a person (--status, --off)
+clax people                          # (the owner) list people, their rights, machines and agents, and the People link
+clax agents                          # list your agents; clax agents rename <agent> <name> renames one
+clax approvals                       # list whose content reaches your agents, and what waits for you
 clax init                            # register the plugins with each harness (clax uninit removes them)
 clax bin                             # show which clax the plugins run (clax bin set <path> | --this, clax bin clear)
 clax haiku                           # print one of ten haiku about Clax
@@ -165,6 +169,51 @@ Only your own browser spends the key: the page asks you to allow it once each ti
 A new artifact needs a title: `--title`, or else the page's `<title>`. Updates keep the current title unless `--title` is given.
 
 To serve on the LAN, stop a running daemon first, then run `clax serve --bind 0.0.0.0`.
+
+### People
+
+Other people can connect to your Clax, each with their own machines and
+agents. Use a trusted LAN: Clax traffic is not encrypted, so anyone on the
+network can read pages and comments as they travel, and a sniffed browser
+cookie acts as its person in the browser.
+
+- **Inviting.** Serve on the LAN, open People (`/people`) in your browser
+  and choose **Invite a person**. Give them the command it shows, `clax
+  connect http://<your LAN address>:<port>/i/<code>`: it works once, within
+  24 hours. They run it on their machine, with Clax installed. An invite
+  can also add another machine of yours.
+- **Asking.** Someone can instead run `clax connect http://<IP>:<port>`.
+  It shows a code and waits up to 10 minutes; a connection request comes
+  to your inbox, and you approve it there with the code their machine
+  shows, a name and the rights to give them (Reader, Collaborator or
+  Full).
+- **After connecting.** `clax connect` opens their browser signed in as
+  them and asks whether your comments and pages may reach their agents.
+  Their agents then publish, reply, resolve and write page data with the
+  rights you gave, each on a key that never leaves their machine. `clax
+  connect --status` checks the connection and `clax connect --off`
+  disconnects it.
+- **Agents.** Every agent has a name (from its repository and branch),
+  shown wherever it appears, with its person beside it when it is someone
+  else's. `@<name>` in a comment sends the thread to that agent. People
+  shows each person's agents. An agent's person, or you, can rename it.
+  Its person can narrow what it may do. You can raise it anywhere, and the
+  creator of an artifact can raise it on that artifact.
+- **Approvals.** What another person wrote is withheld from your agents
+  until you approve them: for one thread, one page or everywhere. When a
+  thread is sent to your agent, or your agent asks, an approval card comes
+  to your inbox and shows above the thread. The card offers "Allow this
+  thread", "Always allow … on this page", "Always allow … everywhere" or
+  "Decline", and the thread reads "waiting for your approval" until you
+  decide. People lists who reaches your agents and lets you revoke an
+  approval. Approving happens only in a browser: `clax approvals` lists,
+  and prints the People link.
+- **Viewers who are not connected.** Comments from LAN viewers who are not
+  connected people reach your agents without asking, as before. The
+  switch in People turns that off.
+- **Revoking.** Revoking a person or one of their machines in People ends
+  their agents' sessions at once. Their browser becomes a plain viewer's,
+  and what they wrote stays theirs.
 
 ## Use from an agent
 
@@ -364,7 +413,9 @@ release path, does everything except publish, and keeps the result as the
 
 ## Security model
 
-Writes, and reads of the session list (working directories, process IDs, harness session IDs), need the token in `~/.clax/daemon.json` (mode 0600, served only to localhost browsers), so LAN viewers can read artifacts and comment on them but not publish or change them. Every `/api` route answers only to a `Host` of `localhost`, `127.0.0.1`, `[::1]`, or the exact IP and port the connection arrived on (403 `forbidden_host` otherwise), which defeats DNS rebinding. The comment routes need no token but refuse requests from another origin, including published pages. The viewer cookie never leaves the daemon; viewers are named by a public ID, comment threads carry no session IDs, and the daemon's `codex` path is served only with the token. Published content is isolated on `<id>.localhost` origins or sandboxed. Content and asset URLs are fetchable by anyone who knows the unguessable ID.
+Clax traffic on the LAN is not encrypted: serve on the LAN (`clax serve --bind 0.0.0.0`) only on a network you trust.
+
+Writes, and reads of the session list (working directories, process IDs, harness session IDs), need the token in `~/.clax/daemon.json` (mode 0600, served only to localhost browsers), or a connected person's machine key. A LAN viewer who is not connected can read artifacts and comment on them, but not publish or change them. A connected person's agents publish, reply, resolve and write page data with that person's rights, as the owner set them. They sign every request with their machine's key, which never leaves that machine, so a request seen on the network cannot be replayed. Connecting machines, approvals, rights and raises change only in the owner's or the person's own browser: no agent, tool or CLI command can change them. What another person wrote reaches an agent only once that agent's person approves its author. An agent of the owner's that has a shell runs as the owner's OS user, and is trusted as the owner. Every `/api` route answers only to a `Host` of `localhost`, `127.0.0.1`, `[::1]`, or the exact IP and port the connection arrived on (403 `forbidden_host` otherwise), which defeats DNS rebinding. The comment routes need no token but refuse requests from another origin, including published pages. The viewer cookie never leaves the daemon; viewers are named by a public ID, comment threads carry no session IDs, and the daemon's `codex` path is served only with the token. Published content is isolated on `<id>.localhost` origins or sandboxed. Content and asset URLs are fetchable by anyone who knows the unguessable ID.
 
 Design: [docs/superpowers/specs/2026-09-28-clax-design.md](superpowers/specs/2026-09-28-clax-design.md)
 

@@ -1584,7 +1584,12 @@ again.
   (`GET /api/artifacts/{aid}/approves-first`, 403 for them).
 - The one-press Send goes to the agent the viewer chose, else to the
   viewer's own most recent live agent; with only other people's agents
-  live there is none, and Send opens the menu.
+  live there is none, and Send opens the menu. A viewer who is neither
+  the owner nor a connected person (a LAN viewer) takes the owner's
+  agents as its own here, as on a single-owner install (O6): one press
+  sends to the owner's most recent live agent and the button names it
+  ("Send to claude"); with only connected people's agents live, the menu
+  opens (coordinator ruling, 2026-10-15).
 - Sending to it (button, `to`, `@name`) stores the send and makes the
   routing request (§9.2).
 - **The thread's delivery state** (owner decisions, 2026-10-14). Its
@@ -2016,7 +2021,9 @@ nothing else:
    thread the first owns.
 5. **`ended` notes (M25)** in the owner's inbox.
 6. **Additive JSON fields:** `owner`, `taken_by`, `name`, `person`,
-   `withheld` (absent or null), `rights` in `status`.
+   `withheld` (absent or null), `rights` in `status`, and an artifact's
+   `owner_name` (its owner agent's name, which the shell shows where it
+   showed `owner_harness`).
 7. **`(not connected)` author lines** (§9.6): in every payload and view an
    agent gets, an unconnected LAN viewer's name reads `<name> (not
    connected)`, and so does the name on unattributed history (comments
@@ -2314,7 +2321,8 @@ boundary.
   - The probe loads under `cheap_p95_ms` and `cheap_max_ms` with a signed
     client polling beside them.
 - **Bundles:** the `people` module is lazy (16 KiB); `gallery` and
-  `artifact` grow by at most 512 bytes; `extPanel` stays within 65,536.
+  `artifact` grow by at most 512 bytes; `extPanel` stays within 66,560
+  (the owner raised it from 65,536).
 - **Connecting:** `clax connect` with an invite to "Connected" in under 2 s
   on the LAN; the person's first agent is usable on its first tool call.
 
@@ -2691,3 +2699,9 @@ task, with recommendations; the owner took every recommendation
   `vis_owner_poll_ms`, the owner's own agent's feedback poll with people
   present, judged on `vis_feedback_poll_ms`'s limit; the budgets stay
   (owner ruling: make the poll cheaper rather than widen the margin).
+- **Amendment** (2026-10-15, final review): §10: a LAN viewer's
+  one-press Send goes to the owner's most recent live agent, restoring
+  single-owner behaviour (coordinator ruling); a thread reading "waiting
+  for your approval" with no request for its reader says nothing waits
+  for a decision yet and that the request comes to the inbox. §23: the
+  `extPanel` ceiling is the owner's raised 66,560.

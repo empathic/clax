@@ -2608,8 +2608,8 @@ claude)`); `@<name>` sends a thread to that agent; with several of the owner's
 agents watching one artifact, an untargeted send goes to the first to take
 it; that agent then owns the thread (`thread_taken` for the others); an
 ended session that held something leaves one `ended` inbox note; views
-gain the fields `owner`, `taken_by`, `name`, `person`, `withheld` (absent
-or null) and `rights`; viewers who are not connected read `<name> (not
+gain the fields `owner`, `taken_by`, `name`, `owner_name`, `person`,
+`withheld` (absent or null) and `rights`; viewers who are not connected read `<name> (not
 connected)` in what agents get; display names that look like the owner's
 or a live agent's are refused; and LAN viewers' and anonymous callers'
 thread views carry `feedback_state: null`.
@@ -5430,7 +5430,8 @@ it with Ajv (draft 2020-12, formats asserted;
   and comment on them but not publish or change them. `GET /api/push` names
   the daemon's `codex` path (`bin`) only to a request with the token. `GET /api/artifacts/<id>` returns
   `{artifact, versions}`; like each entry of the artifact list, `artifact`
-  carries `owner_live`, `owner_harness` and `participants`, never the
+  carries `owner_live`, `owner_harness`, `owner_name` (the owner
+  agent's name, or null) and `participants`, never the
   owner's session row, and `owner_session_id` (with each version's
   `session_id`) only with the token. Content and asset URLs are readable by anyone who can
   reach the daemon and knows the unguessable artifact or asset ID.
