@@ -3818,8 +3818,8 @@ mod delivery {
     }
 
     /// Spec §16: a grant session's payload names its clip by reference,
-    /// never by a path on the daemon's machine; the token's agents keep
-    /// the path.
+    /// never by a path on the daemon's machine; the daemon token's agents
+    /// read the clip's file where the content is files.
     #[test]
     fn a_grant_sessions_clip_is_a_reference() {
         let w = two_people();
@@ -3850,8 +3850,16 @@ mod delivery {
             )
             .unwrap()
             .items;
-        let path = mine[0].clip_path.clone().unwrap();
-        assert!(std::path::Path::new(&path).is_absolute(), "{path}");
+        // A local agent reads the clip's file, where the content is files;
+        // content kept in memory (a Durable Object's) has no file to name.
+        let path = mine[0].clip_path.clone();
+        if crate::store::test_util::on_one_connection() {
+            assert_eq!(path, None);
+        } else {
+            let path = path.unwrap();
+            assert!(std::path::Path::new(&path).is_absolute(), "{path}");
+            assert!(std::path::Path::new(&path).is_file(), "{path}");
+        }
     }
 
     #[test]

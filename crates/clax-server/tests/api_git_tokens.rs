@@ -710,7 +710,7 @@ async fn an_agent_whose_person_may_not_see_an_author_gets_no_token_and_loses_one
     // Sam's own browser may: people see everything.
     let sam_cookie = {
         let v = ts.store.viewer_of_grant(&w.sam.grant_id()).unwrap();
-        format!("clax_viewer={}", v.id)
+        format!("clax_viewer={}", ts.browser_cookie(&v.id))
     };
     assert_eq!(browser(ts, mias, "read", Some(&sam_cookie)).await.0, 200);
 
@@ -954,7 +954,7 @@ async fn a_withdrawn_approval_or_an_ended_grant_revokes_tokens_before_its_route_
         .public_id;
     let sam_cookie = {
         let v = ts.store.viewer_of_grant(&w.sam.grant_id()).unwrap();
-        format!("clax_viewer={}", v.id)
+        format!("clax_viewer={}", ts.browser_cookie(&v.id))
     };
     let owner_public = ts.owner_public_id().await;
     let approve = |author: &str| {

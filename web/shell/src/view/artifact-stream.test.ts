@@ -81,7 +81,7 @@ describe("the artifact stream", () => {
     const sync = new ThreadSync(f => { threads = f(threads); });
     const s = new ArtifactStream(A, {
       threads: () => threads, presence: () => [], changeThreads: f => sync.change(f), beginThread: tid => sync.beginThread(tid),
-      event: () => {}, page: () => {}, disposed: () => false,
+      event: () => {}, page: () => {}, spectate: () => {}, seated: () => {}, disposed: () => false,
     });
     const state = { thread_id: "t1", state: "withheld", tier: null, since: "x", resends: 0, exhausted: false, approver: "Sam", mine: true };
     on!({ type: "feedback_state", topic: `artifact:${A}`, artifact_id: A, ...state } as unknown as StreamEvent);
@@ -101,7 +101,7 @@ describe("the artifact stream", () => {
       threads: () => threads, presence: () => [], changeThreads: f => sync.change(f), beginThread: tid => sync.beginThread(tid),
       // The view applies a state for a thread it holds, as onArtifactEvent does.
       event: e => { if (e.type === "feedback_state") sync.change(ts => ts.map(t => t.id === e.thread_id ? { ...t, feedback_state: stateOf(e) } : t)); },
-      page: () => {}, disposed: () => false,
+      page: () => {}, spectate: () => {}, seated: () => {}, disposed: () => false,
     });
     const state = (since: string) => ({ thread_id: "t1", state: "sent", tier: null, since, resends: 0, exhausted: false });
     const heard = (since: string) => on!({ type: "feedback_state", topic: `artifact:${A}`, artifact_id: A, ...state(since) } as unknown as StreamEvent);
