@@ -165,26 +165,26 @@ for name in sorted(set(sys.stdin.buffer.read().split(b"\0")) - {b""}):
 
 # _run_keyed <name> <pathspec...> -- <command...>: a check outside Bazel
 # that reads only the files its pathspecs name (and the v* tags), skipped
-# when it passed last time on the same files, as Bazel caches a passed test.
-# The record is kept under target/, so a fresh checkout (CI) runs every one.
+# when it passed before on the same files, in any worktree, as Bazel caches
+# a passed test. A pass is recorded as an empty file named by its key under
+# CLAX_CHECKS_CACHE (default ~/.cache/clax-checks), which CI does not keep,
+# so CI runs every one.
+checks_cache="${CLAX_CHECKS_CACHE:-$HOME/.cache/clax-checks}"
 _run_keyed() {
     local name="$1" specs=() key stamp
     shift
     while [ "$1" != "--" ]; do specs+=("$1"); shift; done
     shift
     key="$(_key "${specs[@]}")"
-    stamp="target/bazel-checks/$(printf '%s' "$name" | tr -c 'A-Za-z0-9\n' '-').passed"
-    if [ -n "$key" ] && [ "$(cat "$stamp" 2>/dev/null)" = "$key" ]; then
-        echo "── $name: passed on these files before (${stamp}) ──"
+    stamp="$checks_cache/$(printf '%s' "$name" | tr -c 'A-Za-z0-9\n' '-')/$key"
+    if [ -f "$stamp" ]; then
+        echo "── $name: passed on these files before ($stamp) ──"
         return
     fi
     local before="${#failed[@]}"
     _run "$name" "$@"
-    if [ "${#failed[@]}" = "$before" ] && [ -n "$key" ]; then
-        mkdir -p "$(dirname "$stamp")"
-        printf '%s\n' "$key" > "$stamp"
-    else
-        rm -f "$stamp"
+    if [ "${#failed[@]}" = "$before" ]; then
+        mkdir -p "$(dirname "$stamp")" && : > "$stamp"
     fi
 }
 

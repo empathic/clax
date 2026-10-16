@@ -162,9 +162,10 @@ the tracked files (their own tests are Bazel tests),
 ones are skipped when they passed last time on the same files, as Bazel
 caches a passed test: the plugin and dev-script checks are keyed on the
 whole working tree and the `v*` tags, the two Bazel-setup tests on the
-Cargo, Bazel and package manifests and Bazel's own files. The records live
-in `target/bazel-checks/` (delete it to rerun them); a fresh checkout, as in
-CI, runs every one. Tests that
+Cargo, Bazel and package manifests and Bazel's own files. A pass is
+recorded under `~/.cache/clax-checks/` (`CLAX_CHECKS_CACHE`) by its key, so
+a new worktree at contents some worktree checked skips them too; delete the
+directory to rerun them. CI keeps no such record and runs every one. Tests that
 need a real harness CLI, a model or credentials (`scripts/verify-harnesses.sh`
 against real harnesses, the smoke scripts) stay native and manual, as
 before.
