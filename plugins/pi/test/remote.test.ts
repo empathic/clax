@@ -3,7 +3,7 @@
 // registration was answered, keeps that secret in its credential file, and
 // fetches a remote daemon's clips into its cache.
 import { createHash, generateKeyPairSync, verify, type KeyObject } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { claxExtension } from "../src/clax.ts";
 import { sendRemote } from "../src/client.ts";
 import { repoAndBranch } from "../src/git.ts";
-import { AGENT_HEADERS, canonical, credentialFileName, encodeAgentHeaders, loadRemote, parseClipReference, rewriteClipText } from "../src/remote.ts";
+import { AGENT_HEADERS, canonical, credentialFileName, encodeAgentHeaders, loadRemote, parseClipReference, rewriteClipText, MAX_RESPONSE_BYTES, SessionFiles } from "../src/remote.ts";
 import { FakePi, fakeContext } from "./fake-api.ts";
 
 let scratch: string;
@@ -47,6 +47,18 @@ describe("remote mode", () => {
     expect(credentialFileName("pi", odd)).toBe(`pi-h-${sha(odd).slice(0, 32)}.json`);
     expect(credentialFileName("pi", "x".repeat(129))).toMatch(/^pi-h-[0-9a-f]{32}\.json$/);
     expect(credentialFileName("Pi", "x")).toBeUndefined();
+  });
+
+  it("marks its own credential file in use, and no other session's", () => {
+    const files = new SessionFiles(join(scratch, `touch-${Math.random().toString(36).slice(2)}`));
+    files.write("pi-s-t.json", "t", { session: "S1", secret: `cxs_${"a".repeat(43)}` });
+    const path = join(files.dir, "pi-s-t.json");
+    const weekAgo = new Date(Date.now() - 8 * 24 * 3600 * 1000);
+    utimesSync(path, weekAgo, weekAgo);
+    files.touch("pi-s-t.json", "S2");
+    expect(statSync(path).mtimeMs).toBeLessThan(Date.now() - 7 * 24 * 3600 * 1000);
+    files.touch("pi-s-t.json", "S1");
+    expect(statSync(path).mtimeMs).toBeGreaterThan(Date.now() - 60_000);
   });
 
   it("reads the repository and branch from the files, as the Rust clients do", () => {
@@ -381,6 +393,37 @@ describe("remote retries", () => {
     } finally {
       once.close();
       always.close();
+    }
+  });
+
+  it("says the clocks differ when the daemon's is too far off to learn, as the Rust clients do", async () => {
+    const far = new Date(Date.now() + 3600_000).toUTCString();
+    const d = await daemonAnswering((_, res) => error(res, 401, "stale_request", far));
+    try {
+      const r = loadRemote(connectedHome(d.url).home)!;
+      const res = await sendRemote(r, "/api/artifacts", { method: "GET" });
+      expect(res.status).toBe(401);
+      const e = JSON.parse(res.body.toString("utf8")).error;
+      expect(e.code).toBe("clock_skew");
+      expect(e.message).toMatch(/^the daemon's clock is \+36\d\d s from this machine's, more than the 600 s a signed request may be moved by: set this machine's clock \(nothing was signed for that time\)$/);
+      expect(d.count()).toBe(1);
+      expect(r.offset).toBe(0);
+    } finally {
+      d.close();
+    }
+  });
+
+  it("reads at most MAX_RESPONSE_BYTES of an answer, as the Rust clients do", async () => {
+    const d = await daemonAnswering((_, res) => {
+      res.setHeader("content-type", "application/json");
+      res.write("[");
+      res.end(Buffer.alloc(MAX_RESPONSE_BYTES, 0x20));
+    });
+    try {
+      const r = loadRemote(connectedHome(d.url).home)!;
+      await expect(sendRemote(r, "/api/artifacts", { method: "GET" })).rejects.toMatchObject({ error: { kind: "bad_response" } });
+    } finally {
+      d.close();
     }
   });
 

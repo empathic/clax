@@ -5,7 +5,7 @@
 import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import { currentCall, type ToolCallReport } from "./calls.ts";
 import { encodeHeader, type GitField } from "./git.ts";
-import { BACKOFF_S, credentialFileName, learnOffset, SESSION_SECRET_HEADER, SessionFiles, signedHeaders, type Remote, type SessionCredential } from "./remote.ts";
+import { BACKOFF_S, clockSkewMessage, credentialFileName, daemonOffset, learnOffset, MAX_RESPONSE_BYTES, SESSION_SECRET_HEADER, SessionFiles, signedHeaders, type Remote, type SessionCredential } from "./remote.ts";
 
 /** Deadline for ordinary requests. */
 export const REQUEST_TIMEOUT_MS = 30_000;
@@ -182,20 +182,26 @@ function errorOf(res: RawResponse): Record<string, unknown> {
 /** Sends a request to the remote daemon `r` (spec §6.6): signed now, and
  * signed anew for each retry: one on `stale_request`, after learning the
  * daemon's clock from its `Date`; three on `limit_reached` (429) and
- * `busy` (503), after 1, 2 and 4 s with up to a quarter more. */
+ * `busy` (503), after 1, 2 and 4 s with up to a quarter more. At most
+ * [`MAX_RESPONSE_BYTES`] of an answer are read. A `stale_request` whose
+ * `Date` is further off than a signature may be moved answers 401
+ * `clock_skew`, saying so, as the Rust clients do. */
 export async function sendRemote(r: Remote, path: string, opts: RequestOptions): Promise<RawResponse> {
   const body = opts.body === undefined ? Buffer.alloc(0) : Buffer.isBuffer(opts.body) ? opts.body : Buffer.from(opts.body, "utf8");
+  const maxBytes = Math.min(opts.maxBytes ?? MAX_RESPONSE_BYTES, MAX_RESPONSE_BYTES);
   let staleRetried = false;
   let backoffs = 0;
   for (;;) {
     const headers = signedHeaders(r, opts.method, path, body, opts.headers ?? {});
-    const res = await send(`${r.config.url}${path}`, { ...opts, headers, body });
+    const res = await send(`${r.config.url}${path}`, { ...opts, headers, body, maxBytes });
     if (res.status !== 401 && res.status !== 429 && res.status !== 503) return res;
     const code = errorOf(res).code;
     if (res.status === 401 && code === "stale_request" && !staleRetried) {
       staleRetried = true;
       if (learnOffset(r, res.headers.date)) continue;
-      return res;
+      const o = daemonOffset(res.headers.date);
+      if (o === undefined) return res;
+      return { status: 401, headers: res.headers, body: Buffer.from(JSON.stringify({ error: { code: "clock_skew", message: clockSkewMessage(o) } })) };
     }
     if (((res.status === 429 && code === "limit_reached") || (res.status === 503 && code === "busy")) && backoffs < BACKOFF_S.length) {
       const ms = BACKOFF_S[backoffs++]! * 1000;
@@ -810,6 +816,9 @@ export class DaemonClient {
   async reportToolCall(report: ToolCallReport): Promise<void> {
     if (!this.registeredSession) return;
     await this.json(() => `${this.sessionPath()}/tool-calls`, this.jsonBody("POST", report, REPORT_TIMEOUT_MS), this.discoverFn, Date.now() + REPORT_TIMEOUT_MS);
+    // A working session's credential file is in use.
+    const name = this.credentialFile();
+    if (name && this.sessionId) this.files()!.touch(name, this.sessionId);
   }
 
   /** `PATCH /api/sessions/<id>` `{"ended": true}` for the registered session,

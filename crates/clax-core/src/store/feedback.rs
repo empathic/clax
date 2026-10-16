@@ -691,11 +691,17 @@ impl Held {
                 &tid,
                 &keys,
             )? == crate::visibility::placeholder::ApprovalState::Requested;
+            let author_ids = keys
+                .iter()
+                .filter(|k| crate::is_public_id(k))
+                .cloned()
+                .collect();
             out.push(Placeholder {
                 thread_id: tid,
                 artifact_id: aid,
                 count: ids.len(),
                 author: Some(author),
+                author_ids,
                 title: Some(title),
                 asked,
                 no_access: false,
@@ -716,6 +722,7 @@ impl Held {
                 artifact_id: t.artifact_id.clone(),
                 count: ids.len(),
                 author: None,
+                author_ids: Vec::new(),
                 title: None,
                 asked: false,
                 no_access: true,

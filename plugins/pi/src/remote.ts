@@ -5,7 +5,7 @@
 // carries its secret (§6.8), which the extension keeps in memory and in the
 // session's credential file under `<home>/remote-sessions/`.
 import { createHash, createPrivateKey, randomBytes, sign as edSign, type KeyObject } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, unlinkSync, chmodSync, writeSync, fsyncSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, unlinkSync, chmodSync, writeSync, fsyncSync, futimesSync } from "node:fs";
 import { join } from "node:path";
 
 /** The variable that, set to `0`, keeps a connected home local. */
@@ -178,15 +178,33 @@ export function signedHeaders(r: Remote, method: string, pathAndQuery: string, b
   return out;
 }
 
+/** The most bytes of a remote daemon's answer a client reads
+ * (`clax_core::remote::MAX_RESPONSE_BYTES`); a longer one fails
+ * `bad_response`. */
+export const MAX_RESPONSE_BYTES = 128 * 1024 * 1024;
+
+/** The daemon's time in a response's `Date` less this machine's, in
+ * seconds; `undefined` without a readable `Date`. */
+export function daemonOffset(date: string | undefined): number | undefined {
+  const at = date ? Date.parse(date) : NaN;
+  if (Number.isNaN(at)) return undefined;
+  return Math.round(at / 1000) - Math.floor(Date.now() / 1000);
+}
+
 /** Learns the daemon's clock from a response's `Date`: true when the
  * offset is within [`MAX_OFFSET_S`]. */
 export function learnOffset(r: Remote, date: string | undefined): boolean {
-  const at = date ? Date.parse(date) : NaN;
-  if (Number.isNaN(at)) return false;
-  const o = Math.round(at / 1000) - Math.floor(Date.now() / 1000);
-  if (Math.abs(o) > MAX_OFFSET_S) return false;
+  const o = daemonOffset(date);
+  if (o === undefined || Math.abs(o) > MAX_OFFSET_S) return false;
   r.offset = o;
   return true;
+}
+
+/** Why a request was not retried with a learned clock, as the Rust clients
+ * say it (`clax_core::remote::clock_skew_message`). */
+export function clockSkewMessage(offset: number): string {
+  const signed = offset >= 0 ? `+${offset}` : `${offset}`;
+  return `the daemon's clock is ${signed} s from this machine's, more than the ${MAX_OFFSET_S} s a signed request may be moved by: set this machine's clock (nothing was signed for that time)`;
 }
 
 // ---- Session credential files (spec 2026-10-08 §6.8) ----------------------
@@ -290,6 +308,22 @@ export class SessionFiles {
       try { unlinkSync(tmp); } catch { /* gone */ }
       throw e;
     }
+  }
+
+  /** Marks file `name` in use now (its modification time) when it holds
+   * session `session`, so the Rust clients' pruning of credential files
+   * unused for a week (`clax_core::remote::STALE_FILE_AFTER`) keeps it. */
+  touch(name: string, session: string): void {
+    try {
+      if (this.read(name)?.session !== session) return;
+      const fd = openSync(join(this.dir, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        const now = new Date();
+        futimesSync(fd, now, now);
+      } finally {
+        closeSync(fd);
+      }
+    } catch { /* another session's, or unreadable: left alone */ }
   }
 
   /** Removes file `name` when it holds session `session`. */

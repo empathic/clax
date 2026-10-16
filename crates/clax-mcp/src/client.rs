@@ -1434,6 +1434,13 @@ impl DaemonClient {
                 st.session = Some(session.clone());
             }
         });
+        // A live session's credential files are in use (a remote daemon's;
+        // see `SessionFiles::prune`).
+        if let Some(remote) = &self.inner.remote {
+            remote
+                .sessions
+                .touch(&self.credential_keys(&session), &session.id);
+        }
         Ok(session)
     }
 
@@ -1486,11 +1493,17 @@ impl DaemonClient {
         let Some(remote) = &self.inner.remote else {
             return;
         };
+        remote.sessions.remove(&self.credential_keys(s), &s.id);
+    }
+
+    /// The names session `s`'s credential files go by: its row's and its
+    /// registration's.
+    fn credential_keys<'a>(&'a self, s: &'a Session) -> Vec<SessionKey<'a>> {
         let mut keys = keys_of_row(&s.harness, s.harness_session_id.as_deref(), s.parent_pid);
         if let Some(m) = &self.inner.managed {
             keys.extend(registration_keys(&m.registration));
         }
-        remote.sessions.remove(&keys, &s.id);
+        keys
     }
 }
 
