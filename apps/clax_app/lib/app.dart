@@ -1909,6 +1909,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     required Stream<AppAction> actions,
     required ValueChanged<Ready> onReady,
     VoidCallback? onStoppedLoading,
+    bool covered = false,
     AppAction? action,
     String? thread,
     String? comment,
@@ -1936,6 +1937,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       initialComment: comment,
       onReady: onReady,
       onStoppedLoading: onStoppedLoading,
+      covered: covered,
       device: _device,
       build: _build,
       home: _homeHost,
@@ -1966,6 +1968,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           mode: AppMode.home,
           onReady: (r) => _onReady(aid, r),
           onStoppedLoading: hooks.onStoppedLoading,
+          covered: hooks.covered,
         ),
       );
 
