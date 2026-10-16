@@ -170,6 +170,18 @@ import 'working_chip.dart';
 ///   from the app's first page leaves the app.
 ///
 /// The screen owns [surface] and disposes it.
+/// How an [AppScreen] stands among the app's screens.
+enum AppMode {
+  /// An app opened over the home screen; back at its root closes it.
+  app,
+
+  /// The home app, the first screen: back at its root leaves Clax (there
+  /// is nothing under it), and the inbox, settings, inspector and making
+  /// screens push over it and pop back to it. Each time it shows again it
+  /// takes back the menu bar's Comment and Threads.
+  home,
+}
+
 class AppScreen extends StatefulWidget {
   const AppScreen({
     super.key,
@@ -201,7 +213,11 @@ class AppScreen extends StatefulWidget {
     this.build,
     this.home,
     this.openApp,
+    this.mode = AppMode.app,
   });
+
+  /// Whether this is the home app's screen ([AppMode.home]).
+  final AppMode mode;
 
   final String aid;
 
@@ -284,7 +300,9 @@ class AppScreen extends StatefulWidget {
   /// Answers the page's `home` calls, which it serves only to the home app
   /// ([HomeHost.availableTo]); without it, or for any other app, `home`
   /// reports itself unavailable and every call is refused. The home app
-  /// gets each of the host's [HomeHost.events].
+  /// gets each of the host's [HomeHost.events] while it shows, and each
+  /// topic's latest value ([HomeHost.latest]) when it shows again after
+  /// one came while it was covered or in the background.
   final HomeHost? home;
 
   /// Opens app [aid] as its own screen: where a top-level navigation of
@@ -543,6 +561,11 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       _subs.add(
         h.events.listen((e) {
           if (!mounted || !_homeServed) return;
+          if (_toldVisible == false) {
+            // Told in one go, the latest of each, when it shows again.
+            _homeBehind = true;
+            return;
+          }
           unawaited(widget.surface.call(HomeDeviceEvent(e.name, e.data)));
         }),
       );
@@ -615,6 +638,10 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     widget.surface.setVisible(visible);
     if (!visible) widget.device?.stopWatches(_deviceView);
     if (visible) {
+      if (widget.mode == AppMode.home) {
+        _comments.register(_toggleOpen, comment: _toggleComment);
+      }
+      _catchUpHome();
       unawaited(_showNotice());
       WidgetsBinding.instance.addPostFrameCallback((_) => _offerNewer());
     } else {
@@ -900,6 +927,39 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     },
   );
 
+  /// A `home` event came while the page was not shown.
+  var _homeBehind = false;
+
+  /// Tells the page each `home` topic's latest value, when an event came
+  /// while it was not shown.
+  void _catchUpHome() {
+    final h = widget.home;
+    if (!_homeBehind || h == null || !_homeServed) return;
+    _homeBehind = false;
+    for (final e in h.latest) {
+      unawaited(widget.surface.call(HomeDeviceEvent(e.name, e.data)));
+    }
+  }
+
+  /// [args] with `menu`'s `rect`, given in the page's CSS pixels, moved
+  /// onto the screen: by where the page's view lies in the app's window.
+  Map<String, Object?> _onScreen(Map<String, Object?> args) {
+    final r = args['rect'];
+    final box = _surfaceKey.currentContext?.findRenderObject();
+    if (r is! Map || box is! RenderBox || !box.hasSize) return args;
+    final o = box.localToGlobal(Offset.zero);
+    return {
+      ...args,
+      'rect': {
+        ...r,
+        if (r['x'] case final num x) 'x': x + o.dx,
+        if (r['y'] case final num y) 'y': y + o.dy,
+      },
+    };
+  }
+
+  final _surfaceKey = GlobalKey(debugLabel: 'app-surface');
+
   /// Whether the page is served `home`: this screen is the home app's and
   /// the loaded document is that app's too ([AppSurface.document], from
   /// the URL the WebView committed), not another artifact the top level
@@ -920,11 +980,12 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       return DeviceResult.error(r.id, 'refused', 'not the home app');
     }
     try {
-      final args = switch (r.args) {
+      var args = switch (r.args) {
         [] => const <String, Object?>{},
         [final Map<String, Object?> a] => a,
         _ => throw const HomeBadRequest('takes one object of arguments'),
       };
+      if (r.method == 'menu') args = _onScreen(args);
       return DeviceResult.ok(r.id, await h.call(widget.aid, r.method, args));
     } on HomeRefused {
       return DeviceResult.error(r.id, 'refused', 'not the home app');
@@ -1845,7 +1906,10 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
           _attest(e, PointerPhase.cancel);
           _swipe.onPointerCancel(e);
         },
-        child: widget.surface.build(context),
+        child: KeyedSubtree(
+          key: _surfaceKey,
+          child: widget.surface.build(context),
+        ),
       ),
       if (_covered) _cover(context),
       if (_buildChip && _buildOpen)
