@@ -1,7 +1,8 @@
 // The Clax app's view (`/a/<id>?app=1`): no chrome, `window.claxHost` for the
 // app that hosts it, messages to the app's channel (`window.ClaxHost`), Send,
-// and a newer version, published or restored, followed in place with the
-// page's documents and scroll kept. The app's side is ./app-host.ts.
+// a newer version, published or restored, offered to the app and swapped in
+// place on its reloadLatest with the page's documents and scroll kept, and
+// the app's own history of pages and fragments. The app's side is ./app-host.ts.
 import { type CDPSession, type Frame, type Locator, type Page } from "@playwright/test";
 import { hostChannel, host, initHost, NONCE, noFrames, ofType, toHost } from "./app-host";
 import { test, expect, type Daemon, api, contentFrame, publishAs, publishNext, record, registerSession, streamLive } from "./fixtures";
@@ -191,7 +192,7 @@ const NOTES = `<!doctype html><html><head><title>Notes</title><style>body{margin
 </script></body></html>`;
 
 for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: a published version lands in place with the documents and scroll kept, and a restore brings the earlier version back`, async ({ page }) => {
+  test(`${mode}: a published version is offered, not loaded, and lands in place on reloadLatest with the documents and scroll kept; a restore likewise`, async ({ page }) => {
     const { id, sid, frame } = await openApp(page, `App notes ${mode}`, mode, true, { html: NOTES, capabilities: { db: {} } });
     await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
     await frame.locator("#add").tap();
@@ -201,6 +202,12 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(y).toBeGreaterThanOrEqual(1199);
 
     await publishNext(d.base, d.token, sid, id, 1, { files: { "index.html": NOTES.replace(">Notes</h2>", ">Notes, in blue</h2>") } });
+    await expect.poll(async () => (await ofType(page, "newer")).length, { timeout: 10_000 }).toBe(1);
+    expect((await ofType(page, "newer"))[0]).toEqual({ type: "newer", version: 2 });
+    // Never swapped without the app's word: version 1 still shows.
+    expect((await ofType(page, "landed"))).toEqual([]);
+    await expect(frame.locator("#t")).toHaveText("Notes");
+    await host(page, "reloadLatest()");
     await expect.poll(async () => (await ofType(page, "landed")).length, { timeout: 10_000 }).toBe(1);
     expect((await ofType(page, "landed"))[0]).toEqual({ type: "landed", version: 2 });
     const v2 = await contentFrame(page, id, 2);
@@ -211,6 +218,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     // Undo: version 1's files come back as version 3, over the same
     // documents, and the view follows it as it followed version 2.
     await api(d.base, d.token, `/api/artifacts/${id}/versions:restore`, { method: "POST", session: sid, body: JSON.stringify({ version: 1, if_version: 2 }) });
+    await expect.poll(async () => (await ofType(page, "newer")).length, { timeout: 10_000 }).toBe(2);
+    await host(page, "reloadLatest()");
     await expect.poll(async () => (await ofType(page, "landed")).length, { timeout: 10_000 }).toBe(2);
     expect((await ofType(page, "landed"))[1]).toEqual({ type: "landed", version: 3 });
     const v3 = await contentFrame(page, id, 3);
@@ -221,7 +230,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   });
 }
 
-test("a version published after the hidden-page threshold still lands while the WebView reports the document hidden", async ({ page }) => {
+test("a version published after the hidden-page threshold is still offered and lands while the WebView reports the document hidden", async ({ page }) => {
   // As the app's WKWebView does from load on.
   await page.addInitScript(() => {
     if (window.top !== window) return;
@@ -234,6 +243,8 @@ test("a version published after the hidden-page threshold still lands while the 
   // Past the stream's 30 s hidden-page threshold (web/shell/src/stream.ts HIDDEN_MS), on the shell's test clock.
   await advance(page, 60_000);
   await publishNext(d.base, d.token, sid, id, 1, { files: { "index.html": PAGE.replace("Quarterly goals", "Quarterly goals, later") } });
+  await expect.poll(async () => (await ofType(page, "newer")).length, { timeout: 10_000 }).toBe(1);
+  await host(page, "reloadLatest()");
   await expect.poll(async () => (await ofType(page, "landed")).length, { timeout: 10_000 }).toBe(1);
   const next = await contentFrame(page, id, 2);
   await expect(next.locator("#t")).toHaveText("Quarterly goals, later");
@@ -278,4 +289,43 @@ test.describe("a short view", () => {
     await host(page, `submitDraft({ text: "make it blue" })`);
     await expect.poll(async () => (await ofType(page, "sent")).length).toBe(1);
   });
+});
+
+test("back() moves through the app's own fragments and pages in place, and across a version swap", async ({ page }) => {
+  const ROUTES = `<!doctype html><title>R</title><h1 id=t>Routes</h1><a id=item href="#/item/3">item</a><a id=other href="other.html">other</a>`;
+  const s = await registerSession(d.base, d.token, "app");
+  const { artifact } = await publishAs(d.base, d.token, s.id, "Routes", { "index.html": ROUTES, "other.html": "<!doctype html><title>O</title><h1 id=o>Other</h1>" });
+  const id = artifact.id;
+  await hostChannel(page);
+  await page.goto(`${d.base}/a/${id}?app=1`);
+  const f1 = await contentFrame(page, id, 1);
+  await initHost(page);
+  await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
+  const back = async () => (await ofType(page, "history")).at(-1)?.back;
+  expect(await back()).toBe(false);
+  // A route: one entry.
+  await f1.locator("#item").click();
+  await expect.poll(back).toBe(true);
+  await expect.poll(() => f1.evaluate(() => location.hash)).toBe("#/item/3");
+  // A page of the app: another.
+  await f1.evaluate(() => { location.hash = ""; });
+  await f1.evaluate(() => (document.getElementById("other") as HTMLAnchorElement).click());
+  await expect.poll(() => page.frames().some(f => f.url().endsWith("/other.html"))).toBe(true);
+  // A version swap keeps the trail.
+  await publishNext(d.base, d.token, s.id, id, 1, { files: { "other.html": "<!doctype html><title>O</title><h1 id=o>Other, later</h1>" } });
+  await expect.poll(async () => (await ofType(page, "newer")).length, { timeout: 10_000 }).toBe(1);
+  await host(page, "reloadLatest()");
+  await expect.poll(async () => (await ofType(page, "landed")).length, { timeout: 10_000 }).toBe(1);
+  const other = page.frames().find(f => /\/v\/2\/other\.html$/.test(f.url()))!;
+  await expect(other.locator("#o")).toHaveText("Other, later");
+  // Back: the index page of version 2, then its route, then its start.
+  await host(page, "back()");
+  await expect.poll(() => page.frames().some(f => /\/v\/2\/(#.*)?$/.test(f.url()))).toBe(true);
+  expect(new URL(page.url()).pathname).toBe(`/a/${id}`);
+  await host(page, "back()");
+  const index = page.frames().find(f => /\/v\/2\/(#.*)?$/.test(f.url()))!;
+  await expect.poll(() => index.evaluate(() => location.hash)).toBe("#/item/3");
+  await host(page, "back()");
+  await expect.poll(() => index.evaluate(() => location.hash)).toBe("");
+  await expect.poll(back).toBe(false);
 });
