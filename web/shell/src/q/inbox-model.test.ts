@@ -31,13 +31,16 @@ describe("inbox model", () => {
     expect(itemText(item("ended", { ended: null }))).toBe("");
   });
 
-  it("names a reply's agent with its person and harness (spec §11)", () => {
+  it("names an agent one way in every item: by name, with its person when it is not the reader's (spec §11)", () => {
     const own = item("reply", { agent: { handle: "a_1", harness: "claude", project: "p", name: "clax-web", person: null, person_name: "Alex", own: true } });
-    expect(itemTitle(own)).toBe("clax-web (agent, via claude) replied on Quarterly Review");
+    expect(itemTitle(own)).toBe("clax-web replied on Quarterly Review");
+    expect(itemTitle(item("published", { agent: own.agent }))).toMatch(/^clax-web published /);
     const sams = item("reply", { agent: { handle: "a_2", harness: "pi", project: null, name: "web", person: "u_sam", person_name: "Sam", own: false } });
-    expect(itemTitle(sams)).toBe("web (Sam's agent, via pi) replied on Quarterly Review");
-    // Other kinds name the agent alone.
-    expect(itemTitle(item("finished", { agent: sams.agent }))).toBe("web finished on Quarterly Review");
+    expect(itemTitle(sams)).toBe("web (Sam's agent) replied on Quarterly Review");
+    expect(itemTitle(item("finished", { agent: sams.agent }))).toBe("web (Sam's agent) finished on Quarterly Review");
+    // An unnamed owner reads "the owner" mid-sentence.
+    const owners = item("reply", { agent: { handle: "a_3", harness: "claude", project: null, name: "web", person: null, person_name: "The owner", own: false } });
+    expect(itemTitle(owners)).toBe("web (the owner's agent) replied on Quarterly Review");
   });
 
   it("names a second agent of a harness, and a deleted page", () => {

@@ -3,6 +3,7 @@
 // URL, and a notification's text. Pure: no DOM.
 import type { CardPerson, InboxApproval, InboxFilter, InboxItem, InboxKind, QAgent } from "../api";
 import { agentLabel, answerText, cutHeader } from "./model";
+import { whose } from "../view/working-model";
 
 /** The kinds the inbox page filters by. */
 export const INBOX_KINDS: readonly InboxKind[] = ["reply", "version", "published", "question", "finished", "approval", "connection", "ended"];
@@ -40,22 +41,21 @@ export const heldCount = (a: InboxApproval): string =>
 export const heldAnchor = (i: InboxItem, a: InboxApproval): string | undefined =>
   (a.thread_id ? /«[^»]*»\s*$/.exec(i.thread?.summary ?? "")?.[0]?.trim() : undefined);
 
-/** A reply's author line (spec 2026-10-08 §11 "Display"): `<name> (agent,
- * via <harness>)` for the recipient's own person's agent, else `<name>
- * (<person>'s agent, via <harness>)` (an inbox item's agent with `own`
- * always has `person_name`); null for an agent with no name. */
-function replier(a: QAgent | null): string | null {
-  if (!a?.name || a.own === undefined) return null;
-  return `${a.name} (${a.own ? "" : `${a.person_name}'s `}agent, via ${a.harness})`;
+/** An agent as every item names it: its name (else its harness), with its
+ * person when it is not the reader's own person's (spec 2026-10-08 §11
+ * "Display"): "sam-notes (Sam's agent)". */
+function named(a: QAgent | null, others: InboxItem[]): string {
+  const who = agentLabel(a, others.map(o => o.agent));
+  return a?.own === false && a.person_name ? `${who} (${whose(a.person_name)} agent)` : who;
 }
 
 /** An item's title: who did what, on which page ("claude replied on
  * Quarterly Review"). `others` are the items listed beside it, which
  * decide whether an agent is named by its harness alone. */
 export function itemTitle(i: InboxItem, others: InboxItem[] = []): string {
-  const who = agentLabel(i.agent, others.map(o => o.agent));
+  const who = named(i.agent, others);
   switch (i.kind) {
-    case "reply": return `${replier(i.agent) ?? who} replied on ${pageOf(i)}`;
+    case "reply": return `${who} replied on ${pageOf(i)}`;
     case "version": {
       const n = i.version?.addressed.length ?? 0;
       const addressed = n ? ` · addressed ${n === 1 ? "1 of your threads" : `${n} of your threads`}` : "";

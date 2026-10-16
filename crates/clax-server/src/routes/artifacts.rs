@@ -170,7 +170,8 @@ pub(crate) fn session_header(headers: &HeaderMap) -> Result<Option<String>, ApiE
 }
 
 /// `a` as JSON with `owner_live` (its owner session exists and has not ended),
-/// `owner_harness` (the owner's harness, when it exists) and `participants`
+/// `owner_harness` (the owner's harness, when it exists), `owner_name` (its
+/// agent name, when it has one) and `participants`
 /// (people by public ID, agents by handle; see [`Store::participants`]).
 /// A live page (`kind` `live`) also carries `live: {origin, path, page_url,
 /// origins}` from `live`: `origins` are its site's (spec §7.2), the most
@@ -189,6 +190,7 @@ pub(crate) fn with_owner(
     let mut v = serde_json::to_value(a).expect("serialisable artifact");
     v["owner_live"] = json!(owner.is_some_and(|o| o.ended_at.is_none()));
     v["owner_harness"] = json!(owner.map(|o| &o.harness));
+    v["owner_name"] = json!(owner.and_then(|o| o.name.as_ref()));
     v["working"] = json!(working);
     v["participants"] = json!(participants);
     if let Some(LivePart {

@@ -9,6 +9,8 @@ export type Artifact = {
   owner_live?: boolean;
   /** From `GET /api/artifacts` and `GET /api/artifacts/<id>`: the owner session's harness, when it exists. */
   owner_harness?: string | null;
+  /** From the same routes: the owner session's agent name (spec 2026-10-08 §11), when it has one. */
+  owner_name?: string | null;
   /** From `GET /api/artifacts` and `GET /api/artifacts/<id>`: the artifact's people and agents. */
   participants?: Participants;
   /** Who is working on it now (never a session ID). */
@@ -261,6 +263,8 @@ export type InboxEnded = {
  * open questions and approval requests. */
 export type StripAgent = {
   handle: string; name: string | null; harness: string; live: boolean; unread: number;
+  /** Its person's public ID (null: the owner's) and name, and whether it is the caller's own person's agent. */
+  person?: string | null; person_name?: string; own?: boolean;
   blocked: { since: string; questions: number; approvals: number } | null;
 };
 /** One agent as `GET /api/agents` lists it (§13): another person's agent

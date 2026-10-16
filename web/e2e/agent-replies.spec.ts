@@ -91,10 +91,11 @@ test("each reader reads its own person's agent's reply as its agent's, and anoth
     await expect(card(person, "Done here").locator(".by .author").last()).toHaveText(`${name} (Alex's agent, via claude)`);
     await expect(card(person, "Done there").locator(".by .author").last()).toHaveText("sam-notes (agent, via claude)");
 
-    // The owner's inbox names them the same way.
+    // The owner's inbox names each agent as its other items do: its own by
+    // name, Sam's with Sam.
     await owner.goto(`${d.base}/inbox`);
-    await expect(owner.locator(".title", { hasText: `${name} (agent, via claude) replied on Plan` })).toHaveCount(1);
-    await expect(owner.locator(".title", { hasText: "sam-notes (Sam's agent, via claude) replied on Plan" })).toHaveCount(1);
+    await expect(owner.locator(".title", { hasText: new RegExp(`^${name} replied on Plan$`) })).toHaveCount(1);
+    await expect(owner.locator(".title", { hasText: "sam-notes (Sam's agent) replied on Plan" })).toHaveCount(1);
   } finally {
     await ownerCtx.close();
     await personCtx.close();

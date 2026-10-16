@@ -30,12 +30,17 @@ describe("AgentStrip", () => {
     const m = mount(AgentStrip, { agents: AGENTS, now, selected: null, onPick: vi.fn() });
     expect(chips(m.root).map(c => c.textContent!.replace(/\s+/g, " ").trim())).toEqual([
       "clax-claude · waiting on you 12 min (1 question)",
-      "clax-multi-person · waiting on you 2 min (1 approval)",
+      "clax-multi-person · 1 approval for you · 2 min",
       "web · 3 unread",
       "pi · ended · 1 unread",
     ]);
     m.update({ agents: AGENTS, now: new Date("2026-10-09T11:35:00.000Z"), selected: null, onPick: vi.fn() });
     expect(chips(m.root)[0].textContent).toContain("waiting on you 1 h 17 min");
+  });
+
+  it("names another person's agent with its person, and its own person's agent alone", () => {
+    const m = mount(AgentStrip, { agents: [agent({ handle: "a_sam", name: "sam-notes", unread: 2, person: "u_sam", person_name: "Sam", own: false }), agent({ handle: "a_me", name: "web", unread: 1, person: null, person_name: "Alex", own: true })], now, selected: null, onPick: vi.fn() });
+    expect(chips(m.root).map(c => c.textContent!.replace(/\s+/g, " ").trim())).toEqual(["sam-notes · Sam · 2 unread", "web · 1 unread"]);
   });
 
   it("formats a wait in minutes, then hours", () => {

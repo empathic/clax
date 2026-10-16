@@ -26,7 +26,7 @@
 {/snippet}
 
 <Sidebar threads={s.threads} resolved={s.resolved} selected={s.selected} file={s.file} holds={f => ctl.holds(f, s)} me={s.me}
-  versions={s.data.versions} shown={ctl.shown(s)} agent={s.data.artifact.owner_harness || "agent"}
+  versions={s.data.versions} shown={ctl.shown(s)} agent={s.data.artifact.owner_name || s.data.artifact.owner_harness || "agent"}
   working={s.working} commenting={s.commenting} agents={s.agents} mine={s.attention?.open_in ?? []}
   decided={s.decided} onSeen={t => ctl.look(t)}
   onSelect={t => ctl.selectThread(t)} onHover={t => ctl.hover(t)} onSend={t => go(() => ctl.sendThread(t))}

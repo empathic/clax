@@ -1599,6 +1599,8 @@ pub struct AgentGroup {
     pub handle: String,
     pub name: Option<String>,
     pub harness: String,
+    /// Its person's public ID; `None` for the owner's agents.
+    pub person: Option<String>,
     /// The session has not ended.
     pub live: bool,
     pub unread: u32,
@@ -1627,6 +1629,7 @@ impl Store {
                 handle: String::new(),
                 name: None,
                 harness: String::new(),
+                person: None,
                 live: false,
                 unread: 0,
                 newest: 0,
@@ -1670,19 +1673,21 @@ impl Store {
             }
             let mut out = Vec::with_capacity(by.len());
             for (sid, mut g) in by {
-                let row: Option<(String, Option<String>, String, Option<String>)> = c
+                type Row = (String, Option<String>, String, Option<String>, Option<String>);
+                let row: Option<Row> = c
                     .query_row(
-                        "SELECT agent_handle, name, harness, ended_at FROM sessions WHERE id = ?1",
+                        "SELECT agent_handle, name, harness, ended_at, person FROM sessions WHERE id = ?1",
                         params![sid],
-                        |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?, x.get(3)?)),
+                        |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?, x.get(3)?, x.get(4)?)),
                     )
                     .optional()?;
-                let Some((handle, name, harness, ended)) = row else {
+                let Some((handle, name, harness, ended, person)) = row else {
                     continue;
                 };
                 g.handle = handle;
                 g.name = name;
                 g.harness = harness;
+                g.person = person;
                 g.live = ended.is_none();
                 out.push(g);
             }

@@ -1,3 +1,4 @@
+import { whose } from "./working-model";
 import { type AnchorResult, INDEX_FILE } from "../../../bridge/src/protocol";
 import type { Comment, Thread, Viewer } from "../threads";
 import { hasElapsedLabel } from "../waiting";
@@ -44,7 +45,7 @@ export function needsTicking(threads: Thread[]): boolean {
  * a person's comment by their name. Text, never markup. */
 export function authorLabel(c: Comment, me?: Viewer | null): string {
   const a = c.agent, via = agentName(c.via_harness);
-  return c.author_kind !== "agent" ? c.author_name : a ? `${a.name} (${(a.person === null ? me?.owner : a.person === me?.public_id) ? "" : `${a.person_name}'s `}agent, via ${via})` : via;
+  return c.author_kind !== "agent" ? c.author_name : a ? `${a.name} (${(a.person === null ? me?.owner : a.person === me?.public_id) ? "" : `${whose(a.person_name)} `}agent, via ${via})` : via;
 }
 
 /** A page as people read it: percent-encoding decoded, or the page as

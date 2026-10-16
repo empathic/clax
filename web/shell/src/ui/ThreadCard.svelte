@@ -11,7 +11,7 @@
   import { after } from "../clock";
   import { guardedAction, keyboardTrail } from "../view/trail";
   import { waitingLabel } from "../waiting";
-  import { clock } from "../view/working-model";
+  import { clock, midName, whose } from "../view/working-model";
 
   type Props = {
     t: Thread; n?: number; now: Date; me?: Viewer | null; selected: string | null; file: string | null;
@@ -165,7 +165,7 @@
   {/if}
 </article>
 
-{#snippet chip()}{#if owner}<span class="owner-chip" title={`${owner.name ?? "agent"}, ${mine ? "your agent" : `${owner.person_name}'s agent`}`}><span class="on">{owner.name}</span>{#if !mine}<span class="op">{` · ${owner.person_name}`}</span>{/if}</span>{/if}{/snippet}
+{#snippet chip()}{#if owner}<span class="owner-chip" title={`${owner.name ?? "agent"}, ${mine ? "your agent" : `${whose(owner.person_name ?? "")} agent`}`}><span class="on">{owner.name}</span>{#if !mine}<span class="op">{` · ${midName(owner.person_name ?? "")}`}</span>{/if}</span>{/if}{/snippet}
 
 {#snippet actions()}
   <!-- Only stops a click on these controls from also selecting the card. -->

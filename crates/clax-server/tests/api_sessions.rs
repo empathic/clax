@@ -208,6 +208,8 @@ async fn publish_with_session_header_attributes_owner_and_versions() {
     assert_eq!(got["artifact"]["owner_session_id"], sid);
     assert_eq!(got["artifact"]["owner_live"], true);
     assert_eq!(got["artifact"]["owner_harness"], "claude");
+    // The owner session's agent name (spec 2026-10-08 §11), where the shell showed the harness.
+    assert!(got["artifact"]["owner_name"].is_string(), "{got}");
     let list: Value = ts.get("/api/artifacts").await.json().await.unwrap();
     assert_eq!(list["artifacts"][0]["owner_live"], true);
     assert_eq!(list["artifacts"][0]["owner_harness"], "claude");
@@ -244,6 +246,7 @@ async fn publish_without_header_has_no_owner() {
     assert!(got.get("owner_session").is_none(), "{got}");
     assert_eq!(got["artifact"]["owner_live"], false);
     assert_eq!(got["artifact"]["owner_harness"], Value::Null);
+    assert_eq!(got["artifact"]["owner_name"], Value::Null);
     let list: Value = ts.get("/api/artifacts").await.json().await.unwrap();
     assert_eq!(list["artifacts"][0]["owner_live"], false);
 }
