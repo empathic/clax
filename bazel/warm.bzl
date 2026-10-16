@@ -3,9 +3,12 @@
 macOS assesses every new executable file on its first run, and Bazel makes a
 new file for a binary in each output base. This action runs the binary (the
 same file every test in this output base runs, through runfiles links) and
-records its SHA-256. It is never taken from the disk cache (no-remote-cache),
-so a worktree whose binary came from the cache still runs its own file once;
-the output base's action cache skips it while the binary is unchanged.
+records its SHA-256. It is never taken from any cache (no-cache): Bazel
+applies no-remote-cache to the remote cache only, and served this action
+from the disk cache, so a worktree whose binary came from that cache never
+ran its own file. With no-cache it runs in every build that needs it; once
+macOS has assessed the file that costs one `--version` and a checksum, and
+the stamp's content is unchanged, so nothing that depends on it reruns.
 """
 
 def _warm_binary_impl(ctx):
@@ -18,7 +21,7 @@ def _warm_binary_impl(ctx):
         arguments = [bin.path, stamp.path],
         mnemonic = "WarmBinary",
         progress_message = "Running %{input} once",
-        execution_requirements = {"no-remote-cache": "1"},
+        execution_requirements = {"no-cache": "1"},
     )
     return [DefaultInfo(files = depset([stamp]), runfiles = ctx.runfiles(files = [stamp, bin]))]
 
