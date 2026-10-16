@@ -55,11 +55,9 @@ mod tests {
 
     #[test]
     fn the_shell_shows_the_same_haiku() {
-        let shell: Vec<String> = serde_json::from_str(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../web/shell/src/view/haiku.json"
-        )))
-        .expect("haiku.json is a JSON array of strings");
+        let shell: Vec<String> =
+            serde_json::from_str(include_str!("../../../../web/shell/src/view/haiku.json"))
+                .expect("haiku.json is a JSON array of strings");
         assert_eq!(
             shell,
             HAIKU.to_vec(),

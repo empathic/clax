@@ -4,7 +4,10 @@
 //! ones, so this script names every embedded directory as well. The list is
 //! also written to `$OUT_DIR/plugin-dirs.txt` for a test to check.
 //!
-//! Also sets `CLAX_BUILD_COMMIT` (see [`build_commit`]).
+//! Also sets `CLAX_BUILD_COMMIT` (see [`build_commit`]), and
+//! `CLAX_EXTENSION_DIST_DIR`, the extension build `src/extension_files.rs`
+//! embeds: the environment's value when set (Bazel sets it to its build of
+//! the extension), else the checkout's `web/dist-extension`.
 
 use std::path::{Path, PathBuf};
 
@@ -60,6 +63,10 @@ fn main() {
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("set by cargo"));
     std::fs::write(out.join("plugin-dirs.txt"), list).expect("OUT_DIR is writable");
     build_commit(&repo);
+    println!("cargo::rerun-if-env-changed=CLAX_EXTENSION_DIST_DIR");
+    let dist = std::env::var("CLAX_EXTENSION_DIST_DIR")
+        .unwrap_or_else(|_| format!("{}/web/dist-extension/", repo.display()));
+    println!("cargo::rustc-env=CLAX_EXTENSION_DIST_DIR={dist}");
 }
 
 /// Sets `CLAX_BUILD_COMMIT`, the commit `clax` is built from: the
