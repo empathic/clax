@@ -34,10 +34,17 @@ async fn sent_thread_reaches_the_app_session_by_its_wait_poll() {
     let aid = p["artifact"]["id"].as_str().unwrap();
     let t = ts.thread(aid, 1, "make it blue").await;
     let tid = t["id"].as_str().unwrap();
-    let sent = ts.send_thread(aid, tid).await;
+    ts.send_thread(aid, tid).await;
+    // The delivery state as the owner reads it.
+    let owner: Value = ts
+        .get_authed(&format!("/api/artifacts/{aid}/threads/{tid}"))
+        .await
+        .json()
+        .await
+        .unwrap();
     assert_eq!(
-        sent["feedback_state"]["tier"], "wait",
-        "a sent thread waits on the app's feedback poll: {sent}"
+        owner["thread"]["feedback_state"]["tier"], "wait",
+        "a sent thread waits on the app's feedback poll: {owner}"
     );
     let res = ts
         .get_authed(&format!("/api/sessions/{sid}/feedback?tier=wait&wait=5"))
