@@ -1873,6 +1873,26 @@ as the document then reaches. Later welcomes of the same document carry
 none, so a re-greet never moves the page back. There is no
 `clax:restore-scroll` message.
 
+**Back.** The app's back button goes back through the app's own history,
+not the WebView's: the pages and fragments the page moved through in this
+shell document, and the routes it pushed with `history.pushState`, newest
+last, at most 50. `history {back}` tells the app whether there is one to go
+back to, and `back()` goes there. To a page or a fragment, the frame moves in
+place, without a history entry, as the shell's own back does; a version swap
+keeps them. After the welcome with `app: true`, the page's bridge watches its
+`history.pushState` and its own back and forward, and reports each move
+among its routes as `clax:route {depth, hash}`: `depth` is the number of the
+page's pushes above the entry it loaded at, `hash` its fragment. Each route
+is an entry of the app's history, and a move of the page's own back or
+forward drops the routes above it. To a route below, the shell sends the
+bridge `clax:back {depth}`, and the page goes back through its own entries
+to that route (`history.go`), hearing the `popstate` its router follows, so
+its own back and forward go on from there. Once a fragment entry lies among
+the page's routes, the bridge cannot count its entries, and moves in place
+instead: the entry is replaced with that route's URL and state, and the
+page hears a `popstate`. A page's routes leave the app's history when
+another document greets.
+
 **`window.claxHost`** (the app calls it by `runJavaScript` in the shell's
 document; a page cannot reach it, since its frame is cross-origin to the
 shell in subdomain mode and an opaque origin in sandbox mode):
@@ -1899,6 +1919,7 @@ shell in subdomain mode and an opaque origin in sandbox mode):
 | `runMigration({file, from, to, totalMs?})` | In the migration view only: runs a shared app's migration, answered by `migration` (see "The migration view" below). |
 | `deviceResult({id, ok, value})` / `deviceResult({id, ok: false, error: {code, message}})` | The app's answer to a `device` message; an ID no call waits on is dropped. |
 | `openRoute(hash)` | Moves the page to fragment `hash` (`#` and at most 511 more characters), as a tapped reminder asks. |
+| `back()` | Goes back in the app's own history (see "Back" above); nothing when there is nothing to go back to. |
 
 **Messages to the app** go on the WebView's JavaScript channel `ClaxHost`
 (`window.ClaxHost.postMessage(<JSON>)`), and a page without it (a browser)
@@ -1913,7 +1934,8 @@ drops them. Every message carries `nonce`:
 | `sent` | `thread` | Send posted a thread and sent it to the agent. |
 | `sendFailed` | `thread`, `text` | The send failed; the thread stays posted and unsent until `resend`. |
 | `landed` | `version` | The page of a version auto-follow loaded has greeted. |
-| `notice` | `text` | A shell notice (a failed post, a failed follow, …). |
+| `notice` | `text` | A shell notice (a failed post, a failed follow, …). When the composer cancels a post it queued behind its screenshot (its text changed, or it moved to another anchor), a fresh `Not sent: …` notice each time, so the app's Send stops waiting on it. |
+| `history` | `back` | Whether `back()` has a page, fragment or route to go back to; at `init`, and whenever that changes. |
 | `device` | `id`, `cap`, `method`, `args` | The page called a device capability (see "Device capabilities in the Clax app" below). Calls made before `init` are posted by it. Not in the inspect view. |
 | `questions` | `open`, `showing` | How many of the owner's open questions are about the artifact, and whether the questions sheet shows; posted whenever either changes. |
 | `inspection` | `png`, `errors`, `failed`, `text`, `title`, `height`; or `error` | The answer to `inspect`. |
