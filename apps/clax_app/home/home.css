@@ -1,0 +1,218 @@
+/* Clax's home screen, over kit.css. The colours are the Clax app's own
+ * Material 3 scheme (seed #4A5D8F), so the page reads as the launcher it
+ * replaces; the kit's tokens are set to them for anything the kit draws. */
+
+:root {
+  --h-surface: #faf8ff;
+  --h-on-surface: #1a1b21;
+  --h-on-variant: #45464f;
+  --h-primary: #485d92;
+  --h-pc: #dae2ff;
+  --h-on-pc: #304578;
+  --h-ec: #ffdad6;
+  --h-on-ec: #93000a;
+  --h-error: #ba1a1a;
+  --h-on-error: #ffffff;
+  --h-sc: #dce2f9;
+  --h-on-sc: #404659;
+  --h-track: #e2e2e9;
+  --h-menu-bg: #eeedf4;
+  --h-state: rgba(26, 27, 33, 0.1);
+  --h-fab-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 4px 8px 3px rgba(0, 0, 0, 0.15);
+  --h-menu-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 6px 2px rgba(0, 0, 0, 0.15);
+
+  --k-bg: var(--h-surface);
+  --k-surface: var(--h-surface);
+  --k-fg: var(--h-on-surface);
+  --k-fg-2: var(--h-on-variant);
+  --k-accent: var(--h-primary);
+  --k-danger: var(--h-error);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --h-surface: #121318;
+    --h-on-surface: #e2e2e9;
+    --h-on-variant: #c5c6d0;
+    --h-primary: #b2c5ff;
+    --h-pc: #304578;
+    --h-on-pc: #dae2ff;
+    --h-ec: #93000a;
+    --h-on-ec: #ffdad6;
+    --h-error: #ffb4ab;
+    --h-on-error: #690005;
+    --h-sc: #404659;
+    --h-on-sc: #dce2f9;
+    --h-track: #33343a;
+    --h-menu-bg: #1e1f25;
+    --h-state: rgba(226, 226, 233, 0.1);
+  }
+  :root:not([data-theme="light"]) .h-face { background: var(--t-b); color: var(--t-a); }
+}
+
+:root[data-theme="dark"] {
+  --h-surface: #121318;
+  --h-on-surface: #e2e2e9;
+  --h-on-variant: #c5c6d0;
+  --h-primary: #b2c5ff;
+  --h-pc: #304578;
+  --h-on-pc: #dae2ff;
+  --h-ec: #93000a;
+  --h-on-ec: #ffdad6;
+  --h-error: #ffb4ab;
+  --h-on-error: #690005;
+  --h-sc: #404659;
+  --h-on-sc: #dce2f9;
+  --h-track: #33343a;
+  --h-menu-bg: #1e1f25;
+  --h-state: rgba(226, 226, 233, 0.1);
+}
+
+html, body { background: var(--h-surface); color: var(--h-on-surface); }
+body {
+  font: 400 14px/1.25 var(--k-font);
+  letter-spacing: 0.25px;
+  min-height: 100vh;
+}
+
+.h-glyph { display: inline-grid; line-height: 0; }
+.h-page { min-height: 100vh; }
+
+/* Top bar. */
+.h-bar {
+  position: sticky; top: 0; z-index: 2;
+  display: flex; align-items: center;
+  height: calc(56px + var(--k-safe-top)); padding: var(--k-safe-top) 4px 0 16px;
+  background: var(--h-surface);
+}
+.h-title { flex: 1; margin: 0; font: 400 22px/28px var(--k-font); letter-spacing: 0; }
+.h-actions { display: flex; align-items: center; }
+.h-action {
+  width: 48px; height: 48px; display: grid; place-items: center;
+  border: 0; border-radius: 50%; background: transparent; color: var(--h-on-variant);
+  cursor: pointer; padding: 0;
+}
+.h-action:active, .h-action:hover { background: var(--h-state); }
+.h-badged { position: relative; display: inline-grid; }
+.h-badge {
+  position: absolute; top: -4px; left: 12px;
+  min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px;
+  background: var(--h-error); color: var(--h-on-error);
+  font: 500 11px/16px var(--k-font); letter-spacing: 0.5px; text-align: center;
+}
+.h-more { position: relative; }
+.h-scrim { position: fixed; inset: 0; z-index: 3; border: 0; background: transparent; cursor: default; }
+.h-menu {
+  position: absolute; top: 40px; right: 0; z-index: 4;
+  min-width: 112px; max-width: 280px; padding: 8px 0; border-radius: 4px;
+  background: var(--h-menu-bg); box-shadow: var(--h-menu-shadow);
+}
+.h-menu-item {
+  display: block; width: 100%; height: 48px; padding: 0 12px; border: 0;
+  background: transparent; color: var(--h-on-surface); text-align: left; white-space: nowrap;
+  font: 500 14px/20px var(--k-font); letter-spacing: 0.1px; cursor: pointer;
+}
+.h-menu-item:active, .h-menu-item:hover { background: var(--h-state); }
+
+/* Key banner. */
+.h-key {
+  display: flex; align-items: center; gap: 12px;
+  margin: 0 16px 8px; padding: 12px 8px 12px 16px; border-radius: 20px;
+  background: var(--h-sc); color: var(--h-on-sc);
+}
+.h-key-text { flex: 1; }
+.h-text-button {
+  height: 40px; padding: 0 12px; border: 0; border-radius: 20px; background: transparent;
+  color: var(--h-primary); font: 500 14px/20px var(--k-font); letter-spacing: 0.1px; cursor: pointer;
+}
+.h-text-button:active, .h-text-button:hover { background: color-mix(in srgb, var(--h-primary) 10%, transparent); }
+
+/* The grid. */
+.h-grid-wrap { padding: 8px 16px 112px; }
+.h-grid {
+  display: grid; grid-template-columns: repeat(var(--cols, 4), minmax(0, 1fr));
+  column-gap: 4px; row-gap: 8px;
+}
+.h-tile {
+  display: flex; flex-direction: column; align-items: center;
+  min-width: 0; height: 116px; padding: 8px 4px 4px; border: 0; border-radius: 20px;
+  background: transparent; color: var(--h-on-surface); font: inherit; letter-spacing: inherit;
+  cursor: pointer; touch-action: manipulation;
+  -webkit-touch-callout: none; -webkit-user-select: none; user-select: none;
+}
+.h-tile:active { background: var(--h-state); }
+.h-icon { position: relative; width: 60px; height: 60px; flex: none; }
+.h-face {
+  width: 60px; height: 60px; border-radius: 15px; overflow: hidden;
+  display: grid; place-items: center;
+  background: var(--t-a); color: var(--t-b);
+}
+.h-face img { width: 60px; height: 60px; object-fit: cover; -webkit-user-drag: none; }
+.h-emoji { font-size: 28px; line-height: 1; }
+.h-mono { font: 600 22px/1 var(--k-font); letter-spacing: 0; }
+.h-make { background: var(--h-pc); color: var(--h-on-pc); }
+.h-make.h-failed { background: var(--h-ec); color: var(--h-on-ec); }
+:root[data-theme="dark"] .h-face { background: var(--t-b); color: var(--t-a); }
+.h-face.h-make, :root[data-theme="dark"] .h-face.h-make { background: var(--h-pc); color: var(--h-on-pc); }
+.h-face.h-make.h-failed, :root[data-theme="dark"] .h-face.h-make.h-failed { background: var(--h-ec); color: var(--h-on-ec); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .h-face.h-make { background: var(--h-pc); color: var(--h-on-pc); }
+  :root:not([data-theme="light"]) .h-face.h-make.h-failed { background: var(--h-ec); color: var(--h-on-ec); }
+}
+.h-over {
+  position: absolute; inset: 0; border-radius: 15px; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--h-surface) 82%, transparent);
+}
+.h-label {
+  margin-top: 8px; max-width: 100%; text-align: center; overflow: hidden;
+  display: -webkit-box; -webkit-box-orient: vertical; overflow-wrap: anywhere;
+}
+.h-two { -webkit-line-clamp: 2; line-clamp: 2; }
+.h-one { display: block; white-space: nowrap; text-overflow: ellipsis; }
+.h-status {
+  max-width: 100%; color: var(--h-on-variant); text-align: center;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.h-status.h-error { color: var(--h-error); }
+
+/* Rings. */
+.h-ring { position: relative; width: 36px; height: 36px; display: block; }
+.h-ring svg, .h-spinner svg { display: block; fill: none; }
+.h-ring-track { stroke: var(--h-track); stroke-width: 3; }
+.h-ring-arc, .h-spin-arc { stroke: var(--h-primary); stroke-width: 3; stroke-linecap: round; }
+.h-ring-text {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  color: var(--h-on-surface); font: 600 11px/16px var(--k-font); letter-spacing: 0.5px;
+  font-variant-numeric: tabular-nums;
+}
+.h-spinner { width: 36px; height: 36px; padding: 4px; display: block; }
+.h-spinner svg { animation: h-spin 1.4s linear infinite; }
+.h-spin-arc { stroke-dasharray: 22 100; animation: h-arc 1.4s ease-in-out infinite; }
+@keyframes h-spin { to { transform: rotate(360deg); } }
+@keyframes h-arc {
+  0% { stroke-dasharray: 2 100; stroke-dashoffset: 0; }
+  50% { stroke-dasharray: 50 100; stroke-dashoffset: -12; }
+  100% { stroke-dasharray: 2 100; stroke-dashoffset: -77; }
+}
+
+/* Messages: empty, load error, elsewhere. */
+.h-message {
+  min-height: calc(100vh - 56px); padding: 0 32px 96px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;
+}
+.h-away .h-message { min-height: 100vh; }
+.h-message-glyph { color: var(--h-primary); }
+.h-message-title { margin: 16px 0 0; font: 400 22px/28px var(--k-font); letter-spacing: 0; }
+.h-message-hint { margin: 8px 0 0; color: var(--h-on-variant); font: 400 16px/24px var(--k-font); letter-spacing: 0.5px; }
+.h-message .h-text-button { margin-top: 16px; }
+
+/* New app. */
+.h-fab {
+  position: fixed; z-index: 2;
+  right: 16px; bottom: calc(16px + var(--k-safe-bottom));
+  display: flex; align-items: center; gap: 8px;
+  height: 56px; padding: 0 20px 0 16px; border: 0; border-radius: 16px;
+  background: var(--h-pc); color: var(--h-on-pc); box-shadow: var(--h-fab-shadow);
+  font: 500 14px/20px var(--k-font); letter-spacing: 0.1px; cursor: pointer;
+}
+.h-fab:active { background: color-mix(in srgb, var(--h-on-pc) 10%, var(--h-pc)); }
