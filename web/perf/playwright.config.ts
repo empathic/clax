@@ -1,3 +1,4 @@
+import "../e2e/bazel-env";
 import { defineConfig } from "@playwright/test";
 // One worker, never alongside the e2e run (quality_gates.sh runs the two in turn).
 // Two retries absorb a sample run that a burst of machine load spoiled; the

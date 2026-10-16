@@ -108,3 +108,8 @@ npm.npm_translate_lock(
     pnpm_lock = "//plugins/pi:pnpm-lock.yaml",
 )
 use_repo(npm, "npm_pi", "npm_web")
+
+# The Chromium the browser tests run, pinned by checksum
+# (bazel/playwright/repo.bzl).
+playwright = use_extension("//bazel/playwright:repo.bzl", "playwright")
+use_repo(playwright, "chromium")
