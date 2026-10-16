@@ -17,27 +17,6 @@ dev *ARGS:
 watch *ARGS:
     ./scripts/watch.sh "$@"
 
-# Build the Rust workspace
-build:
-    cargo build --workspace
-
-# Install web dependencies and build the frontend bundles
-web:
-    cd web && pnpm install --frozen-lockfile
-    ./scripts/build-web.sh
-
-# Run the web lint, typecheck, and unit tests
-web-test:
-    cd web && pnpm install --frozen-lockfile && pnpm run lint && pnpm run typecheck && pnpm test
-
-# Build the frontend and run the Playwright end-to-end tests
-web-e2e: web
-    cd web && pnpm exec playwright install --with-deps chromium && pnpm run e2e
-
-# Run the Pi extension tests
-pi-test:
-    cd plugins/pi && pnpm install --frozen-lockfile && pnpm run typecheck && pnpm test
-
 # Run the plugin wrapper tests (scripts/ensure-clax.sh)
 wrapper-test:
     ./scripts/test-ensure-clax.sh
@@ -50,49 +29,12 @@ install-test:
 plugin-test:
     ./scripts/test-plugins.sh
 
-# Run the Rust workspace tests (the shell tests need `just web` once first); cargo nextest when installed
-test:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if cargo nextest --version >/dev/null 2>&1; then
-        # One prebuilt clax for the tests that cannot name it (CLAX_TEST_BIN):
-        # nextest runs each test in its own process, and each would build it.
-        # A copy kept by content (scripts/stable-bin.sh), so macOS assesses it
-        # once per build rather than once per run.
-        cargo build -q -p clax-cli
-        bin="$(scripts/stable-bin.sh target/debug/clax target/clax-bin/debug)"
-        CLAX_TEST_BIN="$PWD/$bin" cargo nextest run --workspace
-    else
-        cargo test --workspace
-    fi
-
-# Run clippy with warnings denied, with and without the test targets, plus the web lint
-lint:
-    cargo clippy --workspace --all-targets -- -D warnings
-    cargo clippy --workspace -- -D warnings
-    cd web && pnpm run lint
-
 # Format the Rust code (the web lint is not a formatter)
 fmt:
     cargo fmt --all
 
-# Auto-format then run every quality gate (dev loop)
-check *GATES:
-    ./scripts/check.sh {{GATES}}
-
-# Run the same quality gates CI runs, without auto-format
-ci *GATES:
-    ./scripts/quality_gates.sh {{GATES}}
-
-# Run the perf gates' full versions (the quality gates run their quick versions): daemon latency, realtime clients, time to usable
-perf: web
-    cargo build -q --release -p clax-cli
-    CLAX_PERF_BIN="$PWD/target/release/clax" ./scripts/perf-daemon.sh
-    CLAX_PERF_BIN="$PWD/target/release/clax" ./scripts/perf-clients.sh
-    cd web && pnpm exec playwright install chromium >/dev/null && pnpm run perf
-
 # Install clax from this checkout into $CARGO_HOME/bin (~/.cargo/bin), stop the agents' daemon if it runs that binary (the next agent call starts the new build), register the plugins with each harness found, and point the plugins at that binary (clax init sets the bin setting)
-install: web
+install: web-native
     cargo install --locked --root "${CARGO_HOME:-$HOME/.cargo}" --path crates/clax-cli
     . scripts/dev-home.sh && stop_installed_daemon "${CLAX_HOME:-$HOME/.clax}" "${CARGO_HOME:-$HOME/.cargo}/bin/clax"
     "${CARGO_HOME:-$HOME/.cargo}/bin/clax" init
@@ -123,3 +65,91 @@ demo-room-sample:
 clean:
     cargo clean
     rm -rf web/dist/_clax web/dist/.vite web/dist/index.html web/dist/artifact.html web/node_modules
+
+# Checks and builds run with Bazel when Bazelisk is installed and natively
+# otherwise (scripts/run.sh says which); each has a `-native` twin. See
+# docs/bazel.md.
+
+# Build clax (Bazel), or the Rust workspace (native)
+build *ARGS:
+    ./scripts/run.sh build {{ARGS}}
+
+# Build clax with Cargo
+build-native *ARGS:
+    CLAX_BUILD=native ./scripts/run.sh build {{ARGS}}
+
+# Build the web UI and the extension into web/dist and web/dist-extension
+web *ARGS:
+    ./scripts/run.sh web {{ARGS}}
+
+# Build the web UI and the extension with pnpm
+web-native *ARGS:
+    CLAX_BUILD=native ./scripts/run.sh web {{ARGS}}
+
+# Run the web lint, typecheck, unit tests and bundle gate
+web-test *ARGS:
+    ./scripts/run.sh web-test {{ARGS}}
+
+# Run the web lint, typecheck and unit tests with pnpm
+web-test-native *ARGS:
+    CLAX_BUILD=native ./scripts/run.sh web-test {{ARGS}}
+
+# Run the Playwright end-to-end tests
+web-e2e *ARGS:
+    ./scripts/run.sh web-e2e {{ARGS}}
+
+# Build the frontend and run the Playwright end-to-end tests with pnpm
+web-e2e-native *ARGS:
+    CLAX_BUILD=native ./scripts/run.sh web-e2e {{ARGS}}
+
+# Run the Pi extension tests
+pi-test *ARGS:
+    ./scripts/run.sh pi-test {{ARGS}}
+
+# Run the Pi extension tests with pnpm
+pi-test-native *ARGS:
+    CLAX_BUILD=native ./scripts/run.sh pi-test {{ARGS}}
+
+# Run the Rust workspace tests
+test *ARGS:
+    ./scripts/run.sh test {{ARGS}}
+
+# Run the Rust workspace tests with Cargo (the shell tests need `just web` once first); cargo nextest when installed
+test-native *ARGS:
+    CLAX_BUILD=native ./scripts/run.sh test {{ARGS}}
+
+# Check formatting, run clippy with warnings denied, and the web lint
+lint:
+    ./scripts/run.sh lint
+
+# Run clippy with warnings denied, with and without the test targets, plus the web lint, natively
+lint-native:
+    CLAX_BUILD=native ./scripts/run.sh lint
+
+# Auto-format then run every check (dev loop)
+check *ARGS:
+    ./scripts/run.sh check {{ARGS}}
+
+# Auto-format then run every quality gate natively
+check-native *GATES:
+    CLAX_BUILD=native ./scripts/run.sh check {{GATES}}
+
+# Run every check CI runs
+ci *ARGS:
+    ./scripts/run.sh ci {{ARGS}}
+
+# Run the native quality gates (scripts/quality_gates.sh)
+ci-native *GATES:
+    CLAX_BUILD=native ./scripts/run.sh ci {{GATES}}
+
+# Run the perf gates' full versions (the checks run their quick versions): daemon latency, realtime clients, time to usable
+perf *ARGS:
+    ./scripts/run.sh perf {{ARGS}}
+
+# Run the perf gates' full versions natively
+perf-native:
+    CLAX_BUILD=native ./scripts/run.sh perf
+
+# Regenerate what Bazel derives from Cargo (after any Cargo.toml or Cargo.lock change); commit the result
+bazel-sync:
+    ./scripts/bazel-sync.sh

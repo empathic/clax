@@ -185,3 +185,14 @@ PERF_ENV = {"CLAX_PERF_BIN": "$(rootpath //crates/clax-cli:clax_opt)"}
     ("perf_daemon", "perf-daemon.sh"),
     ("perf_clients", "perf-clients.sh"),
 ]]
+
+# scripts/run.sh's choice of build system, on a PATH of stub tools.
+sh_test(
+    name = "run_choice",
+    srcs = ["run.test.sh"],
+    data = [
+        ":all",
+        "//:.bazelversion",
+        "//web:package.json",
+    ],
+)
