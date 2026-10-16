@@ -18,17 +18,38 @@ class HomeRecoveryError implements Exception {
   String toString() => 'HomeRecoveryError: $message';
 }
 
-/// Restores the version of home app [homeAppId] before its latest
-/// (`restoreVersion(n - 1)`, as the Versions tab's Undo does): its files
-/// as a new version, documents and capabilities untouched. Throws
-/// [HomeRecoveryError] when it has no earlier version, and what [api]
-/// throws (409 `conflict` when a version landed meanwhile).
-Future<PublishResult> undoLast(ClaxApi api, String homeAppId) async {
+/// Restores an earlier version of home app [homeAppId] (`restoreVersion`,
+/// as the Versions tab's Undo does): its files as a new version, documents
+/// and capabilities untouched. Each Undo in a row steps back one more
+/// version: from latest version `n` it restores `n - 1`; when `n` is the
+/// version the last Undo made (kept in [settings]' [HomeSettings.undo], so
+/// it outlasts a restart) from version `k`, it restores `k - 1`. Any other
+/// version landing (a change, Reset, an update) starts again from the
+/// latest. Throws [HomeRecoveryError] when there is no earlier version,
+/// and what [api] throws (409 `conflict` when a version landed meanwhile).
+Future<PublishResult> undoLast(
+  ClaxApi api,
+  String homeAppId, {
+  HomeSettings? settings,
+}) async {
   final n = (await api.getArtifact(homeAppId)).artifact.currentVersion;
-  if (n < 2) {
+  final chain = settings?.undo;
+  final from = chain != null && chain.app == homeAppId && chain.version == n
+      ? chain.restored
+      : n;
+  if (from < 2) {
     throw const HomeRecoveryError('Your home screen has no earlier version.');
   }
-  return api.restoreVersion(homeAppId, n - 1, ifVersion: n);
+  final published = await api.restoreVersion(homeAppId, from - 1, ifVersion: n);
+  if (settings != null) {
+    settings.undo = (
+      app: homeAppId,
+      version: published.version.n,
+      restored: from - 1,
+    );
+    await settings.save();
+  }
+  return published;
 }
 
 /// Publishes the shipped home bundle's files ([shipped], the app's assets
@@ -41,7 +62,8 @@ Future<PublishResult> undoLast(ClaxApi api, String homeAppId) async {
 /// ([LineageEntry.withRelease], updates no longer stopped), with the
 /// bundle kept, so the update check reads the app as that release,
 /// unmodified; an app with no entry gets the one [Installer.install]
-/// writes. [settings]' [HomeSettings.keptRelease] is cleared. Throws
+/// writes. [settings]' [HomeSettings.keptRelease] and [HomeSettings.undo]
+/// are cleared. Throws
 /// [HomeInstallError] for a mismatched bundle, [HomeRecoveryError] when
 /// the published files are not the bundle's, and what [Installer.open]
 /// and [api] throw.
@@ -123,8 +145,10 @@ Future<PublishResult> reset(
         ),
   );
   await installer.store.keepBundle(homeAppId, b.bytes);
-  if (settings != null && settings.keptRelease != null) {
+  if (settings != null &&
+      (settings.keptRelease != null || settings.undo != null)) {
     settings.keptRelease = null;
+    settings.undo = null;
     await settings.save();
   }
   return published;
@@ -155,7 +179,7 @@ class HomeRecovery extends ChangeNotifier {
   /// [undoLast] on the recorded home app.
   Future<void> undoLast() async {
     await ensureSession?.call();
-    await _undo(api, _aid);
+    await _undo(api, _aid, settings: settings);
     notifyListeners();
   }
 

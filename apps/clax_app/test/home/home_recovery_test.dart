@@ -74,6 +74,58 @@ void main() {
     expect(api.calls.where((c) => c.name == 'restoreVersion'), isEmpty);
   });
 
+  test('Undo again steps back one more version, across a restart, until '
+      'there is none', () async {
+    final good = api.filesOf(aid, 1)['index.html'];
+    await change('<p>broken 2</p>');
+    await change('<p>broken 3</p>');
+    expect(api.currentVersion(aid), 3);
+
+    await undoLast(api, aid, settings: settings);
+    expect(api.filesOf(aid, 4)['index.html'], '<p>broken 2</p>');
+
+    // A restart: the chain is read back from home.json.
+    settings = await HomeSettings.load(Directory('${tmp.path}/support'));
+    await undoLast(api, aid, settings: settings);
+    expect(api.currentVersion(aid), 5);
+    expect(api.filesOf(aid, 5)['index.html'], good);
+    expect(
+      api.calls
+          .where((c) => c.name == 'restoreVersion')
+          .map((c) => c.args['n']),
+      [2, 1],
+    );
+
+    await expectLater(
+      undoLast(api, aid, settings: settings),
+      throwsA(isA<HomeRecoveryError>()),
+    );
+    expect(api.currentVersion(aid), 5);
+  });
+
+  test('A change landing after an Undo starts the chain again from the '
+      'latest', () async {
+    await change('<p>broken 2</p>');
+    await change('<p>broken 3</p>');
+    await undoLast(api, aid, settings: settings); // v4 = v2
+    await change('<p>fixed 5</p>');
+    await undoLast(api, aid, settings: settings);
+    expect(api.calls.lastWhere((c) => c.name == 'restoreVersion').args['n'], 4);
+  });
+
+  test('Reset ends the chain', () async {
+    await change('<p>broken 2</p>');
+    await undoLast(api, aid, settings: settings); // v3 = v1
+    await reset(installer, api, aid, shipped: shipped, settings: settings);
+    expect(settings.undo, isNull);
+    expect(
+      (await HomeSettings.load(Directory('${tmp.path}/support'))).undo,
+      isNull,
+    );
+    await undoLast(api, aid, settings: settings);
+    expect(api.calls.lastWhere((c) => c.name == 'restoreVersion').args['n'], 3);
+  });
+
   test('Reset publishes the shipped files as the next version, documents '
       'and threads untouched, and the lineage reads it as the shipped '
       'release', () async {
