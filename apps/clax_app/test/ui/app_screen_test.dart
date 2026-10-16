@@ -2247,6 +2247,30 @@ void main() {
       expect(find.byKey(const ValueKey('change-stop')), findsNothing);
     });
 
+    testWidgets('a change waiting for the connection says so on the chip '
+        'and its thread page, whose Cancel stops it', (tester) async {
+      final stopped = <String>[];
+      final rig = await pumpScreen(tester, onStop: stopped.add);
+      final tid = await start(tester, rig);
+      rig.worker
+        ..add(WorkerWorking(rig.aid, [tid]))
+        ..add(WorkerProgress(rig.aid, [tid], const WaitingForConnection()));
+      await tester.pump();
+      expect(find.text('Waiting for connection'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('chip-working')));
+      await frames(tester);
+      await tester.tap(find.byKey(const ValueKey('change-open-thread')));
+      await frames(tester);
+      expect(
+        find.byKey(const ValueKey('thread-status-offline')),
+        findsOneWidget,
+      );
+      await tester.tap(find.byKey(const ValueKey('thread-cancel')));
+      await frames(tester);
+      expect(stopped, [rig.aid]);
+      expect(find.byKey(const ValueKey('thread-status-offline')), findsNothing);
+    });
+
     testWidgets('Open thread opens the thread page', (tester) async {
       final rig = await pumpScreen(tester);
       final tid = await start(tester, rig);
