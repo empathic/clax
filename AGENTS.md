@@ -52,26 +52,32 @@ run it through the command the plugin's session context gives.
 
 ## Builds, tests and gates on macOS
 
-- Run checks and builds through the recipes (`just ci`, `just test`,
-  `just web-test`, …): they use Bazel when Bazelisk is installed and the
-  native tools otherwise (`docs/bazel.md`). Report a native result as
-  native: CI gates on Bazel. After any `Cargo.toml` or `Cargo.lock` change
-  run `just bazel-sync` and commit the result; after removing worktrees run
-  `just bazel-gc`.
+- Worktrees build with Bazel: whenever `bazelisk` or `bazel` is on PATH,
+  every `just` recipe (`just ci`, `just test`, `just web-test`, `just dev`,
+  `just watch`, `just install`, …) runs Bazel, with one cache every
+  worktree shares (`docs/bazel.md`). Never run `cargo build`, `cargo test`,
+  `cargo nextest` or `pnpm install` in a worktree except through a
+  `-native` twin (`just ci-native`, `just test-native`, …): each makes a
+  `target/` or `node_modules` of gigabytes. Without Bazel the recipes fall
+  back to the native tools and say so; report such a result as native: CI
+  gates on Bazel. After any `Cargo.toml` or `Cargo.lock` change run
+  `just bazel-sync` and commit the result; after removing worktrees run
+  `just bazel-gc`. For rust-analyzer, `just rust-project`.
 - macOS assesses every new executable on its first run, one at a time.
-  Never `cp` over an existing binary (it is killed on exec); give tests a
-  binary kept by content: `CLAX_TEST_BIN="$(scripts/stable-bin.sh
+  Never `cp` over an existing binary (it is killed on exec). Bazel runs
+  each output base's `clax` once before any test does; natively, give tests
+  a binary kept by content: `CLAX_TEST_BIN="$(scripts/stable-bin.sh
   target/debug/clax target/clax-bin/debug)"`. Install test helper programs
   once (`clax-fake-exe` in Rust, `fake-exe.ts` in `web/e2e` and
   `plugins/pi/test`) rather than
   writing a fresh executable per run.
 - While working, run the tests of the crates and packages you changed;
-  run `scripts/quality_gates.sh` (or `just check`) once before the branch
-  merges. A lane that fails in code you did not touch is rerun alone and
+  run `just check` (or `just ci`) once before the branch merges. A lane that fails in code you did not touch is rerun alone and
   both results reported.
 - Run anything longer than a minute or two in the background, log it to a
-  file inside your own worktree (`target/…`), never a shared scratch
-  directory, and wait in bounded stretches.
+  file inside your own worktree (`target/…`, git-ignored; a log there is
+  no build), never a shared scratch directory, and wait in bounded
+  stretches.
 
 ## Homes, daemons and git
 
