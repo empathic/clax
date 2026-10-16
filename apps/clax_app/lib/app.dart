@@ -33,6 +33,7 @@ import 'bundle/exporter.dart';
 import 'bundle/installer.dart' show Installer, forgetDeleted, fromBundleOf;
 import 'home/home_host.dart';
 import 'home/home_install.dart';
+import 'home/home_keeper.dart';
 import 'home/home_recovery.dart';
 import 'home/home_route.dart';
 import 'home/home_settings.dart';
@@ -615,6 +616,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// Undo and Reset of the home app, made with [_homeHost].
   HomeRecovery? _homeRecovery;
 
+  /// Keeps the home app installed ([_installHome]), from the first Up.
+  HomeKeeper? _homeKeeper;
+
   /// What the home screen opens, over the app's navigator.
   late final _homeFlows = HomeFlows(
     contextOf: () => _nav.currentContext,
@@ -737,6 +741,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     unawaited(_runtime.close());
     _homeHost?.dispose();
     _homeRecovery?.dispose();
+    _homeKeeper?.dispose();
     unawaited(_homeActions.close());
     unawaited(_stream?.close());
     if (_s.inspector case final WebViewInspector i) i.dispose();
@@ -862,7 +867,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       snapshots: _snapshots,
     );
     _lineageDeletions!.onError((Object _) {});
-    unawaited(_recoverBundles().then((_) => _installHome()));
+    unawaited(_recoverBundles().then((_) => _keepHome()));
     final bundles = _bundles;
     final intake = _s.bundleIntake;
     if (bundles != null && intake != null) {
@@ -882,27 +887,50 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     }
   }
 
-  /// Installs the shipped home app when there is none ([ensureHomeApp]),
-  /// after the installs a crash cut short are cleared away; the home
-  /// screen then switches to it. Then brings it to the shipped release
+  /// Keeps the shipped home app installed ([ensureHomeApp], through a
+  /// [HomeKeeper]: tried again with backoff after a failure, at each Up,
+  /// and when the home app is deleted), after the installs a crash cut
+  /// short are cleared away; the home screen then switches to it. After
+  /// the first install that lands, brings it to the shipped release
   /// ([updateHomeApp]), asking first when the person changed it.
-  Future<void> _installHome() async {
+  void _keepHome() {
     final shipped = _s.shippedHome;
     final host = _homeHost;
-    if (shipped == null || host == null) return;
-    final before = host.settings.homeAppId;
+    final stream = _stream;
+    if (shipped == null || host == null || _homeKeeper != null || !mounted) {
+      return;
+    }
     final installer = Installer(
       api: _api,
       store: _lineages,
       key: homeInstallKey(),
     );
-    try {
-      await ensureHomeApp(host.settings, installer, _api, shipped: shipped);
-    } on Object catch (e) {
-      debugPrint('clax home: $e');
-      return;
-    }
-    if (mounted && host.settings.homeAppId != before) host.settingsChanged();
+    var updated = false;
+    final keeper = _homeKeeper = HomeKeeper(
+      settings: host.settings,
+      events: stream?.events.map(
+        (e) => ClaxEvent(type: e.type, data: e.data, id: e.id),
+      ),
+      install: () =>
+          ensureHomeApp(host.settings, installer, _api, shipped: shipped),
+      changed: () {
+        if (mounted) host.settingsChanged();
+      },
+      onInstalled: () {
+        if (updated) return;
+        updated = true;
+        unawaited(_updateHome(host, installer, shipped));
+      },
+      log: (l) => debugPrint('clax home: $l'),
+    );
+    unawaited(keeper.ensure());
+  }
+
+  Future<void> _updateHome(
+    HomeHost host,
+    Installer installer,
+    ShippedHome shipped,
+  ) async {
     final updater = _updater;
     if (updater == null) return;
     try {
@@ -1104,6 +1132,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           scheduleMicrotask(() => _openFromNotice(aid, action: action));
         }
         _startBundles();
+        _homeKeeper?.daemonUp();
         if (!_offeredLostMake) {
           _offeredLostMake = true;
           scheduleMicrotask(() => unawaited(_offerLostMake()));
