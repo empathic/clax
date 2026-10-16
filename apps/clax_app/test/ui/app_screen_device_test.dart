@@ -201,6 +201,45 @@ void main() {
     );
   }
 
+  for (final (name, pad) in const [
+    ('a tall status bar', EdgeInsets.only(top: 48)),
+    ('a cutout', EdgeInsets.only(top: 56)),
+    ('a landscape cutout', EdgeInsets.only(top: 24, left: 44)),
+  ]) {
+    testWidgets('the location pill sits under the top inset and inside the '
+        'side insets: $name', (tester) async {
+      tester.view.physicalSize = const Size(780, 780);
+      tester.view.devicePixelRatio = 1;
+      tester.view.padding = FakeViewPadding(top: pad.top, left: pad.left);
+      addTearDown(tester.view.reset);
+      final api = FakeClaxApi();
+      final aid = api.seedArtifact('Plants', {'index.html': '<h1>P</h1>'});
+      final surface = FakeAppSurface();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: AppScreen(
+            aid: aid,
+            base: Uri.parse('http://127.0.0.1:7999/'),
+            api: api,
+            surface: surface,
+            voice: FakeVoice(),
+            settings: AppSettings(),
+            timings: const NoTimings(),
+            worker: const Stream.empty(),
+            device: host(FakeLocation()),
+          ),
+        ),
+      );
+      surface.push(watch('w'));
+      for (var i = 0; i < 4; i++) {
+        await tester.pump();
+      }
+      final pill = tester.getRect(find.byKey(const ValueKey('location-pill')));
+      expect(pill.top, greaterThanOrEqualTo(pad.top));
+      expect(pill.left, greaterThanOrEqualTo(pad.left));
+    });
+  }
+
   testWidgets('a tap on the location pill stops location', (tester) async {
     final location = FakeLocation();
     final surface = await pump(tester, host(location));

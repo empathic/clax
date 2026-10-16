@@ -168,6 +168,7 @@ void main() {
     String? initialComment,
     Clock? clock,
     Future<(FakeClaxApi, String)> Function()? seed,
+    bool pushed = false,
   }) async {
     phone(tester, size: size);
     final (api, aid) = await (seed ?? _seeded)();
@@ -179,33 +180,45 @@ void main() {
       _Timings(),
     );
     _current = rig;
+    final screen = AppScreen(
+      aid: aid,
+      base: _base,
+      api: api,
+      surface: rig.surface,
+      voice: rig.voice,
+      settings: settings ?? AppSettings(),
+      timings: rig.timings,
+      worker: rig.worker.stream,
+      clock: clock ?? _Clock(),
+      comments: comments,
+      notice: notice == null ? null : AppNoticeSlot(notice),
+      actions: rig.actions.stream,
+      initialAction: initialAction,
+      firstRunHint: firstRunHint,
+      onHintShown: onHintShown,
+      onDictateChanged: onDictateChanged,
+      onRetry: onRetry,
+      onStop: onStop,
+      initialThread: initialThread,
+      initialComment: initialComment,
+    );
     await tester.pumpWidget(
       MaterialApp(
         theme: claxTheme(Brightness.light),
-        home: AppScreen(
-          aid: aid,
-          base: _base,
-          api: api,
-          surface: rig.surface,
-          voice: rig.voice,
-          settings: settings ?? AppSettings(),
-          timings: rig.timings,
-          worker: rig.worker.stream,
-          clock: clock ?? _Clock(),
-          comments: comments,
-          notice: notice == null ? null : AppNoticeSlot(notice),
-          actions: rig.actions.stream,
-          initialAction: initialAction,
-          firstRunHint: firstRunHint,
-          onHintShown: onHintShown,
-          onDictateChanged: onDictateChanged,
-          onRetry: onRetry,
-          onStop: onStop,
-          initialThread: initialThread,
-          initialComment: initialComment,
-        ),
+        // [pushed]: over a launcher, as the app opens it.
+        home: pushed ? const Scaffold(body: Text('Launcher')) : screen,
       ),
     );
+    if (pushed) {
+      unawaited(
+        tester
+            .state<NavigatorState>(find.byType(Navigator))
+            .push(MaterialPageRoute<void>(builder: (_) => screen)),
+      );
+      // The cover's spinner never settles: past the route's transition.
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+    }
     await tester.pump();
     return rig;
   }
@@ -2124,8 +2137,8 @@ void main() {
       await tester.pump();
       expect(chip, findsNothing);
       expect(pill, findsOneWidget);
-      // The pill sits in the status bar's band, off the page.
-      expect(tester.getRect(pill).bottom, lessThanOrEqualTo(24));
+      // The pill sits under the 24 px status bar, off the system's icons.
+      expect(tester.getRect(pill).top, greaterThanOrEqualTo(24));
 
       rig.worker.add(WorkerWorking(rig.aid, [tid]));
       rig.worker.add(
@@ -2394,6 +2407,168 @@ void main() {
       await frames(tester);
       expect(find.byType(ThreadDetail), findsOneWidget, reason: 'once');
     });
+  });
+
+  group('a new version is swapped in with a tap', () {
+    Finder toast() => find.byKey(const ValueKey('newer-toast'));
+    bool reloaded(_Rig rig) =>
+        rig.surface.hostCalls.any((c) => c is ReloadLatest);
+
+    testWidgets('the shell’s offer shows New version ready; Reload loads it, '
+        'and its frame ends the offer', (tester) async {
+      final rig = await pumpScreen(tester);
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      rig.surface.push(const NewerMsg(4));
+      await tester.pump();
+      expect(toast(), findsOneWidget);
+      expect(find.text('New version ready'), findsOneWidget);
+      expect(reloaded(rig), isFalse, reason: 'never without the tap');
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.tap(find.text('Reload'));
+      await tester.pump();
+      expect(reloaded(rig), isTrue);
+      rig.surface.push(rig.ready(version: 4, latest: 4));
+      await tester.pumpAndSettle();
+      expect(toast(), findsNothing);
+      // An offer of a version the page shows already is none.
+      rig.surface.push(const NewerMsg(4));
+      await tester.pumpAndSettle();
+      expect(toast(), findsNothing);
+    });
+
+    testWidgets('the toast waits while a composer is open and shows once it '
+        'closes', (tester) async {
+      final rig = await pumpScreen(tester);
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      rig.surface.push(_Rig.draft);
+      await tester.pump();
+      rig.surface.push(const NewerMsg(4));
+      await tester.pump();
+      expect(toast(), findsNothing);
+      rig.surface.push(_Rig.noDraft);
+      await tester.pump();
+      await tester.pump();
+      expect(toast(), findsOneWidget);
+      // A composer opening over a showing toast puts it away until it closes.
+      rig.surface.push(_Rig.draft);
+      await tester.pumpAndSettle();
+      expect(toast(), findsNothing);
+      rig.surface.push(_Rig.noDraft);
+      await tester.pump();
+      await tester.pump();
+      expect(toast(), findsOneWidget);
+    });
+
+    testWidgets('a change the worker landed ends its chip once the shell '
+        'offers its version, timed to then', (tester) async {
+      final rig = await pumpScreen(tester);
+      final tid = rig.api.sendComment(rig.aid, 'bigger').threadId;
+      rig.surface.push(rig.ready());
+      rig.surface.push(Sent(tid));
+      rig.worker.add(WorkerWorking(rig.aid, [tid]));
+      await tester.pump();
+      rig.worker.add(WorkerLanded(rig.aid, 4));
+      await tester.pump();
+      expect(find.text('Loading the new version'), findsOneWidget);
+      rig.surface.push(const NewerMsg(4));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('chip-working')), findsNothing);
+      expect(rig.timings.log, [
+        'start $longpressLanded',
+        'stop $longpressLanded',
+      ]);
+      expect(rig.timings.extras.last['version'], 4);
+      expect(toast(), findsOneWidget);
+    });
+  });
+
+  group('back goes back in the app first', () {
+    Future<_Rig> pushed(WidgetTester tester) async {
+      final rig = await pumpScreen(tester, pushed: true);
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      return rig;
+    }
+
+    testWidgets('back goes back in the page’s own history while it has one, '
+        'then leaves the app', (tester) async {
+      final rig = await pushed(tester);
+      rig.surface.push(const HistoryMsg(back: true));
+      await tester.pump();
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.byType(AppScreen), findsOneWidget);
+      expect(rig.surface.hostCalls.whereType<GoBack>(), hasLength(1));
+      rig.surface.push(const HistoryMsg(back: false));
+      await tester.pump();
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.byType(AppScreen), findsNothing);
+      expect(find.text('Launcher'), findsOneWidget);
+      expect(rig.surface.hostCalls.whereType<GoBack>(), hasLength(1));
+    });
+
+    testWidgets('back closes the comment bar before going back in the page', (
+      tester,
+    ) async {
+      final rig = await pushed(tester);
+      rig.surface.push(const HistoryMsg(back: true));
+      rig.actions.add(AppAction.comment);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('comment-bar')), findsOneWidget);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('comment-bar')), findsNothing);
+      expect(rig.surface.hostCalls.whereType<GoBack>(), isEmpty);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(rig.surface.hostCalls.whereType<GoBack>(), hasLength(1));
+      expect(find.byType(AppScreen), findsOneWidget);
+    });
+  });
+
+  group('the pills at the top', () {
+    // Insets in logical pixels: a short status bar, a tall one, a punch-hole
+    // cutout taller than the bar, and a landscape cutout on the left.
+    const insets = {
+      'status bar 24': EdgeInsets.only(top: 24),
+      'status bar 48': EdgeInsets.only(top: 48),
+      'cutout 56': EdgeInsets.only(top: 56),
+      'landscape cutout': EdgeInsets.only(top: 24, left: 44, right: 16),
+    };
+    for (final MapEntry(key: name, value: pad) in insets.entries) {
+      testWidgets('the folded chip sits under the top inset and inside the '
+          'side insets: $name', (tester) async {
+        final clock = _Clock();
+        final landscape = pad.left > 0;
+        final rig = await pumpScreen(
+          tester,
+          clock: clock,
+          size: landscape ? const Size(780, 360) : const Size(360, 780),
+        );
+        tester.view.padding = FakeViewPadding(
+          top: pad.top * 3,
+          left: pad.left * 3,
+          right: pad.right * 3,
+        );
+        final tid = rig.api.sendComment(rig.aid, 'bigger').threadId;
+        rig.surface.push(rig.ready());
+        rig.surface.push(Sent(tid));
+        await tester.pump();
+        clock.lapse();
+        await tester.pump();
+        final pill = tester.getRect(
+          find.byKey(const ValueKey('chip-working-pill')),
+        );
+        final width = landscape ? 780.0 : 360.0;
+        expect(pill.top, greaterThanOrEqualTo(pad.top));
+        expect(pill.right, lessThanOrEqualTo(width - pad.right));
+        expect(pill.left, greaterThanOrEqualTo(pad.left));
+        expect(pill.height, AppScreen.pillHeight);
+      });
+    }
   });
 }
 
