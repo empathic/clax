@@ -1,10 +1,10 @@
-import 'dart:typed_data';
 
 import 'package:clax_app/agent/failure.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/thread_detail.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -49,6 +49,8 @@ void main() {
     bool autoDictate = false,
     bool retry = true,
     String? label,
+    ValueListenable<List<String>>? waiting,
+    VoidCallback? onCancel,
   }) async {
     await tester.pumpWidget(
       MaterialApp(
@@ -69,6 +71,8 @@ void main() {
               : null,
           label: label,
           now: () => _now,
+          waitingForConnection: waiting,
+          onCancel: onCancel,
         ),
       ),
     );
@@ -799,6 +803,41 @@ void main() {
       await pumpFocus(tester, rig, a.threadId, run: [a.threadId]);
       expect(find.byKey(const ValueKey('thread-run-place')), findsNothing);
     });
+  });
+
+  testWidgets('a working thread whose change waits for the connection says '
+      'so, offers Cancel, and reads as working once it is back', (
+    tester,
+  ) async {
+    final rig = await _seeded();
+    rig.api.sendComment(rig.aid, 'make it blue');
+    final batch = await rig.api.pollFeedback(
+      rig.api.sessionId!,
+      wait: Duration.zero,
+    );
+    await rig.api.ackFeedback(rig.api.sessionId!, [
+      for (final i in batch.items) i.commentId,
+    ]);
+    final tid = batch.items.single.threadId;
+    final waiting = ValueNotifier<List<String>>([tid]);
+    var cancels = 0;
+    await pumpDetail(
+      tester,
+      rig,
+      tid,
+      waiting: waiting,
+      onCancel: () => cancels++,
+    );
+    expect(find.text('Waiting for connection'), findsOneWidget);
+    expect(find.text('Clax is working on it'), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('thread-cancel')));
+    expect(cancels, 1);
+
+    waiting.value = const [];
+    await tester.pump();
+    expect(find.text('Waiting for connection'), findsNothing);
+    expect(find.text('Clax is working on it'), findsOneWidget);
+    expect(find.byKey(const ValueKey('thread-cancel')), findsNothing);
   });
 }
 

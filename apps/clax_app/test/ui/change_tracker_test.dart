@@ -490,4 +490,19 @@ void main() {
       expect(t.threads, isEmpty);
     },
   );
+
+  test('a change waiting for the connection says so until it is back', () {
+    t.workerWorking(['t1']);
+    expect(t.waitingForConnection, isFalse);
+    expect(t.workerProgress(['t1'], const WaitingForConnection()), isTrue);
+    expect(t.waitingForConnection, isTrue);
+    expect(t.step, 'Waiting for connection');
+    expect(t.workerProgress(['t1'], const ConnectionBack()), isTrue);
+    expect(t.waitingForConnection, isFalse);
+    expect(t.step, 'Connection is back');
+
+    t.workerProgress(['t1'], const WaitingForConnection());
+    t.workerCancelled();
+    expect(t.waitingForConnection, isFalse, reason: 'it ended');
+  });
 }

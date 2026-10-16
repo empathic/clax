@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:clax_app/platform/pending_make.dart';
 import 'package:clax_app/ui/make_service.dart';
+import 'package:clax_app/ui/making_screen.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -58,4 +59,52 @@ void main() {
       expect(await pending.takeAll(), isEmpty);
     },
   );
+
+  test(
+    'a make waiting for the connection says so until its run goes on',
+    () async {
+      final stages = StreamController<MakeUpdate>();
+      final done = Completer<String>();
+      final makes = MakeService((_, _, stage) {
+        stages.stream.listen(stage);
+        return done.future;
+      });
+      final s = makes.start('a tracker');
+      expect(s.waitingForConnection, isFalse);
+      var heard = 0;
+      s.addListener(() => heard++);
+      stages.add(MakeStage.offline);
+      await pumpEventQueue();
+      expect(s.waitingForConnection, isTrue);
+      expect(heard, 1);
+      stages.add(MakeStage.resuming);
+      await pumpEventQueue();
+      expect(s.waitingForConnection, isFalse);
+      expect(heard, 2);
+      stages.add(MakeStage.offline);
+      await pumpEventQueue();
+      s.cancel();
+      expect(s.waitingForConnection, isFalse);
+    },
+  );
+
+  test('a waiting make the last run left is started again by itself, and '
+      'the others are offered as interrupted', () async {
+    final pending = PendingMake();
+    final started = <String>[];
+    final makes = MakeService((request, _, _) {
+      started.add(request);
+      return Completer<String>().future;
+    }, pending: pending);
+    makes.recover([
+      (request: 'runs', waiting: false),
+      (request: 'habits', waiting: true),
+    ]);
+    await pumpEventQueue();
+    expect(started, ['habits']);
+    expect(
+      [for (final m in makes.makes) (m.request, m.interrupted, m.running)],
+      [('habits', false, true), ('runs', true, false)],
+    );
+  });
 }

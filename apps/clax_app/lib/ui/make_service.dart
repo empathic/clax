@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../agent/backend.dart';
+import '../agent/progress.dart';
 import '../daemon/clock.dart';
 import '../platform/pending_make.dart';
 import 'making_screen.dart';
@@ -54,6 +55,11 @@ class MakeSession extends ChangeNotifier {
   /// [MakeService.dismiss]).
   var interrupted = false;
 
+  /// Whether the current attempt waits for the Claude API's connection
+  /// ([MakeStage.offline]): it goes on by itself once the connection is
+  /// back.
+  var waitingForConnection = false;
+
   /// When the current attempt started.
   DateTime startedAt;
 
@@ -93,10 +99,21 @@ class MakeSession extends ChangeNotifier {
     failure = null;
     lastChangedHtml = false;
     startedAt = _clock.now();
+    waitingForConnection = false;
     notifyListeners();
     bool current() => identical(_cancel, cancel);
     void report(MakeUpdate u) {
       if (!current()) return;
+      final waiting = switch (u) {
+        MakeStage.offline ||
+        MakeProgress(event: WaitingForConnection()) => true,
+        MakePlanKey() => waitingForConnection,
+        _ => false,
+      };
+      if (waiting != waitingForConnection) {
+        waitingForConnection = waiting;
+        notifyListeners();
+      }
       if (u case MakePlanKey(:final key)) {
         planKey = key;
         lastChangedHtml = false;
@@ -112,10 +129,12 @@ class MakeSession extends ChangeNotifier {
       final made = await _make(request, cancel.future, report);
       if (!current()) return;
       _running = false;
+      waitingForConnection = false;
       aid = made;
     } catch (e) {
       if (!current()) return;
       _running = false;
+      waitingForConnection = false;
       failure = e is AgentError ? e.message : '$e';
     }
     notifyListeners();
@@ -125,6 +144,7 @@ class MakeSession extends ChangeNotifier {
   void cancel() {
     if (cancelled) return;
     cancelled = true;
+    waitingForConnection = false;
     _abandon();
     notifyListeners();
   }
@@ -205,6 +225,20 @@ class MakeService extends ChangeNotifier {
     final s = MakeSession(request, _make, clock: _clock)..interrupted = true;
     unawaited(pending?.save(request));
     return _keep(s);
+  }
+
+  /// Takes up the makes the app's last run ended before finishing
+  /// ([PendingMake.takeEach]), oldest first: one that waited for the
+  /// connection starts again by itself ([start]); the others are offered as
+  /// interrupted ([lost]).
+  void recover(List<({String request, bool waiting})> left) {
+    for (final m in left) {
+      if (m.waiting) {
+        start(m.request);
+      } else {
+        lost(m.request);
+      }
+    }
   }
 
   /// Takes interrupted make [s] up again, as [add] does.

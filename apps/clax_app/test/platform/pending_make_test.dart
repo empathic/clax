@@ -66,4 +66,27 @@ void main() {
       ..writeAsStringSync('{"request": "a tracker"}');
     expect(await PendingMake(file).takeAll(), ['a tracker']);
   });
+
+  test('a make waiting for the connection is kept as waiting, across a '
+      'restart, until it goes on or ends', () async {
+    final file = File('${dir.path}/pending-make.json');
+    final p = PendingMake(file);
+    await p.save('runs');
+    await p.save('habits');
+    await p.waiting('habits', true);
+    await p.save('books');
+    await p.waiting('books', true);
+    await p.waiting('books', false);
+    expect(await PendingMake(file).takeEach(), [
+      (request: 'runs', waiting: false),
+      (request: 'habits', waiting: true),
+      (request: 'books', waiting: false),
+    ]);
+
+    final next = PendingMake(file);
+    await next.save('runs');
+    await next.waiting('runs', true);
+    await next.clear('runs');
+    expect(await PendingMake(file).takeEach(), isEmpty);
+  });
 }

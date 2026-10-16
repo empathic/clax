@@ -83,7 +83,7 @@ void main() {
   });
 
   test('a second lost while offline starts no second probe loop', () async {
-    final c = connection()
+    connection()
       ..lost()
       ..lost();
     clock.advance(ApiConnection.firstProbe);
