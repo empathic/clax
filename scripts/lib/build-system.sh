@@ -50,7 +50,7 @@ _bazel_usable() {
         return 0
     fi
     if command -v bazel >/dev/null 2>&1; then
-        have="$(bazel --version 2>/dev/null | awk '{ print $2; exit }')"
+        have="$(bazel --version 2>/dev/null | awk 'NR == 1 { print $2 }')"
         if [ "$have" = "$want" ]; then
             BAZEL="$(command -v bazel)"
             _bazel_why="bazel $have found, the version .bazelversion names"
@@ -83,7 +83,7 @@ _native_usable() {
                     _native_missing+=("node")
                 fi
                 if command -v pnpm >/dev/null 2>&1; then
-                    pinned="$(sed -n 's/.*"packageManager": *"pnpm@\([0-9]*\)\..*/\1/p' web/package.json | head -1)"
+                    pinned="$(sed -n 's/.*"packageManager": *"pnpm@\([0-9]*\)\..*/\1/p' web/package.json | sed -n 1p)"
                     have="$(pnpm --version 2>/dev/null | sed 's/^\([0-9]*\).*/\1/')"
                     if [ -n "$pinned" ] && [ "$have" != "$pinned" ]; then
                         _native_warnings+=("pnpm $(pnpm --version 2>/dev/null) is installed; web/package.json pins pnpm $pinned")
