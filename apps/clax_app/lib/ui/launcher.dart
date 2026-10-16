@@ -786,7 +786,8 @@ class _AppTile extends StatelessWidget {
 
 /// A make going on, as a launcher tile: its request and a ring
 /// (indeterminate until its plan has features, then filled to the features
-/// done); or "Waiting for connection" (its run waits for the Claude API),
+/// done); or "Offline" (its run waits for the Claude API's connection, read
+/// out as "Waiting for connection"),
 /// "Waiting…" (for a slot), "Interrupted" (the app's last run ended before
 /// it), or "Couldn't make it" once it failed.
 class MakingTile extends StatelessWidget {
@@ -828,7 +829,7 @@ class MakingTile extends StatelessWidget {
     final status = failed
         ? "Couldn't make it"
         : offline
-        ? 'Waiting for connection'
+        ? 'Offline'
         : session.interrupted
         ? 'Interrupted'
         : session.queued
@@ -839,7 +840,8 @@ class MakingTile extends StatelessWidget {
     final style = _labelStyle(context);
     return _HomeCell(
       key: const ValueKey('making-tile'),
-      semantics: '${session.request}, $status',
+      semantics:
+          '${session.request}, ${offline ? 'Waiting for connection' : status}',
       onTap: onTap,
       icon: DecoratedBox(
         decoration: BoxDecoration(

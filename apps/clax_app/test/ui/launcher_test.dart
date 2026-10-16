@@ -1097,7 +1097,11 @@ void main() {
     await frames(tester);
     expect(find.byKey(const ValueKey('making-tile')), findsOneWidget);
     expect(find.byKey(const ValueKey('tile-offline')), findsOneWidget);
-    expect(find.text('Waiting for connection'), findsOneWidget);
+    expect(find.text('Offline'), findsOneWidget);
+    expect(
+      find.bySemanticsLabel('a stopwatch, Waiting for connection'),
+      findsOneWidget,
+    );
 
     var fired = false;
     unawaited(signals.single.then((_) => fired = true));
