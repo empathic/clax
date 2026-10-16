@@ -678,12 +678,19 @@ same signature and do not ask.
   Resume build. The home screen is itself an app: comment on it (Settings
   › Home screen › Open) to change it, as any app, for example "sort my
   apps alphabetically"; it never lists itself. When it cannot show (it
-  fails to load, or has not shown within 10 seconds of a start), Clax's
-  built-in home screen takes its place with "Your home screen couldn't
-  load", **Undo last change** (back to the version before the latest) and
-  **Reset** (Clax's own home screen again, as a new version, your data and
-  threads kept). Settings › Home screen has Open, Undo last change, Reset
-  to Clax's home screen, and Use the built-in home screen.
+  fails to load, or has not shown within 10 seconds of a load of its
+  page: the first at a start, and the reload after each Undo or Reset),
+  Clax's built-in home screen takes its place with "Your home screen
+  couldn't load", **Undo last change** and **Reset** (Clax's own home
+  screen again, as a new version, your data and threads kept). Undo
+  makes the version before the latest current again, as a new version;
+  each Undo in a row steps back one more (from versions 1, 2 and 3, Undo
+  restores 2, and Undo again 1), even across a restart, until there is
+  no earlier version. Any other change (a new version from a comment, a
+  Reset or an update) starts it again from the latest. Undo restores the
+  files only: the home app's capabilities stay as they are. Settings ›
+  Home screen has Open, Undo last change, Reset to Clax's home screen,
+  and Use the built-in home screen.
 - **Making an app.** New, then say or type what you want. The build view
   shows the plan as a live checklist, what the agent is doing, and a live
   preview of the page as it is written and rendered. Add, edit, drop or
@@ -764,10 +771,11 @@ same signature and do not ask.
   search, Mark all read; a tap opens the thread, version, app or
   question.
 - **Versions.** The threads panel's Versions tab lists every version:
-  tap one to preview it, Restore (or Undo) to make an earlier one current
-  again. A version's page shows the threads it addressed and the files it
-  changed, with a line diff against the version before, or against the
-  current one with Compare with current.
+  tap one to preview it, Restore (or Undo) to make an earlier one's files
+  current again; the app's capabilities stay as they are. A version's
+  page shows the threads it addressed and the files it changed, with a
+  line diff against the version before, or against the current one with
+  Compare with current.
 - **Inspector.** Inspect on a tile's long press shows what an app is made
   of: Overview (title, ID, versions, size, capabilities, history), Files
   (read-only), Data (collections and documents as JSON), Permissions
@@ -819,7 +827,9 @@ same signature and do not ask.
   were, your own private ones included. An update cut short by Clax quitting is put back at the next
   start, or, when the app changed since, Clax asks whether to Restore or
   Discard. If you changed the app yourself, choose **Update (replaces
-  your changes)** or **Keep mine (stop updates for this app)**. A file of
+  your changes)** or **Keep mine (stop updates for this app)** (for the
+  home app, **Keep mine (skip this update)**: the next release asks
+  again). A file of
   an older or the same version is not installed; the same app signed by
   someone else's key, or the original of an app you made your own,
   installs as a separate app beside yours. Sharing an app you installed
@@ -841,9 +851,10 @@ landed, home-usable and home-cover times, also listed in Settings),
 `agent-timings.jsonl`,
 `lineages.json` (which apps were shared or installed as files, and under
 which key), `home.json` (the home app's ID, whether the built-in home
-screen is chosen, and the shipped release the person kept their own home
-app over), `bundles/<ID>.clax` (each installed app's file as received,
-for sharing it on), `snapshots/` (an app's documents while an update
+screen is chosen, the shipped release the person kept their own home
+app over, and where Undo last change has stepped back to),
+`bundles/<ID>.clax` (each installed app's file as received, for sharing
+it on), `snapshots/` (an app's documents while an update
 upgrades them, put back if it fails or Clax ends part way), and
 `clax-home/`, the daemon's home. The sharing key is in the platform's
 secure storage beside the API key; uninstalling Clax loses it, and your
