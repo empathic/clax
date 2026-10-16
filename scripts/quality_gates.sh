@@ -5,10 +5,9 @@
 # The web UI is built and its unit tests run first, alone. The other
 # independent gates then run concurrently in lanes (web e2e, Rust, web, the
 # release build, Pi, scripts), each printing a line per gate as it finishes;
-# the lanes that take longest start first. The perf gates then run alone, in
-# their quick mode, on the one release binary. At the end a table gives each
-# gate's time and the total; times are reported, never judged. `just perf`
-# runs the perf gates' full versions.
+# the lanes that take longest start first. At the end a table gives each
+# gate's time and the total; times are reported, never judged. Performance
+# is measured on demand and gates nothing: `just perf` runs the benchmarks.
 #
 # The script is functions and one call at its end, so bash reads all of it
 # before running any of it: editing this file during a run cannot break that
@@ -51,8 +50,6 @@ export PLAYWRIGHT_INSTALL
 # it when it is made, never inside a gate's time limit (scripts/fake-exe.sh
 # does the same for the gates' fakes).
 export CLAX_TEST_BIN="$GATES_TMP/debug/clax"
-# The one release `clax` the perf gates share, kept the same way.
-export CLAX_PERF_BIN="$GATES_TMP/release/clax"
 
 # --- lanes ------------------------------------------------------------------
 
@@ -134,7 +131,7 @@ lane_lint() {
     mark linted
 }
 lane_release() {
-    run "release build"         bash -c 'cargo build -q --release -p clax-cli && mkdir -p "$(dirname "$CLAX_PERF_BIN")" && kept="$(scripts/stable-bin.sh target/release/clax target/clax-bin/release)" && ln -sfn "$PWD/$kept" "$CLAX_PERF_BIN"' &&
+    run "release build"         cargo build -q --release -p clax-cli &&
     mark release-built
 }
 
@@ -171,12 +168,6 @@ if [ -n "$FAILED" ]; then
     exit 1
 fi
 
-# The perf gates measure latency, so they run alone, one at a time; their
-# quick modes keep the full runs' budgets and idle-baseline scaling.
-echo "quality gates: perf gates, one at a time"
-run "daemon latency"        scripts/perf-daemon.sh --quick || exit 1
-run "realtime clients"      scripts/perf-clients.sh --quick || exit 1
-run "time to usable"        bash -c 'cd web && CLAX_PERF_QUICK=1 pnpm run perf' || exit 1
 echo "all gates passed"
 }
 

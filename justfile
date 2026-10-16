@@ -142,11 +142,11 @@ ci *ARGS:
 ci-native *GATES:
     CLAX_BUILD=native ./scripts/run.sh ci {{GATES}}
 
-# Run the perf gates' full versions (the checks run their quick versions): daemon latency, realtime clients, time to usable
+# Run the perf benchmarks on demand (no check runs them, and they fail on no budget): daemon latency, realtime clients, time to usable
 perf *ARGS:
     ./scripts/run.sh perf {{ARGS}}
 
-# Run the perf gates' full versions natively
+# Run the perf benchmarks natively
 perf-native:
     CLAX_BUILD=native ./scripts/run.sh perf
 

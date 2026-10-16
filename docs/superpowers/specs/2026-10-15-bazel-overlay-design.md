@@ -60,7 +60,7 @@ Changelist's setup, read in full for this design (`docs/bazel.md`,
 | Third-party crates from `Cargo.lock` through crate_universe; `bazel/workspace.bzl` derived from `cargo metadata`; `scripts/bazel-sync.sh --check` fails on drift | The same; Clax also derives `[workspace.lints]` (changelist has none) and the test-only features of its own crates (§5) |
 | `cargo_package()` globs `tests/*.rs`, one test target each | Clax's crates set `autotests = false` and name one or two test binaries each; targets come from the `[[test]]` entries (§5.3) |
 | Integration tests that run the server binary compile outside the sandbox and outside the cache (`no-sandbox`, `no-cache`) for an absolute `CARGO_BIN_EXE_` | Clax's tests take the binary at run time (`CLAX_TEST_BIN`), so they stay sandboxed and cached (§6) |
-| No browser tests; Postgres as an optional pass | Playwright, the Chrome extension's browser tests, the real Pi, and three perf gates (§8) |
+| No browser tests; Postgres as an optional pass | Playwright, the Chrome extension's browser tests, the real Pi, and three perf benchmarks run on demand (§8) |
 | pnpm; rules_js reads `pnpm-lock.yaml` | npm today; Clax moves to pnpm (§7, Q1) |
 | Lints and format through rules_rust's clippy and rustfmt aspects | The same |
 | CI gates on Bazel on Blacksmith runners with a sticky disk per job; the native checks are a manual workflow | CI gates on Bazel on GitHub-hosted runners with `actions/cache`; the native checks are a manual workflow (§14) |
@@ -384,8 +384,8 @@ today.
 | Plugin structure (`scripts/test-plugins.sh`) | run by `bazel-test.sh`, not a Bazel test | — | It compares the pinned release with the newest `v*` git tag: it reads the repository's history, which is not a file Bazel can declare |
 | `scripts/test-justfile.sh` | run by `bazel-test.sh`, not a Bazel test | — | It runs `just`, which is Homebrew's (§5.6) |
 | Playwright browser tests (`web/e2e`) | Bazel tests, one per Playwright project (`gesture`, `chrome-overlay`, `rest`) | `no-sandbox`; a CPU reservation per target; Chromium from a pinned repository | Each worker starts its own daemon on port 0. Outside the sandbox because Chromium applies its own macOS sandbox profile and runs a GPU and helper process tree; the migration's measurements confirm whether the sandbox can stay on |
-| Time to usable (`web/perf`) | Bazel test | `exclusive`, `no-sandbox` | It measures latency, so nothing else may run beside it |
-| Daemon latency, realtime clients (`scripts/perf-daemon.sh`, `perf-clients.sh`) | Bazel tests, quick mode in `--ci`, full mode `manual` for `just perf` | `exclusive`, `no-sandbox`; the release `clax` (`-c opt`) as data | Same; `exclusive` is today's "alone, one at a time" |
+| Time to usable (`web/perf`) | Bazel test, `manual`: a benchmark for `just perf`, in no check | `exclusive`, `no-sandbox` | It measures latency, so nothing else may run beside it. Performance is measured on demand and gates nothing (owner, 2026-10-16: "Report, don't gate") |
+| Daemon latency, realtime clients (`scripts/perf-daemon.sh`, `perf-clients.sh`) | Bazel tests, `manual`: benchmarks for `just perf`, in no check | `exclusive`, `no-sandbox`; the release `clax` (`-c opt`) as data | Same; each reports a measure over budget and passes |
 | `scripts/smoke-*.sh` (Claude, Codex, Grok, Pi, push, ask, capabilities, release binary) | native only, manual | — | Real harness CLIs, a model and the person's credentials |
 | `scripts/verify-harnesses.sh` | native only, manual | — | The real `claude`, `codex` and `pi` on `PATH` |
 | `scripts/demo-room-sample.sh` | native only | — | A demo, not a check |
@@ -399,9 +399,8 @@ needs are installed before Bazel runs (the one thing CI installs besides
 Bazelisk), as `playwright install --with-deps` does today.
 
 A failing test's result is never cached. A passing one is cached on its
-inputs; for the perf gates that is the release binary, the scripts and the
-budget files (Q6: passed perf gates are cached; `--nocache_test_results`
-measures again).
+inputs. The perf benchmarks are not checks: `just perf` runs them with
+`--nocache_test_results`, so every run measures (Q6, superseded).
 
 Bazel runs `exclusive` tests after the others, one at a time, which is the
 order `quality_gates.sh` uses today. Tests in other worktrees still load the
@@ -571,7 +570,7 @@ The rule covers files Bazel's own rules create (Q8).
 files and the PIDs they start.
 
 **Fast tests.** The tests themselves are unchanged: no sleeps, injected
-clocks, perf in the perf gates.
+clocks. Performance is measured on demand (`just perf`) and gates nothing.
 
 ## 14. CI
 
@@ -708,7 +707,9 @@ speed wins. Every task meets the two-minute rule and its native twin's
 speed before the migration merges (§10).
 
 **Q6. Cached perf results.** Decided: a passed perf gate is cached on its
-inputs like any test (§8).
+inputs like any test (§8). Superseded by the owner (2026-10-16): perf
+budgets are reported, not gated ("Report, don't gate"); the perf scripts
+are benchmarks `just perf` runs, uncached, and no check runs them.
 
 **Q7. Debug information in Bazel's test binaries.** Decided: as Cargo's
 dev profile (§10.2).

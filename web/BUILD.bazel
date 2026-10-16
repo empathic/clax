@@ -236,21 +236,8 @@ E2E_SKIPS = ["crates/clax-cli/clax"]
     "rest",
 ]]
 
-# Time to usable (pnpm run perf), quick: alone, as a perf gate.
-npm_script_test(
-    name = "perf_usable",
-    data = E2E_DATA,
-    env = E2E_ENV | {"CLAX_PERF_QUICK": "1"},
-    skips = E2E_SKIPS,
-    # The pinned browsers stay where their repository put them.
-    no_copy_to_bin = ["@chromium//:browsers"],
-    tags = [
-        "exclusive",
-        "no-sandbox",
-    ],
-    script = "perf",
-)
-
+# Time to usable (pnpm run perf), on demand only (`just perf`): alone; it
+# prints each measure beside its budget and fails no check.
 npm_script_test(
     name = "perf_usable_full",
     data = E2E_DATA,

@@ -99,11 +99,15 @@ which declares, with `<lib>` the library's crate name:
 A BUILD file names only what a crate reads outside `src/`: what it embeds,
 what its tests read. `//crates/clax-cli:clax_warm` runs the binary once
 ("macOS first runs"); `//crates/clax-cli:clax_opt` is the optimized build
-the perf gates run (`bazel/opt.bzl`). `//web:dist` (with `dist_extension`,
+(`bazel/opt.bzl`) the perf benchmarks run and `--ci` builds, as the native
+checks build the release binary. `//web:dist` (with `dist_extension`,
 `dist_extension_test`, `dist_e2e`) is the web build; `//web:lint`,
 `//web:typecheck`, `//web:unit`, `//web:bundle_size`,
 `//plugins/pi:typecheck` and `//plugins/pi:test` the web and Pi checks;
-`//scripts:*` the script gates and the perf gates.
+`//scripts:*` the script gates. The perf benchmarks
+(`//scripts:perf_daemon_full`, `//scripts:perf_clients_full`,
+`//web:perf_usable_full`) are `manual`: performance is measured on demand
+(`just perf`, which reruns them and prints their numbers) and gates nothing.
 
 A crate whose compile inputs include a generated directory (the web UI)
 has its sources placed in `bazel-bin` by rules_rust, so the repository
@@ -174,7 +178,7 @@ before.
 
 Bazel runs as many actions as there are cores. Rust tests run four libtest
 threads each (`RUST_TEST_THREADS=4`); the browser projects take eight
-workers each and declare it (`cpu:8`). The perf gates are `exclusive`:
+workers each and declare it (`cpu:8`). The perf benchmarks are `exclusive`:
 Bazel runs them one at a time with nothing beside them. To hold builds
 back on a shared machine, copy `user.bazelrc.example` to `user.bazelrc`.
 
