@@ -16,6 +16,8 @@ export CLAX_HOME="$SCRATCH/home"
 unset CLAX_PORT
 export CLAX_NO_OPEN=1
 BIN="${CLAX_TEST_BIN:-$REPO/target/debug/clax}"
+# Absolute, as Bazel names it relative to the repository (runfiles) root.
+case "$BIN" in /*) ;; *) BIN="$PWD/$BIN" ;; esac
 FAKE="$SCRATCH/fakebin"
 mkdir -p "$CLAX_HOME" "$FAKE"
 

@@ -19,4 +19,7 @@ expect flagged cp.sh 'cp -l "$a" "$b"'
 expect pass symlink.sh 'ln -s "$a" "$b"'
 expect pass variable.rs 'let ln = *map.get(&(a, ln)).unwrap();'
 expect pass symlink.ts 'import { symlinkSync, unlinkSync } from "node:fs";'
+expect flagged x.bzl 'copy_to_bin(name = "x", srcs = ["a"], hardlink = "auto")'
+expect flagged on.bzl 'copy_file(name = "x", src = "a", out = "b", hardlink = "on")'
+expect pass off.bzl 'copy_to_bin(name = "x", srcs = ["a"], hardlink = "off")'
 exit "$fails"

@@ -27,3 +27,16 @@ copy_to_bin(
     srcs = [":embedded"],
     visibility = ["//visibility:public"],
 )
+
+# The plugin files the release script test copies (scripts/test-release.files).
+exports_files(
+    glob(
+        [
+            "claude-code/**",
+            "clax/**",
+            "clax-grok/**",
+        ],
+        exclude = ["**/.qual"],
+    ),
+    visibility = ["//scripts:__pkg__"],
+)
