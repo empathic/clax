@@ -164,6 +164,8 @@ void main() {
     ValueChanged<bool>? onDictateChanged,
     Future<bool> Function(String aid, String tid)? onRetry,
     void Function(String aid)? onStop,
+    Future<bool> Function(String aid, String tid)? onCancelThread,
+    bool Function(String tid)? isStopped,
     String? initialThread,
     String? initialComment,
     Clock? clock,
@@ -199,6 +201,8 @@ void main() {
       onDictateChanged: onDictateChanged,
       onRetry: onRetry,
       onStop: onStop,
+      onCancelThread: onCancelThread,
+      isStopped: isStopped,
       initialThread: initialThread,
       initialComment: initialComment,
     );
@@ -2261,9 +2265,17 @@ void main() {
     });
 
     testWidgets('a change waiting for the connection says so on the chip '
-        'and its thread page, whose Cancel stops it', (tester) async {
+        'and its thread page, whose Cancel stops that thread alone, which '
+        'then reads Cancelled', (tester) async {
       final stopped = <String>[];
-      final rig = await pumpScreen(tester, onStop: stopped.add);
+      final rig = await pumpScreen(
+        tester,
+        onCancelThread: (aid, tid) async {
+          stopped.add('$aid/$tid');
+          return true;
+        },
+        isStopped: (tid) => stopped.any((s) => s.endsWith('/$tid')),
+      );
       final tid = await start(tester, rig);
       rig.worker
         ..add(WorkerWorking(rig.aid, [tid]))
@@ -2280,8 +2292,10 @@ void main() {
       );
       await tester.tap(find.byKey(const ValueKey('thread-cancel')));
       await frames(tester);
-      expect(stopped, [rig.aid]);
+      expect(stopped, ['${rig.aid}/$tid']);
       expect(find.byKey(const ValueKey('thread-status-offline')), findsNothing);
+      expect(find.text('Cancelled'), findsOneWidget);
+      expect(find.text('Clax is working on it'), findsNothing);
     });
 
     testWidgets('Open thread opens the thread page', (tester) async {
