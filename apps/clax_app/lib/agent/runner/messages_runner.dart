@@ -7,6 +7,7 @@ import 'dart:convert';
 import '../backend.dart';
 import '../progress.dart';
 import '../runner.dart';
+import '../tools/budget.dart';
 import '../tools/toolbox.dart';
 import 'turn.dart';
 
@@ -39,7 +40,9 @@ const finishNudge = 'Call finish or give_up.';
 /// - a turn held back by its backend ([TurnHolds], for example
 ///   `ResumingTurns` waiting out a background network cut or a lost
 ///   connection) does not spend the wall clock while held, and is followed
-///   by an [AttemptStarted] when it is sent again; a wait for the
+///   by an [AttemptStarted] when it is sent again; a cut attempt that
+///   reached the API is counted as a turn of the last turn's input; a wait
+///   for the
 ///   connection is told by [WaitingForConnection], and its end by
 ///   [ConnectionBack]; a failed turn is never counted and left
 ///   nothing in the history, so the resent turn is the same request;
@@ -89,7 +92,15 @@ class _Run {
     onResend: () => _emit(AttemptStarted(++_attempt)),
     onConnection: (waiting) =>
         _emit(waiting ? const WaitingForConnection() : const ConnectionBack()),
+    // A cut attempt is billed what the turn before it was sent, at least:
+    // counted as a turn of that input, so the caps bound a run whose
+    // connection keeps breaking.
+    onCutAttempt: () => state.budget.addTurn(_sentBefore),
   );
+
+  /// The input side of the last turn's usage: what resending the history
+  /// costs, about.
+  var _sentBefore = const Usage();
 
   bool get _cancelled => _stopReason == _Stop.cancelled;
   _Stop? _stopReason;
@@ -157,6 +168,11 @@ class _Run {
         return _cap(state.budget.hardStop ?? _wallClockCap());
       }
       state.budget.addTurn(turn.usage, attempts: turn.attempts);
+      _sentBefore = Usage(
+        input: turn.usage.input,
+        cacheWrite: turn.usage.cacheWrite,
+        cacheRead: turn.usage.cacheRead,
+      );
 
       if (turn.stopReason == 'refusal') {
         final category = switch (turn.stopDetails?['category']) {

@@ -287,6 +287,10 @@ class _Turns implements TurnBackend {
       await r.cancelled;
       throw const AgentError.cancelled();
     }
+    if (item is _Break) {
+      r.onActivity?.call();
+      throw _dns;
+    }
     if (item is void Function()) {
       item();
       throw _dns;
@@ -295,6 +299,9 @@ class _Turns implements TurnBackend {
     return item as ModelTurn;
   }
 }
+
+/// A turn whose stream sends one event, then breaks as the network does.
+class _Break {}
 
 /// Records what a run's clock hooks were asked.
 class _Clock {
@@ -778,7 +785,11 @@ void turnTests() {
       await pumpEventQueue();
       expect(out, isA<RunFinished>());
       expect(inner.seen, hasLength(2));
-      expect(tb.state.budget.turns, 1);
+      expect(
+        tb.state.budget.turns,
+        2,
+        reason: 'the stalled attempt reached the API: it is counted',
+      );
     });
 
     test('a cancel while held ends the run cancelled', () async {
@@ -1059,6 +1070,48 @@ void offlineTests() {
     expect(inner.runs, 2);
     expect(got, same(_result));
   });
+
+  test(
+    'a stream that keeps breaking mid-answer while the probe passes is '
+    'sent again at most maxOfflineResends times, then waits for a nudge',
+    () async {
+      reachable = true;
+      final c = _Clock();
+      final inner = _Turns([for (var i = 0; i < 7; i++) _Break(), _ok]);
+      var cutAttempts = 0;
+      ModelTurn? got;
+      unawaited(
+        ResumingTurns(inner, p, clock: clock, connection: conn)
+            .turn(
+              _turnRequest(
+                holds: TurnHolds(
+                  pauseClock: ({since}) => c.pauses++,
+                  resumeClock: () => c.resumes++,
+                  onCutAttempt: () => cutAttempts++,
+                ),
+              ),
+            )
+            .then((t) => got = t),
+      );
+      for (var i = 0; i < 20; i++) {
+        clock.advance(ApiConnection.maxProbe);
+        await pumpEventQueue();
+      }
+      expect(inner.seen, hasLength(6), reason: 'the first send and 5 resends');
+      expect(cutAttempts, 6, reason: 'each reached the API and is counted');
+      expect(got, isNull);
+      expect(c.paused, isTrue);
+
+      conn.nudge();
+      for (var i = 0; i < 20; i++) {
+        clock.advance(ApiConnection.maxProbe);
+        await pumpEventQueue();
+      }
+      expect(inner.seen, hasLength(8));
+      expect(got, same(_ok));
+      expect((c.pauses, c.resumes), (7, 7));
+    },
+  );
 
   group('in MessagesApiRunner', () {
     late Completer<void> cancel;

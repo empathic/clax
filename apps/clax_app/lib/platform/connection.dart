@@ -10,13 +10,27 @@ import '../daemon/clock.dart';
 /// a connection is the agent's run, which talks to the API.
 ///
 /// It starts [online] and says so until a run reports the API unreachable
-/// ([lost]); it then probes the API ([probe]) every [firstProbe], doubling
-/// up to [maxProbe], until a probe answers, and wakes every [whenOnline].
-/// [check] probes at once (the app came back to the front, or a stream went
-/// quiet). Listeners hear each change of [online].
+/// ([lost]). While a run waits for it ([waitOnline]) and the app is in the
+/// foreground ([foreground]), it probes the API ([probe]) every interval,
+/// from [firstProbe] doubling up to [maxProbe] after each failed probe,
+/// until a probe answers; then every wait ends. Nothing is probed while no
+/// run waits, or in the background. A loss within [maxProbe] of the API
+/// coming back doubles the interval too, so a connection that keeps
+/// breaking is tried less and less often.
+///
+/// [check] probes at once. [nudge] (the app came back to the front, or the
+/// person asked to try now) checks at once and ends every [whenNudged]: a
+/// run that gave up resending waits for one. Listeners hear each change of
+/// [online].
 class ApiConnection extends ChangeNotifier {
-  ApiConnection({required this._probe, Clock? clock})
-    : _clock = clock ?? const SystemClock();
+  ApiConnection({
+    required this._probe,
+    Clock? clock,
+    bool Function()? foreground,
+  }) : _clock = clock ?? const SystemClock(),
+       _foreground = foreground ?? _always;
+
+  static bool _always() => true;
 
   /// The first wait between probes while offline.
   static const firstProbe = Duration(seconds: 2);
@@ -26,20 +40,52 @@ class ApiConnection extends ChangeNotifier {
 
   final Future<bool> Function() _probe;
   final Clock _clock;
+  final bool Function() _foreground;
   var _online = true;
+  DateTime? _backAt;
+  var _interval = firstProbe;
+  var _waiters = 0;
   Completer<void>? _back;
+  Completer<void>? _nudged;
   var _probing = false;
   var _disposed = false;
 
   /// Whether the API was reachable when last seen.
   bool get online => _online;
 
-  /// Completes once the API is reachable: at once when [online].
-  Future<void> get whenOnline =>
-      _online ? Future.value() : (_back ??= Completer<void>()).future;
+  /// Completes once the API is reachable (at once when [online]) or
+  /// [cancelled] fires; while it waits, the API is probed.
+  Future<void> waitOnline([Future<void>? cancelled]) async {
+    if (_online) return;
+    _waiters++;
+    try {
+      final back = (_back ??= Completer<void>()).future;
+      _probeLoop();
+      await Future.any([back, ?cancelled]);
+    } finally {
+      _waiters--;
+    }
+  }
+
+  /// Completes at the next [nudge].
+  Future<void> get whenNudged => (_nudged ??= Completer<void>()).future;
+
+  /// Checks the API at once and wakes every [whenNudged].
+  void nudge() {
+    final n = _nudged;
+    _nudged = null;
+    n?.complete();
+    if (!_online) unawaited(check());
+  }
 
   /// A run could not reach the API: offline until a probe answers.
   void lost() {
+    if (_online) {
+      final at = _backAt;
+      _interval = at != null && _clock.now().difference(at) < maxProbe
+          ? _longer(_interval)
+          : firstProbe;
+    }
     _set(false);
     _probeLoop();
   }
@@ -51,6 +97,8 @@ class ApiConnection extends ChangeNotifier {
     if (!ok) _probeLoop();
     return ok;
   }
+
+  static Duration _longer(Duration d) => d * 2 > maxProbe ? maxProbe : d * 2;
 
   Future<bool> _reach() async {
     try {
@@ -64,25 +112,28 @@ class ApiConnection extends ChangeNotifier {
     if (_disposed || online == _online) return;
     _online = online;
     if (online) {
+      _backAt = _clock.now();
       _back?.complete();
       _back = null;
     }
     notifyListeners();
   }
 
+  bool get _shouldProbe =>
+      !_online && !_disposed && _waiters > 0 && _foreground();
+
   Future<void> _probeLoop() async {
-    if (_probing) return;
+    if (_probing || !_shouldProbe) return;
     _probing = true;
     try {
-      var wait = firstProbe;
-      while (!_online && !_disposed) {
-        await _clock.delay(wait);
-        if (_online || _disposed) return;
+      while (_shouldProbe) {
+        await _clock.delay(_interval);
+        if (!_shouldProbe) return;
         if (await _reach()) {
           _set(true);
           return;
         }
-        wait = wait * 2 > maxProbe ? maxProbe : wait * 2;
+        _interval = _longer(_interval);
       }
     } finally {
       _probing = false;
