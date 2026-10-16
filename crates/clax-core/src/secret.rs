@@ -20,6 +20,8 @@ pub const MANAGE_PREFIX: &str = "cxm_";
 pub const CONTINUE_PREFIX: &str = "cxc_";
 /// Prefix of an agent session's secret (spec 2026-10-08 §6.8).
 pub const SESSION_PREFIX: &str = "cxs_";
+/// Prefix of a browser's `clax_viewer` cookie (spec 2026-10-08 §21.4).
+pub const VIEWER_PREFIX: &str = "cxv_";
 
 /// Crockford base32, uppercase, without I, L, O and U.
 const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -90,6 +92,21 @@ fn base64url(bytes: &[u8]) -> String {
 /// A token: `prefix` and 43 base64url characters (32 random bytes).
 pub fn token(prefix: &str) -> Secret {
     Secret(format!("{prefix}{}", base64url(&random_bytes::<32>())))
+}
+
+/// A browser's `clax_viewer` cookie: [`VIEWER_PREFIX`] and 43 base64url
+/// characters (32 random bytes), drawn independently of any row ID.
+pub fn viewer_cookie() -> Secret {
+    token(VIEWER_PREFIX)
+}
+
+/// Whether `s` has the form of a cookie [`viewer_cookie`] mints.
+pub fn is_viewer_cookie(s: &str) -> bool {
+    s.strip_prefix(VIEWER_PREFIX).is_some_and(|t| {
+        t.len() == 43
+            && t.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    })
 }
 
 /// A browser-link code: 43 base64url characters (32 random bytes).

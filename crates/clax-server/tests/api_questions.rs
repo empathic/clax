@@ -1770,7 +1770,7 @@ async fn the_grace_records_its_withdrawal_as_the_daemon() {
 async fn with_sam() -> (TestServer, clax_server::testing::TestClient, String, String) {
     let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
     let sam = ts.connect_person("Sam", "clax:collaborator").await;
-    let cookie = ts.store.viewer_of_grant(&sam.grant_id()).unwrap().id;
+    let cookie = ts.browser_cookie(&ts.store.viewer_of_grant(&sam.grant_id()).unwrap().id);
     let sid = sam.register("claude", "sam-h1").await["id"]
         .as_str()
         .unwrap()

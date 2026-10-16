@@ -30,6 +30,7 @@ async fn roster() -> Roster {
     let sam = ts.connect_person("Sam", "clax:collaborator").await;
     let mia = ts.connect_person("Mia", "clax:collaborator").await;
     let v = ts.store.viewer_of_grant(&sam.grant_id()).unwrap();
+    let sam_cookie = ts.browser_cookie(&v.id);
     let owner_session = id(&ts.register_session("claude", "owner-h1").await);
     let sam_session = id(&sam.register("claude", "sam-h1").await);
     let mia_session = id(&mia.register("codex", "mia-h1").await);
@@ -38,7 +39,7 @@ async fn roster() -> Roster {
         clock,
         sam,
         mia,
-        sam_cookie: v.id,
+        sam_cookie,
         sam_public: v.public_id,
         owner_session,
         sam_session,
@@ -456,7 +457,8 @@ async fn an_agents_end_tells_the_send_menus_of_what_it_watched() {
 #[tokio::test]
 async fn a_persons_ended_note_leaves_out_live_pages() {
     let w = crate::common::people::World::two_people().await;
-    let cookie = w.ts.store.viewer_of_grant(&w.sam.grant_id()).unwrap().id;
+    let cookie =
+        w.ts.browser_cookie(&w.ts.store.viewer_of_grant(&w.sam.grant_id()).unwrap().id);
     // Sam's agent owns a thread on Mia's page and one on the live page
     // (written directly: no send reaches a person's agent on a live page).
     let db = rusqlite::Connection::open(w.ts.home.db_path()).unwrap();

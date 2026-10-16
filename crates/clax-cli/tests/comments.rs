@@ -33,7 +33,7 @@ const HARNESS_ENV: [&str; 18] = [
 ];
 
 /// A viewer cookie standing for someone else's browser.
-const MARIA: &str = "01J9Z3K4M5N6P7Q8R9S0T1V2W3";
+const MARIA: &str = "cxv_MariaTheReviewer_MariaTheReviewer_MariaTheR";
 
 fn clax(home: &Path) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_clax"));

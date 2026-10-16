@@ -1895,8 +1895,18 @@ impl TestServer {
         c
     }
 
-    /// Whether a viewer row `id` exists.
-    pub fn viewer_exists(&self, id: &str) -> bool {
-        self.store.get_viewer(id).unwrap().is_some()
+    /// Whether `cookie` names a viewer.
+    pub fn viewer_exists(&self, cookie: &str) -> bool {
+        self.store.get_viewer(cookie).unwrap().is_some()
+    }
+
+    /// A browser cookie of viewer row `viewer_id`, as a browser link gives
+    /// a person's browser one: a new secret naming it.
+    pub fn browser_cookie(&self, viewer_id: &str) -> String {
+        self.store
+            .issue_viewer_cookie(viewer_id)
+            .unwrap()
+            .expose()
+            .to_string()
     }
 }

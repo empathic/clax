@@ -20,7 +20,8 @@ use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::http::header;
 use axum::http::header::SET_COOKIE;
 use axum::response::{IntoResponse, Response};
-use clax_core::{CoreError, new_ulid};
+use clax_core::CoreError;
+use clax_core::store::viewers::is_legacy_cookie;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -31,10 +32,8 @@ pub struct NameBody {
 }
 
 async fn respond(s: AppState, who: Identity, name: Option<String>) -> Result<Response, ApiError> {
-    let fresh = (!who.is_owner() && who.cookie.is_none()).then(new_ulid);
     let owner = who.is_owner();
-    let minted = fresh.clone();
-    let (before, viewer) = s
+    let (before, viewer, fresh) = s
         .store_call(move |st| {
             if who.is_owner() {
                 // The token alone reads the owner without making one.
@@ -43,17 +42,36 @@ async fn respond(s: AppState, who: Identity, name: Option<String>) -> Result<Res
                     Some(n) => Some(st.set_owner_name(n, who.owner_browser())?),
                     None => before.clone(),
                 };
-                return Ok((before.and_then(|v| v.display_name), after));
+                return Ok((before.and_then(|v| v.display_name), after, None));
             }
-            let id = match minted {
-                Some(m) => {
-                    st.mint_viewer(&m, who.local)?;
-                    m
-                }
-                None => who.cookie.clone().unwrap_or_default(),
+            // A browser without a cookie gets a new viewer and a fresh
+            // secret; one holding a legacy cookie (its viewer's row ID,
+            // from before migration 24) gets a fresh secret for the same
+            // viewer, or a new viewer when it names none (spec §21.4).
+            let mint = |st: &clax_core::Store| -> clax_core::Result<clax_core::secret::Secret> {
+                let c = clax_core::secret::viewer_cookie();
+                st.mint_viewer(c.expose(), who.local)?;
+                Ok(c)
             };
-            let before = st.get_viewer(&id)?.and_then(|v| v.display_name);
-            Ok((before, Some(st.upsert_viewer(&id, name.as_deref())?)))
+            let fresh = match who.cookie.as_deref() {
+                None => Some(mint(st)?),
+                Some(c) if is_legacy_cookie(c) => match st.reissue_viewer_cookie(c)? {
+                    Some((_, secret)) => Some(secret),
+                    None => Some(mint(st)?),
+                },
+                Some(_) => None,
+            };
+            let cookie = fresh
+                .as_ref()
+                .map(|f| f.expose().to_string())
+                .or_else(|| who.cookie.clone())
+                .unwrap_or_default();
+            let before = st.get_viewer(&cookie)?.and_then(|v| v.display_name);
+            Ok((
+                before,
+                Some(st.upsert_viewer(&cookie, name.as_deref())?),
+                fresh,
+            ))
         })
         .await?;
     if let Some(v) = &viewer
@@ -69,8 +87,8 @@ async fn respond(s: AppState, who: Identity, name: Option<String>) -> Result<Res
         viewer["owner"] = json!(true);
     }
     let mut res = Json(json!({"viewer": viewer})).into_response();
-    if let Some(id) = fresh {
-        res.headers_mut().insert(SET_COOKIE, set_cookie(&id));
+    if let Some(c) = fresh {
+        res.headers_mut().insert(SET_COOKIE, set_cookie(&c));
     }
     Ok(res)
 }

@@ -529,10 +529,22 @@ pub const MIGRATIONS: &[&str] = &[
     // harness session ID is unique within its credential (`grant_id`, NULL
     // for the daemon token), never across credentials (M4). A grant's
     // session keeps the SHA-256 of its secret (`secret_sha256`, §6.8),
-    // cleared when it ends.
+    // cleared when it ends. A browser's `clax_viewer` cookie is a random
+    // secret kept as its SHA-256 (`viewer_cookies`, §21.4); until now it was
+    // the viewer's row ID, which the migration's Rust step hashes for every
+    // viewer but the owner as a `legacy` cookie, so existing LAN viewers
+    // keep working until their cookie is replaced.
     "ALTER TABLE viewers ADD COLUMN person INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE viewers ADD COLUMN person_revoked_at TEXT;
     ALTER TABLE viewers ADD COLUMN rights_json TEXT;
+
+    CREATE TABLE viewer_cookies (
+        sha256 TEXT PRIMARY KEY,
+        viewer_id TEXT NOT NULL REFERENCES viewers(id),
+        created_at TEXT NOT NULL,
+        legacy INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX viewer_cookies_by_viewer ON viewer_cookies(viewer_id);
 
     CREATE TABLE invites (
         id TEXT PRIMARY KEY,
@@ -769,6 +781,9 @@ pub(super) fn rust_step(tx: &rusqlite::Transaction<'_>, version: u32) -> crate::
     if version == AUDIT_MIGRATION {
         install_id(tx)?;
     }
+    if version == PEOPLE_MIGRATION {
+        legacy_viewer_cookies(tx)?;
+    }
     if version == VISIBILITY_MIGRATION {
         tx.execute(
             "INSERT INTO approvals (id, approver, author, scope, created_at, created_via)
@@ -785,6 +800,25 @@ pub(super) fn rust_step(tx: &rusqlite::Transaction<'_>, version: u32) -> crate::
 
 /// Mints the install ID once: 128 random bits in lowercase hex. It holds
 /// no timestamp, so an exported reference does not date the install.
+/// Keeps every existing viewer's cookie, its row ID, working (spec
+/// 2026-10-08 §21.4): its SHA-256 as a `legacy` cookie of that viewer. The
+/// owner's row is skipped: no browser holds its ID as a cookie.
+fn legacy_viewer_cookies(tx: &rusqlite::Transaction<'_>) -> crate::Result<()> {
+    let rows: Vec<(String, String)> = {
+        let mut stmt = tx.prepare("SELECT id, created_at FROM viewers WHERE owner = 0")?;
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    for (id, created_at) in rows {
+        tx.execute(
+            "INSERT OR IGNORE INTO viewer_cookies (sha256, viewer_id, created_at, legacy)
+             VALUES (?1, ?2, ?3, 1)",
+            rusqlite::params![crate::secret::sha256_hex(&id), id, created_at],
+        )?;
+    }
+    Ok(())
+}
+
 fn install_id(tx: &rusqlite::Transaction<'_>) -> crate::Result<()> {
     let id: String = rand::random::<[u8; 16]>()
         .iter()
@@ -1530,8 +1564,20 @@ mod tests {
             .unwrap();
         assert_eq!(people.len(), 6);
         assert!(people.iter().all(Option::is_none));
+        // A main viewer's cookie, its row ID, keeps naming it, as a legacy
+        // cookie kept by its hash (spec 2026-10-08 §21.4).
         let v = st.get_viewer(COOKIE).unwrap().unwrap();
         assert!(!v.person && v.person_revoked_at.is_none());
+        let kept: (String, bool) = st
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT sha256, legacy FROM viewer_cookies WHERE viewer_id = ?1",
+                    [COOKIE],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(kept, (crate::secret::sha256_hex(COOKIE), true));
         let json = serde_json::to_value(&v).unwrap();
         assert!(
             json.get("person").is_none(),

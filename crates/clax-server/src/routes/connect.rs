@@ -1,6 +1,7 @@
 //! `GET /connect/b/<code>`: the browser link (spec §6.5). `clax connect`
 //! opens it in the connected person's browser, which becomes that person:
-//! the page sets the `clax_viewer` cookie to the person's viewer and moves
+//! the page sets the `clax_viewer` cookie to a new secret naming the
+//! person's viewer (never its row ID) and moves
 //! on to `/people`. A `clax_viewer` cookie the browser already carried is
 //! replaced, never folded, so a raced or sniffed link moves no one's
 //! history. The code is spent on its first use; it is refused for the owner
@@ -98,7 +99,7 @@ pub async fn browser_link(
         return gone();
     }
     match s.store_call(move |st| st.redeem_browser_code(&code)).await {
-        Ok(viewer) => {
+        Ok((_, cookie)) => {
             let mut res = page(
                 StatusCode::OK,
                 "Connected",
@@ -106,7 +107,7 @@ pub async fn browser_link(
                 Some("/people"),
             );
             res.headers_mut()
-                .insert(header::SET_COOKIE, crate::viewer::set_cookie(&viewer.id));
+                .insert(header::SET_COOKIE, crate::viewer::set_cookie(&cookie));
             res
         }
         Err(e) if e.status == StatusCode::NOT_FOUND => gone(),

@@ -1,16 +1,19 @@
-//! The `clax_viewer` cookie: a host-only ULID naming a browser viewer that
-//! holds no owner credential (see [`crate::identity`]).
+//! The `clax_viewer` cookie: a host-only random secret (`cxv_…`; a legacy
+//! ULID from before migration 24) naming a browser viewer that holds no
+//! owner credential (see [`crate::identity`]). The store finds the viewer
+//! by the cookie's SHA-256, never by row ID.
 
 use crate::error::ApiError;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, header};
+use clax_core::Store;
 use clax_core::feedback::display_name;
-use clax_core::{Store, is_ulid};
+use clax_core::store::viewers::is_cookie;
 
 pub const COOKIE: &str = "clax_viewer";
 
-/// Every distinct ULID value of the `clax_viewer` cookies in `headers`, in
+/// Every distinct well-formed value ([`is_cookie`]) of the `clax_viewer` cookies in `headers`, in
 /// the order sent; malformed values are skipped. More than one means another
 /// page set a cookie of that name (cookies ignore ports, and one scoped to a
 /// longer path is sent first).
@@ -24,7 +27,7 @@ pub(crate) fn read_all(headers: &HeaderMap) -> Vec<String> {
         .filter_map(|kv| kv.trim().split_once('='))
         .filter(|(k, _)| *k == COOKIE)
         .map(|(_, v)| v)
-        .filter(|v| is_ulid(v))
+        .filter(|v| is_cookie(v))
     {
         if !out.iter().any(|o| o == v) {
             out.push(v.to_string());
@@ -33,7 +36,7 @@ pub(crate) fn read_all(headers: &HeaderMap) -> Vec<String> {
     out
 }
 
-/// The viewer the `clax_viewer` cookies name: their one ULID value; `None`
+/// The viewer the `clax_viewer` cookies name: their one value; `None`
 /// when there is none, or when they disagree (a shadowing cookie never
 /// wins).
 pub(crate) fn read(headers: &HeaderMap) -> Option<String> {
@@ -95,12 +98,14 @@ impl<S: Send + Sync> FromRequestParts<S> for SameOrigin {
     }
 }
 
-/// `Set-Cookie` for viewer `id`: host-only (no `Domain`), `HttpOnly`, `SameSite=Lax`, five years.
-pub fn set_cookie(id: &str) -> HeaderValue {
+/// `Set-Cookie` for viewer cookie `cookie` (a secret the daemon minted):
+/// host-only (no `Domain`), `HttpOnly`, `SameSite=Lax`, five years.
+pub fn set_cookie(cookie: &clax_core::secret::Secret) -> HeaderValue {
     HeaderValue::from_str(&format!(
-        "{COOKIE}={id}; Path=/; Max-Age=157680000; HttpOnly; SameSite=Lax"
+        "{COOKIE}={}; Path=/; Max-Age=157680000; HttpOnly; SameSite=Lax",
+        cookie.expose()
     ))
-    .expect("ULIDs are header-safe")
+    .expect("base64url is header-safe")
 }
 
 /// The viewer a request acts as when it writes as a viewer (a comment, a

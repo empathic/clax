@@ -224,10 +224,12 @@ pub struct Watch {
     pub created_at: String,
 }
 
-/// A browser viewer, keyed by the `clax_viewer` cookie. `id` is the cookie
-/// value, the viewer's credential: it is never serialised, so no response,
-/// event, or log built from a `Viewer` carries it. Others see the viewer as
-/// `public_id` (`u_` and 22 lowercase hex digits).
+/// A browser viewer, found by its `clax_viewer` cookies (random secrets the
+/// store keeps as SHA-256 hashes; spec 2026-10-08 §21.4). `id` is its row
+/// ID, which is no credential (no cookie is derived from it) and is never
+/// serialised, so no response, event, or log built from a `Viewer` carries
+/// it. Others see the viewer as `public_id` (`u_` and 22 lowercase hex
+/// digits).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Viewer {
     #[serde(skip_serializing, default)]

@@ -1516,7 +1516,10 @@ async fn remote_hooks_find_their_session() {
     let r =
         w.ts.client
             .post(format!("{}/api/artifacts/{aid}/threads", w.ts.base))
-            .header("cookie", format!("clax_viewer={}", sam.id))
+            .header(
+                "cookie",
+                format!("clax_viewer={}", w.ts.browser_cookie(&sam.id)),
+            )
             .multipart(form)
             .send()
             .await
@@ -1532,7 +1535,10 @@ async fn remote_hooks_find_their_session() {
                 "{}/api/artifacts/{aid}/threads/{tid}/send",
                 w.ts.base
             ))
-            .header("cookie", format!("clax_viewer={}", sam.id))
+            .header(
+                "cookie",
+                format!("clax_viewer={}", w.ts.browser_cookie(&sam.id)),
+            )
             .send()
             .await
             .unwrap();
@@ -1595,7 +1601,7 @@ async fn a_remote_hooks_ask_waits_for_the_persons_answer() {
     assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
     // Sam's browser holds his questions.
     let sam = w.ts.store.viewer_of_grant(&w.sam.grant_id()).unwrap();
-    let cookie = format!("clax_viewer={}", sam.id);
+    let cookie = format!("clax_viewer={}", w.ts.browser_cookie(&sam.id));
     let res =
         w.ts.client
             .get(format!("{}/api/stream", w.ts.base))
@@ -1686,7 +1692,7 @@ async fn remote_follow_names_its_session_with_its_proof() {
     assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
     let sam = w.ts.store.viewer_of_grant(&w.sam.grant_id()).unwrap();
     let send = |body: &'static str| {
-        let (w, aid, cookie) = (&w, aid.clone(), sam.id.clone());
+        let (w, aid, cookie) = (&w, aid.clone(), w.ts.browser_cookie(&sam.id));
         async move {
             let tid = w.ts.thread_as(&aid, &cookie, body).await["id"]
                 .as_str()
@@ -1857,7 +1863,10 @@ async fn a_remote_hook_prints_its_comments_when_clips_do_not_come() {
         let r =
             w.ts.client
                 .post(format!("{}/api/artifacts/{aid}/threads", w.ts.base))
-                .header("cookie", format!("clax_viewer={}", sam.id))
+                .header(
+                    "cookie",
+                    format!("clax_viewer={}", w.ts.browser_cookie(&sam.id)),
+                )
                 .multipart(form)
                 .send()
                 .await
@@ -1873,7 +1882,10 @@ async fn a_remote_hook_prints_its_comments_when_clips_do_not_come() {
                     "{}/api/artifacts/{aid}/threads/{tid}/send",
                     w.ts.base
                 ))
-                .header("cookie", format!("clax_viewer={}", sam.id))
+                .header(
+                    "cookie",
+                    format!("clax_viewer={}", w.ts.browser_cookie(&sam.id)),
+                )
                 .send()
                 .await
                 .unwrap();
@@ -1942,17 +1954,22 @@ async fn sams_watching_session(
 /// Sam's own comment on `aid`, sent to his agents; the thread.
 async fn sam_sends(w: &World, aid: &str, body: &str) -> String {
     let sam = w.ts.store.viewer_of_grant(&w.sam.grant_id()).unwrap();
-    let tid = w.ts.thread_as(aid, &sam.id, body).await["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let tid =
+        w.ts.thread_as(aid, &w.ts.browser_cookie(&sam.id), body)
+            .await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
     let r =
         w.ts.client
             .post(format!(
                 "{}/api/artifacts/{aid}/threads/{tid}/send",
                 w.ts.base
             ))
-            .header("cookie", format!("clax_viewer={}", sam.id))
+            .header(
+                "cookie",
+                format!("clax_viewer={}", w.ts.browser_cookie(&sam.id)),
+            )
             .send()
             .await
             .unwrap();

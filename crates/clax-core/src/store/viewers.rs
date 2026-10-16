@@ -1,11 +1,13 @@
-//! Browser viewers, keyed by the `clax_viewer` cookie (a ULID, the
-//! viewer's credential) and named to others by a public ID.
+//! Browser viewers, found by the `clax_viewer` cookie (a random secret,
+//! kept as its SHA-256 in `viewer_cookies`; never the row ID) and named to
+//! others by a public ID.
 
 use super::Store;
 use crate::audit::{Actor, AuditCtx, AuditKind, AuditRecord, Via, sha256_hex};
 use crate::gitctx::GitField;
 use crate::ids::{is_public_id, is_ulid, new_public_id};
 use crate::model::Viewer;
+use crate::secret::{Secret, is_viewer_cookie, viewer_cookie};
 use crate::store::approvals::OWNER;
 use crate::{CoreError, Result};
 use rusqlite::{OptionalExtension, params};
@@ -21,6 +23,43 @@ pub const MAX_SEARCH_SCAN: usize = 10_000;
 
 const VIEWER_SELECT: &str =
     "SELECT id, public_id, display_name, created_at, person, person_revoked_at FROM viewers";
+
+/// The viewer a cookie's hash (`?1`) names: never the owner's row, and
+/// never a person on a legacy cookie (spec 2026-10-08 §21.4).
+const VIEWER_BY_COOKIE: &str =
+    "SELECT v.id, v.public_id, v.display_name, v.created_at, v.person, v.person_revoked_at
+     FROM viewer_cookies c JOIN viewers v ON v.id = c.viewer_id
+     WHERE c.sha256 = ?1 AND v.owner = 0 AND (c.legacy = 0 OR v.person = 0)";
+
+/// Whether `cookie` has a form a `clax_viewer` cookie may take: a secret
+/// the daemon mints ([`viewer_cookie`]), or a legacy ULID (a viewer's row
+/// ID, the cookie before migration 24).
+pub fn is_cookie(cookie: &str) -> bool {
+    is_viewer_cookie(cookie) || is_ulid(cookie)
+}
+
+/// Whether `cookie` is of the legacy form: a ULID.
+pub fn is_legacy_cookie(cookie: &str) -> bool {
+    is_ulid(cookie)
+}
+
+fn viewer_by_cookie(c: &rusqlite::Connection, cookie: &str) -> rusqlite::Result<Option<Viewer>> {
+    c.query_row(
+        VIEWER_BY_COOKIE,
+        params![crate::secret::sha256_hex(cookie)],
+        row_to_viewer,
+    )
+    .optional()
+}
+
+/// Records `cookie` (its hash) as a cookie of viewer row `id`.
+fn add_cookie(tx: &rusqlite::Transaction<'_>, id: &str, cookie: &str, now: &str) -> Result<()> {
+    tx.execute(
+        "INSERT INTO viewer_cookies (sha256, viewer_id, created_at, legacy) VALUES (?1, ?2, ?3, ?4)",
+        params![crate::secret::sha256_hex(cookie), id, now, is_legacy_cookie(cookie)],
+    )?;
+    Ok(())
+}
 
 pub(super) fn row_to_viewer(r: &rusqlite::Row<'_>) -> rusqlite::Result<Viewer> {
     Ok(Viewer {
@@ -82,52 +121,106 @@ fn check_viewer_name(tx: &rusqlite::Transaction<'_>, id: &str, name: &str) -> Re
 }
 
 impl Store {
-    /// Creates viewer `id` when missing, with a new public ID
-    /// ([`crate::new_public_id`]) that it keeps for good. `display_name`: `None` keeps the
-    /// current name, `Some("")` (after trimming) clears it, any other value
-    /// replaces it. The owner's row is never reached this way (a viewer cookie
-    /// never names it).
+    /// Creates the viewer behind `cookie` when there is none, with a new
+    /// row ID and a new public ID ([`crate::new_public_id`]) that it keeps
+    /// for good; the cookie's SHA-256 names it from then on. `display_name`:
+    /// `None` keeps the current name, `Some("")` (after trimming) clears it,
+    /// any other value replaces it. The owner's row is never reached this
+    /// way (a viewer cookie never names it).
     ///
     /// # Errors
-    /// `invalid_viewer` when `id` is not a ULID or names the owner's row;
-    /// `invalid_name` for a name with control characters or longer than
-    /// [`MAX_NAME_CHARS`]; `name_taken` for the owner's or a connected
-    /// person's name ([`check_viewer_name`]).
-    pub fn upsert_viewer(&self, id: &str, display_name: Option<&str>) -> Result<Viewer> {
-        self.upsert_minted(id, display_name, None)
+    /// `invalid_viewer` when `cookie` has no cookie's form ([`is_cookie`]),
+    /// or is a legacy cookie of a viewer since made a person; `invalid_name`
+    /// for a name with control characters or longer than [`MAX_NAME_CHARS`];
+    /// `name_taken` for the owner's or a connected person's name
+    /// ([`check_viewer_name`]).
+    pub fn upsert_viewer(&self, cookie: &str, display_name: Option<&str>) -> Result<Viewer> {
+        self.upsert_minted(cookie, display_name, None)
     }
 
     /// [`Store::upsert_viewer`] for a cookie the daemon is minting now, on a
     /// request from this machine (`local`: a loopback peer naming a literal
     /// local host) or not. Only a viewer minted locally may later be claimed
     /// for the owner ([`Store::claim_for_owner`]).
-    pub fn mint_viewer(&self, id: &str, local: bool) -> Result<Viewer> {
-        self.upsert_minted(id, None, Some(local))
+    pub fn mint_viewer(&self, cookie: &str, local: bool) -> Result<Viewer> {
+        self.upsert_minted(cookie, None, Some(local))
     }
 
     fn upsert_minted(
         &self,
-        id: &str,
+        cookie: &str,
         display_name: Option<&str>,
         local: Option<bool>,
     ) -> Result<Viewer> {
-        if !is_ulid(id) {
-            return Err(CoreError::invalid("invalid_viewer", "viewer IDs are ULIDs"));
+        if !is_cookie(cookie) {
+            return Err(CoreError::invalid(
+                "invalid_viewer",
+                "a viewer cookie is a cxv_ secret",
+            ));
         }
         let name = display_name.map(checked_name).transpose()?;
+        let no_viewer = || CoreError::invalid("invalid_viewer", "that cookie names no viewer");
         self.with_tx(|tx| {
-            if let Some(Some(n)) = name {
-                check_viewer_name(tx, id, n)?;
+            let hash = crate::secret::sha256_hex(cookie);
+            let known: Option<String> = tx
+                .query_row(
+                    "SELECT viewer_id FROM viewer_cookies WHERE sha256 = ?1",
+                    params![hash],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let id = match known {
+                Some(_) => viewer_by_cookie(tx, cookie)?.ok_or_else(no_viewer)?.id,
+                None => {
+                    let id = crate::new_ulid();
+                    let now = self.now();
+                    tx.execute(
+                        "INSERT INTO viewers (id, public_id, created_at, minted_local) VALUES (?1, ?2, ?3, ?4)",
+                        params![id, new_public_id(), now, local],
+                    )?;
+                    add_cookie(tx, &id, cookie, &now)?;
+                    id
+                }
+            };
+            if let Some(n) = name {
+                if let Some(n) = n {
+                    check_viewer_name(tx, &id, n)?;
+                }
+                tx.execute(
+                    "UPDATE viewers SET display_name = ?2 WHERE id = ?1 AND owner = 0",
+                    params![id, n],
+                )?;
             }
-            tx.execute(
-                "INSERT INTO viewers (id, public_id, display_name, created_at, minted_local) VALUES (?1, ?2, ?3, ?4, ?6)
-                 ON CONFLICT(id) DO UPDATE SET display_name = CASE WHEN ?5 THEN excluded.display_name ELSE display_name END
-                 WHERE owner = 0",
-                params![id, new_public_id(), name.flatten(), self.now(), name.is_some(), local],
-            )?;
             tx.query_row(&format!("{VIEWER_SELECT} WHERE id = ?1 AND owner = 0"), params![id], row_to_viewer)
                 .optional()?
-                .ok_or_else(|| CoreError::invalid("invalid_viewer", "that cookie names no viewer"))
+                .ok_or_else(no_viewer)
+        })
+    }
+
+    /// A new cookie for viewer row `viewer_id` (a browser it gains: a
+    /// person's browser link, spec §6.5), its hash recorded; the viewer's
+    /// other cookies keep working.
+    ///
+    /// # Errors
+    /// `invalid_viewer` for the owner's row or an unknown one.
+    pub fn issue_viewer_cookie(&self, viewer_id: &str) -> Result<Secret> {
+        self.with_tx(|tx| issue_cookie_in(self, tx, viewer_id))
+    }
+
+    /// Replaces legacy cookie `old` (a ULID, see [`is_legacy_cookie`]) with
+    /// a fresh secret naming the same viewer: `None` when it names none.
+    /// The old cookie names no one afterwards.
+    pub fn reissue_viewer_cookie(&self, old: &str) -> Result<Option<(Viewer, Secret)>> {
+        self.with_tx(|tx| {
+            let Some(v) = viewer_by_cookie(tx, old)? else {
+                return Ok(None);
+            };
+            tx.execute(
+                "DELETE FROM viewer_cookies WHERE sha256 = ?1",
+                params![crate::secret::sha256_hex(old)],
+            )?;
+            let fresh = issue_cookie_in(self, tx, &v.id)?;
+            Ok(Some((v, fresh)))
         })
     }
 
@@ -144,16 +237,14 @@ impl Store {
         })
     }
 
-    /// The viewer whose cookie is `id`; never the owner's row.
-    pub fn get_viewer(&self, id: &str) -> Result<Option<Viewer>> {
-        self.with_read(|c| {
-            Ok(c.query_row(
-                &format!("{VIEWER_SELECT} WHERE id = ?1 AND owner = 0"),
-                params![id],
-                row_to_viewer,
-            )
-            .optional()?)
-        })
+    /// The viewer cookie `cookie` names, looked up by its SHA-256, never by
+    /// row ID; never the owner's row, and never a person on a legacy
+    /// cookie.
+    pub fn get_viewer(&self, cookie: &str) -> Result<Option<Viewer>> {
+        if !is_cookie(cookie) {
+            return Ok(None);
+        }
+        self.with_read(|c| Ok(viewer_by_cookie(c, cookie)?))
     }
 
     /// The viewer whose public ID is `public_id`; `None` for anything else,
@@ -285,6 +376,7 @@ fn fold(
         params![from.id],
     )?;
     move_private_docs(st, ctx, tx, old, new)?;
+    forget_cookies(tx, &from.id)?;
     tx.execute("DELETE FROM viewers WHERE id = ?1", params![from.id])?;
     Ok(())
 }
@@ -495,32 +587,32 @@ fn move_private_docs(
     Ok(())
 }
 
-/// Gives viewer row `id` a fresh private ID (its cookie value), so a cookie
-/// that named it before names nothing from now on; its seen and looked-at
-/// marks, invites and grants follow it. Returns the new ID.
-fn rotate_id(tx: &rusqlite::Transaction<'_>, id: &str) -> Result<String> {
-    let fresh = crate::new_ulid();
-    // The marks reference the row; the checks run at commit, once all three moved.
-    tx.execute_batch("PRAGMA defer_foreign_keys = ON")?;
-    tx.execute(
-        "UPDATE viewers SET id = ?2 WHERE id = ?1",
-        params![id, fresh],
+/// A new cookie for viewer row `viewer_id`, its hash recorded.
+pub(super) fn issue_cookie_in(
+    st: &Store,
+    tx: &rusqlite::Transaction<'_>,
+    viewer_id: &str,
+) -> Result<Secret> {
+    let found: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM viewers WHERE id = ?1 AND owner = 0)",
+        params![viewer_id],
+        |r| r.get(0),
     )?;
-    tx.execute(
-        "UPDATE viewer_seen SET viewer_id = ?2 WHERE viewer_id = ?1",
-        params![id, fresh],
-    )?;
-    tx.execute(
-        "UPDATE viewer_threads SET viewer_id = ?2 WHERE viewer_id = ?1",
-        params![id, fresh],
-    )?;
-    for table in ["invites", "grants"] {
-        tx.execute(
-            &format!("UPDATE {table} SET viewer_id = ?2 WHERE viewer_id = ?1"),
-            params![id, fresh],
-        )?;
+    if !found {
+        return Err(CoreError::invalid("invalid_viewer", "no such viewer"));
     }
-    Ok(fresh)
+    let cookie = viewer_cookie();
+    add_cookie(tx, viewer_id, cookie.expose(), &st.now())?;
+    Ok(cookie)
+}
+
+/// Forgets every cookie of viewer row `id`: none names it afterwards.
+pub(super) fn forget_cookies(tx: &rusqlite::Transaction<'_>, id: &str) -> Result<()> {
+    tx.execute(
+        "DELETE FROM viewer_cookies WHERE viewer_id = ?1",
+        params![id],
+    )?;
+    Ok(())
 }
 
 impl Store {
@@ -596,8 +688,8 @@ impl Store {
     /// and history ([`Claim::Adopted`]; such an earlier owner row is folded
     /// into it, its name kept when it has one). Otherwise the viewer is folded
     /// into the owner, which keeps its name when it has one
-    /// ([`Claim::Merged`]). Either way the owner's private ID is new, so the
-    /// cookie names nothing afterwards. Each private document that follows
+    /// ([`Claim::Merged`]). Either way the claimed viewer's cookies are
+    /// forgotten, so the cookie names nothing afterwards. Each private document that follows
     /// a folded viewer to the owner's public ID is recorded as `doc.move`,
     /// and a claim that retires a public ID (the folded row's) as one
     /// `viewer.claim {from_public_id, to_public_id}`, so records naming the
@@ -614,17 +706,19 @@ impl Store {
             call: None,
         };
         self.with_tx(|tx| {
-            let Some(legacy) = tx
-                .query_row(
-                    &format!(
-                        "{VIEWER_SELECT} WHERE id = ?1 AND owner = 0 AND minted_local = 1 AND person = 0"
-                    ),
-                    params![cookie],
-                    row_to_viewer,
-                )
-                .optional()?
-            else {
-                return Ok(Claim::Nothing);
+            let legacy = match viewer_by_cookie(tx, cookie)? {
+                Some(v) if !v.person => {
+                    let local: bool = tx.query_row(
+                        "SELECT minted_local = 1 FROM viewers WHERE id = ?1",
+                        params![v.id],
+                        |r| r.get::<_, Option<bool>>(0).map(|b| b.unwrap_or(false)),
+                    )?;
+                    if !local {
+                        return Ok(Claim::Nothing);
+                    }
+                    v
+                }
+                _ => return Ok(Claim::Nothing),
             };
             // Authorship moves (M17).
             self.visibility_changed();
@@ -659,7 +753,7 @@ impl Store {
                         "UPDATE viewers SET owner = 1, claimed = 1 WHERE id = ?1",
                         params![legacy.id],
                     )?;
-                    rotate_id(tx, &legacy.id)?;
+                    forget_cookies(tx, &legacy.id)?;
                     Ok(Claim::Adopted { retired })
                 }
             }
@@ -762,13 +856,13 @@ mod tests {
             None,
             "a cookie never names the owner"
         );
-        assert!(matches!(
-            st.upsert_viewer(&a.id, Some("Mallory")),
-            Err(CoreError::Invalid {
-                code: "invalid_viewer",
-                ..
-            })
-        ));
+        // The owner's row ID as a cookie is an unknown cookie: a new
+        // viewer, never the owner.
+        let m = st.upsert_viewer(&a.id, Some("Mallory")).unwrap();
+        assert_ne!(
+            (m.id.as_str(), m.public_id.as_str()),
+            (a.id.as_str(), a.public_id.as_str())
+        );
         assert_eq!(
             st.set_owner_name(" Alex ", true)
                 .unwrap()
@@ -1126,7 +1220,7 @@ mod tests {
         let found = st.viewer_by_public_id(&v.public_id).unwrap().unwrap();
         assert_eq!(
             (found.id.as_str(), found.display_name.as_deref()),
-            (id.as_str(), Some("Alex"))
+            (v.id.as_str(), Some("Alex"))
         );
         assert_eq!(
             st.viewer_by_public_id("u_0123456789abcdef012345").unwrap(),

@@ -806,11 +806,10 @@ async fn every_agent_channel_is_an_agent() {
         .find_map(|g| g.person)
         .unwrap();
     let row = ts.store.viewer_by_public_id(&sam_viewer).unwrap().unwrap();
-    let v = caller(
-        ts.client
-            .get(at("/api/_test/caller"))
-            .header("cookie", format!("clax_viewer={}", row.id)),
-    )
+    let v = caller(ts.client.get(at("/api/_test/caller")).header(
+        "cookie",
+        format!("clax_viewer={}", ts.browser_cookie(&row.id)),
+    ))
     .await;
     assert_eq!(v, json!({"caller": "person", "viewer": sam_viewer}));
 }

@@ -656,12 +656,13 @@ async fn renaming_an_agent_is_its_persons_or_the_owners_from_a_browser_or_the_cl
     );
     // Sam's browser renames Sam's agent, never the owner's.
     let sam_public = ts.store.grant(&sam.grant_id()).unwrap().person.unwrap();
-    let sam_cookie = ts
-        .store
-        .viewer_by_public_id(&sam_public)
-        .unwrap()
-        .unwrap()
-        .id;
+    let sam_cookie = ts.browser_cookie(
+        &ts.store
+            .viewer_by_public_id(&sam_public)
+            .unwrap()
+            .unwrap()
+            .id,
+    );
     let as_sam =
         |r: reqwest::RequestBuilder| r.header("cookie", format!("clax_viewer={sam_cookie}"));
     let th = theirs["agent_handle"].as_str().unwrap();

@@ -3756,10 +3756,10 @@ async fn a_connected_persons_browser_is_a_person() {
     let sam = ts.connect_person("Sam", "clax:collaborator").await;
     let v = ts.store.viewer_of_grant(&sam.grant_id()).unwrap();
     let url = format!("{}{CTX}", ts.base);
-    let got = ctx(ts
-        .client
-        .get(&url)
-        .header("cookie", format!("clax_viewer={}", v.id)))
+    let got = ctx(ts.client.get(&url).header(
+        "cookie",
+        format!("clax_viewer={}", ts.browser_cookie(&v.id)),
+    ))
     .await;
     assert_eq!(
         got["actor"],

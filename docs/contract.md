@@ -1270,7 +1270,7 @@ minted a viewer cookie for a request from this machine. When the shell's
 token request carries exactly one `clax_viewer` cookie and it names a
 viewer minted on this machine, that viewer is claimed for the owner and the
 cookie removed: the first one claimed becomes the owner, keeping its public
-ID, name and history, under a new private ID so the old cookie names no
+ID, name and history, its cookies forgotten so the old cookie names no
 one; a later one is folded into the owner and removed. Folding moves its
 comments' author, its mentions, the threads it resolved, its seen marks
 (the higher) and looked-at marks (the later), its name when the owner has
@@ -2875,6 +2875,9 @@ those routes are Denied to agents and refuse the bare token (403
 `browser_required`); they take the owner's or a connected person's
 browser on a same-origin request. `GET /api/people` (the owner) and `GET
 /api/people/me` (the owner or a connected person) are People's reads;
+anyone else, whatever cookie it sends (none, a LAN viewer's, or one that
+names no one), gets the same 403 `forbidden`, so the answer tells a guess
+nothing (a person's cookie is 32 random bytes, so there is no rate limit);
 `DELETE /api/agents/<handle>` ends an agent (the owner any, a person their
 own), as its session's end would.
 
@@ -5546,7 +5549,16 @@ it with Ajv (draft 2020-12, formats asserted;
   owner credential (the token, the events cookie, or the owner cookie; see
   "The owner and other viewers"); any other viewer by the
   `clax_viewer` cookie (`HttpOnly`, host-only, `SameSite=Lax`), whose value
-  the daemon accepts only when it is a ULID. Neither cookie leaves the
+  is a secret the daemon mints: `cxv_` and 43 base64url characters (32
+  random bytes), independent of every row ID. The daemon keeps only its
+  SHA-256 and finds the viewer by it, never by row ID, so no ID it shows
+  anyone (an invite's, say) leads to a cookie. A viewer may hold several
+  cookies (a person's browsers). A cookie from before migration 24 was the
+  viewer's row ID (a ULID); it keeps naming an anonymous LAN viewer until
+  that browser's next `GET /api/viewers/me`, which replaces it with a fresh
+  secret for the same viewer (and a ULID cookie naming no one with a new
+  viewer); it never names a connected person, and a viewer made a person
+  loses such cookies. Any other value names no viewer. Neither cookie leaves the
   daemon: no response body, event, thread view, comment, or log carries it.
   Outside the cookie a viewer is named by its public ID (`u_` and 22
   lowercase hex digits, assigned once and never changed): `GET`/`PUT

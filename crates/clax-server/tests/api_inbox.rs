@@ -581,10 +581,11 @@ async fn with_sam() -> Sam {
         .as_str()
         .unwrap()
         .to_string();
+    let cookie = ts.browser_cookie(&v.id);
     Sam {
         ts,
         sam,
-        cookie: v.id,
+        cookie,
         public_id: v.public_id,
         session,
     }
@@ -687,7 +688,8 @@ fn item_ids(v: &Value) -> Vec<String> {
 async fn a_person_sees_only_their_inbox() {
     let w = with_sam().await;
     let mia = w.ts.connect_person("Mia", "clax:collaborator").await;
-    let mia_cookie = w.ts.store.viewer_of_grant(&mia.grant_id()).unwrap().id;
+    let mia_cookie =
+        w.ts.browser_cookie(&w.ts.store.viewer_of_grant(&mia.grant_id()).unwrap().id);
     let qid = w.ask("Teal or amber?", None).await;
 
     let (status, sams) = w.get_as(&w.cookie, "/api/inbox").await;
