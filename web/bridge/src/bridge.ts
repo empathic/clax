@@ -193,7 +193,7 @@ type PartName = keyof Parts;
   // a hold-then-drag picks on its release, with no chip to confirm it.
   let appShell = false;
   // The page's own pushState routes, watched once the app shell welcomed.
-  let routes: Routes | null = null;
+  let routes: Routes | undefined;
 
   // A pick's clip is rendered only once the shell's composer for it has
   // focus (see `pick.ts`).
@@ -313,7 +313,7 @@ type PartName = keyof Parts;
       case "clax:welcome":
         welcomed = true; appShell = m.app === true; shellMode = m.mode === "comment"; followMode(); rpc.connect(); post(hashFor(location.hash));
         prefetch();
-        if (m.app) void parts.caps().then(c => { c.appScroll(window, post, meta.file, m.restoreScroll); routes ??= c.appRoutes(window, post); }, () => {});
+        if (m.app) void parts.caps().then(c => { routes = c.app(window, post, meta.file, m.restoreScroll); }, () => {});
         break;
       case "clax:use-result": case "clax:call-result": case "clax:event": rpc.accept(m); break;
       case "clax:comment-mode": shellMode = m.on; followMode(); break;

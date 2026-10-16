@@ -251,8 +251,8 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
   it("a post the composer queued and then dropped reaches the app as a notice, each time", async () => {
     const { ctl, frame } = await appView();
     hello(frame, 1);
-    ctl.postDropped();
-    ctl.postDropped();
+    ctl.app!.dropped();
+    ctl.app!.dropped();
     await waitFor(() => ofType("notice").length >= 2, "two notices");
     expect(ofType("notice").map(n => n.text)).toEqual([
       "Not sent: the comment changed before its screenshot was taken. Send it again.",

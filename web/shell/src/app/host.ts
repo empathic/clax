@@ -21,8 +21,9 @@
 //   `#route`s), and the routes it pushed with `history.pushState` (the
 //   bridge's `clax:route`), newest last, at most `TRAIL_MAX`. `back()` moves
 //   the frame to the one before in place, without a history entry, as the
-//   shell's own back and forward do: to a route before, by the bridge's
-//   `clax:back`. A version swap keeps the pages and fragments; a
+//   shell's own back and forward do; to a route before, the bridge takes the
+//   page back through its own entries (`clax:back`). A version swap keeps
+//   the pages and fragments; a
 //   page's routes go with its document. `history` is posted
 //   whenever whether there is one to go back to changes, and at `init`.
 // - Send: the composer's primary button posts the thread and sends it to the
@@ -342,6 +343,9 @@ const MAX_PRESSES = 16;
 /** A thread's summary: its first comment, cut to this many characters. */
 const SUMMARY_CHARS = 140;
 const FOLLOW_FAILED = "Could not load the latest version";
+/** The notice kind for a post the composer queued behind its screenshot
+ * and then cancelled. */
+const POST_DROPPED = "Not sent";
 /** How many pages and fragments the app's own history keeps. */
 export const TRAIL_MAX = 50;
 
@@ -547,6 +551,14 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       return r && r.file === file ? { app: true, restoreScroll: r.y } : { app: true };
     },
     posted: t => sendThread(t.id),
+    // The app's Send waits on the post the composer dropped: a fresh notice
+    // each time tells it nothing was sent (on the web the composer's own
+    // status line says so).
+    dropped: () => {
+      const notice = scopedNotice(ctl.setNotice, POST_DROPPED);
+      notice(null);
+      notice(`${POST_DROPPED}: the comment changed before its screenshot was taken. Send it again.`);
+    },
   };
 
   // Loads the latest version in place (the app's `reloadLatest`).
@@ -701,14 +713,11 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       post(migrationMessage(m as unknown as Record<string, unknown>));
       return;
     }
-    if (m?.type === "clax:hash" && typeof m.hash === "string" && validHash(m.hash)) {
+    if ((m?.type === "clax:hash" || m?.type === "clax:route") && typeof m.hash === "string" && validHash(m.hash)) {
       const file = s().file;
-      if (file !== null) visit(file, m.hash);
-      return;
-    }
-    if (m?.type === "clax:route" && Number.isInteger(m.depth) && m.depth >= 0 && typeof m.hash === "string" && validHash(m.hash)) {
-      const file = s().file;
-      if (file !== null) route(file, m.depth, m.hash);
+      if (file === null) return;
+      if (m.type === "clax:hash") visit(file, m.hash);
+      else if (Number.isInteger(m.depth) && m.depth >= 0) route(file, m.depth, m.hash);
       return;
     }
     if (m?.type === "clax:pick-start" && typeof m.pickId === "string" && m.desc) {
