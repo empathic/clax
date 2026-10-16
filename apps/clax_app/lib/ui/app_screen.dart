@@ -1469,7 +1469,10 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     setState(() => _dictation = const Dictation(listening: true));
     _listen = widget.voice.listen().listen(
       (r) {
-        if (!mounted || _draft == null) return;
+        // Words that land after Send (the recognizer's final result, as
+        // Send stops it) leave the sent text alone: the shell would take
+        // them as an edit and drop a post queued behind its screenshot.
+        if (!mounted || _draft == null || _sending) return;
         setState(() => _dictation = Dictation(listening: true, words: r.words));
         final text = before.isEmpty ? r.words : '$before ${r.words}';
         _text.value = TextEditingValue(

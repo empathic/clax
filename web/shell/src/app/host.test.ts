@@ -248,6 +248,18 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(ofType("sent")).toEqual([]);
   });
 
+  it("a post the composer queued and then dropped reaches the app as a notice, each time", async () => {
+    const { ctl, frame } = await appView();
+    hello(frame, 1);
+    ctl.postDropped();
+    ctl.postDropped();
+    await waitFor(() => ofType("notice").length >= 2, "two notices");
+    expect(ofType("notice").map(n => n.text)).toEqual([
+      "Not sent: the comment changed before its screenshot was taken. Send it again.",
+      "Not sent: the comment changed before its screenshot was taken. Send it again.",
+    ]);
+  });
+
   it("submitDraft({text}) sends the app composer's text on the pick's anchor and screenshot", async () => {
     blobUrls();
     const posted = thread("t9");

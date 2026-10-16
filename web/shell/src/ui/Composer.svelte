@@ -2,15 +2,17 @@
   // The composer for `draft`; `onText` hears the typed text on every input,
   // and "" when it closes; `onFocused` hears that its textarea took focus as
   // it opened. `send`: the primary button is the app's Send (its `onSubmit`
-  // posts and sends to the agent) rather than Post comment.
+  // posts and sends to the agent) rather than Post comment. `onDropped`
+  // hears that a post queued behind the screenshot was cancelled (an edit,
+  // or a move to another anchor), so an owner waiting on it can say so.
   import { onDestroy, untrack } from "svelte";
   import { type Anchor, INDEX_FILE } from "../../../bridge/src/protocol";
   import { type Draft, composerQuote, isSubmitKey, submitKeysLabel } from "../view/composer-model";
   import { nextFrame } from "../view/after-paint";
   import { guardedAction } from "../view/trail";
 
-  type Props = { draft: Draft; onCancel(): void; onSubmit(body: string): Promise<void>; onText?(text: string): void; onFocused?(): void; send?: boolean };
-  let { draft, onCancel, onSubmit, onText, onFocused, send }: Props = $props();
+  type Props = { draft: Draft; onCancel(): void; onSubmit(body: string): Promise<void>; onText?(text: string): void; onFocused?(): void; onDropped?(): void; send?: boolean };
+  let { draft, onCancel, onSubmit, onText, onFocused, onDropped, send }: Props = $props();
   const uid = $props.id();
   let body = $state("");
   let busy = $state(false);
@@ -66,13 +68,19 @@
     if (!queued) return;
     untrack(() => {
       // Only on the anchor shown when it was asked.
-      if (queuedFor !== anchor) { queued = false; return; }
+      if (queuedFor !== anchor) { drop(); return; }
       if (capturing) return;
       queued = false;
       // And only with the text shown then.
       if (textarea?.value === body) void post();
     });
   });
+  /** Cancels the queued post, and says so. */
+  function drop() {
+    if (!queued) return;
+    queued = false;
+    onDropped?.();
+  }
   /** Posts now, or once the screenshot is in. */
   function request() {
     if (!draft.capturing) { void post(); return; }
@@ -104,7 +112,7 @@
     <p class="muted small" id={`${uid}-status`} role="status">{status}</p>
   {/if}
   <textarea {@attach focus} rows={3} placeholder="Comment… (@agent sends it to the agent)" value={body}
-    oninput={e => { const v = e.currentTarget.value; queued = false; body = v; onText?.(v); }}
+    oninput={e => { const v = e.currentTarget.value; drop(); body = v; onText?.(v); }}
     onkeydown={e => {
       if (e.key === "Escape") onCancel();
       else if (isSubmitKey(e)) {

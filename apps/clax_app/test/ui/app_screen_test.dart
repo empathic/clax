@@ -633,6 +633,40 @@ void main() {
     expect(find.text('make it blue'), findsOneWidget);
   });
 
+  testWidgets('a dictation result after Send leaves the sent text alone', (
+    tester,
+  ) async {
+    // The recognizer's final words land after Send stops it: written into
+    // the field, they would reach the shell as an edit, which drops a post
+    // queued behind the screenshot without a word, and Sending… would stay.
+    final rig = await pumpScreen(
+      tester,
+      voice: FakeVoice(
+        script: const ['make it'],
+        hold: true,
+        atStop: 'make it blue',
+      ),
+    );
+    rig.surface.push(rig.ready());
+    await openPanel(tester);
+    rig.surface.push(_Rig.draft);
+    await tester.pumpAndSettle();
+    expect(find.text('make it'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('send')));
+    await tester.pumpAndSettle();
+    expect(rig.voice.stops, 1);
+    expect(
+      rig.surface.js.where((j) => j.contains('claxHost?.setDraftText')).last,
+      'window.claxHost?.setDraftText("make it",{composer:true})',
+    );
+    expect(
+      rig.surface.js.last,
+      'window.claxHost?.submitDraft({text:"make it"})',
+    );
+    expect(find.text('make it'), findsOneWidget);
+    expect(find.text('Sending…'), findsOneWidget);
+  });
+
   testWidgets('without Dictate comments a pick waits for the mic button', (
     tester,
   ) async {

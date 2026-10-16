@@ -132,6 +132,9 @@ export const STREAM_WAIT_MS = 1500;
 
 /** The notice kind for a thread the daemon kept without its screenshot. */
 const CLIP_DROPPED = "Posted without its screenshot";
+/** The notice kind for a post the composer queued behind its screenshot
+ * and then cancelled. */
+export const POST_DROPPED = "Not sent";
 
 /** How long a page the shell sent the frame to may take to greet before the
  * jump is given up (settable for tests). */
@@ -1526,6 +1529,17 @@ export class ArtifactController {
   /** The composer for `pickId` has focus: the bridge may render its clip now. */
   composerFocused(pickId: string): void { if (this.pendingPick?.pickId === pickId) this.send({ type: "clax:composer-ready", pickId }); }
   cancelDraft(): void { this.set({ draft: null }); }
+  /** The composer cancelled a post it queued behind the screenshot (its text
+   * changed, or it moved to another anchor). In app mode the app's Send is
+   * waiting on that post, so a notice tells it (each time, as a fresh
+   * notice) that nothing was sent; on the web the viewer sees the composer's
+   * own status line. */
+  postDropped(): void {
+    if (!this.app) return;
+    const notice = this.noticeFor(POST_DROPPED);
+    notice(null);
+    notice(`${POST_DROPPED}: the comment changed before its screenshot was taken. Send it again.`);
+  }
 
   /** Posts `draft`'s comment (the open composer's), and in app mode hands
    * the thread to `app.posted` to send; a failure to post shows in the notice

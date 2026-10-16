@@ -253,15 +253,19 @@ describe("the submit shortcut", () => {
   it("drops a queued shortcut when the text is edited after it, so a half-finished edit is never posted", () => {
     const onSubmit = vi.fn<(body: string) => Promise<void>>(async () => {});
     const d = draft({ capturing: true, clipToken: "t" });
-    const m = mountIt(Composer, { draft: d, onCancel: vi.fn(), onSubmit });
+    const onDropped = vi.fn();
+    const m = mountIt(Composer, { draft: d, onCancel: vi.fn(), onSubmit, onDropped });
     const ta = m.root.querySelector("textarea")!;
     flush(() => { ta.value = "Why flat"; ta.dispatchEvent(new Event("input", { bubbles: true })); });
+    expect(onDropped).not.toHaveBeenCalled();
     key(ta, { ctrlKey: true });
     expect(m.root.textContent).toContain("Posting once the screenshot is taken…");
     flush(() => { ta.value = "Why flat, and why"; ta.dispatchEvent(new Event("input", { bubbles: true })); });
     expect(m.root.textContent).toContain("Taking the screenshot…");
-    m.update({ draft: { ...d, capturing: false, clipToken: undefined, clipError: "blank" }, onCancel: vi.fn(), onSubmit });
+    expect(onDropped).toHaveBeenCalledTimes(1);
+    m.update({ draft: { ...d, capturing: false, clipToken: undefined, clipError: "blank" }, onCancel: vi.fn(), onSubmit, onDropped });
     expect(onSubmit).not.toHaveBeenCalled();
+    expect(onDropped).toHaveBeenCalledTimes(1);
     expect(m.root.querySelector<HTMLButtonElement>("button[type=submit]")!.disabled).toBe(false);
     m.done();
   });
@@ -269,16 +273,21 @@ describe("the submit shortcut", () => {
   it("drops a queued shortcut when the composer moves to another anchor", () => {
     const onSubmit = vi.fn<(body: string) => Promise<void>>(async () => {});
     const d = draft({ capturing: true, clipToken: "t" });
-    const m = mountIt(Composer, { draft: d, onCancel: vi.fn(), onSubmit });
+    // The owner hears the drop: an app whose Send is waiting on this post
+    // offers it again.
+    const onDropped = vi.fn();
+    const m = mountIt(Composer, { draft: d, onCancel: vi.fn(), onSubmit, onDropped });
     const ta = m.root.querySelector("textarea")!;
     flush(() => { ta.value = "Here"; ta.dispatchEvent(new Event("input", { bubbles: true })); });
     key(ta, { metaKey: true });
     expect(m.root.textContent).toContain("Posting once the screenshot is taken…");
     const moved = { ...d, anchor: { ...d.anchor, selector: "body > p" }, clipToken: "t2" };
-    m.update({ draft: moved, onCancel: vi.fn(), onSubmit });
+    m.update({ draft: moved, onCancel: vi.fn(), onSubmit, onDropped });
     expect(m.root.textContent).toContain("Taking the screenshot…");
-    m.update({ draft: { ...moved, capturing: false, clipToken: undefined, clipError: "blank" }, onCancel: vi.fn(), onSubmit });
+    expect(onDropped).toHaveBeenCalledTimes(1);
+    m.update({ draft: { ...moved, capturing: false, clipToken: undefined, clipError: "blank" }, onCancel: vi.fn(), onSubmit, onDropped });
     expect(onSubmit).not.toHaveBeenCalled();
+    expect(onDropped).toHaveBeenCalledTimes(1);
     expect(ta.value).toBe("Here");
     m.done();
   });
