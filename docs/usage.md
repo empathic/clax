@@ -575,6 +575,40 @@ through `net`; `web/e2e/map.spec.ts` drives it in the app's view against
 tiles the test answers at the shell's `net:fetch` request, the consent
 dialog included.
 
+**The home app.** The home screen is an app of its own, built from
+`apps/clax_app/home/` (`index.html`, `home.js`, `home.css`, its tests, and
+`manifest.json` naming its title, capabilities, lineage, `version`,
+`release` and the kit files it carries) into the bundle the app ships,
+`apps/clax_app/assets/home/home.clax`, with its release record
+`assets/home/release.json`. On the first run the app installs it and
+records its ID in `home.json`; at each start it updates the installed home
+app from a newer shipped release (silently, unless the person changed it:
+then they choose Update or Keep mine, once per release). The `home`
+capability it uses is "The home screen's capability" in
+`docs/contract.md`; `assets/kit/fake-home.js` stands in for it in its
+tests (`add_kit` part `home`).
+
+The bundle is signed by the home app's own key, and every release must be
+signed by the same one: an install treats a bundle under another key as a
+different app. Its seed is kept outside the repository, owner-only, at
+`~/.config/clax/home-bundle/key` on the owner's Mac (`CLAX_HOME_BUNDLE_KEY`
+names another file), so **only the key holder can pack a release**. To
+release a change to `home/` or to the kit files it carries, raise
+`version` and `release` in `home/manifest.json`, then run:
+
+```
+./scripts/build-home-bundle.sh   # a dry run: says what it would write
+just home-bundle                 # packs and writes home.clax and release.json
+```
+
+and commit both outputs with the sources. Packing unchanged sources writes
+nothing; packing changed files under the shipped version, or without the
+key, stops and says why. `test/home/home_bundle_test.dart` fails when
+`home/` changed and was not packed. A kit edit does not fail it: the
+bundle keeps the kit copies it was packed with, and the test reports the
+drift as a skipped test naming the files, until the key holder packs the
+next release.
+
 **On an Android phone.** Turn on developer options and USB debugging, plug
 the phone in, and from the checkout run:
 
@@ -641,7 +675,15 @@ same signature and do not ask.
 - **Home.** Your apps in a grid, each with the icon its agent designed;
   the inbox button with its unread count; Settings; and New. A long press
   on a tile offers Open, Inspect and, while its plan has features left,
-  Resume build.
+  Resume build. The home screen is itself an app: comment on it (Settings
+  › Home screen › Open) to change it, as any app, for example "sort my
+  apps alphabetically"; it never lists itself. When it cannot show (it
+  fails to load, or has not shown within 10 seconds of a start), Clax's
+  built-in home screen takes its place with "Your home screen couldn't
+  load", **Undo last change** (back to the version before the latest) and
+  **Reset** (Clax's own home screen again, as a new version, your data and
+  threads kept). Settings › Home screen has Open, Undo last change, Reset
+  to Clax's home screen, and Use the built-in home screen.
 - **Making an app.** New, then say or type what you want. The build view
   shows the plan as a live checklist, what the agent is doing, and a live
   preview of the page as it is written and rendered. Add, edit, drop or
@@ -797,7 +839,9 @@ The app keeps its own records in its application support directory
 build): `settings.json`, `timings.jsonl` (say → usable and long-press →
 landed times, also listed in Settings), `agent-timings.jsonl`,
 `lineages.json` (which apps were shared or installed as files, and under
-which key), `bundles/<ID>.clax` (each installed app's file as received,
+which key), `home.json` (the home app's ID, whether the built-in home
+screen is chosen, and the shipped release the person kept their own home
+app over), `bundles/<ID>.clax` (each installed app's file as received,
 for sharing it on), `snapshots/` (an app's documents while an update
 upgrades them, put back if it fails or Clax ends part way), and
 `clax-home/`, the daemon's home. The sharing key is in the platform's
