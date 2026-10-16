@@ -21,6 +21,8 @@ describe("HostedPanel", () => {
     flush(() => { form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
     await settle();
     expect(m.root.querySelector('[role="alert"]')!.textContent).toBe("Too many tokens made from this address.");
+    expect(m.root.querySelector('.hosted-tokens [role="alert"]'), "the refusal shows under Agent tokens").not.toBeNull();
+    expect(m.root.querySelectorAll('[role="alert"]').length).toBe(1);
   });
 
   it("says a taken name in People's own words", async () => {

@@ -17,7 +17,9 @@
 
   let { me }: { me: api.HostedMe } = $props();
   const person = $derived(me.person);
-  let err = $state<string | null>(null);
+  // A refusal shows in the part whose action it answers; a failed load at the end.
+  type Part = "me" | "tokens" | "links" | "load";
+  let err = $state<{ at: Part; text: string } | null>(null);
   let link = $state<{ url: string; expires_at: string } | null>(null);
   let label = $state("");
   let minted = $state<api.NewAgentToken | null>(null);
@@ -38,17 +40,17 @@
       const [t, l, a] = await Promise.all([api.tokens(), api.links(), listArtifacts()]);
       tokens = t.tokens; shared = l.links; pages = a.map(x => ({ id: x.id, title: x.title }));
       if (!pick || shared.some(s => s.artifact_id === pick)) pick = pages.find(p => !shared.some(s => s.artifact_id === p.id))?.id ?? "";
-    } catch (x) { err = msg(x); }
+    } catch (x) { err = { at: "load", text: msg(x) }; }
   }
-  async function act(fn: () => Promise<unknown>) {
+  async function act(at: Part, fn: () => Promise<unknown>) {
     err = null;
-    try { await fn(); await load(); } catch (x) { err = msg(x); }
+    try { await fn(); await load(); } catch (x) { err = { at, text: msg(x) }; }
   }
   const copy = (what: string, text: string) => { void navigator.clipboard?.writeText(text).then(() => { copied = what; }, () => {}); };
-  const makeLink = () => act(async () => { link = await api.signinLink(); });
-  const signOut = () => act(async () => { await api.signOut(); location.assign("/signin"); });
-  const mint = (e: Event) => { e.preventDefault(); void act(async () => { minted = await api.mintToken(label.trim()); label = ""; }); };
-  const share = (e: Event) => { e.preventDefault(); if (pick) void act(() => api.setLink(pick, pickAccess)); };
+  const makeLink = () => act("me", async () => { link = await api.signinLink(); });
+  const signOut = () => act("me", async () => { await api.signOut(); location.assign("/signin"); });
+  const mint = (e: Event) => { e.preventDefault(); void act("tokens", async () => { minted = await api.mintToken(label.trim()); label = ""; }); };
+  const share = (e: Event) => { e.preventDefault(); if (pick) void act("links", () => api.setLink(pick, pickAccess)); };
   const minutes = (iso: string) => Math.max(0, Math.round((Date.parse(iso) - Date.now()) / 60000));
   const day = (iso: string | null) => (iso ? iso.slice(0, 10) : "never");
   const unshared = $derived(pages.filter(p => !shared.some(s => s.artifact_id === p.id)));
@@ -65,6 +67,7 @@
     <div class="cmd"><code>{link.url}</code><button type="button" onclick={() => copy("link", link!.url)}>{copied === "link" ? "Copied" : "Copy"}</button></div>
     <p class="meta">One use; it works for {minutes(link.expires_at)} more minutes. Anyone holding it signs in as you, so send it only to yourself.</p>
   {/if}
+  {#if err?.at === "me"}<p class="err" role="alert">{err.text}</p>{/if}
 </section>
 
 <section class="pcard hosted-tokens" aria-labelledby="ht-h">
@@ -85,8 +88,9 @@
   {/if}
   {#each tokens as t (t.id)}
     <div class="line tok"><span class="mname">{t.label}</span><span class="meta">made {day(t.created_at)} · last used {day(t.last_used_at)}{t.status !== "approved" ? ` · ${t.status}` : ""}</span><span class="sp"></span>
-      {#if t.status === "approved"}<button type="button" class="ghost danger" aria-label="Revoke the token for {t.label}" onclick={() => act(() => api.revokeToken(t.id))}>Revoke</button>{/if}</div>
+      {#if t.status === "approved"}<button type="button" class="ghost danger" aria-label="Revoke the token for {t.label}" onclick={() => act("tokens", () => api.revokeToken(t.id))}>Revoke</button>{/if}</div>
   {/each}
+  {#if err?.at === "tokens"}<p class="err" role="alert">{err.text}</p>{/if}
 </section>
 
 <section class="pcard hosted-links" aria-labelledby="hl-h">
@@ -94,7 +98,7 @@
   <p class="note">Anyone with a shared page's link sees it. To comment there they give a name and become a guest, whose comments reach your agents only once you approve them.</p>
   {#each shared as s (s.artifact_id)}
     <div class="line"><a class="mname" href={s.url}>{s.title}</a>{#if s.listed}<span class="meta pub">Public</span>{/if}<span class="sp"></span>
-      <select aria-label="Who may do what on {s.title}" onchange={e => { const v = e.currentTarget.value; void act(() => api.setLink(s.artifact_id, v === "none" ? null : (v as api.LinkAccess))); }}>
+      <select aria-label="Who may do what on {s.title}" onchange={e => { const v = e.currentTarget.value; void act("links", () => api.setLink(s.artifact_id, v === "none" ? null : (v as api.LinkAccess))); }}>
         {#each LEVELS as v (v)}<option value={v} selected={v === s.access}>{ACCESS[v]}</option>{/each}
         <option value="none">Stop sharing</option>
       </select>
@@ -113,8 +117,9 @@
       <button type="submit">Share by link</button>
     </form>
   {/if}
+  {#if err?.at === "links"}<p class="err" role="alert">{err.text}</p>{/if}
 </section>
-{#if err}<p class="err" role="alert">{err}</p>{/if}
+{#if err?.at === "load"}<p class="err" role="alert">{err.text}</p>{/if}
 
 <style>
   :global {
