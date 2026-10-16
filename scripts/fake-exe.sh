@@ -30,8 +30,10 @@ FAKE_EXE_MV="$(command -v mv)"
 FAKE_EXE_LN="$(command -v ln)"
 FAKE_EXE_RM="$(command -v rm)"
 FAKE_EXE_SUM="$(command -v shasum || command -v sha256sum)"
+# The store: CLAX_FAKE_EXE_DIR when set (Bazel's tests set it, so the store
+# outlives one test's temporary directory), else $TMPDIR/clax-fake-exe.
 FAKE_EXE_DIR="${TMPDIR:-/tmp}"
-FAKE_EXE_DIR="${FAKE_EXE_DIR%/}/clax-fake-exe"
+FAKE_EXE_DIR="${CLAX_FAKE_EXE_DIR:-${FAKE_EXE_DIR%/}/clax-fake-exe}"
 # The stored copies this gate has run once already.
 FAKE_EXE_WARMED=" "
 

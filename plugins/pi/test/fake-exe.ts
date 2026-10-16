@@ -11,7 +11,8 @@
 // first run. So each text is stored once, read-only, in the temporary
 // directory under a hash of the text, run once with CLAX_FAKE_EXE_WARMUP set
 // (a line added after the #! line makes that run exit at once), and the path
-// asked for is a symbolic link to it.
+// asked for is a symbolic link to it. The store is CLAX_FAKE_EXE_DIR when set
+// (Bazel's tests set it, so it outlives one test's temporary directory).
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -33,7 +34,7 @@ export function fakeExe(at: string, text: string): string {
   const first = nl < 0 ? text : text.slice(0, nl);
   if (!first.startsWith("#!")) throw new Error(`a fake executable starts with a #! line: ${first}`);
   const full = `${first}\n[ -z "\${CLAX_FAKE_EXE_WARMUP:-}" ] || exit 0\n${nl < 0 ? "" : text.slice(nl + 1)}`;
-  const dir = join(tmpdir(), "clax-fake-exe");
+  const dir = process.env.CLAX_FAKE_EXE_DIR || join(tmpdir(), "clax-fake-exe");
   const shared = join(dir, `sha256-${createHash("sha256").update(full).digest("hex")}`);
   if (!warmed.has(shared)) {
     mkdirSync(dir, { recursive: true });
