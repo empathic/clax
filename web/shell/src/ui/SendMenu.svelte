@@ -17,8 +17,8 @@
   import type { AgentView } from "../view/working-model";
   import { type AskFirsts, firstsVia, sendGroups } from "../view/send-menu";
 
-  let { agents, names, me, aid, threads, target, onChoose, onClose }: {
-    agents: AgentView[]; names?: Map<string, string>; me: string | null | undefined; aid?: string; threads?: string[]; target: string | null; onChoose(h: string): void; onClose(): void;
+  let { agents, names, me, own = me, aid, threads, target, onChoose, onClose }: {
+    agents: AgentView[]; names?: Map<string, string>; me: string | null | undefined; own?: string | null; aid?: string; threads?: string[]; target: string | null; onChoose(h: string): void; onClose(): void;
   } = $props();
   const ask: AskFirsts = firstsVia.ask ?? ((a, ts) =>
     fetch(`/api/artifacts/${encodeURIComponent(a)}/approves-first?threads=${ts.map(encodeURIComponent).join(",")}`)
@@ -31,7 +31,11 @@
     return () => { live = false; };
   });
   const groups = $derived(sendGroups(agents, me, firsts, names));
-  const headed = $derived(groups.length > 1 || !groups[0]?.mine);
+  // Unheaded, and its agents untagged, when it lists only the viewer's own
+  // agents, or only those a Send takes as its own (`own`: a LAN viewer's,
+  // the owner's), as on a single-owner install.
+  const pool = $derived(groups.length === 1 && agents.every(a => !a.live || !a.person || a.person.public_id === own));
+  const headed = $derived(groups.length > 1 || !(groups[0]?.mine || pool));
   let menu: HTMLElement | undefined = $state();
   // The button that opened it, which gets the focus back.
   const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -60,7 +64,7 @@
       {#if headed}<p class="send-group-h" aria-hidden="true">{g.label}</p>{/if}
       {#each g.agents as a (a.handle)}
         <button type="button" role="menuitemradio" aria-checked={a.handle === target} class="ghost" tabindex="-1" onclick={() => { onChoose(a.handle); close(); }}
-          ><span class="send-name">{a.name}</span>{#if a.person}{" "}<small class="send-person">{a.person}</small>{/if}{#if a.first}{" "}<small class="send-first">{a.first}</small>{/if}</button>
+          ><span class="send-name">{a.name}</span>{#if a.person && headed}{" "}<small class="send-person">{a.person}</small>{/if}{#if a.first}{" "}<small class="send-first">{a.first}</small>{/if}</button>
       {/each}
     </div>
   {/each}

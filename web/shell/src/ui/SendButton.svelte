@@ -34,7 +34,7 @@
     <button type="button" class="primary caret" aria-label="Choose the agent" aria-haspopup="menu" aria-expanded={open} onclick={() => { open = !open; }}>▾</button>
     {#if open}
       {#await import("./SendMenu.svelte") then { default: SendMenu }}
-        <SendMenu {agents} {names} {me} {aid} {threads} {target} {onChoose} onClose={() => { open = false; }} />
+        <SendMenu {agents} {names} {me} {own} {aid} {threads} {target} {onChoose} onClose={() => { open = false; }} />
       {/await}
     {/if}
   {/if}

@@ -254,6 +254,18 @@ describe("the Send target (spec 2026-10-08 §10, §11)", () => {
     expect(m.root.querySelector('[role="menu"] [role="menuitemradio"] .send-name')!.textContent).toBe("sam-notes");
   });
 
+  it("lists a LAN viewer's menu of the owner's agents alone unheaded and untagged, as on a single-owner install", async () => {
+    await import("./ui/SendMenu.svelte");
+    const other = { ...mine, handle: "a_cl", harness: "claude", name: "claude" };
+    const m = shell([unsent], LAN, { agents: [mine, other] }, { chooseTarget: vi.fn(), sendThread: vi.fn() });
+    flush(() => m.root.querySelector<HTMLButtonElement>('.thread-card [aria-label="Choose the agent"]')!.click());
+    await settle();
+    const menu = m.root.querySelector('[role="menu"]')!;
+    expect(menu.querySelectorAll(".send-group-h")).toHaveLength(0);
+    expect(menu.querySelectorAll(".send-person")).toHaveLength(0);
+    expect([...menu.querySelectorAll(".send-name")].map(n => n.textContent)).toEqual(["codex", "claude"]);
+  });
+
   it("heads a LAN viewer's menu with the owner's agents, then each person's, none of them yours", async () => {
     await import("./ui/SendMenu.svelte");
     const m = render([unsent], { me: LAN, agents: [sams, mine], sendTo: "a_cx" });
