@@ -1,0 +1,8 @@
+# Marks the workspace root as a package, so MODULE.bazel can name Cargo.toml
+# and Cargo.lock. The crates have their own BUILD files (docs/bazel.md).
+exports_files([
+    "Cargo.toml",
+    "Cargo.lock",
+    "clippy.toml",
+    "rust-toolchain.toml",
+])

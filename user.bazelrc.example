@@ -1,0 +1,14 @@
+# Copy to user.bazelrc (git-ignored) for this checkout only, or put the
+# lines in ~/.bazelrc so every worktree gets them: a new worktree has no
+# user.bazelrc of its own.
+
+# Hold builds to part of the machine (the default is all of it), for
+# instance while many worktrees build at once.
+# build --jobs=4
+# build --local_resources=cpu=4
+# test --test_env=RUST_TEST_THREADS=2
+# test --test_env=TOKIO_WORKER_THREADS=2
+
+# Keep the shared compile cache somewhere else. Its bound (80 GB, 7 days) is
+# for this repository and ../changelist together; .bazelrc states it.
+# build --disk_cache=/Volumes/scratch/bazel-disk
