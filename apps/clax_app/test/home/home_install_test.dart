@@ -138,4 +138,16 @@ void main() {
     expect(creates(), 0);
     expect((await settings()).homeAppId, isNull);
   });
+
+  test('a home.json that cannot be written leaves the settings in memory '
+      'unchanged', () async {
+    // The settings directory's place is taken by a file: the save fails.
+    final blocked = File('${tmp.path}/blocked')..writeAsStringSync('');
+    final s = await HomeSettings.load(Directory('${blocked.path}/support'));
+    await expectLater(
+      ensureHomeApp(s, installer, api, shipped: shipped),
+      throwsA(isA<FileSystemException>()),
+    );
+    expect(s.homeAppId, isNull);
+  });
 }

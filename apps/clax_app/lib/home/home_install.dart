@@ -134,8 +134,14 @@ Future<String> ensureHomeApp(
     TrustAnswer.foreign ||
     TrustAnswer.forked => await installer.install(opened),
   };
+  final was = settings.homeAppId;
   settings.homeAppId = aid;
-  await settings.save();
+  try {
+    await settings.save();
+  } on Object {
+    settings.homeAppId = was;
+    rethrow;
+  }
   return aid;
 }
 
