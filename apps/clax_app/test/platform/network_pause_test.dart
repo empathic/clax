@@ -1087,7 +1087,7 @@ void offlineTests() {
                 holds: TurnHolds(
                   pauseClock: ({since}) => c.pauses++,
                   resumeClock: () => c.resumes++,
-                  onCutAttempt: () => cutAttempts++,
+                  onCutAttempt: (_) => cutAttempts++,
                 ),
               ),
             )
@@ -1188,6 +1188,71 @@ void offlineTests() {
         reason: 'the cut turn left nothing in the history',
       );
       expect(events.whereType<ConnectionBack>(), hasLength(1));
+    });
+
+    test('each cut attempt that reached the API is priced, the first '
+        "turn's too, and a cap it reaches ends the run without sending the "
+        'turn again', () async {
+      reachable = true;
+      const files = {'index.html': '<p>runs</p>'};
+      final tb = Toolbox(
+        RunState(
+          ctx: RunContext(
+            kind: RequestKind.change,
+            artifactId: 'a1',
+            baseVersion: 3,
+            files: files,
+            cancelled: cancel.future,
+            clock: clock,
+          ),
+          draft: Draft(files: files, title: 'Runs', baseVersion: 3),
+          budget: RunBudget(
+            const RunCaps(
+              turns: 2,
+              renders: 4,
+              outputTokens: 48000,
+              costUsd: 1.5,
+              wallClock: Duration(seconds: 45),
+            ),
+            'claude-haiku-5-5',
+            clock,
+          ),
+          progress: events.add,
+        ),
+        [_Counted('finish', ends: true)],
+      );
+      final inner = _Turns([for (var i = 0; i < 10; i++) _Break()]);
+      RunOutcome? out;
+      unawaited(
+        MessagesApiRunner(
+              ResumingTurns(inner, p, clock: clock, connection: conn),
+            )
+            .run(
+              const RunInput(
+                system: 's',
+                first: [
+                  {'type': 'text', 'text': 'u'},
+                ],
+              ),
+              tb,
+            )
+            .then((o) => out = o),
+      );
+      for (var i = 0; i < 10; i++) {
+        clock.advance(ApiConnection.maxProbe);
+        await pumpEventQueue();
+      }
+      expect(inner.seen, hasLength(2), reason: 'not sent past the turn cap');
+      expect(
+        out,
+        isA<RunGaveUp>().having((o) => o.reason, 'reason', '2 turns'),
+      );
+      expect(tb.state.budget.turns, 2);
+      expect(tb.state.budget.costUsd, greaterThan(0));
+      expect(
+        tb.state.budget.usage.output,
+        2 * MessagesApiRunner.tokensPerEvent,
+      );
     });
   });
 }

@@ -116,8 +116,9 @@ class TurnHolds {
   final void Function(bool waiting)? onConnection;
 
   /// Called for each cut attempt that reached the API (it was billed),
-  /// before the turn is sent again.
-  final void Function()? onCutAttempt;
+  /// with how many server-sent events its stream sent, before the turn is
+  /// sent again.
+  final void Function(int events)? onCutAttempt;
 }
 
 /// One model attempt of a turn and what it spent: a turn has more than one

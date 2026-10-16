@@ -281,7 +281,7 @@ class ResumingTurns implements TurnBackend {
       } finally {
         watch.stop();
       }
-      if (watch.sawActivity) holds.onCutAttempt?.call();
+      if (watch.events > 0) holds.onCutAttempt?.call(watch.events);
       if (offline) {
         cuts++;
         final nudge = cuts > maxOfflineResends;
@@ -370,11 +370,12 @@ class _StallWatch {
   /// Whether the stall was found by a failed connection probe in front.
   var offline = false;
 
-  /// Whether the attempt's stream sent an event: it reached the API.
-  var sawActivity = false;
+  /// How many events the attempt's stream sent; any means it reached the
+  /// API.
+  var events = 0;
 
   void activity() {
-    sawActivity = true;
+    events++;
     _last = owner.clock.now();
     _leaves = owner.presence.leaves;
   }
