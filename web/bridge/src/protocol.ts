@@ -75,9 +75,9 @@ export type ShellToBridge =
    * new document (Back or Forward across the page's own fragments). */
   | { type: "clax:greet" }
   /** After a welcome with `app: true`: return to the page's route at
-   * `depth` (below the one it shows, as its `clax:route` reported) in place,
-   * replacing its history entry, with a `popstate` the page's router
-   * follows. */
+   * `depth` (below the one it shows, as its `clax:route` reported), back
+   * through the page's own entries, or in place once a fragment entry lies
+   * among them (`routes.ts`), with a `popstate` the page's router follows. */
   | { type: "clax:back"; depth: number }
   /** `sameVersion`: the thread was made on the version the frame shows (an
    * area's element fingerprint is then not checked: its content may be live). */

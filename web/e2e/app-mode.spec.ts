@@ -330,7 +330,7 @@ test("back() moves through the app's own fragments and pages in place, and acros
   await expect.poll(back).toBe(false);
 });
 
-test("back() returns a page that routes with pushState to its routes before, in place, and follows the page's own back", async ({ page }) => {
+test("back() takes a page that routes with pushState back through its routes, follows the page's own back, and the page's own back goes on from the app's", async ({ page }) => {
   const ROUTER = `<!doctype html><title>R</title><h1 id=view></h1><button id=go>next</button><button id=own>own back</button><script>
 const show = () => { document.getElementById("view").textContent = location.pathname.split("/").filter(Boolean).at(-1) + ":" + JSON.stringify(history.state); };
 let n = 0;
@@ -366,10 +366,16 @@ show();
   // The shell hears where the page went before the app's back.
   await expect.poll(() => page.evaluate(() => (window as unknown as { claxMsgs: { type: string; depth?: number }[] }).claxMsgs.filter(m => m.type === "clax:route").at(-1)?.depth)).toBe(2);
   await expect(view).toHaveText(top!);
-  // The app's back: the route before, in place, with its state.
+  // The app's back: the route before, with its state.
   await host(page, "back()");
   await expect(view).not.toHaveText(top!);
   await expect(view).toHaveText(/^run-\d+:\{"n":\d+\}$/);
+  // The page's own back after the app's: one press reaches the route below.
+  await f.locator("#own").click();
+  await expect(view).toHaveText(start!);
+  await expect.poll(back).toBe(false);
+  await f.locator("#go").click();
+  await expect.poll(back).toBe(true);
   // Back to where the page loaded, then out of the app.
   for (let i = 0; i < 10 && await back(); i++) await host(page, "back()");
   await expect(view).toHaveText(start!);

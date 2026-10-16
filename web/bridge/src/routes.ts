@@ -1,12 +1,15 @@
 // The page's own `history.pushState` routes, for the app shell's back: each
 // push the page makes, and each move of its own back or forward among them,
 // is reported as the route's depth (`clax:route`), the number of the page's
-// pushes above the entry it was loaded at. The shell's `clax:back`
-// returns the page to the route at a lower depth in place, as the shell's own
-// back does: the entry is replaced with that route's URL and state, and the
-// page hears a `popstate`, which its router follows. Loaded with the caps
-// part on the app shell's welcome, so a page outside the app loads none of
-// it.
+// pushes above the entry it was loaded at. The shell's `clax:back` takes the
+// page to the route at a lower depth: back through its own entries
+// (`history.go`), so its own back and forward go on from there, while the
+// page's entries since it loaded are its routes' alone. Once a fragment
+// entry lies among them (a `hashchange` to no route), the count of entries
+// is unknown, and the move is made in place, as the shell's own back is: the
+// entry is replaced with that route's URL and state, and the page hears a
+// `popstate`, which its router follows. Loaded with the caps part on the app
+// shell's welcome, so a page outside the app loads none of it.
 
 export type RouteReport = { type: "clax:route"; depth: number; hash: string };
 
@@ -14,7 +17,7 @@ export type RouteReport = { type: "clax:route"; depth: number; hash: string };
 type Route = { href: string; state: unknown };
 
 export type Routes = {
-  /** Returns the page to the route at `depth`, below the one it shows. */
+  /** Takes the page to the route at `depth`, below the one it shows. */
   back(depth: number): void;
 };
 
@@ -22,14 +25,23 @@ export type Routes = {
 export function appRoutes(win: Window, post: (m: RouteReport) => void): Routes {
   const h = win.history;
   const routes: Route[] = [{ href: win.location.href, state: h.state }];
+  // The route the frame's entry shows.
   let depth = 0;
+  // Whether the page's entries since it loaded are its routes' alone.
+  let plain = true;
+  // The shell's back under way: the route its `history.go` lands on, and
+  // the one the shell last asked for.
+  let landing: number | null = null;
+  let target = 0;
   const report = () => post({ type: "clax:route", depth, hash: win.location.hash });
   const push = h.pushState.bind(h);
   const replace = h.replaceState.bind(h);
+  const go = () => { landing = target; h.go(target - depth); };
   h.pushState = (state: unknown, unused: string, url?: string | URL | null) => {
     push(state, unused, url);
     routes.splice(depth + 1, routes.length, { href: win.location.href, state });
     depth++;
+    landing = null;
     report();
   };
   h.replaceState = (state: unknown, unused: string, url?: string | URL | null) => {
@@ -40,6 +52,12 @@ export function appRoutes(win: Window, post: (m: RouteReport) => void): Routes {
   // one it showed with this URL. A fragment's own entry is none of them (the
   // bridge's `clax:hash` reports it).
   win.addEventListener("popstate", () => {
+    if (landing !== null) {
+      depth = landing;
+      landing = null;
+      if (target < depth) go();
+      return;
+    }
     const href = win.location.href;
     let at = -1;
     for (let d = 0; d < routes.length; d++) {
@@ -49,9 +67,15 @@ export function appRoutes(win: Window, post: (m: RouteReport) => void): Routes {
     depth = at;
     report();
   });
+  win.addEventListener("hashchange", () => {
+    if (win.location.href !== routes[depth].href) plain = false;
+  });
   return {
     back(to: number) {
-      if (!Number.isInteger(to) || to < 0 || to >= depth) return;
+      if (!Number.isInteger(to) || to < 0 || to >= (landing ?? depth)) return;
+      target = to;
+      if (landing !== null) return;
+      if (plain) return go();
       const r = routes[to];
       depth = to;
       replace(r.state, "", r.href);
