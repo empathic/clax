@@ -69,35 +69,40 @@ void main() {
   });
   tearDown(() => dir.deleteSync(recursive: true));
 
-  AppServices services({HomeSnapshot? snapshot}) => AppServices(
-    supervisor: supervisor,
-    api: (_) => api,
-    backend: (s, k) => HeldBackend([], name: backendMessagesApi),
-    voice: FakeVoice.unsupported('No speech here'),
-    settings: SettingsStore(File('${dir.path}/settings.json')),
-    key: _Key(),
-    timings: timings,
-    agentTimings: RecordingTimings(),
-    surface: (_) {
-      final s = FakeAppSurface();
-      surfaces.add(s);
-      return s;
-    },
-    installId: 'install',
-    supportDir: dir.path,
-    prompts: PromptBuilder(rootBundle),
-    homeSnapshot: snapshot,
-    pid: 42,
-  );
+  AppServices services({HomeSnapshot? snapshot, HomeSnapshotStore? store}) =>
+      AppServices(
+        supervisor: supervisor,
+        api: (_) => api,
+        backend: (s, k) => HeldBackend([], name: backendMessagesApi),
+        voice: FakeVoice.unsupported('No speech here'),
+        settings: SettingsStore(File('${dir.path}/settings.json')),
+        key: _Key(),
+        timings: timings,
+        agentTimings: RecordingTimings(),
+        surface: (_) {
+          final s = FakeAppSurface();
+          surfaces.add(s);
+          return s;
+        },
+        installId: 'install',
+        supportDir: dir.path,
+        prompts: PromptBuilder(rootBundle),
+        homeSnapshot: snapshot,
+        homeSnapshots: store,
+        pid: 42,
+      );
 
   Future<void> recordHome(WidgetTester tester) => tester.runAsync(
     () => (HomeSettings.loadSync(Directory(dir.path))..homeAppId = home).save(),
   );
 
   /// Starts the app with [home] as its home app, up and ready.
-  Future<FakeAppSurface> start(WidgetTester tester) async {
+  Future<FakeAppSurface> start(
+    WidgetTester tester, {
+    HomeSnapshotStore? store,
+  }) async {
     await recordHome(tester);
-    await tester.pumpWidget(AppRoot(services: services()));
+    await tester.pumpWidget(AppRoot(services: services(store: store)));
     supervisor.set(Up(endpoint()));
     await _settle(tester);
     final page = surfaces.single;
@@ -173,6 +178,7 @@ void main() {
       ..start(homeUsable);
     final snapshot = HomeSnapshot(
       aid: home,
+      version: 1,
       png: Uint8List(0),
       width: 800,
       height: 600,
@@ -216,6 +222,104 @@ void main() {
     );
     await _settle(tester);
     expect(timings.stopped.where((r) => r.name == homeUsable), isEmpty);
+    await _finish(tester);
+  });
+
+  HomeSnapshot kept({int version = 1, DateTime? at}) => HomeSnapshot(
+    aid: home,
+    version: version,
+    png: Uint8List(0),
+    width: 800,
+    height: 600,
+    tiles: const [],
+    at: at ?? DateTime.now(),
+  );
+
+  testWidgets('a snapshot older than a week is not shown, and is cleared', (
+    tester,
+  ) async {
+    await recordHome(tester);
+    final store = HomeSnapshotStore(Directory('${dir.path}/cache'));
+    final old = kept(at: DateTime.now().subtract(const Duration(days: 8)));
+    await tester.runAsync(() => store.save(old));
+    await tester.pumpWidget(
+      AppRoot(
+        services: services(snapshot: old, store: store),
+      ),
+    );
+    expect(find.byKey(const ValueKey('launch-snapshot')), findsNothing);
+    await tester.runAsync(() async {
+      expect(await store.load(decode: false), isNull);
+    });
+    await _finish(tester);
+  });
+
+  testWidgets('a page of another version than the snapshot takes it away '
+      'and clears it', (tester) async {
+    await recordHome(tester);
+    final store = HomeSnapshotStore(Directory('${dir.path}/cache'));
+    final snapshot = kept(version: 1);
+    await tester.runAsync(() => store.save(snapshot));
+    await tester.pumpWidget(
+      AppRoot(
+        services: services(snapshot: snapshot, store: store),
+      ),
+    );
+    supervisor.set(Up(endpoint()));
+    await _settle(tester);
+    expect(find.byKey(const ValueKey('home-snapshot-cover')), findsOneWidget);
+    surfaces.single.push(
+      Ready(artifact: home, version: 2, latest: 2, file: 'index.html'),
+    );
+    await _settle(tester);
+    expect(find.byKey(const ValueKey('home-snapshot-cover')), findsNothing);
+    await tester.runAsync(() async {
+      await Future<void>.delayed(Duration.zero);
+      expect(await store.load(decode: false), isNull);
+    });
+    await _finish(tester);
+  });
+
+  testWidgets('choosing the built-in home screen clears the snapshot', (
+    tester,
+  ) async {
+    final store = HomeSnapshotStore(Directory('${dir.path}/cache'));
+    await tester.runAsync(() => store.save(kept()));
+    final page = await start(tester, store: store);
+    page.push(
+      const DeviceRequest(
+        id: 'r2',
+        cap: 'home',
+        method: 'openSettings',
+        args: [],
+      ),
+    );
+    await _settle(tester);
+    await tester.scrollUntilVisible(
+      find.text('Use the built-in home screen'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    final toggle = find.widgetWithText(
+      SwitchListTile,
+      'Use the built-in home screen',
+    );
+    await tester.ensureVisible(toggle);
+    await tester.pumpAndSettle();
+    await tester.tap(toggle);
+    await _settle(tester);
+    expect(
+      tester
+          .widget<SwitchListTile>(
+            find.widgetWithText(SwitchListTile, 'Use the built-in home screen'),
+          )
+          .value,
+      isTrue,
+    );
+    await tester.runAsync(() async {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(await store.load(decode: false), isNull);
+    });
     await _finish(tester);
   });
 }

@@ -64,12 +64,13 @@ class HomeTile {
   int get hashCode => Object.hash(id, rect);
 }
 
-/// Home app [aid]'s page as it showed at [at]: [png], of a view [width] by
-/// [height] logical pixels, with its app [tiles] where they were. [image]
-/// is [png] decoded, once [HomeSnapshotStore.load] has.
+/// Home app [aid]'s page at [version] as it showed at [at]: [png], of a
+/// view [width] by [height] logical pixels, with its app [tiles] where
+/// they were. [image] is [png] decoded, once [HomeSnapshotStore.load] has.
 class HomeSnapshot {
   const HomeSnapshot({
     required this.aid,
+    required this.version,
     required this.png,
     required this.width,
     required this.height,
@@ -79,11 +80,18 @@ class HomeSnapshot {
   });
 
   final String aid;
+  final int version;
   final Uint8List png;
   final double width, height;
   final List<HomeTile> tiles;
   final DateTime at;
   final ui.Image? image;
+
+  /// The oldest a snapshot may be and still show.
+  static const maxAge = Duration(days: 7);
+
+  /// Whether it may still show at [now].
+  bool freshAt(DateTime now) => now.difference(at) <= maxAge;
 
   /// The app whose tile holds [p] (in the snapshot's logical pixels), or
   /// null when no tile does.
@@ -96,8 +104,8 @@ class HomeSnapshot {
 }
 
 /// Keeps one [HomeSnapshot] in [dir] (the app's cache directory), as one
-/// file `home-snapshot.bin`: a line of JSON (`aid`, `width`, `height`,
-/// `tiles`, `at`), then the PNG. It is written whole to a temporary file
+/// file `home-snapshot.bin`: a line of JSON (`aid`, `version`, `width`,
+/// `height`, `tiles`, `at`), then the PNG. It is written whole to a temporary file
 /// and renamed over the last one, so a load sees one snapshot or the
 /// other. A file that cannot be read whole is no snapshot.
 class HomeSnapshotStore {
@@ -120,6 +128,7 @@ class HomeSnapshotStore {
     final head = utf8.encode(
       jsonEncode({
         'aid': s.aid,
+        'version': s.version,
         'width': s.width,
         'height': s.height,
         'tiles': [for (final t in s.tiles) t.toJson()],
@@ -163,6 +172,7 @@ class HomeSnapshotStore {
       codec.dispose();
       return HomeSnapshot(
         aid: s.aid,
+        version: s.version,
         png: s.png,
         width: s.width,
         height: s.height,
@@ -185,6 +195,7 @@ class HomeSnapshotStore {
       if (j
           case {
             'aid': final String aid,
+            'version': final int version,
             'width': final num width,
             'height': final num height,
             'tiles': final List<Object?> tiles,
@@ -196,6 +207,7 @@ class HomeSnapshotStore {
         if (parsed.contains(null)) return null;
         return HomeSnapshot(
           aid: aid,
+          version: version,
           png: Uint8List.sublistView(bytes, nl + 1),
           width: width.toDouble(),
           height: height.toDouble(),
@@ -210,9 +222,14 @@ class HomeSnapshotStore {
   }
 }
 
-/// What [HomeSnapshotter.capture] gives: the home app [aid]'s page as
-/// [shot], with its app [tiles] at that time.
-typedef HomeCapture = ({SurfaceShot shot, String aid, List<HomeTile> tiles});
+/// What [HomeSnapshotter.capture] gives: the home app [aid]'s page at
+/// [version] as [shot], with its app [tiles] at that time.
+typedef HomeCapture = ({
+  SurfaceShot shot,
+  String aid,
+  int version,
+  List<HomeTile> tiles,
+});
 
 /// Takes and keeps the home screen's snapshot: [capture] gives the home
 /// app's page as it shows, with the app it belongs to and its tiles (null
@@ -227,6 +244,10 @@ typedef HomeCapture = ({SurfaceShot shot, String aid, List<HomeTile> tiles});
 /// - when the home screen is covered or put in the background ([take]).
 /// A scroll or a re-render alone takes none. Takes run one at a time.
 ///
+/// The kept snapshot is cleared ([clear]) when the home app's page loads
+/// another version than it shows ([loaded]); `kept` is the version of the
+/// one kept at launch.
+///
 /// A snapshot keeps the tiles of the very render it shows: none is taken
 /// within [quiet] of the page's last load or tile report, and one whose
 /// [mark] (the page's loads and tile reports) changed while the image was
@@ -240,6 +261,7 @@ class HomeSnapshotter {
     this.clock = const SystemClock(),
     this.settle = const Duration(seconds: 3),
     this.quiet = const Duration(milliseconds: 500),
+    this._kept,
   });
 
   final HomeSnapshotStore store;
@@ -254,6 +276,7 @@ class HomeSnapshotter {
   static Object? _none() => null;
 
   DateTime? _changed;
+  int? _kept;
   var _dirty = true;
   var _seq = 0;
   Future<void> _last = Future.value();
@@ -264,8 +287,22 @@ class HomeSnapshotter {
     _dirty = true;
   }
 
-  /// The page loaded a document.
-  void loaded() => _change();
+  /// The page loaded a document, of the home app's [version] when known.
+  void loaded({int? version}) {
+    _change();
+    final kept = _kept;
+    if (version != null && kept != null && kept != version) {
+      unawaited(clear());
+    }
+  }
+
+  /// Forgets the kept snapshot (after any take in progress).
+  Future<void> clear() {
+    _kept = null;
+    _dirty = true;
+    final next = _last = _last.then((_) => store.clear());
+    return next;
+  }
 
   /// The page reported its tiles anew (a render or a scroll moved them).
   void tilesChanged() => _change();
@@ -302,6 +339,7 @@ class HomeSnapshotter {
       await store.save(
         HomeSnapshot(
           aid: c.aid,
+          version: c.version,
           png: c.shot.png,
           width: c.shot.width,
           height: c.shot.height,
@@ -309,6 +347,7 @@ class HomeSnapshotter {
           at: clock.now(),
         ),
       );
+      _kept = c.version;
       if (mark() == before) _dirty = false;
     } on Object catch (e) {
       debugPrint('clax home: no snapshot: $e');

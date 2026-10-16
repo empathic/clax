@@ -642,7 +642,12 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     final s = _s.homeSnapshot;
     if (s == null) return null;
     final settings = HomeSettings.loadSync(Directory(_s.supportDir));
-    if (settings.builtin || settings.homeAppId != s.aid) return null;
+    if (settings.builtin ||
+        settings.homeAppId != s.aid ||
+        !s.freshAt(_s.clock.now())) {
+      unawaited(_s.homeSnapshots?.clear());
+      return null;
+    }
     return HomeSnapshotCover(s, clock: _s.clock);
   }();
 
@@ -658,6 +663,12 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   StreamSubscription<String>? _homeShown;
   StreamSubscription<Object?>? _homeTiles;
   StreamSubscription<HostMessage>? _homePage;
+
+  /// The version of the home app's page last loaded.
+  int? _homeVersion;
+
+  /// Whether the built-in home screen was chosen when last looked at.
+  var _builtinChosen = false;
 
   /// Whether this launch may still end in the home app's first `shown`
   /// ([homeUsable]): not once the built-in home screen or the daemon's
@@ -1181,6 +1192,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
               cwd: _s.supportDir,
             ),
           );
+          // An Undo or Reset landed: the kept snapshot shows another page.
+          _homeRecovery!.addListener(() => unawaited(_snapshotter?.clear()));
         }
         if (_questionQueue.isNotEmpty) unawaited(_recheckThenNext());
         if (_pendingOpen case (:final aid, :final action)?) {
@@ -2059,6 +2072,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         clock: _s.clock,
         inFront: () => _homeInFront,
         mark: () => host.renderMark,
+        kept: _homeCover?.snapshot.version,
         capture: () async {
           final aid = host.settings.homeAppId;
           final surface = _homeSurface;
@@ -2071,11 +2085,20 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           }
           final shot = await (surface as CapturableSurface).capture();
           final tiles = host.tiles;
-          if (shot == null || tiles == null) return null;
-          return (shot: shot, aid: aid, tiles: tiles);
+          final version = _homeVersion;
+          if (shot == null || tiles == null || version == null) return null;
+          return (shot: shot, aid: aid, version: version, tiles: tiles);
         },
       );
       _homeTiles = host.tileReports.listen((_) => snapshotter.tilesChanged());
+      // The built-in home screen chosen, Undo and Reset: the kept snapshot
+      // no longer shows what the next start shows.
+      _builtinChosen = host.settings.builtin;
+      host.addListener(() {
+        final builtin = host.settings.builtin;
+        if (builtin && !_builtinChosen) unawaited(snapshotter.clear());
+        _builtinChosen = builtin;
+      });
     }
   }
 
@@ -2084,9 +2107,13 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   AppSurface _watchHomePage(String aid, AppSurface surface) {
     unawaited(_homePage?.cancel());
     _homePage = surface.messages.listen((m) {
-      if (m case Ready(:final artifact) when artifact == aid) {
+      if (m case Ready(:final artifact, :final version) when artifact == aid) {
+        _homeVersion = version;
         _homeHost?.pageLoaded();
-        _snapshotter?.loaded();
+        _snapshotter?.loaded(version: version);
+        // A snapshot of another version does not stand for this page.
+        final cover = _homeCover;
+        if (cover != null && cover.snapshot.version != version) cover.drop();
       }
     });
     return surface;
