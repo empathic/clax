@@ -97,6 +97,26 @@ def expect(cond, what):
         raise SetupError(what)
 
 
+COOKIE_RE = r"clax_viewer=([0-9A-Za-z_-]+)"
+
+
+def viewer_cookie(c, what):
+    """A new LAN viewer's cookie from `GET /api/viewers/me`, checked to name
+    that viewer: the same viewer again and no new cookie when presented. A
+    cookie read short (a `cxv_` secret cut at its `_`) names no one, and the
+    daemon would answer it with a new viewer; the seed then fails here
+    instead of measuring an anonymous caller."""
+    st, d, _, r = c.req("GET", "/api/viewers/me", auth=False)
+    m = re.search(COOKIE_RE, r.getheader("Set-Cookie") or "")
+    expect(st == 200 and m, f"{what}: no viewer cookie from /api/viewers/me ({st})")
+    cookie = m.group(1)
+    public = json.loads(d)["viewer"]["public_id"]
+    st, d2, _, r2 = c.req("GET", "/api/viewers/me", None, {"Cookie": "clax_viewer=" + cookie}, auth=False)
+    expect(st == 200 and not r2.getheader("Set-Cookie") and json.loads(d2)["viewer"]["public_id"] == public,
+           f"{what}: the viewer cookie {cookie[:8]}... does not name its viewer ({st})")
+    return cookie
+
+
 def raise_nofile(want):
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
     target = want if hard == resource.RLIM_INFINITY else min(want, hard)
@@ -263,10 +283,7 @@ def multipart(fields):
 
 def seed(d, n_artifacts, n_hot):
     c = Client(d.port, d.token)
-    st, _, _, r = c.req("GET", "/api/viewers/me", auth=False)
-    m = re.search(r"clax_viewer=([0-9A-Za-z]+)", r.getheader("Set-Cookie") or "")
-    expect(st == 200 and m, f"no viewer cookie from /api/viewers/me ({st})")
-    cookie = {"Cookie": "clax_viewer=" + m.group(1)}
+    cookie = {"Cookie": "clax_viewer=" + viewer_cookie(c, "seed")}
     st, _, _, _ = c.req("PUT", "/api/viewers/me", {"display_name": "Perf"}, cookie, auth=False)
     expect(st == 200, f"naming the viewer: {st}")
     aids = []
