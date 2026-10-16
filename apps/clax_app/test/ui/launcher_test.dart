@@ -1065,12 +1065,17 @@ void main() {
         'version', (tester) async {
       final api = _api();
       final aid = api.seedArtifact('Runs', {..._page, 'icon.svg': icon});
-      api.failNext(
-        'readFile',
-        const ClaxApiError(status: 0, code: 'timeout', message: ''),
-      );
+      // The home host asks for the live version's icon on each list, and
+      // the tile asks again once built: both reads fail.
+      for (var i = 0; i < 2; i++) {
+        api.failNext(
+          'readFile',
+          const ClaxApiError(status: 0, code: 'timeout', message: ''),
+        );
+      }
       await pumpWith(tester, api, AppIcons(api));
       expect(shown(tester, 'Runs'), isNull);
+      expect(api.callNames.where((n) => n == 'readFile'), hasLength(2));
       api.seedVersion(aid, {..._page, 'icon.svg': icon});
       api.emit(ClaxEvent(type: 'version', data: {'artifact_id': aid, 'n': 2}));
       await tester.pumpAndSettle();

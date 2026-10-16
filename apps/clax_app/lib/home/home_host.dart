@@ -168,6 +168,7 @@ class HomeHost extends ChangeNotifier {
   }) {
     makes.addListener(_onMakes);
     icons?.addListener(_onIcons);
+    if (icons case final i?) unawaited(i.preload());
     _events = stream.events.listen(_onEvent, onError: (Object _) {});
     if (builds case final b?) {
       _builds = b.control.builds.listen(_onBuild, onError: (Object _) {});
@@ -185,7 +186,9 @@ class HomeHost extends ChangeNotifier {
   final HomeSettings settings;
   final HomeActions actions;
 
-  /// The apps' icons, for `{url}` faces; null gives none.
+  /// The apps' icons, for `{url}` faces; null gives none. Each listed
+  /// app's icon at its live version is asked for whenever the list
+  /// changes ([AppIcons.want] reads each version once).
   final AppIcons? icons;
 
   /// Waits between tries to subscribe a dropped topic again;
@@ -583,6 +586,7 @@ class HomeHost extends ChangeNotifier {
       _summaries = _newestFirst(apps);
       _loadError = null;
       _syncPlans();
+      _wantIcons();
       _changed();
     } catch (e) {
       if (_dead || n != _loads) return;
@@ -648,9 +652,19 @@ class HomeHost extends ChangeNotifier {
         ...?_summaries?.where((a) => a.id != aid),
       ]);
       _syncPlans();
+      _wantIcons();
       _changed();
     } catch (_) {
       // Deleted again, or the daemon is restarting; the next load catches up.
+    }
+  }
+
+  /// Asks [icons] for each listed app's icon at its live version.
+  void _wantIcons() {
+    final i = icons;
+    if (i == null) return;
+    for (final a in summaries ?? const <ArtifactSummary>[]) {
+      unawaited(i.want(a.id, a.currentVersion));
     }
   }
 
