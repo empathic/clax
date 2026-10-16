@@ -5,7 +5,7 @@
 #
 # Usage: scripts/check-bazel-no-hard-links.sh OUTPUT_BASE DISK_CACHE
 set -euo pipefail
-found="$(find "$@" -type f -links +1 2>/dev/null | head -20 || true)"
+found="$(find "$@" -type f -links +1 2>/dev/null | sed -n 1,20p || true)"
 if [ -n "$found" ]; then
     echo "error: files with more than one link (hard links) under Bazel's directories:" >&2
     printf '  %s\n' "$found" >&2

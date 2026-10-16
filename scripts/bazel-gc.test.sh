@@ -157,19 +157,19 @@ n="$(find "$other/cas" -type f | wc -l | tr -d ' ')"
 _bazelrc .bazelrc 80G 7d
 _bazelrc ../changelist/.bazelrc 20G 7d
 out="$(BAZEL_DISK_CACHE="$other" ./scripts/bazel-gc.sh --dry-run 2>&1)"
-if echo "$out" | grep -q "warning: the shared cache has two bounds" && echo "$out" | grep -q 80G &&
-    echo "$out" | grep -q 20G && echo "$out" | grep -q changelist/.bazelrc; then
+if echo "$out" | grep "warning: the shared cache has two bounds" >/dev/null && echo "$out" | grep 80G >/dev/null &&
+    echo "$out" | grep 20G >/dev/null && echo "$out" | grep changelist/.bazelrc >/dev/null; then
     _ok "another bound in changelist's .bazelrc is warned about, naming both"
 else
     _fail "no warning about changelist's bound: $out"
 fi
 _bazelrc ../changelist/.bazelrc 80G 7d
 out="$(BAZEL_DISK_CACHE="$other" ./scripts/bazel-gc.sh --dry-run 2>&1)"
-echo "$out" | grep -q "two bounds" && _fail "a warning with the same bound" || _ok "the same bound in both, no warning"
+echo "$out" | grep "two bounds" >/dev/null && _fail "a warning with the same bound" || _ok "the same bound in both, no warning"
 
 # 8. --report prints the sizes.
 out="$(BAZEL_DISK_CACHE="$other" ./scripts/bazel-gc.sh --dry-run --report 2>&1)"
-echo "$out" | grep -q "^report: cache $other" && _ok "--report prints the cache's size" || _fail "--report: $out"
+echo "$out" | grep "^report: cache $other" >/dev/null && _ok "--report prints the cache's size" || _fail "--report: $out"
 
 if [ "$fails" -gt 0 ]; then
     echo "bazel-gc tests: $fails failed" >&2
