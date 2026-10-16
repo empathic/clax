@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# `just dev [claude|codex|grok|pi] [harness arguments...]`: builds clax, copies
+# `just dev [claude|codex|grok|pi] [harness arguments...]`: builds clax (with
+# Bazel when it is installed: scripts/run.sh bin), copies
 # it to a temporary directory (removed on exit) that it names in CLAX_BIN, which
 # the plugins run ahead of anything else, and puts first on PATH; it starts
 # the harness on the dev home ($CLAX_HOME, else ~/.clax-dev, whose daemon
@@ -45,9 +46,9 @@ command -v "$harness" >/dev/null 2>&1 || { echo "clax dev: $harness is not on PA
 if [ -n "${CLAX_DEV_BIN:-}" ]; then
     bin="$CLAX_DEV_BIN"
 else
-    [ -f web/dist/index.html ] || (cd web && pnpm install --frozen-lockfile --silent && pnpm run build)
-    cargo build -q -p clax-cli --bin clax
-    bin=target/debug/clax
+    # Bazel's debug clax when Bazel is installed (it embeds the web UI),
+    # else Cargo's (scripts/run.sh bin).
+    bin="$(scripts/run.sh bin)"
 fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT

@@ -33,9 +33,15 @@ plugin-test:
 fmt:
     cargo fmt --all
 
-# Install clax from this checkout into $CARGO_HOME/bin (~/.cargo/bin), stop the agents' daemon if it runs that binary (the next agent call starts the new build), register the plugins with each harness found, and point the plugins at that binary (clax init sets the bin setting)
-install: web-native
-    cargo install --locked --root "${CARGO_HOME:-$HOME/.cargo}" --path crates/clax-cli
+# Install clax from this checkout into $CARGO_HOME/bin (~/.cargo/bin), built with Bazel (natively without it), stop the agents' daemon if it runs that binary (the next agent call starts the new build), register the plugins with each harness found, and point the plugins at that binary (clax init sets the bin setting)
+install:
+    ./scripts/run.sh install
+    . scripts/dev-home.sh && stop_installed_daemon "${CLAX_HOME:-$HOME/.clax}" "${CARGO_HOME:-$HOME/.cargo}/bin/clax"
+    "${CARGO_HOME:-$HOME/.cargo}/bin/clax" init
+
+# Install clax from this checkout, built natively (Cargo and pnpm)
+install-native:
+    CLAX_BUILD=native ./scripts/run.sh install
     . scripts/dev-home.sh && stop_installed_daemon "${CLAX_HOME:-$HOME/.clax}" "${CARGO_HOME:-$HOME/.cargo}/bin/clax"
     "${CARGO_HOME:-$HOME/.cargo}/bin/clax" init
 
@@ -43,19 +49,20 @@ install: web-native
 uninstall:
     -"${CARGO_HOME:-$HOME/.cargo}/bin/clax" uninit
     -. scripts/dev-home.sh && stop_installed_daemon "${CLAX_HOME:-$HOME/.clax}" "${CARGO_HOME:-$HOME/.cargo}/bin/clax"
-    -cargo uninstall --root "${CARGO_HOME:-$HOME/.cargo}" clax-cli
+    -cargo uninstall --root "${CARGO_HOME:-$HOME/.cargo}" clax-cli 2>/dev/null
+    rm -f "${CARGO_HOME:-$HOME/.cargo}/bin/clax"
 
 # Run the dev daemon in the foreground on ~/.clax-dev, port 7481 (extra args go to `clax serve`)
 serve *ARGS:
-    CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" cargo run -p clax-cli -- serve --foreground --port 7481 {{ARGS}}
+    CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" ./scripts/run.sh clax serve --foreground --port 7481 {{ARGS}}
 
 # Stop the dev daemon (~/.clax-dev)
 stop:
-    CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" cargo run -q -p clax-cli -- stop
+    CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" ./scripts/run.sh clax stop
 
 # Check the dev home and its daemon (~/.clax-dev)
 doctor:
-    CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" cargo run -q -p clax-cli -- doctor
+    CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" ./scripts/run.sh clax doctor
 
 # Try rooms and sample() in a scratch daemon (the stub provider unless ANTHROPIC_API_KEY is set)
 demo-room-sample:
@@ -69,6 +76,10 @@ clean:
 # Checks and builds run with Bazel when Bazelisk is installed and natively
 # otherwise (scripts/run.sh says which); each has a `-native` twin. See
 # docs/bazel.md.
+
+# Write rust-project.json from Bazel, so rust-analyzer needs no Cargo build (docs/bazel.md, "rust-analyzer")
+rust-project:
+    ./scripts/run.sh rust-project
 
 # Build clax (Bazel), or the Rust workspace (native)
 build *ARGS:
