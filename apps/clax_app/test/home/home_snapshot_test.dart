@@ -84,8 +84,10 @@ void main() {
     ui.Image? image,
     double width = 800,
     double height = 600,
+    int version = 1,
   }) => HomeSnapshot(
     aid: aid,
+    version: version,
     png: png,
     width: width,
     height: height,
@@ -138,6 +140,15 @@ void main() {
       expect(await store.load(decode: false), isNull);
       file.writeAsBytesSync([...'{"aid":3}'.codeUnits, 0x0a, 1, 2]);
       expect(await store.load(decode: false), isNull);
+      // A snapshot written before snapshots said their version.
+      file.writeAsBytesSync([
+        ...'{"aid":"h","width":1,"height":1,"tiles":[],"at":"2026-10-16T00:00:00Z","bytes":2}'
+            .codeUnits,
+        0x0a,
+        1,
+        2,
+      ]);
+      expect(await store.load(decode: false), isNull);
     });
 
     testWidgets('a file whose image cannot be decoded is no snapshot', (
@@ -167,7 +178,9 @@ void main() {
       capture: () async {
         captures++;
         final s = shot;
-        return s == null ? null : (shot: s, aid: 'home1', tiles: tiles);
+        return s == null
+            ? null
+            : (shot: s, aid: 'home1', version: 1, tiles: tiles);
       },
     );
 
@@ -234,7 +247,7 @@ void main() {
         capture: () async {
           captures++;
           mark++;
-          return (shot: shot!, aid: 'home1', tiles: tiles);
+          return (shot: shot!, aid: 'home1', version: 1, tiles: tiles);
         },
       );
       await s.take();
@@ -246,7 +259,7 @@ void main() {
         clock: clock,
         capture: () async {
           captures++;
-          return (shot: shot!, aid: 'home1', tiles: tiles);
+          return (shot: shot!, aid: 'home1', version: 1, tiles: tiles);
         },
       );
       quiet.loaded();
@@ -256,6 +269,31 @@ void main() {
       await quiet.take();
       expect(captures, 2);
       expect(await store.load(decode: false), isNotNull);
+    });
+
+    test(
+      'a page of another version than the kept snapshot clears it',
+      () async {
+        await store.save(snap('home1', Uint8List.fromList([1])));
+        final s = HomeSnapshotter(
+          store: store,
+          clock: clock,
+          kept: 1,
+          capture: () async => null,
+        );
+        s.loaded(version: 1);
+        await s.idle;
+        expect(await store.load(decode: false), isNotNull);
+        s.loaded(version: 2);
+        await s.idle;
+        expect(await store.load(decode: false), isNull);
+      },
+    );
+
+    test('a snapshot older than a week does not show', () {
+      final s = snap('home1', Uint8List(0));
+      expect(s.freshAt(s.at.add(const Duration(days: 7))), isTrue);
+      expect(s.freshAt(s.at.add(const Duration(days: 7, minutes: 1))), isFalse);
     });
 
     test('no image to take keeps the last snapshot', () async {
