@@ -55,7 +55,10 @@ class _Change {
 /// [WorkerProgress] events whose threads are exactly the running change's
 /// ([workerProgress]); a [Narration] or [ToolStarted] is a step, a
 /// resent [AttemptStarted] the step "Trying again", an [Inspected] the
-/// [inspection]. Steps start afresh with each run and stop when it ends.
+/// [inspection], a [WaitingForConnection] the step "Waiting for
+/// connection" ([waitingForConnection] until a [ConnectionBack], the step
+/// "Connection is back"). Steps start afresh with each run and stop when it
+/// ends.
 /// The send→first-step timing ([sendFirstStep]) runs with the timed
 /// change, from Send to its first step; a step the worker reported before
 /// the Send, or a change that ends without one, records nothing.
@@ -107,6 +110,9 @@ class ChangeTracker {
   var _failed = const <String>[];
   var _retrying = false;
 
+  /// The running change said it waits for the connection.
+  var _offline = false;
+
   /// How many steps [steps] keeps.
   static const shownSteps = 3;
 
@@ -140,6 +146,11 @@ class ChangeTracker {
 
   /// Whether a Retry is being queued.
   bool get retrying => _retrying;
+
+  /// Whether the running change waits for the Claude API's connection; it
+  /// goes on by itself once the connection is back.
+  bool get waitingForConnection =>
+      _offline && _running.isNotEmpty && _outcome == null;
 
   /// The threads of the change the worker is running; empty when none.
   List<String> get running => List.unmodifiable(_running);
@@ -234,6 +245,14 @@ class ChangeTracker {
         return true;
       case AttemptStarted(:final attempt) when attempt > 1:
         return _addStep('Trying again');
+      case WaitingForConnection():
+        _offline = true;
+        _addStep('Waiting for connection');
+        return true;
+      case ConnectionBack():
+        _offline = false;
+        _addStep('Connection is back');
+        return true;
       case Inspected(:final png, :final errors):
         _inspection = (png: png, errors: errors);
         return true;
@@ -420,6 +439,7 @@ class ChangeTracker {
 
   /// Drops the steps and render of the run that ended.
   void _clearRun() {
+    _offline = false;
     _steps.clear();
     _stepCount = 0;
     _inspection = null;

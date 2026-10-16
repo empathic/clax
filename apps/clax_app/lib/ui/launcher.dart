@@ -786,8 +786,9 @@ class _AppTile extends StatelessWidget {
 
 /// A make going on, as a launcher tile: its request and a ring
 /// (indeterminate until its plan has features, then filled to the features
-/// done); or "Waiting…" (for a slot), "Interrupted" (the app's last run
-/// ended before it), or "Couldn't make it" once it failed.
+/// done); or "Waiting for connection" (its run waits for the Claude API),
+/// "Waiting…" (for a slot), "Interrupted" (the app's last run ended before
+/// it), or "Couldn't make it" once it failed.
 class MakingTile extends StatelessWidget {
   const MakingTile({
     super.key,
@@ -823,15 +824,18 @@ class MakingTile extends StatelessWidget {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final failed = session.failure != null && !session.running;
+    final offline = session.running && session.waitingForConnection;
     final status = failed
         ? "Couldn't make it"
+        : offline
+        ? 'Waiting for connection'
         : session.interrupted
         ? 'Interrupted'
         : session.queued
         ? 'Waiting…'
         : 'Making…';
     // Making shows its ring; the others say where they stand in words.
-    final said = failed || session.interrupted || session.queued;
+    final said = failed || offline || session.interrupted || session.queued;
     final style = _labelStyle(context);
     return _HomeCell(
       key: const ValueKey('making-tile'),
@@ -848,8 +852,11 @@ class MakingTile extends StatelessWidget {
                     ? const _MakingRing()
                     : _BuildRing(done: count.done, total: count.total)
               : Icon(
+                  key: offline ? const ValueKey('tile-offline') : null,
                   failed
                       ? Icons.error_outline_rounded
+                      : offline
+                      ? Icons.cloud_off_rounded
                       : session.interrupted
                       ? Icons.replay_rounded
                       : Icons.hourglass_empty_rounded,

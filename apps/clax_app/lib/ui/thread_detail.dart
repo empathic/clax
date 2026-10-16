@@ -1,6 +1,6 @@
 import 'dart:async';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../agent/failure.dart';
@@ -139,6 +139,8 @@ class ThreadDetail extends StatefulWidget {
     this.focusLatestReply = false,
     this.run = const [],
     this.onRun,
+    this.waitingForConnection,
+    this.onCancel,
   });
 
   /// The comment to land on and highlight.
@@ -177,6 +179,15 @@ class ThreadDetail extends StatefulWidget {
 
   /// The clock relative times are read against.
   final DateTime Function() now;
+
+  /// The threads whose change waits for the Claude API's connection: while
+  /// it names this thread and the thread reads as sent or working, the
+  /// status says "Waiting for connection" (the change goes on by itself
+  /// once the connection is back), with Cancel ([onCancel]) when given.
+  final ValueListenable<List<String>>? waitingForConnection;
+
+  /// Stops the waiting change (the app's Stop).
+  final VoidCallback? onCancel;
 
   @override
   State<ThreadDetail> createState() => _ThreadDetailState();
@@ -631,7 +642,17 @@ class _ThreadDetailState extends State<ThreadDetail> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                _statusCard(context, t),
+                if (widget.waitingForConnection case final w?)
+                  ValueListenableBuilder(
+                    valueListenable: w,
+                    builder: (context, waiting, _) => _statusCard(
+                      context,
+                      t,
+                      offline: waiting.contains(widget.tid),
+                    ),
+                  )
+                else
+                  _statusCard(context, t),
                 if (_clip != null) ...[
                   const SizedBox(height: 12),
                   _clipView(context, _clip!),
@@ -693,10 +714,17 @@ class _ThreadDetailState extends State<ThreadDetail> {
     );
   }
 
-  Widget _statusCard(BuildContext context, ThreadView t) {
+  Widget _statusCard(
+    BuildContext context,
+    ThreadView t, {
+    bool offline = false,
+  }) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     var status = threadStatus(t);
+    final waiting =
+        offline &&
+        (status == ThreadStatus.working || status == ThreadStatus.sent);
     // A change that stopped at a limit offers Keep going, whether it
     // published part of itself (replied) or nothing (failed).
     final keepGoing =
@@ -727,6 +755,13 @@ class _ThreadDetailState extends State<ThreadDetail> {
       String title,
       String line,
     ) = switch (status) {
+      _ when waiting => (
+        Icons.cloud_off_outlined,
+        scheme.secondaryContainer,
+        scheme.onSecondaryContainer,
+        'Waiting for connection',
+        'It goes to Clax by itself when the connection is back.',
+      ),
       ThreadStatus.unsent => (
         Icons.outbox_outlined,
         scheme.surfaceContainerHighest,
@@ -775,6 +810,14 @@ class _ThreadDetailState extends State<ThreadDetail> {
       ),
     };
     final Widget? action = switch (status) {
+      _ when waiting => switch (widget.onCancel) {
+        final cancel? => OutlinedButton(
+          key: const ValueKey('thread-cancel'),
+          onPressed: cancel,
+          child: const Text('Cancel'),
+        ),
+        null => null,
+      },
       ThreadStatus.unsent => FilledButton.icon(
         key: const ValueKey('send-to-clax'),
         onPressed: _busy == null
@@ -807,7 +850,7 @@ class _ThreadDetailState extends State<ThreadDetail> {
       _ => null,
     };
     return Material(
-      key: ValueKey('thread-status-${status.name}'),
+      key: ValueKey('thread-status-${waiting ? 'offline' : status.name}'),
       color: bg,
       borderRadius: BorderRadius.circular(16),
       child: Padding(

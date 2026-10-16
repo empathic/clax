@@ -77,7 +77,12 @@ enum MakeStage implements MakeUpdate {
   /// run waits for Clax to come back to the front.
   paused('Waiting for Clax to come back…'),
 
-  /// Clax is back after a cut; the model is asked again.
+  /// The Claude API cannot be reached; the run waits for the connection
+  /// and goes on by itself once it is back.
+  offline('Waiting for connection'),
+
+  /// Clax or the connection is back after a cut; the model is asked
+  /// again.
   resuming('Picking up where it left off');
 
   const MakeStage(this.label);
@@ -163,7 +168,8 @@ const sayFirstOutput = 'say-first-output';
 /// [MakeUpdate]s:
 ///
 /// - [line]: the latest step (a [Narration] or a [ToolStarted] label), or
-///   the [stage] before any, or while the run waits out a network cut;
+///   the [stage] before any, or while the run waits out a network cut or
+///   for the connection;
 /// - [earlier]: up to two steps before it, oldest first;
 /// - [html]: `index.html` as written so far, for the live preview;
 /// - [png] and [errors]: the last render's screenshot and its uncaught
@@ -187,7 +193,7 @@ class MakingLog {
   String? _held;
 
   String get line => switch (stage) {
-    MakeStage.paused || MakeStage.resuming => stage.label,
+    MakeStage.paused || MakeStage.offline || MakeStage.resuming => stage.label,
     _ => _steps.isEmpty ? stage.label : _steps.last,
   };
 
@@ -237,7 +243,11 @@ class MakingLog {
         inspected = true;
         asking = false;
         return false;
-      case PartialFile() || PartialEdit() || OutputTokens():
+      case PartialFile() ||
+          PartialEdit() ||
+          OutputTokens() ||
+          WaitingForConnection() ||
+          ConnectionBack():
         return false;
     }
   }

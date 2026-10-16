@@ -15,9 +15,8 @@ import '../daemon/clock.dart';
 /// [check] probes at once (the app came back to the front, or a stream went
 /// quiet). Listeners hear each change of [online].
 class ApiConnection extends ChangeNotifier {
-  ApiConnection({required Future<bool> Function() probe, Clock? clock})
-    : _probe = probe,
-      _clock = clock ?? const SystemClock();
+  ApiConnection({required this._probe, Clock? clock})
+    : _clock = clock ?? const SystemClock();
 
   /// The first wait between probes while offline.
   static const firstProbe = Duration(seconds: 2);

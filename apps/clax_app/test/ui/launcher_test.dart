@@ -1077,6 +1077,37 @@ void main() {
       expect(shown(tester, 'Runs'), contains('#f80'));
     });
   });
+
+  testWidgets('a make waiting for the connection shows it on its tile; '
+      'Cancel in its build view stops it', (tester) async {
+    final api = _api();
+    final signals = <Future<void>>[];
+    await pumpLauncher(
+      tester,
+      api,
+      makeFull: (r, cancelled, stage) {
+        signals.add(cancelled);
+        stage(MakeStage.offline);
+        return Completer<String>().future;
+      },
+    );
+    await submit(tester, 'a stopwatch');
+    expect(find.text('Waiting for connection'), findsWidgets);
+    await tester.tap(find.byKey(const ValueKey('build-back')));
+    await frames(tester);
+    expect(find.byKey(const ValueKey('making-tile')), findsOneWidget);
+    expect(find.byKey(const ValueKey('tile-offline')), findsOneWidget);
+    expect(find.text('Waiting for connection'), findsOneWidget);
+
+    var fired = false;
+    unawaited(signals.single.then((_) => fired = true));
+    await tester.tap(find.text('a stopwatch'));
+    await frames(tester);
+    await tester.tap(find.text('Cancel'));
+    await frames(tester);
+    expect(fired, isTrue);
+    expect(find.byKey(const ValueKey('making-tile')), findsNothing);
+  });
 }
 
 /// Timings that keep nothing.
