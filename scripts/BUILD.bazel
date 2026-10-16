@@ -196,3 +196,10 @@ sh_test(
         "//web:package.json",
     ],
 )
+
+# scripts/bazel-gc.sh on throwaway directories.
+sh_test(
+    name = "bazel_gc",
+    srcs = ["bazel-gc.test.sh"],
+    data = [":all"],
+)
