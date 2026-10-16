@@ -53,7 +53,9 @@ describe("PeoplePanel asking for a name to reopen", () => {
 
 describe("PeoplePanel's agents", () => {
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); document.body.replaceChildren(); });
-  const settle = async () => { for (let i = 0; i < 5; i++) await Promise.resolve(); flush(); };
+  // A few turns of the event loop: the stubbed fetch's Response body is read
+  // through more microtasks on some Node versions (22) than on others (26).
+  const settle = async () => { for (let i = 0; i < 3; i++) await new Promise(r => setTimeout(r, 0)); flush(); };
   const ALEX = { public_id: "u_1", name: "Alex", owner: true };
   const SAM = { public_id: "u_sam", name: "Sam", owner: false };
 

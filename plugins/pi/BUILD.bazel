@@ -1,5 +1,6 @@
 load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
 load("@npm_pi//:defs.bzl", "npm_link_all_packages")
+load("//bazel/js:defs.bzl", "npm_script_test")
 
 # The Pi extension under Bazel (docs/bazel.md, "The web side and Pi"): its
 # packages from pnpm-lock.yaml, and its files beside them in bazel-bin, so
@@ -65,4 +66,42 @@ filegroup(
     name = "test_fixtures",
     srcs = glob(["test/fixtures/**"]),
     visibility = ["//crates:__subpackages__"],
+)
+
+# pnpm run typecheck and test. The tests start the warmed clax.
+npm_script_test(
+    name = "typecheck",
+    data = [
+        ":files",
+        ":node_modules",
+    ],
+    script = "typecheck",
+)
+
+npm_script_test(
+    name = "test",
+    args = ["--reporter=dot"],
+    data = [
+        ":files",
+        ":node_modules",
+        "//crates/clax-cli:clax",
+        "//crates/clax-cli:clax_warm",
+        "//crates/clax-core:toolpath_vectors_bin",
+    ],
+    env = {"CLAX_TEST_BIN": "$(rootpath //crates/clax-cli:clax)"},
+    script = "test",
+)
+
+# The Pi files the release script test copies (scripts/test-release.files).
+exports_files(
+    glob(
+        [
+            "README.md",
+            "scripts/**",
+            "skills/**",
+            "test/fixtures/**",
+        ],
+        exclude = ["**/.qual"],
+    ),
+    visibility = ["//scripts:__pkg__"],
 )

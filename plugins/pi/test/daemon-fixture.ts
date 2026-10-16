@@ -2,13 +2,19 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
 /** `CLAX_TEST_BIN` (a debug build quality_gates.sh makes once for the run),
  * else the binary `cargo run` builds. */
-const prebuilt = process.env.CLAX_TEST_BIN || "";
+// Absolute at load. Bazel names it relative to its runfiles root, which a
+// test run by bazel/js/npm_script.mjs (in a copy of the project) finds in
+// JS_BINARY__RUNFILES; the binary there is the one Bazel ran once.
+const runfiles = process.env.JS_BINARY__RUNFILES
+  ? join(process.env.JS_BINARY__RUNFILES, process.env.JS_BINARY__WORKSPACE ?? "_main")
+  : process.cwd();
+const prebuilt = process.env.CLAX_TEST_BIN ? resolve(runfiles, process.env.CLAX_TEST_BIN) : "";
 export const claxBin = prebuilt || join(repoRoot, "target", "debug", "clax");
 
 /** Builds the binary `claxBin` names, unless it is `CLAX_TEST_BIN`. */
