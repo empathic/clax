@@ -45,7 +45,7 @@ fn other_ends_closed(ours: &std::os::unix::net::UnixStream) -> bool {
 fn clax_inheriting(theirs: std::os::unix::net::UnixStream) -> std::process::Command {
     let mut cmd = std::process::Command::new("/bin/sh");
     cmd.args(["-c", r#"exec "$0" "$@" 9>&2 2>/dev/null"#])
-        .arg(assert_cmd::cargo::cargo_bin("clax"))
+        .arg(crate::common::clax())
         .stderr(std::os::fd::OwnedFd::from(theirs));
     cmd
 }

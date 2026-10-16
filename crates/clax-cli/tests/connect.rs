@@ -37,15 +37,6 @@ const HARNESS_ENV: [&str; 10] = [
     "CLAX_SESSION_ID",
 ];
 
-/// The `clax` binary: `CLAX_TEST_BIN` (an absolute path to a copy kept by
-/// content), else this build's.
-fn bin() -> PathBuf {
-    match std::env::var_os("CLAX_TEST_BIN") {
-        Some(b) => PathBuf::from(b),
-        None => PathBuf::from(env!("CARGO_BIN_EXE_clax")),
-    }
-}
-
 /// A scratch home of another machine.
 struct Machine {
     dir: tempfile::TempDir,
@@ -63,7 +54,7 @@ impl Machine {
     }
 
     fn cmd(&self, args: &[&str]) -> Command {
-        let mut c = Command::new(bin());
+        let mut c = Command::new(crate::common::clax());
         for v in HARNESS_ENV {
             c.env_remove(v);
         }
@@ -1060,7 +1051,7 @@ impl Machine {
         use std::io::Write;
         let mut c = self.cmd(&["hook", "--agent", agent, event]);
         if via_shell {
-            let bin = bin();
+            let bin = crate::common::clax();
             let mut sh = Command::new("/bin/sh");
             for (k, v) in c.get_envs() {
                 match v {

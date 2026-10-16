@@ -2,6 +2,12 @@
 
 use assert_cmd::Command;
 
+/// The `clax` the tests run (`clax_fake_exe::clax_bin`): `CLAX_TEST_BIN`,
+/// else Cargo's build of it kept by content.
+pub fn clax() -> std::path::PathBuf {
+    clax_fake_exe::clax_bin(option_env!("CARGO_BIN_EXE_clax"))
+}
+
 /// A scratch HOME and CLAX_HOME; dropping it stops the daemon started there.
 pub struct Env {
     pub dir: tempfile::TempDir,
@@ -13,7 +19,7 @@ impl Env {
         }
     }
     pub fn cmd(&self) -> Command {
-        let mut c = Command::cargo_bin("clax").unwrap();
+        let mut c = Command::new(crate::common::clax());
         c.env("CLAX_HOME", self.dir.path().join("ax"))
             .env("CLAX_CODEX_BIN", "")
             .env("HOME", self.dir.path());

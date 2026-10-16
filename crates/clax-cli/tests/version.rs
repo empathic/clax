@@ -2,7 +2,6 @@
 //! and installers compare; `clax version --verbose` names the commit the
 //! binary was built from.
 use assert_cmd::Command;
-use std::path::Path;
 
 /// The commit this checkout's build embeds: the `CLAX_BUILD_COMMIT` override
 /// the build saw, else `HEAD` of the repository whose root is the workspace,
@@ -11,7 +10,7 @@ fn expected_commit() -> String {
     if let Some(c) = option_env!("CLAX_BUILD_COMMIT").filter(|c| !c.is_empty()) {
         return c.to_string();
     }
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let root = clax_fake_exe::repo();
     let git = |args: &[&str]| {
         std::process::Command::new("git")
             .arg("-C")
@@ -30,8 +29,7 @@ fn expected_commit() -> String {
 }
 
 fn clax(args: &[&str]) -> String {
-    let out = Command::cargo_bin("clax")
-        .unwrap()
+    let out = Command::new(crate::common::clax())
         .args(args)
         .output()
         .unwrap();

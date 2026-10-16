@@ -50,8 +50,7 @@ fn the_previous_home_and_variables_are_ignored_and_left_untouched() {
     std::fs::write(&daemon_json, &info).unwrap();
 
     let old_var = |suffix: &str| format!("{}_{suffix}", OLD.to_uppercase());
-    let out = Command::cargo_bin("clax")
-        .unwrap()
+    let out = Command::new(crate::common::clax())
         .arg("stop")
         .env("HOME", dir.path())
         .env_remove("CLAX_HOME")

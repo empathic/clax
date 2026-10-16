@@ -17,7 +17,7 @@ impl Drop for Scratch {
 }
 
 fn clax(dir: &std::path::Path) -> Command {
-    let mut c = Command::cargo_bin("clax").unwrap();
+    let mut c = Command::new(crate::common::clax());
     c.env("HOME", dir)
         .env("CLAX_HOME", dir.join("ax"))
         .env_remove("CLAX_CONFIG_DIR")

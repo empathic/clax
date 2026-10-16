@@ -6,15 +6,9 @@
 //! makes: no step lost, none twice, and no line differing.
 
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
-
-fn clax_bin() -> PathBuf {
-    std::env::var_os("CLAX_TEST_BIN")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| assert_cmd::cargo::cargo_bin("clax"))
-}
 
 /// A foreground daemon on `home`, on a port the OS picks.
 struct Daemon {
@@ -44,7 +38,7 @@ impl Daemon {
             .append(true)
             .open(dir.join("daemon.log"))
             .unwrap();
-        let child = Command::new(clax_bin())
+        let child = Command::new(crate::common::clax())
             .args(["serve", "--foreground", "--port", "0"])
             .env("CLAX_HOME", &home)
             .env("HOME", dir)

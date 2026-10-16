@@ -93,7 +93,7 @@ fn fake_daemon(home: &std::path::Path, version: &str) -> Fake {
 }
 
 fn clax(dir: &std::path::Path) -> Command {
-    let mut c = Command::cargo_bin("clax").unwrap();
+    let mut c = Command::new(crate::common::clax());
     c.env("HOME", dir)
         .env("CLAX_HOME", dir.join("ax"))
         .env_remove("CLAX_CONFIG_DIR")
@@ -129,7 +129,7 @@ fn serve_replaces_an_older_daemon_on_its_port() {
         "same port"
     );
     assert_eq!(now["version"], env!("CARGO_PKG_VERSION"));
-    let exe = std::fs::canonicalize(env!("CARGO_BIN_EXE_clax")).unwrap();
+    let exe = std::fs::canonicalize(crate::common::clax()).unwrap();
     assert_eq!(now["exe"].as_str().unwrap(), exe.display().to_string());
     clax(dir.path()).arg("stop").assert().success();
 }
@@ -154,7 +154,7 @@ fn serve_keeps_a_newer_daemon() {
 
 /// `clax serve` as a child process, for tests that act while it runs.
 fn serve_child(dir: &std::path::Path) -> Child {
-    std::process::Command::new(env!("CARGO_BIN_EXE_clax"))
+    std::process::Command::new(crate::common::clax())
         .args(["serve", "--json", "--port", "0"])
         .env("HOME", dir)
         .env("CLAX_HOME", dir.join("ax"))
@@ -252,7 +252,7 @@ fn serve_replaces_a_real_older_daemon_and_ends_its_event_streams() {
     use std::time::{Duration, Instant};
     let dir = Scratch::new();
     let home = dir.path().join("ax");
-    let mut old = std::process::Command::new(env!("CARGO_BIN_EXE_clax"))
+    let mut old = std::process::Command::new(crate::common::clax())
         .args([
             "serve",
             "--foreground",
@@ -307,7 +307,7 @@ fn serve_replaces_a_real_older_daemon_and_ends_its_event_streams() {
 /// Records, as a rolled-back upgrade does, that upgrading to this binary
 /// failed just now.
 fn hold_this_binary(dir: &std::path::Path) {
-    let exe = std::fs::canonicalize(env!("CARGO_BIN_EXE_clax")).unwrap();
+    let exe = std::fs::canonicalize(crate::common::clax()).unwrap();
     let mtime = std::fs::metadata(&exe)
         .unwrap()
         .modified()

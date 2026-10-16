@@ -19,7 +19,7 @@ impl Env {
         self.dir.path().join(rel)
     }
     fn cmd(&self) -> Command {
-        let mut c = Command::cargo_bin("clax").unwrap();
+        let mut c = Command::new(crate::common::clax());
         c.env("HOME", self.dir.path())
             .env("CLAX_HOME", self.p("ax"))
             .env("CLAUDE_CONFIG_DIR", self.p("claude"))
@@ -46,11 +46,15 @@ impl Env {
     }
 }
 
-const ME: &str = env!("CARGO_BIN_EXE_clax");
+/// The `clax` the tests run, as the plugins' setting names it.
+fn me() -> String {
+    crate::common::clax().display().to_string()
+}
 
 #[test]
 fn bin_shows_sets_and_clears_the_binary_the_plugins_run() {
     let e = Env::new();
+    let me = me();
     let (ok, v) = e.json(&["bin"]);
     assert!(ok, "{v}");
     assert_eq!(v["setting"], serde_json::Value::Null, "{v}");
@@ -59,19 +63,19 @@ fn bin_shows_sets_and_clears_the_binary_the_plugins_run() {
         .args(["bin", "set", "--this"])
         .assert()
         .success()
-        .stdout(contains(format!("the plugins now run {ME}")));
+        .stdout(contains(format!("the plugins now run {me}")));
     let (_, v) = e.json(&["bin", "show"]);
     assert_eq!(
         (v["source"].as_str(), v["path"].as_str(), v["ok"].as_bool()),
-        (Some("config"), Some(ME), Some(true)),
+        (Some("config"), Some(me.as_str()), Some(true)),
         "{v}"
     );
-    assert_eq!(e.config(), format!("bin = \"{ME}\"\n"));
-    let out = e.cmd().arg("bin").env("CLAX_BIN", ME).output().unwrap();
+    assert_eq!(e.config(), format!("bin = \"{me}\"\n"));
+    let out = e.cmd().arg("bin").env("CLAX_BIN", &me).output().unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
         text.contains(&format!(
-            "the plugins run: {ME} (clax {}), from CLAX_BIN",
+            "the plugins run: {me} (clax {}), from CLAX_BIN",
             env!("CARGO_PKG_VERSION")
         )),
         "{text}"
@@ -88,10 +92,10 @@ fn bin_shows_sets_and_clears_the_binary_the_plugins_run() {
         .stderr(contains("not a usable clax binary"));
     e.cmd().args(["bin", "set"]).assert().failure();
     e.cmd()
-        .args(["bin", "set", ME, "--this"])
+        .args(["bin", "set", me.as_str(), "--this"])
         .assert()
         .failure();
-    assert_eq!(e.config(), format!("bin = \"{ME}\"\n"));
+    assert_eq!(e.config(), format!("bin = \"{me}\"\n"));
     e.cmd()
         .args(["bin", "clear"])
         .assert()
@@ -108,12 +112,13 @@ fn bin_shows_sets_and_clears_the_binary_the_plugins_run() {
 #[test]
 fn a_bin_setting_does_not_disturb_the_rest_of_the_config() {
     let e = Env::new();
+    let me = me();
     std::fs::create_dir_all(e.p("ax")).unwrap();
     std::fs::write(e.p("ax/config.toml"), "[serve]\nport = 7489\n").unwrap();
-    e.cmd().args(["bin", "set", ME]).assert().success();
+    e.cmd().args(["bin", "set", me.as_str()]).assert().success();
     assert_eq!(
         e.config(),
-        format!("bin = \"{ME}\"\n[serve]\nport = 7489\n")
+        format!("bin = \"{me}\"\n[serve]\nport = 7489\n")
     );
     // The CLI still reads the port, and mcp's preflight accepts the file.
     e.cmd()
@@ -125,6 +130,7 @@ fn a_bin_setting_does_not_disturb_the_rest_of_the_config() {
 #[test]
 fn init_points_the_bin_setting_at_this_binary_and_uninit_removes_it() {
     let e = Env::new();
+    let me = me();
     std::fs::create_dir_all(e.p("ax")).unwrap();
     std::fs::write(e.p("ax/config.toml"), "[serve]\nport = 7481\n").unwrap();
     let (ok, v) = e.json(&["init"]);
@@ -132,7 +138,7 @@ fn init_points_the_bin_setting_at_this_binary_and_uninit_removes_it() {
     assert_eq!(v["bin"]["status"], "set", "{v}");
     assert_eq!(
         e.config(),
-        format!("bin = \"{ME}\"\n[serve]\nport = 7481\n")
+        format!("bin = \"{me}\"\n[serve]\nport = 7481\n")
     );
     let (ok, v) = e.json(&["uninit"]);
     assert!(ok, "{v}");

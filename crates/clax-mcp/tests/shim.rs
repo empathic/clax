@@ -2,8 +2,8 @@
 //! server, starts its own daemon in a temporary `CLAX_HOME`, and is driven
 //! with rmcp's client.
 
-use crate::common::clax_bin;
 use clax_core::Home;
+use clax_fake_exe::clax_bin;
 use clax_server::daemon::read_daemon_info;
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::RunningService;
@@ -58,7 +58,7 @@ impl Shim {
         std::fs::create_dir_all(dir.path().join("work")).unwrap();
         let home = dir.path().join("ax");
         let work = dir.path().join("work");
-        let cmd = tokio::process::Command::new(clax_bin()).configure(|c| {
+        let cmd = tokio::process::Command::new(clax_bin(None)).configure(|c| {
             for var in [
                 "GROK_SESSION_ID",
                 "GROK_HOOK_EVENT",
@@ -149,7 +149,7 @@ impl Shim {
     /// Runs `clax stop` against this shim's home and checks the daemon
     /// process is gone (the shim, its parent, must have reaped it).
     fn stop_daemon(&self) {
-        let out = std::process::Command::new(clax_bin())
+        let out = std::process::Command::new(clax_bin(None))
             .args(["--json", "stop"])
             .env("CLAX_HOME", self.dir.path().join("ax"))
             .env("CLAX_CODEX_BIN", "")
@@ -181,7 +181,7 @@ impl Shim {
 
 impl Drop for Shim {
     fn drop(&mut self) {
-        let _ = std::process::Command::new(clax_bin())
+        let _ = std::process::Command::new(clax_bin(None))
             .arg("stop")
             .env("CLAX_HOME", self.dir.path().join("ax"))
             .env("CLAX_CODEX_BIN", "")
@@ -441,7 +441,7 @@ async fn a_session_ended_under_the_shim_is_replaced_on_the_next_publish() {
 async fn an_older_daemon_is_replaced_on_the_same_bind() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("ax");
-    let out = std::process::Command::new(clax_bin())
+    let out = std::process::Command::new(clax_bin(None))
         .args(["--port", "0", "serve", "--bind", "0.0.0.0"])
         .env("CLAX_HOME", &home)
         .env("CLAX_CODEX_BIN", "")

@@ -14,9 +14,9 @@
 //! artifact.
 
 use crate::common::people::World;
+use clax_fake_exe::{clax_bin, repo};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::time::Duration;
 
 /// Longest a client may run.
@@ -27,58 +27,6 @@ const LIMIT: Duration = Duration::from_secs(30);
 pub struct Out {
     pub channel: String,
     pub text: String,
-}
-
-/// The `clax` binary: `CLAX_TEST_BIN`, else a copy of this build's kept by
-/// content (`scripts/stable-bin.sh`), never `target/debug/clax` run in place
-/// (macOS assesses each new executable, and a build would replace it under
-/// a run).
-pub fn clax_bin() -> PathBuf {
-    static BIN: OnceLock<PathBuf> = OnceLock::new();
-    BIN.get_or_init(|| {
-        if let Some(bin) = std::env::var_os("CLAX_TEST_BIN") {
-            let bin = PathBuf::from(bin);
-            assert!(bin.exists(), "CLAX_TEST_BIN {} missing", bin.display());
-            return bin;
-        }
-        let workspace = repo();
-        let status = std::process::Command::new(env!("CARGO"))
-            .current_dir(&workspace)
-            .args(["build", "--quiet", "-p", "clax-cli", "--bin", "clax"])
-            .status()
-            .expect("run cargo build");
-        assert!(status.success(), "cargo build -p clax-cli failed");
-        let exe = std::env::current_exe().unwrap();
-        let built = exe.parent().unwrap().parent().unwrap().join("clax");
-        let store = built
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("clax-bin/debug");
-        let out = std::process::Command::new(workspace.join("scripts/stable-bin.sh"))
-            .arg(&built)
-            .arg(&store)
-            .output()
-            .expect("run scripts/stable-bin.sh");
-        assert!(
-            out.status.success(),
-            "stable-bin.sh: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let kept = PathBuf::from(String::from_utf8(out.stdout).unwrap().trim());
-        if kept.is_absolute() {
-            kept
-        } else {
-            workspace.join(kept)
-        }
-    })
-    .clone()
-}
-
-/// The repository's root.
-pub fn repo() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 /// The variables a harness sets in its shell (spec §16, as the probe saw
@@ -170,7 +118,7 @@ impl<'a> RealClients<'a> {
 
     /// `clax <args>` with `env`: what it printed, and its exit status.
     pub async fn clax(&self, args: &[&str], env: &[(&str, &str)]) -> (String, i32) {
-        self.run(self.command(&clax_bin(), args, env), "").await
+        self.run(self.command(&clax_bin(None), args, env), "").await
     }
 
     /// Every channel but Pi's ([`RealClients::pi`]), each driven through
@@ -208,7 +156,7 @@ impl<'a> RealClients<'a> {
         let input = json!({"session_id": "owner-h1", "hook_event_name": name,
             "stop_hook_active": false, "prompt": "Carry on.", "cwd": "/w", "source": "startup"})
         .to_string();
-        let cmd = self.command(&clax_bin(), &["hook", "--agent", "claude", event], &[]);
+        let cmd = self.command(&clax_bin(None), &["hook", "--agent", "claude", event], &[]);
         let (text, _) = self.run(cmd, &input).await;
         Out {
             channel: format!("clax hook --agent claude {event}"),
@@ -255,7 +203,7 @@ impl<'a> RealClients<'a> {
         }
         let n = lines.len() - 2;
         let cmd = self.command(
-            &clax_bin(),
+            &clax_bin(None),
             &["mcp", "--agent", "claude"],
             &[("CLAUDE_CODE_SESSION_ID", "owner-h1")],
         );
@@ -396,7 +344,7 @@ impl<'a> RealClients<'a> {
                     &["-c", cmd],
                     &[
                         ("CLAUDE_PLUGIN_ROOT", root.to_str().unwrap()),
-                        ("CLAX_BIN", clax_bin().to_str().unwrap()),
+                        ("CLAX_BIN", clax_bin(None).to_str().unwrap()),
                         ("CLAUDECODE", "1"),
                     ],
                 );
@@ -510,7 +458,7 @@ impl<'a> RealClients<'a> {
         );
         let node = which("node").expect("node on PATH");
         let script = serde_json::to_string(calls).unwrap();
-        let bin = clax_bin();
+        let bin = clax_bin(None);
         let mut all_env: Vec<(&str, &str)> = vec![
             ("CLAX_BIN", bin.to_str().unwrap()),
             ("CLAX_SCRIPT", &script),

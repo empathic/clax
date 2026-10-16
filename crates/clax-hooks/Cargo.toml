@@ -16,3 +16,4 @@ serde_json.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 reqwest.workspace = true
+clax-fake-exe = { path = "../clax-fake-exe" }

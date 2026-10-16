@@ -5,7 +5,6 @@
 mod calls;
 mod channel;
 mod comments;
-mod common;
 mod db;
 mod live;
 mod open;
