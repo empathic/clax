@@ -158,8 +158,6 @@ class Launcher extends StatefulWidget {
 }
 
 class _LauncherState extends State<Launcher> {
-  String _draft = '';
-
   late final MakeService _makes =
       widget.host?.makes ?? widget.makes ?? MakeService(widget.make);
 
@@ -175,15 +173,33 @@ class _LauncherState extends State<Launcher> {
         makes: _makes,
         builds: widget.build,
         settings: HomeSettings(),
-        actions: _LauncherActions(this),
+        actions: HomeFlows(
+          contextOf: () => mounted ? context : null,
+          api: widget.api,
+          openApp: (aid) => widget.open(aid),
+          voice: widget.voice,
+          showSettings: widget.openSettings,
+          onOpenTarget: widget.onOpenTarget,
+          onOpenQuestion: widget.onOpenQuestion,
+          timings: widget.timings,
+          handOver: widget.handOver,
+          inspectorPermissions: widget.inspectorPermissions,
+          build: widget.build,
+          bundles: widget.bundles,
+          lineage: widget.lineage,
+        ),
         icons: _icons,
         retryDelay: widget.retryDelay,
         needsKey: widget.needsKey,
       );
 
+  /// What the launcher's buttons, tiles and menu open: its host's.
+  HomeActions get _actions => _host.actions;
+
   @override
   void initState() {
     super.initState();
+    if (widget.host == null) (_host.actions as HomeFlows).host = _host;
     _host.addListener(_onHost);
   }
 
@@ -206,248 +222,13 @@ class _LauncherState extends State<Launcher> {
     super.dispose();
   }
 
-  Future<void> _openInbox() async {
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute(
-        builder: (_) => InboxScreen(
-          api: widget.api,
-          onOpen: _openItem,
-          stream: _host.stream,
-        ),
-      ),
-    );
-    if (mounted) await _host.loadUnread();
-  }
-
-  void _openItem(InboxItem item) {
-    final question = item.question;
-    if (item.kind == 'question' &&
-        question != null &&
-        widget.onOpenQuestion != null) {
-      widget.onOpenQuestion!(question.id);
-      return;
-    }
-    final aid = item.artifactId;
-    if (aid == null) return;
-    final target = widget.onOpenTarget;
-    if (target == null) {
-      widget.open(aid);
-      return;
-    }
-    target(
-      aid,
-      thread: item.kind == 'reply' ? item.thread?.id : null,
-      version: item.kind == 'version' ? item.versionN : null,
-      comment: item.kind == 'reply' ? item.replyCommentId : null,
-    );
-  }
-
-  /// Shows make [s]'s build view, or offers an interrupted one again.
-  Future<void> _openMake(MakeSession s) =>
-      s.interrupted ? _offerAgain(s) : _showMake(s);
-
-  Future<void> _newApp() async {
-    final request = await showNewSheet(
-      context,
-      widget.voice,
-      _draft,
-      onChanged: (t) => _draft = t,
-    );
-    if (request == null || !mounted) return;
-    _draft = request;
-    // The build view starts it, once it is up.
-    await _showMake(_makes.add(request));
-  }
-
-  /// Asks whether to make interrupted make [s] again (then shows it) or to
-  /// discard it; closing the question leaves it as it is.
-  Future<void> _offerAgain(MakeSession s) async {
-    final again = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Make it again?'),
-        content: Text('Clax closed before it finished “${s.request}”.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Discard'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Make it again'),
-          ),
-        ],
-      ),
-    );
-    if (!mounted || again == null) return;
-    if (!again) {
-      _makes.dismiss(s);
-      return;
-    }
-    _makes.resume(s);
-    await _showMake(s);
-  }
-
-  /// Shows make [s] in the build view, caught up with what it did.
-  Future<void> _showMake(MakeSession s) async {
-    final result = await Navigator.of(context).push<MakingResult>(
-      MaterialPageRoute(
-        fullscreenDialog: true,
-        builder: (_) => MakingScreen(
-          request: s.request,
-          session: s,
-          openSettings: widget.openSettings,
-          timings: widget.timings,
-          onMade: widget.handOver,
-          build: widget.build,
-        ),
-      ),
-    );
-    if (!mounted) return;
-    switch (result) {
-      case Made(:final aid):
-        if (_draft == s.request) _draft = '';
-        if (widget.handOver == null) widget.open(aid);
-      case MakingLeft():
-        if (_draft == s.request) _draft = '';
-      case EditRequest():
-        _draft = s.request;
-        await _newApp();
-      case null:
-        _draft = s.request;
-    }
-  }
-
-  /// Whether [aid]'s build stopped (stopped, capped or failed) with
-  /// features still to build, so the menu offers Resume build.
-  Future<bool> _resumable(String aid) async {
-    final b = widget.build;
-    if (b == null) return false;
-    final Plan? plan;
-    try {
-      plan = await b.plans.get(aid);
-    } on Object {
-      return false;
-    }
-    if (plan == null || plan.todo.isEmpty) return false;
-    final phase = b.control.buildOf(aid)?.phase;
-    return plan.stopped ||
-        phase == BuildPhase.stopped ||
-        phase == BuildPhase.capped ||
-        phase == BuildPhase.failed;
-  }
-
-  Future<void> _menu(ArtifactSummary app) async {
-    final resume = await _resumable(app.id);
-    if (!mounted) return;
-    final choice = await showModalBottomSheet<String>(
-      context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
-              child: Text(
-                app.title,
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-            ),
-            ListTile(
-              leading: const Icon(Icons.open_in_new_rounded),
-              title: const Text('Open'),
-              onTap: () => Navigator.of(context).pop('open'),
-            ),
-            ListTile(
-              key: const ValueKey('inspect'),
-              leading: const Icon(Icons.manage_search_rounded),
-              title: const Text('Inspect'),
-              subtitle: const Text('Files, data and permissions'),
-              onTap: () => Navigator.of(context).pop('inspect'),
-            ),
-            if (widget.bundles case final b?)
-              ListTile(
-                key: const ValueKey('share-app'),
-                leading: Icon(
-                  b.toFile ? Icons.save_alt_rounded : Icons.ios_share_rounded,
-                ),
-                title: Text(b.shareLabel),
-                subtitle: Text(
-                  b.toFile ? 'Save it as a .clax file' : 'Send it as a file',
-                ),
-                onTap: () => Navigator.of(context).pop('share'),
-              ),
-            if (resume)
-              ListTile(
-                key: const ValueKey('resume-build'),
-                leading: const Icon(Icons.play_arrow_rounded),
-                title: const Text('Resume build'),
-                subtitle: const Text('Build the rest of its plan'),
-                onTap: () => Navigator.of(context).pop('resume'),
-              ),
-            const SizedBox(height: 8),
-          ],
-        ),
-      ),
-    );
-    if (!mounted) return;
-    switch (choice) {
-      case 'open':
-        widget.open(app.id);
-      case 'resume':
-        await widget.build?.control.resumeBuild(app.id);
-      case 'share':
-        await widget.bundles?.share(context, app.id, svg: _icons.svgOf(app.id));
-      case 'inspect':
-        final target = widget.onOpenTarget;
-        await Navigator.of(context).push<void>(
-          MaterialPageRoute(
-            builder: (_) => AppInspector(
-              api: widget.api,
-              aid: app.id,
-              permissions: widget.inspectorPermissions,
-              bundles: widget.bundles,
-              lineage: widget.lineage,
-              plan: switch (widget.build) {
-                final b? => (context, aid) => BuildWatch(
-                  link: b,
-                  appId: aid,
-                  builder: (context, plan, state) => plan == null
-                      ? const _Message(
-                          icon: Icons.checklist_rounded,
-                          text: 'No plan',
-                          hint:
-                              'Apps built from a plan show their features '
-                              'here.',
-                        )
-                      : BuildPlanPanel(
-                          plan: plan,
-                          state: state,
-                          handle: false,
-                          onResume: plan.todo.isEmpty
-                              ? null
-                              : () => unawaited(b.control.resumeBuild(aid)),
-                        ),
-                ),
-                null => null,
-              },
-              onOpenVersion: target == null
-                  ? null
-                  : (aid, n) => target(aid, version: n),
-            ),
-          ),
-        );
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final apps = _host.summaries;
     final unread = _host.unread;
     return Scaffold(
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _newApp,
+        onPressed: _actions.newApp,
         icon: const Icon(Icons.mic_rounded),
         label: const Text('New app'),
       ),
@@ -462,7 +243,7 @@ class _LauncherState extends State<Launcher> {
               actions: [
                 IconButton(
                   tooltip: 'Inbox',
-                  onPressed: _openInbox,
+                  onPressed: _actions.openInbox,
                   icon: Badge.count(
                     count: unread,
                     isLabelVisible: unread > 0,
@@ -537,7 +318,7 @@ class _LauncherState extends State<Launcher> {
                         key: ObjectKey(m),
                         session: m,
                         link: widget.build,
-                        onTap: () => unawaited(_openMake(m)),
+                        onTap: () => _actions.openMake(_host.makeIdOf(m)),
                       );
                     }
                     i -= makes.length;
@@ -547,7 +328,8 @@ class _LauncherState extends State<Launcher> {
                       icons: _icons,
                       building: _host.buildOf(apps[i].id),
                       onTap: () => widget.open(apps[i].id),
-                      onLongPress: () => _menu(apps[i]),
+                      // The menu is a bottom sheet: no anchor.
+                      onLongPress: () => _actions.menu(apps[i].id, Rect.zero),
                     );
                   },
                 ),
@@ -1083,37 +865,341 @@ IconData? iconFor(String? word) => switch (word?.trim().toLowerCase()) {
 };
 
 /// The launcher's own answers to its host's calls, when it keeps the host.
-class _LauncherActions implements HomeActions {
-  _LauncherActions(this._s);
+/// The screens and sheets the home screen opens, over the navigator of
+/// [context]: the [HomeActions] of a [host] (a `HomeHost`), for the
+/// built-in home screen ([Launcher]) and the home app alike.
+///
+/// New app shows the New sheet; a submitted request starts a make on the
+/// host's makes and shows it in the build view; the artifact ID it returns
+/// goes to [handOver] (which puts the app's route in the build view's
+/// place), else to [open] once the build view has closed. A request the
+/// person has not made yet (the sheet closed, Cancel, or Edit after a
+/// failure) is kept for the next New. A make's tile shows its build view
+/// again, caught up, or asks "Make it again?" for an interrupted one.
+///
+/// The menu of an app: Open; Inspect, which pushes the [AppInspector] with
+/// [inspectorPermissions] (a version opened from its history going to
+/// [onOpenTarget]); with [bundles], Share app; Resume build for a build
+/// that stopped with features to build. The inbox pushes [InboxScreen] on
+/// the host's stream; an item opened there goes to [onOpenQuestion] (a
+/// question, when given), else to [onOpenTarget], else to [open]; coming
+/// back loads the unread count again.
+class HomeFlows implements HomeActions {
+  HomeFlows({
+    required this.contextOf,
+    required this.api,
+    required this.openApp,
+    required this.voice,
+    this.showSettings,
+    this.onOpenTarget,
+    this.onOpenQuestion,
+    this.timings,
+    this.handOver,
+    this.inspectorPermissions = const [],
+    this.build,
+    this.bundles,
+    this.lineage,
+  });
 
-  final _LauncherState _s;
+  /// The context the screens are pushed from; null once there is none.
+  final BuildContext? Function() contextOf;
+  final ClaxApi api;
 
-  @override
-  void open(String id) => _s.widget.open(id);
+  /// Opens app [aid], as a tile's tap does.
+  final void Function(String aid) openApp;
+  final VoiceInput voice;
 
-  @override
-  void openMake(String id) {
-    if (_s._host.sessionOf(id) case final m?) unawaited(_s._openMake(m));
+  /// Shows Settings; null shows none.
+  final VoidCallback? showSettings;
+  final void Function(
+    String aid, {
+    String? thread,
+    int? version,
+    String? comment,
+  })?
+  onOpenTarget;
+  final void Function(String qid)? onOpenQuestion;
+  final Timings? timings;
+  final void Function(BuildContext context, String aid, Uint8List? lastFrame)?
+  handOver;
+  final List<PermissionSource> inspectorPermissions;
+  final BuildLink? build;
+  final BundleFlows? bundles;
+  final Future<LineageEntry?> Function(String aid)? lineage;
+
+  /// The host whose makes, apps and stream these flows act on; set once,
+  /// before the first action.
+  late final HomeHost host;
+
+  String _draft = '';
+
+  bool get mounted => contextOf()?.mounted ?? false;
+  BuildContext get context => contextOf()!;
+
+  Future<void> _openInbox() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) =>
+            InboxScreen(api: api, onOpen: _openItem, stream: host.stream),
+      ),
+    );
+    if (mounted) await host.loadUnread();
   }
 
-  @override
-  void newApp() => unawaited(_s._newApp());
+  void _openItem(InboxItem item) {
+    final question = item.question;
+    if (item.kind == 'question' && question != null && onOpenQuestion != null) {
+      onOpenQuestion!(question.id);
+      return;
+    }
+    final aid = item.artifactId;
+    if (aid == null) return;
+    final target = onOpenTarget;
+    if (target == null) {
+      openApp(aid);
+      return;
+    }
+    target(
+      aid,
+      thread: item.kind == 'reply' ? item.thread?.id : null,
+      version: item.kind == 'version' ? item.versionN : null,
+      comment: item.kind == 'reply' ? item.replyCommentId : null,
+    );
+  }
 
-  @override
-  void menu(String id, Rect anchor) {
-    for (final a in _s._host.summaries ?? const <ArtifactSummary>[]) {
-      if (a.id == id) unawaited(_s._menu(a));
+  /// Shows make [s]'s build view, or offers an interrupted one again.
+  Future<void> _openMake(MakeSession s) =>
+      s.interrupted ? _offerAgain(s) : _showMake(s);
+
+  Future<void> _newApp() async {
+    final request = await showNewSheet(
+      context,
+      voice,
+      _draft,
+      onChanged: (t) => _draft = t,
+    );
+    if (request == null || !mounted) return;
+    _draft = request;
+    // The build view starts it, once it is up.
+    await _showMake(host.makes.add(request));
+  }
+
+  /// Asks whether to make interrupted make [s] again (then shows it) or to
+  /// discard it; closing the question leaves it as it is.
+  Future<void> _offerAgain(MakeSession s) async {
+    final again = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Make it again?'),
+        content: Text('Clax closed before it finished “${s.request}”.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Discard'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Make it again'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || again == null) return;
+    if (!again) {
+      host.makes.dismiss(s);
+      return;
+    }
+    host.makes.resume(s);
+    await _showMake(s);
+  }
+
+  /// Shows make [s] in the build view, caught up with what it did.
+  Future<void> _showMake(MakeSession s) async {
+    final result = await Navigator.of(context).push<MakingResult>(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => MakingScreen(
+          request: s.request,
+          session: s,
+          openSettings: showSettings,
+          timings: timings,
+          onMade: handOver,
+          build: build,
+        ),
+      ),
+    );
+    if (!mounted) return;
+    switch (result) {
+      case Made(:final aid):
+        if (_draft == s.request) _draft = '';
+        if (handOver == null) openApp(aid);
+      case MakingLeft():
+        if (_draft == s.request) _draft = '';
+      case EditRequest():
+        _draft = s.request;
+        await _newApp();
+      case null:
+        _draft = s.request;
+    }
+  }
+
+  /// Whether [aid]'s build stopped (stopped, capped or failed) with
+  /// features still to build, so the menu offers Resume build.
+  Future<bool> _resumable(String aid) async {
+    final b = build;
+    if (b == null) return false;
+    final Plan? plan;
+    try {
+      plan = await b.plans.get(aid);
+    } on Object {
+      return false;
+    }
+    if (plan == null || plan.todo.isEmpty) return false;
+    final phase = b.control.buildOf(aid)?.phase;
+    return plan.stopped ||
+        phase == BuildPhase.stopped ||
+        phase == BuildPhase.capped ||
+        phase == BuildPhase.failed;
+  }
+
+  Future<void> _menu(ArtifactSummary app) async {
+    final resume = await _resumable(app.id);
+    final at = contextOf();
+    if (at == null || !at.mounted) return;
+    final choice = await showModalBottomSheet<String>(
+      context: at,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+              child: Text(
+                app.title,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.open_in_new_rounded),
+              title: const Text('Open'),
+              onTap: () => Navigator.of(context).pop('open'),
+            ),
+            ListTile(
+              key: const ValueKey('inspect'),
+              leading: const Icon(Icons.manage_search_rounded),
+              title: const Text('Inspect'),
+              subtitle: const Text('Files, data and permissions'),
+              onTap: () => Navigator.of(context).pop('inspect'),
+            ),
+            if (bundles case final b?)
+              ListTile(
+                key: const ValueKey('share-app'),
+                leading: Icon(
+                  b.toFile ? Icons.save_alt_rounded : Icons.ios_share_rounded,
+                ),
+                title: Text(b.shareLabel),
+                subtitle: Text(
+                  b.toFile ? 'Save it as a .clax file' : 'Send it as a file',
+                ),
+                onTap: () => Navigator.of(context).pop('share'),
+              ),
+            if (resume)
+              ListTile(
+                key: const ValueKey('resume-build'),
+                leading: const Icon(Icons.play_arrow_rounded),
+                title: const Text('Resume build'),
+                subtitle: const Text('Build the rest of its plan'),
+                onTap: () => Navigator.of(context).pop('resume'),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    final c = contextOf();
+    if (c == null || !c.mounted) return;
+    switch (choice) {
+      case 'open':
+        openApp(app.id);
+      case 'resume':
+        await build?.control.resumeBuild(app.id);
+      case 'share':
+        await bundles?.share(c, app.id, svg: host.icons?.svgOf(app.id));
+      case 'inspect':
+        final target = onOpenTarget;
+        await Navigator.of(c).push<void>(
+          MaterialPageRoute(
+            builder: (_) => AppInspector(
+              api: api,
+              aid: app.id,
+              permissions: inspectorPermissions,
+              bundles: bundles,
+              lineage: lineage,
+              plan: switch (build) {
+                final b? => (context, aid) => BuildWatch(
+                  link: b,
+                  appId: aid,
+                  builder: (context, plan, state) => plan == null
+                      ? const _Message(
+                          icon: Icons.checklist_rounded,
+                          text: 'No plan',
+                          hint:
+                              'Apps built from a plan show their features '
+                              'here.',
+                        )
+                      : BuildPlanPanel(
+                          plan: plan,
+                          state: state,
+                          handle: false,
+                          onResume: plan.todo.isEmpty
+                              ? null
+                              : () => unawaited(b.control.resumeBuild(aid)),
+                        ),
+                ),
+                null => null,
+              },
+              onOpenVersion: target == null
+                  ? null
+                  : (aid, n) => target(aid, version: n),
+            ),
+          ),
+        );
     }
   }
 
   @override
-  void openInbox() => unawaited(_s._openInbox());
+  void open(String id) => openApp(id);
 
   @override
-  void openSettings() => _s.widget.openSettings?.call();
+  void openMake(String id) {
+    if (!mounted) return;
+    if (host.sessionOf(id) case final m?) unawaited(_openMake(m));
+  }
+
+  @override
+  void newApp() {
+    if (mounted) unawaited(_newApp());
+  }
+
+  @override
+  void menu(String id, Rect anchor) {
+    if (!mounted) return;
+    for (final a in host.summaries ?? const <ArtifactSummary>[]) {
+      if (a.id == id) unawaited(_menu(a));
+    }
+  }
+
+  @override
+  void openInbox() {
+    if (mounted) unawaited(_openInbox());
+  }
+
+  @override
+  void openSettings() => showSettings?.call();
 
   @override
   void importApp() {
-    if (_s.widget.bundles case final b?) unawaited(b.importPicked(_s.context));
+    if (bundles case final b? when mounted) unawaited(b.importPicked(context));
   }
 }

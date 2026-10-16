@@ -34,8 +34,32 @@ class HomeSettings {
   /// The settings kept in [dir]; the defaults when there are none.
   static Future<HomeSettings> load(Directory dir) async {
     final file = File('${dir.path}/$fileName');
+    String? text;
     try {
-      final j = jsonDecode(await file.readAsString());
+      text = await file.readAsString();
+    } on Object {
+      // Missing or unreadable: the defaults.
+    }
+    return _parse(file, text);
+  }
+
+  /// [load], reading the file at once: for the first frame of the home
+  /// screen.
+  static HomeSettings loadSync(Directory dir) {
+    final file = File('${dir.path}/$fileName');
+    String? text;
+    try {
+      text = file.readAsStringSync();
+    } on Object {
+      // Missing or unreadable: the defaults.
+    }
+    return _parse(file, text);
+  }
+
+  static HomeSettings _parse(File file, String? text) {
+    if (text == null) return HomeSettings._(file);
+    try {
+      final j = jsonDecode(text);
       if (j is Map<String, Object?>) {
         return HomeSettings._(
           file,
@@ -51,7 +75,7 @@ class HomeSettings {
         );
       }
     } on Object {
-      // Missing or unreadable: the defaults.
+      // Torn: the defaults.
     }
     return HomeSettings._(file);
   }

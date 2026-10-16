@@ -256,6 +256,21 @@ class HomeHost extends ChangeNotifier {
   /// Each change of a topic for the home app (see [HomeEvent]).
   Stream<HomeEvent> get events => _out.stream;
 
+  /// Each topic's latest value, as [events] carries it: what a home app
+  /// page that was covered or in the background is told when it shows
+  /// again.
+  List<HomeEvent> get latest => [
+    for (final (topic, name) in _names) (name: name, data: _json(topic)),
+  ];
+
+  /// Each topic's [_json] name and its event name.
+  static const _names = [
+    ('apps', 'apps'),
+    ('makes', 'makes'),
+    ('unread', 'unread'),
+    ('needsKey', 'key'),
+  ];
+
   /// Whether the API key is missing.
   bool get needsKey => _needsKey;
   set needsKey(bool v) {
@@ -430,12 +445,7 @@ class HomeHost extends ChangeNotifier {
     _state = null;
     notifyListeners();
     if (!_out.hasListener) return;
-    for (final (topic, name) in const [
-      ('apps', 'apps'),
-      ('makes', 'makes'),
-      ('unread', 'unread'),
-      ('needsKey', 'key'),
-    ]) {
+    for (final (topic, name) in _names) {
       final data = _json(topic);
       final s = jsonEncode(data);
       if (_told[name] == s) continue;
@@ -592,9 +602,7 @@ class HomeHost extends ChangeNotifier {
   void _watchMakePlans() {
     final b = builds;
     if (b == null) return;
-    final keys = {
-      for (final m in makes.makes) ?m.planKey,
-    };
+    final keys = {for (final m in makes.makes) ?m.planKey};
     for (final gone
         in _makePlanSubs.keys.where((k) => !keys.contains(k)).toList()) {
       unawaited(_makePlanSubs.remove(gone)!.cancel());

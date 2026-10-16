@@ -21,6 +21,7 @@ import 'daemon/health.dart';
 import 'daemon/ports.dart';
 import 'daemon/process.dart';
 import 'daemon/supervisor.dart';
+import 'home/home_install.dart';
 import 'platform/app_notice.dart';
 import 'platform/background_work.dart';
 import 'platform/bundle_intake.dart';
@@ -178,6 +179,7 @@ Future<AppServices> platformServices() async {
     pendingMake: PendingMake(File('${support.path}/pending-make.json')),
     bundleKey: BundleKey(FlutterBundleSeedStorage()),
     bundleIntake: ChannelBundleIntake(),
+    shippedHome: AssetShippedHome(),
   );
 }
 

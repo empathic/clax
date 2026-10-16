@@ -31,6 +31,10 @@ import 'agent/worker.dart';
 import 'bundle/doc_snapshot.dart';
 import 'bundle/exporter.dart';
 import 'bundle/installer.dart' show Installer, forgetDeleted, fromBundleOf;
+import 'home/home_host.dart';
+import 'home/home_install.dart';
+import 'home/home_route.dart';
+import 'home/home_settings.dart';
 import 'bundle/lineage_store.dart';
 import 'bundle/updater.dart';
 import 'clax/api.dart';
@@ -101,6 +105,7 @@ class AppServices {
     this.bundleKey,
     this.bundleIntake,
     this.bundleFiles,
+    this.shippedHome,
     PendingMake? pendingMake,
     ApiConnection? connection,
     int? pid,
@@ -223,6 +228,10 @@ class AppServices {
   /// Where a shared bundle goes and an imported one comes from; the share
   /// sheet (the save panel on the Mac) and the file picker when null.
   final BundleFiles? bundleFiles;
+
+  /// The home app the app ships, installed on the first run and shown as
+  /// the home screen; without it the built-in home screen is home.
+  final ShippedHome? shippedHome;
 
   /// The app's process ID, given to the daemon with the session.
   final int pid;
@@ -597,6 +606,35 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     store: FileIconStore(Directory('${_s.supportDir}/app-icons')),
   );
 
+  /// The home screen's sources, for the home app and the built-in home
+  /// screen, from the daemon's first Up.
+  HomeHost? _homeHost;
+
+  /// What the home screen opens, over the app's navigator.
+  late final _homeFlows = HomeFlows(
+    contextOf: () => _nav.currentContext,
+    api: _api,
+    openApp: _open,
+    voice: _s.voice,
+    showSettings: () => unawaited(_openSettings()),
+    onOpenTarget: _openTarget,
+    onOpenQuestion: _openQuestion,
+    timings: _s.timings,
+    handOver: _handOver,
+    inspectorPermissions: [
+      AgentReadPermissions(_consentMemory),
+      if (_device case final d?) DevicePermissions(d),
+      NetPermissions(_api),
+      AiPermissions(_api),
+    ],
+    build: _build,
+    bundles: _bundles,
+    lineage: _lineages.entry,
+  );
+
+  /// The actions of the home app's screen.
+  final _homeActions = StreamController<AppAction>.broadcast();
+
   /// The app the last Make made, until its first `ready`.
   ({String aid, Map<String, Object?> extra})? _made;
 
@@ -692,6 +730,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     }
     _makes.dispose();
     unawaited(_runtime.close());
+    _homeHost?.dispose();
+    unawaited(_homeActions.close());
     unawaited(_stream?.close());
     if (_s.inspector case final WebViewInspector i) i.dispose();
     _runs.dispose();
@@ -816,7 +856,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       snapshots: _snapshots,
     );
     _lineageDeletions!.onError((Object _) {});
-    unawaited(_recoverBundles());
+    unawaited(_recoverBundles().then((_) => _installHome()));
     final bundles = _bundles;
     final intake = _s.bundleIntake;
     if (bundles != null && intake != null) {
@@ -834,6 +874,28 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         ),
       );
     }
+  }
+
+  /// Installs the shipped home app when there is none ([ensureHomeApp]),
+  /// after the installs a crash cut short are cleared away; the home
+  /// screen then switches to it.
+  Future<void> _installHome() async {
+    final shipped = _s.shippedHome;
+    final host = _homeHost;
+    if (shipped == null || host == null) return;
+    final before = host.settings.homeAppId;
+    try {
+      await ensureHomeApp(
+        host.settings,
+        Installer(api: _api, store: _lineages, key: homeInstallKey()),
+        _api,
+        shipped: shipped,
+      );
+    } on Object catch (e) {
+      debugPrint('clax home: $e');
+      return;
+    }
+    if (mounted && host.settings.homeAppId != before) host.settingsChanged();
   }
 
   Future<void> _recoverBundles() async {
@@ -979,6 +1041,17 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
             }
           });
           _questionEvents = stream.events.listen(_onQuestionEvent);
+          _homeHost = HomeHost(
+            api: _api,
+            stream: stream,
+            makes: _makes,
+            builds: _build,
+            settings: HomeSettings.loadSync(Directory(_s.supportDir)),
+            actions: _homeFlows,
+            icons: _icons,
+            needsKey: _needsKey,
+          );
+          _homeFlows.host = _homeHost!;
         }
         if (_questionQueue.isNotEmpty) unawaited(_recheckThenNext());
         if (_pendingOpen case (:final aid, :final action)?) {
@@ -1068,6 +1141,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     if (!mounted) return;
     _settings = s;
     _needsKey = key == null && _s.backend(s, _s.key).name == backendMessagesApi;
+    _homeHost?.needsKey = _needsKey;
     _revision.value++;
   }
 
@@ -1708,46 +1782,20 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           thread: thread,
           version: version,
         ),
-        // While an update runs on the app, its page is unloaded behind a
-        // cover (bundles spec §8.4) and loads again afterwards.
-        screen: (base, surface) => ValueListenableBuilder<Set<String>>(
-          valueListenable: _updating,
-          builder: (_, updating, child) =>
-              updating.contains(aid) ? const _UpdatingCover() : child!,
-          child: AppScreen(
-            key: ValueKey(base),
-            aid: aid,
-            base: base,
-            api: _api,
-            surface: surface,
-            voice: _s.voice,
-            settings: settings,
-            timings: _s.timings,
-            worker: _runtime.worker.events,
-            onRetry: _runtime.worker.retry,
-            onStop: _runtime.worker.cancelChange,
-            onCancelThread: _runtime.worker.cancelThread,
-            isStopped: _runtime.worker.isStopped,
-            onTryNow: _s.connection.nudge,
-            initialThread: thread,
-            initialComment: comment,
-            onReady: (r) {
-              open.ready = true;
-              _onReady(aid, r);
-              _openRoute(aid);
-            },
-            device: _device,
-            build: _build,
-            openApp: _open,
-            comments: _comments,
-            notice: _notice,
-            actions: actions.stream,
-            initialAction: action,
-            firstRunHint: _notice != null && !settings.appHintSeen,
-            onHintShown: () => unawaited(_keep((s) => s.appHintSeen = true)),
-            onDictateChanged: (on) =>
-                unawaited(_keep((s) => s.dictateComments = on)),
-          ),
+        screen: (base, surface) => _appScreen(
+          aid: aid,
+          base: base,
+          surface: surface,
+          settings: settings,
+          actions: actions.stream,
+          action: action,
+          thread: thread,
+          comment: comment,
+          onReady: (r) {
+            open.ready = true;
+            _onReady(aid, r);
+            _openRoute(aid);
+          },
         ),
       ),
     );
@@ -1760,6 +1808,79 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     );
     return route;
   }
+
+  /// App [aid]'s screen on [surface] at [base], under [settings]: taking
+  /// [actions] (and [action] once it is up), at [thread] and [comment] when
+  /// given, telling [onReady] of each `ready`. While an update runs on the
+  /// app, its page is unloaded behind a cover (bundles spec §8.4) and
+  /// loads again afterwards.
+  Widget _appScreen({
+    required String aid,
+    required Uri base,
+    required AppSurface surface,
+    required AppSettings settings,
+    required Stream<AppAction> actions,
+    required ValueChanged<Ready> onReady,
+    AppAction? action,
+    String? thread,
+    String? comment,
+    AppMode mode = AppMode.app,
+  }) => ValueListenableBuilder<Set<String>>(
+    valueListenable: _updating,
+    builder: (_, updating, child) =>
+        updating.contains(aid) ? const _UpdatingCover() : child!,
+    child: AppScreen(
+      key: ValueKey(base),
+      aid: aid,
+      base: base,
+      api: _api,
+      surface: surface,
+      voice: _s.voice,
+      settings: settings,
+      timings: _s.timings,
+      worker: _runtime.worker.events,
+      onRetry: _runtime.worker.retry,
+      onStop: _runtime.worker.cancelChange,
+      onCancelThread: _runtime.worker.cancelThread,
+      isStopped: _runtime.worker.isStopped,
+      onTryNow: _s.connection.nudge,
+      initialThread: thread,
+      initialComment: comment,
+      onReady: onReady,
+      device: _device,
+      build: _build,
+      home: _homeHost,
+      openApp: _open,
+      mode: mode,
+      comments: _comments,
+      notice: _notice,
+      actions: actions,
+      initialAction: action,
+      firstRunHint: _notice != null && !settings.appHintSeen,
+      onHintShown: () => unawaited(_keep((s) => s.appHintSeen = true)),
+      onDictateChanged: (on) => unawaited(_keep((s) => s.dictateComments = on)),
+    ),
+  );
+
+  /// The home app [aid]'s page, as the home screen ([AppMode.home]).
+  Widget _homeApp(BuildContext context, String aid, VoidCallback ready) =>
+      _AppPage(
+        aid: aid,
+        endpoint: _endpoint,
+        surface: _s.surface,
+        screen: (base, surface) => _appScreen(
+          aid: aid,
+          base: base,
+          surface: surface,
+          settings: _settings,
+          actions: _homeActions.stream,
+          mode: AppMode.home,
+          onReady: (r) {
+            ready();
+            _onReady(aid, r);
+          },
+        ),
+      );
 
   /// [surface], which once [aid]'s page is up selects [thread] (when the
   /// shell lists it) or shows [version], once.
@@ -1807,30 +1928,34 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         onRestart: _start,
       );
     }
-    if (!_wasUp) return const _Splash(key: ValueKey('splash'));
-    return Launcher(
-      api: _api,
-      open: _open,
-      make: _make,
-      timings: _s.timings,
-      handOver: _handOver,
-      voice: _s.voice,
-      openSettings: () => unawaited(_openSettings()),
-      needsKey: _needsKey,
-      stream: _stream,
-      onOpenTarget: _openTarget,
-      onOpenQuestion: _openQuestion,
-      makes: _makes,
-      icons: _icons,
-      inspectorPermissions: [
-        AgentReadPermissions(_consentMemory),
-        if (_device case final d?) DevicePermissions(d),
-        NetPermissions(_api),
-        AiPermissions(_api),
-      ],
-      build: _build,
-      bundles: _bundles,
-      lineage: _lineages.entry,
+    final host = _homeHost;
+    if (!_wasUp || host == null) {
+      return const _Splash(key: ValueKey('splash'));
+    }
+    return HomeRoute(
+      key: const ValueKey('home'),
+      host: host,
+      app: _homeApp,
+      fallback: (_) => Launcher(
+        api: _api,
+        open: _open,
+        make: _make,
+        timings: _s.timings,
+        handOver: _handOver,
+        voice: _s.voice,
+        openSettings: () => unawaited(_openSettings()),
+        needsKey: _needsKey,
+        stream: _stream,
+        onOpenTarget: _openTarget,
+        onOpenQuestion: _openQuestion,
+        makes: _makes,
+        icons: _icons,
+        inspectorPermissions: _homeFlows.inspectorPermissions,
+        build: _build,
+        bundles: _bundles,
+        lineage: _lineages.entry,
+        host: host,
+      ),
     );
   }
 
