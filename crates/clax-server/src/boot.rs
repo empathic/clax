@@ -298,11 +298,9 @@ mod tests {
 
     #[test]
     fn page_src_agrees_with_the_shell() {
-        let cases: Value = serde_json::from_str(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../web/shell/src/frame-src-cases.json"
-        )))
-        .unwrap();
+        let cases: Value =
+            serde_json::from_str(include_str!("../../../web/shell/src/frame-src-cases.json"))
+                .unwrap();
         for c in cases.as_array().unwrap() {
             let got = page_src(
                 c["id"].as_str().unwrap(),
@@ -316,10 +314,7 @@ mod tests {
 
     #[test]
     fn the_frame_has_the_shells_attributes() {
-        let host = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../web/shell/src/view/frame-host.ts"
-        ));
+        let host = include_str!("../../../web/shell/src/view/frame-host.ts");
         assert!(
             host.contains(&format!(
                 "export const FRAME_SANDBOX = \"{FRAME_SANDBOX}\";"

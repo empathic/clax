@@ -87,11 +87,8 @@ mod tests {
 
     #[test]
     fn agrees_with_the_shell_on_every_shared_case() {
-        let cases: serde_json::Value = serde_json::from_str(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../web/shell/src/route-cases.json"
-        )))
-        .unwrap();
+        let cases: serde_json::Value =
+            serde_json::from_str(include_str!("../../../web/shell/src/route-cases.json")).unwrap();
         for case in cases.as_array().unwrap() {
             let path = case["path"].as_str().unwrap();
             let want = &case["route"];

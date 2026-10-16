@@ -8,10 +8,7 @@ use clax_server::routes::shell::set_web_dist;
 use common::TestServer;
 use serde_json::{Value, json};
 
-const ENTRY: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../web/shell/artifact.html"
-));
+const ENTRY: &str = include_str!("../../../web/shell/artifact.html");
 const OPEN: &str = r#"<script type="application/json" id="clax-boot">"#;
 
 /// Serves the web UI from a scratch copy of the artifact entry until the

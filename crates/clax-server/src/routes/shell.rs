@@ -11,7 +11,7 @@ use axum::response::{IntoResponse, Response};
 use rust_embed::RustEmbed;
 
 #[derive(RustEmbed)]
-#[folder = "../../web/dist/"]
+#[folder = "$CLAX_WEB_DIST_DIR"]
 struct Assets;
 
 /// Where the bridge bundle sits in [`Assets`].
@@ -37,7 +37,7 @@ fn web_dist() -> std::path::PathBuf {
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .clone()
-        .unwrap_or_else(|| concat!(env!("CARGO_MANIFEST_DIR"), "/../../web/dist").into())
+        .unwrap_or_else(|| env!("CLAX_WEB_DIST_DIR").into())
 }
 
 /// A file of the web UI (`path` relative to `web/dist`): embedded in a release
@@ -87,9 +87,15 @@ pub fn bridge_version() -> String {
 /// A debug build reads `web/dist` from disk on every request, and `just dev`
 /// rebuilds the bridge under a running daemon, so the version follows the
 /// file: it is rehashed whenever the file's path, modification time or size
-/// changes.
+/// changes. A debug build that embeds its web UI (`clax_embedded`) and has
+/// no `set_web_dist` override versions the embedded bundle, once.
 #[cfg(debug_assertions)]
 pub fn bridge_version() -> String {
+    #[cfg(clax_embedded)]
+    if WEB_DIST.read().unwrap_or_else(|e| e.into_inner()).is_none() {
+        static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        return VERSION.get_or_init(hash_bridge).clone();
+    }
     type Stamp = (std::path::PathBuf, Option<std::time::SystemTime>, u64);
     static SEEN: std::sync::Mutex<Option<(Stamp, String)>> = std::sync::Mutex::new(None);
     let path = web_dist().join(BRIDGE);
@@ -446,6 +452,19 @@ mod tests {
         assert!(
             within(limit, std::future::pending()).await.is_none(),
             "a store slower than the limit"
+        );
+    }
+
+    /// A debug build with its web UI embedded (`clax_embedded`, Bazel's)
+    /// names the bridge by the embedded bundle, with no file on disk to read.
+    #[cfg(all(debug_assertions, clax_embedded))]
+    #[test]
+    fn an_embedded_debug_build_versions_the_embedded_bridge() {
+        let v = bridge_version();
+        assert_eq!(v.len(), 12, "{v:?}");
+        assert_eq!(
+            v,
+            short_hash(&Assets::get(BRIDGE).unwrap().metadata.sha256_hash())
         );
     }
 

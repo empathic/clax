@@ -7,7 +7,7 @@ use rust_embed::RustEmbed;
 use std::path::PathBuf;
 
 #[derive(RustEmbed)]
-#[folder = "../../web/dist-extension/"]
+#[folder = "$CLAX_EXTENSION_DIST_DIR"]
 #[exclude = ".gitkeep"]
 #[exclude = "key/*"]
 #[exclude = "**/.DS_Store"]
