@@ -573,7 +573,8 @@ enum UpdateChoice {
   /// Update (an unmodified copy), or Update (replaces your changes).
   update,
 
-  /// Keep mine (stop updates for this app).
+  /// Keep mine: stop updates for this app, or skip only this update
+  /// ([UpdateSheet.keepStopsUpdates]).
   keepMine,
 }
 
@@ -588,6 +589,7 @@ class UpdateSheet extends StatelessWidget {
     required this.added,
     this.modified = false,
     this.stoppedAt,
+    this.keepStopsUpdates = true,
   });
 
   final BundleSummary bundle;
@@ -602,6 +604,11 @@ class UpdateSheet extends StatelessWidget {
 
   /// When the person chose Keep mine before; the sheet then asks again.
   final DateTime? stoppedAt;
+
+  /// Whether Keep mine stops every later update of the app ("Keep mine
+  /// (stop updates for this app)"), or only this one, the next asking
+  /// again ("Keep mine (skip this update)").
+  final bool keepStopsUpdates;
 
   static String _date(DateTime t) {
     const months = [
@@ -645,7 +652,11 @@ class UpdateSheet extends StatelessWidget {
                 key: const ValueKey('keep-mine'),
                 onPressed: () =>
                     Navigator.of(context).pop(UpdateChoice.keepMine),
-                child: const Text('Keep mine (stop updates for this app)'),
+                child: Text(
+                  keepStopsUpdates
+                      ? 'Keep mine (stop updates for this app)'
+                      : 'Keep mine (skip this update)',
+                ),
               ),
               FilledButton(
                 key: const ValueKey('update'),

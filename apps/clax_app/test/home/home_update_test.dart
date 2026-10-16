@@ -7,6 +7,7 @@ import 'package:clax_app/home/home_install.dart';
 import 'package:clax_app/home/home_settings.dart';
 import 'package:clax_app/home/home_update.dart';
 import 'package:clax_app/ui/bundle_sheets.dart' show UpdateChoice;
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../bundle/services_support.dart';
@@ -154,6 +155,35 @@ void main() {
     expect(await check(await _Shipped.at(3, '1.2.0')), HomeUpdateResult.none);
     expect(asked, hasLength(2), reason: 'the next release asks again');
     expect(await liveIndex(), '<p>sorted alphabetically</p>');
+  });
+
+  testWidgets('the home update sheet says Keep mine skips only this '
+      'update', (tester) async {
+    await tester.runAsync(() async {
+      await changeIt();
+      await check(await _Shipped.at(2, '1.1.0'));
+    });
+    final opened = asked.single;
+    final answers = <UpdateChoice?>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: TextButton(
+              onPressed: () async =>
+                  answers.add(await askHomeUpdate(context, opened)),
+              child: const Text('show'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('show'));
+    await tester.pumpAndSettle();
+    expect(find.text('Keep mine (stop updates for this app)'), findsNothing);
+    await tester.tap(find.text('Keep mine (skip this update)'));
+    await tester.pumpAndSettle();
+    expect(answers, [UpdateChoice.keepMine]);
   });
 
   test('Update replaces the changed home app and keeps its data', () async {
