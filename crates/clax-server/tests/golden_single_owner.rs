@@ -1063,7 +1063,9 @@ async fn the_golden_differs_only_as_section_19_lists() {
             .expect("the fixture's owner")
             .public_id
     };
-    let got = compare_with_section_19(&committed, &golden_now().await, &owner);
+    let mut now = golden_now().await;
+    unscope_asset_urls(&mut now);
+    let got = compare_with_section_19(&committed, &now, &owner);
     assert!(
         got.other.is_empty(),
         "differences §19 does not list: {:#?}",
@@ -1079,6 +1081,46 @@ async fn the_golden_differs_only_as_section_19_lists() {
         .map(|(n, c)| (n.to_string(), *c))
         .collect();
     assert_eq!(got.marks, want, "(not connected) marks per name");
+}
+
+/// Rewrites every asset URL `/_blob/<artifact ID>/<asset ID>` in `v` to
+/// the `/_blob/<asset ID>` the golden was collected with. Assets are scoped
+/// to their artifact (docs/contract.md, `assets`): a change of the URL's
+/// shape that §19 does not cover and that holds for every install.
+fn unscope_asset_urls(v: &mut Value) {
+    match v {
+        Value::String(s) if s.contains("/_blob/") => {
+            let mut out = String::new();
+            let mut rest = s.as_str();
+            while let Some(at) = rest.find("/_blob/") {
+                let (head, tail) = rest.split_at(at + "/_blob/".len());
+                out.push_str(head);
+                let seg = tail
+                    .find(['/', '"', ' ', '?', '#', ')'])
+                    .unwrap_or(tail.len());
+                rest = if tail[seg..].starts_with('/') {
+                    &tail[seg + 1..]
+                } else {
+                    tail
+                };
+            }
+            out.push_str(rest);
+            *s = out;
+        }
+        Value::Array(a) => a.iter_mut().for_each(unscope_asset_urls),
+        Value::Object(o) => o.values_mut().for_each(unscope_asset_urls),
+        _ => {}
+    }
+}
+
+#[test]
+fn unscope_asset_urls_drops_only_the_artifact_segment() {
+    let mut v = json!({"u": "http://h/_blob/ky9g/01AB and /_blob/01CD", "n": [1, "/_blob/a/b"]});
+    unscope_asset_urls(&mut v);
+    assert_eq!(
+        v,
+        json!({"u": "http://h/_blob/01AB and /_blob/01CD", "n": [1, "/_blob/b"]})
+    );
 }
 
 /// Writes the golden. Run by hand, only where the plan allows it.
