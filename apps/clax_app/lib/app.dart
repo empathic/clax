@@ -586,6 +586,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     _make,
     clock: _s.clock,
     pending: _s.pendingMake,
+    tryNow: _s.connection.nudge,
     onMade: _madeAway,
     onFailed: _failedAway,
   );
@@ -1001,15 +1002,17 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _presence.onLifecycle(state);
+    // The connection is probed only in front.
+    _s.connection.foreground = _presence.foreground;
     if (_presence.foreground && _backgroundQuestions.isNotEmpty) {
       _presentBackgroundQuestions();
     }
     switch (state) {
       case AppLifecycleState.resumed:
         unawaited(_s.supervisor.onResume());
-        // Back in front: work waiting for the connection need not wait out
-        // the probe's interval.
-        if (!_s.connection.online) unawaited(_s.connection.check());
+        // Back in front: work waiting for the connection is tried at once,
+        // also a turn that stopped resending until now.
+        _s.connection.nudge();
         _runs.onForeground();
       case AppLifecycleState.detached:
         unawaited(_shutDown());
@@ -1723,6 +1726,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
             worker: _runtime.worker.events,
             onRetry: _runtime.worker.retry,
             onStop: _runtime.worker.cancelChange,
+            onCancelThread: _runtime.worker.cancelThread,
+            isStopped: _runtime.worker.isStopped,
+            onTryNow: _s.connection.nudge,
             initialThread: thread,
             initialComment: comment,
             onReady: (r) {
