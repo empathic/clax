@@ -37,9 +37,11 @@ const finishNudge = 'Call finish or give_up.';
 ///   follows a mid-output fallback to another model, after which the
 ///   partial output starts again from empty;
 /// - a turn held back by its backend ([TurnHolds], for example
-///   `ResumingTurns` waiting out a background network cut) does not spend
-///   the wall clock while held, and is followed by an [AttemptStarted]
-///   when it is sent again; a failed turn is never counted and left
+///   `ResumingTurns` waiting out a background network cut or a lost
+///   connection) does not spend the wall clock while held, and is followed
+///   by an [AttemptStarted] when it is sent again; a wait for the
+///   connection is told by [WaitingForConnection], and its end by
+///   [ConnectionBack]; a failed turn is never counted and left
 ///   nothing in the history, so the resent turn is the same request;
 /// - a turn is priced per model attempt (a fallback model at its own
 ///   rates).
@@ -85,6 +87,8 @@ class _Run {
     pauseClock: state.budget.pauseClock,
     resumeClock: state.budget.resumeClock,
     onResend: () => _emit(AttemptStarted(++_attempt)),
+    onConnection: (waiting) =>
+        _emit(waiting ? const WaitingForConnection() : const ConnectionBack()),
   );
 
   bool get _cancelled => _stopReason == _Stop.cancelled;

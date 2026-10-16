@@ -99,6 +99,25 @@ final class Inspected extends AgentProgress {
   String toString() => 'Inspected(${png.length} bytes, $errors errors)';
 }
 
+/// The run waits for the Claude API to be reachable again: its connection
+/// was lost, or it started while the API was known unreachable. Nothing
+/// it spent while waiting counts against its limits.
+final class WaitingForConnection extends AgentProgress {
+  const WaitingForConnection();
+
+  @override
+  String toString() => 'WaitingForConnection()';
+}
+
+/// The API is reachable again after a [WaitingForConnection]: the run goes
+/// on from where it stopped.
+final class ConnectionBack extends AgentProgress {
+  const ConnectionBack();
+
+  @override
+  String toString() => 'ConnectionBack()';
+}
+
 /// What a call of the tool [name] does, for the person, from its input so
 /// far ([partialInput] may lack fields while the call streams).
 String toolLabel(String name, Map<String, Object?> partialInput) {

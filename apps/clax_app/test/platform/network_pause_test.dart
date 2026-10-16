@@ -14,6 +14,7 @@ import 'package:clax_app/agent/tools/budget.dart';
 import 'package:clax_app/agent/tools/draft.dart';
 import 'package:clax_app/agent/tools/tool_spec.dart';
 import 'package:clax_app/agent/tools/toolbox.dart';
+import 'package:clax_app/platform/connection.dart';
 import 'package:clax_app/platform/network_pause.dart';
 import 'package:flutter/widgets.dart' show AppLifecycleState;
 import 'package:flutter_test/flutter_test.dart';
@@ -238,6 +239,7 @@ void main() {
   });
 
   group('ResumingTurns', turnTests);
+  group('offline', offlineTests);
 }
 
 // ResumingTurns: the same rule, per turn of a tool loop.
@@ -320,13 +322,18 @@ TurnRequest _turnRequest({Future<void>? cancelled, TurnHolds? holds}) =>
       holds: holds,
     );
 
-TurnHolds _holds(_Clock c, {void Function()? onResend}) => TurnHolds(
+TurnHolds _holds(
+  _Clock c, {
+  void Function()? onResend,
+  void Function(bool waiting)? onConnection,
+}) => TurnHolds(
   pauseClock: ({since}) {
     c.pauses++;
     c.since.add(since);
   },
   resumeClock: () => c.resumes++,
   onResend: onResend,
+  onConnection: onConnection,
 );
 
 void turnTests() {
@@ -832,4 +839,302 @@ class _Counted implements Tool {
     }
     return const ToolOk({});
   }
+}
+
+// Offline: a cut while the app is in front waits for the connection.
+
+void offlineTests() {
+  late AppPresence p;
+  late StepClock clock;
+  late bool reachable;
+  late ApiConnection conn;
+
+  setUp(() {
+    p = AppPresence();
+    clock = StepClock();
+    reachable = false;
+    conn = ApiConnection(probe: () async => reachable, clock: clock);
+  });
+
+  /// The API answers again: the next probe finds it.
+  Future<void> reconnect() async {
+    reachable = true;
+    clock.advance(ApiConnection.maxProbe);
+    await pumpEventQueue();
+  }
+
+  test('a turn cut in front waits for the connection with the run clock '
+      'stopped, however long, then is sent again unchanged', () async {
+    final c = _Clock();
+    final events = <String>[];
+    final inner = _Turns([_dns, _ok]);
+    final turns = ResumingTurns(
+      inner,
+      p,
+      clock: clock,
+      connection: conn,
+      onPause: () => events.add('pause'),
+      onOffline: () => events.add('offline'),
+      onResume: () => events.add('resume'),
+    );
+    final r = _turnRequest(
+      holds: _holds(
+        c,
+        onResend: () => events.add('resend'),
+        onConnection: (w) => events.add(w ? 'waiting' : 'back'),
+      ),
+    );
+    ModelTurn? got;
+    unawaited(turns.turn(r).then((t) => got = t));
+    await pumpEventQueue();
+    expect(conn.online, isFalse);
+    expect(events, ['offline', 'waiting']);
+    expect(c.paused, isTrue);
+
+    clock.advance(const Duration(hours: 5));
+    await pumpEventQueue();
+    expect(got, isNull, reason: 'waiting has no time limit');
+
+    await reconnect();
+    expect(events, ['offline', 'waiting', 'back', 'resume', 'resend']);
+    expect((c.pauses, c.resumes), (1, 1));
+    expect(inner.seen, hasLength(2));
+    expect(identical(inner.seen[1].messages, r.messages), isTrue);
+    expect(got, same(_ok));
+  });
+
+  test('a turn that starts while the API is known unreachable is not sent '
+      'until it is back', () async {
+    final c = _Clock();
+    final events = <String>[];
+    conn.lost();
+    final inner = _Turns([_ok]);
+    ModelTurn? got;
+    unawaited(
+      ResumingTurns(inner, p, clock: clock, connection: conn)
+          .turn(
+            _turnRequest(
+              holds: _holds(
+                c,
+                onConnection: (w) => events.add(w ? 'waiting' : 'back'),
+              ),
+            ),
+          )
+          .then((t) => got = t),
+    );
+    await pumpEventQueue();
+    expect(inner.seen, isEmpty);
+    expect(events, ['waiting']);
+    expect(c.paused, isTrue);
+
+    await reconnect();
+    expect(inner.seen, hasLength(1));
+    expect(got, same(_ok));
+    expect(events, ['waiting', 'back']);
+    expect((c.pauses, c.resumes), (1, 1));
+  });
+
+  test('waits for the connection are not counted against maxResumes', () async {
+    final c = _Clock();
+    final inner = _Turns([_dns, _dns, _dns, _dns, _dns, _ok]);
+    ModelTurn? got;
+    unawaited(
+      ResumingTurns(
+        inner,
+        p,
+        clock: clock,
+        connection: conn,
+      ).turn(_turnRequest(holds: _holds(c))).then((t) => got = t),
+    );
+    for (var i = 0; i < 5; i++) {
+      await pumpEventQueue();
+      expect(conn.online, isFalse);
+      await reconnect();
+      reachable = false;
+    }
+    await pumpEventQueue();
+    expect(inner.seen, hasLength(6));
+    expect(got, same(_ok));
+  });
+
+  test(
+    'a cancel while waiting for the connection ends the turn cancelled',
+    () async {
+      final c = _Clock();
+      final cancel = Completer<void>();
+      final inner = _Turns([_dns]);
+      final turn = ResumingTurns(
+        inner,
+        p,
+        clock: clock,
+        connection: conn,
+      ).turn(_turnRequest(cancelled: cancel.future, holds: _holds(c)));
+      await pumpEventQueue();
+      cancel.complete();
+      await expectLater(
+        turn,
+        throwsA(
+          isA<AgentError>().having(
+            (e) => e.kind,
+            'kind',
+            AgentErrorKind.cancelled,
+          ),
+        ),
+      );
+      expect(inner.seen, hasLength(1));
+      expect((c.pauses, c.resumes), (1, 1));
+    },
+  );
+
+  test('a stream quiet in front for stallAfter is probed: unreachable, it '
+      'is aborted and waits for the connection', () async {
+    final c = _Clock();
+    final stall = _Stall();
+    final inner = _Turns([stall, _ok]);
+    ModelTurn? got;
+    unawaited(
+      ResumingTurns(
+        inner,
+        p,
+        clock: clock,
+        connection: conn,
+      ).turn(_turnRequest(holds: _holds(c))).then((t) => got = t),
+    );
+    await pumpEventQueue();
+    clock.advance(ResumingTurns.defaultStallAfter);
+    await pumpEventQueue();
+    expect(conn.online, isFalse);
+    expect(c.pauses, 1);
+    expect(inner.seen, hasLength(1));
+
+    await reconnect();
+    expect(inner.seen, hasLength(2));
+    expect(got, same(_ok));
+  });
+
+  test(
+    'a stream quiet in front with the API reachable is left alone',
+    () async {
+      reachable = true;
+      final c = _Clock();
+      final cancel = Completer<void>();
+      final inner = _Turns([_Stall()]);
+      final turn = ResumingTurns(
+        inner,
+        p,
+        clock: clock,
+        connection: conn,
+      ).turn(_turnRequest(cancelled: cancel.future, holds: _holds(c)));
+      for (var i = 0; i < 10; i++) {
+        clock.advance(const Duration(minutes: 1));
+        await pumpEventQueue();
+      }
+      expect(c.pauses, 0);
+      expect(conn.online, isTrue);
+      cancel.complete();
+      await expectLater(turn, throwsA(isA<AgentError>()));
+      expect(inner.seen, hasLength(1));
+    },
+  );
+
+  test('ResumingBackend: a run cut in front waits for the connection, then '
+      'runs again', () async {
+    final events = <String>[];
+    final inner = _Backend([_dns, _result]);
+    EditResult? got;
+    unawaited(
+      ResumingBackend(
+        inner,
+        p,
+        connection: conn,
+        onOffline: () => events.add('offline'),
+        onResume: () => events.add('resume'),
+      ).run(_request()).then((r) => got = r),
+    );
+    await pumpEventQueue();
+    expect(events, ['offline']);
+    expect(inner.runs, 1);
+    await reconnect();
+    expect(events, ['offline', 'resume']);
+    expect(inner.runs, 2);
+    expect(got, same(_result));
+  });
+
+  group('in MessagesApiRunner', () {
+    late Completer<void> cancel;
+    late List<AgentProgress> events;
+
+    setUp(() {
+      cancel = Completer<void>();
+      events = [];
+    });
+
+    Map<String, Object?> use(String id, String name) => {
+      'type': 'tool_use',
+      'id': id,
+      'name': name,
+      'input': <String, Object?>{},
+    };
+
+    test('a run that loses the connection mid-way waits and resumes: no '
+        'tool runs twice, it publishes once, and says it is waiting', () async {
+      const files = {'index.html': '<p>runs</p>'};
+      final render = _Counted('render');
+      final finish = _Counted('finish', ends: true);
+      final tb = Toolbox(
+        RunState(
+          ctx: RunContext(
+            kind: RequestKind.change,
+            artifactId: 'a1',
+            baseVersion: 3,
+            files: files,
+            cancelled: cancel.future,
+            clock: clock,
+          ),
+          draft: Draft(files: files, title: 'Runs', baseVersion: 3),
+          budget: RunBudget(testChangeCaps, 'claude-haiku-5-5', clock),
+          progress: events.add,
+        ),
+        [render, finish],
+      );
+      final inner = _Turns([
+        _turn([use('t1', 'render')]),
+        _dns,
+        _turn([use('t2', 'finish')]),
+      ]);
+      RunOutcome? out;
+      unawaited(
+        MessagesApiRunner(
+              ResumingTurns(inner, p, clock: clock, connection: conn),
+            )
+            .run(
+              const RunInput(
+                system: 's',
+                first: [
+                  {'type': 'text', 'text': 'u'},
+                ],
+              ),
+              tb,
+            )
+            .then((o) => out = o),
+      );
+      await pumpEventQueue();
+      expect(out, isNull);
+      expect(events.whereType<WaitingForConnection>(), hasLength(1));
+      clock.advance(const Duration(hours: 1));
+      await pumpEventQueue();
+      expect(out, isNull, reason: 'the wall clock is stopped while waiting');
+
+      await reconnect();
+      expect(out, isA<RunFinished>());
+      expect((render.calls, finish.calls), (1, 1));
+      expect(inner.seen, hasLength(3));
+      expect(
+        jsonEncode(inner.seen[2].messages),
+        jsonEncode(inner.seen[1].messages),
+        reason: 'the cut turn left nothing in the history',
+      );
+      expect(events.whereType<ConnectionBack>(), hasLength(1));
+    });
+  });
 }
