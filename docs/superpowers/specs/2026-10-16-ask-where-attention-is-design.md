@@ -1,6 +1,6 @@
 # Asking where the person is paying attention
 
-Status: draft for the owner's review, 2026-10-16.
+Status: draft for the owner's review, 2026-10-16; the four proposals settled the same day.
 
 ## Problem
 
@@ -30,9 +30,10 @@ not on the person:
   the signals and a suggestion. It decides nothing for the agent.
 - **Best effort:** the estimate uses every signal that is available and
   says when it is unsure.
-- **Both surfaces say what is happening.** A question asked in the terminal
-  shows in Clax as being asked there, and the reverse. Where the mechanism
-  allows it, the person can pull the question to the other surface.
+- **One surface asks; the other is notified.** A question is asked on one
+  surface only and is never mirrored. The other surface gets a notice that
+  a question waits there. Where the mechanism allows it, the notice lets
+  the person pull the question over.
 - **The narrowest context:** a question shows in the most local place it
   belongs: the thread it arose from, else the artifact, else the inbox.
 - **Every agent follows the same rules:** Claude Code, Codex, Grok and Pi.
@@ -68,6 +69,8 @@ session's person is engaged:
     `web/shell/src/view/presence-model.ts:9-10`).
   - New: the tab's focus, reported with presence. Today focus is known
     only inside the shell's SharedWorker (`web/shell/src/stream-hub.ts:26-30`).
+    Focus is kept for the person's own agents' suggestion alone: other
+    viewers' presence never shows it.
   - New: the person's last input on the page.
   - The extension side panel being open.
 
@@ -83,6 +86,11 @@ From these the daemon derives a **suggestion**:
   - the newest signals on the two sides are within a minute of each other;
   - neither side has a signal from the last 5 minutes;
   - or the only signal is an inferred terminal turn (Codex, Grok).
+
+  These windows are a starting default, to tune with use.
+- **An unsure suggestion leans to Clax:** it names Clax, at the
+  instigating thread or else the session's artifact, with `confidence:
+  "unsure"`.
 - A hidden or unfocused tab never counts as Clax attention. This replaces
   `holds_surface`'s rule and settles record `fabba150`.
 
@@ -113,41 +121,41 @@ From these the daemon derives a **suggestion**:
 
 ### 3. Asking in the terminal
 
+- **The notice:** a question asked in the terminal is not copied to Clax.
+  Clax shows a notice in the narrowest place (§2): "<agent> is asking you
+  in the terminal", with the time and, for a thread, the thread. Clax also
+  notifies as for a question (the inbox count, the tab's notification).
+  The notice closes when the question is answered or withdrawn.
 - **Claude Code's AskUserQuestion:**
   - The hook asks the daemon for the suggestion.
-  - When it says the terminal, or is unsure with the terminal newest, the
-    hook releases at once, so the terminal dialog shows.
-  - It then posts the questions to Clax as a **notice**: a read-only card,
-    "Claude is asking in the terminal". The card shows the questions and
-    follows their state. The PostToolUse `asked` hook
-    (`crates/clax-hooks/src/ask.rs:207-228`) closes it as "Answered in the
-    terminal".
-  - When the suggestion says Clax, the hook waits in Clax as today. The
-    card keeps **Answer in the terminal**, which is the pull toward the
-    terminal (`release_owner`, `crates/clax-server/src/routes/questions.rs:735-750`).
-- **Chat questions** in any harness, written by the agent as text: the
-  agent may post the same questions as a notice with `ask`
-  `{notice: true}`. It shows in the narrowest place, as in §2, marked
-  "asked in the terminal", and closes when the agent cancels it or the
-  person answers.
-- **Pulling to Clax:** on a notice, **Answer here** turns it into an open
-  question in Clax. The agent learns of that at its next delivery (piggy-
-  backed feedback, `wait_for_feedback`, channel notice). It then stops
-  waiting on the terminal and takes the Clax answer.
+  - When it names the terminal, the hook releases at once, so the
+    terminal dialog shows. It posts the notice, and the PostToolUse
+    `asked` hook (`crates/clax-hooks/src/ask.rs:207-228`) closes it.
+  - When it names Clax (unsure included), the hook asks in Clax as today,
+    and its status line is the terminal's notice. The card keeps
+    **Answer in the terminal**, the pull toward the terminal (`release_owner`,
+    `crates/clax-server/src/routes/questions.rs:735-750`).
+- **Chat questions** in any harness, which the agent writes as text: the
+  agent posts the notice with `ask` `{notice: true, thread_id?}` (the
+  questions' headers only), and cancels it when the person answers in
+  chat.
+- **Pulling to Clax:** a notice offers **Ask me here**. It sends the agent
+  a delivery (piggybacked feedback, `wait_for_feedback`, channel notice)
+  saying the person wants the question in Clax, and the agent asks it
+  there with `ask`.
   - **The limit:** Claude Code's terminal dialog can't be closed from
-    outside. A pulled AskUserQuestion's dialog stays until the person
-    dismisses it. The notice says so ("Answer here, then press Esc in the
-    terminal"). Pressing Esc withdraws the hook question
-    (`question_grace`), so the pulled question must be a new row, not the
-    hook's.
+    outside. After Ask me here, the dialog stays until the person presses
+    Esc, and the notice says so. Esc withdraws the hook's question
+    (`question_grace`); the Clax question is the agent's new one.
 
 ### 4. Answers and replies stay with their thread
 
 - **The instructions** (MCP server instructions and every plugin's skill)
   change from "prefer `ask`" to:
   1. read the suggestion;
-  2. ask on the surface it names, at the place it names;
-  3. say on the other surface what you did;
+  2. ask on the surface it names, at the place it names, and only there;
+  3. notify the other surface: in chat, "Asked in Clax: <url>"; in Clax,
+     the notice of §3;
   4. answer Clax-instigated work in its thread (`comments_reply`), and
      chat-instigated work in chat.
 - **The suggestion's `why`** is shown to the agent, so it can override
@@ -156,12 +164,12 @@ From these the daemon derives a **suggestion**:
 
 ### 5. Each harness
 
-| Harness | Terminal activity | Native question | Mirrored |
+| Harness | Terminal activity | Native question | Notice in Clax |
 |---|---|---|---|
-| Claude Code | `UserPromptSubmit` | AskUserQuestion | yes (hook, §3) |
+| Claude Code | `UserPromptSubmit` | AskUserQuestion | the hook posts the notice (§3) |
 | Pi | input event if offered, else inferred | none (`clax_ask` is Clax's) | n/a |
-| Codex | inferred from turns | `request_user_input` (plan mode only) | no; notice by the agent |
-| Grok | inferred from turns | `ask_user_question` | no; notice by the agent |
+| Codex | inferred from turns | `request_user_input` (plan mode only) | no; the agent posts the notice |
+| Grok | inferred from turns | `ask_user_question` | no; the agent posts the notice |
 
 ## Tests
 
@@ -173,7 +181,7 @@ From these the daemon derives a **suggestion**:
   - a hook question with a newer terminal prompt is released at once and
     leaves a notice;
   - one with newer focused Clax input waits in Clax;
-  - **Answer here** opens a new question and closes the notice;
+  - **Ask me here** reaches the agent as a delivery;
   - the `asked` hook closes a notice;
   - a hidden tab is not attention.
 - **Plugins:** the Claude prompt hook records terminal activity; Pi's turn
@@ -181,17 +189,14 @@ From these the daemon derives a **suggestion**:
 - **Browser:**
   - a thread question renders in its thread card and is counted in the
     Inbox;
-  - a notice shows "asking in the terminal" and its Answer here;
+  - a notice shows "asking you in the terminal" and its Ask me here;
   - both at 1280 and 390 wide, light and dark.
 
-## Proposals for the owner
+## Settled by the owner (2026-10-16)
 
-1. The unsure window (signals within a minute of each other, or none in 5
-   minutes).
-2. Whether an unsure suggestion should lean to the terminal (the agent's
-   own surface) or to Clax.
-3. Whether a notice for chat questions is the agent's choice (as above) or
-   always posted when the person has Clax open on the page.
-4. Whether to send tab focus to the daemon. It is new presence data that
-   other people in the room never see; only the person's own agents see
-   it.
+1. The unsure windows (one minute apart, none in 5 minutes) are a default
+   to tune with use.
+2. An unsure suggestion leans to Clax.
+3. No mirroring: a question is asked on one surface, and the other gets a
+   notice.
+4. Tab focus goes to the daemon, for the person's own agents.
