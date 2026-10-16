@@ -489,6 +489,15 @@ function Home({ home }) {
   );
   const [act, notice] = useActions(home);
   const { pull, busy } = usePull(refresh);
+  // Clax keeps its own home screen over this page until it is told the
+  // grid (or the empty state, or the load error) is drawn: once per load.
+  const drawn = Array.isArray(apps) || !!appsError;
+  const toldShown = useRef(false);
+  useEffect(() => {
+    if (!home || !drawn || toldShown.current) return;
+    toldShown.current = true;
+    Promise.resolve(home.shown?.()).catch(() => {});
+  }, [home, drawn]);
 
   if (!home || (appsError && isRefused(appsError))) {
     return html`<main class="h-page h-away">

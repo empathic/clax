@@ -53,7 +53,7 @@ test.describe("its tests in the inspect view", () => {
     const tests = (await ofType(page, "tests"))[0] as HostMessage & { passed: number; failed: unknown[]; skipped: number };
     expect(tests.failed).toEqual([]);
     expect(tests.skipped).toBe(0);
-    expect(tests.passed).toBe(19);
+    expect(tests.passed).toBe(20);
   });
 });
 
@@ -89,6 +89,12 @@ test.describe("in app mode, through the shell", () => {
       return calls.map(c => c.method);
     };
     await expect.poll(async () => { await serveCalls(); return frame.locator(".h-tile").count(); }).toBe(2);
+    // Once the grid is drawn with its apps, the page says so: Clax lifts
+    // its own home screen on that, not on the frame's ready.
+    await expect.poll(serveCalls).toContain("shown");
+    const order = calls.map(c => c.method);
+    expect(order.indexOf("shown")).toBeGreaterThan(order.indexOf("apps"));
+    expect(order.filter(m => m === "shown")).toHaveLength(1);
 
     const box = (await frame.locator('[data-id="app-groceries"] .h-icon').boundingBox())!;
     const [x, y] = [box.x + box.width / 2, box.y + box.height / 2];

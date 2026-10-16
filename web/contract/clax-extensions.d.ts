@@ -294,7 +294,11 @@ declare namespace ClaxExtensions {
    * Calls that open something (`open`, `openMake`, `newApp`, `menu`,
    * `openInbox`, `openSettings`, `importApp`) must come from the person's
    * tap or key press in the page, or they reject `no_gesture`; the reads
-   * need none. Rejections are `{code, message}` with `code` one of
+   * and `shown` need none.
+   *
+   * Clax keeps its own home screen over the page until the page calls
+   * `shown()`, and shows its own, with Undo last change and Reset, when
+   * no `shown()` comes within 10 s of the page loading. Rejections are `{code, message}` with `code` one of
    * `refused` (not the home app), `bad_request` (an ID not on the home
    * screen, a malformed rect), `no_gesture` or `unavailable`.
    */
@@ -365,6 +369,10 @@ declare namespace ClaxExtensions {
       openSettings(): Promise<void>;
       /** Opens the system picker to import a `.clax` app. */
       importApp(): Promise<void>;
+      /** Says the page has drawn the home screen: the grid with its apps,
+       * the empty state or the load error. Call it once per load, after
+       * the first such render (from an effect, not a tap). */
+      shown(): Promise<void>;
       /** Calls `fn` with each change of topic `name`, after the page's
        * first `home` call; returns `stop`. A page that was covered hears
        * only the latest value. */

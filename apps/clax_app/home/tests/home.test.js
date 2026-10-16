@@ -251,3 +251,22 @@ test('a refused capability reads as unavailable; another failure offers Try agai
   await ui.click('Try again');
   await wait(() => labels().includes('Run tracker'));
 });
+
+test('tells Clax once the grid is drawn, after the apps arrive', async () => {
+  const home = fakeHome({ makes: [] });
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const apps = home.apps;
+  home.apps = async () => { await gate; return apps(); };
+  const shown = [];
+  home.shown = async () => { shown.push(tiles().length); };
+  mount(root(), home);
+  await ui.waitFor(() => document.querySelector('.h-fab'));
+  expect(shown).toEqual([]);
+  release();
+  await wait(() => shown.length === 1);
+  expect(shown[0]).toBe(SAMPLE.apps.length);
+  home.set({ apps: SAMPLE.apps.slice(0, 2) });
+  await wait(() => tiles().length === 2);
+  expect(shown.length).toBe(1);
+});

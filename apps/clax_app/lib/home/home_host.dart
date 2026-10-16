@@ -256,6 +256,14 @@ class HomeHost extends ChangeNotifier {
   /// Each change of a topic for the home app (see [HomeEvent]).
   Stream<HomeEvent> get events => _out.stream;
 
+  final _shown = StreamController<String>.broadcast(sync: true);
+
+  /// The home app's ID at each of its `shown` calls: its page has drawn
+  /// the home screen with its apps (or its empty state, or its load
+  /// error), so nothing empty shows when Clax's own home screen over it
+  /// goes.
+  Stream<String> get shown => _shown.stream;
+
   /// Each topic's latest value, as [events] carries it: what a home app
   /// page that was covered or in the background is told when it shows
   /// again.
@@ -344,6 +352,8 @@ class HomeHost extends ChangeNotifier {
         actions.openSettings();
       case 'importApp':
         actions.importApp();
+      case 'shown':
+        _shown.add(callerAid);
       default:
         throw HomeBadRequest('home.$method is not a home method');
     }
@@ -627,6 +637,7 @@ class HomeHost extends ChangeNotifier {
       unawaited(s.cancel());
     }
     unawaited(_out.close());
+    unawaited(_shown.close());
     if (closeStream) unawaited(stream.close());
     super.dispose();
   }
