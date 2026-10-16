@@ -49,11 +49,11 @@ describe("ApprovalCard", () => {
   });
 
   it("shows the daemon's refusal and keeps the buttons", async () => {
-    stubFetch({ [`POST /api/approvals/requests/${RID}/decide`]: [409, { error: { code: "request_closed", message: "the request is no longer open" } }] });
+    stubFetch({ [`POST /api/approvals/requests/${RID}/decide`]: [409, { error: { code: "request_closed", message: "The request is no longer open." } }] });
     const m = mount(ApprovalCard, { item: item("approval"), now });
     click(buttons(m.root)[0]);
     await settle();
-    expect(m.root.querySelector('[role="alert"]')!.textContent).toContain("the request is no longer open");
+    expect(m.root.querySelector('[role="alert"]')!.textContent).toContain("The request is no longer open.");
     expect(buttons(m.root)).toHaveLength(4);
   });
 

@@ -1,6 +1,7 @@
 <svelte:options css="injected" />
 
 <script lang="ts">
+  import { refusal } from "./refusal";
   // The `*unconnected` switch (spec 2026-10-08-multi-agent-multi-person
   // §9.6), the owner's: on while the owner's approval of viewers who are not
   // connected is live. Off revokes that approval; on makes a new one. A
@@ -20,7 +21,7 @@
       if (sw.on && sw.approval_id) await api.revokeApproval(sw.approval_id);
       else await api.allow("*unconnected");
       onChanged();
-    } catch (e) { err = e instanceof Error ? e.message : String(e); } finally { busy = false; }
+    } catch (e) { err = refusal(e); } finally { busy = false; }
   };
 </script>
 

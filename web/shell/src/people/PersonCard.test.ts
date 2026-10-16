@@ -67,7 +67,7 @@ describe("PersonCard", () => {
   });
 
   it("revokes a person after asking, and shows the daemon's refusal as it is", async () => {
-    const calls = stubFetch({ "DELETE /api/people/p1": [400, { error: { code: "not_a_person", message: "p1 is not a person" } }] });
+    const calls = stubFetch({ "DELETE /api/people/p1": [400, { error: { code: "not_a_person", message: "p1 is not a person." } }] });
     const ask = vi.fn(() => true);
     vi.stubGlobal("confirm", ask);
     const m = mount(PersonCard, { view: "owner", who: person(), onChanged: vi.fn() });
@@ -78,18 +78,18 @@ describe("PersonCard", () => {
     await settle();
     expect(ask).toHaveBeenCalled();
     expect(calls.at(-1)).toEqual({ url: "/api/people/p1", method: "DELETE", body: undefined });
-    expect(m.root.querySelector('[role="alert"]')!.textContent).toBe("p1 is not a person");
+    expect(m.root.querySelector('[role="alert"]')!.textContent).toBe("p1 is not a person.");
   });
 
   it("puts a refused narrowing's checkbox back and says why", async () => {
-    stubFetch({ "PUT /api/people/me/grants/g1/narrow": [400, { error: { code: "not_narrower", message: "that would widen this machine's rights" } }] });
+    stubFetch({ "PUT /api/people/me/grants/g1/narrow": [400, { error: { code: "not_narrower", message: "That would widen this machine's rights." } }] });
     const m = mount(PersonCard, { view: "self", who: { public_id: "p1", display_name: "Sam", revoked_at: null, rights: COLLAB, grants: [grant()], agents: [] }, onChanged: vi.fn() });
     const del = byLabel(m.root.querySelector(".machine")!, "Delete artifacts")!;
     del.checked = false;
     change(del);
     await settle();
     expect(del.checked).toBe(true);
-    expect(m.root.querySelector('[role="alert"]')!.textContent).toBe("that would widen this machine's rights");
+    expect(m.root.querySelector('[role="alert"]')!.textContent).toBe("That would widen this machine's rights.");
   });
 
   it("lets a person narrow a machine and one agent of it, and gives this machine's agents no rights controls", async () => {
