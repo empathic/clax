@@ -119,6 +119,13 @@ class _HomeRouteState extends State<HomeRoute> {
     _listen(widget.host);
     widget.recovery?.addListener(_onRecovered);
     widget.snapshot?.addListener(_onSnapshot);
+    _holdActions();
+  }
+
+  /// The page's clicks are held while the snapshot holds them.
+  void _holdActions() {
+    final s = widget.snapshot;
+    widget.host.holdActions = s == null ? null : () => s.holdsActions;
   }
 
   void _onSnapshot() {
@@ -151,6 +158,10 @@ class _HomeRouteState extends State<HomeRoute> {
       old.snapshot?.removeListener(_onSnapshot);
       widget.snapshot?.addListener(_onSnapshot);
     }
+    if (old.snapshot != widget.snapshot || old.host != widget.host) {
+      if (old.host != widget.host) old.host.holdActions = null;
+      _holdActions();
+    }
   }
 
   @override
@@ -158,6 +169,7 @@ class _HomeRouteState extends State<HomeRoute> {
     _unlisten(widget.host);
     widget.recovery?.removeListener(_onRecovered);
     widget.snapshot?.removeListener(_onSnapshot);
+    widget.host.holdActions = null;
     super.dispose();
   }
 

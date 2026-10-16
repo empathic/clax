@@ -67,7 +67,14 @@ import 'ui/bundle_sheets.dart';
 import 'ui/app_surface.dart';
 import 'ui/error_screen.dart';
 import 'ui/host_protocol.dart'
-    show HostCall, LoadVersion, OpenRoute, OpenThread, Ready, ThreadsMsg;
+    show
+        HostCall,
+        HostMessage,
+        LoadVersion,
+        OpenRoute,
+        OpenThread,
+        Ready,
+        ThreadsMsg;
 import 'ui/inspector_surface.dart';
 import 'ui/launcher.dart';
 import 'ui/make_service.dart';
@@ -636,7 +643,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     if (s == null) return null;
     final settings = HomeSettings.loadSync(Directory(_s.supportDir));
     if (settings.builtin || settings.homeAppId != s.aid) return null;
-    return HomeSnapshotCover(s);
+    return HomeSnapshotCover(s, clock: _s.clock);
   }();
 
   /// Takes the home screen's snapshot, from the first Up.
@@ -650,6 +657,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
 
   StreamSubscription<String>? _homeShown;
   StreamSubscription<Object?>? _homeTiles;
+  StreamSubscription<HostMessage>? _homePage;
 
   /// Takes the snapshot as something is pushed over the home screen.
   late final _coverWatch = _HomeCoverWatch(
@@ -782,6 +790,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     _snapshotter?.dispose();
     unawaited(_homeShown?.cancel());
     unawaited(_homeTiles?.cancel());
+    unawaited(_homePage?.cancel());
     _homeCover?.dispose();
     unawaited(_homeActions.close());
     unawaited(_stream?.close());
@@ -2039,6 +2048,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         store: store,
         clock: _s.clock,
         inFront: () => _homeInFront,
+        mark: () => host.renderMark,
         capture: () async {
           final aid = host.settings.homeAppId;
           final surface = _homeSurface;
@@ -2059,6 +2069,19 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     }
   }
 
+  /// Follows the home app [aid]'s page on [surface]: each document it
+  /// loads forgets the tiles of the one before.
+  AppSurface _watchHomePage(String aid, AppSurface surface) {
+    unawaited(_homePage?.cancel());
+    _homePage = surface.messages.listen((m) {
+      if (m case Ready(:final artifact) when artifact == aid) {
+        _homeHost?.pageLoaded();
+        _snapshotter?.loaded();
+      }
+    });
+    return surface;
+  }
+
   /// The launch's snapshot drew its first frame.
   void _snapshotPainted() => _s.timings.stop(
     homeCover,
@@ -2071,7 +2094,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     return _AppPage(
       aid: aid,
       endpoint: _endpoint,
-      surface: (base) => _homeSurface = _s.surface(base),
+      surface: (base) => _watchHomePage(aid, _homeSurface = _s.surface(base)),
       screen: (base, surface) => _appScreen(
         aid: aid,
         base: base,
