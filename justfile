@@ -153,3 +153,7 @@ perf-native:
 # Regenerate what Bazel derives from Cargo (after any Cargo.toml or Cargo.lock change); commit the result
 bazel-sync:
     ./scripts/bazel-sync.sh
+
+# Free what Bazel leaves behind: output bases of removed worktrees, and the shared cache beyond its bound (--dry-run, --report)
+bazel-gc *ARGS:
+    ./scripts/bazel-gc.sh {{ARGS}}
