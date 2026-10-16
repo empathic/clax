@@ -36,7 +36,9 @@ Size? pngSize(Uint8List png) {
 }
 
 /// A screenshot of what a comment is on, scaled down to fit [maxWidth] by
-/// [maxHeight] with its proportions kept, its corners rounded.
+/// [maxHeight] with its proportions kept, its corners rounded. The PNG is
+/// decoded no larger than the box it is laid out in, in device pixels, so
+/// a full-size screenshot costs only a thumbnail's memory.
 class ClipThumb extends StatelessWidget {
   const ClipThumb(
     this.png, {
@@ -64,13 +66,33 @@ class ClipThumb extends StatelessWidget {
         ),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(8),
-          // Without a width or height the image keeps its proportions
-          // inside the box.
-          child: Image.memory(
-            png,
-            gaplessPlayback: true,
-            filterQuality: FilterQuality.medium,
-            semanticLabel: semanticLabel,
+          child: LayoutBuilder(
+            builder: (context, box) {
+              // Never decode below one pixel per logical pixel, so the
+              // decoded image is never smaller than the box shows it.
+              final dpr = MediaQuery.devicePixelRatioOf(context)
+                  .clamp(1.0, double.infinity);
+              int? device(double side) =>
+                  side.isFinite ? (side * dpr).ceil() : null;
+              final w = device(box.maxWidth), h = device(box.maxHeight);
+              final ImageProvider source = MemoryImage(png);
+              // Without a width or height the image keeps its proportions
+              // inside the box.
+              return Image(
+                image: w == null && h == null
+                    ? source
+                    : ResizeImage(
+                        source,
+                        width: w,
+                        height: h,
+                        policy: ResizeImagePolicy.fit,
+                        allowUpscaling: false,
+                      ),
+                gaplessPlayback: true,
+                filterQuality: FilterQuality.medium,
+                semanticLabel: semanticLabel,
+              );
+            },
           ),
         ),
       ),
