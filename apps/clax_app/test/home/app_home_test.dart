@@ -198,4 +198,24 @@ void main() {
     expect(timings.stopped.last.extra, {'artifact': home, 'snapshot': true});
     await _finish(tester);
   });
+
+  testWidgets('a launch that shows the built-in home screen records no '
+      'home-usable, not even at a later shown', (tester) async {
+    await recordHome(tester);
+    timings.start(homeUsable);
+    await tester.pumpWidget(AppRoot(services: services()));
+    supervisor.set(Up(endpoint()));
+    await _settle(tester);
+    final page = surfaces.single;
+    page.push(Ready(artifact: home, version: 1, latest: 1, file: 'index.html'));
+    // No shown within 10 s: the built-in home screen.
+    await tester.pump(const Duration(seconds: 11));
+    await _settle(tester);
+    page.push(
+      const DeviceRequest(id: 'r1', cap: 'home', method: 'shown', args: []),
+    );
+    await _settle(tester);
+    expect(timings.stopped.where((r) => r.name == homeUsable), isEmpty);
+    await _finish(tester);
+  });
 }

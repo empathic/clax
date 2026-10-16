@@ -54,7 +54,8 @@ class HomeBanner {
 /// [HomeSnapshotCover] lifts on the page's `shown`, opening (with the
 /// host's [HomeActions.open]) the app a tap on it chose; the built-in
 /// screen coming instead drops it. [onSnapshotPainted] is called after its
-/// first frame.
+/// first frame. [onBuiltIn] is called whenever the built-in home screen
+/// shows.
 class HomeRoute extends StatefulWidget {
   const HomeRoute({
     super.key,
@@ -64,6 +65,7 @@ class HomeRoute extends StatefulWidget {
     this.recovery,
     this.snapshot,
     this.onSnapshotPainted,
+    this.onBuiltIn,
     this.clock = const SystemClock(),
     this.shownWithin = const Duration(seconds: 10),
   });
@@ -81,6 +83,7 @@ class HomeRoute extends StatefulWidget {
   final HomeRecovery? recovery;
   final HomeSnapshotCover? snapshot;
   final VoidCallback? onSnapshotPainted;
+  final VoidCallback? onBuiltIn;
   final Clock clock;
   final Duration shownWithin;
 
@@ -248,6 +251,7 @@ class _HomeRouteState extends State<HomeRoute> {
     final failed = load != null && _failed == load;
     final cover = aid == null || failed || (_fellBack && _shownLoad != load);
     if (aid == null) _fellBack = true;
+    if (cover) widget.onBuiltIn?.call();
     final snap = widget.snapshot;
     final snapshot =
         !cover && snap != null && snap.covering && snap.snapshot.aid == aid;
