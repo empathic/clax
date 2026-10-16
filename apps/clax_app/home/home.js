@@ -478,6 +478,40 @@ function PullRing({ pull, busy }) {
   </div>`;
 }
 
+const MAX_TILES = 512;
+
+/** Tells Clax where each app's tile is (`home.tiles`), after each render
+ * that moves one and on scroll and resize, so the image of the home screen
+ * it shows at its next start opens the app under a tap. */
+function useTiles(home) {
+  const frame = useRef(0);
+  const last = useRef('');
+  const report = useCallback(() => {
+    if (!home?.tiles) return;
+    cancelAnimationFrame(frame.current);
+    frame.current = requestAnimationFrame(() => {
+      const tiles = [...document.querySelectorAll('.h-tile[data-id]')].slice(0, MAX_TILES).map((el) => {
+        const r = el.getBoundingClientRect();
+        return { id: el.dataset.id, rect: { x: r.x, y: r.y, w: r.width, h: r.height } };
+      });
+      const key = JSON.stringify(tiles);
+      if (key === last.current) return;
+      last.current = key;
+      Promise.resolve(home.tiles(tiles)).catch(() => {});
+    });
+  }, [home]);
+  useEffect(report);
+  useEffect(() => {
+    addEventListener('scroll', report, { passive: true });
+    addEventListener('resize', report);
+    return () => {
+      cancelAnimationFrame(frame.current);
+      removeEventListener('scroll', report);
+      removeEventListener('resize', report);
+    };
+  }, [report]);
+}
+
 function Home({ home }) {
   const [apps, appsError, reloadApps] = useTopic(home, 'apps', (h) => h.apps(), null);
   const [makes, , reloadMakes] = useTopic(home, 'makes', (h) => h.makes(), []);
@@ -498,6 +532,7 @@ function Home({ home }) {
     toldShown.current = true;
     Promise.resolve(home.shown?.()).catch(() => {});
   }, [home, drawn]);
+  useTiles(home);
 
   if (!home || (appsError && isRefused(appsError))) {
     return html`<main class="h-page h-away">

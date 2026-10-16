@@ -5,9 +5,10 @@
 // the app refuses every call from any other app). Reads (`apps`, `makes`,
 // `unread`, `needsKey`) need no gesture; every call that opens something
 // must come from the viewer's tap or key in the page (`no_gesture`
-// otherwise); `shown` needs none either. Positional arguments go to the app as one object: `open(id)`
-// and `openMake(id)` as `{id}`, `menu(id, rect)` as `{id, rect: {x, y, w,
-// h}}`. The app's changes (`deviceEvent({cap: "home", name, data})`, name
+// otherwise); `shown` and `tiles` need none either. Positional arguments go
+// to the app as one object: `open(id)` and `openMake(id)` as `{id}`,
+// `menu(id, rect)` as `{id, rect: {x, y, w, h}}`, `tiles(list)` as `{tiles:
+// [{id, rect}]}` (at most MAX_TILES). The app's changes (`deviceEvent({cap: "home", name, data})`, name
 // `apps`, `makes`, `unread` or `key`) reach the page as `home`/<name>
 // events once the handler is loaded.
 import { deviceLink } from "./device-link";
@@ -15,9 +16,12 @@ import { CapError } from "./errors";
 import { frameGesture } from "./gesture";
 import type { HandlerFactory } from "./host";
 
-export const HOME_METHODS = ["apps", "makes", "unread", "needsKey", "open", "openMake", "newApp", "menu", "openInbox", "openSettings", "importApp", "shown"] as const;
+export const HOME_METHODS = ["apps", "makes", "unread", "needsKey", "open", "openMake", "newApp", "menu", "openInbox", "openSettings", "importApp", "shown", "tiles"] as const;
 
-const READS = new Set<string>(["apps", "makes", "unread", "needsKey", "shown"]);
+const READS = new Set<string>(["apps", "makes", "unread", "needsKey", "shown", "tiles"]);
+
+/** The most tiles one `tiles` call may give. */
+export const MAX_TILES = 512;
 export const HOME_EVENTS = new Set<string>(["apps", "makes", "unread", "key"]);
 
 const id = (method: string, v: unknown): string => {
@@ -27,16 +31,36 @@ const id = (method: string, v: unknown): string => {
 
 const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 
+type Rect = { x: number; y: number; w: number; h: number };
+
+/** `v` as a rect, or null when it is not one. */
+function rectOf(v: unknown): Rect | null {
+  const r = (v ?? null) as { x?: unknown; y?: unknown; w?: unknown; h?: unknown } | null;
+  if (!r || typeof r !== "object" || !finite(r.x) || !finite(r.y) || !finite(r.w) || !finite(r.h) || r.w < 0 || r.h < 0) return null;
+  return { x: r.x, y: r.y, w: r.w, h: r.h };
+}
+
 /** The one argument object the app takes for `method`. */
 function argsFor(method: string, args: unknown[]): unknown[] {
   switch (method) {
     case "open": case "openMake": return [{ id: id(method, args[0]) }];
     case "menu": {
-      const r = (args[1] ?? null) as { x?: unknown; y?: unknown; w?: unknown; h?: unknown } | null;
-      if (!r || typeof r !== "object" || !finite(r.x) || !finite(r.y) || !finite(r.w) || !finite(r.h) || r.w < 0 || r.h < 0) {
-        throw new CapError("bad_request", "home.menu takes an app ID and the tile's rect {x, y, w, h}");
-      }
-      return [{ id: id(method, args[0]), rect: { x: r.x, y: r.y, w: r.w, h: r.h } }];
+      const rect = rectOf(args[1]);
+      if (!rect) throw new CapError("bad_request", "home.menu takes an app ID and the tile's rect {x, y, w, h}");
+      return [{ id: id(method, args[0]), rect }];
+    }
+    case "tiles": {
+      const list = args[0];
+      const bad = () => new CapError("bad_request", `home.tiles takes a list of at most ${MAX_TILES} {id, rect: {x, y, w, h}}`);
+      if (!Array.isArray(list) || list.length > MAX_TILES) throw bad();
+      return [{
+        tiles: list.map(t => {
+          const e = (t ?? null) as { id?: unknown; rect?: unknown } | null;
+          const rect = e && typeof e === "object" ? rectOf(e.rect) : null;
+          if (!rect) throw bad();
+          return { id: id(method, e!.id), rect };
+        }),
+      }];
     }
     default: return [];
   }

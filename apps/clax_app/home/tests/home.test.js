@@ -279,3 +279,18 @@ test('the shipped page calls shown() exactly once over the kit\'s fake host', as
   await wait(() => tiles().length === 3);
   expect(home.shownCount).toBe(1);
 });
+
+test('tells Clax where each app tile is, again when they move', async () => {
+  const home = fakeHome({ makes: [] });
+  const reports = [];
+  home.tiles = async (list) => { reports.push(list); };
+  mount(root(), home);
+  await wait(() => reports.length === 1);
+  const first = reports[0];
+  expect(first.map((t) => t.id)).toEqual(tiles().filter((t) => t.dataset.id).map((t) => t.dataset.id));
+  const r = document.querySelector(`[data-id="${first[0].id}"]`).getBoundingClientRect();
+  expect(first[0].rect).toEqual({ x: r.x, y: r.y, w: r.width, h: r.height });
+  home.set({ apps: SAMPLE.apps.slice(0, 2) });
+  await wait(() => reports.length === 2);
+  expect(reports[1].length).toBe(2);
+});

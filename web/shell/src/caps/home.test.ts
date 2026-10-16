@@ -99,6 +99,22 @@ describe("the home capability", () => {
     expect(sent).toHaveLength(1);
   });
 
+  it("relays tiles without a gesture as {tiles: [{id, rect}]}, and refuses a malformed list", async () => {
+    const sent = link(true);
+    const { e, posted } = env({ home: {} });
+    const host = new CapabilityHost(Promise.resolve(e), REGISTRY, null);
+    gesture = false;
+    void host.handle({ type: "clax:call", id: "c1", ns: "home", method: "tiles", args: [[{ id: "a1", rect: { x: 1, y: 2, w: 3, h: 4 }, extra: true }]] });
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]).toMatchObject({ cap: "home", method: "tiles", args: [{ tiles: [{ id: "a1", rect: { x: 1, y: 2, w: 3, h: 4 } }] }] });
+
+    for (const bad of [[{ id: "a1", rect: { x: 1 } }], [{ rect: { x: 1, y: 2, w: 3, h: 4 } }], "a1", Array(513).fill({ id: "a", rect: { x: 0, y: 0, w: 1, h: 1 } })]) {
+      await host.handle({ type: "clax:call", id: "c2", ns: "home", method: "tiles", args: [bad] });
+      expect(posted.at(-1)).toMatchObject({ ok: false, error: { code: "bad_request" } });
+    }
+    expect(sent).toHaveLength(1);
+  });
+
   it("passes the app's home events to the page as home/<name>", async () => {
     const sent = link(true);
     const { e, posted } = env({ home: {} });

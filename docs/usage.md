@@ -715,8 +715,9 @@ same signature and do not ask.
 
 The app keeps its own records in its application support directory
 (inside `~/Library/Containers/dev.empathic.clax` for the sandboxed macOS
-build): `settings.json`, `timings.jsonl` (say → usable and long-press →
-landed times, also listed in Settings), `agent-timings.jsonl`,
+build): `settings.json`, `timings.jsonl` (say → usable, long-press →
+landed, home-usable and home-cover times, also listed in Settings),
+`agent-timings.jsonl`,
 `lineages.json` (which apps were shared or installed as files, and under
 which key), `home.json` (the home app's ID, whether the built-in home
 screen is chosen, and the shipped release the person kept their own home
@@ -726,6 +727,35 @@ upgrades them, put back if it fails or Clax ends part way), and
 `clax-home/`, the daemon's home. The sharing key is in the platform's
 secure storage beside the API key; uninstalling Clax loses it, and your
 later files then install on others' devices as separate apps. It never touches `~/.clax` or port 7480.
+
+Its cache directory keeps `home/home-snapshot.bin`: the last image of the
+home app's page, with where its app tiles were. A cold start shows it at
+once, under the home app's page as it loads, until the page says it has
+drawn the home screen; a tap on it then opens the app whose tile it fell
+on, if that app is still there.
+
+**Measuring the home screen's start.** Two timings run from the app's
+launch (its `main`): `home-usable` ends at the home app's first `shown()`
+and `home-cover` at the first frame of the kept snapshot (none on a first
+run, or after the cache was cleared). Each launch adds one line of each
+to `timings.jsonl`. On the phone:
+
+```sh
+just app-phone        # build and install the release APK
+adb shell am force-stop dev.empathic.clax
+adb shell am start -W -n dev.empathic.clax/dev.empathic.clax_app.MainActivity
+```
+
+Each `am start` after a `force-stop` is a cold start; Settings lists the
+last ten timings ("Launch → home usable", "Launch → home snapshot").
+
+A first launch after an install has no snapshot yet; leave the home
+screen up for a second (the snapshot is taken shortly after it is
+drawn, and whenever it is covered or put away) before the next launch.
+On macOS, `CLAX_APP_DIR=<dir inside ~/Library/Containers/dev.empathic.clax/Data>`
+in the environment of the app's executable
+(`clax_app.app/Contents/MacOS/clax_app`) gives it a scratch support and
+cache directory, so a measured build leaves your own apps alone.
 
 ## Releasing
 

@@ -21,7 +21,9 @@ import 'daemon/health.dart';
 import 'daemon/ports.dart';
 import 'daemon/process.dart';
 import 'daemon/supervisor.dart';
+import 'agent/timings.dart';
 import 'home/home_install.dart';
+import 'home/home_snapshot.dart';
 import 'platform/app_notice.dart';
 import 'platform/background_work.dart';
 import 'platform/bundle_intake.dart';
@@ -52,8 +54,9 @@ import 'ui/webview_surface.dart';
 const scriptedAgentPath = String.fromEnvironment('CLAX_SCRIPTED_AGENT');
 
 Future<void> main() async {
+  final launched = DateTime.now();
   WidgetsFlutterBinding.ensureInitialized();
-  await runClaxApp(await platformServices());
+  await runClaxApp(await platformServices(launched: launched));
 }
 
 /// The services of the app on this device: the embedded daemon under the
@@ -70,9 +73,26 @@ Future<void> main() async {
 ///
 /// The tool loop renders its drafts in a [WebViewInspector]: a WebView of
 /// its own that follows no link out of the app.
-Future<AppServices> platformServices() async {
-  final support = await getApplicationSupportDirectory();
-  final cache = await getApplicationCacheDirectory();
+///
+/// The home screen's snapshot is kept in the cache directory
+/// (`home/home-snapshot.bin`). [homeUsable] and [homeCover] run from
+/// [launched].
+///
+/// With `CLAX_APP_DIR` set in the environment, the support and cache
+/// directories are `support/` and `cache/` under it instead (a scratch
+/// home for measuring a build; on macOS it must lie in the app's
+/// container).
+Future<AppServices> platformServices({DateTime? launched}) async {
+  final scratchDir = Platform.environment['CLAX_APP_DIR'] ?? '';
+  final support = scratchDir.isEmpty
+      ? await getApplicationSupportDirectory()
+      : Directory('$scratchDir/support');
+  final cache = scratchDir.isEmpty
+      ? await getApplicationCacheDirectory()
+      : Directory('$scratchDir/cache');
+  support.createSync(recursive: true);
+  cache.createSync(recursive: true);
+  final snapshots = HomeSnapshotStore(Directory('${cache.path}/home'));
   final home = Directory('${support.path}/clax-home')
     ..createSync(recursive: true);
   final android = Platform.isAndroid;
@@ -139,7 +159,10 @@ Future<AppServices> platformServices() async {
     voice: DictationVoice.forSettings(SpeechToTextVoice(), settings),
     settings: settings,
     key: DaemonKey(secureKey, onChanged: supervisor.restart),
-    timings: FileTimings(File('${support.path}/timings.jsonl')),
+    timings: FileTimings(
+      File('${support.path}/timings.jsonl'),
+      started: {homeUsable: ?launched, homeCover: ?launched},
+    ),
     agentTimings: FileTimings(File('${support.path}/agent-timings.jsonl')),
     surface: (base) => WebViewAppSurface(
       base: base,
@@ -180,6 +203,8 @@ Future<AppServices> platformServices() async {
     bundleKey: BundleKey(FlutterBundleSeedStorage()),
     bundleIntake: ChannelBundleIntake(),
     shippedHome: AssetShippedHome(),
+    homeSnapshots: snapshots,
+    homeSnapshot: await snapshots.load(),
   );
 }
 
