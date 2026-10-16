@@ -7,13 +7,13 @@
 #   scripts/bazel-test.sh --web        # the web UI's and Pi's checks, browser tests included
 #   scripts/bazel-test.sh --ci         # every check, in this order:
 #       1. scripts/bazel-sync.sh --check (a stale derived file stops the run)
-#       2. the Rust format check and clippy with -D warnings
-#       3. the Rust tests
-#       4. the web and Pi checks
-#       5. the script gates
-#       6. the checks that run outside Bazel (docs/bazel.md, "Run outside Bazel")
-#       7. the perf gates, one at a time
-#       8. no hard link in Bazel's output base or the disk cache
+#       2. package.json and pnpm-lock.yaml agree; clippy on each crate with
+#          its own clippy.toml
+#       3. one `bazel test`: the Rust format check and clippy with
+#          -D warnings, the Rust tests, the web and Pi checks, the script
+#          gates, then the perf gates one at a time
+#       4. the checks that run outside Bazel (docs/bazel.md, "Run outside Bazel")
+#       5. no hard link in Bazel's output base or the disk cache
 #   scripts/bazel-test.sh [...] ARGS   # ARGS go to every `bazel test`
 #
 # A failing phase does not stop the later ones, but for the first. Nothing
@@ -189,35 +189,25 @@ _run_keyed() {
 }
 
 if [ "$ci" = 1 ]; then
-    _build "rust fmt check" --config=fmt //crates/...
-    # Cargo reads a crate's clippy.toml from beside its Cargo.toml. Bazel
-    # takes one for the whole command, so each crate that has one is linted
-    # on its own.
-    plain=(//crates/...)
-    for toml in crates/*/clippy.toml; do
-        [ -f "$toml" ] || continue
-        crate="$(dirname "$toml")"
-        plain+=("-//$crate/...")
-        _build "rust clippy ($crate)" --config=clippy \
-            "--@rules_rust//rust/settings:clippy.toml=//$crate:clippy.toml" "//$crate/..."
-    done
-    _build "rust clippy" --config=clippy -- "${plain[@]}"
-fi
-
-if [ "$rust" = 1 ]; then
-    _pass "rust tests" 'tests(//crates/...)' "$@"
-fi
-
-if [ "$web" = 1 ]; then
     # What `pnpm install --frozen-lockfile` refuses: Bazel builds from the
     # lockfile alone, so a dependency missing from it must fail here.
     _run "package.json and pnpm-lock.yaml agree" ./scripts/pnpm-lock-check.py web plugins/pi
-    _pass "web and pi checks" \
-        'tests(//web/... + //plugins/pi/... + //bazel/js/...) except attr(tags, "\b(manual|exclusive)\b", //...)' "$@"
-fi
-
-if [ "$ci" = 1 ]; then
-    _pass "script gates" 'tests(//scripts/...) except attr(tags, "\b(manual|exclusive)\b", //scripts/...)' "$@"
+    # Cargo reads a crate's clippy.toml from beside its Cargo.toml. Bazel
+    # takes one for the whole command, so each crate that has one is also
+    # linted on its own, with it.
+    for toml in crates/*/clippy.toml; do
+        [ -f "$toml" ] || continue
+        crate="$(dirname "$toml")"
+        _build "rust clippy ($crate)" --config=clippy \
+            "--@rules_rust//rust/settings:clippy.toml=//$crate:clippy.toml" "//$crate/..."
+    done
+    # Everything else in one invocation, so builds, lints and tests share
+    # the machine instead of queueing: the format check and clippy over
+    # every crate, and every test (Rust, web, Pi, script gates). Bazel runs
+    # the `exclusive` ones, the perf gates, last and one at a time.
+    _pass "every check" \
+        '//crates/... + tests(//...) except attr(tags, "\bmanual\b", //...)' \
+        --config=fmt --config=clippy "$@"
     # Outside Bazel (docs/bazel.md, "Run outside Bazel"): each reads git
     # (tags, tracked files), runs just or cargo, writes into the checkout,
     # or runs Bazel itself.
@@ -237,9 +227,17 @@ if [ "$ci" = 1 ]; then
         '*package.json' '*pnpm-lock.yaml' '*pnpm-workspace.yaml')
     _run_keyed "bazel sync" "${bazel_setup[@]}" -- ./scripts/bazel-sync.test.sh
     _run_keyed "bazel web" "${bazel_setup[@]}" -- ./scripts/bazel-web.test.sh
-    _pass "perf gates" 'attr(tags, "\bexclusive\b", tests(//...)) except attr(tags, "\bmanual\b", //...)' "$@"
     _run "no hard links in Bazel's directories" \
         ./scripts/check-bazel-no-hard-links.sh "$("$bazel" info output_base 2>/dev/null)" "$HOME/.cache/bazel-disk"
+else
+    if [ "$rust" = 1 ]; then
+        _pass "rust tests" 'tests(//crates/...)' "$@"
+    fi
+    if [ "$web" = 1 ]; then
+        _run "package.json and pnpm-lock.yaml agree" ./scripts/pnpm-lock-check.py web plugins/pi
+        _pass "web and pi checks" \
+            'tests(//web/... + //plugins/pi/... + //bazel/js/...) except attr(tags, "\b(manual|exclusive)\b", //...)' "$@"
+    fi
 fi
 
 if [ "${#failed[@]}" -gt 0 ]; then
