@@ -1,0 +1,7 @@
+# The contract the Rust tests check the daemon against
+# (crates/clax-server/src/routes/mod.rs).
+filegroup(
+    name = "contract",
+    srcs = ["contract.md"],
+    visibility = ["//crates:__subpackages__"],
+)

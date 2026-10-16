@@ -1,3 +1,9 @@
 load("//bazel:cargo.bzl", "cargo_package")
 
-cargo_package()
+cargo_package(
+    test_data = ["//plugins/pi:test_fixtures"],
+    tests_use_clax = [
+        "clax_mcp_lib_test",
+        "integration",
+    ],
+)

@@ -35,6 +35,9 @@ test --test_env=TOKIO_WORKER_THREADS=4
 # As .cargo/config.toml gives Cargo's tests: CLAX_PORT empty, so a port in
 # the developer's shell never moves a test daemon.
 test --test_env=CLAX_PORT=
+# The system's tools a test runs (lsof is in /usr/sbin on macOS), and
+# nothing of the developer's own PATH.
+test --test_env=PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
 test --test_output=errors
 

@@ -30,6 +30,19 @@ cargo_package(
         "//crates/clax-server:test_people",
         "//scripts:ensure-clax.sh",
     ],
+    test_data = [
+        "//:marketplaces",
+        "//plugins:embedded",
+        "//plugins/pi:embedded",
+        "//plugins/pi:test_fixtures",
+        "//scripts:all",
+        "//web:dist_extension",
+    ],
+    tests_use_clax = [
+        "clax_bin_test",
+        "descriptors",
+        "integration",
+    ],
 )
 
 # The binary, run once before any test runs it (bazel/warm.bzl).

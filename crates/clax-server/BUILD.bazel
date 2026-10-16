@@ -14,6 +14,25 @@ cargo_package(
         "//web:contract_files",
         "//web:shell_cases",
     ],
+    test_data = [
+        "//:marketplaces",
+        "//docs:contract",
+        "//plugins:embedded",
+        "//plugins/pi:embedded",
+        "//plugins/pi:files",
+        "//plugins/pi:node_modules",
+        "//plugins/pi:test_fixtures",
+        "//scripts:all",
+        "//web:contract_files",
+        "//web:dist",
+        "@nodejs//:node_bin",
+    ],
+    test_env = {"CLAX_TEST_NODE": "$(rootpath @nodejs//:node_bin)"},
+    tests_use_clax = [
+        "clax_server_lib_test",
+        "integration",
+        "web_dist",
+    ],
 )
 
 # The people fixture clax-cli's tests share (crates/clax-cli/tests/common),
@@ -25,4 +44,11 @@ filegroup(
         "tests/common/people.rs",
     ],
     visibility = ["//crates/clax-cli:__pkg__"],
+)
+
+# The sources clax-core's tests read (crates/clax-core/src/feedback.rs).
+filegroup(
+    name = "srcs",
+    srcs = glob(["src/**"], exclude = ["**/.qual"]),
+    visibility = ["//crates:__subpackages__"],
 )

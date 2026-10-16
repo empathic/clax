@@ -3,6 +3,10 @@ load("//bazel:cargo.bzl", "cargo_package")
 cargo_package(
     build_script_data = ["//web:extension_key"],
     compile_data = ["//web:extension/manifest.json"] + glob(["tests/toolpath/**"]),
+    test_data = [
+        "//crates/clax-server:srcs",
+        "//plugins/pi:test_fixtures",
+    ],
 )
 
 # The tool path test vectors other crates' tests read.
