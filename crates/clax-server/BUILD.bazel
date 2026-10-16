@@ -1,6 +1,9 @@
 load("//bazel:cargo.bzl", "cargo_package")
 
 cargo_package(
+    # Each module of tests/integration.rs is a test target of its own
+    # (bazel/cargo.bzl); these three are tests/web_dist.rs's.
+    split_tests = {"integration": ["bridge_dev", "shell_boot", "shell_entries"]},
     build_script_data = ["//web:dist"],
     # The web UI the library embeds (src/routes/shell.rs).
     build_script_env = {"CLAX_WEB_DIST_DIR": "$(execpath //web:dist)"},
@@ -22,7 +25,7 @@ cargo_package(
         "//plugins/pi:files",
         "//plugins/pi:node_modules",
         "//plugins/pi:test_fixtures",
-        "//scripts:all",
+        "//scripts:hook_scripts",
         "//web:contract_files",
         "//web:dist",
         "@nodejs//:node_bin",

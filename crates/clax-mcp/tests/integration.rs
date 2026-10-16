@@ -1,23 +1,40 @@
 //! The integration tests of `clax-mcp` in one test binary, a module per file in
 //! `tests/`: every test binary costs a link and, on macOS, an assessment of
 //! the new executable on its first run.
+//!
+//! Bazel builds each module as its own test target instead (`clax_split`,
+//! `bazel/cargo.bzl`), so an edit recompiles, relinks and reruns each module
+//! on its own, in parallel; `clax_split = "root"` holds this file's own tests.
+//! Gate every new test module the same way.
 
+#[cfg(any(not(clax_split), clax_split = "calls"))]
 mod calls;
+#[cfg(any(not(clax_split), clax_split = "channel"))]
 mod channel;
+#[cfg(any(not(clax_split), clax_split = "comments"))]
 mod comments;
+#[cfg(any(not(clax_split), clax_split = "db"))]
 mod db;
+#[cfg(any(not(clax_split), clax_split = "live"))]
 mod live;
+#[cfg(any(not(clax_split), clax_split = "open"))]
 mod open;
+#[cfg(any(not(clax_split), clax_split = "open_status"))]
 mod open_status;
+#[cfg(any(not(clax_split), clax_split = "people"))]
 mod people;
+#[cfg(any(not(clax_split), clax_split = "remote"))]
 mod remote;
+#[cfg(any(not(clax_split), clax_split = "shim"))]
 mod shim;
+#[cfg(any(not(clax_split), clax_split = "tools"))]
 mod tools;
 
 /// Cargo's test autodiscovery is off for this crate (`autotests = false` in
 /// its manifest), so a file in `tests/`, or a directory there with a
 /// `main.rs` or `mod.rs`, runs only once a test binary's root declares it as
 /// a module.
+#[cfg(any(not(clax_split), clax_split = "root"))]
 #[test]
 fn every_test_file_is_a_module() {
     let tests = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");

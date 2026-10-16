@@ -44,6 +44,7 @@ def cargo_package(
         tests_use_clax = [],
         test_env = {},
         shard_counts = {},
+        split_tests = {},
         build_script_env = {},
         build_script_data = [],
         visibility = ["//visibility:public"]):
@@ -71,6 +72,13 @@ def cargo_package(
         warm-up stamp and CLAX_TEST_BIN.
       test_env: environment variables for every test.
       shard_counts: {test name: shards}.
+      split_tests: {[[test]] name: [module stems of tests/ it does not
+        declare]}: each module that test's root declares, gated in the root
+        by `#[cfg(any(not(clax_split), clax_split = "<module>"))]`, becomes
+        a test target of its own, `<test>__<module>`, and the root's own
+        tests `<test>__root`; `common` is shared by all. An edit then
+        recompiles, relinks and reruns only the modules that depend on it,
+        in parallel.
       build_script_env: environment for the build script ($(execpath) works).
       build_script_data: files the build script reads.
       visibility: the library's and binaries' visibility.
@@ -163,10 +171,10 @@ def cargo_package(
         allow_empty = True,
     ) + ["Cargo.toml"]
 
-    def test_kwargs(name, integration = False):
+    def test_kwargs(name, integration = False, uses_clax = None):
         data = own_files + test_data
         env = dict(test_env)
-        if name in tests_use_clax:
+        if name in tests_use_clax or uses_clax in tests_use_clax:
             data += [_CLAX, _CLAX_WARM]
             env["CLAX_TEST_BIN"] = "$(rootpath %s)" % _CLAX
         kwargs = dict(
@@ -240,7 +248,26 @@ def cargo_package(
         )
 
     test_srcs = native.glob(["tests/**/*.rs"], allow_empty = True)
+    roots = [r.split("/")[-1][:-len(".rs")] for r in crate["tests"].values()]
     for name, root in crate["tests"].items():
+        if name in split_tests:
+            stems = [f.split("/")[-1][:-len(".rs")] for f in native.glob(["tests/*.rs"], allow_empty = True)]
+            stems += [f.split("/")[-2] for f in native.glob(["tests/*/mod.rs"], allow_empty = True)]
+            modules = [m for m in stems if m not in roots and m != "common" and m not in split_tests[name]]
+            for module in sorted(modules) + ["root"]:
+                kwargs = test_kwargs(name, integration = True, uses_clax = name)
+                kwargs["rustc_flags"] = rustc_flags + ["--cfg", "clax_split", "--cfg", 'clax_split="%s"' % module]
+                _test(
+                    name = "%s__%s" % (name, module),
+                    srcs = test_srcs,
+                    crate_features = features,
+                    crate_name = name.replace("-", "_"),
+                    crate_root = root,
+                    proc_macro_deps = macros + dev_macros,
+                    deps = ([":" + test_lib] if lib else []) + test_normal_deps + dev_deps,
+                    **kwargs
+                )
+            continue
         _test(
             name = name,
             srcs = test_srcs,

@@ -37,7 +37,11 @@ def nextest(path):
 
 
 def binary_of(crate, target):
-    """nextest's name for a Bazel test target of crate directory `crate`."""
+    """nextest's name for a Bazel test target of crate directory `crate`.
+
+    A split integration test's targets (`<test>__<module>`, bazel/cargo.bzl)
+    are modules of nextest's one binary `<test>`."""
+    target = target.split("__")[0]
     if target.endswith("_lib_test"):
         return crate
     if target.endswith("_bin_test"):
