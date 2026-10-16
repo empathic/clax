@@ -262,6 +262,7 @@ impl Store {
             &conn,
             home,
             migrations::MIGRATIONS.len() as u32,
+            migrations::needs_multi_person_repair(&conn)?,
             clock.now(),
         )?;
         let content = Arc::new(FsContent::new(home.clone()));
@@ -645,7 +646,10 @@ pub fn schema_version(home: &Home) -> Result<Option<u32>> {
 /// once. A database an earlier Clax app build numbered differently is first
 /// brought into this numbering
 /// ([`migrations::adopt_pre_rebase_flutter_app`]), in a transaction of its
-/// own. Refuses a database whose schema is newer than this binary knows
+/// own, and one an earlier revision of the multi-person migrations wrote
+/// is given what their final revision added
+/// ([`migrations::repair_multi_person_revisions`]), in another, whatever
+/// its version. Refuses a database whose schema is newer than this binary knows
 /// ([`CoreError::SchemaNewer`]) without changing it.
 ///
 /// # Errors
@@ -687,7 +691,8 @@ fn migrate_steps(conn: &mut Connection) -> Result<()> {
     };
     let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     check(version)?;
-    if version == known {
+    let repair = migrations::needs_multi_person_repair(conn)?;
+    if version == known && !repair {
         return Ok(());
     }
     {
@@ -698,6 +703,18 @@ fn migrate_steps(conn: &mut Connection) -> Result<()> {
                 from = version,
                 to = now,
                 "renumbered a database from an earlier Clax app build"
+            );
+        }
+    }
+    {
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let added = migrations::repair_multi_person_revisions(&tx)?;
+        if !added.is_empty() {
+            tx.commit()?;
+            tracing::warn!(
+                version,
+                added = ?added,
+                "brought a database from an earlier revision of the multi-person migrations to their final schema"
             );
         }
     }
