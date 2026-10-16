@@ -29,6 +29,16 @@ abstract interface class AppSurface {
   /// The page's document failing to load (or its renderer going away).
   Stream<SurfaceFault> get faults;
 
+  /// The artifact ID of the loaded top-level document, from the URL it
+  /// was committed at (never from the page); null before it loaded.
+  String? get document;
+
+  /// Each other artifact the page's top level tried to navigate to. The
+  /// surface keeps its top level on the artifact it was [load]ed with and
+  /// refuses the navigation; the app opens that artifact as its own
+  /// screen.
+  Stream<String> get elsewhere;
+
   void dispose();
 }
 

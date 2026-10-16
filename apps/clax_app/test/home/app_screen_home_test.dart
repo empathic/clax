@@ -62,6 +62,8 @@ void main() {
 
   tearDown(() => host.dispose());
 
+  final openedApps = <String>[];
+
   Future<FakeAppSurface> pump(WidgetTester tester, String aid) async {
     final surface = FakeAppSurface();
     await tester.pumpWidget(
@@ -77,6 +79,7 @@ void main() {
           timings: const NoTimings(),
           worker: const Stream.empty(),
           home: host,
+          openApp: openedApps.add,
         ),
       ),
     );
@@ -152,6 +155,40 @@ void main() {
     api.pushInbox('reply', artifactId: other, body: 'Done');
     await tester.pump();
     expect(surface.hostCalls.whereType<HomeDeviceEvent>(), isEmpty);
+  });
+
+  testWidgets('another artifact loaded at the top of the home screen gets no '
+      'home, and a navigation to one opens it as its own screen', (
+    tester,
+  ) async {
+    openedApps.clear();
+    final surface = await pump(tester, home);
+    // A top-level document of another artifact (a navigation the surface
+    // did not stop) gets nothing.
+    surface.document = other;
+    final results = await ask(tester, surface, [
+      req('a', 'available'),
+      req('b', 'apps'),
+      req('c', 'open', [
+        {'id': other},
+      ]),
+    ]);
+    expect(results.map((r) => (r.id, r.code)), [
+      ('a', null),
+      ('b', 'refused'),
+      ('c', 'refused'),
+    ]);
+    expect(results[0].value, isFalse);
+    expect(actions.opened, isEmpty);
+    api.pushInbox('reply', artifactId: other, body: 'Done');
+    await tester.pump();
+    await tester.pump();
+    expect(surface.hostCalls.whereType<HomeDeviceEvent>(), isEmpty);
+
+    // The surface refuses such a navigation and the app opens it instead.
+    surface.navigateElsewhere(other);
+    await tester.pump();
+    expect(openedApps, [other]);
   });
 
   testWidgets('a malformed call is a bad request', (tester) async {

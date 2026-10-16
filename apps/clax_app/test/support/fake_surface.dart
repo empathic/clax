@@ -50,7 +50,24 @@ class FakeAppSurface implements AppSurface {
   );
 
   @override
-  Future<void> load(Uri url) async => loads.add(url);
+  Future<void> load(Uri url) async {
+    loads.add(url);
+    final segs = url.pathSegments;
+    document = segs.length >= 2 && segs[0] == 'a' ? segs[1] : null;
+  }
+
+  /// The loaded document's artifact: the last [load]ed URL's, until a test
+  /// sets another (a top-level navigation the surface let through).
+  @override
+  String? document;
+
+  final _elsewhere = StreamController<String>.broadcast(sync: true);
+
+  /// Reports a refused top-level navigation to artifact [aid].
+  void navigateElsewhere(String aid) => _elsewhere.add(aid);
+
+  @override
+  Stream<String> get elsewhere => _elsewhere.stream;
 
   @override
   Future<void> reload() async => reloads++;

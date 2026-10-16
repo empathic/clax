@@ -58,6 +58,23 @@ void main() {
     ]);
   });
 
+  test('the top level stays on its own artifact: another artifact\'s app '
+      'view is refused and handed to openArtifact', () {
+    final others = <String>[];
+    NavigationDecision as(String url) => WebViewAppSurface.decide(
+      base,
+      url,
+      isMainFrame: true,
+      own: 'abcdefghjkmn',
+      openExternal: opened.add,
+      openArtifact: others.add,
+    );
+    expect(as('$base/a/abcdefghjkmn/v/2?app=1'), NavigationDecision.navigate);
+    expect(as('$base/a/zyxwvtsrqpnm?app=1'), NavigationDecision.prevent);
+    expect(others, ['zyxwvtsrqpnm']);
+    expect(opened, isEmpty);
+  });
+
   test('frames inside the page navigate freely', () {
     expect(
       WebViewAppSurface.decide(

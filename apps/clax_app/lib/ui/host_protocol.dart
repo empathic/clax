@@ -917,13 +917,25 @@ class ShellSession {
     return true;
   }
 
+  /// The artifact ID of [url] when it is the shell's app view on [base]
+  /// ([isShellUrl]); null otherwise.
+  static String? artifactOf(Uri base, Uri? url) =>
+      isShellUrl(base, url) ? url!.path.split('/')[2] : null;
+
   /// Whether calls may be made now.
   bool get canCall => _shell && _nonce != null;
+
+  /// The artifact the loaded top-level document shows, from the URL the
+  /// WebView committed it at; null while none has loaded or it is not the
+  /// shell.
+  String? get document => canCall ? _document : null;
+  String? _document;
 
   /// A new top-level document started loading at [url]: nothing is
   /// accepted or called until it has loaded.
   void documentStarted(Uri? url) {
     _nonce = null;
+    _document = null;
     _shell = isShellUrl(base, url);
   }
 
@@ -938,6 +950,7 @@ class ShellSession {
     if (_nonce != null) return null;
     _shell = isShellUrl(base, url);
     if (!_shell) return null;
+    _document = artifactOf(base, url);
     final bytes = List<int>.generate(16, (_) => _random.nextInt(256));
     final n = [for (final b in bytes) b.toRadixString(16).padLeft(2, '0')]
         .join();
