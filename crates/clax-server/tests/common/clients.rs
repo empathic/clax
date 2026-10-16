@@ -456,7 +456,7 @@ impl<'a> RealClients<'a> {
             "{} is missing: run `pnpm install --frozen-lockfile` in plugins/pi",
             cli.display()
         );
-        let node = which("node").expect("node on PATH");
+        let node = node().expect("node: CLAX_TEST_NODE or PATH");
         let script = serde_json::to_string(calls).unwrap();
         let bin = clax_bin(None);
         let mut all_env: Vec<(&str, &str)> = vec![
@@ -634,6 +634,15 @@ async fn rpc_over_stdio(mut cmd: tokio::process::Command, lines: &[Value], n: us
 }
 
 /// `name` on this process's `PATH`.
+/// Node for the real Pi: `CLAX_TEST_NODE` when set (Bazel's toolchain,
+/// relative to the start directory), else `node` on `PATH`.
+fn node() -> Option<PathBuf> {
+    std::env::var_os("CLAX_TEST_NODE")
+        .filter(|p| !p.is_empty())
+        .map(|p| clax_fake_exe::bin::absolute_from(PathBuf::from(p), &repo()))
+        .or_else(|| which("node"))
+}
+
 fn which(name: &str) -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|p| {
         std::env::split_paths(&p)

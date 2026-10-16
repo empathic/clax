@@ -149,8 +149,15 @@ def cargo_package(
         allow_empty = True,
     )
 
+    # Every test may read its crate's own files, as tests under Cargo do.
+    own_files = native.glob(
+        ["src/**", "tests/**"],
+        exclude = ["**/.qual"],
+        allow_empty = True,
+    ) + ["Cargo.toml"]
+
     def test_kwargs(name, integration = False):
-        data = list(test_data)
+        data = own_files + test_data
         env = dict(test_env)
         if name in tests_use_clax:
             data += [_CLAX, _CLAX_WARM]

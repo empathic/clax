@@ -14,3 +14,29 @@ copy_to_bin(
     srcs = ["ensure-clax.sh"],
     visibility = ["//crates:__subpackages__"],
 )
+
+# The scripts the Rust tests run or read.
+filegroup(
+    name = "test_scripts",
+    srcs = [
+        "ensure-clax.sh",
+        "fake-exe.sh",
+        "stable-bin.sh",
+    ],
+    visibility = ["//crates:__subpackages__"],
+)
+
+# Every script, for the Rust tests that scan or run them
+# (crates/clax-cli/tests/extension.rs, verify_harnesses.rs;
+# crates/clax-server/src/routes/mod.rs).
+filegroup(
+    name = "all",
+    srcs = glob(
+        ["**"],
+        exclude = [
+            "**/.qual",
+            "BUILD.bazel",
+        ],
+    ),
+    visibility = ["//crates:__subpackages__"],
+)

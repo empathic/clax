@@ -59,3 +59,10 @@ copy_to_bin(
     srcs = [":embedded"],
     visibility = ["//visibility:public"],
 )
+
+# The shared contract fixture the Rust tests read.
+filegroup(
+    name = "test_fixtures",
+    srcs = glob(["test/fixtures/**"]),
+    visibility = ["//crates:__subpackages__"],
+)
