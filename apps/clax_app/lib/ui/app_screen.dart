@@ -62,8 +62,9 @@ import 'working_chip.dart';
 ///   Voice (whether a pick starts dictation, reported to
 ///   [AppScreen.onDictateChanged]) and ✕ (comment mode off); back, Escape
 ///   and the menu's Comment end it too, closing the panel first when it is
-///   open over the bar. Without comment mode, back and Escape leave the
-///   app. Comment while the panel is open puts the bar in its
+///   open over the bar. Without comment mode, back and Escape go back in
+///   the app's own history first (**Back**), then leave the app. Comment
+///   while the panel is open puts the bar in its
 ///   place. A composer the bar led to opens the panel's peek in the bar's
 ///   place, at the bar's height, and closing it goes back to the bar.
 /// - **Toasts.** A reply from the agent for this app, or a new question
@@ -95,15 +96,16 @@ import 'working_chip.dart';
 ///   dictation added to the composer's text.
 /// - **Working chip and timing** ([ChangeTracker], [WorkingChip]). Each
 ///   change is kept by its thread, from the shell's `sent` or the worker's
-///   start to the frame that shows its version, whatever order those come
-///   in; the page stays usable meanwhile. The chip narrates the running
+///   start until its version is ready in the view (the shell's `newer`
+///   for it, or a frame that shows it), whatever order those come in; the
+///   page stays usable meanwhile. The chip narrates the running
 ///   change from the worker's [WorkerProgress] for its threads: the latest
 ///   step and the seconds since the work began. A tap on it opens the
 ///   change in progress ([showChangeSheet]): the comments it answers, its
 ///   steps and last render, live, with Stop ([AppScreen.onStop]; the
 ///   threads stay open), Open thread and a waiting question. The
 ///   long-press→landed timing runs
-///   from Send to that frame, the send→first-step timing from Send to the
+///   from Send to that version being ready, the send→first-step timing from Send to the
 ///   change's first step. A reply without a version, a failure, a cancel
 ///   or a failed send ends the chip and shows which it was: Retry for a
 ///   failed send sends the thread again; Retry for a failed change calls
@@ -115,7 +117,9 @@ import 'working_chip.dart';
 ///   ("Building · Export · 3/7") for [_AppScreenState.buildChipFor] after
 ///   the build starts, a feature starts or ends, or its phase changes (on
 ///   [AppScreen.clock]); then it folds into a small pill (a ring and "3/7")
-///   at the top right, in the status bar's band, off the app's own header.
+///   at the top right, just under the status bar and any display cutout
+///   (the top inset) and inside the side insets, so it never covers the
+///   system's icons. The change chip folds into a pill there too.
 ///   A tap on the pill opens the chip again; a tap on the chip opens the
 ///   build sheet ([showBuildSheet]) with the plan and Stop or Resume. When the build
 ///   ends a toast says how: every feature built, the spending cap, stopped
@@ -138,10 +142,25 @@ import 'working_chip.dart';
 ///   screen is hidden (the app in the background, another route on top,
 ///   the screen closed) or a new document loads, and does not start again
 ///   by itself. While one runs a small location pill sits at the top left,
-///   in the status bar's band; a tap on it stops location. A location call
+///   under the top inset; a tap on it stops location. A location call
 ///   that fails because Android will not ask again (`system_denied`) or the
 ///   device's location is off (`location_off`) shows a toast with Open
 ///   settings.
+/// - **New version.** A newer version published while the page shows the
+///   latest (a change, a build's feature, an update, another client) is
+///   never loaded by itself: the shell offers it (`newer`), and a toast
+///   "New version ready" with Reload loads it in place (`reloadLatest`),
+///   on the page, fragment and scroll shown, with the app's data. The
+///   toast waits while a composer is open or sending and shows once it
+///   closes; it shows only while the screen is in front, again when the
+///   screen comes back to the front with the version still not loaded,
+///   and again after a toast that replaced it. A frame of that version
+///   ends the offer.
+/// - **Back.** Back (Android's back, Escape, App › Back) closes what is
+///   over the page first (the questions sheet, the composer, the panel,
+///   the comment bar), then goes back in the app's own history (its pages
+///   and `#route`s, which the shell keeps: `history`, `back()`), and only
+///   from the app's first page leaves the app.
 ///
 /// The screen owns [surface] and disposes it.
 class AppScreen extends StatefulWidget {
@@ -166,6 +185,9 @@ class AppScreen extends StatefulWidget {
     this.onDictateChanged,
     this.onRetry,
     this.onStop,
+    this.onCancelThread,
+    this.isStopped,
+    this.onTryNow,
     this.initialThread,
     this.initialComment,
     this.device,
@@ -228,6 +250,16 @@ class AppScreen extends StatefulWidget {
   /// offers no Stop.
   final void Function(String aid)? onStop;
 
+  /// Stops one thread of the app's change (Cancel on a thread page waiting
+  /// for the connection); its other threads run without it.
+  final Future<bool> Function(String aid, String tid)? onCancelThread;
+
+  /// Whether a thread was stopped and waits to be sent again.
+  final bool Function(String tid)? isStopped;
+
+  /// Tries the Claude API's connection at once (Try now).
+  final VoidCallback? onTryNow;
+
   /// A thread to open the thread page at once the page is first up, at
   /// comment [initialComment] (else at its newest comment).
   final String? initialThread;
@@ -239,6 +271,9 @@ class AppScreen extends StatefulWidget {
 
   /// The plans and builds; null shows no build and offers no Add to plan.
   final BuildLink? build;
+
+  /// How tall the folded chips and the location pill are.
+  static const pillHeight = 24.0;
 
   /// The app view's URL for [aid] under [base].
   static Uri appUrl(Uri base, String aid) {
@@ -294,6 +329,15 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
 
   /// Whether the shell's questions sheet is up over the page.
   var _questionsShowing = false;
+
+  /// Whether the app's page has a page or fragment of its own to go back
+  /// to (the shell's `history`).
+  var _canGoBack = false;
+
+  /// The newer version the shell offers and the page does not show yet,
+  /// and the one its toast shows for while it shows.
+  int? _newer;
+  int? _newerShown;
 
   // The panel.
   var _open = false;
@@ -375,15 +419,31 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     );
   }
 
-  /// The folded change chip, in the status bar's band at the top right,
-  /// as the build's pill.
-  Widget _changePill(BuildContext context) {
-    final inset = MediaQuery.paddingOf(context).top;
-    final h = (inset - 4).clamp(20.0, 28.0);
+  /// The folded change chip at the top right, as the build's pill.
+  Widget _changePill(BuildContext context) => _topPill(
+    context,
+    right: true,
+    child: WorkingPill(
+      changes: _changes,
+      height: AppScreen.pillHeight,
+      onTap: _openChangeChip,
+    ),
+  );
+
+  /// A small pill just under the top inset (the status bar and any display
+  /// cutout, which the system draws its icons in) and inside the side
+  /// insets, at the top right, or the top left unless [right].
+  Widget _topPill(
+    BuildContext context, {
+    required bool right,
+    required Widget child,
+  }) {
+    final pad = MediaQuery.paddingOf(context);
     return Positioned(
-      top: inset >= 22 ? (inset - h) / 2 : 4,
-      right: 12,
-      child: WorkingPill(changes: _changes, height: h, onTap: _openChangeChip),
+      top: pad.top + 6,
+      right: right ? pad.right + 12 : null,
+      left: right ? null : pad.left + 12,
+      child: child,
     );
   }
 
@@ -510,6 +570,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     if (!visible) widget.device?.stopWatches(_deviceView);
     if (visible) {
       unawaited(_showNotice());
+      WidgetsBinding.instance.addPostFrameCallback((_) => _offerNewer());
     } else {
       widget.notice?.clear(this);
     }
@@ -602,6 +663,16 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     }
   }
 
+  /// Back: what is over the page closes first, then the app's page goes
+  /// back in its own history.
+  void _back() {
+    if (_wantComment || _questionsShowing) {
+      _closeTop();
+    } else if (_canGoBack) {
+      _call(const GoBack());
+    }
+  }
+
   @override
   void dispose() {
     widget.device?.stopWatches(_deviceView, asking: true);
@@ -641,6 +712,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
           _gaveUp = null;
           _changes.shown(m.version, pinned: m.pinned);
         });
+        if (_newer case final n? when m.version >= n) _endOffer();
         // A reloaded shell starts with comment mode off. While its composer
         // is open comment mode reads off too, and the shell turns it back
         // on itself after Send or Cancel.
@@ -701,6 +773,12 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         if (closed) {
           _field.unfocus();
           unawaited(_stopDictation());
+          WidgetsBinding.instance.addPostFrameCallback((_) => _offerNewer());
+        }
+        // The composer takes the bottom of the screen: a showing offer waits.
+        if (picked && _newerShown != null) {
+          _newerShown = null;
+          ScaffoldMessenger.maybeOf(context)?.hideCurrentSnackBar();
         }
         // The shell turns comment mode back on when a composer closes; with
         // the panel and the bar closed meanwhile, it stays off.
@@ -717,6 +795,16 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       case Landed(:final version):
         setState(() => _changes.frame(version));
         if (_open) _loadVersions();
+      case NewerMsg(:final version):
+        if (version <= (_ready?.version ?? 0)) break;
+        setState(() {
+          _newer = version;
+          _changes.ready(version);
+        });
+        if (_open) _loadVersions();
+        _offerNewer();
+      case HistoryMsg(:final back):
+        if (back != _canGoBack) setState(() => _canGoBack = back);
       case SendFailed(:final thread, :final text):
         setState(() => _changes.sendFailed(thread, text));
       case Notice():
@@ -804,23 +892,19 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       );
   }
 
-  /// The location pill while a watch runs: at the top left, in the status
-  /// bar's band; a tap stops location.
-  Widget _locationPill(BuildContext context) {
-    final inset = MediaQuery.paddingOf(context).top;
-    final h = (inset - 4).clamp(20.0, 28.0);
-    return Positioned(
-      top: inset >= 22 ? (inset - h) / 2 : 4,
-      left: 12,
-      child: LocationPill(
-        height: h,
-        onTap: () => widget.device?.stopWatches(
-          _deviceView,
-          message: 'the person stopped location; start it again from a tap',
-        ),
+  /// The location pill while a watch runs, at the top left under the top
+  /// inset; a tap stops location.
+  Widget _locationPill(BuildContext context) => _topPill(
+    context,
+    right: false,
+    child: LocationPill(
+      height: AppScreen.pillHeight,
+      onTap: () => widget.device?.stopWatches(
+        _deviceView,
+        message: 'the person stopped location; start it again from a tap',
       ),
-    );
-  }
+    ),
+  );
 
   void _onFault(SurfaceFault f) {
     if (!mounted) return;
@@ -949,23 +1033,18 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       _plan != null &&
       widget.build != null;
 
-  /// The folded build chip, centred in the status bar's band at the top
-  /// right (or just inside the top right corner without one).
-  Widget _buildPill(BuildContext context) {
-    final inset = MediaQuery.paddingOf(context).top;
-    final h = (inset - 4).clamp(20.0, 28.0);
-    return Positioned(
-      top: inset >= 22 ? (inset - h) / 2 : 4,
-      right: 12,
-      child: BuildChip(
-        plan: _plan,
-        state: _build!,
-        compact: true,
-        height: h,
-        onTap: _openBuildChip,
-      ),
-    );
-  }
+  /// The folded build chip at the top right, under the top inset.
+  Widget _buildPill(BuildContext context) => _topPill(
+    context,
+    right: true,
+    child: BuildChip(
+      plan: _plan,
+      state: _build!,
+      compact: true,
+      height: AppScreen.pillHeight,
+      onTap: _openBuildChip,
+    ),
+  );
 
   /// A toast about the build that fades on its own; only while the screen
   /// is in front.
@@ -1081,13 +1160,18 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         },
         onRetry: retry == null ? null : (tid) => retry(widget.aid, tid),
         waitingForConnection: _waitingThreads,
-        onCancel: widget.onStop == null
-            ? null
-            : () {
-                widget.onStop!(widget.aid);
-                setState(_changes.stopped);
-                _waitingThreads.value = const [];
-              },
+        isStopped: widget.isStopped,
+        onTryNow: widget.onTryNow,
+        onCancel: switch (widget.onCancelThread) {
+          final cancel? => () {
+            unawaited(cancel(widget.aid, id));
+            _waitingThreads.value = [
+              for (final t in _waitingThreads.value)
+                if (t != id) t,
+            ];
+          },
+          null => null,
+        },
       ),
     );
   }
@@ -1175,6 +1259,64 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
           action: SnackBarAction(label: 'View', onPressed: view),
         ),
       );
+  }
+
+  /// How long the New version toast stays before it fades.
+  static const newerFor = Duration(seconds: 8);
+
+  /// Shows "New version ready" with Reload for the version the shell
+  /// offers, unless it shows already, the screen is not in front, or a
+  /// composer is open or sending. [queued] puts it after the toast that
+  /// shows (one that took its place), not in its place. A toast that took
+  /// its place offers it again; one that faded or was swiped away waits for
+  /// the screen to come back to the front or a composer to close.
+  void _offerNewer({bool queued = false}) {
+    final v = _newer;
+    if (!mounted ||
+        v == null ||
+        _newerShown == v ||
+        _toldVisible != true ||
+        _draft != null ||
+        _sending) {
+      return;
+    }
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (messenger == null) return;
+    _newerShown = v;
+    if (!queued) messenger.hideCurrentSnackBar();
+    final shown = messenger.showSnackBar(
+      SnackBar(
+        key: const ValueKey('newer-toast'),
+        content: const Text('New version ready'),
+        duration: newerFor,
+        persist: false,
+        behavior: SnackBarBehavior.floating,
+        action: SnackBarAction(
+          label: 'Reload',
+          onPressed: () => _call(const ReloadLatest()),
+        ),
+      ),
+    );
+    unawaited(
+      shown.closed.then((reason) {
+        if (!mounted || _newerShown != v) return;
+        _newerShown = null;
+        if (reason == SnackBarClosedReason.hide ||
+            reason == SnackBarClosedReason.remove) {
+          WidgetsBinding.instance.addPostFrameCallback(
+            (_) => _offerNewer(queued: true),
+          );
+        }
+      }),
+    );
+  }
+
+  /// The page shows the offered version (or a newer one): the offer ends.
+  void _endOffer() {
+    _newer = null;
+    if (_newerShown == null) return;
+    _newerShown = null;
+    ScaffoldMessenger.maybeOf(context)?.hideCurrentSnackBar();
   }
 
   // --- the panel ---
@@ -1452,7 +1594,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       ),
     );
     // Escape is back: it closes the questions sheet, the panel or the bar
-    // first (the PopScope below), then leaves the app.
+    // first, then goes back in the app's own history (the PopScope below),
+    // then leaves the app.
     screen = CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.escape): () =>
@@ -1465,9 +1608,9 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       screen = ClaxMenuBar(comments: own, child: screen);
     }
     return PopScope(
-      canPop: !_wantComment && !_questionsShowing,
+      canPop: !_wantComment && !_questionsShowing && !_canGoBack,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) _closeTop();
+        if (!didPop) _back();
       },
       child: screen,
     );
