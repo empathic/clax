@@ -60,7 +60,9 @@
     e.preventDefault();
     const to = target;
     if (!to) { err = "Type a GitHub login, such as @octocat, or pick someone."; return; }
-    if (await act(() => api.share(id, to, addAccess))) {
+    // Only the text sent is cleared: what is typed while the add is in flight stays.
+    const sent = query;
+    if (await act(() => api.share(id, to, addAccess)) && query === sent) {
       query = ""; chosen = null;
       await tick();
       panel?.querySelector<HTMLElement>("input[name=\"who\"]")?.focus();

@@ -120,6 +120,31 @@ describe("Share", () => {
 });
 
 describe("Share dialog", () => {
+  it("keeps what is typed while an add is in flight, clearing only the text it sent", async () => {
+    let release = () => {};
+    const gate = new Promise<void>(r => { release = r; });
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (url === `${BASE}/sharing` && method === "GET") return new Response(JSON.stringify(open({ people: [sam, octo] })));
+      if (url === `${BASE}/shares`) { await gate; return new Response(JSON.stringify({ share: octo })); }
+      return new Response("{}", { status: 404 });
+    }));
+    const m = mount(ShareDialog, { id: ID, title: "Plan", initial: open(), onClose: vi.fn() });
+    const root = m.root;
+    const who = root.querySelector<HTMLInputElement>("input[name=who]")!;
+    const type = (v: string) => flush(() => { who.value = v; who.dispatchEvent(new Event("input", { bubbles: true })); });
+    type("@octo");
+    flush(() => root.querySelector<HTMLFormElement>("form.add")!.requestSubmit());
+    await until(() => root.querySelector("[role=dialog]")!.getAttribute("aria-busy") === "true");
+    type("@next");
+    release();
+    await until(() => root.querySelectorAll(".shared li").length === 2);
+    await until(() => root.querySelector("[role=dialog]")!.getAttribute("aria-busy") === "false");
+    flush();
+    expect(who.value, "the next name typed stays").toBe("@next");
+    m.unmount();
+  });
+
   it("adds a login, changes and removes a person, and sets general access", async () => {
     const state = { sharing: open() as Sharing };
     const sent = serve(state);
