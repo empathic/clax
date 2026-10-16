@@ -7,7 +7,8 @@ use rusqlite::Connection;
 
 use crate::{CoreError, Home, Result};
 
-/// How many copies `<home>/backups` keeps: the newest.
+/// How many of the newest copies `<home>/backups` keeps (one older copy
+/// may be kept besides them; see `prune`).
 pub const KEEP: usize = 3;
 
 /// The directory the copies are kept in.
@@ -20,7 +21,7 @@ pub fn dir(home: &Home) -> PathBuf {
 /// what its write-ahead log holds, to
 /// `<home>/backups/clax-<version>-<UTC time>.db` (`VACUUM INTO` a
 /// temporary name, then renamed, so a copy that exists is complete), then
-/// removes all but the newest [`KEEP`] copies. Returns the copy's path, or
+/// prunes the older copies (see `prune`). Returns the copy's path, or
 /// `None` when nothing is to be migrated.
 ///
 /// # Errors
@@ -80,11 +81,79 @@ pub fn list(dir: &Path) -> Vec<PathBuf> {
     copies.into_iter().map(|(_, p)| p).collect()
 }
 
+/// The schema version in a copy's name (`clax-<version>-<time>.db`).
+fn version_of(copy: &Path) -> Option<u32> {
+    let name = copy.file_name()?.to_str()?;
+    name.strip_prefix("clax-")?.split_once('-')?.0.parse().ok()
+}
+
+/// Removes all but the newest [`KEEP`] copies, and keeps besides them the
+/// newest copy at a version below the newest copy's: the database as it
+/// was before the upgrade now under way, which repeated starts that fail
+/// partway through it (each copying the database at the version it
+/// reached) would otherwise rotate out.
 fn prune(dir: &Path) {
     let copies = list(dir);
+    let newest = copies.last().and_then(|c| version_of(c));
+    let pinned = copies
+        .iter()
+        .rev()
+        .find(|c| matches!((version_of(c), newest), (Some(v), Some(n)) if v < n));
     for old in copies.iter().take(copies.len().saturating_sub(KEEP)) {
+        if Some(old) == pinned {
+            continue;
+        }
         if let Err(e) = std::fs::remove_file(old) {
             tracing::warn!(copy = %old.display(), error = %e, "could not remove an old database copy");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(dir: &Path) -> Vec<String> {
+        list(dir)
+            .iter()
+            .map(|p| p.file_name().unwrap().to_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn failed_retries_keep_the_copy_from_before_the_upgrade() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = Home::at(tmp.path().join("ax"));
+        let backups = dir(&home);
+        std::fs::create_dir_all(&backups).unwrap();
+        // A start at version 9 copied, migrated to 10, and failed the next step.
+        std::fs::write(backups.join("clax-9-20261001T000000000Z.db"), b"v9").unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "user_version", 10).unwrap();
+        for day in 2..=6 {
+            let now = format!("2026-10-{day:02}T00:00:00Z").parse().unwrap();
+            assert!(before_migrate(&conn, &home, 12, now).unwrap().is_some());
+        }
+        assert_eq!(
+            names(&backups),
+            [
+                "clax-9-20261001T000000000Z.db",
+                "clax-10-20261004T000000000Z.db",
+                "clax-10-20261005T000000000Z.db",
+                "clax-10-20261006T000000000Z.db",
+            ]
+        );
+        // Once a later upgrade starts from a newer version, the pin moves on.
+        conn.pragma_update(None, "user_version", 11).unwrap();
+        let now = "2026-10-07T00:00:00Z".parse().unwrap();
+        before_migrate(&conn, &home, 12, now).unwrap();
+        assert_eq!(
+            names(&backups),
+            [
+                "clax-10-20261005T000000000Z.db",
+                "clax-10-20261006T000000000Z.db",
+                "clax-11-20261007T000000000Z.db",
+            ]
+        );
     }
 }
