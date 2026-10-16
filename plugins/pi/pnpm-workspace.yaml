@@ -1,0 +1,8 @@
+# No dependency's install script runs: their packages work without them
+# (esbuild's only checks its platform binary). Stated because Bazel's
+# rules for pnpm projects (docs/bazel.md) require it stated.
+allowBuilds:
+  '@google/genai': false
+  esbuild: false
+  koffi: false
+  protobufjs: false

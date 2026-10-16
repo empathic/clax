@@ -20,7 +20,7 @@ pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILED=1; }
 
 FILES="Cargo.toml Cargo.lock .claude-plugin/marketplace.json plugins/claude-code/.claude-plugin/plugin.json \
-    plugins/clax/.codex-plugin/plugin.json plugins/pi/package.json plugins/pi/package-lock.json \
+    plugins/clax/.codex-plugin/plugin.json plugins/pi/package.json \
     scripts/ensure-clax.sh plugins/claude-code/scripts/ensure-clax.sh plugins/clax/scripts/ensure-clax.sh \
     scripts/check-version.sh scripts/bump-version.sh scripts/package-release.sh \
     scripts/sync-skill-tools.py plugins/pi/test/fixtures/contract.json docs/contract.md docs/usage.md README.md \

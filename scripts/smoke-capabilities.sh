@@ -259,13 +259,13 @@ echo "smoke: ok room-socket: the second socket's first peers frame lists both, a
 if [ "$BROWSER" = 1 ]; then
     # The suite's daemon serves web/dist; it must be built from the current sources.
     for out in web/dist/index.html web/dist/_clax/bridge.js; do
-        [ -f "$out" ] || die "$out is missing: run (cd web && npm run build) first, or pass --no-browser"
-        newer="$(find web/shell web/bridge web/vite.shell.config.ts web/vite.bridge.config.ts web/package.json web/package-lock.json \
+        [ -f "$out" ] || die "$out is missing: run (cd web && pnpm run build) first, or pass --no-browser"
+        newer="$(find web/shell web/bridge web/vite.shell.config.ts web/vite.bridge.config.ts web/package.json web/pnpm-lock.yaml \
             -type f ! -name '*.test.ts' -newer "$out" -print -quit)"
-        [ -z "$newer" ] || die "web/dist is older than $newer: run (cd web && npm run build) first, or pass --no-browser"
+        [ -z "$newer" ] || die "web/dist is older than $newer: run (cd web && pnpm run build) first, or pass --no-browser"
     done
     echo "smoke: running the claude.ai-page suite (web/e2e/contract.spec.ts), room.spec.ts and sample.spec.ts in both frame modes"
-    (cd web && npx playwright test contract.spec.ts room.spec.ts sample.spec.ts --reporter=line) || die "the claude.ai-page, room or sample suite failed"
+    (cd web && pnpm exec playwright test contract.spec.ts room.spec.ts sample.spec.ts --reporter=line) || die "the claude.ai-page, room or sample suite failed"
     echo "smoke: ok the claude.ai sample pages, rooms and sample() run in both frame modes"
 fi
 echo "smoke: all checks passed"

@@ -18,13 +18,13 @@
 #
 # The release build embeds web/dist and web/dist-extension; the phase reads
 # only the API, so this checkout's built ones are copied in (build them first:
-# `cd web && npm run build`).
+# `cd web && pnpm run build`).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 [ $# -eq 1 ] || { echo "usage: scripts/perf-vis-baseline.sh <commit>" >&2; exit 2; }
 commit="$(git rev-parse --verify "$1^{commit}")"
 for d in web/dist web/dist-extension; do
-    [ -d "$d" ] || { echo "perf-vis-baseline: $d is missing; run 'cd web && npm run build' first" >&2; exit 2; }
+    [ -d "$d" ] || { echo "perf-vis-baseline: $d is missing; run 'cd web && pnpm run build' first" >&2; exit 2; }
 done
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/clax-vis-baseline.XXXXXX")"
 cleanup() {

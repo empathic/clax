@@ -17,7 +17,7 @@ main() {
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # One run at a time per checkout: parallel runs corrupt each other (an
-# `npm ci` replaces node_modules under the other's tests). The lock lives in
+# `pnpm install` replaces node_modules under the other's tests). The lock lives in
 # this checkout's git dir, so separate worktrees still run in parallel.
 LOCK="$(git rev-parse --git-dir)/quality-gates.lock"
 while ! mkdir "$LOCK" 2>/dev/null; do
@@ -37,8 +37,8 @@ trap 'finish' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 VERBOSE="${1:-}"
-PLAYWRIGHT_INSTALL="npx playwright install chromium"
-if [ -n "${CI:-}" ]; then PLAYWRIGHT_INSTALL="npx playwright install --with-deps chromium"; fi
+PLAYWRIGHT_INSTALL="pnpm exec playwright install chromium"
+if [ -n "${CI:-}" ]; then PLAYWRIGHT_INSTALL="pnpm exec playwright install --with-deps chromium"; fi
 export PLAYWRIGHT_INSTALL
 # One debug `clax` (no test features) for every gate that runs the binary:
 # the Rust tests that cannot name it (CLAX_TEST_BIN), the plugin wrapper
@@ -58,13 +58,13 @@ export CLAX_PERF_BIN="$GATES_TMP/release/clax"
 
 lane_web() {
     run "web bundle size"       bash -c 'cd web && node scripts/bundle-size.mjs' &&
-    run "web lint"              bash -c 'cd web && npm run lint' &&
-    run "web typecheck"         bash -c 'cd web && npm run typecheck'
+    run "web lint"              bash -c 'cd web && pnpm run lint' &&
+    run "web typecheck"         bash -c 'cd web && pnpm run typecheck'
 }
 lane_pi() {
-    run "pi npm ci"             scripts/npm-ci-stamped.sh plugins/pi --silent &&
+    run "pi pnpm install"         scripts/pnpm-install-stamped.sh plugins/pi --silent &&
     await clax-built rust &&
-    run "pi extension"          bash -c 'cd plugins/pi && npm run typecheck && npm test -- --reporter=dot'
+    run "pi extension"          bash -c 'cd plugins/pi && pnpm run typecheck && pnpm run test --reporter=dot'
 }
 lane_scripts() {
     run "justfile"              scripts/test-justfile.sh &&
@@ -95,7 +95,7 @@ lane_e2e() {
     await tests-built rust &&
     await linted lint &&
     await release-built release &&
-    run "web e2e"               bash -c 'cd web && npm run e2e'
+    run "web e2e"               bash -c 'cd web && pnpm run e2e'
 }
 # The Rust tests are built before clippy runs, so they start running as soon
 # as they can: cargo builds one thing at a time in target/, and clippy's
@@ -143,9 +143,9 @@ lane_release() {
 # release build embeds it. The shell's unit tests include timing-sensitive
 # ones, so they run next, with nothing else loading the machine.
 echo "quality gates: web build and unit tests"
-run "web npm ci"            scripts/npm-ci-stamped.sh web --silent || exit 1
+run "web pnpm install"       scripts/pnpm-install-stamped.sh web --silent || exit 1
 run "web build"             scripts/build-web.sh || exit 1
-run "web unit"              bash -c 'cd web && npm test -- --reporter=dot' || exit 1
+run "web unit"              bash -c 'cd web && pnpm run test --reporter=dot' || exit 1
 
 # Web e2e runs beside the other lanes: they wait mostly on processes and
 # sockets, not the CPU, while the browser tests need the CPU.
@@ -177,7 +177,7 @@ fi
 echo "quality gates: perf gates, one at a time"
 run "daemon latency"        scripts/perf-daemon.sh --quick || exit 1
 run "realtime clients"      scripts/perf-clients.sh --quick || exit 1
-run "time to usable"        bash -c 'cd web && CLAX_PERF_QUICK=1 npm run perf' || exit 1
+run "time to usable"        bash -c 'cd web && CLAX_PERF_QUICK=1 pnpm run perf' || exit 1
 echo "all gates passed"
 }
 

@@ -270,8 +270,8 @@ if command -v just >/dev/null 2>&1; then
     if grep -q "serving CLAX_HOME=$HOME/.clax-dev on port 1 " "$T/out" && grep -q "cargo-watch is required" "$T/err"; then
         pass "just watch runs watch.sh on ~/.clax-dev"
     else fail "just watch ($(cat "$T/out" "$T/err"))"; fi
-    plan="$("${J[@]}" --dry-run install 2>&1 | grep -E '^(cd web && npm|\./scripts/build-web\.sh)')"
-    if [ "$plan" = "cd web && npm ci
+    plan="$("${J[@]}" --dry-run install 2>&1 | grep -E '^(cd web && pnpm|\./scripts/build-web\.sh)')"
+    if [ "$plan" = "cd web && pnpm install --frozen-lockfile
 ./scripts/build-web.sh" ]; then pass "just install builds the web UI first"
     else fail "just install plan ($plan)"; fi
     # The install and uninstall recipes themselves, with a fake cargo, a fake

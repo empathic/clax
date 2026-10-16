@@ -10,8 +10,8 @@
 # ~/.pi is never read or written: the script fails if anything under it
 # changed during the run.
 #
-# Pi is $PI when set, else plugins/pi/node_modules/.bin/pi (after `npm ci`
-# there), else `npx --yes @mariozechner/pi-coding-agent@0.73.1`.
+# Pi is $PI when set, else plugins/pi/node_modules/.bin/pi (after `pnpm install --frozen-lockfile`
+# there), else `pnpm dlx @mariozechner/pi-coding-agent@0.73.1`.
 #
 # The daemon listens on the CLI's default port, which must be free.
 #
@@ -40,7 +40,7 @@ REAL_PI_HOME="$(cd "$HOME/.pi/agent" 2>/dev/null && pwd -P || true)"
 
 if [ -n "${PI:-}" ]; then PI_CMD=("$PI")
 elif [ -x "$REPO/plugins/pi/node_modules/.bin/pi" ]; then PI_CMD=("$REPO/plugins/pi/node_modules/.bin/pi")
-else PI_CMD=(npx --yes @mariozechner/pi-coding-agent@0.73.1)
+else PI_CMD=(pnpm dlx @mariozechner/pi-coding-agent@0.73.1)
 fi
 
 rm -rf "$PI_CODING_AGENT_DIR" "$CLAX_HOME" "$CWD"

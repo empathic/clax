@@ -453,7 +453,7 @@ impl<'a> RealClients<'a> {
         let cli = plugin.join("node_modules/@mariozechner/pi-coding-agent/dist/cli.js");
         assert!(
             cli.exists(),
-            "{} is missing: run `npm ci` in plugins/pi",
+            "{} is missing: run `pnpm install --frozen-lockfile` in plugins/pi",
             cli.display()
         );
         let node = which("node").expect("node on PATH");

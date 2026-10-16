@@ -45,7 +45,7 @@ command -v "$harness" >/dev/null 2>&1 || { echo "clax dev: $harness is not on PA
 if [ -n "${CLAX_DEV_BIN:-}" ]; then
     bin="$CLAX_DEV_BIN"
 else
-    [ -f web/dist/index.html ] || (cd web && npm ci --silent && npm run build)
+    [ -f web/dist/index.html ] || (cd web && pnpm install --frozen-lockfile --silent && pnpm run build)
     cargo build -q -p clax-cli --bin clax
     bin=target/debug/clax
 fi
