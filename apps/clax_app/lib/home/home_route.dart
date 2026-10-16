@@ -6,10 +6,13 @@ import '../daemon/clock.dart';
 import 'home_host.dart';
 import 'home_recovery.dart';
 
-/// What the home app's screen tells [HomeRoute]: the page giving up
-/// ("This app stopped loading", [onStoppedLoading]).
+/// What [HomeRoute] and the home app's screen tell each other: whether
+/// the built-in home screen covers it ([covered], so it acts as not
+/// shown), and the page giving up ("This app stopped loading",
+/// [onStoppedLoading]).
 class HomePageHooks {
-  const HomePageHooks({required this.onStoppedLoading});
+  const HomePageHooks({required this.covered, required this.onStoppedLoading});
+  final bool covered;
   final VoidCallback onStoppedLoading;
 }
 
@@ -217,7 +220,10 @@ class _HomeRouteState extends State<HomeRoute> {
             child: widget.app(
               context,
               aid!,
-              HomePageHooks(onStoppedLoading: () => _onFailed(load)),
+              HomePageHooks(
+                covered: cover,
+                onStoppedLoading: () => _onFailed(load),
+              ),
             ),
           ),
         if (cover)

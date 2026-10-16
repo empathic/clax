@@ -215,7 +215,15 @@ class AppScreen extends StatefulWidget {
     this.home,
     this.openApp,
     this.mode = AppMode.app,
+    this.covered = false,
   });
+
+  /// Whether something in the same route covers the screen (the built-in
+  /// home screen over the home app while its page loads or after it
+  /// failed): it then counts as not shown, as under another route. It
+  /// holds no menu bar Comment and Threads, takes no focus, Escape or
+  /// back, and holds the home host's events for when it shows.
+  final bool covered;
 
   /// Whether this is the home app's screen ([AppMode.home]).
   final AppMode mode;
@@ -546,7 +554,9 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     );
     _text.addListener(_onText);
     _comments = widget.comments ?? (_ownComments = CommentsCommand());
-    _comments.register(_toggleOpen, comment: _toggleComment);
+    if (!widget.covered) {
+      _comments.register(_toggleOpen, comment: _toggleComment);
+    }
     _swipe = TwoFingerSwipe(
       left: () => _setOpen(true),
       right: () => _setOpen(false),
@@ -636,8 +646,24 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     _tellVisible();
   }
 
+  @override
+  void didUpdateWidget(AppScreen old) {
+    super.didUpdateWidget(old);
+    if (old.covered != widget.covered) {
+      _tellVisible();
+      if (!widget.covered) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && !widget.covered) _screenFocus.requestFocus();
+        });
+      }
+    }
+  }
+
+  /// The screen's own focus, taken when it shows and when its cover goes.
+  final _screenFocus = FocusNode(debugLabel: 'app screen');
+
   void _tellVisible() {
-    final visible = _lifecycleShown && _routeCurrent;
+    final visible = _lifecycleShown && _routeCurrent && !widget.covered;
     if (visible == _toldVisible) return;
     _toldVisible = visible;
     widget.surface.setVisible(visible);
@@ -650,6 +676,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       unawaited(_showNotice());
       WidgetsBinding.instance.addPostFrameCallback((_) => _offerNewer());
     } else {
+      if (widget.covered) _comments.unregister(_toggleOpen);
       widget.notice?.clear(this);
       _putAwayNewer();
     }
@@ -763,6 +790,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     widget.notice?.clear(this);
     _comments.unregister(_toggleOpen);
     _ownComments?.dispose();
+    _screenFocus.dispose();
     for (final s in _subs) {
       s.cancel();
     }
@@ -1800,17 +1828,26 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         const SingleActivator(LogicalKeyboardKey.escape): () =>
             escapeOrBack(() => unawaited(Navigator.maybePop(context))),
       },
-      child: Focus(autofocus: true, child: screen),
+      child: Focus(
+        focusNode: _screenFocus,
+        autofocus: !widget.covered,
+        child: screen,
+      ),
     );
+    screen = ExcludeFocus(excluding: widget.covered, child: screen);
     final own = _ownComments;
     if (macOS && own != null) {
       screen = ClaxMenuBar(comments: own, child: screen);
     }
     return PopScope(
       canPop:
-          !_wantComment && !_questionsShowing && _draft == null && !_canGoBack,
+          widget.covered ||
+          (!_wantComment &&
+              !_questionsShowing &&
+              _draft == null &&
+              !_canGoBack),
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) _back();
+        if (!didPop && !widget.covered) _back();
       },
       child: screen,
     );

@@ -12,6 +12,7 @@ import 'package:clax_app/home/home_host.dart';
 import 'package:clax_app/home/home_route.dart';
 import 'package:clax_app/home/home_settings.dart';
 import 'package:clax_app/platform/settings_store.dart';
+import 'package:clax_app/ui/app_menu.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/launcher.dart';
@@ -237,6 +238,74 @@ void main() {
         same(page),
         reason: 'the page loaded under the cover is kept',
       );
+    });
+
+    testWidgets('the home app under the built-in screen acts as covered: '
+        'no menu bar commands, focus, Escape or back, and its events are '
+        'held until it shows', (tester) async {
+      final surface = FakeAppSurface();
+      final cmd = CommentsCommand();
+      addTearDown(cmd.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: HomeRoute(
+            host: host,
+            clock: _Clock(),
+            app: (context, aid, hooks) => AppScreen(
+              aid: aid,
+              base: Uri.parse('http://127.0.0.1:7999/'),
+              api: api,
+              surface: surface,
+              voice: FakeVoice(),
+              settings: AppSettings(),
+              timings: const NoTimings(),
+              worker: const Stream.empty(),
+              home: host,
+              mode: AppMode.home,
+              comments: cmd,
+              covered: hooks.covered,
+            ),
+            fallback: (_, _) => const Text('built-in'),
+          ),
+        ),
+      );
+      settings.homeAppId = home;
+      host.settingsChanged();
+      await tester.pump();
+      await tester.pump();
+      expect(find.text('built-in'), findsOneWidget);
+      expect(surface.visibility, [false], reason: 'told hidden, never shown');
+      expect(cmd.toggle, isNull, reason: 'no Comment or Threads');
+      expect(
+        FocusManager.instance.primaryFocus?.debugLabel,
+        isNot('app screen'),
+      );
+      final nav = tester.state<NavigatorState>(find.byType(Navigator));
+      expect(await nav.maybePop(), isFalse, reason: 'back is not taken');
+
+      // The page reads, then a change arrives while it is covered.
+      surface.push(
+        const DeviceRequest(id: 'u', cap: 'home', method: 'unread', args: []),
+      );
+      await tester.pump();
+      api.pushInbox('reply', artifactId: other, body: 'one');
+      await tester.pump();
+      await tester.pump();
+      Iterable<HomeDeviceEvent> told() =>
+          surface.hostCalls.whereType<HomeDeviceEvent>();
+      expect(told(), isEmpty, reason: 'held while covered');
+
+      surface.push(
+        const DeviceRequest(id: 's', cap: 'home', method: 'shown', args: []),
+      );
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(find.text('built-in'), findsNothing);
+      expect(surface.visibility.last, isTrue);
+      expect(cmd.toggle, isNotNull);
+      expect(told().map((e) => (e.name, e.data)), contains(('unread', 1)));
+      expect(FocusManager.instance.primaryFocus?.debugLabel, 'app screen');
     });
 
     testWidgets('a shown from another app lifts nothing', (tester) async {
