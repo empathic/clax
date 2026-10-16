@@ -3637,6 +3637,7 @@ test fails when it differs:
 | Route | Class | Refuses the owner's agents |
 |---|---|---|
 | `GET /` | Denied | no |
+| `GET /_blob/{aid}/{asset_id}` | Denied | yes: 403 `not_for_agents` |
 | `GET /_blob/{asset_id}` | Denied | yes: 403 `not_for_agents` |
 | `GET /_clax/{*path}` | Denied | no |
 | `GET /a/{aid}` | Denied | yes: 403 `not_for_agents` |
@@ -3655,10 +3656,25 @@ test fails when it differs:
 | `POST /api/approvals/requests/{rid}/decide` | Denied | yes: 403 `browser_required` |
 | `DELETE /api/approvals/{id}` | Denied | yes: 403 `browser_required` |
 | `GET /api/artifacts/{aid}/approves-first` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/artifacts/{aid}/db-grants` | Denied | no |
+| `DELETE /api/artifacts/{aid}/db-grants/{source}` | Denied | no |
+| `PUT /api/artifacts/{aid}/db-grants/{source}` | Denied | no |
+| `GET /api/artifacts/{aid}/docs:collections` | Denied | no |
+| `DELETE /api/artifacts/{aid}/net-grants` | Denied | no |
+| `GET /api/artifacts/{aid}/net-grants` | Denied | no |
+| `PUT /api/artifacts/{aid}/net-grants` | Denied | no |
+| `POST /api/artifacts/{aid}/net:fetch` | Denied | no |
 | `GET /api/artifacts/{aid}/room` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/artifacts/{aid}/sample` | Denied | no |
 | `POST /api/artifacts/{aid}/sample` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/artifacts/{aid}/sample-grant` | Denied | no |
+| `GET /api/artifacts/{aid}/sample-grant` | Denied | no |
+| `PUT /api/artifacts/{aid}/sample-grant` | Denied | no |
 | `POST /api/artifacts/{aid}/sample/{call}/tool_result` | Denied | no |
+| `POST /api/artifacts/{aid}/versions:restore` | Denied | no |
+| `GET /api/drafts` | Denied | no |
+| `POST /api/drafts` | Denied | no |
+| `DELETE /api/drafts/{id}` | Denied | no |
 | `GET /api/events` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/extension` | Denied | no |
 | `DELETE /api/extension/credentials` | Denied | no |
