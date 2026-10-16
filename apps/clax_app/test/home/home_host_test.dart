@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' show Rect;
 
@@ -8,6 +9,7 @@ import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/home/home_host.dart';
 import 'package:clax_app/home/home_settings.dart';
+import 'package:clax_app/ui/app_icon.dart';
 import 'package:clax_app/ui/build_plan.dart';
 import 'package:clax_app/ui/make_service.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -139,6 +141,50 @@ void main() {
       expect(actions.calls, isEmpty);
     },
   );
+
+  test("apps() gives a listed app's icon.svg as a {url} face once read, "
+      'with no tile built; a repeated list reads it no more', () async {
+    const icon =
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">'
+        '<rect width="1024" height="1024" fill="#f80"/></svg>';
+    final runs = api.seedArtifact('Runs', {..._page, 'icon.svg': icon});
+    final plain = api.seedArtifact('Plain', _page);
+    host.dispose();
+    final icons = AppIcons(api);
+    host = HomeHost(
+      api: api,
+      stream: api.stream(),
+      closeStream: true,
+      makes: makes,
+      builds: BuildLink(plans: plans, control: control),
+      settings: settings,
+      actions: actions,
+      icons: icons,
+    );
+    final told = <HomeEvent>[];
+    host.events.listen(told.add);
+    await pumpEventQueue();
+
+    Map<String, Object?> iconOf(List apps, String id) =>
+        (apps.firstWhere((a) => (a as Map)['id'] == id) as Map)['icon']
+            as Map<String, Object?>;
+    final apps = await host.call(home, 'apps', {}) as List;
+    final url = iconOf(apps, runs)['url'] as String;
+    expect(url, startsWith('data:image/svg+xml;base64,'));
+    expect(utf8.decode(base64.decode(url.split(',').last)), contains('#f80'));
+    expect(iconOf(apps, plain), {'monogram': 'P', 'hue': isA<int>()});
+    // The page heard of the icon without asking again.
+    expect(iconOf(told.lastWhere((e) => e.name == 'apps').data as List, runs), {
+      'url': url,
+    });
+
+    final reads = api.callNames.where((n) => n == 'readFile').length;
+    expect(reads, 2, reason: "each app's live version read once");
+    await host.load();
+    await host.load();
+    await pumpEventQueue();
+    expect(api.callNames.where((n) => n == 'readFile').length, reads);
+  });
 
   test('without a recorded home app every caller is refused', () async {
     settings.homeAppId = null;
