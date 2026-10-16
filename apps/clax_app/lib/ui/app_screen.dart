@@ -148,14 +148,16 @@ import 'working_chip.dart';
 ///   settings.
 /// - **New version.** A newer version published while the page shows the
 ///   latest (a change, a build's feature, an update, another client) is
-///   never loaded by itself: the shell offers it (`newer`), and a toast
+///   never loaded by itself: the shell offers it (`newer`), as does the
+///   worker landing a change of this app (without the stream), and a toast
 ///   "New version ready" with Reload loads it in place (`reloadLatest`),
 ///   on the page, fragment and scroll shown, with the app's data. The
 ///   toast waits while a composer is open or sending and shows once it
 ///   closes; it shows only while the screen is in front, again when the
 ///   screen comes back to the front with the version still not loaded,
-///   and again after a toast that replaced it. A frame of that version
-///   ends the offer.
+///   and again after a toast that replaced it; each version is offered
+///   once. Leaving or covering the screen puts it away. A frame of that
+///   version ends the offer.
 /// - **Back.** Back (Android's back, Escape, App › Back) closes what is
 ///   over the page first (the questions sheet, the composer, the panel,
 ///   the comment bar), then goes back in the app's own history (its pages
@@ -559,6 +561,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     super.didChangeDependencies();
     // ModalRoute.of rebuilds this when the route stops or starts being on top.
     _routeCurrent = ModalRoute.of(context)?.isCurrent ?? true;
+    _messenger = ScaffoldMessenger.maybeOf(context);
     _tellVisible();
   }
 
@@ -573,6 +576,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       WidgetsBinding.instance.addPostFrameCallback((_) => _offerNewer());
     } else {
       widget.notice?.clear(this);
+      _putAwayNewer();
     }
   }
 
@@ -666,7 +670,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   /// Back: what is over the page closes first, then the app's page goes
   /// back in its own history.
   void _back() {
-    if (_wantComment || _questionsShowing) {
+    if (_wantComment || _questionsShowing || _draft != null) {
       _closeTop();
     } else if (_canGoBack) {
       _call(const GoBack());
@@ -675,6 +679,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _putAwayNewer();
     widget.device?.stopWatches(_deviceView, asking: true);
     _deviceView.watching.dispose();
     _updates.dispose();
@@ -794,15 +799,18 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         unawaited(_stopDictation());
       case Landed(:final version):
         setState(() => _changes.frame(version));
+        if (_newer case final n? when version >= n) _endOffer();
         if (_open) _loadVersions();
       case NewerMsg(:final version):
         if (version <= (_ready?.version ?? 0)) break;
+        // Offered already (the worker's landing came first): once only.
+        final known = _newer != null && version <= _newer!;
         setState(() {
-          _newer = version;
+          if (!known) _newer = version;
           _changes.ready(version);
         });
         if (_open) _loadVersions();
-        _offerNewer();
+        if (!known) _offerNewer();
       case HistoryMsg(:final back):
         if (back != _canGoBack) setState(() => _canGoBack = back);
       case SendFailed(:final thread, :final text):
@@ -931,6 +939,14 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       case WorkerLanded(:final version):
         final pinned = _changes.workerLanded(version);
         setState(() {});
+        // The worker's own word that a version landed: offered whether or
+        // not the shell's stream tells it (Reload reads the latest itself).
+        if (!pinned &&
+            version > (_ready?.version ?? 0) &&
+            (_newer == null || version > _newer!)) {
+          _newer = version;
+          _offerNewer();
+        }
         if (pinned) {
           _snack(
             'Version $version is ready',
@@ -1311,6 +1327,28 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     );
   }
 
+  /// The app's messenger, kept to put the toast away as the screen goes.
+  ScaffoldMessengerState? _messenger;
+
+  /// The screen is left, covered or gone: a showing or queued New version
+  /// toast goes with it (the messenger is the app's, and would keep it over
+  /// the launcher); it is offered again when the screen is back in front.
+  /// The toast goes after this frame (the screen may be building), at
+  /// once with no animation that would outlive the screen, and the toasts
+  /// queued behind it with it; unless it was offered again meanwhile.
+  void _putAwayNewer() {
+    if (_newerShown == null) return;
+    _newerShown = null;
+    final m = _messenger;
+    if (m == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!m.mounted || _newerShown != null) return;
+      m
+        ..removeCurrentSnackBar()
+        ..clearSnackBars();
+    });
+  }
+
   /// The page shows the offered version (or a newer one): the offer ends.
   void _endOffer() {
     _newer = null;
@@ -1608,7 +1646,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       screen = ClaxMenuBar(comments: own, child: screen);
     }
     return PopScope(
-      canPop: !_wantComment && !_questionsShowing && !_canGoBack,
+      canPop:
+          !_wantComment && !_questionsShowing && _draft == null && !_canGoBack,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) _back();
       },
