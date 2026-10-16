@@ -361,6 +361,19 @@ The perf benchmarks, run on demand by `just perf` and by no check: each prints i
 - realtime clients (`scripts/perf-clients.sh`): 1,000 `/api/stream` clients on one release daemon, judged on delivery latency, cheap requests under load, memory per client, idle CPU and a client that never reads; a 16 s idle and a 15 s load window (3 s and 9 s in the quick mode: the load makes at least 40 writes, so one write held up by its commit cannot set the delivery p95 alone), budgets in `scripts/perf-clients-budget.json`;
 - time to usable (`cd web && pnpm run perf`): link to first paint and to comment mode in a fresh tab, per frame mode, against `web/perf/budget.json`; the quick mode (`CLAX_PERF_QUICK=1`) takes 5 samples per mode instead of 9.
 
+The numbers are kept in a perf log, one JSON line per run: the commit and
+date, the runner, its CPU count and load average, and every measure (the
+benchmarks above and the bundle bytes) beside its budget. Each benchmark
+writes its measures to `CLAX_PERF_JSON` when it is set, and
+`scripts/perf-log.sh record` makes the line. `just perf` prints it and
+appends it to `target/perf-log.jsonl`, and never pushes. CI's `perf-log`
+job runs the benchmarks after every green push to main and appends its line
+to `perf/log.jsonl` on the orphan branch `perf-log`; a number never fails
+it. `scripts/perf-log.sh show` fetches that branch and prints each
+measure's trend over the last runs (`--runs N`, default 10; `--file
+target/perf-log.jsonl` for the local log), marking a value over its
+budget.
+
 One run of the gates at a time per checkout: a run holds
 `quality-gates.lock` in the checkout's git directory, a second run in the
 same checkout waits for it, and a lock whose process has gone is taken over.

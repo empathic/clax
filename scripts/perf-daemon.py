@@ -153,6 +153,8 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
+from perf_metrics import metric, write as write_metrics
+
 RESERVED_PORTS = {7480, 7481, 7490}
 CHEAP = ["GET /healthz", "GET /a/<id>", "GET /c/<id>/v/1/", "GET /api/artifacts/<id>"]
 REQUEST_TIMEOUT_S = 60
@@ -1443,11 +1445,13 @@ def judge_vis(cfg, scale, vis_runs, raised, verified, signed_runs, confirm):
         if not ok:
             failed.append(key)
         print(f"{'two people':<14} {label:<28} {k:>5} {v:>9.2f} {lim:>9.2f}  {'ok' if ok else 'FAIL'}")
+        metric(f"two people {label}", v, lim)
     us = verified["median_us"]
     ok = us is not None and us <= lim_sig
     if not ok:
         failed.append("sig_verify_us")
     print(f"{'gateway':<14} {'signature verification':<28} {verified['count']:>5} {us if us is not None else float('nan'):>8.0f}u {lim_sig:>8.0f}u  {'ok' if ok else 'FAIL'}")
+    metric("gateway signature verification", us, lim_sig, "us")
     bad = {k: v for r in signed_runs for k, v in r["statuses"].items() if k != "200"}
     if bad or not all(r["n"] for r in signed_runs):
         failed.append("the signed polling client")
@@ -1606,11 +1610,15 @@ def main(binary, budget_path, quick):
             v95, vmax = med([x["p95"] for x in xs]), med([x["max"] for x in xs])
             if name == "idle":
                 verdict = "baseline"
+                metric(f"{name} {label} p95", v95, None)
+                metric(f"{name} {label} max", vmax, None)
             else:
                 sc = phase_scale.get(name, scale)
                 l95, lmax = cfg["cheap_p95_ms"] * sc, cfg["cheap_max_ms"] * sc
                 over = [w for w, v, lim in (("p95", v95, l95), ("max", vmax, lmax)) if v > lim]
                 verdict = "FAIL " + ", ".join(over) if over else "ok"
+                metric(f"{name} {label} p95", v95, l95)
+                metric(f"{name} {label} max", vmax, lmax)
                 if over:
                     failed.append(f"{label} under {name}")
             print(f"{name:<14} {label:<28} {n:>5} {v95:>9.1f} {vmax:>9.1f}  {verdict}")
@@ -1637,6 +1645,8 @@ def main(binary, budget_path, quick):
             failed.append(f"gallery alone {path}")
         label = "GET " + path
         print(f"{'gallery alone':<14} {label:<28} {len(gallery[path]) * GALLERY_SAMPLES:>5} {ms:>9.1f} {'x' + format(q, '.2f'):>9}  {'ok' if ok else 'FAIL'}")
+        metric(f"gallery alone {label}", ms, ceiling)
+        metric(f"gallery alone {label} ratio", q, cfg[key], "x")
     for path in INBOX_REQUESTS:
         v = med(inbox[path])
         ok = v <= lim_inbox
@@ -1644,6 +1654,7 @@ def main(binary, budget_path, quick):
             failed.append(f"inbox alone {path}")
         label = "GET " + path
         print(f"{'inbox alone':<14} {label:<28} {len(inbox[path]) * INBOX_SAMPLES:>5} {v:>9.1f} {'':>9}  {'ok' if ok else 'FAIL'}")
+        metric(f"inbox alone {label}", v, lim_inbox)
     print(f"{'alone':<14} {'session probe':<28} {'n':>5} {'p50 ms':>9} {'p99 ms':>9}  verdict (limits p50 {lim_s50:.0f}, p99 {lim_s99:.0f})")
     for label in SESSION_PROBES:
         v50 = med([x[label]["p50"] for x in session_runs])
@@ -1653,6 +1664,8 @@ def main(binary, budget_path, quick):
             failed.append(f"{label} alone")
         n = len(session_runs) * cfg["session_samples"]
         print(f"{'alone':<14} {label:<28} {n:>5} {v50:>9.1f} {v99:>9.1f}  {'FAIL ' + ', '.join(over) if over else 'ok'}")
+        metric(f"alone {label} p50", v50, lim_s50)
+        metric(f"alone {label} p99", v99, lim_s99)
     if people:
         failed += judge_vis(cfg, scale, vis_runs, raised, verified, signed_runs, vis_confirm)
     elif vis_note:
@@ -1661,6 +1674,7 @@ def main(binary, budget_path, quick):
     for name, _ in PHASES[1:]:
         print(f"{name}: " + "; ".join(infos[name]))
     print()
+    write_metrics("daemon: ")
     # A benchmark, not a gate: over budget is reported, and the run passes.
     if failed:
         print(f"daemon latency: {len(failed)} over budget (reported, not gated): " + "; ".join(failed))
