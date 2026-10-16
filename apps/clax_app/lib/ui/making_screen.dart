@@ -796,9 +796,24 @@ class _MakingScreenState extends State<MakingScreen> {
           ),
           SizedBox(
             height: 24,
-            child: _made == null && _seconds >= MakingScreen.slowAfter
-                ? Text('Usually under a minute', style: dim)
-                : null,
+            child: switch (_session.tryNow) {
+              final tryNow? when log.stage == MakeStage.offline => Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton(
+                  key: const ValueKey('make-try-now'),
+                  style: TextButton.styleFrom(
+                    padding: EdgeInsets.zero,
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  onPressed: tryNow,
+                  child: const Text('Try now'),
+                ),
+              ),
+              _ when _made == null && _seconds >= MakingScreen.slowAfter =>
+                Text('Usually under a minute', style: dim),
+              _ => null,
+            },
           ),
           Center(
             child: _made == null

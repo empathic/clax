@@ -20,9 +20,17 @@ import 'making_screen.dart';
 /// hear of each change of [running], [planKey], [aid], [failure] and
 /// [cancelled].
 class MakeSession extends ChangeNotifier {
-  MakeSession(this.request, this._make, {Clock clock = const SystemClock()})
-    : _clock = clock,
-      startedAt = clock.now();
+  MakeSession(
+    this.request,
+    this._make, {
+    Clock clock = const SystemClock(),
+    this.tryNow,
+  }) : _clock = clock,
+       startedAt = clock.now();
+
+  /// Tries the Claude API's connection at once, for a make waiting for it
+  /// ([waitingForConnection]); null when nothing can.
+  final VoidCallback? tryNow;
 
   final String request;
   final MakeApp _make;
@@ -174,6 +182,7 @@ class MakeService extends ChangeNotifier {
     this.onFailed,
     this.pending,
     this.maxRunning = 3,
+    this.tryNow,
     this._clock = const SystemClock(),
   });
 
@@ -182,6 +191,9 @@ class MakeService extends ChangeNotifier {
 
   /// How many makes run at once.
   final int maxRunning;
+
+  /// Tries the connection at once, for each make's [MakeSession.tryNow].
+  final VoidCallback? tryNow;
 
   /// Where interrupted makes are kept across launches.
   final PendingMake? pending;
@@ -215,14 +227,15 @@ class MakeService extends ChangeNotifier {
   /// first starts it ([MakeSession.started]), unless it waits for a slot
   /// ([MakeSession.queued]).
   MakeSession add(String request) {
-    final s = MakeSession(request, _make, clock: _clock);
+    final s = MakeSession(request, _make, clock: _clock, tryNow: tryNow);
     s.queued = _busy >= maxRunning;
     return _keep(s);
   }
 
   /// An interrupted make of [request], kept in [pending] until settled.
   MakeSession lost(String request) {
-    final s = MakeSession(request, _make, clock: _clock)..interrupted = true;
+    final s = MakeSession(request, _make, clock: _clock, tryNow: tryNow)
+      ..interrupted = true;
     unawaited(pending?.save(request));
     return _keep(s);
   }
