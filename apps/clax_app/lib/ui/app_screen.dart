@@ -117,9 +117,13 @@ import 'working_chip.dart';
 ///   ("Building · Export · 3/7") for [_AppScreenState.buildChipFor] after
 ///   the build starts, a feature starts or ends, or its phase changes (on
 ///   [AppScreen.clock]); then it folds into a small pill (a ring and "3/7")
-///   at the top right, just under the status bar and any display cutout
-///   (the top inset) and inside the side insets, so it never covers the
-///   system's icons. The change chip folds into a pill there too.
+///   at the top right, in a strip ([AppScreen.pillStrip]) between the
+///   status bar and any display cutout (the top inset) and the page, inside
+///   the side insets, so it covers neither the system's icons nor the app's
+///   own header. The strip shows while a change, a build or a location
+///   watch goes, whether its chip is whole or folded, so the page moves
+///   only as work starts and ends. The change chip folds into a pill there
+///   too.
 ///   A tap on the pill opens the chip again; a tap on the chip opens the
 ///   build sheet ([showBuildSheet]) with the plan and Stop or Resume. When the build
 ///   ends a toast says how: every feature built, the spending cap, stopped
@@ -142,7 +146,7 @@ import 'working_chip.dart';
 ///   screen is hidden (the app in the background, another route on top,
 ///   the screen closed) or a new document loads, and does not start again
 ///   by itself. While one runs a small location pill sits at the top left,
-///   under the top inset; a tap on it stops location. A location call
+///   in the pill strip; a tap on it stops location. A location call
 ///   that fails because Android will not ask again (`system_denied`) or the
 ///   device's location is off (`location_off`) shows a toast with Open
 ///   settings.
@@ -276,6 +280,10 @@ class AppScreen extends StatefulWidget {
 
   /// How tall the folded chips and the location pill are.
   static const pillHeight = 24.0;
+
+  /// How tall the strip above the page that holds the pills is, while a
+  /// change, a build or a location watch goes.
+  static const pillStrip = pillHeight + 8;
 
   /// The app view's URL for [aid] under [base].
   static Uri appUrl(Uri base, String aid) {
@@ -432,9 +440,10 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     ),
   );
 
-  /// A small pill just under the top inset (the status bar and any display
-  /// cutout, which the system draws its icons in) and inside the side
-  /// insets, at the top right, or the top left unless [right].
+  /// A small pill in the strip between the top inset (the status bar and
+  /// any display cutout, which the system draws its icons in) and the page,
+  /// inside the side insets, at the top right, or the top left unless
+  /// [right].
   Widget _topPill(
     BuildContext context, {
     required bool right,
@@ -442,12 +451,15 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   }) {
     final pad = MediaQuery.paddingOf(context);
     return Positioned(
-      top: pad.top + 6,
+      top: pad.top + (AppScreen.pillStrip - AppScreen.pillHeight) / 2,
       right: right ? pad.right + 12 : null,
       left: right ? null : pad.left + 12,
       child: child,
     );
   }
+
+  /// The watch count without a device: never any.
+  static final _noWatches = ValueNotifier<int>(0);
 
   /// The app's plan and its build's latest step.
   Plan? _plan;
@@ -1683,26 +1695,36 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Expanded(
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  SafeArea(
-                    // The bar under the page, or the panel, holds the
-                    // bottom inset.
-                    bottom: !bar && (!shown || wide),
-                    right: !shown || !wide,
-                    child: _pageStack(context),
-                  ),
-                  if (_buildChip && !_buildOpen) _buildPill(context),
-                  if (_changeChip && !_changeOpen) _changePill(context),
-                  if (widget.device != null)
-                    ValueListenableBuilder<int>(
-                      valueListenable: _deviceView.watching,
-                      builder: (context, n, _) => n > 0
-                          ? _locationPill(context)
-                          : const SizedBox.shrink(),
-                    ),
-                ],
+              child: ValueListenableBuilder<int>(
+                valueListenable: widget.device != null
+                    ? _deviceView.watching
+                    : _noWatches,
+                builder: (context, watches, _) {
+                  final strip = _buildChip || _changeChip || watches > 0;
+                  return Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      SafeArea(
+                        // The bar under the page, or the panel, holds the
+                        // bottom inset.
+                        bottom: !bar && (!shown || wide),
+                        right: !shown || !wide,
+                        // The pills' strip sits above the page, so they
+                        // never cover the app's own header.
+                        minimum: EdgeInsets.only(
+                          top: strip
+                              ? MediaQuery.paddingOf(context).top +
+                                    AppScreen.pillStrip
+                              : 0,
+                        ),
+                        child: _pageStack(context),
+                      ),
+                      if (_buildChip && !_buildOpen) _buildPill(context),
+                      if (_changeChip && !_changeOpen) _changePill(context),
+                      if (watches > 0) _locationPill(context),
+                    ],
+                  );
+                },
               ),
             ),
             if (bar)

@@ -2638,8 +2638,42 @@ void main() {
         expect(pill.right, lessThanOrEqualTo(width - pad.right));
         expect(pill.left, greaterThanOrEqualTo(pad.left));
         expect(pill.height, AppScreen.pillHeight);
+        // The page starts under the pill's strip, so the pill covers none
+        // of the app's own header.
+        final page = tester.getRect(find.byKey(const ValueKey('fake-surface')));
+        expect(page.top, greaterThanOrEqualTo(pill.bottom));
+        expect(page.top, pad.top + AppScreen.pillStrip);
       });
     }
+
+    testWidgets('the page takes the strip back when nothing runs', (
+      tester,
+    ) async {
+      final clock = _Clock();
+      final rig = await pumpScreen(tester, clock: clock);
+      tester.view.padding = const FakeViewPadding(top: 24 * 3);
+      final page = find.byKey(const ValueKey('fake-surface'));
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      expect(tester.getRect(page).top, 24);
+      final tid = rig.api.sendComment(rig.aid, 'bigger').threadId;
+      rig.surface.push(Sent(tid));
+      await tester.pump();
+      // The strip shows while the chip is whole too, so the page does not
+      // move each time the chip opens or folds.
+      expect(find.byKey(const ValueKey('chip-working')), findsOneWidget);
+      expect(tester.getRect(page).top, 24 + AppScreen.pillStrip);
+      clock.lapse();
+      await tester.pump();
+      expect(tester.getRect(page).top, 24 + AppScreen.pillStrip);
+      await tester.tap(find.byKey(const ValueKey('chip-working-pill')));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('chip-dismiss')));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('chip-working')), findsNothing);
+      expect(find.byKey(const ValueKey('chip-working-pill')), findsNothing);
+      expect(tester.getRect(page).top, 24);
+    });
   });
 }
 
