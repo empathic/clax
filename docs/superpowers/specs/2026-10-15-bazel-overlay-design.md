@@ -89,7 +89,7 @@ Changelist's setup, read in full for this design (`docs/bazel.md`,
 | B16 | The web side builds and tests under rules_js, as changelist's does: each project's `package.json` scripts run over the whole project, with Node and packages Bazel fetches by the lockfile's checksums. Nothing is restated: a target names a script. | Changelist's runner (`bazel/js/npm_script.mjs`) and macros (`bazel/js/defs.bzl`) already solve Vite under Bazel, the copy-not-link question and stale-file safety. Granularity per project needs no per-file BUILD upkeep. |
 | B17 | The web build (`//web:dist`, which writes `dist`, `dist-extension` and `dist-extension-test`) and Pi's packages (`//plugins/pi:node_modules`) are inputs of the Rust tests, built before them. | `clax-server`'s shell tests read the built web UI; the real-Pi tests (`RealClients::run_pi` in `crates/clax-server/tests/common/clients.rs`) run `plugins/pi/node_modules/@mariozechner/pi-coding-agent/dist/cli.js`. |
 | B18 | Which tests are Bazel targets, and which stay native with a reason, is §8's table. Browser tests and perf gates are Bazel targets; tests that need a real harness CLI, a model or credentials stay native. | Clax's daemons, browsers and Pi runs already use scratch homes and port 0; nothing in them reads the person's machine. Real harness sessions do. |
-| B19 | Disk: the disk cache is the one changelist uses, `~/.cache/bazel-disk`, under one bound both repositories' `.bazelrc` state: 40 GB and 7 days, sized from measurements (§9.3). Per-worktree real disk under Bazel stays below 0.5 GB for a worktree that builds main and below 3 GB after edits; `just bazel-gc` removes output bases of removed worktrees (§9). | Owner decision (2026-10-15): "Use a shared cache with other projects, there's no reason to have a dedicated cache". Measured `target/` sizes are 10–16 GB per worktree. The budgets are measured before the migration merges. |
+| B19 | Disk: the disk cache is the one changelist uses, `~/.cache/bazel-disk`, under one bound both repositories' `.bazelrc` state: 80 GB in total and 7 days (§9.3). Per-worktree real disk under Bazel stays below 0.5 GB for a worktree that builds main and below 3 GB after edits; `just bazel-gc` removes output bases of removed worktrees (§9). | Owner decision (2026-10-15): "Use a shared cache with other projects, there's no reason to have a dedicated cache"; on the bound: "Raise the total to 80GB". Measured `target/` sizes are 10–16 GB per worktree. The budgets are measured before the migration merges. |
 | B20 | Speed: on a warm cache, every Bazel task takes no longer than its native twin, and the whole suite stays under two minutes. Both are measured before the migration merges, for every recipe; a task that misses them blocks the merge until fixed (§10). | The owner's rule: the check suite stays under two minutes. Disk savings do not pay for a slower loop (Q5). |
 | B21 | The dev loop stays native: `just dev`, `just watch`, `just serve`, `just stop`, `just doctor`, `just install`, `just demo-room-sample`, and rust-analyzer. | Cargo's incremental compilation and cargo-watch, Vite's rebuilds, and a debug binary reading `web/dist` from disk are what the loop is built on. |
 | B22 | Releases build with Cargo, unchanged; `scripts/test-release.sh` becomes a Bazel test (§11). | Static musl binaries on four native runners, the real `CLAX_BUILD_COMMIT`, and a release that reads no build state anything else wrote. |
@@ -414,7 +414,7 @@ machine, as today.
 - **The disk cache**, `~/.cache/bazel-disk` (B19, Q2): every action's
   outputs, shared by every Clax worktree and every changelist worktree.
   `.bazelrc`: `--disk_cache=~/.cache/bazel-disk`,
-  `--experimental_disk_cache_gc_max_size=40G`,
+  `--experimental_disk_cache_gc_max_size=80G`,
   `--experimental_disk_cache_gc_max_age=7d` (§9.3).
 - **One output base per worktree** under Bazel's user root
   (`~/Library/Caches/bazel/_bazel_$USER/` on macOS). Its files come from the
@@ -428,14 +428,14 @@ machine, as today.
 
 | What | Budget | Enforced by |
 |---|---|---|
-| Disk cache, Clax and changelist together | 40 GB, entries unused for 7 days removed | Bazel while idle; either repository's `bazel-gc.sh` at any time |
+| Disk cache, Clax and changelist together | 80 GB in total, entries unused for 7 days removed | Bazel while idle; either repository's `bazel-gc.sh` at any time |
 | A worktree at a commit some worktree has built | under 0.5 GB of real disk | measured before merge |
 | A worktree after edits, all tests built | under 3 GB of real disk | measured before merge; naming one test target builds one test binary |
 | Output bases of removed worktrees | 0 after `just bazel-gc` | `scripts/bazel-gc.sh` |
 | `target/` in a worktree that only runs checks | none | Bazel writes none; only the dev loop and rust-analyzer make one |
-| All Bazel state on the machine (the shared cache, output bases, downloads) with 20 Clax worktrees | under 70 GB | `scripts/bazel-gc.sh --report` prints the real total |
+| Clax's output bases and the downloads beside the shared cache, with 20 Clax worktrees | under 15 GB | `scripts/bazel-gc.sh --report` prints the real total |
 
-§9.3 says where 40 GB comes from and how it is confirmed.
+§9.3 says how the 80 GB bound was set and how both repositories keep it.
 
 ### 9.3 One bound for a shared cache
 
@@ -447,11 +447,12 @@ a Cargo worktree's `target/debug/deps` (every dependency and test binary of
 one debug build) is 6.2 GB on the multi-person branch; Bazel's build of main
 is expected near that, and each edited worktree adds its relinked test
 binaries (about 1.5 GB, to be measured). Five edited Clax worktrees beside
-main's build come to about 14 GB; with changelist's 14 GB working set and
-headroom for both to grow, the shared bound is **40 GB**, 7 days. The
-migration measures Clax's real numbers (one build of main, then one edit of
-each crate) and sets the bound from them before merging; the figure and the
-measurement go in `docs/bazel.md`.
+main's build come to about 14 GB; with changelist's 14 GB working set,
+both together need about 30 GB. The owner set the bound above that, with
+room for both to grow: **80 GB in total**, 7 days ("Raise the total to
+80GB", 2026-10-15). The migration still measures Clax's real numbers (one
+build of main, then one edit of each crate) and records them in
+`docs/bazel.md`; they inform the owner, and do not change the bound.
 
 Bazel trims the cache to the bound of whichever server trims it, so both
 repositories must state the same bound, or the smaller one wins in effect.
@@ -459,15 +460,15 @@ How they agree:
 
 - Both `.bazelrc` files carry the same three lines (`--disk_cache`, the
   size and the age), under a comment naming the other repository.
-- Both `scripts/bazel-gc.sh` default to the same bound, read from those
-  `.bazelrc` lines rather than a constant of their own.
+- Clax's `scripts/bazel-gc.sh` reads its bound from those `.bazelrc`
+  lines; changelist's keeps its own default, set to the same 80 GB.
 - Clax's `bazel-sync.sh --check` fails if `.bazelrc`'s lines and
   `bazel-gc.sh`'s reading of them disagree; and `bazel-gc.sh` warns when a
   sibling `../changelist/.bazelrc` exists and names a different bound,
   naming both values.
-- Changing the bound changes both repositories. Changelist's side of this
-  (raising its `.bazelrc` and `bazel-gc.sh` default from 20 GB) is a change
-  to another repository (Q10).
+- Changing the bound changes both repositories. The migration makes
+  changelist's side (its `.bazelrc` and `bazel-gc.sh` default, from 20 GB to
+  80 GB) as a commit in that repository (Q10).
 
 ### 9.4 `just bazel-gc`
 
@@ -720,18 +721,14 @@ every file in Bazel's directories too, and `bazel-test.sh --ci` checks it
 the way to bazel at once and switch CI over". CI gates on Bazel only; the
 native gate is a manual workflow (§14).
 
-## 19. Open questions for the owner
+## 19. The question settled last
 
 **Q10. Raising changelist's side of the shared bound.** The shared cache
 works only if `../changelist`'s `.bazelrc` and `scripts/bazel-gc.sh` state
-the same bound as Clax's (§9.3); today they state 20 GB, and either
-repository's trim to its own bound evicts the other's entries.
-(a) Change changelist's `.bazelrc` and `bazel-gc.sh` default to 40 GB in a
-commit to that repository, made with the Clax migration.
-(b) Leave changelist alone; Clax states 40 GB, and the effective bound is
-20 GB whenever changelist's server or `just bazel-gc` trims.
-(c) Move the bound out of both repositories into `~/.bazelrc`, which Bazel
-reads after a workspace's `.bazelrc`, and have both `bazel-gc.sh` read it
-there.
-Recommendation: (a): it keeps each repository self-contained, and the
-check in §9.3 then holds on every machine with both checkouts.
+the same bound as Clax's (§9.3); they stated 20 GB, and either
+repository's trim to its own bound evicts the other's entries. Decided by
+the owner (2026-10-15): "Raise the total to 80GB". Both repositories state
+80 GB in total, and the migration changes changelist's `.bazelrc` and
+`bazel-gc.sh` default to match, in a commit to that repository.
+
+No question for the owner remains open in this spec.
