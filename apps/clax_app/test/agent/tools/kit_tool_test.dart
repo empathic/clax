@@ -100,14 +100,32 @@ void main() {
     expect(tb.state.draft.files.length, maxDraftFiles - 1);
   });
 
+  test(
+    'home brings the fake home capability, for a home app\'s tests',
+    () async {
+      final tb = toolboxWith(extra: [AddKitTool(load: _diskKit)]);
+      final r = _ok(
+        await tb.call('add_kit', {
+          'parts': ['home'],
+        }),
+      );
+      expect(
+        [for (final f in r['files']! as List) (f as Map)['path']],
+        ['kit/fake-home.js'],
+      );
+      expect(tb.state.draft.files['kit/fake-home.js'], contains('fakeHome'));
+      expect(r['api'], contains('claude.use("home")'));
+    },
+  );
+
   test('every kit file is a bundled asset', () async {
     final pubspec = File('pubspec.yaml').readAsStringSync();
     expect(pubspec, contains('- assets/kit/'));
     final tb = toolboxWith(extra: [AddKitTool(load: _diskKit)]);
     final r = _ok(await tb.call('add_kit', {'parts': kitParts.keys.toList()}));
-    expect((r['files']! as List).length, 8);
+    expect((r['files']! as List).length, 9);
     // Each export of kit.js and chart.js is named in the API text.
-    for (final file in ['kit.js', 'chart.js', 'map.js']) {
+    for (final file in ['kit.js', 'chart.js', 'map.js', 'fake-home.js']) {
       final src = File('assets/kit/$file').readAsStringSync();
       final exports = RegExp(
         r'^export (?:async )?(?:function|const|let) (\w+)',
