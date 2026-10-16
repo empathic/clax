@@ -2253,3 +2253,82 @@ async fn racing_publishes_of_a_threads_state_send_in_read_order() {
     assert_eq!(heard[0], sent, "{heard:?}");
     assert_ne!(heard[1], sent, "the newer state is heard last: {heard:?}");
 }
+
+/// A thread view names its clip's file to the daemon token's agent, on
+/// this machine, and never names a path of this machine to a person's
+/// agent on another one (spec 2026-10-08 §16), whose view says only that
+/// the thread has a clip.
+#[tokio::test]
+async fn a_thread_view_names_the_clip_file_to_local_agents_alone() {
+    use clax_core::store::approvals::{Scope, Via};
+    let w = crate::common::people::World::two_people().await;
+    let ts = &w.ts;
+    let sam_public = ts
+        .store
+        .viewer_of_grant(&w.sam.grant_id())
+        .unwrap()
+        .public_id;
+    let owner_public = ts.owner_public_id().await;
+    ts.store
+        .approve(
+            &clax_core::audit::AuditCtx::DAEMON,
+            Some(&sam_public),
+            &owner_public,
+            Scope::Everywhere,
+            Via::Shell,
+        )
+        .unwrap();
+    let a = ts
+        .publish(
+            "Owner's plan",
+            &[("index.html", "<h2>Quarterly goals</h2>")],
+        )
+        .await;
+    let aid = a["artifact"]["id"].as_str().unwrap().to_string();
+    let form = reqwest::multipart::Form::new()
+        .text("anchor", element_anchor().to_string())
+        .text("body", "Make this two columns.")
+        .text("version", "1")
+        .part(
+            "clip",
+            reqwest::multipart::Part::bytes(FAKE_PNG.to_vec())
+                .file_name("clip.png")
+                .mime_str("image/png")
+                .unwrap(),
+        );
+    let res = ts
+        .client
+        .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let tid = res.json::<Value>().await.unwrap()["thread"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let path = format!("/api/artifacts/{aid}/threads/{tid}");
+    let local: Value = ts
+        .authed(ts.client.get(format!("{}{path}", ts.base)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let file = local["thread"]["clip_path"].as_str().unwrap();
+    assert!(std::path::Path::new(file).is_file(), "{file}");
+    let r = w.sam.agent("GET", &path, Some(&w.sam_session), None).await;
+    assert_eq!(r.status(), 200);
+    let remote: Value = r.json().await.unwrap();
+    assert_eq!(remote["thread"]["has_clip"], json!(true), "{remote}");
+    assert!(
+        remote["thread"]["clip_path"]
+            .as_str()
+            .is_none_or(|p| !std::path::Path::new(p).is_absolute()),
+        "{remote}"
+    );
+    assert!(!remote.to_string().contains(file), "{remote}");
+}
