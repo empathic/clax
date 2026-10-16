@@ -25,7 +25,9 @@
  * scroll position as it scrolls (`clax:scroll`), and scrolls the page to the
  * position the welcome carries (`restoreScroll`), with `scroll.ts` from the
  * caps part, loaded on that welcome, so a page outside the app loads none of
- * it. On
+ * it; with `routes.ts` from the same part it reports the page's own
+ * `history.pushState` routes (`clax:route`) and takes the shell back among
+ * them (`clax:back`). On
  * `pagehide` it says `clax:bye`, and the shell stops sending until the next
  * document greets. In a frame the shell named `INSPECT_FRAME` it keeps the
  * page's errors from before its first script (`inspect.ts`); it answers the
@@ -66,6 +68,7 @@ import { type Clock, retrying } from "./part-loader";
 import { PickFlow } from "./pick";
 import { type Anchor, type AnchorResult, type Box, type BridgeToShell, INSPECT_FRAME, MIGRATE_FRAME } from "./protocol";
 import { Rpc } from "./rpc";
+import type { Routes } from "./routes";
 import { whenParsed } from "./parsed";
 import { makeUse } from "./use";
 
@@ -189,6 +192,8 @@ type PartName = keyof Parts;
   // Welcomed by the Clax app's shell, whose host attests the viewer's finger:
   // a hold-then-drag picks on its release, with no chip to confirm it.
   let appShell = false;
+  // The page's own pushState routes, watched once the app shell welcomed.
+  let routes: Routes | null = null;
 
   // A pick's clip is rendered only once the shell's composer for it has
   // focus (see `pick.ts`).
@@ -308,7 +313,7 @@ type PartName = keyof Parts;
       case "clax:welcome":
         welcomed = true; appShell = m.app === true; shellMode = m.mode === "comment"; followMode(); rpc.connect(); post(hashFor(location.hash));
         prefetch();
-        if (m.app) void parts.caps().then(c => c.appScroll(window, post, meta.file, m.restoreScroll), () => {});
+        if (m.app) void parts.caps().then(c => { c.appScroll(window, post, meta.file, m.restoreScroll); routes ??= c.appRoutes(window, post); }, () => {});
         break;
       case "clax:use-result": case "clax:call-result": case "clax:event": rpc.accept(m); break;
       case "clax:comment-mode": shellMode = m.on; followMode(); break;
@@ -316,6 +321,7 @@ type PartName = keyof Parts;
       // URL up to `#` is the page's own (absolute, so no <base> moves it).
       case "clax:hash": location.replace(location.href.split("#")[0] + "#" + m.hash.slice(1)); break;
       case "clax:greet": post(helloFor(meta)); break;
+      case "clax:back": routes?.back(m.depth); break;
       case "clax:resolve-anchors": {
         if (commentsContext.live) break;
         // The anchors take effect (for reflows too) once the page has parsed,

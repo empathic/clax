@@ -451,6 +451,50 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(posted.length).toBe(sent);
   });
 
+  it("history: the page's pushState routes are the app's own history too, and back() returns the page to the route before in place", async () => {
+    const { frame, host } = await appView();
+    hello(frame, 1);
+    const posted = framePosts(frame);
+    const routeBacks = () => posted.filter(m => m.type === "clax:back");
+    fromFrame(frame.contentWindow!, { type: "clax:hash", hash: "" });
+    fromFrame(frame.contentWindow!, { type: "clax:route", depth: 1, hash: "" });
+    expect(ofType("history").at(-1)).toEqual({ type: "history", back: true });
+    fromFrame(frame.contentWindow!, { type: "clax:route", depth: 2, hash: "" });
+    // A fragment on a route is an entry of that route.
+    fromFrame(frame.contentWindow!, { type: "clax:hash", hash: "#laps" });
+    // An invalid report is none.
+    fromFrame(frame.contentWindow!, { type: "clax:route", depth: -1, hash: "" });
+    fromFrame(frame.contentWindow!, { type: "clax:route", depth: 3, hash: "laps" });
+    host.back();
+    expect(routeBacks()).toEqual([]);
+    expect(posted.filter(m => m.type === "clax:hash").at(-1)).toEqual({ type: "clax:hash", hash: "" });
+    host.back();
+    expect(routeBacks()).toEqual([{ type: "clax:back", depth: 1 }]);
+    expect(ofType("history").at(-1)).toEqual({ type: "history", back: true });
+    // The page reports the route it returned to: no new entry.
+    fromFrame(frame.contentWindow!, { type: "clax:route", depth: 1, hash: "" });
+    // The page's own back to its first route: the app's history follows.
+    fromFrame(frame.contentWindow!, { type: "clax:route", depth: 0, hash: "" });
+    expect(ofType("history").at(-1)).toEqual({ type: "history", back: false });
+    const sent = posted.length;
+    host.back();
+    expect(posted.length).toBe(sent);
+  });
+
+  it("history: a page's routes go with its document; back() from another page reloads it", async () => {
+    const { frame, host } = await appView();
+    hello(frame, 1);
+    fromFrame(frame.contentWindow!, { type: "clax:route", depth: 1, hash: "" });
+    // The page's link to another page: a new document greets.
+    hello(frame, 1, "about.html");
+    expect(ofType("history").at(-1)).toEqual({ type: "history", back: true });
+    const posted = framePosts(frame);
+    host.back();
+    expect(posted.filter(m => m.type === "clax:back")).toEqual([]);
+    expect(location.pathname).toBe(`/a/${ID}`);
+    expect(ofType("history").at(-1)).toEqual({ type: "history", back: false });
+  });
+
   it("history: a version swap keeps it, and back() then moves the new version's page", async () => {
     const { view, frame, host } = await appView();
     hello(frame, 1);
