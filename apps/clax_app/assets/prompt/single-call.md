@@ -75,6 +75,18 @@ change, and it lands in place with their data kept.
   `onSnapshot()`. The person is asked once to allow it; handle a refusal
   (`not_granted`) by showing the app without that data.
 
+## The home screen
+
+- One app declares `{"home": {}}`: Clax's home screen, reached with
+  `await window.claude.use("home")` (`apps()`, `makes()`, `unread()`,
+  `needsKey()`, the actions `open`, `openMake`, `newApp`, `menu`,
+  `openInbox`, `openSettings`, `importApp`, and `on(name, fn)`; types in
+  `ClaxExtensions.Home` below).
+- It is a launcher first: keep opening an app by its tile, New app, the
+  tile's menu on a long press, the inbox, Settings and the key banner
+  reachable. Never hide an app the person did not ask to hide; keep the
+  order or groups they asked for in `db`.
+
 ## Changing an app
 
 - Answer a change with minimal `edits`, not whole-file rewrites: each

@@ -279,6 +279,32 @@ the button again); for location also `system_denied` and
 location is off): handle each with a short message, never a crash. One
 tap makes one location call.
 
+## The home screen
+
+One app declares `{"home": {}}`: Clax's home screen, which lists, opens and
+starts the person's apps. Changing it is a change like any other.
+
+- `const home = await window.claude.use("home")` gives `apps()` (newest
+  first, the home app left out; each `{id, title, updatedAt, icon, build}`,
+  `icon` one of `{url}`, `{emoji}`, `{word}`, `{monogram, hue}`),
+  `makes()`, `unread()`, `needsKey()`, and the actions `open(id)`,
+  `openMake(id)`, `newApp()`, `menu(id, {x, y, w, h})`, `openInbox()`,
+  `openSettings()`, `importApp()`, which Clax carries out (call them from a
+  tap). `home.on(name, fn)` hears `apps`, `makes`, `unread` and `key`, each
+  topic's whole latest value; it returns `stop`. The types are
+  `ClaxExtensions.Home` below.
+- It is a launcher first. Whatever you change, keep a tap on a tile
+  opening it (`open`), New app (`newApp`), a long press on a tile opening
+  its menu (`menu`), the inbox and Settings reachable, and the key banner
+  when `needsKey()` is true.
+- Never hide, drop or reorder away an app the person did not ask to hide;
+  a new app they make must show. Keep the order, folders or groups they
+  asked for in the app's documents, and show apps no group names.
+- `use("home")` resolves null in a browser, in your renders and tests, and
+  in every other app: show "This is a Clax home screen. Open it in the Clax
+  app." then. Test it with the kit's `home` part: mount the page over
+  `fakeHome()` from `kit/fake-home.js`.
+
 ## Asking the person
 
 Decide routine things yourself and mention the choice in `reply`. Call
