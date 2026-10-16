@@ -1,0 +1,55 @@
+name: Set up Bazel
+description: >-
+  Bazelisk at a pinned version and checksum, Bazel's disk cache and
+  downloads restored from the newest cache main saved (docs/bazel.md, "CI"),
+  and .bazelrc's `ci` config for every Bazel command in the job.
+
+outputs:
+  cache-key:
+    description: The key to save the cache under after a passing run.
+    value: ${{ steps.key.outputs.key }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install Bazelisk
+      shell: bash
+      env:
+        BAZELISK_VERSION: v1.29.0
+        BAZELISK_SHA256: 5a408715e932c0250d28bd84555f12edbf70117de42f9181691c736eacc4a992
+      run: |
+        mkdir -p "$RUNNER_TEMP/bin"
+        curl -fsSL -o "$RUNNER_TEMP/bin/bazelisk" \
+          "https://github.com/bazelbuild/bazelisk/releases/download/$BAZELISK_VERSION/bazelisk-linux-amd64"
+        echo "$BAZELISK_SHA256  $RUNNER_TEMP/bin/bazelisk" | sha256sum -c -
+        chmod +x "$RUNNER_TEMP/bin/bazelisk"
+        echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+    # The cache's key: the lockfiles and this commit. A run restores the
+    # newest cache of the same lockfiles, else the newest of any.
+    - name: Name the cache
+      id: key
+      shell: bash
+      run: echo "key=bazel-${{ runner.os }}-${{ hashFiles('.bazelversion', 'MODULE.bazel.lock', 'Cargo.lock', 'web/pnpm-lock.yaml', 'plugins/pi/pnpm-lock.yaml') }}-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+    - name: Restore Bazel's cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.cache/bazel-disk
+          ~/.cache/bazel-repo
+        key: ${{ steps.key.outputs.key }}
+        restore-keys: |
+          bazel-${{ runner.os }}-${{ hashFiles('.bazelversion', 'MODULE.bazel.lock', 'Cargo.lock', 'web/pnpm-lock.yaml', 'plugins/pi/pnpm-lock.yaml') }}-
+          bazel-${{ runner.os }}-
+
+    # Ubuntu 24.04 denies unprivileged user namespaces, which Bazel's
+    # sandbox is made of. Without them Bazel falls back to a weaker sandbox
+    # and still builds, so a failure here is not fatal.
+    - name: Allow Bazel's sandbox
+      shell: bash
+      run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+    - name: Select Bazel's CI settings
+      shell: bash
+      run: echo "common --config=ci" > user.bazelrc

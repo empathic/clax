@@ -1,0 +1,44 @@
+name: native-check
+
+# scripts/quality_gates.sh with the native tools: Cargo, cargo-nextest, pnpm
+# and Node. CI builds and tests with Bazel (ci.yml, docs/bazel.md); this
+# shows by hand that the native path still works. It has no trigger but the
+# button.
+on: { workflow_dispatch: {} }
+permissions: { contents: read }
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    # Nothing keeps a Cargo cache warm for it: its cache is restored and
+    # never saved, so it may compile everything.
+    timeout-minutes: 60
+    steps:
+      # The full history and its tags: scripts/test-plugins.sh checks the
+      # plugins' pinned release against the newest v* tag.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { fetch-depth: 0, persist-credentials: false }
+      # rust-toolchain.toml's version, with rustfmt and clippy.
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+      # Restored, never saved: a manual run should not keep a
+      # multi-gigabyte cache alive for a path CI does not use.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { save-if: "false" }
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with: { tool: cargo-nextest }
+      # pnpm at the version web/package.json names (packageManager).
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with: { package_json_file: web/package.json }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: |
+            web/pnpm-lock.yaml
+            plugins/pi/pnpm-lock.yaml
+      - run: scripts/quality_gates.sh
+      # A failed browser test's error context, screenshot and trace.
+      - if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: { name: playwright-results, path: web/test-results/, if-no-files-found: ignore, retention-days: 14 }

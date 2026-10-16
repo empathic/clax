@@ -176,7 +176,8 @@ GitHub-hosted runner. `.github/actions/setup-bazel` installs Bazelisk and
 restores `~/.cache/bazel-disk` and `~/.cache/bazel-repo` with
 `actions/cache`, keyed by the lockfiles and the commit, falling back to the
 newest cache of the same lockfiles and then of any; only a passing push to
-main saves one. `common --config=ci` (`.bazelrc`) bounds the cache to what
+main saves one, after `scripts/bazel-gc.sh` trims the disk cache to 6 GB
+(Bazel trims only while its server sits idle, which a job never does). `common --config=ci` (`.bazelrc`) bounds the cache to what
 fits a runner and fails on a stale lockfile. The native gates stay as a
 manual workflow (`native-check.yml`).
 
