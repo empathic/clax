@@ -31,7 +31,8 @@ class MainActivity : FlutterActivity() {
         // the person chose for it, and answers whether one took it.
         // "snapshotWebView" {id} answers an image of the WebView that
         // webview_flutter names `id` (`webViewIdentifier`) as it shows:
-        // {png, width, height}, its size in dp; null without one.
+        // {png, at one pixel a dp, width, height}, its size in dp; null
+        // without one.
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dev.empathic.clax/native")
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -42,9 +43,15 @@ class MainActivity : FlutterActivity() {
                         if (view == null || view.width <= 0 || view.height <= 0) {
                             result.success(null)
                         } else {
-                            val bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
-                            view.draw(Canvas(bitmap))
+                            // Drawn at one pixel a dp, a fraction of the page's
+                            // pixels, since the view draws on this thread.
                             val density = resources.displayMetrics.density
+                            val w = maxOf(1, (view.width / density).toInt())
+                            val h = maxOf(1, (view.height / density).toInt())
+                            val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                            val canvas = Canvas(bitmap)
+                            canvas.scale(w.toFloat() / view.width, h.toFloat() / view.height)
+                            view.draw(canvas)
                             val width = view.width / density.toDouble()
                             val height = view.height / density.toDouble()
                             thread(name = "clax-snapshot") {

@@ -16,7 +16,8 @@ class MainFlutterWindow: NSWindow {
     // person chose for it, and answers whether it was handed over.
     // "snapshotWebView" {id} answers an image of the WebView that
     // webview_flutter names `id` (`webViewIdentifier`) as it shows:
-    // {png, width, height}, its size in points; nil without one.
+    // {png, at one pixel a point, width, height}, its size in points;
+    // nil without one.
     let native = FlutterMethodChannel(
       name: "dev.empathic.clax/native",
       binaryMessenger: flutterViewController.engine.binaryMessenger)
@@ -35,17 +36,26 @@ class MainFlutterWindow: NSWindow {
         let size = webView.bounds.size
         webView.takeSnapshot(with: nil) { image, _ in
           guard let image,
-            let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
-            let png = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])
+            let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
           else {
             result(nil)
             return
           }
-          result([
-            "png": FlutterStandardTypedData(bytes: png),
-            "width": Double(size.width),
-            "height": Double(size.height),
-          ])
+          // Scaled to one pixel a point and encoded off the main thread.
+          DispatchQueue.global(qos: .utility).async {
+            let png = MainFlutterWindow.png(cg, width: Int(size.width), height: Int(size.height))
+            DispatchQueue.main.async {
+              guard let png else {
+                result(nil)
+                return
+              }
+              result([
+                "png": FlutterStandardTypedData(bytes: png),
+                "width": Double(size.width),
+                "height": Double(size.height),
+              ])
+            }
+          }
         }
       case "openExternal":
         guard let args = call.arguments as? [String: Any],
@@ -107,6 +117,21 @@ class MainFlutterWindow: NSWindow {
   }
 
   private var cueSounds: [NSSound.Name: NSSound] = [:]
+
+  /// [image] drawn at [width] by [height] pixels, as PNG; nil when it
+  /// cannot be drawn or encoded.
+  private static func png(_ image: CGImage, width: Int, height: Int) -> Data? {
+    guard width > 0, height > 0,
+      let ctx = CGContext(
+        data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+        space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+    else { return nil }
+    ctx.interpolationQuality = .high
+    ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+    guard let scaled = ctx.makeImage() else { return nil }
+    return NSBitmapImageRep(cgImage: scaled).representation(using: .png, properties: [:])
+  }
 
   #if DEBUG
     private var toolExit: DispatchSourceProcess?

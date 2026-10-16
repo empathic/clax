@@ -216,18 +216,21 @@ typedef HomeCapture = ({SurfaceShot shot, String aid, List<HomeTile> tiles});
 
 /// Takes and keeps the home screen's snapshot: [capture] gives the home
 /// app's page as it shows, with the app it belongs to and its tiles (null
-/// when it cannot be taken now: not in front, not drawn, covered by the
-/// built-in home screen), and [store] keeps it.
+/// when it cannot be taken now: not drawn, covered by the built-in home
+/// screen, in comment mode), and [store] keeps it.
 ///
-/// [tilesChanged] takes one [settle] after the page's last tile report
-/// (on [clock]), so a burst of renders makes one snapshot, when the home
-/// screen is then [inFront]; [take] takes one at once (the home screen
-/// being covered or put in the background). Takes run one at a time.
+/// A snapshot is taken only when the home screen changed since the last
+/// one (its page loaded, or reported tiles: [loaded], [tilesChanged]), and
+/// only:
+/// - [settle] after a page load is shown ([updated]), when the home
+///   screen is then [inFront];
+/// - when the home screen is covered or put in the background ([take]).
+/// A scroll or a re-render alone takes none. Takes run one at a time.
 ///
 /// A snapshot keeps the tiles of the very render it shows: none is taken
-/// within [quiet] of the page's last load or tile report ([loaded],
-/// [tilesChanged]), and one whose [mark] (the page's loads and tile
-/// reports) changed while the image was taken is dropped.
+/// within [quiet] of the page's last load or tile report, and one whose
+/// [mark] (the page's loads and tile reports) changed while the image was
+/// taken is dropped.
 class HomeSnapshotter {
   HomeSnapshotter({
     required this.store,
@@ -235,7 +238,7 @@ class HomeSnapshotter {
     this.inFront = _always,
     this.mark = _none,
     this.clock = const SystemClock(),
-    this.settle = const Duration(milliseconds: 800),
+    this.settle = const Duration(seconds: 3),
     this.quiet = const Duration(milliseconds: 500),
   });
 
@@ -243,25 +246,32 @@ class HomeSnapshotter {
   final Future<HomeCapture?> Function() capture;
   final bool Function() inFront;
   final Object? Function() mark;
-  final Duration quiet;
-
-  static Object? _none() => null;
-  DateTime? _changed;
-
-  /// The page loaded a document.
-  void loaded() => _changed = clock.now();
-
-  static bool _always() => true;
   final Clock clock;
   final Duration settle;
+  final Duration quiet;
 
+  static bool _always() => true;
+  static Object? _none() => null;
+
+  DateTime? _changed;
+  var _dirty = true;
   var _seq = 0;
   Future<void> _last = Future.value();
   var _disposed = false;
 
-  /// The page reported its tiles anew.
-  void tilesChanged() {
+  void _change() {
     _changed = clock.now();
+    _dirty = true;
+  }
+
+  /// The page loaded a document.
+  void loaded() => _change();
+
+  /// The page reported its tiles anew (a render or a scroll moved them).
+  void tilesChanged() => _change();
+
+  /// A page load was shown: a snapshot follows [settle] later.
+  void updated() {
     final mine = ++_seq;
     unawaited(
       clock.delay(settle).then((_) {
@@ -274,14 +284,15 @@ class HomeSnapshotter {
   @visibleForTesting
   Future<void> get idle => _last;
 
-  /// Takes a snapshot now, after any in progress.
+  /// Takes a snapshot now, after any in progress, when the home screen
+  /// changed since the last one.
   Future<void> take() {
     final next = _last = _last.then((_) => _take());
     return next;
   }
 
   Future<void> _take() async {
-    if (_disposed) return;
+    if (_disposed || !_dirty) return;
     final changed = _changed;
     if (changed != null && clock.now().difference(changed) < quiet) return;
     final before = mark();
@@ -298,6 +309,7 @@ class HomeSnapshotter {
           at: clock.now(),
         ),
       );
+      if (mark() == before) _dirty = false;
     } on Object catch (e) {
       debugPrint('clax home: no snapshot: $e');
     }
