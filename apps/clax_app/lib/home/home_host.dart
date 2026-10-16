@@ -267,14 +267,39 @@ class HomeHost extends ChangeNotifier {
 
   final _tiles = StreamController<List<HomeTile>>.broadcast(sync: true);
   List<HomeTile>? _lastTiles;
+  var _shownThisLoad = false;
+  var _pageLoads = 0;
+  var _tileReports = 0;
 
   /// Where the home app's page last said its app tiles are (its
   /// `home.tiles` call, made after each render), in CSS pixels from its
-  /// viewport's top left; null before it said.
+  /// viewport's top left; null before the current page load said, after
+  /// its `shown` ([pageLoaded] forgets them).
   List<HomeTile>? get tiles => _lastTiles;
 
-  /// Each of the home app's `home.tiles` reports.
+  /// Each of the home app's `home.tiles` reports that [tiles] took.
   Stream<List<HomeTile>> get tileReports => _tiles.stream;
+
+  /// Counts the home app's page loads and the tile reports [tiles] took:
+  /// a capture of the page pairs with [tiles] only while this is
+  /// unchanged.
+  ({int loads, int tiles}) get renderMark =>
+      (loads: _pageLoads, tiles: _tileReports);
+
+  /// The home app's page loaded a document (its shell's `ready`): the
+  /// tiles of the page before are forgotten, and tile reports count again
+  /// from this load's `shown`.
+  void pageLoaded() {
+    _pageLoads++;
+    _lastTiles = null;
+    _shownThisLoad = false;
+  }
+
+  /// While this answers true, the calls that open something (`open`,
+  /// `openMake`, `newApp`, `menu`, `openInbox`, `openSettings`,
+  /// `importApp`) do nothing: a click that reached the page while the
+  /// person saw a snapshot over it was aimed at the snapshot.
+  bool Function()? holdActions;
 
   /// The most tiles one `home.tiles` call may give.
   static const maxTiles = 512;
@@ -342,6 +367,9 @@ class HomeHost extends ChangeNotifier {
     Map<String, Object?> args,
   ) async {
     if (!availableTo(callerAid)) throw HomeRefused(callerAid);
+    if (_opens.contains(method) && (holdActions?.call() ?? false)) {
+      return null;
+    }
     switch (method) {
       case 'apps':
         return _json('apps');
@@ -368,10 +396,15 @@ class HomeHost extends ChangeNotifier {
       case 'importApp':
         actions.importApp();
       case 'shown':
+        _shownThisLoad = true;
         _shown.add(callerAid);
       case 'tiles':
-        final t = _lastTiles = _tilesOf(args['tiles']);
-        _tiles.add(t);
+        final t = _tilesOf(args['tiles']);
+        if (_shownThisLoad) {
+          _lastTiles = t;
+          _tileReports++;
+          _tiles.add(t);
+        }
       default:
         throw HomeBadRequest('home.$method is not a home method');
     }
@@ -391,6 +424,17 @@ class HomeHost extends ChangeNotifier {
     }
     return id;
   }
+
+  /// The calls that open something.
+  static const _opens = {
+    'open',
+    'openMake',
+    'newApp',
+    'menu',
+    'openInbox',
+    'openSettings',
+    'importApp',
+  };
 
   static List<HomeTile> _tilesOf(Object? v) {
     if (v is! List || v.length > maxTiles) {

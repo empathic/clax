@@ -223,18 +223,33 @@ typedef HomeCapture = ({SurfaceShot shot, String aid, List<HomeTile> tiles});
 /// (on [clock]), so a burst of renders makes one snapshot, when the home
 /// screen is then [inFront]; [take] takes one at once (the home screen
 /// being covered or put in the background). Takes run one at a time.
+///
+/// A snapshot keeps the tiles of the very render it shows: none is taken
+/// within [quiet] of the page's last load or tile report ([loaded],
+/// [tilesChanged]), and one whose [mark] (the page's loads and tile
+/// reports) changed while the image was taken is dropped.
 class HomeSnapshotter {
   HomeSnapshotter({
     required this.store,
     required this.capture,
     this.inFront = _always,
+    this.mark = _none,
     this.clock = const SystemClock(),
     this.settle = const Duration(milliseconds: 800),
+    this.quiet = const Duration(milliseconds: 500),
   });
 
   final HomeSnapshotStore store;
   final Future<HomeCapture?> Function() capture;
   final bool Function() inFront;
+  final Object? Function() mark;
+  final Duration quiet;
+
+  static Object? _none() => null;
+  DateTime? _changed;
+
+  /// The page loaded a document.
+  void loaded() => _changed = clock.now();
 
   static bool _always() => true;
   final Clock clock;
@@ -246,6 +261,7 @@ class HomeSnapshotter {
 
   /// The page reported its tiles anew.
   void tilesChanged() {
+    _changed = clock.now();
     final mine = ++_seq;
     unawaited(
       clock.delay(settle).then((_) {
@@ -266,9 +282,12 @@ class HomeSnapshotter {
 
   Future<void> _take() async {
     if (_disposed) return;
+    final changed = _changed;
+    if (changed != null && clock.now().difference(changed) < quiet) return;
+    final before = mark();
     try {
       final c = await capture();
-      if (c == null || _disposed) return;
+      if (c == null || _disposed || mark() != before) return;
       await store.save(
         HomeSnapshot(
           aid: c.aid,
@@ -290,16 +309,35 @@ class HomeSnapshotter {
 /// The cold start's cover: [snapshot] shows ([covering]) until the home
 /// app's page has drawn the home screen ([shown]) or the cover is
 /// [drop]ped. The first tap on it is kept ([tap]) for [shown].
+///
+/// While it shows, and for [grace] after it lifts (on [clock]), it
+/// [holdsActions]: a click that reached the page under it was aimed at the
+/// snapshot, so a tap goes to one place, the kept tap or nowhere.
 class HomeSnapshotCover extends ChangeNotifier {
-  HomeSnapshotCover(this.snapshot);
+  HomeSnapshotCover(
+    this.snapshot, {
+    this.clock = const SystemClock(),
+    this.grace = const Duration(milliseconds: 300),
+  });
 
   final HomeSnapshot snapshot;
+  final Clock clock;
+  final Duration grace;
 
   var _covering = true;
   Offset? _tap;
+  DateTime? _lifted;
 
   /// Whether the snapshot still shows.
   bool get covering => _covering;
+
+  /// Whether the page's own clicks are held: while the snapshot shows,
+  /// and for [grace] after [shown] lifts it.
+  bool get holdsActions {
+    if (_covering) return true;
+    final lifted = _lifted;
+    return lifted != null && clock.now().difference(lifted) < grace;
+  }
 
   /// The kept tap, in the snapshot's logical pixels.
   Offset? get queuedTap => _tap;
@@ -319,6 +357,7 @@ class HomeSnapshotCover extends ChangeNotifier {
     final tap = _tap;
     _tap = null;
     _covering = false;
+    _lifted = clock.now();
     notifyListeners();
     if (tap == null || aid != snapshot.aid) return;
     final id = snapshot.tileAt(tap);

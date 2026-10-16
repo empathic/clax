@@ -215,6 +215,40 @@ void main() {
       expect(await store.load(decode: false), isNotNull);
     });
 
+    test('an image whose render changed while it was taken is dropped, and '
+        'none is taken just after the page loads or moves', () async {
+      var mark = 0;
+      final s = HomeSnapshotter(
+        store: store,
+        clock: clock,
+        mark: () => mark,
+        capture: () async {
+          captures++;
+          mark++;
+          return (shot: shot!, aid: 'home1', tiles: tiles);
+        },
+      );
+      await s.take();
+      expect(captures, 1);
+      expect(await store.load(decode: false), isNull);
+
+      final quiet = HomeSnapshotter(
+        store: store,
+        clock: clock,
+        capture: () async {
+          captures++;
+          return (shot: shot!, aid: 'home1', tiles: tiles);
+        },
+      );
+      quiet.loaded();
+      await quiet.take();
+      expect(captures, 1, reason: 'a page that just loaded');
+      clock.advance(const Duration(milliseconds: 500));
+      await quiet.take();
+      expect(captures, 2);
+      expect(await store.load(decode: false), isNotNull);
+    });
+
     test('no image to take keeps the last snapshot', () async {
       final s = snapshotter();
       await s.take();
@@ -419,6 +453,7 @@ void main() {
         final heard = <List<HomeTile>>[];
         host.tileReports.listen(heard.add);
         expect(host.tiles, isNull);
+        await host.call(home, 'shown', const {});
         await host.call(home, 'tiles', {
           'tiles': [
             {
@@ -459,5 +494,99 @@ void main() {
         expect(heard, hasLength(1));
       },
     );
+
+    test('belong to one page load: none before its shown, none after it '
+        'loads again', () async {
+      Map<String, Object?> one() => {
+        'tiles': [
+          {
+            'id': notes,
+            'rect': {'x': 0, 'y': 0, 'w': 10, 'h': 10},
+          },
+        ],
+      };
+      final start = host.renderMark;
+      await host.call(home, 'tiles', one());
+      expect(host.tiles, isNull, reason: 'before the load is shown');
+      await host.call(home, 'shown', const {});
+      await host.call(home, 'tiles', one());
+      expect(host.tiles, hasLength(1));
+      final drawn = host.renderMark;
+      expect(drawn, isNot(start));
+      host.pageLoaded();
+      expect(host.tiles, isNull, reason: 'a new document forgets them');
+      expect(host.renderMark, isNot(drawn));
+      await host.call(home, 'tiles', one());
+      expect(host.tiles, isNull, reason: 'the new load has not shown yet');
+    });
+  });
+
+  group("the page's clicks under the snapshot", () {
+    late FakeClaxApi api;
+    late String home;
+    late String notes;
+    late HomeHost host;
+    late _Actions actions;
+    late _Clock clock;
+
+    setUp(() {
+      api = FakeClaxApi();
+      home = api.seedArtifact('Home', _page, capabilities: {'home': {}});
+      notes = api.seedArtifact('Notes', _page);
+      actions = _Actions();
+      clock = _Clock();
+      host = HomeHost(
+        api: api,
+        stream: api.stream(),
+        closeStream: true,
+        makes: MakeService((r, c, s) => Completer<String>().future),
+        builds: null,
+        settings: HomeSettings(homeAppId: home),
+        actions: actions,
+      );
+    });
+
+    tearDown(() => host.dispose());
+
+    testWidgets('do nothing while it shows and just after it lifts, so a '
+        'tap opens one app at most', (tester) async {
+      await tester.runAsync(host.load);
+      final cover = HomeSnapshotCover(
+        snap(
+          home,
+          Uint8List(0),
+          tiles: [HomeTile(notes, const Rect.fromLTWH(0, 0, 100, 100))],
+        ),
+        clock: clock,
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: HomeRoute(
+            host: host,
+            clock: clock,
+            snapshot: cover,
+            app: (context, aid, hooks) => Text('page $aid'),
+            fallback: (_, _) => const Text('built-in'),
+          ),
+        ),
+      );
+      Future<void> pageOpens() =>
+          tester.runAsync(() => host.call(home, 'open', {'id': notes}));
+      // A tap the cover kept, and the same click reaching the page.
+      await tester.tapAt(const Offset(50, 50));
+      await pageOpens();
+      expect(actions.opened, isEmpty);
+      await tester.runAsync(() => host.call(home, 'shown', const {}));
+      await tester.pump();
+      expect(actions.opened, [notes], reason: 'the kept tap, once');
+      await pageOpens();
+      expect(actions.opened, [notes], reason: 'within the grace');
+      clock.advance(const Duration(milliseconds: 300));
+      await pageOpens();
+      expect(actions.opened, [
+        notes,
+        notes,
+      ], reason: 'a click on the live page');
+    });
   });
 }
