@@ -1,6 +1,99 @@
-# The project's package manager files, for MODULE.bazel.
+load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
+load("@npm_web//:defs.bzl", "npm_link_all_packages")
+load("//bazel:dirs.bzl", "pick_dir")
+load("//bazel/js:defs.bzl", "npm_script_build")
+
+# The web UI under Bazel (docs/bazel.md, "The web side and Pi"): its
+# package.json scripts, run over the whole project with packages from
+# pnpm-lock.yaml.
+
+npm_link_all_packages(name = "node_modules")
+
 exports_files([
     "pnpm-lock.yaml",
     "package.json",
     "pnpm-workspace.yaml",
 ])
+
+# The project's own files, where the tools run.
+copy_to_bin(
+    name = "files",
+    srcs = glob(
+        [
+            "shell/**",
+            "bridge/**",
+            "extension/**",
+            "contract/**",
+            "e2e/**",
+            "perf/**",
+            "scripts/**",
+        ],
+        exclude = [
+            "**/.qual",
+            "extension/key/key.pem",
+        ],
+    ) + [
+        ".oxlintrc.json",
+        "package.json",
+        "playwright.config.ts",
+        "pnpm-workspace.yaml",
+        "svelte.config.js",
+        "tsconfig.json",
+        "vite.bridge.config.ts",
+        "vite.bridge-parts.config.ts",
+        "vite.shell.config.ts",
+        "vitest.config.ts",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# pnpm run build: the web UI, the extension and the extension's test build.
+npm_script_build(
+    name = "dist_all",
+    srcs = [
+        ":files",
+        ":node_modules",
+        "//:cargo_toml",
+    ],
+    out_dirs = [
+        "dist",
+        "dist-extension",
+        "dist-extension-test",
+    ],
+    script = "build",
+    visibility = ["//visibility:public"],
+)
+
+pick_dir(
+    name = "dist",
+    dir = "dist",
+    src = ":dist_all",
+    visibility = ["//visibility:public"],
+)
+
+pick_dir(
+    name = "dist_extension",
+    dir = "dist-extension",
+    src = ":dist_all",
+    visibility = ["//visibility:public"],
+)
+
+pick_dir(
+    name = "dist_extension_test",
+    dir = "dist-extension-test",
+    src = ":dist_all",
+    visibility = ["//visibility:public"],
+)
+
+# pnpm run build:e2e: the browser tests' web UI, with the test clock.
+npm_script_build(
+    name = "dist_e2e",
+    srcs = [
+        ":dist",
+        ":files",
+        ":node_modules",
+    ],
+    out_dirs = ["dist-e2e"],
+    script = "build:e2e",
+    visibility = ["//visibility:public"],
+)

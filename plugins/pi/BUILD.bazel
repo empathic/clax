@@ -1,6 +1,35 @@
-# The project's package manager files, for MODULE.bazel.
+load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
+load("@npm_pi//:defs.bzl", "npm_link_all_packages")
+
+# The Pi extension under Bazel (docs/bazel.md, "The web side and Pi"): its
+# packages from pnpm-lock.yaml, and its files beside them in bazel-bin, so
+# the real Pi the Rust tests run (crates/clax-server/tests/common/clients.rs)
+# resolves its imports there.
+
+npm_link_all_packages(name = "node_modules")
+
 exports_files([
     "pnpm-lock.yaml",
     "package.json",
     "pnpm-workspace.yaml",
 ])
+
+copy_to_bin(
+    name = "files",
+    srcs = glob(
+        [
+            "src/**",
+            "skills/**",
+            "scripts/**",
+            "test/**",
+        ],
+        exclude = ["**/.qual"],
+    ) + [
+        "README.md",
+        "package.json",
+        "pnpm-workspace.yaml",
+        "tsconfig.json",
+        "vitest.config.ts",
+    ],
+    visibility = ["//visibility:public"],
+)

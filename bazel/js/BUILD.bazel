@@ -1,0 +1,25 @@
+load("@aspect_rules_js//js:defs.bzl", "js_test")
+load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
+
+# Running a pnpm project's own scripts under Bazel (defs.bzl).
+copy_to_bin(
+    name = "runner",
+    srcs = ["npm_script.mjs"],
+    visibility = ["//visibility:public"],
+)
+
+# What the runner imports (scratch.mjs: where its private copy may go).
+copy_to_bin(
+    name = "runner_lib",
+    srcs = ["scratch.mjs"],
+    visibility = ["//visibility:public"],
+)
+
+# node --test bazel/js/scratch.test.mjs, as a Bazel test.
+js_test(
+    name = "scratch_test",
+    data = [":runner_lib"],
+    entry_point = "scratch.test.mjs",
+    node_options = ["--test"],
+    patch_node_fs = False,
+)

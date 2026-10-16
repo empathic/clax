@@ -1,3 +1,5 @@
+load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
+
 # Marks the workspace root as a package, so MODULE.bazel can name Cargo.toml
 # and Cargo.lock. The crates have their own BUILD files (docs/bazel.md).
 exports_files([
@@ -6,3 +8,11 @@ exports_files([
     "clippy.toml",
     "rust-toolchain.toml",
 ])
+
+# The workspace version, which the extension's manifest takes
+# (web/scripts/extension-manifest.mjs reads ../Cargo.toml).
+copy_to_bin(
+    name = "cargo_toml",
+    srcs = ["Cargo.toml"],
+    visibility = ["//web:__pkg__"],
+)
