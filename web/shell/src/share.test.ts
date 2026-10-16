@@ -71,6 +71,15 @@ describe("share model", () => {
     expect(subject("Mia Chen", null)).toBeNull();
   });
 
+  it("names the person a typed name is, never a GitHub login of that word", () => {
+    const people = [{ person: "u_sam", name: "Sam", github_login: null }, { person: "u_jo", name: "Jo", github_login: null }, { person: "u_jo2", name: "jo", github_login: null }];
+    expect(subject("Sam", null, people)).toEqual({ person: "u_sam" });
+    expect(subject(" sam ", null, people)).toEqual({ person: "u_sam" });
+    expect(subject("@sam", null, people)).toEqual({ github_login: "sam" });
+    expect(subject("Jo", null, people)).toBeNull();
+    expect(subject("octo", null, people)).toEqual({ github_login: "octo" });
+  });
+
   it("maps general access onto the link request", () => {
     expect(linkRequest("restricted", "commenter")).toEqual({ access: null, listed: false });
     expect(linkRequest("link", "commenter")).toEqual({ access: "commenter", listed: false });

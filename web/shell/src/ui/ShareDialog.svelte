@@ -36,7 +36,7 @@
   let backdrop: HTMLElement | undefined = $state();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const hints = $derived(chosen ? [] : suggest(query, data.suggestions, data.people));
-  const target = $derived(subject(query, chosen));
+  const target = $derived(subject(query, chosen, data.suggestions));
   const linkAccess = $derived<api.LinkAccess>(data.link_access ?? "viewer");
 
   onMount(() => {

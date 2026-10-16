@@ -45,9 +45,18 @@ export function suggest(query: string, candidates: ShareCandidate[], people: Sha
   return candidates.filter(c => !holds(c, people) && (hit(c.name) || hit(c.github_login))).slice(0, max);
 }
 
-/** What the add field names: a chosen suggestion's person, else the login typed; null when neither. */
-export function subject(query: string, chosen: ShareCandidate | null): { person: string } | { github_login: string } | null {
+/** What the add field names: a chosen suggestion's person; else, for text with no `@` first that is
+ * one of `candidates`' names (any case), that person; else the login typed. Null when none, or when
+ * the name is more than one candidate's: a word naming someone here is never taken for a stranger's
+ * GitHub login, which takes the `@`. */
+export function subject(query: string, chosen: ShareCandidate | null, candidates: ShareCandidate[] = []): { person: string } | { github_login: string } | null {
   if (chosen) return { person: chosen.person };
+  const typed = query.trim();
+  if (!typed.startsWith("@")) {
+    const named = candidates.filter(c => c.name?.trim().toLowerCase() === typed.toLowerCase());
+    if (named.length === 1) return { person: named[0].person };
+    if (named.length > 1) return null;
+  }
   const login = parseLogin(query);
   return login ? { github_login: login } : null;
 }
