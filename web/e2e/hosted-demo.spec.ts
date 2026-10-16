@@ -84,10 +84,11 @@ test("the seeded demo: agents' versions and a live comment in two people's brows
     // merged: a version an agent publishes is offered as Reload.
     await ready;
     for (const p of [rae, mia]) await showLatest(p);
-    // The agents show as their names (the MCP clients'), not as harnesses.
+    // The agents show as their names (the MCP clients'), not as harnesses;
+    // past two working, the summary names one and counts the rest.
     for (const p of [rae, mia]) {
       const who = p.locator(".who .sum b");
-      await expect(who).toContainText("summary-writer");
+      await expect(who).toContainText(/\w+-writer( and \d+ more)? working/);
       await expect(who).not.toContainText(/claude/);
     }
     await shot(rae, "rae-agents");
