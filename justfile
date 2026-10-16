@@ -103,6 +103,10 @@ app-apk:
 app-phone:
     ./scripts/app-phone.sh --i-know-what-i-am-doing
 
+# Pack the home app (apps/clax_app/home) into the bundle the Clax app ships, apps/clax_app/assets/home/home.clax, signed by the home app's key in ~/.config/clax/home-bundle
+home-bundle:
+    ./scripts/build-home-bundle.sh --i-know-what-i-am-doing
+
 # Build the macOS clax and the Clax app's release macOS app
 app-macos:
     ./scripts/build-app-clax.sh macos && cd apps/clax_app && flutter build macos --release
