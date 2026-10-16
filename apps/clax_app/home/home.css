@@ -17,6 +17,8 @@
   --h-on-sc: #404659;
   --h-track: #e2e2e9;
   --h-menu-bg: #eeedf4;
+  --h-inverse: #2f3036;
+  --h-on-inverse: #f1f0f7;
   --h-state: rgba(26, 27, 33, 0.1);
   --h-fab-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 4px 8px 3px rgba(0, 0, 0, 0.15);
   --h-menu-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 6px 2px rgba(0, 0, 0, 0.15);
@@ -45,6 +47,8 @@
     --h-on-sc: #dce2f9;
     --h-track: #33343a;
     --h-menu-bg: #1e1f25;
+    --h-inverse: #e2e2e9;
+    --h-on-inverse: #2f3036;
     --h-state: rgba(226, 226, 233, 0.1);
   }
   :root:not([data-theme="light"]) .h-face { background: var(--t-b); color: var(--t-a); }
@@ -65,6 +69,8 @@
   --h-on-sc: #dce2f9;
   --h-track: #33343a;
   --h-menu-bg: #1e1f25;
+  --h-inverse: #e2e2e9;
+  --h-on-inverse: #2f3036;
   --h-state: rgba(226, 226, 233, 0.1);
 }
 
@@ -216,3 +222,27 @@ body {
   font: 500 14px/20px var(--k-font); letter-spacing: 0.1px; cursor: pointer;
 }
 .h-fab:active { background: color-mix(in srgb, var(--h-on-pc) 10%, var(--h-pc)); }
+
+/* A press held long enough to ask for the menu on release. */
+.h-icon > * { transition: transform var(--k-fast) var(--k-ease); }
+.h-tile[data-held] .h-icon > * { transform: scale(0.92); }
+
+/* What an action that failed says, and Tap again to retry it. */
+.h-notice {
+  position: fixed; z-index: 3; left: 50%; transform: translateX(-50%);
+  bottom: calc(88px + var(--k-safe-bottom)); max-width: min(560px, calc(100vw - 32px));
+  padding: 14px 16px; border: 0; border-radius: 4px;
+  background: var(--h-inverse); color: var(--h-on-inverse); box-shadow: var(--h-menu-shadow);
+  font: 400 14px/20px var(--k-font); letter-spacing: 0.25px; text-align: left; cursor: pointer;
+}
+
+/* Pull to refresh. */
+html { overscroll-behavior-y: contain; }
+.h-pull {
+  position: fixed; z-index: 1; left: 50%; top: calc(56px + var(--k-safe-top));
+  width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--h-menu-bg); box-shadow: var(--h-menu-shadow);
+}
+.h-pull svg { fill: none; }
+.h-pull-arc { stroke: var(--h-primary); stroke-width: 2.5; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 12px 12px; }
+.h-pull-busy svg { animation: h-spin 1s linear infinite; }

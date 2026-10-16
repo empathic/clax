@@ -71,7 +71,7 @@ test('a tap opens the app, and a making tile its make', async () => {
   expect(home.calls).toEqual([{ method: 'open', args: ['app-groceries'] }, { method: 'openMake', args: ['make-water'] }]);
 });
 
-test('a long press or a context menu asks for the menu at the tile, and a hold does not open', async () => {
+test('a context menu asks for the menu at the tile; a long press arms, then asks on release, and does not open', async () => {
   const home = await show({ makes: [] });
   const tile = document.querySelector('[data-id="app-habits"]');
   tile.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
@@ -79,17 +79,109 @@ test('a long press or a context menu asks for the menu at the tile, and a hold d
   const [first] = home.calls;
   expect(first.method).toBe('menu');
   expect(first.args[0]).toBe('app-habits');
-  const r = tile.querySelector('.h-face').getBoundingClientRect();
-  expect(first.args[1]).toEqual({ x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) });
+  const r = tile.querySelector('.h-icon').getBoundingClientRect();
+  const rect = { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+  expect(first.args[1]).toEqual(rect);
+  expect(rect.w).toBe(60);
 
   const opts = { bubbles: true, cancelable: true, pointerId: 7, isPrimary: true, pointerType: 'touch', clientX: r.x + 10, clientY: r.y + 10 };
   tile.dispatchEvent(new PointerEvent('pointerdown', opts));
-  await wait(() => home.calls.length === 2);
+  // The WebView's own long press comes while the finger is down: the release answers it.
+  tile.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+  await wait(() => 'held' in tile.dataset);
+  expect(home.calls.length).toBe(1);
   tile.dispatchEvent(new PointerEvent('pointerup', opts));
+  await wait(() => home.calls.length === 2);
+  expect(home.calls[1]).toEqual({ method: 'menu', args: ['app-habits', rect] });
+  expect('held' in tile.dataset).toBe(false);
   tile.click();
   expect(home.calls.map((c) => c.method)).toEqual(['menu', 'menu']);
   tile.click();
-  expect(home.calls.map((c) => c.method)).toEqual(['menu', 'menu', 'open']);
+  await wait(() => home.calls.length === 3);
+  expect(home.calls[2].method).toBe('open');
+});
+
+test('a press that moves or is cancelled before it arms asks for nothing', async () => {
+  const home = await show({ makes: [] });
+  const tile = document.querySelector('[data-id="app-run"]');
+  const r = tile.getBoundingClientRect();
+  const at = (dx) => ({ bubbles: true, cancelable: true, pointerId: 3, isPrimary: true, pointerType: 'touch', clientX: r.x + 20 + dx, clientY: r.y + 20 });
+  tile.dispatchEvent(new PointerEvent('pointerdown', at(0)));
+  tile.dispatchEvent(new PointerEvent('pointermove', at(30)));
+  tile.dispatchEvent(new PointerEvent('pointerup', at(30)));
+  tile.dispatchEvent(new PointerEvent('pointerdown', at(0)));
+  tile.dispatchEvent(new PointerEvent('pointercancel', at(0)));
+  await new Promise((done) => setTimeout(done, 0));
+  expect(home.calls).toEqual([]);
+  expect('held' in tile.dataset).toBe(false);
+});
+
+test('an action refused for want of a tap says so, and the next tap on the notice tries it again', async () => {
+  const home = await show({ makes: [] });
+  const open = home.open;
+  let refuse = true;
+  home.open = (...a) => (refuse ? Promise.reject({ code: 'no_gesture', message: 'tap' }) : open(...a));
+  await ui.click('[data-id="app-groceries"]');
+  await wait(() => ui.exists('.h-notice'));
+  expect(ui.text('.h-notice')).toBe('Tap again to open Groceries');
+  refuse = false;
+  await ui.click('.h-notice');
+  await wait(() => home.calls.length === 1);
+  expect(home.calls).toEqual([{ method: 'open', args: ['app-groceries'] }]);
+  await wait(() => !ui.exists('.h-notice'));
+});
+
+test('a tap on another control drops a refused action instead of retrying it', async () => {
+  const home = await show({ makes: [] });
+  home.open = () => Promise.reject({ code: 'no_gesture', message: 'tap' });
+  await ui.click('[data-id="app-groceries"]');
+  await wait(() => ui.exists('.h-notice'));
+  await ui.click('[aria-label="Settings"]');
+  await wait(() => home.calls.length === 1);
+  expect(home.calls).toEqual([{ method: 'openSettings', args: [] }]);
+});
+
+test('other failed actions say what went wrong', async () => {
+  const home = await show({ makes: [] });
+  home.open = () => Promise.reject({ code: 'bad_request', message: 'gone' });
+  home.newApp = () => Promise.reject({ code: 'unavailable', message: 'closed' });
+  await ui.click('[data-id="app-groceries"]');
+  await wait(() => ui.text('.h-notice') === 'That app is no longer here');
+  await ui.click('New app');
+  await wait(() => ui.text('.h-notice') === "Couldn't make a new app");
+});
+
+test('Refresh in More loads everything again', async () => {
+  const home = await show({ makes: [] });
+  const apps = home.apps;
+  let loads = 0;
+  home.apps = () => { loads++; return apps(); };
+  await ui.click('[aria-label="More"]');
+  await ui.click('Refresh');
+  await wait(() => loads === 1);
+});
+
+test('a pull down from the top loads everything again', async () => {
+  if (typeof Touch !== 'function') return;
+  const home = await show({ makes: [] });
+  const apps = home.apps;
+  let loads = 0;
+  home.apps = () => { loads++; return apps(); };
+  scrollTo(0, 0);
+  const touch = (y) => new Touch({ identifier: 1, target: document.body, clientX: 200, clientY: y });
+  const send = (type, y) => document.body.dispatchEvent(new TouchEvent(type, { bubbles: true, cancelable: true, touches: type === 'touchend' ? [] : [touch(y)], changedTouches: [touch(y)] }));
+  send('touchstart', 100);
+  send('touchmove', 140);
+  send('touchmove', 260);
+  await wait(() => ui.exists('.h-pull'));
+  send('touchend', 260);
+  await wait(() => loads === 1);
+  await wait(() => !ui.exists('.h-pull'));
+  send('touchstart', 100);
+  send('touchmove', 140);
+  send('touchend', 140);
+  await new Promise((done) => setTimeout(done, 0));
+  expect(loads).toBe(1);
 });
 
 test('New app, Inbox, Settings and Import app… ask the app', async () => {
