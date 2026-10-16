@@ -511,11 +511,23 @@ void main() {
       await pump(tester);
       await show(tester, 'Undo last change');
       await tester.tap(find.text('Undo last change'));
-      await tester.pump();
-      await tester.pump();
+      // Undo saves where it stepped back to with real file I/O: wait for
+      // it outside the fake clock.
+      final done = find.text('Undid the last change');
+      for (var i = 0; i < 200 && done.evaluate().isEmpty; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 10)),
+        );
+        await tester.pump();
+      }
       final r = api.calls.lastWhere((c) => c.name == 'restoreVersion');
       expect(r.args, {'aid': aid, 'n': 1, 'ifVersion': 2});
-      expect(find.text('Undid the last change'), findsOneWidget);
+      expect(done, findsOneWidget);
+      expect(HomeSettings.loadSync(dir).undo, (
+        app: aid,
+        version: 3,
+        restored: 1,
+      ));
     });
 
     testWidgets('Use the built-in home screen is saved and told', (
