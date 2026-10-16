@@ -14,6 +14,7 @@ import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/daemon/supervisor.dart';
 import 'package:clax_app/platform/background_work.dart';
+import 'package:clax_app/platform/connection.dart';
 import 'package:clax_app/platform/pending_make.dart';
 import 'package:clax_app/platform/secure_key.dart';
 import 'package:clax_app/platform/settings_store.dart';
@@ -193,9 +194,13 @@ void main() {
   late List<FakeAppSurface> surfaces;
   late List<Uri> questionLoads;
   _Turns? turns;
+  late StepClock clock;
+  late bool reachable;
 
   setUp(() {
     turns = null;
+    clock = StepClock();
+    reachable = true;
     dir = Directory.systemTemp.createTempSync('app-bg-test-');
     supervisor = FakeSupervisor();
     api = FakeClaxApi();
@@ -234,7 +239,8 @@ void main() {
           consentMemory: FileConsentMemory(
             File('${dir.path}/agent-read-consent.json'),
           ),
-          clock: StepClock(),
+          clock: clock,
+          connection: ApiConnection(probe: () async => reachable, clock: clock),
         ),
       ),
     );
@@ -382,10 +388,57 @@ void main() {
     expect(find.byType(AppScreen), findsOneWidget);
   });
 
-  testWidgets('a network failure while the app stayed in front still fails, '
-      'and in the background a failure is posted', (tester) async {
+  testWidgets('a make that cannot reach the API in front waits for the '
+      'connection, kept as waiting, and makes the app once it is back', (
+    tester,
+  ) async {
     await pumpApp(tester);
-    agent.steps.add((_) async => throw _dns);
+    reachable = false;
+    agent.steps
+      ..add((_) async => throw _dns)
+      ..add((_) async => _made);
+    await submit(tester, 'a tracker for my runs');
+    await pumpRoute(tester);
+    expect(find.text('Waiting for connection'), findsOneWidget);
+    expect(find.text("Couldn't make it"), findsNothing);
+    expect(agent.runs, 1);
+    expect(work.calls.last, 'update($title, Waiting for connection)');
+    await settleFiles(tester);
+    expect(
+      File('${dir.path}/pending-make.json').readAsStringSync(),
+      contains('"waiting":["a tracker for my runs"]'),
+    );
+
+    reachable = true;
+    clock.advance(ApiConnection.maxProbe);
+    await pumpRoute(tester);
+    await pumpRoute(tester);
+    expect(agent.runs, 2);
+    expect(find.byType(AppScreen), findsOneWidget);
+    expect(work.calls.where((c) => c.startsWith('failed')), isEmpty);
+  });
+
+  testWidgets('a make that waited for the connection when the app ended is '
+      'started again by itself at the next launch', (tester) async {
+    File('${dir.path}/pending-make.json').writeAsStringSync(
+      '{"requests": ["a tracker for my runs"], '
+      '"waiting": ["a tracker for my runs"]}',
+    );
+    agent.steps.add((_) async => _made);
+    await pumpApp(tester);
+    await settleFiles(tester);
+    await pumpRoute(tester);
+    expect(agent.runs, 1, reason: 'no tap needed');
+    expect(find.text('Interrupted'), findsNothing);
+    expect(find.text('Runs'), findsOneWidget);
+  });
+
+  testWidgets('a failure in front shows on the make; in the background a '
+      'failure is posted', (tester) async {
+    await pumpApp(tester);
+    agent.steps.add(
+      (_) async => throw const AgentError('The model is overloaded'),
+    );
     await submit(tester, 'a tracker for my runs');
     await pumpRoute(tester);
     expect(find.text("Couldn't make it"), findsOneWidget);
