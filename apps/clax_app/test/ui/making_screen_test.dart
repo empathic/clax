@@ -9,6 +9,7 @@ import 'package:clax_app/agent/request.dart';
 import 'package:clax_app/agent/scripted_backend.dart';
 import 'package:clax_app/agent/timings.dart';
 import 'package:clax_app/daemon/clock.dart';
+import 'package:clax_app/ui/make_service.dart';
 import 'package:clax_app/ui/making_preview.dart';
 import 'package:clax_app/ui/making_screen.dart';
 import 'package:flutter/material.dart';
@@ -410,6 +411,30 @@ class _Rig {
 }
 
 void _screen() {
+  testWidgets('a make waiting for the connection says so and offers Try '
+      'now', (tester) async {
+    var tries = 0;
+    final session = MakeSession('a timer', (r, cancelled, stage) {
+      stage(MakeStage.offline);
+      return Completer<String>().future;
+    }, tryNow: () => tries++);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MakingScreen(
+          request: 'a timer',
+          session: session,
+          preview: _FakePreview.new,
+        ),
+      ),
+    );
+    await _settle(tester);
+    expect(find.text('Waiting for connection'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('make-try-now')));
+    expect(tries, 1);
+    session.cancel();
+    await _settle(tester);
+  });
+
   testWidgets('streamed index.html loads into the preview at most four '
       'times a second, and its first frame stops say-first-output', (
     tester,
