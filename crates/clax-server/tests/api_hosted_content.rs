@@ -171,6 +171,7 @@ fn the_content_tests_pass_when_content_io_needs_an_executor() {
         "api_live_watch::thread_views_carry_the_page_url_and_snapshot_path_of_a_live_page",
         "api_threads::every_thread_of_every_artifact_needs_the_token",
         "api_threads::create_stores_the_clip_and_serves_it_sandboxed",
+        "api_threads::a_thread_view_names_the_clip_file_to_local_agents_alone",
         "api_threads::thread_events_never_carry_the_clip_path",
         "api_threads::viewers_reopen_and_delete_threads_with_events",
     ];
