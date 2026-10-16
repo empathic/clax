@@ -111,11 +111,19 @@ async fn invite_flow_issues_a_key_bound_token_and_a_browser_link() {
         .collect();
     assert_eq!(cookies.len(), 1);
     assert!(
-        cookies[0].starts_with(&format!("clax_viewer={}; Path=/;", person.id))
+        cookies[0].starts_with("clax_viewer=cxv_")
+            && cookies[0].contains("; Path=/;")
             && cookies[0].contains("HttpOnly")
             && cookies[0].contains("SameSite=Lax"),
         "{cookies:?}"
     );
+    let cookie = cookies[0]
+        .split(';')
+        .next()
+        .unwrap()
+        .strip_prefix("clax_viewer=")
+        .unwrap();
+    assert_eq!(ts.store.get_viewer(cookie).unwrap().unwrap().id, person.id);
     let page = planted.text().await.unwrap();
     assert!(page.contains("/people") && page.contains("no-referrer"));
     assert!(

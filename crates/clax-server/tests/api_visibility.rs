@@ -441,7 +441,7 @@ async fn people_are_never_filtered() {
     let aid = &w.read.artifact;
     let list = format!("/api/artifacts/{aid}/threads?include_resolved=true");
     let clip = format!("/api/artifacts/{aid}/threads/{}/clip", w.read.thread);
-    let sam_cookie = ts.store.viewer_of_grant(&w.sam.grant_id()).unwrap().id;
+    let sam_cookie = ts.browser_cookie(&ts.store.viewer_of_grant(&w.sam.grant_id()).unwrap().id);
     let lan = ts.viewer(Some("Lan")).await;
     let browsers: Vec<(&str, Option<String>)> = vec![
         ("Sam's browser", Some(format!("clax_viewer={sam_cookie}"))),

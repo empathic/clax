@@ -136,7 +136,8 @@ pub struct Identity {
     pub events_cookie: bool,
     /// The owner cookie, on a request from this machine.
     pub owner_cookie: bool,
-    /// The `clax_viewer` cookie, when it is a ULID ([`crate::viewer::read`]).
+    /// The `clax_viewer` cookie, when it has a cookie's form
+    /// ([`crate::viewer::read`]).
     pub cookie: Option<String>,
     /// The request comes from this machine ([`is_local`]).
     pub local: bool,

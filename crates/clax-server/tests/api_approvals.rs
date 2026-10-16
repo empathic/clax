@@ -107,13 +107,15 @@ impl Two {
     }
 
     fn sam_browser(&self) -> Browser<'_> {
-        let cookie = self
-            .w
-            .ts
-            .store
-            .viewer_of_grant(&self.w.sam.grant_id())
-            .unwrap()
-            .id;
+        let cookie = self.w.ts.browser_cookie(
+            &self
+                .w
+                .ts
+                .store
+                .viewer_of_grant(&self.w.sam.grant_id())
+                .unwrap()
+                .id,
+        );
         Browser {
             ts: &self.w.ts,
             cookie: format!("clax_viewer={cookie}"),
@@ -1303,12 +1305,7 @@ async fn one_persons_sends_cannot_block_anothers_request() {
     let t = Two::new().await;
     let owner_handle = owner_agent_watches(&t).await;
     let sam = t.sam_browser();
-    let sam_cookie =
-        t.w.ts
-            .store
-            .viewer_of_grant(&t.w.sam.grant_id())
-            .unwrap()
-            .id;
+    let sam_cookie = sam.cookie.replace("clax_viewer=", "");
     // Sam's browser sends a hundred threads to the owner's agent.
     for i in 0..MAX_OPEN_REQUESTS {
         let tid =

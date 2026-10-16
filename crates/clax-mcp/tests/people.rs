@@ -106,7 +106,7 @@ async fn status_sets_and_reports_the_name() {
 /// browser, sent to the agents; the artifact's ID and the thread's.
 async fn mias_thread(ts: &TestServer, aid: &str) -> String {
     let mia = ts.connect_person("Mia", "clax:collaborator").await;
-    let cookie = ts.store.viewer_of_grant(&mia.grant_id()).unwrap().id;
+    let cookie = ts.browser_cookie(&ts.store.viewer_of_grant(&mia.grant_id()).unwrap().id);
     let t = ts.thread_as(aid, &cookie, "MIACANARY words").await;
     let tid = t["id"].as_str().unwrap().to_string();
     ts.send_thread(aid, &tid).await;

@@ -174,7 +174,7 @@ impl World {
                 resolved: String::new(),
                 asset: String::new(),
             },
-            mia_cookie: mia_viewer.id.clone(),
+            mia_cookie: ts.browser_cookie(&mia_viewer.id),
             mia_public: mia_viewer.public_id.clone(),
             sam_question: String::new(),
             owner_question: String::new(),

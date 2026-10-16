@@ -745,13 +745,15 @@ impl Store {
 
     /// Redeems a browser link's `code` (spec §6.5): once, within
     /// [`BROWSER_LINK_TTL_SECS`] of its issue, while its grant is approved
-    /// and its person unrevoked. Returns the person's viewer row, whose `id`
-    /// becomes the browser's `clax_viewer` cookie; the code is cleared.
+    /// and its person unrevoked. Returns the person's viewer row and a new
+    /// cookie naming it, the browser's `clax_viewer` cookie: a random
+    /// secret, never the row's ID (spec §21.4), kept as its hash; the code
+    /// is cleared.
     ///
     /// # Errors
     /// `NotFound` for an unknown, used or expired code (the link's 404),
     /// and for a revoked grant or person.
-    pub fn redeem_browser_code(&self, code: &str) -> Result<Viewer> {
+    pub fn redeem_browser_code(&self, code: &str) -> Result<(Viewer, Secret)> {
         let hash = sha256_hex(code);
         self.with_tx(|tx| {
             let now = self.now();
@@ -786,7 +788,11 @@ impl Store {
                     row_to_viewer,
                 )
                 .optional()?;
-            Ok(viewer.ok_or(CoreError::NotFound))
+            let Some(viewer) = viewer else {
+                return Ok(Err(CoreError::NotFound));
+            };
+            let cookie = super::viewers::issue_cookie_in(self, tx, &viewer.id)?;
+            Ok(Ok((viewer, cookie)))
         })?
     }
 
@@ -859,6 +865,12 @@ impl Store {
                     if let Some(name) = name {
                         check_person_name(tx, &name, Some(&id))?;
                     }
+                    // A legacy cookie (the row ID, guessable) never
+                    // carries a person's authority (§21.4).
+                    tx.execute(
+                        "DELETE FROM viewer_cookies WHERE viewer_id = ?1 AND legacy = 1",
+                        params![id],
+                    )?;
                     if tx.execute(
                         "UPDATE viewers SET person = 1 WHERE id = ?1 AND person = 0",
                         params![id],
@@ -2572,7 +2584,12 @@ pub(crate) mod tests {
             .create_invite(DAEMON, InvitePerson::Viewer(lan.public_id.clone()), None)
             .unwrap();
         assert_eq!(inv.person, lan.public_id);
-        assert!(st.get_viewer(&lan.id).unwrap().unwrap().person);
+        assert!(
+            st.viewer_by_public_id(&lan.public_id)
+                .unwrap()
+                .unwrap()
+                .person
+        );
         let (me, _) = st.create_invite(DAEMON, InvitePerson::Owner, None).unwrap();
         assert!(me.owner);
         assert_eq!(
@@ -3648,9 +3665,14 @@ pub(crate) mod tests {
             st.redeem_browser_code("not-the-code"),
             Err(CoreError::NotFound)
         ));
-        let v = st.redeem_browser_code(link.expose()).unwrap();
+        let (v, cookie) = st.redeem_browser_code(link.expose()).unwrap();
         assert_eq!(Some(v.public_id.clone()), g.person);
         assert!(v.person && !v.id.is_empty());
+        // The browser's cookie is a fresh secret naming the person, not
+        // the row's ID, which names no one (spec §21.4).
+        assert!(crate::secret::is_viewer_cookie(cookie.expose()));
+        assert_eq!(st.get_viewer(cookie.expose()).unwrap().unwrap().id, v.id);
+        assert!(st.get_viewer(&v.id).unwrap().is_none());
         assert!(
             matches!(
                 st.redeem_browser_code(link.expose()),
@@ -3700,6 +3722,7 @@ pub(crate) mod tests {
         assert_eq!(
             st.redeem_browser_code(link.expose())
                 .unwrap()
+                .0
                 .display_name
                 .as_deref(),
             Some("Sam")
@@ -4116,9 +4139,19 @@ pub(crate) mod tests {
         let (inv, _) = st
             .create_invite(DAEMON, InvitePerson::Viewer(lan.public_id.clone()), None)
             .unwrap();
-        assert!(st.get_viewer(&lan.id).unwrap().unwrap().person);
+        assert!(
+            st.viewer_by_public_id(&lan.public_id)
+                .unwrap()
+                .unwrap()
+                .person
+        );
         st.revoke_invite(DAEMON, &inv.id).unwrap();
-        assert!(!st.get_viewer(&lan.id).unwrap().unwrap().person);
+        assert!(
+            !st.viewer_by_public_id(&lan.public_id)
+                .unwrap()
+                .unwrap()
+                .person
+        );
         assert_eq!(code(st.person_rights(&lan.public_id)), "not_a_person");
         // A new person whose invite expires frees the name; a person with a
         // grant stays one.

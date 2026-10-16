@@ -45,6 +45,7 @@ async fn people() -> People {
     let mia = ts.connect_person("Mia", "clax:collaborator").await;
     let sv = ts.store.viewer_of_grant(&sam.grant_id()).unwrap();
     let mv = ts.store.viewer_of_grant(&mia.grant_id()).unwrap();
+    let (sam_cookie, mia_cookie) = (ts.browser_cookie(&sv.id), ts.browser_cookie(&mv.id));
     let owner_session = id(&ts.register_session("claude", "owner-h1").await);
     let sam_session = id(&sam.register("claude", "sam-h1").await);
     let mia_session = id(&mia.register("codex", "mia-h1").await);
@@ -52,9 +53,9 @@ async fn people() -> People {
         ts,
         sam,
         mia,
-        sam_cookie: format!("clax_viewer={}", sv.id),
+        sam_cookie: format!("clax_viewer={sam_cookie}"),
         sam_public: sv.public_id,
-        mia_cookie: format!("clax_viewer={}", mv.id),
+        mia_cookie: format!("clax_viewer={mia_cookie}"),
         owner_session,
         sam_session,
         mia_session,
@@ -2234,7 +2235,7 @@ async fn the_agents_person_and_the_owner_remove_a_creators_raise_and_no_one_else
     let lee = p.ts.connect_person("Lee", "clax:collaborator").await;
     let lee_cookie = format!(
         "clax_viewer={}",
-        p.ts.store.viewer_of_grant(&lee.grant_id()).unwrap().id
+        p.ts.browser_cookie(&p.ts.store.viewer_of_grant(&lee.grant_id()).unwrap().id)
     );
     let notes = p.sams_notes().await;
     let mia_h = p.handle(&p.mia_session);
@@ -2573,4 +2574,199 @@ async fn a_persons_agent_gets_links_on_the_address_it_reached() {
         );
         assert!(!v.to_string().contains(&loopback), "{tier}: {v}");
     }
+}
+
+/// `id` (a ULID) moved by `by`: a value minted beside it.
+fn ulid_beside(id: &str, by: i128) -> String {
+    const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    let mut n: u128 = id.bytes().fold(0u128, |n, b| {
+        n * 32 + ALPHABET.iter().position(|&a| a == b).unwrap() as u128
+    });
+    n = (n as i128 + by) as u128;
+    let mut out = vec![b'0'; 26];
+    for c in out.iter_mut().rev() {
+        *c = ALPHABET[(n % 32) as usize];
+        n /= 32;
+    }
+    String::from_utf8(out).unwrap()
+}
+
+/// `GET /api/people/me` from the LAN with `cookie` (none: no cookie).
+async fn people_me_from_lan(ts: &TestServer, cookie: Option<&str>) -> (u16, Value) {
+    let (lan, base) = ts.lan();
+    let mut r = lan.get(format!("{base}/api/people/me"));
+    if let Some(c) = cookie {
+        r = r.header("cookie", format!("clax_viewer={c}"));
+    }
+    json_of(r.send().await.unwrap()).await
+}
+
+/// Spec §21.4: a person's browser cookie is a random secret, never a row
+/// ID: guessing a neighbour of a row ID the owner sees (an invite's) or
+/// presenting the person's row ID grants nothing, the answer to a wrong
+/// cookie is the same as to none, and the daemon keeps only the cookie's
+/// hash.
+#[tokio::test]
+async fn a_persons_cookie_is_a_secret_that_no_row_id_reaches() {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let res = ts
+        .owner_browser()
+        .post("/api/people/invites", json!({"name": "Eve"}))
+        .await;
+    let (status, inv) = json_of(res).await;
+    assert_eq!(status, 201, "{inv}");
+    let invite_id = inv["invite"]["id"].as_str().unwrap().to_string();
+    let code = inv["invite"]["command"]
+        .as_str()
+        .unwrap()
+        .rsplit_once("/i/")
+        .unwrap()
+        .1
+        .to_string();
+    let eve = TestClient::new(&ts);
+    let r = eve
+        .grant_request(json!({"access_token": {"access": ["clax:collaborator"]},
+                              "clax": {"invite": code}}))
+        .await;
+    let link = r["clax"]["browser_link"].as_str().unwrap();
+    let (lan, _) = ts.lan();
+    let res = lan.get(link).send().await.unwrap();
+    assert_eq!(res.status(), 200);
+    let set = res.headers()["set-cookie"].to_str().unwrap().to_string();
+    let cookie = set
+        .split(';')
+        .next()
+        .unwrap()
+        .strip_prefix("clax_viewer=")
+        .unwrap()
+        .to_string();
+    let person = ts.store.viewer_of_grant(&eve.grant_id()).unwrap();
+    // A secret of its own: `cxv_` and 32 random bytes, no row ID in it.
+    assert!(cookie.starts_with("cxv_") && cookie.len() == 47, "{cookie}");
+    for id in [&person.id, &invite_id] {
+        assert!(!cookie.contains(id.as_str()), "{cookie} holds {id}");
+    }
+    let (status, me) = people_me_from_lan(&ts, Some(&cookie)).await;
+    assert_eq!(status, 200, "{me}");
+    assert_eq!(me["person"]["public_id"], json!(person.public_id), "{me}");
+    // Nothing near a row ID names Eve: her own row ID, the invite's, and
+    // the values minted beside either.
+    let none = people_me_from_lan(&ts, None).await;
+    assert_eq!(none.0, 403);
+    let mut guesses = vec![person.id.clone(), invite_id.clone()];
+    for by in [-2, -1, 1, 2] {
+        guesses.push(ulid_beside(&invite_id, by));
+        guesses.push(ulid_beside(&person.id, by));
+    }
+    for g in &guesses {
+        let got = people_me_from_lan(&ts, Some(g)).await;
+        assert_eq!(got, none, "{g} must answer as no cookie does");
+        assert!(
+            ts.store.get_viewer(g).unwrap().is_none_or(|v| !v.person),
+            "{g} names a person"
+        );
+    }
+    // The daemon keeps the cookie's SHA-256, never the cookie.
+    let db = rusqlite::Connection::open(ts.home.db_path()).unwrap();
+    let hashes: Vec<String> = db
+        .prepare("SELECT sha256 FROM viewer_cookies WHERE viewer_id = ?1")
+        .unwrap()
+        .query_map([&person.id], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(hashes, [clax_core::secret::sha256_hex(&cookie)]);
+    let dump: String = db
+        .query_row(
+            "SELECT group_concat(sha256 || viewer_id || created_at) FROM viewer_cookies",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(!dump.contains(&cookie));
+}
+
+/// Every cookie `GET /api/viewers/me` mints for a new browser is a fresh
+/// secret, independent of the viewer row it names, and of the cookie
+/// minted before it.
+#[tokio::test]
+async fn an_anonymous_viewers_cookie_is_a_secret_not_its_row_id() {
+    let ts = TestServer::spawn().await;
+    let a = ts.viewer(None).await;
+    let b = ts.viewer(None).await;
+    for v in [&a, &b] {
+        assert!(
+            v.cookie.starts_with("cxv_") && v.cookie.len() == 47,
+            "{}",
+            v.cookie
+        );
+        let row = ts.store.get_viewer(&v.cookie).unwrap().unwrap();
+        assert_ne!(row.id, v.cookie);
+        assert!(
+            ts.store.get_viewer(&row.id).unwrap().is_none(),
+            "a row ID names no viewer"
+        );
+    }
+    assert_ne!(a.cookie[4..20], b.cookie[4..20]);
+}
+
+/// A viewer from before migration 24 holds its row ID as its cookie. It
+/// keeps working until its next `GET /api/viewers/me`, which replaces it
+/// with a fresh secret naming the same viewer; and a viewer made a person
+/// never carries a person's authority on such a cookie.
+#[tokio::test]
+async fn a_legacy_viewer_cookie_is_replaced_and_never_names_a_person() {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    // As a home migrated from main holds it: the row ID's hash, legacy.
+    let legacy = "01J9Z3K4M5N6P7Q8R9S0T1V2W3";
+    let lan = ts.store.upsert_viewer(legacy, Some("Lan")).unwrap();
+    assert_eq!(
+        ts.store.get_viewer(legacy).unwrap().unwrap().public_id,
+        lan.public_id
+    );
+    let (client, base) = ts.lan();
+    let res = client
+        .get(format!("{base}/api/viewers/me"))
+        .header("cookie", format!("clax_viewer={legacy}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let set = res.headers()["set-cookie"].to_str().unwrap().to_string();
+    let fresh = set
+        .split(';')
+        .next()
+        .unwrap()
+        .strip_prefix("clax_viewer=")
+        .unwrap()
+        .to_string();
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(
+        v["viewer"]["public_id"],
+        json!(lan.public_id),
+        "the same viewer"
+    );
+    assert!(fresh.starts_with("cxv_"), "{fresh}");
+    assert!(
+        ts.store.get_viewer(legacy).unwrap().is_none(),
+        "the old cookie names no one"
+    );
+    assert_eq!(
+        ts.store.get_viewer(&fresh).unwrap().unwrap().public_id,
+        lan.public_id
+    );
+    // Another legacy viewer, never re-issued, is made a person: its old
+    // cookie names no one from then on.
+    let other = "01J9Z3K4M5N6P7Q8R9S0T1V2W4";
+    let o = ts.store.upsert_viewer(other, Some("Old")).unwrap();
+    ts.store
+        .create_invite(
+            &clax_core::audit::AuditCtx::DAEMON,
+            clax_core::store::people::InvitePerson::Viewer(o.public_id.clone()),
+            None,
+        )
+        .unwrap();
+    assert!(ts.store.get_viewer(other).unwrap().is_none());
+    let (status, _) = people_me_from_lan(&ts, Some(other)).await;
+    assert_eq!(status, 403);
 }

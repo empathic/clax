@@ -327,8 +327,8 @@ async fn remote_clip_lines_are_rewritten_to_cached_files() {
         .await
         .unwrap();
     let aid = made["artifact"]["id"].as_str().unwrap().to_string();
-    let sam_cookie = ts.store.viewer_of_grant(&sam.grant_id()).unwrap().id;
-    let mia_cookie = ts.store.viewer_of_grant(&mia.grant_id()).unwrap().id;
+    let sam_cookie = ts.browser_cookie(&ts.store.viewer_of_grant(&sam.grant_id()).unwrap().id);
+    let mia_cookie = ts.browser_cookie(&ts.store.viewer_of_grant(&mia.grant_id()).unwrap().id);
     let send = |tid: String| {
         let (ts, aid, cookie) = (&ts, aid.clone(), sam_cookie.clone());
         async move {
@@ -496,7 +496,7 @@ async fn a_remote_clip_that_does_not_come_never_holds_the_feedback() {
         .await
         .unwrap();
     let aid = made["artifact"]["id"].as_str().unwrap().to_string();
-    let cookie = ts.store.viewer_of_grant(&sam.grant_id()).unwrap().id;
+    let cookie = ts.browser_cookie(&ts.store.viewer_of_grant(&sam.grant_id()).unwrap().id);
     for body in ["FIRSTCLIP", "SECONDCLIP"] {
         let tid = thread_with_clip(&ts, &aid, &cookie, body).await;
         let r = ts

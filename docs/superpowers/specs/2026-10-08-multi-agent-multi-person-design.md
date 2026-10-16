@@ -327,6 +327,19 @@ ALTER TABLE viewers ADD COLUMN person_revoked_at TEXT;   -- a revoked person (§
 -- The person's rights (an access array, §7); NULL: the clax:collaborator preset.
 ALTER TABLE viewers ADD COLUMN rights_json TEXT;
 
+-- The browsers' `clax_viewer` cookies, by SHA-256 (§21.4): a cookie is a
+-- random secret, never a row ID, and a viewer may have several browsers.
+-- `legacy`: a cookie from before this migration (the viewer's row ID,
+-- hashed by the migration's Rust step for every viewer but the owner) or
+-- one a browser presented in that ULID form; it never names a person.
+CREATE TABLE viewer_cookies (
+    sha256 TEXT PRIMARY KEY,
+    viewer_id TEXT NOT NULL REFERENCES viewers(id),
+    created_at TEXT NOT NULL,
+    legacy INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX viewer_cookies_by_viewer ON viewer_cookies(viewer_id);
+
 CREATE TABLE invites (
     id TEXT PRIMARY KEY,                         -- ULID
     code_sha256 TEXT NOT NULL UNIQUE,
@@ -681,8 +694,8 @@ The request is signed with the presented key (§6.6) and carries no token.
 An approved grant response carries `clax.browser_link`:
 `http://<host>:<port>/connect/b/<code>` (32 random bytes, one use, 10
 minutes). `clax connect` opens it in the person's default browser. The
-daemon answers with a page that sets the `clax_viewer` cookie to the
-person's viewer and redirects to `/people`. A `clax_viewer` cookie the
+daemon answers with a page that sets the `clax_viewer` cookie to a fresh
+secret naming the person's viewer and redirects to `/people`. A `clax_viewer` cookie the
 browser already carried is replaced, never folded: the viewer it named
 stays a separate LAN viewer with its own history, so a raced or sniffed
 link cannot move anyone's history into the person. The link is refused for
@@ -2026,6 +2039,11 @@ nothing else:
    field. The owner's browser hears its own on `/api/stream` (§10).
    Agent-facing output does not change: with no person, every agent
    reads every row.
+10. **Viewer cookies** (§21.4): a LAN viewer's `clax_viewer` cookie, its
+    row ID until now, is replaced by a random secret at that browser's
+    next `GET /api/viewers/me` (a `Set-Cookie` on that answer); the
+    viewer's public ID, name and history stay. New viewers get such a
+    secret from the start.
 
 §19 covers agent-facing output and existing behaviour. New UI (the People
 link and page, the agent strip, owner chips, the Send menu's grouping) is
@@ -2204,6 +2222,18 @@ boundary.
    browser (their inbox, their agents' questions, their approvals). The
    owner's browser credentials are loopback-only. People shows "Use a
    trusted LAN".
+
+   A browser cookie cannot be guessed: every `clax_viewer` value the
+   daemon sets (a browser link's, an anonymous viewer's) is 32 bytes from
+   the operating system's random source, independent of any row ID, and
+   the daemon keeps only its SHA-256 (`viewer_cookies`), looking a viewer
+   up by that hash and never by row ID, so a viewer's row ID (an
+   invite's neighbour, say) names no one. Cookies from before migration 24
+   were the viewer's row ID, a monotonic ULID; the migration keeps them
+   working for anonymous LAN viewers only, as legacy hashes: the viewer's
+   next `GET /api/viewers/me` replaces such a cookie with a fresh secret,
+   and a viewer made a person loses its legacy cookies, so a guessable
+   value never carries a person's authority.
 5. **Invite races.** An invite code crosses the LAN in clear inside a
    signed request; a sniffer racing it redeems first. Sam then gets
    `invalid_invite`, and the owner sees a connection from an unexpected
