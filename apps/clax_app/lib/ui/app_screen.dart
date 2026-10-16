@@ -305,6 +305,10 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   /// The changes in flight, for the chip and the long-press→landed timing.
   late final ChangeTracker _changes;
 
+  /// The threads of the change that waits for the connection, for the
+  /// thread pages.
+  final _waitingThreads = ValueNotifier<List<String>>(const []);
+
   /// Fires on every rebuild of the screen, for the change sheet, which
   /// reads [_changes] then.
   final _updates = _Updates();
@@ -603,6 +607,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     widget.device?.stopWatches(_deviceView, asking: true);
     _deviceView.watching.dispose();
     _updates.dispose();
+    _waitingThreads.dispose();
     WidgetsBinding.instance.removeObserver(this);
     widget.notice?.clear(this);
     _comments.unregister(_toggleOpen);
@@ -871,6 +876,9 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       case WorkerProgress(:final threads, :final progress):
         if (_changes.workerProgress(threads, progress)) setState(() {});
     }
+    _waitingThreads.value = _changes.waitingForConnection
+        ? _changes.running
+        : const [];
   }
 
   // --- the build ---
@@ -1072,6 +1080,14 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
           _call(LoadVersion(n));
         },
         onRetry: retry == null ? null : (tid) => retry(widget.aid, tid),
+        waitingForConnection: _waitingThreads,
+        onCancel: widget.onStop == null
+            ? null
+            : () {
+                widget.onStop!(widget.aid);
+                setState(_changes.stopped);
+                _waitingThreads.value = const [];
+              },
       ),
     );
   }
