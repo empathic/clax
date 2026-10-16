@@ -19,8 +19,8 @@ mkdir -p "$tmp/w/clax/scripts" "$tmp/w/changelist"
 cp "$here/scripts/bazel-gc.sh" "$tmp/w/clax/scripts/"
 _bazelrc "$tmp/w/clax/.bazelrc" 80G 7d
 _bazelrc "$tmp/w/changelist/.bazelrc" 80G 7d
-git -C "$tmp/w/clax" init -q
 cd "$tmp/w/clax"
+git init -q
 
 fails=0
 _ok() { echo "ok: $1"; }
