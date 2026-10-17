@@ -2,7 +2,7 @@
 
 use clax_mcp::tools::{Opener, PublishArgs, TargetArgs};
 use clax_mcp::{ClaxTools, DaemonClient};
-use clax_server::testing::TestServer;
+use clax_testkit::TestServer;
 use rmcp::handler::server::wrapper::Parameters;
 use serde_json::Value;
 use std::time::{Duration, Instant};

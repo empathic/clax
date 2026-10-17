@@ -4,8 +4,8 @@
 //! unverified reads, and every session a request names bound to its
 //! credential.
 
-use crate::common::TestServer;
-use clax_server::testing::{Call, LAN_HEADER, TestClient};
+use clax_testkit::TestServer;
+use clax_testkit::{Call, LAN_HEADER, TestClient};
 use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1187,7 +1187,7 @@ async fn live_page(ts: &TestServer) -> String {
         .text("snapshot", "<p>private</p>")
         .part(
             "clip",
-            reqwest::multipart::Part::bytes(clax_server::testing::FAKE_PNG.to_vec())
+            reqwest::multipart::Part::bytes(clax_testkit::FAKE_PNG.to_vec())
                 .mime_str("image/png")
                 .unwrap(),
         );

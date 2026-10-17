@@ -3,10 +3,9 @@
 //! live credential, only to the allowlisted routes, only for live pages, and
 //! acts there as the owner identity.
 
-use crate::common;
 use clax_core::extension::extension_origin;
-use clax_server::testing::FAKE_PNG;
-use common::TestServer;
+use clax_testkit::FAKE_PNG;
+use clax_testkit::TestServer;
 use reqwest::Method;
 use serde_json::{Value, json};
 
@@ -526,7 +525,7 @@ async fn the_extensions_stream_is_live_only() {
         res.headers()["access-control-allow-origin"],
         origin(&ts).as_str()
     );
-    let mut events = clax_server::testing::EventReader::from_response(res);
+    let mut events = clax_testkit::EventReader::from_response(res);
     let ready = events.next_named("ready").await;
     let sid = ready["stream"].as_str().unwrap().to_string();
     let sub = |topic: String| {
@@ -556,7 +555,7 @@ async fn the_extensions_stream_is_live_only() {
         .send()
         .await
         .unwrap();
-    let mut shell = clax_server::testing::EventReader::from_response(res);
+    let mut shell = clax_testkit::EventReader::from_response(res);
     let ready = shell.next_named("ready").await;
     let sid = ready["stream"].as_str().unwrap().to_string();
     let st = ts
@@ -576,12 +575,12 @@ async fn delivering_stream(
     cred: &str,
     aid: &str,
     tid: &str,
-) -> clax_server::testing::EventReader {
+) -> clax_testkit::EventReader {
     let res = ext(ts, Method::GET, "/api/stream", cred)
         .send()
         .await
         .unwrap();
-    let mut events = clax_server::testing::EventReader::from_response(res);
+    let mut events = clax_testkit::EventReader::from_response(res);
     let sid = events.next_named("ready").await["stream"]
         .as_str()
         .unwrap()
@@ -693,7 +692,7 @@ async fn the_extension_and_the_shell_change_only_their_own_streams() {
         .send()
         .await
         .unwrap();
-    let mut shell = clax_server::testing::EventReader::from_response(res);
+    let mut shell = clax_testkit::EventReader::from_response(res);
     let shell_sid = shell.next_named("ready").await["stream"]
         .as_str()
         .unwrap()
@@ -702,7 +701,7 @@ async fn the_extension_and_the_shell_change_only_their_own_streams() {
         .send()
         .await
         .unwrap();
-    let mut mine = clax_server::testing::EventReader::from_response(res);
+    let mut mine = clax_testkit::EventReader::from_response(res);
     let ext_sid = mine.next_named("ready").await["stream"]
         .as_str()
         .unwrap()

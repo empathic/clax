@@ -8,7 +8,6 @@
 #![cfg(debug_assertions)]
 
 mod bridge_dev;
-mod common;
 mod shell_boot;
 mod shell_entries;
 

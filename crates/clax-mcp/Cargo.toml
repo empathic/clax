@@ -27,7 +27,7 @@ url.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
-clax-server = { path = "../clax-server", features = ["test-support"] }
+clax-testkit = { path = "../clax-testkit" }
 rmcp = { workspace = true, features = ["client", "transport-child-process"] }
 tempfile.workspace = true
 rusqlite.workspace = true

@@ -1,7 +1,6 @@
-use crate::common;
 use clax_core::wrap::bridge_tag_for;
 use clax_server::routes::shell::bridge_version;
-use common::TestServer;
+use clax_testkit::TestServer;
 
 #[tokio::test]
 async fn serves_wrapped_index_and_files_with_caching_headers() {

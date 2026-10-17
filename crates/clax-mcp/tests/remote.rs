@@ -6,7 +6,7 @@ use clax_core::remote::{Remote, RemoteConfig, SessionFiles, Signer};
 use clax_core::secret::Secret;
 use clax_core::sig::KeyPair;
 use clax_mcp::DaemonClient;
-use clax_server::testing::{TestClient, TestServer};
+use clax_testkit::{TestClient, TestServer};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -281,12 +281,12 @@ async fn a_credential_for_a_session_the_daemon_does_not_know_is_passed_over() {
 /// A thread Sam's browser (cookie `cookie`) starts on `aid` with a clip.
 async fn thread_with_clip(ts: &TestServer, aid: &str, cookie: &str, body: &str) -> String {
     let form = reqwest::multipart::Form::new()
-        .text("anchor", clax_server::testing::element_anchor().to_string())
+        .text("anchor", clax_testkit::element_anchor().to_string())
         .text("body", body.to_string())
         .text("version", "1")
         .part(
             "clip",
-            reqwest::multipart::Part::bytes(clax_server::testing::FAKE_PNG.to_vec())
+            reqwest::multipart::Part::bytes(clax_testkit::FAKE_PNG.to_vec())
                 .file_name("clip.png")
                 .mime_str("image/png")
                 .unwrap(),
@@ -373,10 +373,7 @@ async fn remote_clip_lines_are_rewritten_to_cached_files() {
         trailing.contains(&format!("\nClip: {}\n", cached.display())),
         "{trailing}"
     );
-    assert_eq!(
-        std::fs::read(&cached).unwrap(),
-        clax_server::testing::FAKE_PNG
-    );
+    assert_eq!(std::fs::read(&cached).unwrap(), clax_testkit::FAKE_PNG);
     assert!(!trailing.contains("clax-clip:"), "{trailing}");
     assert!(trailing.contains("\nClip: withheld\n"), "{trailing}");
     let first: serde_json::Value = serde_json::from_str(&text[0]).unwrap();

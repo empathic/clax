@@ -1,5 +1,4 @@
-use crate::common;
-use common::TestServer;
+use clax_testkit::TestServer;
 use serde_json::{Value, json};
 use std::net::{IpAddr, UdpSocket};
 
@@ -406,7 +405,7 @@ async fn mcp_tool_calls_are_the_sessionless_agent_under_a_call() {
 /// the version lacks, and never the name it was asked for.
 #[tokio::test]
 async fn the_read_tool_answers_a_withheld_file_as_withheld() {
-    use crate::common::people::{CARRIED_NAME, FILE_NAME, World};
+    use clax_testkit::people::{CARRIED_NAME, FILE_NAME, World};
     let w = World::two_people().await;
     let session = mcp_session(&w.ts).await;
     let aid = &w.read.artifact;
@@ -451,7 +450,7 @@ async fn the_read_tool_answers_a_withheld_file_as_withheld() {
 /// the document, and a listing's count of withheld documents.
 #[tokio::test]
 async fn the_db_tools_answer_withheld_documents_as_withheld() {
-    use crate::common::people::{DOC_FIELD, World};
+    use clax_testkit::people::{DOC_FIELD, World};
     let w = World::two_people().await;
     let session = mcp_session(&w.ts).await;
     let aid = &w.read.artifact;

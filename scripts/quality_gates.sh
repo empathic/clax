@@ -39,7 +39,7 @@ VERBOSE="${1:-}"
 PLAYWRIGHT_INSTALL="pnpm exec playwright install chromium"
 if [ -n "${CI:-}" ]; then PLAYWRIGHT_INSTALL="pnpm exec playwright install --with-deps chromium"; fi
 export PLAYWRIGHT_INSTALL
-# One debug `clax` (no test features) for every gate that runs the binary:
+# One debug `clax` for every gate that runs the binary:
 # the Rust tests that cannot name it (CLAX_TEST_BIN), the plugin wrapper
 # test, the comment loop, the Pi tests and the browser tests' daemons. A
 # copy, so a later `cargo build` that replaces target/debug/clax cannot pull
@@ -123,11 +123,6 @@ lane_lint() {
     run "cargo fmt --check"     cargo fmt --all -- --check &&
     await tests-built rust &&
     run "cargo clippy"          cargo clippy --workspace --all-targets -- -D warnings &&
-    # The libraries and binaries alone, so without the test-only features
-    # that dev-dependencies turn on. Clippy denies rustc's warnings too, and
-    # shares the flags and dependency builds of the pass above, which a
-    # `RUSTFLAGS=-Dwarnings cargo check` would not.
-    run "clippy (no test features)" cargo clippy --workspace -- -D warnings &&
     mark linted
 }
 lane_release() {

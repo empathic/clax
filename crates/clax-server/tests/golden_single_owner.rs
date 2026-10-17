@@ -5,7 +5,7 @@
 //!
 //! - `fixtures/single-owner-21.sql` is the fixture: a whole migration-21
 //!   database (schema, rows, `user_version`) and the files its rows name,
-//!   loaded by `clax_server::testing::load_fixture`. `write_fixture` built
+//!   loaded by `clax_testkit::load_fixture`. `write_fixture` built
 //!   it through the daemon's routes; it runs only at a migration-21 schema.
 //! - `fixtures/single-owner-21.golden.json` holds, per tier,
 //!   [`collect_agent_outputs`] after [`normalise_minted`]. `write_golden`
@@ -43,7 +43,7 @@ use clax_core::Tier;
 use clax_core::model::Session;
 use clax_core::working::ManualClock;
 use clax_mcp::{ClaxTools, DaemonClient};
-use clax_server::testing::TestServer;
+use clax_testkit::TestServer;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use serde_json::{Map, Value, json};
@@ -71,7 +71,7 @@ pub const TIERS: [Tier; 6] = [
 const CLIENT_LIMIT: Duration = Duration::from_secs(30);
 
 fn fixtures_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+    clax_testkit::fixtures_dir()
 }
 
 // --- collection ------------------------------------------------------------
@@ -1202,7 +1202,7 @@ fn dump(home: &clax_core::Home) -> String {
     let mut out = String::from(
         "-- The single-owner golden's fixture: a migration-21 Clax database and\n\
          -- the files its rows name. Written by golden_single_owner.rs's\n\
-         -- write_fixture; loaded by clax_server::testing::load_fixture.\n\
+         -- write_fixture; loaded by clax_testkit::load_fixture.\n\
          PRAGMA foreign_keys = OFF;\nBEGIN;\n",
     );
     for (_, name, sql) in &objects {

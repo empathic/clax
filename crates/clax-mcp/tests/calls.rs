@@ -5,7 +5,7 @@
 use clax_core::model::Session;
 use clax_mcp::git::GitCapture;
 use clax_mcp::{ClaxTools, DaemonClient};
-use clax_server::testing::TestServer;
+use clax_testkit::TestServer;
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::RunningService;
 use rmcp::{RoleClient, ServiceExt};

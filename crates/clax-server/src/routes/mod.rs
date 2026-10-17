@@ -308,7 +308,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             "/api/agents/{handle}/elevate",
             axum::routing::put(people::elevate_agent).delete(people::unelevate_agent),
         );
-    #[cfg(feature = "test-routes")]
+    #[cfg(debug_assertions)]
     let api_fast = api_fast
         .route("/api/_test/sleep/{ms}", get(test_sleep))
         .route("/api/_test/slow_publish/{ms}", post(test_slow_publish))
@@ -352,8 +352,12 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             "/api/_test/grants/index/fail",
             post(grants::test_fail_index),
         );
-    #[cfg(feature = "test-routes")]
-    let api_fast = api_fast.layer(axum::middleware::from_fn(test_delay));
+    #[cfg(debug_assertions)]
+    let api_fast = if state.test_delays {
+        api_fast.layer(axum::middleware::from_fn(test_delay))
+    } else {
+        api_fast
+    };
     let api_fast = api_fast.layer(axum::middleware::from_fn(crate::http_cache::api_etag));
     let api_fast =
         with_timeout(api_fast, state.request_timeout).layer(crate::http_cache::compression());
@@ -387,8 +391,12 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .route("/api/live/rules", post(live::add_rule))
         // A join merges pages as moves do.
         .route("/api/live/sites/join", post(sites::join));
-    #[cfg(feature = "test-routes")]
-    let api_slow = api_slow.layer(axum::middleware::from_fn(test_delay));
+    #[cfg(debug_assertions)]
+    let api_slow = if state.test_delays {
+        api_slow.layer(axum::middleware::from_fn(test_delay))
+    } else {
+        api_slow
+    };
     let api_slow =
         with_timeout(api_slow, state.publish_timeout).layer(crate::http_cache::compression());
     let shell_routes = Router::new()
@@ -403,8 +411,12 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .route("/_clax/{*path}", get(shell::static_file))
         .layer(crate::http_cache::compression());
     let mcp = mcp::router(&state);
-    #[cfg(feature = "test-routes")]
-    let mcp = mcp.layer(axum::middleware::from_fn(test_delay));
+    #[cfg(debug_assertions)]
+    let mcp = if state.test_delays {
+        mcp.layer(axum::middleware::from_fn(test_delay))
+    } else {
+        mcp
+    };
     let mut r = Router::new()
         .route("/healthz", get(health::healthz).layer(cors))
         .route("/api/events", get(events::events))
@@ -478,8 +490,10 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
 
 /// Sleeps for the milliseconds in the `x-clax-test-delay-ms` request
 /// header, if any, before handling the request. It sits inside each route
-/// group's timeout layer, so tests can make a real route slow.
-#[cfg(feature = "test-routes")]
+/// group's timeout layer, so tests can make a real route slow. Debug
+/// builds add it only when [`AppState::test_delays`] is set: the testkit's
+/// daemon, never one `serve` starts.
+#[cfg(debug_assertions)]
 async fn test_delay(
     req: axum::extract::Request,
     next: axum::middleware::Next,
@@ -497,7 +511,7 @@ async fn test_delay(
 
 /// The audit context the request resolves, as JSON: `actor`, `via`, and
 /// `git`, `git_capture` and `call` (null when absent).
-#[cfg(feature = "test-routes")]
+#[cfg(debug_assertions)]
 async fn test_audit_ctx(ctx: clax_core::audit::AuditCtx) -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!({
         "actor": ctx.actor,
@@ -508,7 +522,7 @@ async fn test_audit_ctx(ctx: clax_core::audit::AuditCtx) -> axum::Json<serde_jso
     }))
 }
 
-#[cfg(feature = "test-routes")]
+#[cfg(debug_assertions)]
 async fn test_sleep(
     _d: crate::agent::DeniedToGrants,
     axum::extract::Path(ms): axum::extract::Path<u64>,
@@ -519,7 +533,7 @@ async fn test_sleep(
 
 /// Creates an artifact after sleeping inside the blocking closure, publishing the event from the
 /// same closure, so tests can observe write side effects surviving a handler timeout.
-#[cfg(feature = "test-routes")]
+#[cfg(debug_assertions)]
 async fn test_slow_publish(
     axum::extract::State(s): axum::extract::State<AppState>,
     _d: crate::agent::DeniedToGrants,
@@ -728,15 +742,15 @@ mod l10 {
     const INLINE: &[(&str, &str)] = &[
         (
             "/api/_test/sleep/{ms}",
-            "test-routes only; names no artifact",
+            "debug builds only; names no artifact",
         ),
         (
             "/api/_test/slow_publish/{ms}",
-            "test-routes only; makes an HTML artifact",
+            "debug builds only; makes an HTML artifact",
         ),
         (
             "/api/_test/audit/ctx",
-            "test-routes only; names no artifact",
+            "debug builds only; names no artifact",
         ),
         ("/api/admin/shutdown", "RequireToken"),
     ];

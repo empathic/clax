@@ -1,5 +1,4 @@
-use crate::common;
-use common::TestServer;
+use clax_testkit::TestServer;
 
 #[tokio::test]
 async fn slow_api_requests_time_out_with_json_408() {

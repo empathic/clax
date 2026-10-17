@@ -18,9 +18,9 @@
 //! Each join goes through the hook's own [`events::join`], and the refs are
 //! read from an export, so the test covers what a reader is handed.
 
-use crate::common::TestServer;
 use clax_hooks::events::{self, Daemon};
 use clax_hooks::input::HookInput;
+use clax_testkit::TestServer;
 use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::time::Duration;

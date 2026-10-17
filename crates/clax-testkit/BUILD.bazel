@@ -1,0 +1,14 @@
+load("//bazel:cargo.bzl", "cargo_package")
+
+cargo_package(
+    # The router's source, which people::every_route reads.
+    compile_data = ["//crates/clax-server:router_source"],
+)
+
+# The fixtures TestServer::from_fixture_with_clock loads at run time: the
+# data of every test that uses one.
+filegroup(
+    name = "fixtures",
+    srcs = glob(["fixtures/**"]),
+    visibility = ["//visibility:public"],
+)

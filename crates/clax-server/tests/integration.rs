@@ -97,8 +97,6 @@ mod api_watches;
 mod api_working;
 #[cfg(any(not(clax_split), clax_split = "api_working_auto"))]
 mod api_working_auto;
-#[cfg_attr(clax_split, allow(dead_code, unused_imports, unused_macros))]
-mod common;
 #[cfg(any(not(clax_split), clax_split = "daemon"))]
 mod daemon;
 #[cfg(any(not(clax_split), clax_split = "golden_single_owner"))]

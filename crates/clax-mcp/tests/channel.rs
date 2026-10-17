@@ -278,7 +278,7 @@ fn http() -> reqwest::blocking::Client {
 fn send_comment(c: &FakeClaude, aid: &str, text: &str) -> String {
     let (base, token) = c.daemon();
     let form = reqwest::blocking::multipart::Form::new()
-        .text("anchor", clax_server::testing::element_anchor().to_string())
+        .text("anchor", clax_testkit::element_anchor().to_string())
         .text("body", format!("@agent {text}"))
         .text("version", "1");
     let res = http()

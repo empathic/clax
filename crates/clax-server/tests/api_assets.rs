@@ -1,5 +1,4 @@
-use crate::common;
-use common::TestServer;
+use clax_testkit::TestServer;
 
 #[tokio::test]
 async fn upload_serve_list_delete() {

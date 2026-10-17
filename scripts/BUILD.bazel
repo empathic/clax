@@ -67,6 +67,7 @@ RUST_SOURCES = [
     "//crates/clax-hooks:rust_sources",
     "//crates/clax-mcp:rust_sources",
     "//crates/clax-server:rust_sources",
+    "//crates/clax-testkit:rust_sources",
 ]
 
 # The script gates of scripts/quality_gates.sh, as Bazel tests. Each script

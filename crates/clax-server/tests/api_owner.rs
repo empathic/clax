@@ -1,8 +1,7 @@
 //! The owner identity: every browser of the owner's, the token (the CLI) and
 //! any other owner credential act as one viewer; LAN viewers stay apart.
 
-use crate::common;
-use common::TestServer;
+use clax_testkit::TestServer;
 use serde_json::{Value, json};
 
 /// A browser of the owner's: the owner cookie, plus the stray `clax_viewer`

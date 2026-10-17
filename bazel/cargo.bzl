@@ -1,8 +1,7 @@
 """Builds a Cargo package's targets the way Cargo does.
 
 A package's BUILD.bazel calls cargo_package(). The package's facts (version,
-targets, default features, path dependencies, the features its tests turn
-on, its build script) come from bazel/workspace.bzl, which
+targets, default features, path dependencies, its build script) come from bazel/workspace.bzl, which
 scripts/bazel-sync.sh derives from `cargo metadata`; its third-party
 dependencies come from its Cargo.toml through crate_universe; and its sources
 are globbed. So a BUILD file changes only for what Cargo knows by convention
@@ -16,26 +15,7 @@ load(":workspace.bzl", "CRATES", "WORKSPACE_RUSTC_FLAGS")
 
 _CLAX = "//crates/clax-cli:clax"
 _CLAX_WARM = "//crates/clax-cli:clax_warm"
-
-def _test_variants():
-    """{package: features} of the workspace libraries some crate's tests
-    build with more features: each gets a `<lib>_test` twin."""
-    out = {}
-    for crate in CRATES.values():
-        for package, features in crate["test_features"].items():
-            out[package] = sorted({f: True for f in out.get(package, []) + features}.keys())
-    return out
-
-_TEST_VARIANTS = _test_variants()
-
-def _test_label(label):
-    """A workspace library's label as tests link it: its `_test` twin when
-    some crate's tests turn on features of it (Cargo's workspace build
-    unifies them for every test)."""
-    package = label[2:].split(":")[0]
-    if package in _TEST_VARIANTS:
-        return label + "_test"
-    return label
+_TESTKIT = "//crates/clax-testkit:clax_testkit"
 
 def cargo_package(
         compile_data = [],
@@ -52,9 +32,8 @@ def cargo_package(
     package here.
 
     Targets, with <lib> the library's crate name:
-      <lib>                 the library
-      <lib>_test            the library with the features tests turn on in it
-                            (only when another crate's tests name it)
+      <lib>                 the library (tests link it too: no crate turns on
+                            another's features for tests)
       <lib>_lib_test        its unit tests
       <bin>                 each binary, under Cargo's name for it
       <bin>_bin_test        each binary's unit tests
@@ -131,7 +110,6 @@ def cargo_package(
         rustc_flags = rustc_flags,
     )
 
-    test_lib = None
     build_deps = []
     if crate["has_build_script"]:
         cargo_build_script(
@@ -148,8 +126,12 @@ def cargo_package(
         build_deps = [":build_script"]
 
     normal_deps = crate["deps"] + all_crate_deps(normal = True) + build_deps
-    test_normal_deps = [_test_label(d) for d in crate["deps"]] + all_crate_deps(normal = True) + build_deps
-    dev_deps = [_test_label(d) for d in crate["dev_deps"]] + all_crate_deps(normal_dev = True)
+    dev_deps = crate["dev_deps"] + all_crate_deps(normal_dev = True)
+
+    # The testkit serves integration tests only: it depends on the crates it
+    # tests, so a unit test that linked it would wait for its crate's own
+    # library to compile first.
+    unit_dev_deps = [d for d in dev_deps if d != _TESTKIT]
     macros = all_crate_deps(proc_macro = True)
     dev_macros = all_crate_deps(proc_macro_dev = True)
     srcs = native.glob(["src/**/*.rs"])
@@ -204,26 +186,11 @@ def cargo_package(
             deps = normal_deps,
             **common
         )
-        test_lib = lib
-        if package in _TEST_VARIANTS:
-            test_lib = lib + "_test"
-            rust_library(
-                name = test_lib,
-                srcs = srcs,
-                compile_data = src_data,
-                crate_features = sorted({f: True for f in features + _TEST_VARIANTS[package]}.keys()),
-                crate_name = lib,
-                crate_root = crate["lib_root"],
-                proc_macro_deps = macros,
-                visibility = visibility,
-                deps = test_normal_deps,
-                **common
-            )
         _test(
             name = lib + "_lib_test",
-            crate = ":" + test_lib,
+            crate = ":" + lib,
             proc_macro_deps = dev_macros,
-            deps = dev_deps,
+            deps = unit_dev_deps,
             **test_kwargs(lib + "_lib_test")
         )
 
@@ -246,7 +213,7 @@ def cargo_package(
             crate_name = bin.replace("-", "_"),
             crate_root = root,
             proc_macro_deps = macros + dev_macros,
-            deps = ([":" + test_lib] if lib else []) + test_normal_deps + dev_deps,
+            deps = ([":" + lib] if lib else []) + normal_deps + unit_dev_deps,
             **test_kwargs(bin + "_bin_test")
         )
 
@@ -272,7 +239,7 @@ def cargo_package(
                     crate_name = name.replace("-", "_"),
                     crate_root = root,
                     proc_macro_deps = macros + dev_macros,
-                    deps = ([":" + test_lib] if lib else []) + test_normal_deps + dev_deps,
+                    deps = ([":" + lib] if lib else []) + normal_deps + dev_deps,
                     **kwargs
                 )
             continue
@@ -283,7 +250,7 @@ def cargo_package(
             crate_name = name.replace("-", "_"),
             crate_root = root,
             proc_macro_deps = macros + dev_macros,
-            deps = ([":" + test_lib] if lib else []) + test_normal_deps + dev_deps,
+            deps = ([":" + lib] if lib else []) + normal_deps + dev_deps,
             **test_kwargs(name, integration = True)
         )
 

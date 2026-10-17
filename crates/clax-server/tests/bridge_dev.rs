@@ -5,9 +5,8 @@
 //! real `web/dist` (see `tests/web_dist.rs`).
 #![cfg(debug_assertions)]
 
-use crate::common;
 use clax_server::routes::shell::{bridge_version, set_web_dist};
-use common::TestServer;
+use clax_testkit::TestServer;
 
 #[tokio::test]
 async fn a_rebuilt_bridge_gets_a_new_url_and_is_never_immutable() {

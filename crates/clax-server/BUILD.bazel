@@ -19,6 +19,7 @@ cargo_package(
     ],
     test_data = [
         "//:marketplaces",
+        "//crates/clax-testkit:fixtures",
         "//docs:contract",
         "//plugins:embedded",
         "//plugins/pi:embedded",
@@ -38,15 +39,12 @@ cargo_package(
     ],
 )
 
-# The people fixture clax-cli's tests share (crates/clax-cli/tests/common),
-# and the routes' source it reads.
+# The router's source, which the testkit's people fixture reads
+# (crates/clax-testkit/src/people.rs).
 filegroup(
-    name = "test_people",
-    srcs = [
-        "src/routes/mod.rs",
-        "tests/common/people.rs",
-    ],
-    visibility = ["//crates/clax-cli:__pkg__"],
+    name = "router_source",
+    srcs = ["src/routes/mod.rs"],
+    visibility = ["//crates/clax-testkit:__pkg__"],
 )
 
 # The sources clax-core's tests read (crates/clax-core/src/feedback.rs).

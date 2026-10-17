@@ -8,12 +8,12 @@
 //! [`events::tool_call_id`] from stdin as Claude Code writes it, and the
 //! calls it is matched against are made by the shim's own [`CallScope`].
 
-use crate::common::TestServer;
 use clax_core::audit::ToolOutcome;
 use clax_hooks::events::{self, Daemon};
 use clax_hooks::input::HookInput;
 use clax_mcp::calls::CallScope;
 use clax_server::call_ids::{CALL_ID_CAP, CallIdWait};
+use clax_testkit::TestServer;
 use serde_json::{Map, Value, json};
 use std::cell::RefCell;
 use std::sync::Arc;

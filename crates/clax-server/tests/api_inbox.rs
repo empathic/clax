@@ -1,8 +1,7 @@
 //! The owner's inbox over HTTP (spec 2026-10-06-agent-questions-and-inbox
 //! §8): the routes, the `inbox` stream topic, finished work and read marks.
 
-use crate::common;
-use common::TestServer;
+use clax_testkit::TestServer;
 use serde_json::{Value, json};
 
 /// The owner comments on a thread of a fresh agent artifact and sends it;
@@ -478,7 +477,7 @@ async fn the_extension_may_list_read_and_follow_the_inbox() {
     let id = list["items"][0]["id"].as_str().unwrap().to_string();
     assert_eq!(ext.get("/api/inbox/summary").await.status(), 200);
     assert_eq!(ext.get(&format!("/api/inbox/{id}")).await.status(), 200);
-    let mut events = clax_server::testing::EventReader::from_response(ext.get("/api/stream").await);
+    let mut events = clax_testkit::EventReader::from_response(ext.get("/api/stream").await);
     let sid_stream = events.next_named("ready").await["stream"]
         .as_str()
         .unwrap()
@@ -567,7 +566,7 @@ async fn the_hooks_timer_leaves_a_question_unread_and_the_owner_moving_it_reads_
 /// machine, his viewer cookie and public ID, and his agent's session.
 struct Sam {
     ts: TestServer,
-    sam: clax_server::testing::TestClient,
+    sam: clax_testkit::TestClient,
     cookie: String,
     public_id: String,
     session: String,
@@ -648,7 +647,7 @@ impl Sam {
     }
 
     /// Sam's browser opens `/api/stream` and follows `topics`.
-    async fn stream(&self, topics: &[&str]) -> clax_server::testing::EventReader {
+    async fn stream(&self, topics: &[&str]) -> clax_testkit::EventReader {
         let res = Sam::browser(
             &self.cookie,
             self.ts.client.get(format!("{}/api/stream", self.ts.base)),
@@ -657,7 +656,7 @@ impl Sam {
         .await
         .unwrap();
         assert_eq!(res.status(), 200);
-        let mut ev = clax_server::testing::EventReader::from_response(res);
+        let mut ev = clax_testkit::EventReader::from_response(res);
         let id = ev.next_named("ready").await["stream"]
             .as_str()
             .unwrap()
@@ -894,7 +893,7 @@ async fn a_revoked_person_loses_the_inbox() {
     .send()
     .await
     .unwrap();
-    let mut ev = clax_server::testing::EventReader::from_response(res);
+    let mut ev = clax_testkit::EventReader::from_response(res);
     let id = ev.next_named("ready").await["stream"]
         .as_str()
         .unwrap()

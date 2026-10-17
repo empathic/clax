@@ -1,5 +1,4 @@
-use crate::common;
-use common::TestServer;
+use clax_testkit::TestServer;
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 
 /// A non-loopback IPv4 address of this machine: the source address the OS would

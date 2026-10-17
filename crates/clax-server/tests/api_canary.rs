@@ -8,9 +8,9 @@
 //! The filter is live for every route and every agent channel, the real Pi
 //! with the Clax extension among them.
 
-use crate::common::TestServer;
-use crate::common::clients::{HARNESS_ENVS, RealClients};
-use crate::common::people::{AgentOf, As, Call, DOC_PATH, World, without_named_doc};
+use clax_testkit::TestServer;
+use clax_testkit::clients::{HARNESS_ENVS, RealClients};
+use clax_testkit::people::{AgentOf, As, Call, DOC_PATH, World, without_named_doc};
 use serde_json::{Value, json};
 
 async fn status_code(res: reqwest::Response) -> (u16, String) {
@@ -329,7 +329,7 @@ async fn the_owner_by_hand_sees_every_canary() {
 /// one. `clax db get … <doc ID>` prints the
 /// document it was asked for by path and ID (spec §21.9): for a command
 /// line that names Mia's document, those fields alone are left out.
-fn leaks(w: &World, outs: &[crate::common::clients::Out]) -> Vec<String> {
+fn leaks(w: &World, outs: &[clax_testkit::clients::Out]) -> Vec<String> {
     let mut leaks = Vec::new();
     for out in outs {
         let named = out.channel.contains(" db get ") && out.channel.contains(DOC_PATH);
@@ -471,12 +471,12 @@ async fn cli_under_a_harness_environment_is_an_agent_channel() {
         let (text, code) = clients.clax(&["--json", "list"], env).await;
         assert_eq!(code, 0, "{env:?}: {text}");
         assert!(
-            text.contains(crate::common::people::TITLE),
+            text.contains(clax_testkit::people::TITLE),
             "{env:?}: {text}"
         );
         let (text, _) = clients.clax(&["comments", "--all"], env).await;
         assert!(
-            text.contains(crate::common::people::REPLY),
+            text.contains(clax_testkit::people::REPLY),
             "{env:?}: {text}"
         );
     }
@@ -501,7 +501,7 @@ async fn all_threads_listing_is_filtered_for_owner_agents() {
         .json()
         .await
         .unwrap();
-    assert!(by_hand.to_string().contains(crate::common::people::COMMENT));
+    assert!(by_hand.to_string().contains(clax_testkit::people::COMMENT));
     let agent: Value = ts
         .authed(
             ts.client

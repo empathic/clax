@@ -1,9 +1,9 @@
 //! The agents roster, its stream topic, and what an agent's end leaves
 //! behind (spec 2026-10-08-multi-agent-multi-person §13, §14, §6.7).
 
-use crate::common::TestServer;
 use clax_core::working::ManualClock;
-use clax_server::testing::{EventReader, TestClient};
+use clax_testkit::TestServer;
+use clax_testkit::{EventReader, TestClient};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -460,7 +460,7 @@ async fn an_agents_end_tells_the_send_menus_of_what_it_watched() {
 /// browser never sees a live page.
 #[tokio::test]
 async fn a_persons_ended_note_leaves_out_live_pages() {
-    let w = crate::common::people::World::two_people().await;
+    let w = clax_testkit::people::World::two_people().await;
     let cookie =
         w.ts.browser_cookie(&w.ts.store.viewer_of_grant(&w.sam.grant_id()).unwrap().id);
     // Sam's agent owns a thread on Mia's page and one on the live page

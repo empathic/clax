@@ -2,10 +2,9 @@
 //! a web UI override (see `tests/web_dist.rs`).
 #![cfg(debug_assertions)]
 
-use crate::common;
 use clax_server::boot::FRAME_SANDBOX;
 use clax_server::routes::shell::set_web_dist;
-use common::TestServer;
+use clax_testkit::TestServer;
 use serde_json::{Value, json};
 
 const ENTRY: &str = include_str!("../../../web/shell/artifact.html");
@@ -128,7 +127,7 @@ async fn names_no_session_and_no_clip_path() {
         "the API names the owner session"
     );
     let res = ts
-        .create_thread(&id, 1, "with a clip", Some(clax_server::testing::FAKE_PNG))
+        .create_thread(&id, 1, "with a clip", Some(clax_testkit::FAKE_PNG))
         .await;
     assert_eq!(res.status(), 201);
     // The token holder is answered with the clip's path on disk; the page is not.

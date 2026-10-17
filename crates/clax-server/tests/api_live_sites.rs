@@ -1,10 +1,9 @@
 //! Joined sites over HTTP (spec 2026-10-05-chrome-overlay-design §7.2,
 //! owner decisions 2026-10-06): suggestions, joining, splitting and the
 //! owner's answers; a joined site's listing, topics and watches.
-use crate::common;
 use clax_core::extension::extension_origin;
-use clax_server::testing::{EventReader, FAKE_PNG};
-use common::TestServer;
+use clax_testkit::TestServer;
+use clax_testkit::{EventReader, FAKE_PNG};
 use reqwest::Method;
 use serde_json::{Value, json};
 
@@ -610,7 +609,7 @@ async fn a_join_waits_for_an_unmerge_under_way() {
 /// A comment posted on artifact `aid` the way the shell posts one.
 async fn shell_thread(ts: &TestServer, cookie: &str, aid: &str) -> (u16, Value) {
     let form = reqwest::multipart::Form::new()
-        .text("anchor", clax_server::testing::element_anchor().to_string())
+        .text("anchor", clax_testkit::element_anchor().to_string())
         .text("body", "On the old page")
         .text("version", "1");
     json_of(

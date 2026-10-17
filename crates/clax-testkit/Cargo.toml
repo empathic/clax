@@ -1,0 +1,22 @@
+[package]
+name = "clax-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+clax-core = { path = "../clax-core" }
+clax-server = { path = "../clax-server" }
+clax-fake-exe = { path = "../clax-fake-exe" }
+axum.workspace = true
+futures = "0.3"
+reqwest = { workspace = true, features = ["stream"] }
+rusqlite.workspace = true
+serde_json.workspace = true
+sha2 = "0.11"
+tempfile.workspace = true
+tokio.workspace = true

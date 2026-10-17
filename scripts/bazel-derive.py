@@ -105,7 +105,6 @@ def workspace():
             todo.extend(f for f in p["features"][feature] if ":" not in f and "/" not in f)
 
         deps = {"deps": set(), "dev_deps": set()}
-        test_features = {}
         for d in p["dependencies"]:
             if not d.get("path"):
                 continue
@@ -117,10 +116,16 @@ def workspace():
             if d["kind"] != "dev" and d["features"]:
                 sys.exit("error: scripts/bazel-derive.py: %s -> %s: features on a normal path dependency are not supported" % (name, d["name"]))
             if d["kind"] == "dev" and d["features"]:
-                key = rel(os.path.dirname(target["manifest_path"]))
-                test_features[key] = sorted(set(test_features.get(key, [])) | set(d["features"]))
+                # Tests build the libraries the binary links: a feature
+                # turned on for tests would compile its crate a second
+                # time. Test support lives in clax-testkit instead.
+                sys.exit(
+                    "error: scripts/bazel-derive.py: %s turns on features %s of %s in a"
+                    " dev-dependency; tests link the same libraries as the binary, so put"
+                    " test support in crates/clax-testkit (or behind debug_assertions)"
+                    % (name, ", ".join(d["features"]), d["name"]))
             if d["name"] == name:
-                continue  # a crate's own features for its tests
+                sys.exit("error: scripts/bazel-derive.py: %s depends on itself" % name)
             deps["dev_deps" if d["kind"] == "dev" else "deps"].add(label(target))
         deps["dev_deps"] -= deps["deps"]
 
@@ -142,7 +147,6 @@ def workspace():
             "features": sorted(p["features"]),
             "deps": sorted(deps["deps"]),
             "dev_deps": sorted(deps["dev_deps"]),
-            "test_features": test_features,
             "has_build_script": any("custom-build" in t["kind"] for t in p["targets"]),
         }
 

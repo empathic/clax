@@ -44,7 +44,7 @@ predicates.workspace = true
 tempfile.workspace = true
 clax-fake-exe = { path = "../clax-fake-exe" }
 rusqlite.workspace = true
-clax-server = { path = "../clax-server", features = ["test-support"] }
+clax-testkit = { path = "../clax-testkit" }
 
 [[test]]
 name = "integration"

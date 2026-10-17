@@ -3,7 +3,7 @@ use clax_mcp::tools::{
     TargetArgs,
 };
 use clax_mcp::{ClaxTools, DaemonClient};
-use clax_server::testing::TestServer;
+use clax_testkit::TestServer;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use serde_json::Value;

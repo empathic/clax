@@ -1,6 +1,5 @@
-use crate::common;
-use clax_server::testing::{FAKE_PNG, element_anchor};
-use common::TestServer;
+use clax_testkit::TestServer;
+use clax_testkit::{FAKE_PNG, element_anchor};
 use serde_json::{Value, json};
 
 async fn setup(ts: &TestServer) -> (String, String) {
