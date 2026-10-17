@@ -208,8 +208,9 @@ class MemoryUnfinishedChanges implements UnfinishedChanges {
 /// files once, with fingerprints of what they replaced, at most
 /// [maxBytes]), so it is read and written synchronously, as
 /// [FileStoppedThreads] is: the worker never waits on the event loop for
-/// it. A write that would pass [maxBytes] drops the oldest changes first
-/// (by [UnfinishedChange.at]), keeping at least the newest.
+/// it. A file past [maxBytes] is not read; a change whose own entry is
+/// past it is not kept; a write that would pass it drops the oldest
+/// changes first (by [UnfinishedChange.at]).
 class FileUnfinishedChanges implements UnfinishedChanges {
   FileUnfinishedChanges(this.file, {this.maxBytes = maxUnfinishedBytes});
 
@@ -223,6 +224,8 @@ class FileUnfinishedChanges implements UnfinishedChanges {
     final out = <String, UnfinishedChange>{};
     try {
       if (!file.existsSync()) return out;
+      // Past the bound it was not written by this store: nothing is read.
+      if (file.lengthSync() > maxBytes) return out;
       final j = jsonDecode(file.readAsStringSync());
       if (j case {'threads': final Map<String, Object?> threads}) {
         for (final e in threads.entries) {
@@ -241,22 +244,37 @@ class FileUnfinishedChanges implements UnfinishedChanges {
     return out;
   }
 
+  /// Writes [m], first dropping its oldest changes while it would pass
+  /// [maxBytes]. Each entry is encoded once; the file once.
   void _save(Map<String, UnfinishedChange> m) {
-    String encode() => jsonEncode({
-      'version': 1,
-      'threads': {for (final e in m.entries) e.key: e.value.toJson()},
-    });
-    var text = encode();
-    // A change kept under several threads is one change: its artifact and
-    // when it stopped name it.
-    String key(UnfinishedChange c) =>
-        '${c.artifactId} ${c.at.toUtc().toIso8601String()}';
-    while (utf8.encode(text).length > maxBytes) {
-      if ({for (final c in m.values) key(c)}.length < 2) break;
-      final oldest = m.values.reduce((a, b) => b.at.isBefore(a.at) ? b : a);
-      m.removeWhere((_, c) => key(c) == key(oldest));
-      text = encode();
+    final entries = {
+      for (final e in m.entries)
+        e.key: '${jsonEncode(e.key)}:${jsonEncode(e.value.toJson())}',
+    };
+    int bytes(String s) => utf8.encode(s).length;
+    final sizes = {for (final e in entries.entries) e.key: bytes(e.value)};
+    const frame = '{"version":1,"threads":{}}';
+    var total =
+        bytes(frame) +
+        sizes.values.fold(0, (a, b) => a + b) +
+        (sizes.isEmpty ? 0 : sizes.length - 1);
+    // Oldest first; a change kept under several threads goes whole.
+    final byAge = m.keys.toList()..sort((a, b) => m[a]!.at.compareTo(m[b]!.at));
+    for (final t in byAge) {
+      if (total <= maxBytes) break;
+      final c = m[t];
+      if (c == null) continue;
+      for (final other in m.keys.toList()) {
+        final o = m[other]!;
+        if (o.artifactId == c.artifactId && o.at == c.at) {
+          total -= sizes[other]! + 1;
+          entries.remove(other);
+          sizes.remove(other);
+          m.remove(other);
+        }
+      }
     }
+    final text = '{"version":1,"threads":{${entries.values.join(',')}}}';
     file.parent.createSync(recursive: true);
     final tmp = File('${file.path}.tmp');
     tmp.writeAsStringSync(text, flush: true);
@@ -269,11 +287,19 @@ class FileUnfinishedChanges implements UnfinishedChanges {
   @override
   Future<Map<String, UnfinishedChange>> all() async => Map.of(_all);
 
+  /// Keeps [c] under each of its threads, unless its own entry would pass
+  /// [maxBytes]: then nothing is kept for them, and a Keep going of them
+  /// starts again from the app.
   @override
   Future<void> put(UnfinishedChange c) async {
     final m = _all;
+    final one = utf8.encode(jsonEncode(c.toJson())).length;
     for (final t in c.threadIds) {
-      m[t] = c;
+      if (one > maxBytes) {
+        m.remove(t);
+      } else {
+        m[t] = c;
+      }
     }
     _save(m);
   }

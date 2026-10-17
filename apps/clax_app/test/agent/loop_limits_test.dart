@@ -796,6 +796,39 @@ void main() {
     expect(dir.file('u.json').lengthSync(), lessThanOrEqualTo(1500));
   });
 
+  test('the unfinished file reads nothing from a file past its size, and '
+      'keeps no change that alone is past it', () async {
+    final dir = await _tempDir();
+    UnfinishedChange big(String t, int size) => UnfinishedChange(
+      artifactId: 'a',
+      threadIds: [t],
+      commentIds: const ['c'],
+      limit: '10 turns',
+      spentUsd: 1,
+      at: DateTime.utc(2026, 10, 15),
+      edits: {'index.html': 'x' * size},
+      before: const {'index.html': null},
+    );
+    // Written under a larger bound, read under a smaller one.
+    await FileUnfinishedChanges(
+      dir.file('u.json'),
+      maxBytes: 5000,
+    ).put(big('t1', 2000));
+    expect(
+      await FileUnfinishedChanges(dir.file('u.json'), maxBytes: 1500).get('t1'),
+      isNull,
+    );
+
+    final f = FileUnfinishedChanges(dir.file('v.json'), maxBytes: 1500);
+    await f.put(big('t2', 100));
+    await f.put(big('t2', 3000));
+    expect(await f.get('t2'), isNull);
+    expect(
+      await FileUnfinishedChanges(dir.file('v.json'), maxBytes: 1500).get('t2'),
+      isNull,
+    );
+  });
+
   test('the unfinished file keeps a change across instances', () async {
     final dir = await _tempDir();
     final file = FileUnfinishedChanges(dir.file('unfinished.json'));
