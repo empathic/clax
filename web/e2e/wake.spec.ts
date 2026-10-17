@@ -39,6 +39,25 @@ test("an agent no comment wakes is marked until a follower connects", async ({ p
   }
 });
 
+test("an agent woken only through its Claude Code channel is marked unsure", async ({ page }) => {
+  const s = await registerSession(d.base, d.token, "claude", `chan-${Math.random().toString(36).slice(2)}`);
+  const { artifact } = await publishAs(d.base, d.token, s.id, "Channel", { "index.html": PAGE });
+  await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  const token = page.locator(".who .agt .tok.a");
+  await expect(token).toHaveClass(/nowake/);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { claxStreamLive?: number }).claxStreamLive ?? 0)).toBeGreaterThan(0);
+  const poll = new AbortController();
+  void fetch(`${d.base}/api/sessions/${s.id}/notices?wait=30&via=channel`, { headers: { authorization: `Bearer ${d.token}` }, signal: poll.signal }).catch(() => undefined);
+  try {
+    await expect(token).toHaveClass(/maywake/);
+    await expect(token).toHaveAttribute("title", /may not be woken by comments: Claude Code does not confirm its channel$/);
+    await page.locator("button.who").click();
+    await expect(page.locator(".people .prow.agent .nowake")).toHaveText("May not be woken by your comments: Claude Code does not confirm its channel.");
+  } finally {
+    poll.abort();
+  }
+});
+
 const SHOTS = process.env.CLAX_WAKE_SHOTS ?? "";
 for (const theme of ["light", "dark"] as const) {
   for (const width of [1280, 390]) {
@@ -58,6 +77,17 @@ for (const theme of ["light", "dark"] as const) {
       await expect(page.locator(".people .prow.agent .nowake")).toBeVisible();
       await page.screenshot({ path: `${SHOTS}/${theme}-${width}-panel.png` });
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+      // Woken only through its channel: unsure.
+      await expect.poll(() => page.evaluate(() => (window as unknown as { claxStreamLive?: number }).claxStreamLive ?? 0)).toBeGreaterThan(0);
+      const poll = new AbortController();
+      void fetch(`${d.base}/api/sessions/${s.id}/notices?wait=30&via=channel`, { headers: { authorization: `Bearer ${d.token}` }, signal: poll.signal }).catch(() => undefined);
+      try {
+        await expect(page.locator(".who .agt .tok.a.maywake")).toHaveCount(1);
+        await expect(page.locator(".people .prow.agent .nowake")).toHaveText(/^May not be woken/);
+        await page.screenshot({ path: `${SHOTS}/${theme}-${width}-unsure.png` });
+      } finally {
+        poll.abort();
+      }
     });
   }
 }
