@@ -23,6 +23,19 @@ typedef AppCollection = ({String path, int count, List<AppDocument> docs});
 /// run of the change (oldest first), and the paths
 /// the draft already holds its unfinished edits to ([edited]); or, with
 /// [edited] null, [why] the run starts over from the app instead.
+/// What a build's continue run is told of the draft a change left when it
+/// planned the rest of itself: the paths it holds edits to ([edited]),
+/// shown as a [diff] against the app, and what its last render found; or,
+/// with [edited] null, [why] it could not be used.
+class CarriedDraft {
+  const CarriedDraft({this.edited, this.diff, this.lastRender, this.why});
+
+  final List<String>? edited;
+  final String? diff;
+  final String? lastRender;
+  final String? why;
+}
+
 class KeepGoingNote {
   const KeepGoingNote({
     required this.limit,
@@ -184,6 +197,7 @@ class PromptBuilder {
     required List<OtherApp> others,
     required List<AppCollection> documents,
     bool fromBundle = false,
+    CarriedDraft? carried,
   }) {
     final b = StringBuffer()
       ..writeln(
@@ -200,6 +214,33 @@ class PromptBuilder {
     _writeFiles(b, files);
     _writeOwn(b, documents, toolLoop: true);
     _writeOtherApps(b, others, fromBundle, _writeOtherNames);
+    if (carried != null) {
+      b.writeln();
+      if (carried.edited case final paths?) {
+        b.writeln(
+          'The draft already holds the unfinished edits of the change that '
+          'planned these features, shown in the files above '
+          '(${paths.map(jsonEncode).join(', ')}); they have not been '
+          'rendered in this run. Render first, then build on them.',
+        );
+        if (carried.diff case final diff?) {
+          b
+            ..writeln(
+              'Those edits against the app as it is, as a unified diff:',
+            )
+            ..writeln(diff);
+        }
+        if (carried.lastRender case final r?) {
+          b.writeln("That change's last render found: $r.");
+        }
+      } else {
+        b.writeln(
+          'The change that planned these features left an unfinished draft, '
+          'but it could not be used (${carried.why}): build from the app as '
+          'it is; what a feature\'s detail says the draft holds is not there.',
+        );
+      }
+    }
     b
       ..writeln()
       ..writeln(
