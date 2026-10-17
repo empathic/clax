@@ -170,6 +170,17 @@ A new artifact needs a title: `--title`, or else the page's `<title>`. Updates k
 
 To serve on the LAN, stop a running daemon first, then run `clax serve --bind 0.0.0.0`.
 
+To serve the internet (hosted mode), put the daemon behind a proxy that terminates TLS and keeps the `Host` header, and name its public origin in `config.toml`:
+
+```toml
+[hosted]
+public_origin = "https://clax.example"   # https, or http on localhost for development
+setup_secret_env = "CLAX_SETUP_SECRET"   # the default: the variable the setup secret is read from
+behind_cloudflare = false                # true when Cloudflare is in front: clients are counted by CF-Connecting-IP
+```
+
+Start the daemon with the secret in that variable and open `https://clax.example/setup` to make the first person, the owner; without a secret, setup stays closed. From then on people sign in through the browser: the owner invites a person on People (a link, `/join/<code>`, good for a day), a signed-in person makes a one-use, ten-minute sign-in link for another device and agent tokens for their remote agents, and the owner shares a page by link, where anyone may read it and, once they give a name, comment as a guest. Nothing is served as "this machine" in hosted mode (the owner's browser holds a token of its session's, never the daemon token), a person's rights limit their browser as they limit their agents, a page's content is served only at its version's keyed address, setup, sign-in codes and guest names are rate-limited per client address, sign-ins and sign-outs are in the audit journal, and a bad `[hosted]` table stops the daemon from starting.
+
 ### People
 
 Other people can connect to your Clax, each with their own machines and
@@ -214,6 +225,48 @@ cookie acts as its person in the browser.
 - **Revoking.** Revoking a person or one of their machines in People ends
   their agents' sessions at once. Their browser becomes a plain viewer's,
   and what they wrote stays theirs.
+
+### Publishing to a public Clax
+
+Your Clax can publish artifacts to a hosted one (a daemon in hosted mode, or
+the Cloudflare Worker), where they get a public link; nothing changes for
+your local Clax or its plugins until you add one.
+
+```
+clax remote add https://clax.example   # sign this Clax in there; approve it in the browser
+clax remote list                       # which public Clax instances it is signed in to, and as whom
+clax push <ID>                         # publish an artifact there, or push its new versions
+clax push <ID> --to clax.example       # name the public Clax when there are several
+clax push <ID> --follow                # also let agents push its new versions without asking
+clax push <ID> --fork                  # the public copy moved: push onto a fork of it
+clax push <ID> --new                   # or publish it again as a new public artifact
+clax remote remove clax.example        # forget it, revoking its token there
+```
+
+`clax remote add` asks the public Clax for a sign-in naming this machine,
+prints a code and opens its approval page. Signed in there as the person to
+publish as, check the code and approve: this Clax receives an agent token of
+yours, which your People page there lists (named `Clax on <host name>`) and
+revokes. Codes last ten minutes and work once.
+
+A push publishes every version the public copy has not had, in order, with
+its label, note and files. The public versions are yours there: each names
+the local agent that made it, and the ones you published by hand read as
+yours by hand. An asset a pushed page loads by the address Clax gave it
+(`/_blob/<ID>`) is uploaded to the public copy and the page's references
+rewritten to its address there; other assets stay on your machine. A push whose answer was lost can be sent
+again: the public Clax answers the version it already made. When an
+automatic push (`--follow`) is refused, your inbox says why.
+If someone published on the public copy since your last push, the push is
+refused and nothing is overwritten: push onto a fork of it, or as a new
+artifact. Comments on the public copy stay there.
+
+On an artifact's page, Publish to `<host>` does the same in the browser
+(and Push v`<N>` once it is public, beside a link to its public copy). An
+agent publishes with the `publish_public` tool, which asks you first: the
+question waits in your inbox beside the artifact, and only your answer in
+the browser or the extension counts. Choose Publish and push new versions
+to let that artifact's later versions go out without asking again.
 
 ## Use from an agent
 
@@ -362,9 +415,10 @@ one is. To run
 one file's tests: `cargo nextest run -p clax-server -E 'test(/^api_batch::/)'`,
 or `cargo test -p clax-server --test integration api_batch::`.
 
-`scripts/quality_gates.sh` runs every check CI runs: the justfile, plugin wrapper (`scripts/test-ensure-clax.sh`, `just wrapper-test`), release script, release installer and dev script tests (`scripts/test-release.sh`, `scripts/test-install.sh` (`just install-test`), `scripts/test-dev.sh`), and plugin structure tests (`scripts/test-plugins.sh`, which also checks that the four skill copies and `docs/contract.md` share the page contract word for word, that the skill copies share the comment loop word for word, that the plugins wire their Stop and prompt hooks, that the workspace, the plugin manifests, the Pi package and the plugins' wrapper's `CLAX_VERSION` carry one version (`scripts/check-version.sh`), that the four plugins carry the same wrapper and pin the newest `v*` release tag, that the Rust and Pi tool descriptions match `plugins/pi/test/fixtures/contract.json`, and, through `scripts/sync-skill-tools.py --check`, that each skill's generated tool block and the tool lists in `docs/contract.md` and the READMEs name exactly that fixture's tools), the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build (before the Rust tests and the release build, which serve or embed it), `cargo fmt`, clippy with `-D warnings` over every target, the Rust tests (`cargo nextest`, or `cargo test` with a warning where nextest is not installed: `cargo install --locked cargo-nextest`), the comment-loop smoke (`scripts/smoke-comment-loop.sh`: a scripted Claude Code session, no model, through tiers 1, 2, 4 and 5 with a fake `codex`), the Pi extension's typecheck and tests, and the Playwright end-to-end tests. `just web-test` runs the web lint, typecheck, and unit tests.
+`scripts/quality_gates.sh` runs every check CI runs: the justfile, plugin wrapper (`scripts/test-ensure-clax.sh`, `just wrapper-test`), release script, release installer and dev script tests (`scripts/test-release.sh`, `scripts/test-install.sh` (`just install-test`), `scripts/test-dev.sh`), and plugin structure tests (`scripts/test-plugins.sh`, which also checks that the four skill copies and `docs/contract.md` share the page contract word for word, that the skill copies share the comment loop word for word, that the plugins wire their Stop and prompt hooks, that the workspace, the plugin manifests, the Pi package and the plugins' wrapper's `CLAX_VERSION` carry one version (`scripts/check-version.sh`), that the four plugins carry the same wrapper and pin the newest `v*` release tag, that the Rust and Pi tool descriptions match `plugins/pi/test/fixtures/contract.json`, and, through `scripts/sync-skill-tools.py --check`, that each skill's generated tool block and the tool lists in `docs/contract.md` and the READMEs name exactly that fixture's tools), the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build (before the Rust tests and the release build, which serve or embed it), `cargo fmt`, clippy with `-D warnings` over every target, the Rust tests (`cargo nextest`, or `cargo test` with a warning where nextest is not installed: `cargo install --locked cargo-nextest`), the comment-loop smoke (`scripts/smoke-comment-loop.sh`: a scripted Claude Code session, no model, through tiers 1, 2, 4 and 5 with a fake `codex`), the Pi extension's typecheck and tests, the Worker's checks (`crates/clax-worker`, its own workspace: `cargo fmt`, its tests, among them the SQLite VFS's, and clippy, natively, then `test-wasm.mjs`, which builds the wasm Worker, writes through it under `wrangler dev --local` on free ports with fresh state under `crates/clax-worker/target/wasm-test/`, restarts wrangler and checks the data and `PRAGMA integrity_check`; and, after the web e2e tests, `e2e.mjs`, which runs the Clax server in its Durable Object under `wrangler dev --local` with the web UI from `web/dist` and checks in two browsers that a published artifact shows in the gallery and opens, that a comment reaches the other browser live over the stream's WebSocket, also after the server is rebuilt as after hibernation, and that everything is there after a restart), and the Playwright end-to-end tests of the web UI. `just web-test` runs the web lint, typecheck, and unit tests.
 
-The web UI is built first (`scripts/build-web.sh`, which keeps the modification times of output it did not change, so an unchanged web UI does not rebuild the release binary that embeds it) and its unit tests run next, alone, since some are timing-sensitive. The other gates then run in concurrent lanes (web e2e, the Rust tests, clippy and `cargo fmt`, web lint and typecheck, the release build, Pi, the scripts), the longest first, each printing a line as it finishes; a failed gate prints its output. The Rust tests are built before clippy runs, so they start as soon as they can. `pnpm install --frozen-lockfile` runs in `web/` and `plugins/pi/` only when `node_modules` was not installed from the current `pnpm-lock.yaml` by the same Node and pnpm (a hash in `node_modules/.clax-install-stamp`; `CLAX_PNPM_INSTALL=always` ignores it). One debug `clax` is built for the whole run and given to the tests that cannot name it and to the browser tests' daemons as `CLAX_TEST_BIN` (`just test` does the same for the Rust tests), and one release `clax` to the perf gates as `CLAX_PERF_BIN`. The perf gates then run alone, one at a time. The run ends with each gate's time and the total; a slow gate is reported, never failed. On a warm build cache and an otherwise idle machine, the whole run takes under two minutes.
+The web UI is built first (`scripts/build-web.sh`, which keeps the modification times of output it did not change, so an unchanged web UI does not rebuild the release binary that embeds it) and its unit tests run next, alone, since some are timing-sensitive. The other gates then run in concurrent lanes (web e2e then the Worker's e2e, the Rust tests, clippy and `cargo fmt`, web lint and typecheck, the release build, Pi, the scripts, the Worker, the wasm32 check), the longest first, each printing a line as it finishes; a failed gate prints its output. The Rust tests are built before clippy runs, so they start as soon as they can. `pnpm install --frozen-lockfile` runs in `web/` and `plugins/pi/` only when `node_modules` was not installed from the current `pnpm-lock.yaml` by the same Node and pnpm (a hash in `node_modules/.clax-install-stamp`; `CLAX_PNPM_INSTALL=always` ignores it), and `npm ci` in `crates/clax-worker/`, the one npm project, only when its `node_modules` was not installed from its `package-lock.json` by the same Node and npm (`node_modules/.clax-ci-stamp`; `CLAX_NPM_CI=always` ignores it). One debug `clax` is built for the whole run and given to the tests that cannot name it and to the browser tests' daemons as `CLAX_TEST_BIN` (`just test` does the same for the Rust tests), and one release `clax` to the perf gates as `CLAX_PERF_BIN`. The perf gates then run alone, one at a time. The run ends with each gate's time and the total; a slow gate is reported, never failed. On a warm build cache and an otherwise idle machine, the whole run takes under two minutes.
+
 
 The perf benchmarks, run on demand by `just perf` and by no check: each prints its measures beside its budgets, scaled by the run's own idle latency, and reports a measure over budget without failing:
 
@@ -384,6 +438,27 @@ it. `scripts/perf-log.sh show` fetches that branch and prints each
 measure's trend over the last runs (`--runs N`, default 10; `--file
 target/perf-log.jsonl` for the local log), marking a value over its
 budget.
+
+`clax-core`, `clax-rt`, `clax-mcp`, `clax-server` and `clax-content-git`
+also build for `wasm32-unknown-unknown`, the target a Worker runs Rust as. `just
+check-wasm` (`scripts/check-wasm.sh`) checks them there and fails on any
+warning; arguments, when given, go to `cargo check` in place of that crate
+list. The target alone decides what is built (`cfg(target_arch =
+"wasm32")`, no cargo feature); `clax-server`'s crate documentation says
+what the daemon alone runs and how the server reaches its runtime through
+`clax-rt`. Bundled SQLite
+for that target is C built by a clang with a wasm32 backend, which Apple's
+clang lacks: the script takes `$LLVM_BIN`, else Homebrew's LLVM (`brew
+install llvm`), else the `clang` on `PATH`, else the newest Debian or
+Ubuntu `/usr/lib/llvm-<N>`, and fails saying what is missing (that LLVM, or
+the target: `rustup target add wasm32-unknown-unknown`). `.cargo/config.toml` sets the
+`getrandom_backend="wasm_js"` cfg for the target. On it the store runs in
+single-connection mode (`Store::open_on`), and what needs a local machine is
+built on unix only: the tool-call journal's real file system
+(`toolpath::segment::StdFs`), git discovery (`gitctx::find_git` finds none),
+`file://` links in exports, and file modes on the home's directories and
+private files. The gates run this check in a lane of their own (`wasm32`),
+so a machine running them needs that LLVM and the target.
 
 One run of the gates at a time per checkout: a run holds
 `quality-gates.lock` in the checkout's git directory, a second run in the

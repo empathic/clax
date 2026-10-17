@@ -1016,6 +1016,64 @@ so that narrowing and elevation (§7.4) bind exactly one agent.
   session it was set on (and, while it lives, the machine's requests
   naming no session, above).
 
+### 6.9 Agent tokens on a hosted Clax (amendment)
+
+A hosted Clax (spec 2026-10-11-clax-dev-hosted-design) has no connected
+machines: a member's agents reach it over `/mcp`, the JSON-RPC adapter
+(`crates/clax-server/src/routes/mcp_http.rs`), with an agent token the
+member minted in their browser (`Authorization: Bearer cxa_…`, a grant with
+`bearer = 1`). §6.8 applies with the token in the machine's place:
+
+- **The token is the machine.** It is one grant of its member; its rights
+  are the member's within the token's narrowing (`PUT
+  /api/people/me/grants/<gid>/narrow`), and revoking it ends its sessions.
+  HTTPS stands where §6.6's signature stands on a LAN.
+- **Each MCP client is one agent session.** Its `initialize` registers a
+  session of the token's grant, named after the client
+  (`clientInfo.name`, §11), and the daemon issues its secret as §6.8
+  issues one. The answer carries both as `Mcp-Session-Id: <session
+  ID>.<secret>`; the adapter proves the session with the secret
+  (`X-Clax-Session-Secret`) on every route request it makes for the
+  client. The MCP client holds the value as the shim holds its secret, in
+  memory: there are no credential files, so a client that restarts
+  initializes a new session.
+- **Proving.** A request whose `Mcp-Session-Id` is not proved, because it
+  names the session alone or with another secret, names another token's
+  session, or names an ended one, is answered 404, which an MCP client
+  takes as "initialize again", in place of §6.8's 401
+  `invalid_session_proof`. So another client of the same token cannot act
+  in a session it was not given.
+- **Rights.** A session's request acts with that session's rights, so
+  narrowing one agent (`PUT /api/agents/<handle>/narrow`, in the member's
+  browser) binds exactly that client. A request with the token that names
+  no session is §6.8's session-less request: the member's rights within
+  the token's narrowing and every live narrowing of its sessions.
+- **People.** The member's People (`GET /api/people/me`) lists the token
+  as one of their grants and its sessions as its agents, by name; the
+  member narrows and ends them (`DELETE /api/agents/<handle>`), and the
+  owner elevates them, as for a connected machine's.
+- **Lifecycle.** A token holds at most 16 live sessions; an `initialize`
+  beyond them ends the least recently seen (`idle`). A session unseen for
+  30 minutes ends as a remote one does (§14); `DELETE /mcp` ends it.
+- **Re-initializing.** A new session of a token starts within the
+  narrowings in force on the token's other live sessions of the same
+  client name: their intersection, by §7.2's operator, recorded as
+  `agent.narrow {session, access, inherited: true}`. So an MCP client that
+  sends `initialize` again (a reconnect, a restart that keeps its name)
+  while its narrowed session stands is never wider than it was; the cap
+  ends the least recently seen session only after the new one has
+  inherited. The token's own narrowing binds every session already. A
+  session of another client name inherits nothing, nor does one started
+  after every narrowed session of its name has ended (the member ended
+  it, it idled out, or its client sent `DELETE /mcp`). This is the hosted
+  rule, provisional until the general question for a machine's sessions
+  (§6.8, a new session of a narrowed machine) is decided.
+- **The trust limit.** Whoever holds the token can initialize a new
+  session under another client name, or after ending its narrowed one,
+  which starts without the session's narrowing, as §6.8's agent with a
+  shell can register one. The token is the hard boundary: narrow or
+  revoke the token to bind every agent that holds it.
+
 ## 7. Rights
 
 ### 7.1 Access objects
@@ -2614,6 +2672,11 @@ task, with recommendations; the owner took every recommendation
 - **Amendment** (2026-10-13, ruling): the parent process's start is read
   through `sysinfo`, to the second, rather than `libproc`, whose build
   needs libclang and the Command Line Tools SDK on every macOS build.
+- **Amendment** (2026-10-13, hosted mode): §6.9: a hosted Clax's agent
+  token stands for the machine and each of its MCP clients is an agent
+  session, proved by the secret its `Mcp-Session-Id` carries
+  (`<session ID>.<secret>`); an unproved session is 404 to the client; no
+  credential files.
 - **Amendment** (2026-10-13, owner decision "Only about their content",
   and rulings on the agent strip's re-review): §10, §18: who approves first
   is asked of the daemon as the Send menu opens, and a connected person
