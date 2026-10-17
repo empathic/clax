@@ -24,9 +24,10 @@ use axum::body::Bytes;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::Secret;
+use clax_core::secret;
 use clax_core::sig::{self, NonceCache, SigError, SignInput};
-use clax_core::store::people::{CredentialKind, Unissued};
-use clax_core::{Store, secret};
+use clax_store::Store;
+use clax_store::people::{CredentialKind, Unissued};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -492,12 +493,12 @@ impl GrantAuth {
 
     /// Whether grant `gid`'s use at `now` is due to be written
     /// (`last_used_at`, at most once per
-    /// [`clax_core::store::people::USE_NOTE_SECS`]): remembered here, so a
+    /// [`clax_store::people::USE_NOTE_SECS`]): remembered here, so a
     /// request costs no store write otherwise.
     pub fn use_due(&self, gid: &str, now: i64) -> bool {
         let mut noted = lock(&self.noted);
         match noted.get(gid) {
-            Some(&at) if now - at < clax_core::store::people::USE_NOTE_SECS => false,
+            Some(&at) if now - at < clax_store::people::USE_NOTE_SECS => false,
             _ => {
                 noted.insert(gid.to_string(), now);
                 true
@@ -988,7 +989,7 @@ mod tests {
         match st
             .request_grant(
                 &clax_core::audit::AuditCtx::DAEMON,
-                clax_core::store::people::NewGrant {
+                clax_store::people::NewGrant {
                     key,
                     client_name: "sam-mbp".into(),
                     peer_ip: "192.168.1.20".into(),
@@ -1001,7 +1002,7 @@ mod tests {
             )
             .unwrap()
         {
-            clax_core::store::people::GrantStart::Pending {
+            clax_store::people::GrantStart::Pending {
                 grant, user_code, ..
             } => (grant.id, user_code.expose().to_string()),
             other => panic!("{other:?}"),
@@ -1010,7 +1011,7 @@ mod tests {
 
     #[test]
     fn a_revocation_during_the_sweep_keeps_its_record_and_only_purged_rows_are_forgotten() {
-        use clax_core::store::people::EndedBy;
+        use clax_store::people::EndedBy;
         let (_d, clock, st) = store();
         let index = GrantIndex::load(&st).unwrap();
         // A request approved, its tokens not yet collected.
@@ -1048,7 +1049,7 @@ mod tests {
             .unwrap();
         index.ended(&gone).unwrap();
         assert!(!forget_purged(&index, &st));
-        clock.advance(clax_core::store::people::UNISSUED_RETENTION_SECS + 1);
+        clock.advance(clax_store::people::UNISSUED_RETENTION_SECS + 1);
         st.expire_grants().unwrap();
         assert!(forget_purged(&index, &st));
         assert_eq!(index.ended_grants(), vec![gid]);

@@ -1,10 +1,10 @@
 //! Hands store work to the store's own database threads (see
-//! [`clax_core::Store::call`]) so SQLite and file I/O never stall a runtime
+//! [`clax_store::Store::call`]) so SQLite and file I/O never stall a runtime
 //! worker and never claim threads from tokio's blocking pool.
 
 use crate::error::ApiError;
 use crate::state::AppState;
-use clax_core::Store;
+use clax_store::Store;
 
 impl AppState {
     /// Runs `f` on one of the store's database threads, in the interactive
@@ -22,7 +22,7 @@ impl AppState {
     }
 
     /// [`AppState::store_call`] in the store's bulk lane
-    /// ([`clax_core::Store::call_bulk`]), for reads whose cost grows with
+    /// ([`clax_store::Store::call_bulk`]), for reads whose cost grows with
     /// the whole home: interactive calls start ahead of it.
     pub async fn store_call_bulk<T, F>(&self, f: F) -> Result<T, ApiError>
     where

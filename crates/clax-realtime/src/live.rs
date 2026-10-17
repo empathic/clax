@@ -3,10 +3,10 @@
 //! that are neither on this machine nor hold the token is
 //! the HTTP layer's `live_access`.
 
-use clax_core::Store;
 use clax_core::audit::AuditCtx;
 use clax_core::live::PageKey;
-use clax_core::store::live::EnsuredPage;
+use clax_store::Store;
+use clax_store::live::EnsuredPage;
 use std::collections::HashMap;
 use std::sync::RwLock;
 

@@ -441,7 +441,7 @@ impl Rights {
 
     /// Reads back any [`Rights::to_json`], computed rights included (their
     /// `"own:<id>"` locations and unbounded sizes): rights the store wrote.
-    pub(crate) fn parse_internal(v: &Value) -> Result<Rights> {
+    pub fn parse_internal(v: &Value) -> Result<Rights> {
         Rights::parse_with(v, true)
     }
 

@@ -6,7 +6,7 @@ use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use clax_core::model::Session;
 use clax_core::working::{Actor, End, Ended, MAX_WORKING_THREADS, SetWorking, clean_message};
-use clax_core::{ArtifactId, CoreError, Store};
+use clax_core::{ArtifactId, CoreError};
 use clax_http::agent::TokenOrAgent;
 use clax_http::audit::DeferredAudit;
 #[cfg(debug_assertions)]
@@ -15,6 +15,7 @@ use clax_http::error::ApiError;
 use clax_http::headers::parse_id;
 use clax_http::state::AppState;
 use clax_realtime::working::settle;
+use clax_store::Store;
 use serde::Deserialize;
 use serde_json::{Value, json};
 

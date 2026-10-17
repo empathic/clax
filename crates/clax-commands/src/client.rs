@@ -1329,7 +1329,7 @@ impl Client {
         log_line(home, &format!("replacing {what} with {}", exe.display()));
         // Whether a failed start moved the schema on decides whether the
         // previous build may be restarted, so the swap needs it known.
-        let schema = clax_core::store::schema_version(home).map_err(|e| {
+        let schema = clax_store::schema_version(home).map_err(|e| {
             let msg = format!(
                 "could not read the database's schema version before replacing the clax daemon v{} with {}: {e}; the running daemon was kept. Run the command again; if this persists, see {}",
                 target.version,
@@ -1343,7 +1343,7 @@ impl Client {
         let new = match Client::spawn(home, exe, target.port, bind, true, windows) {
             Ok(c) => c,
             Err(e) => {
-                let now = clax_core::store::schema_version(home).ok().flatten();
+                let now = clax_store::schema_version(home).ok().flatten();
                 if let (Some(was), Some(now)) = (schema, now)
                     && now > was
                 {

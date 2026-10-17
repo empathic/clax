@@ -1492,7 +1492,7 @@ const LAUNCH: &str = "<!doctype html><html><head><title>Launch Plan</title></hea
 #[ignore = "writes tests/fixtures/single-owner-21.sql; run only at a migration-21 schema"]
 async fn write_fixture() {
     assert_eq!(
-        clax_core::store::migrations::MIGRATIONS.len(),
+        clax_store::migrations::MIGRATIONS.len(),
         21,
         "the fixture is a migration-21 database"
     );

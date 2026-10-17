@@ -381,7 +381,7 @@ fn wait_for(
     let deadline = Instant::now() + left;
     let mut every = Duration::from_millis(a.poll_interval_ms);
     if every.is_zero() {
-        every = Duration::from_secs(clax_core::store::people::CONTINUE_WAIT_SECS as u64);
+        every = Duration::from_secs(clax_store::people::CONTINUE_WAIT_SECS as u64);
     }
     let path = format!("/api/grants/{}/continue", p.grant_id);
     let mut warned = false;

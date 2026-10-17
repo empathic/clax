@@ -2,7 +2,8 @@ use super::doctor_agent::{self, DoctorAgent};
 use crate::client::Client;
 use anyhow::Context;
 use clax_core::daemon::DaemonLock;
-use clax_core::{ArtifactId, Home, Store};
+use clax_core::{ArtifactId, Home};
+use clax_store::Store;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 

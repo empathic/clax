@@ -235,8 +235,8 @@ async fn sam_approves_the_owner(t: &Two) {
             &AuditCtx::DAEMON,
             Some(&t.sam_public()),
             &t.w.ts.owner_public_id().await,
-            clax_core::store::approvals::Scope::Everywhere,
-            clax_core::store::approvals::Via::Connect,
+            clax_store::approvals::Scope::Everywhere,
+            clax_store::approvals::Via::Connect,
         )
         .unwrap();
 }
@@ -367,7 +367,7 @@ async fn approval_changes_need_a_browser() {
     // Nothing changed.
     assert_eq!(
         ts.store.approval_request(&rid, None).unwrap().status,
-        clax_core::store::approvals::RequestStatus::Open
+        clax_store::approvals::RequestStatus::Open
     );
     assert_eq!(ts.store.live_approvals(None).unwrap().len(), 1);
     // Agents read their own person's, never the content.
@@ -952,9 +952,9 @@ async fn a_page_send_routes_with_the_publisher_as_author() {
 
 #[tokio::test]
 async fn the_hundred_and_first_request_is_refused_with_a_banner() {
-    use clax_core::store::approvals::MAX_OPEN_REQUESTS;
+    use clax_store::approvals::MAX_OPEN_REQUESTS;
     let t = Two::new().await;
-    use clax_core::store::approvals::MAX_OPEN_PER_AUTHOR;
+    use clax_store::approvals::MAX_OPEN_PER_AUTHOR;
     let id = clax_core::ArtifactId::parse(&t.aid).unwrap();
     // Five LAN viewers, each at their own share of Sam's requests.
     let authors: Vec<String> = (0..MAX_OPEN_REQUESTS / MAX_OPEN_PER_AUTHOR)
@@ -977,7 +977,7 @@ async fn the_hundred_and_first_request_is_refused_with_a_banner() {
                 .create_thread(
                     &AuditCtx::DAEMON,
                     &id,
-                    clax_core::store::threads::NewThread {
+                    clax_store::threads::NewThread {
                         version_n: 1,
                         anchor: serde_json::from_value(clax_testkit::element_anchor()).unwrap(),
                         author_name: "Lan".into(),
@@ -993,7 +993,7 @@ async fn the_hundred_and_first_request_is_refused_with_a_banner() {
             .send_to(
                 &AuditCtx::DAEMON,
                 &th.id,
-                clax_core::SendTarget::Agent(&t.w.sam_session),
+                clax_store::SendTarget::Agent(&t.w.sam_session),
             )
             .unwrap();
     }
@@ -1300,7 +1300,7 @@ async fn owner_agent_watches(t: &Two) -> String {
 
 #[tokio::test]
 async fn one_persons_sends_cannot_block_anothers_request() {
-    use clax_core::store::approvals::MAX_OPEN_REQUESTS;
+    use clax_store::approvals::MAX_OPEN_REQUESTS;
     let t = Two::new().await;
     let owner_handle = owner_agent_watches(&t).await;
     let sam = t.sam_browser();
@@ -1567,8 +1567,8 @@ async fn handoff_to_another_persons_agent_makes_a_routing_request() {
             &AuditCtx::DAEMON,
             None,
             &t.w.mia_public,
-            clax_core::store::approvals::Scope::Everywhere,
-            clax_core::store::approvals::Via::Shell,
+            clax_store::approvals::Scope::Everywhere,
+            clax_store::approvals::Via::Shell,
         )
         .unwrap();
     let tid = t.mia_thread("please fix the chart").await;
@@ -1686,8 +1686,8 @@ fn approve_mia_for_owner(t: &Two) {
             &AuditCtx::DAEMON,
             None,
             &t.w.mia_public,
-            clax_core::store::approvals::Scope::Everywhere,
-            clax_core::store::approvals::Via::Shell,
+            clax_store::approvals::Scope::Everywhere,
+            clax_store::approvals::Via::Shell,
         )
         .unwrap();
 }
@@ -2374,8 +2374,8 @@ async fn a_connected_person_learns_who_approves_first_only_about_their_own_conte
             &AuditCtx::DAEMON,
             Some(&t.w.mia_public),
             &t.w.ts.owner_public_id().await,
-            clax_core::store::approvals::Scope::Everywhere,
-            clax_core::store::approvals::Via::Shell,
+            clax_store::approvals::Scope::Everywhere,
+            clax_store::approvals::Via::Shell,
         )
         .unwrap();
     let (status, v) = t.owner_browser().call("GET", "/api/people", None).await;

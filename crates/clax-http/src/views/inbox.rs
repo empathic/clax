@@ -14,8 +14,9 @@
 use crate::error::ApiError;
 use crate::identity::Identity;
 use crate::state::AppState;
-use clax_core::store::inbox::{InboxChange, ItemRow, Kind, Sources, ThreadRef};
-use clax_core::{Event, Store};
+use clax_core::Event;
+use clax_store::Store;
+use clax_store::inbox::{InboxChange, ItemRow, Kind, Sources, ThreadRef};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
@@ -334,7 +335,7 @@ fn announcement(
     changes: &[InboxChange],
     held: &std::collections::HashSet<String>,
 ) -> clax_core::Result<Vec<Announce>> {
-    use clax_core::store::inbox::recipient_key;
+    use clax_store::inbox::recipient_key;
     let seqs: Vec<i64> = changes.iter().map(|c| c.seq).collect();
     let mut out = Vec::new();
     if changes.len() > MAX_ITEM_EVENTS {
@@ -444,7 +445,7 @@ pub fn listen(s: &AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clax_core::store::inbox::AgentRef;
+    use clax_store::inbox::AgentRef;
 
     fn item(kind: Kind, recipient: Option<&str>) -> ItemRow {
         ItemRow {

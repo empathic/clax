@@ -5,8 +5,8 @@ use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use clax_core::CoreError;
 use clax_core::model::Session;
-use clax_core::{CoreError, JoinSession, NameSource, Proved, RegisterSession};
 use clax_http::agent::{
     SessionsGet, SessionsJoin, SessionsList, SessionsPatch, SessionsRegister, TokenOrAgent,
 };
@@ -14,6 +14,7 @@ use clax_http::audit::DeferredAudit;
 use clax_http::error::ApiError;
 use clax_http::state::AppState;
 use clax_realtime::push::CodexPush;
+use clax_store::{JoinSession, NameSource, Proved, RegisterSession};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -81,7 +82,7 @@ fn answer(session: &Session, secret: Option<clax_core::secret::Secret>) -> Value
 
 /// Keeps a restored session's note for its first feedback poll (spec
 /// 2026-10-08 §6.7).
-fn restored_note(s: &AppState, session: &Session, restored: Option<clax_core::Restored>) {
+fn restored_note(s: &AppState, session: &Session, restored: Option<clax_store::Restored>) {
     if let Some(r) = restored {
         s.feedback_waiters.set_note(&session.id, r.note);
     }
@@ -431,7 +432,7 @@ fn clax_tool(bare: &str) -> bool {
 /// name that is not one of Clax's own tools is 204, recording nothing; a
 /// session that never existed is 404 `unknown_session`.
 ///
-/// [`CallIdScan`]: clax_core::store::audit::CallIdScan
+/// [`CallIdScan`]: clax_store::audit::CallIdScan
 /// [`ToolCallIdReport::validate`]: clax_core::audit::ToolCallIdReport::validate
 pub async fn tool_call_ids(
     State(s): State<AppState>,
@@ -441,7 +442,7 @@ pub async fn tool_call_ids(
     req: Result<Json<clax_core::audit::ToolCallIdReport>, JsonRejection>,
 ) -> Result<axum::response::Response, ApiError> {
     use axum::response::IntoResponse;
-    use clax_core::store::audit::{CallIdMatch, CallIdScan};
+    use clax_store::audit::{CallIdMatch, CallIdScan};
     let arrival = chrono::Utc::now();
     let sid = path(id)?;
     if !clax_core::ids::is_ulid(&sid) {

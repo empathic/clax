@@ -157,7 +157,7 @@ async fn read_only_tool_records_tool_call() {
     assert_eq!(t.body["produced"], json!([]));
     assert_eq!(
         t.body["args_sha256"],
-        clax_core::toolpath::args::args_sha256(&json!({"limit": 5}))
+        clax_core::audit::args::args_sha256(&json!({"limit": 5}))
     );
     assert_eq!(t.actor["session_id"], s.id.as_str());
     assert_eq!(t.body["via"], "mcp");

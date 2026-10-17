@@ -85,7 +85,7 @@ run it through the command the plugin's session context gives.
   on 7480. Use `just watch`/`just dev` (`~/.clax-dev`), or a scratch
   `CLAX_HOME` on a free port, and stop any daemon you start by its PID.
 - Migrations are numbered contiguously in
-  `crates/clax-core/src/store/migrations.rs`; a branch takes the next free
+  `crates/clax-store/src/migrations.rs`; a branch takes the next free
   number on main and renumbers if another branch lands first. A branch
   edits its own unmerged migrations in place; dev homes migrated by its
   earlier builds are reset, not upgraded.

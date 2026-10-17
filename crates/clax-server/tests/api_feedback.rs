@@ -1,5 +1,5 @@
-use clax_core::store::sessions::RegisterSession;
 use clax_realtime::feedback::FeedbackWaiters;
+use clax_store::sessions::RegisterSession;
 use clax_testkit::TestServer;
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};

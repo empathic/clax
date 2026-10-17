@@ -13,10 +13,6 @@ use super::artifacts::{body, path};
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
-use clax_core::store::inbox::{
-    Agent, InboxQuery, Kind, MAX_PAGE, ReadFilter, is_item_id, stored_time,
-};
-use clax_core::store::questions::ListStatus;
 use clax_core::{ArtifactId, CoreError};
 use clax_http::agent::DeniedToGrants;
 use clax_http::error::ApiError;
@@ -24,6 +20,8 @@ use clax_http::identity::Identity;
 use clax_http::state::AppState;
 use clax_http::viewer::SameOrigin;
 use clax_http::views::inbox::{recipient_of, view as inbox_view, views as inbox_views};
+use clax_store::inbox::{Agent, InboxQuery, Kind, MAX_PAGE, ReadFilter, is_item_id, stored_time};
+use clax_store::questions::ListStatus;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -175,8 +173,8 @@ impl ListQuery {
 /// (null for the owner's agents) and name, and `own` for the caller's own
 /// person's agents (spec 2026-10-08 §11 "Display").
 fn strip_view(
-    db: &clax_core::Store,
-    strip: &[clax_core::store::inbox::AgentGroup],
+    db: &clax_store::Store,
+    strip: &[clax_store::inbox::AgentGroup],
     me: Option<&str>,
 ) -> clax_core::Result<Value> {
     let mut names = std::collections::HashMap::new();
@@ -303,7 +301,7 @@ pub async fn list(
     // A filtered list (a search included) also counts what matches, which
     // reads up to the whole inbox, so it waits in the bulk lane; an
     // unfiltered page reads one page and the unread count.
-    let job = move |db: &clax_core::Store| {
+    let job = move |db: &clax_store::Store| {
         let (rows, next) = db.inbox_list(&iq)?;
         let items = inbox_views(db, &rows)?;
         let unread = db.inbox_unread(me.as_deref())?;

@@ -96,7 +96,7 @@ pub async fn open(
 /// The recipient key of the person `who` speaks for, whose `questions` and
 /// `inbox` topics a stream may hold: empty for the owner, a connected
 /// person's public ID for their browser, `None` for anyone else.
-fn person_key(st: &clax_core::Store, who: &clax_http::identity::Identity) -> Option<String> {
+fn person_key(st: &clax_store::Store, who: &clax_http::identity::Identity) -> Option<String> {
     match who.person(st) {
         Ok(clax_http::auth::Person::Owner) => Some(String::new()),
         Ok(clax_http::auth::Person::Viewer(pid)) => Some(pid),

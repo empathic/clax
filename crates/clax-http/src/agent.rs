@@ -787,7 +787,7 @@ impl ReadRights {
     /// `grant_revoked` once the grant has ended; the store's.
     pub fn current(
         &self,
-        st: &clax_core::Store,
+        st: &clax_store::Store,
         grant: Option<&str>,
         session: &str,
         seen: u64,
@@ -1473,7 +1473,7 @@ fn check_head(s: &AppState, parts: &Parts) -> Result<GrantHead, Refusal> {
         .grant_auth
         .index
         .lookup(&secret::sha256(token.expose()))
-        .filter(|g| g.kind == clax_core::store::people::CredentialKind::Access)
+        .filter(|g| g.kind == clax_store::people::CredentialKind::Access)
         .ok_or_else(grant_auth::invalid_token)?;
     if found.revoked {
         return Err(ApiError::new(

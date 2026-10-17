@@ -496,7 +496,7 @@ async fn codex_home_is_ignored_for_other_harnesses_and_kept_on_a_rejoin_without_
         .as_str()
         .unwrap()
         .to_string();
-    let store = clax_core::Store::open(&ts.home).unwrap();
+    let store = clax_store::Store::open(&ts.home).unwrap();
     assert_eq!(store.codex_home(&sid).unwrap(), None, "not a Codex session");
     let res = join("cx-8", "codex", Some("/tmp/cxh8")).await;
     let sid = res.json::<Value>().await.unwrap()["session"]["id"]

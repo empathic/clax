@@ -11,7 +11,7 @@
 use crate::client::Client;
 use crate::term::{self, Paint};
 use clax_core::Home;
-use clax_core::store::inbox::is_item_id;
+use clax_store::inbox::is_item_id;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 

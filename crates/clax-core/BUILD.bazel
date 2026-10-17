@@ -10,6 +10,7 @@ cargo_package(
         "//crates/clax-http:rust_sources",
         "//crates/clax-realtime:rust_sources",
         "//crates/clax-server:rust_sources",
+        "//crates/clax-store:rust_sources",
         "//plugins/pi:test_fixtures",
     ],
 )

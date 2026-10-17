@@ -4,7 +4,7 @@
 //! that progress rather than on a fixed deadline.
 
 use assert_cmd::Command;
-use clax_core::store::migrations::{AUDIT_MIGRATION, MIGRATIONS};
+use clax_store::migrations::{AUDIT_MIGRATION, MIGRATIONS};
 use rusqlite::{Connection, params};
 
 /// A test's scratch home; dropping it stops any daemon started there.

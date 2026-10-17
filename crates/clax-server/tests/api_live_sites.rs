@@ -524,7 +524,7 @@ async fn the_sites_routes_are_hidden_from_the_lan_and_admitted_for_the_extension
 
 /// A server whose store the test can reach, to leave a join or an un-merge
 /// half done as an interrupted client would.
-async fn with_store() -> (TestServer, std::sync::Arc<clax_core::Store>) {
+async fn with_store() -> (TestServer, std::sync::Arc<clax_store::Store>) {
     let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
     let s2 = slot.clone();
     let ts = TestServer::spawn_with(move |st| {
@@ -548,9 +548,9 @@ async fn an_unfinished_join_is_listed_and_holds_off_other_joins_and_splits_until
         .join_origins(&clax_core::audit::AuditCtx::DAEMON, B, A)
         .unwrap();
     let (moves, _) = store.join_candidates(A, 1).unwrap();
-    let how = clax_core::store::site::MoveBy {
+    let how = clax_store::site::MoveBy {
         by: "viewer:x".into(),
-        kind: clax_core::store::site::KIND_JOIN,
+        kind: clax_store::site::KIND_JOIN,
         rule_id: None,
     };
     store

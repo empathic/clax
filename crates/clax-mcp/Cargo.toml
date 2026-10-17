@@ -26,6 +26,7 @@ tracing.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+clax-store = { path = "../clax-store" }
 axum.workspace = true
 clax-testkit = { path = "../clax-testkit" }
 rmcp = { workspace = true, features = ["client", "transport-child-process"] }

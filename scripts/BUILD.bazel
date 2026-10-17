@@ -73,6 +73,7 @@ RUST_SOURCES = [
     "//crates/clax-realtime:rust_sources",
     "//crates/clax-sample:rust_sources",
     "//crates/clax-server:rust_sources",
+    "//crates/clax-store:rust_sources",
     "//crates/clax-testkit:rust_sources",
 ]
 

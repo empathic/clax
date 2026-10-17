@@ -12,10 +12,8 @@ use clax_core::audit::AuditCtx;
 use clax_core::feedback::{Placeholder, ago, quoted, render_delivery, render_notice};
 use clax_core::model::Artifact;
 use clax_core::questions::render_late;
-use clax_core::store::questions::Status;
-use clax_core::store::visibility::Visibility;
 use clax_core::working::Clock;
-use clax_core::{CoreError, Store, TakeFeedback, Tier};
+use clax_core::{CoreError, Tier};
 use clax_http::agent::{FeedbackAck, FeedbackNotices, FeedbackPoll, TokenOrAgent};
 #[cfg(debug_assertions)]
 use clax_http::auth::RequireToken;
@@ -23,6 +21,9 @@ use clax_http::error::ApiError;
 use clax_http::state::AppState;
 use clax_realtime::feedback::apply;
 use clax_realtime::questions::QuestionWaiters;
+use clax_store::questions::Status;
+use clax_store::visibility::Visibility;
+use clax_store::{Store, TakeFeedback};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -659,9 +660,10 @@ pub async fn waiters(
 #[cfg(test)]
 mod tests {
     use super::{Woke, wait_for_change};
+    use clax_core::Home;
     use clax_core::audit::AuditCtx;
-    use clax_core::{Home, Store};
     use clax_http::state::VisGen;
+    use clax_store::Store;
     use std::time::Duration;
     use tokio::sync::Notify;
     use tokio::time::Instant;

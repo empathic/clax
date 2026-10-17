@@ -2,7 +2,7 @@
 //! no one.
 //!
 //! The owner is one identity, a viewer row flagged as the owner
-//! ([`clax_core::Store::owner_viewer`]). A request is the owner's when it
+//! ([`clax_store::Store::owner_viewer`]). A request is the owner's when it
 //! carries an owner credential; [`Identity::of`] is the one place that maps
 //! credentials to the owner, so a new kind of credential (a browser
 //! extension's, say) is added there and nowhere else. The credentials today:
@@ -36,10 +36,10 @@ use crate::state::AppState;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, header};
-use clax_core::Store;
 use clax_core::audit::{Actor, AgentActor, Via};
 use clax_core::model::Viewer;
 use clax_core::secret::Secret;
+use clax_store::Store;
 use std::convert::Infallible;
 
 /// The owner cookie's name: `clax_owner_<port>`, the port from the request's
@@ -347,7 +347,7 @@ impl Identity {
         if ok {
             Ok(())
         } else {
-            Err(clax_core::store::sessions::invalid_session_proof().into())
+            Err(clax_store::sessions::invalid_session_proof().into())
         }
     }
 

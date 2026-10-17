@@ -5,7 +5,7 @@
 //! changes its own rights.
 
 use clax_core::audit::AuditCtx;
-use clax_core::store::approvals::{Scope, Via};
+use clax_store::approvals::{Scope, Via};
 use clax_testkit::TestClient;
 use clax_testkit::TestServer;
 use serde_json::{Value, json};
@@ -2770,7 +2770,7 @@ async fn a_legacy_viewer_cookie_is_replaced_and_never_names_a_person() {
         lan.public_id
     );
     // Within the grace window the old cookie still names the viewer.
-    clock.advance(clax_core::store::viewers::LEGACY_SWAP_GRACE_SECS - 1);
+    clock.advance(clax_store::viewers::LEGACY_SWAP_GRACE_SECS - 1);
     assert_eq!(
         ts.store.get_viewer(legacy).unwrap().unwrap().public_id,
         lan.public_id
@@ -2792,7 +2792,7 @@ async fn a_legacy_viewer_cookie_is_replaced_and_never_names_a_person() {
     ts.store
         .create_invite(
             &clax_core::audit::AuditCtx::DAEMON,
-            clax_core::store::people::InvitePerson::Viewer(o.public_id.clone()),
+            clax_store::people::InvitePerson::Viewer(o.public_id.clone()),
             None,
         )
         .unwrap();

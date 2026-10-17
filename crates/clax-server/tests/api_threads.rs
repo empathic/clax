@@ -61,7 +61,7 @@ async fn bad_clip_saves_the_thread_without_it() {
     assert_eq!(v["thread"]["has_clip"], false);
     assert_eq!(v["clip_error"], "the clip is not a PNG image");
     let mut big = FAKE_PNG.to_vec();
-    big.resize(clax_core::store::threads::MAX_CLIP_BYTES + 1, 0);
+    big.resize(clax_store::threads::MAX_CLIP_BYTES + 1, 0);
     let v: Value = ts
         .create_thread(&aid, 1, "huge clip", Some(&big))
         .await
@@ -553,7 +553,7 @@ async fn viewer_resolve_withdraws_undelivered_feedback() {
         .await
         .unwrap();
     assert!(fb["feedback"].as_array().unwrap().is_empty());
-    let st = clax_core::Store::open(&ts.home).unwrap();
+    let st = clax_store::Store::open(&ts.home).unwrap();
     assert!(
         st.feedback_rows(tid).unwrap().is_empty(),
         "the rows are gone"
@@ -2219,8 +2219,8 @@ async fn racing_publishes_of_a_threads_state_send_in_read_order() {
     // Between its read and its send the first holds the order: a second
     // publish cannot read yet.
     assert!(ts.feedback.states.try_lock().is_err());
-    let vis = clax_core::store::visibility::Visibility::for_session(&ts.store, &sid).unwrap();
-    let q = clax_core::store::feedback::TakeFeedback {
+    let vis = clax_store::visibility::Visibility::for_session(&ts.store, &sid).unwrap();
+    let q = clax_store::feedback::TakeFeedback {
         session_id: sid.clone(),
         tier: Tier::Piggyback,
         artifact_id: None,

@@ -16,9 +16,9 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Duration, Utc};
-use clax_core::Store;
 use clax_core::extension::{CREDENTIAL_TTL_DAYS, credential_hash, extension_origin, is_credential};
 use clax_core::working::{Clock, SystemClock};
+use clax_store::Store;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 

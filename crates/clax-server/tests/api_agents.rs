@@ -336,7 +336,7 @@ async fn reregistering_after_an_idle_end_restores_watches_and_says_what_ended() 
         clax_server::daemon::reap_idle(
             &feedback,
             &store,
-            std::time::Duration::from_secs(clax_core::Store::SESSION_IDLE_SECS),
+            std::time::Duration::from_secs(clax_store::Store::SESSION_IDLE_SECS),
             &|_| panic!("a remote session is never probed"),
         )
     })

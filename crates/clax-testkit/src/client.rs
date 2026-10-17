@@ -2,7 +2,7 @@
 //! ([`OwnerBrowser`]).
 
 use crate::*;
-use clax_core::Store;
+use clax_store::Store;
 use std::net::IpAddr;
 use std::sync::Arc;
 

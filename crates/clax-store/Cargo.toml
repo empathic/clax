@@ -1,0 +1,29 @@
+[package]
+name = "clax-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+clax-core = { path = "../clax-core" }
+base64.workspace = true
+chrono.workspace = true
+mime_guess.workspace = true
+nix = { workspace = true, features = ["fs", "signal"] }
+rand.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.11"
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+clax-fake-exe = { path = "../clax-fake-exe" }
+nix = { workspace = true, features = ["time", "user"] }
+tokio = { workspace = true, features = ["sync", "macros", "rt", "rt-multi-thread", "time"] }

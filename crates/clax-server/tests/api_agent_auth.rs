@@ -1275,16 +1275,16 @@ async fn a_remote_session_is_ended_when_idle_whatever_pid_it_reports() {
     let reap = || {
         ts.store
             .reap_sessions(
-                Duration::from_secs(clax_core::Store::SESSION_IDLE_SECS),
+                Duration::from_secs(clax_store::Store::SESSION_IDLE_SECS),
                 &alive,
             )
             .unwrap()
     };
     // Past the local idle window, a remote session stays (spec 2026-10-08
     // §14: 30 minutes for them, so a brief sleep keeps it).
-    clock.advance(clax_core::Store::SESSION_IDLE_SECS as i64 + 1);
+    clock.advance(clax_store::Store::SESSION_IDLE_SECS as i64 + 1);
     assert!(reap().ended.is_empty());
-    clock.advance(clax_core::Store::REMOTE_SESSION_IDLE_SECS as i64);
+    clock.advance(clax_store::Store::REMOTE_SESSION_IDLE_SECS as i64);
     let reaped = reap();
     assert!(reaped.ended.iter().any(|s| s == rid), "{:?}", reaped.ended);
     assert!(

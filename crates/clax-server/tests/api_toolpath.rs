@@ -3020,8 +3020,8 @@ async fn one_export_runs_at_a_time() {
 
 // --- the journal appender (spec §7) -----------------------------------------
 
-use clax_core::toolpath::segment::{MemFs, SegmentConfig, SegmentWriter};
 use clax_http::audit::{Appender, JournalStart, JournalStatus, start_journal};
+use clax_store::toolpath::segment::{MemFs, SegmentConfig, SegmentWriter};
 use std::sync::Arc;
 
 const JOURNAL: &str = "/home/toolpath/journal";
@@ -3342,7 +3342,7 @@ struct GatedFs {
     gate: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
 }
 
-impl clax_core::toolpath::segment::JournalFs for GatedFs {
+impl clax_store::toolpath::segment::JournalFs for GatedFs {
     fn create_dir_all(&mut self, d: &std::path::Path) -> std::io::Result<()> {
         self.inner.create_dir_all(d)
     }

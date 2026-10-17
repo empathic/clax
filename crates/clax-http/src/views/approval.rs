@@ -6,9 +6,10 @@
 //! topic and wakes the polls waiting on it.
 
 use crate::state::AppState;
-use clax_core::store::approvals::{Approval, ApprovalRequest};
+use clax_core::Event;
 use clax_core::visibility::{self, Author};
-use clax_core::{Event, Store};
+use clax_store::Store;
+use clax_store::approvals::{Approval, ApprovalRequest};
 use serde_json::{Value, json};
 
 /// `{public_id, name, owner}` of viewer `pid`: names are not filtered
@@ -62,7 +63,7 @@ pub fn request_view(st: &Store, r: &ApprovalRequest) -> clax_core::Result<Value>
 /// An approval's view: who may see whose content, at which scope, with
 /// its page's title (`artifact_title`) while the page is live.
 pub fn approval_view(st: &Store, a: &Approval) -> clax_core::Result<Value> {
-    let author = if a.author == clax_core::store::approvals::UNCONNECTED {
+    let author = if a.author == clax_store::approvals::UNCONNECTED {
         json!({"public_id": null, "name": "Viewers who are not connected"})
     } else {
         person(st, &a.author)?
@@ -121,7 +122,7 @@ pub fn card(
                     })
                     .map(|c| {
                         json!({"id": c.id, "body": c.body, "created_at": c.created_at,
-                               "author_name": c.author_name, "by_agent": c.author_kind == clax_core::store::threads::AUTHOR_AGENT})
+                               "author_name": c.author_name, "by_agent": c.author_kind == clax_store::threads::AUTHOR_AGENT})
                     })
                     .collect();
                 json!({"thread": {"id": t.id, "status": t.status}, "comments": comments})
@@ -150,7 +151,7 @@ pub fn card(
             let mut authors = Vec::new();
             for a in p["authors"].as_array().into_iter().flatten() {
                 match a.as_str() {
-                    Some(clax_core::store::approvals::OWNER) | None => {
+                    Some(clax_store::approvals::OWNER) | None => {
                         authors.push(person(st, &st.owner_viewer(true)?.public_id)?)
                     }
                     Some(pid) => authors.push(person(st, pid)?),
@@ -194,7 +195,7 @@ pub fn listen(s: &AppState) {
                     let rs = db.approval_requests_by_rowid(&rows)?;
                     rs.iter()
                         .map(|r| {
-                            let public = r.cause == clax_core::store::approvals::Cause::Ask;
+                            let public = r.cause == clax_store::approvals::Cause::Ask;
                             Ok((r.approver.clone(), public, request_view(db, r)?))
                         })
                         .collect::<clax_core::Result<Vec<_>>>()

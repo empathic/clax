@@ -5,7 +5,7 @@
 //! never filtered.
 
 use clax_core::audit::AuditCtx;
-use clax_core::store::approvals::{Scope, Via};
+use clax_store::approvals::{Scope, Via};
 use clax_testkit::TestServer;
 use clax_testkit::people::{
     ASSET_BYTES, BATCH_NOTE, CAPABILITY, CARRIED_BYTES, CARRIED_NAME, CLIP, COMMENT, DESCRIPTION,
@@ -2273,7 +2273,7 @@ async fn a_merge_never_tells_what_a_withheld_document_holds() {
     let base = serde_json::to_vec(&json!({"flag": true, "text": "hello", "pad": ""}))
         .unwrap()
         .len();
-    let pad = "a".repeat(clax_core::store::docs::MAX_DOC_BYTES - base);
+    let pad = "a".repeat(clax_store::docs::MAX_DOC_BYTES - base);
     let before: Vec<_> = ["notes/t", "notes/f"]
         .iter()
         .map(|p| stored_doc(&w, aid, p))

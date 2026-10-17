@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 clax-core = { path = "../clax-core" }
+clax-store = { path = "../clax-store" }
 clax-sample = { path = "../clax-sample" }
 clax-realtime = { path = "../clax-realtime" }
 clax-http = { path = "../clax-http" }

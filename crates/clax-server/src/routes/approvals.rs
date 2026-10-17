@@ -21,10 +21,7 @@ use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use clax_core::store::approvals::{
-    AskApproval, Decision, OVERFLOW_BANNER, RequestStatus, Scope, UNCONNECTED, Via,
-};
-use clax_core::{CoreError, Store};
+use clax_core::CoreError;
 use clax_http::agent::{Agent, DeniedToGrants, TokenOrAgent};
 use clax_http::audit::DeferredAudit;
 use clax_http::auth::Caller;
@@ -34,6 +31,10 @@ use clax_http::state::AppState;
 use clax_http::viewer::SameOrigin;
 use clax_http::views::approval::{approval_view, request_view};
 use clax_realtime::feedback::apply_decision;
+use clax_store::Store;
+use clax_store::approvals::{
+    AskApproval, Decision, OVERFLOW_BANNER, RequestStatus, Scope, UNCONNECTED, Via,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -358,10 +359,7 @@ fn live_person(db: &Store, sid: &str) -> clax_core::Result<Option<String>> {
 /// An agent's answer about request `r`: `{approval_id, status, scope,
 /// request}` (§9.2: `status` is `open`, `approved`, `declined` or
 /// `withdrawn`).
-fn answer(
-    db: &Store,
-    r: &clax_core::store::approvals::ApprovalRequest,
-) -> clax_core::Result<Value> {
+fn answer(db: &Store, r: &clax_store::approvals::ApprovalRequest) -> clax_core::Result<Value> {
     Ok(json!({
         "approval_id": r.id,
         "status": r.status,

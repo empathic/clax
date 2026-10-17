@@ -2,7 +2,7 @@
 
 use clax_core::rights::Rights;
 use clax_core::sig;
-use clax_core::store::people::Grant;
+use clax_store::people::Grant;
 use serde_json::{Value, json};
 
 /// A grant's view for the owner: never a hash or a code.
