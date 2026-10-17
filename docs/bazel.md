@@ -376,10 +376,28 @@ integration tests run as a few targets per crate (`split_tests`), the
 format check, clippy and the tests share one invocation, clax-cli's own
 clippy pass runs after it (from 70 s on the critical path to 8 s), the web
 UI's build no longer reads tests, and the slow checks outside Bazel are
-skipped when their inputs passed before. What remains is structural:
-clax-server is one 37,000-line crate, compiled twice (with and without its
-test features), and its debug build embeds the web UI, so a web edit
-recompiles it and everything after it.
+skipped when their inputs passed before.
+
+The tables above predate the crate layout
+(`docs/superpowers/specs/2026-10-16-workspace-layout-design.md`), which
+took the store out of clax-core, split clax-server into five crates, put
+every embedded file in clax-embedded and test support in clax-testkit, so
+no crate is compiled twice. `just test` after an edit, measured
+2026-10-16/17 on the same machine (1-minute load before → after):
+
+| Edit | Before the layout | After it, first run | After it, second run |
+|---|---|---|---|
+| clax-core comment (`ids.rs`) | 105 s (9→19) | 74 s (23→21) | 93 s (11→42) |
+| route comment (`clax-server/src/routes/threads.rs`) | 138 s (19→24) | 56 s (19→20) | 79 s (42→35) |
+| web shell comment (`web/shell/index.html`) | 96 s (15→17) | 50 s (20→21) | 74 s (35→34) |
+
+The second run shared the machine with a load above 30, which the test
+runs (half of every critical path) feel most. What a clax-core edit
+compiles now: clax-core (3.3 s; its unit tests 6.3 s), clax-store (7.5 s;
+its tests 15.3 s), clax-mcp, then clax-server's library once (15–18 s, no
+test-feature variant) and the test binaries. A web edit rebuilds
+`web/dist`, clax-embedded (0.5 s) and the binary (3–4 s) and reruns the
+tests that serve it; it recompiles no daemon crate.
 
 ## For agents
 
