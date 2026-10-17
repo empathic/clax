@@ -1176,8 +1176,8 @@ fn answered_text(q: &QuestionRow) -> String {
 }
 
 /// A question was created: one `question` item for the asking session's
-/// person (the owner for the owner's agents), indexed by its questions,
-/// headers and labels.
+/// person (the owner for the owner's agents), about its artifact and
+/// thread, indexed by its questions, headers and labels.
 pub(crate) fn note_question(c: &Connection, q: &QuestionRow, now: &str) -> Result<Option<i64>> {
     let person = person_of_session(c, &q.session_id)?;
     insert_at(
@@ -1185,6 +1185,7 @@ pub(crate) fn note_question(c: &Connection, q: &QuestionRow, now: &str) -> Resul
         New {
             recipient: person.as_deref(),
             artifact_id: q.artifact_id.as_deref(),
+            thread_id: q.thread_id.as_deref(),
             question_id: Some(&q.id),
             session_id: Some(&q.session_id),
             text: question_text(q),
@@ -1197,6 +1198,8 @@ pub(crate) fn note_question(c: &Connection, q: &QuestionRow, now: &str) -> Resul
 /// A question closed: its index entry gains the answers, and the item is
 /// updated (so the listener hears of it); when `seen` (its person answered,
 /// skipped or moved it, or it was answered in the terminal) it is also read.
+/// An in-terminal question's item is read on every close: nothing waits in
+/// the terminal once it is answered, withdrawn, pulled or lapsed.
 pub(crate) fn question_changed(
     c: &Connection,
     q: &QuestionRow,
@@ -1220,11 +1223,12 @@ pub(crate) fn question_changed(
         "INSERT INTO inbox_fts (rowid, text) VALUES (?1, ?2)",
         params![seq, text],
     )?;
-    let read = seen
-        && matches!(
-            q.status,
-            Status::Answered | Status::Declined | Status::Released
-        );
+    let read = q.in_terminal
+        || (seen
+            && matches!(
+                q.status,
+                Status::Answered | Status::Declined | Status::Released
+            ));
     // Always written, so the listener hears that the source changed.
     c.execute(QUESTION_TOUCH, params![seq, now, read])?;
     Ok(())
@@ -2152,6 +2156,8 @@ mod tests {
                 tool_use_id: tool_use_id.map(Into::into),
                 questions,
                 released: false,
+                thread_id: None,
+                in_terminal: false,
             },
         )
         .unwrap()

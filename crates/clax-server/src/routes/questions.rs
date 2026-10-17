@@ -290,6 +290,8 @@ pub async fn create(
                     tool_use_id,
                     questions,
                     released,
+                    thread_id: None,
+                    in_terminal: false,
                 },
                 keyed,
             )?;

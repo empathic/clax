@@ -788,6 +788,8 @@ async fn ask_owner(
                     tool_use_id: None,
                     questions,
                     released: false,
+                    thread_id: None,
+                    in_terminal: false,
                 },
             )?;
             db.create_push_approval(&row.id, id.as_str(), &r.id, &sid, a.current_version)?;

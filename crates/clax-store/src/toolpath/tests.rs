@@ -835,6 +835,8 @@ fn question_text_redacted_under_no_text() {
                 tool_use_id: tool_use_id.map(str::to_string),
                 questions: questions.clone(),
                 released: false,
+                thread_id: None,
+                in_terminal: false,
             },
         )
         .unwrap()
@@ -2704,8 +2706,10 @@ fn golden_questions_match_the_live_builders() {
         let actors: &[&str] = match (kind, str_of("reason").and_then(Reason::parse)) {
             (AuditKind::QuestionAsk, _) => &["agent"],
             (AuditKind::QuestionAnswer | AuditKind::QuestionDecline, _) => &["owner"],
-            (_, Some(Reason::Owner)) => &["owner"],
-            (_, Some(Reason::Timer | Reason::Created | Reason::Explicit)) => &["agent"],
+            (_, Some(Reason::Owner | Reason::Pulled)) => &["owner"],
+            (_, Some(Reason::Timer | Reason::Created | Reason::Explicit | Reason::Lapsed)) => {
+                &["agent"]
+            }
             (_, Some(Reason::Unwaited | Reason::DaemonStart | Reason::DaemonStop)) => &["system"],
             (_, Some(Reason::SessionEnd)) => &["agent", "system"],
             (_, None) => &["system"],

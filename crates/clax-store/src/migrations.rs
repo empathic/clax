@@ -1127,6 +1127,27 @@ pub const MIGRATIONS: &[&str] = &[
     // nothing. A repaired table's added columns come last, so its column
     // order may differ from a new database's; no read depends on it.
     "",
+    // 38: where an agent's person is paying attention (spec
+    // 2026-10-16-ask-where-attention-is-design §1-§3). `questions.thread_id`
+    // places a question in a thread of its artifact; `in_terminal` marks a
+    // row that says a question waits in the terminal or in chat and takes
+    // no answer in Clax; `pulled_at` is when the person asked for such a
+    // question in Clax instead ("Ask me here"), handed to the session once,
+    // as a late answer is. On `sessions`: `terminal_at`, the person's last
+    // prompt to the session in the terminal (`terminal_inferred` when the
+    // harness reports no prompts and a turn with no Clax delivery stood in
+    // for one); `turn_at`, the end of the last turn such a harness reported;
+    // `delivered_*`, its last delivery from Clax and the artifact and thread
+    // it was about. Every time is the daemon's.
+    "ALTER TABLE questions ADD COLUMN thread_id TEXT;
+    ALTER TABLE questions ADD COLUMN in_terminal INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE questions ADD COLUMN pulled_at TEXT;
+    ALTER TABLE sessions ADD COLUMN terminal_at TEXT;
+    ALTER TABLE sessions ADD COLUMN terminal_inferred INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE sessions ADD COLUMN turn_at TEXT;
+    ALTER TABLE sessions ADD COLUMN delivered_at TEXT;
+    ALTER TABLE sessions ADD COLUMN delivered_artifact_id TEXT;
+    ALTER TABLE sessions ADD COLUMN delivered_thread_id TEXT;",
 ];
 
 /// The audit journal's migration, as a schema version (the
@@ -1762,6 +1783,35 @@ mod tests {
             )?)
         });
         assert!(second.is_err());
+    }
+
+    #[test]
+    fn migration_38_adds_where_to_ask() {
+        let (_d, st) = crate::test_util::store();
+        let cols = |t: &str| -> Vec<String> {
+            st.with_read(|c| {
+                let mut s = c.prepare(&format!("SELECT name FROM pragma_table_info('{t}')"))?;
+                Ok(s.query_map([], |r| r.get(0))?
+                    .collect::<rusqlite::Result<Vec<String>>>()?)
+            })
+            .unwrap()
+        };
+        let q = cols("questions");
+        for c in ["thread_id", "in_terminal", "pulled_at"] {
+            assert!(q.iter().any(|x| x == c), "questions.{c}");
+        }
+        let s = cols("sessions");
+        for c in [
+            "terminal_at",
+            "terminal_inferred",
+            "turn_at",
+            "delivered_at",
+            "delivered_artifact_id",
+            "delivered_thread_id",
+        ] {
+            assert!(s.iter().any(|x| x == c), "sessions.{c}");
+        }
+        assert_eq!(MIGRATIONS.len(), 37);
     }
 
     #[test]

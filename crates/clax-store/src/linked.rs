@@ -1171,7 +1171,10 @@ impl Store {
     /// was linked (or last made two-way again) and not paired yet, with a
     /// copy to make there under a new idempotency key. A download-only
     /// link's questions stay local, as its new threads do; another local
-    /// person's agents' questions never go up. How many it paired.
+    /// person's agents' questions never go up. An in-terminal question is
+    /// never copied: it takes no answer in Clax, there or here. A thread
+    /// question is copied as any other, about the remote artifact; its
+    /// `thread_id` is this daemon's and is not sent. How many it paired.
     pub fn scan_linked_questions(&self, rid: &str) -> Result<usize> {
         let links = self.links_of_remote(rid)?;
         let (rname, rorigin): (String, String) = match self.find_remote(rid)? {
@@ -1185,7 +1188,7 @@ impl Store {
                 let mut stmt = tx.prepare_cached(
                     "SELECT q.id FROM questions q
                      WHERE q.artifact_id = ?1 AND q.status = 'open' AND q.source = 'ask'
-                       AND q.person IS NULL
+                       AND q.in_terminal = 0 AND q.person IS NULL
                        AND q.created_at >= COALESCE((SELECT threads_since FROM remote_links
                              WHERE artifact_id = ?1 AND remote_id = ?3), ?2)
                        AND NOT EXISTS (SELECT 1 FROM linked_questions lq WHERE lq.question_id = q.id)
@@ -1846,6 +1849,8 @@ mod tests {
                     tool_use_id: None,
                     questions: qs.clone(),
                     released: false,
+                    thread_id: None,
+                    in_terminal: false,
                 },
             )
             .unwrap()
@@ -1905,6 +1910,48 @@ mod tests {
     }
 
     #[test]
+    fn an_in_terminal_question_about_a_linked_artifact_is_not_copied() {
+        use crate::questions::{NewQuestion, Source};
+        let w = world();
+        link(&w, (1, 1));
+        let qs: Vec<clax_core::questions::Question> = serde_json::from_value(serde_json::json!([
+            {"question": "Which?", "header": "Pick", "options": [{"label": "A"}, {"label": "B"}]}
+        ]))
+        .unwrap();
+        let sid =
+            w.st.register_session(
+                &AuditCtx::DAEMON,
+                crate::RegisterSession {
+                    harness: "claude".into(),
+                    harness_session_id: Some("h1".into()),
+                    cwd: "/w".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .id;
+        w.st.create_question(
+            &AuditCtx::DAEMON,
+            NewQuestion {
+                session_id: sid,
+                artifact_id: Some(w.aid.clone()),
+                source: Source::Ask,
+                tool_use_id: None,
+                questions: qs,
+                released: false,
+                thread_id: None,
+                in_terminal: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            w.st.scan_linked_questions(&w.rid).unwrap(),
+            0,
+            "an in-terminal question takes no answer there"
+        );
+    }
+
+    #[test]
     fn a_keyed_question_is_made_once_per_grant() {
         use crate::questions::{NewQuestion, Source};
         let w = world();
@@ -1940,6 +1987,8 @@ mod tests {
                     tool_use_id: None,
                     questions: qs.clone(),
                     released: false,
+                    thread_id: None,
+                    in_terminal: false,
                 },
                 key,
             )

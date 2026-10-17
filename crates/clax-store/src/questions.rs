@@ -94,6 +94,13 @@ pub struct QuestionRow {
     pub closed_at: Option<String>,
     /// When the asking session received the outcome.
     pub taken_at: Option<String>,
+    /// The thread of `artifact_id` it was asked in, shown in that thread's card.
+    pub thread_id: Option<String>,
+    /// An in-terminal question: says a question waits in the terminal or in
+    /// chat, and takes no answer in Clax.
+    pub in_terminal: bool,
+    /// When the person asked for the in-terminal question in Clax instead.
+    pub pulled_at: Option<String>,
 }
 
 /// A question to record. The caller has validated `questions`.
@@ -105,9 +112,16 @@ pub struct NewQuestion {
     pub questions: Vec<Question>,
     /// Created already moved to the terminal (the hook's `terminal` mode).
     pub released: bool,
+    /// A thread of `artifact_id`; it must be one (`invalid_thread`).
+    pub thread_id: Option<String>,
+    /// Record an in-terminal question ([`QuestionRow::in_terminal`]); never
+    /// created released.
+    pub in_terminal: bool,
 }
 
-/// A transition out of `Open` (or, for `Terminal`, out of `Released`).
+/// A transition out of `Open` (or, for `Terminal`, out of `Released`, or
+/// out of `Open` for a hook in-terminal question). An in-terminal question
+/// takes no `Answer`, `Decline`, `Release` or `Expire`.
 pub enum Close {
     /// Answered in Clax; `via` is `shell`, `extension` or `cli`. The
     /// answers are checked against the questions
@@ -131,11 +145,19 @@ pub enum Close {
     /// Withdrawn by the daemon as it shuts down: a mirrored question a poll
     /// held. Its inbox item stays unread.
     Shutdown,
-    /// A released question answered in the terminal, stored as Claude Code
-    /// recorded it (it may leave a question unanswered).
+    /// A released question, or an open hook in-terminal question, answered
+    /// in the terminal, stored as Claude Code recorded it (it may leave a
+    /// question unanswered).
     Terminal {
         answers: Vec<Answer>,
     },
+    /// "Ask me here" on an in-terminal question: it is withdrawn, and its
+    /// session is told once, at its next delivery, that the person wants
+    /// the question in Clax. Its inbox item is read.
+    Pull,
+    /// A hook in-terminal question whose terminal dialog took no answer:
+    /// its person typed a new prompt to the session. Its inbox item is read.
+    Lapse,
 }
 
 /// Why a question was released or withdrawn: the `reason` of its
@@ -161,11 +183,16 @@ pub enum Reason {
     DaemonStart,
     /// Withdrawn as the daemon shut down: its hook was waiting on it.
     DaemonStop,
+    /// Withdrawn: the person asked for the in-terminal question in Clax.
+    Pulled,
+    /// Withdrawn: the hook in-terminal question's dialog closed unanswered
+    /// (a new prompt came).
+    Lapsed,
 }
 
 impl Reason {
     /// Every reason.
-    pub const ALL: [Reason; 8] = [
+    pub const ALL: [Reason; 10] = [
         Reason::Owner,
         Reason::Timer,
         Reason::Created,
@@ -174,6 +201,8 @@ impl Reason {
         Reason::SessionEnd,
         Reason::DaemonStart,
         Reason::DaemonStop,
+        Reason::Pulled,
+        Reason::Lapsed,
     ];
 
     /// The phrase recorded.
@@ -187,6 +216,8 @@ impl Reason {
             Reason::SessionEnd => "session_end",
             Reason::DaemonStart => "daemon_start",
             Reason::DaemonStop => "daemon_stop",
+            Reason::Pulled => "pulled",
+            Reason::Lapsed => "lapsed",
         }
     }
 
@@ -322,16 +353,18 @@ impl ClosedCursor {
 macro_rules! select {
     () => {
         "SELECT id, session_id, artifact_id, source, tool_use_id, questions_json, status,
-            answers_json, answered_via, created_at, closed_at, taken_at FROM questions "
+            answers_json, answered_via, created_at, closed_at, taken_at, thread_id, in_terminal,
+            pulled_at FROM questions "
     };
 }
 
-/// The late answers' filter: answered or declined `ask` questions of
-/// session `?1` not yet received.
+/// The late answers' filter: session `?1`'s outcomes not yet received:
+/// its answered and declined `ask` questions, and its pulled in-terminal
+/// questions.
 macro_rules! late {
     () => {
-        "WHERE session_id = ?1 AND status IN ('answered', 'declined') AND source = 'ask'
-            AND taken_at IS NULL"
+        "WHERE session_id = ?1 AND taken_at IS NULL AND ((status IN ('answered', 'declined')
+            AND source = 'ask' AND in_terminal = 0) OR pulled_at IS NOT NULL)"
     };
 }
 
@@ -388,9 +421,9 @@ pub(crate) const WITHDRAW_SESSION: &str =
     "UPDATE questions SET status = 'withdrawn', closed_at = ?2
     WHERE session_id = ?1 AND status = 'open'";
 pub(crate) const OPEN_HOOKS: &str = "SELECT id, session_id, artifact_id FROM questions
-    WHERE status = 'open' AND source = 'hook'";
+    WHERE status = 'open' AND source = 'hook' AND in_terminal = 0";
 pub(crate) const WITHDRAW_HOOKS: &str = "UPDATE questions SET status = 'withdrawn', closed_at = ?1
-    WHERE status = 'open' AND source = 'hook'";
+    WHERE status = 'open' AND source = 'hook' AND in_terminal = 0";
 pub(crate) const CLOSE: &str = "UPDATE questions SET status = ?3, answers_json = ?4,
     answered_via = ?5, closed_at = ?6 WHERE id = ?1 AND status = ?2";
 pub(crate) const TAKE: &str =
@@ -435,6 +468,9 @@ fn row(r: &Row<'_>) -> rusqlite::Result<QuestionRow> {
         created_at: r.get("created_at")?,
         closed_at: r.get("closed_at")?,
         taken_at: r.get("taken_at")?,
+        thread_id: r.get("thread_id")?,
+        in_terminal: r.get("in_terminal")?,
+        pulled_at: r.get("pulled_at")?,
     })
 }
 
@@ -477,7 +513,8 @@ impl Store {
     /// Withdraws session `sid`'s open questions inside the caller's
     /// transaction, its session having ended under `ctx` (the reaper's is
     /// `system:ttl`); returns their IDs. Each records `question.withdraw`
-    /// (reason `session_end`).
+    /// (reason `session_end`); an in-terminal question's inbox item is read,
+    /// nothing waiting in the terminal any more.
     pub(crate) fn withdraw_session_questions(
         &self,
         tx: &Transaction<'_>,
@@ -489,6 +526,11 @@ impl Store {
         if !open.is_empty() {
             tx.execute(WITHDRAW_SESSION, params![sid, now])?;
             self.record_withdrawals(tx, ctx, &open, now, Reason::SessionEnd)?;
+            for k in &open {
+                if let Some(q) = fetch(tx, &k.id)?.filter(|q| q.in_terminal) {
+                    super::inbox::question_changed(tx, &q, false, now)?;
+                }
+            }
         }
         Ok(open.into_iter().map(|k| k.id).collect())
     }
@@ -550,6 +592,27 @@ fn not_mirrored() -> CoreError {
     )
 }
 
+fn invalid_thread() -> CoreError {
+    CoreError::invalid(
+        "invalid_thread",
+        "thread_id names no thread of the question's artifact",
+    )
+}
+
+fn not_answerable() -> CoreError {
+    CoreError::invalid(
+        "not_answerable",
+        "an in-terminal question is answered where it was asked",
+    )
+}
+
+fn not_in_terminal() -> CoreError {
+    CoreError::invalid(
+        "not_in_terminal",
+        "only an in-terminal question is asked again in Clax or lapses",
+    )
+}
+
 impl Store {
     /// Records a question for live session `n.session_id`, asked under
     /// `ctx`: `question.ask`, followed by `question.release` (reason
@@ -560,7 +623,10 @@ impl Store {
     ///
     /// # Errors
     /// `unknown_session` for a missing or ended session; `not_mirrored` for
-    /// an `ask` question created released; `limit_reached` past
+    /// an `ask` question created released; `invalid_question` for an
+    /// in-terminal question created released; `invalid_thread` when
+    /// `thread_id` names no thread of `artifact_id` (or the question has no
+    /// artifact); `limit_reached` past
     /// [`MAX_OPEN_PER_SESSION`] or [`MAX_OPEN`] open questions (a question
     /// created released does not count).
     pub fn create_question(&self, ctx: &AuditCtx, n: NewQuestion) -> Result<(QuestionRow, bool)> {
@@ -584,6 +650,15 @@ impl Store {
         if n.released && n.source == Source::Ask {
             return Err(not_mirrored());
         }
+        if n.in_terminal && n.released {
+            return Err(CoreError::invalid(
+                "invalid_question",
+                "an in-terminal question is open until it is answered or withdrawn",
+            ));
+        }
+        if n.thread_id.is_some() && n.artifact_id.is_none() {
+            return Err(invalid_thread());
+        }
         let json = to_json(&n.questions)?;
         self.with_tx(|tx| {
             let ended: Option<Option<String>> = tx
@@ -598,6 +673,18 @@ impl Store {
                     "unknown_session",
                     "no live session has this ID",
                 ));
+            }
+            if let (Some(t), Some(a)) = (&n.thread_id, &n.artifact_id) {
+                let on: Option<String> = tx
+                    .query_row(
+                        "SELECT artifact_id FROM threads WHERE id = ?1",
+                        params![t],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if on.as_deref() != Some(a.as_str()) {
+                    return Err(invalid_thread());
+                }
             }
             if let Some((grant, k)) = key {
                 let made: Option<String> = tx
@@ -647,9 +734,9 @@ impl Store {
             };
             tx.execute(
                 "INSERT INTO questions (id, session_id, artifact_id, source, tool_use_id,
-                    questions_json, status, created_at, closed_at, person)
+                    questions_json, status, created_at, closed_at, person, thread_id, in_terminal)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
-                         (SELECT person FROM sessions WHERE id = ?2))",
+                         (SELECT person FROM sessions WHERE id = ?2), ?10, ?11)",
                 params![
                     id,
                     n.session_id,
@@ -659,7 +746,9 @@ impl Store {
                     json,
                     status.as_str(),
                     now,
-                    closed_at
+                    closed_at,
+                    n.thread_id,
+                    n.in_terminal
                 ],
             )?;
             if let Some((grant, k)) = key {
@@ -797,13 +886,17 @@ impl Store {
     /// gives. A refused change records nothing.
     ///
     /// # Errors
-    /// `NotFound`; `not_mirrored` for a release of an `ask` question;
-    /// `question_closed` when the status no longer allows `c`;
+    /// `NotFound`; `not_answerable` for an answer, decline, release or
+    /// expiry of an in-terminal question; `not_mirrored` for a release of an
+    /// `ask` question; `not_in_terminal` for a pull of a question that is
+    /// not in the terminal, or a lapse of one that is not a hook in-terminal
+    /// question; `question_closed` when the status no longer allows `c`;
     /// `invalid_answer` for answers that do not fit the questions or a `via`
     /// other than `shell`, `extension` or `cli`.
     pub fn close_question(&self, ctx: &AuditCtx, qid: &str, c: Close) -> Result<QuestionRow> {
         // Whether the owner acted (or answered in the terminal): the
-        // question's inbox item is then read.
+        // question's inbox item is then read. An in-terminal question's
+        // item is read on every close (`inbox::question_changed`).
         let seen = !matches!(
             c,
             Close::Withdraw | Close::Unwaited | Close::Shutdown | Close::Expire
@@ -811,6 +904,26 @@ impl Store {
         self.with_tx(|tx| {
             let q = fetch(tx, qid)?.ok_or(CoreError::NotFound)?;
             let (status, answers, via, why) = match (c, q.status) {
+                (Close::Answer { .. } | Close::Decline | Close::Release | Close::Expire, _)
+                    if q.in_terminal =>
+                {
+                    return Err(not_answerable());
+                }
+                (Close::Pull, _) if !q.in_terminal => return Err(not_in_terminal()),
+                (Close::Lapse, _) if !(q.in_terminal && q.source == Source::Hook) => {
+                    return Err(not_in_terminal());
+                }
+                (Close::Pull, Status::Open) => {
+                    (Status::Withdrawn, None, None, Some(Reason::Pulled))
+                }
+                (Close::Lapse, Status::Open) => {
+                    (Status::Withdrawn, None, None, Some(Reason::Lapsed))
+                }
+                (Close::Terminal { answers }, Status::Open)
+                    if q.in_terminal && q.source == Source::Hook =>
+                {
+                    (Status::Answered, Some(answers), Some("terminal"), None)
+                }
                 (Close::Release | Close::Expire, _) if q.source == Source::Ask => {
                     return Err(not_mirrored());
                 }
@@ -854,6 +967,12 @@ impl Store {
             if n != 1 {
                 return Err(closed(&q));
             }
+            if why == Some(Reason::Pulled) {
+                tx.execute(
+                    "UPDATE questions SET pulled_at = ?2 WHERE id = ?1",
+                    params![qid, now],
+                )?;
+            }
             let (sid, aid) = (&q.session_id, q.artifact_id.as_deref());
             let rec = match status {
                 Status::Answered => {
@@ -883,11 +1002,12 @@ impl Store {
         })
     }
 
-    /// Session `sid`'s answered and declined `ask` questions it has not yet
-    /// received and for which `skip` is false (given the question ID), in
-    /// the order they closed, marked received in the same transaction so each
-    /// is returned once. A skipped question stays unreceived; the daemon skips
-    /// those a question poll holds, so that poll alone hands them over.
+    /// Session `sid`'s answered and declined `ask` questions, and its
+    /// pulled in-terminal questions, it has not yet received and for which
+    /// `skip` is false (given the question ID), in the order they closed,
+    /// marked received in the same transaction so each is returned once. A
+    /// skipped question stays unreceived; the daemon skips those a question
+    /// poll holds, so that poll alone hands them over.
     pub fn take_late_answers(
         &self,
         sid: &str,
@@ -999,6 +1119,8 @@ mod tests {
             tool_use_id: tool_use_id.map(Into::into),
             questions: qs(),
             released: false,
+            thread_id: None,
+            in_terminal: false,
         }
     }
 
@@ -1007,6 +1129,248 @@ mod tests {
             selected: vec!["A".into()],
             text: None,
         }]
+    }
+
+    fn thread_on(st: &Store, aid: &clax_core::ArtifactId) -> String {
+        st.create_thread(
+            DAEMON,
+            aid,
+            crate::threads::NewThread {
+                author_public_id: Some("u_mia".into()),
+                version_n: 1,
+                anchor: crate::test_util::anchor(),
+                body: "here".into(),
+                author_name: "Mia".into(),
+                clip: None,
+                via_page: false,
+            },
+        )
+        .unwrap()
+        .id
+    }
+
+    fn invalid(r: Result<impl std::fmt::Debug>, want: &str) {
+        match r {
+            Err(CoreError::Invalid { code, .. }) => assert_eq!(code, want),
+            other => panic!("expected {want}, got {other:?}"),
+        }
+    }
+
+    /// Whether question `qid`'s inbox item is read.
+    fn item_read(st: &Store, qid: &str) -> bool {
+        st.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT read_at IS NOT NULL FROM inbox_items WHERE question_id = ?1",
+                params![qid],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_thread_question_is_refused_off_its_artifact() {
+        let (_d, st) = store();
+        let sid = session(&st, "claude", "h1");
+        let a = crate::test_util::artifact(&st, Some(&sid));
+        let b = crate::test_util::artifact(&st, Some(&sid));
+        let t = thread_on(&st, &a);
+        let on = |aid: Option<&clax_core::ArtifactId>, tid: &str| {
+            st.create_question(
+                DAEMON,
+                NewQuestion {
+                    artifact_id: aid.map(|x| x.as_str().to_string()),
+                    thread_id: Some(tid.into()),
+                    ..new(&sid, Source::Ask, None)
+                },
+            )
+        };
+        invalid(on(Some(&b), &t), "invalid_thread");
+        invalid(on(None, &t), "invalid_thread");
+        invalid(on(Some(&a), "tmissing"), "invalid_thread");
+        let (q, made) = on(Some(&a), &t).unwrap();
+        assert!(made);
+        assert_eq!(q.thread_id.as_deref(), Some(t.as_str()));
+        assert!(!q.in_terminal);
+    }
+
+    #[test]
+    fn an_in_terminal_question_takes_no_answer_and_is_pulled_once() {
+        let (_d, st) = store();
+        let sid = session(&st, "claude", "h1");
+        let in_terminal = || {
+            st.create_question(
+                DAEMON,
+                NewQuestion {
+                    in_terminal: true,
+                    ..new(&sid, Source::Ask, None)
+                },
+            )
+            .unwrap()
+            .0
+        };
+        let n = in_terminal();
+        assert!(n.in_terminal && n.status == Status::Open);
+        invalid(
+            st.close_question(
+                DAEMON,
+                &n.id,
+                Close::Answer {
+                    answers: a(),
+                    via: "shell",
+                },
+            ),
+            "not_answerable",
+        );
+        invalid(
+            st.close_question(DAEMON, &n.id, Close::Decline),
+            "not_answerable",
+        );
+        let q = st
+            .create_question(DAEMON, new(&sid, Source::Ask, None))
+            .unwrap()
+            .0;
+        invalid(
+            st.close_question(DAEMON, &q.id, Close::Pull),
+            "not_in_terminal",
+        );
+        let unread = st.inbox_unread(None).unwrap();
+        let pulled = st.close_question(DAEMON, &n.id, Close::Pull).unwrap();
+        assert_eq!(pulled.status, Status::Withdrawn);
+        assert!(pulled.pulled_at.is_some());
+        assert_eq!(
+            st.inbox_unread(None).unwrap(),
+            unread - 1,
+            "the person acted: its item is read"
+        );
+        invalid(
+            st.close_question(DAEMON, &n.id, Close::Pull),
+            "question_closed",
+        );
+        let late: Vec<String> = st
+            .take_late_answers(&sid, |_| false)
+            .unwrap()
+            .into_iter()
+            .map(|q| q.id)
+            .collect();
+        assert_eq!(
+            late,
+            vec![n.id.clone()],
+            "handed over once, as a late answer"
+        );
+        assert!(st.take_late_answers(&sid, |_| false).unwrap().is_empty());
+        // Cancelled by its agent (answered in chat): its item is read too.
+        let unread = st.inbox_unread(None).unwrap();
+        let w = in_terminal();
+        assert_eq!(st.inbox_unread(None).unwrap(), unread + 1);
+        let w = st.close_question(DAEMON, &w.id, Close::Withdraw).unwrap();
+        assert_eq!(w.status, Status::Withdrawn);
+        assert!(w.pulled_at.is_none());
+        assert_eq!(st.inbox_unread(None).unwrap(), unread);
+        assert!(st.take_late_answers(&sid, |_| false).unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_in_terminal_questions_item_is_read_when_its_session_ends() {
+        let (_d, st) = store();
+        let sid = session(&st, "claude", "h1");
+        let n = st
+            .create_question(
+                DAEMON,
+                NewQuestion {
+                    in_terminal: true,
+                    ..new(&sid, Source::Ask, None)
+                },
+            )
+            .unwrap()
+            .0;
+        let q = st
+            .create_question(DAEMON, new(&sid, Source::Ask, None))
+            .unwrap()
+            .0;
+        st.end_session(DAEMON, &sid).unwrap();
+        assert!(item_read(&st, &n.id), "nothing waits in the terminal now");
+        assert!(
+            !item_read(&st, &q.id),
+            "a Clax question's item stays as it was"
+        );
+    }
+
+    #[test]
+    fn a_hook_in_terminal_question_takes_the_terminal_answer_or_lapses_and_outlives_a_restart() {
+        let (_d, st) = store();
+        let sid = session(&st, "claude", "h1");
+        let in_terminal = |t: &str| {
+            st.create_question(
+                DAEMON,
+                NewQuestion {
+                    in_terminal: true,
+                    ..new(&sid, Source::Hook, Some(t))
+                },
+            )
+            .unwrap()
+            .0
+        };
+        let answered = in_terminal("t1");
+        let q = st
+            .close_question(DAEMON, &answered.id, Close::Terminal { answers: a() })
+            .unwrap();
+        assert_eq!(
+            (q.status, q.answered_via.as_deref()),
+            (Status::Answered, Some("terminal"))
+        );
+        assert!(item_read(&st, &q.id));
+        let kept = in_terminal("t2");
+        assert!(
+            st.withdraw_hook_questions_on_start().unwrap().is_empty(),
+            "an in-terminal question's hook is not waiting on the daemon"
+        );
+        assert!(
+            st.open_hook_question_ids().unwrap().is_empty(),
+            "no grace for an in-terminal question"
+        );
+        invalid(
+            st.close_question(DAEMON, &kept.id, Close::Release),
+            "not_answerable",
+        );
+        let q = st.close_question(DAEMON, &kept.id, Close::Lapse).unwrap();
+        assert_eq!(q.status, Status::Withdrawn);
+        assert!(q.pulled_at.is_none());
+        assert!(item_read(&st, &q.id));
+        let plain = st
+            .create_question(DAEMON, new(&sid, Source::Hook, Some("t3")))
+            .unwrap()
+            .0;
+        invalid(
+            st.close_question(DAEMON, &plain.id, Close::Lapse),
+            "not_in_terminal",
+        );
+        let asked = st
+            .create_question(
+                DAEMON,
+                NewQuestion {
+                    in_terminal: true,
+                    ..new(&sid, Source::Ask, None)
+                },
+            )
+            .unwrap()
+            .0;
+        invalid(
+            st.close_question(DAEMON, &asked.id, Close::Lapse),
+            "not_in_terminal",
+        );
+        // An in-terminal question is never created released.
+        invalid(
+            st.create_question(
+                DAEMON,
+                NewQuestion {
+                    in_terminal: true,
+                    released: true,
+                    ..new(&sid, Source::Hook, Some("t4"))
+                },
+            ),
+            "invalid_question",
+        );
     }
 
     #[test]

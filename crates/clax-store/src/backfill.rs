@@ -2985,6 +2985,8 @@ pub(crate) mod tests {
                         "header": "Pick", "options": [{"label": "A"}, {"label": "B"}]}]))
                     .unwrap(),
                     released,
+                    thread_id: None,
+                    in_terminal: false,
                 },
             )
             .unwrap()

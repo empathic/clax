@@ -3188,6 +3188,8 @@ mod tests {
                         "options": [{"label": "A"}, {"label": "B"}]}]))
                     .unwrap(),
                     released: false,
+                    thread_id: None,
+                    in_terminal: false,
                 },
             )
             .unwrap();
