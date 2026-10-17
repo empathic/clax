@@ -497,7 +497,8 @@ pub async fn read_many(
     let b = body(req)?;
     enum Mark {
         Ids(Vec<String>),
-        All(InboxQuery),
+        // Boxed: a query is far larger than a list of IDs.
+        All(Box<InboxQuery>),
     }
     let mark = match (b.ids, b.all) {
         (Some(ids), false) => {
@@ -515,7 +516,7 @@ pub async fn read_many(
         (None, true) => {
             let mut q = b.filter.unwrap_or_default().query(me.clone())?;
             q.upto = b.upto;
-            Mark::All(q)
+            Mark::All(Box::new(q))
         }
         _ => return Err(invalid("give ids, or all: true")),
     };
