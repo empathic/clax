@@ -13,6 +13,11 @@
 # names another file). The first packing makes it; every later release must
 # be signed by the same key, so keep that file backed up: without it,
 # packing a new release stops (pack_home.dart says why).
+#
+# Under `bazelisk run //apps/clax_app:home_bundle` (what `just home-bundle`
+# runs when Bazel is installed) CLAX_PACK_HOME names Bazel's build of
+# pack_home.dart and BUILD_WORKSPACE_DIRECTORY the checkout; otherwise the
+# script runs pack_home.dart with `dart run`.
 set -eu
 
 act=0
@@ -22,11 +27,21 @@ case "${1:-}" in
     *) echo "usage: $0 [--i-know-what-i-am-doing]" >&2; exit 2 ;;
 esac
 
-root="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -n "${BUILD_WORKSPACE_DIRECTORY:-}" ]; then
+    root="$BUILD_WORKSPACE_DIRECTORY"
+else
+    root="$(cd "$(dirname "$0")/.." && pwd)"
+fi
 app="$root/apps/clax_app"
 key="${CLAX_HOME_BUNDLE_KEY:-${XDG_CONFIG_HOME:-$HOME/.config}/clax/home-bundle/key}"
 
-command -v dart > /dev/null || { echo "build-home-bundle.sh: dart (from Flutter) is not on PATH" >&2; exit 1; }
+pack=""
+if [ -n "${CLAX_PACK_HOME:-}" ]; then
+    # A runfiles path: absolute before the cd below.
+    pack="$(cd "$(dirname "$CLAX_PACK_HOME")" && pwd)/$(basename "$CLAX_PACK_HOME")"
+else
+    command -v dart > /dev/null || { echo "build-home-bundle.sh: dart (from Flutter) is not on PATH" >&2; exit 1; }
+fi
 
 # The seed file and its directory are the owner's only.
 umask 077
@@ -38,7 +53,11 @@ else
 fi
 
 cd "$app"
-dart run tool/pack_home.dart "$@"
+if [ -n "$pack" ]; then
+    "$pack" --app "$app" "$@"
+else
+    dart run tool/pack_home.dart "$@"
+fi
 if [ "$act" -eq 0 ]; then
     echo "run again with --i-know-what-i-am-doing (or: just home-bundle) to write"
 fi

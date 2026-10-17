@@ -3,7 +3,11 @@
 // release.json`). Run through scripts/build-home-bundle.sh, which names the
 // signing key and passes `--write` only when asked to act.
 //
-//   dart run tool/pack_home.dart --key <seed file> [--write]
+//   dart run tool/pack_home.dart --key <seed file> [--write] [--app <dir>]
+//
+// `--app` names apps/clax_app; the default is this script's parent
+// directory's parent (a compiled pack_home, as Bazel builds it, is run
+// with it).
 //
 // `home/manifest.json` gives the bundle's title, icon word, capabilities,
 // lineage, version and release, and the kit files (from `assets/kit/`) the
@@ -64,6 +68,7 @@ Map<String, File> _tree(Directory dir) => {
 
 Future<void> main(List<String> args) async {
   String? keyPath;
+  String? appPath;
   var write = false;
   for (var i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -71,16 +76,21 @@ Future<void> main(List<String> args) async {
         write = true;
       case '--key' when i + 1 < args.length:
         keyPath = args[++i];
+      case '--app' when i + 1 < args.length:
+        appPath = args[++i];
       default:
         _stop(
-          'usage: dart run tool/pack_home.dart --key <seed file> [--write]',
+          'usage: dart run tool/pack_home.dart --key <seed file> [--write] '
+          '[--app <dir>]',
           2,
         );
     }
   }
   if (keyPath == null) _stop('--key is required', 2);
 
-  final app = File(Platform.script.toFilePath()).parent.parent;
+  final app = appPath != null
+      ? Directory(appPath)
+      : File(Platform.script.toFilePath()).parent.parent;
   final source = Directory('${app.path}/home');
   final kit = Directory('${app.path}/assets/kit');
   final out = Directory('${app.path}/assets/home');

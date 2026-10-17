@@ -4,9 +4,10 @@
 
 load("@aspect_rules_js//js:defs.bzl", "js_library")
 load("@rules_apple//apple:versioning.bzl", "apple_bundle_version")
-load("@rules_dart//dart:defs.bzl", "dart_analysis_config", "dart_analysis_options")
+load("@rules_dart//dart:defs.bzl", "dart_analysis_config", "dart_analysis_options", "dart_binary", "dart_library")
 load("@rules_flutter//flutter:defs.bzl", "flutter_application", "flutter_library", "flutter_test")
 load("@rules_flutter//flutter:macos.bzl", "flutter_macos_app")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel/flutter:android.bzl", "flutter_fat_apk")
 load("//bazel/flutter:macos.bzl", "macos_helper")
@@ -264,4 +265,40 @@ sh_test(
     },
     tags = ["no-remote"],
     target_compatible_with = ["@platforms//os:macos"],
+)
+
+# The home app's bundle (assets/home/home.clax and release.json), packed
+# from home/ by tool/pack_home.dart, which needs only the bundle format and
+# no Flutter. `bazelisk run //apps/clax_app:home_bundle` (just home-bundle)
+# writes them into the checkout; the key is read from outside it
+# (scripts/build-home-bundle.sh), so this is a run target, never cached.
+dart_library(
+    name = "bundle_format",
+    package_name = "clax_app",
+    srcs = [
+        "lib/agent/icon_svg.dart",
+        "lib/bundle/bundle_reader.dart",
+        "lib/bundle/bundle_writer.dart",
+        "lib/bundle/content_hash.dart",
+        "lib/bundle/manifest.dart",
+        "lib/bundle/signing.dart",
+    ],
+    deps = [
+        "@clax_app_pub//:archive",
+        "@clax_app_pub//:cryptography",
+        "@clax_app_pub//:xml",
+    ],
+)
+
+dart_binary(
+    name = "pack_home",
+    main = "tool/pack_home.dart",
+    deps = [":bundle_format"],
+)
+
+sh_binary(
+    name = "home_bundle",
+    srcs = ["//scripts:build-home-bundle.sh"],
+    data = [":pack_home"],
+    env = {"CLAX_PACK_HOME": "$(rootpath :pack_home)"},
 )

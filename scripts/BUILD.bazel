@@ -8,9 +8,13 @@ exports_files(
     visibility = ["//crates:__subpackages__"],
 )
 
-# The Clax app's prompt copies' check (//apps/clax_app:prompt_sync).
+# The Clax app's prompt copies' check (//apps/clax_app:prompt_sync) and its
+# home bundle's packing (//apps/clax_app:home_bundle).
 exports_files(
-    ["sync-app-prompt.sh"],
+    [
+        "build-home-bundle.sh",
+        "sync-app-prompt.sh",
+    ],
     visibility = ["//apps/clax_app:__pkg__"],
 )
 
