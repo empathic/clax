@@ -651,12 +651,15 @@ class AgentLoop {
       RunCancelled() || RunInterrupted() => null,
       _ => '',
     };
+    // A limit stop after planning the rest: the build goes on with it.
+    final planned = switch (ran.outcome) {
+      RunGaveUp(planned: true) => true,
+      RunFinished(limit: null) =>
+        ran.state.planned && ran.finish.capPublished != null,
+      _ => false,
+    };
     try {
       if (limit == null) return;
-      if (limit.isEmpty) {
-        await unfinished.remove(threadIds);
-        return;
-      }
       final d = ran.state.draft;
       // What the draft holds beyond what is live now: the run's base, or
       // the part a cap stop published.
@@ -667,6 +670,28 @@ class AgentLoop {
           jsonEncode(d.capabilities) != jsonEncode(ran.state.ctx.capabilities)
           ? d.capabilities
           : null;
+      if (limit.isEmpty) {
+        await unfinished.remove(threadIds);
+        if (planned && (edits.isNotEmpty || title != null || caps != null)) {
+          // Its draft goes to the build, whose next run starts from it.
+          await unfinished.put(
+            UnfinishedChange(
+              artifactId: aid,
+              threadIds: [buildDraftKey(aid)],
+              commentIds: const [],
+              limit: '',
+              spentUsd: 0,
+              at: _clock.now(),
+              edits: edits,
+              before: {for (final p in edits.keys) p: fingerprint(from[p])},
+              title: title,
+              capabilities: caps,
+              lastRender: _lastRender(d),
+            ),
+          );
+        }
+        return;
+      }
       await unfinished.put(
         UnfinishedChange(
           artifactId: aid,
@@ -803,6 +828,27 @@ class AgentLoop {
       }
       if (cancel.isCancelled) return const ChangeCancelled();
       final documents = PromptBuilder.trimDocuments(snap.docs);
+      // The draft a change left when it planned the rest of itself.
+      UnfinishedChange? carried;
+      try {
+        carried = await unfinished.get(buildDraftKey(aid));
+      } on Object catch (e) {
+        _log('the build draft of $aid is unavailable: $e');
+      }
+      final holds =
+          carried != null &&
+          carried.before.entries.every(
+            (e) => fingerprint(snap.files[e.key]) == e.value,
+          );
+      final start = holds ? carried.edits : const <String, String?>{};
+      final draftFiles = {...snap.files};
+      for (final e in start.entries) {
+        if (e.value case final v?) {
+          draftFiles[e.key] = v;
+        } else {
+          draftFiles.remove(e.key);
+        }
+      }
       const caps = RunCaps.continueBuild;
       final scope = _RunCancel(cancelled);
       final ran = await _runTools(
@@ -835,10 +881,21 @@ class AgentLoop {
           first: _prompts.firstContinue(
             title: snap.artifact.title,
             plan: plan,
-            files: snap.files,
+            files: draftFiles,
             others: others,
             documents: snap.docs,
             fromBundle: bundled,
+            carried: carried == null
+                ? null
+                : holds
+                ? CarriedDraft(
+                    edited: carried.edits.keys.toList()..sort(),
+                    diff: _diffOf(carried.edits, snap.files),
+                    lastRender: carried.lastRender,
+                  )
+                : const CarriedDraft(
+                    why: 'the app changed under its unfinished draft',
+                  ),
           ),
         ),
         onProgress,
@@ -847,9 +904,24 @@ class AgentLoop {
         kind: RunKind.continueBuild,
         fromBundle: bundled,
         plan: RunPlan(plans, aid, request: plan.request, seen: plan.revision),
+        start: start,
+        startTitle: holds ? carried.title : null,
+        startCapabilities: holds ? carried.capabilities : null,
       );
       // A continue run has no one waiting on its question.
       await ran.ask.withdrawOpen();
+      // The carried draft is done with once it landed, or when it no
+      // longer fits the app.
+      final landed = switch (ran.outcome) {
+        RunFinished(version: _?) => true,
+        _ => false,
+      };
+      if (carried != null && (!holds || landed)) {
+        await _quiet(
+          'forget the build draft',
+          () => unfinished.remove([buildDraftKey(aid)]),
+        );
+      }
       return switch (ran.outcome) {
         RunFinished(:final version?) => ChangeLanded(version),
         RunFinished() => const ChangeAnswered(),

@@ -616,6 +616,91 @@ void main() {
     expect(await unfinished.get(item.threadId), isNull);
   });
 
+  test(
+    'a Keep going that plans the rest and stops before a clean render '
+    'carries its draft into the build, whose first run starts from it',
+    () async {
+      final item = api.sendComment(aid, 'Rename and add stats', queue: false);
+      await unfinished.put(
+        UnfinishedChange(
+          artifactId: aid,
+          threadIds: [item.threadId],
+          commentIds: [item.commentId],
+          limit: '10 turns',
+          spentUsd: 2.5,
+          stops: 2,
+          at: clock.now(),
+          edits: {'index.html': page.replaceFirst('Save', 'Keep')},
+          before: {'index.html': fingerprint(page)},
+        ),
+      );
+      final loop = loopWith([
+        [
+          const ScriptedCall('plan_set', {
+            'features': [
+              {
+                'id': 's1',
+                'title': 'Stats',
+                'detail': 'The draft renames Save already.',
+                'status': 'todo',
+              },
+            ],
+          }),
+          for (var i = 0; i < 10; i++) const ScriptedCall('list_files', {}),
+        ],
+        [
+          const ScriptedCall('render', {'file': null}),
+          const ScriptedCall('plan_mark', {'id': 's1', 'status': 'done'}),
+          const ScriptedCall('finish', {'reply': 'Built s1.', 'resolve': true}),
+        ],
+      ]);
+      final out = await loop.change(aid, [item], session: sid, keepGoing: true);
+      expect(out, isA<ChangeAnswered>());
+      expect(api.currentVersion(aid), 1);
+      expect(await unfinished.get(item.threadId), isNull);
+      expect(
+        (await unfinished.get(buildDraftKey(aid)))!.edits['index.html'],
+        contains('<button>Keep'),
+      );
+
+      await loop.continueBuild(aid);
+      expect(runner.states[1].draft.files['index.html'], contains('Keep'));
+      expect(runner.text(1), contains('change that planned these features'));
+      expect(api.filesOf(aid, 2)['index.html'], contains('<button>Keep'));
+      expect(await unfinished.get(buildDraftKey(aid)), isNull);
+    },
+  );
+
+  test('a build draft the app changed under is dropped, and the build is '
+      'told the features\' notes of it do not hold', () async {
+    await plans.set(aid, const [
+      PlanFeature(id: 's1', title: 'Stats'),
+    ], request: 'runs');
+    await unfinished.put(
+      UnfinishedChange(
+        artifactId: aid,
+        threadIds: [buildDraftKey(aid)],
+        commentIds: const [],
+        limit: '',
+        spentUsd: 0,
+        at: clock.now(),
+        edits: {'index.html': 'stale'},
+        before: {'index.html': fingerprint('something else')},
+      ),
+    );
+    await loopWith([
+      [
+        const ScriptedCall('finish', {
+          'reply': 'Nothing yet.',
+          'resolve': true,
+        }),
+      ],
+    ]).continueBuild(aid);
+    expect(runner.states.single.draft.files['index.html'], page);
+    expect(runner.text(0), contains('could not be used'));
+    expect(await unfinished.get(buildDraftKey(aid)), isNull);
+  });
+
   test('a small change keeps the fast path: no plan, one run', () async {
     final item = api.sendComment(aid, 'Rename Save', queue: false);
     final out = await loopWith([

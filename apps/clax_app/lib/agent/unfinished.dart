@@ -19,6 +19,11 @@ const maxUnfinishedBytes = 8 * 1024 * 1024;
 /// its Keep going runs: the newest.
 const maxUnfinishedNotes = 60;
 
+/// The key [UnfinishedChanges] keeps the draft of a change that planned
+/// the rest of itself under ([plannedStopReply]): the build of [appId]
+/// starts its next continue run from it.
+String buildDraftKey(String appId) => 'build:$appId';
+
 /// What [draft] holds beyond [from]: each path whose text differs, to the
 /// draft's text, and each path of [from] the draft lacks, to null.
 Map<String, String?> keptEdits(

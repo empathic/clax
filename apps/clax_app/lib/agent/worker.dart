@@ -1342,8 +1342,8 @@ class FeedbackWorker {
     try {
       final kept = await _loop.unfinished.all();
       final gone = [
-        for (final t in kept.keys)
-          if (!open.contains(t)) t,
+        for (final MapEntry(key: t, value: c) in kept.entries)
+          if (t == buildDraftKey(c.artifactId) ? false : !open.contains(t)) t,
       ];
       if (gone.isNotEmpty) await _loop.unfinished.remove(gone);
     } on Object catch (e) {
