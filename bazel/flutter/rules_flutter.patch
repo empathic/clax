@@ -22,3 +22,38 @@ diff --git a/flutter/private/flutter_asset_bundle.bzl b/flutter/private/flutter_
  
      # Add extra copies with custom destination paths.
      extra_files = []
+diff --git a/flutter/private/flutter_pub_package.bzl b/flutter/private/flutter_pub_package.bzl
+--- a/flutter/private/flutter_pub_package.bzl
++++ b/flutter/private/flutter_pub_package.bzl
+@@ -499,7 +499,12 @@ def _resolve_plugin_maven_deps(ctx):
+     for coord in coords:
+         if coord in _MAVEN_COORDS_PROVIDED:
+             continue
+-        label = _MAVEN_COORD_TO_LABEL.get(coord)
++        # Any other coordinate names its rules_jvm_external target, which
++        # the workspace's `maven.install` of rules_android_maven must
++        # declare: a missing one fails the build by name instead of the
++        # plugin's compile (a patch Clax keeps:
++        # bazel/flutter/rules_flutter.patch).
++        label = _MAVEN_COORD_TO_LABEL.get(coord) or "@rules_android_maven//:" + coord.replace(".", "_").replace(":", "_").replace("-", "_")
+         if label and label not in seen:
+             seen[label] = True
+             labels.append(label)
+@@ -1719,6 +1724,17 @@ def _flutter_pub_package_impl(ctx):
+             )
+             if android_src_dir or android_has_resources:
+                 android_extra_maven_labels = _resolve_plugin_maven_deps(ctx)
++
++                # The Android code of the pub packages this one depends on,
++                # as Gradle gives a plugin its pub dependencies' Android
++                # projects (image_picker_android needs
++                # flutter_plugin_android_lifecycle's FlutterLifecycleAdapter).
++                # Every spoke has an `android:lib`, empty without Android
++                # code (a patch Clax keeps: bazel/flutter/rules_flutter.patch).
++                android_extra_maven_labels = android_extra_maven_labels + [
++                    "@{hub}__{dep}//android:lib".format(hub = ctx.attr.hub_name, dep = dep)
++                    for dep in bazel_deps
++                ]
+                 android_manifest = _detect_android_manifest(ctx)
+                 android_consumer_proguard_specs = _detect_consumer_proguard_specs(ctx)
+ 

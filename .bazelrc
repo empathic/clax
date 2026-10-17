@@ -16,6 +16,15 @@ common --repo_env=DO_NOT_TRACK=1
 # for Java 21 and later; Bazel's own tool JDK is older.
 common --tool_java_language_version=25
 common --tool_java_runtime_version=remotejdk_25
+# The app's own Java and Kotlin compile for Java 17, as its Gradle build
+# does, with a JDK rules_java fetches by checksum (never a local one).
+common --java_language_version=17
+common --java_runtime_version=remotejdk_21
+
+# An APK's native libraries, which reach it as Java resources
+# (bazel/flutter/android.bzl), compressed as Gradle packs them for an app
+# that extracts them (android:extractNativeLibs="true").
+build --experimental_android_compress_java_resources
 
 # Actions see a fixed environment, so their results can be shared.
 build --incompatible_strict_action_env

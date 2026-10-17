@@ -1,0 +1,59 @@
+diff --git a/rules/android_sdk_repository/rule.bzl b/rules/android_sdk_repository/rule.bzl
+--- a/rules/android_sdk_repository/rule.bzl
++++ b/rules/android_sdk_repository/rule.bzl
+@@ -110,8 +110,27 @@ def _android_sdk_repository_impl(repo_ctx):
+     repo_metadata = None
+     if hasattr(repo_ctx, "repo_metadata"):
+         repo_metadata = repo_ctx.repo_metadata(reproducible = True)
+-    # Determine the SDK path to use, either from the attribute or the environment.
++    # Determine the SDK path to use: the pinned archives (a patch Clax keeps,
++    # bazel/android/rules_android.patch), the attribute, or the environment.
+     android_sdk_path = repo_ctx.attr.path
++    if repo_ctx.attr.archives:
++        host = {"linux": "linux", "mac os x": "darwin"}.get(repo_ctx.os.name)
++        dests = {}
++        for entry in repo_ctx.attr.archives:
++            dest, strip_prefix, os, url, sha256 = entry.split(" ")
++            dests.setdefault(dest, None)
++            if os == host or os == "any":
++                dests[dest] = (strip_prefix, url, sha256)
++        for dest, pinned in dests.items():
++            if not pinned:
++                fail("No archive of %s is pinned for %s" % (dest, repo_ctx.os.name))
++            repo_ctx.download_and_extract(
++                url = pinned[1],
++                sha256 = pinned[2],
++                stripPrefix = pinned[0],
++                output = "_sdk/" + dest,
++            )
++        android_sdk_path = str(repo_ctx.path("_sdk"))
+     if not android_sdk_path:
+         android_sdk_path = repo_ctx.getenv("ANDROID_HOME")
+     if not android_sdk_path:
+@@ -195,9 +214,9 @@ _android_sdk_repository = repository_rule(
+         "api_level": attr.int(default = 0),
+         "build_tools_version": attr.string(),
+         "path": attr.string(),
++        "archives": attr.string_list(doc = "Archives unpacked under one SDK root, each \"<dest> <strip_prefix> <darwin|linux|any> <url> <sha256>\"."),
+     },
+     environ = ["ANDROID_HOME"],
+-    local = True,
+ )
+ 
+ def android_sdk_repository(
+@@ -242,6 +261,7 @@ def _android_sdk_repository_extension_impl(module_ctx):
+         kwargs["api_level"] = module.tags.configure[0].api_level
+         kwargs["build_tools_version"] = module.tags.configure[0].build_tools_version
+         kwargs["path"] = module.tags.configure[0].path
++        kwargs["archives"] = module.tags.configure[0].archives
+ 
+     _android_sdk_repository(
+         name = "androidsdk",
+@@ -261,6 +281,7 @@ android_sdk_repository_extension = module_extension(
+             "path": attr.string(),
+             "api_level": attr.int(),
+             "build_tools_version": attr.string(),
++            "archives": attr.string_list(),
+         }),
+     },
+ )

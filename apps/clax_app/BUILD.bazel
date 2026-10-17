@@ -4,8 +4,9 @@
 
 load("@aspect_rules_js//js:defs.bzl", "js_library")
 load("@rules_dart//dart:defs.bzl", "dart_analysis_config", "dart_analysis_options")
-load("@rules_flutter//flutter:defs.bzl", "flutter_library", "flutter_test")
+load("@rules_flutter//flutter:defs.bzl", "flutter_application", "flutter_library", "flutter_test")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("//bazel/flutter:android.bzl", "flutter_fat_apk")
 
 js_library(
     name = "kit",
@@ -134,4 +135,90 @@ sh_test(
         "//docs:contract",
         "//web:contract_files",
     ],
+)
+
+# pubspec.yaml's assets: the files directly in each directory it names, as
+# Flutter bundles them.
+APP_ASSETS = glob(
+    [
+        "assets/home/*",
+        "assets/kit/*",
+        "assets/prompt/*",
+    ],
+    exclude = ["**/.qual"],
+)
+
+flutter_application(
+    name = "app",
+    package_name = "clax_app",
+    srcs = glob(["lib/**/*.dart"]),
+    assets = APP_ASSETS,
+    main = "lib/main.dart",
+    deps = [
+        ":clax_app",
+        "@rules_flutter//flutter:material_icons",
+    ],
+)
+
+# pubspec.yaml's `version: <name>+<code>`.
+VERSION_NAME = "1.0.0"
+
+VERSION_CODE = "1"
+
+sh_test(
+    name = "version_sync",
+    srcs = ["tool/version-sync.sh"],
+    args = [
+        VERSION_NAME,
+        VERSION_CODE,
+    ],
+    data = ["pubspec.yaml"],
+)
+
+# The release APK, for both Android CPUs the app ships, with the embedded
+# clax for each (bazel/flutter/android.bzl).
+flutter_fat_apk(
+    name = "apk",
+    application = ":app",
+    debug_key = "@android_debug_keystore//:key",
+    kotlin_srcs = glob(["android/app/src/main/kotlin/**/*.kt"]),
+    manifest = "android/app/src/main/AndroidManifest.xml",
+    # As android/app/build.gradle.kts gives them: minSdk 29, Flutter's
+    # target SDK, and pubspec.yaml's version (:version_sync checks it).
+    manifest_values = {
+        "minSdkVersion": "29",
+        "targetSdkVersion": "36",
+        "versionCode": VERSION_CODE,
+        "versionName": VERSION_NAME,
+    },
+    namespace = "dev.empathic.clax_app",
+    native_files = {
+        "//crates/clax-cli:clax_android_arm64": "arm64-v8a/libclax.so",
+        "//crates/clax-cli:clax_android_x86_64": "x86_64/libclax.so",
+    },
+    package_name = "dev.empathic.clax",
+    pub_hub_name = "clax_app_pub",
+    resources = glob(["android/app/src/main/res/**"]),
+    tags = ["no-remote"],
+)
+
+# The APK has what the Gradle build gives it (tool/apk-check.sh).
+sh_test(
+    name = "apk_test",
+    srcs = ["tool/apk-check.sh"],
+    args = [
+        "$(rootpath :apk)",
+        "$(rootpath @androidsdk//:aapt2)",
+        "$(rootpath @androidsdk//:apksigner)",
+    ],
+    data = [
+        ":apk",
+        "@androidsdk//:aapt2",
+        "@androidsdk//:apksigner",
+    ],
+    env = {
+        "VERSION_CODE": VERSION_CODE,
+        "VERSION_NAME": VERSION_NAME,
+    },
+    tags = ["no-remote"],
 )
