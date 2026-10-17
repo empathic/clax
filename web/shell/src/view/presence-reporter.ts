@@ -5,12 +5,17 @@
 // stream (re)connect. Each report says whether the tab has focus and how
 // long ago the viewer last gave input in it (never a time, so the browser's
 // clock does not matter); the daemon keeps both for the viewer's own agents
-// and shows them to no one. Gaining or losing focus reports at once.
+// and shows them to no one. Gaining or losing focus reports at once; while
+// focus sits in the artifact's frame, where the shell window hears no blur
+// or focus as the viewer leaves the browser or comes back, focus is read
+// again every second.
 import { after, wall } from "../clock";
 import type { ViewState } from "./artifact-controller";
 import { type PresenceView, stateFor, whereLabel } from "./presence-model";
 
 const INPUTS = ["pointerdown", "pointermove", "keydown", "wheel", "touchstart"] as const;
+/** How often focus is read again while it sits in a frame. */
+const FRAME_FOCUS_MS = 1000;
 
 export class PresenceReporter {
   /** This page's name in its reports: one viewer (the owner's browsers are
@@ -22,8 +27,10 @@ export class PresenceReporter {
   private reported: { state: "here" | "away"; where: string | null; focused: boolean; at: number } | null = null;
   private timer: (() => void) | undefined;
   private readonly beat: ReturnType<typeof setInterval>;
-  private readonly onVisible = () => this.report();
-  private readonly onFocus = () => this.report();
+  /** Cancels the pending re-read of focus while it sits in a frame. */
+  private frameWatch: (() => void) | undefined;
+  private readonly onVisible = () => { this.report(); this.watchFrame(); };
+  private readonly onFocus = () => { this.report(); this.watchFrame(); };
   private readonly onInput = () => {
     this.lastInput = wall();
     if (this.reported?.state === "away" && document.visibilityState === "visible") this.report();
@@ -75,6 +82,19 @@ export class PresenceReporter {
     void putPresence(this.id, state, where, this.tab, false, { focused, idle_ms: this.idle() }).then(p => { if (p && !this.done) this.take(p); });
   }
 
+  /** Re-reads focus every second while the tab is visible and focus is in a
+   * frame (a blur toward the frame is followed by one re-read, since focus
+   * lands there after the blur), reporting when it changed. */
+  private watchFrame(): void {
+    if (this.done || this.frameWatch) return;
+    this.frameWatch = after(FRAME_FOCUS_MS, () => {
+      this.frameWatch = undefined;
+      if (this.done) return;
+      this.report();
+      if (document.visibilityState === "visible" && document.activeElement?.tagName === "IFRAME") this.watchFrame();
+    });
+  }
+
   /** How long ago, in whole milliseconds, the viewer last gave input in this tab. */
   private idle(): number { return Math.max(0, Math.round(wall() - this.lastInput)); }
 
@@ -90,6 +110,7 @@ export class PresenceReporter {
     for (const t of INPUTS) removeEventListener(t, this.onInput, { capture: true });
     clearInterval(this.beat);
     this.timer?.();
+    this.frameWatch?.();
   }
 }
 

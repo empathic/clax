@@ -14,9 +14,16 @@ function stub(focused: boolean) {
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   return vi.spyOn(document, "hasFocus").mockReturnValue(focused);
 }
-const reporter = () => new PresenceReporter(AID, () => ({ shareWhere: false }) as unknown as ViewState, () => true, () => {});
+const clock = () => (globalThis as unknown as { claxTestClock: { advance(ms: number): void } }).claxTestClock;
+// Every reporter is disposed after its test, so one a failed test leaves cannot report into the next.
+const made: PresenceReporter[] = [];
+const reporter = () => {
+  const r = new PresenceReporter(AID, () => ({ shareWhere: false }) as unknown as ViewState, () => true, () => {});
+  made.push(r);
+  return r;
+};
 
-afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+afterEach(() => { for (const r of made.splice(0)) r.dispose(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("PresenceReporter", () => {
   it("reports focus and idle time, never a timestamp", async () => {
@@ -43,6 +50,64 @@ describe("PresenceReporter", () => {
     dispatchEvent(new Event("focus"));
     await vi.waitFor(() => expect(bodies.length).toBe(3));
     expect(bodies[2].focused).toBe(true);
+    r.dispose();
+  });
+
+  it("reads focus again every second while it sits in the frame, and reports when it is lost", async () => {
+    const focus = stub(true);
+    const frame = document.createElement("iframe");
+    const active = vi.spyOn(document, "activeElement", "get").mockReturnValue(frame);
+    const r = reporter();
+    r.report(true);
+    await vi.waitFor(() => expect(bodies.length).toBe(1));
+    // Focus moves into the frame: the shell window hears a blur, but the document keeps focus.
+    dispatchEvent(new Event("blur"));
+    clock().advance(1000);
+    expect(bodies.length).toBe(1);
+    // The viewer leaves for another app: the shell window hears nothing.
+    focus.mockReturnValue(false);
+    clock().advance(1000);
+    await vi.waitFor(() => expect(bodies.length).toBe(2));
+    expect(bodies[1].focused).toBe(false);
+    // Focus leaves the frame: the re-reads stop.
+    active.mockReturnValue(document.body);
+    focus.mockReturnValue(true);
+    clock().advance(1000);
+    await vi.waitFor(() => expect(bodies.length).toBe(3));
+    expect(bodies[2].focused).toBe(true);
+    focus.mockReturnValue(false);
+    clock().advance(5000);
+    expect(bodies.length).toBe(3);
+    r.dispose();
+  });
+
+  it("reports the time since the last input as idle_ms", async () => {
+    stub(true);
+    const r = reporter();
+    dispatchEvent(new Event("keydown"));
+    clock().advance(5000);
+    r.report(true);
+    await vi.waitFor(() => expect(bodies.length).toBe(1));
+    expect(bodies[0].idle_ms).toBeGreaterThanOrEqual(5000);
+    expect(bodies[0].idle_ms).toBeLessThan(6000);
+    // A new input restarts the count (reports go out at most every 2 s).
+    dispatchEvent(new Event("keydown"));
+    clock().advance(2000);
+    r.report(true);
+    await vi.waitFor(() => expect(bodies.length).toBe(2));
+    expect(bodies[1].idle_ms).toBeGreaterThanOrEqual(2000);
+    expect(bodies[1].idle_ms).toBeLessThan(3000);
+    r.dispose();
+  });
+
+  it("leaving the page reports away, unfocused, with idle_ms, on a keepalive request", async () => {
+    stub(true);
+    const r = reporter();
+    dispatchEvent(new Event("pagehide"));
+    await vi.waitFor(() => expect(bodies.length).toBe(1));
+    expect(bodies[0]).toMatchObject({ artifact_id: AID, state: "away", focused: false });
+    expect(bodies[0].idle_ms).toBeGreaterThanOrEqual(0);
+    expect(vi.mocked(fetch).mock.calls[0][1]?.keepalive).toBe(true);
     r.dispose();
   });
 });
