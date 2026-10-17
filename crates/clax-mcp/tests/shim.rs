@@ -3,8 +3,8 @@
 //! with rmcp's client.
 
 use clax_core::Home;
+use clax_core::daemon::read_daemon_info;
 use clax_fake_exe::clax_bin;
-use clax_server::daemon::read_daemon_info;
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::RunningService;
 use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
@@ -107,7 +107,7 @@ impl Shim {
         let info = read_daemon_info(&self.home()).expect("daemon.json");
         format!(
             "http://{}:{}",
-            clax_server::daemon::probe_host(&info.bind),
+            clax_core::daemon::probe_host(&info.bind),
             info.port
         )
     }
@@ -364,7 +364,7 @@ async fn heartbeats_never_start_a_daemon_but_tool_calls_do() {
     tokio::time::sleep(Duration::from_millis(700)).await;
     if let Some(info) = read_daemon_info(&shim.home()) {
         assert!(
-            !clax_server::daemon::pid_alive(info.pid),
+            !clax_core::daemon::pid_alive(info.pid),
             "a heartbeat started daemon {info:?}"
         );
     }
@@ -461,7 +461,7 @@ async fn an_older_daemon_is_replaced_on_the_same_bind() {
     let now = read_daemon_info(&shim.home()).unwrap();
     assert_ne!(u64::from(now.pid), old_pid, "the older daemon was replaced");
     assert_eq!(now.bind, "0.0.0.0");
-    assert!(!clax_server::daemon::pid_alive(old_pid as u32));
+    assert!(!clax_core::daemon::pid_alive(old_pid as u32));
     shim.finish().await;
 }
 

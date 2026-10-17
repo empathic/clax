@@ -16,7 +16,7 @@ icu_properties = "2"
 unicode-security = "0.1"
 chrono.workspace = true
 mime_guess.workspace = true
-nix = { workspace = true, features = ["fs"] }
+nix = { workspace = true, features = ["fs", "signal"] }
 rand.workspace = true
 ring.workspace = true
 sha2 = "0.11"

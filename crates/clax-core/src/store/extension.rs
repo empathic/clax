@@ -35,7 +35,7 @@ pub struct LiveCredential {
 
 /// The oldest `last_used_at` still live at `now`.
 fn cutoff(now: chrono::DateTime<chrono::Utc>) -> String {
-    super::stamp(now - chrono::Duration::days(CREDENTIAL_TTL_DAYS))
+    crate::time::stamp(now - chrono::Duration::days(CREDENTIAL_TTL_DAYS))
 }
 
 impl Store {

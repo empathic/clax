@@ -10,11 +10,11 @@
 
 use anyhow::{Context, anyhow, bail};
 use clax_core::Home;
-use clax_core::remote::{Credential, Mode, Remote, Signer};
-use clax_server::daemon::{
+use clax_core::daemon::{
     DaemonInfo, DaemonLock, StartingInfo, browser_host, pid_alive, probe_host, read_daemon_info,
     read_starting_info,
 };
+use clax_core::remote::{Credential, Mode, Remote, Signer};
 use nix::sys::signal::Signal;
 use std::net::{IpAddr, Ipv4Addr};
 use std::process::{Command, Stdio};
@@ -343,7 +343,7 @@ fn log_line(home: &Home, msg: &str) {
         let _ = writeln!(
             f,
             "{} clax client: {msg}",
-            clax_core::store::stamp(chrono::Utc::now())
+            clax_core::time::stamp(chrono::Utc::now())
         );
     }
 }

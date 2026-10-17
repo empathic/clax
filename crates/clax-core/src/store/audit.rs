@@ -868,7 +868,7 @@ pub(crate) mod tests {
     }
 
     fn rec(title: &str) -> AuditRecord {
-        let mut r = AuditRecord::new(AuditKind::ArtifactUpdate, super::super::stamp_now())
+        let mut r = AuditRecord::new(AuditKind::ArtifactUpdate, crate::time::stamp_now())
             .with("title", title);
         r.ids.artifact = Some("01ARZ3NDEKTSV4RRFFQ69G5FAV".into());
         r

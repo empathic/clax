@@ -1114,7 +1114,7 @@ fn request_in(
     if route == Route::Join {
         return Ok(Requested::None);
     }
-    let quiet = super::stamp(st.now_utc() - chrono::Duration::seconds(DECLINE_QUIET_SECS));
+    let quiet = crate::time::stamp(st.now_utc() - chrono::Duration::seconds(DECLINE_QUIET_SECS));
     let declined: bool = tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM approval_requests
            WHERE COALESCE(approver, '') = COALESCE(?1, '') AND author = ?2

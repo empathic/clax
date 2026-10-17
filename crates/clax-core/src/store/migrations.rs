@@ -794,7 +794,7 @@ pub(super) fn rust_step(tx: &rusqlite::Transaction<'_>, version: u32) -> crate::
             rusqlite::params![
                 crate::new_ulid(),
                 super::approvals::UNCONNECTED,
-                super::stamp_now()
+                crate::time::stamp_now()
             ],
         )?;
     }

@@ -48,7 +48,7 @@ pub struct RealClients<'a> {
 
 impl<'a> RealClients<'a> {
     pub fn new(w: &'a World) -> RealClients<'a> {
-        let info = clax_server::daemon::DaemonInfo {
+        let info = clax_core::daemon::DaemonInfo {
             port: w.ts.addr.port(),
             pid: std::process::id(),
             token: w.ts.token.clone(),
@@ -58,7 +58,7 @@ impl<'a> RealClients<'a> {
             exe: None,
             commit: None,
         };
-        clax_server::daemon::write_daemon_info(&w.ts.home, &info).unwrap();
+        clax_core::daemon::write_daemon_info(&w.ts.home, &info).unwrap();
         let scratch = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(scratch.path().join("work")).unwrap();
         RealClients { w, scratch }

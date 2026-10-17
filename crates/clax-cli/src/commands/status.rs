@@ -82,8 +82,8 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
                 text
             })
         }
-        None => match clax_server::daemon::read_starting_info(home)
-            .filter(|s| clax_server::daemon::pid_alive(s.pid))
+        None => match clax_core::daemon::read_starting_info(home)
+            .filter(|s| clax_core::daemon::pid_alive(s.pid))
         {
             // A daemon that has not answered yet: say what it is doing (a
             // first start may record the audit backfill for a while).

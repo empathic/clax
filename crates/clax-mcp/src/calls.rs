@@ -111,7 +111,7 @@ impl CallScope {
             tool: tool.to_string(),
             harness_tool: None,
             args_sha256,
-            started_at: clax_core::store::stamp_now(),
+            started_at: clax_core::time::stamp_now(),
             harness_call_id: None,
         };
         let encoded = encode_call_header(&header).ok();
@@ -163,8 +163,7 @@ impl CallScope {
 
     /// The report of this call, ending now with `outcome`.
     pub fn report(&self, outcome: ToolOutcome) -> ToolCallReport {
-        let mut r =
-            ToolCallReport::new(self.header.clone(), clax_core::store::stamp_now(), outcome);
+        let mut r = ToolCallReport::new(self.header.clone(), clax_core::time::stamp_now(), outcome);
         r.artifact_id = self
             .artifact
             .lock()
