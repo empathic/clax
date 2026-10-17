@@ -23,6 +23,11 @@ pub struct SessionSignals {
     pub delivered_at: Option<String>,
     pub delivered_artifact_id: Option<String>,
     pub delivered_thread_id: Option<String>,
+    /// When the delivered comment was written, when the session's own
+    /// person wrote it in a browser (not a page through the `comments`
+    /// capability, not another author): the person was in Clax then. A
+    /// delivery's own time says only when the agent took it.
+    pub delivered_written_at: Option<String>,
 }
 
 fn unknown_session() -> CoreError {
@@ -114,16 +119,30 @@ impl Store {
     }
 
     /// Records a delivery from Clax to session `sid` now, about artifact
-    /// `aid` and, when given, its thread `tid`. An ended or unknown session
-    /// records nothing.
-    pub fn note_delivery(&self, sid: &str, aid: &str, tid: Option<&str>) -> Result<()> {
+    /// `aid` and, when given, its thread `tid` and comment `cid`. The
+    /// comment's creation time is kept as `delivered_written_at` only when
+    /// the session's own person (its `person`, else the owner) wrote it by
+    /// hand. An ended or unknown session records nothing.
+    pub fn note_delivery(
+        &self,
+        sid: &str,
+        aid: &str,
+        tid: Option<&str>,
+        cid: Option<&str>,
+    ) -> Result<()> {
         let now = self.now();
         self.with_tx(|tx| {
             tx.execute(
                 "UPDATE sessions SET delivered_at = ?2, delivered_artifact_id = ?3,
-                    delivered_thread_id = ?4, delivered_since_turn = 1
+                    delivered_thread_id = ?4, delivered_since_turn = 1,
+                    delivered_written_at = (
+                        SELECT c.created_at FROM comments c
+                        WHERE c.id = ?5 AND c.author_kind = ?6 AND c.via_page = 0
+                          AND c.author_public_id = COALESCE(
+                              sessions.person,
+                              (SELECT public_id FROM viewers WHERE owner = 1)))
                  WHERE id = ?1 AND ended_at IS NULL",
-                params![sid, now, aid, tid],
+                params![sid, now, aid, tid, cid, clax_core::model::AUTHOR_VIEWER],
             )?;
             Ok(())
         })
@@ -134,7 +153,7 @@ impl Store {
         self.with_read(|c| {
             Ok(c.query_row(
                 "SELECT terminal_at, terminal_inferred, delivered_at, delivered_artifact_id,
-                    delivered_thread_id FROM sessions WHERE id = ?1",
+                    delivered_thread_id, delivered_written_at FROM sessions WHERE id = ?1",
                 params![sid],
                 |r| {
                     Ok(SessionSignals {
@@ -143,6 +162,7 @@ impl Store {
                         delivered_at: r.get(2)?,
                         delivered_artifact_id: r.get(3)?,
                         delivered_thread_id: r.get(4)?,
+                        delivered_written_at: r.get(5)?,
                     })
                 },
             )
@@ -221,7 +241,8 @@ mod tests {
         );
         assert!(st.note_terminal(DAEMON, &sid).unwrap().is_empty());
         c.advance(30);
-        st.note_delivery(&sid, "7q3k9mzx2b4t", Some("t1")).unwrap();
+        st.note_delivery(&sid, "7q3k9mzx2b4t", Some("t1"), None)
+            .unwrap();
         assert_eq!(
             st.session_signals(&sid).unwrap().unwrap(),
             SessionSignals {
@@ -230,6 +251,7 @@ mod tests {
                 delivered_at: Some("2026-10-16T10:00:30.000Z".into()),
                 delivered_artifact_id: Some("7q3k9mzx2b4t".into()),
                 delivered_thread_id: Some("t1".into()),
+                delivered_written_at: None,
             }
         );
         assert_eq!(st.session_signals("nope").unwrap(), None);
@@ -266,7 +288,7 @@ mod tests {
             (Some("2026-10-16T10:00:00.000Z"), true)
         );
         c.advance(10);
-        st.note_delivery(&sid, "7q3k9mzx2b4t", None).unwrap();
+        st.note_delivery(&sid, "7q3k9mzx2b4t", None, None).unwrap();
         c.advance(10);
         assert!(!st.note_turn(&sid).unwrap(), "that turn came from Clax");
         c.advance(10);
@@ -290,7 +312,8 @@ mod tests {
         let sid = session(&st, "codex", "h1");
         assert!(st.note_turn(&sid).unwrap());
         // One feedback poll: the turn, then the items it hands over.
-        st.note_delivery(&sid, "7q3k9mzx2b4t", Some("t1")).unwrap();
+        st.note_delivery(&sid, "7q3k9mzx2b4t", Some("t1"), None)
+            .unwrap();
         assert!(!st.note_turn(&sid).unwrap(), "that turn came from Clax");
         assert!(
             st.note_turn(&sid).unwrap(),
@@ -311,11 +334,71 @@ mod tests {
             })
         ));
         assert!(st.note_turn(&sid).is_err());
-        st.note_delivery(&sid, "7q3k9mzx2b4t", None).unwrap();
+        st.note_delivery(&sid, "7q3k9mzx2b4t", None, None).unwrap();
         assert_eq!(
             st.session_signals(&sid).unwrap().unwrap().delivered_at,
             None
         );
+    }
+
+    fn thread_by(
+        st: &Store,
+        aid: &clax_core::ArtifactId,
+        author: &str,
+        via_page: bool,
+    ) -> (String, String) {
+        let t = st
+            .create_thread(
+                DAEMON,
+                aid,
+                crate::threads::NewThread {
+                    author_public_id: Some(author.into()),
+                    version_n: 1,
+                    anchor: crate::test_util::anchor(),
+                    body: "make it blue".into(),
+                    author_name: "Someone".into(),
+                    clip: None,
+                    via_page,
+                },
+            )
+            .unwrap();
+        let c = t.comments[0].id.clone();
+        (t.id, c)
+    }
+
+    #[test]
+    fn a_delivery_keeps_its_comments_time_only_when_the_sessions_person_wrote_it() {
+        let (c, _d, st) = clocked();
+        let owner = st.owner_viewer(true).unwrap().public_id;
+        let sid = session(&st, "claude", "h1");
+        let aid = crate::test_util::artifact(&st, None);
+        let (mine, my_comment) = thread_by(&st, &aid, &owner, false);
+        let (theirs, their_comment) = thread_by(&st, &aid, "u_mia", false);
+        let (paged, page_comment) = thread_by(&st, &aid, &owner, true);
+        c.advance(600);
+        let written = |tid: &str, cid: Option<&str>| {
+            st.note_delivery(&sid, aid.as_str(), Some(tid), cid)
+                .unwrap();
+            let k = st.session_signals(&sid).unwrap().unwrap();
+            assert_eq!(k.delivered_at.as_deref(), Some("2026-10-16T10:10:00.000Z"));
+            k.delivered_written_at
+        };
+        assert_eq!(
+            written(&mine, Some(&my_comment)).as_deref(),
+            Some("2026-10-16T10:00:00.000Z"),
+            "the person's own comment, at its own time"
+        );
+        assert_eq!(
+            written(&theirs, Some(&their_comment)),
+            None,
+            "another author's"
+        );
+        assert_eq!(
+            written(&paged, Some(&page_comment)),
+            None,
+            "a page's, as the person"
+        );
+        assert_eq!(written(&mine, None), None, "no comment named");
     }
 
     #[test]

@@ -3,7 +3,10 @@
 //! the where-to-ask route, terminal activity, and deliveries.
 
 use clax_testkit::TestServer;
-use clax_testkit::where_to_ask::{clocked, owner_tab, paged, typed, where_to_ask_reply};
+use clax_testkit::where_to_ask::{
+    browser_of, clocked, clocked_with_sam, owner_tab, paged, person_paged, stream_as, tab_as,
+    typed, typed_as, where_to_ask_as, where_to_ask_reply,
+};
 use serde_json::{Value, json};
 
 fn says(v: &Value) -> (&str, &str) {
@@ -137,7 +140,7 @@ async fn an_ended_or_unknown_session_has_no_where_to_ask() {
 }
 
 #[tokio::test]
-async fn a_persons_agent_reads_its_persons_engagement_not_the_owners() {
+async fn a_persons_agent_needs_its_persons_own_clax_open() {
     let ts = TestServer::spawn_on_with_shutdown("0.0.0.0".parse().unwrap()).await;
     let sam = ts.connect_person("Sam", "clax:full").await;
     let sid = sam.register("claude", "h1").await["id"]
@@ -225,5 +228,114 @@ async fn a_persons_agent_is_never_shown_a_page_it_may_not_read() {
     assert!(
         v["where_to_ask"]["where"].get("artifact_id").is_none(),
         "{v}"
+    );
+}
+
+#[tokio::test]
+async fn a_persons_agent_reads_its_persons_engagement_not_the_owners() {
+    let (c, ts, sam) = clocked_with_sam().await;
+    let (sid, aid) = person_paged(&sam, "h1").await;
+    let sams = browser_of(&ts, &sam);
+    let _stream = stream_as(&ts, &sams, &["questions"]).await;
+    typed_as(&sam, &sid).await;
+    c.advance(120);
+    // The owner, focused on Sam's page, is not Sam.
+    owner_tab(&ts, &aid, "o1", true, 0).await;
+    let v = where_to_ask_as(&sam, &sid).await;
+    assert_eq!(says(&v), ("terminal", "clear"), "{v}");
+    tab_as(&ts, &sams, &aid, "s1", true, 0).await;
+    let v = where_to_ask_as(&sam, &sid).await;
+    assert_eq!(says(&v), ("clax", "clear"), "{v}");
+    assert_eq!(v["where_to_ask"]["where"], json!({"artifact_id": aid}));
+}
+
+#[tokio::test]
+async fn the_daemon_token_never_reads_a_persons_focus_or_input() {
+    let (c, ts, sam) = clocked_with_sam().await;
+    let (sid, aid) = person_paged(&sam, "h1").await;
+    let sams = browser_of(&ts, &sam);
+    let _stream = stream_as(&ts, &sams, &["questions", "inbox"]).await;
+    typed_as(&sam, &sid).await;
+    c.advance(120);
+    tab_as(&ts, &sams, &aid, "s1", true, 0).await;
+    assert_eq!(says(&where_to_ask_as(&sam, &sid).await), ("clax", "clear"));
+    // Only the person's own agent reads where they are: the owner's tools
+    // are refused a session of another credential's.
+    let r = ts
+        .get_authed(&format!("/api/sessions/{sid}/where-to-ask"))
+        .await;
+    assert_eq!(r.status(), 403);
+    assert_eq!(
+        r.json::<Value>().await.unwrap()["error"]["code"],
+        "foreign_session"
+    );
+    let r = ts
+        .post_json(&format!("/api/sessions/{sid}/terminal"), json!({}))
+        .await;
+    assert_eq!(r.status(), 403);
+}
+
+#[tokio::test]
+async fn a_thread_taken_late_counts_when_it_was_written_not_when_it_was_taken() {
+    let (c, ts) = clocked().await;
+    let (sid, aid) = paged(&ts, "h1").await;
+    let _stream = ts.stream_as_owner(&["questions"]).await;
+    let t = ts.thread_as_owner(&aid, "Bigger title?").await;
+    let tid = t["id"].as_str().unwrap().to_string();
+    c.advance(19 * 60);
+    typed(&ts, &sid).await;
+    c.advance(60);
+    let r = ts
+        .get_authed(&format!("/api/sessions/{sid}/feedback?tier=piggyback"))
+        .await;
+    assert_eq!(r.status(), 200);
+    let v = where_to_ask_reply(&ts, &sid).await;
+    assert_eq!(v["signals"]["delivered_at"], "2026-10-16T10:20:00.000Z");
+    // The prompt at 10:19 is newer than the comment of 10:00; the thread,
+    // taken at 10:20, still instigates the work.
+    assert_eq!(says(&v), ("terminal", "clear"), "{v}");
+    assert_eq!(
+        v["where_to_ask"]["where"],
+        json!({"thread_id": tid, "artifact_id": aid})
+    );
+}
+
+#[tokio::test]
+async fn a_thread_another_author_wrote_places_the_question_but_is_not_the_persons_activity() {
+    let (c, ts) = clocked().await;
+    let (sid, aid) = paged(&ts, "h1").await;
+    let _stream = ts.stream_as_owner(&["questions"]).await;
+    typed(&ts, &sid).await;
+    c.advance(120);
+    // A LAN viewer, not the owner, writes on the page; the owner sends it on.
+    let lucy = ts.viewer(Some("Lucy")).await;
+    let tid = ts.thread_as(&aid, &lucy.cookie, "The chart is wrong").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r = ts
+        .client
+        .post(format!(
+            "{}/api/artifacts/{aid}/threads/{tid}/send",
+            ts.base
+        ))
+        .header("cookie", ts.owner_cookie())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    let r = ts
+        .get_authed(&format!("/api/sessions/{sid}/feedback?tier=piggyback"))
+        .await;
+    assert_eq!(r.status(), 200);
+    let v = where_to_ask_reply(&ts, &sid).await;
+    assert_eq!(
+        v["signals"]["delivered_at"], "2026-10-16T10:02:00.000Z",
+        "{v}"
+    );
+    assert_eq!(says(&v), ("terminal", "clear"), "{v}");
+    assert_eq!(
+        v["where_to_ask"]["where"],
+        json!({"thread_id": tid, "artifact_id": aid})
     );
 }

@@ -60,13 +60,19 @@ pub struct TerminalSignal {
     pub inferred: bool,
 }
 
-/// The session's last delivery from Clax.
+/// The session's last delivery from Clax: what instigated its work, when
+/// newer than the last prompt. Its time is when the agent took it, never
+/// the person's activity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Delivery {
     pub at: DateTime<Utc>,
     pub artifact_id: String,
     /// Its thread, when it still is one of `artifact_id`'s.
     pub thread_id: Option<String>,
+    /// When the delivered comment was written, when the session's own
+    /// person wrote it: the delivery's only part in the person's Clax
+    /// activity.
+    pub written_at: Option<DateTime<Utc>>,
 }
 
 /// What the daemon knows of a session's person, now.
@@ -102,8 +108,10 @@ fn place_of(s: &Signals) -> Place {
     }
 }
 
-/// The suggestion for `s` at `now`. The newest engagement wins; signals a
-/// minute apart, no signal in five minutes, or an inferred turn with no
+/// The suggestion for `s` at `now`. The newest engagement wins: on the
+/// Clax side, input or focus on the session's page and the time the person
+/// wrote the delivered comment (a delivery places the question, and its
+/// own time is never the person's). Signals a minute apart, no signal in five minutes, or an inferred turn with no
 /// Clax signal to weigh it against are unsure, and unsure leans to Clax.
 /// An inferred turn a minute or more newer than the newest Clax signal
 /// gives the terminal, as a prompt would. With no Clax tab or panel open,
@@ -131,11 +139,15 @@ pub fn suggest(s: &Signals, now: DateTime<Utc>) -> Suggestion {
     } else {
         ""
     };
-    let clax = s
-        .clax_at
-        .into_iter()
-        .chain(s.delivery.as_ref().map(|d| d.at))
-        .max();
+    // The person's newest Clax activity, and whether it was writing the
+    // delivered comment rather than input on the session's page.
+    let written = s.delivery.as_ref().and_then(|d| d.written_at);
+    let (clax, wrote) = match (s.clax_at, written) {
+        (Some(p), Some(w)) if w > p => (Some(w), true),
+        (Some(p), _) => (Some(p), false),
+        (None, Some(w)) => (Some(w), true),
+        (None, None) => (None, false),
+    };
     let term = s.terminal.as_ref();
     let recent = |t: DateTime<Utc>| now - t <= Duration::seconds(QUIET_SECS);
     let ago = |t: DateTime<Utc>| (now - t).num_seconds().max(0);
@@ -151,6 +163,20 @@ pub fn suggest(s: &Signals, now: DateTime<Utc>) -> Suggestion {
             format!(
                 "the person typed to this session in the terminal {} s ago",
                 ago(t.at)
+            )
+        }
+    };
+    // The Clax side in words.
+    let in_clax = |c: DateTime<Utc>| {
+        if wrote {
+            format!(
+                "the person wrote in the delivered thread in Clax {} s ago",
+                ago(c)
+            )
+        } else {
+            format!(
+                "the person was active on this session's page in Clax {} s ago",
+                ago(c)
             )
         }
     };
@@ -181,9 +207,9 @@ pub fn suggest(s: &Signals, now: DateTime<Utc>) -> Suggestion {
                 Surface::Clax,
                 Confidence::Unsure,
                 format!(
-                    "{}, and the person was active in Clax {} s ago, too close to tell.{panel}",
+                    "{}, and {}, too close to tell.{panel}",
                     capitalized(&in_terminal(t)),
-                    ago(c)
+                    in_clax(c)
                 ),
             ),
             Some(c) => make(
@@ -209,8 +235,8 @@ pub fn suggest(s: &Signals, now: DateTime<Utc>) -> Suggestion {
                 Surface::Clax,
                 Confidence::Unsure,
                 format!(
-                    "The person was active in Clax {} s ago and {}, too close to tell.{panel}",
-                    ago(c),
+                    "{} and {}, too close to tell.{panel}",
+                    capitalized(&in_clax(c)),
                     in_terminal(t)
                 ),
             ),
@@ -218,8 +244,8 @@ pub fn suggest(s: &Signals, now: DateTime<Utc>) -> Suggestion {
                 Surface::Clax,
                 Confidence::Clear,
                 format!(
-                    "The person was active on this session's page in Clax {} s ago; before that, {}.{panel}",
-                    ago(c),
+                    "{}; before that, {}.{panel}",
+                    capitalized(&in_clax(c)),
                     in_terminal(t)
                 ),
             ),
@@ -227,8 +253,8 @@ pub fn suggest(s: &Signals, now: DateTime<Utc>) -> Suggestion {
                 Surface::Clax,
                 Confidence::Clear,
                 format!(
-                    "The person was active on this session's page in Clax {} s ago; the terminal has seen no prompt or turn from the person.{panel}",
-                    ago(c)
+                    "{}; the terminal has seen no prompt or turn from the person.{panel}",
+                    capitalized(&in_clax(c))
                 ),
             ),
         },
@@ -290,11 +316,13 @@ mod tests {
             inferred: false,
         })
     }
+    /// A delivery of a comment the person wrote and sent at once.
     fn sent(secs_ago: i64, thread: Option<&str>) -> Option<Delivery> {
         Some(Delivery {
             at: at(secs_ago),
             artifact_id: "7q3k9mzx2b4t".into(),
             thread_id: thread.map(Into::into),
+            written_at: Some(at(secs_ago)),
         })
     }
     fn says(s: &Signals) -> (Surface, Confidence) {
@@ -374,6 +402,54 @@ mod tests {
             (Surface::Clax, Confidence::Clear)
         );
         assert_eq!(x.r#where.thread_id.as_deref(), Some("t1"));
+    }
+
+    #[test]
+    fn a_delivery_is_clax_activity_only_by_the_persons_own_comment_and_its_time() {
+        let late = |written: Option<i64>| Signals {
+            terminal: typed(200),
+            delivery: Some(Delivery {
+                at: at(10),
+                artifact_id: "7q3k9mzx2b4t".into(),
+                thread_id: Some("t1".into()),
+                written_at: written.map(at),
+            }),
+            ..open()
+        };
+        // Another author's comment: it places the question, and the person
+        // did nothing in Clax.
+        let x = suggest(&late(None), now());
+        assert_eq!(
+            (x.surface, x.confidence),
+            (Surface::Terminal, Confidence::Clear)
+        );
+        assert_eq!(x.r#where.thread_id.as_deref(), Some("t1"));
+        assert!(x.why.contains("Clax has seen nothing"), "{}", x.why);
+        // The person's comment, written before the prompt and taken after.
+        let x = suggest(&late(Some(1000)), now());
+        assert_eq!(
+            (x.surface, x.confidence),
+            (Surface::Terminal, Confidence::Clear)
+        );
+        assert_eq!(x.r#where.thread_id.as_deref(), Some("t1"));
+        // Written after the prompt: Clax, said as writing, at its own time.
+        let x = suggest(&late(Some(100)), now());
+        assert_eq!(
+            (x.surface, x.confidence),
+            (Surface::Clax, Confidence::Clear)
+        );
+        assert!(x.why.contains("wrote"), "{}", x.why);
+        assert!(x.why.contains("100 s ago"), "{}", x.why);
+        // Input on the page newer than the comment is said as activity.
+        let x = suggest(
+            &Signals {
+                clax_at: Some(at(20)),
+                ..late(Some(100))
+            },
+            now(),
+        );
+        assert!(!x.why.contains("wrote"), "{}", x.why);
+        assert!(x.why.contains("20 s ago"), "{}", x.why);
     }
 
     #[test]

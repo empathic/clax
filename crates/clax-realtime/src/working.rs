@@ -64,10 +64,12 @@ pub fn renew_for_tier(ctx: &FeedbackCtx, session_id: &str, tier: Tier) {
 /// Feedback reached `session_id`: marks it working on each item's artifact
 /// and thread, records the records it starts under `audit`, and announces
 /// the changes. It also records the delivery on the session
-/// (`Store::note_delivery`), the newest item's artifact and thread.
+/// (`Store::note_delivery`): the newest item's artifact, thread and
+/// comment. The items are taken by then, so a failure to record it is
+/// logged, not returned.
 ///
 /// # Errors
-/// When reading the session or recording the delivery fails.
+/// When reading the session fails.
 pub fn mark_items(
     ctx: &FeedbackCtx,
     audit: &AuditCtx,
@@ -101,8 +103,15 @@ pub fn mark_items(
     settle(st, audit, &ctx.events, &ctx.working, &changed);
     // The newest item is what the session acts on next: Clax instigated it,
     // at that thread (spec 2026-10-16-ask-where-attention-is-design §1).
-    if let Some(last) = items.last() {
-        st.note_delivery(session_id, &last.artifact_id, Some(last.thread_id.as_str()))?;
+    if let Some(last) = items.last()
+        && let Err(e) = st.note_delivery(
+            session_id,
+            &last.artifact_id,
+            Some(last.thread_id.as_str()),
+            Some(last.comment_id.as_str()),
+        )
+    {
+        tracing::warn!(session = %session_id, error = %e, "recording a delivery failed");
     }
     Ok(())
 }

@@ -41,14 +41,7 @@ pub async fn where_to_ask(
     let st = s.clone();
     let v = s
         .store_call(move |db| {
-            live(db, &sid)?;
-            let sugg = clax_http::surface::suggestion(&st, db, &sid, page.as_deref())?;
-            let k = db.session_signals(&sid)?.unwrap_or_default();
-            Ok(json!({"where_to_ask": sugg, "signals": {
-                "terminal_at": k.terminal_at,
-                "terminal_inferred": k.terminal_inferred,
-                "delivered_at": k.delivered_at,
-            }}))
+            clax_http::surface::where_to_ask_reply(&st, db, &sid, page.as_deref())
         })
         .await?;
     Ok(Json(v))
