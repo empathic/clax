@@ -10,7 +10,7 @@ use clax_core::audit::AuditCtx;
 use clax_core::{CoreError, Result};
 use rusqlite::{OptionalExtension, params};
 
-/// What the store knows of where session `id`'s person last engaged.
+/// What the store knows of where a session's person last engaged.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SessionSignals {
     /// The person's last prompt to the session in the terminal.
@@ -77,29 +77,26 @@ impl Store {
     /// prompts (Codex, Grok Build). When no Clax delivery reached the
     /// session since its previous turn ended (for its first turn: at all),
     /// the turn stands for a terminal prompt, recorded as inferred. Returns
-    /// whether it did.
+    /// whether it did. A delivery sets a flag that the next turn clears
+    /// ([`Store::note_delivery`]), so a delivery stamped in the same
+    /// millisecond as the turn before it still counts.
     ///
     /// # Errors
     /// `unknown_session` for a missing or ended session.
     pub fn note_turn(&self, sid: &str) -> Result<bool> {
         let now = self.now();
         self.with_tx(|tx| {
-            let row: Option<(Option<String>, Option<String>)> = tx
+            let delivered: Option<bool> = tx
                 .query_row(
-                    "SELECT turn_at, delivered_at FROM sessions WHERE id = ?1 AND ended_at IS NULL",
+                    "SELECT delivered_since_turn FROM sessions WHERE id = ?1 AND ended_at IS NULL",
                     params![sid],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    |r| r.get(0),
                 )
                 .optional()?;
-            let Some((turn, delivered)) = row else {
+            let Some(delivered) = delivered else {
                 return Err(unknown_session());
             };
-            // Times are the store's fixed RFC 3339 form: they order as text.
-            let from_terminal = match (&delivered, &turn) {
-                (None, _) => true,
-                (Some(d), Some(t)) => d <= t,
-                (Some(_), None) => false,
-            };
+            let from_terminal = !delivered;
             if from_terminal {
                 tx.execute(
                     "UPDATE sessions SET terminal_at = ?2, terminal_inferred = 1, turn_at = ?2
@@ -108,7 +105,7 @@ impl Store {
                 )?;
             } else {
                 tx.execute(
-                    "UPDATE sessions SET turn_at = ?2 WHERE id = ?1",
+                    "UPDATE sessions SET turn_at = ?2, delivered_since_turn = 0 WHERE id = ?1",
                     params![sid, now],
                 )?;
             }
@@ -117,14 +114,15 @@ impl Store {
     }
 
     /// Records a delivery from Clax to session `sid` now, about artifact
-    /// `aid` and, when given, its thread `tid`. An ended session records
-    /// nothing.
+    /// `aid` and, when given, its thread `tid`. An ended or unknown session
+    /// records nothing.
     pub fn note_delivery(&self, sid: &str, aid: &str, tid: Option<&str>) -> Result<()> {
         let now = self.now();
         self.with_tx(|tx| {
             tx.execute(
                 "UPDATE sessions SET delivered_at = ?2, delivered_artifact_id = ?3,
-                    delivered_thread_id = ?4 WHERE id = ?1 AND ended_at IS NULL",
+                    delivered_thread_id = ?4, delivered_since_turn = 1
+                 WHERE id = ?1 AND ended_at IS NULL",
                 params![sid, now, aid, tid],
             )?;
             Ok(())
@@ -180,7 +178,13 @@ mod tests {
         (c, d, st)
     }
 
-    fn hook_in_terminal(st: &Store, sid: &str, t: &str) -> String {
+    fn new_question(
+        st: &Store,
+        sid: &str,
+        source: Source,
+        t: Option<&str>,
+        in_terminal: bool,
+    ) -> String {
         let qs =
             serde_json::from_value(serde_json::json!([{"question": "Which?", "header": "Pick",
             "options": [{"label": "A"}, {"label": "B"}]}]))
@@ -190,17 +194,21 @@ mod tests {
             NewQuestion {
                 session_id: sid.into(),
                 artifact_id: None,
-                source: Source::Hook,
-                tool_use_id: Some(t.into()),
+                source,
+                tool_use_id: t.map(Into::into),
                 questions: qs,
                 thread_id: None,
-                in_terminal: true,
+                in_terminal,
                 released: false,
             },
         )
         .unwrap()
         .0
         .id
+    }
+
+    fn hook_in_terminal(st: &Store, sid: &str, t: &str) -> String {
+        new_question(st, sid, Source::Hook, Some(t), true)
     }
 
     #[test]
@@ -234,12 +242,17 @@ mod tests {
         let other = session(&st, "claude", "h2");
         let mine = hook_in_terminal(&st, &sid, "t1");
         let theirs = hook_in_terminal(&st, &other, "t1");
+        let plain = new_question(&st, &sid, Source::Hook, Some("t2"), false);
+        let asked = new_question(&st, &sid, Source::Ask, None, true);
         assert_eq!(st.note_terminal(DAEMON, &sid).unwrap(), vec![mine.clone()]);
         assert_eq!(
             st.question(&mine).unwrap().unwrap().status,
             Status::Withdrawn
         );
         assert_eq!(st.question(&theirs).unwrap().unwrap().status, Status::Open);
+        for q in [&plain, &asked] {
+            assert_eq!(st.question(q).unwrap().unwrap().status, Status::Open);
+        }
     }
 
     #[test]
@@ -269,6 +282,20 @@ mod tests {
         // A typed prompt clears the inference.
         st.note_terminal(DAEMON, &sid).unwrap();
         assert!(!st.session_signals(&sid).unwrap().unwrap().terminal_inferred);
+    }
+
+    #[test]
+    fn a_turn_after_a_delivery_in_the_same_millisecond_came_from_clax() {
+        let (_c, _d, st) = clocked();
+        let sid = session(&st, "codex", "h1");
+        assert!(st.note_turn(&sid).unwrap());
+        // One feedback poll: the turn, then the items it hands over.
+        st.note_delivery(&sid, "7q3k9mzx2b4t", Some("t1")).unwrap();
+        assert!(!st.note_turn(&sid).unwrap(), "that turn came from Clax");
+        assert!(
+            st.note_turn(&sid).unwrap(),
+            "no delivery since the last turn"
+        );
     }
 
     #[test]
