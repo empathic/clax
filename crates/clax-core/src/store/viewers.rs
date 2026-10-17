@@ -847,7 +847,7 @@ mod tests {
 
     #[test]
     fn making_the_owners_row_after_an_agent_read_connects_the_owner() {
-        use crate::visibility::Author;
+        use crate::store::visibility::Author;
         let (_d, st) = store();
         // An agent reads first: who is connected is cached with no owner.
         assert!(

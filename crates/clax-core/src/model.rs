@@ -167,6 +167,15 @@ pub struct Thread {
     pub resolved_by_person: Option<String>,
 }
 
+/// `Comment::author_kind` of a comment a viewer wrote in the browser.
+pub const AUTHOR_VIEWER: &str = "viewer";
+/// `Comment::author_kind` of a comment an agent wrote.
+pub const AUTHOR_AGENT: &str = "agent";
+
+/// The text fields of an artifact that carry authors of their own (spec
+/// 2026-10-08 §8.2): `artifacts.text_authors_json`'s keys.
+pub const ARTIFACT_TEXT_FIELDS: [&str; 4] = ["title", "description", "icon", "capabilities"];
+
 /// `author_kind` is `viewer` or `agent`; an agent comment names the harness in
 /// `author_name` and in `via_harness` (`null` on viewer comments). The
 /// replying session's ID is stored but never part of a comment: it would be

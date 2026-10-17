@@ -300,7 +300,7 @@ mod tests {
                     include_resends: true,
                 },
                 "http://h",
-                &crate::visibility::Visibility::all(),
+                &crate::store::visibility::Visibility::all(),
             )
             .unwrap()
             .items;

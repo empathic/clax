@@ -13,7 +13,7 @@ use clax_core::feedback::{Placeholder, ago, quoted, render_delivery, render_noti
 use clax_core::model::Artifact;
 use clax_core::questions::render_late;
 use clax_core::store::questions::Status;
-use clax_core::visibility::Visibility;
+use clax_core::store::visibility::Visibility;
 use clax_core::working::Clock;
 use clax_core::{CoreError, Store, TakeFeedback, Tier};
 use clax_http::agent::{FeedbackAck, FeedbackNotices, FeedbackPoll, TokenOrAgent};

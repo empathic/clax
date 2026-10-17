@@ -233,7 +233,7 @@ pub fn dispatch(ctx: &FeedbackCtx, st: &Store, targets: &BTreeSet<String>) {
         // A view an approval or revocation overtook takes nothing: build
         // it again.
         let taken = (|| loop {
-            let vis = clax_core::visibility::Visibility::for_session(st, sid)?;
+            let vis = clax_core::store::visibility::Visibility::for_session(st, sid)?;
             let t = st.take_feedback(
                 &clax_core::audit::AuditCtx::DAEMON,
                 &q,

@@ -21,7 +21,7 @@ use super::Store;
 use crate::audit::{AuditCtx, AuditKind, AuditRecord, sha256_hex};
 use crate::db::{Caller, Op, Rules, collection_path, doc_path, invalid_argument};
 use crate::store::approvals::OWNER;
-use crate::visibility::{Author, Visibility, authors_of_doc};
+use crate::store::visibility::{Author, Visibility, authors_of_doc};
 use crate::{ArtifactId, CoreError, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
@@ -2557,7 +2557,7 @@ mod tests {
     mod per_reader {
         use super::*;
         use crate::store::people::tests::{approved, store};
-        use crate::visibility::{Reader, Visibility};
+        use crate::store::visibility::{Reader, Visibility};
 
         struct Two {
             _dir: tempfile::TempDir,

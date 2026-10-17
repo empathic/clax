@@ -10,7 +10,7 @@ use crate::model::{
 };
 use crate::publish::{FileChange, INDEX, ValidatedPublish};
 use crate::store::approvals::OWNER;
-use crate::visibility::{Author, file_authors};
+use crate::store::visibility::{Author, file_authors};
 use crate::{ArtifactId, CoreError, Result, new_ulid};
 use rusqlite::{OptionalExtension, Row, params};
 use std::collections::BTreeMap;
@@ -795,7 +795,7 @@ pub(super) const SELECT_VERSION: &str =
 
 /// The text fields of an artifact that carry authors of their own (spec
 /// §8.2): `artifacts.text_authors_json`'s keys.
-pub const TEXT_FIELDS: [&str; 4] = ["title", "description", "icon", "capabilities"];
+pub use crate::model::ARTIFACT_TEXT_FIELDS as TEXT_FIELDS;
 
 /// Author tokens, each once in first-seen order.
 fn tokens(authors: impl IntoIterator<Item = Author>) -> Vec<String> {

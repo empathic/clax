@@ -10,8 +10,8 @@ use super::threads::{AUTHOR_VIEWER, thread_in};
 use crate::audit::{AuditCtx, AuditKind, AuditRecord};
 use crate::feedback::Touched;
 use crate::model::Thread;
-use crate::visibility::placeholder::ApprovalState;
-use crate::visibility::{self, Author, Reader, Visibility};
+use crate::store::visibility::placeholder::ApprovalState;
+use crate::store::visibility::{self, Author, Reader, Visibility};
 use crate::{CoreError, Result, is_public_id, new_ulid};
 use rusqlite::{OptionalExtension, Row, Transaction, params};
 use serde::Serialize;
@@ -20,13 +20,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
-/// The author class of every viewer who is neither the owner nor a
-/// connected person, and of anonymous callers (M14).
-pub const UNCONNECTED: &str = "*unconnected";
-
-/// The owner as an author, where a public ID is not used (`doc_authors`,
-/// `comments.page_person`, `versions.file_authors_json`).
-pub const OWNER: &str = "*owner";
+pub use crate::store::visibility::{OWNER, UNCONNECTED};
 
 /// What an approval covers (§9.1, M13).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -330,7 +324,7 @@ pub(super) struct VisState {
     /// `((generation + 1) << 1) | sees_all`, or 0 before the first answer.
     fast: AtomicU64,
     /// Who is connected, read at the generation it is tagged with.
-    connected: std::sync::Mutex<Option<(u64, Arc<crate::visibility::Connected>)>>,
+    connected: std::sync::Mutex<Option<(u64, Arc<crate::store::visibility::Connected>)>>,
     listener: RwLock<Option<Listener>>,
 }
 
@@ -452,7 +446,7 @@ impl Store {
     /// included), for marking unconnected authors' names (spec §9.6):
     /// cached for the current generation, which every change to a
     /// viewer's person flag or the owner's row bumps.
-    pub fn connected(&self) -> Result<Arc<crate::visibility::Connected>> {
+    pub fn connected(&self) -> Result<Arc<crate::store::visibility::Connected>> {
         let g = self.visibility_generation();
         if let Some((at, c)) = self
             .visibility
@@ -465,7 +459,7 @@ impl Store {
             return Ok(c.clone());
         }
         // Tagged with the generation read before the query, as `fast` is.
-        let c = Arc::new(self.with_read(crate::visibility::Connected::read)?);
+        let c = Arc::new(self.with_read(crate::store::visibility::Connected::read)?);
         *self
             .visibility
             .connected
