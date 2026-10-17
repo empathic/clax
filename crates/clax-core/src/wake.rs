@@ -122,6 +122,14 @@ with Grok's monitor tool (persistent: true), exactly as given: each line it prin
 notice that wakes you. Keep exactly one running."
             );
         }
+        ("codex", _) if push["other_machine"] == true => {
+            out["do"] = json!(
+                "Nothing can wake this session while it is idle. Tell the person: \"Codex can't be \
+woken here; it runs on another machine than Clax, whose codex queue cannot reach it. Your \
+comments reach me only when I next act.\" While they comment, call wait_for_feedback in a loop \
+instead of ending your turn."
+            );
+        }
         ("codex", _) => {
             let why = push["reason"]
                 .as_str()
@@ -304,6 +312,23 @@ mod tests {
         );
         assert!(d.contains("codex is not on the daemon's PATH"), "{d}");
         assert!(d.contains("CLAX_CODEX_BIN"), "{d}");
+    }
+
+    #[test]
+    fn a_codex_session_on_another_machine_is_told_so() {
+        let w = block(
+            "codex",
+            &json!({"tier": null, "available": false, "other_machine": true,
+                    "reason": "this Codex session runs on another machine than this Clax"}),
+            "/b",
+            Some("c"),
+        );
+        let d = w["do"].as_str().unwrap();
+        assert!(
+            d.contains("Codex can't be woken here; it runs on another machine than Clax"),
+            "{d}"
+        );
+        assert!(!d.contains("PATH"), "{d}");
     }
 
     #[test]

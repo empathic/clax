@@ -191,6 +191,7 @@ impl AppState {
             browser_base: self.browser_base.clone(),
             store: self.store.clone(),
             codex: self.codex.clone(),
+            hosted: self.hosted.is_some(),
             working: self.working.clone(),
             drafts: self.drafts.clone(),
             git_remotes: self.git_remotes.clone(),

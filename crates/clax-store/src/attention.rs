@@ -40,6 +40,10 @@ pub struct AgentView {
     /// Whether its session's harness session ID is known; never serialised.
     #[serde(skip)]
     pub harness_session_known: bool,
+    /// Whether its session registered under a grant (an agent of another
+    /// machine); never serialised.
+    #[serde(skip)]
+    pub grant: bool,
 }
 
 /// How a session of another Clax shows whose Clax it relays from.
@@ -172,7 +176,7 @@ macro_rules! agents_sql {
                        (SELECT w.relay_name FROM watches w WHERE w.session_id = s.id AND w.artifact_id = k.aid) AS relay_name,
                        (SELECT w.relay_harness FROM watches w WHERE w.session_id = s.id AND w.artifact_id = k.aid) AS relay_harness,
                        (s.grant_id IS NOT NULL AND EXISTS (SELECT 1 FROM device_codes d WHERE d.grant_id = s.grant_id)) AS relay,
-                       s.harness_session_id IS NOT NULL AS hsk,
+                       s.harness_session_id IS NOT NULL AS hsk, s.grant_id IS NOT NULL AS gr,
                        (s.ended_at IS NULL AND (s.id IS k.owner OR EXISTS
                           (SELECT 1 FROM watches w WHERE w.session_id = s.id AND w.artifact_id = k.aid))) AS live,
                        MAX(COALESCE((SELECT MAX(v.created_at) FROM versions v WHERE v.artifact_id = k.aid AND v.session_id = s.id), ''),
@@ -181,8 +185,8 @@ macro_rules! agents_sql {
                            COALESCE((SELECT w.created_at FROM watches w WHERE w.session_id = s.id AND w.artifact_id = k.aid), ''),
                            s.started_at) AS active_at
                   FROM rel k CROSS JOIN sessions s ON s.id = k.sid)
-            SELECT aid, agent_handle, harness, live, name, person, relay_name, relay_harness, relay, id, hsk FROM
-              (SELECT aid, agent_handle, harness, live, name, person, relay_name, relay_harness, relay, id, hsk,
+            SELECT aid, agent_handle, harness, live, name, person, relay_name, relay_harness, relay, id, hsk, gr FROM
+              (SELECT aid, agent_handle, harness, live, name, person, relay_name, relay_harness, relay, id, hsk, gr,
                       ROW_NUMBER() OVER (PARTITION BY aid ORDER BY live DESC, active_at DESC, id) AS rn
                  FROM ranked)
              WHERE rn <= :limit ORDER BY aid, rn"
@@ -458,6 +462,7 @@ fn participants_in(c: &Connection, aid: Option<&str>) -> Result<BTreeMap<String,
             wakes: None,
             session_id: r.get(9)?,
             harness_session_known: r.get(10)?,
+            grant: r.get(11)?,
         });
     }
     Ok(out)

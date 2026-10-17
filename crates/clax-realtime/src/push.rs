@@ -230,11 +230,11 @@ pub fn dispatch(ctx: &FeedbackCtx, st: &Store, targets: &BTreeSet<String>) {
         let Ok(Some(session)) = st.get_session(sid) else {
             continue;
         };
-        // A grant's session runs on another machine: the daemon's own
-        // `codex` never queues to it.
+        // A session on another machine (a grant's, or any of a hosted
+        // daemon): the daemon's own `codex` never queues to it.
         if session.harness != "codex"
             || session.ended_at.is_some()
-            || session.grant_id.is_some()
+            || crate::routes::sessions::elsewhere(&session, ctx.hosted)
             || ctx.waiters.is_waiting(sid)
         {
             continue;

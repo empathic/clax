@@ -360,10 +360,20 @@ pub async fn get(
         })
         .await?;
     let following = s.followers.is_following(&session.id);
-    let push = push_info(&session, &s.codex, codex_home, push_error, following);
+    let away = elsewhere(&session, s.hosted.is_some());
+    let push = push_info(&session, &s.codex, codex_home, push_error, following, away);
     Ok(Json(
         json!({"session": session, "push": push, "person": person, "rights": rights}),
     ))
+}
+
+/// Why nothing wakes an idle Codex session on another machine.
+const CODEX_ELSEWHERE: &str = "this Codex session runs on another machine than this Clax, whose codex queue cannot reach it; comments arrive at the end of its turn (Stop hook), on its next clax tool call, or during wait_for_feedback";
+
+/// Whether session `s` runs on another machine than this daemon: a
+/// grant's session, or any session of a hosted daemon.
+pub fn elsewhere(s: &Session, hosted: bool) -> bool {
+    hosted || s.grant_id.is_some()
 }
 
 /// Why nothing wakes an idle Claude Code session that no notice follower
@@ -385,8 +395,16 @@ fn push_info(
     codex_home: Option<String>,
     push_error: Option<(String, String)>,
     following: bool,
+    elsewhere: bool,
 ) -> Value {
     match s.harness.as_str() {
+        // This daemon's `codex` never queues to a session on another
+        // machine (`dispatch` skips it), whatever its own PATH holds.
+        "codex" if elsewhere => {
+            json!({"tier": null, "available": false, "other_machine": true,
+                "reason": CODEX_ELSEWHERE, "codex_home": codex_home,
+                "last_error": null, "last_error_at": null})
+        }
         "codex" => {
             let reason = codex.reason().or_else(|| {
                 s.harness_session_id
@@ -415,17 +433,19 @@ fn push_info(
 
 /// Whether a comment sent to a live session of `harness` wakes it while it
 /// is idle, as [`push_info`] reports `available`: Codex through `codex
-/// queue` (the daemon's `codex` and the harness session ID known), Pi
+/// queue` (the daemon's `codex`, the harness session ID known, and the
+/// session on this daemon's machine, not `elsewhere`), Pi
 /// through its extension, Claude Code and Grok Build while a notice
 /// follower (`clax feedback follow`, or the shim's channel) is connected.
 pub fn wakes_when_idle(
     harness: &str,
     harness_session_known: bool,
+    elsewhere: bool,
     codex: &CodexPush,
     following: bool,
 ) -> bool {
     match harness {
-        "codex" => codex.available() && harness_session_known,
+        "codex" => !elsewhere && codex.available() && harness_session_known,
         "pi" => true,
         "claude" | "grok" => following,
         _ => false,
@@ -438,6 +458,7 @@ pub fn wakes_when_idle(
 pub struct Wakes {
     codex: Arc<CodexPush>,
     followers: Arc<crate::feedback::Followers>,
+    hosted: bool,
 }
 
 impl Wakes {
@@ -445,6 +466,7 @@ impl Wakes {
         Wakes {
             codex: s.codex.clone(),
             followers: s.followers.clone(),
+            hosted: s.hosted.is_some(),
         }
     }
 
@@ -459,6 +481,7 @@ impl Wakes {
         wakes_when_idle(
             &x.harness,
             x.harness_session_id.is_some(),
+            elsewhere(x, self.hosted),
             &self.codex,
             self.followers.is_following(&x.id),
         )
@@ -477,6 +500,7 @@ impl Wakes {
             a.wakes = Some(wakes_when_idle(
                 &a.harness,
                 a.harness_session_known,
+                self.hosted || a.grant,
                 &self.codex,
                 self.followers.is_following(&a.session_id),
             ));
@@ -647,22 +671,54 @@ mod tests {
             for codex in [&off, &on] {
                 for following in [false, true] {
                     for hs in [None, Some("h".to_string())] {
-                        let session: Session = serde_json::from_value(json!({
-                            "id": "s", "harness": harness, "pid": null, "parent_pid": 1, "cwd": "/", "ended_at": null, "agent_handle": "a",
-                            "started_at": "2026-01-01T00:00:00Z", "last_seen_at": "2026-01-01T00:00:00Z",
-                            "harness_session_id": hs,
-                        }))
-                        .unwrap();
-                        let push = push_info(&session, codex, None, None, following);
-                        assert_eq!(
-                            wakes_when_idle(harness, hs.is_some(), codex, following),
-                            push["available"] == true,
-                            "{harness} following={following} hs={hs:?} {push}"
-                        );
+                        for elsewhere in [false, true] {
+                            let session: Session = serde_json::from_value(json!({
+                                "id": "s", "harness": harness, "pid": null, "parent_pid": 1, "cwd": "/", "ended_at": null, "agent_handle": "a",
+                                "started_at": "2026-01-01T00:00:00Z", "last_seen_at": "2026-01-01T00:00:00Z",
+                                "harness_session_id": hs,
+                            }))
+                            .unwrap();
+                            let push = push_info(&session, codex, None, None, following, elsewhere);
+                            assert_eq!(
+                                wakes_when_idle(harness, hs.is_some(), elsewhere, codex, following),
+                                push["available"] == true,
+                                "{harness} following={following} hs={hs:?} elsewhere={elsewhere} {push}"
+                            );
+                        }
                     }
                 }
             }
         }
+    }
+
+    /// The daemon's own `codex` never queues to a session on another
+    /// machine (a grant's, or any on a hosted daemon): push says so.
+    #[test]
+    fn codex_on_another_machine_is_not_woken_by_this_daemons_codex() {
+        let on = CodexPush::from_env(Some("/bin/sh".into()), None);
+        let session: Session = serde_json::from_value(json!({
+            "id": "s", "harness": "codex", "pid": null, "parent_pid": 1, "cwd": "/", "ended_at": null, "agent_handle": "a",
+            "started_at": "2026-01-01T00:00:00Z", "last_seen_at": "2026-01-01T00:00:00Z",
+            "harness_session_id": "h",
+        }))
+        .unwrap();
+        let here = push_info(&session, &on, None, None, false, false);
+        assert_eq!(
+            (&here["available"], &here["tier"]),
+            (&json!(true), &json!("queue"))
+        );
+        let there = push_info(&session, &on, None, None, false, true);
+        assert_eq!(there["available"], false, "{there}");
+        assert_eq!(there["tier"], Value::Null);
+        assert_eq!(there["other_machine"], true);
+        assert!(
+            there["reason"]
+                .as_str()
+                .unwrap()
+                .contains("another machine"),
+            "{there}"
+        );
+        assert!(!wakes_when_idle("codex", true, true, &on, false));
     }
 
     #[test]

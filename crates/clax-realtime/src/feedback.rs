@@ -404,6 +404,9 @@ pub struct FeedbackCtx {
     pub browser_base: String,
     pub store: Arc<Store>,
     pub codex: Arc<crate::push::CodexPush>,
+    /// Hosted mode: every agent runs on another machine, so this
+    /// daemon's `codex` queues to none.
+    pub hosted: bool,
     pub working: Arc<clax_core::working::Working>,
     /// Agents' drafts, which end with their sessions.
     pub drafts: Arc<clax_core::drafts::Drafts>,
