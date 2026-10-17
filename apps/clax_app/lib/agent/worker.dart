@@ -174,7 +174,8 @@ class _Job {
 /// runs) run one at a time, in the order they were queued. When a run
 /// starts, every queued job of its artifact and kind joins it, in arrival
 /// order, so comments sent while a change runs are answered by one run on
-/// the version it landed.
+/// the version it landed; a Keep going ([retry]) joins or is joined only
+/// by a job on one of its own threads, so it runs from its kept draft.
 ///
 /// Registration and recovery: [start], and every poll failure, registers
 /// the session again (the daemon finds its row by the install ID, or makes
@@ -903,6 +904,12 @@ class FeedbackWorker {
       if (j.artifactId != job.artifactId || j.build != job.build) {
         return false;
       }
+      // A Keep going runs its kept change alone: it joins, or is joined
+      // by, only a job on one of its own threads (the person wrote there
+      // again, so the change runs afresh with the newer comment).
+      if ((job.keepGoing || j.keepGoing) && !_sharesThread(job, j)) {
+        return false;
+      }
       job.items.addAll(j.items);
       job.recheck.addAll(j.recheck);
       job.answers.addAll(j.answers);
@@ -911,6 +918,12 @@ class FeedbackWorker {
       return true;
     });
     return job;
+  }
+
+  static bool _sharesThread(_Job a, _Job b) {
+    final mine = {...a.recheck, for (final i in a.items) i.threadId};
+    return b.recheck.any(mine.contains) ||
+        b.items.any((i) => mine.contains(i.threadId));
   }
 
   Future<void> _runJob(_Job job) async {
