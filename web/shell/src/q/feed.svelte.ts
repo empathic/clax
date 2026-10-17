@@ -37,6 +37,10 @@ export class QuestionFeed {
   declare private leave: Map<string, () => void>;
   declare private unwatch: (() => void) | null;
   declare private readonly after: After;
+  // The latest fetch of the open list (0: none yet), and the question
+  // events heard while it was in flight, which its answer may predate.
+  declare private fetching: number;
+  declare private heard: QuestionView[] | null;
 
   constructor(opts: { after?: After } = {}) {
     this.s = reactive({ open: [], recent: [] });
@@ -44,6 +48,8 @@ export class QuestionFeed {
     this.leave = new Map();
     this.unwatch = null;
     this.after = opts.after ?? after;
+    this.fetching = 0;
+    this.heard = null;
   }
 
   /** Open questions, oldest first. */
@@ -128,16 +134,29 @@ export class QuestionFeed {
     this.upsert("question" in r ? r.question : r.closed);
   }
 
-  /** Fetches the open list (none for a browser without an inbox). */
+  /** Fetches the open list (none for a browser without an inbox). The
+   * list replaces `open`, and then the question events heard since the
+   * fetch began are taken again in order, so a question asked or closed
+   * while the fetch was in flight is not undone by a list read before it.
+   * Only the latest of overlapping fetches applies. */
   private async refetch(): Promise<void> {
+    const n = ++this.fetching;
+    this.heard = [];
     const r = await listQuestions().catch(() => null);
+    if (n !== this.fetching) return;
+    const heard = this.heard ?? [];
+    this.heard = null;
     if (!r) return;
     // Those that closed unheard leave at once; a card closing now keeps its time.
     this.open = r === "forbidden" ? [] : (r.questions ?? []).filter(q => !this.recent.some(x => x.id === q.id)).sort(byCreated);
+    if (r !== "forbidden") for (const q of heard) this.upsert(q);
   }
 
   private on(e: StreamEvent): void {
-    if (e.type === "question") { const q = e.question as QuestionView | undefined; if (q?.id) this.upsert(q); }
+    if (e.type === "question") {
+      const q = e.question as QuestionView | undefined;
+      if (q?.id) { this.heard?.push(q); this.upsert(q); }
+    }
     else if (e.type === "ready" || e.type === "resync") void this.refetch();
     else if (e.type === "refused") this.stop();
   }

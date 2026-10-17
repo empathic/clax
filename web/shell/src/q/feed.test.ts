@@ -129,6 +129,43 @@ describe("QuestionFeed", () => {
     expect(stream.watched[0].off).toBe(true);
   });
 
+  it("keeps a question heard while a fetch was in flight, whose list was read before it was asked or closed", async () => {
+    // Each fetch waits until the test answers it, with the list as the daemon read it.
+    const pending: ((list: unknown[]) => void)[] = [];
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(res => {
+      pending.push(list => res(new Response(JSON.stringify({ questions: list, open: list.length }), { status: 200 })));
+    })));
+    const C = view({ id: "Q3", created_at: "2026-10-07T09:10:00.000Z" });
+    const feed = new QuestionFeed({ after: fakeClock().after });
+    const stream = fakeStream();
+    feed.start(stream);
+    stream.emit("ready");
+    await settle();
+    // Asked, and A answered, after the daemon read the list it is sending.
+    stream.emit("question", { question: B });
+    stream.emit("question", { question: { ...A, status: "answered" as const, answers: [] } });
+    pending.shift()!([A]);
+    await settle();
+    expect(feed.open.map(q => q.id)).toEqual(["Q2"]);
+    expect(feed.recent.map(q => q.id)).toEqual(["Q1"]);
+    // Of two fetches in flight, the older answer (read before C) is not applied over the newer.
+    stream.emit("resync", { topic: "questions" });
+    stream.emit("resync", { topic: "questions" });
+    await settle();
+    stream.emit("question", { question: C });
+    pending[1]([B, C]);
+    await settle();
+    pending[0]([B]);
+    await settle();
+    expect(feed.open.map(q => q.id)).toEqual(["Q2", "Q3"]);
+    // Heard events are not taken again by a later fetch.
+    stream.emit("ready");
+    await settle();
+    pending[2]([B]);
+    await settle();
+    expect(feed.open.map(q => q.id)).toEqual(["Q2"]);
+  });
+
   it("tells its listeners each change", async () => {
     stubFetch(() => [200, { questions: [], open: 0 }]);
     const feed = new QuestionFeed();
