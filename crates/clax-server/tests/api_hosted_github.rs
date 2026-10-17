@@ -4,11 +4,11 @@
 //! only what they made; a blocked account and a forged state are refused;
 //! sign-ups are rate limited and members' artifacts capped.
 
-use crate::common::TestServer;
 use axum::extract::{Form, State};
 use axum::http::HeaderMap;
 use axum::routing::{get, post};
 use clax_core::working::ManualClock;
+use clax_testkit::TestServer;
 use reqwest::header::{COOKIE, HOST, LOCATION, ORIGIN, SET_COOKIE};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -87,7 +87,7 @@ impl Site {
         let limits: Arc<dyn clax_core::working::Clock> = clock.clone();
         let ts = TestServer::spawn_hosted_with(clock.clone(), Some(SECRET), move |s| {
             let origin = format!("http://localhost:{}", s.port);
-            let github = clax_server::github::GitHub::new(
+            let github = clax_http::github::GitHub::new(
                 "the-client",
                 "the-client-secret",
                 Some("TheOwner"),

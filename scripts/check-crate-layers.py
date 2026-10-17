@@ -25,7 +25,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-CORE = {"clax-core"}
+# The async runtime seam (clax-rt, tokio natively, a Worker's event loop on
+# wasm32) sits beside the core vocabulary: neither depends on a workspace
+# crate, and every daemon crate may reach both.
+CORE = {"clax-core", "clax-rt"}
 STORE = CORE | {"clax-store"}
 REALTIME = STORE | {"clax-realtime"}
 SAMPLE = CORE | {"clax-sample"}
@@ -38,6 +41,11 @@ COMMANDS = STORE | MCP | HOOKS | {"clax-commands"}
 # What each crate may depend on (outside its tests).
 ALLOWED = {
     "clax-core": set(),
+    "clax-rt": set(),
+    # Git objects, packs and smart HTTP without I/O, and the artifact
+    # content kept in git over them (the hosted Worker's content store).
+    "clax-git": set(),
+    "clax-content-git": CORE | {"clax-git"},
     "clax-fake-exe": set(),
     "clax-embedded": set(),
     "clax-store": CORE,

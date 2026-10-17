@@ -4,17 +4,17 @@
 //! session at `/api/sessions/<id>/git-token/<aid>` (the MCP `git_remote`
 //! tool).
 
+use axum::Json;
+use axum::extract::rejection::{JsonRejection, PathRejection};
+use axum::extract::{Path, State};
+use axum::http::{Extensions, HeaderMap, StatusCode, Uri, header};
+use clax_core::CoreError;
 use clax_http::agent::{DeniedToGrants, TokenOrAgent};
 use clax_http::auth::Caller;
 use clax_http::error::ApiError;
 use clax_http::git_remotes::{Asker, Scope, mint_for, scopes_for};
 use clax_http::hosted::Attempt;
 use clax_http::state::AppState;
-use axum::Json;
-use axum::extract::rejection::{JsonRejection, PathRejection};
-use axum::extract::{Path, State};
-use axum::http::{Extensions, HeaderMap, StatusCode, Uri, header};
-use clax_core::CoreError;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -103,7 +103,7 @@ pub async fn mint(
     p: Result<Path<String>, PathRejection>,
     body: Result<Json<TokenBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    let aid = super::artifacts::parse_id(&super::artifacts::path(p)?)?;
+    let aid = clax_http::headers::parse_id(&super::artifacts::path(p)?)?;
     let scope = scope_of(body)?;
     let asker = browser_asker(&s, &d, &aid).await?;
     if let (Asker::Link, Some(h)) = (&asker, &s.hosted) {
@@ -129,7 +129,7 @@ pub async fn options(
     d: DeniedToGrants,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    let aid = super::artifacts::parse_id(&super::artifacts::path(p)?)?;
+    let aid = clax_http::headers::parse_id(&super::artifacts::path(p)?)?;
     let id = aid.clone();
     s.store_call(move |st| st.get_artifact(&id)?.ok_or(CoreError::NotFound).map(drop))
         .await?;

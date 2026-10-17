@@ -91,7 +91,7 @@ pub async fn register(
                 if !over.ended.is_empty() {
                     let ttl =
                         clax_core::audit::AuditCtx::system(clax_core::audit::SystemReason::Ttl);
-                    crate::feedback::sessions_ended(
+                    clax_http::state::sessions_ended(
                         &state,
                         &ctx,
                         st,
@@ -370,11 +370,7 @@ pub async fn get(
 /// Why nothing wakes an idle Codex session on another machine.
 const CODEX_ELSEWHERE: &str = "this Codex session runs on another machine than this Clax, whose codex queue cannot reach it; comments arrive at the end of its turn (Stop hook), on its next clax tool call, or during wait_for_feedback";
 
-/// Whether session `s` runs on another machine than this daemon: a
-/// grant's session, or any session of a hosted daemon.
-pub fn elsewhere(s: &Session, hosted: bool) -> bool {
-    hosted || s.grant_id.is_some()
-}
+pub use clax_realtime::push::elsewhere;
 
 /// Why nothing wakes an idle Claude Code session that no notice follower
 /// polls for: optional, since comments still arrive without push, and how to
@@ -383,7 +379,7 @@ const CLAUDE_NO_PUSH: &str = "optional: comments sent to this session already ar
 
 /// What is connected for a session that can wake it ([`Followers`]).
 ///
-/// [`Followers`]: crate::feedback::Followers
+/// [`Followers`]: clax_realtime::feedback::Followers
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Live {
     /// A `clax feedback follow` polls its notices.
@@ -397,11 +393,11 @@ pub struct Live {
 
 impl Live {
     pub fn of(
-        followers: &crate::feedback::Followers,
-        waiters: &crate::feedback::FeedbackWaiters,
+        followers: &clax_realtime::feedback::Followers,
+        waiters: &clax_realtime::feedback::FeedbackWaiters,
         sid: &str,
     ) -> Live {
-        use crate::feedback::FollowKind;
+        use clax_realtime::feedback::FollowKind;
         Live {
             follower: followers.has(sid, FollowKind::Follower),
             channel: followers.has(sid, FollowKind::Channel),
@@ -529,8 +525,8 @@ enum Audience {
 #[derive(Clone)]
 pub struct Wakes {
     codex: Arc<CodexPush>,
-    followers: Arc<crate::feedback::Followers>,
-    waiters: Arc<crate::feedback::FeedbackWaiters>,
+    followers: Arc<clax_realtime::feedback::Followers>,
+    waiters: Arc<clax_realtime::feedback::FeedbackWaiters>,
     hosted: bool,
     audience: Audience,
 }
@@ -568,10 +564,10 @@ impl Wakes {
     /// These `wakes` for a delivery viewer: every agent's for the owner, a
     /// connected person's own agents' for that person, none for anyone
     /// else.
-    pub fn for_viewer(&self, v: &clax_core::DeliveryViewer) -> Option<Wakes> {
+    pub fn for_viewer(&self, v: &clax_store::DeliveryViewer) -> Option<Wakes> {
         let audience = match v {
-            clax_core::DeliveryViewer::Owner => Audience::All,
-            clax_core::DeliveryViewer::Person(p) => Audience::Person(p.clone()),
+            clax_store::DeliveryViewer::Owner => Audience::All,
+            clax_store::DeliveryViewer::Person(p) => Audience::Person(p.clone()),
             _ => return None,
         };
         Some(Wakes {

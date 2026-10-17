@@ -5,12 +5,11 @@
 //! their session ends, their rights drop or a version they may not see
 //! lands.
 
-use crate::common;
-use clax_testkit::people::World;
 use clax_core::ArtifactId;
 use clax_core::audit::AuditCtx;
 use clax_http::git_remotes::{GitRemotes, Held, Holder, Minted, RemoteFuture, Scope};
-use common::TestServer;
+use clax_testkit::TestServer;
+use clax_testkit::people::World;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

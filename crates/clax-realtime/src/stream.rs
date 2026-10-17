@@ -1581,9 +1581,9 @@ pub struct Conn {
     shutdown_live: bool,
     /// Whether the stream may still deliver (see [`Conn::checking`]).
     check: Option<Box<dyn Fn() -> bool + Send + Sync>>,
-    /// Its place in its client's cap ([`crate::socket_caps`]), given back
-    /// when the connection drops.
-    _slot: Option<crate::socket_caps::SocketSlot>,
+    /// Its place in its client's cap (the HTTP layer's `socket_caps`),
+    /// given back when the connection drops.
+    _slot: Option<Box<dyn std::any::Any + Send + Sync>>,
 }
 
 impl Conn {
@@ -1620,8 +1620,8 @@ impl Conn {
 
     /// This connection, holding `slot` (its client's place under the cap)
     /// until it drops.
-    pub fn holding(mut self, slot: Option<crate::socket_caps::SocketSlot>) -> Conn {
-        self._slot = slot;
+    pub fn holding<T: Send + Sync + 'static>(mut self, slot: Option<T>) -> Conn {
+        self._slot = slot.map(|s| Box::new(s) as Box<dyn std::any::Any + Send + Sync>);
         self
     }
 

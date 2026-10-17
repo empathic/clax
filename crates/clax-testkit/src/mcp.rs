@@ -5,15 +5,15 @@
 use super::TestServer;
 use serde_json::{Value, json};
 
-pub(crate) const ACCEPT: &str = "application/json, text/event-stream";
+pub const ACCEPT: &str = "application/json, text/event-stream";
 
 /// rmcp's streamable HTTP service, the daemon's `/mcp`.
-pub(crate) const RMCP: &str = "/mcp";
+pub const RMCP: &str = "/mcp";
 /// The tool set's JSON-RPC adapter (`clax_mcp::http`), what a Durable
 /// Object serves at `/mcp`.
-pub(crate) const ADAPTER: &str = "/mcp/json";
+pub const ADAPTER: &str = "/mcp/json";
 
-pub(crate) fn initialize() -> Value {
+pub fn initialize() -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -26,7 +26,7 @@ pub(crate) fn initialize() -> Value {
     })
 }
 
-pub(crate) fn mcp_post(ts: &TestServer, path: &str, body: &Value) -> reqwest::RequestBuilder {
+pub fn mcp_post(ts: &TestServer, path: &str, body: &Value) -> reqwest::RequestBuilder {
     ts.client
         .post(format!("{}{path}", ts.base))
         .header("accept", ACCEPT)
@@ -34,7 +34,7 @@ pub(crate) fn mcp_post(ts: &TestServer, path: &str, body: &Value) -> reqwest::Re
 }
 
 /// The JSON-RPC message in a response that is either plain JSON or an SSE stream.
-pub(crate) async fn rpc_message(res: reqwest::Response) -> Value {
+pub async fn rpc_message(res: reqwest::Response) -> Value {
     let text = res.text().await.unwrap();
     if let Ok(v) = serde_json::from_str(&text) {
         return v;

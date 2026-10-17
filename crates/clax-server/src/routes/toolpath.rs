@@ -12,6 +12,7 @@ use clax_http::agent::TokenOrAgent;
 use clax_http::audit::DeferredAudit;
 use clax_http::auth::RequireToken;
 use clax_http::error::ApiError;
+#[cfg(not(target_arch = "wasm32"))]
 use clax_http::exports::Exports;
 use clax_http::identity::Identity;
 use clax_http::state::AppState;
@@ -20,6 +21,7 @@ use clax_rt::wall::Instant;
 #[cfg(not(target_arch = "wasm32"))]
 use clax_store::toolpath::RenderEnv;
 use clax_store::toolpath::project;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 /// Whether `who` may read the audit history: the owner, by the daemon

@@ -10,13 +10,20 @@ workspace = true
 [dependencies]
 clax-core = { path = "../clax-core" }
 clax-store = { path = "../clax-store" }
+clax-rt = { path = "../clax-rt" }
+chrono.workspace = true
 bytes = "1"
 futures = "0.3"
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["sync", "macros"] }
 tracing.workspace = true
+
+# Native only: the Worker's wasm32 build has no tokio runtime, sockets or
+# processes (see clax-server's crate documentation).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true, features = ["full"] }
 
 [dev-dependencies]
 clax-fake-exe = { path = "../clax-fake-exe" }

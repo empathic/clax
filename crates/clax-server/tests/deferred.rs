@@ -1,6 +1,6 @@
 //! The content tests that drive the server only through its routes, run
 //! again on [`Deferred`](clax_testkit::Deferred) content
-//! (`tests/api_hosted_content.rs` tests it). A module of `common`, so that
+//! (`tests/api_hosted_content.rs` tests it). A module of `tests/integration.rs` in every test target, so that
 //! each test target Bazel deals `tests/integration.rs`'s modules into
 //! (`clax_split`, `bazel/cargo.bzl`) runs it over the modules it holds.
 

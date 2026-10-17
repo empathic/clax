@@ -1032,9 +1032,7 @@ impl clax_http::git_remotes::GitRemotes for Remotes {
         })
     }
 
-    fn held(
-        &self,
-    ) -> clax_http::git_remotes::RemoteFuture<'_, Vec<clax_http::git_remotes::Held>> {
+    fn held(&self) -> clax_http::git_remotes::RemoteFuture<'_, Vec<clax_http::git_remotes::Held>> {
         Box::pin(async { Ok(Vec::new()) })
     }
 

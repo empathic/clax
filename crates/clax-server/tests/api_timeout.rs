@@ -204,7 +204,11 @@ async fn the_test_routes_refuse_callers_without_the_token() {
         .unwrap();
     assert_eq!(publish.status(), 401, "slow_publish without the token");
     let list: serde_json::Value = ts.get_authed("/api/artifacts").await.json().await.unwrap();
-    assert_eq!(list["artifacts"].as_array().unwrap().len(), 0, "nothing made");
+    assert_eq!(
+        list["artifacts"].as_array().unwrap().len(),
+        0,
+        "nothing made"
+    );
 
     for (method, path) in [
         (reqwest::Method::GET, "/api/_test/sleep/60001"),

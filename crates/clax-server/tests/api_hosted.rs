@@ -3,8 +3,8 @@
 //! the session cookie's flags, CSRF on every change, agent tokens, and
 //! guests on pages shared by link; and the local daemon serving none of it.
 
-use crate::common::TestServer;
 use clax_core::working::ManualClock;
+use clax_testkit::TestServer;
 use reqwest::header::{COOKIE, HOST, ORIGIN, SET_COOKIE};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -2313,7 +2313,7 @@ impl Site {
     async fn reap(&self) -> Vec<String> {
         let (feedback, store) = (self.ts.feedback.clone(), self.ts.store.clone());
         tokio::task::spawn_blocking(move || {
-            clax_server::daemon::reap_idle(
+            clax_server::serve::reap_idle(
                 &feedback,
                 &store,
                 std::time::Duration::from_secs(clax_store::Store::SESSION_IDLE_SECS),

@@ -27,16 +27,20 @@
 //! guest by their seat key, anyone else by `tab` (an ID its page picks,
 //! at most 32 letters, digits, `-` or `_`), counted per client address.
 
-use super::artifacts::{live_part, parse_id, path, strip_sessions, with_owner};
-use clax_http::error::ApiError;
-use crate::feedback::VisFor;
-use clax_http::identity::Identity;
-use clax_http::state::AppState;
+use super::artifacts::path;
 use axum::extract::rejection::{PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::CoreError;
+use clax_http::error::ApiError;
+use clax_http::headers::parse_id;
+use clax_http::identity::Identity;
+use clax_http::state::AppState;
+use clax_http::views::artifact::live_part;
+use clax_http::views::artifact::strip_sessions;
+use clax_http::views::artifact::with_owner;
+use clax_http::views::thread::VisFor;
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
@@ -60,7 +64,7 @@ pub async fn snapshot(
     State(s): State<AppState>,
     d: clax_http::agent::DeniedToGrants,
     who: Identity,
-    sees: crate::live::SeesLive,
+    sees: clax_http::live_access::SeesLive,
     extensions: axum::http::Extensions,
     aid: Result<Path<String>, PathRejection>,
     q: Result<Query<SnapshotQuery>, QueryRejection>,
@@ -85,8 +89,8 @@ pub async fn snapshot(
         })
         .await?;
     let spectator = key.or_else(|| {
-        let client =
-            clax_http::identity::peer_of(&extensions).map_or_else(String::new, |p| p.ip().to_string());
+        let client = clax_http::identity::peer_of(&extensions)
+            .map_or_else(String::new, |p| p.ip().to_string());
         q.tab
             .as_deref()
             .filter(|t| tab_ok(t))

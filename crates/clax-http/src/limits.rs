@@ -20,3 +20,8 @@ pub const DOCS_BATCH_LIMIT: usize = 14 * 1024 * 1024;
 
 /// Largest accepted ask body.
 pub const ASK_BODY_LIMIT: usize = 128 * 1024;
+
+/// The most body a draft request may carry:
+/// [`MAX_DRAFT_BYTES`](clax_core::drafts::MAX_DRAFT_BYTES) of files, with
+/// room for JSON escaping and base64.
+pub const DRAFT_BODY_LIMIT: usize = 4 * clax_core::drafts::MAX_DRAFT_BYTES;

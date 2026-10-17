@@ -29,7 +29,7 @@ struct Sites {
     /// recently used first.
     origins: HashMap<String, Vec<(String, String)>>,
     /// When each joined origin's use was last written to the store.
-    written: HashMap<String, std::time::Instant>,
+    written: HashMap<String, clax_rt::wall::Instant>,
 }
 
 /// How often a joined origin's use is written to the store at most.
@@ -213,7 +213,7 @@ impl LiveIds {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         g.written
-            .insert(origin.to_string(), std::time::Instant::now());
+            .insert(origin.to_string(), clax_rt::wall::Instant::now());
         if let Some(key) = g.key_of.get(origin).cloned()
             && let Some(list) = g.origins.get_mut(&key)
             && let Some(i) = list.iter().position(|(o, _)| o == origin)

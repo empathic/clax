@@ -1,37 +1,37 @@
-//! A hosted daemon's pages (`clax_http::hosted`): `/setup` while setup is
+//! A hosted daemon's pages (`clax_server::hosted`): `/setup` while setup is
 //! open, the join and sign-in pages without a referrer, and the artifact
-//! page's bootstrap for a guest of a page shared by link, served from a web
-//! UI override (see `tests/web_dist.rs`).
+//! page's bootstrap for a guest of a page shared by link, served from a
+//! scratch web UI.
 #![cfg(debug_assertions)]
 
-use crate::common::TestServer;
 use clax_core::working::ManualClock;
-use clax_server::routes::shell::set_web_dist;
+use clax_testkit::TestServer;
 use reqwest::header::{COOKIE, ORIGIN, SET_COOKIE};
 use serde_json::json;
 use std::sync::Arc;
 
 const ENTRY: &str = include_str!("../../../web/shell/artifact.html");
 
-async fn dist() -> tokio::sync::MutexGuard<'static, ()> {
-    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    let guard = crate::web_dist_lock().await;
-    let dir = DIR.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("clax-hosted-pages-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("artifact.html"), ENTRY).unwrap();
-        std::fs::write(dir.join("index.html"), "<p>gallery</p>").unwrap();
-        dir
-    });
-    set_web_dist(dir.clone());
-    guard
+/// A scratch web UI: the artifact entry and a stand-in gallery.
+fn dist() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("artifact.html"), ENTRY).unwrap();
+    std::fs::write(dir.path().join("index.html"), "<p>gallery</p>").unwrap();
+    dir
+}
+
+/// A hosted test daemon whose setup takes `s3cret`, serving `dist`.
+async fn spawn(clock: Arc<ManualClock>, dist: &tempfile::TempDir) -> TestServer {
+    let web: Arc<dyn clax_core::embedded::FileTree> =
+        Arc::new(clax_core::embedded::DiskTree::new(dist.path()));
+    TestServer::spawn_hosted_with(clock, Some("s3cret"), move |s| s.web = web).await
 }
 
 #[tokio::test]
 async fn the_sign_in_pages_load_without_a_referrer_and_setup_closes_once_done() {
-    let _g = dist().await;
+    let dist = dist();
     let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
-    let ts = TestServer::spawn_hosted(clock, Some("s3cret")).await;
+    let ts = spawn(clock, &dist).await;
     let origin = format!("http://localhost:{}", ts.addr.port());
     let r = ts.get("/setup").await;
     assert_eq!(r.status(), 200);
@@ -61,9 +61,9 @@ async fn the_sign_in_pages_load_without_a_referrer_and_setup_closes_once_done() 
 
 #[tokio::test]
 async fn a_guest_gets_a_shared_pages_bootstrap_and_no_other() {
-    let _g = dist().await;
+    let dist = dist();
     let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
-    let ts = TestServer::spawn_hosted(clock, Some("s3cret")).await;
+    let ts = spawn(clock, &dist).await;
     let origin = format!("http://localhost:{}", ts.addr.port());
     let r = ts
         .client
@@ -120,9 +120,9 @@ async fn a_guest_gets_a_shared_pages_bootstrap_and_no_other() {
 
 #[tokio::test]
 async fn a_person_who_may_not_read_comments_gets_a_bootstrap_without_threads() {
-    let _g = dist().await;
+    let dist = dist();
     let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
-    let ts = TestServer::spawn_hosted(clock, Some("s3cret")).await;
+    let ts = spawn(clock, &dist).await;
     let origin = format!("http://localhost:{}", ts.addr.port());
     let cookie_of = |r: &reqwest::Response| {
         r.headers()[SET_COOKIE]

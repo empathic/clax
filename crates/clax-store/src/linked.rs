@@ -37,10 +37,10 @@
 use super::Store;
 use super::remotes::RemoteLink;
 use super::threads::{anchor_record, check_body, comment_record, open_record, thread_in};
-use crate::anchor::Anchor;
-use crate::audit::AuditCtx;
-use crate::model::{Comment, Thread};
-use crate::{CoreError, Result, new_ulid};
+use clax_core::anchor::Anchor;
+use clax_core::audit::AuditCtx;
+use clax_core::model::{Comment, Thread};
+use clax_core::{CoreError, Result, new_ulid};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -1416,11 +1416,11 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Home;
     use crate::remotes::{PendingSignIn, SignedInAs};
     use crate::threads::{AUTHOR_AGENT, AUTHOR_VIEWER, NewComment, NewThread};
-    use crate::working::ManualClock;
-    use crate::{ArtifactId, Secret};
+    use clax_core::Home;
+    use clax_core::working::ManualClock;
+    use clax_core::{ArtifactId, Secret};
     use std::sync::Arc;
 
     struct W {
@@ -1462,7 +1462,7 @@ mod tests {
         .unwrap();
         let req = serde_json::json!({"title": "Linked",
             "files": {"index.html": {"content": "<p>one</p>", "encoding": "utf8"}}});
-        let p = crate::publish::validate(serde_json::from_value(req).unwrap()).unwrap();
+        let p = clax_core::publish::validate(serde_json::from_value(req).unwrap()).unwrap();
         let a = st.create_artifact(&AuditCtx::DAEMON, p, None).unwrap();
         let owner = st.owner_viewer(false).unwrap().public_id;
         W {
@@ -1818,7 +1818,7 @@ mod tests {
         use crate::questions::{Close, NewQuestion, Source};
         let w = world();
         link(&w, (1, 1));
-        let qs: Vec<crate::questions::Question> = serde_json::from_value(serde_json::json!([
+        let qs: Vec<clax_core::questions::Question> = serde_json::from_value(serde_json::json!([
             {"question": "Which?", "header": "Pick", "options": [{"label": "A"}, {"label": "B"}]}
         ]))
         .unwrap();
@@ -1926,7 +1926,7 @@ mod tests {
                 .id,
             );
         }
-        let qs: Vec<crate::questions::Question> = serde_json::from_value(serde_json::json!([
+        let qs: Vec<clax_core::questions::Question> = serde_json::from_value(serde_json::json!([
             {"question": "Which?", "header": "Pick"}
         ]))
         .unwrap();

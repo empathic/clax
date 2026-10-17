@@ -1,8 +1,8 @@
 //! The rules every [`ContentStore`] keeps, as checks any implementation can
 //! run: `content::contract::run(&store).await` panics on the first rule it
 //! breaks. Each check uses artifacts of its own, so they share one store.
-//! Built for this crate's tests, and for other crates with the
-//! `content-contract` feature.
+//! Built in every build, so other crates' tests run it without turning on a
+//! feature of this crate.
 
 use super::{AssetKey, ContentStore, NewFile, VersionMeta, VersionWrite};
 use crate::ArtifactId;

@@ -710,9 +710,9 @@ fn admission(
     let topics = declared.map(|a| Topics::from_capabilities(&a.capabilities).unwrap_or_default());
     let declares_user = declared.is_some_and(|a| a.capabilities.get("user").is_some());
     let seat = match caller {
-        Some(c @ (clax_http::auth::Caller::Person { .. } | clax_http::auth::Caller::Viewer { .. })) => {
-            clax_http::seats::claim_for(st, c, aid)?
-        }
+        Some(
+            c @ (clax_http::auth::Caller::Person { .. } | clax_http::auth::Caller::Viewer { .. }),
+        ) => clax_http::seats::claim_for(st, c, aid)?,
         _ => None,
     };
     let Caller { level, viewer, .. } = resolved;
@@ -836,7 +836,10 @@ pub async fn reopen(
                 return Err(CoreError::NotFound);
             }
             let caller = who.caller(st, None).ok();
-            if caller.as_ref().is_some_and(clax_http::auth::Caller::is_agent) {
+            if caller
+                .as_ref()
+                .is_some_and(clax_http::auth::Caller::is_agent)
+            {
                 return Err(CoreError::NotFound);
             }
             let resolved = clax_http::db_caller::base_caller(st, who.token, &who)?;

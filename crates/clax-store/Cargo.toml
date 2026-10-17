@@ -12,15 +12,21 @@ clax-core = { path = "../clax-core" }
 base64.workspace = true
 chrono.workspace = true
 mime_guess.workspace = true
-nix = { workspace = true, features = ["fs", "signal"] }
 rand.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.11"
 tokio = { workspace = true, features = ["sync"] }
+async-trait = "0.1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+web-time = "1"
 tracing.workspace = true
+unicode-security = "0.1"
 url.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, features = ["fs", "signal"] }
 
 [dev-dependencies]
 tempfile.workspace = true

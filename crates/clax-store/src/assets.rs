@@ -91,7 +91,7 @@ const SELECT: &str = "SELECT id, artifact_id, content_type, size, ext, created_a
 #[derive(Clone, Debug, PartialEq)]
 pub struct AssetRow {
     pub asset: Asset,
-    /// Where the home's files keep its bytes ([`crate::content::fs`]); not
+    /// Where the home's files keep its bytes ([`clax_core::content::fs`]); not
     /// checked for existence, and meaningful only for a store whose content
     /// is the home's files.
     pub path: PathBuf,
@@ -347,7 +347,7 @@ impl Store {
                     );
                     return None;
                 };
-                let path = crate::content::fs::asset_path(
+                let path = clax_core::content::fs::asset_path(
                     &self.home,
                     &AssetKey {
                         artifact: id,
@@ -427,14 +427,17 @@ mod tests {
     use crate::test_util::pool_store;
 
     /// Where the home's files keep `a`'s bytes.
-    fn path_of(store: &Store, a: &crate::model::Asset) -> std::path::PathBuf {
-        crate::content::fs::asset_path(store.home(), &crate::content::AssetKey::of(a).unwrap())
+    fn path_of(store: &Store, a: &clax_core::model::Asset) -> std::path::PathBuf {
+        clax_core::content::fs::asset_path(
+            store.home(),
+            &clax_core::content::AssetKey::of(a).unwrap(),
+        )
     }
 
     /// `a`'s bytes in the store's content store.
-    fn bytes_of(store: &Store, a: &crate::model::Asset) -> Option<Vec<u8>> {
-        let key = crate::content::AssetKey::of(a).unwrap();
-        crate::content::wait(store.content().read_asset(&key)).unwrap()
+    fn bytes_of(store: &Store, a: &clax_core::model::Asset) -> Option<Vec<u8>> {
+        let key = clax_core::content::AssetKey::of(a).unwrap();
+        clax_core::content::wait(store.content().read_asset(&key)).unwrap()
     }
 
     #[test]
@@ -554,8 +557,8 @@ mod tests {
         let (_d, store) = store();
         let id = store.insert_artifact_for_test("A", "2026-01-01T00:00:00.000Z");
         let a = store.add_asset(DAEMON, &id, "image/png", &[1]).unwrap();
-        let key = crate::content::AssetKey::of(&a).unwrap();
-        crate::content::wait(store.content().delete_asset(&key)).unwrap();
+        let key = clax_core::content::AssetKey::of(&a).unwrap();
+        clax_core::content::wait(store.content().delete_asset(&key)).unwrap();
         assert!(store.read_asset(&a.id).unwrap().is_none());
         store.delete_asset(DAEMON, &a.id).unwrap();
         assert!(store.get_asset(&a.id).unwrap().is_none());
@@ -601,8 +604,8 @@ mod tests {
         let drop_row = store.add_asset(DAEMON, &gone, "image/png", &[2]).unwrap();
         store.delete_artifact(DAEMON, &gone).unwrap();
         // Simulate a content removal that failed: the bytes are still there.
-        let key = crate::content::AssetKey::of(&drop_row).unwrap();
-        crate::content::wait(store.content().put_asset(&key, b"x")).unwrap();
+        let key = clax_core::content::AssetKey::of(&drop_row).unwrap();
+        clax_core::content::wait(store.content().put_asset(&key, b"x")).unwrap();
         assert_eq!(store.delete_assets_of_deleted_artifacts().unwrap(), 1);
         assert_eq!(bytes_of(&store, &drop_row), None);
         assert!(store.get_asset(&drop_row.id).unwrap().is_none());

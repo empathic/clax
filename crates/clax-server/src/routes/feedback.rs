@@ -4,7 +4,6 @@
 //! prints.
 
 use super::artifacts::{body, path};
-use clax_realtime::feedback::FollowKind;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
@@ -20,12 +19,13 @@ use clax_http::agent::{FeedbackAck, FeedbackNotices, FeedbackPoll, TokenOrAgent}
 use clax_http::auth::RequireToken;
 use clax_http::error::ApiError;
 use clax_http::state::AppState;
+use clax_realtime::feedback::FollowKind;
 use clax_realtime::feedback::apply;
 use clax_realtime::questions::QuestionWaiters;
+use clax_rt::time::Instant;
 use clax_store::questions::Status;
 use clax_store::visibility::Visibility;
 use clax_store::{Store, TakeFeedback};
-use clax_rt::time::Instant;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -584,7 +584,7 @@ fn follow_changed(s: &AppState, sid: &str) {
 }
 
 /// When a notices poll ends, checks once its session's follower stays
-/// counted ([`crate::feedback::Followers::RECENT`]), and calls
+/// counted ([`clax_realtime::feedback::Followers::RECENT`]), and calls
 /// [`follow_changed`] when no poll followed.
 struct FollowLapse {
     s: AppState,
@@ -596,8 +596,8 @@ impl Drop for FollowLapse {
     fn drop(&mut self) {
         let (s, sid, kind) = (self.s.clone(), std::mem::take(&mut self.sid), self.kind);
         let grace = match kind {
-            FollowKind::Channel => crate::feedback::Followers::CHANNEL_RECENT,
-            _ => crate::feedback::Followers::RECENT,
+            FollowKind::Channel => clax_realtime::feedback::Followers::CHANNEL_RECENT,
+            _ => clax_realtime::feedback::Followers::RECENT,
         };
         clax_rt::spawn(async move {
             clax_rt::time::sleep(grace + Duration::from_secs(1)).await;

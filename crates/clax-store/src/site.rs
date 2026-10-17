@@ -463,7 +463,7 @@ async fn stage_copy(
                 .content
                 .read_file(&src_id, n, path)
                 .await?
-                .ok_or_else(|| crate::content::missing(&src_id, n, path))?;
+                .ok_or_else(|| clax_core::content::missing(&src_id, n, path))?;
             meta.sha256 = Some(sha256_hex(&bytes));
         }
     }
@@ -1604,10 +1604,7 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        assert_eq!(
-            crate::test_util::content_clip(&st, &a, &t.id).unwrap(),
-            PNG
-        );
+        assert_eq!(crate::test_util::content_clip(&st, &a, &t.id).unwrap(), PNG);
         let before = st
             .events_after(0, 1000)
             .unwrap()
@@ -1726,10 +1723,7 @@ mod tests {
             )
         );
         assert_eq!(crate::test_util::content_clip(&st, &a, &t.id), None);
-        assert_eq!(
-            crate::test_util::content_clip(&st, &b, &t.id).unwrap(),
-            PNG
-        );
+        assert_eq!(crate::test_util::content_clip(&st, &b, &t.id).unwrap(), PNG);
         assert_eq!(st.read_clip(&b, &t.id).unwrap().unwrap(), PNG);
         let mut want = vec![watcher.clone(), target.clone()];
         want.sort();
@@ -1833,7 +1827,7 @@ mod tests {
         let t1 = thread(&st, &a, None);
         let t2 = thread(&st, &c, None);
         // /c's snapshot is gone from the content store: its link fails mid-way.
-        crate::content::wait(st.content().remove_version(&c, 1)).unwrap();
+        clax_core::content::wait(st.content().remove_version(&c, 1)).unwrap();
         let err = st.refile_threads(
             DAEMON,
             &[to(&b, &t1.id), to(&b, &t2.id)],

@@ -22,10 +22,10 @@
 
 use super::Store;
 use super::hosted::{AgentToken, agent_label};
-use crate::audit::AuditCtx;
-use crate::secret::{self, Secret, sha256_hex};
-use crate::{CoreError, Result, new_ulid};
 use chrono::Duration;
+use clax_core::audit::AuditCtx;
+use clax_core::secret::{self, Secret, sha256_hex};
+use clax_core::{CoreError, Result, new_ulid};
 use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 
@@ -80,7 +80,7 @@ pub enum DevicePoll {
 
 impl Store {
     fn device_later(&self, secs: i64) -> String {
-        super::stamp(self.now_utc() + Duration::seconds(secs))
+        clax_core::time::stamp(self.now_utc() + Duration::seconds(secs))
     }
 
     /// Starts a device sign-in for the machine named `client_name`, asking
@@ -348,8 +348,8 @@ fn user_sha256(code: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Home;
-    use crate::working::ManualClock;
+    use clax_core::Home;
+    use clax_core::working::ManualClock;
     use std::sync::Arc;
 
     fn store() -> (tempfile::TempDir, Store, Arc<ManualClock>) {
@@ -506,12 +506,8 @@ mod tests {
         let t = st
             .approve_device(&AuditCtx::DAEMON, &ada, start.user_code.expose())
             .unwrap();
-        st.revoke_grant(
-            &AuditCtx::DAEMON,
-            &t.id,
-            crate::people::EndedBy::Person,
-        )
-        .unwrap();
+        st.revoke_grant(&AuditCtx::DAEMON, &t.id, crate::people::EndedBy::Person)
+            .unwrap();
         clock.advance(DEVICE_INTERVAL_SECS);
         assert!(matches!(
             st.poll_device(&AuditCtx::DAEMON, start.device_code.expose())

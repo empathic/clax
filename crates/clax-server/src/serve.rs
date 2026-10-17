@@ -2,6 +2,7 @@
 //! the open-file limit, and shutdown. The discovery files clients read are
 //! `clax_core::daemon`.
 
+use clax_core::Home;
 use clax_core::daemon::DaemonInfo;
 use clax_core::daemon::StartingInfo;
 use clax_core::daemon::browser_host;
@@ -13,7 +14,6 @@ use clax_core::daemon::read_daemon_info;
 use clax_core::daemon::remove_daemon_info;
 use clax_core::daemon::write_daemon_info;
 use clax_core::daemon::write_starting_info;
-use clax_core::Home;
 use clax_http::state::AppState;
 use clax_store::Store;
 use std::io;
@@ -351,7 +351,7 @@ pub async fn serve(
             }
         })
     });
-    state.start_listeners();
+    crate::start_listeners(&state);
     tracing::info!(codex = ?state.codex.bin, source = ?state.codex.source, "codex push");
     tracing::info!(provider = ?state.sample.provider_name(), "sample provider");
     let fctx = state.feedback_ctx();

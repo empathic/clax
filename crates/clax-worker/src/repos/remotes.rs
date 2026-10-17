@@ -12,9 +12,7 @@ use clax_core::ArtifactId;
 use clax_git::GitError;
 use clax_git::http::Transport;
 use clax_git::versions::repo_name;
-use clax_http::git_remotes::{
-    GitRemotes, Held, Holder, Minted, RemoteError, RemoteFuture, Scope,
-};
+use clax_http::git_remotes::{GitRemotes, Held, Holder, Minted, RemoteError, RemoteFuture, Scope};
 
 use super::api::DoTokens;
 use super::tokens;

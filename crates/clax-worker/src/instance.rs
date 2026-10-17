@@ -100,14 +100,15 @@ use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
+use clax_core::Home;
 use clax_core::content::ContentStore;
-use clax_core::{Home, Store};
-use clax_http::state::AppState;
 use clax_http::identity::SocketCredentials;
+use clax_http::state::AppState;
+use clax_realtime::stream::Conn;
 use clax_server::routes::live_layers::{LiveOpened, LiveSocket, LiveStep};
 use clax_server::routes::room::{RoomOpened, RoomSocket, RoomStep};
 use clax_server::routes::stream::{SocketStream, open_stream};
-use clax_realtime::stream::Conn;
+use clax_store::Store;
 use serde::{Deserialize, Serialize};
 use tower_service::Service;
 use wasm_bindgen::JsValue;
@@ -372,7 +373,7 @@ fn hosted(env: &Env) -> Result<Option<Arc<clax_http::hosted::Hosted>>> {
     // `GITHUB_CLIENT_SECRET`; `OWNER_GITHUB` names the owner's login;
     // `GITHUB_OAUTH_BASE` and `GITHUB_API_BASE` point a test at a fake.
     let opt = |name: &str| Some(var(env, name)).filter(|v| !v.is_empty());
-    let github = clax_server::github::GitHub::new(
+    let github = clax_http::github::GitHub::new(
         &var(env, "GITHUB_CLIENT_ID"),
         &secret(env, "GITHUB_CLIENT_SECRET"),
         opt("OWNER_GITHUB").as_deref(),
@@ -437,7 +438,7 @@ impl Instance {
             sample: Arc::new(clax_sample::Sampler::disabled()),
             clock,
             // Graces wait for the alarm, not a timer that keeps the object up.
-            question_sleeper: Arc::new(clax_server::questions::SweptGraces),
+            question_sleeper: Arc::new(clax_realtime::questions::SweptGraces),
             agent_timer: Arc::new(clax_http::agent::TokioTimer::default()),
             extension_id: String::new(),
             terminal_after_s: clax_core::config::TERMINAL_AFTER_S,
@@ -445,6 +446,7 @@ impl Instance {
             bind: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
             port: 0,
             hosted,
+            web: Arc::new(crate::web::WebUi),
         })
         .map_err(rust_err)?;
         app.seats
@@ -458,7 +460,7 @@ impl Instance {
             app.presence.restore(&k.presence);
         }
         install_git_remotes(&app, env);
-        app.start_listeners();
+        clax_server::start_listeners(&app);
         let router = clax_server::router::build_router(app.clone());
         let inst = Rc::new(Instance {
             app,
@@ -803,7 +805,7 @@ impl InstanceDo {
     /// and, once per server, a grace for each open hook question.
     async fn revive(&self, inst: &Rc<Instance>) {
         if !inst.graced.replace(true) {
-            let _ = clax_server::questions::arm_open_hooks(&inst.app).await;
+            let _ = clax_http::views::question::arm_open_hooks(&inst.app).await;
         }
         if self.revived.replace(true) {
             return;

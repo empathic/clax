@@ -15,3 +15,12 @@ pub const VIA_HEADER: &str = "x-clax-via";
 
 /// Header naming the session a publish is attributed to.
 pub const SESSION_HEADER: &str = "x-clax-session";
+
+/// Where the MCP adapter answers (`clax_server::routes::mcp_http`): `/mcp`
+/// on a Durable Object; beside rmcp's `/mcp` in the daemon.
+#[cfg(not(target_arch = "wasm32"))]
+pub const MCP_JSON_PATH: &str = "/mcp/json";
+/// Where the MCP adapter answers (`clax_server::routes::mcp_http`): `/mcp`
+/// on a Durable Object; beside rmcp's `/mcp` in the daemon.
+#[cfg(target_arch = "wasm32")]
+pub const MCP_JSON_PATH: &str = "/mcp";

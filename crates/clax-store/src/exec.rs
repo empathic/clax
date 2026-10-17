@@ -904,7 +904,7 @@ impl Store {
     ///   methods, so content I/O never stalls the caller's runtime.
     /// - On one connection ([`Store::open_on`]), and so always on
     ///   `wasm32`, and on a content store that needs an executor
-    ///   ([`crate::content::ContentStore::needs_executor`]) whatever the
+    ///   ([`clax_core::content::ContentStore::needs_executor`]) whatever the
     ///   connections, the future is awaited inline on the caller's task, so
     ///   content I/O that needs an executor (a Durable Object's JavaScript
     ///   promises) completes, where a synchronous method would fail with
@@ -1794,9 +1794,14 @@ mod tests {
         let home = st.home().clone();
         drop(st);
         let conn = Connection::open(home.db_path()).unwrap();
-        let content = Arc::new(crate::content::fs::FsContent::new(home.clone()));
-        let one =
-            Store::open_on(&home, conn, Arc::new(crate::working::SystemClock), content).unwrap();
+        let content = Arc::new(clax_core::content::fs::FsContent::new(home.clone()));
+        let one = Store::open_on(
+            &home,
+            conn,
+            Arc::new(clax_core::working::SystemClock),
+            content,
+        )
+        .unwrap();
         assert_eq!(viewers(&one), 1);
         let fk: bool = one
             .with_read(|c| Ok(c.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?))

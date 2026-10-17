@@ -2,8 +2,7 @@
 //! lists and the streams hear of as a publish, and a publish that did not
 //! see it is a conflict.
 
-use crate::common;
-use common::TestServer;
+use clax_testkit::TestServer;
 use futures::StreamExt;
 use std::sync::Arc;
 use std::time::Duration;

@@ -155,6 +155,9 @@ crates/
   clax-cli        The `clax` binary: wires the daemon and the embedded files into the commands.
   clax-testkit    The in-process test daemon, its clients and fixtures.
   clax-fake-exe   Test helpers with no workspace dependency.                       (unchanged)
+  clax-rt         The async runtime seam: tokio natively, a Worker's event loop on wasm32.
+  clax-git        Git objects, packs, smart HTTP and artifact versions, without I/O.
+  clax-content-git  Artifact content kept in git repositories, over any clax-git host.
 ```
 
 The layering rule: a crate depends only on crates above it in this picture,
@@ -177,6 +180,12 @@ never sideways or up.
 
   tests only:  clax-testkit ── clax-server (and everything above it), clax-fake-exe
                clax-fake-exe ── nothing in the workspace
+
+  beside clax-core: clax-rt (no workspace dependency; any crate may use it)
+  apart:            clax-git (no workspace dependency)
+                    clax-content-git ── clax-core, clax-rt, clax-git
+  outside the workspace: crates/clax-worker ── clax-server and everything
+                    above it, clax-content-git, clax-git (built for wasm32)
 ```
 
 Two test-only rules keep test support in its own place:

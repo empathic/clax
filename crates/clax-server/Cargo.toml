@@ -58,6 +58,8 @@ send_wrapper = { version = "0.6", features = ["futures"] }
 
 [dev-dependencies]
 clax-testkit = { path = "../clax-testkit" }
+clax-http = { path = "../clax-http" }
+async-trait = "0.1"
 clax-hooks = { path = "../clax-hooks" }
 clax-content-git = { path = "../clax-content-git" }
 clax-git = { path = "../clax-git" }

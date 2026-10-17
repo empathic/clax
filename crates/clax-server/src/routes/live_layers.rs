@@ -33,19 +33,19 @@
 //! after a sustained overrun, 4410 when the artifact is deleted, 1001 when
 //! the daemon shuts down.
 
-use clax_http::auth::Caller;
-use clax_http::error::ApiError;
-use clax_http::identity::Identity;
-use clax_realtime::live_layers::LiveLayers;
-use crate::routes::artifacts::parse_id;
-use clax_http::state::AppState;
-use clax_http::viewer::SameOrigin;
 #[cfg(not(target_arch = "wasm32"))]
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::response::Response;
 use clax_core::live_layers::{MAX_LIVE_MESSAGE_BYTES, Take, TokenBucket, parse_message};
 use clax_core::{CoreError, Event};
+use clax_http::auth::Caller;
+use clax_http::error::ApiError;
+use clax_http::headers::parse_id;
+use clax_http::identity::Identity;
+use clax_http::state::AppState;
+use clax_http::viewer::SameOrigin;
+use clax_realtime::live_layers::LiveLayers;
 use serde_json::json;
 
 /// The close code of a socket without a live seat.
@@ -65,7 +65,7 @@ pub async fn live(
     _o: SameOrigin,
     who: Identity,
     caller: Caller,
-    sees: crate::live::SeesLive,
+    sees: clax_http::live_access::SeesLive,
     headers: axum::http::HeaderMap,
     extensions: axum::http::Extensions,
     ws: WebSocketUpgrade,
@@ -436,7 +436,7 @@ pub async fn live_socket(
     _o: SameOrigin,
     who: Identity,
     caller: Caller,
-    sees: crate::live::SeesLive,
+    sees: clax_http::live_access::SeesLive,
     extensions: axum::http::Extensions,
     headers: axum::http::HeaderMap,
 ) -> Result<Response, ApiError> {

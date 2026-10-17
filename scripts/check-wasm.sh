@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # check-wasm.sh [CARGO ARGS...]: checks the crates a hosted Worker runs
-# (clax-core, clax-rt, clax-mcp, clax-server, clax-content-git) for
+# (clax-core, clax-rt, clax-store, clax-sample, clax-realtime, clax-http,
+# clax-mcp, clax-server, clax-content-git) for
 # wasm32-unknown-unknown, and fails on any error or warning.
 #
 # SQLite for that target (rusqlite's sqlite-wasm-rs) is C compiled with a
@@ -54,7 +55,8 @@ fi
 export CC_wasm32_unknown_unknown="$llvm/clang"
 export AR_wasm32_unknown_unknown="$llvm/llvm-ar"
 if [ "$#" -eq 0 ]; then
-  set -- -p clax-core -p clax-rt -p clax-mcp -p clax-server -p clax-content-git
+  set -- -p clax-core -p clax-rt -p clax-store -p clax-sample -p clax-realtime -p clax-http \
+    -p clax-mcp -p clax-server -p clax-content-git
 fi
 # A warning fails the check too, as `-D warnings` does in the native gates;
 # cargo reports cached warnings again, so a rerun still sees them.

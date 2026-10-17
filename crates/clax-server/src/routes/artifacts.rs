@@ -10,7 +10,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::audit::AuditCtx;
 use clax_core::live::KIND_LIVE;
-use clax_core::model::Session;
+use clax_core::model::{Artifact, Session};
 use clax_core::publish::{PublishRequest, require_title, validate};
 use clax_core::rights::RightType;
 use clax_core::{ArtifactId, CoreError, Event};
@@ -153,7 +153,7 @@ pub(crate) fn publishing_session(
 }
 
 /// Header an agent of another machine names a publish's idempotency key in
-/// (another Clax's push: `clax_http::public`). A publish whose key the token
+/// (another Clax's push: `crate::public`). A publish whose key the token
 /// named before answers the version that publish made, whatever the
 /// public copy holds now, and publishes nothing.
 pub const IDEMPOTENCY_HEADER: &str = "idempotency-key";
@@ -201,7 +201,7 @@ fn replayed(
     grant: Option<&str>,
     key: Option<&str>,
     of: Option<&ArtifactId>,
-    vis: &crate::feedback::Vis,
+    vis: &clax_http::views::thread::Vis,
 ) -> clax_core::Result<Option<(Value, Value)>> {
     let (Some(g), Some(k)) = (grant, key) else {
         return Ok(None);
@@ -832,7 +832,7 @@ pub async fn publish(
         .await?;
     // A public twin that follows new versions gets this one.
     if let Ok(id) = clax_core::ArtifactId::parse(artifact["id"].as_str().unwrap_or_default()) {
-        clax_http::public::after_publish(&s, &id);
+        crate::public::after_publish(&s, &id);
     }
     let url = format!("/a/{}", artifact["id"].as_str().unwrap_or_default());
     let mut v =
@@ -963,7 +963,7 @@ pub(crate) fn forked_from_view(
     st: &Store,
     a: &Artifact,
     reader: &SourceReader,
-    vis: Option<&crate::feedback::Vis>,
+    vis: Option<&clax_http::views::thread::Vis>,
 ) -> clax_core::Result<Option<Value>> {
     let Some(f) = &a.forked_from else {
         return Ok(None);

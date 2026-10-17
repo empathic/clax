@@ -13,14 +13,7 @@
 //! reaches no one else, so it is the draft's capability, on a hosted daemon
 //! as a version's content key is.
 
-use super::artifacts::{body_within, parse_id, path};
-use clax_http::agent::{DeniedToGrants, TokenOrAgent};
-use clax_http::audit::DeferredAudit;
-use clax_http::auth::Caller;
-use clax_http::error::ApiError;
-use crate::feedback::VisFor;
-use clax_http::host::OnArtifactOrigin;
-use clax_http::state::AppState;
+use super::artifacts::{body_within, path};
 use axum::Json;
 use axum::body::Body;
 use axum::extract::rejection::{JsonRejection, PathRejection};
@@ -28,6 +21,7 @@ use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use clax_core::ArtifactId;
+use clax_core::CoreError;
 use clax_core::drafts::{
     DraftFile, Drafter, MAX_DRAFT_BYTES, MAX_NOTE_CHARS, NewDraft, Refusal, Served, is_token,
     served_page,
@@ -35,7 +29,15 @@ use clax_core::drafts::{
 use clax_core::model::FileMeta;
 use clax_core::publish::{FileChange, FileInput, INDEX, check_path, content_type_for};
 use clax_core::working::Actor;
-use clax_core::{CoreError, Store};
+use clax_http::agent::{DeniedToGrants, TokenOrAgent};
+use clax_http::audit::DeferredAudit;
+use clax_http::auth::Caller;
+use clax_http::error::ApiError;
+use clax_http::headers::parse_id;
+use clax_http::host::OnArtifactOrigin;
+use clax_http::state::AppState;
+use clax_http::views::thread::VisFor;
+use clax_store::Store;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -46,9 +48,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// reading and marking whatever the base version holds.
 pub const MAX_BASE_COMPARED: u64 = 2 * MAX_DRAFT_BYTES as u64;
 
-/// The most body a draft request may carry: [`MAX_DRAFT_BYTES`] of files,
-/// with room for JSON escaping and base64.
-pub const DRAFT_BODY_LIMIT: usize = 4 * MAX_DRAFT_BYTES;
+pub use clax_http::limits::DRAFT_BODY_LIMIT;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -350,7 +350,12 @@ pub async fn delete(
     let ended = s
         .store_call(move |st| {
             live_session(st, &sid)?;
-            Ok(clax_realtime::drafts::end(&events, &drafts, &sid, id.as_str()))
+            Ok(clax_realtime::drafts::end(
+                &events,
+                &drafts,
+                &sid,
+                id.as_str(),
+            ))
         })
         .await?;
     Ok(Json(json!({"ended": ended})))

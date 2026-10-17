@@ -54,24 +54,21 @@
 //! The timers run on a [`Sleeper`], which tests drive. A hosted daemon runs
 //! none of this.
 
-use clax_http::error::ApiError;
-use crate::feedback::apply;
-use clax_http::public::{Client, RemoteFail};
-use crate::questions::Sleeper;
-use clax_http::state::AppState;
+use crate::public::{Client, RemoteFail};
 use clax_core::audit::AuditCtx;
+use clax_core::{Anchor, Event};
+use clax_http::error::ApiError;
+use clax_http::state::AppState;
+use clax_realtime::feedback::apply;
+use clax_store::SendTarget;
 use clax_store::approvals::Route;
-use clax_store::linked::{
-    LinkedQuestion, MirrorComment, MirrorThread, OutboxRow, RemoteAuthor,
-};
+use clax_store::linked::{LinkedQuestion, MirrorComment, MirrorThread, OutboxRow, RemoteAuthor};
 use clax_store::questions::Close;
 use clax_store::remotes::RemoteLink;
-use clax_core::{Anchor, Event, SendTarget};
-use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::sync::Notify;
 
@@ -91,117 +88,7 @@ const SYNC_NAME: &str = "clax-sync";
 /// by hand uses.
 const SYNC_HARNESS: &str = crate::routes::sessions::BY_HAND_HARNESS;
 
-/// How one remote's sync stands.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
-pub struct SyncStatus {
-    /// Since when the remote could not be reached; `None` while it can.
-    pub unreachable_since: Option<String>,
-    pub last_error: Option<String>,
-    /// When a cycle last finished.
-    pub synced_at: Option<String>,
-}
-
-struct Task {
-    kick: Arc<Notify>,
-    retry: Arc<Notify>,
-    handle: clax_rt::JoinHandle<()>,
-}
-
-/// The sync's state on a local daemon: its timers, its tasks and how each
-/// remote stands.
-pub struct Linked {
-    sleeper: Arc<dyn Sleeper>,
-    supervise: Notify,
-    tasks: Mutex<HashMap<String, Task>>,
-    /// Each linked artifact's remotes, as of the last supervision.
-    artifacts: Mutex<HashMap<String, Vec<String>>>,
-    status: Mutex<HashMap<String, SyncStatus>>,
-    /// Tests: requests to remotes fail as unreachable while set.
-    offline: AtomicBool,
-    /// Tests: the answers to this many up-sends are lost after the remote
-    /// acted on them.
-    lose_answers: AtomicUsize,
-    started: AtomicBool,
-}
-
-impl Linked {
-    /// The sync's state, its timers on `sleeper`.
-    pub fn new(sleeper: Arc<dyn Sleeper>) -> Linked {
-        Linked {
-            sleeper,
-            supervise: Notify::new(),
-            tasks: Mutex::default(),
-            artifacts: Mutex::default(),
-            status: Mutex::default(),
-            offline: AtomicBool::new(false),
-            lose_answers: AtomicUsize::new(0),
-            started: AtomicBool::new(false),
-        }
-    }
-
-    /// How remote `rid`'s sync stands.
-    pub fn status(&self, rid: &str) -> SyncStatus {
-        self.status
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(rid)
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    /// Whether a task runs for remote `rid`.
-    pub fn running(&self, rid: &str) -> bool {
-        self.tasks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains_key(rid)
-    }
-
-    /// Wakes remote `rid`'s task, or every task for `None`.
-    pub fn kick(&self, rid: Option<&str>) {
-        let tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
-        for (id, t) in tasks.iter() {
-            if rid.is_none_or(|r| r == id) {
-                t.kick.notify_one();
-            }
-        }
-    }
-
-    /// Ends remote `rid`'s backoff now: its task tries again at once (the
-    /// owner's Retry). A local write during an outage only queues.
-    pub fn retry(&self, rid: &str) {
-        let tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(t) = tasks.get(rid) {
-            t.retry.notify_one();
-            t.kick.notify_one();
-        }
-    }
-
-    /// Tells the supervisor the links or remotes changed: tasks start or
-    /// stop to match.
-    pub fn links_changed(&self) {
-        self.supervise.notify_one();
-    }
-
-    /// Tests: makes every request to a remote fail as unreachable while
-    /// `on`.
-    #[cfg(feature = "test-routes")]
-    pub fn set_offline(&self, on: bool) {
-        self.offline.store(on, Ordering::SeqCst);
-    }
-
-    /// Tests: loses the answers to the next `n` up-sends after the remote
-    /// acted on them.
-    #[cfg(feature = "test-routes")]
-    pub fn lose_next_answers(&self, n: usize) {
-        self.lose_answers.store(n, Ordering::SeqCst);
-    }
-
-    fn set_status(&self, rid: &str, f: impl FnOnce(&mut SyncStatus)) {
-        let mut m = self.status.lock().unwrap_or_else(|e| e.into_inner());
-        f(m.entry(rid.to_string()).or_default());
-    }
-}
+pub use clax_realtime::linked::{Linked, SyncStatus, Task};
 
 /// Starts the sync on a local daemon: a supervisor that keeps one task per
 /// remote with a linked artifact, and a listener that wakes a remote's task
@@ -503,8 +390,8 @@ fn publish_questions(
 ) -> clax_core::Result<()> {
     for qid in qids {
         if let Some(q) = st.question(qid)? {
-            let v = crate::questions::view(st, &q)?;
-            crate::questions::announce(s, st, &q, v);
+            let v = clax_http::views::question::view(st, &q)?;
+            clax_http::views::question::announce(s, st, &q, v);
         }
     }
     Ok(())
@@ -574,10 +461,10 @@ impl Sync {
     /// Ends the sync's sessions there.
     async fn end(&mut self) {
         if let Some(mut c) = self.client.take() {
-            clax_http::public::sendable(c.end_session()).await;
+            crate::public::sendable(c.end_session()).await;
         }
         for (_, (mut c, _)) in std::mem::take(&mut self.agents) {
-            clax_http::public::sendable(c.end_session()).await;
+            crate::public::sendable(c.end_session()).await;
         }
         self.asked_in.clear();
         for (_, w) in self.copy_waits.drain() {
@@ -622,7 +509,7 @@ impl Sync {
             let path = format!("/api/sessions/{sid}/questions/{q}?wait={WAIT_S}");
             let w = clax_rt::spawn(async move {
                 loop {
-                    match clax_http::public::sendable(c.get(&path)).await {
+                    match crate::public::sendable(c.get(&path)).await {
                         Ok(v) if v["question"]["status"] == "open" => {}
                         _ => break,
                     }
@@ -649,7 +536,7 @@ impl Sync {
                 return Err(Stop::Gone);
             };
             let mut c = Client::new(&remote.origin, Some(token));
-            clax_http::public::sendable(c.session_for(SYNC_HARNESS, SYNC_NAME))
+            crate::public::sendable(c.session_for(SYNC_HARNESS, SYNC_NAME))
                 .await
                 .map_err(|f| {
                     Stop::Unreachable(classify(&f).unwrap_or_else(|| f.message.clone()))
@@ -676,12 +563,12 @@ impl Sync {
             let path = format!("/api/sessions/{sid}/watches/{}", l.remote_artifact_id);
             let body = json!({"as": relay.as_ref().map(|(name, harness)| json!({"name": name, "harness": harness}))});
             let watched =
-                match clax_http::public::sendable(c.call(reqwest::Method::PUT, &path, Some(&body)))
+                match crate::public::sendable(c.call(reqwest::Method::PUT, &path, Some(&body)))
                     .await
                 {
                     // A public Clax older than the relay label watches without it.
                     Err(f) if f.status == Some(400) => {
-                        clax_http::public::sendable(c.call(
+                        crate::public::sendable(c.call(
                             reqwest::Method::PUT,
                             &path,
                             Some(&json!({})),
@@ -728,7 +615,7 @@ impl Sync {
         // own, which starts a cycle once the copy is no longer open there.
         self.wait_on_copies().await;
         let c = self.client.as_ref().expect("connected");
-        let v = clax_http::public::sendable(c.get(&format!(
+        let v = crate::public::sendable(c.get(&format!(
             "/api/sessions/{sid}/feedback?tier=wait&wait={WAIT_S}"
         )))
         .await
@@ -765,7 +652,7 @@ impl Sync {
             let c = self.client.as_ref().expect("connected");
             let sid = c.session().map(|s| s.0.clone()).unwrap_or_default();
             let ids = std::mem::take(&mut self.acks);
-            let _ = clax_http::public::sendable(c.post(
+            let _ = crate::public::sendable(c.post(
                 &format!("/api/sessions/{sid}/feedback/ack"),
                 &json!({"thread_ids": ids}),
             ))
@@ -861,11 +748,11 @@ impl Sync {
                 return Err("the remote is gone".into());
             };
             let mut c = Client::new(&remote.origin, Some(token));
-            clax_http::public::sendable(c.session_for(harness, name))
+            crate::public::sendable(c.session_for(harness, name))
                 .await
                 .map_err(|f| classify(&f).unwrap_or(f.message))?;
             let sid = c.session().map(|s| s.0.clone()).unwrap_or_default();
-            let v = clax_http::public::sendable(c.get(&format!("/api/sessions/{sid}")))
+            let v = crate::public::sendable(c.get(&format!("/api/sessions/{sid}")))
                 .await
                 .map_err(|f| classify(&f).unwrap_or(f.message))?;
             let handle = v["session"]["agent_handle"]
@@ -907,8 +794,8 @@ impl Sync {
         let mut handed = false;
         loop {
             let wrote = match key {
-                Some(k) => clax_http::public::sendable(ac.post_keyed(path, body, k)).await,
-                None => clax_http::public::sendable(ac.post(path, body)).await,
+                Some(k) => crate::public::sendable(ac.post_keyed(path, body, k)).await,
+                None => crate::public::sendable(ac.post(path, body)).await,
             };
             match wrote {
                 Ok(v) if v.get("guidance").is_none() => return Ok(Some(v)),
@@ -917,7 +804,7 @@ impl Sync {
                     handed = true;
                     let c = self.client.as_ref().expect("connected");
                     let sid = c.session().map(|s| s.0.clone()).unwrap_or_default();
-                    if clax_http::public::sendable(c.post(
+                    if crate::public::sendable(c.post(
                         &format!("/api/sessions/{sid}/threads/{rtid}/handoff"),
                         &json!({"to": handle}),
                     ))
@@ -1038,7 +925,7 @@ impl Sync {
                     form = form.part("clip", part);
                 }
                 self.trying(row.seq).await?;
-                let v = match clax_http::public::sendable(c.post_form_keyed(
+                let v = match crate::public::sendable(c.post_form_keyed(
                     &format!("/api/artifacts/{raid}/threads"),
                     form,
                     &row.idem_key,
@@ -1101,7 +988,7 @@ impl Sync {
                 }
                 let v = match answer {
                     Some(v) => v,
-                    None => match clax_http::public::sendable(c.post_keyed(
+                    None => match crate::public::sendable(c.post_keyed(
                         &path,
                         &json!({"body": body}),
                         &row.idem_key,
@@ -1147,7 +1034,7 @@ impl Sync {
                         Err(f) => return fail(f),
                     }
                 }
-                if !done && let Err(f) = clax_http::public::sendable(c.post(&path, &json!({}))).await {
+                if !done && let Err(f) = crate::public::sendable(c.post(&path, &json!({}))).await {
                     return fail(f);
                 }
                 if self.lose_answer() {
@@ -1227,12 +1114,12 @@ impl Sync {
                 continue;
             }
             if let Some((mut c, _)) = agents.remove(&name) {
-                clax_http::public::sendable(c.end_session()).await;
+                crate::public::sendable(c.end_session()).await;
             }
         }
         for (c, _) in agents.values() {
             if let Some((sid, _)) = c.session() {
-                let _ = clax_http::public::sendable(c.call(
+                let _ = crate::public::sendable(c.call(
                     reqwest::Method::PATCH,
                     &format!("/api/sessions/{sid}"),
                     Some(&json!({"heartbeat": true})),
@@ -1289,7 +1176,7 @@ impl Sync {
             // Closed here first: the copy there is withdrawn (or was
             // closed there already).
             let path = format!("/api/sessions/{sid}/questions/{rqid}/withdraw");
-            match clax_http::public::sendable(c.post(&path, &json!({}))).await {
+            match crate::public::sendable(c.post(&path, &json!({}))).await {
                 Ok(_) => {}
                 Err(f) => {
                     if let Some(why) = classify(&f) {
@@ -1300,7 +1187,7 @@ impl Sync {
             self.question_done(&qid, false).await?;
             return Ok(false);
         }
-        let v = match clax_http::public::sendable(
+        let v = match crate::public::sendable(
             c.get(&format!("/api/sessions/{sid}/questions/{rqid}?wait=0")),
         )
         .await
@@ -1444,7 +1331,7 @@ impl Sync {
             .store_call(move |st| st.linked_question_trying(&q2))
             .await
             .map_err(|e| e.message)?;
-        let v = match clax_http::public::sendable(c.post_keyed(
+        let v = match crate::public::sendable(c.post_keyed(
             &format!("/api/sessions/{sid}/questions"),
             &body,
             &row.idem_key,
@@ -1511,7 +1398,7 @@ impl Sync {
             if let Some(cu) = &cursor {
                 q.push_str(&format!("&cursor={}", urlencode(cu)));
             }
-            let v = match clax_http::public::sendable(c.get(&q)).await {
+            let v = match crate::public::sendable(c.get(&q)).await {
                 Ok(v) => v,
                 Err(f) => match classify(&f) {
                     Some(why) => return Err(Stop::Unreachable(why)),
@@ -1723,7 +1610,7 @@ impl Sync {
             l.remote_artifact_id
         );
         let max = clax_store::threads::MAX_CLIP_BYTES;
-        match clax_http::public::sendable(c.get_bytes(&path, max)).await {
+        match crate::public::sendable(c.get_bytes(&path, max)).await {
             Ok((bytes, _)) => {
                 let (t2, ctx) = (tid.to_string(), self.store().feedback_ctx());
                 let r = self

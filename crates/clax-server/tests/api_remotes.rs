@@ -4,9 +4,9 @@
 //! pushes new ones, refuses when the public copy moved, and asks the owner
 //! before an agent's push.
 
-use crate::common::TestServer;
-use clax_testkit::remotes::{Public, connect, json_of, local_req, post};
 use clax_core::ArtifactId;
+use clax_testkit::TestServer;
+use clax_testkit::remotes::{Public, connect, json_of, local_req, post};
 use reqwest::header::HOST;
 use serde_json::{Value, json};
 
@@ -547,7 +547,7 @@ async fn a_push_whose_answer_was_lost_is_answered_the_version_it_made() {
         .unwrap()
         .to_string();
     // The public Clax took the first push, but its answer never came back.
-    let key = clax_http::public::version_key(&aid, 1, "new:-");
+    let key = clax_server::public::version_key(&aid, 1, "new:-");
     let body = json!({"title": "Plan", "files": files(&[("index.html", "<h1>v1</h1>")])});
     let (s, first) = as_token(&public, &token, "/api/artifacts", body.clone(), Some(&key)).await;
     assert_eq!(s, 201, "{first}");
@@ -572,7 +572,7 @@ async fn a_push_whose_answer_was_lost_is_answered_the_version_it_made() {
         None,
     )
     .await;
-    let key = clax_http::public::version_key(&aid, 2, &rid);
+    let key = clax_server::public::version_key(&aid, 2, &rid);
     let (s, v) = as_token(
         &public,
         &token,

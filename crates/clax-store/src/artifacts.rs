@@ -746,10 +746,10 @@ pub(super) fn collide(a: &str, b: &str) -> bool {
 /// How a new version's content comes to be.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum VersionStep<'a> {
-    /// Written from the publish, through [`crate::content::ContentStore::write_version`].
+    /// Written from the publish, through [`clax_core::content::ContentStore::write_version`].
     Write,
     /// Pushed commit `.0`, made the version as it is
-    /// ([`crate::content::ContentStore::tag_pushed`]).
+    /// ([`clax_core::content::ContentStore::tag_pushed`]).
     Adopt(&'a str),
 }
 
@@ -1217,7 +1217,7 @@ impl Store {
                     .content
                     .read_file(id, expected, path)
                     .await?
-                    .ok_or_else(|| crate::content::missing(id, expected, path))?;
+                    .ok_or_else(|| clax_core::content::missing(id, expected, path))?;
                 meta.sha256 = Some(sha256_hex(&bytes));
             }
             files.insert((*path).clone(), meta);
@@ -1768,14 +1768,11 @@ mod tests {
     fn delete_hides_from_get_and_list_and_removes_dir() {
         let (_d, store) = store();
         let id = store.insert_artifact_for_test("A", "2026-01-01T00:00:00.000Z");
-        crate::content::wait(store.content().put_clip(&id, "t1", b"png")).unwrap();
+        clax_core::content::wait(store.content().put_clip(&id, "t1", b"png")).unwrap();
         store.delete_artifact(DAEMON, &id).unwrap();
         assert!(store.get_artifact(&id).unwrap().is_none());
         assert!(store.list_artifacts().unwrap().is_empty());
-        assert_eq!(
-            crate::test_util::content_clip(&store, &id, "t1"),
-            None
-        );
+        assert_eq!(crate::test_util::content_clip(&store, &id, "t1"), None);
         assert!(matches!(
             store.delete_artifact(DAEMON, &id),
             Err(clax_core::CoreError::NotFound)
@@ -1961,24 +1958,24 @@ mod tests {
         // The carried file's hash comes from version 1's record, not from
         // re-reading its bytes.
         let c = store.content();
-        crate::content::wait(c.remove_version(&id, 1)).unwrap();
-        let changed = crate::content::VersionWrite {
+        clax_core::content::wait(c.remove_version(&id, 1)).unwrap();
+        let changed = clax_core::content::VersionWrite {
             carry: Vec::new(),
             put: vec![
-                crate::content::NewFile {
+                clax_core::content::NewFile {
                     path: "index.html",
                     bytes: b"v1",
                     content_type: "text/html",
                 },
-                crate::content::NewFile {
+                clax_core::content::NewFile {
                     path: "app.js",
                     bytes: b"changed in the content store",
                     content_type: "text/javascript",
                 },
             ],
-            meta: crate::content::VersionMeta::default(),
+            meta: clax_core::content::VersionMeta::default(),
         };
-        crate::content::wait(c.write_version(&id, 1, &changed)).unwrap();
+        clax_core::content::wait(c.write_version(&id, 1, &changed)).unwrap();
         let (_, v2) = store
             .publish_version(
                 DAEMON,
@@ -2267,7 +2264,7 @@ mod tests {
         let (a, _) = st
             .create_artifact(DAEMON, publish(&[("index.html", Some("v1"))], None), None)
             .unwrap();
-        let id = crate::ArtifactId::parse(&a.id).unwrap();
+        let id = clax_core::ArtifactId::parse(&a.id).unwrap();
         // Another process holds the write lock: the first publish waits on
         // it holding the artifact's content lock, the rest for that lock.
         let other = rusqlite::Connection::open(st.home().db_path()).unwrap();
@@ -2314,7 +2311,7 @@ mod tests {
         for p in publishes {
             match p.await.unwrap() {
                 Ok(_) => wins += 1,
-                Err(e) => assert!(matches!(e, crate::CoreError::Conflict { .. }), "{e:?}"),
+                Err(e) => assert!(matches!(e, clax_core::CoreError::Conflict { .. }), "{e:?}"),
             }
         }
         assert_eq!(wins, 1);
@@ -2355,28 +2352,24 @@ mod tests {
         let (a, v1) = store
             .create_artifact(DAEMON, publish(&[("index.html", Some("v1"))], None), None)
             .unwrap();
-        let id = crate::ArtifactId::parse(&a.id).unwrap();
+        let id = clax_core::ArtifactId::parse(&a.id).unwrap();
         let seq = store.events_after(0, 100).unwrap().last().unwrap().seq;
         let p = publish(&[("index.html", Some("v2"))], Some(1));
         let e = store
             .write_version_then(DAEMON, &id, 1, &p, &v1.files, None, |_, n| {
                 // The content is written by the time the transaction runs.
-                assert!(crate::test_util::content_version_exists(
-                    &store, &id, n
-                ));
-                Err::<(), _>(crate::CoreError::invalid("refused", "refused"))
+                assert!(crate::test_util::content_version_exists(&store, &id, n));
+                Err::<(), _>(clax_core::CoreError::invalid("refused", "refused"))
             })
             .unwrap_err();
         assert!(matches!(
             e,
-            crate::CoreError::Invalid {
+            clax_core::CoreError::Invalid {
                 code: "refused",
                 ..
             }
         ));
-        assert!(!crate::test_util::content_version_exists(
-            &store, &id, 2
-        ));
+        assert!(!crate::test_util::content_version_exists(&store, &id, 2));
         assert_eq!(store.events_after(seq, 100).unwrap(), vec![]);
         // Nothing left blocks the next publish of version 2.
         store.publish_version(DAEMON, &id, p, None).unwrap();
@@ -2390,7 +2383,7 @@ mod tests {
     fn a_store_keeps_its_content_in_the_content_store_it_is_given() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
-        let content = std::sync::Arc::new(crate::content::memory::MemContent::new());
+        let content = std::sync::Arc::new(clax_core::content::memory::MemContent::new());
         let store = Store::open(&home).unwrap().with_content(content.clone());
         let (a, _) = store
             .create_artifact(
@@ -2399,8 +2392,8 @@ mod tests {
                 None,
             )
             .unwrap();
-        let id = crate::ArtifactId::parse(&a.id).unwrap();
-        let (_, v2) = crate::content::wait(store.publish_version_async(
+        let id = clax_core::ArtifactId::parse(&a.id).unwrap();
+        let (_, v2) = clax_core::content::wait(store.publish_version_async(
             DAEMON,
             &id,
             publish(&[("index.html", Some("v2"))], Some(1)),
@@ -2460,7 +2453,11 @@ mod tests {
             self.metas.lock().unwrap().push((n, write.meta.clone()));
             self.inner.write_version(id, n, write).await
         }
-        async fn remove_version(&self, id: &clax_core::ArtifactId, n: u32) -> clax_core::Result<()> {
+        async fn remove_version(
+            &self,
+            id: &clax_core::ArtifactId,
+            n: u32,
+        ) -> clax_core::Result<()> {
             self.inner.remove_version(id, n).await
         }
         async fn delete_artifact(&self, id: &clax_core::ArtifactId) -> clax_core::Result<()> {

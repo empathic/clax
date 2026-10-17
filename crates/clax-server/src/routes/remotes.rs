@@ -22,24 +22,25 @@
 //! A hosted daemon has no remotes: every route answers 404 there. Every
 //! route is refused to another machine's agents (`DeniedToGrants`).
 
-use super::artifacts::{body, parse_id, path};
-use clax_http::agent::DeniedToGrants;
-use clax_http::audit::DeferredAudit;
-use clax_http::auth::Caller;
-use clax_http::error::ApiError;
-use clax_http::identity::Identity;
-use clax_http::public::{self, Mode, SignIn};
-use clax_http::state::AppState;
-use clax_http::viewer::SameOrigin;
+use super::artifacts::{body, path};
+use crate::public::{self, Mode, SignIn};
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use clax_core::questions::{QOption, Question};
+use clax_core::{ArtifactId, CoreError};
+use clax_http::agent::DeniedToGrants;
+use clax_http::audit::DeferredAudit;
+use clax_http::auth::Caller;
+use clax_http::error::ApiError;
+use clax_http::headers::parse_id;
+use clax_http::identity::Identity;
+use clax_http::state::AppState;
+use clax_http::viewer::SameOrigin;
 use clax_store::questions::{NewQuestion, Source, Status};
 use clax_store::remotes::Remote;
-use clax_core::{ArtifactId, CoreError};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -790,8 +791,8 @@ async fn ask_owner(
                 },
             )?;
             db.create_push_approval(&row.id, id.as_str(), &r.id, &sid, a.current_version)?;
-            let v = crate::questions::view(db, &row)?;
-            crate::questions::announce(&st8, db, &row, v);
+            let v = clax_http::views::question::view(db, &row)?;
+            clax_http::views::question::announce(&st8, db, &row, v);
             Ok(row.id)
         })
         .await?;

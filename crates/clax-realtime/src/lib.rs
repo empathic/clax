@@ -8,11 +8,14 @@
 pub mod call_ids;
 pub mod drafts;
 pub mod feedback;
+pub mod git_remotes;
+pub mod linked;
 pub mod live;
 pub mod live_layers;
 pub mod presence;
 pub mod push;
 pub mod questions;
 pub mod room;
+pub mod seats;
 pub mod stream;
 pub mod working;

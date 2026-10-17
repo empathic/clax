@@ -27,8 +27,8 @@
 //! answer was lost and is sent again is answered that version.
 
 use super::Store;
-use crate::secret::Secret;
-use crate::{CoreError, Result, new_ulid};
+use clax_core::secret::Secret;
+use clax_core::{CoreError, Result, new_ulid};
 use rusqlite::{OptionalExtension, Row, params};
 use serde::Serialize;
 
@@ -611,8 +611,8 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Home;
-    use crate::working::ManualClock;
+    use clax_core::Home;
+    use clax_core::working::ManualClock;
     use std::sync::Arc;
 
     fn store() -> (tempfile::TempDir, Store) {

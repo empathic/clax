@@ -7,6 +7,8 @@
 //! on its own, in parallel; `clax_split = "root"` holds this file's own tests.
 //! Gate every new test module the same way.
 
+// In every test target: it reruns, on deferred content, the content
+// modules the target holds.
 #[cfg(any(not(clax_split), clax_split = "api_agent_auth"))]
 mod api_agent_auth;
 #[cfg(any(not(clax_split), clax_split = "api_agents"))]
@@ -125,6 +127,7 @@ mod api_working_auto;
 mod bridge_dev;
 #[cfg(any(not(clax_split), clax_split = "daemon"))]
 mod daemon;
+mod deferred;
 #[cfg(any(not(clax_split), clax_split = "golden_single_owner"))]
 mod golden_single_owner;
 #[cfg(any(not(clax_split), clax_split = "harness_ids"))]

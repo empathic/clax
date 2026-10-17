@@ -41,7 +41,7 @@ pub struct TokioSleeper;
 
 impl Sleeper for TokioSleeper {
     fn sleep(&self, d: std::time::Duration) -> futures::future::BoxFuture<'static, ()> {
-        Box::pin(tokio::time::sleep(d))
+        Box::pin(clax_rt::time::sleep(d))
     }
 }
 
@@ -274,7 +274,7 @@ pub async fn count_until(
             c.await;
         }
     };
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), reached).await;
+    let _ = clax_rt::time::timeout(std::time::Duration::from_secs(5), reached).await;
     count()
 }
 

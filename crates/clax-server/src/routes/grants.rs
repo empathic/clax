@@ -49,29 +49,6 @@ fn require_browser(caller: &Caller, what: &str) -> Result<(), ApiError> {
     }
 }
 
-/// A grant's view for the owner: never a hash or a code.
-pub fn grant_view(g: &Grant) -> Value {
-    let fingerprint = sig::decode_public(&g.client_key)
-        .map(|k| sig::fingerprint(&k))
-        .ok();
-    json!({
-        "id": g.id,
-        "status": g.status,
-        "via": g.via,
-        "client": {"name": g.client_name, "key": fingerprint.filter(|_| !g.bearer), "peer_ip": g.peer_ip},
-        "bearer": g.bearer,
-        "person": g.person.as_ref().map(|p| json!({"public_id": p, "display_name": g.person_name})),
-        "owner": g.owner,
-        "narrow": g.narrow.as_ref().map(Rights::to_json),
-        "wrong_codes": g.wrong_codes,
-        "created_at": g.created_at,
-        "decided_at": g.decided_at,
-        "last_used_at": g.last_used_at,
-        "ended_at": g.ended_at,
-        "ended_by": g.ended_by,
-    })
-}
-
 fn invite_view(i: &Invite) -> Value {
     json!({
         "id": i.id,
@@ -246,7 +223,7 @@ fn lan_address(s: &AppState) -> Result<IpAddr, ApiError> {
 /// rights?}` → 201 `{invite: {id, command, expires_at}}` (spec §6.2).
 /// Without `rights`, a hosted daemon gives a new person (or a viewer not
 /// yet a person) the GitHub members' own space
-/// ([`clax_core::store::github::member_rights`]); a local daemon the
+/// ([`clax_store::github::member_rights`]); a local daemon the
 /// collaborator preset. The
 /// command carries the code, shown this once. 409 `not_on_lan` when the
 /// daemon listens on loopback only.
@@ -296,13 +273,11 @@ pub async fn create_invite(
     let (invite, code) = s
         .store_call(move |st| {
             let rights = match &target {
-                InvitePerson::New(_) if own_space => {
-                    Some(clax_core::store::github::member_rights())
-                }
+                InvitePerson::New(_) if own_space => Some(clax_store::github::member_rights()),
                 InvitePerson::Viewer(pid) if own_space => st
                     .viewer_by_public_id(pid)?
                     .filter(|v| !v.person)
-                    .map(|_| clax_core::store::github::member_rights()),
+                    .map(|_| clax_store::github::member_rights()),
                 _ => rights,
             };
             let made = st.create_invite(&audit.resolve(st)?, target, rights)?;
@@ -864,7 +839,7 @@ pub async fn approve(
     let rights = b.rights.as_ref().map(Rights::parse).transpose()?;
     // A hosted daemon's new person gets their own space, as an invitee's.
     let rights = match rights {
-        None if s.hosted.is_some() => Some(clax_core::store::github::member_rights()),
+        None if s.hosted.is_some() => Some(clax_store::github::member_rights()),
         r => r,
     };
     let state = s.clone();

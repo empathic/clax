@@ -8,9 +8,10 @@ use std::sync::Arc;
 use clax_content_git::MemGitContent;
 use clax_core::audit::AuditCtx;
 use clax_core::content::wait;
-use clax_core::{ArtifactId, Home, Store};
+use clax_core::{ArtifactId, Home};
 use clax_git::versions::repo_name;
 use clax_git::{MAIN, Repo};
+use clax_store::Store;
 
 use crate::common::{clock, committer};
 

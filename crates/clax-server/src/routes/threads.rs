@@ -392,7 +392,7 @@ pub async fn get(
 pub async fn keyed_clip(
     State(s): State<AppState>,
     _d: clax_http::agent::DeniedToGrants,
-    sees: crate::live::SeesLive,
+    sees: clax_http::live_access::SeesLive,
     p: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Response, ApiError> {
     if s.hosted.is_none() {

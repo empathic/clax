@@ -14,9 +14,9 @@
 //! up to [`RESPONSE_LIMIT`]. The router is built on the first call, from
 //! the state the loopback was made with: a router does not hold itself.
 
-use clax_http::state::AppState;
 use axum::body::Body;
 use axum::http::{HeaderValue, StatusCode, header};
+use clax_http::state::AppState;
 use clax_mcp::client::{InProcess, InProcessFuture};
 use std::sync::OnceLock;
 use tower::ServiceExt;

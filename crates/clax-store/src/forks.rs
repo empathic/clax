@@ -13,7 +13,7 @@
 //!   `Clax-Forked-From`), the others copy the files. Assets, threads,
 //!   documents, shares and link access are not copied.
 //! - `artifacts.forked_from_id` and `forked_from_version` record where it
-//!   came from ([`crate::model::ForkedFrom`]); version 1's note says it,
+//!   came from ([`clax_core::model::ForkedFrom`]); version 1's note says it,
 //!   by ID (`Forked from <artifact ID>@v<n>`), as the git commit does, so
 //!   it names nothing the fork's readers may not see.
 //! - The transaction records `artifact.create` with `forked_from
@@ -23,20 +23,21 @@
 //! The rights a fork needs (read on the source, create) are the caller's
 //! to check.
 //!
-//! [`ContentStore::fork`]: crate::content::ContentStore::fork
+//! [`ContentStore::fork`]: clax_core::content::ContentStore::fork
 
 use super::Store;
 use super::artifacts::{
-    SELECT, SELECT_VERSION, TEXT_FIELDS, create_record, owners_alone, row_to_artifact,
-    row_to_version, tokens, version_record,
+    SELECT, SELECT_VERSION, create_record, owners_alone, row_to_artifact, row_to_version, tokens,
+    version_record,
 };
 use super::changelog::fill_addresses;
-use crate::audit::{AuditCtx, content_manifest_sha256, sha256_hex};
-use crate::live::KIND_LIVE;
-use crate::model::{Artifact, FileMeta, Version};
-use crate::approvals::OWNER;
-use crate::visibility::{Author, file_authors};
-use crate::{ArtifactId, CoreError, Result};
+use clax_core::audit::{AuditCtx, content_manifest_sha256, sha256_hex};
+use clax_core::live::KIND_LIVE;
+use clax_core::model::ARTIFACT_TEXT_FIELDS as TEXT_FIELDS;
+use clax_core::model::{Artifact, FileMeta, Version};
+use clax_core::visibility::OWNER;
+use clax_core::visibility::{Author, file_authors};
+use clax_core::{ArtifactId, CoreError, Result};
 use rusqlite::{OptionalExtension, params};
 use std::collections::BTreeMap;
 
@@ -122,7 +123,7 @@ impl Store {
                     .content
                     .read_file(from, n, path)
                     .await?
-                    .ok_or_else(|| crate::content::missing(from, n, path))?;
+                    .ok_or_else(|| clax_core::content::missing(from, n, path))?;
                 meta.sha256 = Some(sha256_hex(&bytes));
             }
             files.insert(path.clone(), meta);
@@ -307,7 +308,10 @@ impl Store {
                      WHERE artifact_id = ?1 AND kind = ?2",
                 )?;
                 let rows = stmt.query_map(
-                    params![at.0, crate::audit::AuditKind::VersionPushRefused.as_str()],
+                    params![
+                        at.0,
+                        clax_core::audit::AuditKind::VersionPushRefused.as_str()
+                    ],
                     |r| r.get(0),
                 )?;
                 Ok(rows.collect::<rusqlite::Result<Vec<Option<String>>>>()?)
@@ -328,9 +332,10 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
+    use crate::Store;
     use crate::test_util::{DAEMON, anchor, content_file, store};
     use crate::threads::NewThread;
-    use crate::{ArtifactId, Store};
+    use clax_core::ArtifactId;
 
     /// A connected person's public ID, as the store records one.
     const MIA: &str = "p_mia0000000000";
@@ -358,14 +363,14 @@ mod tests {
             None => {
                 req["title"] = "Quarterly Review".into();
                 req["description"] = "The numbers".into();
-                let p = crate::publish::validate(serde_json::from_value(req).unwrap()).unwrap();
+                let p = clax_core::publish::validate(serde_json::from_value(req).unwrap()).unwrap();
                 let (a, _) = st.create_artifact(DAEMON, p, None).unwrap();
                 ArtifactId::parse(&a.id).unwrap()
             }
             Some(id) => {
                 let cur = st.get_artifact(id).unwrap().unwrap().current_version;
                 req["if_version"] = cur.into();
-                let p = crate::publish::validate(serde_json::from_value(req).unwrap()).unwrap();
+                let p = clax_core::publish::validate(serde_json::from_value(req).unwrap()).unwrap();
                 st.publish_version(DAEMON, id, p, None).unwrap();
                 id.clone()
             }
@@ -385,7 +390,7 @@ mod tests {
         assert_eq!(a.current_version, 1);
         assert_eq!(
             a.forked_from,
-            Some(crate::model::ForkedFrom {
+            Some(clax_core::model::ForkedFrom {
                 artifact_id: src.as_str().to_string(),
                 version: 1
             })
@@ -457,8 +462,8 @@ mod tests {
         // Mia published version 1; its file and the title stay the owner's.
         assert_eq!(v.authors.person.as_deref(), Some(mia.as_str()));
         assert_eq!(
-            crate::visibility::file_authors(&v.authors, "index.html"),
-            [crate::visibility::Author::Owner]
+            clax_core::visibility::file_authors(&v.authors, "index.html"),
+            [clax_core::visibility::Author::Owner]
         );
         let text = a.authors.text.unwrap();
         assert_eq!(text["title"], [Some(super::OWNER.to_string())]);
@@ -471,7 +476,7 @@ mod tests {
         let before = st.list_artifacts().unwrap().len();
         assert!(matches!(
             st.fork_artifact(DAEMON, &ArtifactId::generate(), None, None, None),
-            Err(crate::CoreError::NotFound)
+            Err(clax_core::CoreError::NotFound)
         ));
         let e = st
             .fork_artifact(DAEMON, &src, Some(7), None, None)
@@ -479,7 +484,7 @@ mod tests {
         assert!(
             matches!(
                 e,
-                crate::CoreError::Invalid {
+                clax_core::CoreError::Invalid {
                     code: "unknown_version",
                     ..
                 }
@@ -559,7 +564,7 @@ mod tests {
         let as_person = |id: &ArtifactId, person: &str, body: &str| {
             let cur = st.get_artifact(id).unwrap().unwrap().current_version;
             let req = serde_json::json!({"if_version": cur, "files": {"index.html": {"content": body, "encoding": "utf8"}}});
-            let mut p = crate::publish::validate(serde_json::from_value(req).unwrap()).unwrap();
+            let mut p = clax_core::publish::validate(serde_json::from_value(req).unwrap()).unwrap();
             p.person = Some(person.to_string());
             st.publish_version(DAEMON, id, p, None).unwrap();
         };
@@ -601,8 +606,8 @@ mod tests {
         );
         // A commit pushed to the source and left out of its versions.
         st.with_tx(|tx| {
-            let mut rec = crate::audit::AuditRecord::new(
-                crate::audit::AuditKind::VersionPushRefused,
+            let mut rec = clax_core::audit::AuditRecord::new(
+                clax_core::audit::AuditKind::VersionPushRefused,
                 st.now(),
             )
             .with("commit", "c0ffee")
@@ -646,7 +651,7 @@ mod tests {
         st.delete_artifact(DAEMON, &src).unwrap();
         assert!(matches!(
             st.fork_artifact(DAEMON, &src, None, None, None),
-            Err(crate::CoreError::NotFound)
+            Err(clax_core::CoreError::NotFound)
         ));
     }
 
@@ -656,7 +661,7 @@ mod tests {
         let src = publish(&st, None, &[("index.html", "<p>one"), ("a/b.css", "b")]);
         let (a, _) = st.fork_artifact(DAEMON, &src, None, None, None).unwrap();
         let fork = ArtifactId::parse(&a.id).unwrap();
-        let bytes = crate::content::wait(st.content().read_file(&fork, 1, "a/b.css")).unwrap();
+        let bytes = clax_core::content::wait(st.content().read_file(&fork, 1, "a/b.css")).unwrap();
         assert_eq!(bytes.as_deref(), Some(&b"b"[..]));
     }
 }

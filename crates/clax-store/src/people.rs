@@ -432,7 +432,7 @@ fn stored_row(c: &rusqlite::Connection, viewer_id: &str) -> Result<(bool, Rights
     }
     let rights = match json {
         Some(j) => read_rights(&j)?,
-        None => Rights::preset(crate::rights::PRESET_COLLABORATOR).expect("a preset"),
+        None => Rights::preset(clax_core::rights::PRESET_COLLABORATOR).expect("a preset"),
     };
     Ok((false, rights))
 }

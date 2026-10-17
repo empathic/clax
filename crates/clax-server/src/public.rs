@@ -41,12 +41,12 @@
 //! to rewrite; should one, it is made as it is, then published again
 //! rewritten. Nothing here runs until a remote is added.
 
-use crate::error::ApiError;
-use crate::state::AppState;
 use axum::http::StatusCode;
 use base64::Engine as _;
-use clax_store::remotes::{PendingSignIn, Remote, RemoteLink, SignedInAs};
 use clax_core::{ArtifactId, Secret};
+use clax_http::error::ApiError;
+use clax_http::state::AppState;
+use clax_store::remotes::{PendingSignIn, Remote, RemoteLink, SignedInAs};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 

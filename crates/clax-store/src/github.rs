@@ -22,14 +22,13 @@
 
 use super::Store;
 use super::hosted::{SignInVia, SignedIn};
-use crate::audit::AuditCtx;
-use crate::rights::Rights;
-use crate::{CoreError, Result, new_public_id, new_ulid};
+use clax_core::audit::AuditCtx;
+use clax_core::rights::Rights;
+use clax_core::{CoreError, Result, new_public_id, new_ulid};
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde::Serialize;
 
-/// [`MemberCaps::max_artifacts`] by default.
-pub const DEFAULT_MAX_ARTIFACTS: u64 = 200;
+pub use clax_core::config::DEFAULT_MAX_ARTIFACTS;
 /// What one GitHub member may keep: at most `max_artifacts` live artifacts
 /// they created.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,9 +98,9 @@ pub fn member_rights() -> Rights {
     Rights::parse(&serde_json::json!([
         {"type": "clax-artifacts", "actions": ["create"], "locations": ["*"]},
         {"type": "clax-artifacts", "actions": ["read", "update", "delete"], "locations": ["own"]},
-        {"type": "clax-comments", "actions": crate::rights::COMMENT_ACTIONS, "locations": ["own"]},
+        {"type": "clax-comments", "actions": clax_core::rights::COMMENT_ACTIONS, "locations": ["own"]},
         {"type": "clax-db", "actions": ["read", "write"], "level": "admin", "locations": ["own"]},
-        {"type": "clax-ask", "actions": crate::rights::ASK_ACTIONS},
+        {"type": "clax-ask", "actions": clax_core::rights::ASK_ACTIONS},
     ]))
     .expect("the GitHub member rights are well formed")
 }

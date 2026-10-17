@@ -3,9 +3,8 @@
 //! clients' exchanges, and the HTTP rules of a server with no SSE stream
 //! and no session. The shared suite in `api_mcp.rs` runs on both too.
 
-use crate::common;
+use clax_testkit::TestServer;
 use clax_testkit::mcp::{ACCEPT, ADAPTER, RMCP, initialize, mcp_post, rpc_message};
-use common::TestServer;
 use serde_json::{Value, json};
 
 /// The per-request metadata 2026-07-28 requires, for `version`.

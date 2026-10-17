@@ -7,11 +7,6 @@ license.workspace = true
 [lints]
 workspace = true
 
-[features]
-# The ContentStore contract checks (`content::contract`), for other crates'
-# implementations to run.
-content-contract = []
-
 [dependencies]
 async-trait = "0.1"
 base64.workspace = true

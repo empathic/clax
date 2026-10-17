@@ -75,8 +75,11 @@
 //! is not spawned on the Worker but run from the object's alarm, which
 //! calls the same sweep functions (`presence::sweep_and_announce`,
 //! `Working`'s and the stream hub's sweeps, the live seats'
-//! [`LiveSeats::sweep`](clax_http::seats::LiveSeats::sweep), grant expiry) and sets the
-//! next alarm for the earliest one due. The request timeout layer is the
+//! [`LiveSeats::sweep`](clax_realtime::seats::LiveSeats::sweep), the agents' drafts'
+//! [`drafts::sweep_and_announce`](clax_realtime::drafts::sweep_and_announce), grant expiry, and a question's grace,
+//! which a [`Sleeper`](clax_realtime::questions::Sleeper) that does not time graces leaves to the
+//! sweep) and sets the next alarm for the earliest one due. The request
+//! timeout layer is the
 //! daemon's; a Worker's request is bounded by the platform.
 //!
 //! ## Live updates: one fan-out, two outlets
@@ -94,20 +97,29 @@
 //!   stream through the router, with the same checks, and hands it to the
 //!   object in a response extension; subscriptions stay on `POST
 //!   /api/stream/<id>`. The object takes frames with
-//!   [`Conn::drain`](clax_realtime::stream::Conn::drain), without waiting,
-//!   one SSE block a text message, after each request, socket message and
-//!   alarm and whenever [`Hub::on_queue`](clax_realtime::stream::Hub::on_queue)
-//!   says frames were queued. An SSE stream would keep the object awake for
-//!   as long as it is open; a hibernated socket costs nothing. A socket's
-//!   attachment carries the credentials its stream was opened with
-//!   ([`SocketCredentials`](clax_http::identity::SocketCredentials)), so an
-//!   object woken from hibernation opens each socket a new stream as the
-//!   same caller and sends its `ready`; the client subscribes again and
+//!   [`Conn::drain`](clax_realtime::stream::Conn::drain), without waiting, one SSE block a text
+//!   message, after each request, socket message and alarm and whenever
+//!   [`Hub::on_queue`](clax_realtime::stream::Hub::on_queue) says frames were queued. An SSE stream would
+//!   keep the object awake for as long as it is open; a hibernated socket
+//!   costs nothing. A socket's attachment carries the credentials its
+//!   stream was opened with ([`SocketCredentials`](clax_http::identity::SocketCredentials)), so an object
+//!   woken from hibernation opens each socket a new stream as the same
+//!   caller and sends its `ready`; the client subscribes again and
 //!   refetches, as after a daemon restart.
 //!
-//! Rooms ([`Rooms`](clax_realtime::room::Rooms)) are to follow the same rule
-//! (the hubs shared, only the socket that carries their frames different);
-//! the Worker does not carry their socket yet.
+//! The room capability's socket and the live layers' socket follow the
+//! same rule, the hubs ([`Rooms`](clax_realtime::room::Rooms), [`LiveLayers`](clax_realtime::live_layers::LiveLayers))
+//! shared and only the outlet different: on wasm32
+//! `routes::room::room_socket` and `routes::live_layers::live_socket` admit
+//! the upgrade as the native handlers do and hand the object a socket it
+//! drives itself (`routes::room::RoomSocket`,
+//! `routes::live_layers::LiveSocket`: the first frames, each message, and
+//! a drain after each event; [`LiveLayers::on_queue`](clax_realtime::live_layers::LiveLayers::on_queue) says
+//! when batches were queued), and reopens from its attachment after a
+//! wake (`routes::room::reopen`, `routes::live_layers::reopen`). The seats
+//! they and the streams hold, and the presence reports, are kept by the
+//! object across a wake ([`LiveSeats::kept`](clax_realtime::seats::LiveSeats::kept),
+//! `clax_core::presence::Presence::kept`).
 //!
 //! ## MCP on the Worker
 //!
@@ -130,10 +142,22 @@
 /// that does not take it from the CLI (a Durable Object's `/healthz`).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+pub mod github;
+pub mod hosted;
 pub mod linked;
 pub mod loopback;
+pub mod public;
 pub mod router;
 pub mod routes;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod serve;
 pub mod shell;
+
+/// Starts every listener of the state `s` serves from: the HTTP layer's
+/// ([`AppState::start_listeners`](clax_http::state::AppState::start_listeners)),
+/// then the people routes' and linked threads' sync ([`linked::listen`]).
+pub fn start_listeners(s: &clax_http::state::AppState) {
+    s.start_listeners();
+    routes::people::listen(s);
+    linked::listen(s);
+}

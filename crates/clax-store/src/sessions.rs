@@ -1,11 +1,11 @@
 //! Harness sessions: registration, joining by parent PID, liveness, and reaping.
 
 use super::Store;
+use chrono::{DateTime, Utc};
 use clax_core::audit::{Actor, AgentActor, AuditCtx, AuditKind, AuditRecord, SystemReason};
 use clax_core::model::Session;
 use clax_core::secret::Secret;
 use clax_core::{CoreError, Result, new_ulid};
-use chrono::{DateTime, Utc};
 
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use serde::Deserialize;
@@ -2295,7 +2295,8 @@ mod tests {
 
     #[test]
     fn reaper_ends_only_idle_sessions_with_dead_or_unknown_pids() {
-        let clock = std::sync::Arc::new(crate::working::ManualClock::at("2026-09-01T10:00:00Z"));
+        let clock =
+            std::sync::Arc::new(clax_core::working::ManualClock::at("2026-09-01T10:00:00Z"));
         let (_d, store) = crate::test_util::store_with_clock(clock.clone());
         let dead = store
             .register_session(DAEMON, reg(Some("dead"), Some(1001), None))

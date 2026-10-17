@@ -1,5 +1,5 @@
 //! Commits pushed to an artifact's repository, recorded as versions (the
-//! content module's [Pushes](crate::content#pushes)).
+//! content module's [Pushes](clax_core::content#pushes)).
 //!
 //! Each pushed commit, oldest first, becomes the next version as a publish
 //! would make it: under the artifact's content lock, the commit is made
@@ -14,7 +14,7 @@
 //!
 //! The pusher of a commit is whoever made the push that left `main` at it,
 //! or at the nearest commit above it that a push left `main` at
-//! ([`crate::content::ContentStore::pushers`]); the caller's `fallback` for
+//! ([`clax_core::content::ContentStore::pushers`]); the caller's `fallback` for
 //! commits no push is known for. Before a commit is recorded:
 //!
 //! - its pusher's rights are checked again, as they are at that moment: a
@@ -42,7 +42,7 @@
 //! reads of one commit ([`PushedContent::TooLarge`]), and anything but a
 //! regular file (a symbolic link, a submodule) are left out of the version
 //! (they stay in git), and its note names them. A commit whose trees hold
-//! more than [`crate::content::MAX_PUSHED_ENTRIES`] is refused as a commit
+//! more than [`clax_core::content::MAX_PUSHED_ENTRIES`] is refused as a commit
 //! whose pusher may not publish is (`push_too_large`). The note is the commit's message,
 //! after a line saying so when the commit does not simply follow the
 //! version below it.
@@ -53,18 +53,19 @@ use rusqlite::{OptionalExtension, params};
 
 use super::Store;
 use super::artifacts::VersionStep;
-use crate::audit::{AuditCtx, AuditKind, AuditRecord};
-use crate::content::{PushedCommit, PushedContent};
-use crate::model::{Artifact, FileMeta, Version};
-use crate::publish::{
+use crate::visibility::Visibility;
+use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
+use clax_core::content::{PushedCommit, PushedContent};
+use clax_core::model::{Artifact, FileMeta, Version};
+use clax_core::publish::{
     DecodedFile, FileChange, MAX_BODY_BYTES, MAX_FILE_BYTES, ValidatedPublish, check_path,
     content_type_for,
 };
-use crate::rights::RightType;
-use crate::visibility::{Author, Reader, Visibility, file_authors};
-use crate::{ArtifactId, CoreError, Result};
+use clax_core::rights::RightType;
+use clax_core::visibility::{Author, Reader, file_authors};
+use clax_core::{ArtifactId, CoreError, Result};
 
-pub use crate::content::Pusher;
+pub use clax_core::content::Pusher;
 
 /// The most paths a note names as left out.
 const NAMED: usize = 10;
@@ -213,7 +214,7 @@ impl Store {
                 }
             }
         };
-        let may = |rights: &crate::rights::Rights, person: Option<&str>| {
+        let may = |rights: &clax_core::rights::Rights, person: Option<&str>| {
             let own = |x: &str| self.artifact_created_by(x, person).unwrap_or(false);
             rights.allows(RightType::Artifacts, "update", Some(id.as_str()), &own)
         };
@@ -395,9 +396,9 @@ impl Store {
             }
         }
         self.revoke_blind_tokens(id, &authors).await?;
-        let (note, note_truncated) = crate::working::clean_line(
+        let (note, note_truncated) = clax_core::working::clean_line(
             &push_note(c, current, &skipped, refused),
-            crate::changelog::MAX_NOTE_CHARS,
+            clax_core::changelog::MAX_NOTE_CHARS,
         );
         let p = ValidatedPublish {
             title: None,

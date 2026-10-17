@@ -45,6 +45,7 @@ uuid = { version = "1", features = ["js"] }
 clax-store = { path = "../clax-store" }
 axum = { workspace = true, features = ["http1", "tokio"] }
 clax-testkit = { path = "../clax-testkit" }
+clax-http = { path = "../clax-http" }
 rmcp = { workspace = true, features = ["client", "transport-child-process"] }
 tempfile.workspace = true
 rusqlite.workspace = true

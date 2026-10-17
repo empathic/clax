@@ -205,7 +205,7 @@ fn strip_view(
         });
         // Another Clax's agent: whose Clax it relays from.
         if g.relay {
-            v["via"] = json!(clax_core::store::attention::relay_via(&person_name));
+            v["via"] = json!(clax_store::attention::relay_via(&person_name));
         }
         out.push(v);
     }
@@ -310,7 +310,8 @@ pub async fn list(
     let job = move |db: &clax_store::Store| {
         let mut iq = iq;
         if iq.text.is_some() {
-            iq.text_withheld_at = clax_http::views::inbox::text_withheld_at(db, me.as_deref(), hosted)?;
+            iq.text_withheld_at =
+                clax_http::views::inbox::text_withheld_at(db, me.as_deref(), hosted)?;
         }
         let (rows, next) = db.inbox_list(&iq)?;
         let items = inbox_views(db, &rows, hosted)?;

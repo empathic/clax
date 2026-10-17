@@ -2,7 +2,6 @@
 //! /api/stream/<id>`: its subscriptions (see [`clax_realtime::stream`]).
 
 use super::artifacts::{body, path};
-use clax_http::seats::Subscribe;
 use axum::Json;
 #[cfg(not(target_arch = "wasm32"))]
 use axum::body::Body;
@@ -15,6 +14,7 @@ use axum::response::{IntoResponse, Response};
 use clax_core::CoreError;
 use clax_http::error::ApiError;
 use clax_http::headers::parse_id;
+use clax_http::seats::Subscribe;
 use clax_http::state::AppState;
 use clax_http::viewer::SameOrigin;
 use clax_realtime::stream::{Conn, MAX_TOPICS, SubError, Topic, parse_last_event_id};
@@ -95,7 +95,7 @@ pub async fn open(
 /// person resolved once, from the store, and a stream opened through the
 /// extension gateway (`credential`, the hash of its credential) ending once
 /// that credential stops being live. `local`: whether the stream may see
-/// live pages ([`crate::live::sees_live_pages`]). `guest`: whether the
+/// live pages ([`clax_http::live_access::sees_live_pages`]). `guest`: whether the
 /// request is a hosted daemon's signed-in guest, whose stream carries
 /// agents' drafts as a person's does ([`hosted_guest`]).
 ///
@@ -200,7 +200,7 @@ pub async fn open_socket(
             "the stream's WebSocket opens only from the Clax shell's own origin",
         ));
     }
-    let local = crate::live::sees_live_pages(&headers, &extensions, &s.token);
+    let local = clax_http::live_access::sees_live_pages(&headers, &extensions, &s.token);
     let credential = extensions
         .get::<clax_http::extension::ExtensionCredential>()
         .map(|c| c.hash().to_string());
@@ -452,7 +452,11 @@ pub async fn update(
                     if !clax_http::hosted::reads_comments(st, member.as_ref(), a)?);
                 add.push(if quiet { t.without_comments() } else { t });
             }
-            Ok((clax_http::db_caller::caller_of(st, token, &who)?, claims, add))
+            Ok((
+                clax_http::db_caller::caller_of(st, token, &who)?,
+                claims,
+                add,
+            ))
         })
         .await?;
     let credential = via.as_ref().map(|c| c.0.hash());

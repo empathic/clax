@@ -15,9 +15,9 @@ use axum::response::Response;
 use clax_content_git::GitContent;
 use clax_core::ArtifactId;
 use clax_core::audit::AuditCtx;
-use clax_store::pushes::Pusher;
 use clax_git::versions::repo_name;
 use clax_http::state::AppState;
+use clax_store::pushes::Pusher;
 use clax_testkit::TestServer;
 use rusqlite::Connection;
 use serde_json::{Value, json};
@@ -262,9 +262,7 @@ async fn a_persons_write_token_pushes_a_version_credited_to_them_and_agents_toke
 
     // Rae's version is work the owner has not approved for their agents:
     // the agent's token is revoked, and a new one refused.
-    clax_http::git_remotes::recheck(&w.app, None)
-        .await
-        .unwrap();
+    clax_http::git_remotes::recheck(&w.app, None).await.unwrap();
     assert!(!w.live(&aid, &agents), "the blind agent's token is revoked");
     let (status, v) = agent_token(&aid).await;
     assert_eq!(
@@ -292,9 +290,7 @@ async fn a_persons_write_token_pushes_a_version_credited_to_them_and_agents_toke
     )
     .await;
     ts.store.end_session(&AuditCtx::DAEMON, &sid).unwrap();
-    clax_http::git_remotes::recheck(&w.app, None)
-        .await
-        .unwrap();
+    clax_http::git_remotes::recheck(&w.app, None).await.unwrap();
     assert!(!w.live(&plain, &notes));
     assert!(
         !w.sh_ok(

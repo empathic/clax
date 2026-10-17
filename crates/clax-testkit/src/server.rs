@@ -543,8 +543,8 @@ impl TestServer {
             web: web_ui(),
             hosted: None,
             git_remotes: Arc::default(),
-            linked: Arc::new(crate::linked::Linked::new(Arc::new(
-                crate::questions::TokioSleeper,
+            linked: Arc::new(clax_realtime::linked::Linked::new(Arc::new(
+                clax_realtime::questions::TokioSleeper,
             ))),
         };
         f(&mut state);
@@ -558,7 +558,7 @@ impl TestServer {
         clax_server::routes::people::listen(&state);
         clax_http::pushes::listen(&state);
         clax_http::git_remotes::listen(&state);
-        crate::linked::listen(&state);
+        clax_server::linked::listen(&state);
         let events = state.events.clone();
         let store = state.store.clone();
         let working = state.working.clone();
@@ -571,7 +571,10 @@ impl TestServer {
         let web = state.web.clone();
         let kept_state = state.clone();
         let app = if shutdown {
-            clax_server::router::build_router_with_shutdown(state, tokio::sync::watch::channel(false).0)
+            clax_server::router::build_router_with_shutdown(
+                state,
+                tokio::sync::watch::channel(false).0,
+            )
         } else {
             build_router(state)
         }

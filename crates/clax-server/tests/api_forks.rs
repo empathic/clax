@@ -3,9 +3,9 @@
 //! person's agent (whose view of the copy and its source is filtered), and
 //! a guest, who may not.
 
-use crate::common::TestServer;
-use clax_testkit::people::World;
 use clax_core::rights::Rights;
+use clax_testkit::TestServer;
+use clax_testkit::people::World;
 use serde_json::{Value, json};
 
 async fn json_of(r: reqwest::Response) -> (u16, Value) {

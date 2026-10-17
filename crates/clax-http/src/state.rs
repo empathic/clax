@@ -172,9 +172,9 @@ pub struct AppState {
     /// The host's git remotes ([`crate::git_remotes`]), once it installs
     /// them; empty on the native daemon.
     pub git_remotes: Arc<crate::git_remotes::Slot>,
-    /// Linked threads' sync with remotes ([`crate::linked`]); idle on a
+    /// Linked threads' sync with remotes (`clax_server::linked`); idle on a
     /// hosted daemon.
-    pub linked: Arc<crate::linked::Linked>,
+    pub linked: Arc<clax_realtime::linked::Linked>,
     /// Debug builds: whether this is the testkit's daemon, which honours
     /// the `x-clax-test-delay-ms` header (so a test can make a real route
     /// slow) and serves `GET /api/_test/audit/ctx` (`clax_server::router`).
@@ -324,8 +324,8 @@ impl AppState {
             test_daemon: false,
             web: p.web,
             git_remotes: Arc::default(),
-            linked: Arc::new(crate::linked::Linked::new(Arc::new(
-                crate::questions::TokioSleeper,
+            linked: Arc::new(clax_realtime::linked::Linked::new(Arc::new(
+                clax_realtime::questions::TokioSleeper,
             ))),
             store: p.store,
         })
@@ -342,7 +342,7 @@ impl AppState {
         clax_realtime::drafts::sweep_and_announce(&self.drafts, &self.events);
         self.stream.sweep();
         self.seats.sweep();
-        crate::questions::withdraw_due(self).await;
+        crate::views::question::withdraw_due(self).await;
         crate::git_remotes::settle(self).await;
     }
 
@@ -351,7 +351,7 @@ impl AppState {
     /// Durable Object, woken by each request): every live session unseen
     /// for [`Store::REMOTE_SESSION_IDLE_SECS`], counted from its last
     /// request ([`Store::reap_sessions_from`] with no resume), as the
-    /// daemon's reaper ends them (`crate::daemon::reap_idle`): the
+    /// daemon's reaper ends them (`clax_server::serve::reap_idle`): the
     /// feedback they released handed on, their working records ended and
     /// their withdrawn questions announced. Returns how many ended.
     ///
@@ -365,8 +365,8 @@ impl AppState {
                 let idle = Duration::from_secs(Store::REMOTE_SESSION_IDLE_SECS);
                 let r = store.reap_sessions_from(idle, &|_| false, "")?;
                 let ttl = clax_core::audit::AuditCtx::system(clax_core::audit::SystemReason::Ttl);
-                crate::feedback::sessions_stop(&ctx, store, &ttl, &r.touched, &r.ended);
-                crate::questions::announce_ids(&st, store, &r.withdrawn_questions);
+                clax_realtime::feedback::sessions_stop(&ctx, store, &ttl, &r.touched, &r.ended);
+                crate::views::question::announce_ids(&st, store, &r.withdrawn_questions);
                 Ok(r.ended.len())
             })
             .await
@@ -388,7 +388,7 @@ impl AppState {
     /// report lapsing or a gone viewer dropping, a draft going idle, a
     /// detached stream's grace ending, a live seat going idle, and a
     /// question's swept grace ending
-    /// ([`crate::questions::Sleeper::times_graces`]), and a git token
+    /// ([`clax_realtime::questions::Sleeper::times_graces`]), and a git token
     /// revocation the host failed ([`crate::git_remotes::RETRY_AFTER`]).
     /// `None` when none of them holds
     /// anything that will need it. A host whose sweeps run from a timer it
@@ -415,16 +415,16 @@ impl AppState {
 
     /// Starts what turns the store's changes and the event bus into the
     /// streams' events: the stream hub's listener, the live seats' link to
-    /// it, and the inbox, approvals and people listeners.
+    /// it, and the inbox, approvals, pushes and git remotes listeners. The
+    /// daemon's `clax_server::start_listeners` adds the people routes' and
+    /// the linked threads' sync.
     pub fn start_listeners(&self) {
         self.stream.listen(&self.events);
         crate::seats::install(self);
         crate::views::inbox::listen(self);
         crate::views::approval::listen(self);
-        crate::routes::people::listen(self);
         crate::pushes::listen(self);
         crate::git_remotes::listen(self);
-        crate::linked::listen(self);
     }
 }
 

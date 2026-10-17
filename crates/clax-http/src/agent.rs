@@ -233,7 +233,7 @@ need!(
     Artifacts,
     "update",
     Own,
-    crate::routes::drafts::DRAFT_BODY_LIMIT
+    crate::limits::DRAFT_BODY_LIMIT
 );
 need!(DraftDelete, Artifacts, "update", Own, DEFAULT_LIMIT);
 need!(GitTokenMint, Artifacts, "read", Own, DEFAULT_LIMIT);
@@ -915,7 +915,7 @@ pub fn person_agent_session(c: &Caller) -> Result<(), ApiError> {
 ///
 /// # Errors
 /// The store's.
-pub fn administers(st: &clax_core::Store, c: &Caller, aid: &str) -> clax_core::Result<bool> {
+pub fn administers(st: &clax_store::Store, c: &Caller, aid: &str) -> clax_core::Result<bool> {
     match c {
         Caller::Owner { .. } | Caller::OwnerAgent { .. } => Ok(true),
         Caller::PersonAgent { person: None, .. } => Ok(true),
@@ -1904,8 +1904,8 @@ fn bearer_key(grant_id: &str) -> [u8; 32] {
 /// limit.
 async fn verify_bearer(s: &AppState, b: BearerGrant, mut req: Request, next: Next) -> Response {
     let matched = req.extensions().get::<MatchedPath>().map(|m| m.as_str());
-    if matched == Some(crate::routes::mcp_http::PATH) {
-        let limit = crate::routes::artifacts::PUBLISH_BODY_LIMIT;
+    if matched == Some(crate::headers::MCP_JSON_PATH) {
+        let limit = crate::limits::PUBLISH_BODY_LIMIT;
         let mut req = match gated(s, &b, req, limit).await {
             Ok(r) => r,
             Err(e) => return e.into_response(),

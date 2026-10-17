@@ -84,6 +84,7 @@ pub mod diag;
 mod instance;
 pub mod repos;
 mod store;
+mod web;
 
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -275,7 +276,7 @@ async fn static_asset(env: &Env, path: &str, app_host: bool) -> Result<Option<Ht
         }
         _ => match path
             .strip_prefix("/_clax/")
-            .and_then(clax_server::routes::shell::asset_cache)
+            .and_then(clax_server::shell::asset_cache)
         {
             Some((cache, any)) if !path.split('/').any(|c| c.starts_with('.')) => {
                 (path.to_string(), cache, any, false)

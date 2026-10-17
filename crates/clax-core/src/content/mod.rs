@@ -158,7 +158,6 @@
 pub mod fs;
 pub mod memory;
 
-#[cfg(any(test, feature = "content-contract"))]
 pub mod contract;
 
 use crate::{ArtifactId, Result};
@@ -611,10 +610,10 @@ std::thread_local! {
 }
 
 /// Marks this thread as running a synchronous store method until dropped.
-pub(crate) struct SyncDriven;
+pub struct SyncDriven;
 
 impl SyncDriven {
-    pub(crate) fn enter() -> SyncDriven {
+    pub fn enter() -> SyncDriven {
         SYNC_DRIVEN.with(|n| n.set(n.get() + 1));
         SyncDriven
     }

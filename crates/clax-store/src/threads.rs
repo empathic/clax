@@ -999,7 +999,7 @@ impl Store {
 
     /// The file on this machine holding the clip of thread `tid` of `id`,
     /// when the content store keeps clips in files
-    /// ([`crate::content::ContentStore::local_clip`]), for an agent on the
+    /// ([`clax_core::content::ContentStore::local_clip`]), for an agent on the
     /// same machine.
     /// A mirrored thread's is its cached copy under the home
     /// ([`Store::remote_clip_file`]), never a path a remote sent.
@@ -1695,7 +1695,7 @@ impl Store {
         &self,
         ctx: &AuditCtx,
         thread_id: &str,
-    ) -> Result<(Thread, crate::feedback::Touched)> {
+    ) -> Result<(Thread, clax_core::Touched)> {
         let (t, targets) = self.delete_thread_rows(ctx, thread_id)?;
         if t.has_clip {
             let id = ArtifactId::parse(&t.artifact_id)?;
@@ -1710,7 +1710,7 @@ impl Store {
         }
         Ok((
             t,
-            crate::feedback::Touched {
+            clax_core::Touched {
                 targets,
                 ..Default::default()
             },

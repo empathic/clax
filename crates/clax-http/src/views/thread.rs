@@ -321,7 +321,7 @@ pub struct VisFor {
 pub struct ClipLinks {
     hosted: std::sync::Arc<crate::hosted::Hosted>,
     token: String,
-    live: std::sync::Arc<crate::live::LiveIds>,
+    live: std::sync::Arc<clax_realtime::live::LiveIds>,
 }
 
 impl ClipLinks {

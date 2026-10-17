@@ -11,7 +11,6 @@
 mod client;
 pub mod clients;
 mod clock;
-pub mod deferred;
 mod events;
 mod fixture;
 pub mod mcp;

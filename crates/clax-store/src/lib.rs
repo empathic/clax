@@ -55,7 +55,7 @@
 //! # Content
 //!
 //! Version files, asset bytes and thread clip images live in the store's
-//! [`ContentStore`] ([`crate::content`]; the home's files unless
+//! [`ContentStore`] ([`clax_core::content`]; the home's files unless
 //! [`Store::with_content`] or [`Store::open_on`] gives another), never in a
 //! transaction. Version writes, deletes, and asset and clip writes combine
 //! a transaction with content I/O done outside it, ordered so that a
@@ -140,8 +140,8 @@ pub use sessions::{
 };
 pub use threads::{NewComment, NewThread, ThreadExtras};
 
-use clax_core::content::{ArtifactLock, ArtifactLocks, ContentStore, fs::FsContent};
 use chrono::{DateTime, Utc};
+use clax_core::content::{ArtifactLock, ArtifactLocks, ContentStore, fs::FsContent};
 use clax_core::time::stamp;
 use clax_core::working::{Clock, SystemClock};
 use clax_core::{CoreError, Home, Result};
@@ -167,7 +167,7 @@ type AgentsListener = Arc<dyn Fn(Vec<String>) + Send + Sync>;
 
 /// The installed pushed versions listener, cloned out of its lock.
 pub(crate) type PushedListener =
-    Arc<dyn Fn(&crate::model::Artifact, &crate::model::Version) + Send + Sync>;
+    Arc<dyn Fn(&clax_core::model::Artifact, &clax_core::model::Version) + Send + Sync>;
 
 pub struct Store {
     home: Home,
@@ -388,15 +388,15 @@ impl Store {
                 what: "content I/O that needs an executor; await the async method",
             });
         }
-        let _sync = crate::content::SyncDriven::enter();
+        let _sync = clax_core::content::SyncDriven::enter();
         #[cfg(target_arch = "wasm32")]
         {
-            crate::content::ready(f).unwrap_or(Err(CoreError::WouldBlock {
+            clax_core::content::ready(f).unwrap_or(Err(CoreError::WouldBlock {
                 what: "content I/O that is not ready",
             }))
         }
         #[cfg(not(target_arch = "wasm32"))]
-        crate::content::wait(f)
+        clax_core::content::wait(f)
     }
 
     /// Waits for, then holds, the content lock of `id`. A worker thread
@@ -408,7 +408,10 @@ impl Store {
     /// [`CoreError::WouldBlock`], in a synchronous method
     /// ([`Store::block_on`]), when this thread holds the lock already (an
     /// `async` method holding it across an await): waiting would never end.
-    pub(crate) async fn lock_content(&self, id: &crate::ArtifactId) -> Result<ArtifactLock<'_>> {
+    pub(crate) async fn lock_content(
+        &self,
+        id: &clax_core::ArtifactId,
+    ) -> Result<ArtifactLock<'_>> {
         if let Some(held) = self.content_locks.try_lock(id) {
             return Ok(held);
         }
@@ -420,7 +423,7 @@ impl Store {
     /// [`Store::lock_content`] for every one of `ids`, taken in ID order.
     pub(crate) async fn lock_contents(
         &self,
-        ids: &[&crate::ArtifactId],
+        ids: &[&clax_core::ArtifactId],
     ) -> Result<Vec<ArtifactLock<'_>>> {
         self.refuse_held_here(ids)?;
         let _lane = exec::WriteLane::waiting();
@@ -429,8 +432,8 @@ impl Store {
 
     /// [`CoreError::WouldBlock`] when a synchronous method runs on this
     /// thread and this thread holds the content lock of any of `ids`.
-    fn refuse_held_here(&self, ids: &[&crate::ArtifactId]) -> Result<()> {
-        if crate::content::driven_synchronously()
+    fn refuse_held_here(&self, ids: &[&clax_core::ArtifactId]) -> Result<()> {
+        if clax_core::content::driven_synchronously()
             && ids.iter().any(|id| self.content_locks.held_here(id))
         {
             return Err(CoreError::WouldBlock {
@@ -701,7 +704,7 @@ pub(crate) mod test_util {
 
     /// A store on a new home, through [`Store::open_on`] on a connection
     /// opened here in `journal_mode=MEMORY` and `locking_mode=EXCLUSIVE`,
-    /// keeping content in memory ([`MemContent`](crate::content::memory::MemContent)),
+    /// keeping content in memory ([`MemContent`](clax_core::content::memory::MemContent)),
     /// as a Durable Object keeps none in files.
     pub fn single_store() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
@@ -716,25 +719,25 @@ pub(crate) mod test_util {
         // and the one connection holds the lock for its life.
         conn.execute_batch("PRAGMA journal_mode=MEMORY; PRAGMA locking_mode=EXCLUSIVE;")
             .unwrap();
-        let content = Arc::new(crate::content::memory::MemContent::new());
+        let content = Arc::new(clax_core::content::memory::MemContent::new());
         Store::open_on(home, conn, clock, content).unwrap()
     }
 
     /// The bytes of `path` in version `n` of `id`, read from `st`'s content
     /// store; `None` when they are not there.
     pub fn content_file(st: &Store, id: &ArtifactId, n: u32, path: &str) -> Option<Vec<u8>> {
-        crate::content::wait(st.content().read_file(id, n, path)).unwrap()
+        clax_core::content::wait(st.content().read_file(id, n, path)).unwrap()
     }
 
     /// Whether version `n` of `id` has any content in `st`'s content store
     /// (its `index.html`, which every version has).
     pub fn content_version_exists(st: &Store, id: &ArtifactId, n: u32) -> bool {
-        content_file(st, id, n, crate::publish::INDEX).is_some()
+        content_file(st, id, n, clax_core::publish::INDEX).is_some()
     }
 
     /// The clip of thread `tid` of `id` in `st`'s content store.
     pub fn content_clip(st: &Store, id: &ArtifactId, tid: &str) -> Option<Vec<u8>> {
-        crate::content::wait(st.content().read_clip(id, tid)).unwrap()
+        clax_core::content::wait(st.content().read_clip(id, tid)).unwrap()
     }
 
     /// A one-version artifact titled "Quarterly Review", owned by `session`.
@@ -813,20 +816,15 @@ mod tests {
     /// their stores through `test_util::store`, pass on one connection too:
     /// this test binary runs them again with
     /// [`STORE_MODE_VAR`](super::test_util::STORE_MODE_VAR) set. The pool's
-    /// own tests (`store::exec::tests`) are left out; they open the pool
-    /// whichever the mode, and its one-connection tests are run here.
+    /// own tests (`exec::tests`) are left out; they open the pool whichever
+    /// the mode, and its one-connection tests are run here.
     #[test]
     fn the_store_tests_pass_on_one_connection() {
         if super::test_util::on_one_connection() {
             return;
         }
         let out = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "store::",
-                "toolpath::tests::",
-                "--skip",
-                "store::exec::tests::",
-            ])
+            .args(["--skip", "exec::tests::"])
             .env(super::test_util::STORE_MODE_VAR, "single")
             .output()
             .unwrap();
@@ -846,7 +844,7 @@ mod tests {
     /// A content store whose version writes wait until `open`, as a
     /// Durable Object's wait on a JavaScript promise.
     struct Gated {
-        inner: crate::content::memory::MemContent,
+        inner: clax_core::content::memory::MemContent,
         open: std::sync::atomic::AtomicBool,
         waker: std::sync::Mutex<Option<std::task::Waker>>,
     }
@@ -861,21 +859,21 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl crate::content::ContentStore for Gated {
+    impl clax_core::content::ContentStore for Gated {
         async fn read_file(
             &self,
-            id: &crate::ArtifactId,
+            id: &clax_core::ArtifactId,
             n: u32,
             path: &str,
-        ) -> crate::Result<Option<Vec<u8>>> {
+        ) -> clax_core::Result<Option<Vec<u8>>> {
             self.inner.read_file(id, n, path).await
         }
         async fn write_version(
             &self,
-            id: &crate::ArtifactId,
+            id: &clax_core::ArtifactId,
             n: u32,
-            write: &crate::content::VersionWrite<'_>,
-        ) -> crate::Result<()> {
+            write: &clax_core::content::VersionWrite<'_>,
+        ) -> clax_core::Result<()> {
             std::future::poll_fn(|cx| {
                 if self.open.load(std::sync::atomic::Ordering::SeqCst) {
                     std::task::Poll::Ready(())
@@ -887,32 +885,36 @@ mod tests {
             .await;
             self.inner.write_version(id, n, write).await
         }
-        async fn remove_version(&self, id: &crate::ArtifactId, n: u32) -> crate::Result<()> {
+        async fn remove_version(
+            &self,
+            id: &clax_core::ArtifactId,
+            n: u32,
+        ) -> clax_core::Result<()> {
             self.inner.remove_version(id, n).await
         }
-        async fn delete_artifact(&self, id: &crate::ArtifactId) -> crate::Result<()> {
+        async fn delete_artifact(&self, id: &clax_core::ArtifactId) -> clax_core::Result<()> {
             self.inner.delete_artifact(id).await
         }
         async fn put_asset(
             &self,
-            key: &crate::content::AssetKey,
+            key: &clax_core::content::AssetKey,
             bytes: &[u8],
-        ) -> crate::Result<()> {
+        ) -> clax_core::Result<()> {
             self.inner.put_asset(key, bytes).await
         }
         async fn read_asset(
             &self,
-            key: &crate::content::AssetKey,
-        ) -> crate::Result<Option<Vec<u8>>> {
+            key: &clax_core::content::AssetKey,
+        ) -> clax_core::Result<Option<Vec<u8>>> {
             self.inner.read_asset(key).await
         }
-        async fn delete_asset(&self, key: &crate::content::AssetKey) -> crate::Result<()> {
+        async fn delete_asset(&self, key: &clax_core::content::AssetKey) -> clax_core::Result<()> {
             self.inner.delete_asset(key).await
         }
     }
 
-    fn next_version(n: u32, html: &str) -> crate::publish::ValidatedPublish {
-        crate::publish::validate(
+    fn next_version(n: u32, html: &str) -> clax_core::publish::ValidatedPublish {
+        clax_core::publish::validate(
             serde_json::from_value(serde_json::json!({
                 "if_version": n,
                 "files": {"index.html": {"content": html, "encoding": "utf8"}}
@@ -922,9 +924,12 @@ mod tests {
         .unwrap()
     }
 
-    fn would_block<T: std::fmt::Debug>(r: crate::Result<T>) {
+    fn would_block<T: std::fmt::Debug>(r: clax_core::Result<T>) {
         let e = r.unwrap_err();
-        assert!(matches!(e, crate::CoreError::WouldBlock { .. }), "{e:?}");
+        assert!(
+            matches!(e, clax_core::CoreError::WouldBlock { .. }),
+            "{e:?}"
+        );
     }
 
     /// On one connection, a synchronous method never waits for an
@@ -940,14 +945,14 @@ mod tests {
         home.ensure_dirs().unwrap();
         let conn = rusqlite::Connection::open(home.db_path()).unwrap();
         let gated = Arc::new(Gated {
-            inner: crate::content::memory::MemContent::new(),
+            inner: clax_core::content::memory::MemContent::new(),
             open: std::sync::atomic::AtomicBool::new(true),
             waker: std::sync::Mutex::new(None),
         });
         let st = Store::open_on(
             &home,
             conn,
-            Arc::new(crate::working::SystemClock),
+            Arc::new(clax_core::working::SystemClock),
             gated.clone(),
         )
         .unwrap();
@@ -981,7 +986,7 @@ mod tests {
         );
 
         gated.set_open(true);
-        let (a, _) = crate::content::wait(held).unwrap();
+        let (a, _) = clax_core::content::wait(held).unwrap();
         assert_eq!(a.current_version, 2);
         let (a, _) = st
             .publish_version(ctx, &aid, next_version(2, "<p>3"), None)
@@ -990,46 +995,50 @@ mod tests {
     }
 
     /// In-memory content that says it needs an executor.
-    struct NeedsExecutor(crate::content::memory::MemContent);
+    struct NeedsExecutor(clax_core::content::memory::MemContent);
 
     #[async_trait::async_trait]
-    impl crate::content::ContentStore for NeedsExecutor {
+    impl clax_core::content::ContentStore for NeedsExecutor {
         async fn read_file(
             &self,
-            id: &crate::ArtifactId,
+            id: &clax_core::ArtifactId,
             n: u32,
             path: &str,
-        ) -> crate::Result<Option<Vec<u8>>> {
+        ) -> clax_core::Result<Option<Vec<u8>>> {
             self.0.read_file(id, n, path).await
         }
         async fn write_version(
             &self,
-            id: &crate::ArtifactId,
+            id: &clax_core::ArtifactId,
             n: u32,
-            write: &crate::content::VersionWrite<'_>,
-        ) -> crate::Result<()> {
+            write: &clax_core::content::VersionWrite<'_>,
+        ) -> clax_core::Result<()> {
             self.0.write_version(id, n, write).await
         }
-        async fn remove_version(&self, id: &crate::ArtifactId, n: u32) -> crate::Result<()> {
+        async fn remove_version(
+            &self,
+            id: &clax_core::ArtifactId,
+            n: u32,
+        ) -> clax_core::Result<()> {
             self.0.remove_version(id, n).await
         }
-        async fn delete_artifact(&self, id: &crate::ArtifactId) -> crate::Result<()> {
+        async fn delete_artifact(&self, id: &clax_core::ArtifactId) -> clax_core::Result<()> {
             self.0.delete_artifact(id).await
         }
         async fn put_asset(
             &self,
-            key: &crate::content::AssetKey,
+            key: &clax_core::content::AssetKey,
             bytes: &[u8],
-        ) -> crate::Result<()> {
+        ) -> clax_core::Result<()> {
             self.0.put_asset(key, bytes).await
         }
         async fn read_asset(
             &self,
-            key: &crate::content::AssetKey,
-        ) -> crate::Result<Option<Vec<u8>>> {
+            key: &clax_core::content::AssetKey,
+        ) -> clax_core::Result<Option<Vec<u8>>> {
             self.0.read_asset(key).await
         }
-        async fn delete_asset(&self, key: &crate::content::AssetKey) -> crate::Result<()> {
+        async fn delete_asset(&self, key: &clax_core::content::AssetKey) -> clax_core::Result<()> {
             self.0.delete_asset(key).await
         }
         fn needs_executor(&self) -> bool {
@@ -1046,16 +1055,16 @@ mod tests {
         let home = Home::at(dir.path().join("ax"));
         home.ensure_dirs().unwrap();
         let conn = rusqlite::Connection::open(home.db_path()).unwrap();
-        let content = Arc::new(NeedsExecutor(crate::content::memory::MemContent::new()));
+        let content = Arc::new(NeedsExecutor(clax_core::content::memory::MemContent::new()));
         let st = Store::open_on(
             &home,
             conn,
-            Arc::new(crate::working::SystemClock),
+            Arc::new(clax_core::working::SystemClock),
             content.clone(),
         )
         .unwrap();
         let first = || {
-            crate::publish::validate(
+            clax_core::publish::validate(
                 serde_json::from_value(serde_json::json!({
                     "title": "T",
                     "files": {"index.html": {"content": "<p>1", "encoding": "utf8"}}
@@ -1068,8 +1077,9 @@ mod tests {
         would_block(st.create_artifact(ctx, first(), None));
         assert!(st.list_artifacts().unwrap().is_empty());
         assert!(content.0.versions().is_empty());
-        let (a, _) = crate::content::wait(st.create_artifact_async(ctx, first(), None)).unwrap();
-        let aid = crate::ArtifactId::parse(&a.id).unwrap();
+        let (a, _) =
+            clax_core::content::wait(st.create_artifact_async(ctx, first(), None)).unwrap();
+        let aid = clax_core::ArtifactId::parse(&a.id).unwrap();
         would_block(st.publish_version(ctx, &aid, next_version(1, "<p>2"), None));
         would_block(st.read_file(&aid, 1, "index.html"));
         assert_eq!(st.get_artifact(&aid).unwrap().unwrap().current_version, 1);
@@ -1083,7 +1093,7 @@ mod tests {
     fn a_sync_method_waits_for_a_content_lock_another_thread_holds() {
         let (_d, st) = super::test_util::single_store();
         let aid = artifact(&st, None);
-        let held = crate::content::wait(st.lock_content(&aid)).unwrap();
+        let held = clax_core::content::wait(st.lock_content(&aid)).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::scope(|s| {
             s.spawn(|| {

@@ -2260,8 +2260,8 @@ async fn racing_publishes_of_a_threads_state_send_in_read_order() {
 /// the thread has a clip.
 #[tokio::test]
 async fn a_thread_view_names_the_clip_file_to_local_agents_alone() {
-    use clax_core::store::approvals::{Scope, Via};
-    let w = crate::common::people::World::two_people().await;
+    use clax_store::approvals::{Scope, Via};
+    let w = clax_testkit::people::World::two_people().await;
     let ts = &w.ts;
     let sam_public = ts
         .store

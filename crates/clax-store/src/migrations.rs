@@ -1955,15 +1955,15 @@ mod tests {
         home.ensure_dirs().unwrap();
         let before = 35;
         assert!(MIGRATIONS[before].contains("clax-ask"));
-        let earlier = crate::rights::Rights::parse(&serde_json::json!([
+        let earlier = clax_core::rights::Rights::parse(&serde_json::json!([
             {"type": "clax-artifacts", "actions": ["create"], "locations": ["*"]},
             {"type": "clax-artifacts", "actions": ["read", "update", "delete"], "locations": ["own"]},
-            {"type": "clax-comments", "actions": crate::rights::COMMENT_ACTIONS, "locations": ["own"]},
+            {"type": "clax-comments", "actions": clax_core::rights::COMMENT_ACTIONS, "locations": ["own"]},
             {"type": "clax-db", "actions": ["read", "write"], "level": "admin", "locations": ["own"]},
         ]))
         .unwrap();
         let custom = super::super::people::write_rights(
-            &crate::rights::Rights::preset(crate::rights::PRESET_READER).unwrap(),
+            &clax_core::rights::Rights::preset(clax_core::rights::PRESET_READER).unwrap(),
         );
         {
             let c = Connection::open(home.db_path()).unwrap();

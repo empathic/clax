@@ -882,7 +882,7 @@ mod tests {
 
     #[test]
     fn the_owners_row_made_after_agents_looked_is_connected_to_them() {
-        use crate::visibility::Author;
+        use clax_core::visibility::Author;
         let (_d, st) = store();
         // An agent's view is read before any browser of the owner's came.
         let before = st.connected().unwrap();

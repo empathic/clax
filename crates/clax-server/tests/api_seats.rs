@@ -3,11 +3,11 @@
 //! seat there, a person beyond the seats is refused them and every write,
 //! and the spectator snapshot is shared for 5 s per head version.
 
-use crate::common::TestServer;
 use clax_core::audit::AuditCtx;
 use clax_core::rights::Rights;
 use clax_core::seats::SeatLimits;
 use clax_core::working::ManualClock;
+use clax_testkit::TestServer;
 use clax_testkit::{EventReader, element_anchor};
 use serde_json::{Value, json};
 use std::sync::Arc;

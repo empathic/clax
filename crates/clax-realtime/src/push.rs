@@ -234,7 +234,7 @@ pub fn dispatch(ctx: &FeedbackCtx, st: &Store, targets: &BTreeSet<String>) {
         // daemon): the daemon's own `codex` never queues to it.
         if session.harness != "codex"
             || session.ended_at.is_some()
-            || crate::routes::sessions::elsewhere(&session, ctx.hosted)
+            || elsewhere(&session, ctx.hosted)
             || ctx.waiters.is_waiting(sid)
         {
             continue;
@@ -320,6 +320,12 @@ pub fn dispatch(ctx: &FeedbackCtx, st: &Store, targets: &BTreeSet<String>) {
             }
         });
     }
+}
+
+/// Whether session `s` runs on another machine than this daemon: a
+/// grant's session, or any session of a hosted daemon.
+pub fn elsewhere(s: &clax_core::model::Session, hosted: bool) -> bool {
+    hosted || s.grant_id.is_some()
 }
 
 #[cfg(test)]

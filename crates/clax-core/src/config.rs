@@ -121,6 +121,10 @@ impl Default for ToolpathConfig {
     }
 }
 
+/// How many live artifacts one GitHub member may keep by default
+/// (`[hosted] member_max_artifacts`; the store's `MemberCaps`).
+pub const DEFAULT_MAX_ARTIFACTS: u64 = 200;
+
 /// `[hosted]`: hosted mode, in which the daemon serves the public internet
 /// at `public_origin` (behind a proxy that terminates TLS and keeps the
 /// `Host` header): people sign in through the browser with session cookies,
@@ -141,7 +145,7 @@ pub struct HostedConfig {
     /// GitHub sign-in (`github_client_id`); `None` keeps it off.
     pub github: Option<GitHubConfig>,
     /// The most live artifacts a GitHub member keeps
-    /// (`member_max_artifacts`, [`crate::store::github::DEFAULT_MAX_ARTIFACTS`]
+    /// (`member_max_artifacts`, [`DEFAULT_MAX_ARTIFACTS`]
     /// when absent).
     pub member_max_artifacts: u64,
     /// Whether pages may be listed in the public gallery that signed-out
@@ -426,9 +430,7 @@ impl HomeConfig {
             setup_secret_env,
             behind_cloudflare: t.behind_cloudflare.unwrap_or(false),
             github,
-            member_max_artifacts: t
-                .member_max_artifacts
-                .unwrap_or(crate::store::github::DEFAULT_MAX_ARTIFACTS),
+            member_max_artifacts: t.member_max_artifacts.unwrap_or(DEFAULT_MAX_ARTIFACTS),
             public_gallery: t.public_gallery.unwrap_or(false),
         }))
     }

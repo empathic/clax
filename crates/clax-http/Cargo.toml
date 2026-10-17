@@ -12,17 +12,37 @@ clax-core = { path = "../clax-core" }
 clax-store = { path = "../clax-store" }
 clax-realtime = { path = "../clax-realtime" }
 clax-sample = { path = "../clax-sample" }
+clax-rt = { path = "../clax-rt" }
 axum.workspace = true
 chrono.workspace = true
 futures = "0.3"
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.11"
-socket2 = "0.6"
-tokio.workspace = true
+base64.workspace = true
+http = "1"
+rand.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
+url.workspace = true
+web-time = "1"
+tokio = { workspace = true, features = ["sync", "macros"] }
 tower.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
+
+# Native only: the Worker's wasm32 build has no tokio runtime, sockets or
+# processes (see clax-server's crate documentation).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+axum = { workspace = true, features = ["http1", "tokio", "tower-log", "ws"] }
+nix = { workspace = true, features = ["signal", "resource"] }
+reqwest = { workspace = true, features = ["rustls-tls"] }
+socket2 = "0.6"
+tokio = { workspace = true, features = ["full"] }
+
+# The MCP adapter's tool set holds rmcp's `local` tool router, which is
+# not `Send`; a Worker has one thread.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+send_wrapper = "0.6"
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -35,14 +35,14 @@ use super::people::{
     Grant, checked_client_name, grant_access, grant_in, grant_record, new_grant_id,
 };
 use super::viewers::{check_viewer_name, checked_name, row_to_viewer};
-use crate::audit::{Actor, AuditCtx, AuditKind, AuditRecord};
-use crate::model::Viewer;
-use crate::names::CollisionKeys;
-use crate::rights::Rights;
-use crate::secret::{self, Secret, sha256_hex};
-use crate::{CoreError, Result, new_public_id, new_ulid};
 use base64::Engine as _;
 use chrono::Duration;
+use clax_core::audit::{Actor, AuditCtx, AuditKind, AuditRecord};
+use clax_core::model::Viewer;
+use clax_core::names::CollisionKeys;
+use clax_core::rights::Rights;
+use clax_core::secret::{self, Secret, sha256_hex};
+use clax_core::{CoreError, Result, new_public_id, new_ulid};
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde::Serialize;
 
@@ -277,7 +277,7 @@ fn session_viewer(c: &rusqlite::Connection, id: &str) -> Result<Option<SessionVi
 /// The words of `name` as names are compared: its [`CollisionKeys`]
 /// folded skeleton, split at whatever is not a letter or a digit.
 fn name_words(name: &str) -> Vec<String> {
-    let key: String = unicode_security::skeleton(&crate::names::token_form(name)).collect();
+    let key: String = unicode_security::skeleton(&clax_core::names::token_form(name)).collect();
     key.split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())
         .map(str::to_string)
@@ -336,7 +336,7 @@ fn check_guest_name(tx: &Transaction<'_>, id: &str, name: &str) -> Result<String
 
 impl Store {
     fn later(&self, secs: i64) -> String {
-        super::stamp(self.now_utc() + Duration::seconds(secs))
+        clax_core::time::stamp(self.now_utc() + Duration::seconds(secs))
     }
 
     /// Opens a session for viewer `viewer_id` in `tx`: its cookie value and
@@ -446,7 +446,7 @@ impl Store {
                     "SELECT id FROM approvals
                      WHERE approver IS NULL AND author = ?1 AND revoked_at IS NULL",
                 )?
-                .query_map(params![super::approvals::UNCONNECTED], |r| r.get(0))?
+                .query_map(params![clax_core::visibility::UNCONNECTED], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?;
             let now = self.now();
             for id in ids {
@@ -936,10 +936,10 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Home;
-    use crate::rights::RightType;
     use crate::people::{EndedBy, InvitePerson};
-    use crate::working::ManualClock;
+    use clax_core::Home;
+    use clax_core::rights::RightType;
+    use clax_core::working::ManualClock;
     use std::sync::Arc;
 
     fn store() -> (tempfile::TempDir, Store, Arc<ManualClock>) {
@@ -983,7 +983,7 @@ mod tests {
             st.live_approvals(None)
                 .unwrap()
                 .iter()
-                .all(|a| a.author != crate::approvals::UNCONNECTED)
+                .all(|a| a.author != clax_core::visibility::UNCONNECTED)
         );
     }
 
@@ -1237,7 +1237,7 @@ mod tests {
             .create_invite(
                 &AuditCtx::DAEMON,
                 InvitePerson::New("Sam".into()),
-                Some(Rights::preset(crate::rights::PRESET_READER).unwrap()),
+                Some(Rights::preset(clax_core::rights::PRESET_READER).unwrap()),
             )
             .unwrap();
         let sam = st

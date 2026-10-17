@@ -1224,7 +1224,7 @@ pub(crate) mod tests {
         let weak = me.clone();
         st.set_audit_nudge(move || {
             const COUNT: &str = "SELECT COUNT(*) FROM audit_events";
-            let n: i64 = if crate::store::test_util::on_one_connection() {
+            let n: i64 = if crate::test_util::on_one_connection() {
                 let st = weak.get().and_then(std::sync::Weak::upgrade).unwrap();
                 st.with_read(|c| Ok(c.query_row(COUNT, [], |r| r.get(0))?))
                     .unwrap()

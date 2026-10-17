@@ -16,10 +16,10 @@ clax-core = { path = "../clax-core" }
 clax-git = { path = "../clax-git" }
 
 [dev-dependencies]
+clax-store = { path = "../clax-store" }
 # The workspace's axum and tokio carry no runtime features (clax-server
 # builds them for wasm32); the tests serve smart HTTP and run git natively.
 axum = { workspace = true, features = ["http1", "tokio"] }
-clax-core = { path = "../clax-core", features = ["content-contract"] }
 # A store on one connection, as a Durable Object opens it.
 rusqlite.workspace = true
 serde_json.workspace = true

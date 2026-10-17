@@ -2,8 +2,9 @@
 //! public Clax (a hosted test daemon) by device code and publishes an
 //! artifact's versions there.
 
-use crate::common::{Env, TestServer};
+use crate::common::Env;
 use clax_core::working::ManualClock;
+use clax_testkit::TestServer;
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader};
 use std::sync::Arc;

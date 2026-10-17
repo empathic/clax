@@ -31,8 +31,12 @@ clax-content-git = { path = "../clax-content-git" }
 clax-core = { path = "../clax-core" }
 clax-do-vfs = { path = "vfs" }
 clax-git = { path = "../clax-git" }
+clax-http = { path = "../clax-http" }
+clax-realtime = { path = "../clax-realtime" }
 clax-rt = { path = "../clax-rt" }
+clax-sample = { path = "../clax-sample" }
 clax-server = { path = "../clax-server" }
+clax-store = { path = "../clax-store" }
 console_error_panic_hook = "0.1"
 # Reading a request's body in bounded chunks (`ByteStream`).
 futures-util = "0.3"
@@ -40,6 +44,8 @@ futures-util = "0.3"
 getrandom = { version = "0.3", features = ["wasm_js"] }
 js-sys = "0.3"
 rusqlite = { version = "0.40", features = ["bundled", "hooks"] }
+# The web UI the router renders pages from (`src/web.rs`).
+rust-embed = "8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
@@ -51,9 +57,8 @@ worker = { version = "0.8.7", features = ["http", "axum", "queue"] }
 
 [dev-dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
-clax-core = { path = "../clax-core", features = ["content-contract"] }
-# The server in process, for the git token routes over the stand-in.
-clax-server = { path = "../clax-server", features = ["test-support"] }
+# The test daemon in process, for the git token routes over the stand-in.
+clax-testkit = { path = "../clax-testkit" }
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "net"] }
 

@@ -2,11 +2,10 @@
 //! the draft routes' rights and limits, the draft URL, and the `drafts`
 //! events people's streams carry.
 
-use crate::common;
-use crate::common::people::World;
 use clax_core::working::ManualClock;
 use clax_testkit::EventReader;
-use common::TestServer;
+use clax_testkit::TestServer;
+use clax_testkit::people::World;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -313,7 +312,7 @@ async fn a_draft_ends_after_two_idle_minutes_and_with_its_session() {
     assert_eq!(listed(&ts, &aid).await.len(), 1);
     clock.advance(1);
     assert!(listed(&ts, &aid).await.is_empty());
-    clax_server::drafts::sweep_and_announce(&ts.drafts, &ts.events);
+    clax_realtime::drafts::sweep_and_announce(&ts.drafts, &ts.events);
     assert_eq!(stream.next_named("drafts").await["drafts"], json!([]));
     put_ok(&ts, &sid, &aid, DRAFT).await;
     assert_eq!(listed(&ts, &aid).await.len(), 1);
@@ -526,7 +525,10 @@ async fn a_draft_is_compared_only_with_base_files_its_agent_may_see() {
         "{page}"
     );
     // Mia's files never come through the draft; the owner's agent's own do.
-    for p in [common::people::FILE_NAME, common::people::CARRIED_NAME] {
+    for p in [
+        clax_testkit::people::FILE_NAME,
+        clax_testkit::people::CARRIED_NAME,
+    ] {
         assert_eq!(ts.get(&draft_url(aid, &d, p)).await.status(), 404, "{p}");
     }
     let mine = ts.get(&draft_url(aid, &d, "owner.html")).await;

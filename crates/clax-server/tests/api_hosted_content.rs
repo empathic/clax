@@ -5,11 +5,10 @@
 //! fail with `WouldBlock`. And on the daemon's pool, concurrent writers of
 //! one artifact's content wait for each other rather than answer busy.
 
-use crate::common;
 use clax_core::ArtifactId;
 use clax_core::audit::AuditCtx;
+use clax_testkit::TestServer;
 use clax_testkit::{Deferred, FAKE_PNG};
-use common::TestServer;
 use serde_json::{Value, json};
 use std::sync::Arc;
 

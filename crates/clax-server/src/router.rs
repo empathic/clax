@@ -4,12 +4,12 @@
 //! testkit's delay middleware are here too.
 
 use crate::routes::{
-    approvals, artifacts, assets, connect, content, docs, drafts, extension, feedback, grants, health,
-    inbox, live, people, perf, questions, sample, sessions, sites, snapshot, stream, threads,
-    token, toolpath, viewers, watches, working,
+    approvals, artifacts, assets, connect, content, docs, drafts, extension, feedback, git_token,
+    grants, health, inbox, live, live_layers, mcp_http, people, perf, questions, remotes, room,
+    sample, sessions, sites, snapshot, stream, threads, token, toolpath, viewers, watches, working,
 };
 #[cfg(not(target_arch = "wasm32"))]
-use crate::routes::{events, mcp, room};
+use crate::routes::{events, mcp};
 use crate::shell;
 #[cfg(not(target_arch = "wasm32"))]
 use axum::error_handling::HandleErrorLayer;
@@ -22,7 +22,7 @@ use axum::{
 };
 use clax_http::agent::{self, DeniedToGrants};
 use clax_http::auth::RequireToken;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(debug_assertions, not(target_arch = "wasm32")))]
 use clax_http::error::ApiError;
 use clax_http::limits;
 use clax_http::state::AppState;
@@ -676,7 +676,7 @@ pub fn build_router_with_shutdown(
 fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
     let hosted = state.hosted.is_some();
     let inner = if hosted {
-        inner.merge(clax_http::hosted::router(state.clone()))
+        inner.merge(crate::hosted::router(state.clone()))
     } else {
         inner
     };

@@ -13,9 +13,9 @@ use clax_core::content::memory::MemContent;
 use clax_core::home::Home;
 use clax_core::ids::ArtifactId;
 use clax_core::publish::{FileInput, PublishRequest, validate};
-use clax_store::Store;
 use clax_core::working::SystemClock;
 use clax_do_vfs::{Chunks, PageStore, StoreError};
+use clax_store::Store;
 
 #[derive(Default)]
 struct MemPages {

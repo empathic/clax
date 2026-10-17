@@ -12,12 +12,19 @@ clax-core = { path = "../clax-core" }
 base64.workspace = true
 chrono.workspace = true
 futures = "0.3"
-reqwest = { workspace = true, features = ["stream", "rustls-tls"] }
+reqwest = { workspace = true, features = ["stream"] }
+clax-rt = { path = "../clax-rt" }
 serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["sync", "macros"] }
 tokio-stream.workspace = true
 tracing.workspace = true
+
+# Native only: the Worker's wasm32 build has no tokio runtime, sockets or
+# processes (see clax-server's crate documentation).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+reqwest = { workspace = true, features = ["rustls-tls"] }
+tokio = { workspace = true, features = ["full"] }
 
 [dev-dependencies]
 tempfile.workspace = true

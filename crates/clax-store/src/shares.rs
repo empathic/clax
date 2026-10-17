@@ -23,9 +23,9 @@
 
 use super::Store;
 use super::hosted::LinkAccess;
-use crate::audit::{AuditCtx, AuditKind, AuditRecord};
-use crate::rights::Rights;
-use crate::{CoreError, Result, new_ulid};
+use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
+use clax_core::rights::Rights;
+use clax_core::{CoreError, Result, new_ulid};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -76,7 +76,7 @@ impl ShareAccess {
         let comments: &[&str] = match self {
             ShareAccess::Viewer => &["read", "watch"],
             ShareAccess::Commenter => &["read", "watch", "write", "reply", "send"],
-            ShareAccess::Editor => crate::rights::COMMENT_ACTIONS,
+            ShareAccess::Editor => clax_core::rights::COMMENT_ACTIONS,
         };
         let artifacts: &[&str] = match self {
             ShareAccess::Editor => &["read", "update"],
@@ -558,10 +558,10 @@ fn already_owner() -> CoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rights::RightType;
-    use crate::store::github::GitHubUser;
-    use crate::store::people::InvitePerson;
-    use crate::store::test_util::{DAEMON, artifact, store};
+    use crate::github::GitHubUser;
+    use crate::people::InvitePerson;
+    use crate::test_util::{DAEMON, artifact, store};
+    use clax_core::rights::RightType;
 
     fn code_of<T: std::fmt::Debug>(r: Result<T>) -> String {
         match r {
@@ -636,7 +636,7 @@ mod tests {
         let rights = st.person_rights(&sam).unwrap();
         assert_eq!(
             rights.db_level(a, "write", &own),
-            Some(crate::db::Level::Interact)
+            Some(clax_core::db::Level::Interact)
         );
         assert!(!may(&st, &sam, RightType::Artifacts, "read", other));
         assert_eq!(
@@ -650,7 +650,7 @@ mod tests {
             .unwrap()
             .into_iter()
             .find(|p| p.viewer.public_id == sam);
-        assert_eq!(row.unwrap().rights, crate::store::github::member_rights());
+        assert_eq!(row.unwrap().rights, crate::github::member_rights());
         let s = st.artifact_shares(a).unwrap().remove(0);
         st.unshare_artifact(DAEMON, a, &s.id).unwrap();
         assert!(

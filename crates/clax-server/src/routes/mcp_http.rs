@@ -37,22 +37,17 @@
 //! answers 404, which tells the client to initialize again. A request naming no session acts as the grant's
 //! sessionless agent, which reads but does not write.
 
-use clax_http::auth::RequireToken;
-use crate::routes::artifacts::PUBLISH_BODY_LIMIT;
-use clax_http::state::AppState;
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, Request};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
+use clax_http::auth::RequireToken;
+use clax_http::limits::PUBLISH_BODY_LIMIT;
+use clax_http::state::AppState;
 use clax_mcp::{ClaxTools, DaemonClient};
 use std::sync::Arc;
 
-/// Where the adapter answers: `/mcp` on a Durable Object; beside rmcp's
-/// `/mcp` in the daemon.
-#[cfg(not(target_arch = "wasm32"))]
-pub const PATH: &str = "/mcp/json";
-#[cfg(target_arch = "wasm32")]
-pub const PATH: &str = "/mcp";
+pub use clax_http::headers::MCP_JSON_PATH as PATH;
 
 /// Who may call the adapter: the daemon token's holder, as on `/mcp`, or
 /// an agent token's agent (a bearer grant that
