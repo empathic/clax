@@ -8,7 +8,9 @@
 # The build runs in a clean copy of HEAD under target/app-phone/<sha>, so
 # uncommitted changes are left out (it says so) and builds in apps/clax_app
 # are not disturbed. A HEAD already built is installed without rebuilding;
-# the newest three copies are kept.
+# the newest three copies are kept. Cargo's output is shared by every copy
+# (target/app-phone-cargo), so a new HEAD recompiles only what changed.
+# While it builds it prints the step it is on, and the time every 30 s.
 #
 # Environment:
 #   ANDROID_SERIAL  which device, when more than one is attached
@@ -66,26 +68,30 @@ fi
 
 if [ ! -f "$apk" ]; then
     log="$root/target/app-phone/$sha.log"
-    echo "app-phone: building $sha from a clean copy; this takes several minutes (log: $log)"
+    echo "app-phone: building $sha from a clean copy (the first build takes several minutes; later ones reuse its Rust output) (log: $log)"
     rm -rf "$copy"
     mkdir -p "$copy"
     git archive HEAD | tar -x -C "$copy"
     ln -s "$root/web/node_modules" "$copy/web/node_modules"
-    (cd "$copy" && just app-apk) > "$log" 2>&1 &
+    (cd "$copy" && CARGO_TARGET_DIR="$root/target/app-phone-cargo" just app-apk) > "$log" 2>&1 &
     build=$!
     trap 'kill "$build" 2>/dev/null' INT TERM
-    # Every 15 s: the elapsed time and the log's latest line, so a long step
-    # shows as progress rather than a hang.
+    # The step the build is on (its "build-app-clax: …" and "app-apk: …"
+    # lines), printed when it changes and otherwise every 30 s.
     start=$SECONDS
+    shown=""
+    told=0
     while kill -0 "$build" 2>/dev/null; do
-        for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-            kill -0 "$build" 2>/dev/null || break
-            sleep 1
-        done
-        kill -0 "$build" 2>/dev/null || break
+        sleep 1
         e=$((SECONDS - start))
-        last="$(tail -n 1 "$log" 2>/dev/null | tr -d '\r' | cut -c 1-100)"
-        printf 'app-phone: %dm%02ds  %s\n' $((e / 60)) $((e % 60)) "$last"
+        step="$(grep -E '^(build-app-clax|app-apk): ' "$log" 2>/dev/null | tail -n 1 | sed -E 's/^[a-z-]+: //' || true)"
+        if [ -n "$step" ] && [ "$step" != "$shown" ]; then
+            shown="$step"; told=$e
+            printf 'app-phone: %dm%02ds  %s\n' $((e / 60)) $((e % 60)) "$step"
+        elif [ $((e - told)) -ge 30 ]; then
+            told=$e
+            printf 'app-phone: %dm%02ds  still %s\n' $((e / 60)) $((e % 60)) "${shown:-starting}"
+        fi
     done
     if ! wait "$build"; then
         trap - INT TERM

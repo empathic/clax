@@ -14,8 +14,13 @@
 #   ANDROID_NDK_HOME     the NDK (default ~/Library/Android/sdk/ndk/28.2.13676358)
 #   CLAX_APP_DRY_RUN=1   print the commands ("+ …") instead of running them
 #   CLAX_APP_PLACE_ONLY=1  with arguments SRC DEST: only place SRC at DEST
+#   CARGO_TARGET_DIR     cargo's output directory (default target)
+#
+# Each step starts with a "build-app-clax: …" line, so a caller logging the
+# build can show which step it is on.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+say() { echo "build-app-clax: $*"; }
 run() { if [ "${CLAX_APP_DRY_RUN:-}" = 1 ]; then echo "+ $*"; else "$@"; fi; }
 place() { # place SRC DEST
     local dir; dir="$(dirname "$2")"; run mkdir -p "$dir"
@@ -40,10 +45,13 @@ case "${2:-}" in "") ;; --debug) profile=debug ;; *) usage ;; esac
 # Bash 3.2 (macOS) treats an empty array as unset under `set -u`, so the
 # flag is expanded only when present.
 flag=(); [ "$profile" = release ] && flag=(--release)
+out="${CARGO_TARGET_DIR:-target}"
+say "building the web UI"
 run ./scripts/build-web.sh
 if [ "$what" = macos ] || [ "$what" = all ]; then
+    say "building clax for macOS"
     run cargo build -q ${flag[@]+"${flag[@]}"} -p clax-cli
-    place "target/$profile/clax" apps/clax_app/build-native/macos/clax
+    place "$out/$profile/clax" apps/clax_app/build-native/macos/clax
 fi
 if [ "$what" = android ] || [ "$what" = all ]; then
     ndk="${ANDROID_NDK_HOME:-$HOME/Library/Android/sdk/ndk/28.2.13676358}"
@@ -54,9 +62,10 @@ if [ "$what" = android ] || [ "$what" = all ]; then
         # The C sources of rusqlite (bundled SQLite) and ring are compiled by
         # cc-rs, which reads the target's compiler and archiver from these.
         cc_var="CC_$(echo "$triple" | tr '-' '_')"; ar_var="AR_$(echo "$triple" | tr '-' '_')"
+        say "building clax for Android $abi ($triple)"
         run rustup target add "$triple"
         run env "$var=$bin/${triple}29-clang" "$cc_var=$bin/${triple}29-clang" "$ar_var=$bin/llvm-ar" cargo build -q ${flag[@]+"${flag[@]}"} -p clax-cli --target "$triple"
-        run "$bin/llvm-strip" -o "target/$triple/$profile/clax.stripped" "target/$triple/$profile/clax"
-        place "target/$triple/$profile/clax.stripped" "apps/clax_app/android/app/src/main/jniLibs/$abi/libclax.so"
+        run "$bin/llvm-strip" -o "$out/$triple/$profile/clax.stripped" "$out/$triple/$profile/clax"
+        place "$out/$triple/$profile/clax.stripped" "apps/clax_app/android/app/src/main/jniLibs/$abi/libclax.so"
     done
 fi

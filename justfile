@@ -97,7 +97,7 @@ app-eval *ARGS:
 
 # Build the Android clax binaries and the Clax app's release APK, for arm64 and x86_64 only (the ABIs clax is built for); disable-abi-filtering keeps Flutter's Gradle plugin from adding armeabi-v7a back to the app's abiFilters
 app-apk:
-    ./scripts/build-app-clax.sh android && cd apps/clax_app && flutter build apk --release --target-platform android-arm64,android-x64 -P disable-abi-filtering=true
+    ./scripts/build-app-clax.sh android && echo "app-apk: packaging the APK with Gradle" && cd apps/clax_app && flutter build apk --release --target-platform android-arm64,android-x64 -P disable-abi-filtering=true
 
 # Build HEAD's release APK in a clean copy and install it on the plugged-in phone
 app-phone:
