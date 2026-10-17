@@ -386,11 +386,12 @@ there only:
 3. Tell the other surface. While `ask` waits for the answer, the terminal
    shows its pending call; when its result has a `tell_terminal` line
    ("Asked in Clax: <url>"), the question still waits there: write that
-   line in chat. Before asking in chat, post `ask` with `in_terminal:
-   true` (each question's `question` and `header` only, and the place), so
-   Clax shows that you are asking in the terminal; cancel that question
-   (`question_id`, `cancel: true`) once they answer. If the person chooses **Ask me here** in Clax, a delivery tells
-   you they want the question asked in Clax: ask it there with `ask`.
+   line in chat. Before asking in chat, post `ask` with
+   `in_terminal: true` (each question's `question` and `header` only, and
+   the place), so Clax shows that you are asking in the terminal; cancel
+   that question (`question_id`, `cancel: true`) once they answer. If the
+   person chooses **Ask me here** in Clax, a delivery tells you they want
+   the question asked in Clax: ask it there with `ask`.
 4. Keep discussion where it started: answer work a Clax thread started in
    that thread with `comments_reply`, and work started in chat in chat.
 
