@@ -2219,7 +2219,7 @@ async fn racing_publishes_of_a_threads_state_send_in_read_order() {
     // Between its read and its send the first holds the order: a second
     // publish cannot read yet.
     assert!(ts.feedback.states.try_lock().is_err());
-    let vis = clax_core::visibility::Visibility::for_session(&ts.store, &sid).unwrap();
+    let vis = clax_core::store::visibility::Visibility::for_session(&ts.store, &sid).unwrap();
     let q = clax_core::store::feedback::TakeFeedback {
         session_id: sid.clone(),
         tier: Tier::Piggyback,

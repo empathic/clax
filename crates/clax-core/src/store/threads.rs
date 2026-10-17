@@ -13,13 +13,12 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use std::collections::HashMap;
 
 /// Largest accepted clip, in bytes.
-pub const MAX_CLIP_BYTES: usize = 5 * 1024 * 1024;
+pub const MAX_CLIP_BYTES: usize = crate::clips::MAX_BYTES;
 /// Longest accepted comment body, in characters.
 pub const MAX_BODY_CHARS: usize = 10_000;
 /// Threads per page when a caller gives no limit.
 pub const DEFAULT_THREAD_PAGE: usize = 50;
-pub const AUTHOR_VIEWER: &str = "viewer";
-pub const AUTHOR_AGENT: &str = "agent";
+pub use crate::model::{AUTHOR_AGENT, AUTHOR_VIEWER};
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 
 /// A thread to create; its first comment is a viewer comment by `author_name`.
@@ -1033,13 +1032,13 @@ impl Store {
         if self.get_session(sid)?.is_none() {
             return Ok(Vec::new());
         }
-        let vis = crate::visibility::Visibility::for_session(self, sid)?;
+        let vis = crate::store::visibility::Visibility::for_session(self, sid)?;
         Ok(t.comments
             .iter()
             .filter(|c| {
                 c.author_kind == AUTHOR_VIEWER
                     && vis.sees(
-                        &crate::visibility::authors_of_comment(c),
+                        &crate::store::visibility::authors_of_comment(c),
                         &t.artifact_id,
                         Some(tid),
                     )

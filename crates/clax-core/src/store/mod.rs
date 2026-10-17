@@ -70,6 +70,7 @@ pub mod sessions;
 pub mod site;
 pub mod threads;
 pub mod viewers;
+pub mod visibility;
 pub mod watches;
 
 use crate::time::stamp;

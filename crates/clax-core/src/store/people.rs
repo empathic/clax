@@ -3597,10 +3597,10 @@ pub(crate) mod tests {
         let aid = crate::ArtifactId::parse(&a.id).unwrap();
         let v2 = st.get_version(&aid, 2).unwrap().unwrap();
         assert_eq!(
-            crate::visibility::authors_of_version(&v2),
+            crate::store::visibility::authors_of_version(&v2),
             vec![
-                crate::visibility::Author::Owner,
-                crate::visibility::Author::Person(sam.clone().unwrap())
+                crate::store::visibility::Author::Owner,
+                crate::store::visibility::Author::Person(sam.clone().unwrap())
             ]
         );
     }

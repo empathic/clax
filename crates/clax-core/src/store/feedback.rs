@@ -12,7 +12,7 @@ use crate::feedback::{
     Tier, Touched,
 };
 use crate::model::{Artifact, Feedback, Thread, Version};
-use crate::visibility::{self, Author, Reader, Visibility};
+use crate::store::visibility::{self, Author, Reader, Visibility};
 use crate::{ArtifactId, CoreError, Result, new_ulid};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::collections::{BTreeMap, HashMap};
@@ -669,11 +669,11 @@ impl Held {
                         &aid,
                         None,
                     )? {
-                        Some(by) => crate::visibility::placeholder::title_by(&by),
+                        Some(by) => crate::store::visibility::placeholder::title_by(&by),
                         None => a.title.clone(),
                     }
                 }
-                None => crate::visibility::placeholder::title_by(&sight.names(&[])?),
+                None => crate::store::visibility::placeholder::title_by(&sight.names(&[])?),
             };
             let keys: Vec<String> = authors
                 .iter()
@@ -690,7 +690,7 @@ impl Held {
                 &aid,
                 &tid,
                 &keys,
-            )? == crate::visibility::placeholder::ApprovalState::Requested;
+            )? == crate::store::visibility::placeholder::ApprovalState::Requested;
             let author_ids = keys
                 .iter()
                 .filter(|k| crate::is_public_id(k))
@@ -1309,7 +1309,7 @@ impl Store {
                 });
                 if let Some(w) = shown {
                     if w.title.is_some() {
-                        p.title = crate::visibility::placeholder::title_by(
+                        p.title = crate::store::visibility::placeholder::title_by(
                             w.title.as_deref().unwrap_or_default(),
                         );
                     }
@@ -1747,7 +1747,7 @@ impl Store {
                             None,
                         )?
                     {
-                        title = crate::visibility::placeholder::title_by(&by);
+                        title = crate::store::visibility::placeholder::title_by(&by);
                     }
                 }
                 let changed = tx.execute(

@@ -15,10 +15,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// The most bytes a clip download may hold: the most a clip may hold
-/// ([`crate::store::threads::MAX_CLIP_BYTES`]). A client reads at most one
-/// byte more, and refuses a body over it.
-pub const MAX_BYTES: usize = crate::store::threads::MAX_CLIP_BYTES;
+/// The most bytes a clip may hold, which the store accepts and a clip
+/// download may read. A client reads at most one byte more, and refuses a
+/// body over it.
+pub const MAX_BYTES: usize = 5 * 1024 * 1024;
 
 /// The reason a clip fetch that did not finish in time is written with.
 pub const TIMED_OUT: &str = "timed out";
