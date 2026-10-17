@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { approvalCard, item, view } from "./fixtures";
-import { filterFromUrl, filterToUrl, itemText, itemTitle, newestSeq, notificationText } from "./inbox-model";
+import { filterFromUrl, filterToUrl } from "./inbox-filter";
+import { itemText, itemTitle, newestSeq } from "./inbox-model";
+import { notificationText } from "./notify";
 
 describe("inbox model", () => {
   it("titles each kind", () => {

@@ -53,7 +53,7 @@
       <span class="sr">{KIND_NAMES[p.item.kind]}:</span>
     </span>
     <span class="main">
-      <span class="title" id={`irow-${p.item.id}`}>{title}{#if p.item.linked}{" "}<span class={["link-tag", p.item.linked.unlinked && "unlinked"]} title={p.item.linked.unlinked ? `From ${p.item.linked.remote}; no longer linked` : `Linked to ${p.item.linked.remote}`}>{p.item.linked.remote}{p.item.linked.unlinked ? " · unlinked" : ""}</span>{/if}</span>
+      <span class="title" id={`irow-${p.item.id}`}>{title}{#if p.item.linked}{" "}<span class="link-tag" data-unlinked={p.item.linked.unlinked ? "" : undefined} title={p.item.linked.unlinked ? `From ${p.item.linked.remote}; no longer linked` : `Linked to ${p.item.linked.remote}`}>{p.item.linked.remote}{p.item.linked.unlinked ? " · unlinked" : ""}</span>{/if}</span>
       {#if text}<span class="text" data-gone={p.item.gone ? "" : undefined} data-wrap={p.item.kind === "ended" ? "" : undefined}>{text}</span>{/if}
       {#if p.hint}<span class="hint">{p.hint}</span>{/if}
     </span>
@@ -79,7 +79,7 @@
     .irow .main { display: grid; gap: 1px; min-width: 0; }
     .irow .title { overflow-wrap: anywhere; color: var(--muted); }
     .irow .link-tag { display: inline-block; margin-left: 2px; padding: 0 7px; border-radius: 999px; font: 600 11px/17px var(--font); color: var(--muted); background: var(--hover); border: 1px solid var(--border); white-space: nowrap; vertical-align: 1px; }
-    .irow .link-tag.unlinked { font-weight: 500; font-style: italic; }
+    .irow .link-tag[data-unlinked] { font-weight: 500; font-style: italic; }
     .irow[data-unread] .title { color: var(--fg); font-weight: 600; }
     .irow .text { color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .irow .text[data-gone] { font-style: italic; }

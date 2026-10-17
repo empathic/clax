@@ -27,7 +27,6 @@
   import { asPages, pageOfRoute } from "./adapt";
   import Elsewhere from "./Elsewhere.svelte";
   import type { PanelLink } from "./link.svelte";
-  import Merge from "./Merge.svelte";
   import SiteTools from "./SiteTools.svelte";
   import MoveTo from "./MoveTo.svelte";
   import { type Shortcut, offHint, panelHint, readShortcut } from "../shortcut";
@@ -339,8 +338,9 @@
         onSeen={t => link.post({ t: "looked", threadIds: [t.id] })} />
     {/if}
     {#if s.enabled && site}
-      <!-- A run belongs to its site: another site's panel starts afresh, and the run stops. -->
-      {#key site.origin}<Merge {site} request={ask} />{/key}
+      <!-- A run belongs to its site: another site's panel starts afresh, and the run stops.
+           Merging is rare and folded away, so its code is a chunk of its own. -->
+      {#key site.origin}{#await import("./Merge.svelte") then { default: Merge }}<Merge {site} request={ask} />{/await}{/key}
     {/if}
     {#if tabOrigin && site}
       {#key tabOrigin}

@@ -559,7 +559,7 @@ describe("Panel: the site's other pages", () => {
   it("checks and previews a merge pattern, and sends nothing before the person confirms", async () => {
     const l = siteLink();
     const { container } = render(Panel, { props: { link: l as never, now: NOW, store: area() } });
-    const input = screen.getByLabelText("Pattern");
+    const input = await screen.findByLabelText("Pattern");
     await fireEvent.input(input, { target: { value: "/:a/:b" } });
     expect(screen.getByRole("alert").textContent).toMatch(/fixed segment/);
     expect((screen.getByRole("button", { name: "Merge pages" }) as HTMLButtonElement).disabled).toBe(true);
@@ -578,7 +578,7 @@ describe("Panel: the site's other pages", () => {
   it("runs the merge in batches with its progress, and un-merges", async () => {
     const l = siteLink([{ moved: 200, remaining: 3 }, { moved: 3, remaining: 0 }, { moved: 1, remaining: 0 }]);
     render(Panel, { props: { link: l as never, now: NOW, store: area() } });
-    await fireEvent.input(screen.getByLabelText("Pattern"), { target: { value: "/users/:id" } });
+    await fireEvent.input(await screen.findByLabelText("Pattern"), { target: { value: "/users/:id" } });
     await fireEvent.click(screen.getByRole("button", { name: "Merge pages" }));
     await fireEvent.click(screen.getByRole("button", { name: "Yes, merge" }));
     await settle();
@@ -594,7 +594,7 @@ describe("Panel: the site's other pages", () => {
 
   it("says when the worker refuses a pattern to merge", async () => {
     render(Panel, { props: { link: siteLink() as never, now: NOW, store: area() } });
-    await fireEvent.input(screen.getByLabelText("Pattern"), { target: { value: "/docs/*" } });
+    await fireEvent.input(await screen.findByLabelText("Pattern"), { target: { value: "/docs/*" } });
     await fireEvent.click(screen.getByRole("button", { name: "Merge pages" }));
     await fireEvent.click(screen.getByRole("button", { name: "Yes, merge" }));
     await settle();
@@ -607,7 +607,7 @@ describe("Panel: the site's other pages", () => {
   ])("stops a merge whose batch %s, and says how many are left", async (_, steps) => {
     const l = siteLink([...steps, { moved: 1, remaining: 4 }]);
     render(Panel, { props: { link: l as never, now: NOW, store: area() } });
-    await fireEvent.input(screen.getByLabelText("Pattern"), { target: { value: "/users/:id" } });
+    await fireEvent.input(await screen.findByLabelText("Pattern"), { target: { value: "/users/:id" } });
     await fireEvent.click(screen.getByRole("button", { name: "Merge pages" }));
     await fireEvent.click(screen.getByRole("button", { name: "Yes, merge" }));
     await settle();
@@ -620,7 +620,7 @@ describe("Panel: the site's other pages", () => {
     let answer!: (s: { moved: number; remaining: number }) => void;
     const l = { ...siteLink(), request: (m: unknown) => { l.asked.push(m); return new Promise<{ moved: number; remaining: number }>(r => { answer = r; }); } };
     const r = render(Panel, { props: { link: l as never, now: NOW, store: area() } });
-    await fireEvent.input(screen.getByLabelText("Pattern"), { target: { value: "/users/:id" } });
+    await fireEvent.input(await screen.findByLabelText("Pattern"), { target: { value: "/users/:id" } });
     await fireEvent.click(screen.getByRole("button", { name: "Merge pages" }));
     await fireEvent.click(screen.getByRole("button", { name: "Yes, merge" }));
     expect(l.asked).toHaveLength(1);

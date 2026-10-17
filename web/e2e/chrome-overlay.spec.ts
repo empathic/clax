@@ -480,7 +480,8 @@ test("the panel lists the site's other pages, answers and resolves their threads
   expect(await panel.text()).toContain("Home button note");
 
   // Merge the user pages: the preview names both, the rule applies, and both pages' threads are one page's.
-  await panel.eval(`document.querySelector("details.merge").open = true`);
+  // Merging's section is a chunk of its own: open it once it is there.
+  await expect.poll(() => panel.eval<boolean>(`(() => { const d = document.querySelector("details.merge"); if (d) d.open = true; return !!d; })()`)).toBe(true);
   await panel.eval(`(() => { const i = document.querySelector("input[aria-label='Pattern']"); i.value = "/users/:id"; i.dispatchEvent(new Event("input", { bubbles: true })); })()`);
   await expect.poll(() => panel.eval<string[]>(`[...document.querySelectorAll(".paths li")].map(l => l.textContent)`)).toEqual(["/users/1.html", "/users/2.html"]);
   await panel.click(/^ ?Merge pages$/);

@@ -28,7 +28,8 @@
   import { ticker } from "../ui/ticker.svelte";
   import { after } from "../clock";
   import type { InboxFeed, QuestionFeed } from "./feed.svelte";
-  import { INBOX_KINDS, approvalOf, filterFromUrl, filterToUrl, newestSeq } from "./inbox-model";
+  import { approvalOf, newestSeq } from "./inbox-model";
+  import { INBOX_KINDS, filterFromUrl, filterToUrl } from "./inbox-filter";
   import ApprovalCard from "../people/ApprovalCard.svelte";
   import ConnectionCard from "../people/ConnectionCard.svelte";
   import InboxRow from "./InboxRow.svelte";
