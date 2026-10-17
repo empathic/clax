@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 clax-core = { path = "../clax-core" }
 clax-server = { path = "../clax-server" }
+clax-sample = { path = "../clax-sample" }
 clax-fake-exe = { path = "../clax-fake-exe" }
 axum.workspace = true
 futures = "0.3"

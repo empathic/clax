@@ -14,12 +14,6 @@ use crate::auth::RequireToken;
 use crate::error::ApiError;
 use crate::headers::parse_id;
 use crate::identity::Identity;
-use crate::sample::cache::AnswerCache;
-use crate::sample::flight::Done;
-use crate::sample::flight::{self, Flight, Out};
-use crate::sample::request::CachePolicy;
-use crate::sample::request::{self, MAX_TOOL_RESULT_BYTES, SampleBody};
-use crate::sample::{Deliver, ToolOutput};
 use crate::state::AppState;
 use crate::viewer::SameOrigin;
 use axum::Json;
@@ -29,6 +23,12 @@ use axum::http::StatusCode;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use chrono::NaiveDate;
+use clax_sample::cache::AnswerCache;
+use clax_sample::flight::Done;
+use clax_sample::flight::{self, Flight, Out};
+use clax_sample::request::CachePolicy;
+use clax_sample::request::{self, MAX_TOOL_RESULT_BYTES, SampleBody};
+use clax_sample::{Deliver, ToolOutput};
 use futures::{Stream, StreamExt};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -280,7 +280,7 @@ pub async fn daemon(
     _d: DeniedToGrants,
     _t: RequireToken,
 ) -> Json<Value> {
-    use crate::sample::OffReason;
+    use clax_sample::OffReason;
     let (reason, detail) = match s.sample.reason() {
         None => (None, None),
         Some(OffReason::NoKey) => (Some("no_key"), None),

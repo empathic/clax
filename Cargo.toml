@@ -10,6 +10,7 @@ members = [
     "crates/clax-testkit",
     "crates/clax-embedded",
     "crates/clax-commands",
+    "crates/clax-sample",
 ]
 
 [workspace.package]

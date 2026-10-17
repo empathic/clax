@@ -32,7 +32,7 @@ pub fn run(home: &Home, a: ServeArgs) -> anyhow::Result<()> {
             std::env::var_os("CLAX_CODEX_BIN"),
             std::env::var_os("PATH").as_deref(),
         ),
-        sample: Arc::new(clax_server::sample::Sampler::from_home(home.root(), |k| {
+        sample: Arc::new(clax_sample::Sampler::from_home(home.root(), |k| {
             std::env::var(k).ok()
         })),
         web,

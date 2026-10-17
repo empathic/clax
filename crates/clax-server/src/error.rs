@@ -40,6 +40,13 @@ impl ApiError {
     }
 }
 
+/// A sample body the checks refuse is a 400 with the check's code.
+impl From<clax_sample::request::SampleError> for ApiError {
+    fn from(e: clax_sample::request::SampleError) -> Self {
+        ApiError::bad_request(e.code, e.message)
+    }
+}
+
 impl From<CoreError> for ApiError {
     fn from(e: CoreError) -> Self {
         match e {
