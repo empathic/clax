@@ -112,10 +112,10 @@ binary differ.
 
 ## What it adds
 
-- The `clax` MCP server (`clax mcp --agent claude`): twenty-nine tools,
+- The `clax` MCP server (`clax mcp --agent claude`): thirty tools,
   `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `fork`,
   `asset_upload`, `status`, `comments_read`, `comments_reply`,
-  `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, `publish_public`,
+  `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, `where_to_ask`, `publish_public`,
   and the data tools
   `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`,
   `db_str_replace`, `db_batch`.

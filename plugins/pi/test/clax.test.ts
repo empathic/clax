@@ -111,7 +111,7 @@ async function deadHome(): Promise<string> {
 }
 
 describe("clax Pi extension", () => {
-  it("registers the twenty-nine tools with one-line prompt snippets, and the clax command", () => {
+  it("registers the thirty tools with one-line prompt snippets, and the clax command", () => {
     const { pi } = load(daemon.home, "s-tools");
     expect([...pi.tools.keys()].sort()).toEqual([...TOOLS].sort());
     for (const t of pi.tools.values()) {
@@ -522,6 +522,7 @@ describe("clax Pi extension", () => {
         { approval: { url_or_id: id, thread_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W", author: "u_mia" }, timeout_s: 60 },
         { approval_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W" },
       ],
+      clax_where_to_ask: [{}],
       clax_db_get: [{ url_or_id: id, collection: "tasks", doc_id: "t1" }, { url_or_id: id, collection: "tasks", doc_id: "t1", as_level: "view" }],
       clax_db_list: [{ url_or_id: id, collection: "tasks" }, { url_or_id: id, collection: "tasks", query: { limit: 10, cursor: "t1" } }],
       clax_db_query: [{ url_or_id: id, collection: "tasks", query: { where: [["n", ">", 1]], order_by: { field: "n", direction: "desc" }, limit: 5 } }],
@@ -560,6 +561,7 @@ describe("clax Pi extension", () => {
       clax_watch: [{ url_or_id: id, on: "yes" }],
       clax_wait_for_feedback: [{ timeout_s: -1 }, { bogus: 1 }],
       clax_ask: [{ bogus: 1 }, { questions: [] }, { questions: [{ question: "Q" }] }, { questions: [{ question: "Q", header: "H", nope: 1 }] }, { questions: [{ question: "Q", header: "H", options: [{ label: "A", nope: 1 }] }] }, { approval: { thread_id: "x", nope: 1 } }],
+      clax_where_to_ask: [{ bogus: 1 }],
       clax_working: [{ url_or_id: id, done: "yes" }, { url_or_id: id, bogus: 1 }],
       clax_git_remote: [{ url_or_id: id }, { url_or_id: id, scope: "admin" }, { url_or_id: id, scope: "read", bogus: 1 }],
       clax_draft: [{ html: "<p>x</p>" }, { url_or_id: id, bogus: 1 }, { url_or_id: id, done: "yes" }, { url_or_id: id, files: { "a.css": { content: "x", nope: 1 } } }],
@@ -1051,6 +1053,14 @@ describe("comments", () => {
     expect(got.json.call_again).toBe(false);
     expect(pi.sent).toHaveLength(0);
   }, 20_000);
+
+  it("clax_where_to_ask says where to ask, as the daemon suggests it", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-where-to-ask");
+    await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    const r = parts(await pi.callTool("clax_where_to_ask", {}, ctx)).json;
+    expect(r).toMatchObject({ surface: "terminal", confidence: "clear" });
+    expect(r.why).toContain("No Clax tab");
+  });
 
   it("clax_ask asks to call again while no answer came, with late answers apart from its reply", async () => {
     const { pi, ctx } = load(daemon.home, "pi-ask");

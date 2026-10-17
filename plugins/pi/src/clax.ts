@@ -1,6 +1,6 @@
 // Clax for Pi: registers the Pi session with the Clax daemon (the local one,
 // or in remote mode the daemon of the person this machine is connected to)
-// and adds the twenty-nine Clax tools (`clax_publish`, `clax_read`, ...) and
+// and adds the thirty Clax tools (`clax_publish`, `clax_read`, ...) and
 // the `/clax` command. Pi has no MCP support in its extension API, so the
 // tools call the daemon's REST API directly and return the same JSON as the MCP
 // tools. It appends feedback to its tool results and long-polls for pushed
@@ -175,6 +175,8 @@ const AskArgs = Type.Object({
   }, { ...strict, description: "Ask your person to let you see what is withheld from you instead of asking questions: `url_or_id`, and optionally `thread_id` and `author` (the public ID a `withheld` summary names)." })),
   approval_id: opt(str("Keep waiting on an approval you asked for (after `call_again`).")),
 }, strict);
+
+const WhereToAskArgs = Type.Object({}, strict);
 
 const WorkingArgs = Type.Object({
   url_or_id: pageOrId,
@@ -1614,6 +1616,13 @@ class Tools {
     return this.askResult(c, r.question, Number(r.waited_s ?? 0), r.where_to_ask);
   }
 
+  /** Where to ask the person now: the daemon's suggestion (`surface`,
+   * `where`, `confidence`, `why`). */
+  async whereToAsk(ctx: ExtensionContext): Promise<Json> {
+    const c = this.clientFor(ctx);
+    return (await this.call(() => c.whereToAsk())).where_to_ask;
+  }
+
   /** `ask` with `approval` or `approval_id` (spec §9.2): makes (or joins)
    * a request to the session's person for what is withheld there, or keeps
    * waiting on one, and waits for the decision as a question waits for its
@@ -2024,6 +2033,10 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       "Ask the person one to four questions in Clax and wait for the answers (up to `timeout_s`, default 600 s). Each question has a short `header` (at most 12 characters) and two to four `options` (`label`, optional `description`, `preview` text, `recommended`) or none for a free-text answer; `multi_select` allows several; the person may also type an \"Other\" answer. Pass `url_or_id` when the question is about a page, and `thread_id` when it arose in one of its threads, so it shows there. With `in_terminal: true`, sending each question's `question` and `header` only, it asks nothing: it shows the person in Clax that you are asking in the terminal, returns at once, and you cancel it once they answer. If the result says `call_again`, call `ask` again with `question_id`. The answers come back in `reply`, in the person's own words; write the result's `tell_terminal` line in chat. To ask your person to let you see content withheld from you, pass `approval` (`url_or_id`, optional `thread_id`, and `author`, a public ID from the `withheld` summary's `author_ids`) instead of `questions`: the result's `status` is `approved`, `declined` or `open` (then call again with `approval_id`).",
       "Ask the person questions in Clax and wait for their answers",
       AskArgs, (ctx, a) => tools.ask(ctx, a));
+    define("where_to_ask", "Clax where to ask",
+      "Where to ask the person now: `surface` (`clax` or `terminal`), `where` (the narrowest place in Clax: `thread_id`, `artifact_id`), `confidence` (`clear` or `unsure`) and `why`. Read it before you ask anything; ask only on the surface it names, at the place it names, and tell the other surface (in chat, the `tell_terminal` line `ask` returns; in Clax, `ask` with `in_terminal: true`, so Clax shows that you are asking in the terminal). When you know better (the person said where they are), follow that and say why.",
+      "Read where to ask the person now: in Clax or in the terminal",
+      WhereToAskArgs, ctx => tools.whereToAsk(ctx));
 
     // Registered apart from `define` because its result carries its own feedback.
     pi.registerTool({

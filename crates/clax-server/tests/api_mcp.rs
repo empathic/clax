@@ -132,6 +132,7 @@ async fn mcp_lists_the_twenty_six_tools(path: &str) {
             "unpin",
             "wait_for_feedback",
             "watch",
+            "where_to_ask",
             "working"
         ]
     );

@@ -1676,6 +1676,17 @@ impl DaemonClient {
         .await
     }
 
+    /// `GET /api/sessions/<sid>/where-to-ask`: `{where_to_ask, signals}`.
+    pub async fn where_to_ask(&self) -> Result<Value> {
+        self.json(|c| {
+            c.request(
+                reqwest::Method::GET,
+                &format!("{}/where-to-ask", c.session_path()),
+            )
+        })
+        .await
+    }
+
     /// `GET /api/sessions/<sid>/notices?wait=<wait_s>`: `{notices, lines,
     /// waited_s}`; the deadline is `wait_s` plus 10 s. Like `heartbeat`, it
     /// finds a running daemon but never starts one.

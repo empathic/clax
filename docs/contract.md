@@ -14,13 +14,13 @@ The implementation is the authority where the two disagree:
 
 ## Tools
 
-Twenty-nine tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `fork`,
+Thirty tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `fork`,
 `asset_upload`, `status`, the comment tools `comments_read`,
 `comments_reply`, `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working` (see
 "Comments and feedback"), `draft` (an agent's work in progress, shown to
 the people viewing the artifact until it publishes), `git_remote` (a git
 remote and a short-lived token for an artifact's repository, where Clax keeps
-one), `ask` (see "Agent questions"), `publish_public` (see "Publishing to a
+one), `ask` and `where_to_ask` (see "Agent questions"), `publish_public` (see "Publishing to a
 public Clax"), and the data tools `db_get`, `db_list`,
 `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`,
 `db_batch` (see "Runtime capabilities"). The MCP implementation lives in
@@ -42,7 +42,7 @@ public Clax"), and the data tools `db_get`, `db_list`,
   which attributes publishes to no session.
 
 Pi's extension API cannot register an MCP server, so `plugins/pi` implements
-the same twenty-nine tools in TypeScript against the daemon's REST API, with the same
+the same thirty tools in TypeScript against the daemon's REST API, with the same
 arguments and the same result and error JSON.
 
 Names as the model sees them:
@@ -2901,6 +2901,28 @@ ULID, `in_terminal` without `questions`, `thread_id` or `in_terminal` with
 of the artifact), `invalid_id` (`url_or_id` names nothing), `not_found` (no
 such question for this session, or no such artifact), `limit_reached`,
 `no_session` (the daemon's `/mcp`), `unknown_session`, `daemon_unreachable`.
+
+### `where_to_ask`
+
+`where_to_ask` (Pi: `clax_where_to_ask`) takes no arguments and returns the
+session's suggestion of where to ask its person now: the `where_to_ask` of
+`GET /api/sessions/<sid>/where-to-ask` (above), without its `signals`.
+
+```json
+{"surface": "clax", "where": {"thread_id": "01J8…", "artifact_id": "km6tssskwd1e"},
+ "confidence": "clear", "why": "…"}
+```
+
+The agent reads it before it asks anything, asks only on the surface and at
+the place it names, and tells the other surface: in chat, the `tell_terminal`
+line `ask` returns; in Clax, `ask` with `in_terminal: true`, so Clax shows
+that it is asking in the terminal. `why` is a sentence for the agent; when
+the agent knows better (the person said where they are), it follows that
+and says why. This is the session's person's engagement across the terminal
+and Clax, not the per-artifact viewer attention of "Versions, seen marks
+and attention" (`GET /api/viewers/me/attention`). Errors besides the common
+ones: `no_session` (the daemon's `/mcp`), `unknown_session`,
+`daemon_unreachable`.
 
 ### Mirroring `AskUserQuestion` (Claude Code)
 

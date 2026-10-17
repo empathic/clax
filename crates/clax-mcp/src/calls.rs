@@ -243,7 +243,7 @@ mod tests {
     #[test]
     fn every_tool_that_changes_history_captures_git() {
         let tools = crate::ClaxTools::tools();
-        assert_eq!(tools.len(), 29);
+        assert_eq!(tools.len(), 30);
         for t in &tools {
             let name = t.name.as_ref();
             let read_only = t

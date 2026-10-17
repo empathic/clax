@@ -810,6 +810,11 @@ export class DaemonClient {
     return this.json(() => `${this.sessionPath()}/questions/${qid}/withdraw`, this.jsonBody("POST", {}));
   }
 
+  /** `GET /api/sessions/<sid>/where-to-ask`: `{where_to_ask, signals}`. */
+  whereToAsk(): Promise<any> {
+    return this.json(() => `${this.sessionPath()}/where-to-ask`, { method: "GET" });
+  }
+
   /** `GET /api/sessions/<sid>/feedback` for `tier`, waiting up to `waitS`
    * seconds (`artifact` narrows it to one artifact): `{feedback, text,
    * waited_s}`. The deadline is `waitS` plus 10 s; `signal` cancels it. */
