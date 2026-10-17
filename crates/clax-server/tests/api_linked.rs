@@ -670,21 +670,20 @@ async fn an_outage_queues_marks_rows_not_sent_at_the_cap_then_drains_in_order() 
         (ts.len() == 1 && bodies(&ts[0]) == ["before", "one", "two"]).then_some(())
     })
     .await;
-    let (_, links) = p
-        .local_req(
-            reqwest::Method::GET,
-            &format!("/api/artifacts/{}/remotes", p.aid),
-            json!(null),
-            None,
-        )
-        .await;
-    assert_eq!(
-        (
-            links["links"][0]["pending"].clone(),
-            links["links"][0]["failed"].clone()
-        ),
-        (json!(0), json!(0))
-    );
+    // The remote shows a row before the sync records its answer here: the
+    // link counts it pending until then.
+    until("the rows are acknowledged here", || async {
+        let (_, links) = p
+            .local_req(
+                reqwest::Method::GET,
+                &format!("/api/artifacts/{}/remotes", p.aid),
+                json!(null),
+                None,
+            )
+            .await;
+        (links["links"][0]["pending"] == 0 && links["links"][0]["failed"] == 0).then_some(())
+    })
+    .await;
 }
 
 #[tokio::test]
