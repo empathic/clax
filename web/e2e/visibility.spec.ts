@@ -107,12 +107,21 @@ test("Mia's comment to Sam's agent waits for Sam's approval, which only those co
     await expect.poll(() => sam!.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBe(0);
     await sam.page.screenshot({ path: test.info().outputPath("sam-approval-phone.png") });
     await sam.page.setViewportSize({ width: 1280, height: 800 });
+    // The decided card says so only until the thread's next change, which
+    // removes it: the request's own status is read instead.
+    const rid = (await above.getAttribute("data-approval"))!;
     await above.getByRole("button", { name: "Allow this thread, including later replies" }).click();
-    await expect(above.locator(".outcome")).toHaveText("Allowed in this thread");
+    await expect.poll(() => sam!.page.evaluate(async r => {
+      const b = await (await fetch("/api/approvals/requests?status=all")).json() as { requests: { id: string; status: string; scope: string | null }[] };
+      const q = b.requests.find(x => x.id === r);
+      return q && `${q.status} ${q.scope}`;
+    }, rid)).toBe("approved thread");
 
-    // Sam's agent reads Mia's comment; her thread no longer waits.
+    // Sam's agent reads Mia's comment; her thread no longer waits, and the
+    // decided card has left the thread.
     await expect.poll(() => agent!.waitBriefly()).toContain("The goals need a Q4 column.");
     await expect(miasCard).not.toContainText("waiting for Sam's approval");
+    await expect(sam.page.locator(".thread-approval .acard")).toHaveCount(0);
   } finally {
     agent?.stop();
     await ownerCtx.close();
