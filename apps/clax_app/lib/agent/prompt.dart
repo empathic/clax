@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/services.dart';
 
+import 'failure.dart' show planAfterStops, timesWords;
 import 'plan.dart';
 import 'request.dart';
 import 'tools/kit_tool.dart' show kitApiSection;
@@ -16,19 +17,25 @@ typedef AppDocument = ({String path, int version, Map<String, Object?> data});
 typedef AppCollection = ({String path, int count, List<AppDocument> docs});
 
 /// What a Keep going run's first message says about the run it goes on
-/// from: the [limit] it stopped at, the agent's [notes] over every earlier
+/// from: the [limit] it stopped at, how many runs stopped ([stops]; from
+/// [planAfterStops] on, the run plans what is left instead of building
+/// it), the agent's [notes] over every earlier
 /// run of the change (oldest first), and the paths
 /// the draft already holds its unfinished edits to ([edited]); or, with
 /// [edited] null, [why] the run starts over from the app instead.
 class KeepGoingNote {
   const KeepGoingNote({
     required this.limit,
+    this.stops = 1,
     required this.notes,
     this.edited,
     this.why,
   });
 
   final String limit;
+
+  /// How many runs of the change stopped at a limit.
+  final int stops;
   final List<String> notes;
   final List<String>? edited;
   final String? why;
@@ -278,19 +285,35 @@ class PromptBuilder {
         ..writeln(jsonEncode(answers));
     }
     if (keepGoing != null) _writeKeepGoing(b, keepGoing);
-    b
-      ..writeln()
-      ..writeln(
-        'First decide whether this change fits one run (a few edits, one '
-        'or two renders). When it is big (a new screen or several new '
-        'features, or more than a few files of new work for an app this '
-        'size), do not build it now: plan_set the plan with every feature '
-        'already in it kept as it is and the new work added as two to five '
-        'todo features, then finish with no edits and a reply saying it is '
-        'planned and will be built in steps. Otherwise make the edits that '
-        'do it, test what you changed and render it; fix what the render or '
-        'the tests show is broken; then finish.',
-      );
+    if (keepGoing != null && keepGoing.stops >= planAfterStops) {
+      b
+        ..writeln()
+        ..writeln(
+          'This change has stopped at its limit '
+          '${timesWords(keepGoing.stops)}: it is too big for a change run, so '
+          'do not try to finish it here. First plan_set the plan with every '
+          'feature already in it kept as it is and the work that is left '
+          'added as two to five todo features, each detail saying what the '
+          'draft already holds of it; the build then builds them in its own '
+          'runs. Then render the draft, fix what the render shows is broken, '
+          'and finish with it once it renders clean (resolve false), saying '
+          'in reply that the rest is planned and will be built in steps.',
+        );
+    } else {
+      b
+        ..writeln()
+        ..writeln(
+          'First decide whether this change fits one run (a few edits, one '
+          'or two renders). When it is big (a new screen or several new '
+          'features, or more than a few files of new work for an app this '
+          'size), do not build it now: plan_set the plan with every feature '
+          'already in it kept as it is and the new work added as two to five '
+          'todo features, then finish with no edits and a reply saying it is '
+          'planned and will be built in steps. Otherwise make the edits that '
+          'do it, test what you changed and render it; fix what the render or '
+          'the tests show is broken; then finish.',
+        );
+    }
     final clip = comments.isEmpty ? null : comments.first.clip;
     return [
       if (clip != null)
@@ -310,9 +333,9 @@ class PromptBuilder {
     b
       ..writeln()
       ..writeln(
-        'Keep going: an earlier run of this change stopped at its limit '
-        '(${k.limit}) before it finished, and the person asked it to keep '
-        'going.',
+        'Keep going: this change has stopped at its limit '
+        '${timesWords(k.stops)} (last at ${k.limit}) before it finished, and '
+        'the person asked it to keep going.',
       );
     if (k.edited case final paths?) {
       b.writeln(
