@@ -246,7 +246,7 @@ impl TestServer {
                 clax_http::agent::TokioTimer::default(),
             ))),
             vis_gen,
-            test_delays: true,
+            test_daemon: true,
             // The checkout's web UI; tests of the shell serve their own
             // with `spawn_with_web`.
             web: web_ui(),

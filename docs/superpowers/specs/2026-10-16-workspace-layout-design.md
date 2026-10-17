@@ -463,7 +463,7 @@ feature, its gate (`src/lib.rs:29`) and the optional dependencies go.
 
 The three routes and the delay middleware compile under `debug_assertions`,
 as the other 25 `/api/_test/` routes do. The delay middleware is added to
-each route group only when `AppState::test_delays` is set: a runtime field,
+each route group only when `AppState::test_daemon` is set: a runtime field,
 `false` in `serve`, set by the testkit's `TestServer`. A `just watch` or
 `just dev` daemon then serves the test routes (as it already serves the
 others, behind their extractors' checks) but never honours
@@ -510,7 +510,7 @@ qualifier record moves of §6.2 in the commit after it.
    `clax-core` gains `nix`'s `signal` feature.
 3. **`clax-testkit`, and no test features.** Create the crate (§5.1); move
    the people fixture and clients harness; `test-routes` to
-   `debug_assertions` with `test_delays` (§5.2); drop `[features]`; the
+   `debug_assertions` with `test_daemon` (§5.2); drop `[features]`; the
    derivation check and `cargo.bzl` cleanup (§5.4); drop the second clippy
    gate. Update `docs/bazel.md` "Targets" and "Gate for gate". This step
    alone removes the 31.7 s variant.
@@ -724,7 +724,7 @@ unless the closing session wrote the record (§9, question 4).
    accept; the alternative is a router hook (§8, alternative 4).
    **Decided:** "Debug builds serve them": the three routes are under
    `debug_assertions`, the delay header is honoured only where the testkit
-   turns it on (`AppState::test_delays`), no test features remain, and the
+   turns it on (`AppState::test_daemon`), no test features remain, and the
    Bazel derivation refuses one.
 6. **`clax-commands` opens the store directly** (`doctor`, `init`'s
    credential revoke), so it depends on `clax-store` and is rebuilt by
@@ -822,3 +822,12 @@ migration decided as follows.
   rule (`scripts/check-crate-layers.py`). Dev-dependencies are not checked
   by it: tests reach the support crates and the crates they drive, and the
   derivation already refuses features turned on there.
+- **The debug test routes that hold a request or a store worker take the
+  owner's token** (`RequireToken`, beside `DeniedToGrants`) and sleep at
+  most 60 s (`TEST_SLEEP_MAX_MS`): `GET /api/_test/sleep/{ms}` and `POST
+  /api/_test/slow_publish/{ms}`. A cross-site request to a `just dev`
+  daemon could otherwise make artifacts and hold the store's workers.
+  `GET /api/_test/audit/ctx` must answer every caller (a cookie, a LAN
+  viewer, an agent), so it takes no token and only the testkit's daemon
+  serves it: `AppState::test_daemon` (named `test_delays` above, renamed
+  when it came to gate that route too).
