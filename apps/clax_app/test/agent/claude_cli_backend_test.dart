@@ -9,9 +9,10 @@ import 'package:clax_app/agent/edit_schema.dart';
 import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/agent/request.dart';
 import 'package:flutter_test/flutter_test.dart';
+import '../support/paths.dart';
 
 /// The fixture standing in for `claude`, run through `/bin/sh`.
-final fixture = File('test/fixtures/fake-claude.sh').absolute.path;
+final fixture = File(appPath('test/fixtures/fake-claude.sh')).absolute.path;
 
 Map<String, Object?> resultJson() => {
   'reply': 'Made a run tracker.',

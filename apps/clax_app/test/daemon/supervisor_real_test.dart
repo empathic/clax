@@ -6,11 +6,12 @@ import 'package:clax_app/daemon/ports.dart';
 import 'package:clax_app/daemon/process.dart';
 import 'package:clax_app/daemon/supervisor.dart';
 import 'package:flutter_test/flutter_test.dart';
+import '../support/paths.dart';
 
 /// The supervisor against the real debug `clax` named by `CLAX_TEST_BIN`
 /// (`tool/test-bin.sh` prints one), with a scratch home.
 void main() {
-  final bin = Platform.environment['CLAX_TEST_BIN'];
+  final bin = claxTestBin();
 
   test(
     'starts the real daemon, restarts it after SIGKILL on the same port, and stops it',

@@ -14,12 +14,13 @@ import 'package:flutter_test/flutter_test.dart';
 import '../../support/fake_inspector.dart';
 import '../../support/real_daemon.dart';
 import 'support.dart';
+import '../../support/paths.dart';
 
 /// The render tool against the real debug `clax` named by `CLAX_TEST_BIN`
 /// (`tool/test-bin.sh` prints one): the draft publishes the daemon takes
 /// and the document merge it applies.
 void main() {
-  final bin = Platform.environment['CLAX_TEST_BIN'];
+  final bin = claxTestBin();
 
   test(
     'renders after a delete, a title change and an app.js change are '

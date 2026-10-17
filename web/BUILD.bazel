@@ -166,11 +166,15 @@ filegroup(
     visibility = ["//crates:__subpackages__"],
 )
 
-# The contract files clax-server embeds (src/shell/mod.rs).
+# The contract files clax-server embeds (src/shell/mod.rs), and the Clax
+# app's prompt test compares with its copies.
 filegroup(
     name = "contract_files",
     srcs = glob(["contract/**"], exclude = ["**/.qual"]),
-    visibility = ["//crates:__subpackages__"],
+    visibility = [
+        "//apps/clax_app:__pkg__",
+        "//crates:__subpackages__",
+    ],
 )
 
 # What the unit tests and the typecheck read outside web/ (the browser

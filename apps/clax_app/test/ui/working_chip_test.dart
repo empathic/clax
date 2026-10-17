@@ -488,6 +488,9 @@ Uint8List? _screenshot;
 /// Flutter's Roboto and Material Icons, so renders look as on a phone.
 Future<void> _loadFonts() async {
   final root = Platform.environment['FLUTTER_ROOT'];
+  // The renders are drawn with the test's own fonts where the SDK's are not
+  // at hand (a Bazel test has no FLUTTER_ROOT).
+  if (root == null) return;
   final dir = '$root/bin/cache/artifacts/material_fonts';
   Future<void> load(String family, List<String> files) async {
     final l = FontLoader(family);

@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:clax_app/agent/icon_svg.dart';
 import 'package:flutter_test/flutter_test.dart';
+import '../support/paths.dart';
 
 const _ok =
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">'
@@ -19,7 +20,7 @@ void main() {
   group('iconProblem', () {
     test('passes a plain square icon and every sample fixture', () {
       expect(iconProblem(_ok), isNull);
-      for (final f in Directory('test/fixtures/icons').listSync()) {
+      for (final f in Directory(appPath('test/fixtures/icons')).listSync()) {
         expect(
           iconProblem(File(f.path).readAsStringSync()),
           isNull,

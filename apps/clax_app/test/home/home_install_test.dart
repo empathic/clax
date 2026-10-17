@@ -7,6 +7,7 @@ import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/home/home_install.dart';
 import 'package:clax_app/home/home_settings.dart';
 import 'package:flutter_test/flutter_test.dart';
+import '../support/paths.dart';
 
 /// The shipped bundle and release record, read from the asset files.
 class _FileShipped implements ShippedHome {
@@ -18,13 +19,13 @@ class _FileShipped implements ShippedHome {
   @override
   Future<Uint8List> bundle() async {
     reads++;
-    return File(AssetShippedHome.bundlePath).readAsBytesSync();
+    return File(appPath(AssetShippedHome.bundlePath)).readAsBytesSync();
   }
 
   @override
   Future<HomeRelease> release() async {
     final r = HomeRelease.parse(
-      File(AssetShippedHome.releasePath).readAsStringSync(),
+      File(appPath(AssetShippedHome.releasePath)).readAsStringSync(),
     );
     return edit?.call(r) ?? r;
   }

@@ -14,18 +14,19 @@ import 'dart:io';
 
 import 'package:clax_app/bundle/bundle_reader.dart';
 import 'package:flutter_test/flutter_test.dart';
+import '../support/paths.dart';
 
 void main() {
   final manifest = jsonDecode(
-    File('home/manifest.json').readAsStringSync(),
+    File(appPath('home/manifest.json')).readAsStringSync(),
   ) as Map<String, Object?>;
   final release = jsonDecode(
-    File('assets/home/release.json').readAsStringSync(),
+    File(appPath('assets/home/release.json')).readAsStringSync(),
   ) as Map<String, Object?>;
   final kit = (manifest['kit'] as List).cast<String>();
 
   Future<Bundle> shipped() async =>
-      BundleReader.read(File('assets/home/home.clax').readAsBytesSync());
+      BundleReader.read(File(appPath('assets/home/home.clax')).readAsBytesSync());
 
   test(
     'home.clax verifies and carries the manifest it was packed from',
@@ -49,7 +50,7 @@ void main() {
       'manifest names', () async {
     final b = await shipped();
     final want = <String, List<int>>{};
-    final source = Directory('home');
+    final source = Directory(appPath('home'));
     for (final e in source.listSync(recursive: true)) {
       if (e is! File) continue;
       final path = e.path.substring(source.path.length + 1);
@@ -82,7 +83,7 @@ void main() {
     final b = await shipped();
     final drifted = [
       for (final n in kit)
-        if (!_same(b.files['kit/$n'], File('assets/kit/$n').readAsBytesSync()))
+        if (!_same(b.files['kit/$n'], File(appPath('assets/kit/$n')).readAsBytesSync()))
           n,
     ];
     if (drifted.isNotEmpty) {

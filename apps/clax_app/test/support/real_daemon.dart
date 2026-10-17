@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:clax_app/daemon/supervisor.dart' show DaemonEndpoint;
 import 'package:flutter_test/flutter_test.dart';
+import 'paths.dart';
 
 /// A real debug `clax` (the binary `CLAX_TEST_BIN` names) this test
 /// started on a free port with a scratch home under the repository's
@@ -17,9 +18,7 @@ class RealDaemon {
   final DaemonEndpoint endpoint;
 
   static Future<RealDaemon> start(String bin) async {
-    final scratch = Directory(
-      '${Directory.current.path}/../../target/flutter-app',
-    )..createSync(recursive: true);
+    final scratch = scratchRoot();
     final dir = scratch.createTempSync('clax-real-');
     addTearDown(() {
       if (dir.existsSync()) dir.deleteSync(recursive: true);

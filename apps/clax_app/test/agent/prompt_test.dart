@@ -10,6 +10,7 @@ import 'package:clax_app/agent/tools/kit_tool.dart' show kitApiSection;
 import 'package:clax_app/agent/tools/tool_spec.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import '../support/paths.dart';
 
 typedef Coll = ({String path, int count, List<Map<String, Object?>> samples});
 
@@ -46,8 +47,8 @@ void main() {
         final ownMd = await rootBundle.loadString(
           'assets/prompt/single-call.md',
         );
-        final dbTypes = File('assets/prompt/db.d.ts').readAsStringSync();
-        final extTypes = File('assets/prompt/clax-extensions.d.ts')
+        final dbTypes = File(appPath('assets/prompt/db.d.ts')).readAsStringSync();
+        final extTypes = File(appPath('assets/prompt/clax-extensions.d.ts'))
             .readAsStringSync();
 
         expect(system, startsWith(ownMd.trim()));
@@ -83,12 +84,12 @@ void main() {
       // The gate's `scripts/sync-app-prompt.sh --check` proves this byte for
       // byte; this guards the d.ts copies from inside the test suite.
       expect(
-        File('assets/prompt/db.d.ts').readAsStringSync(),
-        File('../../web/contract/0.2.61/db.d.ts').readAsStringSync(),
+        File(appPath('assets/prompt/db.d.ts')).readAsStringSync(),
+        File(appPath('../../web/contract/0.2.61/db.d.ts')).readAsStringSync(),
       );
       expect(
-        File('assets/prompt/clax-extensions.d.ts').readAsStringSync(),
-        File('../../web/contract/clax-extensions.d.ts').readAsStringSync(),
+        File(appPath('assets/prompt/clax-extensions.d.ts')).readAsStringSync(),
+        File(appPath('../../web/contract/clax-extensions.d.ts')).readAsStringSync(),
       );
     });
   });

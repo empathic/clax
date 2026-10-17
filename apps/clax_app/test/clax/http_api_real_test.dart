@@ -8,13 +8,14 @@ import 'package:clax_app/clax/http_api.dart';
 import 'package:clax_app/daemon/supervisor.dart' show DaemonEndpoint, keyCookie;
 import 'package:cryptography/dart.dart' show DartSha256;
 import 'package:flutter_test/flutter_test.dart';
+import '../support/paths.dart';
 
 /// [HttpClaxApi] against the real debug `clax` named by `CLAX_TEST_BIN`
 /// (`tool/test-bin.sh` prints one), started on a free port with a scratch
 /// home under the repository's `target/flutter-app/`, and stopped by its
 /// PID in a tear-down, which runs on a failure or a timeout too.
 void main() {
-  final bin = Platform.environment['CLAX_TEST_BIN'];
+  final bin = claxTestBin();
   _lockedTest(bin);
   _entriesTest(bin);
 
@@ -611,9 +612,7 @@ class _Daemon {
     String bin, {
     bool requireCredential = false,
   }) async {
-    final scratch = Directory(
-      '${Directory.current.path}/../../target/flutter-app',
-    )..createSync(recursive: true);
+    final scratch = scratchRoot();
     final dir = scratch.createTempSync('clax-api-real-');
     addTearDown(() {
       if (dir.existsSync()) dir.deleteSync(recursive: true);

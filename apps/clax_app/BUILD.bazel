@@ -3,6 +3,9 @@
 # as js_library targets so rules_js copies them beside the tests.
 
 load("@aspect_rules_js//js:defs.bzl", "js_library")
+load("@rules_dart//dart:defs.bzl", "dart_analysis_config", "dart_analysis_options")
+load("@rules_flutter//flutter:defs.bzl", "flutter_library", "flutter_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 js_library(
     name = "kit",
@@ -20,4 +23,115 @@ js_library(
         exclude = ["**/.qual"],
     ),
     visibility = ["//web:__pkg__"],
+)
+exports_files(["pubspec.lock"])
+
+# `flutter analyze`'s rules for the app's Dart targets (the dart_analyze
+# aspect .bazelrc applies to every test run).
+dart_analysis_options(
+    name = "analysis_options",
+    src = "analysis_options.yaml",
+    deps = ["@clax_app_pub//:flutter_lints"],
+)
+
+dart_analysis_config(
+    name = "analysis_config",
+    options = [":analysis_options"],
+    visibility = ["//visibility:public"],
+)
+
+flutter_library(
+    name = "clax_app",
+    package_name = "clax_app",
+    srcs = glob(["lib/**/*.dart"]),
+    deps = [
+        "@clax_app_pub//:archive",
+        "@clax_app_pub//:cryptography",
+        "@clax_app_pub//:file_picker",
+        "@clax_app_pub//:flutter",
+        "@clax_app_pub//:flutter_local_notifications",
+        "@clax_app_pub//:flutter_secure_storage",
+        "@clax_app_pub//:flutter_svg",
+        "@clax_app_pub//:flutter_timezone",
+        "@clax_app_pub//:geolocator",
+        "@clax_app_pub//:image_picker",
+        "@clax_app_pub//:path_provider",
+        "@clax_app_pub//:share_plus",
+        "@clax_app_pub//:speech_to_text",
+        "@clax_app_pub//:timezone",
+        "@clax_app_pub//:webview_flutter",
+        "@clax_app_pub//:xml",
+    ],
+)
+
+# The app's unit and widget tests (`flutter test`), a target per file, each
+# against the app's sources and the files its tests read. Those that run
+# the real daemon (*_real_test.dart) get the warmed debug clax.
+TEST_SUPPORT = glob(
+    [
+        "test/**/*.dart",
+        "tool/**/*.dart",
+    ],
+    exclude = ["test/**/*_test.dart"],
+) + [
+    # Test files other tests import for their fakes.
+    "test/platform/background_work_test.dart",
+    "test/platform/device/device_host_test.dart",
+    "test/ui/build_view_test.dart",
+    "test/ui/bundle_flows_test.dart",
+]
+
+TEST_DATA = glob(
+    [
+        "assets/**",
+        "home/**",
+        "test/fixtures/**",
+        "tool/eval/prompts.json",
+    ],
+    exclude = ["**/.qual"],
+) + [
+    "pubspec.yaml",
+    "//web:contract_files",
+]
+
+[flutter_test(
+    name = test[len("test/"):-len(".dart")].replace("/", "_"),
+    size = "medium",
+    package_name = "clax_app",
+    srcs = TEST_SUPPORT,
+    assets = glob(
+        [
+            "assets/home/**",
+            "assets/kit/**",
+            "assets/prompt/**",
+        ],
+        exclude = ["**/.qual"],
+    ),
+    data = TEST_DATA + ([
+        "//crates/clax-cli:clax",
+        "//crates/clax-cli:clax_warm",
+    ] if test.endswith("_real_test.dart") else []),
+    # UNIT_TEST_ASSETS and APP_NAME, as `flutter test` sets them:
+    # flutter_test then reads an asset from disk at once, where through the
+    # engine the read would not finish within a test's fake time.
+    env = {
+        "APP_NAME": "clax_app",
+        "UNIT_TEST_ASSETS": "apps/clax_app/%s_flutter_assets" % test[len("test/"):-len(".dart")].replace("/", "_"),
+    } | ({"CLAX_TEST_BIN": "crates/clax-cli/clax"} if test.endswith("_real_test.dart") else {}),
+    main = test,
+    deps = [
+        ":clax_app",
+        "@clax_app_pub//:flutter_test",
+    ],
+) for test in glob(["test/**/*_test.dart"])]
+
+# The prompt's copies of the contract match it (scripts/sync-app-prompt.sh).
+sh_test(
+    name = "prompt_sync",
+    srcs = ["//scripts:sync-app-prompt.sh"],
+    args = ["--check"],
+    data = glob(["assets/prompt/**"]) + [
+        "//docs:contract",
+        "//web:contract_files",
+    ],
 )

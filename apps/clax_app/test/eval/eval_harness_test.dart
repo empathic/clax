@@ -21,8 +21,9 @@ import '../../tool/eval/eval_config.dart';
 import '../agent/loop_support.dart' show until;
 import '../agent/tools/support.dart' show StepClock;
 import '../support/fake_inspector.dart';
+import '../support/paths.dart';
 
-const _promptFile = 'tool/eval/prompts.json';
+final _promptFile = appPath('tool/eval/prompts.json');
 
 Map<String, Object?> _f(String id, String title) => {
   'id': id,

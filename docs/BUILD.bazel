@@ -3,7 +3,10 @@
 filegroup(
     name = "contract",
     srcs = ["contract.md"],
-    visibility = ["//crates:__subpackages__"],
+    visibility = [
+        "//apps/clax_app:__pkg__",
+        "//crates:__subpackages__",
+    ],
 )
 
 # The docs the release script test checks (scripts/test-release.files).

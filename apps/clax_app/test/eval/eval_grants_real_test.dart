@@ -9,10 +9,11 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../../tool/eval/build_eval.dart';
 import '../support/real_daemon.dart';
+import '../support/paths.dart';
 
 void main() {
   group('grants', () {
-    final bin = Platform.environment['CLAX_TEST_BIN'];
+    final bin = claxTestBin();
     test(
       'the published app gets its declared net hosts and AI from the '
       'daemon',

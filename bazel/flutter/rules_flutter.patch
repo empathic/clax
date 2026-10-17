@@ -1,0 +1,24 @@
+diff --git a/flutter/private/flutter_asset_bundle.bzl b/flutter/private/flutter_asset_bundle.bzl
+--- a/flutter/private/flutter_asset_bundle.bzl
++++ b/flutter/private/flutter_asset_bundle.bzl
+@@ -125,9 +125,17 @@ def flutter_asset_bundle_action(
+     asset_paths = []
+     copies = {}
+     for f in assets:
+-        # Use short_path as the logical key inside flutter_assets/.
+-        asset_paths.append(f.short_path)
+-        copies[f.short_path] = f.path
++        # Use short_path as the logical key inside flutter_assets/, relative
++        # to the package of the target bundling it, where its pubspec.yaml
++        # names it: an app below the workspace root (apps/clax_app) lists
++        # `assets/kit/`, not `apps/clax_app/assets/kit/` (a patch Clax keeps:
++        # bazel/flutter/rules_flutter.patch).
++        key = f.short_path
++        prefix = ctx.label.package + "/" if ctx.label.package else ""
++        if prefix and key.startswith(prefix) and not f.owner.workspace_name:
++            key = key[len(prefix):]
++        asset_paths.append(key)
++        copies[key] = f.path
+ 
+     # Add extra copies with custom destination paths.
+     extra_files = []

@@ -6,9 +6,10 @@ import 'package:clax_app/agent/tools/toolbox.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'support.dart';
+import '../../support/paths.dart';
 
 /// Reads the kit from the package's own `assets/kit/` on disk.
-Future<String> _diskKit(String name) => File('assets/kit/$name').readAsString();
+Future<String> _diskKit(String name) => File(appPath('assets/kit/$name')).readAsString();
 
 Map<String, Object?> _ok(ToolOutput r) {
   expect(r, isA<ToolOk>());
@@ -119,14 +120,14 @@ void main() {
   );
 
   test('every kit file is a bundled asset', () async {
-    final pubspec = File('pubspec.yaml').readAsStringSync();
+    final pubspec = File(appPath('pubspec.yaml')).readAsStringSync();
     expect(pubspec, contains('- assets/kit/'));
     final tb = toolboxWith(extra: [AddKitTool(load: _diskKit)]);
     final r = _ok(await tb.call('add_kit', {'parts': kitParts.keys.toList()}));
     expect((r['files']! as List).length, 9);
     // Each export of kit.js and chart.js is named in the API text.
     for (final file in ['kit.js', 'chart.js', 'map.js', 'fake-home.js']) {
-      final src = File('assets/kit/$file').readAsStringSync();
+      final src = File(appPath('assets/kit/$file')).readAsStringSync();
       final exports = RegExp(
         r'^export (?:async )?(?:function|const|let) (\w+)',
         multiLine: true,
@@ -141,7 +142,7 @@ void main() {
       }
     }
     // Each icon name the result lists is one icons.js exports.
-    final icons = File('assets/kit/icons.js').readAsStringSync();
+    final icons = File(appPath('assets/kit/icons.js')).readAsStringSync();
     final api = r['api']! as String;
     final listed = RegExp(r'Icon names \(.*?\): ([\w ]+)\.')
         .firstMatch(api)!

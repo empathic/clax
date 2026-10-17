@@ -153,3 +153,24 @@ use_repo(npm, "npm_pi", "npm_web")
 # (bazel/playwright/repo.bzl).
 playwright = use_extension("//bazel/playwright:repo.bzl", "playwright")
 use_repo(playwright, "chromium")
+
+# The Clax app (apps/clax_app): rules_flutter fetches the Flutter SDK and
+# engine it pins, and each pub package from the app's pubspec.lock by its
+# checksum (docs/bazel.md, "The Clax app").
+bazel_dep(name = "rules_flutter", version = "0.0.6")
+bazel_dep(name = "rules_dart", version = "0.7.3")
+single_version_override(
+    module_name = "rules_flutter",
+    patch_strip = 1,
+    patches = ["//bazel/flutter:rules_flutter.patch"],
+)
+
+flutter = use_extension("@rules_flutter//flutter:extensions.bzl", "flutter")
+flutter.toolchain(flutter_version = "3.47.7")
+flutter.pub(
+    name = "clax_app_pub",
+    lock = "//apps/clax_app:pubspec.lock",
+)
+use_repo(flutter, "clax_app_pub", "flutter_toolchains")
+
+register_toolchains("@flutter_toolchains//:all")

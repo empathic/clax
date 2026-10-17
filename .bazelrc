@@ -12,6 +12,11 @@ startup --host_jvm_args=-Xmx3g
 # unless told not to.
 common --repo_env=DO_NOT_TRACK=1
 
+# rules_flutter's Java tools (rules_jvm_external, rules_android) are compiled
+# for Java 21 and later; Bazel's own tool JDK is older.
+common --tool_java_language_version=25
+common --tool_java_runtime_version=remotejdk_25
+
 # Actions see a fixed environment, so their results can be shared.
 build --incompatible_strict_action_env
 
@@ -40,6 +45,13 @@ test --test_env=CLAX_PORT=
 test --test_env=PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
 test --test_output=errors
+
+# `dart analyze` over the Clax app's Dart targets in every test run, as
+# `flutter analyze` (apps/clax_app/analysis_options.yaml); a diagnostic is a
+# build failure.
+test --aspects=@rules_dart//dart:analyze.bzl%dart_analyze
+test --output_groups=+dart_analyze
+common --@rules_dart//dart:analysis_config=//apps/clax_app:analysis_config
 
 # --config=clippy: lint instead of only compiling, as `cargo clippy
 # --all-targets -- -D warnings` does. A lint is a build failure.

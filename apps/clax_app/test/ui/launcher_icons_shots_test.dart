@@ -16,6 +16,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/fake_voice.dart';
+import '../support/paths.dart';
 
 final _on = Platform.environment['CLAX_X4_SHOTS'] == '1';
 // Goldens resolve from this file.
@@ -78,7 +79,7 @@ void main() {
         for (final e in _apps.entries) {
           api.seedArtifact(e.key, {
             'index.html': '<p>x</p>',
-            'icon.svg': File('test/fixtures/icons/${e.value}.svg')
+            'icon.svg': File(appPath('test/fixtures/icons/${e.value}.svg'))
                 .readAsStringSync(),
           });
         }

@@ -16,6 +16,7 @@ import 'package:flutter_test/flutter_test.dart';
 import '../../support/fake_inspector.dart';
 import '../../support/real_daemon.dart';
 import 'support.dart';
+import '../../support/paths.dart';
 
 const page = '<main><button>Save</button></main>';
 const db = {'db': <String, Object?>{}};
@@ -103,7 +104,7 @@ class RealRun {
 /// (`scripts/stable-bin.sh` keeps one): the publish conflicts, document
 /// pins and restores the daemon applies.
 void main() {
-  final bin = Platform.environment['CLAX_TEST_BIN'];
+  final bin = claxTestBin();
   late HttpClaxApi api;
   late Uri base;
 

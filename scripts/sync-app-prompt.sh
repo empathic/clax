@@ -13,7 +13,13 @@
 #   --check  writes nothing; exits 1 with a diff when a copy differs.
 set -eu
 
-root="$(cd "$(dirname "$0")/.." && pwd)"
+# The repository: the runfiles tree under `bazel test`
+# (//apps/clax_app:prompt_sync), else this script's parent directory.
+if [ -n "${TEST_SRCDIR:-}" ] && [ -n "${TEST_WORKSPACE:-}" ]; then
+    root="$TEST_SRCDIR/$TEST_WORKSPACE"
+else
+    root="$(cd "$(dirname "$0")/.." && pwd)"
+fi
 dest="$root/apps/clax_app/assets/prompt"
 contract="$root/docs/contract.md"
 
