@@ -1,6 +1,6 @@
 -- The single-owner golden's fixture: a migration-21 Clax database and
 -- the files its rows name. Written by golden_single_owner.rs's
--- write_fixture; loaded by clax_server::testing::load_fixture.
+-- write_fixture; loaded by clax_testkit::load_fixture.
 PRAGMA foreign_keys = OFF;
 BEGIN;
 CREATE TABLE artifacts (
