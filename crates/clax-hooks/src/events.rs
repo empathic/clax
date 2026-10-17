@@ -1291,7 +1291,7 @@ mod tests {
         );
         let t = line("claude", false, Some(true));
         assert!(
-            t.contains("\nPush: available in this session (via channel)"),
+            t.contains("\nPush: probably available in this session (via channel)"),
             "{t}"
         );
         assert!(line("claude", false, None).contains("\nPush: unknown"));

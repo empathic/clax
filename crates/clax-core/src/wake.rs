@@ -38,6 +38,19 @@ that their comments reach you only when you next act (your next clax tool call, 
 turn, or their next message); while they comment, call wait_for_feedback in a loop instead of \
 ending your turn.";
 
+/// Why a channel's wake is not sure: Claude Code tells a server neither
+/// whether it registered it as a channel nor whether it accepted an event.
+const CHANNEL_UNSURE: &str = "Claude Code was launched with the Clax channel, but it does not \
+tell Clax whether it registered it: organization policy (channelsEnabled), the --channels \
+allowlist or the sign-in method can refuse it, and then it drops each notice silently";
+
+/// What to do about a channel that may have been refused.
+const CHANNEL_DO: &str = "Start nothing if Claude Code's startup screen listed the Clax channel \
+as loaded: a comment sent to you wakes this session through it. If it said the channel was \
+blocked or not loaded, comments will not wake you while idle: tell the person, and that \
+relaunching Claude Code without the channel flag lets the clax feedback follow follower wake \
+you instead.";
+
 /// Whether a comment wakes an idle session with push `push` (as `status`
 /// reports it: the daemon's, refined by the shim), by which path, and what
 /// the agent does about it. `bin` is the clax binary a follower runs and
@@ -50,6 +63,8 @@ ending your turn.";
 ///   when nothing wakes it.
 /// - `follow_command` (and under Claude Code `follow_once_command`): the
 ///   background command that would wake it, when one would.
+/// - `sure`: false when Clax cannot tell whether the path works (a
+///   channel Claude Code may have refused); `reason` then says why.
 /// - `reason`: why it is not woken, when it is not.
 /// - `do`: one plain instruction.
 pub fn block(harness: &str, push: &Value, bin: &str, hs: Option<&str>) -> Value {
@@ -69,14 +84,24 @@ pub fn block(harness: &str, push: &Value, bin: &str, hs: Option<&str>) -> Value 
             "monitor" => "through the follower your monitor runs",
             _ => "through the clax feedback follow already running",
         };
+        if via == "channel" {
+            return json!({
+                "when_idle": true,
+                "via": via,
+                "sure": false,
+                "reason": CHANNEL_UNSURE,
+                "do": CHANNEL_DO,
+            });
+        }
         return json!({
             "when_idle": true,
             "via": via,
+            "sure": true,
             "do": format!("Start nothing: a comment sent to you wakes this session {how}. End your turn when you are done."),
         });
     }
     let reason = push["reason"].clone();
-    let mut out = json!({"when_idle": false, "via": null, "reason": reason});
+    let mut out = json!({"when_idle": false, "via": null, "sure": true, "reason": reason});
     match (harness, hs) {
         ("claude", Some(hs)) => {
             out["follow_command"] = json!(follow_command(bin, "claude", hs, false));
@@ -116,6 +141,14 @@ next act.\" While they comment, call wait_for_feedback in a loop instead of endi
 /// One line for the start of a session: whether comments wake it while
 /// idle, from [`block`].
 pub fn session_line(wake: &Value) -> String {
+    if wake["when_idle"] == true && wake["sure"] == false {
+        return format!(
+            "Push: probably available in this session (via {}): {}. {}",
+            wake["via"].as_str().unwrap_or("push"),
+            wake["reason"].as_str().unwrap_or_default(),
+            wake["do"].as_str().unwrap_or_default()
+        );
+    }
     if wake["when_idle"] == true {
         return format!(
             "Push: available in this session (via {}); a comment sent to you wakes it while idle.",
@@ -160,6 +193,39 @@ mod tests {
                 "{w}"
             );
         }
+    }
+
+    #[test]
+    fn a_channel_is_unsure_and_every_other_path_is_sure() {
+        let w = block(
+            "claude",
+            &json!({"tier": "channel", "available": true}),
+            "/b",
+            Some("h"),
+        );
+        assert_eq!(
+            (&w["when_idle"], &w["sure"]),
+            (&json!(true), &json!(false)),
+            "{w}"
+        );
+        let d = w["do"].as_str().unwrap();
+        assert!(d.contains("startup screen") && d.contains("without"), "{d}");
+        assert!(
+            session_line(&w).starts_with("Push: probably available"),
+            "{}",
+            session_line(&w)
+        );
+        for tier in ["follow", "notice", "queue", "inject", "monitor"] {
+            let w = block(
+                "claude",
+                &json!({"tier": tier, "available": true}),
+                "/b",
+                Some("h"),
+            );
+            assert_eq!(w["sure"], true, "{tier}");
+        }
+        let off = block("claude", &json!({"available": false}), "/b", Some("h"));
+        assert_eq!(off["sure"], true);
     }
 
     #[test]

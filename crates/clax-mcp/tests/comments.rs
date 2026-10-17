@@ -1439,6 +1439,8 @@ async fn watch_says_whether_a_comment_wakes_the_idle_session_and_what_to_start()
         (&json!(true), &json!("channel")),
         "{w}"
     );
+    // Claude Code never says whether it registered the channel.
+    assert_eq!(w["sure"], false, "{w}");
     // Pi: its extension injects.
     let (p, _) = wake_tools(&ts, "pi", "pi-1").await;
     let w = wake_of(&p, &publish(&p).await, true).await;
