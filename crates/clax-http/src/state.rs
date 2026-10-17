@@ -159,7 +159,7 @@ pub struct AppState {
     pub vis_gen: VisGen,
     /// Debug builds: whether this is the testkit's daemon, which honours
     /// the `x-clax-test-delay-ms` header (so a test can make a real route
-    /// slow) and serves `GET /api/_test/audit/ctx` (`clax_server::routes`).
+    /// slow) and serves `GET /api/_test/audit/ctx` (`clax_server::router`).
     /// `false` in every daemon `serve` starts; the testkit's daemon sets it.
     pub test_daemon: bool,
 }

@@ -834,8 +834,8 @@ migration decided as follows.
   daemon could otherwise make artifacts and hold the store's workers.
   `GET /api/_test/audit/ctx` must answer every caller (a cookie, a LAN
   viewer, an agent), so it takes no token and only the testkit's daemon
-  serves it: `AppState::test_daemon` (named `test_delays` above, renamed
-  when it came to gate that route too).
+  serves it: `AppState::test_daemon`, the same field that gates
+  the delay middleware.
 - **The guard tests leave `routes/mod.rs` for `routes/guards.rs`** (§3.2
   kept them in `routes/mod.rs`): `routes/mod.rs` only declares the handler
   modules, `router.rs` is the router alone, and the guards read the
