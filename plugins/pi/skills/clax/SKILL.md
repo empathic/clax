@@ -311,13 +311,20 @@ Tools:
   watches with replies on (an existing watch keeps its setting).
   `replies: false` keeps comments out of your Stop
   hook and out of native push; they still arrive on tool results, with the
-  person's next message, and from `wait_for_feedback`.
+  person's next message, and from `wait_for_feedback`. The result's `wake`
+  says whether a comment wakes this session while it is idle:
+  `when_idle`, `via` (`channel`, `follower`, `queue`, `inject` or
+  `monitor`), `reason`, `follow_command` (and in Claude Code
+  `follow_once_command`) when starting one in the background would wake
+  it, and `do`, the one thing to do next. `replies_armed: true` alone does
+  not mean you will be woken: always do what `wake.do` says.
 - `wait_for_feedback` (optional `url_or_id`; `timeout_s` default 50, at most
   600): `{"feedback": [...], "waited_s": n, "call_again": true|false}`.
 
 **Live pages.** When you run a web app's dev server (or any page the person
 will look at in Chrome), call `watch` with its URL, for example
-`watch({url_or_id: "http://localhost:5173/"})`, right after it starts. That
+`watch({url_or_id: "http://localhost:5173/"})`, right after it starts, then do what the
+result's `wake.do` says (it may tell you to start a follower). That
 watches every page under that URL: comments the person makes there with the
 Clax extension reach you like comments on artifacts, with the page URL, a
 screenshot (`Clip:`) and a snapshot of the page's HTML (`Snapshot:`). After

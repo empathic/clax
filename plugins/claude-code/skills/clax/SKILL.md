@@ -317,13 +317,20 @@ Tools:
   watches with replies on (an existing watch keeps its setting).
   `replies: false` keeps comments out of your Stop
   hook and out of native push; they still arrive on tool results, with the
-  person's next message, and from `wait_for_feedback`.
+  person's next message, and from `wait_for_feedback`. The result's `wake`
+  says whether a comment wakes this session while it is idle:
+  `when_idle`, `via` (`channel`, `follower`, `queue`, `inject` or
+  `monitor`), `reason`, `follow_command` (and in Claude Code
+  `follow_once_command`) when starting one in the background would wake
+  it, and `do`, the one thing to do next. `replies_armed: true` alone does
+  not mean you will be woken: always do what `wake.do` says.
 - `wait_for_feedback` (optional `url_or_id`; `timeout_s` default 50, at most
   600): `{"feedback": [...], "waited_s": n, "call_again": true|false}`.
 
 **Live pages.** When you run a web app's dev server (or any page the person
 will look at in Chrome), call `watch` with its URL, for example
-`watch({url_or_id: "http://localhost:5173/"})`, right after it starts. That
+`watch({url_or_id: "http://localhost:5173/"})`, right after it starts, then do what the
+result's `wake.do` says (it may tell you to start a follower). That
 watches every page under that URL: comments the person makes there with the
 Clax extension reach you like comments on artifacts, with the page URL, a
 screenshot (`Clip:`) and a snapshot of the page's HTML (`Snapshot:`). After
@@ -409,21 +416,28 @@ It does not contain the comment. Call `comments_read` as it says, then
 handle the comment as in "Comment loop". If you have already handled that
 thread, do nothing.
 
-After your first `publish` (or `watch`) in a session, call `status` and
-look at `push`:
+After `watch`, read its result's `wake`; after your first `publish` in a
+session (publishing watches), call `status` and read `push`. Then:
 
-- `tier` is `"channel"`: the session was launched with the Clax channel.
-  Notices arrive on their own. Start nothing.
-- `tier` is `"follow"`: a follower is already running. Start nothing.
-- `tier` is null and `follow_command` is present: run `follow_command`
-  with the Bash tool and `run_in_background: true`. It exits when a
-  comment arrives, which wakes you, and its output is the notice lines.
-  Handle each one, then run the same command again in the background.
-  Keep exactly one running. Stop restarting it when the person says to
-  stop watching for comments. If it exits with no output, the session has
-  ended. Do not restart it.
+- `wake.when_idle` is true (`push.tier` is `"channel"` or `"follow"`):
+  notices arrive on their own. Start nothing.
+- `wake.when_idle` is false with `follow_command` (`push.tier` is null):
+  start `wake.follow_command` with the Monitor tool (`timeout_ms`
+  1800000). Each line it prints is a notice that wakes you; handle each
+  one. When the monitor expires, start it again. Without Monitor, run
+  `wake.follow_once_command` (`status`'s `push.follow_command`) with the
+  Bash tool and `run_in_background: true`: it exits when a comment
+  arrives, which wakes you; handle it, then run the same command again.
+  Keep exactly one follower running. Stop restarting it when the person
+  says to stop watching for comments. If it exits with no output, the
+  session has ended. Do not restart it.
+- Neither: nothing can wake this session while it is idle. Tell the
+  person that their comments reach you when you next act.
 
-Never start `follow_command` while `tier` is `"channel"`.
+If you end your turn with a watch armed and nothing to wake you, the Stop
+hook says so once, with the commands.
+
+Never start a follower while `wake.via` is `"channel"`.
 
 ## Working beside other agents and people
 
