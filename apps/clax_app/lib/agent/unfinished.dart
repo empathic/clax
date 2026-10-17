@@ -44,6 +44,7 @@ class UnfinishedChange {
     required this.spentUsd,
     required this.at,
     this.notes = const [],
+    this.answers,
     this.edits = const {},
     this.before = const {},
     this.title,
@@ -58,6 +59,7 @@ class UnfinishedChange {
     spentUsd: (j['spent_usd']! as num).toDouble(),
     at: DateTime.parse(j['at']! as String),
     notes: [for (final n in j['notes'] as List? ?? const []) n as String],
+    answers: j['answers'] as String?,
     edits: {
       for (final e in (j['edits'] as Map? ?? const {}).entries)
         e.key as String: e.value as String?,
@@ -89,6 +91,10 @@ class UnfinishedChange {
   /// narrated, then why it stopped; the newest [maxUnfinishedNotes].
   final List<String> notes;
 
+  /// What the person answered (or skipped) of the questions the change's
+  /// runs asked, as late-answer text ([answerText]), or null.
+  final String? answers;
+
   final Map<String, String?> edits;
   final Map<String, String?> before;
 
@@ -107,6 +113,7 @@ class UnfinishedChange {
     'spent_usd': spentUsd,
     'at': at.toUtc().toIso8601String(),
     'notes': notes,
+    'answers': ?answers,
     'edits': edits,
     'before': before,
     'title': ?title,

@@ -535,7 +535,8 @@ class AgentLoop {
   /// on the app, the agent's notes and what it cost. [keepGoing] runs such
   /// a change on: the draft starts from those edits, where the app still
   /// holds what they were made on, and the first message carries the
-  /// notes; an app that changed under the draft starts over from the app
+  /// notes and what the person answered of its questions; an app that
+  /// changed under the draft starts over from the app
   /// with the notes, and the run is told to say so. The draft is kept until
   /// then, however long ago the run stopped (within [unfinishedKeepAge]). The change and its Keep going runs share
   /// [changeCapUsd]: each run's cost cap is what is left of it, at most
@@ -628,6 +629,7 @@ class AgentLoop {
     double spentBefore,
     _Ran ran, {
     List<String> earlierNotes = const [],
+    String? earlierAnswers,
   }) async {
     final limit = switch (ran.outcome) {
       RunGaveUp(:final limit?) || RunFinished(:final limit?) => limit,
@@ -668,6 +670,10 @@ class AgentLoop {
             ...ran.narrations,
             ?ran.giveUp.givenReason,
           ], maxUnfinishedNotes),
+          answers: _joined([
+            ?earlierAnswers,
+            for (final q in ran.ask.answered) answerText(q),
+          ]),
           edits: edits,
           before: {for (final p in edits.keys) p: fingerprint(from[p])},
           title: title,
@@ -678,6 +684,9 @@ class AgentLoop {
       _log('keeping the unfinished change of $aid failed: $e');
     }
   }
+
+  static String? _joined(List<String> texts) =>
+      texts.isEmpty ? null : texts.join('\n\n');
 
   static List<String> _newest(List<String> notes, int n) =>
       notes.length <= n ? notes : notes.sublist(notes.length - n);
@@ -993,7 +1002,7 @@ class AgentLoop {
           ],
           others: others,
           documents: snap.docs,
-          answers: answers,
+          answers: _joined([?answers, ?kept?.answers]),
           plan: plan,
           fromBundle: bundled,
           keepGoing: kept == null
@@ -1036,6 +1045,7 @@ class AgentLoop {
       spentBefore,
       ran,
       earlierNotes: kept?.notes ?? const [],
+      earlierAnswers: kept?.answers,
     );
 
     final outcome = ran.outcome;

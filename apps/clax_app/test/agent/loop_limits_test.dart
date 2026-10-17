@@ -379,6 +379,55 @@ void main() {
     expect(notes.last, 'Renaming the button');
   });
 
+  test('an answer the person gave the stopped run is kept and sent to the '
+      'Keep going run', () async {
+    await api.stream().subscribe(['questions']);
+    final item = api.sendComment(aid, 'Show my total', queue: false);
+    final loop = loopWith([
+      [
+        const ScriptedCall('ask', {
+          'questions': [
+            {
+              'question': 'Kilometres or miles?',
+              'header': 'Units',
+              'options': [
+                {'label': 'km'},
+                {'label': 'mi'},
+              ],
+            },
+          ],
+          'question_id': null,
+          'timeout_s': null,
+          'cancel': null,
+        }),
+        ...unfinishedRun(),
+      ],
+      [
+        const ScriptedCall('render', {'file': null}),
+        const ScriptedCall('finish', {'reply': 'In km.', 'resolve': true}),
+      ],
+    ]);
+    final stopped = loop.change(aid, [item], session: sid);
+    await until(() => api.callNames.contains('waitQuestion'));
+    final q = (await api.questions()).single;
+    await api.answerQuestion(q.id, [
+      {
+        'selected': ['km'],
+        'text': null,
+      },
+    ]);
+    await stopped;
+    final kept = (await unfinished.get(item.threadId))!;
+    expect(kept.answers, contains('The person answered your question'));
+    expect(kept.answers, contains('"km"'));
+
+    await loop.change(aid, [item], session: sid, keepGoing: true);
+    final first = runner.text(1);
+    expect(first, contains('Answers to the question you asked'));
+    expect(first, contains('The person answered your question'));
+    expect(first, contains(r'\"km\"'));
+  });
+
   test('a Keep going hours after the stop still starts from the kept '
       'draft', () async {
     final item = api.sendComment(aid, 'Rename Save', queue: false);
@@ -513,6 +562,7 @@ void main() {
       spentUsd: 1.5,
       at: DateTime.utc(2026, 10, 15),
       notes: const ['n'],
+      answers: 'Units: "km"',
       edits: const {'index.html': 'x', 'old.js': null},
       before: const {'index.html': 'y', 'old.js': 'z'},
       title: 'T',
