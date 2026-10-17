@@ -5,6 +5,7 @@ import 'package:webview_flutter/webview_flutter.dart';
 
 import '../clax/api.dart';
 import 'daemon_cookie.dart';
+import 'webview_surface.dart' show noPinchZoom;
 
 /// From this width the question shows as a dialog rather than a bottom
 /// sheet.
@@ -52,6 +53,7 @@ class WebViewQuestionPage implements QuestionPage {
     this.keyCookie,
     WebViewController? controller,
   }) : controller = controller ?? WebViewController() {
+    noPinchZoom(this.controller);
     this.controller
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setNavigationDelegate(
