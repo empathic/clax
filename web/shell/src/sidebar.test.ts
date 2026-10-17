@@ -52,6 +52,16 @@ describe("Sidebar", () => {
     ro.unmount();
   });
 
+  it("names each thread by data-thread on its card alone, and its question slot by data-slot-thread", () => {
+    const threads: Thread[] = [{ ...base, id: "a", anchor, status: "open", sent_to_agent: false, comments: [comment("1", "viewer", "Alex", "two columns")] }];
+    const m = mount(Sidebar, { versions: [], shown: 1, agent: "claude", threads, resolved: {}, now: new Date(base.created_at), selected: "a", onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() });
+    const named = [...m.root.querySelectorAll('[data-thread="a"]')];
+    expect(named).toHaveLength(1);
+    expect(named[0].classList.contains("thread-card")).toBe(true);
+    expect(named[0].querySelector<HTMLElement>(".thread-q-slot")!.dataset.slotThread).toBe("a");
+    m.unmount();
+  });
+
   it("groups open, detached, and resolved threads and labels agent comments", () => {
     const threads: Thread[] = [
       { ...base, id: "a", anchor, status: "open", sent_to_agent: true, comments: [comment("1", "viewer", "Alex", "two columns"), comment("2", "agent", "claude", "done")],

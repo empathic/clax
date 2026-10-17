@@ -171,9 +171,9 @@
       </div>
     {/each}
     {@render writers?.(t.id)}
-    <!-- The question module (loaded apart, for a person with an inbox) fills this with the questions asked in the thread; a click on a question is its own, not the card's. -->
+    <!-- The question module (loaded apart, for a person with an inbox) fills this with the questions asked in the thread. It is named by data-slot-thread, so the card stays the only element with its data-thread; a click on a question is its own, not the card's. -->
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-    <div class="thread-q-slot" data-thread={t.id} onclick={e => e.stopPropagation()}></div>
+    <div class="thread-q-slot" data-slot-thread={t.id} onclick={e => e.stopPropagation()}></div>
     {#if marker}<p class="st ag"><span class="tok a work sm" aria-hidden="true"></span>{marker.text}<small>{clock(marker.since, now)}</small></p>
     {:else if label}<p class="st waiting">{label}</p>{/if}
     {#if lines.thread}

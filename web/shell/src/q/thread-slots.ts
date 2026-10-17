@@ -11,8 +11,8 @@ import ThreadQuestions from "./ThreadQuestions.svelte";
 export function followSlots(doc: Document, aid: string): () => void {
   const shown = new Map<HTMLElement, Record<string, unknown>>();
   const sweep = () => {
-    for (const el of doc.querySelectorAll<HTMLElement>(".thread-q-slot[data-thread]")) {
-      if (!shown.has(el)) shown.set(el, mount(ThreadQuestions, { target: el, props: { aid, tid: el.dataset.thread! } }));
+    for (const el of doc.querySelectorAll<HTMLElement>(".thread-q-slot[data-slot-thread]")) {
+      if (!shown.has(el)) shown.set(el, mount(ThreadQuestions, { target: el, props: { aid, tid: el.dataset.slotThread! } }));
     }
     for (const [el, c] of shown) if (!el.isConnected) { void unmount(c); shown.delete(el); }
   };

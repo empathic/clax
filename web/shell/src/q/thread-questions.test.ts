@@ -76,7 +76,7 @@ describe("questions in threads and in the terminal", () => {
       card.classList.remove("folded");
       const slot = document.createElement("div");
       slot.className = "thread-q-slot";
-      slot.dataset.thread = "t1";
+      slot.dataset.slotThread = "t1";
       slot.scrollIntoView = vi.fn();
       card.append(slot);
       queueMicrotask(() => { slot.innerHTML = `<article class="qcard" data-question="QF" tabindex="-1"></article>`; });

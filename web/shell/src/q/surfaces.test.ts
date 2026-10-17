@@ -126,7 +126,7 @@ describe("the questions in the artifact view", () => {
     const inT = view({ id: "QT", thread: { id: "t1", open: true } });
     const loose = view({ id: "QA", created_at: "2026-10-07T09:05:00.000Z" });
     vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(JSON.stringify(url.startsWith("/api/inbox/summary") ? { unread: 2, questions: [inT, loose], latest: [] } : { questions: [inT, loose], open: 2 }))));
-    document.body.innerHTML = `<div class="page"><header class="topbar"><div class="island"></div></header><aside class="sidebar"><div class="questions-slot"></div><article class="thread"><div class="thread-q-slot" data-thread="t1"></div></article></aside></div>`;
+    document.body.innerHTML = `<div class="page"><header class="topbar"><div class="island"></div></header><aside class="sidebar"><div class="questions-slot"></div><article class="thread"><div class="thread-q-slot" data-slot-thread="t1"></div></article></aside></div>`;
     const qmod = await import("./index");
     const stream = fakeStream();
     const stop = qmod.artifact(AID, { keyboardTrail: { onClear: () => () => {} }, guardedAction: (_e, _v, act) => { act(); return null; } }, stream as never);
@@ -141,7 +141,7 @@ describe("the questions in the artifact view", () => {
     // A card mounted later gets its questions too.
     const late = document.createElement("div");
     late.className = "thread-q-slot";
-    late.dataset.thread = "t1";
+    late.dataset.slotThread = "t1";
     document.querySelector(".sidebar")!.append(late);
     await settle();
     expect(late.querySelectorAll(".qcard")).toHaveLength(1);
