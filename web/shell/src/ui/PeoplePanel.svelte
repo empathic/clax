@@ -65,7 +65,8 @@
   const mineOf = (handle: string) => raises?.raises.find(r => r.agent.handle === handle)?.access ?? null;
   const versionOf = (handle: string) => raises?.raises.find(r => r.agent.handle === handle)?.version ?? null;
   const personOf = (handle: string) => parts.agents.find(a => a.handle === handle)?.person;
-  const theirs = (handle: string) => { const p = personOf(handle); return !!p && p.public_id !== me && (!!me || !p.owner); };
+  // Another person's agent, named with them; another Clax's agent's name already says whose Clax it relays from.
+  const theirs = (handle: string) => { const p = personOf(handle); return !!p && p.public_id !== me && (!!me || !p.owner) && !parts.agents.find(a => a.handle === handle)?.via; };
   /** What the roster says an agent waits on: its person (you, for yours),
    * since when, and on what. Only an agent the roster calls `waiting` (an
    * open question or `ask`, spec 2026-10-08 §13) waits, so every viewer

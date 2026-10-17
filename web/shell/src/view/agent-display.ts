@@ -3,13 +3,20 @@
 // appear, another person's with that person: "sam-notes (Sam's)".
 import type { AgentView } from "./working-model";
 
+/** An agent's name as shown: another Clax's agent with whose Clax it
+ * relays from ("claude · via Alex's Clax"). */
+export function shownName(name: string, via: string | null | undefined): string {
+  return via ? `${name} · via ${via}` : name;
+}
+
 /** `names` (handle → name) with another person's agents named with their
  * person, when `agents` hold more than one person's; `me` is this viewer's
- * public ID. A new map; `names` is left as it is. */
+ * public ID. Another Clax's agents keep their names, whose `via` says whose
+ * they are. A new map; `names` is left as it is. */
 export function withPeople(names: Map<string, string>, agents: AgentView[], me: string | null | undefined): Map<string, string> {
   const out = new Map(names);
   if (new Set(agents.map(a => a.person?.public_id)).size < 2) return out;
-  for (const a of agents) if (a.person && a.person.public_id !== me) out.set(a.handle, `${out.get(a.handle) ?? a.name ?? a.harness} (${a.person.name}'s)`);
+  for (const a of agents) if (a.person && a.person.public_id !== me && !a.via) out.set(a.handle, `${out.get(a.handle) ?? a.name ?? a.harness} (${a.person.name}'s)`);
   return out;
 }
 

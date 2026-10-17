@@ -221,12 +221,17 @@ fn render(
         Some(a) => {
             let shown = i.recipient.is_none() || i.recipient == a.person;
             let person_name = person_name(st, names, &a.person)?;
-            Some(
-                json!({"handle": a.handle, "name": a.name, "harness": a.harness,
-                   "project": shown.then(|| project(&a.cwd)),
-                   "person": a.person, "person_name": person_name,
-                   "own": i.recipient == a.person}),
-            )
+            let mut v = json!({"handle": a.handle, "name": a.name, "harness": a.harness,
+               "project": shown.then(|| project(&a.cwd)),
+               "person": a.person, "person_name": person_name,
+               "own": i.recipient == a.person});
+            // Another Clax's agent: whose Clax it relays from.
+            if a.relay {
+                v["via"] = json!(clax_store::attention::relay_via(
+                    v["person_name"].as_str().unwrap_or("Someone")
+                ));
+            }
+            Some(v)
         }
         None => None,
     };
@@ -607,6 +612,7 @@ mod tests {
                 cwd: "/home/alex/secret-project".into(),
                 person: person.map(Into::into),
                 name: Some("web".into()),
+                relay: false,
             }),
             artifact: Some(artifact),
             page_url: Some("http://localhost:5173/LIVECANARYpath".into()),

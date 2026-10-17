@@ -983,10 +983,25 @@ keeps each linked artifact's comment threads in step with its public
 copy's, both ways, acting only with the remote's agent token over the
 routes above and below: one task per remote with a link registers a session
 there (the `clax` harness), watches the public artifacts and long-polls
-`GET /api/sessions/<sid>/feedback?tier=wait` for liveness; each answer, and
-each local write on a linked artifact, starts a cycle reading the threads
-changed since the link's cursor (`since`, below), and every 60 s it reads
-them all.
+`GET /api/sessions/<sid>/feedback?tier=wait` for liveness (and each open
+question copy's `GET /api/sessions/<sid>/questions/<qid>?wait=`); each
+answer, and each local write on a linked artifact, starts a cycle reading
+the threads changed since the link's cursor (`since`, below), and every
+60 s it reads them all.
+
+- Each watch names the local agent the sync relays for on that artifact:
+  the owner's agent live on the local artifact (its owner session or a
+  watcher) most recently active, by `PUT
+  /api/sessions/<sid>/watches/<aid> {"as": {name, harness}}` (`"as":
+  null` when none is, where the sync's own name, `clax-sync`, shows).
+  Only a session of the `clax` harness of a device sign-in's agent token
+  may name one (400 `invalid_args` otherwise, and for a name or harness
+  that is not an agent's); the public copy's participants then show that
+  agent, with `via`, and an `agents` event tells the page.
+- An `ask` question copy is asked in a session there named as the local
+  agent that asked it, kept (with `PATCH /api/sessions/<sid>
+  {heartbeat: true}` each cycle) while the copy is open, so the card there
+  names that agent; the sync's own session reads and withdraws it.
 
 - Every public thread the token's person may see comes down as a thread
   of the local artifact, on the local version that public version is the
@@ -1606,7 +1621,12 @@ lowercase hex digits, assigned once per session), never by session ID.
 `live` is `true` when the session has not ended and owns or watches the
 artifact, so a send can reach it. `name` is the agent's name (see "Names"
 under "People and their agents"), and `person` whose agent it is
-(`public_id` null for the owner's). Browsers get people's names as
+(`public_id` null for the owner's). An agent of another Clax (a session of
+a device sign-in's agent token, on a public Clax) also carries `via`,
+whose Clax it relays from (`"<person>'s Clax"`), and the shell names it
+`<name> · via <via>`; when it is that Clax's sync session and its watch
+names the local agent it relays for (below, **Linked threads**), `name`
+and `harness` are that agent's. Browsers get people's names as
 stored; agents get them as the payload names authors (control characters, `"`
 and `:` as spaces, at most 40 characters). Live agents come first, then the most
 recently active on the artifact (its newest version, comment on the
@@ -2550,7 +2570,10 @@ The **question view**, as every route and event gives it:
 }
 ```
 
-`project` is the last component of the session's working directory.
+`project` is the last component of the session's working directory. An
+agent of another Clax (a session of a device sign-in's agent token, on a
+public Clax) also carries `via`: whose Clax it asks from, `"<person>'s
+Clax"`; the shell names it `<name> · via <via>`.
 `artifact` is the artifact or live page the question is about: null for
 none, or when it has been deleted. `source` is `ask` or `hook` (mirrored).
 `answered_via` is `shell`, `extension`, `cli` or `terminal`. No view or

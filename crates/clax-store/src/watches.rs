@@ -319,6 +319,24 @@ impl Store {
         })
     }
 
+    /// Names the local agent another Clax's sync session relays for on its
+    /// watch of `id` (`relay`: its name and harness), or clears it (`None`),
+    /// as the artifact's participants show it. A display label: nothing is
+    /// recorded. True when the session watches `id`.
+    pub fn set_watch_relay(
+        &self,
+        session_id: &str,
+        id: &ArtifactId,
+        relay: Option<(&str, &str)>,
+    ) -> Result<bool> {
+        self.with_tx(|tx| {
+            Ok(tx.execute(
+                "UPDATE watches SET relay_name = ?3, relay_harness = ?4 WHERE session_id = ?1 AND artifact_id = ?2",
+                params![session_id, id.as_str(), relay.map(|r| r.0), relay.map(|r| r.1)],
+            )? > 0)
+        })
+    }
+
     /// Creates an armed watch unless one exists; an existing watch is returned
     /// unchanged. Used on publish, so republishing never re-arms replies the
     /// agent turned off. A new watch records `watch.start` under `ctx`.

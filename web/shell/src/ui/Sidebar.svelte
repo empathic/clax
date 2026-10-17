@@ -149,7 +149,8 @@
   // to …"); with none live, the publishing agent's name.
   const chosen = $derived(p.agents?.find(a => a.handle === p.sendTo));
   const pick = $derived(!chosen && !!p.agents?.some(a => a.live));
-  const theirs = $derived(!!chosen?.person && (own === undefined ? !chosen.person.owner : chosen.person.public_id !== own));
+  // Another Clax's agent's name already says whose Clax it relays from.
+  const theirs = $derived(!!chosen?.person && !chosen.via && (own === undefined ? !chosen.person.owner : chosen.person.public_id !== own));
   const target = $derived(chosen ? `${agentsByHandle.get(chosen.handle)}${theirs ? ` (${chosen.person!.name}'s)` : ""}` : pick ? "…" : p.agent);
   const ticked = $derived(new Set(p.selection?.ids ?? []));
   // The cards in the order shown, for a Shift range: the Addressed group, Open, then Detached.

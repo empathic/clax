@@ -10,7 +10,7 @@
   // module shares no prop or class runtime with the artifact entry.
   import type { Participants } from "../api";
   import type { Working } from "../view/working-model";
-  import { agentMark } from "../view/agent-display";
+  import { agentMark, shownName } from "../view/agent-display";
   import { midName } from "../view/working-model";
 
   type Props = { people: Participants["people"]; agents: Participants["agents"]; working: Working[]; me: string | null; max: number; small?: boolean; presence?: Map<string, "here" | "away" | "gone"> };
@@ -20,8 +20,9 @@
     return (w.length > 1 ? w[0][0] + w[1][0] : w[0].slice(0, 2)).toUpperCase();
   };
   const mark = (a: Props["agents"][number]) => agentMark(a.name, a.harness);
-  // Its name, with its person's when that person is not this viewer.
-  const named = (a: Props["agents"][number]) => `${a.name || a.harness}${a.person && a.person.public_id !== p.me ? ` · ${midName(a.person.name)}` : ""}`;
+  // Its name, with its person's when that person is not this viewer; another
+  // Clax's agent with whose Clax it relays from.
+  const named = (a: Props["agents"][number]) => a.via ? shownName(a.name || a.harness, a.via) : `${a.name || a.harness}${a.person && a.person.public_id !== p.me ? ` · ${midName(a.person.name)}` : ""}`;
   const ordered = $derived([...p.people].sort((a, b) => Number(b.public_id === p.me) - Number(a.public_id === p.me)));
   const busy = $derived(new Set(p.working.map(w => w.agent)));
 </script>

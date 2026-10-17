@@ -19,11 +19,22 @@ pub struct Person {
 pub struct AgentView {
     pub handle: String,
     pub harness: String,
-    /// Its agent name (spec 2026-10-08 §11), which it shows as.
+    /// Its agent name (spec 2026-10-08 §11), which it shows as: for another
+    /// Clax's session whose watch names the local agent it relays for, that
+    /// agent's name (and `harness` its harness).
     pub name: Option<String>,
     pub live: bool,
     /// Whose agent it is (§10, §11 "Display"): names are not filtered (§21.9).
     pub person: AgentPerson,
+    /// For a session of another Clax (signed in by device code), whose
+    /// Clax it relays from: `<person>'s Clax`. Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+}
+
+/// How a session of another Clax shows whose Clax it relays from.
+pub fn relay_via(person: &str) -> String {
+    format!("{person}'s Clax")
 }
 /// The person an agent works for: `owner` for the owner's agents, whose
 /// `public_id` is the owner's (null before the owner exists) and whose
@@ -129,7 +140,9 @@ macro_rules! people_sql {
 }
 
 /// Agents of `arts`: its owner, its watchers and the sessions that published
-/// a version of it, at most `:limit` per artifact. `live`: a send can reach
+/// a version of it, at most `:limit` per artifact. `relay`: a session of
+/// another Clax (its grant is a device sign-in's), whose watch may name the
+/// local agent it relays for (`relay_name`, `relay_harness`). `live`: a send can reach
 /// it (live, and the owner or a watcher), as `live_agent` checks. Activity:
 /// the newest of its versions, its comments on the artifact's threads and its
 /// watch, else its registration. SQLite's many-argument MAX is NULL when any
@@ -146,6 +159,9 @@ macro_rules! agents_sql {
                        WHERE v.session_id IS NOT NULL),
             ranked AS (
                 SELECT k.aid, s.id, s.agent_handle, s.harness, s.name, s.person,
+                       (SELECT w.relay_name FROM watches w WHERE w.session_id = s.id AND w.artifact_id = k.aid) AS relay_name,
+                       (SELECT w.relay_harness FROM watches w WHERE w.session_id = s.id AND w.artifact_id = k.aid) AS relay_harness,
+                       (s.grant_id IS NOT NULL AND EXISTS (SELECT 1 FROM device_codes d WHERE d.grant_id = s.grant_id)) AS relay,
                        (s.ended_at IS NULL AND (s.id IS k.owner OR EXISTS
                           (SELECT 1 FROM watches w WHERE w.session_id = s.id AND w.artifact_id = k.aid))) AS live,
                        MAX(COALESCE((SELECT MAX(v.created_at) FROM versions v WHERE v.artifact_id = k.aid AND v.session_id = s.id), ''),
@@ -154,8 +170,8 @@ macro_rules! agents_sql {
                            COALESCE((SELECT w.created_at FROM watches w WHERE w.session_id = s.id AND w.artifact_id = k.aid), ''),
                            s.started_at) AS active_at
                   FROM rel k CROSS JOIN sessions s ON s.id = k.sid)
-            SELECT aid, agent_handle, harness, live, name, person FROM
-              (SELECT aid, agent_handle, harness, live, name, person,
+            SELECT aid, agent_handle, harness, live, name, person, relay_name, relay_harness, relay FROM
+              (SELECT aid, agent_handle, harness, live, name, person, relay_name, relay_harness, relay,
                       ROW_NUMBER() OVER (PARTITION BY aid ORDER BY live DESC, active_at DESC, id) AS rn
                  FROM ranked)
              WHERE rn <= :limit ORDER BY aid, rn"
@@ -193,6 +209,23 @@ impl Store {
     /// the owner's agents), as participant lists name it.
     pub fn agent_person(&self, pid: Option<&str>) -> Result<AgentPerson> {
         self.with_read(|c| agent_person(c, pid))
+    }
+
+    /// For a session of another Clax (its grant a device sign-in's: grant
+    /// `grant_id`, person `person`), whose Clax it relays from
+    /// ([`relay_via`]); `None` for any other session.
+    pub fn session_via(
+        &self,
+        grant_id: Option<&str>,
+        person: Option<&str>,
+    ) -> Result<Option<String>> {
+        let Some(g) = grant_id else {
+            return Ok(None);
+        };
+        if !self.is_device_grant(g)? {
+            return Ok(None);
+        }
+        Ok(Some(relay_via(&self.agent_person(person)?.name)))
     }
 
     /// The live owner or watcher of `aid` whose handle is `handle`, as a session ID.
@@ -401,12 +434,16 @@ fn participants_in(c: &Connection, aid: Option<&str>) -> Result<BTreeMap<String,
                 p
             }
         };
+        let (relay_name, relay_harness, relay): (Option<String>, Option<String>, bool) =
+            (r.get(6)?, r.get(7)?, r.get(8)?);
+        let via = relay.then(|| relay_via(&person.name));
         out.entry(r.get(0)?).or_default().agents.push(AgentView {
             handle: r.get(1)?,
-            harness: r.get(2)?,
-            name: r.get(4)?,
+            harness: relay_harness.unwrap_or(r.get(2)?),
+            name: relay_name.or(r.get(4)?),
             live: r.get(3)?,
             person,
+            via,
         });
     }
     Ok(out)

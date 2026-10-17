@@ -23,6 +23,45 @@ use serde_json::{Value, json};
 #[serde(deny_unknown_fields)]
 struct WatchBody {
     replies_armed: Option<bool>,
+    /// Another Clax's sync session: the local agent it relays for here
+    /// (`null` clears it).
+    #[serde(rename = "as", default, deserialize_with = "some_or_null")]
+    relay: Option<Option<RelayAs>>,
+}
+
+/// A local agent another Clax relays for: its name and harness there.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RelayAs {
+    name: String,
+    harness: String,
+}
+
+/// `Some(None)` for an explicit `null`, so it differs from an absent field.
+fn some_or_null<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Option<RelayAs>>, D::Error> {
+    Option::<RelayAs>::deserialize(d).map(Some)
+}
+
+/// `invalid_args` unless `r` names an agent as agent names go (1 to 32 of
+/// a-z, 0-9, `.`, `_` and `-`, a letter or digit at each end) of one of
+/// the harnesses.
+fn checked_relay(r: &RelayAs) -> Result<(), ApiError> {
+    let n = r.name.as_bytes();
+    let ok_name = (1..=32).contains(&n.len())
+        && n.iter()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(b))
+        && n[0].is_ascii_alphanumeric()
+        && n[n.len() - 1].is_ascii_alphanumeric();
+    if ok_name && super::sessions::HARNESSES.contains(&r.harness.as_str()) {
+        Ok(())
+    } else {
+        Err(ApiError::bad_request(
+            "invalid_args",
+            "as names an agent (1 to 32 of a-z, 0-9, '.', '_' and '-') and a harness",
+        ))
+    }
 }
 
 /// Watches the artifact (replies armed unless `replies_armed: false`) and
@@ -48,11 +87,44 @@ pub async fn put(
         serde_json::from_slice(&raw)
             .map_err(|e| ApiError::bad_request("invalid_json", e.to_string()))?
     };
+    if let Some(Some(r)) = &b.relay {
+        checked_relay(r)?;
+    }
     let ctx = s.feedback_ctx();
     let watch = s
         .store_call(move |st| {
             let audit = audit.for_session(st, &sid)?;
+            // Only another Clax's sync session (the by-hand harness of a
+            // device sign-in's token) names whom it relays for.
+            if b.relay.is_some() {
+                let session = st.get_session(&sid)?;
+                let grant = session
+                    .as_ref()
+                    .filter(|x| x.harness == super::sessions::BY_HAND_HARNESS)
+                    .and_then(|x| x.grant_id.clone());
+                let relays = match grant {
+                    Some(g) => st.is_device_grant(&g)?,
+                    None => false,
+                };
+                if !relays {
+                    return Err(CoreError::invalid(
+                        "invalid_args",
+                        "only another Clax's sync session names an agent it relays for",
+                    ));
+                }
+            }
             let w = st.watch(&audit, &sid, &id, b.replies_armed.unwrap_or(true))?;
+            if let Some(relay) = &b.relay {
+                let relay = relay
+                    .as_ref()
+                    .map(|r| (r.name.as_str(), r.harness.as_str()));
+                st.set_watch_relay(&sid, &id, relay)?;
+            }
+            // The artifact's Send menu and roster show the watcher (and the
+            // agent it relays for), and a linked artifact's sync names it.
+            ctx.events.publish(Event::Agents {
+                artifacts: vec![id.as_str().to_string()],
+            });
             if retarget {
                 let touched = st.retarget_untargeted(&id, &sid)?;
                 apply(&ctx, st, &touched);
@@ -73,11 +145,18 @@ pub async fn delete(
 ) -> Result<StatusCode, ApiError> {
     let (sid, _) = path(p)?;
     let id = a.artifact()?;
-    s.store_call(move |st| {
-        let audit = audit.for_session(st, &sid)?;
-        st.unwatch(&audit, &sid, &id)
-    })
-    .await?;
+    let aid = id.as_str().to_string();
+    let removed = s
+        .store_call(move |st| {
+            let audit = audit.for_session(st, &sid)?;
+            st.unwatch(&audit, &sid, &id)
+        })
+        .await?;
+    if removed {
+        s.events.publish(Event::Agents {
+            artifacts: vec![aid],
+        });
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -229,8 +229,9 @@ test("a local agent's question is asked on the hosted copy, answered there, and 
     const raid = pushed.link.remote_artifact_id;
     const host = `localhost:${port}`;
 
-    // The local agent asks about the linked artifact.
+    // The local agent, watching the linked artifact, asks about it.
     const s = await registerSession(local.base, local.token);
+    await api(local.base, local.token, `/api/sessions/${s.id}/watches/${artifact.id}`, { method: "PUT", body: "{}", session: s.id });
     const asked = await ask(local.base, local.token, s.id, { source: "ask", artifact_id: artifact.id, questions: [
       { question: "Which Friday should the launch go out on?", header: "Launch day", other: true, options: [{ label: "The 17th", description: "Before the conference" }, { label: "The 24th", description: "After the review" }] }] });
     const qid = asked.question.id;
@@ -264,6 +265,12 @@ test("a local agent's question is asked on the hosted copy, answered there, and 
     const there = owner.locator(`.qcard[data-question="${rq.id}"]`).first();
     if (!(await there.isVisible().catch(() => false))) await threads(owner);
     await expect(there).toBeVisible({ timeout: 20_000 });
+    // There the local agent is named, with whose Clax it relays from: on the
+    // card, in the top bar's roster and in the Send menu.
+    await expect(there.locator(".asker")).toHaveText(/^\S+ · via Ada's Clax$/);
+    const relayed = (await there.locator(".asker").textContent())!;
+    await expect(owner.locator(`.who .tok.a[title="${relayed}"]`)).toHaveCount(1);
+    await expect(owner.locator(".who .tok.a[title^='clax-sync']")).toHaveCount(0);
     await shoot(owner, "questions-hosted-artifact", async phone => { await owner.reload(); if (phone) await threads(owner); await there.waitFor(); });
 
     // Answered there: the local `ask` returns that answer.

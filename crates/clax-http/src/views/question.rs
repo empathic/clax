@@ -15,17 +15,25 @@ use serde_json::{Value, json};
 /// daemon, says where its copy on a remote stands
 /// ([`clax_store::linked::LinkedQuestionView`]), null for none.
 pub fn view(st: &Store, q: &QuestionRow) -> clax_core::Result<Value> {
-    let agent = st.get_session(&q.session_id)?.map(|s| {
-        json!({
-            "handle": s.agent_handle,
-            "name": s.name,
-            "harness": s.harness,
-            "project": std::path::Path::new(&s.cwd)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(""),
-        })
-    });
+    let agent = match st.get_session(&q.session_id)? {
+        Some(s) => {
+            let mut a = json!({
+                "handle": s.agent_handle,
+                "name": s.name,
+                "harness": s.harness,
+                "project": std::path::Path::new(&s.cwd)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(""),
+            });
+            // Another Clax's agent: whose Clax it asks from.
+            if let Some(via) = st.session_via(s.grant_id.as_deref(), s.person.as_deref())? {
+                a["via"] = json!(via);
+            }
+            Some(a)
+        }
+        None => None,
+    };
     let artifact = match q.artifact_id.as_deref().map(ArtifactId::parse) {
         Some(Ok(id)) => st
             .get_artifact(&id)?

@@ -14,6 +14,11 @@ describe("working-model", () => {
     expect([two.get("a_1111aaaa"), two.get("a_3333cccc")]).toEqual(["claude 1111", "claude 3333"]);
   });
 
+  it("names another Clax's agent with whose Clax it relays from", () => {
+    const relayed = [{ handle: "a_1111aaaa", harness: "claude", name: "claude", live: true, via: "Alex's Clax" }];
+    expect(agentNames([], relayed).get("a_1111aaaa")).toBe("claude · via Alex's Clax");
+  });
+
   it("names agents by their agent name where they have one, the working record's for one not listed", () => {
     const named = [{ handle: "a_1111aaaa", harness: "claude", name: "summary-writer", live: true }, { handle: "a_2222bbbb", harness: "claude", name: "budget-checker", live: true }];
     const n = agentNames([w({ agent: "a_4444dddd", name: "fact-finder" })], named);

@@ -34,7 +34,9 @@ export type ForkedFrom = { artifact_id: string; version: number; title: string |
  * its name, which it shows as, and its person (`owner` for the owner's
  * agents) from daemons that name agents (spec
  * 2026-10-08-multi-agent-multi-person §10, §11). */
-export type Participants = { people: { public_id: string; display_name: string | null; seen: number | null }[]; agents: { handle: string; harness: string; live: boolean; name?: string | null; person?: CardPerson }[] };
+export type Participants = { people: { public_id: string; display_name: string | null; seen: number | null }[]; agents: { handle: string; harness: string; live: boolean; name?: string | null; person?: CardPerson;
+  /** Another Clax's session (signed in by device code): whose Clax it relays from, "Alex's Clax". */
+  via?: string }[] };
 export type AttentionSummary = { addressed: string[]; addressed_v: number | null; new_replies: string[]; open_in: string[]; seen: number | null };
 export type Attention = AttentionSummary & { looked: Record<string, string> };
 /** `sha256`: the file's lowercase hex SHA-256; absent on versions written before content hashes. */
@@ -139,6 +141,8 @@ export type AnswerBody = { answers: QAnswer[] };
 /** The asking agent; `project` is the last component of its working
  * directory; `name` its agent name (spec 2026-10-08 §11), when it has one. */
 export type QAgent = { handle: string; harness: string; project: string | null; name?: string | null;
+  /** Another Clax's agent: whose Clax it asks from, "Alex's Clax". */
+  via?: string;
   /** Inbox items: its person's public ID (null: the owner's) and name, and whether it is the recipient's own person's agent (spec 2026-10-08 §11). */
   person?: string | null; person_name?: string; own?: boolean };
 export type QuestionStatus = "open" | "answered" | "declined" | "released" | "withdrawn";

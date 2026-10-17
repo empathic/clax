@@ -229,6 +229,27 @@ pub fn listen(s: &AppState) {
                 }
                 Err(_) => return,
             };
+            // An agent starting, ending or watching a linked artifact
+            // changes whom its watch there names (`local_relay`).
+            if let Event::Agents { artifacts } = &ev.event {
+                let rids: HashSet<String> = {
+                    let linked = st
+                        .linked
+                        .artifacts
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    artifacts
+                        .iter()
+                        .filter_map(|a| linked.get(a))
+                        .flatten()
+                        .cloned()
+                        .collect()
+                };
+                for r in rids {
+                    st.linked.kick(Some(&r));
+                }
+                continue;
+            }
             let aid = match &ev.event {
                 Event::Comment { artifact_id, .. }
                 | Event::Thread { artifact_id, .. }
@@ -349,8 +370,10 @@ async fn run(s: AppState, rid: String, kick: Arc<Notify>, retry: Arc<Notify>) {
         s: s.clone(),
         rid: rid.clone(),
         client: None,
-        watched: HashSet::new(),
+        watched: HashMap::new(),
         acks: Vec::new(),
+        agents: HashMap::new(),
+        asked_in: HashMap::new(),
     };
     let mut full = true;
     let mut backoff = Duration::ZERO;
@@ -492,11 +515,41 @@ struct Sync {
     rid: String,
     /// The remote's client, speaking in the sync's session there.
     client: Option<Client>,
-    /// The public artifacts the session watches.
-    watched: HashSet<String>,
+    /// The public artifacts the session watches, each with the local agent
+    /// its watch names as the one it relays for (`None`: none, the sync's
+    /// own name shows).
+    watched: HashMap<String, Option<(String, String)>>,
     /// The public threads a feedback poll handed over, acknowledged after
     /// the next cycle wrote them here.
     acks: Vec<String>,
+    /// Sessions there named as local agents, by name, each with its agent
+    /// handle there: the outbox's agent writes go up in them, and a local
+    /// agent's question is asked in its own, which stays (heartbeating)
+    /// while the question's copy is open there.
+    agents: HashMap<String, (Client, String)>,
+    /// The local questions whose copies were asked there, by the name of
+    /// the session in `agents` they were asked in.
+    asked_in: HashMap<String, String>,
+}
+
+/// The local agent the sync names as the one it relays for on local
+/// artifact `aid`'s public copy: the owner's agent live on it (its owner
+/// session or a watcher) most recently active, as its participants list
+/// it; `None` when none is.
+fn local_relay(st: &clax_store::Store, aid: &str) -> clax_core::Result<Option<(String, String)>> {
+    let Ok(id) = clax_core::ArtifactId::parse(aid) else {
+        return Ok(None);
+    };
+    Ok(st
+        .participants(&id)?
+        .agents
+        .into_iter()
+        .find(|a| {
+            a.live
+                && a.person.owner
+                && crate::routes::sessions::HARNESSES.contains(&a.harness.as_str())
+        })
+        .map(|a| (a.name.unwrap_or_else(|| a.harness.clone()), a.harness)))
 }
 
 /// What sending one outbox row did.
@@ -513,11 +566,15 @@ impl Sync {
         &self.s
     }
 
-    /// Ends the sync's session there.
+    /// Ends the sync's sessions there.
     async fn end(&mut self) {
         if let Some(mut c) = self.client.take() {
             clax_http::public::sendable(c.end_session()).await;
         }
+        for (_, (mut c, _)) in std::mem::take(&mut self.agents) {
+            clax_http::public::sendable(c.end_session()).await;
+        }
+        self.asked_in.clear();
     }
 
     /// The client, signed in and in the sync's session, watching every
@@ -546,19 +603,40 @@ impl Sync {
         }
         let c = self.client.as_ref().expect("connected");
         let sid = c.session().map(|s| s.0.clone()).unwrap_or_default();
-        for l in links {
-            if self.watched.contains(&l.remote_artifact_id) {
+        let locals: Vec<String> = links.iter().map(|l| l.artifact_id.clone()).collect();
+        let relays = self
+            .s
+            .store_call(move |st| {
+                locals
+                    .iter()
+                    .map(|aid| local_relay(st, aid))
+                    .collect::<clax_core::Result<Vec<_>>>()
+            })
+            .await?;
+        for (l, relay) in links.iter().zip(relays) {
+            if self.watched.get(&l.remote_artifact_id) == Some(&relay) {
                 continue;
             }
-            match clax_http::public::sendable(c.call(
-                reqwest::Method::PUT,
-                &format!("/api/sessions/{sid}/watches/{}", l.remote_artifact_id),
-                Some(&json!({})),
-            ))
-            .await
-            {
+            let path = format!("/api/sessions/{sid}/watches/{}", l.remote_artifact_id);
+            let body = json!({"as": relay.as_ref().map(|(name, harness)| json!({"name": name, "harness": harness}))});
+            let watched =
+                match clax_http::public::sendable(c.call(reqwest::Method::PUT, &path, Some(&body)))
+                    .await
+                {
+                    // A public Clax older than the relay label watches without it.
+                    Err(f) if f.status == Some(400) => {
+                        clax_http::public::sendable(c.call(
+                            reqwest::Method::PUT,
+                            &path,
+                            Some(&json!({})),
+                        ))
+                        .await
+                    }
+                    r => r,
+                };
+            match watched {
                 Ok(_) => {
-                    self.watched.insert(l.remote_artifact_id.clone());
+                    self.watched.insert(l.remote_artifact_id.clone(), relay);
                 }
                 // A public copy gone there (or not this person's to watch)
                 // leaves the remote's other links syncing.
@@ -589,11 +667,39 @@ impl Sync {
             return Err("offline".into());
         }
         let sid = c.session().map(|s| s.0.clone()).unwrap_or_default();
-        let v = clax_http::public::sendable(c.get(&format!(
-            "/api/sessions/{sid}/feedback?tier=wait&wait={WAIT_S}"
-        )))
-        .await
-        .map_err(|f| f.message)?;
+        // An answer to a copy asked in a local agent's session there wakes
+        // that session, not the sync's: the sync also waits on each open
+        // copy, any of which answering starts a cycle.
+        let rid = self.rid.clone();
+        let open: Vec<String> = self
+            .s
+            .store_call(move |st| {
+                Ok(st
+                    .live_linked_questions(&rid)?
+                    .into_iter()
+                    .filter_map(|r| r.remote_question_id)
+                    .collect())
+            })
+            .await
+            .unwrap_or_default();
+        let feedback_path = format!("/api/sessions/{sid}/feedback?tier=wait&wait={WAIT_S}");
+        let feedback = Box::pin(clax_http::public::sendable(c.get(&feedback_path)));
+        let paths: Vec<String> = open
+            .iter()
+            .map(|q| format!("/api/sessions/{sid}/questions/{q}?wait={WAIT_S}"))
+            .collect();
+        let v = if paths.is_empty() {
+            feedback.await.map_err(|f| f.message)?
+        } else {
+            let waits: Vec<_> = paths
+                .iter()
+                .map(|p| Box::pin(clax_http::public::sendable(c.get(p))))
+                .collect();
+            tokio::select! {
+                v = feedback => v.map_err(|f| f.message)?,
+                _ = futures::future::select_all(waits) => return Ok(()),
+            }
+        };
         for i in v["feedback"].as_array().into_iter().flatten() {
             if let Some(t) = i["thread_id"].as_str() {
                 self.acks.push(t.to_string());
@@ -641,7 +747,9 @@ impl Sync {
         let rid = self.rid.clone();
         let rows = self.s.store_call(move |st| st.outbox_of(&rid)).await?;
         let mut blocked: HashSet<String> = HashSet::new();
-        let mut agents: HashMap<String, (Client, String)> = HashMap::new();
+        // The sessions named as local agents: kept for the cycle's questions,
+        // which end those no open copy needs.
+        let mut agents = std::mem::take(&mut self.agents);
         let mut changed: HashSet<String> = HashSet::new();
         let mut out = Ok(());
         for row in rows {
@@ -685,9 +793,7 @@ impl Sync {
                 }
             }
         }
-        for (_, (mut c, _)) in agents {
-            clax_http::public::sendable(c.end_session()).await;
-        }
+        self.agents = agents;
         let ctx = self.s.feedback_ctx();
         let _ = self
             .s
@@ -1035,8 +1141,9 @@ impl Sync {
             .await?;
         let mut changed: Vec<String> = Vec::new();
         let mut out = Ok(());
+        let mut agents = std::mem::take(&mut self.agents);
         for row in rows {
-            match self.question(&row, links).await {
+            match self.question(&row, links, &mut agents).await {
                 Ok(true) => changed.push(row.question_id.clone()),
                 Ok(false) => {}
                 Err(why) => {
@@ -1050,6 +1157,7 @@ impl Sync {
                 }
             }
         }
+        self.keep_askers(agents).await;
         if !changed.is_empty() {
             let st2 = self.s.clone();
             let _ = self
@@ -1060,9 +1168,56 @@ impl Sync {
         out
     }
 
+    /// Keeps the sessions named as local agents in which an open copy was
+    /// asked, heartbeating them so they outlive the remote's idle reaping
+    /// (their copies are withdrawn when they end), and ends the rest.
+    async fn keep_askers(&mut self, mut agents: HashMap<String, (Client, String)>) {
+        let rid = self.rid.clone();
+        // A copy whose ask's answer was lost may have been made there: its
+        // session stays until the copy is done.
+        let live: HashSet<String> = match self
+            .s
+            .store_call(move |st| st.live_linked_questions(&rid))
+            .await
+        {
+            Ok(rows) => rows.into_iter().map(|r| r.question_id).collect(),
+            // Kept as they are until a cycle can tell.
+            Err(_) => {
+                self.agents = agents;
+                return;
+            }
+        };
+        self.asked_in.retain(|qid, _| live.contains(qid));
+        let needed: HashSet<String> = self.asked_in.values().cloned().collect();
+        for name in agents.keys().cloned().collect::<Vec<_>>() {
+            if needed.contains(&name) {
+                continue;
+            }
+            if let Some((mut c, _)) = agents.remove(&name) {
+                clax_http::public::sendable(c.end_session()).await;
+            }
+        }
+        for (c, _) in agents.values() {
+            if let Some((sid, _)) = c.session() {
+                let _ = clax_http::public::sendable(c.call(
+                    reqwest::Method::PATCH,
+                    &format!("/api/sessions/{sid}"),
+                    Some(&json!({"heartbeat": true})),
+                ))
+                .await;
+            }
+        }
+        self.agents = agents;
+    }
+
     /// Brings question copy `row` in step; whether its view changed here.
     /// `Err` when the remote could not be reached.
-    async fn question(&self, row: &LinkedQuestion, links: &[RemoteLink]) -> Result<bool, String> {
+    async fn question(
+        &mut self,
+        row: &LinkedQuestion,
+        links: &[RemoteLink],
+        agents: &mut HashMap<String, (Client, String)>,
+    ) -> Result<bool, String> {
         let qid = row.question_id.clone();
         let linked = links.iter().any(|l| l.artifact_id == row.artifact_id);
         let mut rqid = row.remote_question_id.clone();
@@ -1079,7 +1234,7 @@ impl Sync {
             if row.failed_at.is_some() && row.attempts == 0 {
                 return Ok(false);
             }
-            match self.ask_there(row).await? {
+            match self.ask_there(row, agents).await? {
                 Ok(made) => rqid = Some(made),
                 Err(why) => {
                     let q2 = qid.clone();
@@ -1207,19 +1362,45 @@ impl Sync {
 
     /// Asks question copy `row` there under its key: `Ok(Ok(id))` with the
     /// copy's ID there, `Ok(Err(why))` when the remote refused it, `Err`
-    /// when it could not be reached.
-    async fn ask_there(&self, row: &LinkedQuestion) -> Result<Result<String, String>, String> {
+    /// when it could not be reached. It is asked in a session there named
+    /// as the local agent that asked it (in `agents`), so the card there
+    /// names that agent; the sync's own session reads and withdraws it, as
+    /// a keyed question is any of the token's sessions'.
+    async fn ask_there(
+        &mut self,
+        row: &LinkedQuestion,
+        agents: &mut HashMap<String, (Client, String)>,
+    ) -> Result<Result<String, String>, String> {
         let qid = row.question_id.clone();
-        let q = self
+        let (q, asker) = self
             .s
-            .store_call(move |st| st.question(&qid))
+            .store_call(move |st| {
+                let q = st.question(&qid)?;
+                let asker = match &q {
+                    Some(q) => st
+                        .get_session(&q.session_id)?
+                        .filter(|x| {
+                            crate::routes::sessions::HARNESSES.contains(&x.harness.as_str())
+                        })
+                        .map(|x| (x.name.unwrap_or_else(|| x.harness.clone()), x.harness)),
+                    None => None,
+                };
+                Ok((q, asker))
+            })
             .await
             .map_err(|e| e.message)?;
         let Some(q) = q else {
             return Ok(Err("the question is gone".into()));
         };
-        let c = self.client.as_ref().expect("connected");
+        let c = match &asker {
+            Some((name, harness)) => &self.agent_client(agents, name, harness).await?.0,
+            None => self.client.as_ref().expect("connected"),
+        };
         let sid = c.session().map(|s| s.0.clone()).unwrap_or_default();
+        if let Some((name, _)) = &asker {
+            // Before the try: one whose answer is lost may have made it.
+            self.asked_in.insert(row.question_id.clone(), name.clone());
+        }
         let body = json!({
             "questions": q.questions,
             "artifact_id": row.remote_artifact_id,

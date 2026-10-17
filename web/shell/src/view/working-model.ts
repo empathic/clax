@@ -2,6 +2,7 @@
 // over the daemon's working views, shared by the top bar, the gallery, the
 // sidebar, the pins and the capability.
 import type { Participants } from "../api";
+import { shownName } from "./agent-display";
 
 export type Working = { key: string; agent: string; harness: string; name?: string | null; message: string | null; thread_ids: string[]; started_at: string; last_heartbeat: string };
 export type AgentView = Participants["agents"][number];
@@ -18,7 +19,7 @@ export function newestFirst(list: Working[]): Working[] {
 
 /** Handle → name: its agent name (spec 2026-10-08 §11), else the harness, with the handle's first four hex digits when two agents share it. */
 export function agentNames(list: Working[], agents: AgentView[]): Map<string, string> {
-  const all = new Map<string, string>(agents.map(a => [a.handle, a.name || a.harness]));
+  const all = new Map<string, string>(agents.map(a => [a.handle, shownName(a.name || a.harness, a.via)]));
   for (const w of list) if (!all.has(w.agent)) all.set(w.agent, w.name || w.harness);
   const count = new Map<string, number>();
   for (const h of all.values()) count.set(h, (count.get(h) ?? 0) + 1);

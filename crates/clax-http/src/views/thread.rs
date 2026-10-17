@@ -286,7 +286,11 @@ fn mark_participants(vis: &Visibility, view: &mut Value) {
     if let Some(agents) = view["participants"]["agents"].as_array_mut() {
         for a in agents {
             if let Some(n) = a["person"]["name"].as_str().map(str::to_string) {
-                a["person"]["name"] = json!(clax_core::feedback::display_name(&n));
+                let n = clax_core::feedback::display_name(&n);
+                if a.get("via").is_some_and(|v| v.is_string()) {
+                    a["via"] = json!(clax_store::attention::relay_via(&n));
+                }
+                a["person"]["name"] = json!(n);
             }
         }
     }

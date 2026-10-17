@@ -73,6 +73,8 @@ describe("question model", () => {
     const s = { ...view().questions[0], options: [{ label: "A", preview: "p" }, { label: "B" }] };
     expect(previewOf(s, "B", { selected: [], text: "" })).toBe("");
     expect(agentLabel(null, [])).toBe("an agent");
+    // Another Clax's agent: with whose Clax it asks from.
+    expect(agentLabel({ handle: "a_rel", harness: "claude", project: null, name: "claude", via: "Alex's Clax" }, [])).toBe("claude · via Alex's Clax");
     expect(closedLabel(view({ status: "withdrawn", agent: null }))).toBe("an agent stopped waiting");
     expect(closedLabel(view({ status: "declined" }))).toBe("Skipped");
     expect(closedLabel(view({ status: "answered", answered_via: "shell" }))).toBe("Answered");

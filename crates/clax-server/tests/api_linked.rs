@@ -1112,6 +1112,68 @@ async fn a_local_ask_on_a_linked_artifact_is_asked_there_and_answered_from_there
     assert_eq!(p.hosted_questions().await.len(), 2);
 }
 
+impl Pair {
+    /// The live agents of another Clax on the public copy, as its
+    /// participants list them.
+    async fn relayed(&self) -> Vec<Value> {
+        let path = format!("/api/artifacts/{}", self.raid);
+        let (s, v) = self
+            .public
+            .browser(reqwest::Method::GET, &path, json!(null))
+            .await;
+        assert_eq!(s, 200, "{v}");
+        v["artifact"]["participants"]["agents"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|a| a["live"] == true && a["via"].is_string())
+            .collect()
+    }
+}
+
+/// The public copy names the agent the sync relays for as the local agent
+/// live on the artifact, with whose Clax it relays from: in its
+/// participants (the roster and the Send menu) and on a question the local
+/// agent asks. With no local agent live there, the sync's own name shows.
+#[tokio::test]
+async fn the_public_copy_names_the_local_agent_the_sync_relays_for() {
+    let p = Pair::new().await;
+    let alone = p.relayed().await;
+    assert_eq!(alone.len(), 1, "{alone:?}");
+    assert_eq!(alone[0]["name"], "clax-sync", "{alone:?}");
+    // The local agent's watch starts a cycle: no backstop is fired.
+    let sid = p.local_agent("asker").await;
+    let named = until("the public copy names the local agent", || async {
+        let a = p.relayed().await;
+        (a.len() == 1 && a[0]["name"] == "asker").then_some(a)
+    })
+    .await;
+    let person = named[0]["person"]["name"].as_str().unwrap().to_string();
+    assert_eq!(named[0]["via"], format!("{person}'s Clax"), "{named:?}");
+    assert_eq!(named[0]["harness"], "claude", "{named:?}");
+    // Its question is asked there as that agent, from that Clax.
+    p.ask(&sid, Some(&p.aid), "Which colour?").await;
+    let there = p.hosted_question("Which colour?").await;
+    assert_eq!(there["agent"]["name"], "asker", "{there}");
+    assert_eq!(there["agent"]["via"], format!("{person}'s Clax"), "{there}");
+    // Its session ending here leaves the sync's own name there.
+    let (s, v) = p
+        .local_req(
+            reqwest::Method::PATCH,
+            &format!("/api/sessions/{sid}"),
+            json!({"ended": true}),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    until("the public copy names the sync again", || async {
+        let a = p.relayed().await;
+        (a.len() == 1 && a[0]["name"] == "clax-sync").then_some(())
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn a_question_closed_here_first_is_withdrawn_there() {
     let p = Pair::new().await;

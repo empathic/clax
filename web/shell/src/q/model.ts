@@ -3,6 +3,7 @@
 // the body the owner route takes, which preview to show, and the card's
 // names for agents and closed states. Pure: no DOM.
 import type { AnswerBody, QAgent, QOption, QuestionSpec, QuestionView } from "../api";
+import { shownName } from "../view/agent-display";
 
 /** One entry per question: the picked labels (in option order) and the
  * "Other" or free text as typed. */
@@ -69,7 +70,7 @@ export function previewOf(s: QuestionSpec, focused: string | null, a: Draft[numb
  * among `others`. */
 export function agentLabel(agent: QAgent | null, others: (QAgent | null)[]): string {
   if (!agent) return "an agent";
-  if (agent.name) return agent.name;
+  if (agent.name) return shownName(agent.name, agent.via);
   const twin = others.some(o => o && o.harness === agent.harness && o.handle !== agent.handle);
   return twin ? `${agent.harness} ${agent.handle.replace(/^a_/, "").slice(0, 4)}` : agent.harness;
 }

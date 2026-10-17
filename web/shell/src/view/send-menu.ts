@@ -4,6 +4,7 @@
 // the order their agents are listed; an agent whose person must approve the thread's
 // authors first says so ("Sam approves first").
 import type { Viewer } from "../threads";
+import { shownName } from "./agent-display";
 import type { AgentView } from "./working-model";
 
 /** Who approves a send of threads `threads` of artifact `aid` first (null:
@@ -35,7 +36,7 @@ export function sendGroups(agents: AgentView[], me: string | null | undefined, f
     const g = groups.get(key) ?? { label: mine ? "Your agents" : `${who}'s agents`, mine, owner: owners, agents: [] };
     groups.set(key, g);
     const asks = firsts.includes(owners ? null : p.public_id);
-    g.agents.push({ handle: a.handle, name: a.name ?? names?.get(a.handle) ?? a.harness, person: mine ? null : `${who}'s agent`, first: asks ? (mine ? "You approve first" : `${who} approves first`) : null });
+    g.agents.push({ handle: a.handle, name: a.name ? shownName(a.name, a.via) : names?.get(a.handle) ?? a.harness, person: mine ? null : `${who}'s agent`, first: asks ? (mine ? "You approve first" : `${who} approves first`) : null });
   }
   // Yours first, then the owner's, then each other person's in the daemon's order.
   const rank = (g: { mine: boolean; owner: boolean }) => (g.mine ? 0 : g.owner ? 1 : 2);

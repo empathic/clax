@@ -1100,12 +1100,17 @@ pub const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (grant_id, key)
     );
     CREATE INDEX question_keys_by_question ON question_keys(question_id, grant_id);",
-    // 36: a member's own-space rights (`crate::store::github::member_rights`)
+    // 36: a member's own-space rights (`crate::github::member_rights`)
     // gain `clax-ask`, so their agents may ask them. Rows holding exactly the
     // earlier member rights, as stored, are given the new ones; rights the
-    // owner set otherwise are left as they are.
+    // owner set otherwise are left as they are. A watch of another Clax's
+    // sync session names the local agent it relays for there
+    // (`relay_name`, `relay_harness`; `crate::watches`), which the
+    // artifact's participants show in place of the sync's own name.
     r#"UPDATE viewers SET rights_json = '[{"actions":["create"],"locations":["*"],"type":"clax-artifacts"},{"actions":["delete","read","update"],"locations":["own"],"type":"clax-artifacts"},{"actions":["read","reply","resolve","send","watch","write"],"locations":["own"],"type":"clax-comments"},{"actions":["read","write"],"level":"admin","locations":["own"],"type":"clax-db"},{"actions":["ask"],"type":"clax-ask"}]'
-        WHERE rights_json = '[{"actions":["create"],"locations":["*"],"type":"clax-artifacts"},{"actions":["delete","read","update"],"locations":["own"],"type":"clax-artifacts"},{"actions":["read","reply","resolve","send","watch","write"],"locations":["own"],"type":"clax-comments"},{"actions":["read","write"],"level":"admin","locations":["own"],"type":"clax-db"}]';"#,
+        WHERE rights_json = '[{"actions":["create"],"locations":["*"],"type":"clax-artifacts"},{"actions":["delete","read","update"],"locations":["own"],"type":"clax-artifacts"},{"actions":["read","reply","resolve","send","watch","write"],"locations":["own"],"type":"clax-comments"},{"actions":["read","write"],"level":"admin","locations":["own"],"type":"clax-db"}]';
+    ALTER TABLE watches ADD COLUMN relay_name TEXT;
+    ALTER TABLE watches ADD COLUMN relay_harness TEXT;"#,
 ];
 
 /// The audit journal's migration, as a schema version (the
@@ -1988,13 +1993,19 @@ mod tests {
         let st = Store::open(&home).unwrap();
         let rights = |id: &str| -> Option<String> {
             st.with_read(|c| {
-                Ok(c.query_row("SELECT rights_json FROM viewers WHERE id = ?1", [id], |r| r.get(0))?)
+                Ok(
+                    c.query_row("SELECT rights_json FROM viewers WHERE id = ?1", [id], |r| {
+                        r.get(0)
+                    })?,
+                )
             })
             .unwrap()
         };
         assert_eq!(
             rights("v1"),
-            Some(super::super::people::write_rights(&crate::store::github::member_rights())),
+            Some(super::super::people::write_rights(
+                &crate::github::member_rights()
+            )),
             "a member with the earlier own-space rights gets the current ones"
         );
         assert_eq!(rights("v2"), Some(custom), "rights set otherwise are kept");

@@ -41,6 +41,11 @@ describe("the Send menu", () => {
     expect(sendGroups([{ handle: "a_old", harness: "claude", live: true }], "u_alex")).toEqual([{ label: "Your agents", mine: true, agents: [{ handle: "a_old", name: "claude", person: null, first: null }] }]);
   });
 
+  it("names another Clax's agent with whose Clax it relays from", () => {
+    const relayed = [{ handle: "a_rel", harness: "claude", live: true, name: "claude", person: { public_id: "u_alex", name: "Alex", owner: true }, via: "Alex's Clax" }];
+    expect(sendGroups(relayed, "u_sam")[0].agents[0].name).toBe("claude · via Alex's Clax");
+  });
+
   it("lists Your agents, then Sam's agents, by name, in the caret's menu", async () => {
     const onChoose = vi.fn();
     const asked = stubFirsts(["u_sam"]);
