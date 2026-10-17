@@ -7,9 +7,9 @@ use crate::error::ApiError;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, header};
-use clax_core::Store;
 use clax_core::feedback::display_name;
-use clax_core::store::viewers::is_cookie;
+use clax_store::Store;
+use clax_store::viewers::is_cookie;
 
 pub const COOKIE: &str = "clax_viewer";
 

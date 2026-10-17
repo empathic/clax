@@ -13,8 +13,9 @@ use clax_core::daemon::read_daemon_info;
 use clax_core::daemon::remove_daemon_info;
 use clax_core::daemon::write_daemon_info;
 use clax_core::daemon::write_starting_info;
-use clax_core::{EventBus, Home, Store};
+use clax_core::{EventBus, Home};
 use clax_http::state::AppState;
+use clax_store::Store;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -85,7 +86,7 @@ impl Starting {
 
     /// Records the backfill's progress, writing it at most every 100 ms
     /// within a phase.
-    pub fn progress(&mut self, p: &clax_core::store::backfill::Progress) {
+    pub fn progress(&mut self, p: &clax_store::backfill::Progress) {
         let mut info = self.info.lock().unwrap_or_else(|e| e.into_inner());
         let phase = p.phase.label().to_string();
         let changed = info.phase != phase;
@@ -122,7 +123,7 @@ pub fn reap_idle(
     store: &Store,
     idle: Duration,
     pid_alive: &dyn Fn(u32) -> bool,
-) -> clax_core::Result<clax_core::Reaped> {
+) -> clax_core::Result<clax_store::Reaped> {
     let r = store.reap_sessions(idle, pid_alive)?;
     let ttl = clax_core::audit::AuditCtx::system(clax_core::audit::SystemReason::Ttl);
     clax_realtime::feedback::sessions_stop(ctx, store, &ttl, &r.touched, &r.ended);
@@ -481,7 +482,7 @@ pub async fn serve(
     });
 
     let optimizer = tokio::spawn(async move {
-        let mut every = tokio::time::interval(clax_core::store::OPTIMIZE_INTERVAL);
+        let mut every = tokio::time::interval(clax_store::OPTIMIZE_INTERVAL);
         every.tick().await;
         loop {
             every.tick().await;

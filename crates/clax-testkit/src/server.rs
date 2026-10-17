@@ -4,10 +4,11 @@
 use crate::*;
 use clax_core::daemon::{browser_host, probe_host};
 use clax_core::working::{Clock, ManualClock, SystemClock};
-use clax_core::{EventBus, Home, Store};
+use clax_core::{EventBus, Home};
 use clax_http::AppState;
 use clax_http::wrap_cache::WrapCache;
 use clax_server::build_router;
+use clax_store::Store;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;

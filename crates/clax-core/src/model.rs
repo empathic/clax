@@ -296,3 +296,31 @@ mod tests {
         assert_eq!(v["untargeted_at"], "2026-01-02T00:00:00.000Z");
     }
 }
+
+/// What a harness shim or hook reports when it starts.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RegisterSession {
+    pub harness: String,
+    #[serde(default)]
+    pub harness_session_id: Option<String>,
+    pub cwd: String,
+    #[serde(default)]
+    pub pid: Option<u32>,
+    #[serde(default)]
+    pub parent_pid: Option<u32>,
+    /// The harness's transcript file, where the harness's extension API
+    /// names one (Pi's session file). Not sent when absent, so an older
+    /// daemon is not asked to read it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_path: Option<String>,
+    /// The grant the caller authenticated with; `None` for the daemon token.
+    /// Set by the daemon from the credential, never read from a body.
+    #[serde(skip)]
+    pub grant_id: Option<String>,
+    /// The repository's directory name, for the agent's name (spec §11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    /// The repository's branch, for the agent's name (spec §11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+}

@@ -18,7 +18,8 @@ use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use clax_core::db::{Caller, Level};
 use clax_core::visibility::Author;
-use clax_core::{ArtifactId, CoreError, Store};
+use clax_core::{ArtifactId, CoreError};
+use clax_store::Store;
 
 /// The value of the first `key=` parameter of `parts`' query string,
 /// percent-decoded (`+` is a space). `Some(None)` when the value's encoding

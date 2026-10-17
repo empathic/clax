@@ -2,10 +2,11 @@
 //! share: its owner fields, its live page, and the session IDs a token-less
 //! caller must not see.
 
+use clax_core::ArtifactId;
 use clax_core::live::KIND_LIVE;
 use clax_core::model::{Artifact, Session};
-use clax_core::store::live::LivePage;
-use clax_core::{ArtifactId, Participants, Store};
+use clax_store::live::LivePage;
+use clax_store::{Participants, Store};
 use serde_json::{Value, json};
 
 /// `a` as JSON with `owner_live` (its owner session exists and has not ended),

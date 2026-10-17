@@ -219,7 +219,7 @@ async fn connect_with_an_invite_writes_remote_json_and_key_0600() {
         (
             owner.public_id.as_str(),
             "connect",
-            clax_core::store::approvals::ScopeKind::Everywhere
+            clax_store::approvals::ScopeKind::Everywhere
         )
     );
     // Only remote.json holds a token; no file holds the key's bytes but
@@ -793,8 +793,8 @@ async fn remote_cli_commands_work_as_listed() {
             &clax_core::audit::AuditCtx::DAEMON,
             Some(&sam.public_id),
             &owner.public_id,
-            clax_core::store::approvals::Scope::Everywhere,
-            clax_core::store::approvals::Via::Connect,
+            clax_store::approvals::Scope::Everywhere,
+            clax_store::approvals::Via::Connect,
         )
         .unwrap();
     let r = w
@@ -1282,7 +1282,7 @@ async fn a_codex_hook_finds_its_shims_session_by_its_parent_and_never_by_a_reuse
         .register_session_proved(
             &clax_core::audit::AuditCtx::DAEMON,
             shim(None),
-            clax_core::Proved::Unchecked,
+            clax_store::Proved::Unchecked,
         )
         .unwrap();
     let files = SessionFiles::of(&Home::at(m.home()));
@@ -1327,7 +1327,7 @@ async fn a_codex_hook_finds_its_shims_session_by_its_parent_and_never_by_a_reuse
         .register_session_proved(
             &clax_core::audit::AuditCtx::DAEMON,
             shim(None),
-            clax_core::Proved::Unchecked,
+            clax_store::Proved::Unchecked,
         )
         .unwrap();
     let ppid = m.credential(&format!("codex-p-{me}.json"));
@@ -1367,7 +1367,7 @@ async fn a_hook_behind_a_wrapper_shell_finds_its_shims_session_by_an_ancestor() 
                 grant_id: Some(gid),
                 ..Default::default()
             },
-            clax_core::Proved::Unchecked,
+            clax_store::Proved::Unchecked,
         )
         .unwrap();
     SessionFiles::of(&Home::at(m.home()))
@@ -1488,8 +1488,8 @@ async fn remote_hooks_find_their_session() {
             &clax_core::audit::AuditCtx::DAEMON,
             Some(&sam.public_id),
             &owner.public_id,
-            clax_core::store::approvals::Scope::Everywhere,
-            clax_core::store::approvals::Via::Connect,
+            clax_store::approvals::Scope::Everywhere,
+            clax_store::approvals::Via::Connect,
         )
         .unwrap();
     // Sam's comment, with a clip.
@@ -1832,8 +1832,8 @@ async fn a_remote_hook_prints_its_comments_when_clips_do_not_come() {
             &clax_core::audit::AuditCtx::DAEMON,
             Some(&sam.public_id),
             &owner.public_id,
-            clax_core::store::approvals::Scope::Everywhere,
-            clax_core::store::approvals::Via::Connect,
+            clax_store::approvals::Scope::Everywhere,
+            clax_store::approvals::Via::Connect,
         )
         .unwrap();
     for body in ["FIRSTCLIP", "SECONDCLIP"] {

@@ -177,7 +177,7 @@ async fn a_pages_upload_carries_every_author_of_the_page() {
         .store
         .create_invite(
             &clax_core::audit::AuditCtx::DAEMON,
-            clax_core::store::people::InvitePerson::New("Mia".into()),
+            clax_store::people::InvitePerson::New("Mia".into()),
             None,
         )
         .unwrap();

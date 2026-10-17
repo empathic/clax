@@ -8,8 +8,6 @@ use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use clax_core::audit::ToolCallReport;
-use clax_core::toolpath::RenderEnv;
-use clax_core::toolpath::project;
 use clax_http::agent::TokenOrAgent;
 use clax_http::audit::DeferredAudit;
 use clax_http::auth::RequireToken;
@@ -17,6 +15,8 @@ use clax_http::error::ApiError;
 use clax_http::exports::Exports;
 use clax_http::identity::Identity;
 use clax_http::state::AppState;
+use clax_store::toolpath::RenderEnv;
+use clax_store::toolpath::project;
 use std::time::{Duration, Instant};
 
 /// Whether `who` may read the audit history: the owner, by the daemon

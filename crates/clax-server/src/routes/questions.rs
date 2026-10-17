@@ -16,10 +16,9 @@ use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use clax_core::CoreError;
 use clax_core::audit::AuditCtx;
 use clax_core::questions::{Answer, Question, from_claude, from_claude_answers, validate_ask};
-use clax_core::store::questions::{Close, ListStatus, NewQuestion, Source, Status};
-use clax_core::{CoreError, Store};
 use clax_http::agent::{DeniedToGrants, TokenOrAgent};
 use clax_http::audit::DeferredAudit;
 use clax_http::auth::Caller;
@@ -32,6 +31,8 @@ use clax_http::viewer::SameOrigin;
 use clax_http::views::inbox::recipient_of;
 use clax_http::views::question::{announce, arm_grace, start_grace, view as question_view};
 use clax_http::views::thread::VisFor;
+use clax_store::Store;
+use clax_store::questions::{Close, ListStatus, NewQuestion, Source, Status};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::time::Duration;
@@ -201,7 +202,7 @@ pub async fn create(
     };
     let surface_open = s
         .stream
-        .holds_surface(clax_core::store::inbox::recipient_key(asker.as_deref()));
+        .holds_surface(clax_store::inbox::recipient_key(asker.as_deref()));
     let vf = VisFor::of(&a.caller, &s);
     let after = s.terminal_after_s;
     let artifact_id = match (&b.artifact_id, source) {

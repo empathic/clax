@@ -409,6 +409,7 @@ dependencies = [
  "clax-realtime",
  "clax-sample",
  "clax-server",
+ "clax-store",
  "clax-testkit",
  "nix",
  "predicates",
@@ -432,6 +433,7 @@ dependencies = [
  "clax-fake-exe",
  "clax-hooks",
  "clax-mcp",
+ "clax-store",
  "http",
  "nix",
  "reqwest",
@@ -518,6 +520,7 @@ dependencies = [
  "clax-core",
  "clax-realtime",
  "clax-sample",
+ "clax-store",
  "futures",
  "serde",
  "serde_json",
@@ -540,6 +543,7 @@ dependencies = [
  "bytes",
  "clax-core",
  "clax-fake-exe",
+ "clax-store",
  "clax-testkit",
  "http",
  "reqwest",
@@ -561,6 +565,7 @@ dependencies = [
  "bytes",
  "clax-core",
  "clax-fake-exe",
+ "clax-store",
  "futures",
  "rand 0.9.5",
  "serde",
@@ -603,6 +608,7 @@ dependencies = [
  "clax-mcp",
  "clax-realtime",
  "clax-sample",
+ "clax-store",
  "clax-testkit",
  "futures",
  "mime_guess",
@@ -629,6 +635,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "clax-store"
+version = "0.4.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "clax-core",
+ "clax-fake-exe",
+ "mime_guess",
+ "nix",
+ "rand 0.9.5",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "clax-testkit"
 version = "0.4.0"
 dependencies = [
@@ -639,6 +666,7 @@ dependencies = [
  "clax-realtime",
  "clax-sample",
  "clax-server",
+ "clax-store",
  "futures",
  "reqwest",
  "rusqlite",

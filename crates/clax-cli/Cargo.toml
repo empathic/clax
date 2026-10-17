@@ -27,6 +27,7 @@ tracing-subscriber.workspace = true
 nix.workspace = true
 
 [dev-dependencies]
+clax-store = { path = "../clax-store" }
 chrono.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true

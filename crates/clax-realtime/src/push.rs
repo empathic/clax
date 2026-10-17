@@ -9,7 +9,7 @@
 
 use crate::feedback::{FeedbackCtx, publish_states};
 use clax_core::feedback::{Tier, Touched, render_items};
-use clax_core::{Store, TakeFeedback};
+use clax_store::{Store, TakeFeedback};
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -233,7 +233,7 @@ pub fn dispatch(ctx: &FeedbackCtx, st: &Store, targets: &BTreeSet<String>) {
         // A view an approval or revocation overtook takes nothing: build
         // it again.
         let taken = (|| loop {
-            let vis = clax_core::store::visibility::Visibility::for_session(st, sid)?;
+            let vis = clax_store::visibility::Visibility::for_session(st, sid)?;
             let t = st.take_feedback(
                 &clax_core::audit::AuditCtx::DAEMON,
                 &q,

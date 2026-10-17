@@ -294,8 +294,8 @@ pub fn tool_call_id(
     }
     // Missing arguments, absent or null, are `{}` (§12.2), as for the shim.
     let args_sha256 = match input.rest.get("tool_input") {
-        Some(args) if !args.is_null() => clax_core::toolpath::args::args_sha256(args),
-        _ => clax_core::toolpath::args::object_sha256(&serde_json::Map::new()),
+        Some(args) if !args.is_null() => clax_core::audit::args::args_sha256(args),
+        _ => clax_core::audit::args::object_sha256(&serde_json::Map::new()),
     };
     if let Some(sid) = live_session(harness, input, daemon)? {
         daemon.post(

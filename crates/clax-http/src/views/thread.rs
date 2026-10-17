@@ -2,15 +2,16 @@
 //! channel may see of it ([`Vis`]).
 
 use crate::state::AppState;
+use clax_core::ArtifactId;
 use clax_core::model::{Artifact, Asset, Comment, Thread, Version};
-use clax_core::store::approvals::UNCONNECTED;
-use clax_core::store::docs::{Acquired, Doc, DocPage, Written};
-use clax_core::store::live::LivePage;
-use clax_core::store::threads::ThreadOwner;
-use clax_core::store::visibility::placeholder::{self, ApprovalState, WithheldAuthor};
-use clax_core::store::visibility::{self, Author, Reader, Visibility};
 use clax_core::working::{SessionWorking, WorkingView};
-use clax_core::{ArtifactId, DeliveryViewer, Store};
+use clax_store::approvals::UNCONNECTED;
+use clax_store::docs::{Acquired, Doc, DocPage, Written};
+use clax_store::live::LivePage;
+use clax_store::threads::ThreadOwner;
+use clax_store::visibility::placeholder::{self, ApprovalState, WithheldAuthor};
+use clax_store::visibility::{self, Author, Reader, Visibility};
+use clax_store::{DeliveryViewer, Store};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
@@ -69,7 +70,7 @@ pub fn thread_event_views(
 }
 
 /// [`thread_views`] as `viewer` reads them: each `feedback_state` its
-/// [`clax_core::Delivery::view`].
+/// [`clax_store::Delivery::view`].
 pub fn thread_views_as(
     st: &Store,
     threads: &[Thread],
@@ -81,7 +82,7 @@ pub fn thread_views_as(
 }
 
 /// Each thread view's batch senders, in `sends` order
-/// ([`clax_core::store::batches::ThreadSend::sender`], never served).
+/// ([`clax_store::batches::ThreadSend::sender`], never served).
 type Senders = Vec<Vec<Option<String>>>;
 
 /// Each thread view's owner agent, when it has one.
@@ -184,7 +185,7 @@ fn views_and_senders(
 /// with no `agent` object; one from a session with no name keeps its
 /// stored name.
 fn mark_comment(vis: &Visibility, c: &Comment, view: &mut Value) {
-    if c.author_kind == clax_core::store::threads::AUTHOR_AGENT {
+    if c.author_kind == clax_store::threads::AUTHOR_AGENT {
         if let (Some(a), Some(harness)) = (&c.agent, &c.via_harness) {
             let reader = match vis.reader() {
                 Some(Reader::Person(p)) => Some(p.as_str()),
@@ -277,7 +278,7 @@ pub struct VisFor {
     pub agent: Option<Option<String>>,
     /// Whose agents' handles thread views name in `owner`.
     pub handles: Handles,
-    /// How thread views read their delivery state ([`clax_core::Delivery::view`]).
+    /// How thread views read their delivery state ([`clax_store::Delivery::view`]).
     pub viewer: DeliveryViewer,
 }
 
@@ -994,7 +995,7 @@ impl<'a> Withhold<'a> {
     fn artifact(&mut self, a: &Artifact, view: &mut Value) -> clax_core::Result<()> {
         let mut fields = Vec::new();
         let mut withheld: Vec<Author> = Vec::new();
-        for f in clax_core::store::artifacts::TEXT_FIELDS {
+        for f in clax_store::artifacts::TEXT_FIELDS {
             let w = self.vis.withheld_authors(
                 &visibility::authors_of_artifact_field(a, f),
                 &a.id,

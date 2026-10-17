@@ -365,7 +365,7 @@ fn missing_clax_home_and_home_is_an_error() {
 fn doctor_names_corrupt_rows_and_still_checks_good_artifacts() {
     let e = Env::new();
     let home = clax_core::Home::at(e.dir.path().join("ax"));
-    let store = clax_core::Store::open(&home).unwrap();
+    let store = clax_store::Store::open(&home).unwrap();
     let make = |title: &str| {
         let p = clax_core::publish::validate(
             serde_json::from_value(serde_json::json!({
@@ -417,7 +417,7 @@ fn doctor_names_corrupt_rows_and_still_checks_good_artifacts() {
     assert_eq!(files["detail"], format!("missing {good}:index.html"));
 }
 
-fn make_artifact(store: &clax_core::Store, title: &str) -> clax_core::ArtifactId {
+fn make_artifact(store: &clax_store::Store, title: &str) -> clax_core::ArtifactId {
     let p = clax_core::publish::validate(
         serde_json::from_value(serde_json::json!({
             "title": title,
@@ -460,7 +460,7 @@ fn doctor_check(e: &Env, args: &[&str], name: &str) -> serde_json::Value {
 fn doctor_fix_clears_stale_files() {
     let e = Env::new();
     let home = clax_core::Home::at(e.dir.path().join("ax"));
-    let store = clax_core::Store::open(&home).unwrap();
+    let store = clax_store::Store::open(&home).unwrap();
     let id = make_artifact(&store, "A");
     drop(store);
     let versions = home.artifact_dir(&id).join("versions");
@@ -494,7 +494,7 @@ fn doctor_fix_clears_stale_files() {
 fn doctor_fix_clears_asset_problems() {
     let e = Env::new();
     let home = clax_core::Home::at(e.dir.path().join("ax"));
-    let store = clax_core::Store::open(&home).unwrap();
+    let store = clax_store::Store::open(&home).unwrap();
     let live = make_artifact(&store, "live");
     let gone = make_artifact(&store, "gone");
     let missing = store
@@ -538,7 +538,7 @@ fn doctor_fix_clears_asset_problems() {
     let detail = after["detail"].as_str().unwrap();
     assert!(!detail.contains("X.png.tmp"), "{detail}");
     assert!(detail.contains(&missing.id), "{detail}");
-    let store = clax_core::Store::open(&home).unwrap();
+    let store = clax_store::Store::open(&home).unwrap();
     let rows = store.list_all_asset_rows().unwrap();
     assert!(rows.iter().all(|r| !r.artifact_deleted));
     assert_eq!(rows.len(), 3);
@@ -554,7 +554,7 @@ fn doctor_fix_clears_asset_problems() {
 fn doctor_fix_deletes_corrupt_rows_of_deleted_artifacts_only() {
     let e = Env::new();
     let home = clax_core::Home::at(e.dir.path().join("ax"));
-    let store = clax_core::Store::open(&home).unwrap();
+    let store = clax_store::Store::open(&home).unwrap();
     let live = make_artifact(&store, "live");
     let gone = make_artifact(&store, "gone");
     store.delete_artifact(&AuditCtx::DAEMON, &gone).unwrap();
@@ -663,7 +663,7 @@ fn doctor_fix_refuses_while_a_daemon_is_live() {
     e.cmd().args(["serve", "--port", "0"]).assert().success();
     let versions = {
         let home = clax_core::Home::at(e.dir.path().join("ax"));
-        let store = clax_core::Store::open(&home).unwrap();
+        let store = clax_store::Store::open(&home).unwrap();
         let id = make_artifact(&store, "A");
         home.artifact_dir(&id).join("versions")
     };

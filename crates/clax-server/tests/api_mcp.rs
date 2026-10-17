@@ -395,7 +395,7 @@ async fn mcp_tool_calls_are_the_sessionless_agent_under_a_call() {
     assert_eq!(body["call"]["tool"], "publish");
     assert_eq!(
         body["call"]["args_sha256"],
-        clax_core::toolpath::args::args_sha256(&args)
+        clax_core::audit::args::args_sha256(&args)
     );
     assert_eq!(call_id.as_deref(), body["call"]["call_id"].as_str());
 }

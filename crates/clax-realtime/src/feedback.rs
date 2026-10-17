@@ -6,7 +6,8 @@ use clax_core::feedback::FeedbackState;
 #[cfg(debug_assertions)]
 use clax_core::feedback::Tier;
 use clax_core::feedback::Touched;
-use clax_core::{DeliveryViewer, Event, EventBus, Store};
+use clax_core::{Event, EventBus};
+use clax_store::{DeliveryViewer, Store};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
@@ -425,8 +426,8 @@ impl FeedbackCtx {
 
 /// Publishes `feedback_state` for every touched thread after a change to
 /// its delivery rows: to the owner, and to each person the newest change
-/// is visible to ([`clax_core::Delivery::changed_for`]), each as they read it
-/// ([`clax_core::Delivery::view`]; spec 2026-10-08 §10, §18). Visitors and agents
+/// is visible to ([`clax_store::Delivery::changed_for`]), each as they read it
+/// ([`clax_store::Delivery::view`]; spec 2026-10-08 §10, §18). Visitors and agents
 /// hear none, and nor does a person whose rows did not change: another
 /// author's delivery after an approval tells them nothing. Failures are
 /// logged; the change itself has happened.
@@ -460,7 +461,7 @@ pub fn publish_states_after(ctx: &FeedbackCtx, touched: Touched) {
 /// [`publish_states`] for an approval decision (made, declined, revoked)
 /// by `parties[0]` about `parties[1]`'s content (recipient keys: empty for
 /// the owner): to the owner, those two and that content's co-authors
-/// ([`clax_core::Delivery::decision_people`]) alone, each as they read it. A
+/// ([`clax_store::Delivery::decision_people`]) alone, each as they read it. A
 /// decision stamps no row, and no one else reads a held state, so no one
 /// else hears of it (spec §10).
 pub fn publish_decision(ctx: &FeedbackCtx, st: &Store, touched: &Touched, parties: &[String]) {

@@ -17,12 +17,12 @@ use axum::http::header;
 use axum::http::header::SET_COOKIE;
 use axum::response::{IntoResponse, Response};
 use clax_core::CoreError;
-use clax_core::store::viewers::is_legacy_cookie;
 use clax_http::error::ApiError;
 use clax_http::headers::parse_id;
 use clax_http::identity::Identity;
 use clax_http::state::AppState;
 use clax_http::viewer::{SameOrigin, set_cookie};
+use clax_store::viewers::is_legacy_cookie;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -52,7 +52,7 @@ async fn respond(s: AppState, who: Identity, name: Option<String>) -> Result<Res
             // viewer's row ID, from before migration 24) gets a fresh
             // secret for the same viewer, also while that cookie's
             // replacement is recent (spec §21.4).
-            let mint = |st: &clax_core::Store| -> clax_core::Result<clax_core::secret::Secret> {
+            let mint = |st: &clax_store::Store| -> clax_core::Result<clax_core::secret::Secret> {
                 let c = clax_core::secret::viewer_cookie();
                 st.mint_viewer(c.expose(), who.local)?;
                 Ok(c)
@@ -181,7 +181,7 @@ pub async fn lookup(
             }
             let text = text.trim().to_string();
             // No stored name is longer than MAX_NAME_CHARS, so a longer query matches none.
-            if text.is_empty() || text.chars().count() > clax_core::store::viewers::MAX_NAME_CHARS {
+            if text.is_empty() || text.chars().count() > clax_store::viewers::MAX_NAME_CHARS {
                 Vec::new()
             } else {
                 s.store_call(move |st| st.search_viewers(&text, MAX_SEARCH))
@@ -316,7 +316,7 @@ pub async fn attention(
     // Every artifact's attention costs what the viewer's threads do, so it
     // waits in the bulk lane; one artifact's is an interactive call.
     let whole = one.is_none();
-    let job = move |st: &clax_core::Store| {
+    let job = move |st: &clax_store::Store| {
         Ok(match (who.viewer(st)?, one) {
             (None, _) => json!({}),
             (Some(v), None) => json!(st.attention_all(&v.id)?),
@@ -358,7 +358,7 @@ pub async fn set_looked(
     let b = body(req)?;
     let id = parse_id(&b.artifact_id)?;
     sees.check(&s.live_ids, id.as_str())?;
-    let max = clax_core::store::attention::MAX_LOOKED;
+    let max = clax_store::attention::MAX_LOOKED;
     if b.thread_ids.is_empty()
         || b.thread_ids.len() > max
         || !b.thread_ids.iter().all(|t| clax_core::is_ulid(t))

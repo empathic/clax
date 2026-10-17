@@ -1,7 +1,8 @@
 use crate::wrap_cache::WrapCache;
 use clax_core::feedback::Touched;
-use clax_core::{EventBus, Home, Store};
+use clax_core::{EventBus, Home};
 use clax_realtime::feedback::{FeedbackCtx, sessions_stop};
+use clax_store::Store;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -202,9 +203,10 @@ pub fn sessions_ended(
 #[cfg(test)]
 mod tests {
     use super::VisGen;
+    use clax_core::Home;
     use clax_core::audit::AuditCtx;
-    use clax_core::store::approvals::{Scope, UNCONNECTED, Via};
-    use clax_core::{Home, Store};
+    use clax_store::Store;
+    use clax_store::approvals::{Scope, UNCONNECTED, Via};
 
     #[tokio::test]
     async fn waiting_after_a_generation_wakes_on_the_next_bump() {

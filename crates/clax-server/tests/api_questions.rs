@@ -1143,7 +1143,7 @@ async fn an_answer_a_question_poll_holds_reaches_only_that_poll() {
         .close_question(
             &clax_core::audit::AuditCtx::DAEMON,
             &qid,
-            clax_core::store::questions::Close::Decline,
+            clax_store::questions::Close::Decline,
         )
         .unwrap();
     assert_eq!(
@@ -1225,7 +1225,7 @@ async fn a_held_answer_left_untaken_wakes_the_feedback_poll_when_the_hold_ends()
         .close_question(
             &clax_core::audit::AuditCtx::DAEMON,
             &qid,
-            clax_core::store::questions::Close::Decline,
+            clax_store::questions::Close::Decline,
         )
         .unwrap();
     ask.abort();
@@ -1938,8 +1938,8 @@ async fn a_persons_agent_sees_its_questions_title_once_its_person_approves_the_a
             &clax_core::audit::AuditCtx::DAEMON,
             Some(&sam),
             &w.mia_public,
-            clax_core::store::approvals::Scope::Everywhere,
-            clax_core::store::approvals::Via::Shell,
+            clax_store::approvals::Scope::Everywhere,
+            clax_store::approvals::Via::Shell,
         )
         .unwrap();
     let v = ask().await;

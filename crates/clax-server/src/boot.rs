@@ -189,11 +189,11 @@ pub async fn assemble(
             // (spec 2026-10-08 §10, §18).
             let viewer = who.browser_viewer(st)?;
             let reads = match &viewer {
-                _ if owner_browser => clax_core::DeliveryViewer::Owner,
+                _ if owner_browser => clax_store::DeliveryViewer::Owner,
                 Some(v) if v.person && v.person_revoked_at.is_none() => {
-                    clax_core::DeliveryViewer::Person(v.public_id.clone())
+                    clax_store::DeliveryViewer::Person(v.public_id.clone())
                 }
-                _ => clax_core::DeliveryViewer::Visitor,
+                _ => clax_store::DeliveryViewer::Visitor,
             };
             let mut threads = Vec::new();
             let mut cursor: Option<String> = None;

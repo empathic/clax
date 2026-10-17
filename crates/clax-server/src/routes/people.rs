@@ -18,10 +18,8 @@ use super::grants::{announce, announce_ended};
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, State};
+use clax_core::CoreError;
 use clax_core::rights::Rights;
-use clax_core::store::approvals::{ScopeKind, UNCONNECTED};
-use clax_core::store::people::{AgentRights, Grant, PersonRow};
-use clax_core::{CoreError, NameSource, Store};
 use clax_http::agent::DeniedToGrants;
 use clax_http::audit::DeferredAudit;
 use clax_http::auth::Caller;
@@ -29,6 +27,9 @@ use clax_http::error::ApiError;
 use clax_http::state::AppState;
 use clax_http::viewer::SameOrigin;
 use clax_http::views::grant::grant_view;
+use clax_store::approvals::{ScopeKind, UNCONNECTED};
+use clax_store::people::{AgentRights, Grant, PersonRow};
+use clax_store::{NameSource, Store};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -826,7 +827,7 @@ pub async fn unelevate_agent(
                 None => "removed_by_owner",
                 Some(_) if session.person == me => "removed_by_person",
                 // Not theirs to remove: answered as a raise that is not there.
-                Some(_) => return Err(clax_core::store::elevations::not_raised()),
+                Some(_) => return Err(clax_store::elevations::not_raised()),
             };
             let a = st.remove_raise(&audit.resolve(st)?, &session.id, target.as_deref(), reason)?;
             let view = agent_view(st, &a)?;

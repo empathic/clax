@@ -1139,7 +1139,7 @@ fn revoke_extension_credentials(home: &Home) -> Value {
     if !home.db_path().exists() {
         return json!(0);
     }
-    match clax_core::Store::open(home).and_then(|st| st.revoke_extension_credentials()) {
+    match clax_store::Store::open(home).and_then(|st| st.revoke_extension_credentials()) {
         Ok(n) => json!(n),
         Err(e) => json!(format!("failed: {e}")),
     }

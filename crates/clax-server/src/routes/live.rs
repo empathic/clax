@@ -13,17 +13,18 @@ use axum::http::StatusCode;
 use clax_core::audit::AuditCtx;
 use clax_core::live::{PageKey, PageUrl, PathPattern, parse_page_url};
 use clax_core::model::Artifact;
-use clax_core::store::live::LivePage;
-use clax_core::store::site::{
-    KIND_MERGE, KIND_MOVE, KIND_UNMERGE, LiveRule, MAX_REFILE, MoveBy, Refile, Refiled,
-};
-use clax_core::store::threads::{NewThread, clip_problem};
-use clax_core::{Anchor, ArtifactId, CoreError, Event, Store};
+use clax_core::{Anchor, ArtifactId, CoreError, Event};
 use clax_http::error::ApiError;
 use clax_http::identity::Identity;
 use clax_http::state::AppState;
 use clax_http::viewer::{SameOrigin, author};
 use clax_http::views::thread::{thread_view, thread_views};
+use clax_store::Store;
+use clax_store::live::LivePage;
+use clax_store::site::{
+    KIND_MERGE, KIND_MOVE, KIND_UNMERGE, LiveRule, MAX_REFILE, MoveBy, Refile, Refiled,
+};
+use clax_store::threads::{NewThread, clip_problem};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -351,7 +352,7 @@ fn replay(
 /// reported.
 ///
 /// With `pick_id` (32 lowercase hex digits), a repeat of the request within
-/// [`PICK_TTL`](clax_core::store::live::PICK_TTL) whose pick already made a thread on the page writes and
+/// [`PICK_TTL`](clax_store::live::PICK_TTL) whose pick already made a thread on the page writes and
 /// sends nothing and answers `200 {thread, page, version}` with that thread
 /// as it is now (`version` is the one it was made on).
 pub async fn thread(

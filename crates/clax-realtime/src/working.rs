@@ -50,7 +50,8 @@ pub async fn sweep_and_announce(store: &Arc<Store>, w: &Working, events: &EventB
 
 use crate::feedback::FeedbackCtx;
 use clax_core::working::Actor;
-use clax_core::{FeedbackItem, Store, Tier};
+use clax_core::{FeedbackItem, Tier};
+use clax_store::Store;
 use std::collections::BTreeMap;
 
 /// Tiers whose takes are hook runs or tool calls: each renews the session's records.

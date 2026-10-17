@@ -103,8 +103,8 @@ impl CallScope {
         git: Option<GitStart>,
     ) -> CallScope {
         let args_sha256 = match arguments {
-            Some(a) => clax_core::toolpath::args::object_sha256(a),
-            None => clax_core::toolpath::args::object_sha256(&serde_json::Map::new()),
+            Some(a) => clax_core::audit::args::object_sha256(a),
+            None => clax_core::audit::args::object_sha256(&serde_json::Map::new()),
         };
         let header = CallHeader {
             call_id: clax_core::new_ulid(),

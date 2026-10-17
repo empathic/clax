@@ -5,10 +5,10 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use clax_core::audit::Via;
-use clax_core::store::viewers::Claim;
 use clax_http::auth::{Conn, is_local_host, is_loopback};
 use clax_http::error::ApiError;
 use clax_http::state::AppState;
+use clax_store::viewers::Claim;
 /// The bearer token, for the shell on this machine. Beyond the `/api` host
 /// check ([`clax_http::auth::require_api_host`]), the peer must be a loopback
 /// address and the `Host` a literal local name (not the LAN bind address),
@@ -21,7 +21,7 @@ use clax_http::state::AppState;
 /// ([`clax_http::identity::owner_cookie_name`]) for the API and the artifact
 /// pages, so the browser is the owner there. Such a request is the owner's
 /// browser: when it carries exactly one `clax_viewer` cookie, the viewer that
-/// names is claimed for the owner ([`clax_core::Store::claim_for_owner`]:
+/// names is claimed for the owner ([`clax_store::Store::claim_for_owner`]:
 /// only a viewer minted on this machine), the cookie removed, and a viewer
 /// the claim retired leaves every presence list and room at once.
 pub async fn token(

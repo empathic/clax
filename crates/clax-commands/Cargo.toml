@@ -9,6 +9,7 @@ workspace = true
 
 [dependencies]
 clax-core = { path = "../clax-core" }
+clax-store = { path = "../clax-store" }
 clax-mcp = { path = "../clax-mcp" }
 clax-hooks = { path = "../clax-hooks" }
 anyhow.workspace = true

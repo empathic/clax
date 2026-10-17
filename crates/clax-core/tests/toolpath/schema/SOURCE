@@ -11,7 +11,7 @@ toolpath.schema.json
   `pnpm exec vitest run scripts/toolpath-schema.test.ts` (Ajv validates the
   golden documents in expected/ against it).
 
-normalize_remote cases (crates/clax-core/src/toolpath/tests.rs,
+normalize_remote cases (crates/clax-store/src/toolpath/tests.rs,
 `normalize_remote_follows_toolpath_git`)
   From: crates/toolpath-git/src/lib.rs at the same commit: the documented
         cases of `normalize_git_url` (its doc comment and doc test) and its

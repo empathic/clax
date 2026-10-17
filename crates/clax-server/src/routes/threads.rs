@@ -13,13 +13,8 @@ use axum::response::{IntoResponse, Response};
 use clax_core::audit::AuditCtx;
 use clax_core::feedback::Touched;
 use clax_core::model::{Session, Thread};
-use clax_core::store::approvals::{OWNER, UNCONNECTED};
-use clax_core::store::batches::SendBatch;
-use clax_core::store::threads::{
-    AUTHOR_AGENT, AUTHOR_VIEWER, DEFAULT_THREAD_PAGE, NewComment, NewThread, clip_problem,
-};
 use clax_core::working::StopReason;
-use clax_core::{Anchor, ArtifactId, CoreError, Event, SendTarget, Store};
+use clax_core::{Anchor, ArtifactId, CoreError, Event};
 use clax_http::agent::{Agent, TokenOrAgent, person_agent_session};
 use clax_http::audit::DeferredAudit;
 use clax_http::auth::Caller;
@@ -30,6 +25,12 @@ use clax_http::state::AppState;
 use clax_http::viewer::{SameOrigin, acting_viewer, author};
 use clax_http::views::thread::{VisFor, thread_event_views};
 use clax_realtime::feedback::apply;
+use clax_store::approvals::{OWNER, UNCONNECTED};
+use clax_store::batches::SendBatch;
+use clax_store::threads::{
+    AUTHOR_AGENT, AUTHOR_VIEWER, DEFAULT_THREAD_PAGE, NewComment, NewThread, clip_problem,
+};
+use clax_store::{SendTarget, Store};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -555,7 +556,7 @@ pub(crate) fn announce_new_thread(
             audit,
             &thread.id,
             SendTarget::Thread,
-            clax_core::store::approvals::Route::Send,
+            clax_store::approvals::Route::Send,
             false,
         )?;
         thread = sent;
@@ -897,7 +898,7 @@ pub async fn comment(
                     addressed.then_some((&id, sess.harness.as_str())),
                 )?;
                 touched.merge(took);
-                let seen = clax_core::store::visibility::Visibility::for_session(st, &sess.id)?;
+                let seen = clax_store::visibility::Visibility::for_session(st, &sess.id)?;
                 let may = |x: &clax_core::model::Artifact| reads.allows(x);
                 let readable: Option<&(dyn Fn(&clax_core::model::Artifact) -> bool + Sync)> =
                     reads.is_person_agent().then_some(&may);
@@ -944,9 +945,9 @@ pub async fn comment(
                     // `@agent` routes (M18); a later comment on a sent
                     // thread counts into the requests open there.
                     let route = if at_agent {
-                        clax_core::store::approvals::Route::Send
+                        clax_store::approvals::Route::Send
                     } else {
-                        clax_core::store::approvals::Route::Join
+                        clax_store::approvals::Route::Join
                     };
                     let (_, t, _) =
                         st.send_routed(&audit, &tid, SendTarget::Thread, route, false)?;
@@ -1063,7 +1064,7 @@ pub async fn send(
                 &tid,
                 to.as_deref()
                     .map_or(SendTarget::Everyone, SendTarget::Agent),
-                clax_core::store::approvals::Route::Send,
+                clax_store::approvals::Route::Send,
                 page,
             )?;
             apply(&ctx, st, &touched);
@@ -1327,7 +1328,7 @@ pub async fn resolve(
             };
             let audit = audit.resolve(st)?;
             if let Some(sess) = &resolver {
-                let seen = clax_core::store::visibility::Visibility::for_session(st, &sess.id)?;
+                let seen = clax_store::visibility::Visibility::for_session(st, &sess.id)?;
                 let may = |x: &clax_core::model::Artifact| reads.allows(x);
                 let readable: Option<&(dyn Fn(&clax_core::model::Artifact) -> bool + Sync)> =
                     reads.is_person_agent().then_some(&may);

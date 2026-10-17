@@ -63,7 +63,7 @@ impl AuditWake {
 
     /// Makes `store` nudge this wake-up after each commit that recorded an
     /// audit event.
-    pub fn install(self: &Arc<Self>, store: &clax_core::Store) {
+    pub fn install(self: &Arc<Self>, store: &clax_store::Store) {
         let wake = Arc::clone(self);
         store.set_audit_nudge(move || wake.nudge());
     }
@@ -138,7 +138,7 @@ fn call_field(id: &Identity, headers: &HeaderMap) -> Option<CallHeader> {
 /// The actor and channel of a request with credentials `id` that names
 /// channel `named` and session `session`, reading the rows they name.
 fn actor_and_channel(
-    st: &clax_core::Store,
+    st: &clax_store::Store,
     id: &Identity,
     named: Option<Via>,
     session: Option<&str>,
@@ -155,7 +155,7 @@ fn actor_and_channel(
 /// extractor it writes no row, so a `GET` route may use it. Call it only
 /// behind the token or a verified grant whose session `sid` is.
 pub fn session_ctx(
-    st: &clax_core::Store,
+    st: &clax_store::Store,
     headers: &HeaderMap,
     sid: &str,
 ) -> clax_core::Result<AuditCtx> {
@@ -210,7 +210,7 @@ impl DeferredAudit {
     /// (`session_id` alone when no such session exists), through the
     /// channel the request names, else `mcp`. It reads the session row and
     /// writes nothing. Otherwise it is [`DeferredAudit::resolve`].
-    pub fn for_session(self, st: &clax_core::Store, sid: &str) -> clax_core::Result<AuditCtx> {
+    pub fn for_session(self, st: &clax_store::Store, sid: &str) -> clax_core::Result<AuditCtx> {
         if !self.id.agent_headers_count() {
             return self.resolve(st);
         }
@@ -235,7 +235,7 @@ impl DeferredAudit {
     /// person (the owner for a grant of the owner's row). Through the
     /// channel the request names, else `hook`, with the request's git state
     /// and tool call.
-    pub fn answerer_in_terminal(self, st: &clax_core::Store) -> clax_core::Result<AuditCtx> {
+    pub fn answerer_in_terminal(self, st: &clax_store::Store) -> clax_core::Result<AuditCtx> {
         let actor = match self.id.verified_grant() {
             Some(gid) => {
                 let v = st.viewer_of_grant(gid)?;
@@ -297,7 +297,7 @@ impl DeferredAudit {
     /// The audit context: reads the session and viewer rows, and makes the
     /// viewer row of a first-time viewer or the owner as
     /// [`Identity::ensure_viewer`] does.
-    pub fn resolve(self, st: &clax_core::Store) -> clax_core::Result<AuditCtx> {
+    pub fn resolve(self, st: &clax_store::Store) -> clax_core::Result<AuditCtx> {
         let (actor, via) = actor_and_channel(st, &self.id, self.named, self.session.as_deref())?;
         Ok(AuditCtx {
             actor,
@@ -398,15 +398,15 @@ const MAX_BACKOFF_S: i64 = 60;
 const FINAL_DRAIN: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// The journal appender (spec §7.3): reads the events past its cursor from
-/// the table, at most [`BATCH_ROWS`](clax_core::toolpath::segment::BATCH_ROWS)
+/// the table, at most [`BATCH_ROWS`](clax_store::toolpath::segment::BATCH_ROWS)
 /// at a time on a reader connection, and appends them to the segments. It
 /// runs on its own thread and never takes the writer, so recording never
 /// waits on it; the table is its queue, so a slow or failing disk only
 /// leaves the journal behind. A failure is logged and kept in the status,
 /// and the same events are tried again after 1 s, doubling to 60 s.
 pub struct Appender {
-    store: Arc<clax_core::Store>,
-    writer: clax_core::toolpath::segment::SegmentWriter,
+    store: Arc<clax_store::Store>,
+    writer: clax_store::toolpath::segment::SegmentWriter,
     status: Arc<JournalStatus>,
     clock: Arc<dyn clax_core::working::Clock>,
     backoff_s: i64,
@@ -418,11 +418,11 @@ impl Appender {
     /// `fs`, reporting to `status`. It reads the journal back on its first
     /// drain.
     pub fn new(
-        store: Arc<clax_core::Store>,
+        store: Arc<clax_store::Store>,
         dir: impl Into<std::path::PathBuf>,
-        cfg: clax_core::toolpath::segment::SegmentConfig,
+        cfg: clax_store::toolpath::segment::SegmentConfig,
         clock: Arc<dyn clax_core::working::Clock>,
-        fs: Box<dyn clax_core::toolpath::segment::JournalFs>,
+        fs: Box<dyn clax_store::toolpath::segment::JournalFs>,
         status: Arc<JournalStatus>,
     ) -> Appender {
         status.update(|s| {
@@ -431,7 +431,7 @@ impl Appender {
         });
         Appender {
             store,
-            writer: clax_core::toolpath::segment::SegmentWriter::new(dir, cfg, clock.clone(), fs),
+            writer: clax_store::toolpath::segment::SegmentWriter::new(dir, cfg, clock.clone(), fs),
             status,
             clock,
             backoff_s: 0,
@@ -512,7 +512,7 @@ impl Appender {
     }
 
     fn drain(&mut self, budget: Option<std::time::Duration>) -> Result<bool, String> {
-        use clax_core::toolpath::segment::BATCH_ROWS;
+        use clax_store::toolpath::segment::BATCH_ROWS;
         let start = std::time::Instant::now();
         let io = |what: &str, e: std::io::Error| format!("{what}: {e}");
         let caught_up = loop {
@@ -722,7 +722,7 @@ pub fn spawn_appender(
 
 /// What starting the journal needs from the daemon.
 pub struct JournalStart {
-    pub store: Arc<clax_core::Store>,
+    pub store: Arc<clax_store::Store>,
     /// The journal directory (`<home>/toolpath/journal`).
     pub dir: std::path::PathBuf,
     pub wake: Arc<AuditWake>,
@@ -773,7 +773,7 @@ pub fn start_journal(
         ));
         return None;
     };
-    let mut seg = clax_core::toolpath::segment::SegmentConfig::new(
+    let mut seg = clax_store::toolpath::segment::SegmentConfig::new(
         install,
         start.version,
         clax_core::build_commit(),
@@ -787,7 +787,7 @@ pub fn start_journal(
         start.dir,
         seg,
         Arc::new(clax_core::working::SystemClock),
-        Box::new(clax_core::toolpath::segment::StdFs::new()),
+        Box::new(clax_store::toolpath::segment::StdFs::new()),
         start.status,
     );
     match spawn_appender(appender, rx, start.wake) {

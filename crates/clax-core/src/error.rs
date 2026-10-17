@@ -58,7 +58,7 @@ pub enum CoreError {
         version: Option<u32>,
     },
     /// A read ran longer than the store's read limit
-    /// ([`crate::store::exec::READ_LIMIT`] by default) and was interrupted.
+    /// (`clax_store::exec::READ_LIMIT` by default) and was interrupted.
     #[error("a database read ran too long and was stopped")]
     ReadTimeout,
     /// A store job panicked, or the thread that would run it stopped.

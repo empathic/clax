@@ -6,9 +6,9 @@ do, what the daemon guarantees about isolation, and what does not exist yet.
 The implementation is the authority where the two disagree:
 `crates/clax-mcp/src/tools.rs` (arguments), `crates/clax-mcp/src/render.rs`
 (result shape), `crates/clax-server/src/routes/` (daemon errors),
-`crates/clax-core/src/store/sessions.rs` (sessions),
+`crates/clax-store/src/sessions.rs` (sessions),
 `crates/clax-core/src/feedback.rs` and
-`crates/clax-core/src/store/feedback.rs` (comment delivery),
+`crates/clax-store/src/feedback.rs` (comment delivery),
 `crates/clax-hooks/src/events.rs` (hooks), and `plugins/pi/src/clax.ts`
 (the Pi tools).
 

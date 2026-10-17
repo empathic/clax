@@ -1,4 +1,8 @@
-//! Core types and storage for Clax.
+//! The vocabulary and the rules of Clax that need no database: IDs, the
+//! records the store returns and the API serves (`model`), the event bus,
+//! configuration and the home directory, signing, the visibility
+//! vocabulary, audit records, and the daemon's discovery files. The SQLite
+//! store is `clax-store`'s; nothing here runs a query.
 
 pub mod anchor;
 pub mod audit;
@@ -29,9 +33,7 @@ pub mod rights;
 pub mod room;
 pub mod secret;
 pub mod sig;
-pub mod store;
 pub mod time;
-pub mod toolpath;
 pub mod visibility;
 pub mod working;
 pub mod wrap;
@@ -71,17 +73,6 @@ pub use home::Home;
 pub use ids::{
     ArtifactId, is_agent_handle, is_public_id, is_ulid, new_agent_handle, new_public_id, new_ulid,
 };
+pub use model::RegisterSession;
 pub use publish::html_title;
 pub use secret::Secret;
-pub use store::Store;
-pub use store::artifacts::{CorruptRow, MetaPatch};
-pub use store::attention::{
-    AgentPerson, AgentView, Attention, AttentionSummary, Participants, Person,
-};
-pub use store::audit::AuditRow;
-pub use store::feedback::{Delivery, DeliveryViewer, SendTarget, TakeFeedback, Taken};
-pub use store::sessions::{
-    EndReason, EndedSession, JoinSession, NameSource, Proved, Reaped, RegisterSession, Registered,
-    Restored, RosterAgent,
-};
-pub use store::threads::{NewComment, NewThread, ThreadExtras};
