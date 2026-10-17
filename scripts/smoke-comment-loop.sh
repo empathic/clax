@@ -212,10 +212,15 @@ def stop(active):
 code, out = stop(False)
 if code != 0 or json.loads(out)["decision"] != "block" or "tighten the spacing" not in json.loads(out)["reason"]:
     fail(f"stop hook: {code} {out!r}")
+# Nothing wakes this session while it is idle (no follower, channel or
+# queue here): the stop after the comments is blocked once to say so.
+code, out = stop(True)
+if code != 0 or json.loads(out)["decision"] != "block" or not json.loads(out)["reason"].startswith("[clax] You watch 1 "):
+    fail(f"stop hook with stop_hook_active: {code} {out!r}")
 code, out = stop(True)
 if code != 0 or out:
-    fail(f"stop hook with stop_hook_active: {code} {out!r}")
-ok(f"tier 2: the Stop hook blocked with thread {t2['id']}, then allowed the stop")
+    fail(f"stop hook after the wake notice: {code} {out!r}")
+ok(f"tier 2: the Stop hook blocked with thread {t2['id']}, then once to say nothing wakes the session, then allowed the stop")
 if working(aid):
     fail(f"working after the Stop hook allowed the stop: {working(aid)}")
 ok("working: cleared when the Stop hook allowed the stop (the turn ended)")
