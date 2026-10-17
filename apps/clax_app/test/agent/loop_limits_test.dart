@@ -29,6 +29,7 @@ void main() {
   late MemoryUnfinishedChanges unfinished;
   late PlanStore plans;
   late StepClock clock;
+  late FakeInspector inspector;
   late String sid;
   late String aid;
 
@@ -40,7 +41,7 @@ void main() {
       prompts: PromptBuilder(rootBundle),
       model: () => 'claude-haiku-5-5',
       timings: RecordingTimings(),
-      inspector: FakeInspector(),
+      inspector: inspector,
       baseUrl: () => Uri.parse('http://127.0.0.1:7999'),
       plans: plans,
       unfinished: unfinished,
@@ -68,6 +69,7 @@ void main() {
     unfinished = MemoryUnfinishedChanges();
     plans = PlanStore();
     clock = StepClock();
+    inspector = FakeInspector();
     sid = (await api.registerAppSession(installId: 'install', pid: 1)).id;
     aid = api.seedArtifact('Runs', {'index.html': page});
   });
@@ -410,6 +412,48 @@ void main() {
     expect((await unfinished.get(item.threadId))!.stops, 2);
   });
 
+  test('a Keep going is shown its kept edits as a diff against the app and '
+      'what the stopped run\'s last render found', () async {
+    final item = api.sendComment(aid, 'Rename Save', queue: false);
+    inspector.answer(
+      inspector.clean(
+        errors: [(kind: 'error', text: 'TypeError: total is undefined')],
+      ),
+    );
+    final loop = loopWith([
+      [
+        const ScriptedCall('str_replace', {
+          'path': 'index.html',
+          'old_str': 'Save',
+          'new_str': 'Keep',
+        }),
+        const ScriptedCall('render', {'file': null}),
+        for (var i = 0; i < 10; i++) const ScriptedCall('list_files', {}),
+      ],
+      [
+        const ScriptedCall('render', {'file': null}),
+        const ScriptedCall('finish', {'reply': 'Renamed.', 'resolve': true}),
+      ],
+    ]);
+    await loop.change(aid, [item], session: sid);
+    expect(
+      (await unfinished.get(item.threadId))!.lastRender,
+      contains('TypeError: total is undefined'),
+    );
+    await loop.change(aid, [item], session: sid, keepGoing: true);
+    final first = runner.text(1);
+    expect(
+      first,
+      contains(
+        '--- a/index.html\n+++ b/index.html\n@@ -1,1 +1,1 @@\n'
+        '-$page\n'
+        '+${page.replaceFirst('Save', 'Keep')}\n',
+      ),
+    );
+    expect(first, contains("That run's last render"));
+    expect(first, contains('TypeError: total is undefined'));
+  });
+
   test('the notes kept for Keep going are bounded, the newest kept', () async {
     final item = api.sendComment(aid, 'Rename Save', queue: false);
     await unfinished.put(
@@ -615,6 +659,7 @@ void main() {
       at: DateTime.utc(2026, 10, 15),
       notes: const ['n'],
       answers: 'Units: "km"',
+      lastRender: 'it showed an uncaught error',
       edits: const {'index.html': 'x', 'old.js': null},
       before: const {'index.html': 'y', 'old.js': 'z'},
       title: 'T',
