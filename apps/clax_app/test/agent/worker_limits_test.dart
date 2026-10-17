@@ -289,6 +289,93 @@ void main() {
     },
   );
 
+  group('a late answer to a stopped change', () {
+    const units = {
+      'questions': [
+        {
+          'question': 'Kilometres or miles?',
+          'header': 'Units',
+          'options': [
+            {'label': 'km'},
+            {'label': 'mi'},
+          ],
+        },
+      ],
+      'question_id': null,
+      'timeout_s': null,
+      'cancel': null,
+    };
+    final stopsAsking = [
+      const ScriptedCall('ask', units),
+      const ScriptedCall('str_replace', {
+        'path': 'index.html',
+        'old_str': 'Save',
+        'new_str': 'Keep',
+      }, 'Renaming the button'),
+      const ScriptedCall('render', {'file': null}),
+      for (var i = 0; i < 10; i++) const ScriptedCall('list_files', {}),
+    ];
+    const answers = [
+      {
+        'selected': ['km'],
+        'text': null,
+      },
+    ];
+
+    test('runs as a Keep going of the kept change', () async {
+      workerWith([
+        stopsAsking,
+        [
+          const ScriptedCall('finish', {'reply': 'In km.', 'resolve': true}),
+        ],
+      ]).start();
+      await idle();
+      final item = api.sendComment(aid, 'Show my total');
+      await until(() => api.currentVersion(aid) == 2);
+      await idle();
+      expect(offersKeepGoing(bodies(item.threadId).last), isTrue);
+      final q = (await api.questions()).single;
+      await api.answerQuestion(q.id, answers);
+      await until(() => bodies(item.threadId).last == 'In km.');
+      await idle();
+      expect(runner.seen, hasLength(2));
+      expect(runner.text(1), contains('has stopped at its limit once'));
+      expect(runner.text(1), contains('The person answered your question'));
+    });
+
+    test('and a Keep going tap run once, together', () async {
+      workerWith([
+        stopsAsking,
+        [
+          const ScriptedCall('finish', {'reply': 'Answered.', 'resolve': true}),
+        ],
+        [
+          const ScriptedCall('finish', {'reply': 'In km.', 'resolve': true}),
+        ],
+      ]).start();
+      await idle();
+      final item = api.sendComment(aid, 'Show my total');
+      await until(() => api.currentVersion(aid) == 2);
+      await idle();
+      final q = (await api.questions()).single;
+
+      // Another change of the app holds the queue while both arrive.
+      runner.gate = Completer<void>();
+      api.sendComment(aid, 'What does Save do?');
+      await runner.arrived.future;
+      await api.answerQuestion(q.id, answers);
+      await until(() => api.waitingPolls == 1, reason: 'the answer is queued');
+      expect(await worker.retry(aid, item.threadId), isTrue);
+      runner.gate!.complete();
+      runner.gate = null;
+      await until(() => bodies(item.threadId).last == 'In km.');
+      await idle();
+      expect(runner.seen, hasLength(3));
+      expect(runner.text(2), contains('has stopped at its limit once'));
+      expect(runner.text(2), contains('The person answered your question'));
+    });
+  });
+
   test(r'a change that has spent its $6 does not keep going', () async {
     workerWith([]).start();
     await idle();

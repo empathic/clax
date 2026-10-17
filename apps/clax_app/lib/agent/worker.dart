@@ -142,9 +142,11 @@ class _Job {
     Set<String>? recheck,
     Set<String>? answers,
     List<String>? texts,
+    Set<String>? threads,
     this.build = false,
     this.keepGoing = false,
-  }) : items = items ?? [],
+  }) : threads = threads ?? {},
+       items = items ?? [],
        recheck = recheck ?? {},
        answers = answers ?? {},
        texts = texts ?? [];
@@ -162,8 +164,14 @@ class _Job {
   /// ([AgentLoop.change]'s `keepGoing`).
   bool keepGoing;
 
+  /// The threads of [answers]' questions, known before their comments
+  /// are looked up.
+  final Set<String> threads;
+
   bool names(String tid) =>
-      recheck.contains(tid) || items.any((i) => i.threadId == tid);
+      recheck.contains(tid) ||
+      threads.contains(tid) ||
+      items.any((i) => i.threadId == tid);
 }
 
 /// Takes the app session's comments and runs them through [AgentLoop]:
@@ -816,7 +824,13 @@ class FeedbackWorker {
           _queue.any((j) => j.answers.contains(e.questionId))) {
         continue;
       }
-      _queue.add(_Job(e.artifactId, answers: {e.questionId}));
+      _queue.add(
+        _Job(
+          e.artifactId,
+          answers: {e.questionId},
+          threads: e.threadIds.toSet(),
+        ),
+      );
       queued = true;
     }
     if (queued) _kick();
@@ -898,6 +912,7 @@ class FeedbackWorker {
       recheck: Set.of(first.recheck),
       answers: Set.of(first.answers),
       texts: List.of(first.texts),
+      threads: Set.of(first.threads),
       build: first.build,
       keepGoing: first.keepGoing,
     );
@@ -915,6 +930,7 @@ class FeedbackWorker {
       job.recheck.addAll(j.recheck);
       job.answers.addAll(j.answers);
       job.texts.addAll(j.texts);
+      job.threads.addAll(j.threads);
       job.keepGoing = job.keepGoing || j.keepGoing;
       return true;
     });
@@ -922,8 +938,13 @@ class FeedbackWorker {
   }
 
   static bool _sharesThread(_Job a, _Job b) {
-    final mine = {...a.recheck, for (final i in a.items) i.threadId};
+    final mine = {
+      ...a.recheck,
+      ...a.threads,
+      for (final i in a.items) i.threadId,
+    };
     return b.recheck.any(mine.contains) ||
+        b.threads.any(mine.contains) ||
         b.items.any((i) => mine.contains(i.threadId));
   }
 
@@ -952,6 +973,9 @@ class FeedbackWorker {
       final late = await _withAnswers(job, items);
       if (items.isEmpty || !_started || cancel.isCompleted) return;
       final texts = [...job.texts, ...late.texts];
+      // Comments a kept change answered run on from it, however they were
+      // queued (a late answer to its question included).
+      final keepGoing = job.keepGoing || await _keptCovers(aid, items);
       _answering.addAll(late.questions);
       final ChangeOutcome outcome;
       try {
@@ -961,7 +985,7 @@ class FeedbackWorker {
           answers: texts.isEmpty ? null : texts.join('\n\n'),
           answering: late.questions.toSet(),
           cancel: cancel.future,
-          keepGoing: job.keepGoing,
+          keepGoing: keepGoing,
         );
       } finally {
         _answering.removeAll(late.questions);
@@ -983,6 +1007,21 @@ class FeedbackWorker {
         _changeCancels.remove(aid);
         _changeThreads.remove(aid);
       }
+    }
+  }
+
+  /// Whether [items] are all comments of the change kept for Keep going
+  /// on their first thread.
+  Future<bool> _keptCovers(String aid, List<FeedbackItem> items) async {
+    if (items.isEmpty) return false;
+    try {
+      final kept = await _loop.unfinished.get(items.first.threadId);
+      if (kept == null || kept.artifactId != aid) return false;
+      final ids = kept.commentIds.toSet();
+      return items.every((i) => ids.contains(i.commentId));
+    } on Object catch (e) {
+      _log('the unfinished change of $aid is unavailable: $e');
+      return false;
     }
   }
 
@@ -1199,9 +1238,11 @@ class FeedbackWorker {
   /// that has spent its [changeCapUsd] runs nothing. With nothing kept,
   /// the comments the limit replies answered ([keptGoingComments]) are
   /// queued as a Keep going all the same, which starts over from the app
-  /// and says so: Keep going never quietly runs the change afresh.
+  /// and says so: Keep going never quietly runs the change afresh. A Keep
+  /// going of a thread already queued (a late answer to the change's
+  /// question) joins that job.
   Future<bool> retry(String aid, String tid) async {
-    if (!_started || _known(aid, tid)) return false;
+    if (!_started || _running.contains(tid)) return false;
     final List<ThreadView> all;
     try {
       all = await _api.threads(aid);
@@ -1210,7 +1251,21 @@ class FeedbackWorker {
       return false;
     }
     final t = all.where((x) => x.id == tid).firstOrNull;
-    if (t == null || !t.isOpen || !_started || _known(aid, tid)) return false;
+    if (t == null || !t.isOpen || !_started || _running.contains(tid)) {
+      return false;
+    }
+    final queued = _queue
+        .where((j) => j.artifactId == aid && !j.build && j.names(tid))
+        .firstOrNull;
+    if (queued != null) {
+      // A Keep going of a change already queued (a late answer to its
+      // question) runs once, with it, from the kept change.
+      if (t.comments.isEmpty || !isKeepGoingReply(t.comments.last)) {
+        return false;
+      }
+      queued.keepGoing = true;
+      return true;
+    }
     UnfinishedChange? unfinished;
     try {
       unfinished = await _loop.unfinished.get(tid);
