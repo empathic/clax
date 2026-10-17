@@ -14,13 +14,14 @@
 //! agent's next request and at a waiting agent's next take.
 
 use super::artifacts::{body, path};
-use super::grants::{announce, announce_ended, grant_view};
+use super::grants::{announce, announce_ended};
 use crate::agent::DeniedToGrants;
 use crate::audit::DeferredAudit;
 use crate::auth::Caller;
 use crate::error::ApiError;
 use crate::state::AppState;
 use crate::viewer::SameOrigin;
+use crate::views::grant::grant_view;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, State};
@@ -125,7 +126,7 @@ pub async fn list_agents(
     extensions: axum::http::Extensions,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    use crate::feedback::Handles;
+    use crate::views::thread::Handles;
     let handles = Handles::of(&a.caller);
     if handles == Handles::None {
         return Err(ApiError::forbidden(
@@ -143,9 +144,9 @@ pub async fn list_agents(
         _ => None,
     };
     let local = !matches!(a.caller, Caller::Person { .. })
-        && crate::live::sees_live_pages(&headers, &extensions, &s.token);
+        && crate::live_access::sees_live_pages(&headers, &extensions, &s.token);
     let reads = a.read_rights();
-    let vf = crate::feedback::VisFor::of(&a.caller, &s);
+    let vf = crate::views::thread::VisFor::of(&a.caller, &s);
     let working = s.working.clone();
     let v = s
         .store_call(move |st| {
@@ -367,7 +368,7 @@ fn approvals_of_yours(st: &Store, pid: &str) -> clax_core::Result<Vec<Value>> {
     st.live_approvals(Some(pid))?
         .iter()
         .filter(|a| a.author == owner.public_id)
-        .map(|a| crate::approvals::approval_view(st, a))
+        .map(|a| crate::views::approval::approval_view(st, a))
         .collect()
 }
 
@@ -906,7 +907,7 @@ pub async fn raises(
         .0;
     let aid = q
         .artifact
-        .map(|a| super::artifacts::parse_id(&a))
+        .map(|a| crate::headers::parse_id(&a))
         .transpose()?;
     let v = s
         .store_call(move |st| {
@@ -981,7 +982,7 @@ pub async fn end_agent(
             let id = session.id.clone();
             let audit = audit.resolve(st)?;
             let ended = st.end_session_by_person(&audit, &id)?;
-            crate::feedback::sessions_ended(
+            crate::state::sessions_ended(
                 &state,
                 &ctx,
                 st,

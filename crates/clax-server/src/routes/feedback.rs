@@ -61,7 +61,7 @@ fn late_answers(
     let mut views = Vec::with_capacity(rows.len());
     let mut blocks = Vec::with_capacity(rows.len());
     for q in &rows {
-        views.push(crate::questions::view(st, q)?);
+        views.push(crate::views::question::view(st, q)?);
         let header = q.questions.first().map_or("", |x| x.header.as_str());
         let head = match q.status {
             Status::Declined => format!(

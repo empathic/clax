@@ -73,9 +73,9 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
     // Hash the bridge bundle now, not on the first page served.
     shell::bridge_version();
     let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any);
-    let publish_limit = DefaultBodyLimit::max(artifacts::PUBLISH_BODY_LIMIT);
-    let asset_limit = DefaultBodyLimit::max(assets::UPLOAD_BODY_LIMIT);
-    let ask_limit = DefaultBodyLimit::max(questions::ASK_BODY_LIMIT);
+    let publish_limit = DefaultBodyLimit::max(crate::limits::PUBLISH_BODY_LIMIT);
+    let asset_limit = DefaultBodyLimit::max(crate::limits::UPLOAD_BODY_LIMIT);
+    let ask_limit = DefaultBodyLimit::max(crate::limits::ASK_BODY_LIMIT);
     let api_fast = Router::new()
         .route("/api/token", get(token::token))
         .route("/api/artifacts", get(artifacts::list))
@@ -251,7 +251,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         )
         .route(
             "/api/artifacts/{aid}/docs:batch",
-            post(docs::batch.layer(DefaultBodyLimit::max(docs::DOCS_BATCH_LIMIT))),
+            post(docs::batch.layer(DefaultBodyLimit::max(crate::limits::DOCS_BATCH_LIMIT))),
         )
         .route(
             "/api/artifacts/{aid}/docs:str_replace",
@@ -372,7 +372,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         )
         .route(
             "/api/artifacts/{aid}/threads",
-            post(threads::create.layer(DefaultBodyLimit::max(threads::THREAD_BODY_LIMIT))),
+            post(threads::create.layer(DefaultBodyLimit::max(crate::limits::THREAD_BODY_LIMIT))),
         )
         .route(
             "/api/live/threads",
@@ -467,7 +467,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
     // 2026-10-05-chrome-overlay-design L5).
     r.layer(axum::middleware::from_fn_with_state(
         state.clone(),
-        crate::live::hide_live_pages,
+        crate::live_access::hide_live_pages,
     ))
     .layer(axum::middleware::from_fn_with_state(
         state.clone(),
@@ -1149,8 +1149,8 @@ mod l10 {
         let src = &src[..src.find("mod l10 {").unwrap()];
         for (path, text) in routes(src) {
             let concrete = path.replace("{aid}", aid);
-            if crate::live::live_route(&concrete)
-                || crate::live::artifact_in(&concrete).as_deref() == Some(aid)
+            if crate::live_access::live_route(&concrete)
+                || crate::live_access::artifact_in(&concrete).as_deref() == Some(aid)
             {
                 continue;
             }
@@ -1258,7 +1258,7 @@ mod l10 {
                             !src.contains("InboxQuery {") || src.contains("recipient: me"),
                             "{name} builds a query of no one's inbox"
                         );
-                        let inbox = include_str!("../inbox.rs");
+                        let inbox = include_str!("../views/inbox.rs");
                         assert!(
                             function(inbox, "recipient_of").contains("who.person(st)"),
                             "recipient_of no longer reads who.person"
@@ -1286,7 +1286,7 @@ mod l10 {
             "/api/live/sites/split",
             "/api/live/sites/answer",
         ] {
-            assert!(crate::live::live_route(p), "{p}");
+            assert!(crate::live_access::live_route(p), "{p}");
             assert!(routes(src).iter().any(|(r, _)| r == p), "{p} is not routed");
         }
         // `/mcp` is a `route_service` behind the token.

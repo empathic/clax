@@ -2,8 +2,9 @@
 
 use crate::agent::{Agent, AssetsUpload, DeniedToGrants, TokenOrAgent};
 use crate::error::ApiError;
-use crate::live::SeesLive;
-use crate::routes::artifacts::{parse_id, path};
+use crate::headers::parse_id;
+use crate::live_access::SeesLive;
+use crate::routes::artifacts::path;
 use crate::state::AppState;
 use axum::Json;
 use axum::body::Body;
@@ -15,9 +16,6 @@ use axum::response::{IntoResponse, Response};
 use clax_core::CoreError;
 use clax_core::audit::AuditCtx;
 use serde_json::{Value, json};
-
-/// The most an asset upload's body may hold.
-pub const UPLOAD_BODY_LIMIT: usize = 21 * 1024 * 1024;
 
 pub(crate) fn multipart_error(status: StatusCode, message: String) -> ApiError {
     if status == StatusCode::PAYLOAD_TOO_LARGE {
@@ -57,7 +55,7 @@ pub async fn upload(
     }
     crate::agent::person_agent_session(&a.0.caller)?;
     let via_page = crate::agent::page_marker(&a.0.caller, &headers)?;
-    let vf = crate::feedback::VisFor::of(&a.0.caller, &s);
+    let vf = crate::views::thread::VisFor::of(&a.0.caller, &s);
     let mut mp = mp.map_err(|e| multipart_error(e.status(), e.body_text()))?;
     while let Some(field) = mp
         .next_field()
@@ -116,7 +114,7 @@ pub async fn list(
 ) -> Result<Json<Value>, ApiError> {
     let aid = path(aid)?;
     let id = parse_id(&aid)?;
-    let vf = crate::feedback::VisFor::of(&a.caller, &s);
+    let vf = crate::views::thread::VisFor::of(&a.caller, &s);
     let assets = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;

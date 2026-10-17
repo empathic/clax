@@ -144,7 +144,7 @@ need!(
     Artifacts,
     "create",
     Filtered,
-    crate::routes::artifacts::PUBLISH_BODY_LIMIT
+    crate::limits::PUBLISH_BODY_LIMIT
 );
 need!(ArtifactsGet, Artifacts, "read", Filtered, DEFAULT_LIMIT);
 need!(ArtifactsPatch, Artifacts, "update", Filtered, DEFAULT_LIMIT);
@@ -156,7 +156,7 @@ need!(
     Artifacts,
     "update",
     Filtered,
-    crate::routes::artifacts::PUBLISH_BODY_LIMIT
+    crate::limits::PUBLISH_BODY_LIMIT
 );
 need!(FilesList, Artifacts, "read", Filtered, DEFAULT_LIMIT);
 need!(FileContent, Artifacts, "read", Filtered, DEFAULT_LIMIT);
@@ -166,7 +166,7 @@ need!(
     Artifacts,
     "update",
     Filtered,
-    crate::routes::assets::UPLOAD_BODY_LIMIT
+    crate::limits::UPLOAD_BODY_LIMIT
 );
 need!(AssetsDelete, Artifacts, "delete", Own, DEFAULT_LIMIT);
 need!(Presence, Artifacts, "read", Own, DEFAULT_LIMIT);
@@ -194,7 +194,7 @@ need!(
     Comments,
     "write",
     Filtered,
-    crate::routes::threads::THREAD_BODY_LIMIT
+    crate::limits::THREAD_BODY_LIMIT
 );
 need!(ThreadComment, Comments, "reply", Filtered, DEFAULT_LIMIT);
 need!(ThreadResolve, Comments, "resolve", Filtered, DEFAULT_LIMIT);
@@ -213,7 +213,7 @@ need!(
     Db,
     "write",
     Filtered,
-    crate::routes::docs::DOCS_BATCH_LIMIT
+    crate::limits::DOCS_BATCH_LIMIT
 );
 need!(DocsStrReplace, Db, "write", Filtered, DEFAULT_LIMIT);
 need!(DocsAcquire, Db, "write", Filtered, DEFAULT_LIMIT);
@@ -233,7 +233,7 @@ need!(
     Ask,
     "ask",
     Own,
-    crate::routes::questions::ASK_BODY_LIMIT
+    crate::limits::ASK_BODY_LIMIT
 );
 need!(QuestionsPoll, Ask, "ask", Own, DEFAULT_LIMIT);
 need!(QuestionsWithdraw, Ask, "ask", Own, DEFAULT_LIMIT);
@@ -691,7 +691,7 @@ impl<N: Need> Agent<N> {
     /// # Errors
     /// 400 for a malformed or missing ID.
     pub fn artifact(&self) -> Result<ArtifactId, ApiError> {
-        crate::routes::artifacts::parse_id(self.raw_artifact.as_deref().unwrap_or_default())
+        crate::headers::parse_id(self.raw_artifact.as_deref().unwrap_or_default())
     }
 
     /// An artifact the request names outside its path (its query or body):
@@ -702,7 +702,7 @@ impl<N: Need> Agent<N> {
     /// # Errors
     /// As above, and 400 for a malformed ID.
     pub async fn named_artifact(&self, s: &AppState, raw: &str) -> Result<ArtifactId, ApiError> {
-        let id = crate::routes::artifacts::parse_id(raw)?;
+        let id = crate::headers::parse_id(raw)?;
         if let Caller::PersonAgent { person, rights, .. } = &self.caller {
             if s.live_ids.contains(id.as_str()) {
                 return Err(ApiError::not_found());
@@ -838,7 +838,7 @@ pub fn invalid_via_page() -> ApiError {
 /// As above.
 pub fn page_marker(c: &Caller, headers: &HeaderMap) -> Result<bool, ApiError> {
     let page = headers
-        .get(crate::routes::artifacts::VIA_HEADER)
+        .get(crate::headers::VIA_HEADER)
         .and_then(|v| v.to_str().ok())
         == Some("page");
     if page && matches!(c, Caller::PersonAgent { .. }) {
@@ -1742,7 +1742,7 @@ mod tests {
         assert!(need_of(&Method::GET, "/api/sessions/x").is_none());
         assert!(need_of(&Method::GET, "/api/inbox").is_none());
         let p = need_of(&Method::POST, "/api/artifacts/{aid}/versions").unwrap();
-        assert_eq!(p.limit, crate::routes::artifacts::PUBLISH_BODY_LIMIT);
+        assert_eq!(p.limit, crate::limits::PUBLISH_BODY_LIMIT);
         assert_eq!(p.right, Some((RightType::Artifacts, "update")));
         assert_eq!(p.class, Class::Filtered);
     }

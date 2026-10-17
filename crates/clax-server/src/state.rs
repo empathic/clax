@@ -1,4 +1,6 @@
+use crate::feedback::{FeedbackCtx, sessions_stop};
 use crate::wrap_cache::WrapCache;
+use clax_core::feedback::Touched;
 use clax_core::{EventBus, Home, Store};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -123,10 +125,10 @@ pub struct AppState {
     pub terminal_after_s: u64,
     /// The latency gate's calibration database, built on first use
     /// ([`crate::routes::perf`]).
-    pub calibration: crate::routes::perf::Slot,
+    pub calibration: crate::perf::Slot,
     /// How long the gateway's latest signature verifications took, for the
     /// latency gate ([`crate::routes::perf::verify_times`]).
-    pub verify_times: Arc<crate::routes::perf::VerifyTimes>,
+    pub verify_times: Arc<crate::perf::VerifyTimes>,
     /// The journal appender's wake-up, which `store` nudges after each
     /// commit that recorded an audit event.
     pub audit_wake: Arc<crate::audit::AuditWake>,
@@ -134,9 +136,9 @@ pub struct AppState {
     pub journal: Arc<crate::audit::JournalStatus>,
     /// What bounds the audit exports: one at a time, a stall limit and a
     /// time limit.
-    pub exports: Arc<crate::routes::toolpath::Exports>,
+    pub exports: Arc<crate::exports::Exports>,
     /// How Claude Code's call-ID reports wait for their `tool.call`.
-    pub call_ids: Arc<crate::routes::sessions::CallIdWait>,
+    pub call_ids: Arc<crate::call_ids::CallIdWait>,
     /// The address the daemon listens on: invites need one other than
     /// loopback (spec §6.2).
     pub bind: std::net::IpAddr,
@@ -151,6 +153,43 @@ pub struct AppState {
     pub agent_gate: Arc<crate::agent::Gate>,
     /// The visibility generation (spec 2026-10-08-multi-agent-multi-person M17).
     pub vis_gen: VisGen,
+}
+
+impl AppState {
+    pub fn feedback_ctx(&self) -> FeedbackCtx {
+        FeedbackCtx {
+            events: self.events.clone(),
+            waiters: self.feedback_waiters.clone(),
+            followers: self.followers.clone(),
+            browser_base: self.browser_base.clone(),
+            store: self.store.clone(),
+            codex: self.codex.clone(),
+            working: self.working.clone(),
+            handle: tokio::runtime::Handle::current(),
+            states: self.feedback_states.clone(),
+            #[cfg(debug_assertions)]
+            between: None,
+        }
+    }
+}
+
+/// The live side of sessions' ends (spec 2026-10-08 §14), once the store
+/// committed them with their cleanup: the feedback they released reaches
+/// its new targets ([`apply`]), their withdrawn questions are announced,
+/// and for each ended session in `sessions` its long-polls are woken and
+/// forgotten, its working records end (recorded under `audit`), and its
+/// followers stop. Every route that ends sessions calls it.
+pub fn sessions_ended(
+    s: &AppState,
+    ctx: &FeedbackCtx,
+    st: &Store,
+    audit: &clax_core::audit::AuditCtx,
+    touched: &Touched,
+    withdrawn_questions: &[String],
+    sessions: &[String],
+) {
+    crate::views::question::announce_ids(s, st, withdrawn_questions);
+    sessions_stop(ctx, st, audit, touched, sessions);
 }
 
 #[cfg(test)]

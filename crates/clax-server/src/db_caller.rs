@@ -164,7 +164,7 @@ impl FromRequestParts<AppState> for CallerParts {
         let who = Identity::from_parts(&parts.headers, &parts.extensions, &state.token);
         let page = parts
             .headers
-            .get(crate::routes::artifacts::VIA_HEADER)
+            .get(crate::headers::VIA_HEADER)
             .and_then(|v| v.to_str().ok())
             == Some("page");
         // A page writes through a browser, never through a grant.

@@ -2,9 +2,10 @@
 //! `text/html` files) wrapped with the bridge, other supporting files as stored.
 
 use crate::error::ApiError;
+use crate::headers::parse_id;
 use crate::host::OnArtifactOrigin;
 use crate::http_cache;
-use crate::routes::artifacts::{parse_id, path};
+use crate::routes::artifacts::path;
 use crate::routes::shell::bridge_version;
 use crate::state::AppState;
 use axum::body::Body;
@@ -274,7 +275,7 @@ pub async fn file(
 /// sandbox` because it shares the API's origin. A file an agent channel's
 /// reader may not see answers 403 `withheld` with its authors; while the
 /// version withholds any file, so does a path it lacks
-/// ([`crate::feedback::Vis::filter_file_content`]).
+/// ([`crate::views::thread::Vis::filter_file_content`]).
 pub async fn raw_file(
     State(s): State<AppState>,
     a: crate::agent::Agent<crate::agent::FileContent>,
@@ -282,7 +283,7 @@ pub async fn raw_file(
 ) -> Result<Response, ApiError> {
     let (aid, n, rel) = path(p)?;
     let id = parse_id(&aid)?;
-    let vf = crate::feedback::VisFor::of(&a.caller, &s);
+    let vf = crate::views::thread::VisFor::of(&a.caller, &s);
     let found = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;

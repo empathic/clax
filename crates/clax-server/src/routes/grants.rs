@@ -18,6 +18,7 @@ use crate::grant_auth::{self, Refusal, Signed};
 use crate::identity::Identity;
 use crate::state::AppState;
 use crate::viewer::SameOrigin;
+use crate::views::grant::grant_view;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
@@ -45,28 +46,6 @@ fn require_browser(caller: &Caller, what: &str) -> Result<(), ApiError> {
             format!("{what} needs the owner's browser: open People in Clax"),
         ))
     }
-}
-
-/// A grant's view for the owner: never a hash or a code.
-pub fn grant_view(g: &Grant) -> Value {
-    let fingerprint = sig::decode_public(&g.client_key)
-        .map(|k| sig::fingerprint(&k))
-        .ok();
-    json!({
-        "id": g.id,
-        "status": g.status,
-        "via": g.via,
-        "client": {"name": g.client_name, "key": fingerprint, "peer_ip": g.peer_ip},
-        "person": g.person.as_ref().map(|p| json!({"public_id": p, "display_name": g.person_name})),
-        "owner": g.owner,
-        "narrow": g.narrow.as_ref().map(Rights::to_json),
-        "wrong_codes": g.wrong_codes,
-        "created_at": g.created_at,
-        "decided_at": g.decided_at,
-        "last_used_at": g.last_used_at,
-        "ended_at": g.ended_at,
-        "ended_by": g.ended_by,
-    })
 }
 
 fn invite_view(i: &Invite) -> Value {
@@ -101,7 +80,7 @@ pub fn announce_ended(
 ) {
     for r in ended.iter().filter(|r| r.ended) {
         grant_auth::note_stale(s.grant_auth.index.ended(&r.grant_id), "grant ended");
-        crate::feedback::sessions_ended(
+        crate::state::sessions_ended(
             s,
             ctx,
             st,

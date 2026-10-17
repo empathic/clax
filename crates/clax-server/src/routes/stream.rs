@@ -1,8 +1,9 @@
 //! `GET /api/stream`: one multiplexed event stream per client, and `POST
 //! /api/stream/<id>`: its subscriptions (see [`crate::stream`]).
 
-use super::artifacts::{body, parse_id, path};
+use super::artifacts::{body, path};
 use crate::error::ApiError;
+use crate::headers::parse_id;
 use crate::state::AppState;
 use crate::stream::{Conn, MAX_TOPICS, SubError, Topic, parse_last_event_id};
 use crate::viewer::SameOrigin;
@@ -30,7 +31,7 @@ use std::convert::Infallible;
 /// topic the client must refetch, and a `: keep-alive` comment every
 /// `AppState::sse_keep_alive` while idle. It ends when the daemon shuts down
 /// or a newer connection resumes the same stream. A stream opened by a
-/// request that may not see live pages ([`crate::live::sees_live_pages`])
+/// request that may not see live pages ([`crate::live_access::sees_live_pages`])
 /// receives no gallery event of a live page and cannot subscribe to a live
 /// page's topics; it resumes only from a request of the same kind. A stream
 /// is opened for the person the request speaks for (the owner, or a
@@ -50,7 +51,7 @@ pub async fn open(
     // The stream serves people (spec §7.5): an agent reads through the
     // filtered routes.
     d.refuse_agents()?;
-    let local = crate::live::sees_live_pages(&headers, &extensions, &s.token);
+    let local = crate::live_access::sees_live_pages(&headers, &extensions, &s.token);
     let credential = extensions
         .get::<crate::extension::ExtensionCredential>()
         .map(|c| c.hash().to_string());
@@ -182,7 +183,7 @@ pub async fn update(
     d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     who: crate::identity::Identity,
-    sees: crate::live::SeesLive,
+    sees: crate::live_access::SeesLive,
     via: Option<axum::Extension<crate::extension::ExtensionCredential>>,
     p: Result<Path<String>, PathRejection>,
     req: Result<Json<UpdateBody>, JsonRejection>,

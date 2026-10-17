@@ -1,16 +1,18 @@
 //! Comment threads (spec §6 "Comments"): create with anchor and clip, comment,
 //! send to the agent, resolve, list, and serve clips.
 
-use super::artifacts::{body, parse_id, path, publishing_session};
+use super::artifacts::{body, path, publishing_session};
 use super::assets::multipart_error;
 use crate::agent::{Agent, TokenOrAgent, person_agent_session};
 use crate::audit::DeferredAudit;
 use crate::auth::Caller;
 use crate::error::ApiError;
-use crate::feedback::{VisFor, apply, thread_event_views};
+use crate::feedback::apply;
+use crate::headers::parse_id;
 use crate::identity::Identity;
 use crate::state::AppState;
 use crate::viewer::{SameOrigin, acting_viewer, author};
+use crate::views::thread::{VisFor, thread_event_views};
 use axum::Json;
 use axum::body::{Body, Bytes};
 use axum::extract::multipart::MultipartRejection;
@@ -31,9 +33,6 @@ use clax_core::{Anchor, ArtifactId, CoreError, Event, SendTarget, Store};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-/// Request cap for thread creation; a clip over `MAX_CLIP_BYTES` but under this
-/// is dropped with `clip_error`, a larger request is refused with 413.
-pub const THREAD_BODY_LIMIT: usize = 16 * 1024 * 1024;
 pub const GUIDANCE_REPLY: &str = "This thread was not sent to you. Only threads the person sends to the agent accept agent replies; leave plain threads to people. Nothing was written.";
 pub const GUIDANCE_RESOLVE: &str = "This thread was not sent to you. Only threads the person sends to the agent can be resolved by the agent; leave plain threads to people. Nothing was changed.";
 pub const GUIDANCE_REOPEN: &str = "This thread was not sent to you. Only threads the person sends to the agent can be reopened by the agent; leave plain threads to people. Nothing was changed.";
@@ -61,7 +60,7 @@ pub fn mentions_agent(body: &str) -> bool {
 }
 
 /// Broadcasts the `thread` event. It reaches every subscriber, so its view
-/// ([`crate::feedback::thread_event_views`]) has no `clip_path` and no
+/// ([`crate::views::thread::thread_event_views`]) has no `clip_path` and no
 /// delivery state, whoever made the change.
 pub(crate) fn publish_thread(
     ctx: &crate::feedback::FeedbackCtx,
@@ -178,12 +177,14 @@ pub async fn approves_first(
     q: Result<Query<FirstsQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
-    let asker = crate::inbox::recipient_of(&s, &who).await.map_err(|_| {
-        ApiError::forbidden(
-            "forbidden",
-            "only the owner or a connected person sees who approves first",
-        )
-    })?;
+    let asker = crate::views::inbox::recipient_of(&s, &who)
+        .await
+        .map_err(|_| {
+            ApiError::forbidden(
+                "forbidden",
+                "only the owner or a connected person sees who approves first",
+            )
+        })?;
     let id = parse_id(&path(p)?)?;
     let q = q
         .map(|Query(q)| q)
@@ -257,7 +258,7 @@ pub struct AllQuery {
 /// artifact's `threads` are thread views with `clip_path`, oldest first, and
 /// an artifact with none is left out. Artifacts come in the order of
 /// `GET /api/artifacts`. For the owner's agents each field goes through
-/// their visibility ([`crate::feedback::Vis`]): a withheld title is null
+/// their visibility ([`crate::views::thread::Vis`]): a withheld title is null
 /// with `withheld: {authors}`, withheld file names are left out and counted
 /// in `files_withheld`, and the threads are filtered as everywhere.
 pub async fn list_all(

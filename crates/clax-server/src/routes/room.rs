@@ -19,8 +19,8 @@
 
 use crate::db_caller::Subscriber;
 use crate::error::ApiError;
+use crate::headers::parse_id;
 use crate::room::{Frame, Membership, Rooms, Sender, Who};
-use crate::routes::artifacts::parse_id;
 use crate::state::AppState;
 use crate::viewer::SameOrigin;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};

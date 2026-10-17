@@ -292,7 +292,7 @@ impl
 }
 
 /// The daemon's listener: a TCP listener that sets socket options on each
-/// connection it accepts (see [`crate::daemon::tune_connection`]).
+/// connection it accepts (see [`crate::conn::tune_connection`]).
 pub struct TunedListener(pub tokio::net::TcpListener);
 
 impl axum::serve::Listener for TunedListener {
@@ -301,7 +301,7 @@ impl axum::serve::Listener for TunedListener {
 
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
         let (mut io, addr) = axum::serve::Listener::accept(&mut self.0).await;
-        crate::daemon::tune_connection(&mut io);
+        crate::conn::tune_connection(&mut io);
         (io, addr)
     }
 

@@ -8,7 +8,7 @@
 //! session's event stream stays open.
 
 use crate::auth::RequireToken;
-use crate::routes::artifacts::PUBLISH_BODY_LIMIT;
+use crate::limits::PUBLISH_BODY_LIMIT;
 use crate::state::AppState;
 use axum::Router;
 use axum::extract::Request;

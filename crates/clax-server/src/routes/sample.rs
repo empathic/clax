@@ -12,8 +12,8 @@
 use crate::agent::DeniedToGrants;
 use crate::auth::RequireToken;
 use crate::error::ApiError;
+use crate::headers::parse_id;
 use crate::identity::Identity;
-use crate::routes::artifacts::parse_id;
 use crate::sample::cache::AnswerCache;
 use crate::sample::flight::Done;
 use crate::sample::flight::{self, Flight, Out};

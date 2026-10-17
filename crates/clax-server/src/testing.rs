@@ -254,10 +254,10 @@ impl TestServer {
             audit_wake: crate::audit::AuditWake::new(),
             // No appender; tests of the journal start their own.
             journal: crate::audit::JournalStatus::off(None),
-            exports: crate::routes::toolpath::Exports::new(),
-            call_ids: Arc::new(crate::routes::sessions::CallIdWait::new(
-                crate::routes::sessions::CALL_ID_GRACE,
-                crate::routes::sessions::CALL_ID_CAP,
+            exports: crate::exports::Exports::new(),
+            call_ids: Arc::new(crate::call_ids::CallIdWait::new(
+                crate::call_ids::CALL_ID_GRACE,
+                crate::call_ids::CALL_ID_CAP,
             )),
             bind,
             port,
@@ -273,8 +273,8 @@ impl TestServer {
         f(&mut state);
         state.audit_wake.install(&state.store);
         state.stream.listen(&state.events);
-        crate::inbox::listen(&state);
-        crate::approvals::listen(&state);
+        crate::views::inbox::listen(&state);
+        crate::views::approval::listen(&state);
         crate::routes::people::listen(&state);
         let events = state.events.clone();
         let store = state.store.clone();

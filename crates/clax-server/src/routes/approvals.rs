@@ -18,7 +18,6 @@
 
 use super::artifacts::{body, path};
 use crate::agent::{Agent, DeniedToGrants, TokenOrAgent};
-use crate::approvals::{approval_view, request_view};
 use crate::audit::DeferredAudit;
 use crate::auth::Caller;
 use crate::error::ApiError;
@@ -26,6 +25,7 @@ use crate::feedback::apply_decision;
 use crate::identity::Identity;
 use crate::state::AppState;
 use crate::viewer::SameOrigin;
+use crate::views::approval::{approval_view, request_view};
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
@@ -109,7 +109,7 @@ pub async fn list(
 ) -> Result<Json<Value>, ApiError> {
     let me = whose(&a.caller)?;
     let reads = a.read_rights();
-    let vf = crate::feedback::VisFor::of(&a.caller, &s);
+    let vf = crate::views::thread::VisFor::of(&a.caller, &s);
     let v = s
         .store_call(move |st| {
             let vis = vf.build(st)?;

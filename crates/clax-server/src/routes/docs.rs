@@ -9,7 +9,7 @@
 //! SSE event, which carries the path and version but never the body.
 //!
 //! Agent channels (spec §7.5 docs row, §8.2, §8.3) get every document
-//! through [`crate::feedback::Vis`]: one whose authors their reader may not
+//! through [`crate::views::thread::Vis`]: one whose authors their reader may not
 //! see is its placeholder (`{doc_id, version, withheld: {authors}}`) when
 //! read or written by its path, and in a listing is never matched,
 //! ordered or listed, only counted in `withheld_count`. A write whose
@@ -20,12 +20,13 @@
 //! authors, so they never make it the writer's. A lease in force on it is
 //! busy whatever its holder.
 
-use super::artifacts::{JsonBytes, body, parse_body, parse_id, path};
+use super::artifacts::{JsonBytes, body, parse_body, path};
 use crate::db_caller::CallerParts;
 use crate::error::ApiError;
-use crate::feedback::{Vis, VisFor};
+use crate::headers::parse_id;
 use crate::state::AppState;
 use crate::viewer::SameOrigin;
+use crate::views::thread::{Vis, VisFor};
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
@@ -37,10 +38,6 @@ use clax_core::store::docs::{
 use clax_core::{CoreError, Event, EventBus, Store};
 use serde::Deserialize;
 use serde_json::{Value, json};
-
-/// Request body cap for `docs:batch`: 50 documents of up to 256 KiB each,
-/// with room for JSON escaping. Single-document writes keep axum's 2 MB default.
-pub const DOCS_BATCH_LIMIT: usize = 14 * 1024 * 1024;
 
 fn announce(events: &EventBus, aid: &str, changes: impl IntoIterator<Item = DocChange>) {
     for c in changes {

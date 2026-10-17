@@ -17,12 +17,12 @@ use crate::auth::Caller;
 #[cfg(debug_assertions)]
 use crate::auth::RequireToken;
 use crate::error::ApiError;
-use crate::feedback::VisFor;
 use crate::identity::Identity;
-use crate::inbox::recipient_of;
-use crate::questions::{announce, arm_grace, start_grace, view as question_view};
 use crate::state::AppState;
 use crate::viewer::SameOrigin;
+use crate::views::inbox::recipient_of;
+use crate::views::question::{announce, arm_grace, start_grace, view as question_view};
+use crate::views::thread::VisFor;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
@@ -39,8 +39,6 @@ use tokio::time::Instant;
 
 /// Longest `wait` of a question poll, in seconds.
 pub const MAX_WAIT_SECS: u64 = 3600;
-/// Largest accepted ask body.
-pub const ASK_BODY_LIMIT: usize = 128 * 1024;
 
 /// A question route's failure: an API error, or 409 `question_closed` with
 /// the question's view beside the error so the caller can say what
@@ -88,7 +86,7 @@ fn live(db: &Store, sid: &str) -> clax_core::Result<()> {
 
 /// `v`, a question's view, as the asking agent may see it (spec §8.2): its
 /// artifact's title, an author field, through the agent's visibility `vf`
-/// ([`crate::feedback::Vis::filter_question`]). Runs on a store thread.
+/// ([`crate::views::thread::Vis::filter_question`]). Runs on a store thread.
 fn for_asker(db: &Store, vf: &VisFor, mut v: Value) -> clax_core::Result<Value> {
     vf.build(db)?.filter_question(db, &mut v)?;
     Ok(v)

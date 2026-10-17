@@ -154,7 +154,7 @@ impl Credentials {
 pub const SCHEME: &str = "Clax-Extension";
 
 /// Marks a request the gateway admitted. [`crate::identity::Identity`] counts
-/// it as a browser of the owner's; [`crate::live::SeesLive`] and the stream
+/// it as a browser of the owner's; [`crate::live_access::SeesLive`] and the stream
 /// read it as "live pages only". Only [`gateway`] inserts it, after checking
 /// the credential.
 #[derive(Clone, Copy, Debug)]
@@ -197,7 +197,7 @@ enum Rule<'a> {
 
 /// The routes the extension may use, and what each needs (spec 2026-10-05
 /// §9.2); `None` for every other route. Routes taking an artifact ID in the
-/// body or a topic check it themselves through [`crate::live::SeesLive`].
+/// body or a topic check it themselves through [`crate::live_access::SeesLive`].
 fn rule<'a>(m: &Method, path: &'a str) -> Option<Rule<'a>> {
     let segs: Vec<&str> = path.strip_prefix('/')?.split('/').collect();
     let (get, post, put, del) = (
@@ -392,7 +392,7 @@ pub async fn gateway(State(s): State<AppState>, mut req: Request, next: Next) ->
         return unknown();
     }
     if let Rule::Live(aid) = r
-        && !crate::live::percent_decoded(aid).is_some_and(|a| s.live_ids.contains(&a))
+        && !crate::live_access::percent_decoded(aid).is_some_and(|a| s.live_ids.contains(&a))
     {
         return refuse(clax_core::CoreError::NotFound.into(), &origin);
     }

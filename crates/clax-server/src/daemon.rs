@@ -368,22 +368,6 @@ pub fn raise_open_file_limit() -> io::Result<(u64, u64)> {
     Ok((soft, soft))
 }
 
-/// Socket options for each accepted connection: no Nagle delay, so a small
-/// event leaves at once, and TCP keep-alive probes after a minute idle, so a
-/// peer that vanished without closing (a sleeping laptop on the LAN) frees
-/// its connection and its stream.
-pub fn tune_connection(tcp: &mut tokio::net::TcpStream) {
-    if let Err(e) = tcp.set_nodelay(true) {
-        tracing::debug!(error = %e, "TCP_NODELAY");
-    }
-    let ka = socket2::TcpKeepalive::new()
-        .with_time(Duration::from_secs(60))
-        .with_interval(Duration::from_secs(10));
-    if let Err(e) = socket2::SockRef::from(&*tcp).set_tcp_keepalive(&ka) {
-        tracing::debug!(error = %e, "TCP keep-alive");
-    }
-}
-
 /// Parameters for [`serve`].
 pub struct ServeConfig {
     /// Clax home the daemon serves from and writes `daemon.json` into.
@@ -575,10 +559,10 @@ pub async fn serve(
         verify_times: Arc::default(),
         audit_wake: crate::audit::AuditWake::new(),
         journal: crate::audit::JournalStatus::off(None),
-        exports: crate::routes::toolpath::Exports::new(),
-        call_ids: Arc::new(crate::routes::sessions::CallIdWait::new(
-            crate::routes::sessions::CALL_ID_GRACE,
-            crate::routes::sessions::CALL_ID_CAP,
+        exports: crate::exports::Exports::new(),
+        call_ids: Arc::new(crate::call_ids::CallIdWait::new(
+            crate::call_ids::CALL_ID_GRACE,
+            crate::call_ids::CALL_ID_CAP,
         )),
         bind: cfg.bind,
         port,
@@ -621,8 +605,8 @@ pub async fn serve(
         })
     });
     state.stream.listen(&state.events);
-    crate::inbox::listen(&state);
-    crate::approvals::listen(&state);
+    crate::views::inbox::listen(&state);
+    crate::views::approval::listen(&state);
     crate::routes::people::listen(&state);
     tracing::info!(codex = ?state.codex.bin, source = ?state.codex.source, "codex push");
     tracing::info!(provider = ?state.sample.provider_name(), "sample provider");
@@ -687,7 +671,7 @@ pub async fn serve(
                         store.mark_resumed();
                     }
                     let r = reap_idle(&ctx, store, SESSION_IDLE, &pid_alive)?;
-                    crate::questions::announce_ids(&st, store, &r.withdrawn_questions);
+                    crate::views::question::announce_ids(&st, store, &r.withdrawn_questions);
                     Ok(r)
                 })
                 .await;

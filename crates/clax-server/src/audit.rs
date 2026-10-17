@@ -14,8 +14,8 @@
 //! or `x-clax-session` is inferred as though absent. Header values are never
 //! logged.
 
+use crate::headers::{SESSION_HEADER, VIA_HEADER};
 use crate::identity::Identity;
-use crate::routes::artifacts::{SESSION_HEADER, VIA_HEADER};
 use crate::state::AppState;
 use axum::extract::FromRequestParts;
 use axum::http::HeaderMap;
