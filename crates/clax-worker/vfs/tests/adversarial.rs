@@ -84,7 +84,7 @@ fn integrity(c: &Connection) -> String {
 }
 
 /// A caller that switches the connection to WAL (as clax-core's writer does
-/// in `crates/clax-core/src/store/exec.rs`) would commit into a WAL file the
+/// in `crates/clax-store/src/exec.rs`) would commit into a WAL file the
 /// VFS keeps in memory, out of the store. The VFS refuses the switch, so the
 /// connection stays in MEMORY mode and its commits reach the store.
 #[test]

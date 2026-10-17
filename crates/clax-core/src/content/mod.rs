@@ -134,7 +134,7 @@
 //! # Futures
 //!
 //! The trait is written with `async_trait`. An implementation is `Send +
-//! Sync` on every target, so a [`Store`](crate::store::Store) holding it in
+//! Sync` on every target, so a `clax_store::Store` holding it in
 //! an `Arc` is too, as the server's state must be (axum's bounds hold on
 //! `wasm32` as well). Natively its futures are `Send`; on `wasm32` they need
 //! not be, since a Worker's JavaScript futures are `!Send` and run on one

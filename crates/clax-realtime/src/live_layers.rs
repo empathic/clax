@@ -87,7 +87,7 @@ impl LiveLayers {
     /// Calls `f`, outside the hub's lock, after each flush that queued a
     /// batch and each seat released: what a host that sends sockets their
     /// batches itself (a Durable Object, through
-    /// `crate::routes::live_layers::LiveSocket::drain`) listens to, as the
+    /// `clax_server::routes::live_layers::LiveSocket::drain`) listens to, as the
     /// stream hub's `on_queue`.
     pub fn on_queue(&self, f: QueueListener) {
         *self.on_queue.lock().unwrap_or_else(PoisonError::into_inner) = Some(f);

@@ -1668,7 +1668,7 @@ fn check_head(s: &AppState, parts: &Parts) -> Result<GrantHead, Refusal> {
 
 /// What [`authenticate`] found for an agent token (`Authorization: Bearer
 /// cxa_…`): the bearer grant it holds, for [`verify_layer`] on the API and
-/// for the remote MCP endpoint (`crate::routes::mcp_http`).
+/// for the remote MCP endpoint (`clax_server::routes::mcp_http`).
 #[derive(Clone, Debug)]
 pub struct BearerGrant {
     pub grant_id: String,
@@ -1899,7 +1899,7 @@ fn bearer_key(grant_id: &str) -> [u8; 32] {
 /// is the request's ([`VerifiedGrant`]). Its body is read before it is
 /// handed on as a signed request's is ([`read_unverified`], keyed by the
 /// grant), within the route's limit. The remote MCP endpoint
-/// (`crate::routes::mcp_http`), which serves agent tokens, is handed the
+/// (`clax_server::routes::mcp_http`), which serves agent tokens, is handed the
 /// [`BearerGrant`] instead, its body read the same way within the publish
 /// limit.
 async fn verify_bearer(s: &AppState, b: BearerGrant, mut req: Request, next: Next) -> Response {
@@ -1946,7 +1946,7 @@ async fn verify_bearer(s: &AppState, b: BearerGrant, mut req: Request, next: Nex
 /// under `b`'s key ([`read_unverified`]); a request whose body is known to
 /// be empty as it is. Its body's own length decides, not its headers: an
 /// in-process request (the MCP adapter's tools, through
-/// `crate::loopback`) carries a body with no `Content-Length`.
+/// `clax_server::loopback`) carries a body with no `Content-Length`.
 async fn gated(
     s: &AppState,
     b: &BearerGrant,

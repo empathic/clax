@@ -53,7 +53,7 @@
 //!   token is the
 //!   capability in the same way: minted per revision, it travels only in
 //!   the drafts listing and the `drafts` events, which reach only people
-//!   who may read the artifact ([`crate::routes::drafts`]);
+//!   who may read the artifact (`clax_server::routes::drafts`);
 //! - the shell's static files and `/healthz` are open;
 //! - a request with `Authorization` (the daemon token, a grant, an agent
 //!   token) is as on a local daemon, and so is the owner's session; any
@@ -76,7 +76,7 @@
 //! person's): `Authorization: Bearer cxa_…` is an agent credential
 //! ([`crate::agent::authenticate`]) on every route agents of other
 //! machines reach, and on the tool set's JSON-RPC adapter (`/mcp` on a
-//! Worker, `/mcp/json` on the daemon, [`crate::routes::mcp_http`]).
+//! Worker, `/mcp/json` on the daemon, `clax_server::routes::mcp_http`).
 
 use crate::error::ApiError;
 use crate::state::AppState;

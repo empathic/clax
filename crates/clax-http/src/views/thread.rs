@@ -336,7 +336,7 @@ impl ClipLinks {
 
     /// The keyed address of thread `tid`'s clip on artifact `aid`; `None`
     /// for a live page's, which the address does not serve to a caller
-    /// with no credential (`crate::routes::threads::keyed_clip`).
+    /// with no credential (`clax_server::routes::threads::keyed_clip`).
     pub fn link(&self, aid: &str, tid: &str) -> Option<String> {
         (!self.live.contains(aid))
             .then(|| crate::hosted::clip_link_at(&self.hosted, &self.token, aid, tid))
