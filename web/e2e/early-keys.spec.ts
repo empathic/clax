@@ -60,6 +60,10 @@ async function instrument(page: Page) {
 }
 
 async function commentMode(page: Page, f: Frame) {
+  // Fork, which comes with the more menu after the first paint, moves
+  // Comment left as it arrives: Comment is measured once it is in, so the
+  // press lands on it.
+  await expect(page.getByRole("button", { name: "Fork", exact: true })).toBeVisible();
   const toggle = page.getByRole("button", { name: "Comment", exact: true });
   const b = (await toggle.boundingBox())!;
   await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2, { steps: 5 });
