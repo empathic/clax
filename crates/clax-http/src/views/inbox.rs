@@ -329,7 +329,15 @@ fn render(
             v["url"] = json!(format!("/inbox?q={qid}"));
             match st.question(qid)? {
                 Some(q) => {
-                    v["question"] = crate::views::question::view(st, &q)?;
+                    let view = crate::views::question::view(st, &q)?;
+                    // A thread question opens its thread while it has one.
+                    if let (Some(on), Some(tid)) = (
+                        view["artifact"]["id"].as_str(),
+                        view["thread"]["id"].as_str(),
+                    ) {
+                        v["url"] = json!(format!("/a/{on}?thread={tid}"));
+                    }
+                    v["question"] = view;
                     false
                 }
                 None => true,

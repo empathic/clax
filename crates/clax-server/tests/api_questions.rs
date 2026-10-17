@@ -2,6 +2,7 @@
 //! §6.1), their waiters and the `question` event.
 
 use clax_testkit::TestServer;
+use clax_testkit::where_to_ask::{clocked, owner_tab, paged as paged_at, typed};
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -1043,8 +1044,12 @@ async fn hook_mode_is_terminal_without_a_surface() {
         .await
         .unwrap();
     assert_eq!(
-        (r["mode"].as_str(), r["question"]["status"].as_str()),
-        (Some("terminal"), Some("released"))
+        (
+            r["mode"].as_str(),
+            r["question"]["status"].as_str(),
+            r["question"]["in_terminal"].as_bool()
+        ),
+        (Some("terminal"), Some("open"), Some(true))
     );
     assert_eq!(r["surface_open"], false);
     // A stream holding other topics is no surface.
@@ -1563,8 +1568,9 @@ async fn each_question_route_records_its_transition_once() {
             .send()
     };
 
-    // Created released (no owner surface): asked, then released; the
-    // terminal's answer is the owner's, through the hook.
+    // Asked in the terminal (no owner surface): asked as an in-terminal
+    // question, never released; the terminal's answer is the owner's,
+    // through the hook.
     let seq = newest();
     let r: Value = as_hook(
         ts.client
@@ -1580,10 +1586,7 @@ async fn each_question_route_records_its_transition_once() {
     let t1 = id(r);
     assert_eq!(
         question_events(&ts, seq),
-        [
-            event("question.ask", &t1, "agent", "hook", Value::Null),
-            event("question.release", &t1, "agent", "hook", json!("created")),
-        ]
+        [event("question.ask", &t1, "agent", "hook", Value::Null)]
     );
     let seq = newest();
     // The same tool call again makes no question and records nothing.
@@ -1614,6 +1617,32 @@ async fn each_question_route_records_its_transition_once() {
     assert_eq!(b["answered_via"], "terminal");
     assert_eq!(b["answers"], json!([{"selected": ["B"], "text": null}]));
     assert_eq!(e.ids.session.as_deref(), Some(sid.as_str()), "the asker");
+
+    // Created released (a session with no page): asked, then released.
+    let bare = session(&ts, "h2").await;
+    let seq = newest();
+    let r: Value = ts
+        .authed(
+            ts.client
+                .post(format!("{}/api/sessions/{bare}/questions", ts.base))
+                .header("x-clax-via", "hook")
+                .header("x-clax-session", &bare),
+        )
+        .json(&hook("t9"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let t9 = id(r);
+    assert_eq!(
+        question_events(&ts, seq),
+        [
+            event("question.ask", &t9, "agent", "hook", Value::Null),
+            event("question.release", &t9, "agent", "hook", json!("created")),
+        ]
+    );
 
     // With a surface open, a hook question waits; each route's change.
     let _surface = owner_tap(&ts).await;
@@ -1945,4 +1974,315 @@ async fn a_persons_agent_sees_its_questions_title_once_its_person_approves_the_a
     let v = ask().await;
     assert_eq!(v["question"]["artifact"]["title"], TITLE, "{v}");
     assert!(v["question"]["artifact"].get("withheld").is_none());
+}
+
+#[tokio::test]
+async fn a_hook_question_after_a_newer_terminal_prompt_is_released_at_once_and_leaves_a_terminal_card()
+ {
+    let (_c, ts) = clocked().await;
+    let mut tap = owner_tap(&ts).await;
+    let (sid, aid) = paged_at(&ts, "h1").await;
+    typed(&ts, &sid).await;
+    let before = ts.store.inbox_unread(None).unwrap();
+    let r: Value = post(&ts, &format!("/api/sessions/{sid}/questions"), hook("t1"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(r["mode"], "terminal");
+    assert_eq!(r["where_to_ask"]["surface"], "terminal");
+    let q = &r["question"];
+    assert_eq!(
+        (q["status"].as_str(), q["in_terminal"].as_bool()),
+        (Some("open"), Some(true))
+    );
+    assert_eq!(q["artifact"]["id"], aid.as_str());
+    assert_eq!(
+        tap.next().await["in_terminal"],
+        true,
+        "Clax hears of the in-terminal question"
+    );
+    assert_eq!(
+        ts.store.inbox_unread(None).unwrap(),
+        before + 1,
+        "it counts in the inbox"
+    );
+    // No grace withdraws it: its hook is not waiting.
+    assert_eq!(ts.question_waiters(q["id"].as_str().unwrap()).await, 0);
+}
+
+#[tokio::test]
+async fn a_hook_question_with_newer_focused_clax_input_waits_in_clax() {
+    let (c, ts) = clocked().await;
+    let _surface = ts.stream_as_owner(&["questions"]).await;
+    let (sid, aid) = paged_at(&ts, "h1").await;
+    typed(&ts, &sid).await;
+    c.advance(120);
+    owner_tab(&ts, &aid, "t1", true, 0).await;
+    let r: Value = post(&ts, &format!("/api/sessions/{sid}/questions"), hook("t1"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        (r["mode"].as_str(), r["question"]["in_terminal"].as_bool()),
+        (Some("wait"), Some(false))
+    );
+    assert_eq!(r["where_to_ask"]["confidence"], "clear");
+}
+
+#[tokio::test]
+async fn a_hidden_tab_does_not_hold_a_hook_question_after_a_prompt() {
+    let (_c, ts) = clocked().await;
+    let _hidden = ts.stream_as_owner(&["questions"]).await;
+    let (sid, _aid) = paged_at(&ts, "h1").await;
+    typed(&ts, &sid).await;
+    let r: Value = post(&ts, &format!("/api/sessions/{sid}/questions"), hook("t1"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(r["mode"], "terminal");
+}
+
+#[tokio::test]
+async fn a_hook_question_of_a_session_with_no_page_is_asked_in_the_terminal_without_a_terminal_card()
+ {
+    let ts = TestServer::spawn().await;
+    let _surface = ts.stream_as_owner(&["questions"]).await;
+    let sid = session(&ts, "h1").await;
+    let r: Value = post(&ts, &format!("/api/sessions/{sid}/questions"), hook("t1"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            r["mode"].as_str(),
+            r["question"]["status"].as_str(),
+            r["question"]["in_terminal"].as_bool()
+        ),
+        (Some("terminal"), Some("released"), Some(false))
+    );
+    assert_eq!(ts.store.inbox_unread(None).unwrap(), 0);
+}
+
+#[tokio::test]
+async fn the_asked_hook_closes_an_in_terminal_question_with_the_terminals_answer() {
+    let (_c, ts) = clocked().await;
+    let (sid, _aid) = paged_at(&ts, "h1").await;
+    let _surface = ts.stream_as_owner(&["questions"]).await;
+    typed(&ts, &sid).await;
+    let before = ts.store.inbox_unread(None).unwrap();
+    let r = ts.ask(&sid, hook("t1")).await;
+    let qid = r["question"]["id"].as_str().unwrap().to_string();
+    let res = post(
+        &ts,
+        &format!("/api/sessions/{sid}/questions:terminal"),
+        json!({"tool_use_id": "t1", "answers": {"Which?": "A"}}),
+    )
+    .await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(ts.question_status(&qid).await, "answered");
+    assert_eq!(
+        ts.store.inbox_unread(None).unwrap(),
+        before,
+        "answered in the terminal: read"
+    );
+}
+
+#[tokio::test]
+async fn a_prompt_lapses_an_unanswered_hook_in_terminal_question() {
+    let (_c, ts) = clocked().await;
+    let (sid, _aid) = paged_at(&ts, "h1").await;
+    let _surface = ts.stream_as_owner(&["questions"]).await;
+    typed(&ts, &sid).await;
+    let qid = ts.ask(&sid, hook("t1")).await["question"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let t = typed(&ts, &sid).await;
+    assert_eq!(t["lapsed"], json!([qid]));
+    assert_eq!(ts.question_status(&qid).await, "withdrawn");
+}
+
+#[tokio::test]
+async fn ask_me_here_reaches_the_agent_as_a_delivery() {
+    let (_c, ts) = clocked().await;
+    let (sid, aid) = paged_at(&ts, "h1").await;
+    let mut b = body();
+    b["artifact_id"] = json!(aid);
+    b["in_terminal"] = json!(true);
+    let r = ts.ask(&sid, b).await;
+    assert_eq!(
+        (r["mode"].as_str(), r["question"]["in_terminal"].as_bool()),
+        (Some("terminal"), Some(true))
+    );
+    let qid = r["question"]["id"].as_str().unwrap().to_string();
+    let res = ts
+        .client
+        .post(format!("{}/api/questions/{qid}/answer", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"answers": [{"selected": ["A"], "text": null}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        400,
+        "an in-terminal question takes no answer in Clax"
+    );
+    let res = ts
+        .client
+        .post(format!("{}/api/questions/{qid}/pull", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(
+        (
+            v["question"]["status"].as_str(),
+            v["question"]["pulled"].as_bool()
+        ),
+        (Some("withdrawn"), Some(true))
+    );
+    let res = ts
+        .client
+        .post(format!("{}/api/questions/{qid}/pull", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409, "pulled once");
+    let taken = late(&ts, &sid).await;
+    assert_eq!(taken[0]["id"], qid.as_str());
+    assert!(late(&ts, &sid).await.as_array().unwrap().is_empty(), "once");
+    let q = ts.ask(&sid, body()).await["question"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = ts
+        .client
+        .post(format!("{}/api/questions/{q}/pull", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400, "a question asked in Clax is not pulled");
+    assert_eq!(
+        res.json::<Value>().await.unwrap()["error"]["code"],
+        "not_in_terminal"
+    );
+}
+
+#[tokio::test]
+async fn a_hook_question_cannot_ask_to_be_in_the_terminal() {
+    let (_c, ts) = clocked().await;
+    let (sid, _aid) = paged_at(&ts, "h1").await;
+    let mut b = hook("t1");
+    b["in_terminal"] = json!(true);
+    let res = post(&ts, &format!("/api/sessions/{sid}/questions"), b).await;
+    assert_eq!(res.status(), 400);
+    assert_eq!(
+        res.json::<Value>().await.unwrap()["error"]["code"],
+        "invalid_question"
+    );
+}
+
+#[tokio::test]
+async fn a_thread_question_names_its_thread_and_its_inbox_item_opens_it() {
+    let ts = TestServer::spawn().await;
+    let (sid, aid) = paged_at(&ts, "h1").await;
+    let t = ts.thread_as_owner(&aid, "Bigger title?").await;
+    let tid = t["id"].as_str().unwrap();
+    let mut b = body();
+    b["artifact_id"] = json!(aid);
+    b["thread_id"] = json!(tid);
+    let r = ts.ask(&sid, b.clone()).await;
+    assert_eq!(r["question"]["thread"], json!({"id": tid, "open": true}));
+    let items: Value = ts
+        .client
+        .get(format!("{}/api/inbox?kind=question", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(items["items"][0]["url"], format!("/a/{aid}?thread={tid}"));
+    let mut off = body();
+    off["thread_id"] = json!(tid);
+    let res = post(&ts, &format!("/api/sessions/{sid}/questions"), off).await;
+    assert_eq!(res.status(), 400, "a thread needs its artifact");
+    let (_s2, other) = paged_at(&ts, "h2").await;
+    b["artifact_id"] = json!(other);
+    let res = post(&ts, &format!("/api/sessions/{sid}/questions"), b).await;
+    assert_eq!(res.status(), 400);
+    assert_eq!(
+        res.json::<Value>().await.unwrap()["error"]["code"],
+        "invalid_thread"
+    );
+}
+
+#[tokio::test]
+async fn a_deleted_thread_leaves_its_question_on_the_artifact() {
+    let ts = TestServer::spawn().await;
+    let (sid, aid) = paged_at(&ts, "h1").await;
+    let t = ts.thread_as_owner(&aid, "Gone soon").await;
+    let tid = t["id"].as_str().unwrap().to_string();
+    let mut b = body();
+    b["artifact_id"] = json!(aid);
+    b["thread_id"] = json!(tid);
+    let qid = ts.ask(&sid, b).await["question"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ts.delete_thread_as_owner(&aid, &tid).await;
+    let v: Value = ts
+        .get_authed(&format!("/api/sessions/{sid}/questions/{qid}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert!(v["question"]["thread"].is_null());
+    assert_eq!(v["question"]["artifact"]["id"], aid.as_str());
+    assert!(
+        v["where_to_ask"].is_object(),
+        "every poll result carries the suggestion"
+    );
+    let items: Value = ts
+        .client
+        .get(format!("{}/api/inbox?kind=question", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        items["items"][0]["url"],
+        format!("/inbox?q={qid}"),
+        "a deleted thread's question opens as any other"
+    );
+}
+
+#[tokio::test]
+async fn a_hook_question_after_a_thread_delivery_is_placed_in_that_thread() {
+    let (_c, ts) = clocked().await;
+    let (sid, aid) = paged_at(&ts, "h1").await;
+    let _surface = ts.stream_as_owner(&["questions"]).await;
+    let t = ts.thread_as_owner(&aid, "Bigger title?").await;
+    let tid = t["id"].as_str().unwrap();
+    let r = ts
+        .get_authed(&format!("/api/sessions/{sid}/feedback?tier=piggyback"))
+        .await;
+    assert_eq!(r.status(), 200);
+    let r = ts.ask(&sid, hook("t1")).await;
+    assert_eq!(r["where_to_ask"]["where"]["thread_id"], tid);
+    assert_eq!(r["question"]["thread"]["id"], tid);
+    assert_eq!(r["question"]["artifact"]["id"], aid.as_str());
 }

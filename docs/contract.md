@@ -2520,8 +2520,14 @@ control does.
 An agent asks the person one to four questions with `ask` (Pi:
 `clax_ask`); Claude Code's built-in `AskUserQuestion` is mirrored into Clax
 by a hook once the session has a page (it has published or watched an
-artifact); before that it is asked in the terminal. The person answers in the shell or the extension's panel (or
-any owner client, through the owner routes). Each set of questions is one **question**,
+artifact); before that it is asked in the terminal. Once the session has a
+page, the hook asks where the session's suggestion (`where_to_ask`, below)
+says: in Clax, or in the terminal as an **in-terminal question**, which
+Clax shows ("<agent> is asking you in the terminal") but does not take an
+answer to. An agent that asks in the terminal or in chat itself asks with
+`in_terminal: true`, so Clax shows that it is asking there. The person
+answers in the shell or the extension's panel (or any owner client,
+through the owner routes). Each set of questions is one **question**,
 stored for the session that asked it and never deleted.
 
 ### The question shape
@@ -2583,7 +2589,10 @@ The **question view**, as every route and event gives it:
   "answers": null,
   "answered_via": null,
   "created_at": "…",
-  "closed_at": null
+  "closed_at": null,
+  "thread": {"id": "01J9…", "open": true},
+  "in_terminal": false,
+  "pulled": false
 }
 ```
 
@@ -2593,8 +2602,13 @@ public Clax) also carries `via`: whose Clax it asks from, `"<person>'s
 Clax"`; the shell names it `<name> · via <via>`.
 `artifact` is the artifact or live page the question is about: null for
 none, or when it has been deleted. `source` is `ask` or `hook` (mirrored).
-`answered_via` is `shell`, `extension`, `cli` or `terminal`. No view or
-event carries a session ID, PID or working directory.
+`answered_via` is `shell`, `extension`, `cli` or `terminal`. `thread` is
+the thread of `artifact` the question was asked in (`open`: not resolved):
+null for none, or when the thread or its artifact has been deleted.
+`in_terminal` is true for an in-terminal question: the agent asks it in
+the terminal or in chat, and Clax takes no answer to it (400
+`not_answerable`). `pulled` is true once the person chose **Ask me here**
+on it. No view or event carries a session ID, PID or working directory.
 
 `status` moves, each change in one write transaction (of two racing
 changes the first wins and the other is 409 `question_closed`):
@@ -2604,8 +2618,11 @@ changes the first wins and the other is 409 `question_closed`):
 | `open` | `answered` | the person's answer |
 | `open` | `declined` | the person's **Skip** |
 | `open` | `released` | **Answer in the terminal**, the hook's timer, or created so (mirrored questions only) |
-| `open` | `withdrawn` | the asking session (`ask` with `cancel`, or the session's end); a mirrored question no poll has held for 5 s; a daemon start (mirrored questions only) |
+| `open` | `withdrawn` | the asking session (`ask` with `cancel`, or the session's end); a mirrored question no poll has held for 5 s; a daemon start (mirrored questions only, never an in-terminal one) |
+| `open` | `withdrawn` | **Ask me here** on an in-terminal question (reason `pulled`): the session is told once, with its late answers, that the person wants the question in Clax |
+| `open` | `withdrawn` | the person's next prompt to the session in the terminal, on a mirrored in-terminal question the terminal dialog took no answer to (reason `lapsed`) |
 | `released` | `answered` | the terminal dialog's answer, recorded by the `PostToolUse` hook (`answered_via: "terminal"`) |
+| `open` | `answered` | the same, on a mirrored in-terminal question |
 
 A session has at most 8 open questions, and one person's agents at most
 100 between them (the owner's agents, and each connected person's, have
@@ -2618,8 +2635,9 @@ is 404, an ended one 400 `unknown_session`, and another session's question
 404 `not_found` (its existence is not revealed).
 
 - **`POST /api/sessions/<sid>/questions`**, body `{questions, artifact_id?,
-  source: "ask" | "hook", tool_use_id?}` → 201 `{question, mode: "wait" |
-  "terminal", terminal_after_s, surface_open}`. A `hook` body's `questions`
+  thread_id?, in_terminal?, source: "ask" | "hook", tool_use_id?}` → 201
+  `{question, mode: "wait" | "terminal", terminal_after_s, surface_open,
+  where_to_ask}`. A `hook` body's `questions`
   is `AskUserQuestion`'s input as it is. The same `tool_use_id` again
   answers 200 with the first question. `artifact_id` must name a live
   artifact (404). A `hook` question with no `artifact_id` is about the
@@ -2628,12 +2646,25 @@ is 404, an ended one 400 `unknown_session`, and another session's question
   last published a version of or started watching. `surface_open`
   is whether a stream of the asking agent's person (the owner for the
   owner's agents) holds the `questions` or `inbox` topic (attached, or
-  detached within its 60 s grace). `mode` is `terminal`, and
-  the question is created `released`, only for a `hook` question about no
-  artifact (the session has not published or watched one), or when no
-  surface is open or `terminal_after_s` is 0.
+  detached within its 60 s grace). `where_to_ask` is the session's
+  suggestion now (as `GET /api/sessions/<sid>/where-to-ask` gives it). A
+  `hook` question about no artifact (the session has not published or
+  watched one) is created `released`, with `mode: "terminal"`. Any other
+  `hook` question is created as an open in-terminal question, with `mode:
+  "terminal"`, when the suggestion's `surface` is `terminal` (no surface
+  open included) or `terminal_after_s` is 0; it takes the terminal
+  dialog's answer (`questions:terminal`) or lapses at the next prompt, and
+  no grace withdraws it. Otherwise it waits in Clax (`mode: "wait"`). A
+  `hook` question is placed in the suggestion's thread when the
+  suggestion's `where` names one on the question's artifact. `thread_id`
+  needs `artifact_id` and must name a thread of it (400 `invalid_thread`);
+  the thread is readable wherever its artifact is. `in_terminal: true` (an
+  `ask` question only; 400 `invalid_question` on a `hook` body) makes an
+  in-terminal question, with `mode: "terminal"`: the agent asks in the
+  terminal or in chat, and withdraws it when the person has answered
+  there.
 - **`GET /api/sessions/<sid>/questions/<qid>?wait=<s>`** → `{question,
-  waited_s}` as soon as the question is not `open`, or after `wait` seconds
+  waited_s, where_to_ask}` (the session's suggestion now) as soon as the question is not `open`, or after `wait` seconds
   (at most 3600; 0 answers at once). An `answered` or `declined` result
   marks the answer taken (handed to the session). At most 4 polls hold one
   question at once (429 `limit_reached` for a fifth). While a poll holds an
@@ -2646,7 +2677,25 @@ is 404, an ended one 400 `unknown_session`, and another session's question
   mirrored questions only (400 `not_mirrored`); 409 when not open.
 - **`POST /api/sessions/<sid>/questions:terminal`**, body `{tool_use_id,
   answers: {<question>: <string>}}` → `{question}`, or 204 when the session
-  has no released question for that `tool_use_id`.
+  has no released question, or open mirrored in-terminal question, for
+  that `tool_use_id`.
+- **`GET /api/sessions/<sid>/where-to-ask`** → `{where_to_ask, signals}`:
+  where the session should ask its person now. `where_to_ask` is
+  `{surface: "clax" | "terminal", where: {thread_id?, artifact_id?},
+  confidence: "clear" | "unsure", why}`. The newest of the person's
+  engagement wins: their last prompt to the session in the terminal (or a
+  turn inferred where the harness reports no prompts), against their last
+  input or focused report on a tab of the session's pages and the
+  session's last delivery from Clax. Signals less than 60 s apart, or none
+  in the last 5 minutes, are `unsure`, and unsure leans to `clax`; with no
+  Clax tab or panel of the person's open, `terminal`, `clear`. `where` is
+  the delivery's thread (else its artifact) when Clax instigated the
+  current work, else the session's page; `why` is a sentence for the
+  agent. `signals` is `{terminal_at, terminal_inferred, delivered_at}`.
+- **`POST /api/sessions/<sid>/terminal`**, body `{}` → `{terminal_at,
+  lapsed}`: the person typed a prompt to the session in the terminal now.
+  It withdraws the session's open mirrored in-terminal questions (reason
+  `lapsed`), whose IDs are `lapsed`.
 
 ### Person routes
 
@@ -2672,6 +2721,12 @@ viewer routes' `Origin` and `Sec-Fetch-Site` rules (403
 - **`POST /api/questions/<qid>/decline`** → `{question}`; 409 as above.
 - **`POST /api/questions/<qid>/release`** (mirrored questions only, 400
   `not_mirrored` otherwise) → `{question}`; 409 as above.
+- **`POST /api/questions/<qid>/pull`**: **Ask me here** (in-terminal
+  questions only, 400 `not_in_terminal` otherwise) → `{question}`
+  (`withdrawn`, `pulled: true`); 409 as above. The asking session is told
+  once, at its next feedback poll, that the person wants the question in
+  Clax: the view is in that poll's `answers`, and its feedback polls are
+  woken.
 
 ### The `questions` topic
 
@@ -3530,6 +3585,7 @@ router), and a test fails when it differs:
 | `GET /api/questions/{qid}` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/questions/{qid}/answer` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/questions/{qid}/decline` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/questions/{qid}/pull` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/questions/{qid}/release` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/remotes` | Denied | no |
 | `POST /api/remotes` | Denied | yes: 403 `not_for_agents` |
@@ -5575,7 +5631,7 @@ the body below.
 | `question.answer` | `answers, answered_via` | an answer (the owner) |
 | `question.decline` | none | a decline (the owner) |
 | `question.release` | `reason (owner\|timer\|created)` | a release to the terminal |
-| `question.withdraw` | `reason (explicit\|unwaited\|session_end\|daemon_start\|daemon_stop)` | a withdrawal |
+| `question.withdraw` | `reason (explicit\|unwaited\|session_end\|daemon_start\|daemon_stop\|pulled\|lapsed)` | a withdrawal |
 | `tool.call` | `call_id, tool, harness_tool?, args_sha256, started_at, ended_at, outcome (ok\|error), harness_call_id?, produced[seq]` | each Clax tool call's report (below) |
 | `tool.call_id` | `call_id (or null), harness_call_id, harness_tool, args_sha256` | Claude Code's PostToolUse report (below) |
 | `session.start` | `harness, harness_session_id, cwd, transcript_path, pid` (+ `git`) | a session's registration |

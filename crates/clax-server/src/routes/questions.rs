@@ -19,6 +19,7 @@ use axum::response::{IntoResponse, Response};
 use clax_core::CoreError;
 use clax_core::audit::AuditCtx;
 use clax_core::questions::{Answer, Question, from_claude, from_claude_answers, validate_ask};
+use clax_core::surface::Surface;
 use clax_http::agent::{DeniedToGrants, TokenOrAgent};
 use clax_http::audit::DeferredAudit;
 use clax_http::auth::Caller;
@@ -163,24 +164,46 @@ pub struct CreateBody {
     source: String,
     #[serde(default)]
     tool_use_id: Option<String>,
+    /// A thread of `artifact_id` the question arose from (spec
+    /// 2026-10-16-ask-where-attention-is-design §2).
+    #[serde(default)]
+    thread_id: Option<String>,
+    /// An `ask` question the agent asks in the terminal or in chat (§3):
+    /// Clax shows that it is asking there, and it stays open until the
+    /// agent withdraws it.
+    #[serde(default)]
+    in_terminal: bool,
 }
 
 /// `POST /api/sessions/<sid>/questions`: records a question set for live
-/// session `sid` → 201 `{question, mode, terminal_after_s, surface_open}`
-/// (200 with the first question for a `tool_use_id` seen before). An agent
-/// token may name an `Idempotency-Key` (as a publish does): a request whose
+/// session `sid` → 201 `{question, mode, terminal_after_s, surface_open,
+/// where_to_ask}` (200 with the first question for a `tool_use_id` seen
+/// before). An agent token may name an `Idempotency-Key` (as a publish does): a request whose
 /// token named that key before answers 200 with the question it made,
 /// whatever session asked it, and makes none; the token's sessions may
 /// then read and withdraw that question (another Clax's linked questions:
 /// `crate::linked`). Every other caller's key is ignored. A hook
 /// question takes Claude Code's AskUserQuestion input as it is, and when it
 /// names no artifact, the artifact of the session's newest working record,
-/// else the session's artifact (`Store::session_artifact`); it is created
-/// moved to the terminal (`mode: "terminal"`) when it is about no artifact,
-/// no owner surface is open, or `terminal_after_s` is 0, and otherwise is withdrawn
-/// when no poll holds it for the grace. A new question records
-/// `question.ask` as the session's agent (and `question.release` when made
-/// released).
+/// else the session's artifact (`Store::session_artifact`). A hook question
+/// is created released when it is about no artifact (`mode: "terminal"`,
+/// no terminal card); otherwise, when the session's suggestion
+/// ([`clax_http::surface::suggestion`]) names the terminal or
+/// `terminal_after_s` is 0, it is created as an open in-terminal question
+/// (`mode: "terminal"`), which takes the terminal's answer
+/// (`questions:terminal`) or lapses at the next prompt; otherwise it waits
+/// in Clax and is withdrawn when no poll holds it for the grace. A hook
+/// question with no `thread_id` is placed in the suggestion's thread when
+/// the suggestion places it on the question's artifact. `thread_id` must
+/// name a thread of `artifact_id` (400 `invalid_thread`); the person can
+/// read that thread because its artifact passed the agent's gate
+/// ([`clax_http::agent::Agent::named_artifact`]), and a thread is readable
+/// wherever its artifact is. `in_terminal` (an `ask` question only, 400
+/// `invalid_question` otherwise) records a question the agent asks in the
+/// terminal or in chat, so Clax shows that it is asking there (`mode:
+/// "terminal"`). The result carries the session's suggestion as
+/// `where_to_ask`. A new question records `question.ask` as the session's
+/// agent (and `question.release` when made released).
 pub async fn create(
     State(s): State<AppState>,
     TokenOrAgent(a): TokenOrAgent<clax_http::agent::QuestionsCreate>,
@@ -203,6 +226,19 @@ pub async fn create(
             ));
         }
     };
+    if b.in_terminal && source == Source::Hook {
+        return Err(ApiError::bad_request(
+            "invalid_question",
+            "the daemon decides whether a mirrored question is asked in the terminal",
+        ));
+    }
+    if b.thread_id.is_some() && b.artifact_id.is_none() {
+        return Err(ApiError::bad_request(
+            "invalid_thread",
+            "thread_id goes with artifact_id",
+        ));
+    }
+    let (asked_thread, asked_in_terminal) = (b.thread_id.clone(), b.in_terminal);
     let questions = match source {
         Source::Hook => from_claude(&json!({"questions": b.questions}))?,
         Source::Ask => {
@@ -254,9 +290,10 @@ pub async fn create(
     } else {
         None
     };
+    let page = clax_http::surface::page(&s, &a, &sid).await?;
     let tool_use_id = b.tool_use_id;
     let st = s.clone();
-    let (row, made, v) = s
+    let (row, made, v, where_to_ask) = s
         .store_call(move |db| {
             live(db, &sid)?;
             // A named artifact must be live; a working record's may have
@@ -274,11 +311,26 @@ pub async fn create(
             {
                 live = db.get_artifact(id)?.map(|a| a.id);
             }
-            // A mirrored question waits in Clax only beside a page of its
-            // session's: before the session has published or watched one,
-            // it is asked in the terminal.
-            let released =
-                source == Source::Hook && (live.is_none() || !surface_open || after == 0);
+            let where_to_ask = clax_http::surface::suggestion(&st, db, &sid, page.as_deref())?;
+            // A mirrored question of a session with no page is asked in the
+            // terminal with no terminal card: its person is not using Clax
+            // for it.
+            let released = source == Source::Hook && live.is_none();
+            // One the suggestion sends to the terminal (every one, with
+            // `terminal_after_s` 0) is asked there, and Clax shows that it is.
+            let in_terminal = asked_in_terminal
+                || (source == Source::Hook
+                    && !released
+                    && (where_to_ask.surface == Surface::Terminal || after == 0));
+            // A mirrored question goes where Clax instigated the work: the
+            // suggestion's thread, when it is on the question's artifact.
+            let at = &where_to_ask.r#where;
+            let on_live = live.is_some() && at.artifact_id.as_deref() == live.as_deref();
+            let thread_id = asked_thread.or_else(|| {
+                (source == Source::Hook && on_live)
+                    .then(|| at.thread_id.clone())
+                    .flatten()
+            });
             let ctx = audit.for_session(db, &sid)?;
             let keyed = grant.as_deref().zip(key.as_deref());
             let (row, made) = db.create_question_keyed(
@@ -290,8 +342,8 @@ pub async fn create(
                     tool_use_id,
                     questions,
                     released,
-                    thread_id: None,
-                    in_terminal: false,
+                    thread_id,
+                    in_terminal,
                 },
                 keyed,
             )?;
@@ -300,18 +352,19 @@ pub async fn create(
                 announce(&st, db, &row, v.clone());
             }
             let v = for_asker(db, &vf, v)?;
-            Ok((row, made, v))
+            Ok((row, made, v, where_to_ask))
         })
         .await?;
-    if made && row.source == Source::Hook && row.status == Status::Open {
+    if made && row.source == Source::Hook && row.status == Status::Open && !row.in_terminal {
         start_grace(s.clone(), row.id.clone());
     }
-    let mode = if row.status == Status::Released {
+    let mode = if row.status == Status::Released || row.in_terminal {
         "terminal"
     } else {
         "wait"
     };
-    let out = json!({"question": v, "mode": mode, "terminal_after_s": after, "surface_open": surface_open});
+    let out = json!({"question": v, "mode": mode, "terminal_after_s": after,
+        "surface_open": surface_open, "where_to_ask": where_to_ask});
     let status = if made {
         StatusCode::CREATED
     } else {
@@ -327,9 +380,10 @@ pub struct WaitQuery {
 }
 
 /// `GET /api/sessions/<sid>/questions/<qid>?wait=<s>` (a question `sid`
-/// asked, or one its agent token keyed) → `{question,
-/// waited_s}` as soon as the question is not open, or after `wait` seconds
-/// (at most [`MAX_WAIT_SECS`]), or when the daemon shuts down. A daemon
+/// asked, or one its agent token keyed) → `{question, waited_s,
+/// where_to_ask}`, the last the polling session's suggestion
+/// ([`clax_http::surface::suggestion`]), as soon as the question is not
+/// open, or after `wait` seconds (at most [`MAX_WAIT_SECS`]), or when the daemon shuts down. A daemon
 /// that shuts down while a poll holds an open hook question withdraws it
 /// (and announces it) before answering, as its next start would, recording
 /// `question.withdraw` (reason `daemon_stop`) as `system:daemon`: the hook
@@ -365,7 +419,9 @@ pub async fn poll(
     // An `ask` question's answer that the last poll leaves untaken is a late
     // answer: its session's feedback polls are woken to take it.
     let on_last: Option<clax_realtime::questions::OnLast> = match first.source {
-        Source::Hook => (first.status == Status::Open).then(|| arm_grace(s.clone(), qid.clone())),
+        // An in-terminal one has no hook waiting on it in Clax: no grace.
+        Source::Hook => (first.status == Status::Open && !first.in_terminal)
+            .then(|| arm_grace(s.clone(), qid.clone())),
         Source::Ask => {
             let (waiters, asker) = (s.feedback_waiters.clone(), first.session_id.clone());
             Some(Box::new(move || waiters.wake(std::iter::once(&asker))))
@@ -393,6 +449,7 @@ pub async fn poll(
     tokio::pin!(expiry);
     let mut done = wait.is_zero();
     let mut stopped = false;
+    let page = clax_http::surface::page(&s, &a, &sid).await?;
     loop {
         let notified = notify.notified();
         tokio::pin!(notified);
@@ -401,12 +458,13 @@ pub async fn poll(
         if s.questions.take_expired(&qid) {
             done = true;
         }
-        let (sid1, qid1, st, vf1, g1) = (
+        let (sid1, qid1, st, vf1, g1, page1) = (
             sid.clone(),
             qid.clone(),
             s.clone(),
             vf.clone(),
             grant.clone(),
+            page.clone(),
         );
         let out = s
             .store_call(move |db| {
@@ -422,12 +480,15 @@ pub async fn poll(
                     db.take_question(&row.id)?;
                 }
                 let v = question_view(db, &row)?;
-                for_asker(db, &vf1, v).map(Some)
+                let where_to_ask =
+                    clax_http::surface::suggestion(&st, db, &sid1, page1.as_deref())?;
+                Ok(Some((for_asker(db, &vf1, v)?, where_to_ask)))
             })
             .await?;
-        if let Some(v) = out {
+        if let Some((v, where_to_ask)) = out {
             return Ok(Json(
-                json!({"question": v, "waited_s": started.elapsed().as_secs()}),
+                json!({"question": v, "waited_s": started.elapsed().as_secs(),
+                "where_to_ask": where_to_ask}),
             ));
         }
         tokio::select! {
@@ -501,9 +562,10 @@ pub struct TerminalBody {
 
 /// `POST /api/sessions/<sid>/questions:terminal`: records the terminal
 /// dialog's answers (AskUserQuestion's `answers`, by question text) on the
-/// released question of `tool_use_id` → `{question}`; 204 when the session
-/// has no released question for that call. Records `question.answer` as
-/// the owner, who answered (`answered_via: terminal`).
+/// released question, or open hook in-terminal question, of `tool_use_id`
+/// → `{question}`; 204 when the session has no such question for that
+/// call. Records `question.answer` as the owner, who answered
+/// (`answered_via: terminal`).
 pub async fn terminal(
     State(s): State<AppState>,
     TokenOrAgent(a): TokenOrAgent<clax_http::agent::QuestionsTerminal>,
@@ -521,7 +583,9 @@ pub async fn terminal(
             let Some(q) = db.question_by_tool_use(&sid, &b.tool_use_id)? else {
                 return Ok(None);
             };
-            if q.status != Status::Released {
+            // A released question, or an open hook in-terminal question,
+            // took the answer in the terminal.
+            if !(q.status == Status::Released || (q.status == Status::Open && q.in_terminal)) {
                 return Ok(None);
             }
             let answers = from_claude_answers(&q.questions, &b.answers);
@@ -748,4 +812,25 @@ pub async fn release_owner(
     d.refuse_agents()?;
     let me = recipient_of(&s, &who).await?;
     owner_close(s, me, audit, path(p)?, Close::Release).await
+}
+
+/// `POST /api/questions/<qid>/pull` (the owner, or a connected person, for
+/// their agents' in-terminal questions): "Ask me here" (spec
+/// 2026-10-16-ask-where-attention-is-design §3) → `{question}`: the
+/// in-terminal question is withdrawn and its session is told once, at its
+/// next delivery, that the person wants the question in Clax; 404 for
+/// another's; 400 `not_in_terminal` for a question asked in Clax; 409
+/// `question_closed` when it is not open. Records `question.withdraw`
+/// (reason `pulled`).
+pub async fn pull(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    who: Identity,
+    audit: DeferredAudit,
+    p: Result<Path<String>, PathRejection>,
+) -> Result<Json<Value>, QuestionError> {
+    d.refuse_agents()?;
+    let me = recipient_of(&s, &who).await?;
+    owner_close(s, me, audit, path(p)?, Close::Pull).await
 }

@@ -219,6 +219,8 @@ fn rule<'a>(m: &Method, path: &'a str) -> Option<Rule<'a>> {
         ["api", "questions"] if get => Some(Rule::Any),
         ["api", "questions", _] if get => Some(Rule::Any),
         ["api", "questions", _, "answer" | "decline" | "release"] if post => Some(Rule::Any),
+        // Ask me here, on an in-terminal question.
+        ["api", "questions", _, "pull"] if post => Some(Rule::Any),
         ["api", "inbox"] if get => Some(Rule::Any),
         ["api", "inbox", _] if get => Some(Rule::Any),
         ["api", "inbox", "read"] if post => Some(Rule::Any),
@@ -554,6 +556,7 @@ mod tests {
             (&p, "/api/questions/Q/answer", Some(Rule::Any)),
             (&p, "/api/questions/Q/decline", Some(Rule::Any)),
             (&p, "/api/questions/Q/release", Some(Rule::Any)),
+            (&p, "/api/questions/Q/pull", Some(Rule::Any)),
             (&d, "/api/questions/Q", None),
             (&p, "/api/questions", None),
             (&g, "/api/questions/Q/answer", None),

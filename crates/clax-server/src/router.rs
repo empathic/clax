@@ -225,6 +225,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             "/api/questions/{qid}/release",
             post(questions::release_owner),
         )
+        .route("/api/questions/{qid}/pull", post(questions::pull))
         .route("/api/sessions/{id}/approvals", post(approvals::ask))
         .route(
             "/api/sessions/{id}/threads/{tid}/handoff",
