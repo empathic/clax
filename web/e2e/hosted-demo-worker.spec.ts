@@ -13,8 +13,8 @@
 //
 // It needs the web UI and the Worker built, in that order
 // (scripts/build-web.sh, then crates/clax-worker/build.sh: the Worker embeds
-// web/dist as it is built, crates/clax-server/src/routes/shell.rs, and its
-// entry pages name the chunks they load), and runs only with
+// web/dist as it is built, crates/clax-worker/src/web.rs, and its entry
+// pages name the chunks they load), and runs only with
 // CLAX_E2E_WORKER=1, so `npm run e2e` skips it:
 //
 //   CLAX_E2E_WORKER=1 npx playwright test hosted-demo-worker
