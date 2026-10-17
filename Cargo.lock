@@ -408,6 +408,7 @@ dependencies = [
  "clax-hooks",
  "clax-mcp",
  "clax-server",
+ "clax-testkit",
  "http",
  "nix",
  "predicates",
@@ -489,7 +490,7 @@ dependencies = [
  "bytes",
  "clax-core",
  "clax-fake-exe",
- "clax-server",
+ "clax-testkit",
  "http",
  "reqwest",
  "rmcp",
@@ -516,7 +517,7 @@ dependencies = [
  "clax-fake-exe",
  "clax-hooks",
  "clax-mcp",
- "clax-server",
+ "clax-testkit",
  "futures",
  "mime_guess",
  "nix",
@@ -540,6 +541,23 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+]
+
+[[package]]
+name = "clax-testkit"
+version = "0.4.0"
+dependencies = [
+ "axum",
+ "clax-core",
+ "clax-fake-exe",
+ "clax-server",
+ "futures",
+ "reqwest",
+ "rusqlite",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

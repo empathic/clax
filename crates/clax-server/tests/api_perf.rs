@@ -3,8 +3,7 @@
 //! /api/admin/perf/verify`, the gateway's latest signature verification
 //! times, for the token only.
 
-use crate::common;
-use common::TestServer;
+use clax_testkit::TestServer;
 use serde_json::Value;
 
 const PATH: &str = "/api/admin/perf/calibrate";

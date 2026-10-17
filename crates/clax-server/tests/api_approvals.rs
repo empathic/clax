@@ -4,9 +4,9 @@
 //! own browser only; decisions and revocations reach every delivery path at
 //! once; requests batch, are withdrawn, and are capped per approver.
 
-use crate::common::people::World;
 use clax_core::audit::AuditCtx;
-use clax_server::testing::{EventReader, TestServer};
+use clax_testkit::people::World;
+use clax_testkit::{EventReader, TestServer};
 use serde_json::{Value, json};
 
 /// `(status, body)` of a response.
@@ -878,7 +878,7 @@ async fn a_page_send_routes_with_the_publisher_as_author() {
             .await;
     assert_eq!(r.status(), 200);
     let form = reqwest::multipart::Form::new()
-        .text("anchor", clax_server::testing::element_anchor().to_string())
+        .text("anchor", clax_testkit::element_anchor().to_string())
         .text("body", "the page asks")
         .text("version", "2")
         .text("via_page", "true");
@@ -930,7 +930,7 @@ async fn a_page_send_routes_with_the_publisher_as_author() {
     let path = format!("/api/artifacts/{aid}/threads/{tid}/send");
     let r =
         t.w.sam
-            .call(clax_server::testing::Call {
+            .call(clax_testkit::Call {
                 method: "POST",
                 path: &path,
                 authorization: Some(format!("Clax-Grant {}", t.w.sam.access())),
@@ -971,24 +971,23 @@ async fn the_hundred_and_first_request_is_refused_with_a_banner() {
         .collect();
     for i in 0..MAX_OPEN_REQUESTS {
         let author = &authors[(i / MAX_OPEN_PER_AUTHOR) as usize];
-        let th = t
-            .w
-            .ts
-            .store
-            .create_thread(
-                &AuditCtx::DAEMON,
-                &id,
-                clax_core::store::threads::NewThread {
-                    version_n: 1,
-                    anchor: serde_json::from_value(clax_server::testing::element_anchor()).unwrap(),
-                    author_name: "Lan".into(),
-                    author_public_id: Some(author.clone()),
-                    body: format!("t{i}"),
-                    clip: None,
-                    via_page: false,
-                },
-            )
-            .unwrap();
+        let th =
+            t.w.ts
+                .store
+                .create_thread(
+                    &AuditCtx::DAEMON,
+                    &id,
+                    clax_core::store::threads::NewThread {
+                        version_n: 1,
+                        anchor: serde_json::from_value(clax_testkit::element_anchor()).unwrap(),
+                        author_name: "Lan".into(),
+                        author_public_id: Some(author.clone()),
+                        body: format!("t{i}"),
+                        clip: None,
+                        via_page: false,
+                    },
+                )
+                .unwrap();
         t.w.ts
             .store
             .send_to(
@@ -2973,7 +2972,7 @@ async fn a_pages_author_reads_the_hold_of_what_her_page_sent() {
             .await;
     assert_eq!(r.status(), 200);
     let form = reqwest::multipart::Form::new()
-        .text("anchor", clax_server::testing::element_anchor().to_string())
+        .text("anchor", clax_testkit::element_anchor().to_string())
         .text("body", "the page asks")
         .text("version", "2")
         .text("via_page", "true");

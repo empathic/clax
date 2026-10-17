@@ -2,9 +2,8 @@
 //! UI override (see `tests/web_dist.rs`).
 #![cfg(debug_assertions)]
 
-use crate::common;
 use clax_server::routes::shell::set_web_dist;
-use common::TestServer;
+use clax_testkit::TestServer;
 
 #[tokio::test]
 async fn each_route_gets_its_own_entry() {

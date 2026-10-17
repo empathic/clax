@@ -1,8 +1,7 @@
 //! Agent questions: the session routes (spec 2026-10-06-agent-questions-and-inbox
 //! §6.1), their waiters and the `question` event.
 
-use crate::common;
-use common::TestServer;
+use clax_testkit::TestServer;
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -29,7 +28,7 @@ async fn post(ts: &TestServer, path: &str, b: Value) -> reqwest::Response {
 
 /// The `question` events of an owner's stream holding `questions` (which
 /// also keeps an owner surface open).
-struct Tap(clax_server::testing::EventReader);
+struct Tap(clax_testkit::EventReader);
 
 impl Tap {
     /// The next `question` event's view.
@@ -1363,7 +1362,7 @@ async fn the_extension_may_list_answer_and_follow_questions() {
         .unwrap();
     assert_eq!(r["question"]["answered_via"], "extension");
     // Its live-only stream may take the topic.
-    let mut events = clax_server::testing::EventReader::from_response(ext.get("/api/stream").await);
+    let mut events = clax_testkit::EventReader::from_response(ext.get("/api/stream").await);
     let id = events.next_named("ready").await["stream"]
         .as_str()
         .unwrap()
@@ -1767,7 +1766,7 @@ async fn the_grace_records_its_withdrawal_as_the_daemon() {
 
 /// A daemon on the LAN with Sam connected: Sam's machine, his browser's
 /// viewer cookie, and his agent's session.
-async fn with_sam() -> (TestServer, clax_server::testing::TestClient, String, String) {
+async fn with_sam() -> (TestServer, clax_testkit::TestClient, String, String) {
     let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
     let sam = ts.connect_person("Sam", "clax:collaborator").await;
     let cookie = ts.browser_cookie(&ts.store.viewer_of_grant(&sam.grant_id()).unwrap().id);
@@ -1881,7 +1880,7 @@ async fn a_persons_hook_question_waits_only_while_its_person_has_clax_open() {
         .send()
         .await
         .unwrap();
-    let mut ev = clax_server::testing::EventReader::from_response(res);
+    let mut ev = clax_testkit::EventReader::from_response(res);
     let id = ev.next_named("ready").await["stream"]
         .as_str()
         .unwrap()
@@ -1907,7 +1906,7 @@ async fn a_persons_hook_question_waits_only_while_its_person_has_clax_open() {
 
 #[tokio::test]
 async fn a_persons_agent_sees_its_questions_title_once_its_person_approves_the_author() {
-    use crate::common::people::{TITLE, World};
+    use clax_testkit::people::{TITLE, World};
     let w = World::two_people().await;
     let ask = || async {
         let r = w

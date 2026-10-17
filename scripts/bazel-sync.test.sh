@@ -29,11 +29,15 @@ check() { (cd "$T/r" && BAZEL_SYNC_BAZEL="${BAZEL:-$T/bin/bazel-ok}" scripts/baz
 
 fresh; if check; then pass "current files pass"; else fail "current files pass: $(cat "$T/out")"; fi
 
-fresh; edit 's/^\[features\]\n/[features]\ndefault = ["test-routes"]\n/m' "$T/r/crates/clax-server/Cargo.toml"
+fresh; edit 's/^\[lints\]\n/[features]\ndefault = ["extra"]\nextra = []\n\n[lints]\n/m' "$T/r/crates/clax-hooks/Cargo.toml"
 touch "$T/stamp"
 if check; then fail "a new default feature fails"; elif grep -q 'just bazel-sync' "$T/out"; then pass "a new default feature fails, naming just bazel-sync"; else fail "message: $(cat "$T/out")"; fi
 wrote="$(cd "$T/r" && find . -type f -newer "$T/stamp" ! -path './target/*' | sort)"
 [ -z "$wrote" ] && pass "--check writes nothing" || fail "--check wrote: $wrote"
+
+fresh; edit 's/^\[lints\]\n/[features]\nextra = []\n\n[lints]\n/m' "$T/r/crates/clax-hooks/Cargo.toml"
+edit 's/^clax-hooks = \{ path = "..\/clax-hooks" \}$/clax-hooks = { path = "..\/clax-hooks", features = ["extra"] }/m' "$T/r/crates/clax-server/Cargo.toml"
+if check; then fail "a test feature on a workspace crate fails"; elif grep -q 'clax-testkit' "$T/out"; then pass "a test feature on a workspace crate fails, naming clax-testkit"; else fail "message: $(cat "$T/out")"; fi
 
 fresh; if BAZEL="$T/bin/bazel-stale" check; then fail "a stale lockfile fails"; elif grep -q 'just bazel-sync' "$T/out"; then pass "a stale lockfile fails, naming just bazel-sync"; else fail "message: $(cat "$T/out")"; fi
 

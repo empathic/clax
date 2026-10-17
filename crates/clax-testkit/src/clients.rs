@@ -13,7 +13,7 @@
 //! registered for it (harness session ID `owner-h1`), which watches Mia's
 //! artifact.
 
-use crate::common::people::World;
+use crate::people::World;
 use clax_fake_exe::{clax_bin, repo};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};

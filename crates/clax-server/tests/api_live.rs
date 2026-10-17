@@ -2,10 +2,9 @@
 //! L10): lookup, a comment with its snapshot, the views, the publish
 //! refusal, the snapshot policy, and hiding live pages from the LAN (whose
 //! requests arrive through [`TestServer::lan`], so they run on any machine).
-use crate::common;
 use clax_core::audit::AuditCtx;
-use clax_server::testing::FAKE_PNG;
-use common::TestServer;
+use clax_testkit::FAKE_PNG;
+use clax_testkit::TestServer;
 use serde_json::{Value, json};
 
 fn anchor() -> String {

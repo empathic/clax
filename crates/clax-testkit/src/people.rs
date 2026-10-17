@@ -20,8 +20,8 @@
 //! the batch note and the resolution, and her agent the working message
 //! and the question.
 
-use crate::common::TestServer;
-use clax_server::testing::{FAKE_PNG, TestClient};
+use crate::TestServer;
+use crate::{FAKE_PNG, TestClient};
 use serde_json::{Value, json};
 
 /// Every canary string the world seeds, each in one field.
@@ -828,7 +828,7 @@ impl Call {
         });
         let res = match &agent.who {
             As::Grant(c) => {
-                c.call(clax_server::testing::Call {
+                c.call(crate::Call {
                     method: &self.method,
                     path: &self.path,
                     authorization: Some(format!("Clax-Grant {}", c.access())),
@@ -945,7 +945,7 @@ fn a_ready_frame_alone_is_not_enough() {
 /// Every route of `routes/mod.rs` (but the test-only ones): method and
 /// path, read from the source as the route guards read it.
 pub fn every_route() -> Vec<(String, String)> {
-    let src = include_str!("../../src/routes/mod.rs");
+    let src = include_str!("../../clax-server/src/routes/mod.rs");
     let src = &src[..src.find("mod l10 {").unwrap()];
     let mut out = Vec::new();
     let mut rest = src;

@@ -153,6 +153,10 @@ pub struct AppState {
     pub agent_gate: Arc<crate::agent::Gate>,
     /// The visibility generation (spec 2026-10-08-multi-agent-multi-person M17).
     pub vis_gen: VisGen,
+    /// Debug builds: whether requests honour the `x-clax-test-delay-ms`
+    /// header (`crate::routes`), so a test can make a real route slow.
+    /// `false` in every daemon `serve` starts; the testkit's daemon sets it.
+    pub test_delays: bool,
 }
 
 impl AppState {

@@ -2,10 +2,9 @@
 //! 2026-10-06-toolpath-audit-design §5.2, §6, §6.9), read back through the
 //! test-only route `GET /api/_test/audit/ctx`; the appender's nudge; and
 //! the events each request that changes history records (§6.1, §6.2, §6.3).
-use crate::common;
 use clax_core::audit::{CallHeader, encode_call_header};
 use clax_core::gitctx::{GitContext, GitField, encode_header};
-use common::TestServer;
+use clax_testkit::TestServer;
 use serde_json::{Value, json};
 
 const CTX: &str = "/api/_test/audit/ctx";
@@ -367,7 +366,7 @@ async fn status(req: reqwest::RequestBuilder) -> (u16, Value) {
 }
 
 fn png_form() -> reqwest::multipart::Form {
-    let part = reqwest::multipart::Part::bytes(clax_server::testing::FAKE_PNG.to_vec())
+    let part = reqwest::multipart::Part::bytes(clax_testkit::FAKE_PNG.to_vec())
         .mime_str("image/png")
         .unwrap();
     reqwest::multipart::Form::new().part("file", part)
@@ -639,7 +638,7 @@ async fn every_mutation_records_one_event() {
     let threads = format!("{a}/threads");
     let thread_form = |body: &str| {
         reqwest::multipart::Form::new()
-            .text("anchor", clax_server::testing::element_anchor().to_string())
+            .text("anchor", clax_testkit::element_anchor().to_string())
             .text("body", body.to_string())
             .text("version", "2")
     };
@@ -1857,12 +1856,7 @@ async fn agent_reply_records_session_git_and_call() {
     // A thread with a clip says so.
     let seq = last_seq(&ts);
     let res = ts
-        .create_thread(
-            &aid,
-            2,
-            "see the clip",
-            Some(clax_server::testing::FAKE_PNG),
-        )
+        .create_thread(&aid, 2, "see the clip", Some(clax_testkit::FAKE_PNG))
         .await;
     assert_eq!(res.status(), 201);
     let opened = events_since(&ts, seq);
@@ -3664,7 +3658,7 @@ async fn sessionless_tool_call_is_the_mcp_client() {
 /// its registration's `session.start` and its watch's `watch.start` alike.
 #[tokio::test]
 async fn a_persons_agent_is_recorded_with_its_grant_and_person() {
-    use clax_server::testing::Call;
+    use clax_testkit::Call;
     let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
     let sam = ts.connect_person("Sam", "clax:collaborator").await;
     let gid = sam.grant_id();

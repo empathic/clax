@@ -4,15 +4,15 @@
 //! spec §6.7 lists against it, signed, as the person it connected as.
 //!
 //! Test daemons listen on every interface (they may invite people); their
-//! invites name the LAN address of `clax_server::testing::LAN_LOCAL`, which
+//! invites name the LAN address of `clax_testkit::LAN_LOCAL`, which
 //! the tests rewrite to the loopback address the daemon also answers on.
 
-use crate::common::TestServer;
-use crate::common::people::{self, World};
 use clax_core::Home;
 use clax_core::remote::{RemoteConfig, save_key};
 use clax_core::secret::Secret;
 use clax_core::working::ManualClock;
+use clax_testkit::TestServer;
+use clax_testkit::people::{self, World};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -1494,12 +1494,12 @@ async fn remote_hooks_find_their_session() {
         .unwrap();
     // Sam's comment, with a clip.
     let form = reqwest::multipart::Form::new()
-        .text("anchor", clax_server::testing::element_anchor().to_string())
+        .text("anchor", clax_testkit::element_anchor().to_string())
         .text("body", "SAMSAYS tighten it")
         .text("version", "1")
         .part(
             "clip",
-            reqwest::multipart::Part::bytes(clax_server::testing::FAKE_PNG.to_vec())
+            reqwest::multipart::Part::bytes(clax_testkit::FAKE_PNG.to_vec())
                 .file_name("clip.png")
                 .mime_str("image/png")
                 .unwrap(),
@@ -1550,10 +1550,7 @@ async fn remote_hooks_find_their_session() {
         reason.contains(&format!("\nClip: {}\n", cached.display())),
         "{reason}"
     );
-    assert_eq!(
-        std::fs::read(&cached).unwrap(),
-        clax_server::testing::FAKE_PNG
-    );
+    assert_eq!(std::fs::read(&cached).unwrap(), clax_testkit::FAKE_PNG);
     assert!(!reason.contains("clax-clip:"), "{reason}");
 }
 
@@ -1562,7 +1559,7 @@ async fn remote_hooks_find_their_session() {
 /// waits for his answer there and hands it to Claude Code.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_remote_hooks_ask_waits_for_the_persons_answer() {
-    use clax_server::testing::EventReader;
+    use clax_testkit::EventReader;
     let w = World::two_people().await;
     let m = sams_machine(&w);
     let start = json!({"session_id": "cc-wait", "cwd": "/w"});
@@ -1841,12 +1838,12 @@ async fn a_remote_hook_prints_its_comments_when_clips_do_not_come() {
         .unwrap();
     for body in ["FIRSTCLIP", "SECONDCLIP"] {
         let form = reqwest::multipart::Form::new()
-            .text("anchor", clax_server::testing::element_anchor().to_string())
+            .text("anchor", clax_testkit::element_anchor().to_string())
             .text("body", body)
             .text("version", "1")
             .part(
                 "clip",
-                reqwest::multipart::Part::bytes(clax_server::testing::FAKE_PNG.to_vec())
+                reqwest::multipart::Part::bytes(clax_testkit::FAKE_PNG.to_vec())
                     .file_name("clip.png")
                     .mime_str("image/png")
                     .unwrap(),

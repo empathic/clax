@@ -37,8 +37,18 @@ fn web_dist() -> std::path::PathBuf {
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .clone()
-        .unwrap_or_else(|| env!("CLAX_WEB_DIST_DIR").into())
+        .unwrap_or_else(|| DEFAULT_WEB_DIST.into())
 }
+
+/// The directory a debug build reads when no [`set_web_dist`] override is
+/// set: `web/dist`. A build that embeds its web UI (`clax_embedded`) reads
+/// its embed instead and names no directory: Bazel's path is the action's
+/// sandbox, which differs between the metadata and the library actions of a
+/// pipelined build, so naming it would give the two different crate hashes.
+#[cfg(all(debug_assertions, not(clax_embedded)))]
+const DEFAULT_WEB_DIST: &str = env!("CLAX_WEB_DIST_DIR");
+#[cfg(all(debug_assertions, clax_embedded))]
+const DEFAULT_WEB_DIST: &str = "";
 
 /// A file of the web UI (`path` relative to `web/dist`): embedded in a release
 /// build, read from disk (see [`set_web_dist`]) in a debug build.

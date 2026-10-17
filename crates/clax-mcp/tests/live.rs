@@ -5,7 +5,7 @@
 use clax_core::model::Session;
 use clax_mcp::tools::{CommentsReadArgs, WaitArgs, WatchArgs};
 use clax_mcp::{ClaxTools, DaemonClient};
-use clax_server::testing::{FAKE_PNG, TestServer};
+use clax_testkit::{FAKE_PNG, TestServer};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use serde_json::{Value, json};

@@ -4,7 +4,7 @@
 //! browser are never made from the CLI: their commands print the People
 //! link and exit 2.
 
-use crate::common::people::World;
+use clax_testkit::people::World;
 use serde_json::Value;
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;

@@ -4,15 +4,15 @@
 //! agent writes comments from a session only, as its person; people are
 //! never filtered.
 
-use crate::common::TestServer;
-use crate::common::people::{
+use clax_core::audit::AuditCtx;
+use clax_core::store::approvals::{Scope, Via};
+use clax_testkit::TestServer;
+use clax_testkit::people::{
     ASSET_BYTES, BATCH_NOTE, CAPABILITY, CARRIED_BYTES, CARRIED_NAME, CLIP, COMMENT, DESCRIPTION,
     FILE_BYTES, FILE_NAME, ICON, LABEL, NOTE, PREFIX, QUOTE, REPLY, SELECTOR, SUFFIX, TITLE,
     WORKING, World,
 };
-use clax_core::audit::AuditCtx;
-use clax_core::store::approvals::{Scope, Via};
-use clax_server::testing::{Call, FAKE_PNG, TestClient};
+use clax_testkit::{Call, FAKE_PNG, TestClient};
 use serde_json::{Value, json};
 
 /// Mia's canaries a thread view can carry.
@@ -474,7 +474,7 @@ async fn people_are_never_filtered() {
         .text()
         .await
         .unwrap();
-    assert!(all.contains(crate::common::people::TITLE) && all.contains(FILE_NAME));
+    assert!(all.contains(clax_testkit::people::TITLE) && all.contains(FILE_NAME));
 }
 
 #[tokio::test]
@@ -1808,7 +1808,7 @@ fn doc_url(aid: &str, path: &str) -> String {
 
 fn no_doc_field(what: &str, text: &str) {
     assert!(
-        !text.contains(crate::common::people::DOC_FIELD),
+        !text.contains(clax_testkit::people::DOC_FIELD),
         "{what} leaked Mia's field: {text}"
     );
 }
@@ -1879,13 +1879,13 @@ async fn a_withheld_document_read_by_its_path_is_a_placeholder() {
         r.text()
             .await
             .unwrap()
-            .contains(crate::common::people::DOC_FIELD)
+            .contains(clax_testkit::people::DOC_FIELD)
     );
     approve(&w.ts, Some(&sam_public(&w)), &w.mia_public);
     let (_, v) = sam(&w, "GET", &doc_url(aid, MIA_DOC), None).await;
     assert_eq!(
         v["doc"]["data"]["text"],
-        json!(crate::common::people::DOC_FIELD),
+        json!(clax_testkit::people::DOC_FIELD),
         "{v}"
     );
 }
@@ -1923,7 +1923,7 @@ async fn withheld_documents_are_counted_not_listed() {
             "&where={}",
             enc(&format!(
                 r#"[["text","==","{}"]]"#,
-                crate::common::people::DOC_FIELD
+                clax_testkit::people::DOC_FIELD
             ))
         ),
         "&order_by=text".into(),
@@ -2376,7 +2376,7 @@ async fn a_lease_on_a_withheld_document_never_confirms_its_holder() {
 
 /// Every canary of Mia's.
 fn no_canary_at_all(what: &str, text: &str) {
-    for c in crate::common::people::CANARIES {
+    for c in clax_testkit::people::CANARIES {
         assert!(!text.contains(c), "{what} leaked {c}: {text}");
     }
 }
@@ -2424,8 +2424,8 @@ async fn owner_poll(w: &World, query: &str) -> Value {
 
 #[tokio::test]
 async fn hook_tiers_are_filtered_for_owner_agents() {
-    use crate::common::clients::RealClients;
-    use crate::common::people::OWNER_ASKS;
+    use clax_testkit::clients::RealClients;
+    use clax_testkit::people::OWNER_ASKS;
     let w = World::two_people().await;
     let tid = w.owner_thread_on_mias_page().await;
     let clients = RealClients::new(&w);
@@ -2465,7 +2465,7 @@ async fn hook_tiers_are_filtered_for_owner_agents() {
 
 #[tokio::test]
 async fn mcp_tools_are_filtered_for_the_owner() {
-    use crate::common::clients::RealClients;
+    use clax_testkit::clients::RealClients;
     let w = World::two_people().await;
     let clients = RealClients::new(&w);
     let mcp = clients.mcp_http().await;
@@ -2489,7 +2489,7 @@ async fn mcp_tools_are_filtered_for_the_owner() {
 
 #[tokio::test]
 async fn plugin_command_context_is_filtered_for_the_owner() {
-    use crate::common::clients::RealClients;
+    use clax_testkit::clients::RealClients;
     let w = World::two_people().await;
     let outs = RealClients::new(&w).slash_command_context().await;
     assert!(outs.len() >= 8, "{}", outs.len());
@@ -2601,8 +2601,8 @@ async fn revocation_during_wait_for_feedback_holds_rows() {
 
 #[tokio::test]
 async fn withheld_matrix_tiers() {
-    use crate::common::clients::RealClients;
-    use crate::common::people::OWNER_ASKS;
+    use clax_testkit::clients::RealClients;
+    use clax_testkit::people::OWNER_ASKS;
     // Each in-band tier, through its real client: no canary before the
     // approval and Mia's placeholder exactly once; her words after it.
     for tier in ["piggyback", "stop", "prompt", "wait", "inject"] {
@@ -2645,7 +2645,7 @@ async fn withheld_matrix_tiers() {
 /// the poll `wait_for_feedback` and Pi's injection loop make (`wait`,
 /// `inject`).
 async fn tier_output(w: &World, tier: &str) -> String {
-    use crate::common::clients::RealClients;
+    use clax_testkit::clients::RealClients;
     match tier {
         "piggyback" => RealClients::new(w).shim().await.text,
         "stop" | "prompt" => RealClients::new(w).hook(tier).await.text,
@@ -2657,7 +2657,7 @@ async fn tier_output(w: &World, tier: &str) -> String {
 
 #[tokio::test]
 async fn the_codex_queue_sends_only_filtered_visible_rows() {
-    use crate::common::people::OWNER_ASKS;
+    use clax_testkit::people::OWNER_ASKS;
     let dir = tempfile::tempdir().unwrap();
     // Each run writes its arguments into a FIFO, which the test reads:
     // reading waits for a run, with no clock.
@@ -3012,7 +3012,7 @@ async fn a_persons_agent_gets_placeholders_and_never_takes_untargeted_feedback_b
 
 #[tokio::test]
 async fn no_doc_event_reaches_a_waiting_agent() {
-    use crate::common::people::DOC_FIELD;
+    use clax_testkit::people::DOC_FIELD;
     let w = World::two_people().await;
     // Mia's held comments told; the wait finds nothing more.
     owner_poll(&w, "tier=piggyback").await;
@@ -3149,7 +3149,7 @@ async fn rights_narrowed_before_a_polls_first_take_hold_its_rows() {
 
 #[tokio::test]
 async fn a_row_between_take_and_wait_is_not_missed() {
-    use crate::common::people::OWNER_ASKS;
+    use clax_testkit::people::OWNER_ASKS;
     let w = World::two_people().await;
     // Told once already: a take finds nothing more to hand over.
     owner_poll(&w, "tier=piggyback").await;

@@ -6,9 +6,10 @@
 #
 # Derived:
 #   bazel/workspace.bzl   each workspace crate's version, targets, default
-#                         features, path dependencies, test features and
-#                         build script, and the workspace lints as rustc
-#                         flags (scripts/bazel-derive.py workspace)
+#                         features, path dependencies and build script,
+#                         and the workspace lints as rustc flags
+#                         (scripts/bazel-derive.py workspace); a
+#                         dev-dependency that turns features on fails it
 #   bazel/release_files.bzl
 #                         the release script test's files as labels
 #                         (scripts/test-release.files)

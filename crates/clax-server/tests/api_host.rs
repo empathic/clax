@@ -1,7 +1,6 @@
 //! Every `/api` route answers only to a `Host` that names this machine
 //! literally, or to the address the daemon is bound to (DNS rebinding).
-use crate::common;
-use common::TestServer;
+use clax_testkit::TestServer;
 use serde_json::Value;
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 
@@ -53,7 +52,7 @@ async fn api_routes_refuse_a_host_that_is_not_this_machine() {
     }
     // A rebound page: Host and Origin agree, and both name the attacker's domain.
     let form = reqwest::multipart::Form::new()
-        .text("anchor", clax_server::testing::element_anchor().to_string())
+        .text("anchor", clax_testkit::element_anchor().to_string())
         .text("body", "@agent run this")
         .text("version", "1");
     let res = ts

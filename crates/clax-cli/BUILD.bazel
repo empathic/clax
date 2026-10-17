@@ -29,10 +29,7 @@ cargo_package(
         "//web:dist_extension",
         "//web:shell_cases_bin",
     ],
-    test_compile_data = [
-        "//crates/clax-server:test_people",
-        "//scripts:ensure-clax.sh",
-    ],
+    test_compile_data = ["//scripts:ensure-clax.sh"],
     test_data = [
         "//:marketplaces",
         "//plugins:embedded",

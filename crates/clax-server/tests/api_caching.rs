@@ -1,5 +1,4 @@
-use crate::common;
-use common::TestServer;
+use clax_testkit::TestServer;
 
 #[tokio::test]
 async fn api_json_is_compressed_as_the_client_prefers_and_streams_never_are() {

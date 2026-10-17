@@ -1,9 +1,8 @@
-use crate::common;
 use clax_server::sample::provider::{Block, Role};
 use clax_server::sample::sse::SseParser;
 use clax_server::sample::stub::StubProvider;
 use clax_server::sample::{SampleSettings, Sampler};
-use common::TestServer;
+use clax_testkit::TestServer;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;

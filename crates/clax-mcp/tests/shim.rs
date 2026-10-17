@@ -479,7 +479,7 @@ async fn piggyback_and_wait_through_the_shim() {
     let http = reqwest::Client::builder().no_proxy().build().unwrap();
     let thread = |body: &'static str| {
         let form = reqwest::multipart::Form::new()
-            .text("anchor", clax_server::testing::element_anchor().to_string())
+            .text("anchor", clax_testkit::element_anchor().to_string())
             .text("body", body)
             .text("version", "1");
         http.post(format!("{base}/api/artifacts/{aid}/threads"))

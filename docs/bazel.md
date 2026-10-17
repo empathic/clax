@@ -124,8 +124,9 @@ tests the check.
 Each crate's `BUILD.bazel` calls `cargo_package()` (`bazel/cargo.bzl`),
 which declares, with `<lib>` the library's crate name:
 
-- `<lib>`, and `<lib>_test` for a library another crate's tests turn
-  features on in (`clax_server_test`: `test-routes`, `test-support`);
+- `<lib>`; no crate has a test-only feature or variant: test support is
+  the `clax-testkit` crate, and `scripts/bazel-derive.py` refuses a
+  dev-dependency that turns features on;
 - `<lib>_lib_test` (unit tests), each binary and its `<bin>_bin_test`,
   and each `[[test]]` under its name (`//crates/clax-cli:descriptors`);
 - for the `integration` tests of clax-server, clax-cli and clax-mcp, the
@@ -237,7 +238,7 @@ Performance gates nothing in either (`just perf` measures on demand).
 | build clax, build tests | the build of `//crates/...` in the one `bazel test` |
 | cargo nextest (or cargo test) | every Rust test target, `tests(//crates/...)`, the integration tests a target per module |
 | cargo fmt --check | `--config=fmt` over `//crates/...` |
-| cargo clippy, clippy (no test features) | `--config=clippy` over `//crates/...`: each library and binary without test features, each test target with them; `crates/clax-cli` again with its own `clippy.toml` |
+| cargo clippy | `--config=clippy` over `//crates/...`: each library, binary and test target; `crates/clax-cli` again with its own `clippy.toml` |
 | release build | `//crates/clax-cli:clax_opt` |
 | justfile | `scripts/test-justfile.sh`, outside Bazel |
 | release scripts | `//scripts:release` |

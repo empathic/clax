@@ -3,12 +3,12 @@
 //! browser link, the `people` topic, and the signatures that guard every
 //! call of the flow.
 
-use crate::common::TestServer;
 use clax_core::RegisterSession;
 use clax_core::rights::Rights;
 use clax_core::sig::KeyPair;
 use clax_core::working::ManualClock;
-use clax_server::testing::{Call, LAN_LOCAL, TestClient};
+use clax_testkit::TestServer;
+use clax_testkit::{Call, LAN_LOCAL, TestClient};
 use serde_json::{Value, json};
 use std::sync::Arc;
 

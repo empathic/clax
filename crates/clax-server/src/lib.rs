@@ -31,8 +31,6 @@ pub mod sample;
 pub mod shell_route;
 pub mod state;
 pub mod stream;
-#[cfg(feature = "test-support")]
-pub mod testing;
 pub mod viewer;
 pub mod views;
 pub mod working;

@@ -1,6 +1,5 @@
-use crate::common;
-use clax_server::testing::TestViewer;
-use common::TestServer;
+use clax_testkit::TestServer;
+use clax_testkit::TestViewer;
 use reqwest::Method;
 use serde_json::{Value, json};
 

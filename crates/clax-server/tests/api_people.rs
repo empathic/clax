@@ -4,10 +4,10 @@
 //! same-origin request, applies at the agent's next request, and no agent
 //! changes its own rights.
 
-use crate::common::TestServer;
 use clax_core::audit::AuditCtx;
 use clax_core::store::approvals::{Scope, Via};
-use clax_server::testing::TestClient;
+use clax_testkit::TestClient;
+use clax_testkit::TestServer;
 use serde_json::{Value, json};
 
 /// `(status, body)` of a response.
@@ -882,7 +882,7 @@ async fn a_person_or_the_owner_ends_one_agent_with_its_cleanup() {
 
 /// The owner's agent and an artifact it published, with a LAN viewer's
 /// thread sent to the agents.
-async fn lan_thread(p: &People) -> (String, String, clax_server::testing::TestViewer) {
+async fn lan_thread(p: &People) -> (String, String, clax_testkit::TestViewer) {
     let a =
         p.ts.publish_as(&p.owner_session, "Plan", "<main><p>Plan</p></main>")
             .await;
@@ -1238,7 +1238,7 @@ async fn a_sibling_cannot_act_as_an_elevated_session_without_its_secret() {
     let right = p.sam.secret_of(&p.sam_session).unwrap();
     let r = p
         .sam
-        .call(clax_server::testing::Call {
+        .call(clax_testkit::Call {
             method: "GET",
             path: "/api/artifacts",
             authorization: Some(format!("Clax-Grant {}", p.sam.access())),

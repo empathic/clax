@@ -350,6 +350,7 @@ pub async fn serve(
             crate::agent::TokioTimer::default(),
         ))),
         vis_gen,
+        test_delays: false,
     };
     state.audit_wake.install(&state.store);
     // The appender recovers the journal and catches it up on its own

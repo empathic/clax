@@ -1,11 +1,21 @@
-//! An in-process daemon on an ephemeral port, for integration tests
-//! in this crate and in crates that call the daemon over HTTP.
+//! Test support for the integration tests of the crates that call the
+//! daemon: an in-process daemon on an ephemeral port ([`TestServer`]), its
+//! clients, the fixtures it loads, the canary world of people
+//! ([`people`]) and the real clients' harness ([`clients`]).
+//!
+//! Only integration tests (`tests/`) depend on it, never a crate's own
+//! code or unit tests: it sits below every crate it tests. It turns on no
+//! feature of any crate, and no crate turns on one of its own for tests
+//! (`scripts/bazel-derive.py` refuses that).
 
-use crate::wrap_cache::WrapCache;
-use crate::{AppState, build_router};
+pub mod clients;
+pub mod people;
+
 use clax_core::daemon::{browser_host, probe_host};
 use clax_core::working::{Clock, ManualClock, SystemClock};
 use clax_core::{EventBus, Home, Store};
+use clax_server::wrap_cache::WrapCache;
+use clax_server::{AppState, build_router};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,6 +31,12 @@ pub const PEER_HEADER: &str = "x-clax-test-peer";
 /// The daemon's LAN interface address a request with [`LAN_HEADER`]
 /// arrives on.
 pub const LAN_LOCAL: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
+
+/// The directory of the fixtures [`TestServer::from_fixture_with_clock`]
+/// loads: this crate's `fixtures/`.
+pub fn fixtures_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures")
+}
 
 /// Writes fixture `sql` into `home`: runs it on a new database at the home's
 /// database path, then writes each row of its `fixture_files (path,
@@ -74,7 +90,7 @@ async fn as_lan(
     if req.headers().contains_key(LAN_HEADER) {
         let conn = req
             .extensions()
-            .get::<axum::extract::ConnectInfo<crate::auth::Conn>>()
+            .get::<axum::extract::ConnectInfo<clax_server::auth::Conn>>()
             .map(|c| c.0);
         let peer = req
             .headers()
@@ -84,7 +100,7 @@ async fn as_lan(
             .unwrap_or(IpAddr::V4(LAN_PEER));
         if let Some(c) = conn {
             req.extensions_mut()
-                .insert(axum::extract::ConnectInfo(crate::auth::Conn {
+                .insert(axum::extract::ConnectInfo(clax_server::auth::Conn {
                     peer: SocketAddr::new(peer, c.peer.port()),
                     local: SocketAddr::new(IpAddr::V4(LAN_LOCAL), c.local.port()),
                 }));
@@ -106,16 +122,16 @@ pub struct TestServer {
     /// The server's working registry.
     pub working: Arc<clax_core::working::Working>,
     /// The server's feedback context, for driving its background passes.
-    pub feedback: crate::feedback::FeedbackCtx,
+    pub feedback: clax_server::feedback::FeedbackCtx,
     /// The server's presence registry.
     pub presence: Arc<clax_core::presence::Presence>,
     /// The address the listener is bound to (may be unspecified, e.g. `0.0.0.0`).
     pub addr: SocketAddr,
     /// The journal state the status route reports; no appender runs unless
     /// a test starts one with it.
-    pub journal: Arc<crate::audit::JournalStatus>,
+    pub journal: Arc<clax_server::audit::JournalStatus>,
     /// The bounds on agents' unverified bodies.
-    pub agent_gate: Arc<crate::agent::Gate>,
+    pub agent_gate: Arc<clax_server::agent::Gate>,
     extension_id: String,
     _dir: tempfile::TempDir,
 }
@@ -147,7 +163,7 @@ impl TestServer {
     /// whose bounds on agents' unverified bodies wait and measure rates on
     /// the returned timer.
     pub async fn spawn_agent_timer() -> (TestServer, Arc<ManualTimer>) {
-        Self::spawn_agent_timer_with_budget(crate::agent::BUDGET).await
+        Self::spawn_agent_timer_with_budget(clax_server::agent::BUDGET).await
     }
 
     /// [`TestServer::spawn_agent_timer`] with an overall budget of
@@ -156,7 +172,7 @@ impl TestServer {
         let timer = Arc::new(ManualTimer::default());
         let t = timer.clone();
         let ts = Self::spawn_on(IpAddr::V4(Ipv4Addr::UNSPECIFIED), move |s| {
-            s.agent_gate = Arc::new(crate::agent::Gate::with_budget(t, budget));
+            s.agent_gate = Arc::new(clax_server::agent::Gate::with_budget(t, budget));
         })
         .await;
         (ts, timer)
@@ -175,17 +191,15 @@ impl TestServer {
         Self::start(dir, bind, clock, |_| {}, false).await
     }
 
-    /// A test daemon on a fresh copy of fixture `name` (a file of this
-    /// crate's `tests/fixtures/`, loaded by [`load_fixture`]), its clock
+    /// A test daemon on a fresh copy of fixture `name` (a file of
+    /// [`fixtures_dir`], loaded by [`load_fixture`]), its clock
     /// ([`TestServer::spawn_with_clock`]) stopped at `at` (RFC 3339). The
     /// store migrates the fixture's database on open, as a daemon does.
     ///
     /// # Panics
     /// When the fixture cannot be read or loaded, or `at` does not parse.
     pub async fn from_fixture_with_clock(name: &str, at: &str) -> TestServer {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures")
-            .join(name);
+        let path = fixtures_dir().join(name);
         let sql = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
         let dir = tempfile::tempdir().unwrap();
@@ -210,12 +224,13 @@ impl TestServer {
             .unwrap();
         let addr = listener.local_addr().unwrap();
         let port = addr.port();
-        let live_ids = Arc::new(crate::live::LiveIds::load(&store).unwrap());
-        let ext_creds =
-            Arc::new(crate::extension::Credentials::load_with(&store, clock.clone()).unwrap());
+        let live_ids = Arc::new(clax_server::live::LiveIds::load(&store).unwrap());
+        let ext_creds = Arc::new(
+            clax_server::extension::Credentials::load_with(&store, clock.clone()).unwrap(),
+        );
         let started_at = store.now();
-        let grant_auth = Arc::new(crate::grant_auth::GrantAuth::load(&store).unwrap());
-        let vis_gen = crate::state::VisGen::install(&store);
+        let grant_auth = Arc::new(clax_server::grant_auth::GrantAuth::load(&store).unwrap());
+        let vis_gen = clax_server::state::VisGen::install(&store);
         let mut state = AppState {
             store,
             home: home.clone(),
@@ -224,7 +239,7 @@ impl TestServer {
             started_at,
             version: "test",
             shutdown: tokio::sync::watch::channel(false).1,
-            wrap_cache: Arc::new(WrapCache::new(crate::wrap_cache::DEFAULT_MAX_BYTES)),
+            wrap_cache: Arc::new(WrapCache::new(clax_server::wrap_cache::DEFAULT_MAX_BYTES)),
             request_timeout: Duration::from_secs(30),
             publish_timeout: Duration::from_secs(120),
             sse_keep_alive: Duration::from_secs(15),
@@ -237,27 +252,27 @@ impl TestServer {
             codex: Arc::new(Default::default()),
             working: Arc::new(clax_core::working::Working::new(clock.clone())),
             presence: Arc::new(clax_core::presence::Presence::new(clock.clone())),
-            rooms: Arc::new(crate::room::Rooms::default()),
+            rooms: Arc::new(clax_server::room::Rooms::default()),
             // Sampling off; tests that sample set their own with `spawn_with`.
-            sample: Arc::new(crate::sample::Sampler::disabled()),
-            stream: crate::stream::Hub::new(live_ids.clone()),
+            sample: Arc::new(clax_server::sample::Sampler::disabled()),
+            stream: clax_server::stream::Hub::new(live_ids.clone()),
             live_ids,
             ext_creds,
             extension_id: clax_core::extension::extension_id_in_effect(home.root()),
             questions: Arc::new(Default::default()),
             question_grace: Duration::from_secs(5),
-            question_sleeper: Arc::new(crate::questions::TokioSleeper),
+            question_sleeper: Arc::new(clax_server::questions::TokioSleeper),
             question_clock: clock,
             terminal_after_s: clax_core::config::TERMINAL_AFTER_S,
             calibration: Arc::default(),
             verify_times: Arc::default(),
-            audit_wake: crate::audit::AuditWake::new(),
+            audit_wake: clax_server::audit::AuditWake::new(),
             // No appender; tests of the journal start their own.
-            journal: crate::audit::JournalStatus::off(None),
-            exports: crate::exports::Exports::new(),
-            call_ids: Arc::new(crate::call_ids::CallIdWait::new(
-                crate::call_ids::CALL_ID_GRACE,
-                crate::call_ids::CALL_ID_CAP,
+            journal: clax_server::audit::JournalStatus::off(None),
+            exports: clax_server::exports::Exports::new(),
+            call_ids: Arc::new(clax_server::call_ids::CallIdWait::new(
+                clax_server::call_ids::CALL_ID_GRACE,
+                clax_server::call_ids::CALL_ID_CAP,
             )),
             bind,
             port,
@@ -265,17 +280,18 @@ impl TestServer {
             // `lan()` requests arrive on.
             lan_host: bind.is_unspecified().then_some(IpAddr::V4(LAN_LOCAL)),
             grant_auth,
-            agent_gate: Arc::new(crate::agent::Gate::new(Arc::new(
-                crate::agent::TokioTimer::default(),
+            agent_gate: Arc::new(clax_server::agent::Gate::new(Arc::new(
+                clax_server::agent::TokioTimer::default(),
             ))),
             vis_gen,
+            test_delays: true,
         };
         f(&mut state);
         state.audit_wake.install(&state.store);
         state.stream.listen(&state.events);
-        crate::views::inbox::listen(&state);
-        crate::views::approval::listen(&state);
-        crate::routes::people::listen(&state);
+        clax_server::views::inbox::listen(&state);
+        clax_server::views::approval::listen(&state);
+        clax_server::routes::people::listen(&state);
         let events = state.events.clone();
         let store = state.store.clone();
         let working = state.working.clone();
@@ -285,7 +301,7 @@ impl TestServer {
         let journal = state.journal.clone();
         let agent_gate = state.agent_gate.clone();
         let app = if shutdown {
-            crate::build_router_with_shutdown(state, tokio::sync::watch::channel(false).0)
+            clax_server::build_router_with_shutdown(state, tokio::sync::watch::channel(false).0)
         } else {
             build_router(state)
         }
@@ -293,7 +309,7 @@ impl TestServer {
         tokio::spawn(async move {
             axum::serve(
                 listener,
-                app.into_make_service_with_connect_info::<crate::auth::Conn>(),
+                app.into_make_service_with_connect_info::<clax_server::auth::Conn>(),
             )
             .await
             .unwrap();
@@ -740,8 +756,8 @@ impl TestServer {
         let host = self.base.trim_start_matches("http://");
         format!(
             "{}={}",
-            crate::identity::owner_cookie_name(host),
-            crate::identity::owner_cookie_value(&self.token)
+            clax_server::identity::owner_cookie_name(host),
+            clax_server::identity::owner_cookie_value(&self.token)
         )
     }
 
@@ -1168,7 +1184,7 @@ impl TestServer {
     }
 }
 
-/// A [`crate::questions::Sleeper`] whose sleeps end only when the test
+/// A [`clax_server::questions::Sleeper`] whose sleeps end only when the test
 /// fires them, by duration ([`ManualSleeper::fire`]).
 #[derive(Default)]
 pub struct ManualSleeper {
@@ -1176,7 +1192,7 @@ pub struct ManualSleeper {
     changed: tokio::sync::Notify,
 }
 
-impl crate::questions::Sleeper for ManualSleeper {
+impl clax_server::questions::Sleeper for ManualSleeper {
     fn sleep(&self, d: Duration) -> futures::future::BoxFuture<'static, ()> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.pending.lock().unwrap().push((d, tx));
@@ -1228,7 +1244,7 @@ impl ManualSleeper {
     }
 }
 
-/// A [`crate::agent::Timer`] whose time moves only when the test advances
+/// A [`clax_server::agent::Timer`] whose time moves only when the test advances
 /// it ([`ManualTimer::advance`]).
 #[derive(Default)]
 pub struct ManualTimer {
@@ -1238,7 +1254,7 @@ pub struct ManualTimer {
 /// The time a [`ManualTimer`] reads, and each pending sleep's deadline.
 type TimerState = (Duration, Vec<(Duration, tokio::sync::oneshot::Sender<()>)>);
 
-impl crate::agent::Timer for ManualTimer {
+impl clax_server::agent::Timer for ManualTimer {
     fn now(&self) -> Duration {
         self.state.lock().unwrap().0
     }
@@ -1280,8 +1296,8 @@ impl TestServer {
     pub async fn wait_gate(
         &self,
         what: &str,
-        f: impl Fn(crate::agent::GateState) -> bool,
-    ) -> crate::agent::GateState {
+        f: impl Fn(clax_server::agent::GateState) -> bool,
+    ) -> clax_server::agent::GateState {
         self.agent_gate
             .wait_until(f, Duration::from_secs(5))
             .await
