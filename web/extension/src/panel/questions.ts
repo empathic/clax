@@ -7,7 +7,7 @@ import { ApiError, type AnswerBody, type QuestionView } from "../../../shell/src
 import { QuestionFeed } from "../../../shell/src/q/feed.svelte";
 import type { PanelToWorker, WorkerToPanel } from "../messages";
 
-type Close<M = Extract<PanelToWorker, { t: "q-answer" | "q-decline" | "q-release" }>> = M extends unknown ? Omit<M, "req"> : never;
+type Close<M = Extract<PanelToWorker, { t: "q-answer" | "q-decline" | "q-release" | "q-pull" }>> = M extends unknown ? Omit<M, "req"> : never;
 export type Asker = { ask(m: Close): Promise<WorkerToPanel> };
 /** Failures that say Clax did not answer, rather than that it refused. */
 const UNANSWERED = new Set(["daemon_unreachable", "worker_restarted", "timeout"]);
@@ -18,6 +18,7 @@ export class PanelQuestions extends QuestionFeed {
   override answer(id: string, b: AnswerBody): Promise<void> { return this.closing({ t: "q-answer", questionId: id, body: b }); }
   override decline(id: string): Promise<void> { return this.closing({ t: "q-decline", questionId: id }); }
   override release(id: string): Promise<void> { return this.closing({ t: "q-release", questionId: id }); }
+  override pull(id: string): Promise<void> { return this.closing({ t: "q-pull", questionId: id }); }
 
   /** The open questions as the worker last fetched them: one closing here keeps its card. */
   list(qs: QuestionView[]): void {

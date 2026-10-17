@@ -121,6 +121,64 @@ describe("the questions in the artifact view", () => {
     expect(stream.on.size).toBe(0);
   });
 
+  it("shows a thread's question inside its card, and counts and links it from the sidebar's block", async () => {
+    vi.resetModules();
+    const inT = view({ id: "QT", thread: { id: "t1", open: true } });
+    const loose = view({ id: "QA", created_at: "2026-10-07T09:05:00.000Z" });
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(JSON.stringify(url.startsWith("/api/inbox/summary") ? { unread: 2, questions: [inT, loose], latest: [] } : { questions: [inT, loose], open: 2 }))));
+    document.body.innerHTML = `<div class="page"><header class="topbar"><div class="island"></div></header><aside class="sidebar"><div class="questions-slot"></div><article class="thread"><div class="thread-q-slot" data-thread="t1"></div></article></aside></div>`;
+    const qmod = await import("./index");
+    const stream = fakeStream();
+    const stop = qmod.artifact(AID, { keyboardTrail: { onClear: () => () => {} }, guardedAction: (_e, _v, act) => { act(); return null; } }, stream as never);
+    for (const f of stream.on.values()) f({ type: "ready" });
+    await settle();
+    expect([...document.querySelectorAll(".thread-q-slot .qcard")].map(c => (c as HTMLElement).dataset.question)).toEqual(["QT"]);
+    expect([...document.querySelectorAll(".questions-slot .qcard")].map(c => (c as HTMLElement).dataset.question)).toEqual(["QA"]);
+    expect(document.querySelector(".questions-slot h2")!.textContent).toBe("Questions for you 2");
+    expect(document.querySelector<HTMLAnchorElement>(".questions-slot a.q-thread")!.getAttribute("href")).toBe("?thread=t1");
+    // A card mounted later gets its questions too.
+    const late = document.createElement("div");
+    late.className = "thread-q-slot";
+    late.dataset.thread = "t1";
+    document.querySelector(".sidebar")!.append(late);
+    await settle();
+    expect(late.querySelectorAll(".qcard")).toHaveLength(1);
+    // A card removed takes its questions with it, and stopping empties the rest.
+    late.remove();
+    await settle();
+    stop();
+    flush();
+    expect(document.querySelector(".thread-q-slot .qcard")).toBeNull();
+  });
+
+  it("a question whose thread is gone or resolved is a card in the sidebar block", async () => {
+    const resolved = view({ id: "QR", thread: { id: "t1", open: false } });
+    const { feed } = await feedOf([resolved]);
+    const aside = document.createElement("aside");
+    aside.className = "sidebar";
+    document.body.append(aside);
+    const m = mount(SidebarQuestions, { aid: AID, feed }, aside);
+    expect([...m.root.querySelectorAll<HTMLElement>(".qcard")].map(c => c.dataset.question)).toEqual(["QR"]);
+    expect(m.root.querySelector("a.q-thread")).toBeNull();
+    m.unmount();
+  });
+
+  it("shows an in-terminal question as a terminal card, whose Ask me here posts the pull", async () => {
+    const t = view({ id: "QN", in_terminal: true, source: "hook" });
+    const { feed } = await feedOf([t]);
+    const m = mount(SidebarQuestions, { aid: AID, feed });
+    const card = m.root.querySelector<HTMLElement>(".qcard.in-terminal")!;
+    expect(card.dataset.question).toBe("QN");
+    const fetched = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({ question: { ...t, status: "withdrawn", pulled: true, closed_at: "2026-10-07T09:10:00.000Z" } })));
+    vi.stubGlobal("fetch", fetched);
+    await feed.pull("QN");
+    flush();
+    expect(fetched.mock.calls[0][0]).toBe("/api/questions/QN/pull");
+    expect(fetched.mock.calls[0][1]!.method).toBe("POST");
+    expect(m.root.querySelector(".qcard .closed")!.textContent).toBe("Sent to claude: it asks here next");
+    m.unmount();
+  });
+
   it("closes the notifications shown once nothing is left unread, as after a bulk mark", async () => {
     vi.resetModules();
     const made: { closed: boolean }[] = [];

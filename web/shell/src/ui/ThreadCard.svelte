@@ -171,6 +171,9 @@
       </div>
     {/each}
     {@render writers?.(t.id)}
+    <!-- The question module (loaded apart, for a person with an inbox) fills this with the questions asked in the thread; a click on a question is its own, not the card's. -->
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+    <div class="thread-q-slot" data-thread={t.id} onclick={e => e.stopPropagation()}></div>
     {#if marker}<p class="st ag"><span class="tok a work sm" aria-hidden="true"></span>{marker.text}<small>{clock(marker.since, now)}</small></p>
     {:else if label}<p class="st waiting">{label}</p>{/if}
     {#if lines.thread}
@@ -224,6 +227,7 @@
   :global {
     .thread-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 11px 12px 10px; margin-bottom: 10px; cursor: pointer; transition: border-color var(--t), box-shadow var(--t); }
     .thread-card:hover { border-color: var(--border-hover); }
+    .thread-q-slot:empty { display: none; }
     .thread-card.selected { border-color: var(--border-strong); box-shadow: var(--elev); }
     .thread-card.far:not(.folded) { cursor: auto; }
     .thread-card header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; min-width: 0; }

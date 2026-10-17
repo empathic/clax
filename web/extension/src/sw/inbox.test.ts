@@ -13,7 +13,7 @@ const Q3 = "01J9CCCCCCCCCCCCCCCCCCCCCC";
 const question = (id: string, aid: string | null, created: string, status: QuestionView["status"] = "open"): QuestionView => ({
   id, agent: { handle: `a_${"1".repeat(22)}`, harness: "claude", project: "clax" }, artifact: aid ? { id: aid, title: aid, kind: "live" } : null,
   source: "ask", status, questions: [{ question: "Which?", header: "Pick", options: [], multi_select: false, other: false }], answers: null,
-  answered_via: null, created_at: created, closed_at: null,
+  answered_via: null, created_at: created, closed_at: null, thread: null, in_terminal: false, pulled: false,
 });
 const item = (id: string, seq: number, read = false) => ({ id, seq, kind: "reply", read, created_at: "t", url: `/a/${A}` }) as unknown as InboxItem;
 

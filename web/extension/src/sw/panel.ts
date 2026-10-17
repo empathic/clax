@@ -73,7 +73,7 @@ export async function panelAction(d: PanelDeps, tabId: number | null, m: PanelTo
 }
 
 /** The question and inbox requests, which act on no tab. */
-const INBOX_ACTIONS = new Set<PanelToWorker["t"]>(["q-answer", "q-decline", "q-release", "inbox-page", "inbox-mark", "inbox-mark-all", "open-url"]);
+const INBOX_ACTIONS = new Set<PanelToWorker["t"]>(["q-answer", "q-decline", "q-release", "q-pull", "inbox-page", "inbox-mark", "inbox-mark-all", "open-url"]);
 const LIVE_ITEM = /^\/a\/([0-9a-hjkmnp-tv-z]{12})(?:[/?#]|$)/;
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
@@ -99,8 +99,8 @@ export async function openPath(d: PanelDeps, path: string, pageUrl: string | nul
 async function inboxAction(d: PanelDeps, m: PanelToWorker, reply: (r: WorkerToPanel) => void): Promise<boolean> {
   const api = d.api;
   switch (m.t) {
-    case "q-answer": case "q-decline": case "q-release": {
-      const verb = m.t === "q-answer" ? "answer" : m.t === "q-decline" ? "decline" : "release";
+    case "q-answer": case "q-decline": case "q-release": case "q-pull": {
+      const verb = m.t === "q-answer" ? "answer" : m.t === "q-decline" ? "decline" : m.t === "q-pull" ? "pull" : "release";
       const r = await api.closeQuestion(m.questionId, verb, m.t === "q-answer" ? m.body : undefined);
       reply({ t: "q-done", req: m.req, question: r.question, closed: r.closed });
       return true;

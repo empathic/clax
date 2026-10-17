@@ -219,6 +219,8 @@ describe("messages", () => {
     expect(isFromPanel({ t: "q-decline", req: 2, questionId: ULID })).toBe(true);
     expect(isFromPanel({ t: "q-release", req: 3, questionId: ULID })).toBe(true);
     expect(isFromPanel({ t: "q-release", questionId: ULID })).toBe(false);
+    expect(isFromPanel({ t: "q-pull", req: 4, questionId: ULID })).toBe(true);
+    expect(isFromPanel({ t: "q-pull", req: 4, questionId: "nope" })).toBe(false);
     expect(isFromPanel({ t: "q-decline", req: 2, questionId: ULID, body })).toBe(false);
 
     expect(isFromPanel({ t: "inbox-page", req: 4, filter: {}, before: null })).toBe(true);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { view } from "./fixtures";
-import { agentLabel, answerLine, closedLabel, complete, cutHeader, emptyDraft, nextOpen, pick, previewOf, shownLabel, toBody, typeOther } from "./model";
+import { agentLabel, answerLine, closedLabel, complete, cutHeader, emptyDraft, inThread, nextOpen, pick, previewOf, shownLabel, terminalLine, toBody, typeOther } from "./model";
 
 describe("question model", () => {
   it("tracks completeness per kind and builds the body", () => {
@@ -88,5 +88,18 @@ describe("question model", () => {
     expect(shownLabel({ label: "(Recommended)", recommended: true })).toBe("(Recommended)");
     expect(shownLabel({ label: "Jest (Recommended)" })).toBe("Jest (Recommended)");
     expect(shownLabel({ label: "Two", recommended: true })).toBe("Two");
+  });
+});
+
+describe("in-terminal questions and threads", () => {
+  it("places a question in its thread only while the thread is open", () => {
+    expect(inThread(view({ thread: { id: "t1", open: true } }))).toBe("t1");
+    expect(inThread(view({ thread: { id: "t1", open: false } }))).toBeNull();
+    expect(inThread(view())).toBeNull();
+  });
+  it("says who asks in the terminal, and what Ask me here did", () => {
+    expect(terminalLine(view({ in_terminal: true }), [])).toBe("claude is asking you in the terminal");
+    expect(closedLabel(view({ in_terminal: true, status: "withdrawn", pulled: true }))).toBe("Sent to claude: it asks here next");
+    expect(closedLabel(view({ in_terminal: true, status: "answered", answered_via: "terminal" }))).toBe("Answered in the terminal");
   });
 });

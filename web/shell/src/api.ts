@@ -162,6 +162,12 @@ export type QuestionView = {
   created_at: string; closed_at: string | null;
   /** On a local daemon, its copy on a remote (linked questions); absent or null for none. */
   linked?: QuestionLink | null;
+  /** The thread of `artifact` it was asked in (`open`: not resolved); null for none or a deleted one. */
+  thread: { id: string; open: boolean } | null;
+  /** An in-terminal question: the agent is asking in the terminal (or in chat); it takes no answer here. */
+  in_terminal: boolean;
+  /** The person chose Ask me here on the in-terminal question. */
+  pulled: boolean;
 };
 /** Where a question's copy on a remote stands: `pending` until the remote
  * acknowledged it, `failed` when it was not sent (Retry); `answered_there`

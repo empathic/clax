@@ -75,13 +75,24 @@ export function agentLabel(agent: QAgent | null, others: (QAgent | null)[]): str
   return twin ? `${agent.harness} ${agent.handle.replace(/^a_/, "").slice(0, 4)}` : agent.harness;
 }
 
+/** The thread a question shows in, inside that thread's card: its thread
+ * while it is open; null when it shows in the sidebar's block instead (no
+ * thread, or a resolved or deleted one). */
+export const inThread = (q: QuestionView): string | null => (q.thread?.open ? q.thread.id : null);
+
+/** An in-terminal question's line (spec 2026-10-16-ask-where-attention-is-design §3). */
+export const terminalLine = (q: QuestionView, others: (QAgent | null)[]): string => `${agentLabel(q.agent, others)} is asking you in the terminal`;
+
+/** What Ask me here cannot do for Claude Code's terminal dialog. */
+export const TERMINAL_ESC = "After Ask me here, the terminal's dialog stays open until you press Esc there.";
+
 /** What a closed question says happened. */
 export function closedLabel(q: QuestionView): string {
   switch (q.status) {
     case "answered": return q.answered_via === "terminal" ? "Answered in the terminal" : "Answered";
     case "declined": return "Skipped";
     case "released": return "Moved to the terminal";
-    case "withdrawn": return `${agentLabel(q.agent, [])} stopped waiting`;
+    case "withdrawn": return q.pulled ? `Sent to ${agentLabel(q.agent, [])}: it asks here next` : `${agentLabel(q.agent, [])} stopped waiting`;
     default: return "Open";
   }
 }

@@ -38,6 +38,8 @@ export const answerQuestion = (qid: string, body: AnswerBody) => closing(qid, "a
 export const declineQuestion = (qid: string) => closing(qid, "decline");
 /** "Answer in the terminal" (mirrored questions only). */
 export const releaseQuestion = (qid: string) => closing(qid, "release");
+/** "Ask me here" (in-terminal questions only). */
+export const pullQuestion = (qid: string) => closing(qid, "pull");
 
 /** `f` as `GET /api/inbox` query parameters. */
 export function inboxQuery(f: InboxFilter, before?: string | null, limit?: number): string {

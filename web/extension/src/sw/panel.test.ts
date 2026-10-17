@@ -412,14 +412,15 @@ describe("panelAction", () => {
 });
 
 describe("panelAction for the owner's questions and inbox", () => {
-  it("answers, skips and moves questions through the owner routes, on no tab, and says when something closed one first", async () => {
+  it("answers, skips, moves and pulls questions through the owner routes, on no tab, and says when something closed one first", async () => {
     const s = setup();
     const body = { answers: [{ selected: ["Two"], text: null }] };
     await s.run({ t: "q-answer", req: 1, questionId: Q, body }, null);
     await s.run({ t: "q-decline", req: 2, questionId: Q }, null);
     await s.run({ t: "q-release", req: 3, questionId: Q }, 4);
-    expect(s.calls).toEqual([`closeQuestion "${Q}" "answer" ${JSON.stringify(body)}`, `closeQuestion "${Q}" "decline" `, `closeQuestion "${Q}" "release" `]);
-    expect(s.out).toEqual([1, 2, 3].map(req => ({ t: "q-done", req, question: { id: Q }, closed: false })));
+    await s.run({ t: "q-pull", req: 4, questionId: Q }, 4);
+    expect(s.calls).toEqual([`closeQuestion "${Q}" "answer" ${JSON.stringify(body)}`, `closeQuestion "${Q}" "decline" `, `closeQuestion "${Q}" "release" `, `closeQuestion "${Q}" "pull" `]);
+    expect(s.out).toEqual([1, 2, 3, 4].map(req => ({ t: "q-done", req, question: { id: Q }, closed: false })));
     const c = setup({ closed: true });
     await c.run({ t: "q-answer", req: 7, questionId: Q, body }, null);
     expect(c.out).toEqual([{ t: "q-done", req: 7, question: { id: Q }, closed: true }]);

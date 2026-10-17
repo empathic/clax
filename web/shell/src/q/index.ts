@@ -13,6 +13,7 @@ import { setBadge } from "./badge";
 import type { Notifier } from "./notify";
 import { shared } from "./shared";
 import SidebarQuestions from "./SidebarQuestions.svelte";
+import ThreadQuestions from "./ThreadQuestions.svelte";
 import { type Trail, useTrail } from "./trail";
 import { followBadge, followDot } from "./wire";
 
@@ -66,8 +67,9 @@ export function stop(): void {
 /** The artifact view's surfaces for artifact `aid`, for the owner or a connected person: **Inbox**
  * in the top bar (before the island's controls), the questions about it at
  * the top of the sidebar (in the sidebar's `.questions-slot`, each time it
- * mounts), and the dot on the threads controls. `trail` is the view's
- * keyboard trail, which its cards follow. The result removes them and stops
+ * mounts), the questions asked in each thread inside that thread's card
+ * (its `.thread-q-slot`), and the dot on the threads controls. `trail` is
+ * the view's keyboard trail, which its cards follow. The result removes them and stops
  * the feeds (`stop`). */
 export function artifact(aid: string, trail: Trail, stream: EventStream, doc: Document = document): () => void {
   useTrail(trail);
@@ -88,10 +90,28 @@ export function artifact(aid: string, trail: Trail, stream: EventStream, doc: Do
   }
   doc.addEventListener("clax-questions-slot", onSlot);
   fill(doc.querySelector(".sidebar > .questions-slot"));
+  // Each thread card's slot (`ThreadCard`'s `.thread-q-slot`) shows the
+  // questions asked in that thread; cards come and go with the threads, so
+  // a MutationObserver finds slots added and removed.
+  const threads = new Map<HTMLElement, Record<string, unknown>>();
+  const sweep = () => {
+    for (const el of doc.querySelectorAll<HTMLElement>(".thread-q-slot[data-thread]")) {
+      if (!threads.has(el)) threads.set(el, mount(ThreadQuestions, { target: el, props: { aid, tid: el.dataset.thread! } }));
+    }
+    for (const [el, c] of threads) if (!el.isConnected) { void unmount(c); threads.delete(el); }
+  };
+  // Only an element added or removed can add or remove a slot.
+  const elements = (ns: NodeList) => [...ns].some(n => n.nodeType === Node.ELEMENT_NODE);
+  const watch = new MutationObserver(rs => { if (rs.some(r => elements(r.addedNodes) || elements(r.removedNodes))) sweep(); });
+  watch.observe(doc.body, { childList: true, subtree: true });
+  sweep();
   off.push(() => {
     doc.removeEventListener("clax-questions-slot", onSlot);
     if (side) void unmount(side.c);
     side = null;
+    watch.disconnect();
+    for (const c of threads.values()) void unmount(c);
+    threads.clear();
   }, followDot(doc, aid));
   return () => {
     for (const f of off) f();

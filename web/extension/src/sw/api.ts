@@ -212,10 +212,11 @@ export class Api {
     const filter = Object.fromEntries(Object.entries({ q: f.q?.trim() || undefined, kind: f.kind?.length ? f.kind : undefined, artifact: f.artifact, agent: f.agent, since: f.since, until: f.until }).filter(([, v]) => v !== undefined));
     return this.send<{ marked: number; unread: number }>("POST", "/api/inbox/read", { all: true, ...(Object.keys(filter).length ? { filter } : {}), ...(m.upto !== null ? { upto: m.upto } : {}) });
   }
-  /** Answers, skips (`decline`) or moves to the terminal (`release`) question
-   * `qid`: the question after it, or, when something closed it first (409),
-   * the question as it closed. Sent once: a lost answer is not sent again. */
-  async closeQuestion(qid: string, verb: "answer" | "decline" | "release", body?: AnswerBody): Promise<{ question: QuestionView; closed: boolean }> {
+  /** Answers, skips (`decline`), moves to the terminal (`release`) or asks
+   * here (`pull`, an in-terminal question) question `qid`: the question
+   * after it, or, when something closed it first (409), the question as it
+   * closed. Sent once: a lost answer is not sent again. */
+  async closeQuestion(qid: string, verb: "answer" | "decline" | "release" | "pull", body?: AnswerBody): Promise<{ question: QuestionView; closed: boolean }> {
     threadIds([qid]);
     const res = await this.request(`/api/questions/${qid}/${verb}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}) }, true);
     const r = await res.json().catch(() => null) as { question?: QuestionView; error?: { code?: string; message?: string } } | null;

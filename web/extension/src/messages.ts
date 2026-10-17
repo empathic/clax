@@ -193,7 +193,7 @@ export type WorkerToPanel =
   /** An inbox item as it is now (made, marked, or its source changed);
    * null: what the panel shows must be fetched again (a bulk mark). */
   | { t: "inbox-event"; item: InboxItem | null; unread: number }
-  /** The answer to `q-answer`, `q-decline` or `q-release`: the question
+  /** The answer to `q-answer`, `q-decline`, `q-release` or `q-pull`: the question
    * after it, or (`closed`) as something else closed it first. */
   | { t: "q-done"; req: number; question: QuestionView; closed: boolean }
   /** The answer to `inbox-page`. */
@@ -256,6 +256,8 @@ export type PanelToWorker =
   | { t: "q-decline"; req: number; questionId: string }
   /** "Answer in the terminal" (mirrored questions). */
   | { t: "q-release"; req: number; questionId: string }
+  /** "Ask me here" (in-terminal questions). */
+  | { t: "q-pull"; req: number; questionId: string }
   /** One page of the inbox matching `filter`, after cursor `before`. */
   | { t: "inbox-page"; req: number; filter: InboxFilter; before: string | null }
   /** Marks items read, or one item unread (`ids` names one then). */
@@ -505,7 +507,7 @@ export function isFromPanel(m: unknown): m is PanelToWorker {
     case "answer": return has("with", "answer") && origin(m.with) && (m.answer === "never" || m.answer === "later");
     case "suggest": case "list-sites": return has();
     case "q-answer": return has("req", "questionId", "body") && count(m.req) && ulid(m.questionId) && answerBody(m.body);
-    case "q-decline": case "q-release": return has("req", "questionId") && count(m.req) && ulid(m.questionId);
+    case "q-decline": case "q-release": case "q-pull": return has("req", "questionId") && count(m.req) && ulid(m.questionId);
     case "inbox-page": return has("req", "filter", "before") && count(m.req) && filter(m.filter) && (m.before === null || (typeof m.before === "string" && /^\d{1,20}$/.test(m.before)));
     case "inbox-mark": return has("req", "ids", "read") && count(m.req) && bool(m.read) && Array.isArray(m.ids) && m.ids.length >= 1
       && m.ids.length <= (m.read ? MAX_MARK : 1) && m.ids.every(itemId);

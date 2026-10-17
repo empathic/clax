@@ -29,6 +29,7 @@ export function view(over: Partial<QuestionView> = {}): QuestionView {
     answered_via: null,
     created_at: "2026-10-07T09:00:00.000Z",
     closed_at: null,
+    thread: null, in_terminal: false, pulled: false,
     ...over,
   };
 }

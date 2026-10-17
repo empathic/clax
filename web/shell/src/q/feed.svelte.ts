@@ -10,7 +10,8 @@
 import { ApiError, type AnswerBody, type InboxFilter, type InboxItem, type QuestionView } from "../api";
 import { after } from "../clock";
 import type { EventStream, StreamEvent } from "../stream";
-import { type Closing, type Forbidden, answerQuestion, declineQuestion, inboxSummary, listInbox, listQuestions, markInbox, markInboxMany, releaseQuestion } from "./api";
+import { type Closing, type Forbidden, answerQuestion, declineQuestion, inboxSummary, listInbox, listQuestions, markInbox, markInboxMany, pullQuestion, releaseQuestion } from "./api";
+import { inThread } from "./model";
 
 /** How long a closed question's card stays, showing what closed it. */
 export const LEAVE_MS = 4000;
@@ -73,6 +74,11 @@ export class QuestionFeed {
     return this.cards.filter(q => q.artifact?.id === aid);
   }
 
+  /** The cards asked in thread `tid` (shown inside its card while it is open). */
+  byThread(tid: string): QuestionView[] {
+    return this.cards.filter(q => inThread(q) === tid);
+  }
+
   /** The question `id` as last heard, open or recently closed. */
   get(id: string): QuestionView | undefined {
     return this.open.find(q => q.id === id) ?? this.recent.find(q => q.id === id);
@@ -97,6 +103,8 @@ export class QuestionFeed {
   decline(id: string): Promise<void> { return this.close(declineQuestion(id)); }
   /** Moves question `id` to the terminal (mirrored questions). */
   release(id: string): Promise<void> { return this.close(releaseQuestion(id)); }
+  /** Ask me here: asks in-terminal question `id`'s agent to ask it here. */
+  pull(id: string): Promise<void> { return this.close(pullQuestion(id)); }
 
   /** Takes a question view: an open one is listed (or replaced); one that
    * closed leaves the open list and stays in `recent` for `LEAVE_MS`. A
