@@ -158,7 +158,16 @@ async fn every_result_carries_pending_feedback_once() {
         ),
         "{trailing}"
     );
-    assert!(trailing.ends_with("Reply with comments_reply, then comments_resolve when done."));
+    // The delivery ends by saying where to ask the person.
+    let (delivery, line) = trailing.rsplit_once('\n').unwrap();
+    assert!(
+        delivery.ends_with("Reply with comments_reply, then comments_resolve when done."),
+        "{trailing}"
+    );
+    assert!(
+        line.starts_with("[clax] If you ask the person anything now, ask "),
+        "{trailing}"
+    );
     let r = t.list(Parameters(ListArgs::default())).await.unwrap();
     assert_eq!(r.content.len(), 1);
     assert_eq!(blocks(&r).0["feedback"], json!([]));

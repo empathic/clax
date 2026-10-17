@@ -23,9 +23,9 @@ pub struct SessionSignals {
     pub delivered_at: Option<String>,
     pub delivered_artifact_id: Option<String>,
     pub delivered_thread_id: Option<String>,
-    /// When the delivered comment was written, when the session's own
-    /// person wrote it in a browser (not a page through the `comments`
-    /// capability, not another author): the person was in Clax then. A
+    /// When the person did, in Clax, what the delivery carries: wrote its
+    /// comment in a browser (not a page through the `comments` capability,
+    /// not another author), or answered or pulled its question. A
     /// delivery's own time says only when the agent took it.
     pub delivered_written_at: Option<String>,
 }
@@ -143,6 +143,31 @@ impl Store {
                               (SELECT public_id FROM viewers WHERE owner = 1)))
                  WHERE id = ?1 AND ended_at IS NULL",
                 params![sid, now, aid, tid, cid, clax_core::model::AUTHOR_VIEWER],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Records a delivery from Clax to session `sid` now of its question
+    /// about artifact `aid` (and thread `tid`), which the question's
+    /// recipient, the session's person, answered, skipped or pulled
+    /// ("Ask me here") at `acted_at`: kept as `delivered_written_at`. An
+    /// ended or unknown session records nothing.
+    pub fn note_answer(
+        &self,
+        sid: &str,
+        aid: &str,
+        tid: Option<&str>,
+        acted_at: &str,
+    ) -> Result<()> {
+        let now = self.now();
+        self.with_tx(|tx| {
+            tx.execute(
+                "UPDATE sessions SET delivered_at = ?2, delivered_artifact_id = ?3,
+                    delivered_thread_id = ?4, delivered_since_turn = 1,
+                    delivered_written_at = ?5
+                 WHERE id = ?1 AND ended_at IS NULL",
+                params![sid, now, aid, tid, acted_at],
             )?;
             Ok(())
         })
@@ -399,6 +424,45 @@ mod tests {
             "a page's, as the person"
         );
         assert_eq!(written(&mine, None), None, "no comment named");
+    }
+
+    #[test]
+    fn an_answer_delivered_is_the_persons_act_at_its_own_time() {
+        let (c, _d, st) = clocked();
+        let sid = session(&st, "claude", "h1");
+        let aid = crate::test_util::artifact(&st, None);
+        c.advance(600);
+        st.note_answer(&sid, aid.as_str(), None, "2026-10-16T10:04:00.000Z")
+            .unwrap();
+        let k = st.session_signals(&sid).unwrap().unwrap();
+        assert_eq!(
+            (
+                k.delivered_at.as_deref(),
+                k.delivered_written_at.as_deref(),
+                k.delivered_artifact_id.as_deref(),
+                k.delivered_thread_id.as_deref(),
+            ),
+            (
+                Some("2026-10-16T10:10:00.000Z"),
+                Some("2026-10-16T10:04:00.000Z"),
+                Some(aid.as_str()),
+                None
+            )
+        );
+        assert!(!st.note_turn(&sid).unwrap(), "the turn it starts is Clax's");
+        st.end_session(DAEMON, &sid).unwrap();
+        c.advance(60);
+        st.note_answer(&sid, aid.as_str(), None, "2026-10-16T10:11:00.000Z")
+            .unwrap();
+        assert_eq!(
+            st.session_signals(&sid)
+                .unwrap()
+                .unwrap()
+                .delivered_written_at
+                .as_deref(),
+            Some("2026-10-16T10:04:00.000Z"),
+            "an ended session records nothing"
+        );
     }
 
     #[test]

@@ -595,7 +595,17 @@ fn prompt_hook_adds_pending_feedback_even_without_armed_replies() {
         "prompt",
         &fixture("claude-prompt.json"),
     );
-    assert_eq!(r.stdout, "", "delivered once");
+    // Delivered once: the next prompt's context only says where to ask.
+    let v = one_line_json(&r.stdout);
+    let context = v["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(
+        context.starts_with("[clax] If you ask the person anything now, ask ")
+            && !context.contains('\n')
+            && !context.contains("tighten the spacing"),
+        "{context}"
+    );
 }
 
 #[test]

@@ -48,10 +48,14 @@ fn live_session(st: &Store, sid: &str) -> clax_core::Result<()> {
     }
 }
 
-/// Takes session `sid`'s answered and declined `ask` questions it has not
-/// received (marking them received), leaving those a question poll holds
-/// to that poll: their views, and one late-answer block per question, its
-/// age read from `clock` (spec 2026-10-06-agent-questions-and-inbox §6.4).
+/// Takes session `sid`'s answered and declined `ask` questions, and its
+/// pulled in-terminal questions, it has not received (marking them
+/// received), leaving those a question poll holds to that poll: their
+/// views, and one block per question, a late answer's age read from
+/// `clock` (spec 2026-10-06-agent-questions-and-inbox §6.4), a pull's
+/// asking for the question in Clax ([`pulled_block`]). Each is recorded as
+/// a delivery from Clax at the question's artifact and thread, the
+/// person's act there at its close ([`Store::note_answer`]).
 fn late_answers(
     st: &Store,
     sid: &str,
@@ -63,8 +67,23 @@ fn late_answers(
     let mut views = Vec::with_capacity(rows.len());
     let mut blocks = Vec::with_capacity(rows.len());
     for q in &rows {
+        // An answer, or a pull, came from Clax: the work it starts is
+        // Clax's, at its thread (spec 2026-10-16-ask-where-attention-is-design §1).
+        // The question is taken already, so a failure to record that is
+        // logged and the answer still handed over.
+        if let (Some(aid), Some(at)) = (
+            &q.artifact_id,
+            q.pulled_at.as_deref().or(q.closed_at.as_deref()),
+        ) && let Err(e) = st.note_answer(sid, aid, q.thread_id.as_deref(), at)
+        {
+            tracing::warn!(error = %e, question = %q.id, "an answer's delivery not recorded");
+        }
         views.push(clax_http::views::question::view(st, q)?);
         let header = q.questions.first().map_or("", |x| x.header.as_str());
+        if q.pulled_at.is_some() {
+            blocks.push(pulled_block(q, header));
+            continue;
+        }
         let head = match q.status {
             Status::Declined => format!(
                 "[clax] The person skipped your question {} ({}):",
@@ -84,6 +103,48 @@ fn late_answers(
         blocks.push(render_late(&head, &q.questions, answers));
     }
     Ok((views, blocks))
+}
+
+/// The block telling a session that the person wants its in-terminal
+/// question asked in Clax instead ("Ask me here", spec
+/// 2026-10-16-ask-where-attention-is-design §3): never an answer. A
+/// Claude Code hook question's terminal dialog cannot be closed from
+/// outside, so the block says it stays until the person presses Esc.
+fn pulled_block(q: &clax_store::questions::QuestionRow, header: &str) -> String {
+    let at = match (&q.artifact_id, &q.thread_id) {
+        (Some(a), Some(t)) => format!(" with `url_or_id` \"{a}\" and `thread_id` \"{t}\""),
+        (Some(a), None) => format!(" with `url_or_id` \"{a}\""),
+        _ => String::new(),
+    };
+    let dialog = if q.source == clax_store::questions::Source::Hook {
+        " The terminal's dialog for it stays open until the person presses Esc there."
+    } else {
+        ""
+    };
+    format!(
+        "[clax] The person wants your question {} ({}) asked in Clax instead: ask it now with `ask`{at}, whatever `where_to_ask` suggests.{dialog}",
+        quoted(header),
+        q.id
+    )
+}
+
+/// Session `sid`'s suggestion of where to ask, as agent `a` may see its
+/// page; `None` when nothing was `delivered` and the session has no page.
+async fn where_to_ask(
+    s: &AppState,
+    a: &clax_http::agent::Agent<FeedbackPoll>,
+    sid: &str,
+    delivered: bool,
+) -> Result<Option<clax_core::surface::Suggestion>, ApiError> {
+    let page = clax_http::surface::page(s, a, sid).await?;
+    if !delivered && page.is_none() {
+        return Ok(None);
+    }
+    let (st1, sid1) = (s.clone(), sid.to_string());
+    Ok(Some(
+        s.store_call(move |st| clax_http::surface::suggestion(&st1, st, &sid1, page.as_deref()))
+            .await?,
+    ))
 }
 
 /// The response text: the feedback items' text and each placeholder's
@@ -208,6 +269,8 @@ pub struct FeedbackQuery {
     tier: Option<String>,
     artifact: Option<String>,
     resends: Option<bool>,
+    /// The person typed a prompt (Claude Code's prompt hook).
+    prompt: Option<bool>,
 }
 
 /// Returns `{feedback, answers, text, waited_s}` as soon as rows exist for
@@ -221,6 +284,19 @@ pub struct FeedbackQuery {
 /// is always empty. For an agent token's session on a hosted daemon, an
 /// item's clip is named at its keyed address (`clip`), never by reference
 /// ([`link_clips`]).
+///
+/// Where the person is (spec 2026-10-16-ask-where-attention-is-design §1):
+/// `prompt=true` (Claude Code's prompt hook) records a typed prompt first,
+/// withdrawing the session's open hook in-terminal questions; a `stop_hook`
+/// poll of a Codex or Grok session records the turn, which stands for a
+/// prompt when nothing came from Clax since the last
+/// ([`clax_http::surface::note_poll`]). Both are recorded once per poll,
+/// before its first take. A poll that hands anything over, or a
+/// `prompt=true` poll of a session with a page, carries the session's
+/// suggestion as `where_to_ask` and ends `text` with it in one line
+/// ([`clax_core::surface::line`]). A pulled in-terminal question is handed
+/// over as a late answer is, with a block asking the agent to ask it in
+/// Clax ([`pulled_block`]).
 ///
 /// What is handed over is filtered for the session's person (spec
 /// 2026-10-08 §8.4, M16): a comment whose body the person's agents may not
@@ -268,6 +344,7 @@ pub async fn poll(
         Some(t) => Tier::parse(t)
             .ok_or_else(|| ApiError::bad_request("invalid_tier", format!("unknown tier '{t}'")))?,
     };
+    let (prompt, turn_ended) = (q.prompt.unwrap_or(false), tier == Tier::StopHook);
     let artifact = match q.artifact.as_deref() {
         Some(raw) => Some(a.named_artifact(&s, raw).await?.as_str().to_string()),
         None => None,
@@ -326,13 +403,18 @@ pub async fn poll(
         let prior = vis.take();
         let sid = take.session_id.clone();
         let (prior_audit, headers) = (audit.take(), headers.clone());
+        let st0 = s.clone();
         let (view, rights_now, audit_now) = s
             .store_call(move |st| {
                 let audit = match prior_audit {
                     Some(a) => a,
+                    // The poll's first take: what it says of the person is
+                    // recorded once, before anything is taken.
                     None => {
                         live_session(st, &sid)?;
-                        std::sync::Arc::new(clax_http::audit::session_ctx(st, &headers, &sid)?)
+                        let ctx = clax_http::audit::session_ctx(st, &headers, &sid)?;
+                        clax_http::surface::note_poll(&st0, st, &ctx, &sid, prompt, turn_ended)?;
+                        std::sync::Arc::new(ctx)
                     }
                 };
                 let view = view_at(st, &sid, prior, seen)?;
@@ -405,7 +487,26 @@ pub async fn poll(
             || expired
             || Instant::now() >= deadline
         {
+            // Where to ask, beside anything handed over, and on a prompt
+            // to a session with a page. What was taken is handed over even
+            // when the suggestion cannot be read.
+            let delivered = !items.is_empty() || !answers.is_empty();
+            let sugg = if delivered || prompt {
+                where_to_ask(&s, &a, &take.session_id, delivered)
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(error = %e.message, "a poll's where-to-ask not read");
+                        None
+                    })
+            } else {
+                None
+            };
             let text = poll_text(&items, &placeholders, &late);
+            let text = match (text, sugg.as_ref().map(clax_core::surface::line)) {
+                (Some(t), Some(l)) => Some(format!("{t}\n{l}")),
+                (None, Some(l)) => Some(l),
+                (t, None) => t,
+            };
             let text = match (&note, text) {
                 (Some(n), Some(t)) => Some(format!("{n}\n\n{t}")),
                 (Some(n), None) => Some(n.clone()),
@@ -422,6 +523,9 @@ pub async fn poll(
             }
             if let Some(n) = note {
                 out["notes"] = json!([n]);
+            }
+            if let Some(w) = &sugg {
+                out["where_to_ask"] = json!(w);
             }
             return Ok(Json(out));
         }

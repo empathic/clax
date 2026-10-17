@@ -878,7 +878,11 @@ async fn golden_now() -> Value {
 /// `wake` (the watch result's) and `wakes` (a live agent's, in a listing
 /// for anyone but an agent) say how a comment reaches an idle session,
 /// which depends on its harness, not on how many people the install has.
-pub const ADDITIVE_KEYS: [&str; 11] = [
+/// `where_to_ask` (a feedback poll's suggestion of where to ask the
+/// person, spec 2026-10-16-ask-where-attention-is-design §1) and a question
+/// view's `in_terminal`, `pulled` and `thread` are what asking where the
+/// person is added to every install.
+pub const ADDITIVE_KEYS: [&str; 15] = [
     "owner",
     "taken_by",
     "name",
@@ -890,6 +894,10 @@ pub const ADDITIVE_KEYS: [&str; 11] = [
     "linked",
     "wake",
     "wakes",
+    "where_to_ask",
+    "in_terminal",
+    "pulled",
+    "thread",
 ];
 
 /// Whether `v`, the value of item 6's key `key` that the golden lacks, is
@@ -898,7 +906,9 @@ pub const ADDITIVE_KEYS: [&str; 11] = [
 /// the owner's public ID); a thread's `owner` or `taken_by` null or one of
 /// the owner's agents (`person` null); `rights` the owner's, `clax:full`;
 /// an artifact's `may_fork` true (the owner's agents may fork it); an
-/// answer's `linked` null (no remote is linked).
+/// answer's `linked` null (no remote is linked); `where_to_ask` a
+/// suggestion; a question asked before them neither in the terminal nor
+/// pulled, in no thread.
 pub fn solo_value(key: &str, v: &Value, owner: &str) -> bool {
     let owners_agent = |a: &Value| {
         a.is_null()
@@ -919,12 +929,29 @@ pub fn solo_value(key: &str, v: &Value, owner: &str) -> bool {
         "linked" => v.is_null(),
         "wake" => v["when_idle"].is_boolean() && v["do"].is_string(),
         "wakes" => v.is_boolean() || v == "unsure",
+        "where_to_ask" => v["surface"].is_string() && v["why"].is_string(),
+        "in_terminal" | "pulled" => *v == json!(false),
+        "thread" => v.is_null(),
         _ => false,
     }
 }
 
 /// §19 item 7's mark.
 const NOT_CONNECTED: &str = " (not connected)";
+
+/// The start of the where-to-ask line (`clax_core::surface::line`), which
+/// a delivery's text ends with since asking where the person is.
+const WHERE_TO_ASK: &str = "\n[clax] If you ask the person anything now, ask ";
+
+/// `now` without a final where-to-ask line that `committed` lacks.
+fn without_where_to_ask<'a>(committed: &str, now: &'a str) -> &'a str {
+    match now.rfind(WHERE_TO_ASK) {
+        Some(at) if !committed.contains(WHERE_TO_ASK) && !now[at + 1..].contains('\n') => {
+            &now[..at]
+        }
+        _ => now,
+    }
+}
 
 /// The ` (not connected)` marks the fixture's outputs carry, by the name
 /// marked: its two LAN viewers (`Mia`, and the unnamed `Viewer`), and the
@@ -973,9 +1000,11 @@ pub fn compare_with_section_19(committed: &Value, now: &Value, owner: &str) -> S
                     walk(p, q, &format!("{path}[{i}]"), owned, owner, out);
                 }
             }
+            (Value::String(x), Value::String(y)) if without_where_to_ask(x, y) == x => {}
             (Value::String(x), Value::String(y))
-                if x != y && y.replace(NOT_CONNECTED, "") == *x =>
+                if x != y && without_where_to_ask(x, y).replace(NOT_CONNECTED, "") == *x =>
             {
+                let y = without_where_to_ask(x, y);
                 for (at, _) in y.match_indices(NOT_CONNECTED) {
                     let name: String = y[..at]
                         .chars()
@@ -1042,6 +1071,26 @@ fn the_section_19_comparison_counts_marks_per_name_and_flags_the_owners() {
             "/person: not a single owner's: {\"name\":\"Alex\",\"owner\":true,\"public_id\":\"u_sam\"}",
         ]
     );
+}
+
+#[test]
+fn the_section_19_comparison_allows_a_final_where_to_ask_line_only() {
+    let line = "[clax] If you ask the person anything now, ask in Clax (unsure): Why.";
+    let committed = json!({"text": "Mia: \"y\"", "answer": {"id": "q1"}});
+    let now = json!({"text": format!("Mia (not connected): \"y\"\n{line}"),
+        "answer": {"id": "q1", "in_terminal": false, "pulled": false, "thread": null},
+        "where_to_ask": {"surface": "clax", "why": "Why."}});
+    let got = compare_with_section_19(&committed, &now, "u_owner");
+    assert!(got.other.is_empty(), "{:?}", got.other);
+    assert_eq!(
+        got.marks.into_iter().collect::<Vec<_>>(),
+        [("Mia".to_string(), 1)]
+    );
+    // The line anywhere but last, or a question pulled, is a difference.
+    let now = json!({"text": format!("Mia: \"y\"\n{line}\nmore"),
+        "answer": {"id": "q1", "pulled": true}});
+    let got = compare_with_section_19(&committed, &now, "u_owner");
+    assert_eq!(got.other.len(), 2, "{:?}", got.other);
 }
 
 /// The golden check (module docs): the outputs now differ from the

@@ -195,3 +195,37 @@ pub fn where_to_ask_reply(
         "delivered_at": g.kept.delivered_at,
     }}))
 }
+
+/// The harnesses no hook reports a prompt for (Codex, Grok Build): each
+/// Stop with no Clax delivery since the last stands for one.
+pub const INFERRED: [&str; 2] = ["codex", "grok"];
+
+/// Records what a feedback poll of live session `sid` says of its person:
+/// `prompt`, they typed to it (Claude Code's prompt hook), which withdraws
+/// its open hook in-terminal questions under `ctx` and announces each;
+/// `turn_ended`, a Stop hook ended its turn, which for a harness in
+/// [`INFERRED`] stands for a prompt when nothing came from Clax since the
+/// last turn ([`Store::note_turn`]).
+///
+/// # Errors
+/// The store's.
+pub fn note_poll(
+    s: &AppState,
+    st: &Store,
+    ctx: &clax_core::audit::AuditCtx,
+    sid: &str,
+    prompt: bool,
+    turn_ended: bool,
+) -> clax_core::Result<()> {
+    if prompt {
+        let lapsed = st.note_terminal(ctx, sid)?;
+        crate::views::question::announce_ids(s, st, &lapsed);
+    } else if turn_ended
+        && st
+            .get_session(sid)?
+            .is_some_and(|x| INFERRED.contains(&x.harness.as_str()))
+    {
+        st.note_turn(sid)?;
+    }
+    Ok(())
+}
