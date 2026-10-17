@@ -547,10 +547,22 @@ impl Wakes {
         }
     }
 
-    /// [`Wakes::of`] for `caller`'s views: none for an agent, whose
-    /// outputs stay as they were (the page is what shows `wakes`).
+    /// [`Wakes::of`] for `caller`'s views: every agent's for the owner,
+    /// a connected person's own agents' for that person, and none for
+    /// anyone else (an agent, whose outputs stay as they were; a LAN
+    /// viewer or a guest, who need not see whether another person's agent
+    /// runs a follower).
     pub fn for_caller(s: &AppState, caller: &clax_http::auth::Caller) -> Option<Wakes> {
-        (!caller.is_agent()).then(|| Wakes::of(s))
+        use clax_http::auth::Caller;
+        let audience = match caller {
+            Caller::Owner { .. } => Audience::All,
+            Caller::Person { viewer } => Audience::Person(viewer.public_id.clone()),
+            _ => return None,
+        };
+        Some(Wakes {
+            audience,
+            ..Wakes::of(s)
+        })
     }
 
     /// These `wakes` for a delivery viewer: every agent's for the owner, a

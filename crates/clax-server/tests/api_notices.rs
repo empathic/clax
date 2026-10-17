@@ -293,6 +293,24 @@ async fn a_follower_poll_marks_its_agent_woken_on_the_page() {
         page.contains("\"wakes\":false"),
         "the owner's first load names it"
     );
+    // A browser that is neither the owner nor the agent's person is not told.
+    let anon = ts.get(&format!("/a/{aid}")).await.text().await.unwrap();
+    assert!(
+        !anon.contains("\"wakes\""),
+        "a LAN viewer's first load names none"
+    );
+    let lan: Value = ts
+        .get(&format!("/api/artifacts/{aid}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        lan["artifact"]["participants"]["agents"][0]
+            .get("wakes")
+            .is_none(),
+        "{lan}"
+    );
     let req = ts.authed(
         ts.client
             .get(format!("{}/api/sessions/{sid}/notices?wait=30", ts.base)),
