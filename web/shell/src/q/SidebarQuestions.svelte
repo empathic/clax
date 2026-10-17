@@ -17,7 +17,9 @@
   const feed = $derived(p.feed ?? shared().questions);
   const all = $derived(feed.byArtifact(p.aid));
   const cards = $derived(all.filter(q => !inThread(q)));
-  const threaded = $derived(all.filter(q => inThread(q) && q.status === "open"));
+  // A thread's question keeps its link while its card says what closed it,
+  // so the block does not shrink above the card being answered.
+  const threaded = $derived(all.filter(q => inThread(q)));
   const open = $derived(all.filter(q => q.status === "open").length);
   const shown = $derived(cards.length + threaded.length);
   $effect(() => { if (threaded.length) void need(); });

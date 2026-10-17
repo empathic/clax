@@ -14,6 +14,8 @@ describe("TerminalCard", () => {
     const onPull = vi.fn(async () => {});
     const m = mount(TerminalCard, { q: view({ in_terminal: true, source: "hook" }), onPull });
     expect(m.root.querySelector(".asker")!.textContent).toBe("claude is asking you in the terminal");
+    // Who asks and where wrap together; the time is the head's own, so it keeps the first line.
+    expect([...m.root.querySelector(".qhead")!.children].map(c => c.className || c.localName)).toEqual(["asking", "time"]);
     expect([...m.root.querySelectorAll(".hdrs li")].map(l => l.textContent)).toEqual(["Layout", "Sidebars", "Notes"]);
     expect(m.root.querySelector("input, textarea")).toBeNull();
     expect(m.root.querySelector(".esc")!.textContent).toContain("press Esc");

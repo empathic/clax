@@ -49,9 +49,9 @@
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <article class="qcard in-terminal" data-question={p.q.id} data-closed={open ? undefined : ""} aria-label={who} tabindex="-1">
   <header class="qhead">
-    <strong class="asker">{who}</strong>
+    <span class="asking"><strong class="asker">{who}</strong>
     {#if p.q.agent?.project}<span class="proj">in {p.q.agent.project}</span>{/if}
-    {#if about}<a class="about" href={about.href}>{about.text}</a>{/if}
+    {#if about}<a class="about" href={about.href}>{about.text}</a>{/if}</span>
     <time datetime={p.q.created_at}>{relativeTime(p.q.created_at, p.now ?? new Date())}</time>
   </header>
   <ul class="hdrs" aria-label="Questions">{#each p.q.questions as s (s.question)}<li title={s.header}>{cutHeader(s.header)}</li>{/each}</ul>
@@ -73,11 +73,13 @@
     .qcard.in-terminal[data-closed] { border-left-color: var(--border-strong); }
     .qcard.in-terminal:focus { outline: none; }
     .qcard.in-terminal:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-    .qcard.in-terminal .qhead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; font-size: 12.5px; color: var(--muted); margin-bottom: 8px; min-width: 0; }
+    /* The time keeps the head's first line; who asks, and where, wrap beside it. */
+    .qcard.in-terminal .qhead { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; color: var(--muted); margin-bottom: 8px; min-width: 0; }
+    .qcard.in-terminal .asking { display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; }
     .qcard.in-terminal .asker { font: 600 13px/20px var(--font); color: var(--agent-ink); overflow-wrap: anywhere; }
     .qcard.in-terminal .about { color: var(--fg); text-decoration: underline; text-decoration-color: var(--border-hover); text-underline-offset: 2px; }
     .qcard.in-terminal .about:hover { text-decoration-color: currentColor; }
-    .qcard.in-terminal time { margin-left: auto; white-space: nowrap; }
+    .qcard.in-terminal time { flex: none; margin-left: auto; white-space: nowrap; }
     .qcard.in-terminal .hdrs { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; padding: 0; list-style: none; }
     .qcard.in-terminal .hdrs li { padding: 2px 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); font: 500 12px/16px var(--font); color: var(--muted); white-space: nowrap; }
     .qcard.in-terminal .esc { margin: 0 0 8px; }

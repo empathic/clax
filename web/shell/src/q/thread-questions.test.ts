@@ -37,6 +37,19 @@ describe("questions in threads and in the terminal", () => {
     m.unmount();
   });
 
+  it("keeps a thread question's link while its card says what closed it, so the block keeps its height", async () => {
+    const q = view({ id: "QT", thread: { id: "t1", open: true } });
+    const feed = await feedOf([q]);
+    const m = mount(SidebarQuestions, { aid: AID, feed });
+    await vi.waitFor(() => { flush(); expect(m.root.querySelector("a.q-thread")).not.toBeNull(); });
+    feed.upsert({ ...q, status: "answered", closed_at: "2026-10-07T09:10:00.000Z" });
+    flush();
+    expect(m.root.querySelector("a.q-thread")).not.toBeNull();
+    expect(m.root.querySelector<HTMLElement>(".side-q")!.hidden).toBe(false);
+    expect(m.root.querySelector(".side-q .c")!.textContent).toBe("0");
+    m.unmount();
+  });
+
   it("shows an in-terminal question as a terminal card, whose Ask me here posts the pull", async () => {
     const t = view({ id: "QN", in_terminal: true, source: "hook" });
     const feed = await feedOf([t]);
