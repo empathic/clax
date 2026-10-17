@@ -647,12 +647,7 @@ class AgentLoop {
       // What the draft holds beyond what is live now: the run's base, or
       // the part a cap stop published.
       final from = ran.finish.capPublished?.files ?? base;
-      final edits = <String, String?>{
-        for (final e in d.files.entries)
-          if (from[e.key] != e.value) e.key: e.value,
-        for (final p in from.keys)
-          if (!d.files.containsKey(p)) p: null,
-      };
+      final edits = keptEdits(d.files, from);
       final title = d.title != ran.state.ctx.title ? d.title : null;
       final caps =
           jsonEncode(d.capabilities) != jsonEncode(ran.state.ctx.capabilities)
@@ -979,6 +974,8 @@ class AgentLoop {
         cancelled: scope.future,
         clock: _clock,
         changeSpentUsd: spentBefore,
+        changeStops: kept?.stops ?? 0,
+        changeNotes: kept?.notes ?? const [],
       ),
       RunCaps(
         turns: caps.turns,
@@ -1188,6 +1185,7 @@ class AgentLoop {
       budget: RunBudget(caps, model, _clock),
       progress: sink,
       readConsent: _readConsent,
+      narrations: narrations,
     );
     var byTool = false;
     void ended() => byTool = byTool || state.ended;

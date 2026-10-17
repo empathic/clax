@@ -85,7 +85,11 @@ void main() {
       expect(
         reply,
         "Couldn't make that change: it was too big for one go — it needed "
-        'more than 10 steps. $keepGoingHint',
+        'more than 10 steps. $keepGoingHint\n\n'
+        'Stopped once · \$0.00 of \$6 used\n'
+        'Changed so far: index.html (+1 −1)\n\n'
+        "The agent's latest notes:\n"
+        '- Renaming the button',
       );
       expect(isFailureText(reply), isTrue);
       expect(offersKeepGoing((out as ChangeFailed).reason), isTrue);
@@ -117,7 +121,9 @@ void main() {
       bodies(item.threadId).last,
       "Couldn't make that change: it was too big for one go — it needed "
       'more than 10 steps. $keepGoingHint\n\n'
-      'The agent said: I ran out of room in this run',
+      'Stopped once · \$0.00 of \$6 used\n\n'
+      "The agent's latest notes:\n"
+      '- I ran out of room in this run',
     );
     expect((await unfinished.get(item.threadId))!.notes, [
       'I ran out of room in this run',
@@ -177,7 +183,11 @@ void main() {
     expect(
       bodies(item.threadId).last,
       'This change was too big for one go — it needed more than 10 steps — '
-      'so this version has only part of it. $keepGoingHint',
+      'so this version has only part of it. $keepGoingHint\n\n'
+      'Stopped once · \$0.00 of \$6 used\n'
+      'Changed so far: index.html (+1 −1)\n\n'
+      "The agent's latest notes:\n"
+      '- Renaming the button',
     );
     final kept = (await unfinished.get(item.threadId))!;
     expect(
@@ -356,6 +366,48 @@ void main() {
       runner.states[2].draft.files['index.html'],
       contains('<button class="red">Keep'),
     );
+  });
+
+  test('a second stop says how often the change stopped, what its runs '
+      'cost, the files its draft changed and the latest notes of both '
+      'runs', () async {
+    final item = api.sendComment(aid, 'Rename and recolour', queue: false);
+    await unfinished.put(
+      UnfinishedChange(
+        artifactId: aid,
+        threadIds: [item.threadId],
+        commentIds: [item.commentId],
+        limit: '10 turns',
+        spentUsd: 1.25,
+        at: clock.now(),
+        notes: const ['Reading the page', 'Renaming the button'],
+        edits: {'index.html': page.replaceFirst('Save', 'Keep')},
+        before: {'index.html': fingerprint(page)},
+      ),
+    );
+    await loopWith([
+      [
+        const ScriptedCall('write_file', {
+          'path': 'app.js',
+          'content': 'let a = 1;\nlet b = 2;\n',
+        }, 'Adding the colour script'),
+        for (var i = 0; i < 10; i++) const ScriptedCall('list_files', {}),
+      ],
+    ]).change(aid, [item], session: sid, keepGoing: true);
+    final reply = bodies(item.threadId).last;
+    expect(reply, startsWith("Couldn't make that change: it was too big"));
+    expect(
+      reply,
+      endsWith(
+        '\n\nStopped twice · \$1.25 of \$6 used\n'
+        'Changed so far: app.js (+2), index.html (+1 −1)\n\n'
+        "The agent's latest notes:\n"
+        '- Reading the page\n'
+        '- Renaming the button\n'
+        '- Adding the colour script',
+      ),
+    );
+    expect((await unfinished.get(item.threadId))!.stops, 2);
   });
 
   test('the notes kept for Keep going are bounded, the newest kept', () async {
