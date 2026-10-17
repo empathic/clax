@@ -21,8 +21,10 @@ export type QuestionSpec = {
   other?: boolean;
 };
 
-/** `POST /api/sessions/<sid>/questions` → `{question, mode, …}`. */
-export async function ask(base: string, token: string, sid: string, body: { source: "ask" | "hook"; artifact_id?: string; questions: QuestionSpec[] }) {
+/** `POST /api/sessions/<sid>/questions` → `{question, mode, …}`: about
+ * `artifact_id`, in its thread `thread_id`, or asked in the terminal
+ * (`in_terminal`). */
+export async function ask(base: string, token: string, sid: string, body: { source: "ask" | "hook"; artifact_id?: string; thread_id?: string; in_terminal?: boolean; questions: QuestionSpec[] }) {
   const questions = body.questions.map(q => ({ multi_select: false, other: false, options: [], ...q }));
   return api(base, token, `/api/sessions/${sid}/questions`, { method: "POST", body: JSON.stringify({ ...body, questions }) }) as Promise<{ question: QuestionView; mode: string }>;
 }
@@ -39,11 +41,11 @@ export function ownerCookie(base: string, token: string): string {
   return `clax_owner_${port}=${value}`;
 }
 
-/** A thread the owner opens on `aid` v1 (on its `h2`) and sends to the agent; returns its ID. */
-export async function threadAsOwner(base: string, token: string, aid: string, body: string): Promise<string> {
+/** A thread the owner opens on `aid` v1 (on the `h2` of its page `file`) and sends to the agent; returns its ID. */
+export async function threadAsOwner(base: string, token: string, aid: string, body: string, file = "index.html"): Promise<string> {
   const headers = { cookie: ownerCookie(base, token), origin: base };
   const form = new FormData();
-  form.set("anchor", JSON.stringify({ kind: "element", selector: "body > main > h2", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" }));
+  form.set("anchor", JSON.stringify({ kind: "element", selector: "body > main > h2", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file }));
   form.set("body", body);
   form.set("version", "1");
   const res = await fetch(`${base}/api/artifacts/${aid}/threads`, { method: "POST", body: form, headers });
