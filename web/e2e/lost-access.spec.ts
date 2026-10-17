@@ -71,9 +71,16 @@ test("the owner and the agent's person read a wait beside the lost access; the a
       if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     }, aid);
 
+    // The agent's take tells it of the withheld comment, which then waits
+    // for Sam's approval: a row no take told of before the narrowing reads
+    // only "held: the agent no longer has access".
+    const waiting = (p: Page) => p.locator(".thread-card").filter({ hasText: "widen the goals" }).locator(".waiting");
+    expect(hook("prompt", "UserPromptSubmit").status).toBe(0);
+    await owner.goto(`${d.base}/a/${aid}`);
+    await expect(waiting(owner)).toHaveText("waiting for Sam's approval");
+
     // The owner narrows Sam's rights to another page; the agent's next
     // take tells it it no longer has access.
-    await owner.goto(`${d.base}/a/${aid}`);
     const samId = (await api(d.base, d.token, "/api/people")).people.find((p: { display_name: string }) => p.display_name === "Sam").public_id;
     await from(owner, "PUT", `/api/people/${samId}/rights`, { rights: [
       { type: "clax-artifacts", actions: ["read"], locations: [other] },
@@ -84,7 +91,6 @@ test("the owner and the agent's person read a wait beside the lost access; the a
     expect(told.stdout, told.stderr).toContain("you no longer have access to this page");
     expect(told.stdout).not.toContain("widen the goals");
 
-    const waiting = (p: Page) => p.locator(".thread-card").filter({ hasText: "widen the goals" }).locator(".waiting");
     await owner.reload();
     await expect(waiting(owner)).toHaveText("waiting for Sam's approval · the agent no longer has access");
     const person = await personCtx.newPage();
