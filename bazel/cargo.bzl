@@ -74,6 +74,13 @@ def cargo_package(
         srcs = native.glob(["**/*.rs"], allow_empty = True),
         visibility = ["//visibility:public"],
     )
+
+    # The crate's manifest, for the layering check (//scripts:crate_layers).
+    native.filegroup(
+        name = "manifest",
+        srcs = ["Cargo.toml"],
+        visibility = ["//visibility:public"],
+    )
     features = crate["default_features"]
     lib = crate["lib"]
 

@@ -115,6 +115,8 @@ lane_rust() {
 lane_lint() {
     # No `unsafe` in any Rust source (the `unsafe_code` lint forbids it too).
     run "no unsafe code"        scripts/check-no-unsafe.sh &&
+    # Each crate depends only on the crates above it in the layout.
+    run "crate layers"          scripts/test-check-crate-layers.sh &&
     # No hard links in any source or script; a symbolic link does instead.
     run "no hard links"         bash -c "scripts/test-check-no-hard-links.sh >/dev/null && scripts/check-no-hard-links.sh" &&
     # No pipefail pipeline ends in a reader that stops early (grep -q,
