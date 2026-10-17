@@ -299,8 +299,8 @@ Bazel's files live outside the repository, in three places:
 
 - **The shared compile cache**, `~/.cache/bazel-disk`: every action's
   outputs, for every worktree of this repository and of `../changelist`.
-  Bazel trims it to 80 GB and to entries used in the last 7 days while a
-  server sits idle; the 80 GB bound covers both repositories, whose
+  Bazel trims it to 100 GB and to entries used in the last 7 days while a
+  server sits idle; the 100 GB bound covers both repositories, whose
   `.bazelrc` files state the same bound. Change the two together.
 - **Bazel's user root**, `~/Library/Caches/bazel/_bazel_$USER` on macOS:
   - one output base per worktree, of either repository (its

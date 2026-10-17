@@ -19,7 +19,7 @@ build --incompatible_strict_action_env
 # this machine: one directory, one bound. ../changelist/.bazelrc states the
 # same three lines; change both together (docs/bazel.md, "Disk").
 build --disk_cache=~/.cache/bazel-disk
-build --experimental_disk_cache_gc_max_size=80G
+build --experimental_disk_cache_gc_max_size=100G
 build --experimental_disk_cache_gc_max_age=7d
 
 # The whole machine: Bazel runs as many actions as there are cores (its
