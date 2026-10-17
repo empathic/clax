@@ -92,7 +92,7 @@ fn list(v: Option<String>) -> Option<BTreeSet<String>> {
 /// and viewer ([`crate::db_caller::Subscriber`]: the token from
 /// `Authorization`, `?token=` or the events cookie, and the viewer cookie)
 /// are fixed when the stream opens. A stream opened by a request that may
-/// not see live pages ([`crate::live::sees_live_pages`]) carries no event
+/// not see live pages ([`crate::live_access::sees_live_pages`]) carries no event
 /// of a live page.
 ///
 /// Every event, `ready` included, carries an SSE `id` (`<epoch>-<n>`). A
@@ -117,7 +117,7 @@ pub async fn events(
     // The event stream serves people (spec §7.5): an agent reads through
     // the filtered routes.
     d.refuse_agents()?;
-    let hidden = (!crate::live::sees_live_pages(&headers, &extensions, &s.token))
+    let hidden = (!crate::live_access::sees_live_pages(&headers, &extensions, &s.token))
         .then(|| s.live_ids.clone());
     let who = who.or_events_cookie();
     // Resolved when the stream opens: a name set later takes effect on reconnect.

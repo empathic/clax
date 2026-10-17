@@ -8,8 +8,9 @@
 //! `GET /api/viewers`: other viewers by public ID or name. All refuse
 //! a request with a foreign `Origin` ([`SameOrigin`]).
 
-use super::artifacts::{body, parse_id};
+use super::artifacts::body;
 use crate::error::ApiError;
+use crate::headers::parse_id;
 use crate::identity::Identity;
 use crate::state::AppState;
 use crate::viewer::{SameOrigin, set_cookie};
@@ -202,7 +203,7 @@ pub async fn lookup(
     );
     // The owner's agents read a viewer who is not connected as `<name> (not
     // connected)` (spec 2026-10-08 §9.6).
-    let vf = crate::feedback::VisFor::of(&d.caller(&s).await?, &s);
+    let vf = crate::views::thread::VisFor::of(&d.caller(&s).await?, &s);
     let viewers = s
         .store_call(move |st| {
             vf.build(st)?.mark_viewers(&mut viewers, "id");
@@ -224,7 +225,7 @@ pub async fn seen(
     _d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
-    sees: crate::live::SeesLive,
+    sees: crate::live_access::SeesLive,
     q: Result<Query<SeenQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
@@ -256,7 +257,7 @@ pub async fn set_seen(
     _d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
-    sees: crate::live::SeesLive,
+    sees: crate::live_access::SeesLive,
     req: Result<Json<SeenBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let b = body(req)?;
@@ -303,7 +304,7 @@ pub async fn attention(
     _d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
-    sees: crate::live::SeesLive,
+    sees: crate::live_access::SeesLive,
     q: Result<Query<AttentionQuery>, QueryRejection>,
 ) -> Result<Response, ApiError> {
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
@@ -351,7 +352,7 @@ pub async fn set_looked(
     _d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
-    sees: crate::live::SeesLive,
+    sees: crate::live_access::SeesLive,
     req: Result<Json<LookedBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let b = body(req)?;
@@ -410,7 +411,7 @@ pub async fn set_presence(
     _d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
-    sees: crate::live::SeesLive,
+    sees: crate::live_access::SeesLive,
     req: Result<Json<PresenceBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     use clax_core::presence::State as P;

@@ -212,7 +212,7 @@ fn render(
             v["url"] = json!(format!("/inbox?q={qid}"));
             match st.question(qid)? {
                 Some(q) => {
-                    v["question"] = crate::questions::view(st, &q)?;
+                    v["question"] = crate::views::question::view(st, &q)?;
                     false
                 }
                 None => true,
@@ -236,7 +236,7 @@ fn render(
             v["url"] = json!("/people");
             match st.grant(gid) {
                 Ok(g) => {
-                    v["connection"] = crate::routes::grants::grant_view(&g);
+                    v["connection"] = crate::views::grant::grant_view(&g);
                     false
                 }
                 // A request never decided is purged a day after it lapsed.
@@ -255,7 +255,8 @@ fn render(
             if let Some(t) = &s.thread {
                 v["thread"] = json!({"id": t.id, "summary": t.summary, "status": t.status});
             }
-            match crate::approvals::card(st, rid, i.recipient.as_deref(), i.detail.as_ref())? {
+            match crate::views::approval::card(st, rid, i.recipient.as_deref(), i.detail.as_ref())?
+            {
                 Some(card) => {
                     v["approval"] = card;
                     false

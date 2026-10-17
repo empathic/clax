@@ -13,7 +13,7 @@ use clax_core::audit::ToolOutcome;
 use clax_hooks::events::{self, Daemon};
 use clax_hooks::input::HookInput;
 use clax_mcp::calls::CallScope;
-use clax_server::routes::sessions::{CALL_ID_CAP, CallIdWait};
+use clax_server::call_ids::{CALL_ID_CAP, CallIdWait};
 use serde_json::{Map, Value, json};
 use std::cell::RefCell;
 use std::sync::Arc;

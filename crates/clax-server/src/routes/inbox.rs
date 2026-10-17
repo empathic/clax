@@ -1,21 +1,21 @@
 //! The inbox (spec 2026-10-06-agent-questions-and-inbox §8.1), one per
 //! person (spec 2026-10-08-multi-agent-multi-person §5.3, §18): list and
 //! search items, the unread summary, one item, and read marks, each over
-//! the caller's own items ([`crate::inbox::recipient_of`]): the owner's
+//! the caller's own items ([`crate::views::inbox::recipient_of`]): the owner's
 //! for the owner, a connected person's for their browser. Another
 //! person's item is 404. Every route answers 403 `forbidden` to anyone
 //! else (a LAN viewer, a revoked person), refuses agents, and keeps the
 //! viewer routes' origin rules. The changes the marks make reach clients
-//! through the inbox listener ([`crate::inbox::listen`]); the responses
+//! through the inbox listener ([`crate::views::inbox::listen`]); the responses
 //! carry the unread count after them.
 
 use super::artifacts::{body, path};
 use crate::agent::DeniedToGrants;
 use crate::error::ApiError;
 use crate::identity::Identity;
-use crate::inbox::{recipient_of, view as inbox_view, views as inbox_views};
 use crate::state::AppState;
 use crate::viewer::SameOrigin;
+use crate::views::inbox::{recipient_of, view as inbox_view, views as inbox_views};
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
@@ -350,7 +350,7 @@ pub async fn summary(
                 db.list_questions(me.as_deref(), ListStatus::Open, SUMMARY_QUESTIONS)?;
             let questions = open
                 .iter()
-                .map(|q| crate::questions::view(db, q))
+                .map(|q| crate::views::question::view(db, q))
                 .collect::<clax_core::Result<Vec<_>>>()?;
             let (rows, _) = db.inbox_list(&InboxQuery {
                 recipient: me.clone(),

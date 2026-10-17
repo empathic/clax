@@ -1,11 +1,12 @@
 //! Working routes (spec §6, §10 "Working").
 
-use super::artifacts::{body, parse_id, path};
+use super::artifacts::{body, path};
 use crate::agent::TokenOrAgent;
 use crate::audit::DeferredAudit;
 #[cfg(debug_assertions)]
 use crate::auth::RequireToken;
 use crate::error::ApiError;
+use crate::headers::parse_id;
 use crate::state::AppState;
 use crate::working::settle;
 use axum::Json;
@@ -195,7 +196,7 @@ pub async fn for_session(
 /// `GET /api/working` (token): `{working}`, every live record with its
 /// session and artifact (the working roster), newest `started_at` first.
 /// Live pages are left out for a caller that may not see them
-/// ([`crate::live::sees_live_pages`]); for a person's agent, so is every
+/// ([`crate::live_access::sees_live_pages`]); for a person's agent, so is every
 /// artifact it may not read, and the session of another credential is not
 /// named (spec §6.7). Each message is filtered for an agent channel's
 /// reader.
@@ -205,10 +206,10 @@ pub async fn roster(
     extensions: axum::http::Extensions,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    let local = crate::live::sees_live_pages(&headers, &extensions, &s.token);
+    let local = crate::live_access::sees_live_pages(&headers, &extensions, &s.token);
     let reads = a.read_rights();
     let grant = a.grant().map(str::to_string);
-    let vf = crate::feedback::VisFor::of(&a.caller, &s);
+    let vf = crate::views::thread::VisFor::of(&a.caller, &s);
     let records = s.working.roster();
     let list = s
         .store_call(move |st| {
@@ -251,7 +252,7 @@ pub async fn for_artifact(
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(p)?)?;
     let w = s.working.clone();
-    let vf = crate::feedback::VisFor::of(&a.caller, &s);
+    let vf = crate::views::thread::VisFor::of(&a.caller, &s);
     let list = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;

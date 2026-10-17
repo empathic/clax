@@ -8,6 +8,7 @@ use crate::agent::TokenOrAgent;
 use crate::audit::DeferredAudit;
 use crate::auth::RequireToken;
 use crate::error::ApiError;
+use crate::exports::Exports;
 use crate::identity::Identity;
 use crate::state::AppState;
 use axum::extract::rejection::{JsonRejection, PathRejection};
@@ -16,7 +17,6 @@ use axum::http::StatusCode;
 use clax_core::audit::ToolCallReport;
 use clax_core::toolpath::RenderEnv;
 use clax_core::toolpath::project;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Whether `who` may read the audit history: the owner, by the daemon
@@ -105,34 +105,6 @@ const EXPORT_CHUNK: usize = 64 * 1024;
 
 /// How many chunks wait between an export job and its response body.
 const EXPORT_QUEUE: usize = 4;
-
-/// What bounds the daemon's exports: how many run at once (each holds a
-/// store worker, a reader connection and its snapshot), how long one waits
-/// for its reader to take the next chunk, and how long one may run in all.
-pub struct Exports {
-    permits: Arc<tokio::sync::Semaphore>,
-    /// How long a chunk waits for room before the export gives up on its
-    /// reader.
-    pub stall: Duration,
-    /// How long an export may run before it is ended.
-    pub ceiling: Duration,
-}
-
-impl Exports {
-    /// One export at a time; 60 s for a stalled reader; 15 minutes in all.
-    pub fn new() -> Arc<Exports> {
-        Arc::new(Exports {
-            permits: Arc::new(tokio::sync::Semaphore::new(1)),
-            stall: Duration::from_secs(60),
-            ceiling: Duration::from_secs(15 * 60),
-        })
-    }
-
-    /// The permits, for a test that holds one.
-    pub fn permits(&self) -> Arc<tokio::sync::Semaphore> {
-        self.permits.clone()
-    }
-}
 
 type Chunk = Result<axum::body::Bytes, std::io::Error>;
 
@@ -286,7 +258,7 @@ pub async fn export(
         project::Format::Json => "application/json",
         project::Format::Jsonl => "application/x-ndjson",
     };
-    let permit = s.exports.permits.clone().try_acquire_owned().map_err(|_| {
+    let permit = s.exports.permits().try_acquire_owned().map_err(|_| {
         crate::error::ApiError::new(
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             "export_busy",
@@ -453,11 +425,7 @@ mod tests {
     use std::io::Write;
 
     fn limits(stall: Duration) -> Exports {
-        Exports {
-            permits: Arc::new(tokio::sync::Semaphore::new(1)),
-            stall,
-            ceiling: Duration::from_secs(600),
-        }
+        Exports::with_limits(stall, Duration::from_secs(600))
     }
 
     /// The body of `res`, or the error that ended it.

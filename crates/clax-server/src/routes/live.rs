@@ -6,10 +6,10 @@
 use super::assets::multipart_error;
 use super::threads::{announce_new_thread, mentions_agent, publish_thread};
 use crate::error::ApiError;
-use crate::feedback::{thread_view, thread_views};
 use crate::identity::Identity;
 use crate::state::AppState;
 use crate::viewer::{SameOrigin, author};
+use crate::views::thread::{thread_view, thread_views};
 use axum::Json;
 use axum::extract::multipart::MultipartRejection;
 use axum::extract::rejection::QueryRejection;

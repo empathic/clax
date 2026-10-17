@@ -2,8 +2,14 @@
 
 use crate::agent::{Agent, ArtifactsList, TokenOrAgent, page_marker, person_agent_session};
 use crate::error::ApiError;
-use crate::feedback::VisFor;
+use crate::headers::SESSION_HEADER;
+use crate::headers::parse_id;
 use crate::state::AppState;
+use crate::views::artifact::LivePart;
+use crate::views::artifact::live_part;
+use crate::views::artifact::strip_sessions;
+use crate::views::artifact::with_owner;
+use crate::views::thread::VisFor;
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::rejection::PathRejection;
@@ -14,22 +20,13 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::audit::AuditCtx;
 use clax_core::live::KIND_LIVE;
-use clax_core::model::{Artifact, Session};
+use clax_core::model::Session;
 use clax_core::publish::{PublishRequest, require_title, validate};
 use clax_core::store::live::LivePage;
 use clax_core::{ArtifactId, CoreError, Event, MetaPatch, Participants, Store};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-
-/// Request body cap for the publish routes. A fully base64-encoded 64 MiB
-/// payload is about 85 MiB on the wire, so the cap sits above that;
-/// `validate` still enforces the 64 MiB decoded limit.
-pub const PUBLISH_BODY_LIMIT: usize = 96 * 1024 * 1024;
-
-pub fn parse_id(raw: &str) -> Result<ArtifactId, ApiError> {
-    ArtifactId::parse(raw).map_err(ApiError::from)
-}
 
 /// The JSON body of a route with axum's default body limit; see [`body_within`].
 pub(crate) fn body<T>(r: Result<Json<T>, JsonRejection>) -> Result<T, ApiError> {
@@ -121,13 +118,6 @@ pub(crate) fn path<T>(r: Result<Path<T>, PathRejection>) -> Result<T, ApiError> 
         .map_err(|e| ApiError::bad_request("invalid_path_param", e.body_text()))
 }
 
-/// Header a shell sets when the page itself publishes (`artifact.publish`):
-/// the version event then carries `by_page`.
-pub const VIA_HEADER: &str = "x-clax-via";
-
-/// Header naming the session a publish is attributed to.
-pub const SESSION_HEADER: &str = "x-clax-session";
-
 /// The session named by `X-Clax-Session`, checked to exist, be live, and
 /// be one of the caller's credential's: `grant` (`None` for the daemon
 /// token, M4).
@@ -169,127 +159,6 @@ pub(crate) fn session_header(headers: &HeaderMap) -> Result<Option<String>, ApiE
         .transpose()
 }
 
-/// `a` as JSON with `owner_live` (its owner session exists and has not ended),
-/// `owner_harness` (the owner's harness, when it exists), `owner_name` (its
-/// agent name, when it has one) and `participants`
-/// (people by public ID, agents by handle; see [`Store::participants`]).
-/// A live page (`kind` `live`) also carries `live: {origin, path, page_url,
-/// origins}` from `live`: `origins` are its site's (spec §7.2), the most
-/// recently used first, and `page_url` is the page's path on the first.
-/// `working` is the artifact's working list (spec §10 "Working"), which
-/// never names a session. The
-/// artifact's own `owner_session_id` stays; token-less routes drop it with
-/// [`strip_sessions`].
-pub(crate) fn with_owner(
-    a: &Artifact,
-    owner: Option<&Session>,
-    working: &[clax_core::working::WorkingView],
-    participants: &Participants,
-    live: Option<&LivePart>,
-) -> Value {
-    let mut v = serde_json::to_value(a).expect("serialisable artifact");
-    v["owner_live"] = json!(owner.is_some_and(|o| o.ended_at.is_none()));
-    v["owner_harness"] = json!(owner.map(|o| &o.harness));
-    v["owner_name"] = json!(owner.and_then(|o| o.name.as_ref()));
-    v["working"] = json!(working);
-    v["participants"] = json!(participants);
-    if let Some(LivePart {
-        page: p,
-        origins,
-        merged_into,
-    }) = live
-    {
-        let newest = origins.first().unwrap_or(&p.origin);
-        v["live"] = json!({
-            "origin": p.origin,
-            "path": p.path,
-            "page_url": format!("{newest}{}", p.path),
-            "origins": origins,
-        });
-        if let Some((m, url)) = merged_into {
-            v["live"]["merged_into"] = json!(m);
-            v["live"]["merged_into_url"] = json!(url);
-        }
-    }
-    v
-}
-
-/// A live page with its site's origins, the most recently used first.
-pub(crate) struct LivePart {
-    pub page: LivePage,
-    pub origins: Vec<String>,
-    /// A page a join merged away (spec §7.2): the page it was merged into,
-    /// and that page's URL.
-    pub merged_into: Option<(String, Option<String>)>,
-}
-
-/// The live page `a` is, when it is one.
-pub(crate) fn live_part(st: &Store, a: &Artifact) -> clax_core::Result<Option<LivePart>> {
-    if a.kind != KIND_LIVE {
-        return Ok(None);
-    }
-    let Some(page) = st.live_page_of(&ArtifactId::parse(&a.id)?)? else {
-        let Some((origin, path, into)) = st.merged_live_page(&a.id)? else {
-            return Ok(None);
-        };
-        let page = LivePage {
-            artifact_id: a.id.clone(),
-            origin: origin.clone(),
-            path,
-        };
-        return Ok(Some(LivePart {
-            page,
-            origins: vec![origin],
-            merged_into: match into {
-                Some(i) => {
-                    let url = st
-                        .live_page_of(&ArtifactId::parse(&i)?)?
-                        .map(|p| format!("{}{}", p.origin, p.path));
-                    Some((i, url))
-                }
-                None => None,
-            },
-        }));
-    };
-    let origins = st.joined_site(&page.origin)?.origin_names();
-    Ok(Some(LivePart {
-        page,
-        origins,
-        merged_into: None,
-    }))
-}
-
-/// Leaves out the session IDs a token-less caller must not see (spec §14):
-/// the artifact's `owner_session_id` and each version's `session_id`.
-pub(crate) fn strip_sessions(v: &mut Value) {
-    if let Some(a) = v.get_mut("artifact").and_then(Value::as_object_mut) {
-        a.remove("owner_session_id");
-    }
-    if let Some(x) = v.get_mut("version").and_then(Value::as_object_mut) {
-        x.remove("session_id");
-    }
-    for x in v
-        .get_mut("versions")
-        .and_then(Value::as_array_mut)
-        .into_iter()
-        .flatten()
-    {
-        if let Some(x) = x.as_object_mut() {
-            x.remove("session_id");
-        }
-    }
-    for x in v
-        .get_mut("artifacts")
-        .and_then(Value::as_array_mut)
-        .into_iter()
-        .flatten()
-    {
-        if let Some(x) = x.as_object_mut() {
-            x.remove("owner_session_id");
-        }
-    }
-}
-
 #[derive(Deserialize)]
 pub struct ListQuery {
     artifact: Option<String>,
@@ -299,7 +168,7 @@ pub struct ListQuery {
 /// token, no session ID is included. With `?artifact=<aid>`, that artifact
 /// alone, or none when it is not live (400 for a malformed ID). Live pages
 /// are left out for a caller that may not see them
-/// ([`crate::live::sees_live_pages`]), and for a person's agent every
+/// ([`crate::live_access::sees_live_pages`]), and for a person's agent every
 /// artifact its rights do not let it read, answered as if it did not
 /// exist. An agent channel's fields are filtered for its reader (spec
 /// §8.3, O9).
@@ -311,7 +180,7 @@ pub async fn list(
     q: Result<Query<ListQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
-    let local = crate::live::sees_live_pages(&headers, &extensions, &s.token);
+    let local = crate::live_access::sees_live_pages(&headers, &extensions, &s.token);
     let reads = a.read_rights();
     let vf = VisFor::of(&a.caller, &s);
     let artifacts = match q.artifact.as_deref().map(parse_id).transpose()? {
@@ -579,7 +448,7 @@ pub async fn presence(
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(p)?)?;
     let reg = s.presence.clone();
-    let vf = crate::feedback::VisFor::of(&a.caller, &s);
+    let vf = crate::views::thread::VisFor::of(&a.caller, &s);
     let people = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;

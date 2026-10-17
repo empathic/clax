@@ -1,12 +1,8 @@
 //! Agent questions in the daemon (spec 2026-10-06-agent-questions-and-inbox):
-//! which polls wait on each question, the grace after which a mirrored
-//! (hook) question nobody waits on is withdrawn, the view its person
-//! sees, and announcing changes to that person.
+//! which polls wait on each question, and which hook question's grace is
+//! due. The view its person sees, announcing changes to that person and
+//! starting the grace are `crate::views::question`.
 
-use crate::state::AppState;
-use clax_core::store::questions::{Close, QuestionRow, Source, Status};
-use clax_core::{ArtifactId, CoreError, Event, Store};
-use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
@@ -218,114 +214,6 @@ pub async fn count_until(
     };
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), reached).await;
     count()
-}
-
-/// The owner view of `q` (spec §5.4): never a session ID, PID or working
-/// directory; `project` is the last component of the session's directory;
-/// `artifact` is null for none or a deleted one.
-pub fn view(st: &Store, q: &QuestionRow) -> clax_core::Result<Value> {
-    let agent = st.get_session(&q.session_id)?.map(|s| {
-        json!({
-            "handle": s.agent_handle,
-            "name": s.name,
-            "harness": s.harness,
-            "project": std::path::Path::new(&s.cwd)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(""),
-        })
-    });
-    let artifact = match q.artifact_id.as_deref().map(ArtifactId::parse) {
-        Some(Ok(id)) => st
-            .get_artifact(&id)?
-            .map(|a| json!({"id": a.id, "title": a.title, "kind": a.kind})),
-        _ => None,
-    };
-    Ok(json!({
-        "id": q.id,
-        "agent": agent,
-        "artifact": artifact,
-        "source": q.source,
-        "status": q.status.as_str(),
-        "questions": q.questions,
-        "answers": q.answers,
-        "answered_via": q.answered_via,
-        "created_at": q.created_at,
-        "closed_at": q.closed_at,
-    }))
-}
-
-/// Publishes `view` (the view of `q`) as a `question` event to the
-/// `questions` topic of the person whose agent asked it (read from `st`)
-/// and wakes the polls of `q`; an answered or declined `ask` question also
-/// wakes its session's feedback polls, which carry late answers (spec
-/// §6.4).
-pub fn announce(s: &AppState, st: &Store, q: &QuestionRow, view: Value) {
-    match st.question_recipient(q) {
-        Ok(recipient) => s.events.publish(Event::Question {
-            question: view,
-            recipient,
-        }),
-        Err(e) => tracing::warn!(error = %e, "a question's change not announced"),
-    }
-    s.questions.wake(&q.id);
-    if q.source == Source::Ask && matches!(q.status, Status::Answered | Status::Declined) {
-        s.feedback_waiters.wake(std::iter::once(&q.session_id));
-    }
-}
-
-/// Announces each of `ids` as it now is (the questions an ended session
-/// withdrew). Runs on a store thread.
-pub fn announce_ids(s: &AppState, st: &Store, ids: &[String]) {
-    for id in ids {
-        let r = st
-            .question(id)
-            .and_then(|q| q.map(|q| view(st, &q).map(|v| (q, v))).transpose());
-        match r {
-            Ok(Some((q, v))) => announce(s, st, &q, v),
-            Ok(None) => {}
-            Err(e) => tracing::warn!(error = %e, "could not announce a withdrawn question"),
-        }
-    }
-}
-
-/// Starts the grace for hook question `qid`: after `s.question_grace`, if
-/// no poll has held it and no later grace has started meanwhile, an open
-/// `qid` is withdrawn and announced, recording `question.withdraw` (reason
-/// `unwaited`) as `system:daemon`. The grace thus runs from the last time a
-/// poll let go (or from creation, when none has held it).
-pub fn start_grace(s: AppState, qid: String) {
-    let generation = s.questions.arm(&qid);
-    tokio::spawn(async move {
-        s.question_sleeper.sleep(s.question_grace).await;
-        if !s.questions.due(&qid, generation) {
-            return;
-        }
-        let st = s.clone();
-        let r = s
-            .store
-            .call(move |db| {
-                let q =
-                    db.close_question(&clax_core::audit::AuditCtx::DAEMON, &qid, Close::Unwaited)?;
-                let v = view(db, &q)?;
-                announce(&st, db, &q, v);
-                Ok(())
-            })
-            .await;
-        match r {
-            Ok(())
-            | Err(CoreError::Invalid {
-                code: "question_closed",
-                ..
-            }) => {}
-            Err(e) => tracing::warn!(error = %e, "could not withdraw an unwaited question"),
-        }
-    });
-}
-
-/// [`start_grace`] for `qid`, to run when its last poll lets go.
-pub fn arm_grace(s: AppState, qid: String) -> OnLast {
-    Box::new(move || start_grace(s, qid))
 }
 
 #[cfg(test)]

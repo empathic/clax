@@ -4,9 +4,9 @@
 //! markers the shell build keeps; no template engine.
 
 use crate::error::ApiError;
-use crate::routes::artifacts::with_owner;
 use crate::shell_route::ShellRoute;
 use crate::state::AppState;
+use crate::views::artifact::with_owner;
 use axum::http::{HeaderMap, header};
 use serde_json::{Value, json};
 
@@ -149,7 +149,7 @@ fn frame_origin(headers: &HeaderMap, id: &str) -> Option<Option<String>> {
 /// the bootstrap holds nothing that names a session.
 fn without_sessions(artifact: Value, versions: Value) -> Value {
     let mut v = json!({"artifact": artifact, "versions": versions});
-    crate::routes::artifacts::strip_sessions(&mut v);
+    crate::views::artifact::strip_sessions(&mut v);
     v
 }
 
@@ -199,7 +199,7 @@ pub async fn assemble(
             let mut cursor: Option<String> = None;
             loop {
                 let (page, next) = st.list_threads(&lookup, true, cursor.as_deref(), 200)?;
-                threads.extend(crate::feedback::thread_views_as(
+                threads.extend(crate::views::thread::thread_views_as(
                     st, &page, codex, false, &reads,
                 )?);
                 match next {
@@ -216,7 +216,7 @@ pub async fn assemble(
                 owner.as_ref(),
                 &working,
                 &st.participants(&lookup)?,
-                crate::routes::artifacts::live_part(st, &a)?.as_ref(),
+                crate::views::artifact::live_part(st, &a)?.as_ref(),
             );
             Ok(Some((a, artifact, versions, threads, viewer, attention)))
         })

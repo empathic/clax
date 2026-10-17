@@ -1,22 +1,27 @@
 //! HTTP server for Clax: REST API, content serving, SSE, embedded UI.
 
 pub mod agent;
-pub mod approvals;
 pub mod audit;
 pub mod auth;
 pub mod blocking;
 pub mod boot;
+pub mod call_ids;
+pub mod conn;
 pub mod daemon;
 pub mod db_caller;
 pub mod error;
+pub mod exports;
 pub mod extension;
 pub mod feedback;
 pub mod grant_auth;
+pub mod headers;
 pub mod host;
 pub mod http_cache;
 pub mod identity;
-pub mod inbox;
+pub mod limits;
 pub mod live;
+pub mod live_access;
+pub mod perf;
 pub mod presence;
 pub mod push;
 pub mod questions;
@@ -29,6 +34,7 @@ pub mod stream;
 #[cfg(feature = "test-support")]
 pub mod testing;
 pub mod viewer;
+pub mod views;
 pub mod working;
 pub mod wrap_cache;
 
