@@ -10,6 +10,7 @@ import '../edit_result.dart' show DbOp, maxDbOps;
 import '../failure.dart';
 import '../ledger.dart';
 import '../request.dart';
+import '../unfinished.dart' show changedFiles, keptEdits;
 import 'draft.dart';
 import 'render_tool.dart';
 import 'tool_spec.dart';
@@ -283,7 +284,11 @@ class FinishTool implements Tool {
         await _fail(
           s,
           limitFailureReason(cap, leftUsd: left),
-          reply: limitFailureReply(cap, leftUsd: left),
+          reply: limitFailureReply(
+            cap,
+            leftUsd: left,
+            progress: limitProgress(s, from: _baseFiles!),
+          ),
           limit: cap,
         ),
       );
@@ -295,6 +300,7 @@ class FinishTool implements Tool {
             cap,
             leftUsd: changeCapUsd - spent - s.budget.costUsd,
             checksFailed: checksFailed,
+            progress: limitProgress(s, from: clean.files),
           )
         : checksFailed
         ? '${stoppedEarlyReply(narration, cap)} Some of its checks failed.'
@@ -776,13 +782,33 @@ class GiveUpTool implements Tool {
             _log,
             s,
             limitFailureReason(limit, leftUsd: left),
-            reply: limitFailureReply(limit, leftUsd: left, agentSaid: reason),
+            reply: limitFailureReply(
+              limit,
+              leftUsd: left,
+              progress: limitProgress(s, from: s.ctx.files, reason: reason),
+            ),
             limit: limit,
           );
     s.outcome ??= e.outcome;
     return ToolOk({'replied': e.replied});
   }
 }
+
+/// How far the change of [s] has got as its run stops at a limit: this
+/// stop counted with the earlier ones, the cost of every run, the notes of
+/// every run (this one's ending with the give_up [reason], when given)
+/// and the files its draft changes beyond [from], what a Keep going goes
+/// on from.
+LimitProgress limitProgress(
+  RunState s, {
+  required Map<String, String> from,
+  String? reason,
+}) => LimitProgress(
+  stops: s.ctx.changeStops + 1,
+  spentUsd: (s.ctx.changeSpentUsd ?? 0) + s.budget.costUsd,
+  notes: [...s.ctx.changeNotes, ...s.narrations, ?reason],
+  changed: changedFiles(keptEdits(s.draft.files, from), from),
+);
 
 /// Replies "Couldn't make that change: [reason]" (or [reply], when given)
 /// on [s]'s threads (none for a new app), ends the run and gives up, at

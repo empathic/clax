@@ -79,6 +79,8 @@ class RunContext {
     this.cancelled,
     required this.clock,
     this.changeSpentUsd,
+    this.changeStops = 0,
+    this.changeNotes = const [],
   });
 
   final RequestKind kind;
@@ -117,6 +119,12 @@ class RunContext {
   /// ([limitFailureReply], [limitLandedReply]). Null for a new app or a
   /// build's continue run, which reply as before.
   final double? changeSpentUsd;
+
+  /// For a change: how many of its earlier runs stopped at a limit.
+  final int changeStops;
+
+  /// For a change: the agent's notes over its earlier runs, oldest first.
+  final List<String> changeNotes;
 }
 
 /// How a run ended.
@@ -185,9 +193,14 @@ class RunState {
     required this.budget,
     this.progress,
     this.readConsent,
-  });
+    List<String>? narrations,
+  }) : narrations = narrations ?? [];
 
   final RunContext ctx;
+
+  /// What the agent narrated this run, in order (each [Narration] the
+  /// runner sent to [progress]).
+  final List<String> narrations;
   final Draft draft;
   final RunBudget budget;
   final ProgressSink? progress;

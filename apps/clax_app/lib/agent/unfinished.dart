@@ -5,6 +5,9 @@ library;
 import 'dart:convert';
 import 'dart:io';
 
+import 'failure.dart' show FileChange;
+import 'line_diff.dart';
+
 /// How long an unfinished change is kept: after it, its draft, notes and
 /// cost are forgotten. Until then its draft is kept for Keep going as long
 /// as the app still holds what its edits were made on
@@ -14,6 +17,28 @@ const unfinishedKeepAge = Duration(hours: 24);
 /// At most this many of the agent's notes are kept for a change across
 /// its Keep going runs: the newest.
 const maxUnfinishedNotes = 60;
+
+/// What [draft] holds beyond [from]: each path whose text differs, to the
+/// draft's text, and each path of [from] the draft lacks, to null.
+Map<String, String?> keptEdits(
+  Map<String, String> draft,
+  Map<String, String> from,
+) => {
+  for (final e in draft.entries)
+    if (from[e.key] != e.value) e.key: e.value,
+  for (final p in from.keys)
+    if (!draft.containsKey(p)) p: null,
+};
+
+/// The files [edits] change over [from], by path, with their line counts.
+List<FileChange> changedFiles(
+  Map<String, String?> edits,
+  Map<String, String> from,
+) => [
+  for (final p in edits.keys.toList()..sort())
+    if (lineChanges(from[p], edits[p]) case (:final added, :final removed))
+      (path: p, added: added, removed: removed),
+];
 
 /// A short fingerprint of a file's text (FNV-1a over its UTF-8 bytes, with
 /// its length), or null for no file: what [UnfinishedChange.before] keeps

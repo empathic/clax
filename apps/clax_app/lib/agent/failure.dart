@@ -92,16 +92,94 @@ String keepGoingLine(double leftUsd) {
   return keepGoingHint;
 }
 
+/// One file a stopped change's kept draft changed, with the lines it
+/// added and removed.
+typedef FileChange = ({String path, int added, int removed});
+
+/// At most this many files are named in a limit stop's reply.
+const maxReplyFiles = 5;
+
+/// At most this many of the agent's notes are quoted in a limit stop's
+/// reply: the latest.
+const maxReplyNotes = 3;
+
+/// How far a change that stopped at a limit has got, as its reply says:
+/// how many of its runs stopped ([stops], this one included), what they
+/// cost together ([spentUsd] of [changeCapUsd]), the agent's notes over
+/// those runs, oldest first, and the files its kept draft changed.
+class LimitProgress {
+  const LimitProgress({
+    required this.stops,
+    required this.spentUsd,
+    this.notes = const [],
+    this.changed = const [],
+  });
+
+  final int stops;
+  final double spentUsd;
+  final List<String> notes;
+  final List<FileChange> changed;
+}
+
+/// The paragraphs [p] adds to a limit stop's reply: "Stopped twice ·
+/// $2.10 of $6 used", then "Changed so far: index.html (+42 −10),
+/// app.js (+8)" (at most [maxReplyFiles] files, then "and N more"; left
+/// out when the draft holds no change), then the latest [maxReplyNotes]
+/// notes, one per line, a note repeated in a row quoted once.
+String limitProgressText(LimitProgress p) {
+  final b = StringBuffer(
+    '\n\nStopped ${timesWords(p.stops)} · '
+    '\$${p.spentUsd.toStringAsFixed(2)} of '
+    '\$${changeCapUsd.toStringAsFixed(0)} used',
+  );
+  if (p.changed.isNotEmpty) {
+    String counts(FileChange f) => [
+      if (f.added > 0) '+${f.added}',
+      if (f.removed > 0) '−${f.removed}',
+    ].join(' ');
+    final shown = [
+      for (final f in p.changed.take(maxReplyFiles))
+        switch (counts(f)) {
+          '' => f.path,
+          final c => '${f.path} ($c)',
+        },
+    ];
+    final more = p.changed.length - shown.length;
+    b.write(
+      '\nChanged so far: ${shown.join(', ')}'
+      '${more > 0 ? ', and $more more' : ''}',
+    );
+  }
+  // A note the agent repeated turn after turn is quoted once.
+  final notes = <String>[];
+  for (final n in p.notes.map((n) => n.trim())) {
+    if (n.isNotEmpty && (notes.isEmpty || notes.last != n)) notes.add(n);
+  }
+  if (notes.isNotEmpty) {
+    final latest = notes.length <= maxReplyNotes
+        ? notes
+        : notes.sublist(notes.length - maxReplyNotes);
+    b.write('\n\nThe agent\'s latest notes:');
+    for (final n in latest) {
+      b.write('\n- $n');
+    }
+  }
+  return b.toString();
+}
+
 /// The reply of a change that stopped at the limit [cap] with nothing
 /// published: a [failureReply] in Clax's words naming the limit, then
-/// [keepGoingLine], then the agent's own words ([agentSaid]) as detail.
+/// [keepGoingLine]; then, with [progress], how far it has got
+/// ([limitProgressText]), else the agent's own words ([agentSaid]) as
+/// detail.
 String limitFailureReply(
   String cap, {
   required double leftUsd,
   String? agentSaid,
+  LimitProgress? progress,
 }) =>
     '${failureReply(limitFailureReason(cap, leftUsd: leftUsd))}'
-    '${_agentSaid(agentSaid)}';
+    '${progress != null ? limitProgressText(progress) : _agentSaid(agentSaid)}';
 
 /// The reason of a limit stop that published nothing, without the
 /// failure prefix: what the Working chip shows.
@@ -111,18 +189,21 @@ String limitFailureReason(String cap, {required double leftUsd}) =>
 
 /// The reply of a change that stopped at the limit [cap] and published
 /// the part that worked: Clax's sentence naming the limit,
-/// [keepGoingLine], then the agent's own words ([agentSaid]).
+/// [keepGoingLine]; then, with [progress], how far it has got
+/// ([limitProgressText]), else the agent's own words ([agentSaid]).
 /// [checksFailed]: the published render had failing tests.
 String limitLandedReply(
   String cap, {
   required double leftUsd,
   String? agentSaid,
   bool checksFailed = false,
+  LimitProgress? progress,
 }) =>
     'This change was too big for one go — it needed ${limitWords(cap)} — '
     'so this version has only part of it.'
     '${checksFailed ? ' Some of its checks failed.' : ''} '
-    '${keepGoingLine(leftUsd)}${_agentSaid(agentSaid)}';
+    '${keepGoingLine(leftUsd)}'
+    '${progress != null ? limitProgressText(progress) : _agentSaid(agentSaid)}';
 
 String _agentSaid(String? words) {
   final w = (words ?? '').trim();
