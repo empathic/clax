@@ -170,11 +170,13 @@ filegroup(
     visibility = ["//crates:__subpackages__"],
 )
 
-# What the unit tests read outside web/.
+# What the unit tests and the typecheck read outside web/ (the browser
+# tests of the hosted demo import demo/lib).
 UNIT_DATA = [
     ":files",
     ":node_modules",
     "//crates/clax-core:toolpath_vectors_bin",
+    "//demo:files",
 ]
 
 # pnpm run lint, typecheck and test.
@@ -223,6 +225,7 @@ E2E_DATA = [
     ":node_modules",
     "//crates/clax-cli:clax",
     "//crates/clax-cli:clax_warm",
+    "//demo:files",
     "@chromium//:browsers",
 ]
 

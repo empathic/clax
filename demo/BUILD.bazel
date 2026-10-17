@@ -1,0 +1,16 @@
+load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
+
+# The hosted demo's files, in bazel-bin, for the web UI's typecheck and
+# browser tests, which import demo/lib (web/e2e/hosted-demo.spec.ts,
+# web/e2e/hosted-demo-worker.spec.ts).
+copy_to_bin(
+    name = "files",
+    srcs = glob(
+        ["**"],
+        exclude = [
+            "**/.qual",
+            "BUILD.bazel",
+        ],
+    ),
+    visibility = ["//web:__pkg__"],
+)
