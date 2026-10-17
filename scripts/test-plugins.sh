@@ -417,7 +417,7 @@ same_section "Comment loop" "${skill_copies[@]}"
 # Every skill gives the where-to-ask rule, word for word.
 for f in "${skill_copies[@]}"; do
     if [ -n "$(section "$f" "Where to ask")" ]; then pass "$f has a Where to ask section"; else fail "$f has no '## Where to ask' section"; fi
-    if section "$f" "Where to ask" | grep -Ei 'notice|attention' >/dev/null; then fail "$f's Where to ask says 'notice' or 'attention'"; else pass "$f's Where to ask names where_to_ask and in_terminal only"; fi
+    if section "$f" "Where to ask" | grep -Ei 'notice|attention' >/dev/null; then fail "$f's Where to ask says 'notice' or 'attention'"; else pass "$f's Where to ask has neither 'notice' nor 'attention'"; fi
     if section "$f" "Asking the person" | grep -F 'Prefer `ask`' >/dev/null; then fail "$f still says 'Prefer \`ask\`'"; else pass "$f no longer prefers ask"; fi
 done
 same_section "Where to ask" "${skill_copies[@]}"

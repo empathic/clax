@@ -2357,7 +2357,11 @@ where to ask them (`where_to_ask`, under "Agent questions"):
   turn, which counts as a terminal prompt (`terminal_inferred: true`) when
   nothing from Clax (a thread, an answer, an Ask me here) was handed to the
   session since the previous turn. A Stop poll that hands something over
-  makes the turn it continues Clax's.
+  makes the turn it continues Clax's. The first other poll of such a
+  session after a Stop (any tier but `stop_hook` and `queue`: a tool
+  result's, `wait_for_feedback`'s), when nothing from Clax was handed to
+  it since that Stop, starts a turn the person typed: it is recorded then
+  as an inferred prompt.
 - Each is recorded once per poll, before its first take.
 - **The where-to-ask line:** a poll that hands anything over (feedback
   items or late answers), or a `prompt=true` poll of a session with a page,
@@ -2365,15 +2369,16 @@ where to ask them (`where_to_ask`, under "Agent questions"):
   one line:
 
   ```
-  [clax] If you ask the person anything now, ask in Clax, in thread 01J9… (clear): The person wrote in the delivered thread in Clax 40 s ago, after …
+  [clax] If you ask the person anything now, ask in Clax, on 7q3k9mzx2b4t, in thread 01J9… (clear): The person wrote in the delivered thread in Clax 40 s ago, after …
   ```
 
-  (`in Clax`, or `in the terminal (chat)`, and `(unsure)` as the suggestion
-  has it). A Stop poll gets the line only beside a delivery, which blocks
+  (`in Clax, on <artifact ID>` without a thread, `in Clax` with no place,
+  or `in the terminal, in chat`, and `(unsure)` as the suggestion has
+  it). A Stop poll gets the line only beside a delivery, which blocks
   the stop already.
 - An answer, a skip or an Ask me here handed over is a delivery from Clax,
   placed at the question's artifact and thread when it has them (an inbox
-  question's places nothing), and the person's activity in Clax at the
+  question's answer places nothing), and the person's activity in Clax at the
   time they acted; `why` names what they did.
 
 Tier 5 for Claude Code announces and never delivers (see "Notices"). The
@@ -2718,8 +2723,10 @@ is 404, an ended one 400 `unknown_session`, and another session's question
   confidence: "clear" | "unsure", why}`. The newest of the person's
   engagement wins: their last prompt to the session in the terminal (or a
   turn inferred where the harness reports no prompts), against their last
-  input or focused report on a tab of the session's pages and the
-  session's last delivery from Clax. Signals less than 60 s apart, or none
+  input or focused report on a tab of the session's pages and their own
+  act behind the session's last delivery (writing the delivered comment,
+  or answering, skipping or pulling its question), at the time they did
+  it. Signals less than 60 s apart, or none
   in the last 5 minutes, are `unsure`, and unsure leans to `clax`; with no
   Clax tab or panel of the person's open, `terminal`, `clear`. `where` is
   the delivery's thread (else its artifact) when Clax instigated the
@@ -2767,8 +2774,10 @@ viewer routes' `Origin` and `Sec-Fetch-Site` rules (403
 a connected person's browser may subscribe to it (403 `forbidden`
 otherwise; the extension's live-only stream may), and carries the questions
 of its own person's agents. Its event `question`, `{topic: "questions",
-question: <view>}`, is sent on every change; clients upsert by ID.
-`/api/events` never carries it.
+question: <view>}`, is sent on every change; clients upsert by ID. A
+thread resolved, reopened or deleted sends it again for each open question
+asked in that thread, whose `thread` changed (`open`, or null once
+deleted). `/api/events` never carries it.
 
 An agent's own question views (the session routes above) carry the
 artifact's title only when the agent may see it (the title is its
@@ -2934,10 +2943,17 @@ and `clax hook --agent claude asked` as a `PostToolUse` hook on it (timeout
 in `wait` mode, polls it for up to `terminal_after_s` seconds: an answer
 or a skip answers the tool call from Clax; on its timer or **Answer in the
 terminal** the question is released and the terminal dialog opens. The
-daemon chooses `terminal` mode, and the terminal dialog opens at once,
-while the session has no page (it has published or watched no live
-artifact), no owner surface is open, or `terminal_after_s` is 0. `asked`
-records the terminal dialog's answers on a released question (`questions:
+daemon chooses `terminal` mode, and the terminal dialog opens at once, in
+two cases. A question about no artifact (the session has no page and the
+call names none) is created released, with no terminal card. Otherwise,
+when the session's suggestion (`where_to_ask`) names the terminal or
+`terminal_after_s` is 0, it is created as an open in-terminal question:
+Clax shows that the agent is asking in the terminal, placed in the
+suggestion's thread when the suggestion places it on the question's
+artifact, and the question takes the terminal's answer or lapses at the
+next prompt. When the suggestion names Clax (unsure included), it waits in
+Clax (`wait` mode). `asked` records the terminal dialog's answers on a
+released question or an open mirrored in-terminal question (`questions:
 terminal`). Reading the input, finding the daemon, the session lookup and
 the creation have 2 s together (1 s per request); the wait has
 `terminal_after_s` plus 10 s, then at most 3 s (1 s per request) to

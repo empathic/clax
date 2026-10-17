@@ -380,18 +380,19 @@ there only:
 1. Read the suggestion: call `where_to_ask`. An `ask` result carries it
    too, and a delivery from Clax ends with a line saying where to ask
    ("[clax] If you ask the person anything now, …"). It names a `surface`,
-   `clax` or `terminal`; `where` (a `thread_id` and `artifact_id`, the
-   narrowest place in Clax); a `confidence`, `clear` or `unsure`; and
-   `why`.
+   `clax` or `terminal`; `where` (an optional `thread_id` and
+   `artifact_id`, the narrowest place in Clax); a `confidence`, `clear` or
+   `unsure`; and `why`.
 2. Ask on the surface it names, at the place it names, and only there. In
    Clax: `ask` with `url_or_id` and, for a thread, `thread_id`. In the
-   terminal: in chat (or the harness's own question tool).
-3. Tell the other surface. After asking in Clax, write the result's
-   `tell_terminal` line ("Asked in Clax: <url>") in chat. Before asking in
-   chat, post `ask` with `in_terminal: true` (each question's `question`
-   and `header` only, and the place), so Clax shows that you are asking in
-   the terminal; cancel it (`question_id`, `cancel: true`) once they
-   answer. If the person chooses **Ask me here** in Clax, a delivery tells
+   terminal: in chat (or your harness's own question tool, if it has one).
+3. Tell the other surface. While `ask` waits for the answer, the terminal
+   shows its pending call; when its result has a `tell_terminal` line
+   ("Asked in Clax: <url>"), the question still waits there: write that
+   line in chat. Before asking in chat, post `ask` with `in_terminal:
+   true` (each question's `question` and `header` only, and the place), so
+   Clax shows that you are asking in the terminal; cancel that question
+   (`question_id`, `cancel: true`) once they answer. If the person chooses **Ask me here** in Clax, a delivery tells
    you they want the question asked in Clax: ask it there with `ask`.
 4. Keep discussion where it started: answer work a Clax thread started in
    that thread with `comments_reply`, and work started in chat in chat.
