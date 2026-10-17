@@ -58,7 +58,10 @@ export type TabMsg =
  * (refetch them); `resync` a topic whose events were dropped (refetch it);
  * `refused` a topic the daemon would not subscribe (`code` says why);
  * `status` whether the connection is up; `notify` asks the tab to show a
- * notification for an `inbox_item` event's data. */
+ * notification for an `inbox_item` event's data; `welcome` says a shared
+ * worker took the tab's port, which it may do again for a port already open
+ * (a browser can end the worker and start it anew): the tab sends its
+ * `hello`, topics and focus again. */
 export type HubMsg =
   | { t: "event"; topic: string; name: string; data: Record<string, unknown> }
   | { t: "notify"; data: Record<string, unknown> }
@@ -66,6 +69,7 @@ export type HubMsg =
   | { t: "resync"; topic: string }
   | { t: "refused"; topic: string; code: string }
   | { t: "status"; up: boolean }
+  | { t: "welcome" }
   | { t: "ping" };
 
 /** How long the stream may take to say `ready`. */

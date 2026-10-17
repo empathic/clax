@@ -81,13 +81,31 @@ const newId = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? c
  * load, say): this page uses the fallbacks from then on. */
 let workerBroken = false;
 
-/** A link to the shared worker's hub. */
+/** A link to the shared worker's hub. The worker welcomes the port when it
+ * takes it, the first time and again after the browser started it anew: then
+ * the page's `hello`, latest topics and focus go to it again. */
 export const workerLink: LinkMaker = async (on, lost) => {
   const w = new SharedWorker(new URL("./stream-worker.ts", import.meta.url), { name: "clax-stream" });
   const port = w.port;
   let closed = false;
   let heard = false;
-  port.onmessage = e => { heard = true; if (!closed) on(e.data as HubMsg); };
+  // What a new instance of the worker needs to hear: set once `hello` is sent.
+  let hello: TabMsg | null = null;
+  let topics: TabMsg | null = null;
+  let focus: TabMsg | null = null;
+  const welcomed = () => {
+    if (!hello) return;
+    port.postMessage(hello);
+    if (topics) port.postMessage(topics);
+    if (focus) port.postMessage(focus);
+  };
+  port.onmessage = e => {
+    heard = true;
+    if (closed) return;
+    const m = e.data as HubMsg;
+    if (m?.t === "welcome") welcomed();
+    else on(m);
+  };
   // Where the browser says so, the worker's end closing (it crashed).
   port.addEventListener("close", () => { if (!closed) lost(); });
   w.addEventListener("error", () => {
@@ -97,10 +115,16 @@ export const workerLink: LinkMaker = async (on, lost) => {
   port.start();
   const lock = `clax-tab:${newId()}`;
   const release = await holdLock(lock);
-  port.postMessage({ t: "hello", lock: release ? lock : undefined } satisfies TabMsg);
+  hello = { t: "hello", lock: release ? lock : undefined };
+  port.postMessage(hello);
   return {
     pinged: true,
-    send: m => { if (!closed) port.postMessage(m); },
+    send: m => {
+      if (closed) return;
+      if (m.t === "topics") topics = m;
+      if (m.t === "focus") focus = m;
+      port.postMessage(m);
+    },
     close: () => {
       if (closed) return;
       port.postMessage({ t: "bye" } satisfies TabMsg);
