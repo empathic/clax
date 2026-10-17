@@ -1625,13 +1625,18 @@ impl DaemonClient {
     }
 
     /// `POST /api/sessions/<sid>/questions` with `source: "ask"`: `{question,
-    /// mode, terminal_after_s, surface_open}`.
+    /// mode, terminal_after_s, surface_open, where_to_ask}`. `thread` is a
+    /// thread of `artifact`; `in_terminal` records an in-terminal question,
+    /// which Clax shows but does not ask.
     pub async fn ask_create(
         &self,
         questions: &[clax_core::questions::Question],
         artifact: Option<&str>,
+        thread: Option<&str>,
+        in_terminal: bool,
     ) -> Result<Value> {
-        let body = json!({"source": "ask", "questions": questions, "artifact_id": artifact});
+        let body = json!({"source": "ask", "questions": questions, "artifact_id": artifact,
+            "thread_id": thread, "in_terminal": in_terminal});
         self.json(|c| {
             c.request(
                 reqwest::Method::POST,

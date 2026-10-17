@@ -1117,6 +1117,35 @@ describe("comments", () => {
     expect(json(long).error.code).toBe("invalid_question");
   });
 
+  it("clax_ask places a question in its thread, says what to tell the terminal, and shows an in-terminal question in the inbox without waiting", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-thread-ask");
+    await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    const aid = parts(await pi.callTool("clax_publish", { html: "<h2>Goals</h2>", title: "Thread ask" }, ctx)).json.artifact_id;
+    const tid = await browserThread(aid, "Which?");
+    const asking = pi.callToolAsPi("clax_ask", { questions: askBody("Placed").questions, url_or_id: aid, thread_id: tid, timeout_s: 30 }, ctx);
+    await expireQuestion(await openQuestion("Placed"));
+    const r = parts(await asking).json;
+    expect(r.url).toMatch(new RegExp(`/a/${aid}\\?thread=${tid}$`));
+    expect(r.tell_terminal).toBe(`Asked in Clax: ${r.url}`);
+    expect(["clax", "terminal"]).toContain(r.where_to_ask.surface);
+    const n = parts(await pi.callToolAsPi("clax_ask", { questions: [{ question: "Which layout?", header: "Layout" }], in_terminal: true }, ctx)).json;
+    expect(n).toMatchObject({ in_terminal: true, status: "open", call_again: false });
+    expect(n.url).toMatch(new RegExp(`/inbox\\?q=${n.question_id}$`));
+    expect(n.tell_terminal).toBeUndefined();
+    const item = (await api(daemon, "/api/inbox?kind=question")).items.find((i: any) => i.question?.id === n.question_id);
+    expect(item).toMatchObject({ url: `/inbox?q=${n.question_id}`, question: { in_terminal: true } });
+    expect(parts(await pi.callToolAsPi("clax_ask", { question_id: n.question_id, cancel: true }, ctx)).json.status).toBe("withdrawn");
+    for (const args of [
+      { questions: askBody("Pick").questions, thread_id: tid },
+      { question_id: n.question_id, in_terminal: true },
+      { approval: { url_or_id: aid }, thread_id: tid },
+      { approval: { url_or_id: aid }, in_terminal: true },
+    ]) {
+      const bad = await pi.callTool("clax_ask", args, ctx);
+      expect(json(bad).error.code, JSON.stringify(args)).toBe("invalid_args");
+    }
+  });
+
   it("sends addressed with a reply, which the daemon refuses on an artifact", async () => {
     const { pi, ctx } = load(daemon.home, "pi-addressed");
     const aid = parts(await pi.callToolAsPi("clax_publish", { html: "<h2>Goals</h2>", title: "Pi addressed" }, ctx)).json.artifact_id;

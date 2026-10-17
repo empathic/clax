@@ -307,6 +307,11 @@ pub struct AskArgs {
     pub question_id: Option<String>,
     /// The artifact, or a web page's URL (its live page), the question is about.
     pub url_or_id: Option<String>,
+    /// A thread of `url_or_id`'s artifact the question arose from: it shows in that thread.
+    pub thread_id: Option<String>,
+    /// Ask nothing: show the person in Clax that you are asking this in the terminal.
+    /// Returns at once; cancel it (`question_id`, `cancel`) once they answer in the terminal.
+    pub in_terminal: Option<bool>,
     /// Seconds to wait, 1 to 600 (default 600); under Codex 1 to 50 (default 50).
     pub timeout_s: Option<u64>,
     /// With `question_id`: withdraw the question.
@@ -2296,6 +2301,11 @@ impl ClaxTools {
 
     async fn do_ask(&self, a: AskArgs) -> Outcome {
         if a.approval.is_some() || a.approval_id.is_some() {
+            if a.thread_id.is_some() || a.in_terminal.is_some() {
+                return Err(invalid(
+                    "thread_id and in_terminal go with `questions`; an approval's thread is `approval.thread_id`",
+                ));
+            }
             return self.do_ask_approval(a).await;
         }
         let cancel = a.cancel.unwrap_or(false);
@@ -2321,6 +2331,16 @@ impl ClaxTools {
                 ));
             }
         }
+        let in_terminal = a.in_terminal.unwrap_or(false);
+        if let Some(t) = &a.thread_id {
+            if a.url_or_id.is_none() || a.questions.is_none() {
+                return Err(invalid("thread_id goes with `questions` and `url_or_id`"));
+            }
+            check_thread_id(t)?;
+        }
+        if in_terminal && a.questions.is_none() {
+            return Err(invalid("in_terminal goes with `questions`"));
+        }
         let session = self.require_session().await?;
         let artifact = match &a.url_or_id {
             Some(r) => Some(self.resolve_id(r).await?),
@@ -2331,11 +2351,12 @@ impl ClaxTools {
             .unwrap_or_else(|| default_ask_wait(&session.harness))
             .clamp(MIN_WAIT_S, max_ask_wait(&session.harness));
         let mut created = false;
+        let thread = a.thread_id.clone();
         let qid = match (a.questions, a.question_id) {
             (Some(qs), _) => {
                 let res = self
                     .client
-                    .ask_create(&qs, artifact.as_deref())
+                    .ask_create(&qs, artifact.as_deref(), thread.as_deref(), in_terminal)
                     .await
                     .map_err(|e| self.fail(e))?;
                 let qid = res["question"]["id"]
@@ -2343,12 +2364,15 @@ impl ClaxTools {
                     .unwrap_or_default()
                     .to_string();
                 self.remember_surface(&qid, res["surface_open"].as_bool().unwrap_or(true));
+                if in_terminal {
+                    return Ok(self.ask_result(&res["question"], 0, &res["where_to_ask"]));
+                }
                 created = true;
                 qid
             }
             (None, Some(qid)) if cancel => {
                 return match self.client.ask_withdraw(&qid).await {
-                    Ok(v) => Ok(self.ask_result(&v["question"], 0)),
+                    Ok(v) => Ok(self.ask_result(&v["question"], 0, &Value::Null)),
                     // Already closed: hand over what closed it (an answer
                     // is taken by this poll, so it is handed over once).
                     Err(ClientError::Api { status: 409, error })
@@ -2359,7 +2383,7 @@ impl ClaxTools {
                             .ask_wait(&qid, 0)
                             .await
                             .map_err(|e| self.fail(e))?;
-                        Ok(self.ask_result(&v["question"], 0))
+                        Ok(self.ask_result(&v["question"], 0, &Value::Null))
                     }
                     Err(e) => Err(self.fail(e)),
                 };
@@ -2377,7 +2401,11 @@ impl ClaxTools {
             };
             render::client_error_with(e, self.daemon_log(), extra)
         })?;
-        Ok(self.ask_result(&v["question"], v["waited_s"].as_u64().unwrap_or(0)))
+        Ok(self.ask_result(
+            &v["question"],
+            v["waited_s"].as_u64().unwrap_or(0),
+            &v["where_to_ask"],
+        ))
     }
 
     /// `ask` with `approval` or `approval_id` (spec §9.2): makes (or joins)
@@ -2469,12 +2497,27 @@ impl ClaxTools {
         }
     }
 
-    /// The `ask` result (spec §6.5) for the question view `q`: in `reply`,
-    /// each of its answers beside its question and header (null unless it
-    /// was answered); the question's inbox URL; and while it is open
-    /// `call_again` and `surface_open`. `answers` is left to the late
-    /// answers to other questions, as on every tool result.
-    fn ask_result(&self, q: &Value, waited_s: u64) -> Value {
+    /// Where the person finds question view `q` in Clax: its thread, else
+    /// its artifact, else its place in the inbox.
+    fn place_url(&self, q: &Value) -> String {
+        let base = self.browser_base();
+        match (q["artifact"]["id"].as_str(), q["thread"]["id"].as_str()) {
+            (Some(a), Some(t)) => format!("{base}/a/{a}?thread={t}"),
+            (Some(a), None) => format!("{base}/a/{a}"),
+            _ => format!("{base}/inbox?q={}", q["id"].as_str().unwrap_or_default()),
+        }
+    }
+
+    /// The `ask` result (spec §6.5; 2026-10-16-ask-where-attention-is §2)
+    /// for the question view `q`: in `reply`, each of its answers beside its
+    /// question and header (null unless it was answered); `url`, the
+    /// narrowest place it shows; while it waits in Clax, `call_again`,
+    /// `surface_open` and `tell_terminal`, the line to write in chat; and
+    /// the daemon's suggestion `where_to_ask`, when given. An in-terminal
+    /// question is never waited on (`in_terminal: true`, `call_again`
+    /// false). `answers` is left to the late answers to other questions, as
+    /// on every tool result.
+    fn ask_result(&self, q: &Value, waited_s: u64, where_to_ask: &Value) -> Value {
         let qid = q["id"].as_str().unwrap_or_default();
         let status = q["status"].as_str().unwrap_or("open");
         let reply = (status == "answered").then(|| {
@@ -2499,11 +2542,21 @@ impl ClaxTools {
             "question_id": qid,
             "status": status,
             "reply": reply,
-            "url": format!("{}/inbox?q={qid}", self.browser_base()),
+            "url": self.place_url(q),
             "waited_s": waited_s,
             "call_again": status == "open",
             "note": ASK_NOTE,
         });
+        if q["in_terminal"].as_bool().unwrap_or(false) {
+            out["in_terminal"] = json!(true);
+            out["call_again"] = json!(false);
+        } else if status == "open" {
+            let line = format!("Asked in Clax: {}", out["url"].as_str().unwrap_or_default());
+            out["tell_terminal"] = json!(line);
+        }
+        if !where_to_ask.is_null() {
+            out["where_to_ask"] = where_to_ask.clone();
+        }
         let mut surfaces = self.ask_surface.lock().expect("ask_surface lock");
         if status == "open" {
             out["surface_open"] = json!(surfaces.get(qid).copied().unwrap_or(true));
@@ -3204,7 +3257,7 @@ impl ClaxTools {
     }
 
     #[tool(
-        description = "Ask the person one to four questions in Clax and wait for the answers (up to `timeout_s`, default 600 s). Each question has a short `header` (at most 12 characters) and two to four `options` (`label`, optional `description`, `preview` text, `recommended`) or none for a free-text answer; `multi_select` allows several; the person may also type an \"Other\" answer. Pass `url_or_id` when the question is about a page. If the result says `call_again`, call `ask` again with `question_id`. The answers come back in `reply`, in the person's own words. To ask your person to let you see content withheld from you, pass `approval` (`url_or_id`, optional `thread_id`, and `author`, a public ID from the `withheld` summary's `author_ids`) instead of `questions`: the result's `status` is `approved`, `declined` or `open` (then call again with `approval_id`).",
+        description = "Ask the person one to four questions in Clax and wait for the answers (up to `timeout_s`, default 600 s). Each question has a short `header` (at most 12 characters) and two to four `options` (`label`, optional `description`, `preview` text, `recommended`) or none for a free-text answer; `multi_select` allows several; the person may also type an \"Other\" answer. Pass `url_or_id` when the question is about a page, and `thread_id` when it arose in one of its threads, so it shows there. With `in_terminal: true` it asks nothing: it shows the person in Clax that you are asking in the terminal, returns at once, and you cancel it once they answer. If the result says `call_again`, call `ask` again with `question_id`. The answers come back in `reply`, in the person's own words; write the result's `tell_terminal` line in chat. To ask your person to let you see content withheld from you, pass `approval` (`url_or_id`, optional `thread_id`, and `author`, a public ID from the `withheld` summary's `author_ids`) instead of `questions`: the result's `status` is `approved`, `declined` or `open` (then call again with `approval_id`).",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -3591,13 +3644,60 @@ mod tests {
             ..Default::default()
         });
         assert!(!t.ask_surface.lock().unwrap().contains_key(&id(1)));
-        let open = t.ask_result(&json!({"id": id(0), "status": "open"}), 0);
+        let open = t.ask_result(&json!({"id": id(0), "status": "open"}), 0, &Value::Null);
         assert_eq!(
             open["surface_open"], true,
             "a forgotten question reads as open"
         );
-        let open = t.ask_result(&json!({"id": id(2), "status": "open"}), 0);
+        let open = t.ask_result(&json!({"id": id(2), "status": "open"}), 0, &Value::Null);
         assert_eq!(open["surface_open"], false);
+    }
+
+    #[test]
+    fn an_ask_result_names_the_narrowest_place_and_what_to_tell_the_terminal() {
+        let t = ClaxTools::new(
+            DaemonClient::new("http://127.0.0.1:9".into(), "t".into(), None),
+            "http://localhost:9".into(),
+            None,
+            PathBuf::from("log"),
+        );
+        let id = "01K6AB3Q9X7N2M4P5R6S8T0001";
+        let wta = json!({"surface": "clax", "where": {"thread_id": "t1", "artifact_id": "a1"},
+            "confidence": "clear", "why": "w"});
+        let r = t.ask_result(
+            &json!({"id": id, "status": "open", "in_terminal": false, "artifact": {"id": "a1"},
+                "thread": {"id": "t1", "open": true}}),
+            0,
+            &wta,
+        );
+        assert_eq!(r["url"], "http://localhost:9/a/a1?thread=t1");
+        assert_eq!(
+            r["tell_terminal"],
+            "Asked in Clax: http://localhost:9/a/a1?thread=t1"
+        );
+        assert_eq!(r["where_to_ask"], wta);
+        let r = t.ask_result(
+            &json!({"id": id, "status": "open", "in_terminal": true, "artifact": null, "thread": null}),
+            0,
+            &Value::Null,
+        );
+        assert_eq!(r["url"], format!("http://localhost:9/inbox?q={id}"));
+        assert_eq!(
+            (r["in_terminal"].as_bool(), r["call_again"].as_bool()),
+            (Some(true), Some(false))
+        );
+        assert!(r.get("tell_terminal").is_none() && r.get("where_to_ask").is_none());
+        let r = t.ask_result(
+            &json!({"id": id, "status": "answered", "artifact": {"id": "a1"}, "thread": null,
+                "questions": [], "answers": []}),
+            0,
+            &Value::Null,
+        );
+        assert_eq!(r["url"], "http://localhost:9/a/a1");
+        assert!(
+            r.get("tell_terminal").is_none(),
+            "only while it waits in Clax"
+        );
     }
 
     #[test]

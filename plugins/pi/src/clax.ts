@@ -164,6 +164,8 @@ const AskArgs = Type.Object({
   })),
   question_id: opt(str("Keep waiting on a question you asked (after `call_again`).")),
   url_or_id: opt(str("The artifact, or a web page's URL (its live page), the question is about.")),
+  thread_id: opt(str("A thread of `url_or_id`'s artifact the question arose from: it shows in that thread.")),
+  in_terminal: opt(Type.Boolean({ description: "Ask nothing: show the person in Clax that you are asking this in the terminal. Returns at once; cancel it (`question_id`, `cancel`) once they answer in the terminal." })),
   timeout_s: opt(Type.Integer({ minimum: 0, description: "Seconds to wait, 1 to 600 (default 600); under Codex 1 to 50 (default 50)." })),
   cancel: opt(Type.Boolean({ description: "With `question_id`: withdraw the question." })),
   approval: opt(Type.Object({
@@ -1559,7 +1561,10 @@ class Tools {
    * the answers; or, with `question_id`, keeps waiting on a question asked
    * before (`cancel` withdraws it instead). */
   async ask(ctx: ExtensionContext, a: Static<typeof AskArgs>): Promise<Json> {
-    if (a.approval !== undefined || a.approval_id !== undefined) return this.askApproval(ctx, a);
+    if (a.approval !== undefined || a.approval_id !== undefined) {
+      if (a.thread_id !== undefined || a.in_terminal !== undefined) throw invalid("thread_id and in_terminal go with `questions`; an approval's thread is `approval.thread_id`");
+      return this.askApproval(ctx, a);
+    }
     const cancel = a.cancel ?? false;
     if (a.questions !== undefined && a.question_id === undefined) {
       if (cancel) throw invalid("cancel goes with `question_id`");
@@ -1569,14 +1574,21 @@ class Tools {
     } else {
       throw invalid("pass `questions` to ask, or `question_id` to keep waiting on a question you asked");
     }
+    if (a.thread_id !== undefined) {
+      if (a.url_or_id === undefined || a.questions === undefined) throw invalid("thread_id goes with `questions` and `url_or_id`");
+      checkThreadId(a.thread_id);
+    }
+    const inTerminal = a.in_terminal ?? false;
+    if (inTerminal && a.questions === undefined) throw invalid("in_terminal goes with `questions`");
     const c = this.clientFor(ctx);
     const artifact = a.url_or_id === undefined ? undefined : (await this.resolveRef(c, a.url_or_id)).id;
     const wait = Math.min(Math.max(a.timeout_s ?? DEFAULT_ASK_WAIT_S, MIN_WAIT_S), MAX_ASK_WAIT_S);
     let qid: string;
     if (a.questions !== undefined) {
-      const res = await this.call(() => c.askCreate(a.questions!, artifact));
+      const res = await this.call(() => c.askCreate(a.questions!, artifact, a.thread_id, inTerminal));
       qid = String(res.question?.id ?? "");
       this.rememberSurface(qid, res.surface_open ?? true);
+      if (inTerminal) return this.askResult(c, res.question, 0, res.where_to_ask);
     } else {
       qid = a.question_id!;
       if (cancel) {
@@ -1599,7 +1611,7 @@ class Tools {
       const err = internal(e);
       throw a.questions !== undefined ? new ToolError({ ...err.error, question_id: qid }) : err;
     }
-    return this.askResult(c, r.question, Number(r.waited_s ?? 0));
+    return this.askResult(c, r.question, Number(r.waited_s ?? 0), r.where_to_ask);
   }
 
   /** `ask` with `approval` or `approval_id` (spec §9.2): makes (or joins)
@@ -1671,10 +1683,21 @@ class Tools {
     }
   }
 
-  /** The `ask` result for the question view `q`: in `reply`, each answer beside its
-   * question and header, the question's inbox URL, and while it is open
-   * `call_again` and `surface_open`. */
-  private askResult(c: DaemonClient, q: Json, waitedS: number): Json {
+  /** Where the person finds question view `q` in Clax: its thread, else its
+   * artifact, else its place in the inbox. */
+  private placeUrl(c: DaemonClient, q: Json): string {
+    const base = this.browserBase(c);
+    const a = q?.artifact?.id, t = q?.thread?.id;
+    return a && t ? `${base}/a/${a}?thread=${t}` : a ? `${base}/a/${a}` : `${base}/inbox?q=${String(q?.id ?? "")}`;
+  }
+
+  /** The `ask` result for the question view `q`: in `reply`, each answer
+   * beside its question and header; `url`, the narrowest place it shows;
+   * while it waits in Clax, `call_again`, `surface_open` and
+   * `tell_terminal`, the line to write in chat; and the daemon's suggestion
+   * `where_to_ask`, when given. An in-terminal question is never waited on
+   * (`in_terminal: true`, `call_again` false). */
+  private askResult(c: DaemonClient, q: Json, waitedS: number, whereToAsk?: Json): Json {
     const qid = String(q?.id ?? "");
     const status: string = q?.status ?? "open";
     const asked: Json[] = q?.questions ?? [];
@@ -1684,9 +1707,12 @@ class Tools {
       : null;
     const out: Json = {
       question_id: qid, status, reply,
-      url: `${this.browserBase(c)}/inbox?q=${qid}`,
-      waited_s: waitedS, call_again: status === "open", note: ASK_NOTE,
+      url: this.placeUrl(c, q),
+      waited_s: waitedS, call_again: status === "open" && !q?.in_terminal, note: ASK_NOTE,
     };
+    if (q?.in_terminal) out.in_terminal = true;
+    else if (status === "open") out.tell_terminal = `Asked in Clax: ${out.url}`;
+    if (whereToAsk) out.where_to_ask = whereToAsk;
     if (status === "open") out.surface_open = this.askSurface.get(qid) ?? true;
     else this.askSurface.delete(qid);
     return out;
@@ -1995,7 +2021,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       DbBatchArgs, (ctx, a) => tools.dbBatch(ctx, a));
 
     define("ask", "Clax ask",
-      "Ask the person one to four questions in Clax and wait for the answers (up to `timeout_s`, default 600 s). Each question has a short `header` (at most 12 characters) and two to four `options` (`label`, optional `description`, `preview` text, `recommended`) or none for a free-text answer; `multi_select` allows several; the person may also type an \"Other\" answer. Pass `url_or_id` when the question is about a page. If the result says `call_again`, call `ask` again with `question_id`. The answers come back in `reply`, in the person's own words. To ask your person to let you see content withheld from you, pass `approval` (`url_or_id`, optional `thread_id`, and `author`, a public ID from the `withheld` summary's `author_ids`) instead of `questions`: the result's `status` is `approved`, `declined` or `open` (then call again with `approval_id`).",
+      "Ask the person one to four questions in Clax and wait for the answers (up to `timeout_s`, default 600 s). Each question has a short `header` (at most 12 characters) and two to four `options` (`label`, optional `description`, `preview` text, `recommended`) or none for a free-text answer; `multi_select` allows several; the person may also type an \"Other\" answer. Pass `url_or_id` when the question is about a page, and `thread_id` when it arose in one of its threads, so it shows there. With `in_terminal: true` it asks nothing: it shows the person in Clax that you are asking in the terminal, returns at once, and you cancel it once they answer. If the result says `call_again`, call `ask` again with `question_id`. The answers come back in `reply`, in the person's own words; write the result's `tell_terminal` line in chat. To ask your person to let you see content withheld from you, pass `approval` (`url_or_id`, optional `thread_id`, and `author`, a public ID from the `withheld` summary's `author_ids`) instead of `questions`: the result's `status` is `approved`, `declined` or `open` (then call again with `approval_id`).",
       "Ask the person questions in Clax and wait for their answers",
       AskArgs, (ctx, a) => tools.ask(ctx, a));
 

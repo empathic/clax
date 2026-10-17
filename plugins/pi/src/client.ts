@@ -790,9 +790,11 @@ export class DaemonClient {
   }
 
   /** `POST /api/sessions/<sid>/questions` with `source: "ask"`: `{question,
-   * mode, terminal_after_s, surface_open}`. */
-  askCreate(questions: unknown[], artifactId?: string): Promise<any> {
-    return this.json(() => `${this.sessionPath()}/questions`, this.jsonBody("POST", { source: "ask", questions, artifact_id: artifactId ?? null }));
+   * mode, terminal_after_s, surface_open, where_to_ask}`; `threadId` is a
+   * thread of `artifactId`, and `inTerminal` records an in-terminal
+   * question, which Clax shows but does not ask. */
+  askCreate(questions: unknown[], artifactId?: string, threadId?: string, inTerminal = false): Promise<any> {
+    return this.json(() => `${this.sessionPath()}/questions`, this.jsonBody("POST", { source: "ask", questions, artifact_id: artifactId ?? null, thread_id: threadId ?? null, in_terminal: inTerminal }));
   }
 
   /** `GET /api/sessions/<sid>/questions/<qid>?wait=<waitS>`: `{question,

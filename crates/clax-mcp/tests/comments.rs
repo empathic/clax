@@ -1085,6 +1085,80 @@ async fn ask_reports_an_open_surface_and_its_page() {
 }
 
 #[tokio::test]
+async fn ask_places_a_question_in_its_thread_and_an_in_terminal_question_in_the_inbox() {
+    let (ts, clock) = TestServer::spawn_question_clock().await;
+    let page = ts.publish("Dash", &[("index.html", "<p>dash</p>")]).await;
+    let aid = page["artifact"]["id"].as_str().unwrap().to_string();
+    let tid = ts.thread_as_owner(&aid, "Which?").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let tools = harness_tools(&ts, "claude", "ask-where").await;
+    let base = format!("http://localhost:{}", ts.addr.port());
+
+    let (t, a, th) = (tools.clone(), aid.clone(), tid.clone());
+    let first = tokio::spawn(async move {
+        ask(
+            &t,
+            json!({"questions": which(), "url_or_id": a, "thread_id": th, "timeout_s": 1}),
+        )
+        .await
+    });
+    clock.wait_for(Duration::from_secs(1), 1).await;
+    clock.fire(Duration::from_secs(1));
+    let first = first.await.unwrap();
+    assert_eq!(first["url"], format!("{base}/a/{aid}?thread={tid}"));
+    assert_eq!(
+        first["tell_terminal"],
+        format!("Asked in Clax: {}", first["url"].as_str().unwrap())
+    );
+    assert!(first["where_to_ask"]["surface"].is_string(), "{first}");
+
+    // Asked in the terminal, about nothing: returned at once, shown in the inbox.
+    let n = ask(
+        &tools,
+        json!({"questions": [{"question": "Which layout?", "header": "Layout"}], "in_terminal": true}),
+    )
+    .await;
+    let qid = n["question_id"].as_str().unwrap().to_string();
+    assert_eq!(
+        (&n["status"], &n["in_terminal"], &n["call_again"]),
+        (&json!("open"), &json!(true), &json!(false))
+    );
+    assert_eq!(n["url"], format!("{base}/inbox?q={qid}"));
+    assert!(n.get("tell_terminal").is_none(), "{n}");
+    let items: Value = ts
+        .client
+        .get(format!("{}/api/inbox?kind=question", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let item = items["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["question"]["id"] == qid.as_str())
+        .unwrap_or_else(|| panic!("no inbox item for {qid}: {items}"));
+    assert_eq!(item["url"], format!("/inbox?q={qid}"));
+    assert_eq!(item["question"]["in_terminal"], true);
+    let c = ask(&tools, json!({"question_id": qid, "cancel": true})).await;
+    assert_eq!(c["status"], "withdrawn");
+
+    for bad in [
+        json!({"questions": which(), "thread_id": tid}),
+        json!({"question_id": qid, "in_terminal": true}),
+        json!({"approval": {"url_or_id": aid}, "thread_id": tid}),
+        json!({"approval": {"url_or_id": aid}, "in_terminal": true}),
+    ] {
+        assert_eq!(ask_err(&tools, bad.clone()).await, "invalid_args", "{bad}");
+    }
+}
+
+#[tokio::test]
 async fn ask_cancel_and_foreign_ids() {
     let ts = TestServer::spawn().await;
     let tools = harness_tools(&ts, "claude", "ask-own").await;
