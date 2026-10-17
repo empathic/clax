@@ -222,9 +222,9 @@ class _Job {
 /// the build has spent [buildCapUsd] ([BuildPhase.capped]), the person
 /// stops it ([stopBuild]), or a run fails or marks no feature done or
 /// dropped ([BuildPhase.failed], which stops it). A change that leaves
-/// features to build starts the build again, unless it is stopped; so does
-/// one that planned them and then failed, such as a stop at a limit
-/// ([plannedStopReply]). Each
+/// features to build starts the build again, unless it is stopped (a
+/// limit stop after planning them, [plannedStopReply], ends answered); a
+/// failed change starts none. Each
 /// recovery queues the builds of every app whose plan has features to
 /// build, is not stopped and is under the cap. [builds] tells each step.
 /// Builds make no [WorkerEvent]s: those are the comments' changes.
@@ -971,12 +971,10 @@ class FeedbackWorker {
           await _forgetAnswer(q);
         }
       }
-      // A change may have planned what is left before it stopped at a
-      // limit (planAfterStops, plannedStopReply): its features are built
-      // even when the run itself failed.
-      if (outcome is ChangeLanded ||
-          outcome is ChangeAnswered ||
-          outcome is ChangeFailed) {
+      // A change that planned what is left before it stopped at a limit
+      // (plannedStopReply) ends answered or landed, so the build takes it
+      // up; a failed change starts no build.
+      if (outcome is ChangeLanded || outcome is ChangeAnswered) {
         await _maybeBuild(aid);
       }
     } finally {
