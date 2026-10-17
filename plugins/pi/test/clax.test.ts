@@ -1067,8 +1067,16 @@ describe("comments", () => {
     await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
     const sid = await sessionOf("pi-input");
     const signals = async () => (await api(daemon, `/api/sessions/${sid}/where-to-ask`)).signals;
-    await pi.emit("input", { type: "input", text: "[clax] a comment", source: "extension" }, ctx);
-    await pi.emit("input", { type: "input", text: "make it blue", source: "interactive" }, ctx);
+    const note = DaemonClient.prototype.noteTerminal;
+    const spy = vi.spyOn(DaemonClient.prototype, "noteTerminal").mockImplementation(function (this: DaemonClient) { return note.call(this); });
+    try {
+      await pi.emit("input", { type: "input", text: "[clax] a comment", source: "extension" }, ctx);
+      expect(spy).not.toHaveBeenCalled();
+      await pi.emit("input", { type: "input", text: "make it blue", source: "interactive" }, ctx);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
     await expect.poll(async () => (await signals()).terminal_at, { timeout: 10_000 }).not.toBeNull();
     expect((await signals()).terminal_inferred).toBe(false);
   });

@@ -1896,7 +1896,8 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
     // Terminal activity (spec 2026-10-16-ask-where-attention-is-design §1):
     // a prompt the person typed, not a message an extension sent (Clax's
     // deliveries are), tells the daemon where they are. Neither starts a
-    // daemon, registers a session, nor delays the prompt.
+    // daemon, registers a session, nor delays the prompt. A slash command an
+    // extension registered runs before Pi emits `input`, so it is not counted.
     pi.on("input", async event => {
       if (event.source !== "extension") {
         const c = tools.existingClient();
