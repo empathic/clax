@@ -171,15 +171,33 @@ flutter.pub(
     name = "clax_app_pub",
     lock = "//apps/clax_app:pubspec.lock",
 )
+flutter.plugin_overlays(roots = ["//bazel/flutter/plugin_overlays:BUILD.bazel"])
 use_repo(
     flutter,
     "clax_app_pub",
     "flutter_android_engine_arm64",
     "flutter_android_engine_x64",
+    "flutter_macos_engine",
     "flutter_toolchains",
 )
 
 register_toolchains("@flutter_toolchains//:all")
+
+# The Swift package speech_to_text's Apple code needs
+# (bazel/flutter/plugin_overlays/speech_to_text).
+bazel_dep(name = "rules_apple", version = "5.2.0")
+bazel_dep(name = "rules_cc", version = "0.2.26")
+bazel_dep(name = "rules_swift", version = "4.1.2")
+
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
+    name = "cwl_catch_exception",
+    build_file = "//bazel/flutter/third_party:cwl_catch_exception.BUILD",
+    sha256 = "96817f62023ec665e08e76149e6bd90e830c1b83fbd450eb25e6c4984fad6187",
+    strip_prefix = "CwlCatchException-07b2ba21d361c223e25e3c1e924288742923f08c",
+    url = "https://github.com/mattgallagher/CwlCatchException/archive/07b2ba21d361c223e25e3c1e924288742923f08c.tar.gz",
+)
 
 # The AndroidX and Kotlin libraries the Flutter engine and the app's plugins
 # need, from Maven (rules_flutter's own list, which this extends).

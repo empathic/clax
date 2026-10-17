@@ -1,0 +1,3 @@
+# The overlay root for the Clax app's pub packages (MODULE.bazel,
+# flutter.plugin_overlays): <package>/<version>/BUILD.bazel.tpl replaces the
+# BUILD file rules_flutter generates for that package.
