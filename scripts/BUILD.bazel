@@ -138,8 +138,6 @@ sh_test(
         ":all",
         "//:Cargo.toml",
         "//crates/clax-mcp:rust_sources",
-    "//crates/clax-realtime:rust_sources",
-    "//crates/clax-sample:rust_sources",
         "//plugins:embedded",
         "//plugins/pi:embedded",
     ],
