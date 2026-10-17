@@ -429,6 +429,12 @@ tests that serve it; it recompiles no daemon crate.
   `cargo test --workspace` does, plus `debug-embed` on rust-embed.
 - **The test binary.** Bazel's tests run `clax` built with its own
   features only, as the native gates' `CLAX_TEST_BIN` is.
+- **The testkit in unit tests.** Bazel builds a crate's unit tests
+  (`<lib>_lib_test`) without `clax-testkit`, which is for integration
+  tests only (`unit_dev_deps` in `bazel/cargo.bzl`); Cargo gives every test
+  target all dev-dependencies, so `cargo test -p clax-server --lib` builds
+  the testkit and the server under it first, and a unit test that names
+  `clax_testkit` compiles under Cargo and fails to under Bazel.
 - **Debug information.** Workspace crates keep line tables, as Cargo's
   dev profile does; dependencies have none.
 - **PATH.** Tests see `/usr/bin:/bin:/usr/sbin:/sbin` (`.bazelrc`), not the

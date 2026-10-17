@@ -703,7 +703,8 @@ unless the closing session wrote the record (§9, question 4).
    **Decided:** the proposed names.
 2. **The binary's package stays `clax-cli`,** with the commands in
    `clax-commands`. Recommended: yes; nothing a user types changes.
-   **Decided:** not asked; the recommendation stands.
+   **Not asked; taken from the spec's recommendation.** Still open to the
+   owner.
 3. **The `clax-core`/`clax-store` split (step 10).** The largest step and
    the one most in the way of open branches. Recommended: do it, after
    steps 1-9 have landed and been measured; it is what makes clients unable
@@ -725,16 +726,18 @@ unless the closing session wrote the record (§9, question 4).
    **Decided:** "Debug builds serve them": the three routes are under
    `debug_assertions`, the delay header is honoured only where the testkit
    turns it on (`AppState::test_daemon`), no test features remain, and the
-   Bazel derivation refuses one.
+   Bazel derivation refuses one. (The routes' own checks were tightened in
+   §10: the owner's token and a bounded sleep.)
 6. **`clax-commands` opens the store directly** (`doctor`, `init`'s
    credential revoke), so it depends on `clax-store` and is rebuilt by
    store edits. Recommended: keep for now; concern `30b40937` already
-   tracks the risk that brings. **Decided:** not asked; the recommendation
-   stands.
+   tracks the risk that brings. **Not asked; taken from the spec's
+   recommendation.** Still open to the owner.
 7. **Record `e3918e09`** names a file deleted in `baa15c24`: close it, or
    re-anchor it on `crates/clax-server/tests/common/clients.rs`.
-   **Decided:** not asked; re-anchored as recommended, on that file's new
-   home, `crates/clax-testkit/src/clients.rs` (record `62a2827d`).
+   **Not asked; taken from the spec's recommendation:** re-anchored on that
+   file's new home, `crates/clax-testkit/src/clients.rs` (record
+   `62a2827d`). Its reply `8477ffef` asks the owner whether to close it.
 
 The owner also set the order of the goals: "We should be thinking about the
 total layout for readability and maintainability first and speed of
@@ -839,3 +842,7 @@ migration decided as follows.
   router's source from there. `clax_server::daemon` became
   `clax_server::serve`, so `daemon` names only `clax_core::daemon`, the
   discovery files.
+- **Directories that hold only a `.qual` stay** (`crates/clax-core/src/store/`,
+  `crates/clax-server/src/views/`): they keep the closed records whose
+  subjects name those paths, and the resolves that point each to its moved
+  record. Compacting or deleting that history is the owner's call.
