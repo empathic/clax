@@ -229,7 +229,7 @@ async fn connect_with_an_invite_writes_remote_json_and_key_0600() {
         let name = path.file_name().unwrap().to_string_lossy().to_string();
         if name != "remote.json" {
             assert!(
-                !String::from_utf8_lossy(&bytes).contains("cx"),
+                !String::from_utf8_lossy(&bytes).contains(&token),
                 "{name} holds a token"
             );
         }
