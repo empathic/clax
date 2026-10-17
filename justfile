@@ -76,40 +76,72 @@ stop:
 doctor:
     CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" ./scripts/run.sh clax doctor
 
-# Build clax for the Clax app and place it in apps/clax_app: [android|macos|all] [--debug], release by default
+# The Clax app (apps/clax_app). With Bazel each builds or checks from the
+# shared cache (docs/bazel.md, "The Clax app"); each has a `-native` twin
+# (Flutter, Gradle, Xcode and Cargo, as before).
+
+# Build the Clax app's embedded clax: with Bazel for both Android CPUs and macOS, printing their paths; natively placed in apps/clax_app: [android|macos|all] [--debug]
 [positional-arguments]
 app-clax *ARGS:
-    ./scripts/build-app-clax.sh "$@"
+    ./scripts/run.sh app-clax "$@"
 
-# Run the Clax app's checks (Flutter analyze and tests) against a kept debug clax
-app-test:
-    bin="$(apps/clax_app/tool/test-bin.sh)" && cd apps/clax_app && CLAX_TEST_BIN="$bin" tool/check.sh
+# Build the Clax app's embedded clax natively (Cargo and the NDK) and place it in apps/clax_app
+[positional-arguments]
+app-clax-native *ARGS:
+    CLAX_BUILD=native ./scripts/run.sh app-clax "$@"
 
-# Build the macOS clax and run the Clax app's integration tests on macOS, one
-# file per flutter call (a second file in the same call fails to launch)
-app-integration:
-    ./scripts/build-app-clax.sh macos && cd apps/clax_app && for f in integration_test/*_test.dart; do flutter test "$f" -d macos || exit 1; done
+# Run the Clax app's checks: Dart analysis, its tests, the prompt copies, its APK and macOS app's contents
+app-test *ARGS:
+    ./scripts/run.sh app-test {{ARGS}}
+
+# Run the Clax app's checks natively (flutter analyze and test) against a kept debug clax
+app-test-native:
+    CLAX_BUILD=native ./scripts/run.sh app-test
+
+# Run the Clax app's macOS integration tests, one app per file; each opens the app's window
+app-integration *ARGS:
+    ./scripts/run.sh app-integration {{ARGS}}
+
+# Run the Clax app's macOS integration tests natively (flutter test -d macos)
+app-integration-native:
+    CLAX_BUILD=native ./scripts/run.sh app-integration
 
 # Build each eval prompt into an app with the in-app agent on a live model, results in target/flutter-app/eval/<run>/ (needs ANTHROPIC_API_KEY; up to $6 a build, refused over --max-spend, $30 by default): [--model ID] [--prompts a,b] [--max-spend USD] [--run NAME]
 [positional-arguments]
 app-eval *ARGS:
     apps/clax_app/tool/eval/run.sh "$@"
 
-# Build the Android clax binaries and the Clax app's release APK, for arm64 and x86_64 only (the ABIs clax is built for); disable-abi-filtering keeps Flutter's Gradle plugin from adding armeabi-v7a back to the app's abiFilters
+# Build the Clax app's release APK (arm64 and x86_64, the ABIs clax is built for) and print its path
 app-apk:
-    ./scripts/build-app-clax.sh android && echo "app-apk: packaging the APK with Gradle" && cd apps/clax_app && flutter build apk --release --target-platform android-arm64,android-x64 -P disable-abi-filtering=true
+    ./scripts/run.sh app-apk
 
-# Build HEAD's release APK in a clean copy and install it on the plugged-in phone
+# Build the Clax app's release APK natively (Gradle)
+app-apk-native:
+    CLAX_BUILD=native ./scripts/run.sh app-apk
+
+# Build HEAD's release APK and install it on the plugged-in phone, keeping the app's data
 app-phone:
     ./scripts/app-phone.sh --i-know-what-i-am-doing
 
+# Build HEAD's release APK natively (Gradle, in a clean copy) and install it on the plugged-in phone
+app-phone-native:
+    CLAX_BUILD=native ./scripts/app-phone.sh --i-know-what-i-am-doing
+
 # Pack the home app (apps/clax_app/home) into the bundle the Clax app ships, apps/clax_app/assets/home/home.clax, signed by the home app's key in ~/.config/clax/home-bundle
 home-bundle:
-    ./scripts/build-home-bundle.sh --i-know-what-i-am-doing
+    ./scripts/run.sh home-bundle --i-know-what-i-am-doing
 
-# Build the macOS clax and the Clax app's release macOS app
+# Pack the home bundle natively (dart run)
+home-bundle-native:
+    CLAX_BUILD=native ./scripts/run.sh home-bundle --i-know-what-i-am-doing
+
+# Build the Clax app's macOS app and print its path
 app-macos:
-    ./scripts/build-app-clax.sh macos && cd apps/clax_app && flutter build macos --release
+    ./scripts/run.sh app-macos
+
+# Build the Clax app's macOS app natively (Xcode)
+app-macos-native:
+    CLAX_BUILD=native ./scripts/run.sh app-macos
 
 # Try rooms and sample() in a scratch daemon (the stub provider unless ANTHROPIC_API_KEY is set)
 demo-room-sample:

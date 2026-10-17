@@ -116,6 +116,28 @@ _expect "bazelisk: ci is the script CI runs" 0 "1xwould run: ./scripts/bazel-tes
 _try -- which
 _expect "bazelisk: which says bazel" 0 "1x^bazel: Bazelisk found"
 
+# The Clax app's tasks: Bazel targets with Bazelisk; Flutter natively, and
+# refused without it.
+mkdir -p "$repo/apps/clax_app/integration_test"
+touch "$repo/apps/clax_app/integration_test/one_test.dart" "$repo/apps/clax_app/integration_test/rig.dart"
+_try -- --dry-run app-test
+_expect "bazelisk: app-test tests the app's package" 0 "1xwould run: .*bazelisk test --lockfile_mode=error //apps/clax_app/...$"
+_try -- --dry-run app-integration
+_expect "bazelisk: app-integration runs a target per test file" 0 \
+    "1xwould run: .*bazelisk test --lockfile_mode=error //apps/clax_app:integration_one$"
+_try -- --dry-run app-apk
+_expect "bazelisk: app-apk builds the APK and names it" 0 \
+    "1xwould run: .*bazelisk build --lockfile_mode=error //apps/clax_app:apk$" "1x<the output of //apps/clax_app:apk>"
+_try -- --dry-run home-bundle --i-know-what-i-am-doing
+_expect "bazelisk: home-bundle runs the packing target" 0 \
+    "1xwould run: .*bazelisk run --lockfile_mode=error //apps/clax_app:home_bundle -- --i-know-what-i-am-doing$"
+_try CLAX_BUILD=native -- --dry-run app-test
+_expect "native without flutter: app-test is refused" 2 "1xflutter (the Clax app"
+_stubs "${native[@]}" flutter
+_try CLAX_BUILD=native -- --dry-run app-apk
+_expect "native: app-apk is Cargo's binaries and Gradle" 0 \
+    "1xwould run: ./scripts/build-app-clax.sh android$" "1xflutter build apk --release"
+
 # 2. Bazelisk alone, no native tools: fine, and nothing is said.
 _stubs bazelisk
 _try -- web-test

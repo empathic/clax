@@ -135,6 +135,14 @@ sh_test(
     data = [":all"],
 )
 
+# scripts/build-app-clax.sh's dry runs (the native build of the Clax app's
+# embedded clax).
+sh_test(
+    name = "build_app_clax",
+    srcs = ["test-build-app-clax.sh"],
+    data = [":all"],
+)
+
 sh_test(
     name = "stable_bin",
     srcs = ["test-stable-bin.sh"],

@@ -63,7 +63,7 @@ _bazel_usable() {
     return 1
 }
 
-# _native_usable <rust|web>...: returns 1 with _native_missing listing what
+# _native_usable <rust|web|flutter>...: returns 1 with _native_missing listing what
 # is not installed. A version the repository does not pin for is not
 # missing: it goes in _native_warnings, since such a run usually works and,
 # when it does not, fails obscurely.
@@ -91,6 +91,9 @@ _native_usable() {
                 else
                     _native_missing+=("pnpm")
                 fi
+                ;;
+            flutter)
+                command -v flutter >/dev/null 2>&1 || _native_missing+=("flutter (the Clax app: https://docs.flutter.dev/get-started/install)")
                 ;;
         esac
     done

@@ -2,8 +2,8 @@
 
 Clax builds everything with Bazel when Bazel is installed: every `just`
 recipe (`ci`, `check`, `test`, `web-test`, `pi-test`, `web-e2e`, `lint`,
-`build`, `web`, `dev`, `watch`, `serve`, `install`, …), in every worktree,
-and CI. The point is the whole experience in the common case: about five
+`build`, `web`, `dev`, `watch`, `serve`, `install`, the Clax app's
+`app-test`, `app-apk`, `app-macos`, …), in every worktree, and CI. The point is the whole experience in the common case: about five
 worktrees at once, with a shared cache one of them has already filled. A
 new worktree then needs no setup (no `pnpm install`, no web build, no
 warm-up step) and no `target/` or `node_modules`: `just ci` and `just test`
@@ -203,6 +203,153 @@ user-activation tests timed out. In CI,
 `bazelisk run //web:playwright -- install-deps chromium` installs the
 system libraries Chromium needs.
 
+## The Clax app
+
+`apps/clax_app` (Flutter, for Android and macOS) builds and tests under
+Bazel with [rules_flutter](https://github.com/aran/rules_flutter) (0.0.6)
+and [rules_dart](https://github.com/aran/rules_dart) (0.7.3), patched and
+extended here (`bazel/flutter/`, `bazel/android/`). rules_flutter was
+chosen because it is maintained (a release a week, on Bazel 9 and the
+Flutter 3.47.7 the app uses), fetches Flutter, its engines and the pub
+packages by checksum, and builds an APK with rules_android rather than
+Gradle; it is alpha, so its API may move with a version bump. Nothing
+comes from `~/Library` or a `PATH` install but Xcode (rules_apple's, for
+macOS) and the two keys below.
+
+| Target (`//apps/clax_app:…`) | What it is | Native twin |
+|---|---|---|
+| `<dir>_<file>` (127, one per `test/**/*_test.dart`) | `flutter test` of that file; the `*_real_test.dart` ones against the warmed debug `clax` | `flutter test` |
+| (the `dart_analyze` aspect, `.bazelrc`) | `flutter analyze` over every Dart target a test run names, by `analysis_options.yaml`; any diagnostic fails | `flutter analyze` |
+| `prompt_sync`, `version_sync` | the prompt's copies of the contract; pubspec.yaml's version is the one the BUILD file gives the APK and the macOS app | `scripts/sync-app-prompt.sh --check` |
+| `apk`, `apk_test` | the release APK for arm64-v8a and x86_64 (`bazel/flutter/android.bzl`), and a check of it against what Gradle makes | `flutter build apk` |
+| `macos_app`, `macos_app_test` | `clax_app.app` (a zip) with the embedded `clax` signed as a sandboxed helper (`bazel/flutter/macos.bzl`), and a check of it; macOS only | `flutter build macos` |
+| `integration_<name>` (manual) | `integration_test/<name>_test.dart` in the debug app, run in the logged-in session | `flutter test <file> -d macos` |
+| `home_bundle` (run) | `scripts/build-home-bundle.sh` with `pack_home` compiled by rules_dart; writes into the checkout | `dart run tool/pack_home.dart` |
+| `//crates/clax-cli:clax_android_arm64`, `:clax_android_x86_64` | `clax` optimized and stripped for each Android CPU with the NDK, as `<abi>/libclax.so` (`bazel/android/clax.bzl`) | `scripts/build-app-clax.sh android` |
+
+Everything but the integration tests is in `just ci` (`tests(//...)`).
+The integration tests open the app's window and take minutes each, so
+`just app-integration` runs them on demand.
+
+**What is fetched, and from where (`MODULE.bazel`).**
+
+- Flutter 3.47.7 and its engines (`flutter.toolchain`), and every package
+  of `apps/clax_app/pubspec.lock` by its pub.dev checksum (`flutter.pub`,
+  the `@clax_app_pub` hub). Bazel never writes the lockfile:
+  `bazelisk run @rules_flutter//flutter:pub -- get --directory apps/clax_app`
+  resolves it with the pinned Flutter.
+- The NDK r28c (`rules_android_ndk`, patched by
+  `bazel/android/rules_android_ndk.patch` to fetch a pinned archive and to
+  keep its C++ runtime archives apart from the static libc, which rules_rust
+  would otherwise link), and the Rust standard library for
+  `aarch64-linux-android` and `x86_64-linux-android`; crate_universe
+  resolves the crates for those triples too.
+- The Android SDK's build tools 36.0.0, platform android-36 and platform
+  tools (`rules_android`, patched by `bazel/android/rules_android.patch` to
+  fetch pinned archives instead of reading `ANDROID_HOME`).
+- A JDK (rules_java's remote JDKs: 21 for the app's Java, 25 for the tools),
+  the Go toolchain rules_android builds its tools with, and the Maven
+  libraries the plugins' Gradle builds name, pinned in
+  `bazel/android/maven_install.json`.
+- CwlCatchException, the Swift package speech_to_text's Apple code needs
+  (`bazel/flutter/third_party`, added to it by the overlay in
+  `bazel/flutter/plugin_overlays/speech_to_text`).
+
+Two inputs are this machine's, not pinned: the Android debug key
+(`~/.android/debug.keystore`, `bazel/android/debug_keystore.bzl`; without
+one, rules_android's own signs the APK, which then does not install over
+an APK signed on a developer's machine), and the home bundle's signing key
+(`~/.config/clax/home-bundle/key`, read only by the `home_bundle` run
+target).
+
+**rules_flutter's patches** (`bazel/flutter/rules_flutter.patch`), each
+small enough to offer upstream: an app's assets are keyed by their path in
+the app's package, not the workspace, so an app below the root
+(`apps/clax_app`) finds `assets/kit/…`; a plugin gets the Android code of
+its pub dependencies (image_picker_android needs
+flutter_plugin_android_lifecycle's) and every Maven coordinate its Gradle
+build names, not only those rules_flutter lists; and `integration_test`
+comes from the Flutter SDK as `flutter_test` does.
+
+**How the APK is assembled.** rules_flutter's `flutter_android_app` builds
+one ABI and compiles the runner's Kotlin without the app's resources, so
+`flutter_fat_apk` (`bazel/flutter/android.bzl`) composes its lower-level
+rules: per ABI the AOT `libapp.so` (`flutter_android_bundle`) and
+`libflutter.so`, the engine's classes once, `libclax.so` for each ABI,
+the runner's Kotlin with `res/` under its namespace (`dev.empathic.clax_app`),
+the plugin registrant, every plugin's Android code, and the manifest with
+the plugins' permissions merged in and its relative class names made
+absolute (Gradle resolves them against the namespace before it renames the
+package to the application ID, `dev.empathic.clax`). `release_apk` builds
+it with `-c opt` (not debuggable, the AOT snapshot stripped) and
+`.bazelrc`'s `--experimental_android_compress_java_resources` compresses
+the native libraries as Gradle does for an app that extracts them. Gradle
+is not run at all. Against Gradle's APK (`aapt2 dump badging` and the file
+list, as `:apk_test` checks): the same package, versions, SDK levels,
+permissions, launcher activity, native libraries and debug signature; it
+differs in what AGP adds or strips: no R8 shrinking (four dex files,
+17 MB, against one of 1.2 MB, and Kotlin's `.knm` metadata files left in),
+no baseline profile, resource names not obfuscated, and the `.qual` files
+under `assets/` left out.
+
+**The macOS app** is rules_flutter's `flutter_macos_app` (rules_apple),
+named `clax_app` as Xcode's PRODUCT_NAME, with Runner's entitlements and
+pubspec.yaml's version, and `clax` in `Contents/Resources` signed ad hoc
+with `Runner/ClaxHelper.entitlements` by `macos_helper`, as the Xcode
+build's "Embed clax" phase signs it (a debug app's helper without them).
+It is ad hoc signed throughout; a Developer ID identity is a native-build
+concern (`macos/Runner/Configs/AppInfo.xcconfig`, `Signing.xcconfig`).
+
+**The tests** run `flutter_tester` as `flutter test` does, with
+`UNIT_TEST_ASSETS` and `APP_NAME` set as it sets them (so assets load
+within a test's fake time). A test finds the app's files and its scratch
+directory through `test/support/paths.dart`, the same under `flutter test`
+(run in `apps/clax_app`) and Bazel (run in the runfiles tree). A test file
+another test imports for its fakes is listed in `TEST_SUPPORT` in
+`apps/clax_app/BUILD.bazel`. An integration test runs in the debug app
+(`debug_app`, `-c dbg`: JIT, Runner's `#if DEBUG` test-input channel,
+`DebugProfile.entitlements`), whose entry point (`integration_main`) runs
+the test and exits with its result.
+
+### Maintaining it
+
+- **Flutter.** Change `flutter.toolchain(flutter_version = …)` in
+  `MODULE.bazel` to a version rules_flutter knows (its release notes say
+  which; a newer one may need a newer rules_flutter), resolve the lockfile
+  with the new Flutter (above), and run `just app-test`. Each patch under
+  `bazel/flutter/` must still apply: a failure names the file; regenerate
+  the patch against the new release's sources. The Dart SDK of rules_dart
+  (`dart.toolchain` in rules_dart's module) must match Flutter's.
+- **A pub package.** `flutter pub add` (or edit `pubspec.yaml`) and resolve
+  the lock as above; add the package to `:clax_app`'s `deps`. A plugin
+  whose Android build names a Maven coordinate not yet pinned fails naming
+  `@rules_android_maven//:<group>_<artifact>`: add it with its version to
+  `maven.install` in `MODULE.bazel`, then
+  `REPIN=1 bazelisk run @unpinned_rules_android_maven//:pin`. A plugin whose
+  Apple code needs a Swift package, or whose Android build compiles C with
+  CMake, needs an overlay in `bazel/flutter/plugin_overlays/<package>/<major>/`
+  (a copy of the BUILD file rules_flutter generates, with the
+  dependency added; see the speech_to_text one, and its `android/` half,
+  which an overlay must carry too).
+- **The NDK and the SDK.** Each archive is a URL and a SHA-256 in
+  `MODULE.bazel` (`android_ndk.configure`, `android_sdk.configure`; the
+  SDK's in `<directory> <archive's top directory> <host> <url> <sha256>`
+  lines, from Google's `repository2-3.xml`): replace both
+  (`curl -sL <url> | shasum -a 256`). The NDK's API level (29) is the app's
+  `minSdk`. The platform's version is also `targetSdkVersion` in the APK's
+  `manifest_values`.
+- **The JDKs** are rules_java's remote JDKs, named in `.bazelrc`
+  (`--java_runtime_version`, `--tool_java_runtime_version`); the Kotlin
+  toolchain's `jvm_target` is in `bazel/android/BUILD.bazel`.
+- **AGP and Gradle** are not used; `android/app/build.gradle.kts` stays the
+  native build's, and what it sets that the APK must match (application ID,
+  namespace, SDK levels, ABIs, desugaring, extracted native libraries,
+  signing) is set again in `apps/clax_app/BUILD.bazel` and checked by
+  `:apk_test`. Change both together.
+- **The app's version.** `VERSION_NAME` and `VERSION_CODE` in
+  `apps/clax_app/BUILD.bazel` with `pubspec.yaml`'s `version`
+  (`:version_sync` fails until they agree).
+
 ## Run outside Bazel
 
 `scripts/bazel-test.sh --ci` runs these as they are, after the Bazel
@@ -261,6 +408,8 @@ Performance gates nothing in either (`just perf` measures on demand).
 | crate layers | `//scripts:crate_layers` |
 | no hard links | `//scripts:no_hard_links` (the check's own test), and `scripts/check-no-hard-links.sh` over the tracked files outside Bazel |
 | pipefail pipes | `//scripts:pipefail_pipes`, and `scripts/check-pipefail-pipes.sh` over the tracked files outside Bazel |
+| app (flutter analyze + test) | the `dart_analyze` aspect and the flutter_test targets of `//apps/clax_app`, with `:prompt_sync`, `:version_sync`, `:apk_test` and `:macos_app_test` ("The Clax app") |
+| build app clax | `//scripts:build_app_clax` (the native script's dry runs) |
 
 Bazel adds: `scripts/bazel-sync.sh --check` first, `//scripts:bazel_gc`,
 `//scripts:run_choice`, `//bazel/js:scratch_test`,

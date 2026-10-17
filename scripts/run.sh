@@ -17,6 +17,12 @@
 #   scripts/run.sh install           build the release clax and install it in $CARGO_HOME/bin
 #                                    (CLAX_INSTALL_BIN=<binary> installs that one instead: tests)
 #   scripts/run.sh rust-project      rust-project.json for rust-analyzer, from Bazel
+#   scripts/run.sh app-test          the Clax app's analysis and tests (apps/clax_app)
+#   scripts/run.sh app-integration   the Clax app's macOS integration tests (they open its window)
+#   scripts/run.sh app-apk           the Clax app's release APK, and print its path
+#   scripts/run.sh app-macos         the Clax app's macOS app, and print its path
+#   scripts/run.sh app-clax [args]   the Clax app's embedded clax builds ([android|macos|all] [--debug] natively)
+#   scripts/run.sh home-bundle [args] pack the home app's bundle (--i-know-what-i-am-doing writes it)
 #   scripts/run.sh which             say which build system would run, and why
 #   scripts/run.sh --dry-run <task>  say what would run, and run nothing
 #
@@ -63,6 +69,9 @@ case "$task" in
     install) needs=(rust web) ;;
     web-test|pi-test|web) needs=(web) ;;
     web-e2e) needs=(rust web) ;;
+    app-test|app-integration|app-apk|app-macos) needs=(rust web flutter) ;;
+    app-clax) needs=(rust web) ;;
+    home-bundle) needs=(flutter) ;;
     *) usage ;;
 esac
 
@@ -114,6 +123,17 @@ _bazel_bin() {
     local out
     _run "${awake[@]+"${awake[@]}"}" "$BAZEL" build --lockfile_mode=error "$1" >&2 || return $?
     if [ "$dry" = 1 ]; then echo "<the path of $1>"; return 0; fi
+    out="$("$BAZEL" cquery --lockfile_mode=error --output=files "$1" 2>/dev/null | sed -n 1p)"
+    [ -n "$out" ] || { echo "error: no output file for $1" >&2; return 1; }
+    echo "$PWD/$out"
+}
+
+# _bazel_out <label>: builds a target and prints the absolute path of its
+# output (an APK, an app's zip, a binary); Bazel's messages go to stderr.
+_bazel_out() {
+    local out
+    _run "${awake[@]+"${awake[@]}"}" "$BAZEL" build --lockfile_mode=error "$1" >&2 || return $?
+    if [ "$dry" = 1 ]; then echo "<the output of $1>"; return 0; fi
     out="$("$BAZEL" cquery --lockfile_mode=error --output=files "$1" 2>/dev/null | sed -n 1p)"
     [ -n "$out" ] || { echo "error: no output file for $1" >&2; return 1; }
     echo "$PWD/$out"
@@ -175,6 +195,23 @@ _bazel() {
             _run "${b[@]}" build --lockfile_mode=error //web:dist //web:dist_extension "$@" || return $?
             _copy_dist dist && _copy_dist dist-extension
             ;;
+        app-test) _run "${b[@]}" test --lockfile_mode=error //apps/clax_app/... "$@" ;;
+        app-integration)
+            local t targets=()
+            for t in apps/clax_app/integration_test/*_test.dart; do
+                t="${t##*/}"
+                targets+=("//apps/clax_app:integration_${t%_test.dart}")
+            done
+            _run "${b[@]}" test --lockfile_mode=error "${targets[@]}" "$@"
+            ;;
+        app-apk) _bazel_out //apps/clax_app:apk ;;
+        app-macos) _bazel_out //apps/clax_app:macos_app ;;
+        app-clax)
+            _bazel_out //crates/clax-cli:clax_android_arm64 &&
+                _bazel_out //crates/clax-cli:clax_android_x86_64 &&
+                _bazel_out //crates/clax-cli:clax_opt
+            ;;
+        home-bundle) _run "${b[@]}" run --lockfile_mode=error //apps/clax_app:home_bundle -- "$@" ;;
     esac
 }
 
@@ -220,6 +257,29 @@ _native() {
             ;;
         rust-project) echo "Natively rust-analyzer reads Cargo.toml: nothing to generate." ;;
         web) _run bash -c 'cd web && pnpm install --frozen-lockfile' && _run ./scripts/build-web.sh ;;
+        app-test)
+            _run bash -c 'bin="$(apps/clax_app/tool/test-bin.sh)" && cd apps/clax_app && CLAX_TEST_BIN="$bin" tool/check.sh'
+            ;;
+        app-integration)
+            # One file per flutter call: a second file in the same call fails to launch.
+            _run ./scripts/build-app-clax.sh macos &&
+                _run bash -c 'cd apps/clax_app && for f in integration_test/*_test.dart; do flutter test "$f" -d macos || exit 1; done'
+            ;;
+        app-apk)
+            # arm64 and x86_64 only (the ABIs clax is built for); disable-abi-filtering keeps
+            # Flutter's Gradle plugin from adding armeabi-v7a back to the app's abiFilters.
+            _run ./scripts/build-app-clax.sh android &&
+                _run echo "app-apk: packaging the APK with Gradle" &&
+                _run bash -c 'cd apps/clax_app && flutter build apk --release --target-platform android-arm64,android-x64 -P disable-abi-filtering=true' &&
+                { [ "$dry" = 1 ] || echo "$PWD/apps/clax_app/build/app/outputs/flutter-apk/app-release.apk"; }
+            ;;
+        app-macos)
+            _run ./scripts/build-app-clax.sh macos &&
+                _run bash -c 'cd apps/clax_app && flutter build macos --release' &&
+                { [ "$dry" = 1 ] || echo "$PWD/apps/clax_app/build/macos/Build/Products/Release/clax_app.app"; }
+            ;;
+        app-clax) _run ./scripts/build-app-clax.sh "$@" ;;
+        home-bundle) _run ./scripts/build-home-bundle.sh "$@" ;;
     esac
 }
 
@@ -264,7 +324,7 @@ status=$?
 _perf_record
 
 if [ "$status" -eq 0 ]; then result="passed"; else result="failed (exit $status)"; fi
-case "$task" in build|web|bin|install|rust-project) result="${result/passed/done}" ;; esac
+case "$task" in build|web|bin|install|rust-project|app-apk|app-macos|app-clax|home-bundle) result="${result/passed/done}" ;; esac
 line="── \`$task\` $result with the native tools, not Bazel. CI gates on Bazel, and the two can differ: this does not say what CI will."
 if [ "$BUILD_SYSTEM_FALLBACK" = 1 ]; then
     line="$line Install Bazelisk for the same checks: $(build_system_install_hint)"

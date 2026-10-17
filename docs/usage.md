@@ -505,10 +505,21 @@ agent", "The Clax app", "Sharing apps", "Device capabilities in the Clax
 app", "Reading another app's documents", "Fetching from the network",
 "Security model").
 
-**Toolchains.** Flutter (stable; 3.47 is what it is built with), Xcode for
-macOS, and for Android a JDK 17, the Android SDK (platform 36, build tools,
-platform tools, command-line tools) and NDK 28.2.13676358. Point Flutter at
-them once, and accept the SDK licences:
+**Toolchains.** With Bazel (as for the rest of Clax) nothing needs
+installing but Bazelisk and, for macOS, Xcode: Bazel fetches Flutter
+3.47.7 and every pub package of `pubspec.lock`, the Android SDK (build
+tools 36.0.0, platform 36, platform tools), NDK r28c, a JDK, the Maven
+libraries the plugins need and the Rust targets, each by checksum, into
+the cache every worktree shares. `docs/bazel.md`, "The Clax app", says
+what builds what and how to upgrade each piece. The one input from this
+machine is the Android debug key, `~/.android/debug.keystore`, which signs
+the APK so it installs over one already on a phone.
+
+The `-native` twins use Flutter, Gradle and Xcode as installed: Flutter
+(stable; 3.47 is what it is built with), Xcode for macOS, and for Android a
+JDK 17, the Android SDK (platform 36, build tools, platform tools,
+command-line tools) and NDK 28.2.13676358. Point Flutter at them once, and
+accept the SDK licences:
 
 ```
 flutter config --jdk-dir "$(ls -d ~/Library/Java/jdk-17*/Contents/Home | head -1)"
@@ -517,32 +528,38 @@ flutter doctor --android-licenses
 flutter doctor
 ```
 
-`scripts/build-app-clax.sh` takes the NDK from `ANDROID_NDK_HOME`, else
+`scripts/build-app-clax.sh` (the native build of the embedded `clax`)
+takes the NDK from `ANDROID_NDK_HOME`, else
 `~/Library/Android/sdk/ndk/28.2.13676358`, and adds the Rust targets
 `aarch64-linux-android` and `x86_64-linux-android` itself.
 
-**Recipes.**
+**Recipes.** Each runs Bazel when it is installed and has a `-native` twin
+(`just app-test-native`, `just app-apk-native`, …) that runs the native
+tools as before; `scripts/run.sh --dry-run <recipe>` says what one would
+run.
 
-- `just app-clax [android|macos|all] [--debug]` builds `clax` for the app
-  and places it where the app's build picks it up: the host binary at
-  `apps/clax_app/build-native/macos/clax`, and stripped Android binaries at
-  `apps/clax_app/android/app/src/main/jniLibs/{arm64-v8a,x86_64}/libclax.so`
-  (all git-ignored). A release build (the default) embeds `web/dist`, so it
-  builds the web UI first. Each binary is renamed into place, never copied
-  over one that may be running.
-- `just app-test` runs the app's gate, `apps/clax_app/tool/check.sh`:
-  `flutter analyze`, the unit and widget tests (against a debug `clax` kept
-  by content, for the tests that start the daemon), and
-  `scripts/sync-app-prompt.sh --check`, which checks that the prompt assets
-  in `apps/clax_app/assets/prompt` still copy `docs/contract.md`'s "Page
-  contract" and "Runtime capabilities" sections and the served type
-  definitions. After changing either section, run
-  `scripts/sync-app-prompt.sh` and commit the assets with it.
-- `just app-integration` builds the macOS `clax` and runs the integration
-  tests on macOS, one `flutter test <file> -d macos` per file of
-  `integration_test/`: the full loop (a scripted agent making and changing
-  an app on the real daemon and inspector) and the credential-gated daemon.
-  Run it in the background; it builds into `apps/clax_app/build/macos`.
+- `just app-test` runs the app's checks: `dart analyze` over every Dart
+  target (`apps/clax_app/analysis_options.yaml`), each test file of `test/`
+  as its own target (`//apps/clax_app:<dir>_<file>`; the `*_real_test.dart`
+  files against Bazel's debug `clax`), the prompt copies
+  (`//apps/clax_app:prompt_sync`, `scripts/sync-app-prompt.sh --check`,
+  which checks that the prompt assets in `apps/clax_app/assets/prompt`
+  still copy `docs/contract.md`'s "Page contract" and "Runtime
+  capabilities" sections and the served type definitions), the APK's and
+  the macOS app's contents (`:apk_test`, `:macos_app_test`) and the
+  version's (`:version_sync`). All of them are in `just ci`. After changing
+  either contract section, run `scripts/sync-app-prompt.sh` and commit the
+  assets with it. `just app-test-native` runs `apps/clax_app/tool/check.sh`
+  (`flutter analyze`, `flutter test` against a debug `clax` kept by
+  content, and the prompt check).
+- `just app-integration` runs the integration tests on macOS, one app per
+  file of `integration_test/` (`//apps/clax_app:integration_<name>`): the
+  full loop (a scripted agent making and changing an app on the real daemon
+  and inspector), app bundles end to end, and the credential-gated daemon.
+  Each opens the app's window and takes up to a few minutes, so they are
+  not in `just ci`; run it in the background. `just app-integration-native`
+  runs `flutter test <file> -d macos` for each file, into
+  `apps/clax_app/build/macos`.
 - `just app-eval [--model ID] [--prompts a,b] [--max-spend USD] [--run
   NAME]` is the live build eval, run by hand and never by a gate: each
   prompt of `apps/clax_app/tool/eval/prompts.json` is built by the app's
@@ -553,12 +570,33 @@ flutter doctor
   per-run costs and a results table go to `target/flutter-app/eval/<run>/`.
   It builds the macOS debug app, so do not run it beside another macOS
   build or `just app-integration`.
-- `just app-apk` builds the Android binaries and a release APK, at
-  `apps/clax_app/build/app/outputs/flutter-apk/app-release.apk`. It is
-  signed with the debug key, which is enough to install it on your own
-  phone.
-- `just app-macos` builds the macOS `clax` and a release (sandboxed) app,
-  at `apps/clax_app/build/macos/Build/Products/Release/clax_app.app`.
+- `just app-apk` builds the release APK, for arm64-v8a and x86_64 with the
+  embedded `clax` of each, and prints its path (`//apps/clax_app:apk`,
+  `bazel-bin/apps/clax_app/apk.apk`). It is signed with the debug key,
+  which is enough to install it on your own phone.
+  `just app-apk-native` builds the Android binaries with Cargo into
+  `jniLibs/` and the APK with Gradle, at
+  `apps/clax_app/build/app/outputs/flutter-apk/app-release.apk`.
+- `just app-phone` builds HEAD's APK and installs it on the plugged-in
+  phone (`scripts/app-phone.sh`, a dry run without
+  `--i-know-what-i-am-doing`), with the SDK's `adb` Bazel fetches; a
+  checkout with changes is built from a clean copy of HEAD.
+- `just app-macos` builds the release (sandboxed) app, `clax_app.app`, and
+  prints its path (`//apps/clax_app:macos_app`, a zip);
+  `just app-macos-native` builds it with Xcode, at
+  `apps/clax_app/build/macos/Build/Products/Release/clax_app.app`.
+- `just app-clax` builds the embedded `clax` on its own: with Bazel the
+  Android binaries (`//crates/clax-cli:clax_android_arm64`,
+  `:clax_android_x86_64`) and the host one (`:clax_opt`), printing their
+  paths, which the APK and the macOS app take directly.
+  `just app-clax-native [android|macos|all] [--debug]` builds them with
+  Cargo and places them where the native app builds pick them up: the
+  host binary at `apps/clax_app/build-native/macos/clax`, and stripped
+  Android binaries at
+  `apps/clax_app/android/app/src/main/jniLibs/{arm64-v8a,x86_64}/libclax.so`
+  (all git-ignored). A release build (the default) embeds `web/dist`, so it
+  builds the web UI first. Each binary is renamed into place, never copied
+  over one that may be running.
 
 No test and no gate calls a model: the agent is tested against a scripted
 backend and a fake Messages API server. Runs against a live model are
@@ -601,6 +639,10 @@ release a change to `home/` or to the kit files it carries, raise
 just home-bundle                 # packs and writes home.clax and release.json
 ```
 
+(With Bazel, `just home-bundle` runs `//apps/clax_app:home_bundle`: the
+same script with `tool/pack_home.dart` compiled by Bazel, writing into the
+checkout; `just home-bundle-native` runs it with `dart run`.)
+
 and commit both outputs with the sources. Packing unchanged sources writes
 nothing; packing changed files under the shipped version, or without the
 key, stops and says why. `test/home/home_bundle_test.dart` fails when
@@ -613,15 +655,19 @@ next release.
 the phone in, and from the checkout run:
 
 ```
-export PATH="$HOME/Library/Android/sdk/platform-tools:$PATH"
+just app-phone   # builds HEAD's APK, installs it keeping the app's data, and checks the daemon stays up
+```
+
+or by hand, with an `adb` on `PATH`:
+
+```
 adb devices    # lists the phone; accept the prompt on it if it says unauthorized
-just app-apk
-adb install -r apps/clax_app/build/app/outputs/flutter-apk/app-release.apk
+adb install -r "$(just app-apk | tail -n 1)"
 ```
 
 `flutter run --release -d <device>` from `apps/clax_app` builds, installs
-and starts it in one step, once `just app-clax android` has placed the
-binaries. The app needs Android 10 (API 29) or later on an arm64 or x86_64
+and starts it in one step, once `just app-clax-native android` has placed
+the binaries. The app needs Android 10 (API 29) or later on an arm64 or x86_64
 device. Open it, tap Settings on the launcher (a banner says so while no
 key is set), and paste a Claude API key into "Claude API key"; it is kept in
 the phone's Keystore-backed secure storage and sent only to the Claude API.
@@ -637,7 +683,7 @@ start `claude`, so the Claude Code backend is offered only in a debug
 build, which runs without the App Sandbox:
 
 ```
-just app-clax macos
+just app-clax-native macos
 cd apps/clax_app && flutter run -d macos   # or: flutter build macos --debug
 ```
 
