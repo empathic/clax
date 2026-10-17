@@ -1,9 +1,10 @@
-# Every CLI command reaches the daemon through the clients that carry the
+# Every command reaches the daemon through the clients that carry the
 # agent-channel marker under a harness (spec 2026-10-08 §16): `Client` in
 # src/client.rs and the `DaemonClient` src/commands/tools.rs makes from it.
 # Those two files allow these; nothing else in the crate may make an HTTP
 # client or a `DaemonClient` of its own. The integration tests talk to test
-# daemons directly and allow them in tests/integration.rs. The textual guard
+# daemons directly from crates/clax-cli/tests, which this file does not
+# cover. The textual guard
 # `every_command_reaches_the_daemon_through_the_marked_clients` in
 # src/commands/tools.rs stays as a second net.
 # A crate's clippy.toml hides the workspace's: this repeats the root one.
@@ -21,7 +22,7 @@ disallowed-methods = [
     { path = "clax_mcp::client::DaemonClient::new", reason = "use commands::tools::daemon_client" },
     { path = "clax_mcp::client::DaemonClient::with_channel", reason = "use commands::tools::daemon_client" },
     { path = "clax_mcp::client::DaemonClient::managed", reason = "use commands::tools::daemon_client" },
-    { path = "clax::client::Client::owner_channel", reason = "only the extension's native host speaks as the owner whatever its environment" },
+    { path = "clax_commands::client::Client::owner_channel", reason = "only the extension's native host speaks as the owner whatever its environment" },
 ]
 disallowed-types = [
     { path = "reqwest::blocking::Client", reason = "reach the daemon through crate::client::Client" },

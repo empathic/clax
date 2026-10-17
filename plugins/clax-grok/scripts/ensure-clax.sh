@@ -33,8 +33,8 @@
 #      settle on one). After a successful install, the N.N.N directories
 #      older than the pin are removed, except the newest of them: a daemon
 #      started by the previous plugin may still run from it, and a failed
-#      upgrade restarts that daemon's executable (crates/clax-cli/src/
-#      client.rs). A newer version is never removed. A failed download or
+#      upgrade restarts that daemon's executable (crates/clax-commands/
+#      src/client.rs). A newer version is never removed. A failed download or
 #      checksum installs and removes nothing. With no pinned release, this
 #      step is the error, and it says how to name a binary.
 #

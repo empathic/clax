@@ -1,6 +1,7 @@
 //! The Chrome extension built into this binary (`web/dist-extension`, the
-//! release build, embedded by `clax-embedded`), and where each supported
-//! browser looks for native messaging hosts (spec 2026-10-05 §5.4).
+//! release build, [`clax_core::embedded::Bundle::extension`]), and where
+//! each supported browser looks for native messaging hosts (spec 2026-10-05
+//! §5.4).
 
 use std::path::PathBuf;
 
@@ -12,7 +13,7 @@ pub fn files() -> Vec<(String, Vec<u8>)> {
     if let Some(dir) = std::env::var_os("CLAX_EXTENSION_DIST") {
         return walk(&PathBuf::from(dir));
     }
-    clax_embedded::extension_files()
+    clax_core::embedded::files_of(crate::embedded().extension())
 }
 
 #[cfg(debug_assertions)]

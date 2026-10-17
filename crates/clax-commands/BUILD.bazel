@@ -1,0 +1,20 @@
+load("//bazel:cargo.bzl", "cargo_package")
+
+cargo_package(
+    # The plugins' skills `clax doctor --agent` compares
+    # (src/commands/doctor_agent.rs).
+    compile_data = [
+        "//plugins:embedded",
+        "//plugins/pi:embedded",
+    ],
+    # The launcher the unit tests' bundle carries (src/lib.rs) and the shell
+    # cases `clax haiku` is checked against (src/commands/haiku.rs).
+    test_compile_data = [
+        "//scripts:ensure-clax.sh",
+        "//web:shell_cases",
+    ],
+)
+
+# Its lints, which scripts/bazel-test.sh hands to clippy for this crate's
+# targets, as Cargo reads it from beside Cargo.toml.
+exports_files(["clippy.toml"])

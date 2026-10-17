@@ -14,7 +14,9 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 /// The wrapper this binary was built with; the plugins carry copies.
-pub const LAUNCHER: &str = clax_embedded::LAUNCHER;
+pub fn launcher() -> &'static str {
+    crate::embedded().launcher()
+}
 
 /// How long a `clax --version` may take.
 pub const VERSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
@@ -409,7 +411,11 @@ mod tests {
         );
         assert_eq!(pinned_version("nothing"), None);
         // The wrapper this binary carries has the line.
-        assert!(LAUNCHER.lines().any(|l| l.starts_with("PINNED_VERSION=\"")));
+        assert!(
+            launcher()
+                .lines()
+                .any(|l| l.starts_with("PINNED_VERSION=\""))
+        );
     }
 
     #[test]

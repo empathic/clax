@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Prints the environment a harness's shell tool gives a command, so the
-# CLI's agent-channel detection (crates/clax-cli/src/channel.rs, spec §16)
+# CLI's agent-channel detection (crates/clax-commands/src/channel.rs, spec §16)
 # lists exactly the variables a harness is seen to set.
 #
 # Run it from inside a harness, through its shell tool (ask the agent to run

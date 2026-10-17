@@ -15,30 +15,19 @@ name = "clax"
 path = "src/main.rs"
 
 [dependencies]
+clax-commands = { path = "../clax-commands" }
 clax-core = { path = "../clax-core" }
 clax-server = { path = "../clax-server" }
-clax-mcp = { path = "../clax-mcp" }
-clax-hooks = { path = "../clax-hooks" }
 clax-embedded = { path = "../clax-embedded" }
 anyhow.workspace = true
-http = "1"
-chrono.workspace = true
-clap.workspace = true
-reqwest.workspace = true
-rmcp.workspace = true
-serde.workspace = true
-serde_json.workspace = true
 tokio.workspace = true
 tracing-subscriber.workspace = true
-base64.workspace = true
-nix = { workspace = true, features = ["signal", "hostname"] }
-semver.workspace = true
-tracing.workspace = true
-toml.workspace = true
-toml_edit.workspace = true
-sha2 = "0.11"
+nix.workspace = true
 
 [dev-dependencies]
+chrono.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
 assert_cmd.workspace = true
 predicates.workspace = true
 tempfile.workspace = true

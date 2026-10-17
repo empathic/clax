@@ -145,9 +145,9 @@ _bazel() {
         test) _run ./scripts/bazel-test.sh --rust "$@" ;;
         lint)
             _run "${b[@]}" build --lockfile_mode=error --config=fmt //crates/... &&
-                _run "${b[@]}" build --lockfile_mode=error --config=clippy -- //crates/... -//crates/clax-cli/... &&
+                _run "${b[@]}" build --lockfile_mode=error --config=clippy -- //crates/... -//crates/clax-commands/... &&
                 _run "${b[@]}" build --lockfile_mode=error --config=clippy \
-                    --@rules_rust//rust/settings:clippy.toml=//crates/clax-cli:clippy.toml //crates/clax-cli/... &&
+                    --@rules_rust//rust/settings:clippy.toml=//crates/clax-commands:clippy.toml //crates/clax-commands/... &&
                 _run "${b[@]}" test --lockfile_mode=error //web:lint
             ;;
         web-test) _run "${b[@]}" test --lockfile_mode=error //web:lint //web:typecheck //web:unit //web:bundle_size "$@" ;;

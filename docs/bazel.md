@@ -89,7 +89,7 @@ never runs `cargo check` into a `target/`; for VS Code, in
 | `scripts/build-web.sh` | `just web` (copies of Bazel's build into `web/dist` and `web/dist-extension`) |
 
 Use `scripts/bazel-test.sh` rather than `--config=clippy` by hand: it gives
-`crates/clax-cli` its own `clippy.toml`, which Bazel takes only one of per
+`crates/clax-commands` its own `clippy.toml`, which Bazel takes only one of per
 command. It holds off idle sleep on macOS while it runs; a plain
 `bazelisk test` does not (`caffeinate -i bazelisk test …` does).
 
@@ -238,7 +238,7 @@ Performance gates nothing in either (`just perf` measures on demand).
 | build clax, build tests | the build of `//crates/...` in the one `bazel test` |
 | cargo nextest (or cargo test) | every Rust test target, `tests(//crates/...)`, the integration tests a target per module |
 | cargo fmt --check | `--config=fmt` over `//crates/...` |
-| cargo clippy | `--config=clippy` over `//crates/...`: each library, binary and test target; `crates/clax-cli` again with its own `clippy.toml` |
+| cargo clippy | `--config=clippy` over `//crates/...`: each library, binary and test target; `crates/clax-commands` again with its own `clippy.toml` |
 | release build | `//crates/clax-cli:clax_opt` |
 | justfile | `scripts/test-justfile.sh`, outside Bazel |
 | release scripts | `//scripts:release` |

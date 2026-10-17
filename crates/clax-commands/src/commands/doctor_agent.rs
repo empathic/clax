@@ -37,7 +37,7 @@ pub enum DoctorAgent {
 const HOOK_LINES: usize = 5;
 /// The Pi package's name, which identifies it among Pi's installed packages.
 const PI_PACKAGE: &str = "@empathic/clax-pi";
-use crate::plugin_bin::{LAUNCHER, Resolution, version_line};
+use crate::plugin_bin::{Resolution, launcher, version_line};
 
 impl DoctorAgent {
     /// The session `harness` name.
@@ -363,7 +363,7 @@ pub fn plugin_check(
             ),
         ),
         Some(v) => match std::fs::read_to_string(root.join("scripts/ensure-clax.sh")) {
-            Ok(launcher) if launcher != LAUNCHER => check(
+            Ok(installed) if installed != launcher() => check(
                 "plugin",
                 false,
                 format!(
@@ -714,11 +714,11 @@ pub fn checks(agent: DoctorAgent, home: &Home, client: Option<&Client>) -> Vec<V
         None => (check("plugin", false, "HOME is not set"), None),
     };
     // The pin of the installed plugin's wrapper, else of the one built in.
-    let launcher = plugin_root
+    let wrapper = plugin_root
         .as_ref()
         .and_then(|r| std::fs::read_to_string(r.join("scripts/ensure-clax.sh")).ok())
-        .unwrap_or_else(|| LAUNCHER.to_string());
-    let pin = crate::plugin_bin::pinned_version(&launcher);
+        .unwrap_or_else(|| launcher().to_string());
+    let pin = crate::plugin_bin::pinned_version(&wrapper);
     let clax_bin = std::env::var("CLAX_BIN").ok();
     let r = crate::plugin_bin::resolve(home, clax_bin.as_deref(), pin.as_deref());
     let mut out = vec![binary_check(&exe, version, &r, pin.as_deref())];
@@ -795,7 +795,7 @@ mod tests {
                 &format!("{rel}/{manifest}"),
                 &json!({"name": "clax", "version": version}).to_string(),
             );
-            self.write(&format!("{rel}/scripts/ensure-clax.sh"), LAUNCHER);
+            self.write(&format!("{rel}/scripts/ensure-clax.sh"), launcher());
             self.write(&format!("{rel}/skills/clax/SKILL.md"), agent.built_skill());
             self.home().join(rel)
         }

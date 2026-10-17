@@ -1,0 +1,74 @@
+//! `clax serve --foreground`: the daemon in this process
+//! ([`clax_commands::Env::serve`]).
+
+use clax_commands::ServeArgs;
+use clax_core::Home;
+use clax_core::embedded::{DiskTree, FileTree};
+use clax_server::daemon::{ServeConfig, serve};
+use std::sync::Arc;
+use std::time::Duration;
+
+/// Runs the daemon for `home` until it stops.
+pub fn run(home: &Home, a: ServeArgs) -> anyhow::Result<()> {
+    close_inherited_fds();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?),
+        )
+        .init();
+    let web: Arc<dyn FileTree> = match a.web_dist {
+        Some(dir) => Arc::new(DiskTree::new(dir)),
+        None => crate::bundle::web_ui(),
+    };
+    let rt = tokio::runtime::Runtime::new()?;
+    let cfg = ServeConfig {
+        home: home.clone(),
+        bind: a.bind,
+        stale_check_interval: Duration::from_secs(30),
+        reap_interval: Duration::from_secs(60),
+        port: a.port,
+        version: a.version,
+        codex: clax_server::push::CodexPush::from_env(
+            std::env::var_os("CLAX_CODEX_BIN"),
+            std::env::var_os("PATH").as_deref(),
+        ),
+        sample: Arc::new(clax_server::sample::Sampler::from_home(home.root(), |k| {
+            std::env::var(k).ok()
+        })),
+        web,
+    };
+    rt.block_on(serve(cfg, None))
+}
+
+/// The daemon outlives whoever started it, so any descriptor it inherits stays
+/// open for its whole life. A spawner that is itself multi-threaded can leak
+/// descriptors it never meant to pass: on platforms without `pipe2` (macOS)
+/// std creates a pipe and marks it close-on-exec in a second call, and a fork
+/// on another thread between the two copies the pipe into the child, which
+/// hands it on to the daemon. A daemon holding the write end of someone else's
+/// pipe keeps that pipe's reader from ever seeing EOF. Stdio (0–2) is kept:
+/// the auto-start points it at `/dev/null` and the log.
+///
+/// Must run before the process opens anything of its own or starts threads:
+/// it closes every descriptor numbered 3 and up.
+fn close_inherited_fds() {
+    #[cfg(target_os = "linux")]
+    const FD_DIR: &str = "/proc/self/fd";
+    #[cfg(not(target_os = "linux"))]
+    const FD_DIR: &str = "/dev/fd";
+    // Collect first, then close: the directory handle is itself a descriptor
+    // in the listing, and is closed (by the drop) before the loop runs.
+    let fds: Vec<std::os::fd::RawFd> = match std::fs::read_dir(FD_DIR) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok()?.file_name().to_str()?.parse().ok())
+            .filter(|&fd| fd > 2)
+            .collect(),
+        Err(_) => return,
+    };
+    // The process is single-threaded here and owns no descriptor above
+    // stdio yet; closing the listing's own (already closed) handle just
+    // fails with EBADF.
+    for fd in fds {
+        let _ = nix::unistd::close(fd);
+    }
+}
