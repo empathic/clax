@@ -34,7 +34,7 @@ for path in ("scripts/ensure-clax.sh", "plugins/claude-code/scripts/ensure-clax.
     versions[f"{path} CLAX_VERSION"] = first(r'^CLAX_VERSION="([^"]+)"', open(path).read())
 for path in ("plugins/claude-code/skills/clax/SKILL.md", "plugins/clax/skills/clax/SKILL.md", "plugins/pi/skills/clax/SKILL.md", "plugins/clax-grok/skills/clax/SKILL.md"):
     versions[f"{path} tool block"] = first(r'^This is Clax plugin (\S+?)\.(?:\s|$)', open(path).read())
-for crate in ("clax-core", "clax-server", "clax-cli", "clax-mcp", "clax-hooks", "clax-testkit", "clax-embedded"):
+for crate in ("clax-core", "clax-server", "clax-cli", "clax-mcp", "clax-hooks", "clax-testkit", "clax-embedded", "clax-commands"):
     versions[f"Cargo.lock {crate}"] = first(r'^name = "%s"\nversion = "([^"]+)"' % re.escape(crate), lock)
 
 args = sys.argv[1:]

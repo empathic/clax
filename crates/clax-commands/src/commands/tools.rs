@@ -10,7 +10,7 @@ use std::future::Future;
 /// The tools' client for the daemon `c` reaches: an agent channel exactly
 /// when the CLI is one ([`Client::agent`]), naming the CLI as its channel
 /// (audit spec §6.9), and signing every request for a remote daemon. The
-/// one `DaemonClient` the CLI makes (`crates/clax-cli/clippy.toml`).
+/// one `DaemonClient` the CLI makes (`crates/clax-commands/clippy.toml`).
 #[allow(clippy::disallowed_methods)]
 fn daemon_client(c: &Client) -> DaemonClient {
     let d = DaemonClient::with_channel(c.base.clone(), c.token.clone(), None, c.agent);

@@ -10,10 +10,9 @@ CRATES = {
         },
         "default_features": [],
         "deps": [
+            "//crates/clax-commands:clax_commands",
             "//crates/clax-core:clax_core",
             "//crates/clax-embedded:clax_embedded",
-            "//crates/clax-hooks:clax_hooks",
-            "//crates/clax-mcp:clax_mcp",
             "//crates/clax-server:clax_server"
         ],
         "dev_deps": [
@@ -30,6 +29,26 @@ CRATES = {
             "descriptors": "tests/descriptors.rs",
             "integration": "tests/integration.rs"
         },
+        "version": "0.4.0"
+    },
+    "crates/clax-commands": {
+        "bins": {},
+        "default_features": [],
+        "deps": [
+            "//crates/clax-core:clax_core",
+            "//crates/clax-hooks:clax_hooks",
+            "//crates/clax-mcp:clax_mcp"
+        ],
+        "dev_deps": [
+            "//crates/clax-fake-exe:clax_fake_exe"
+        ],
+        "edition": "2024",
+        "features": [],
+        "has_build_script": False,
+        "lib": "clax_commands",
+        "lib_root": "src/lib.rs",
+        "name": "clax-commands",
+        "tests": {},
         "version": "0.4.0"
     },
     "crates/clax-core": {

@@ -2,15 +2,15 @@
 //! marketplace directory (`clax init`). The layout matches the repository:
 //! `.claude-plugin/marketplace.json`, `.agents/plugins/marketplace.json`,
 //! `.grok-plugin/marketplace.json` and `plugins/{claude-code,clax,clax-grok,pi}`,
-//! so the manifests' `./plugins/<name>` sources resolve. The files are
-//! `clax-embedded`'s.
+//! so the manifests' `./plugins/<name>` sources resolve. The files are the
+//! binary's ([`clax_core::embedded::Bundle::plugins`]).
 
 use std::path::Path;
 
 /// Every file of the marketplace tree: (path relative to its root,
-/// contents), sorted ([`clax_embedded::plugin_files`]).
+/// contents), sorted.
 pub fn files() -> Vec<(String, Vec<u8>)> {
-    clax_embedded::plugin_files()
+    clax_core::embedded::files_of(crate::embedded().plugins())
 }
 
 /// Writes the tree to `root`, replacing what is there. It is built in a
@@ -23,11 +23,13 @@ pub fn files() -> Vec<(String, Vec<u8>)> {
 /// back; if even that fails, it is kept as `.marketplace.<pid>.old` and the
 /// error says so.
 pub fn materialize(root: &Path) -> std::io::Result<()> {
-    materialize_with(root, |from, to| std::fs::rename(from, to))
+    materialize_with(root, &files(), |from, to| std::fs::rename(from, to))
 }
 
+/// [`materialize`] of `files`, renaming with `rename`.
 fn materialize_with(
     root: &Path,
+    files: &[(String, Vec<u8>)],
     rename: impl Fn(&Path, &Path) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
     let parent = root.parent().expect("the marketplace root has a parent");
@@ -41,7 +43,7 @@ fn materialize_with(
     let pid = std::process::id();
     let tmp = parent.join(format!(".marketplace.{pid}.tmp"));
     let old = parent.join(format!(".marketplace.{pid}.old"));
-    let result = write_tree(&tmp).and_then(|()| swap(root, &tmp, &old, &rename));
+    let result = write_tree(&tmp, files).and_then(|()| swap(root, &tmp, &old, &rename));
     let _ = std::fs::remove_dir_all(&tmp);
     result
 }
@@ -71,10 +73,10 @@ fn swap(
     Ok(())
 }
 
-fn write_tree(dir: &Path) -> std::io::Result<()> {
+fn write_tree(dir: &Path, files: &[(String, Vec<u8>)]) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    for (rel, data) in files() {
-        let path = dir.join(&rel);
+    for (rel, data) in files {
+        let path = dir.join(rel);
         std::fs::create_dir_all(path.parent().expect("a file has a parent"))?;
         std::fs::write(&path, data)?;
         let mode = if rel.ends_with(".sh") { 0o755 } else { 0o644 };
@@ -87,6 +89,23 @@ fn write_tree(dir: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
+    /// A small tree laid out as the marketplace is.
+    fn tree() -> Vec<(String, Vec<u8>)> {
+        [
+            ("plugins/clax-grok/scripts/ensure-clax.sh", "#!/bin/sh\n"),
+            ("plugins/clax-grok/.grok-plugin/plugin.json", "{}"),
+            ("plugins/clax-grok/.mcp.json", "{}"),
+            ("plugins/clax-grok/hooks/hooks.json", "{}"),
+            (
+                ".grok-plugin/marketplace.json",
+                r#"{"plugins": [{"source": "./plugins/clax-grok"}]}"#,
+            ),
+        ]
+        .into_iter()
+        .map(|(p, c)| (p.to_string(), c.as_bytes().to_vec()))
+        .collect()
+    }
+
     /// `materialize` writes the whole tree, with the wrappers executable
     /// and everything else not.
     #[test]
@@ -94,7 +113,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("marketplace");
-        materialize(&root).unwrap();
+        materialize_with(&root, &tree(), |from, to| std::fs::rename(from, to)).unwrap();
         let mode = |rel: &str| {
             std::fs::metadata(root.join(rel))
                 .unwrap_or_else(|e| panic!("{rel}: {e}"))
@@ -130,10 +149,10 @@ mod tests {
             }
         };
         // Only the new tree's rename fails: the previous one is put back.
-        assert!(materialize_with(&root, fail_into(".tmp")).is_err());
+        assert!(materialize_with(&root, &tree(), fail_into(".tmp")).is_err());
         assert!(root.join("previous").is_file());
         // Putting it back fails too: it survives as `.old`.
-        let e = materialize_with(&root, |from: &Path, to: &Path| {
+        let e = materialize_with(&root, &tree(), |from: &Path, to: &Path| {
             if to.file_name().is_some_and(|n| n == "marketplace") {
                 Err(std::io::Error::other("injected"))
             } else {

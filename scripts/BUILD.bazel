@@ -63,6 +63,7 @@ CLAX_ENV = {"CLAX_TEST_BIN": "$(rootpath //crates/clax-cli:clax)"}
 
 RUST_SOURCES = [
     "//crates/clax-cli:rust_sources",
+    "//crates/clax-commands:rust_sources",
     "//crates/clax-core:rust_sources",
     "//crates/clax-embedded:rust_sources",
     "//crates/clax-fake-exe:rust_sources",

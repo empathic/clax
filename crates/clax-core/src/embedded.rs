@@ -1,8 +1,9 @@
 //! Trees of files a process serves or installs: the web UI the daemon
-//! serves, and later the extension and plugin trees the commands write.
-//! A tree is either embedded in the binary or read from a directory
-//! ([`DiskTree`]); the daemon and the commands read through [`FileTree`]
-//! and never name the crate that embeds them.
+//! serves, and the extension and plugin trees the commands write ([`Bundle`]).
+//! A tree is embedded in the binary (`clax-embedded`, which the binary
+//! adapts to these traits), read from a directory ([`DiskTree`]) or held in
+//! memory ([`MemTree`]); the daemon and the commands read through
+//! [`FileTree`] and never name the crate that embeds them.
 
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
@@ -29,6 +30,46 @@ pub trait FileTree: Send + Sync {
     /// changed since it was last hashed) does.
     fn sha256(&self, path: &str) -> Option<[u8; 32]> {
         self.get(path).map(|f| f.sha256)
+    }
+}
+
+/// The files the binary carries for the commands.
+pub trait Bundle: Send + Sync {
+    /// The Chrome extension's build (`clax extension install`).
+    fn extension(&self) -> &dyn FileTree;
+    /// The plugin trees and marketplaces (`clax init`), laid out as in the
+    /// repository.
+    fn plugins(&self) -> &dyn FileTree;
+    /// The plugins' launcher (`scripts/ensure-clax.sh`).
+    fn launcher(&self) -> &'static str;
+}
+
+/// Every file of `tree`: (path, contents), sorted by path.
+pub fn files_of(tree: &dyn FileTree) -> Vec<(String, Vec<u8>)> {
+    tree.paths()
+        .into_iter()
+        .filter_map(|p| {
+            let f = tree.get(&p)?;
+            Some((p, f.data.into_owned()))
+        })
+        .collect()
+}
+
+/// A tree held in memory: (path, contents).
+#[derive(Default)]
+pub struct MemTree(pub std::collections::BTreeMap<String, Vec<u8>>);
+
+impl FileTree for MemTree {
+    fn get(&self, path: &str) -> Option<EmbeddedFile> {
+        let data = self.0.get(path)?;
+        Some(EmbeddedFile {
+            sha256: Sha256::digest(data).into(),
+            data: Cow::Owned(data.clone()),
+        })
+    }
+
+    fn paths(&self) -> Vec<String> {
+        self.0.keys().cloned().collect()
     }
 }
 

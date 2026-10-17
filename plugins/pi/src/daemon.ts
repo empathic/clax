@@ -17,7 +17,7 @@ export const WRAPPER = fileURLToPath(new URL("../scripts/ensure-clax.sh", import
 export const RESOLVE_TIMEOUT_MS = 330_000;
 
 /** The longest one daemon replacement can hold the start lock, as
- * `crates/clax-cli/src/client.rs` bounds it: stopping the old daemon (a 2 s
+ * `crates/clax-commands/src/client.rs` bounds it: stopping the old daemon (a 2 s
  * shutdown request, 7 s for it to exit, then SIGTERM and 3 s more), starting
  * the new one (5 s for `/healthz`, then SIGTERM, 3 s, SIGKILL and 2 s more
  * when it is late) and the same again to roll back to the old executable;

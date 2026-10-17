@@ -32,7 +32,7 @@ pub struct SetArgs {
 /// What `clax bin` shows: the resolution, as the plugins' wrapper this
 /// binary carries would make it.
 fn show(cli: &crate::Cli, home: &Home) {
-    let pin = plugin_bin::pinned_version(plugin_bin::LAUNCHER);
+    let pin = plugin_bin::pinned_version(plugin_bin::launcher());
     let clax_bin = std::env::var("CLAX_BIN").ok();
     let r = plugin_bin::resolve(home, clax_bin.as_deref(), pin.as_deref());
     let mut out = r.to_json();

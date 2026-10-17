@@ -5,16 +5,8 @@ load("//bazel:warm.bzl", "warm_binary")
 cargo_package(
     # The modules of tests/integration.rs in three test targets (bazel/cargo.bzl).
     split_tests = {"integration": {"groups": 3}},
-    # The plugins' skills `clax doctor --agent` compares
-    # (src/commands/doctor_agent.rs).
-    compile_data = [
-        "//plugins:embedded",
-        "//plugins/pi:embedded",
-    ],
-    test_compile_data = [
-        "//scripts:ensure-clax.sh",
-        "//web:shell_cases",
-    ],
+    # The launcher tests/cli.rs checks the release pins.
+    test_compile_data = ["//scripts:ensure-clax.sh"],
     test_data = [
         "//:marketplaces",
         "//plugins:embedded",
@@ -37,9 +29,6 @@ warm_binary(
     binary = ":clax",
     visibility = ["//visibility:public"],
 )
-# Its lints, which scripts/bazel-test.sh hands to clippy for this crate's
-# targets, as Cargo reads it from beside Cargo.toml.
-exports_files(["clippy.toml"])
 
 # The optimized binary (bazel/opt.bzl), run once too: the perf benchmarks
 # run it, and `scripts/bazel-test.sh --ci` builds it as the native checks

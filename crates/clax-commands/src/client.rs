@@ -2,7 +2,7 @@
 //! mode (spec §16, M26), for the remote daemon `remote.json` names.
 //!
 //! One of the two places the crate may make an HTTP client
-//! (`crates/clax-cli/clippy.toml`): every request it sends carries the
+//! (`crates/clax-commands/clippy.toml`): every request it sends carries the
 //! agent-channel marker when the CLI is an agent channel. In remote mode
 //! every request is signed ([`crate::remote::SignedClient`]) and nothing
 //! starts a local daemon.
