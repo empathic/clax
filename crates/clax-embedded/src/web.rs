@@ -37,12 +37,13 @@ pub fn web_ui_dir() -> Option<&'static str> {
     dir
 }
 
-#[cfg(test)]
+/// Only a build that embeds its web UI has something to check: a debug
+/// build that reads it from disk compiles no tests here.
+#[cfg(all(test, any(not(debug_assertions), clax_embedded)))]
 mod tests {
     use super::*;
 
     /// A build that embeds its web UI carries the bridge with its hash.
-    #[cfg(any(not(debug_assertions), clax_embedded))]
     #[test]
     fn an_embedded_build_carries_the_bridge() {
         use sha2::Digest;
