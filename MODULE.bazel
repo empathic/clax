@@ -23,6 +23,8 @@ rust.toolchain(
         "llvm-tools-1.94.0-aarch64-unknown-linux-gnu.tar.xz": "d9780dbef8b58bf544b255785a420aec64378bc496adb770a628670a0f18171c",
         "llvm-tools-1.94.0-x86_64-apple-darwin.tar.xz": "3f692b525f98bfd070b32303e00a95f2d5bc1d45e82c4a5b17403ecf6fbe9360",
         "llvm-tools-1.94.0-x86_64-unknown-linux-gnu.tar.xz": "cf6b8e1d3e48ffa4db37aa59f55382b991f0d347d9b62eebc9ef1d80dffabef4",
+        "rust-std-1.94.0-aarch64-linux-android.tar.xz": "402c80df672a4b9fc948b6dc8bde21a63e1093eb1c8a2c2bd42221c309d9eba2",
+        "rust-std-1.94.0-x86_64-linux-android.tar.xz": "488c8a581612ac4779a05f05967b76a96e0ff0bdd1ab8d99c13a859c19056b01",
         "rust-std-1.94.0-aarch64-apple-darwin.tar.xz": "d3293668128b0a7838ef2544ae341eadd4437460ca22098af723349885a10ba2",
         "rust-std-1.94.0-aarch64-unknown-linux-gnu.tar.xz": "c781b3ef4fefa5508fbe05820eddc95e46351d905a30921cc020febd9c596a2e",
         "rust-std-1.94.0-x86_64-apple-darwin.tar.xz": "cf716b5a5fab007398ce76536a85a3449df074b66e7c762c0f5de1d6c56a1342",
@@ -36,6 +38,12 @@ rust.toolchain(
         "rustfmt-1.94.0-x86_64-apple-darwin.tar.xz": "e58601a10ee85e956611ea2814bf26de88934a8224c1663bb11aa23f727663ec",
         "rustfmt-1.94.0-x86_64-unknown-linux-gnu.tar.xz": "903e768f7626f78ed2d6cb82c1820b93bd339afec8575102e847fd3a379d33e5",
     },
+    # The Clax app's embedded clax, for its two Android CPUs
+    # (bazel/android/BUILD.bazel).
+    extra_target_triples = [
+        "aarch64-linux-android",
+        "x86_64-linux-android",
+    ],
     # rustfmt from the same release, so the format check agrees with
     # `cargo fmt`.
     rustfmt_version = "1.94.0",
@@ -54,11 +62,44 @@ crate.from_cargo(
     manifests = ["//:Cargo.toml"],
     supported_platform_triples = [
         "aarch64-apple-darwin",
+        "aarch64-linux-android",
         "aarch64-unknown-linux-gnu",
         "x86_64-apple-darwin",
+        "x86_64-linux-android",
         "x86_64-unknown-linux-gnu",
     ],
 )
+
+# The Android NDK, fetched by checksum (no ANDROID_NDK_HOME): its C
+# toolchain links the Android clax and compiles its C dependencies (bundled
+# SQLite, ring). rules_android_ndk reads a local NDK only; the patch lets it
+# fetch one (docs/bazel.md, "The Clax app").
+bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "rules_android_ndk", version = "0.1.5")
+single_version_override(
+    module_name = "rules_android_ndk",
+    patch_strip = 1,
+    patches = ["//bazel/android:rules_android_ndk.patch"],
+)
+
+android_ndk = use_extension("@rules_android_ndk//:extension.bzl", "android_ndk_repository_extension")
+android_ndk.configure(
+    # Android 10, the first to run executables only from nativeLibraryDir
+    # (apps/clax_app/android/app/build.gradle.kts minSdk).
+    api_level = 29,
+    sha256s = {
+        "darwin": "0d4599e8bbf1a1668a0d51a541729b2246360f350018a2081d0b302dbb594f2a",
+        "linux": "dfb20d396df28ca02a8c708314b814a4d961dc9074f9a161932746f815aa552f",
+    },
+    strip_prefix = "android-ndk-r28c",
+    urls = {
+        "darwin": "https://dl.google.com/android/repository/android-ndk-r28c-darwin.zip",
+        "linux": "https://dl.google.com/android/repository/android-ndk-r28c-linux.zip",
+    },
+)
+use_repo(android_ndk, "androidndk")
+
+register_toolchains("@androidndk//:all")
 
 # A Bazel debug build of clax embeds its web UI, extension and plugins.
 crate.annotation(

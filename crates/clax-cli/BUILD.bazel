@@ -1,3 +1,4 @@
+load("//bazel/android:clax.bzl", "android_clax")
 load("//bazel:cargo.bzl", "cargo_package")
 load("//bazel:opt.bzl", "opt_binary")
 load("//bazel:warm.bzl", "warm_binary")
@@ -42,5 +43,23 @@ opt_binary(
 warm_binary(
     name = "clax_opt_warm",
     binary = ":clax_opt",
+    visibility = ["//visibility:public"],
+)
+
+# The Clax app's embedded clax, for each Android CPU it ships
+# (bazel/android/clax.bzl).
+android_clax(
+    name = "clax_android_arm64",
+    abi = "arm64-v8a",
+    binary = ":clax",
+    platform = "//bazel/android:android_arm64",
+    visibility = ["//visibility:public"],
+)
+
+android_clax(
+    name = "clax_android_x86_64",
+    abi = "x86_64",
+    binary = ":clax",
+    platform = "//bazel/android:android_x86_64",
     visibility = ["//visibility:public"],
 )

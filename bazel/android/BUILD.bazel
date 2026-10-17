@@ -1,0 +1,25 @@
+# The Android targets the Clax app's embedded clax is built for, one per
+# CPU the app ships (apps/clax_app/android/app/build.gradle.kts abiFilters).
+# rules_rust maps each to its triple (aarch64-linux-android,
+# x86_64-linux-android); the NDK's toolchain (@androidndk) compiles and
+# links for them at API level 29.
+
+exports_files(["rules_android_ndk.patch"])
+
+platform(
+    name = "android_arm64",
+    constraint_values = [
+        "@platforms//os:android",
+        "@platforms//cpu:arm64",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+platform(
+    name = "android_x86_64",
+    constraint_values = [
+        "@platforms//os:android",
+        "@platforms//cpu:x86_64",
+    ],
+    visibility = ["//visibility:public"],
+)
