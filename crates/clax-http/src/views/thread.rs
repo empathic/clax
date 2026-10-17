@@ -321,6 +321,7 @@ pub struct VisFor {
 pub struct ClipLinks {
     hosted: std::sync::Arc<crate::hosted::Hosted>,
     token: String,
+    live: std::sync::Arc<crate::live::LiveIds>,
 }
 
 impl ClipLinks {
@@ -329,12 +330,16 @@ impl ClipLinks {
         s.hosted.as_ref().map(|h| ClipLinks {
             hosted: h.clone(),
             token: s.token.clone(),
+            live: s.live_ids.clone(),
         })
     }
 
-    /// The keyed address of thread `tid`'s clip on artifact `aid`.
-    pub fn link(&self, aid: &str, tid: &str) -> String {
-        crate::hosted::clip_link_at(&self.hosted, &self.token, aid, tid)
+    /// The keyed address of thread `tid`'s clip on artifact `aid`; `None`
+    /// for a live page's, which the address does not serve to a caller
+    /// with no credential (`crate::routes::threads::keyed_clip`).
+    pub fn link(&self, aid: &str, tid: &str) -> Option<String> {
+        (!self.live.contains(aid))
+            .then(|| crate::hosted::clip_link_at(&self.hosted, &self.token, aid, tid))
     }
 }
 
@@ -523,11 +528,13 @@ impl Vis {
             }
         }
         // A clip the reader is shown (its `clip_url` survived the filter)
-        // is named at its keyed address too.
+        // is named at its keyed address too, but for a live page's.
         if let Some(links) = &self.clip_links {
             for (t, view) in threads.iter().zip(&mut views) {
-                if !view["clip_url"].is_null() {
-                    view["clip_link"] = json!(links.link(&t.artifact_id, &t.id));
+                if !view["clip_url"].is_null()
+                    && let Some(link) = links.link(&t.artifact_id, &t.id)
+                {
+                    view["clip_link"] = json!(link);
                 }
             }
         }

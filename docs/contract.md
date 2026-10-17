@@ -2035,8 +2035,8 @@ shim fetches clips for it) has `clip_path` `null` and, for a clip it is
 shown, `clip: {url, note}`: `url` is the clip's keyed address
 (`<origin>/_clip/<aid>/<tid>?k=<key>`, the content origin's when the Clax
 has one, else its public origin's), which serves the PNG with no
-credential and is cached as immutable; `note` says what it is and how to
-see it. A listing attaches no image; `thread_id` attaches that thread's
+credential and is cached privately as immutable (a live page's clip has
+no such address); `note` says what it is and how to see it. A listing attaches no image; `thread_id` attaches that thread's
 clip to the result as an MCP image block (`image/png`), unless it is over
 1 MiB or a side is over 4096 pixels, when `note` says it is not attached
 and why. Any agent of a hosted Clax reads `clip` beside its other fields.

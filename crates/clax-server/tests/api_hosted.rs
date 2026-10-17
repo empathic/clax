@@ -4968,3 +4968,109 @@ async fn a_local_daemons_agent_reads_its_clip_by_path_as_before() {
         .unwrap();
     assert_eq!(res.status(), 404);
 }
+
+/// `GET path` on the hosted test server with `Host: host`.
+async fn get_at(site: &Site, host: &str, path: &str) -> reqwest::Response {
+    site.ts
+        .client
+        .get(site.url(path))
+        .header(HOST, host)
+        .send()
+        .await
+        .unwrap()
+}
+
+/// The path and query of `url`, after its origin.
+fn path_of(url: &str) -> String {
+    let rest = url.split_once("://").unwrap().1;
+    rest[rest.find('/').unwrap()..].to_string()
+}
+
+#[tokio::test]
+async fn a_clip_address_is_private_to_caches_and_ends_with_its_thread_or_artifact() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let host = format!("localhost:{}", site.ts.addr.port());
+    for gone in ["thread", "artifact"] {
+        let aid = site.titled("Budget").await;
+        let tid = site
+            .thread_with_clip(&owner, &aid, "a note", &png_of(8, 8))
+            .await;
+        let url = clax_server::hosted::clip_link(&site.ts.state, &aid, &tid).unwrap();
+        let r = get_at(&site, &host, &path_of(&url)).await;
+        assert_eq!(r.status(), 200, "{gone}");
+        assert_eq!(
+            r.headers()["cache-control"],
+            "private, max-age=31536000, immutable"
+        );
+        let s = if gone == "thread" {
+            let path = format!("/api/artifacts/{aid}/threads/{tid}");
+            site.send(&owner, reqwest::Method::DELETE, &path, json!(null))
+                .await
+                .0
+        } else {
+            let url = format!("{}/api/artifacts/{aid}", site.ts.base);
+            let req = site
+                .ts
+                .authed(site.ts.client.delete(url))
+                .header(HOST, &host);
+            req.send().await.unwrap().status().as_u16()
+        };
+        assert!(s == 200 || s == 204, "{gone}: {s}");
+        let r = get_at(&site, &host, &path_of(&url)).await;
+        assert_eq!(r.status(), 404, "after its {gone} is deleted");
+    }
+}
+
+#[tokio::test]
+async fn with_a_content_origin_a_clip_is_served_there_alone() {
+    let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+    let ts = TestServer::spawn_hosted_with_content(clock.clone(), Some(SECRET)).await;
+    let port = ts.addr.port();
+    let origin = format!("http://localhost:{port}");
+    let site = Site { ts, clock, origin };
+    let owner = site.owner().await;
+    let aid = site.titled("Budget").await;
+    let png = png_of(8, 8);
+    let tid = site.thread_with_clip(&owner, &aid, "a note", &png).await;
+    let url = clax_server::hosted::clip_link(&site.ts.state, &aid, &tid).unwrap();
+    assert!(
+        url.starts_with(&format!("http://[::1]:{port}/_clip/")),
+        "{url}"
+    );
+    let r = get_at(&site, &format!("[::1]:{port}"), &path_of(&url)).await;
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.bytes().await.unwrap().as_ref(), png.as_slice());
+    let r = get_at(&site, &format!("localhost:{port}"), &path_of(&url)).await;
+    assert_eq!(r.status(), 404, "never on the public origin");
+}
+
+#[tokio::test]
+async fn a_live_pages_clip_is_named_by_no_address() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let aid = site.titled("Budget").await;
+    let tid = site
+        .thread_with_clip(&owner, &aid, "a note", &png_of(8, 8))
+        .await;
+    let read = || async {
+        let call = json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
+            "params": {"name": "comments_read", "arguments": {"url_or_id": aid, "thread_id": tid}}});
+        let res = crate::api_mcp::mcp_post(&site.ts, crate::api_mcp::ADAPTER, &call)
+            .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+            .bearer_auth(&site.ts.token)
+            .send()
+            .await
+            .unwrap();
+        let r = crate::api_mcp::rpc_message(res).await["result"].clone();
+        assert_eq!(tool_code(&r), "", "{r}");
+        tool_json(&r)["threads"][0].clone()
+    };
+    // The owner's agent on the hosted machine is named the address...
+    assert!(read().await["clip"]["url"].is_string());
+    // ...but not once the artifact is a live page, whose clip the address
+    // does not serve to a caller with no credential.
+    site.ts.state.live_ids.insert(&aid, "http://localhost:5173");
+    let t = read().await;
+    assert!(t.get("clip").is_none(), "{t}");
+}

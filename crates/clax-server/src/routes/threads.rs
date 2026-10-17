@@ -386,8 +386,9 @@ pub async fn get(
 /// which only a thread view that shows the clip carries, so no credential
 /// is asked for (a request carrying a grant's is refused, as on `/_blob`),
 /// and a live page's clip is 404 to a caller who does not see live pages;
-/// the PNG never changes, so it is cached as immutable. A local daemon
-/// serves no such address: 404.
+/// the PNG never changes, so it is cached as immutable, but privately, so
+/// no shared cache keeps it once its thread is deleted or restricted. A
+/// local daemon serves no such address: 404.
 pub async fn keyed_clip(
     State(s): State<AppState>,
     _d: clax_http::agent::DeniedToGrants,
@@ -420,7 +421,10 @@ pub async fn keyed_clip(
             (header::CONTENT_TYPE, "image/png"),
             (header::CONTENT_SECURITY_POLICY, "sandbox"),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
-            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+            (
+                header::CACHE_CONTROL,
+                "private, max-age=31536000, immutable",
+            ),
         ],
         Body::from(bytes),
     )

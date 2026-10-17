@@ -572,7 +572,9 @@ pub fn clip_key(token: &str, aid: &str, tid: &str) -> String {
 /// The address a hosted daemon serves thread `tid`'s clip on artifact
 /// `aid` at, with no credential: its content origin's, else its public
 /// origin's `/_clip/<aid>/<tid>?k=<key>` ([`clip_key`]). A clip never
-/// changes once its thread has it, so the address is cached as immutable.
+/// changes once its thread has it, so the address is cached as immutable,
+/// though `private` where `/_blob` is `public`: a shared cache in front of
+/// the daemon must not keep a clip whose thread was deleted or restricted.
 /// `None` on a local daemon, which serves no such address.
 pub fn clip_link(s: &AppState, aid: &str, tid: &str) -> Option<String> {
     s.hosted
