@@ -43,6 +43,7 @@ class UnfinishedChange {
     required this.limit,
     required this.spentUsd,
     required this.at,
+    this.stops = 1,
     this.notes = const [],
     this.answers,
     this.edits = const {},
@@ -58,6 +59,7 @@ class UnfinishedChange {
     limit: j['limit']! as String,
     spentUsd: (j['spent_usd']! as num).toDouble(),
     at: DateTime.parse(j['at']! as String),
+    stops: j['stops'] as int? ?? 1,
     notes: [for (final n in j['notes'] as List? ?? const []) n as String],
     answers: j['answers'] as String?,
     edits: {
@@ -87,6 +89,9 @@ class UnfinishedChange {
   /// When it stopped.
   final DateTime at;
 
+  /// How many of its runs stopped at a limit, this one included.
+  final int stops;
+
   /// The agent's words over the change's runs, oldest first: what each
   /// narrated, then why it stopped; the newest [maxUnfinishedNotes].
   final List<String> notes;
@@ -112,6 +117,7 @@ class UnfinishedChange {
     'limit': limit,
     'spent_usd': spentUsd,
     'at': at.toUtc().toIso8601String(),
+    'stops': stops,
     'notes': notes,
     'answers': ?answers,
     'edits': edits,

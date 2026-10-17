@@ -38,6 +38,18 @@ const changeCapUsd = 6.0;
 /// Less than this left of [changeCapUsd] is too little for another run.
 const minKeepGoingUsd = 0.05;
 
+/// A change that has stopped at a limit this many times is planned rather
+/// than run on: its Keep going run puts what is left into plan features,
+/// and the build's continue runs build them.
+const planAfterStops = 2;
+
+/// [n] times in words: "once", "twice", "3 times".
+String timesWords(int n) => switch (n) {
+  1 => 'once',
+  2 => 'twice',
+  _ => '$n times',
+};
+
 /// The line a limit stop's reply carries while Keep going can run it on;
 /// the thread page and the Working chip offer Keep going on a reply that
 /// has it ([offersKeepGoing]).

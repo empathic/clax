@@ -630,6 +630,7 @@ class AgentLoop {
     _Ran ran, {
     List<String> earlierNotes = const [],
     String? earlierAnswers,
+    int earlierStops = 0,
   }) async {
     final limit = switch (ran.outcome) {
       RunGaveUp(:final limit?) || RunFinished(:final limit?) => limit,
@@ -665,6 +666,7 @@ class AgentLoop {
           limit: limit,
           spentUsd: spentBefore + ran.state.budget.costUsd,
           at: _clock.now(),
+          stops: earlierStops + 1,
           notes: _newest([
             ...earlierNotes,
             ...ran.narrations,
@@ -1009,6 +1011,7 @@ class AgentLoop {
               ? null
               : KeepGoingNote(
                   limit: kept.limit,
+                  stops: kept.stops,
                   notes: kept.notes,
                   edited: resume == _Resume.draft
                       ? (kept.edits.keys.toList()..sort())
@@ -1046,6 +1049,7 @@ class AgentLoop {
       ran,
       earlierNotes: kept?.notes ?? const [],
       earlierAnswers: kept?.answers,
+      earlierStops: kept?.stops ?? 0,
     );
 
     final outcome = ran.outcome;

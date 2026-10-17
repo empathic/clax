@@ -154,6 +154,73 @@ void main() {
     expect(bodies(a.threadId).last, 'Renamed.');
   });
 
+  test('each run is told how often the change stopped, and after the '
+      'second stop Keep going plans the rest, which the build then builds '
+      'even when that run stops too', () async {
+    List<ScriptedCall> stops(String from, String to, String note) => [
+      ScriptedCall('str_replace', {
+        'path': 'index.html',
+        'old_str': from,
+        'new_str': to,
+      }, note),
+      for (var i = 0; i < 10; i++) const ScriptedCall('list_files', {}),
+    ];
+    workerWith([
+      stops('Save', 'Keep', 'Renaming the button'),
+      stops('<button>', '<button class="red">', 'Recolouring the button'),
+      [
+        const ScriptedCall('plan_set', {
+          'features': [
+            {
+              'id': 'r1',
+              'title': 'Red button',
+              'detail': 'The draft has it red already.',
+              'status': 'todo',
+            },
+          ],
+        }, 'Planning the rest'),
+        for (var i = 0; i < 10; i++) const ScriptedCall('list_files', {}),
+      ],
+      [
+        const ScriptedCall('plan_mark', {'id': 'r1', 'status': 'doing'}),
+        const ScriptedCall('str_replace', {
+          'path': 'index.html',
+          'old_str': '<button>',
+          'new_str': '<button class="red">',
+        }),
+        const ScriptedCall('render', {'file': null}),
+        const ScriptedCall('plan_mark', {'id': 'r1', 'status': 'done'}),
+        const ScriptedCall('finish', {'reply': 'Built r1.', 'resolve': true}),
+      ],
+    ]).start();
+    await idle();
+    final item = api.sendComment(aid, 'Rename and recolour Save');
+    await until(() => bodies(item.threadId).length == 2);
+    await idle();
+    expect(runner.text(0), isNot(contains('has stopped at its limit')));
+
+    expect(await worker.retry(aid, item.threadId), isTrue);
+    await until(() => bodies(item.threadId).length == 3);
+    await idle();
+    expect(runner.text(1), contains('has stopped at its limit once'));
+    expect(runner.text(1), contains('First decide whether this change fits'));
+    expect((await unfinished.get(item.threadId))!.stops, 2);
+
+    expect(await worker.retry(aid, item.threadId), isTrue);
+    await until(() => worker.buildOf(aid)?.phase == BuildPhase.done);
+    await idle();
+    final third = runner.text(2);
+    expect(third, contains('has stopped at its limit twice'));
+    expect(third, contains('too big for a change run'));
+    expect(third, isNot(contains('First decide whether this change fits')));
+    expect(runner.seen, hasLength(4));
+    expect((await plans.get(aid))!.feature('r1')!.status, FeatureStatus.done);
+    expect(
+      api.filesOf(aid, api.currentVersion(aid))['index.html'],
+      contains('class="red"'),
+    );
+  });
+
   test(r'a change that has spent its $6 does not keep going', () async {
     workerWith([]).start();
     await idle();
