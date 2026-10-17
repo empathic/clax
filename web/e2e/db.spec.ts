@@ -115,8 +115,17 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const fa = await openArtifact(pa, d.base, artifact.id, 1, mode);
     // B is on another machine: every browser of the owner's here is one viewer.
     const fb = await openArtifact(pb, d.base, artifact.id, 1, mode, { lan: true });
-    // Named, so B may write its own private documents.
-    await pb.evaluate(() => fetch("/api/viewers/me", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ display_name: "B" }) }));
+    // Named, so B may write its own private documents. Through the shell's
+    // name field, which saves only once the shell's first viewer lookup
+    // answered: a PUT without B's cookie while that lookup is out mints a
+    // second viewer, and whichever cookie lands last is B.
+    const name = await nameField(pb);
+    await name.fill("B");
+    const [named] = await Promise.all([
+      pb.waitForResponse(r => r.url().endsWith("/api/viewers/me") && r.request().method() === "PUT"),
+      name.press("Enter"),
+    ]);
+    expect(named.status(), await named.text()).toBe(200);
     const [ida, idb] = [await publicId(pa), await publicId(pb)];
     expect(ida).not.toBe(idb);
     await withDb(fa, `await db.doc("data/users/" + arg + "/profile").set({ pick: 3 });`, ida);
