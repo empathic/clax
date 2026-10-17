@@ -77,6 +77,23 @@ RUST_SOURCES = [
     "//crates/clax-testkit:rust_sources",
 ]
 
+# Every crate's manifest, which the layering check reads.
+CRATE_MANIFESTS = [
+    "//crates/clax-cli:manifest",
+    "//crates/clax-commands:manifest",
+    "//crates/clax-core:manifest",
+    "//crates/clax-embedded:manifest",
+    "//crates/clax-fake-exe:manifest",
+    "//crates/clax-hooks:manifest",
+    "//crates/clax-http:manifest",
+    "//crates/clax-mcp:manifest",
+    "//crates/clax-realtime:manifest",
+    "//crates/clax-sample:manifest",
+    "//crates/clax-server:manifest",
+    "//crates/clax-store:manifest",
+    "//crates/clax-testkit:manifest",
+]
+
 # The script gates of scripts/quality_gates.sh, as Bazel tests. Each script
 # starts with `cd "$(dirname "$0")/.."`, which is the runfiles root here.
 # docs/bazel.md, "Run outside Bazel", lists the gates that stay native.
@@ -137,6 +154,17 @@ sh_test(
         "//crates/clax-hooks:fixtures",
     ],
     env = CLAX_ENV,
+)
+
+# The layout's order of the crates (scripts/check-crate-layers.py), and the
+# check's own test.
+sh_test(
+    name = "crate_layers",
+    srcs = ["test-check-crate-layers.sh"],
+    data = CRATE_MANIFESTS + [
+        ":all",
+        "//:Cargo.toml",
+    ],
 )
 
 sh_test(

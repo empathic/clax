@@ -252,6 +252,7 @@ Performance gates nothing in either (`just perf` measures on demand).
 | plugin wrapper | `//scripts:plugin_wrapper` |
 | comment loop | `//scripts:comment_loop` |
 | no unsafe code | `//scripts:no_unsafe` |
+| crate layers | `//scripts:crate_layers` |
 | no hard links | `//scripts:no_hard_links` (the check's own test), and `scripts/check-no-hard-links.sh` over the tracked files outside Bazel |
 | pipefail pipes | `//scripts:pipefail_pipes`, and `scripts/check-pipefail-pipes.sh` over the tracked files outside Bazel |
 
