@@ -486,8 +486,14 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const reports = () => (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
       .filter(([u, i]) => String(u) === "/api/viewers/me/presence" && (i as RequestInit | undefined)?.method === "PUT")
       .map(([, i]) => JSON.parse((i as RequestInit).body as string))
-      // Every report names this page's tab; the rest is checked below.
-      .map(({ tab, ...rest }: { tab: unknown }) => { expect(typeof tab).toBe("string"); return rest; });
+      // Every report names this page's tab, its focus and its idle time
+      // (presence-reporter.test.ts checks those); the rest is checked below.
+      .map(({ tab, focused, idle_ms, ...rest }: { tab: unknown; focused: unknown; idle_ms: unknown }) => {
+        expect(typeof tab).toBe("string");
+        expect(typeof focused).toBe("boolean");
+        expect(typeof idle_ms).toBe("number");
+        return rest;
+      });
     await vi.waitFor(() => expect(reports()[0]).toEqual({ artifact_id: ID, state: "here" }));
     await vi.waitFor(() => expect(ctl.state.get().threads).toHaveLength(1));
     ctl.selectThread(ctl.state.get().threads[0]);
