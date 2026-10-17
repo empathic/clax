@@ -210,14 +210,15 @@ class RenderTool implements Tool {
     }
     if (_stopped) return _cancelled();
     if (seen is! Inspection) {
-      s.draft.markRendered(snap, errors: true);
-      return ToolRefused(switch (seen) {
+      final why = switch (seen) {
         final String why => why,
         final InspectorError e =>
           'The page did not load: ${e.message}. Look for a script that '
               'never ends or blocks the page, fix it and render again.',
         final e => 'The page could not be inspected: $e.',
-      });
+      };
+      s.draft.markRendered(snap, errors: true, problems: [why]);
+      return ToolRefused(why);
     }
     end('inspected');
 
@@ -230,6 +231,11 @@ class RenderTool implements Tool {
       snap,
       errors: uncaught > 0,
       testsFailed: tests is TestRun && tests.failed.isNotEmpty,
+      problems: [
+        for (final e in seen.uncaught) 'uncaught ${e.kind}: ${e.text}',
+        if (tests is TestRun)
+          for (final f in tests.failed) 'failing test ${f.name}: ${f.error}',
+      ],
     );
     s.progress?.call(Inspected(seen.png, uncaught));
     return ToolOk({

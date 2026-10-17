@@ -106,6 +106,12 @@ class Draft {
   bool get lastRenderFailedTests => _lastRenderFailedTests;
   var _lastRenderFailedTests = false;
 
+  /// What the latest render found wrong, in a line each: uncaught errors,
+  /// failing tests, or why the page did not load. Empty before any
+  /// render, and after a clean one.
+  List<String> get lastRenderProblems => List.unmodifiable(_problems);
+  var _problems = const <String>[];
+
   /// The hidden draft artifact a render serves the draft as, and its
   /// version.
   String? draftArtifactId;
@@ -215,12 +221,15 @@ class Draft {
   /// it uploaded the draft. The current draft counts as rendered only when
   /// nothing changed since ([renderedClean]). A render without uncaught
   /// [errors] and without [testsFailed] keeps [rendered] as [lastClean],
-  /// unless it is built on a base other than the current one.
+  /// unless it is built on a base other than the current one. [problems]
+  /// are what it found wrong ([lastRenderProblems]).
   void markRendered(
     DraftSnapshot rendered, {
     required bool errors,
     bool testsFailed = false,
+    List<String> problems = const [],
   }) {
+    _problems = List.of(problems);
     _renderedRevision = rendered.revision;
     _lastRenderHadErrors = errors;
     _lastRenderFailedTests = testsFailed;

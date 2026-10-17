@@ -28,6 +28,8 @@ class KeepGoingNote {
     required this.limit,
     this.stops = 1,
     required this.notes,
+    this.diff,
+    this.lastRender,
     this.edited,
     this.why,
   });
@@ -37,6 +39,12 @@ class KeepGoingNote {
   /// How many runs of the change stopped at a limit.
   final int stops;
   final List<String> notes;
+
+  /// The kept edits against the app as it is, as unified diffs.
+  final String? diff;
+
+  /// What the stopped run's last render found.
+  final String? lastRender;
   final List<String>? edited;
   final String? why;
 }
@@ -341,8 +349,16 @@ class PromptBuilder {
       b.writeln(
         'The draft already holds that run\'s unfinished edits, shown in the '
         'files above (${paths.map(jsonEncode).join(', ')}); they have not '
-        'been rendered. Render first, then finish what is left.',
+        'been rendered in this run. Render first, then finish what is left.',
       );
+      if (k.diff case final diff?) {
+        b
+          ..writeln('Those edits against the app as it is, as a unified diff:')
+          ..writeln(diff);
+      }
+      if (k.lastRender case final r?) {
+        b.writeln("That run's last render found: $r.");
+      }
       b.writeln(
         'Document writes that run staged were not kept: stage again any the '
         'files rely on.',

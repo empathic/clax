@@ -71,6 +71,7 @@ class UnfinishedChange {
     this.stops = 1,
     this.notes = const [],
     this.answers,
+    this.lastRender,
     this.edits = const {},
     this.before = const {},
     this.title,
@@ -87,6 +88,7 @@ class UnfinishedChange {
     stops: j['stops'] as int? ?? 1,
     notes: [for (final n in j['notes'] as List? ?? const []) n as String],
     answers: j['answers'] as String?,
+    lastRender: j['last_render'] as String?,
     edits: {
       for (final e in (j['edits'] as Map? ?? const {}).entries)
         e.key as String: e.value as String?,
@@ -125,6 +127,10 @@ class UnfinishedChange {
   /// runs asked, as late-answer text ([answerText]), or null.
   final String? answers;
 
+  /// What the stopped run's last render found, for the next run to read;
+  /// null when that run did not render.
+  final String? lastRender;
+
   final Map<String, String?> edits;
   final Map<String, String?> before;
 
@@ -145,6 +151,7 @@ class UnfinishedChange {
     'stops': stops,
     'notes': notes,
     'answers': ?answers,
+    'last_render': ?lastRender,
     'edits': edits,
     'before': before,
     'title': ?title,

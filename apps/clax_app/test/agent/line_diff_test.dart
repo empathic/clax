@@ -24,6 +24,42 @@ void main() {
     });
   });
 
+  group('unifiedDiff', () {
+    test('shows each change with two lines around it, in hunks', () {
+      expect(
+        unifiedDiff(
+          'index.html',
+          '1\n2\n3\n4\n5\n6\n7\n8\n9\n',
+          '1\n2\nthree\n4\n5\n6\n7\n8\n9\nten\n',
+        ),
+        '--- a/index.html\n'
+        '+++ b/index.html\n'
+        '@@ -1,5 +1,5 @@\n'
+        ' 1\n'
+        ' 2\n'
+        '-3\n'
+        '+three\n'
+        ' 4\n'
+        ' 5\n'
+        '@@ -8,2 +8,3 @@\n'
+        ' 8\n'
+        ' 9\n'
+        '+ten\n',
+      );
+    });
+
+    test('a new file and a deleted one', () {
+      expect(
+        unifiedDiff('app.js', null, 'a\n'),
+        '--- /dev/null\n+++ b/app.js\n@@ -0,0 +1,1 @@\n+a\n',
+      );
+      expect(
+        unifiedDiff('old.js', 'a\n', null),
+        '--- a/old.js\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-a\n',
+      );
+    });
+  });
+
   test('changedFiles lists each edited path with its counts, by path', () {
     expect(
       changedFiles(

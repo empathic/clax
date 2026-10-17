@@ -11,6 +11,7 @@ import 'edit_result.dart';
 import 'failure.dart';
 import 'inspector.dart';
 import 'ledger.dart';
+import 'line_diff.dart';
 import 'plan.dart';
 import 'progress.dart';
 import 'prompt.dart';
@@ -137,6 +138,10 @@ typedef _Ran = ({
   FinishTool finish,
   GiveUpTool giveUp,
 });
+
+/// At most this many characters of a Keep going's kept edits go into its
+/// first message as a diff.
+const maxKeepGoingDiff = 8 * 1024;
 
 /// Where a Keep going run starts: from the stopped run's draft, or, when
 /// the app changed under it, over from the app.
@@ -671,6 +676,7 @@ class AgentLoop {
             ?earlierAnswers,
             for (final q in ran.ask.answered) answerText(q),
           ]),
+          lastRender: _lastRender(d),
           edits: edits,
           before: {for (final p in edits.keys) p: fingerprint(from[p])},
           title: title,
@@ -680,6 +686,41 @@ class AgentLoop {
     } on Object catch (e) {
       _log('keeping the unfinished change of $aid failed: $e');
     }
+  }
+
+  /// What [d]'s latest render found, in a sentence or two; null when the
+  /// run did not render.
+  static String? _lastRender(Draft d) {
+    if (d.renderedRevision == null) return null;
+    String cut(String s) => s.length <= 300 ? s : '${s.substring(0, 300)}…';
+    final problems = d.lastRenderProblems;
+    final found = problems.isEmpty
+        ? 'no uncaught errors or failing tests'
+        : [
+            for (final p in problems.take(8)) cut(p),
+            if (problems.length > 8) 'and ${problems.length - 8} more',
+          ].join('; ');
+    return d.renderedRevision == d.revision
+        ? found
+        : '$found (the draft was edited after it)';
+  }
+
+  /// The kept [edits] against [files], the app as it is now, as unified
+  /// diffs, at most [maxKeepGoingDiff] characters.
+  static String? _diffOf(
+    Map<String, String?> edits,
+    Map<String, String> files,
+  ) {
+    if (edits.isEmpty) return null;
+    final b = StringBuffer();
+    for (final p in edits.keys.toList()..sort()) {
+      b.write(unifiedDiff(p, files[p], edits[p]));
+    }
+    final text = b.toString();
+    return text.length <= maxKeepGoingDiff
+        ? text
+        : '${text.substring(0, maxKeepGoingDiff)}\n'
+              '… (the diff goes on; the files above hold the edits whole)';
   }
 
   static String? _joined(List<String> texts) =>
@@ -1009,6 +1050,10 @@ class AgentLoop {
               : KeepGoingNote(
                   limit: kept.limit,
                   stops: kept.stops,
+                  diff: resume == _Resume.draft
+                      ? _diffOf(kept.edits, snap.files)
+                      : null,
+                  lastRender: resume == _Resume.draft ? kept.lastRender : null,
                   notes: kept.notes,
                   edited: resume == _Resume.draft
                       ? (kept.edits.keys.toList()..sort())
