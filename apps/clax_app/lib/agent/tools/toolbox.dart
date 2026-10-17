@@ -163,10 +163,19 @@ final class RunFinished extends RunOutcome {
 
 /// The run stopped without publishing, for [reason].
 final class RunGaveUp extends RunOutcome {
-  const RunGaveUp(this.reason, {required this.answered, this.limit});
+  const RunGaveUp(
+    this.reason, {
+    required this.answered,
+    this.limit,
+    this.planned = false,
+  });
 
   final String reason;
   final bool answered;
+
+  /// The change stopped at a limit after planning what is left
+  /// ([plannedStopReply]): the build goes on with it, so it is no failure.
+  final bool planned;
 
   /// The cap a change stopped at, or gave up out of room near
   /// ([RunBudget.mostSpent]), which the person can Keep going from; else

@@ -287,6 +287,7 @@ class FinishTool implements Tool {
             s,
             plannedStopReason(cap),
             reply: plannedStopReply(cap, progress: _plannedProgress(s)),
+            planned: true,
           ),
         );
       }
@@ -391,6 +392,7 @@ class FinishTool implements Tool {
     Set<String>? newer,
     String? reply,
     String? limit,
+    bool planned = false,
   }) => _failWith(
     api,
     render,
@@ -400,6 +402,7 @@ class FinishTool implements Tool {
     newer: newer,
     reply: reply,
     limit: limit,
+    planned: planned,
   );
 
   /// Clears the working mark and deletes the draft artifact.
@@ -807,6 +810,7 @@ class GiveUpTool implements Tool {
               limit,
               progress: _plannedProgress(s, reason: reason),
             ),
+            planned: true,
           )
         : await _failWith(
             api,
@@ -864,6 +868,7 @@ Future<_Ended> _failWith(
   Set<String>? newer,
   String? reply,
   String? limit,
+  bool planned = false,
 }) async {
   var answered = true;
   var threads = const <String>[];
@@ -881,7 +886,7 @@ Future<_Ended> _failWith(
   }
   await _endRun(api, render, log, s);
   return _Ended(
-    RunGaveUp(reason, answered: answered, limit: limit),
+    RunGaveUp(reason, answered: answered, limit: limit, planned: planned),
     replied: threads,
   );
 }
