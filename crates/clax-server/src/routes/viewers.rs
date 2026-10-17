@@ -83,7 +83,7 @@ async fn respond(s: AppState, who: Identity, name: Option<String>) -> Result<Res
         && before != v.display_name
     {
         for aid in s.presence.rename(&v.public_id, v.display_name.as_deref()) {
-            crate::presence::announce(&s.events, &s.presence, &aid);
+            clax_realtime::presence::announce(&s.events, &s.presence, &aid);
         }
     }
     // `owner` marks the owner's browser (its agents are "Your agents", §10).
@@ -450,7 +450,7 @@ pub async fn set_presence(
             )
         })?;
     if changed {
-        crate::presence::announce(&s.events, &s.presence, &b.artifact_id);
+        clax_realtime::presence::announce(&s.events, &s.presence, &b.artifact_id);
     }
     Ok(Json(
         json!({"people": s.presence.for_artifact(&b.artifact_id)}),

@@ -28,7 +28,7 @@
 //! of detached streams, never a scan of every stream. Sharding the channels
 //! would need an ordering step for resume and is not worth it at that cost.
 
-use axum::body::Bytes;
+use bytes::Bytes;
 use clax_core::db::{Caller, Level};
 use clax_core::presence::PresenceView;
 use clax_core::{ArtifactId, Event};
@@ -256,7 +256,7 @@ enum Gate {
     /// reads it, spec 2026-10-08 §10).
     Person(String),
     /// Only subscribers on this machine or holding the token (a live page's
-    /// gallery event; see [`crate::live_access::sees_live_pages`]).
+    /// gallery event; see the HTTP layer's `live_access::sees_live_pages`).
     Local,
     /// Subscribers at `min` or above, except those at `unless` or above
     /// (they have it from a `DocsAt` channel already).
@@ -325,7 +325,7 @@ struct StreamEntry {
     /// Bumped by each connection that attaches; a connection detaches only its own.
     epoch: u64,
     caller: Caller,
-    /// The stream may see live pages ([`crate::live_access::sees_live_pages`] of
+    /// The stream may see live pages (the HTTP layer's `live_access::sees_live_pages` of
     /// the request that opened it).
     local: bool,
     /// The hash of the extension credential the stream was opened with

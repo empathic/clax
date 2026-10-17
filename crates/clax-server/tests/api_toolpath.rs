@@ -2343,10 +2343,10 @@ async fn ttl_expiry_records_system_stop_with_for_actor() {
     // The sweep records a lapsed record's end as Clax's, for the agent.
     clock.advance(30);
     let seq = last_seq(&ts);
-    clax_server::working::sweep_and_announce(&ts.store, &ts.working, &ts.events).await;
+    clax_realtime::working::sweep_and_announce(&ts.store, &ts.working, &ts.events).await;
     assert_eq!(last_seq(&ts), seq, "nothing lapsed yet");
     clock.advance(130);
-    clax_server::working::sweep_and_announce(&ts.store, &ts.working, &ts.events).await;
+    clax_realtime::working::sweep_and_announce(&ts.store, &ts.working, &ts.events).await;
     let recs = events_since(&ts, seq);
     assert_eq!(kinds(&recs), ["working.stop"]);
     let stop = &recs[0];

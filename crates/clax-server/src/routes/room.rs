@@ -9,7 +9,7 @@
 //! `interact` and above, every other topic `admin` and above; presence admits
 //! everyone. Frames are the JSON objects of `docs/contract.md` "Room protocol".
 //!
-//! Rooms are keyed by artifact, not by version ([`crate::room`]): a socket
+//! Rooms are keyed by artifact, not by version ([`clax_realtime::room`]): a socket
 //! stays open across new versions that keep declaring `room`.
 //!
 //! Close codes: 4403 `not_granted` (the artifact is missing or does not declare
@@ -20,7 +20,6 @@
 use crate::db_caller::Subscriber;
 use crate::error::ApiError;
 use crate::headers::parse_id;
-use crate::room::{Frame, Membership, Rooms, Sender, Who};
 use crate::state::AppState;
 use crate::viewer::SameOrigin;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
@@ -31,6 +30,7 @@ use clax_core::room::{
     MAX_JOINED, Topics, check_json, check_presence, peer_label_ok, room_name_ok, topic_ok,
 };
 use clax_core::{CoreError, Event};
+use clax_realtime::room::{Frame, Membership, Rooms, Sender, Who};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;

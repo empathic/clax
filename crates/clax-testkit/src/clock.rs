@@ -4,7 +4,7 @@ use crate::*;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// A [`clax_server::questions::Sleeper`] whose sleeps end only when the test
+/// A [`clax_realtime::questions::Sleeper`] whose sleeps end only when the test
 /// fires them, by duration ([`ManualSleeper::fire`]).
 #[derive(Default)]
 pub struct ManualSleeper {
@@ -12,7 +12,7 @@ pub struct ManualSleeper {
     changed: tokio::sync::Notify,
 }
 
-impl clax_server::questions::Sleeper for ManualSleeper {
+impl clax_realtime::questions::Sleeper for ManualSleeper {
     fn sleep(&self, d: Duration) -> futures::future::BoxFuture<'static, ()> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.pending.lock().unwrap().push((d, tx));

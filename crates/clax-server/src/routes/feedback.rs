@@ -8,8 +8,6 @@ use crate::agent::{FeedbackAck, FeedbackNotices, FeedbackPoll, TokenOrAgent};
 #[cfg(debug_assertions)]
 use crate::auth::RequireToken;
 use crate::error::ApiError;
-use crate::feedback::apply;
-use crate::questions::QuestionWaiters;
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
@@ -23,6 +21,8 @@ use clax_core::store::questions::Status;
 use clax_core::visibility::Visibility;
 use clax_core::working::Clock;
 use clax_core::{CoreError, Store, TakeFeedback, Tier};
+use clax_realtime::feedback::apply;
+use clax_realtime::questions::QuestionWaiters;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -215,7 +215,7 @@ pub struct FeedbackQuery {
 ///
 /// While a `tier=wait` poll with `wait > 0` (`wait_for_feedback`) is in
 /// progress, tier 5 is skipped for the session: `codex queue` does not push
-/// to it ([`crate::push::dispatch`]), and a `tier=inject` poll (the Pi
+/// to it ([`clax_realtime::push::dispatch`]), and a `tier=inject` poll (the Pi
 /// injection loop) takes nothing and answers empty at once, `{feedback: [],
 /// answers: [], text: null, waited_s: 0}`, so the rows and answers go to the
 /// wait poll. An inject poll already waiting when the wait poll starts is
@@ -270,7 +270,7 @@ pub async fn poll(
         #[cfg(debug_assertions)]
         if vis.is_none() {
             s.feedback_waiters
-                .stop_at(&take.session_id, crate::feedback::Stop::FirstTake)
+                .stop_at(&take.session_id, clax_realtime::feedback::Stop::FirstTake)
                 .await;
         }
         // Registered before the take, and the generation read before it:
@@ -307,7 +307,7 @@ pub async fn poll(
         audit = Some(audit_now.clone());
         #[cfg(debug_assertions)]
         s.feedback_waiters
-            .stop_at(&take.session_id, crate::feedback::Stop::BeforeTake)
+            .stop_at(&take.session_id, clax_realtime::feedback::Stop::BeforeTake)
             .await;
         let ctx = s.feedback_ctx();
         let ctx_after = ctx.clone();
@@ -327,19 +327,19 @@ pub async fn poll(
                     return Ok((taken, Default::default()));
                 }
                 // Its states go out once the poll has answered (below).
-                crate::feedback::wake(&ctx, st, &taken.touched);
-                crate::working::renew_for_tier(&ctx, &t.session_id, t.tier);
+                clax_realtime::feedback::wake(&ctx, st, &taken.touched);
+                clax_realtime::working::renew_for_tier(&ctx, &t.session_id, t.tier);
                 if t.tier == Tier::Queue {
                     return Ok((taken, Default::default()));
                 }
-                crate::working::mark_items(&ctx, &audit, st, &t.session_id, &taken.items)?;
+                clax_realtime::working::mark_items(&ctx, &audit, st, &t.session_id, &taken.items)?;
                 let late = late_answers(st, &t.session_id, &held, &*clock)?;
                 Ok((taken, late))
             })
             .await?;
         vis = Some(view);
         rights = rights_now;
-        crate::feedback::publish_states_after(&ctx_after, taken.touched.clone());
+        clax_realtime::feedback::publish_states_after(&ctx_after, taken.touched.clone());
         if taken.stale {
             // An approval or revocation committed after the view was
             // built: refresh it and take again.
@@ -347,7 +347,7 @@ pub async fn poll(
         }
         #[cfg(debug_assertions)]
         s.feedback_waiters
-            .stop_at(&take.session_id, crate::feedback::Stop::AfterTake)
+            .stop_at(&take.session_id, clax_realtime::feedback::Stop::AfterTake)
             .await;
         #[cfg(debug_assertions)]
         let expired = _waiting.is_some() && s.feedback_waiters.take_expired(&take.session_id);
@@ -605,7 +605,7 @@ pub async fn hold(
     let sid = path(sid)?;
     let b = body(b)?;
     if b.hold {
-        let at = crate::feedback::Stop::parse(b.at.as_deref().unwrap_or("after_take"))
+        let at = clax_realtime::feedback::Stop::parse(b.at.as_deref().unwrap_or("after_take"))
             .ok_or_else(|| ApiError::bad_request("invalid_json", "at names no stop"))?;
         s.feedback_waiters.hold(&sid, at);
     } else {
@@ -652,7 +652,7 @@ pub async fn waiters(
         Some(tier) => w.parked(&sid, tier),
         None => w.count(&sid),
     };
-    let n = crate::questions::count_until(w.changed(), count, q.until).await;
+    let n = clax_realtime::questions::count_until(w.changed(), count, q.until).await;
     Ok(Json(json!({"count": n})))
 }
 

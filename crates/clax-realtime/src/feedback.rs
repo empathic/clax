@@ -1,6 +1,6 @@
 //! Fan-out of feedback changes (`feedback_state` events and long-poll
 //! wake-ups). The JSON view of a thread, and what an agent channel may see
-//! of it, are `crate::views::thread`.
+//! of it, are the HTTP layer's `views::thread`.
 
 use clax_core::feedback::FeedbackState;
 #[cfg(debug_assertions)]

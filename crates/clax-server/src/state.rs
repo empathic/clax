@@ -1,7 +1,7 @@
-use crate::feedback::{FeedbackCtx, sessions_stop};
 use crate::wrap_cache::WrapCache;
 use clax_core::feedback::Touched;
 use clax_core::{EventBus, Home, Store};
+use clax_realtime::feedback::{FeedbackCtx, sessions_stop};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -84,28 +84,28 @@ pub struct AppState {
     /// build artifact URLs from it.
     pub browser_base: String,
     /// Long-polls waiting for feedback, by session.
-    pub feedback_waiters: Arc<crate::feedback::FeedbackWaiters>,
+    pub feedback_waiters: Arc<clax_realtime::feedback::FeedbackWaiters>,
     /// Sessions with a `clax feedback follow` connected (Grok's tier 5).
-    pub followers: Arc<crate::feedback::Followers>,
+    pub followers: Arc<clax_realtime::feedback::Followers>,
     /// Held while delivery states are read and sent
-    /// ([`crate::feedback::FeedbackCtx::states`]).
+    /// ([`clax_realtime::feedback::FeedbackCtx::states`]).
     pub feedback_states: Arc<std::sync::Mutex<()>>,
     /// Where the daemon's `codex` is; Codex tier 5 is off without it.
-    pub codex: Arc<crate::push::CodexPush>,
+    pub codex: Arc<clax_realtime::push::CodexPush>,
     /// Working records (spec §10 "Working"), in memory.
     pub working: Arc<clax_core::working::Working>,
     /// Viewer presence (spec §10 "Presence"), in memory.
     pub presence: Arc<clax_core::presence::Presence>,
     /// The live rooms of the `room` capability (memory only).
-    pub rooms: Arc<crate::room::Rooms>,
+    pub rooms: Arc<clax_realtime::room::Rooms>,
     /// The `sample` capability's provider and settings.
     pub sample: Arc<clax_sample::Sampler>,
     /// The multiplexed event stream's topics and streams (`/api/stream`);
-    /// fed by `events` once [`crate::stream::Hub::listen`] has run.
-    pub stream: Arc<crate::stream::Hub>,
+    /// fed by `events` once [`clax_realtime::stream::Hub::listen`] has run.
+    pub stream: Arc<clax_realtime::stream::Hub>,
     /// Every live page's artifact ID (spec 2026-10-05-chrome-overlay-design
     /// L10), for hiding them from the LAN and serving their snapshots.
-    pub live_ids: Arc<crate::live::LiveIds>,
+    pub live_ids: Arc<clax_realtime::live::LiveIds>,
     /// The Clax extension's live credentials, by hash (spec
     /// 2026-10-05-chrome-overlay-design §5.3).
     pub ext_creds: Arc<crate::extension::Credentials>,
@@ -114,13 +114,13 @@ pub struct AppState {
     pub extension_id: String,
     /// Polls waiting on each agent question (spec
     /// 2026-10-06-agent-questions-and-inbox §6.1).
-    pub questions: Arc<crate::questions::QuestionWaiters>,
+    pub questions: Arc<clax_realtime::questions::QuestionWaiters>,
     /// How long a mirrored (hook) question stays open with no poll waiting
     /// on it before it is withdrawn (5 s in the daemon).
     pub question_grace: Duration,
-    /// The timers of question polls and graces ([`crate::questions::TokioSleeper`]
+    /// The timers of question polls and graces ([`clax_realtime::questions::TokioSleeper`]
     /// in the daemon).
-    pub question_sleeper: Arc<dyn crate::questions::Sleeper>,
+    pub question_sleeper: Arc<dyn clax_realtime::questions::Sleeper>,
     /// Where question code reads the time, such as a late answer's age
     /// ([`clax_core::working::SystemClock`] in the daemon).
     pub question_clock: Arc<dyn clax_core::working::Clock>,
@@ -141,7 +141,7 @@ pub struct AppState {
     /// time limit.
     pub exports: Arc<crate::exports::Exports>,
     /// How Claude Code's call-ID reports wait for their `tool.call`.
-    pub call_ids: Arc<crate::call_ids::CallIdWait>,
+    pub call_ids: Arc<clax_realtime::call_ids::CallIdWait>,
     /// The address the daemon listens on: invites need one other than
     /// loopback (spec §6.2).
     pub bind: std::net::IpAddr,

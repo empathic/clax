@@ -476,7 +476,7 @@ async fn a_client_that_falls_behind_gets_resync_and_never_a_growing_backlog() {
     subscribe(&ts, &sid, &["gallery"]).await;
     // Current-thread runtime: the connection cannot drain while this loop
     // runs, so its queue fills.
-    let sent = clax_server::stream::QUEUE as u32 * 4;
+    let sent = clax_realtime::stream::QUEUE as u32 * 4;
     for n in 0..sent {
         ts.events.publish(clax_core::Event::Version {
             artifact_id: "7q3k9mzx2b4t".into(),

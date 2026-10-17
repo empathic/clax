@@ -1,7 +1,7 @@
 //! Live pages on the daemon (spec 2026-10-05-chrome-overlay-design L10):
 //! the set of live-page artifact IDs. The rule that hides them from callers
 //! that are neither on this machine nor hold the token is
-//! `crate::live_access`.
+//! the HTTP layer's `live_access`.
 
 use clax_core::Store;
 use clax_core::audit::AuditCtx;

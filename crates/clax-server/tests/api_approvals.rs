@@ -1143,10 +1143,10 @@ async fn a_decision_pushes_to_the_approvers_codex_session() {
         "#!/bin/sh\nd=\"$(dirname \"$0\")\"\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > \"$d/args.fifo\"\nexit 0\n",
     );
     let w = World::two_people_with(move |s| {
-        s.codex = std::sync::Arc::new(clax_server::push::CodexPush {
+        s.codex = std::sync::Arc::new(clax_realtime::push::CodexPush {
             bin: Some(bin),
             timeout: std::time::Duration::from_secs(10),
-            source: clax_server::push::CodexSource::Env,
+            source: clax_realtime::push::CodexSource::Env,
             ..Default::default()
         })
     })

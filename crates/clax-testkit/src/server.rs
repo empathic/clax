@@ -74,7 +74,7 @@ pub struct TestServer {
     /// The server's working registry.
     pub working: Arc<clax_core::working::Working>,
     /// The server's feedback context, for driving its background passes.
-    pub feedback: clax_server::feedback::FeedbackCtx,
+    pub feedback: clax_realtime::feedback::FeedbackCtx,
     /// The server's presence registry.
     pub presence: Arc<clax_core::presence::Presence>,
     /// The address the listener is bound to (may be unspecified, e.g. `0.0.0.0`).
@@ -185,7 +185,7 @@ impl TestServer {
             .unwrap();
         let addr = listener.local_addr().unwrap();
         let port = addr.port();
-        let live_ids = Arc::new(clax_server::live::LiveIds::load(&store).unwrap());
+        let live_ids = Arc::new(clax_realtime::live::LiveIds::load(&store).unwrap());
         let ext_creds = Arc::new(
             clax_server::extension::Credentials::load_with(&store, clock.clone()).unwrap(),
         );
@@ -213,16 +213,16 @@ impl TestServer {
             codex: Arc::new(Default::default()),
             working: Arc::new(clax_core::working::Working::new(clock.clone())),
             presence: Arc::new(clax_core::presence::Presence::new(clock.clone())),
-            rooms: Arc::new(clax_server::room::Rooms::default()),
+            rooms: Arc::new(clax_realtime::room::Rooms::default()),
             // Sampling off; tests that sample set their own with `spawn_with`.
             sample: Arc::new(clax_sample::Sampler::disabled()),
-            stream: clax_server::stream::Hub::new(live_ids.clone()),
+            stream: clax_realtime::stream::Hub::new(live_ids.clone()),
             live_ids,
             ext_creds,
             extension_id: clax_core::extension::extension_id_in_effect(home.root()),
             questions: Arc::new(Default::default()),
             question_grace: Duration::from_secs(5),
-            question_sleeper: Arc::new(clax_server::questions::TokioSleeper),
+            question_sleeper: Arc::new(clax_realtime::questions::TokioSleeper),
             question_clock: clock,
             terminal_after_s: clax_core::config::TERMINAL_AFTER_S,
             calibration: Arc::default(),
@@ -231,9 +231,9 @@ impl TestServer {
             // No appender; tests of the journal start their own.
             journal: clax_server::audit::JournalStatus::off(None),
             exports: clax_server::exports::Exports::new(),
-            call_ids: Arc::new(clax_server::call_ids::CallIdWait::new(
-                clax_server::call_ids::CALL_ID_GRACE,
-                clax_server::call_ids::CALL_ID_CAP,
+            call_ids: Arc::new(clax_realtime::call_ids::CallIdWait::new(
+                clax_realtime::call_ids::CALL_ID_GRACE,
+                clax_realtime::call_ids::CALL_ID_CAP,
             )),
             bind,
             port,

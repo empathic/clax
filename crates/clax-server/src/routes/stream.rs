@@ -1,11 +1,10 @@
 //! `GET /api/stream`: one multiplexed event stream per client, and `POST
-//! /api/stream/<id>`: its subscriptions (see [`crate::stream`]).
+//! /api/stream/<id>`: its subscriptions (see [`clax_realtime::stream`]).
 
 use super::artifacts::{body, path};
 use crate::error::ApiError;
 use crate::headers::parse_id;
 use crate::state::AppState;
-use crate::stream::{Conn, MAX_TOPICS, SubError, Topic, parse_last_event_id};
 use crate::viewer::SameOrigin;
 use axum::Json;
 use axum::body::Body;
@@ -14,6 +13,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::CoreError;
+use clax_realtime::stream::{Conn, MAX_TOPICS, SubError, Topic, parse_last_event_id};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::convert::Infallible;
@@ -38,7 +38,7 @@ use std::convert::Infallible;
 /// connected person's browser), whose `questions` and `inbox` topics alone
 /// it may hold; a person's stream ends once the person is revoked. A stream
 /// opened through the extension gateway is live-only
-/// ([`crate::stream::live_only_admits`]); only requests with the credential
+/// ([`clax_realtime::stream::live_only_admits`]); only requests with the credential
 /// it was opened with change or resume it, and it ends, delivering nothing
 /// more, once that credential is revoked or expires.
 pub async fn open(
@@ -174,7 +174,7 @@ fn topics(names: &[String]) -> Result<Vec<Topic>, ApiError> {
 /// that ID for this caller (a stream opened through the extension gateway
 /// is changed only with its own credential, and any other only without
 /// one); 429 `limit_reached` past
-/// [`crate::stream::MAX_TOPICS`] topics; 400 `invalid_topic` for a name
+/// [`clax_realtime::stream::MAX_TOPICS`] topics; 400 `invalid_topic` for a name
 /// that is not a topic. On a live-only stream (the extension's), 403
 /// `forbidden` for `gallery`, a `docs` topic, or a topic of an artifact
 /// that is not a live page (`questions` and `inbox` it may take). Refuses a foreign `Origin` like the viewer routes.
@@ -202,7 +202,7 @@ pub async fn update(
     if sees.live_only
         && !add
             .iter()
-            .all(|t| crate::stream::live_only_admits(&s.live_ids, t))
+            .all(|t| clax_realtime::stream::live_only_admits(&s.live_ids, t))
     {
         return Err(live_only_refusal());
     }

@@ -21,7 +21,6 @@ use crate::agent::{Agent, DeniedToGrants, TokenOrAgent};
 use crate::audit::DeferredAudit;
 use crate::auth::Caller;
 use crate::error::ApiError;
-use crate::feedback::apply_decision;
 use crate::identity::Identity;
 use crate::state::AppState;
 use crate::viewer::SameOrigin;
@@ -34,6 +33,7 @@ use clax_core::store::approvals::{
     AskApproval, Decision, OVERFLOW_BANNER, RequestStatus, Scope, UNCONNECTED, Via,
 };
 use clax_core::{CoreError, Store};
+use clax_realtime::feedback::apply_decision;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -330,11 +330,11 @@ pub async fn revoke(
             let (a, touched) = st.revoke_approval_touched(&audit, &id, me.as_deref())?;
             // Their waits learn of it at once (M17); nothing is delivered.
             ctx.waiters.wake(&touched.targets);
-            crate::feedback::publish_decision(
+            clax_realtime::feedback::publish_decision(
                 &ctx,
                 st,
                 &touched,
-                &crate::feedback::decision_parties(a.approver.as_deref(), &a.author),
+                &clax_realtime::feedback::decision_parties(a.approver.as_deref(), &a.author),
             );
             Ok(json!({"approval": approval_view(st, &a)?}))
         })
@@ -487,7 +487,7 @@ pub async fn poll(
             "limit_reached",
             format!(
                 "at most {} polls wait on one request at once",
-                crate::questions::MAX_POLLS
+                clax_realtime::questions::MAX_POLLS
             ),
         ));
     };

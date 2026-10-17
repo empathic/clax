@@ -118,14 +118,14 @@ impl Drop for Starting {
 /// # Errors
 /// When the store fails.
 pub fn reap_idle(
-    ctx: &crate::feedback::FeedbackCtx,
+    ctx: &clax_realtime::feedback::FeedbackCtx,
     store: &Store,
     idle: Duration,
     pid_alive: &dyn Fn(u32) -> bool,
 ) -> clax_core::Result<clax_core::Reaped> {
     let r = store.reap_sessions(idle, pid_alive)?;
     let ttl = clax_core::audit::AuditCtx::system(clax_core::audit::SystemReason::Ttl);
-    crate::feedback::sessions_stop(ctx, store, &ttl, &r.touched, &r.ended);
+    clax_realtime::feedback::sessions_stop(ctx, store, &ttl, &r.touched, &r.ended);
     Ok(r)
 }
 
@@ -195,8 +195,8 @@ pub struct ServeConfig {
     /// How often idle sessions with dead processes are ended (60 s in production).
     pub reap_interval: std::time::Duration,
     /// Where the daemon's `codex` is, for Codex tier 5 (`clax serve` uses
-    /// [`crate::push::CodexPush::from_env`] on its own environment).
-    pub codex: crate::push::CodexPush,
+    /// [`clax_realtime::push::CodexPush::from_env`] on its own environment).
+    pub codex: clax_realtime::push::CodexPush,
     /// The `sample` capability's provider and settings (`clax serve` uses
     /// [`clax_sample::Sampler::from_home`] on its own environment).
     pub sample: Arc<clax_sample::Sampler>,
@@ -295,7 +295,7 @@ pub async fn serve(
 
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let events_shutdown = shutdown_tx.subscribe();
-    let live_ids = Arc::new(crate::live::LiveIds::load(&store)?);
+    let live_ids = Arc::new(clax_realtime::live::LiveIds::load(&store)?);
     let ext_creds = Arc::new(crate::extension::Credentials::load(&store)?);
     let grant_auth = Arc::new(crate::grant_auth::GrantAuth::load(&store)?);
     let vis_gen = crate::state::VisGen::install(&store);
@@ -325,15 +325,15 @@ pub async fn serve(
         presence: Arc::new(clax_core::presence::Presence::new(Arc::new(
             clax_core::working::SystemClock,
         ))),
-        rooms: Arc::new(crate::room::Rooms::default()),
+        rooms: Arc::new(clax_realtime::room::Rooms::default()),
         sample: cfg.sample.clone(),
-        stream: crate::stream::Hub::new(live_ids.clone()),
+        stream: clax_realtime::stream::Hub::new(live_ids.clone()),
         live_ids,
         ext_creds,
         extension_id: clax_core::extension::extension_id_in_effect(cfg.home.root()),
         questions: Arc::new(Default::default()),
         question_grace: Duration::from_secs(5),
-        question_sleeper: Arc::new(crate::questions::TokioSleeper),
+        question_sleeper: Arc::new(clax_realtime::questions::TokioSleeper),
         question_clock: Arc::new(clax_core::working::SystemClock),
         terminal_after_s,
         calibration: Arc::default(),
@@ -341,9 +341,9 @@ pub async fn serve(
         audit_wake: crate::audit::AuditWake::new(),
         journal: crate::audit::JournalStatus::off(None),
         exports: crate::exports::Exports::new(),
-        call_ids: Arc::new(crate::call_ids::CallIdWait::new(
-            crate::call_ids::CALL_ID_GRACE,
-            crate::call_ids::CALL_ID_CAP,
+        call_ids: Arc::new(clax_realtime::call_ids::CallIdWait::new(
+            clax_realtime::call_ids::CALL_ID_GRACE,
+            clax_realtime::call_ids::CALL_ID_CAP,
         )),
         bind: cfg.bind,
         port,
@@ -493,11 +493,12 @@ pub async fn serve(
 
     let (sweep_working, sweep_events) = (state_working, state_events);
     let sweeper = tokio::spawn(async move {
-        let mut every = tokio::time::interval(crate::working::SWEEP_INTERVAL);
+        let mut every = tokio::time::interval(clax_realtime::working::SWEEP_INTERVAL);
         loop {
             every.tick().await;
-            crate::working::sweep_and_announce(&sweep_store, &sweep_working, &sweep_events).await;
-            crate::presence::sweep_and_announce(&state_presence, &sweep_events);
+            clax_realtime::working::sweep_and_announce(&sweep_store, &sweep_working, &sweep_events)
+                .await;
+            clax_realtime::presence::sweep_and_announce(&state_presence, &sweep_events);
             state_stream.sweep();
         }
     });

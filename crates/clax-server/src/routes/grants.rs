@@ -73,7 +73,7 @@ pub(crate) fn announce(s: &AppState, change: Value) {
 /// ([`AppState::feedback_ctx`]).
 pub fn announce_ended(
     s: &AppState,
-    ctx: &crate::feedback::FeedbackCtx,
+    ctx: &clax_realtime::feedback::FeedbackCtx,
     st: &Store,
     ended: &[RevokedGrant],
     by: &str,
@@ -622,7 +622,7 @@ pub async fn poll(
                 )?;
                 Ok(match made {
                     Some((a, touched)) => {
-                        crate::feedback::apply(&ctx, st, &touched);
+                        clax_realtime::feedback::apply(&ctx, st, &touched);
                         json!({"clax": {"owner_approval": {"id": a.id, "scope": a.scope}}})
                     }
                     None => json!({"clax": {"owner_approval": null}}),
