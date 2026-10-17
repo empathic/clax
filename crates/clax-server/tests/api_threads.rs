@@ -2214,7 +2214,7 @@ async fn racing_publishes_of_a_threads_state_send_in_read_order() {
         }
     }));
     let (st, t1) = (ts.store.clone(), touched.clone());
-    let a = std::thread::spawn(move || clax_server::feedback::publish_states(&first, &st, &t1));
+    let a = std::thread::spawn(move || clax_realtime::feedback::publish_states(&first, &st, &t1));
     read_rx.recv().unwrap();
     // Between its read and its send the first holds the order: a second
     // publish cannot read yet.
@@ -2233,7 +2233,7 @@ async fn racing_publishes_of_a_threads_state_send_in_read_order() {
     assert_eq!(taken.items.len(), 1);
     let (second, st) = (ts.feedback.clone(), ts.store.clone());
     let b =
-        std::thread::spawn(move || clax_server::feedback::publish_states(&second, &st, &touched));
+        std::thread::spawn(move || clax_realtime::feedback::publish_states(&second, &st, &touched));
     go_tx.send(()).unwrap();
     a.join().unwrap();
     b.join().unwrap();

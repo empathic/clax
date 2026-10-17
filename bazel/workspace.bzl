@@ -13,6 +13,7 @@ CRATES = {
             "//crates/clax-commands:clax_commands",
             "//crates/clax-core:clax_core",
             "//crates/clax-embedded:clax_embedded",
+            "//crates/clax-realtime:clax_realtime",
             "//crates/clax-sample:clax_sample",
             "//crates/clax-server:clax_server"
         ],
@@ -137,6 +138,24 @@ CRATES = {
         },
         "version": "0.4.0"
     },
+    "crates/clax-realtime": {
+        "bins": {},
+        "default_features": [],
+        "deps": [
+            "//crates/clax-core:clax_core"
+        ],
+        "dev_deps": [
+            "//crates/clax-fake-exe:clax_fake_exe"
+        ],
+        "edition": "2024",
+        "features": [],
+        "has_build_script": False,
+        "lib": "clax_realtime",
+        "lib_root": "src/lib.rs",
+        "name": "clax-realtime",
+        "tests": {},
+        "version": "0.4.0"
+    },
     "crates/clax-sample": {
         "bins": {},
         "default_features": [],
@@ -159,6 +178,7 @@ CRATES = {
         "deps": [
             "//crates/clax-core:clax_core",
             "//crates/clax-mcp:clax_mcp",
+            "//crates/clax-realtime:clax_realtime",
             "//crates/clax-sample:clax_sample"
         ],
         "dev_deps": [
@@ -183,6 +203,7 @@ CRATES = {
         "deps": [
             "//crates/clax-core:clax_core",
             "//crates/clax-fake-exe:clax_fake_exe",
+            "//crates/clax-realtime:clax_realtime",
             "//crates/clax-sample:clax_sample",
             "//crates/clax-server:clax_server"
         ],

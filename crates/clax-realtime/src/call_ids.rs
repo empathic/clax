@@ -1,5 +1,5 @@
 //! How Claude Code's call-ID reports wait for their `tool.call`
-//! (`crate::routes::sessions::tool_call_ids`).
+//! (`clax-server`'s `routes::sessions::tool_call_ids`).
 
 use std::collections::HashMap;
 use std::sync::Arc;

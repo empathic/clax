@@ -316,7 +316,7 @@ pub struct WaitQuery {
 /// the last poll of an open hook question lets go, its grace starts; when
 /// the last poll of an `ask` question lets go, its session's feedback polls
 /// are woken, so an answer it left untaken is handed over at once. 429 `limit_reached` when
-/// [`MAX_POLLS`](crate::questions::MAX_POLLS) polls hold it already (a
+/// [`MAX_POLLS`](clax_realtime::questions::MAX_POLLS) polls hold it already (a
 /// new poll is refused rather than an older one ended).
 pub async fn poll(
     State(s): State<AppState>,
@@ -339,7 +339,7 @@ pub async fn poll(
     // Only an open mirrored question can be withdrawn for want of a poll.
     // An `ask` question's answer that the last poll leaves untaken is a late
     // answer: its session's feedback polls are woken to take it.
-    let on_last: Option<crate::questions::OnLast> = match first.source {
+    let on_last: Option<clax_realtime::questions::OnLast> = match first.source {
         Source::Hook => (first.status == Status::Open).then(|| arm_grace(s.clone(), qid.clone())),
         Source::Ask => {
             let (waiters, sid) = (s.feedback_waiters.clone(), sid.clone());
@@ -352,7 +352,7 @@ pub async fn poll(
             "limit_reached",
             format!(
                 "at most {} polls wait on one question at once",
-                crate::questions::MAX_POLLS
+                clax_realtime::questions::MAX_POLLS
             ),
         ));
     };
@@ -538,7 +538,7 @@ pub async fn waiters(
     let qid = path(p)?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let w = &s.questions;
-    let n = crate::questions::count_until(w.changed(), || w.count(&qid), q.until).await;
+    let n = clax_realtime::questions::count_until(w.changed(), || w.count(&qid), q.until).await;
     Ok(Json(json!({"count": n})))
 }
 

@@ -19,6 +19,7 @@ clax-commands = { path = "../clax-commands" }
 clax-core = { path = "../clax-core" }
 clax-server = { path = "../clax-server" }
 clax-sample = { path = "../clax-sample" }
+clax-realtime = { path = "../clax-realtime" }
 clax-embedded = { path = "../clax-embedded" }
 anyhow.workspace = true
 tokio.workspace = true

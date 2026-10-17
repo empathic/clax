@@ -8,13 +8,13 @@ use crate::auth::RequireToken;
 use crate::error::ApiError;
 use crate::headers::parse_id;
 use crate::state::AppState;
-use crate::working::settle;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use clax_core::model::Session;
 use clax_core::working::{Actor, End, Ended, MAX_WORKING_THREADS, SetWorking, clean_message};
 use clax_core::{ArtifactId, CoreError, Store};
+use clax_realtime::working::settle;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -321,6 +321,6 @@ pub async fn skew(
 ) -> Result<Json<Value>, ApiError> {
     let b = body(req)?;
     s.working.skew(b.secs);
-    crate::working::sweep_and_announce(&s.store, &s.working, &s.events).await;
+    clax_realtime::working::sweep_and_announce(&s.store, &s.working, &s.events).await;
     Ok(Json(json!({"now": s.working.now().to_rfc3339()})))
 }

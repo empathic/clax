@@ -7,7 +7,6 @@ use crate::agent::{Agent, TokenOrAgent, person_agent_session};
 use crate::audit::DeferredAudit;
 use crate::auth::Caller;
 use crate::error::ApiError;
-use crate::feedback::apply;
 use crate::headers::parse_id;
 use crate::identity::Identity;
 use crate::state::AppState;
@@ -30,6 +29,7 @@ use clax_core::store::threads::{
 };
 use clax_core::working::StopReason;
 use clax_core::{Anchor, ArtifactId, CoreError, Event, SendTarget, Store};
+use clax_realtime::feedback::apply;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -63,7 +63,7 @@ pub fn mentions_agent(body: &str) -> bool {
 /// ([`crate::views::thread::thread_event_views`]) has no `clip_path` and no
 /// delivery state, whoever made the change.
 pub(crate) fn publish_thread(
-    ctx: &crate::feedback::FeedbackCtx,
+    ctx: &clax_realtime::feedback::FeedbackCtx,
     st: &Store,
     t: &Thread,
 ) -> clax_core::Result<()> {
@@ -519,7 +519,7 @@ pub(crate) fn resolve_named(
 /// no agent. Both are recorded under `audit`.
 pub(crate) fn create_thread_now(
     st: &Store,
-    ctx: &crate::feedback::FeedbackCtx,
+    ctx: &clax_realtime::feedback::FeedbackCtx,
     audit: &AuditCtx,
     id: &ArtifactId,
     t: NewThread,
@@ -541,7 +541,7 @@ pub(crate) fn create_thread_now(
 /// holds the thread when its state arrives.
 pub(crate) fn announce_new_thread(
     st: &Store,
-    ctx: &crate::feedback::FeedbackCtx,
+    ctx: &clax_realtime::feedback::FeedbackCtx,
     audit: &AuditCtx,
     mut thread: Thread,
     mention: bool,
@@ -911,7 +911,7 @@ pub async fn comment(
                 let changed =
                     ctx.working
                         .thread_done(&sess.id, id.as_str(), &tid, StopReason::Explicit);
-                crate::working::settle(st, &audit, &ctx.events, &ctx.working, &changed);
+                clax_realtime::working::settle(st, &audit, &ctx.events, &ctx.working, &changed);
                 c
             } else {
                 if !b.via_page {
@@ -1355,7 +1355,7 @@ pub async fn resolve(
                     .working
                     .thread_gone(id.as_str(), &tid, StopReason::Resolved),
             };
-            crate::working::settle(st, &audit, &ctx.events, &ctx.working, &changed);
+            clax_realtime::working::settle(st, &audit, &ctx.events, &ctx.working, &changed);
             ctx.events.publish(Event::ThreadResolved {
                 artifact_id: aid.clone(),
                 thread_id: tid.clone(),
@@ -1511,7 +1511,7 @@ pub async fn delete(
             let changed = ctx
                 .working
                 .thread_gone(id.as_str(), &tid, StopReason::Deleted);
-            crate::working::settle(st, &audit, &ctx.events, &ctx.working, &changed);
+            clax_realtime::working::settle(st, &audit, &ctx.events, &ctx.working, &changed);
             ctx.events.publish(Event::ThreadDeleted {
                 artifact_id: aid.clone(),
                 thread_id: tid.clone(),

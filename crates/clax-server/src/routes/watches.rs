@@ -8,7 +8,6 @@ use crate::agent::{DeniedToGrants, TokenOrAgent};
 use crate::audit::DeferredAudit;
 use crate::auth::RequireToken;
 use crate::error::ApiError;
-use crate::feedback::apply;
 use crate::state::AppState;
 use axum::Json;
 use axum::body::Bytes;
@@ -16,6 +15,7 @@ use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use clax_core::{ArtifactId, CoreError, Event};
+use clax_realtime::feedback::apply;
 use serde::Deserialize;
 use serde_json::{Value, json};
 

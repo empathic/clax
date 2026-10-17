@@ -43,7 +43,7 @@ async fn presence_is_reported_by_viewers_announced_and_lapses() {
         .unwrap();
     assert_eq!(anon.status(), 400);
     c.advance(91);
-    clax_server::presence::sweep_and_announce(&ts.presence, &ts.events);
+    clax_realtime::presence::sweep_and_announce(&ts.presence, &ts.events);
     assert_eq!(
         ev.next_named("presence").await["people"][0]["state"],
         "gone"

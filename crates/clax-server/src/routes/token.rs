@@ -74,7 +74,7 @@ pub async fn token(
             }
             if let Some(old) = retired {
                 for aid in s.presence.forget(&old) {
-                    crate::presence::announce(&s.events, &s.presence, &aid);
+                    clax_realtime::presence::announce(&s.events, &s.presence, &aid);
                 }
                 s.rooms.evict_viewer(&old);
             }

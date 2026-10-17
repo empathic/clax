@@ -2,10 +2,10 @@
 //! and its pollers, and the grace that withdraws a hook question no poll
 //! waits on.
 
-use crate::questions::OnLast;
 use crate::state::AppState;
 use clax_core::store::questions::{Close, QuestionRow, Source, Status};
 use clax_core::{ArtifactId, CoreError, Event, Store};
+use clax_realtime::questions::OnLast;
 use serde_json::{Value, json};
 
 /// The owner view of `q` (spec §5.4): never a session ID, PID or working

@@ -28,7 +28,7 @@ pub fn run(home: &Home, a: ServeArgs) -> anyhow::Result<()> {
         reap_interval: Duration::from_secs(60),
         port: a.port,
         version: a.version,
-        codex: clax_server::push::CodexPush::from_env(
+        codex: clax_realtime::push::CodexPush::from_env(
             std::env::var_os("CLAX_CODEX_BIN"),
             std::env::var_os("PATH").as_deref(),
         ),

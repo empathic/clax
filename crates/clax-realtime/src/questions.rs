@@ -1,7 +1,7 @@
 //! Agent questions in the daemon (spec 2026-10-06-agent-questions-and-inbox):
 //! which polls wait on each question, and which hook question's grace is
 //! due. The view its person sees, announcing changes to that person and
-//! starting the grace are `crate::views::question`.
+//! starting the grace are the HTTP layer's `views::question`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

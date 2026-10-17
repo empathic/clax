@@ -331,7 +331,7 @@ pub async fn create(
                 let aid = ArtifactId::parse(&artifact.id)?;
                 st.ensure_watch(&audit, sid, &aid)?;
                 let touched = st.retarget_untargeted(&aid, sid)?;
-                crate::feedback::apply(&ctx, st, &touched);
+                clax_realtime::feedback::apply(&ctx, st, &touched);
             }
             events.publish(Event::Version {
                 artifact_id: artifact.id.clone(),
@@ -532,7 +532,7 @@ pub async fn delete(
     s.store_call(move |st| {
         st.delete_artifact(&audit, &id)?;
         let gone = working.artifact_gone(id.as_str());
-        crate::working::settle(st, &audit, &events, &working, &gone);
+        clax_realtime::working::settle(st, &audit, &events, &working, &gone);
         cache.remove_artifact(id.as_str());
         events.publish(Event::ArtifactDeleted {
             artifact_id: id.as_str().to_string(),
@@ -632,10 +632,10 @@ pub async fn publish(
                     None,
                     clax_core::working::End::Publish,
                 );
-                crate::working::settle(st, &audit, &ctx.events, &ctx.working, &changed);
+                clax_realtime::working::settle(st, &audit, &ctx.events, &ctx.working, &changed);
                 if retarget {
                     let touched = st.retarget_untargeted(&aid, sid)?;
-                    crate::feedback::apply(&ctx, st, &touched);
+                    clax_realtime::feedback::apply(&ctx, st, &touched);
                 }
             }
             events.publish(Event::Version {
