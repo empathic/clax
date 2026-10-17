@@ -459,11 +459,11 @@ mod tests {
 
     #[test]
     fn the_inspect_views_frame_is_named_as_frame_host_names_it() {
-        let host = include_str!("../../../web/shell/src/view/frame-host.ts");
+        let host = include_str!("../../../../web/shell/src/view/frame-host.ts");
         assert!(host.contains(
             "migrateQuery(location.search) ? MIGRATE_FRAME : inspecting() ? INSPECT_FRAME : null"
         ));
-        let proto = include_str!("../../../web/bridge/src/protocol.ts");
+        let proto = include_str!("../../../../web/bridge/src/protocol.ts");
         assert!(proto.contains(&format!(
             "export const INSPECT_FRAME = \"{INSPECT_FRAME}\";"
         )));

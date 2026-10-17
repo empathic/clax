@@ -1,7 +1,7 @@
 //! Per-artifact origins: `<id>.localhost[:port]` serves only that artifact's content.
 
+use crate::content_policy::{ContentPolicySet, content_policy, own_host};
 use crate::error::ApiError;
-use crate::routes::content::{ContentPolicySet, content_policy, own_host};
 use crate::state::AppState;
 use axum::body::Body;
 use axum::extract::{Request, State};

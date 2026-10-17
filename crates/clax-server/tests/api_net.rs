@@ -2,9 +2,8 @@
 //! C6): the owner's grants and the daemon's fetch, over a resolver and a
 //! transport that never touch the network.
 
-use crate::common;
-use clax_server::net::{Hop, HopResponse, Net, NetError, Resolver, Transport};
-use common::TestServer;
+use clax_http::net::{Hop, HopResponse, Net, NetError, Resolver, Transport};
+use clax_testkit::TestServer;
 use futures::future::BoxFuture;
 use reqwest::Method;
 use serde_json::{Value, json};
@@ -156,7 +155,7 @@ async fn a_fetch_needs_the_owners_grant_and_ends_with_its_revocation() {
                 ("x-key".to_string(), "k".to_string()),
                 (
                     "user-agent".to_string(),
-                    clax_server::net::USER_AGENT.to_string()
+                    clax_http::net::USER_AGENT.to_string()
                 )
             ]
         );

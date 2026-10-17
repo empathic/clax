@@ -6,7 +6,7 @@
 //! [`MAX_REDIRECTS`]) is vetted the same way before anything is sent:
 //! - the URL is `https` with no user name or password;
 //! - its host is one the caller allows (declared by the live version and
-//!   granted by the owner, [`clax_core::store::net_grants::NetAccess::allows`]);
+//!   granted by the owner, [`clax_store::net_grants::NetAccess::allows`]);
 //! - the host's every resolved address is a public unicast address
 //!   ([`public_ip`]); one loopback, private, link-local, multicast,
 //!   unspecified or otherwise special address refuses the hop;

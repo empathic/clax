@@ -11,9 +11,9 @@
 
 use super::Store;
 use super::docs::caps_in;
-use crate::audit::{AuditCtx, AuditKind, AuditRecord};
-use crate::capabilities::net_hosts;
-use crate::{ArtifactId, CoreError, Result};
+use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
+use clax_core::capabilities::net_hosts;
+use clax_core::{ArtifactId, CoreError, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
@@ -211,7 +211,7 @@ impl Store {
 mod tests {
     use super::*;
     use crate::MetaPatch;
-    use crate::store::test_util::{DAEMON, artifact_with_caps, store};
+    use crate::test_util::{DAEMON, artifact_with_caps, store};
     use serde_json::{Value, json};
 
     fn set_caps(st: &Store, id: &ArtifactId, caps: Value) {
@@ -256,7 +256,7 @@ mod tests {
         }))
         .unwrap();
         let d = st
-            .create_draft(DAEMON, of, crate::publish::validate(req).unwrap())
+            .create_draft(DAEMON, of, clax_core::publish::validate(req).unwrap())
             .unwrap();
         ArtifactId::parse(&d.artifact.id).unwrap()
     }
@@ -322,7 +322,7 @@ mod tests {
             .create_draft_with(
                 DAEMON,
                 Some(&app),
-                crate::publish::validate(req).unwrap(),
+                clax_core::publish::validate(req).unwrap(),
                 false,
             )
             .unwrap();
@@ -363,7 +363,7 @@ mod tests {
         let d = draft(&st, Some(&reader), reader_caps);
         assert_eq!(
             st.may_read(&d, &source).unwrap(),
-            crate::store::grants::ReadAccess::NotGranted,
+            crate::grants::ReadAccess::NotGranted,
             "cross-app reads stay refused in a draft"
         );
     }

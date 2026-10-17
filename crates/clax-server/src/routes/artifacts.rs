@@ -868,8 +868,8 @@ pub struct RestoreBody {
 /// `X-Clax-Session` must name a live session, which the version records.
 pub async fn restore(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
-    _t: crate::auth::RequireToken,
+    _d: clax_http::agent::DeniedToGrants,
+    _t: clax_http::auth::RequireToken,
     audit: AuditCtx,
     headers: HeaderMap,
     aid: Result<Path<String>, PathRejection>,

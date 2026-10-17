@@ -1,5 +1,4 @@
-use crate::common;
-use common::TestServer;
+use clax_testkit::TestServer;
 use serde_json::{Value, json};
 
 async fn publish(ts: &TestServer, aid: &str, if_version: u32, files: Value) -> Value {

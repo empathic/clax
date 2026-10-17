@@ -27,12 +27,10 @@
 //! declaration is read; agents and the owner are never refused it.
 //!
 //! The read routes also serve another app reading these documents
-//! (`X-Clax-Reader`, [`crate::db_caller`]); the owner's grants for that and
+//! (`X-Clax-Reader`, [`clax_http::db_caller`]); the owner's grants for that and
 //! the collection listing for the agent live here too.
 
 use super::artifacts::{JsonBytes, body, parse_body, path};
-use clax_http::auth::RequireToken;
-use clax_http::db_caller::{not_granted, reader_of};
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
@@ -40,7 +38,9 @@ use axum::http::HeaderMap;
 use clax_core::audit::AuditCtx;
 use clax_core::db::invalid_argument;
 use clax_core::{CoreError, Event, EventBus};
+use clax_http::auth::RequireToken;
 use clax_http::db_caller::CallerParts;
+use clax_http::db_caller::{not_granted, reader_of};
 use clax_http::error::ApiError;
 use clax_http::headers::parse_id;
 use clax_http::state::AppState;
@@ -539,7 +539,7 @@ pub async fn acquire(
 /// `not_granted`: the listing ignores the read rules, so it is the owner's.
 pub async fn collections(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
     headers: HeaderMap,
     aid: Result<Path<String>, PathRejection>,
@@ -564,7 +564,7 @@ type GrantParams = Result<Path<(String, String)>, PathRejection>;
 /// 404 for an unknown artifact, 400 `invalid_args` when both are one.
 pub async fn grant(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
     audit: AuditCtx,
     p: GrantParams,
@@ -588,7 +588,7 @@ pub async fn grant(
 /// source declares is not a grant and stays. Errors as [`grant`].
 pub async fn revoke(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
     audit: AuditCtx,
     p: GrantParams,
@@ -606,7 +606,7 @@ pub async fn revoke(
 /// unknown artifact.
 pub async fn grants(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {

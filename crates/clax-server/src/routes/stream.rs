@@ -334,7 +334,7 @@ fn topics(names: &[String]) -> Result<Vec<Topic>, ApiError> {
 /// Every topic of a draft needs the token or the events cookie (404
 /// otherwise): its events are the owner's alone.
 /// A `docs:<B>?reader=<A>` topic needs A to exist and to be allowed to read
-/// B now, whatever the caller ([`crate::db_caller::reader_caller`]: 403
+/// B now, whatever the caller ([`clax_http::db_caller::reader_caller`]: 403
 /// `not_granted` or `not_declared`); each of its events is checked again as
 /// it is dispatched. 404 `unknown_stream` when no stream has
 /// that ID for this caller (a stream opened through the extension gateway

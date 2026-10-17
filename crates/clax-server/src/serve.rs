@@ -26,7 +26,7 @@ use tokio::sync::{oneshot, watch};
 const SESSION_IDLE: Duration = Duration::from_secs(Store::SESSION_IDLE_SECS);
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// How often the daemon deletes drafts older than
-/// [`clax_core::store::drafts::DRAFT_MAX_AGE`] (and once at start).
+/// [`clax_store::drafts::DRAFT_MAX_AGE`] (and once at start).
 const DRAFT_SWEEP_INTERVAL: Duration = Duration::from_secs(3600);
 /// How long shutdown waits for the journal appender to close its segment.
 /// The appender stops as shutdown begins, beside the connection drain

@@ -250,7 +250,7 @@ impl Store {
     /// untouched; any other field therefore cannot be cleared through this
     /// call. The caller validates `capabilities`; this call refuses a read
     /// declaration naming the artifact itself
-    /// ([`ReadDecl::from_capabilities`](crate::db::ReadDecl::from_capabilities)). Does not
+    /// ([`ReadDecl::from_capabilities`](clax_core::db::ReadDecl::from_capabilities)). Does not
     /// bump `updated_at` (metadata edits are not new content). Recorded,
     /// in the same transaction, as `artifact.update` under `ctx`, naming in
     /// `fields` each field the patch sets, even to the value it had (an
@@ -266,7 +266,7 @@ impl Store {
         patch: MetaPatch,
     ) -> Result<Artifact> {
         if let Some(caps) = &patch.capabilities {
-            crate::db::ReadDecl::from_capabilities(caps, id.as_str())?;
+            clax_core::db::ReadDecl::from_capabilities(caps, id.as_str())?;
         }
         self.with_tx(|tx| {
             let Some(before) = tx
@@ -1351,7 +1351,7 @@ impl Store {
         if let Some(caps) = &p.capabilities {
             // The publish check has no artifact ID; a declaration may not
             // read or share with its own artifact.
-            crate::db::ReadDecl::from_capabilities(caps, id.as_str())?;
+            clax_core::db::ReadDecl::from_capabilities(caps, id.as_str())?;
         }
         let n = expected + 1;
         let adopt = matches!(step, VersionStep::Adopt(_));
@@ -2227,7 +2227,7 @@ mod tests {
 
     /// Versions 1 (`index.html` "v1", `a.css` "a", `b.css` "b") and 2
     /// (`index.html` "v2", `b.css` "b2", `a.css` carried).
-    fn two_versions(store: &Store) -> crate::ArtifactId {
+    fn two_versions(store: &Store) -> clax_core::ArtifactId {
         let (a, _) = store
             .create_artifact(
                 DAEMON,
@@ -2242,7 +2242,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        let id = crate::ArtifactId::parse(&a.id).unwrap();
+        let id = clax_core::ArtifactId::parse(&a.id).unwrap();
         store
             .publish_version(
                 DAEMON,
@@ -2297,7 +2297,7 @@ mod tests {
             ))
             .unwrap_err();
         assert!(
-            matches!(e, crate::CoreError::Conflict { current: 2 }),
+            matches!(e, clax_core::CoreError::Conflict { current: 2 }),
             "{e:?}"
         );
         assert_eq!(store.get_artifact(&id).unwrap().unwrap().current_version, 2);

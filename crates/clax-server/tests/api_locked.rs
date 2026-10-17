@@ -3,8 +3,7 @@
 //! the shell's static files and content addressed by artifact ID answers a
 //! request that carries no credential, `GET /api/token` included.
 
-use crate::common;
-use common::TestServer;
+use clax_testkit::TestServer;
 
 async fn locked() -> TestServer {
     TestServer::spawn_with(|s| s.require_credential = true).await
@@ -13,7 +12,7 @@ async fn locked() -> TestServer {
 /// `clax_key_<port>=<token>`: the cookie the app sets in its WebView.
 fn key_cookie(ts: &TestServer) -> String {
     let host = ts.base.trim_start_matches("http://");
-    format!("{}={}", clax_server::auth::key_cookie_name(host), ts.token)
+    format!("{}={}", clax_http::auth::key_cookie_name(host), ts.token)
 }
 
 async fn status(ts: &TestServer, path: &str, cookie: Option<&str>) -> u16 {
@@ -42,7 +41,7 @@ async fn the_token_route_answers_no_one_without_a_credential() {
     assert!(body.get("token").is_none());
     // A wrong key cookie is no credential.
     let host = ts.base.trim_start_matches("http://");
-    let wrong = format!("{}=nope", clax_server::auth::key_cookie_name(host));
+    let wrong = format!("{}=nope", clax_http::auth::key_cookie_name(host));
     assert_eq!(status(&ts, "/api/token", Some(&wrong)).await, 401);
 }
 

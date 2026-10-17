@@ -9,3 +9,8 @@ web/dist-extension
 web/dist-extension-test
 web/dist-e2e
 plugins/pi/node_modules
+apps/clax_app/build
+apps/clax_app/build-native
+apps/clax_app/.dart_tool
+apps/clax_app/android/.gradle
+apps/clax_app/macos/Flutter/ephemeral

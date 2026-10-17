@@ -151,7 +151,7 @@ exports_files(
     visibility = ["//crates:__subpackages__"],
 )
 
-# The shell's files the Rust code and its tests include, to check that both
+# The shell's and the bridge's files the Rust code and its tests include, to check that both
 # sides agree (include_str! in crates/clax-server and crates/clax-commands).
 filegroup(
     name = "shell_cases",
@@ -159,7 +159,10 @@ filegroup(
         "shell/src/*-cases.json",
         "shell/src/view/frame-host.ts",
         "shell/src/view/haiku.json",
-    ]) + ["shell/artifact.html"],
+    ]) + [
+        "bridge/src/protocol.ts",
+        "shell/artifact.html",
+    ],
     visibility = ["//crates:__subpackages__"],
 )
 
@@ -218,6 +221,8 @@ npm_script_test(
 # the browsers are read where Bazel put them, not copied
 # (web/e2e/bazel-env.ts).
 E2E_DATA = [
+    "//apps/clax_app:home",
+    "//apps/clax_app:kit",
     ":dist",
     ":dist_e2e",
     ":dist_extension_test",

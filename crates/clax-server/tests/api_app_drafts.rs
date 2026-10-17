@@ -3,13 +3,12 @@
 //! copy, publishing to a draft, reads through its app's grants, and the
 //! routes and streams that never show one.
 
-use crate::common;
 use clax_core::ArtifactId;
 use clax_core::audit::AuditCtx;
 use clax_core::db::{Caller, Level};
-use clax_core::store::docs::{BatchOp, BatchWrite};
-use clax_server::testing::EventReader;
-use common::TestServer;
+use clax_store::docs::{BatchOp, BatchWrite};
+use clax_testkit::EventReader;
+use clax_testkit::TestServer;
 use reqwest::Method;
 use serde_json::{Value, json};
 
@@ -337,7 +336,7 @@ async fn threads_on_a_draft_are_refused() {
         )
         .multipart(
             reqwest::multipart::Form::new()
-                .text("anchor", clax_server::testing::element_anchor().to_string())
+                .text("anchor", clax_testkit::element_anchor().to_string())
                 .text("body", "x")
                 .text("version", "1"),
         )
@@ -488,7 +487,7 @@ async fn delete_and_sweep_remove_everything() {
     let created = chrono::DateTime::parse_from_rfc3339(&created)
         .unwrap()
         .to_utc();
-    let max_age = clax_core::store::drafts::DRAFT_MAX_AGE;
+    let max_age = clax_store::drafts::DRAFT_MAX_AGE;
     let kept = ts
         .store
         .sweep_drafts(

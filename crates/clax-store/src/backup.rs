@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 
-use crate::{CoreError, Home, Result};
+use clax_core::{CoreError, Home, Result};
 
 /// How many of the newest copies `<home>/backups` keeps (one older copy
 /// may be kept besides them; see `prune`).

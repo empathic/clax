@@ -423,11 +423,7 @@ async fn a_service_worker_script_on_content_is_one_that_unregisters_itself() {
                 .contains("connect-src ")
         );
         let body = res.text().await.unwrap();
-        assert_eq!(
-            body,
-            clax_server::host::SERVICE_WORKER_KILL_SWITCH,
-            "{path}"
-        );
+        assert_eq!(body, clax_http::host::SERVICE_WORKER_KILL_SWITCH, "{path}");
     }
     // Without the header the file is served as stored.
     let res = ts.get(&format!("/c/{id}/v/1/sw.js")).await;

@@ -4,10 +4,10 @@
 //! testkit's delay middleware are here too.
 
 use crate::routes::{
-    approvals, artifacts, assets, connect, content, docs, drafts, extension, feedback, git_token,
-    grants, health, inbox, live, live_layers, mcp_http, people, perf, questions, remotes, room,
-    sample, sessions, sites, snapshot, stream, surface, threads, token, toolpath, viewers, watches,
-    working,
+    app_drafts, approvals, artifacts, assets, connect, content, docs, drafts, extension, feedback,
+    git_token, grants, health, inbox, live, live_layers, mcp_http, net, people, perf, questions,
+    remotes, room, sample, sessions, sites, snapshot, stream, surface, threads, token, toolpath,
+    viewers, watches, working,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::routes::{events, mcp};
@@ -270,8 +270,8 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             "/api/artifacts/{aid}/docs:collections",
             get(docs::collections),
         )
-        .route("/api/drafts", get(drafts::list))
-        .route("/api/drafts/{id}", delete(drafts::delete))
+        .route("/api/drafts", get(app_drafts::list))
+        .route("/api/drafts/{id}", delete(app_drafts::delete))
         .route("/api/artifacts/{aid}/db-grants", get(docs::grants))
         .route(
             "/api/artifacts/{aid}/db-grants/{source}",
@@ -581,7 +581,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
     // (spec 2026-10-12-flutter-app-design §3.8): the header is refused on
     // every other route and method.
     let r = r.layer(axum::middleware::from_fn(
-        crate::db_caller::refuse_reader_elsewhere,
+        clax_http::db_caller::refuse_reader_elsewhere,
     ));
     // Live pages answer 404 to callers that may not see them, before any
     // handler runs (spec 2026-10-05-chrome-overlay-design L10).

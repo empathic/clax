@@ -31,7 +31,7 @@ pub struct EventsQuery {
     /// The app the subscriber reads for (spec 2026-10-12-flutter-app-design
     /// §3.8): `doc` events are judged at `view` with no viewer, and each
     /// reaches the stream only while this app may read its artifact
-    /// ([`crate::db_caller::reader_caller`]), checked as it is sent.
+    /// ([`clax_http::db_caller::reader_caller`]), checked as it is sent.
     reader: Option<String>,
 }
 
@@ -310,7 +310,7 @@ async fn reads(s: &AppState, reader: ArtifactId, source: &str) -> bool {
     let Ok(source) = ArtifactId::parse(source) else {
         return false;
     };
-    s.store_call(move |st| crate::db_caller::reader_caller(st, &reader, &source, Level::View))
+    s.store_call(move |st| clax_http::db_caller::reader_caller(st, &reader, &source, Level::View))
         .await
         .is_ok()
 }

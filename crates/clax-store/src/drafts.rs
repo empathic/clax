@@ -13,11 +13,11 @@
 use super::Store;
 use super::artifacts::delete_record;
 use super::docs::caps_in;
-use crate::audit::AuditCtx;
-use crate::db::{Caller, Level, Op, Rules};
-use crate::model::{Artifact, CONTRACT_VERSION, Version};
-use crate::publish::ValidatedPublish;
-use crate::{ArtifactId, CoreError, Result};
+use clax_core::audit::AuditCtx;
+use clax_core::db::{Caller, Level, Op, Rules};
+use clax_core::model::{Artifact, CONTRACT_VERSION, Version};
+use clax_core::publish::ValidatedPublish;
+use clax_core::{ArtifactId, CoreError, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashSet};
@@ -301,7 +301,7 @@ impl Store {
         let dir = self.home.artifact_dir(id);
         let trash = self.home.root().join(DRAFT_TRASH);
         std::fs::create_dir_all(&trash)?;
-        let held = trash.join(format!("{}-{}", id.as_str(), crate::new_ulid()));
+        let held = trash.join(format!("{}-{}", id.as_str(), clax_core::new_ulid()));
         let moved = match std::fs::rename(&dir, &held) {
             Ok(()) => true,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
@@ -416,15 +416,15 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::publish::validate;
-    use crate::store::docs::{BatchOp, BatchWrite, Pin};
-    use crate::store::test_util::{DAEMON, artifact_with_caps, session, store};
+    use crate::docs::{BatchOp, BatchWrite, Pin};
+    use crate::test_util::{DAEMON, artifact_with_caps, session, store};
+    use clax_core::publish::validate;
     use serde_json::{Value, json};
 
     const OWNER: Caller = Caller {
         level: Level::Owner,
         viewer: None,
-        person: crate::visibility::Author::Owner,
+        person: clax_core::visibility::Author::Owner,
         via_page: false,
     };
 
@@ -770,7 +770,7 @@ mod tests {
 
     #[test]
     fn a_draft_reads_no_other_app_whatever_its_apps_grants_and_shares() {
-        use crate::store::grants::ReadAccess;
+        use crate::grants::ReadAccess;
         let (_d, st) = store();
         let b = artifact_with_caps(&st, json!({"db": {}}));
         let a = artifact_with_caps(&st, json!({"db": {"read": [b.as_str()]}}));

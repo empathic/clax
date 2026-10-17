@@ -1786,15 +1786,15 @@ fn every_recorded_kind_is_classified_and_renders_conformant() {
     // A restore (`version.publish` with `restored_from`) and a read grant
     // made and revoked (`artifact.update` with `db_read_grants`).
     {
-        use crate::store::test_util::artifact;
-        let dctx = &crate::audit::AuditCtx::DAEMON;
+        use crate::test_util::artifact;
+        let dctx = &clax_core::audit::AuditCtx::DAEMON;
         let a = artifact(&st, None);
-        let req: crate::publish::PublishRequest = serde_json::from_value(json!({
+        let req: clax_core::publish::PublishRequest = serde_json::from_value(json!({
             "if_version": 1,
             "files": {"index.html": {"content": "<main>v2</main>", "encoding": "utf8"}}
         }))
         .unwrap();
-        st.publish_version(dctx, &a, crate::publish::validate(req).unwrap(), None)
+        st.publish_version(dctx, &a, clax_core::publish::validate(req).unwrap(), None)
             .unwrap();
         st.restore_version(dctx, &a, 1, 2, None).unwrap();
         let b = artifact(&st, None);

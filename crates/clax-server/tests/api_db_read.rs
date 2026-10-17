@@ -3,9 +3,8 @@
 //! stream and the `docs:<B>?reader=<A>` topic, the owner's grant routes, and
 //! `docs:collections`.
 
-use crate::common;
-use clax_server::testing::EventReader;
-use common::TestServer;
+use clax_testkit::EventReader;
+use clax_testkit::TestServer;
 use reqwest::Method;
 use serde_json::{Value, json};
 

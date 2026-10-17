@@ -1278,7 +1278,7 @@ const APP_MIGRATION_MARKS: [(&str, &str); 5] = [
 /// table, and no `invites` table (which migration 24 makes). Each app
 /// migration's mark ([`APP_MIGRATION_MARKS`]) must be present exactly up
 /// to the one its version names, or the database is refused
-/// ([`crate::CoreError::MigrationFailed`]) and left as it was.
+/// ([`clax_core::CoreError::MigrationFailed`]) and left as it was.
 ///
 /// The multi-person migrations' SQL and Rust steps run on it (they touch
 /// none of the app's tables and add no column the app's migrations add),
@@ -1286,7 +1286,7 @@ const APP_MIGRATION_MARKS: [(&str, &str); 5] = [
 /// numbering (its old version plus 3). Returns that version.
 pub(super) fn adopt_pre_rebase_flutter_app(
     tx: &rusqlite::Transaction<'_>,
-) -> crate::Result<Option<u32>> {
+) -> clax_core::Result<Option<u32>> {
     let version: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     let old_last = PEOPLE_MIGRATION + APP_MIGRATION_MARKS.len() as u32 - 1;
     if !(PEOPLE_MIGRATION..=old_last).contains(&version)
@@ -1298,7 +1298,7 @@ pub(super) fn adopt_pre_rebase_flutter_app(
     let held = (version - PEOPLE_MIGRATION + 1) as usize;
     for (i, (kind, name)) in APP_MIGRATION_MARKS.iter().enumerate() {
         if has_mark(tx, kind, name)? != (i < held) {
-            return Err(crate::CoreError::MigrationFailed {
+            return Err(clax_core::CoreError::MigrationFailed {
                 at: version,
                 detail: format!(
                     "a database from an earlier Clax app build at version {version} \
@@ -1319,7 +1319,7 @@ pub(super) fn adopt_pre_rebase_flutter_app(
 
 /// Whether the schema has the table `name` (`kind` "table") or the
 /// `artifacts` column `name` (`kind` "column").
-fn has_mark(tx: &rusqlite::Transaction<'_>, kind: &str, name: &str) -> crate::Result<bool> {
+fn has_mark(tx: &rusqlite::Transaction<'_>, kind: &str, name: &str) -> clax_core::Result<bool> {
     let sql = if kind == "table" {
         "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1)"
     } else {
@@ -1375,9 +1375,9 @@ const MULTI_PERSON_REVISIONS: [(u32, &str, &str, &str); 4] = [
 /// object missing. Empty for any other database.
 fn missing_multi_person_revisions(
     c: &rusqlite::Connection,
-) -> crate::Result<Vec<&'static (u32, &'static str, &'static str, &'static str)>> {
+) -> clax_core::Result<Vec<&'static (u32, &'static str, &'static str, &'static str)>> {
     let version: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    let exists = |sql: &str, name: &str| -> crate::Result<bool> {
+    let exists = |sql: &str, name: &str| -> clax_core::Result<bool> {
         Ok(c.query_row(sql, [name], |r| r.get(0))?)
     };
     let object = "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = ?2 AND name = ?1)";
@@ -1408,7 +1408,7 @@ fn missing_multi_person_revisions(
 }
 
 /// Whether [`repair_multi_person_revisions`] would change this database.
-pub(super) fn needs_multi_person_repair(c: &rusqlite::Connection) -> crate::Result<bool> {
+pub(super) fn needs_multi_person_repair(c: &rusqlite::Connection) -> clax_core::Result<bool> {
     Ok(!missing_multi_person_revisions(c)?.is_empty())
 }
 
@@ -1423,7 +1423,7 @@ pub(super) fn needs_multi_person_repair(c: &rusqlite::Connection) -> crate::Resu
 /// objects it added, empty for any other database.
 pub(super) fn repair_multi_person_revisions(
     tx: &rusqlite::Transaction<'_>,
-) -> crate::Result<Vec<&'static str>> {
+) -> clax_core::Result<Vec<&'static str>> {
     let missing = missing_multi_person_revisions(tx)?;
     for (_, _, name, sql) in &missing {
         tx.execute_batch(sql)?;
@@ -3673,7 +3673,7 @@ mod tests {
             .unwrap();
         assert_eq!(approvals, 1, "migration 25's Rust step ran, from {old}");
         drop(st);
-        let copies = crate::store::backup::list(&crate::store::backup::dir(&home));
+        let copies = crate::backup::list(&crate::backup::dir(&home));
         assert_eq!(copies.len(), 1, "{copies:?}");
         let name = copies[0].file_name().unwrap().to_str().unwrap().to_string();
         assert!(name.starts_with(&format!("clax-{old}-")), "{name}");
@@ -3727,7 +3727,7 @@ mod tests {
             Err(e) => e,
         };
         assert!(
-            matches!(&err, crate::CoreError::MigrationFailed { at: 27, detail }
+            matches!(&err, clax_core::CoreError::MigrationFailed { at: 27, detail }
                 if detail.contains("sample_grants")),
             "{err:?}"
         );
@@ -3769,7 +3769,7 @@ mod tests {
             Err(e) => e,
         };
         assert!(
-            matches!(&err, crate::CoreError::MigrationFailed { at: 27, detail }
+            matches!(&err, clax_core::CoreError::MigrationFailed { at: 27, detail }
                 if detail.contains("draft_of")),
             "{err:?}"
         );
@@ -3819,7 +3819,7 @@ mod tests {
             .unwrap();
         assert_eq!((v, docs, inherit), (MIGRATIONS.len() as u32, 1, 1));
         assert_eq!(st.list_artifacts().unwrap().len(), 1);
-        let copies = crate::store::backup::list(&crate::store::backup::dir(&home));
+        let copies = crate::backup::list(&crate::backup::dir(&home));
         assert_eq!(copies.len(), 1, "{copies:?}");
     }
 
@@ -3833,12 +3833,9 @@ mod tests {
             .unwrap();
         assert_eq!(v, MIGRATIONS.len() as u32);
         drop(st);
-        assert!(!crate::store::backup::dir(&home).exists());
+        assert!(!crate::backup::dir(&home).exists());
         drop(Store::open(&home).unwrap());
-        assert!(
-            !crate::store::backup::dir(&home).exists(),
-            "nothing to migrate"
-        );
+        assert!(!crate::backup::dir(&home).exists(), "nothing to migrate");
     }
 
     #[test]
@@ -3846,7 +3843,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         home.ensure_dirs().unwrap();
-        let backups = crate::store::backup::dir(&home);
+        let backups = crate::backup::dir(&home);
         std::fs::create_dir_all(&backups).unwrap();
         for at in [
             "20261001T000000000Z",
@@ -3861,10 +3858,10 @@ mod tests {
             c.execute_batch(MIGRATIONS[0]).unwrap();
             c.pragma_update(None, "user_version", 1).unwrap();
         }
-        let clock: std::sync::Arc<dyn crate::working::Clock> =
-            std::sync::Arc::new(crate::working::ManualClock::at("2026-10-15T12:00:00Z"));
+        let clock: std::sync::Arc<dyn clax_core::working::Clock> =
+            std::sync::Arc::new(clax_core::working::ManualClock::at("2026-10-15T12:00:00Z"));
         drop(Store::open_with_clock(&home, clock).unwrap());
-        let names: Vec<String> = crate::store::backup::list(&backups)
+        let names: Vec<String> = crate::backup::list(&backups)
             .iter()
             .map(|p| p.file_name().unwrap().to_str().unwrap().to_string())
             .collect();
@@ -3997,7 +3994,7 @@ mod tests {
         assert_eq!(v.public_id, "u_lan");
         drop(st);
 
-        let copies = crate::store::backup::list(&crate::store::backup::dir(&home));
+        let copies = crate::backup::list(&crate::backup::dir(&home));
         assert_eq!(copies.len(), 1, "copied before the repair: {copies:?}");
         let copy = Connection::open(&copies[0]).unwrap();
         assert_eq!(earlier_rows(&copy), before, "the copy holds the old rows");
@@ -4008,7 +4005,7 @@ mod tests {
 
         // Opening it again changes nothing and copies nothing.
         drop(Store::open(&home).unwrap());
-        let copies = crate::store::backup::list(&crate::store::backup::dir(&home));
+        let copies = crate::backup::list(&crate::backup::dir(&home));
         assert_eq!(copies.len(), 1, "{copies:?}");
     }
 

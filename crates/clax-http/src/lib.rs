@@ -15,6 +15,7 @@ pub mod auth;
 pub mod blocking;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod conn;
+pub mod content_policy;
 pub mod db_caller;
 pub mod error;
 pub mod exports;

@@ -7,8 +7,8 @@
 
 use super::Store;
 use super::docs::caps_in;
-use crate::audit::{AuditCtx, AuditKind, AuditRecord};
-use crate::{ArtifactId, Result};
+use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
+use clax_core::{ArtifactId, Result};
 use rusqlite::{OptionalExtension, params};
 
 /// The `artifact.update` record of a grant change: the field
@@ -121,8 +121,8 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use crate::CoreError;
-    use crate::store::test_util::{DAEMON, artifact_with_caps, store};
+    use crate::test_util::{DAEMON, artifact_with_caps, store};
+    use clax_core::CoreError;
 
     #[test]
     fn a_grant_is_kept_until_revoked_and_spend_adds_up_per_day() {

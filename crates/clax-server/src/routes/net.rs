@@ -3,19 +3,14 @@
 //! token: pages reach them only through the owner's shell, which asks the
 //! owner's consent before the first grant.
 //!
-//! - `POST /api/artifacts/<id>/net:fetch`: one fetch under [`crate::net`]'s
+//! - `POST /api/artifacts/<id>/net:fetch`: one fetch under [`clax_http::net`]'s
 //!   rules, to a host the live version declares in `capabilities.net.hosts`
 //!   and the owner granted. A draft uses its live app's grants
-//!   ([`clax_core::store::Store::net_access`]) and is never granted itself.
+//!   ([`clax_store::Store::net_access`]) and is never granted itself.
 //! - `GET /api/artifacts/<id>/net-grants`: the declared hosts and grants.
 //! - `PUT /api/artifacts/<id>/net-grants`: grants every declared host.
 //! - `DELETE /api/artifacts/<id>/net-grants`: revokes every grant.
 
-use crate::auth::RequireToken;
-use crate::error::ApiError;
-use crate::net::{FetchRequest, MAX_BODY, NetError, https_url};
-use crate::routes::artifacts::parse_id;
-use crate::state::AppState;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, State};
@@ -23,6 +18,11 @@ use axum::http::StatusCode;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use clax_core::audit::AuditCtx;
+use clax_http::auth::RequireToken;
+use clax_http::error::ApiError;
+use clax_http::headers::parse_id;
+use clax_http::net::{FetchRequest, MAX_BODY, NetError, https_url};
+use clax_http::state::AppState;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -68,7 +68,7 @@ fn net_error(e: &NetError) -> ApiError {
 /// `too_many_redirects` or `upstream_error`.
 pub async fn fetch(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
     aid: Result<Path<String>, PathRejection>,
     body: Result<Json<FetchBody>, JsonRejection>,
@@ -116,7 +116,7 @@ pub async fn fetch(
 /// declared host is granted. 404 for an unknown artifact.
 pub async fn grants(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -141,7 +141,7 @@ pub struct GrantBody {
 /// draft.
 pub async fn grant(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
     audit: AuditCtx,
     aid: Result<Path<String>, PathRejection>,
@@ -162,7 +162,7 @@ pub async fn grant(
 /// artifact, 403 `draft` for a draft.
 pub async fn revoke(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
     audit: AuditCtx,
     aid: Result<Path<String>, PathRejection>,

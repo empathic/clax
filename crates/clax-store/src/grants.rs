@@ -12,9 +12,9 @@
 
 use super::Store;
 use super::docs::caps_in;
-use crate::audit::{AuditCtx, AuditKind, AuditRecord};
-use crate::db::ReadDecl;
-use crate::{ArtifactId, CoreError, Result};
+use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
+use clax_core::db::ReadDecl;
+use clax_core::{ArtifactId, CoreError, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
@@ -230,9 +230,9 @@ impl Store {
 mod tests {
     use super::*;
     use crate::MetaPatch;
-    use crate::db::{Caller, Level};
-    use crate::store::docs::Pin;
-    use crate::store::test_util::{DAEMON, artifact_with_caps, store};
+    use crate::docs::Pin;
+    use crate::test_util::{DAEMON, artifact_with_caps, store};
+    use clax_core::db::{Caller, Level};
     use serde_json::{Value, json};
 
     fn set_caps(st: &Store, id: &ArtifactId, caps: Value) {
@@ -317,8 +317,8 @@ mod tests {
             if let Some(caps) = caps {
                 req["capabilities"] = caps;
             }
-            let req: crate::publish::PublishRequest = serde_json::from_value(req).unwrap();
-            st.publish_version(DAEMON, &a, crate::publish::validate(req).unwrap(), None)
+            let req: clax_core::publish::PublishRequest = serde_json::from_value(req).unwrap();
+            st.publish_version(DAEMON, &a, clax_core::publish::validate(req).unwrap(), None)
                 .unwrap();
         };
         publish(None);

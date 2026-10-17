@@ -1,0 +1,23 @@
+# The Clax app (Flutter). Its kit and home app are web files the browser
+# tests also load (web/e2e/home-app.spec.ts, lockdown.spec.ts, map.spec.ts),
+# as js_library targets so rules_js copies them beside the tests.
+
+load("@aspect_rules_js//js:defs.bzl", "js_library")
+
+js_library(
+    name = "kit",
+    srcs = glob(
+        ["assets/kit/**"],
+        exclude = ["**/.qual"],
+    ),
+    visibility = ["//web:__pkg__"],
+)
+
+js_library(
+    name = "home",
+    srcs = glob(
+        ["home/**"],
+        exclude = ["**/.qual"],
+    ),
+    visibility = ["//web:__pkg__"],
+)

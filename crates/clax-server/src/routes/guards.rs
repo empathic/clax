@@ -76,9 +76,9 @@ mod l10 {
         ("sessions::join", AgentPath),
         ("sessions::get", AgentPath),
         ("sessions::patch", AgentPath),
-        ("drafts::create", Token),
-        ("drafts::list", Token),
-        ("drafts::delete", Token),
+        ("app_drafts::create", Token),
+        ("app_drafts::list", Token),
+        ("app_drafts::delete", Token),
         ("sessions::push_status", NoArtifact),
         ("sessions::tool_call_ids", NoArtifact),
         ("sample::daemon", Token),
@@ -360,7 +360,11 @@ mod l10 {
         let mut seen = 0;
         for (path, _) in routes(src) {
             let want = admitted.contains(&path.as_str());
-            assert_eq!(clax_http::db_caller::reader_route(&fill(&path)), want, "{path}");
+            assert_eq!(
+                clax_http::db_caller::reader_route(&fill(&path)),
+                want,
+                "{path}"
+            );
             seen += usize::from(want);
         }
         assert_eq!(seen, admitted.len(), "every admitted route is mounted");
