@@ -41,6 +41,7 @@ pub mod room;
 pub mod seats;
 pub mod secret;
 pub mod sig;
+pub mod surface;
 pub mod time;
 pub mod visibility;
 pub mod wake;
