@@ -599,7 +599,8 @@ void main() {
       ],
     ]).change(aid, [item], session: sid);
 
-    expect(out, isA<ChangeFailed>());
+    // Not a failure: the build goes on with it.
+    expect(out, isA<ChangeAnswered>());
     final reply = bodies(item.threadId).last;
     expect(
       reply,
@@ -612,7 +613,6 @@ void main() {
     );
     expect(offersKeepGoing(reply), isFalse);
     expect(isFailureText(reply), isFalse);
-    expect(offersKeepGoing((out as ChangeFailed).reason), isFalse);
     expect(await unfinished.get(item.threadId), isNull);
   });
 

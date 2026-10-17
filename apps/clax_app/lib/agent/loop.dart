@@ -1123,6 +1123,9 @@ class AgentLoop {
         return version == null
             ? ChangeAnswered(answered: answered)
             : ChangeLanded(version, answered: answered);
+      case RunGaveUp(planned: true, :final answered):
+        // The build builds what is left; the reply said so.
+        return ChangeAnswered(answered: answered);
       case RunGaveUp(:final reason, :final answered):
         if (ran.byTool) return ChangeFailed(reason, answered: answered);
         // The runner ended it (a refusal, a broken turn, a model failure):
