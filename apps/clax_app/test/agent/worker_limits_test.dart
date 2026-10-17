@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:clax_app/agent/failure.dart';
 import 'package:clax_app/agent/loop.dart';
 import 'package:clax_app/agent/plan.dart';
@@ -101,6 +103,55 @@ void main() {
     expect(runner.states[1].draft.files['index.html'], contains('Keep'));
     expect(bodies(item.threadId).last, 'Renamed.');
     expect(await unfinished.get(item.threadId), isNull);
+  });
+
+  test('a Keep going queued with a comment on another thread runs on its '
+      'own, from its draft, and the other comment runs after it', () async {
+    workerWith([
+      [
+        const ScriptedCall('str_replace', {
+          'path': 'index.html',
+          'old_str': 'Save',
+          'new_str': 'Keep',
+        }, 'Renaming the button'),
+        for (var i = 0; i < 10; i++) const ScriptedCall('list_files', {}),
+      ],
+      [
+        const ScriptedCall('finish', {'reply': 'Answered.', 'resolve': true}),
+      ],
+      [
+        const ScriptedCall('render', {'file': null}),
+        const ScriptedCall('finish', {'reply': 'Renamed.', 'resolve': true}),
+      ],
+      [
+        const ScriptedCall('finish', {'reply': 'Noted.', 'resolve': true}),
+      ],
+    ]).start();
+    await idle();
+    final a = api.sendComment(aid, 'Rename Save');
+    await until(() => bodies(a.threadId).length == 2);
+    await idle();
+    expect(offersKeepGoing(bodies(a.threadId).last), isTrue);
+
+    // Another change of the app holds the queue while both are queued.
+    runner.gate = Completer<void>();
+    api.sendComment(aid, 'What does Save do?');
+    await runner.arrived.future;
+    expect(await worker.retry(aid, a.threadId), isTrue);
+    final b = api.sendComment(aid, 'Make it blue');
+    await until(() => api.waitingPolls == 1, reason: 'the comment is queued');
+    runner.gate!.complete();
+    runner.gate = null;
+    await until(() => bodies(b.threadId).length == 2);
+    await idle();
+
+    expect(runner.seen, hasLength(4));
+    expect(runner.text(2), contains('Keep going'));
+    expect(runner.text(2), isNot(contains('Make it blue')));
+    expect(runner.states[2].draft.files['index.html'], contains('Keep'));
+    expect(runner.states[2].ctx.threadIds, [a.threadId]);
+    expect(runner.text(3), contains('Make it blue'));
+    expect(bodies(a.threadId).last, 'Renamed.');
   });
 
   test(r'a change that has spent its $6 does not keep going', () async {
