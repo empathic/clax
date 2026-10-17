@@ -158,12 +158,6 @@ sh_test(
     data = [":all"],
 )
 
-sh_test(
-    name = "bazel_no_hard_links",
-    srcs = ["test-check-bazel-no-hard-links.sh"],
-    data = [":all"],
-)
-
 # The perf benchmarks, on demand only (`just perf`): on the optimized clax,
 # alone and one at a time (exclusive), outside the sandbox. They print each
 # measure beside its budget and fail no check; no check runs them (`manual`).

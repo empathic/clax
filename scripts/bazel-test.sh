@@ -14,7 +14,6 @@
 #          nothing)
 #       4. clippy on each crate with its own clippy.toml
 #       5. the checks that run outside Bazel (docs/bazel.md, "Run outside Bazel")
-#       6. no hard link in Bazel's output base, nor in CI in the disk cache
 #   scripts/bazel-test.sh [...] ARGS   # ARGS go to every `bazel test`
 #
 # A failing phase does not stop the later ones, but for the first. Nothing
@@ -233,12 +232,6 @@ if [ "$ci" = 1 ]; then
     _run_keyed "bazel web" .bazelrc .bazelversion MODULE.bazel MODULE.bazel.lock bazel/js/ \
         web/BUILD.bazel web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml \
         scripts/bazel-web.test.sh -- ./scripts/bazel-web.test.sh
-    # The output base every time; the shared cache, tens of gigabytes that
-    # every worktree and changelist write, in CI, whose cache is this run's.
-    # Scanning it locally took minutes on a loaded machine.
-    scan=("$("$bazel" info output_base 2>/dev/null)")
-    if [ -n "${CI:-}" ]; then scan+=("$HOME/.cache/bazel-disk"); fi
-    _run "no hard links in Bazel's directories" ./scripts/check-bazel-no-hard-links.sh "${scan[@]}"
 else
     if [ "$rust" = 1 ]; then
         _pass "rust tests" 'tests(//crates/...)' "$@"

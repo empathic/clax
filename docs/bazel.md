@@ -256,10 +256,13 @@ Performance gates nothing in either (`just perf` measures on demand).
 | pipefail pipes | `//scripts:pipefail_pipes`, and `scripts/check-pipefail-pipes.sh` over the tracked files outside Bazel |
 
 Bazel adds: `scripts/bazel-sync.sh --check` first, `//scripts:bazel_gc`,
-`//scripts:bazel_no_hard_links`, `//scripts:run_choice`,
-`//bazel/js:scratch_test`, `scripts/bazel-sync.test.sh` and
-`scripts/bazel-web.test.sh`, and no hard link in Bazel's output base (and,
-in CI, the disk cache).
+`//scripts:run_choice`, `//bazel/js:scratch_test`,
+`scripts/bazel-sync.test.sh` and `scripts/bazel-web.test.sh`.
+
+The hard-link rule covers the links Clax's own files make, not those of the
+tools it runs. The owner's ruling of 2026-10-16: "Hard links that we create are banned, not those created by well tested tools". So `--ci` no longer
+scans Bazel's output base or the disk cache for files with more than one
+link; the source and rule scans (`scripts/check-no-hard-links.sh`) stay.
 
 ## CPU and memory
 
@@ -359,8 +362,9 @@ The difference is rustc's incremental compilation, which Cargo's dev
 profile uses and rules_rust does not: Bazel compiles every crate that
 depends on the edited one whole. Turning it on (unsandboxed rustc with
 `-Cincremental` in the output base) cut the compile path to about 25 s, but
-rustc fills its incremental directory with hard links, which this
-repository forbids, so it is off. Every source edit changes the crate's
+it stays off: its directory grows with every build, and "Disk filling up
+is a bigger issue right now than slightly slower incremental builds" (the
+owner, 2026-10-16). Every source edit changes the crate's
 metadata, so every dependent recompiles. What was done instead: the
 integration tests run as a few targets per crate (`split_tests`), the
 format check, clippy and the tests share one invocation, clax-cli's own

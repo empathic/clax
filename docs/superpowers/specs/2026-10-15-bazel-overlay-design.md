@@ -522,8 +522,11 @@ its Rust half after a server edit. Clax's measures, in order of cost:
 
 Not done: rustc's incremental compilation. It cut a clax-core edit's
 compile path from about 75 s to 25 s, but rustc fills its incremental
-directory with hard links (630 files after one build), which Clax forbids
-(Q8, §13); there is no option to make it copy.
+directory with hard links (630 files after one build); there is no option
+to make it copy. Q8 as revised on 2026-10-16 no longer forbids links a tool
+makes, but incremental stays off: the owner's priority is that "Disk
+filling up is a bigger issue right now than slightly slower incremental
+builds."
 
 The owner's decision of 2026-10-16 overrides Q5's reading: "Bazel should be
 used on all builds. A large part of this is disk savings and having
@@ -575,13 +578,10 @@ children with `Command::env`, never `std::env::set_var`.
 **No hard links.** Clax's Bazel files and scripts make none: the copy rules
 that take a `hardlink` attribute (bazel_lib's) are given `"off"`, the runner
 copies files, `just web` copies, and `scripts/check-no-hard-links.sh` also
-scans `*.bzl`, `BUILD.bazel`, `MODULE.bazel` and `.bazelrc`. Because Bazel
-and third-party rules write files Clax does not, `scripts/bazel-test.sh --ci`
-ends by checking that the worktree's output base and the disk cache hold no
-regular file with more than one link (`find -type f -links +1`). On
-2026-10-15 changelist's output base, Bazel's shared download cache and its
-install base on this machine held none, with rules_js and rules_rust in use.
-The rule covers files Bazel's own rules create (Q8).
+scans `*.bzl`, `BUILD.bazel`, `MODULE.bazel` and `.bazelrc`. The rule covers
+the links Clax's own code, scripts and rules make, not the files Bazel and
+third-party rules write in Bazel's own directories (Q8, revised): nothing
+scans the output base or the disk cache.
 
 **No `pgrep -f`.** `bazel-gc.sh` and `bazel-test.sh` find processes by PID
 files and the PIDs they start.
@@ -623,7 +623,7 @@ orders it; what matters here is what must be true when it merges:
 - The parity script (changelist's `bazel-parity.py`, adapted to nextest's
   list) shows the same Rust test names passing natively and under Bazel.
 - §6.4, §9.2, §9.3 and §10.1 are measured and hold.
-- No hard link in the output base or the disk cache (§13).
+- No hard link made by Clax's own files (§13).
 - CI's Bazel run passes on the branch, and its cache restores on a second
   run.
 - `just ci-native` still passes: the overlay keeps the native path.
@@ -734,9 +734,13 @@ are benchmarks `just perf` runs, uncached, and no check runs them.
 **Q7. Debug information in Bazel's test binaries.** Decided: as Cargo's
 dev profile (§10.2).
 
-**Q8. Hard links made by Bazel's own rules.** Decided: the rule covers
-every file in Bazel's directories too, and `bazel-test.sh --ci` checks it
-(§13).
+**Q8. Hard links made by Bazel's own rules.** First decided: the rule
+covers every file in Bazel's directories too, and `bazel-test.sh --ci`
+checked it with `find -links +1` over the output base and, in CI, the disk
+cache. Revised by the owner on 2026-10-16: "Hard links that we create are banned, not those created by well tested tools". The scans of Bazel's
+directories (`scripts/check-bazel-no-hard-links.sh`,
+`//scripts:bazel_no_hard_links` and the `--ci` phase, CI's disk-cache scan
+included) are removed; the scans of Clax's sources and rules stay (§13).
 
 **Q9. The native gate in CI.** Decided by the owner: "Just migrate us all
 the way to bazel at once and switch CI over". CI gates on Bazel only; the
