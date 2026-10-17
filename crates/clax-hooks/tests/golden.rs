@@ -466,12 +466,53 @@ fn session_end_gives_up_within_codexs_three_second_cap() {
     );
 }
 
+/// Runs `agent`'s Stop hook with `input` once for a session that watches
+/// with replies armed and that nothing can wake while idle: it blocks once
+/// to say so (no follower, channel or queue in these tests), and the stop
+/// that follows is allowed.
+fn said_unwoken(d: &Daemon, agent: &str, input: &[u8]) {
+    let r = hook(&d.home(), agent, "stop", input);
+    let v = one_line_json(&r.stdout);
+    assert_eq!(v["decision"], "block", "{v}");
+    let reason = v["reason"].as_str().unwrap();
+    assert!(reason.starts_with("[clax] You watch 1 "), "{reason}");
+    let r = hook(&d.home(), agent, "stop", input);
+    assert_eq!(r.stdout, "", "said once");
+}
+
+/// [`said_unwoken`] for Claude Code harness session `hsid`.
+fn claude_said_unwoken(d: &Daemon, hsid: &str) {
+    let mut s: Value = serde_json::from_slice(&fixture("claude-stop.json")).unwrap();
+    s["session_id"] = hsid.into();
+    said_unwoken(d, "claude", s.to_string().as_bytes());
+}
+
 fn stop_loop(agent: &str, hsid: &str) {
     let d = Daemon::start();
     let (_sid, aid) = d.session_with_artifact(agent, hsid);
     let stop = fixture(&format!("{agent}-stop.json"));
     let active = fixture(&format!("{agent}-stop-active.json"));
 
+    // Nothing pending, but nothing wakes the idle session: said once.
+    let r = hook(&d.home(), agent, "stop", &stop);
+    let v = one_line_json(&r.stdout);
+    assert_eq!(v["decision"], "block");
+    let reason = v["reason"].as_str().unwrap();
+    assert!(reason.starts_with("[clax] You watch 1 "), "{reason}");
+    if agent == "claude" {
+        assert!(
+            reason.contains(&format!(
+                "feedback follow --agent claude --harness-session '{hsid}'"
+            )),
+            "{reason}"
+        );
+    }
+    let r = hook(&d.home(), agent, "stop", &active);
+    assert_eq!(
+        (r.code, r.stdout.as_str()),
+        (Some(0), ""),
+        "nothing pending, already said: allow the stop"
+    );
     let r = hook(&d.home(), agent, "stop", &stop);
     assert_eq!(
         (r.code, r.stdout.as_str()),
@@ -610,10 +651,11 @@ impl Daemon {
 fn working_through_a_turn(agent: &str, hsid: &str) {
     let d = Daemon::start();
     let (_sid, aid) = d.session_with_artifact(agent, hsid);
-    d.sent_thread(&aid, "tighten the spacing");
     let mut stop_in: Value =
         serde_json::from_slice(&fixture(&format!("{agent}-stop.json"))).unwrap();
     stop_in["session_id"] = hsid.into();
+    said_unwoken(&d, agent, stop_in.to_string().as_bytes());
+    d.sent_thread(&aid, "tighten the spacing");
     let r = hook(&d.home(), agent, "stop", stop_in.to_string().as_bytes());
     assert_eq!(one_line_json(&r.stdout)["decision"], "block");
     assert_eq!(
@@ -678,6 +720,8 @@ fn a_batch_blocks_the_stop_once_with_every_thread() {
     let mut stop_in: Value = serde_json::from_slice(&fixture("claude-stop.json")).unwrap();
     stop_in["session_id"] = "cc-batch".into();
     let r = hook(&d.home(), "claude", "stop", stop_in.to_string().as_bytes());
+    // The comments come first; that nothing wakes the session is said at
+    // the stop after.
     let reason = one_line_json(&r.stdout)["reason"]
         .as_str()
         .unwrap()
@@ -687,10 +731,7 @@ fn a_batch_blocks_the_stop_once_with_every_thread() {
         assert!(reason.contains(t.as_str()), "{reason}");
     }
     stop_in["stop_hook_active"] = true.into();
-    assert_eq!(
-        hook(&d.home(), "claude", "stop", stop_in.to_string().as_bytes()).stdout,
-        ""
-    );
+    said_unwoken(&d, "claude", stop_in.to_string().as_bytes());
 }
 
 #[test]
@@ -719,6 +760,8 @@ fn a_send_to_one_agent_blocks_only_its_stop_and_later_comments_follow_it() {
     let first = &a["artifact"]["participants"]["agents"][0];
     assert_eq!(first["live"], true);
     let handle = first["handle"].as_str().unwrap().to_string();
+    claude_said_unwoken(&d, "cc-owner");
+    claude_said_unwoken(&d, "cc-watcher");
     let form = reqwest::blocking::multipart::Form::new()
         .text(
             "anchor",
@@ -819,6 +862,7 @@ fn grok_session_start_joins_by_session_id_and_prints_nothing() {
 fn grok_stop_blocks_once_at_the_end_of_a_turn() {
     let d = Daemon::start();
     let (_sid, aid) = grok_session_with_artifact(&d);
+    said_unwoken(&d, "grok", &fixture("grok-stop.json"));
     d.sent_thread(&aid, "make it two columns");
     let r = hook(&d.home(), "grok", "stop", &fixture("grok-stop.json"));
     assert_eq!(r.code, Some(0));
@@ -866,6 +910,7 @@ fn grok_session_end_ends_the_row_within_its_budget() {
 fn grok_working_through_a_turn() {
     let d = Daemon::start();
     let (_sid, aid) = grok_session_with_artifact(&d);
+    said_unwoken(&d, "grok", &fixture("grok-stop.json"));
     d.sent_thread(&aid, "make it two columns");
     let r = hook(&d.home(), "grok", "stop", &fixture("grok-stop.json"));
     assert_eq!(one_line_json(&r.stdout)["decision"], "block");

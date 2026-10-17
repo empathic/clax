@@ -194,12 +194,16 @@ fn hook_requests_send_via_hook() {
         &[("x-clax-session", &sid)],
         json!({"message": "on it"}),
     );
-    hook(
-        &e,
-        "stop",
-        &json!({"session_id": "cc-via-1", "cwd": repo, "hook_event_name": "Stop",
-                "stop_hook_active": false}),
-    );
+    // The first stop says once that nothing wakes the idle session, and
+    // continues the turn; the second ends it.
+    for active in [false, true] {
+        hook(
+            &e,
+            "stop",
+            &json!({"session_id": "cc-via-1", "cwd": repo, "hook_event_name": "Stop",
+                    "stop_hook_active": active}),
+        );
+    }
     let recs = events(&e);
     let stop = recs
         .iter()

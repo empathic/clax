@@ -117,6 +117,44 @@ pub fn session_start(
     codex_home: Option<&str>,
     daemon: &dyn Daemon,
 ) -> anyhow::Result<HookOutput> {
+    session_start_with(
+        harness,
+        parent_pid,
+        ancestor_pids,
+        input,
+        codex_home,
+        daemon,
+        None,
+    )
+}
+
+/// What the start of a session says about how it is woken: the clax binary
+/// a follower runs, and whether the harness was launched with the Clax
+/// channel (Claude Code; `None` when that could not be read, or for
+/// another harness).
+#[derive(Clone, Debug)]
+pub struct StartWake {
+    pub bin: String,
+    pub channel: Option<bool>,
+}
+
+/// [`session_start`], with a `Push:` line after the daemon's
+/// ([`clax_core::wake::session_line`]) when `wake` is given: whether a
+/// comment wakes the idle session, from the channel's launch flag under
+/// Claude Code or else the daemon's `push` (read within
+/// [`START_FEEDBACK_TIMEOUT`]; no line when it cannot be read).
+///
+/// # Errors
+/// When the input has no session ID or the join request fails.
+pub fn session_start_with(
+    harness: &str,
+    parent_pid: u32,
+    ancestor_pids: &[u32],
+    input: &HookInput,
+    codex_home: Option<&str>,
+    daemon: &dyn Daemon,
+    wake: Option<&StartWake>,
+) -> anyhow::Result<HookOutput> {
     let joined = join(
         harness,
         parent_pid,
@@ -129,6 +167,12 @@ pub fn session_start(
         "Clax daemon at {}; artifacts publish with the `publish` tool.",
         daemon.browser_url("/")
     );
+    if let (Some(w), Some(sid)) = (wake, joined["session"]["id"].as_str())
+        && let Some(line) = start_push_line(harness, sid, input, daemon, w)
+    {
+        context.push('\n');
+        context.push_str(&line);
+    }
     if let Some(sid) = joined["session"]["id"].as_str()
         && let Ok(res) = daemon.get_with_timeout(
             &format!("/api/sessions/{sid}/feedback?tier=prompt_hook"),
@@ -140,6 +184,34 @@ pub fn session_start(
         context.push_str(&daemon.agent_text(text));
     }
     Ok(HookOutput::additional_context("SessionStart", &context))
+}
+
+/// The `Push:` line of [`session_start_with`] for session `sid`.
+fn start_push_line(
+    harness: &str,
+    sid: &str,
+    input: &HookInput,
+    daemon: &dyn Daemon,
+    w: &StartWake,
+) -> Option<String> {
+    let hs = input.session_id.as_deref();
+    let push = match (harness, w.channel) {
+        ("claude", Some(true)) => json!({"tier": "channel", "available": true}),
+        ("claude", None) => {
+            return Some(
+                "Push: unknown in this session (how Claude Code was launched could not be read); \
+the `watch` result's `wake` says whether a comment wakes it while idle."
+                    .to_string(),
+            );
+        }
+        _ => daemon
+            .get_with_timeout(&format!("/api/sessions/{sid}"), START_FEEDBACK_TIMEOUT)
+            .ok()?["push"]
+            .clone(),
+    };
+    Some(clax_core::wake::session_line(&clax_core::wake::block(
+        harness, &push, &w.bin, hs,
+    )))
 }
 
 /// [`session_start`] for a harness that ignores `SessionStart` output
@@ -231,6 +303,73 @@ fn rendered_text(res: &Value) -> Option<String> {
 /// # Errors
 /// When the input has no `session_id` or a daemon request fails.
 pub fn stop(harness: &str, input: &HookInput, daemon: &dyn Daemon) -> anyhow::Result<HookOutput> {
+    stop_with(harness, input, daemon, None)
+}
+
+/// What the Stop hook remembers of one harness session between stops:
+/// the watch armings (`<artifact ID>@<created_at>`) it has blocked a stop
+/// about, and whether a comment could wake the session at a stop since.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Nudged {
+    #[serde(default)]
+    pub armings: Vec<String>,
+    #[serde(default)]
+    pub woken: bool,
+}
+
+/// Where the Stop hook keeps [`Nudged`]. A ledger that cannot be written
+/// never blocks a stop, so a stop is never blocked twice for one reason.
+pub trait Ledger {
+    /// What was kept, or the default when nothing was (or it is unreadable).
+    fn load(&self) -> Nudged;
+    fn save(&self, n: &Nudged) -> anyhow::Result<()>;
+}
+
+/// A [`Ledger`] in a JSON file.
+pub struct FileLedger(pub std::path::PathBuf);
+
+impl Ledger for FileLedger {
+    fn load(&self) -> Nudged {
+        std::fs::read(&self.0)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
+    }
+    fn save(&self, n: &Nudged) -> anyhow::Result<()> {
+        if let Some(dir) = self.0.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let tmp = self.0.with_extension("tmp");
+        std::fs::write(&tmp, serde_json::to_vec(n)?)?;
+        std::fs::rename(&tmp, &self.0)?;
+        Ok(())
+    }
+}
+
+/// How the Stop hook checks that a watching session can be woken: the
+/// clax binary a follower runs, and where it remembers what it said.
+pub struct StopWake<'a> {
+    pub bin: String,
+    pub ledger: &'a dyn Ledger,
+}
+
+/// [`stop`], which, when `wake` is given and nothing is pending, also
+/// blocks the stop once when the session watches with replies armed but
+/// nothing can wake it while idle (no channel, follower, queue or
+/// extension): its reason is the `wake` block's `do`
+/// ([`clax_core::wake::block`]) with the follower's commands. It blocks at
+/// most once per watch arming, and once more after a session that could be
+/// woken at an earlier stop no longer can (its follower stopped). Any
+/// failure of that check allows the stop.
+///
+/// # Errors
+/// When the input has no `session_id` or a daemon request fails.
+pub fn stop_with(
+    harness: &str,
+    input: &HookInput,
+    daemon: &dyn Daemon,
+    wake: Option<&StopWake<'_>>,
+) -> anyhow::Result<HookOutput> {
     // Grok Build fires Stop again at session end (`channel_closed`,
     // `shutdown`) and ignores that run's output; only `end_turn` (or an
     // input without a reason) is the end of a turn.
@@ -244,11 +383,91 @@ pub fn stop(harness: &str, input: &HookInput, daemon: &dyn Daemon) -> anyhow::Re
     match feedback_text(daemon, &sid, &format!("tier=stop_hook&resends={resends}"))? {
         Some(text) => Ok(HookOutput::block(&text)),
         None => {
+            if let Some(w) = wake
+                && let Ok(Some(reason)) = unwoken(harness, &sid, daemon, w)
+            {
+                return Ok(HookOutput::block(&reason));
+            }
             // The turn really ends: its working records end with it.
             daemon.post(&format!("/api/sessions/{sid}/working/end"), &json!({}))?;
             Ok(HookOutput::none())
         }
     }
+}
+
+/// The reason [`stop_with`] blocks a stop of session `sid` for, when it
+/// does: its armed watches, unwoken, that it has not said so about.
+fn unwoken(
+    harness: &str,
+    sid: &str,
+    daemon: &dyn Daemon,
+    w: &StopWake<'_>,
+) -> anyhow::Result<Option<String>> {
+    // Pi has no Stop hook, and its extension wakes it.
+    if !matches!(harness, "claude" | "codex" | "grok") {
+        return Ok(None);
+    }
+    let info = daemon.get(&format!("/api/sessions/{sid}"))?;
+    let push = &info["push"];
+    let mut kept = w.ledger.load();
+    if push["available"] == true {
+        if !kept.woken {
+            kept.woken = true;
+            w.ledger.save(&kept)?;
+        }
+        return Ok(None);
+    }
+    let listed = daemon.get(&format!("/api/sessions/{sid}/watches"))?;
+    let armings: Vec<String> = listed["watches"]
+        .as_array()
+        .context("watches listing is not an array")?
+        .iter()
+        .filter(|w| w["replies_armed"] == true)
+        .filter_map(|w| {
+            Some(format!(
+                "{}@{}",
+                w["artifact_id"].as_str()?,
+                w["created_at"].as_str()?
+            ))
+        })
+        .collect();
+    if armings.is_empty() {
+        return Ok(None);
+    }
+    let fresh = armings.iter().any(|a| !kept.armings.contains(a));
+    let lost = kept.woken;
+    if !fresh && !lost {
+        return Ok(None);
+    }
+    // Saved before blocking: a ledger that cannot be written never blocks.
+    w.ledger.save(&Nudged {
+        armings: armings.clone(),
+        woken: false,
+    })?;
+    let hs = info["session"]["harness_session_id"].as_str();
+    let wake = clax_core::wake::block(harness, push, &w.bin, hs);
+    let n = armings.len();
+    let mut text = format!(
+        "[clax] {}You watch {} for comments sent to you. {}",
+        if lost {
+            "The follower that woke this session has stopped. "
+        } else {
+            ""
+        },
+        if n == 1 {
+            "1 artifact or page".to_string()
+        } else {
+            format!("{n} artifacts or pages")
+        },
+        wake["do"].as_str().unwrap_or_default()
+    );
+    for k in ["follow_command", "follow_once_command"] {
+        if let Some(c) = wake[k].as_str() {
+            text.push_str(&format!("\n{k}: {c}"));
+        }
+    }
+    text.push_str("\nThis is said once; end your turn when done.");
+    Ok(Some(text))
 }
 
 /// `PostToolUse`: renews the session's working records. Prints nothing.
@@ -861,5 +1080,226 @@ mod tests {
             .to_string();
         assert!(text.contains("http://h:1/"), "{text}");
         assert!(!text.contains("LATE"), "{text}");
+    }
+
+    /// A daemon with no pending feedback, a session `S` of `harness` whose
+    /// push is `available`, and the watches `watches`.
+    struct WakeFake {
+        harness: &'static str,
+        available: RefCell<bool>,
+        watches: RefCell<Value>,
+        posts: RefCell<Vec<String>>,
+    }
+    impl Daemon for WakeFake {
+        fn browser_url(&self, path: &str) -> String {
+            format!("http://h:1{path}")
+        }
+        fn get(&self, path: &str) -> anyhow::Result<Value> {
+            if path.starts_with("/api/sessions?") {
+                return Ok(json!({"sessions": [
+                    {"id": "S", "harness": self.harness, "harness_session_id": "s1"},
+                ]}));
+            }
+            if path == "/api/sessions/S" {
+                let available = *self.available.borrow();
+                return Ok(json!({
+                    "session": {"id": "S", "harness": self.harness, "harness_session_id": "s1"},
+                    "push": {"tier": if available { json!("notice") } else { Value::Null },
+                             "available": available, "reason": "no follower"},
+                }));
+            }
+            if path == "/api/sessions/S/watches" {
+                return Ok(json!({"watches": self.watches.borrow().clone()}));
+            }
+            Ok(json!({"feedback": [], "text": null, "waited_s": 0}))
+        }
+        fn get_with_timeout(&self, path: &str, _: Duration) -> anyhow::Result<Value> {
+            self.get(path)
+        }
+        fn post(&self, path: &str, _: &Value) -> anyhow::Result<Value> {
+            self.posts.borrow_mut().push(path.to_string());
+            Ok(json!({"session": {"id": "S"}}))
+        }
+        fn patch(&self, _: &str, _: &Value) -> anyhow::Result<Value> {
+            Ok(json!({}))
+        }
+    }
+    fn wake_fake(harness: &'static str, available: bool, watches: Value) -> WakeFake {
+        WakeFake {
+            harness,
+            available: RefCell::new(available),
+            watches: RefCell::new(watches),
+            posts: RefCell::new(vec![]),
+        }
+    }
+    #[derive(Default)]
+    struct MemLedger {
+        kept: RefCell<Nudged>,
+        broken: bool,
+    }
+    impl Ledger for MemLedger {
+        fn load(&self) -> Nudged {
+            self.kept.borrow().clone()
+        }
+        fn save(&self, n: &Nudged) -> anyhow::Result<()> {
+            if self.broken {
+                bail!("read-only");
+            }
+            *self.kept.borrow_mut() = n.clone();
+            Ok(())
+        }
+    }
+    fn armed(aid: &str, at: &str) -> Value {
+        json!({"session_id": "S", "artifact_id": aid, "replies_armed": true, "created_at": at})
+    }
+    fn stop_once(d: &WakeFake, l: &MemLedger, active: bool) -> HookOutput {
+        let w = StopWake {
+            bin: "/b/clax".into(),
+            ledger: l,
+        };
+        let i = HookInput::parse(&format!(
+            r#"{{"session_id":"s1","stop_hook_active":{active}}}"#
+        ));
+        stop_with(d.harness, &i, d, Some(&w)).unwrap()
+    }
+    fn reason(o: &HookOutput) -> String {
+        let v = o.value().expect("blocked");
+        assert_eq!(v["decision"], "block", "{v}");
+        v["reason"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn an_unwoken_watch_blocks_the_stop_once_per_arming() {
+        let d = wake_fake("claude", false, json!([armed("a1", "t1")]));
+        let l = MemLedger::default();
+        let r = reason(&stop_once(&d, &l, false));
+        assert!(r.starts_with("[clax] You watch 1 artifact or page for comments sent to you. A comment will not wake this session while it is idle."), "{r}");
+        assert!(r.contains("Monitor"), "{r}");
+        assert!(
+            r.contains(
+                "follow_command: '/b/clax' feedback follow --agent claude --harness-session 's1'"
+            ),
+            "{r}"
+        );
+        assert!(
+            r.contains("follow_once_command: '/b/clax' feedback follow --once"),
+            "{r}"
+        );
+        assert!(
+            d.posts.borrow().is_empty(),
+            "a blocked stop continues the turn"
+        );
+        // The stop the block caused, and every later one, are allowed.
+        assert_eq!(stop_once(&d, &l, true), HookOutput::none());
+        assert_eq!(stop_once(&d, &l, false), HookOutput::none());
+        assert_eq!(d.posts.borrow().len(), 2, "each allowed stop ends the turn");
+        // A new arming (another watch, or a watch started again) says it again.
+        d.watches
+            .replace(json!([armed("a1", "t1"), armed("a2", "t2")]));
+        assert!(reason(&stop_once(&d, &l, false)).contains("You watch 2 artifacts or pages"));
+        assert_eq!(stop_once(&d, &l, true), HookOutput::none());
+    }
+
+    #[test]
+    fn a_live_follower_or_push_never_blocks_and_a_lost_one_blocks_once() {
+        let d = wake_fake("claude", true, json!([armed("a1", "t1")]));
+        let l = MemLedger::default();
+        assert_eq!(stop_once(&d, &l, false), HookOutput::none());
+        assert!(l.kept.borrow().woken);
+        assert_eq!(stop_once(&d, &l, false), HookOutput::none());
+        // The follower stopped (a Monitor expired): said once.
+        d.available.replace(false);
+        let r = reason(&stop_once(&d, &l, false));
+        assert!(
+            r.starts_with("[clax] The follower that woke this session has stopped."),
+            "{r}"
+        );
+        assert_eq!(stop_once(&d, &l, false), HookOutput::none());
+        // Pi's extension wakes it: never asked.
+        let d = wake_fake("pi", false, json!([armed("a1", "t1")]));
+        assert_eq!(
+            stop_once(&d, &MemLedger::default(), false),
+            HookOutput::none()
+        );
+    }
+
+    #[test]
+    fn watches_without_replies_none_and_an_unwritable_ledger_allow_the_stop() {
+        let off = json!([{"artifact_id": "a1", "replies_armed": false, "created_at": "t1"}]);
+        for watches in [off, json!([])] {
+            let d = wake_fake("claude", false, watches);
+            assert_eq!(
+                stop_once(&d, &MemLedger::default(), false),
+                HookOutput::none()
+            );
+        }
+        let d = wake_fake("claude", false, json!([armed("a1", "t1")]));
+        let broken = MemLedger {
+            broken: true,
+            ..Default::default()
+        };
+        assert_eq!(stop_once(&d, &broken, false), HookOutput::none());
+        assert_eq!(stop_once(&d, &broken, false), HookOutput::none());
+        // Without a wake check, the stop is as before.
+        let i = HookInput::parse(r#"{"session_id":"s1"}"#);
+        assert_eq!(stop("claude", &i, &d).unwrap(), HookOutput::none());
+    }
+
+    #[test]
+    fn a_codex_session_nothing_wakes_is_told_to_tell_the_person() {
+        let d = wake_fake("codex", false, json!([armed("a1", "t1")]));
+        let l = MemLedger::default();
+        let r = reason(&stop_once(&d, &l, false));
+        assert!(r.contains("Tell the person"), "{r}");
+        assert!(!r.contains("follow_command"), "{r}");
+        assert_eq!(stop_once(&d, &l, true), HookOutput::none());
+    }
+
+    #[test]
+    fn a_file_ledger_keeps_what_it_said() {
+        let dir = tempfile::tempdir().unwrap();
+        let l = FileLedger(dir.path().join("run/wake/claude-s1.json"));
+        assert_eq!(l.load(), Nudged::default());
+        let n = Nudged {
+            armings: vec!["a1@t1".into()],
+            woken: true,
+        };
+        l.save(&n).unwrap();
+        assert_eq!(FileLedger(l.0.clone()).load(), n);
+    }
+
+    #[test]
+    fn session_start_says_whether_push_is_available() {
+        let line = |harness: &'static str, available: bool, channel: Option<bool>| {
+            let d = wake_fake(harness, available, json!([]));
+            let w = StartWake {
+                bin: "/b/clax".into(),
+                channel,
+            };
+            let out =
+                session_start_with(harness, 1, &[], &input("s1"), None, &d, Some(&w)).unwrap();
+            out.value().unwrap()["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let t = line("claude", false, Some(false));
+        assert!(t.contains("\nPush: unavailable in this session;"), "{t}");
+        assert!(
+            t.contains("feedback follow --agent claude --harness-session 's1'"),
+            "{t}"
+        );
+        let t = line("claude", false, Some(true));
+        assert!(
+            t.contains("\nPush: available in this session (via channel)"),
+            "{t}"
+        );
+        assert!(line("claude", false, None).contains("\nPush: unknown"));
+        let t = line("codex", false, None);
+        assert!(
+            t.contains("Push: unavailable") && t.contains("Tell the person"),
+            "{t}"
+        );
+        assert!(line("codex", true, None).contains("Push: available"));
     }
 }

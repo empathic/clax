@@ -947,6 +947,49 @@ fn error_code(error: &str) -> String {
         .to_string()
 }
 
+/// The clax binary a follower runs: this one.
+fn follow_bin() -> String {
+    std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "clax".to_string())
+}
+
+/// Whether the Claude Code process among the hook's parent and ancestors
+/// was launched with the Clax channel; `None` when no command line could
+/// be read.
+fn channel_flag(parent_pid: u32) -> Option<bool> {
+    let mut read = false;
+    for pid in std::iter::once(parent_pid).chain(ancestors(parent_pid)) {
+        let Some(args) = process_args(pid) else {
+            continue;
+        };
+        read = true;
+        if matches!(
+            clax_mcp::channel::launch_flag(&args),
+            clax_mcp::channel::LaunchFlag::Present { .. }
+        ) {
+            return Some(true);
+        }
+    }
+    read.then_some(false)
+}
+
+/// Where the Stop hook remembers what it said about waking harness session
+/// `input.session_id` (`run/wake-nudge/<harness>-<ID>.json`); `None` for a
+/// session ID that is not a plain file name.
+fn wake_ledger(home: &Home, agent: Agent, input: &HookInput) -> Option<std::path::PathBuf> {
+    let sid = input.session_id.as_deref().filter(|s| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    })?;
+    Some(
+        home.root()
+            .join("run/wake-nudge")
+            .join(format!("{}-{sid}.json", agent.harness())),
+    )
+}
+
 /// Handles one hook run; `None` means it stood down.
 fn handle(
     agent: Agent,
@@ -991,13 +1034,19 @@ fn handle(
             &input,
             &client,
         ),
-        Event::SessionStart => events::session_start(
+        Event::SessionStart => events::session_start_with(
             agent.harness(),
             parent_pid,
             &ancestors(parent_pid),
             &input,
             codex_home.as_deref(),
             &client,
+            Some(&events::StartWake {
+                bin: follow_bin(),
+                channel: matches!(agent, Agent::Claude)
+                    .then(|| channel_flag(parent_pid))
+                    .flatten(),
+            }),
         ),
         Event::SessionEnd => {
             let out = events::session_end(agent.harness(), &input, &client);
@@ -1015,10 +1064,21 @@ fn handle(
                         .join("run/tool-hook")
                         .join(format!("{}-{sid}", agent.harness())),
                 );
+                // What the Stop hook said about waking the session.
+                if let Some(p) = wake_ledger(home, agent, &input) {
+                    let _ = std::fs::remove_file(p);
+                }
             }
             out
         }
-        Event::Stop => events::stop(agent.harness(), &input, &client),
+        Event::Stop => {
+            let ledger = wake_ledger(home, agent, &input).map(events::FileLedger);
+            let wake = ledger.as_ref().map(|l| events::StopWake {
+                bin: follow_bin(),
+                ledger: l,
+            });
+            events::stop_with(agent.harness(), &input, &client, wake.as_ref())
+        }
         Event::Prompt => events::prompt(agent.harness(), &input, &client),
         Event::Tool => events::tool(agent.harness(), &input, &client),
         Event::CallId if matches!(agent, Agent::Claude) => {
