@@ -905,7 +905,7 @@ pub fn solo_value(key: &str, v: &Value, owner: &str) -> bool {
         "may_fork" => *v == json!(true),
         "linked" => v.is_null(),
         "wake" => v["when_idle"].is_boolean() && v["do"].is_string(),
-        "wakes" => v.is_boolean(),
+        "wakes" => v.is_boolean() || v == "unsure",
         _ => false,
     }
 }

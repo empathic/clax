@@ -43,7 +43,7 @@
     const a = parts.agents.find(x => x.handle === handle);
     // Ended: its session is over (not live) and it works on nothing here.
     // Asleep: a live agent the daemon says no comment wakes while idle (`wakes: false`).
-    return { handle, harness: a?.harness ?? s.working.find(w => w.agent === handle)?.harness ?? "agent", ended: a?.live === false && !s.working.some(w => w.agent === handle), asleep: !!a?.live && a.wakes === false };
+    return { handle, harness: a?.harness ?? s.working.find(w => w.agent === handle)?.harness ?? "agent", ended: a?.live === false && !s.working.some(w => w.agent === handle), asleep: !!a?.live && a.wakes === false, unsure: !!a?.live && a.wakes === "unsure" };
   }));
   const agents = $derived(all.filter(a => !a.ended));
   const earlier = $derived(all.filter(a => a.ended));
@@ -174,7 +174,7 @@
       </div>
     {/each}
   {/if}
-  {#snippet agentRow(a: { handle: string; harness: string; asleep: boolean })}
+  {#snippet agentRow(a: { handle: string; harness: string; asleep: boolean; unsure: boolean })}
     {@const name = names.get(a.handle) ?? a.harness}
     {@const w = newestFirst(s.working).find(x => x.agent === a.handle)}
     {@const held = waiting(a.handle, name)}
@@ -188,7 +188,8 @@
         {#if !s.commenting}<HaikuLine seed={w.key} />{/if}
       {:else}
         <p>{idleLine(a.handle)}</p>
-        {#if a.asleep}<p class="nowake">Won't be woken by your comments until it next acts.</p>{/if}
+        {#if a.asleep}<p class="nowake">Won't be woken by your comments until it next acts.</p>
+        {:else if a.unsure}<p class="nowake">May not be woken by your comments: Claude Code does not confirm its channel.</p>{/if}
       {/if}
       {#if Raise && raises?.holds && raises.raisable?.includes(a.handle)}
         <Raise aid={s.data.artifact.id} handle={a.handle} {name} holds={raises.holds} mine={mineOf(a.handle)} version={versionOf(a.handle)} onChanged={loadRaises} />

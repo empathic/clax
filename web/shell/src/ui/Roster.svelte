@@ -29,6 +29,10 @@
   // dashed, and says so in its title.
   const asleep = (a: Props["agents"][number]) => a.live && a.wakes === false;
   const NOWAKE = " · won't be woken by comments until it next acts";
+  // One woken only through a Claude Code channel, which Claude Code does
+  // not confirm (`wakes: "unsure"`), is drawn dotted.
+  const unsure = (a: Props["agents"][number]) => a.live && a.wakes === "unsure";
+  const MAYWAKE = " · may not be woken by comments: Claude Code does not confirm its channel";
 </script>
 
 {#snippet roster()}
@@ -50,6 +54,7 @@
     {#each p.agents.slice(0, p.max) as a (a.handle)}
       {#if busy.has(a.handle)}<span class="tok a work" title={named(a)}>{mark(a)}</span>
       {:else if asleep(a)}<span class="tok a nowake" title={named(a) + NOWAKE}>{mark(a)}</span>
+      {:else if unsure(a)}<span class="tok a maywake" title={named(a) + MAYWAKE}>{mark(a)}</span>
       {:else}<span class="tok a" title={named(a)}>{mark(a)}</span>{/if}
     {/each}
     {#if p.agents.length > p.max}<span class="tok more">+{p.agents.length - p.max}</span>{/if}
@@ -75,6 +80,7 @@
     .tok.p.me::after { content: ""; position: absolute; left: 7px; right: 7px; bottom: 3px; height: 1.5px; background: currentColor; }
     .tok.a { background: var(--accent-tint); color: var(--agent-ink); }
     .tok.a.nowake { background: none; outline: 1.5px dashed var(--agent-ink); outline-offset: -1.5px; }
+    .tok.a.maywake { outline: 1.5px dotted var(--agent-ink); outline-offset: -1.5px; }
     .tok.a.work { background: var(--agent); color: var(--on-accent); padding-left: 13px; }
     .tok.a.work::before { content: ""; position: absolute; left: 5px; top: 50%; width: 4px; height: 4px; margin-top: -2px; border-radius: 50%; background: currentColor; animation: breathe 1.8s ease-in-out infinite; }
     .tok.more { background: none; box-shadow: none; color: var(--muted); min-width: 0; padding: 0 3px; }

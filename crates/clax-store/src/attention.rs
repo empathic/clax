@@ -31,9 +31,12 @@ pub struct AgentView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub via: Option<String>,
     /// Whether a comment sent to it wakes it while it is idle, for a live
-    /// agent; set by the daemon, which knows its push (absent until then).
+    /// agent: `true`, `false` or `"unsure"` (only through a Claude Code
+    /// channel, which Claude Code may have refused). Set by the daemon,
+    /// which knows its push, for the viewers it shows it to; absent
+    /// otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub wakes: Option<bool>,
+    pub wakes: Option<serde_json::Value>,
     /// Its session; never serialised.
     #[serde(skip)]
     pub session_id: String,

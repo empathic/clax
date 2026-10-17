@@ -328,62 +328,103 @@ impl Drop for ParkGuard {
     }
 }
 
-/// Sessions with a `clax feedback follow` connected: one in a notices
-/// long-poll now, or whose last poll ended under [`Followers::RECENT`]
-/// ago (the gap while it prints and polls again).
+/// What keeps a session's comment notices or feedback polled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FollowKind {
+    /// A `clax feedback follow` (or anything else polling notices).
+    Follower,
+    /// The Claude Code shim forwarding notices to its channel, which Claude
+    /// Code may have refused without saying so.
+    Channel,
+    /// The Pi extension's injection loop (`tier=inject` long polls).
+    Inject,
+}
+
+/// Sessions with something connected that wakes them: one in a long poll
+/// now, or whose last poll ended under [`Followers::RECENT`] ago (the gap
+/// while it prints and polls again; [`Followers::CHANNEL_RECENT`] for the
+/// shim's channel, which a daemon restart or a slow poll may keep away
+/// longer).
 #[derive(Default)]
 pub struct Followers {
-    active: Mutex<HashMap<String, usize>>,
-    last: Mutex<HashMap<String, clax_rt::wall::Instant>>,
+    active: Mutex<HashMap<(String, FollowKind), usize>>,
+    last: Mutex<HashMap<(String, FollowKind), clax_rt::wall::Instant>>,
 }
 
 impl Followers {
     pub const RECENT: std::time::Duration = std::time::Duration::from_secs(15);
+    pub const CHANNEL_RECENT: std::time::Duration = std::time::Duration::from_secs(60);
 
-    /// Counts a notices poll of `session_id` until the guard drops.
-    pub fn enter(self: &Arc<Self>, session_id: &str) -> FollowGuard {
-        *self
-            .active
-            .lock()
-            .unwrap()
-            .entry(session_id.to_string())
-            .or_default() += 1;
+    /// Counts a poll of `session_id` by a `kind` until the guard drops.
+    pub fn enter_as(self: &Arc<Self>, session_id: &str, kind: FollowKind) -> FollowGuard {
+        let key = (session_id.to_string(), kind);
+        *self.active.lock().unwrap().entry(key.clone()).or_default() += 1;
         FollowGuard {
             followers: self.clone(),
-            session_id: session_id.to_string(),
+            key,
         }
     }
 
-    /// Whether a follower of `session_id` is connected.
-    pub fn is_following(&self, session_id: &str) -> bool {
-        self.active.lock().unwrap().contains_key(session_id)
+    /// Counts a notices poll of `session_id` by a follower until the guard
+    /// drops.
+    pub fn enter(self: &Arc<Self>, session_id: &str) -> FollowGuard {
+        self.enter_as(session_id, FollowKind::Follower)
+    }
+
+    /// Whether a `kind` of `session_id` is connected.
+    pub fn has(&self, session_id: &str, kind: FollowKind) -> bool {
+        let key = (session_id.to_string(), kind);
+        let recent = match kind {
+            FollowKind::Channel => Self::CHANNEL_RECENT,
+            _ => Self::RECENT,
+        };
+        self.active.lock().unwrap().contains_key(&key)
             || self
                 .last
                 .lock()
                 .unwrap()
-                .get(session_id)
-                .is_some_and(|t| t.elapsed() < Self::RECENT)
+                .get(&key)
+                .is_some_and(|t| t.elapsed() < recent)
     }
 
-    /// Drops the record of the ended session `session_id`'s last poll.
+    /// Whether a follower of `session_id` is connected (not its channel).
+    pub fn is_following(&self, session_id: &str) -> bool {
+        self.has(session_id, FollowKind::Follower)
+    }
+
+    /// Whether anything of `session_id` is connected, of any kind.
+    pub fn any(&self, session_id: &str) -> bool {
+        [
+            FollowKind::Follower,
+            FollowKind::Channel,
+            FollowKind::Inject,
+        ]
+        .into_iter()
+        .any(|k| self.has(session_id, k))
+    }
+
+    /// Drops the record of the ended session `session_id`'s last polls.
     pub fn forget(&self, session_id: &str) {
-        self.last.lock().unwrap().remove(session_id);
+        self.last
+            .lock()
+            .unwrap()
+            .retain(|(sid, _), _| sid != session_id);
     }
 }
 
-/// An in-progress notices poll ([`Followers::enter`]).
+/// An in-progress poll ([`Followers::enter_as`]).
 pub struct FollowGuard {
     followers: Arc<Followers>,
-    session_id: String,
+    key: (String, FollowKind),
 }
 
 impl Drop for FollowGuard {
     fn drop(&mut self) {
         let mut active = self.followers.active.lock().unwrap();
-        if let Some(n) = active.get_mut(&self.session_id) {
+        if let Some(n) = active.get_mut(&self.key) {
             *n -= 1;
             if *n == 0 {
-                active.remove(&self.session_id);
+                active.remove(&self.key);
             }
         }
         drop(active);
@@ -391,7 +432,7 @@ impl Drop for FollowGuard {
             .last
             .lock()
             .unwrap()
-            .insert(self.session_id.clone(), clax_rt::wall::Instant::now());
+            .insert(self.key.clone(), clax_rt::wall::Instant::now());
     }
 }
 

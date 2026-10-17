@@ -359,9 +359,9 @@ pub async fn get(
             Ok((session, codex_home, push_error, person))
         })
         .await?;
-    let following = s.followers.is_following(&session.id);
+    let live = Live::of(&s.followers, &s.feedback_waiters, &session.id);
     let away = elsewhere(&session, s.hosted.is_some());
-    let push = push_info(&session, &s.codex, codex_home, push_error, following, away);
+    let push = push_info(&session, &s.codex, codex_home, push_error, live, away);
     Ok(Json(
         json!({"session": session, "push": push, "person": person, "rights": rights}),
     ))
@@ -381,20 +381,51 @@ pub fn elsewhere(s: &Session, hosted: bool) -> bool {
 /// turn it on.
 const CLAUDE_NO_PUSH: &str = "optional: comments sent to this session already arrive with the next clax tool result, at the end of each turn, with the next message, and during wait_for_feedback; push only wakes the session while it is idle. To have a comment wake it, run follow_command in the background after publishing, or launch Claude Code with `claude --dangerously-load-development-channels plugin:clax@clax` (Claude Code channels, a research preview)";
 
+/// What is connected for a session that can wake it ([`Followers`]).
+///
+/// [`Followers`]: crate::feedback::Followers
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Live {
+    /// A `clax feedback follow` polls its notices.
+    pub follower: bool,
+    /// The Claude Code shim polls its notices for the channel.
+    pub channel: bool,
+    /// The Pi extension's injection loop polls, or holds while the
+    /// session's `wait_for_feedback` (which hands it every comment) waits.
+    pub inject: bool,
+}
+
+impl Live {
+    pub fn of(
+        followers: &crate::feedback::Followers,
+        waiters: &crate::feedback::FeedbackWaiters,
+        sid: &str,
+    ) -> Live {
+        use crate::feedback::FollowKind;
+        Live {
+            follower: followers.has(sid, FollowKind::Follower),
+            channel: followers.has(sid, FollowKind::Channel),
+            inject: followers.has(sid, FollowKind::Inject) || waiters.is_waiting(sid),
+        }
+    }
+}
+
 /// How feedback can be pushed to this session (tier 5), and why not when it
 /// cannot. For Codex, `last_error` and `last_error_at` hold the latest
 /// `codex queue` failure (`null` after a success or before any run); a
 /// failure leaves push available, since the next comment is pushed again.
-/// For Grok, push is the monitor: available while `following` (a `clax
-/// feedback follow` of the session is connected). For Claude Code, the
-/// daemon reports a notice follower (a `clax feedback follow --once` or the
-/// shim's channel) as tier `notice`; the shim refines it.
+/// For Pi, push is the extension's injection loop: available while it
+/// polls. For Grok, push is the monitor: available while a `clax feedback
+/// follow` of the session is connected. For Claude Code, the daemon
+/// reports a notice follower as tier `notice`, and the shim's channel
+/// alone as tier `channel` with `sure: false` (Claude Code never says
+/// whether it registered the channel); the shim refines it.
 fn push_info(
     s: &Session,
     codex: &CodexPush,
     codex_home: Option<String>,
     push_error: Option<(String, String)>,
-    following: bool,
+    live: Live,
     elsewhere: bool,
 ) -> Value {
     match s.harness.as_str() {
@@ -418,12 +449,15 @@ fn push_info(
         }
         "pi" => json!({"tier": "inject", "available": true, "reason": null}),
         "grok" => {
-            let reason = (!following).then_some(
+            let reason = (!live.follower).then_some(
                 "no clax feedback follow is running for this session; the clax-grok skill starts one with Grok's monitor tool after a publish. Meanwhile comments arrive at the end of a turn (Stop hook), on the next clax tool call, or during wait_for_feedback",
             );
-            json!({"tier": "monitor", "available": following, "reason": reason})
+            json!({"tier": "monitor", "available": live.follower, "reason": reason})
         }
-        "claude" if following => json!({"tier": "notice", "available": true, "reason": null}),
+        "claude" if live.follower => json!({"tier": "notice", "available": true, "reason": null}),
+        "claude" if live.channel => {
+            json!({"tier": "channel", "available": true, "sure": false, "reason": null})
+        }
         "claude" => json!({"tier": null, "available": false, "reason": CLAUDE_NO_PUSH}),
         _ => {
             json!({"tier": null, "available": false, "reason": "Claude Code has no native push; comments arrive at the end of a turn (Stop hook), with the next prompt, on the next clax tool call, or during wait_for_feedback"})
@@ -431,42 +465,81 @@ fn push_info(
     }
 }
 
+/// Whether a comment wakes a live session while it is idle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wake {
+    Yes,
+    No,
+    /// Only through a Claude Code channel, which Claude Code may have
+    /// refused without saying so.
+    Unsure,
+}
+
+impl Wake {
+    /// `wakes` as the page reads it: `true`, `false` or `"unsure"`.
+    pub fn to_json(self) -> Value {
+        match self {
+            Wake::Yes => json!(true),
+            Wake::No => json!(false),
+            Wake::Unsure => json!("unsure"),
+        }
+    }
+}
+
 /// Whether a comment sent to a live session of `harness` wakes it while it
-/// is idle, as [`push_info`] reports `available`: Codex through `codex
-/// queue` (the daemon's `codex`, the harness session ID known, and the
-/// session on this daemon's machine, not `elsewhere`), Pi
-/// through its extension, Claude Code and Grok Build while a notice
-/// follower (`clax feedback follow`, or the shim's channel) is connected.
+/// is idle, as [`push_info`] reports `available` (and `sure`): Codex
+/// through `codex queue` (the daemon's `codex`, the harness session ID
+/// known, and the session on this daemon's machine, not `elsewhere`), Pi
+/// through its extension's injection loop, Grok Build while a notice
+/// follower is connected, and Claude Code while one is, or unsure while
+/// only its channel polls.
 pub fn wakes_when_idle(
     harness: &str,
     harness_session_known: bool,
     elsewhere: bool,
     codex: &CodexPush,
-    following: bool,
-) -> bool {
+    live: Live,
+) -> Wake {
+    let yes = |b: bool| if b { Wake::Yes } else { Wake::No };
     match harness {
-        "codex" => !elsewhere && codex.available() && harness_session_known,
-        "pi" => true,
-        "claude" | "grok" => following,
-        _ => false,
+        "codex" => yes(!elsewhere && codex.available() && harness_session_known),
+        "pi" => Wake::Yes,
+        "grok" => yes(live.follower),
+        "claude" if live.follower => Wake::Yes,
+        "claude" if live.channel => Wake::Unsure,
+        _ => Wake::No,
     }
 }
 
-/// What [`wakes_when_idle`] reads of the daemon: its `codex` and the
-/// connected followers.
+/// Whose agents' `wakes` a listing shows.
+#[derive(Clone, Debug)]
+enum Audience {
+    /// The owner: every agent's.
+    All,
+    /// A connected person (by public ID): their own agents' only.
+    Person(String),
+}
+
+/// What [`wakes_when_idle`] reads of the daemon (its `codex`, the
+/// connected followers and waits), and whose agents it is shown for.
 #[derive(Clone)]
 pub struct Wakes {
     codex: Arc<CodexPush>,
     followers: Arc<crate::feedback::Followers>,
+    waiters: Arc<crate::feedback::FeedbackWaiters>,
     hosted: bool,
+    audience: Audience,
 }
 
 impl Wakes {
+    /// For the owner: every agent's `wakes`.
     pub fn of(s: &AppState) -> Wakes {
         Wakes {
             codex: s.codex.clone(),
             followers: s.followers.clone(),
+            waiters: s.feedback_waiters.clone(),
             hosted: s.hosted.is_some(),
+            audience: Audience::All,
         }
     }
 
@@ -476,15 +549,48 @@ impl Wakes {
         (!caller.is_agent()).then(|| Wakes::of(s))
     }
 
-    /// Whether a comment wakes live session `x` while it is idle.
-    pub fn session(&self, x: &Session) -> bool {
-        wakes_when_idle(
-            &x.harness,
-            x.harness_session_id.is_some(),
-            elsewhere(x, self.hosted),
-            &self.codex,
-            self.followers.is_following(&x.id),
-        )
+    /// These `wakes` for a delivery viewer: every agent's for the owner, a
+    /// connected person's own agents' for that person, none for anyone
+    /// else.
+    pub fn for_viewer(&self, v: &clax_core::DeliveryViewer) -> Option<Wakes> {
+        let audience = match v {
+            clax_core::DeliveryViewer::Owner => Audience::All,
+            clax_core::DeliveryViewer::Person(p) => Audience::Person(p.clone()),
+            _ => return None,
+        };
+        Some(Wakes {
+            audience,
+            ..self.clone()
+        })
+    }
+
+    /// Whether this listing shows `wakes` for an agent of person `pid`
+    /// (its public ID; `None` for the owner's agents, whose person is
+    /// `owner`).
+    fn shows(&self, pid: Option<&str>, owner_agent: bool) -> bool {
+        match &self.audience {
+            Audience::All => true,
+            Audience::Person(me) => !owner_agent && pid == Some(me.as_str()),
+        }
+    }
+
+    fn live(&self, sid: &str) -> Live {
+        Live::of(&self.followers, &self.waiters, sid)
+    }
+
+    /// `wakes` of live session `x`, when this listing shows it.
+    pub fn session(&self, x: &Session) -> Option<Value> {
+        self.shows(x.person.as_deref(), x.person.is_none())
+            .then(|| {
+                wakes_when_idle(
+                    &x.harness,
+                    x.harness_session_id.is_some(),
+                    elsewhere(x, self.hosted),
+                    &self.codex,
+                    self.live(&x.id),
+                )
+                .to_json()
+            })
     }
 
     /// Sets `wakes` on each live agent of `p`, when `w` is given.
@@ -494,16 +600,22 @@ impl Wakes {
         }
     }
 
-    /// Sets `wakes` on each live agent of `p`.
+    /// Sets `wakes` on each live agent of `p` this listing shows it for.
     pub fn mark(&self, p: &mut clax_store::attention::Participants) {
         for a in p.agents.iter_mut().filter(|a| a.live) {
-            a.wakes = Some(wakes_when_idle(
-                &a.harness,
-                a.harness_session_known,
-                self.hosted || a.grant,
-                &self.codex,
-                self.followers.is_following(&a.session_id),
-            ));
+            if !self.shows(a.person.public_id.as_deref(), a.person.owner) {
+                continue;
+            }
+            a.wakes = Some(
+                wakes_when_idle(
+                    &a.harness,
+                    a.harness_session_known,
+                    self.hosted || a.grant,
+                    &self.codex,
+                    self.live(&a.session_id),
+                )
+                .to_json(),
+            );
         }
     }
 }
@@ -667,9 +779,29 @@ mod tests {
         let off = CodexPush::from_env(Some("".into()), None);
         let on = CodexPush::from_env(Some("/bin/sh".into()), None);
         assert!(on.available());
+        let lives = [
+            Live::default(),
+            Live {
+                follower: true,
+                ..Live::default()
+            },
+            Live {
+                channel: true,
+                ..Live::default()
+            },
+            Live {
+                inject: true,
+                ..Live::default()
+            },
+            Live {
+                follower: true,
+                channel: true,
+                inject: true,
+            },
+        ];
         for harness in ["claude", "codex", "grok", "pi", "by-hand"] {
             for codex in [&off, &on] {
-                for following in [false, true] {
+                for live in lives {
                     for hs in [None, Some("h".to_string())] {
                         for elsewhere in [false, true] {
                             let session: Session = serde_json::from_value(json!({
@@ -678,11 +810,16 @@ mod tests {
                                 "harness_session_id": hs,
                             }))
                             .unwrap();
-                            let push = push_info(&session, codex, None, None, following, elsewhere);
+                            let push = push_info(&session, codex, None, None, live, elsewhere);
+                            let want = match (push["available"] == true, push["sure"] == false) {
+                                (false, _) => Wake::No,
+                                (true, true) => Wake::Unsure,
+                                (true, false) => Wake::Yes,
+                            };
                             assert_eq!(
-                                wakes_when_idle(harness, hs.is_some(), elsewhere, codex, following),
-                                push["available"] == true,
-                                "{harness} following={following} hs={hs:?} elsewhere={elsewhere} {push}"
+                                wakes_when_idle(harness, hs.is_some(), elsewhere, codex, live),
+                                want,
+                                "{harness} {live:?} hs={hs:?} elsewhere={elsewhere} {push}"
                             );
                         }
                     }
@@ -702,12 +839,12 @@ mod tests {
             "harness_session_id": "h",
         }))
         .unwrap();
-        let here = push_info(&session, &on, None, None, false, false);
+        let here = push_info(&session, &on, None, None, Live::default(), false);
         assert_eq!(
             (&here["available"], &here["tier"]),
             (&json!(true), &json!("queue"))
         );
-        let there = push_info(&session, &on, None, None, false, true);
+        let there = push_info(&session, &on, None, None, Live::default(), true);
         assert_eq!(there["available"], false, "{there}");
         assert_eq!(there["tier"], Value::Null);
         assert_eq!(there["other_machine"], true);
@@ -718,7 +855,34 @@ mod tests {
                 .contains("another machine"),
             "{there}"
         );
-        assert!(!wakes_when_idle("codex", true, true, &on, false));
+        assert_eq!(
+            wakes_when_idle("codex", true, true, &on, Live::default()),
+            Wake::No
+        );
+    }
+
+    /// A channel alone leaves Claude Code unsure.
+    #[test]
+    fn a_channel_alone_is_unsure() {
+        let off = CodexPush::from_env(Some("".into()), None);
+        let channel = Live {
+            channel: true,
+            ..Live::default()
+        };
+        assert_eq!(
+            wakes_when_idle("claude", true, false, &off, channel),
+            Wake::Unsure
+        );
+        assert_eq!(Wake::Unsure.to_json(), json!("unsure"));
+        let both = Live {
+            channel: true,
+            follower: true,
+            ..Live::default()
+        };
+        assert_eq!(
+            wakes_when_idle("claude", true, false, &off, both),
+            Wake::Yes
+        );
     }
 
     #[test]

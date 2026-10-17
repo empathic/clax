@@ -34,12 +34,13 @@ export type ForkedFrom = { artifact_id: string; version: number; title: string |
  * its name, which it shows as, and its person (`owner` for the owner's
  * agents) from daemons that name agents (spec
  * 2026-10-08-multi-agent-multi-person §10, §11). A live agent on
- * `GET /api/artifacts/<id>` also carries `wakes`: whether a comment sent to
- * it wakes it while it is idle (false: it sees comments only when it next
- * acts). */
+ * `GET /api/artifacts/<id>` also carries `wakes`, for the owner and the
+ * agent's own person: whether a comment sent to it wakes it while it is
+ * idle (false: it sees comments only when it next acts; "unsure": only
+ * through a Claude Code channel, which Claude Code does not confirm). */
 export type Participants = { people: { public_id: string; display_name: string | null; seen: number | null }[]; agents: { handle: string; harness: string; live: boolean; name?: string | null; person?: CardPerson;
   /** Another Clax's session (signed in by device code): whose Clax it relays from, "Alex's Clax". */
-  via?: string; wakes?: boolean }[] };
+  via?: string; wakes?: boolean | "unsure" }[] };
 export type AttentionSummary = { addressed: string[]; addressed_v: number | null; new_replies: string[]; open_in: string[]; seen: number | null };
 export type Attention = AttentionSummary & { looked: Record<string, string> };
 /** `sha256`: the file's lowercase hex SHA-256; absent on versions written before content hashes. */
@@ -261,7 +262,7 @@ export type StripAgent = {
   via?: string;
   blocked: { since: string; questions: number; approvals: number } | null;
   /** For a live agent, whether a comment sent to it wakes it while idle. */
-  wakes?: boolean | null;
+  wakes?: boolean | "unsure" | null;
 };
 /** One agent as `GET /api/agents` lists it (§13): another person's agent
  * by `name`, `person`, `live`, `state` and `since` alone. */

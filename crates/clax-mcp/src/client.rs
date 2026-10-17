@@ -1675,7 +1675,17 @@ impl DaemonClient {
     /// waited_s}`; the deadline is `wait_s` plus 10 s. Like `heartbeat`, it
     /// finds a running daemon but never starts one.
     pub async fn notices(&self, wait_s: u64) -> Result<Value> {
-        let q = [("wait", wait_s.to_string())];
+        self.notices_via(wait_s, None).await
+    }
+
+    /// [`DaemonClient::notices`] polled by `via` (`channel`: the shim for
+    /// its Claude Code channel, which the daemon counts apart from a
+    /// follower and which takes no notice while a follower is connected).
+    pub async fn notices_via(&self, wait_s: u64, via: Option<&str>) -> Result<Value> {
+        let mut q = vec![("wait", wait_s.to_string())];
+        if let Some(v) = via {
+            q.push(("via", v.to_string()));
+        }
         let deadline = Duration::from_secs(wait_s + 10);
         let res = self
             .send_with(Mode::DiscoverOnly, |c| {

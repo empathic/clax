@@ -34,13 +34,16 @@ describe("working UI", () => {
       { handle: "a_1111aaaa", harness: "claude", name: "web", live: true, wakes: false },
       { handle: "a_2222bbbb", harness: "codex", name: "api", live: true, wakes: true },
       { handle: "a_3333cccc", harness: "claude", name: "old", live: false, wakes: false },
+      { handle: "a_5555eeee", harness: "claude", name: "chan", live: true, wakes: "unsure" as const },
     ];
     const working = [{ key: "k", agent: "a_4444dddd", harness: "pi", message: null, thread_ids: [], started_at: "s", last_heartbeat: "s" }];
     const m = mount(Roster, { people: [], agents: list, working, me: "u_me", max: 5 });
     const toks = Array.from(m.root.querySelectorAll(".agt .tok"));
-    expect(toks.map(e => e.classList.contains("nowake"))).toEqual([true, false, false]);
+    expect(toks.map(e => e.classList.contains("nowake"))).toEqual([true, false, false, false]);
+    expect(toks.map(e => e.classList.contains("maywake"))).toEqual([false, false, false, true]);
     expect(toks[0].getAttribute("title")).toBe("web · won't be woken by comments until it next acts");
     expect(toks[1].getAttribute("title")).toBe("api");
+    expect(toks[3].getAttribute("title")).toBe("chan · may not be woken by comments: Claude Code does not confirm its channel");
     m.unmount();
     // A working agent is drawn working: it sees comments at its next step.
     const busy = mount(Roster, { people: [], agents: list.slice(0, 1), working: [{ ...working[0], agent: "a_1111aaaa" }], me: "u_me", max: 5 });

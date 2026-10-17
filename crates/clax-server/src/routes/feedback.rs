@@ -4,6 +4,7 @@
 //! prints.
 
 use super::artifacts::{body, path};
+use clax_realtime::feedback::FollowKind;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
@@ -443,6 +444,9 @@ pub async fn poll(
 pub struct NoticesQuery {
     #[serde(default)]
     wait: u64,
+    /// `channel`: the Claude Code shim polls for its channel.
+    #[serde(default)]
+    via: Option<String>,
 }
 
 /// `GET /api/sessions/<sid>/notices?wait=<s>`: announces the session's
@@ -456,7 +460,11 @@ pub struct NoticesQuery {
 /// as the feedback poll's does, so an approval during the wait announces
 /// what it lets through. While the session is inside
 /// `wait_for_feedback`, answers empty at once and announces nothing. The
-/// poll counts as a connected follower for `status`'s `push`. Unknown
+/// poll counts as a connected follower for `status`'s `push`; with
+/// `via=channel` (the Claude Code shim's), as the session's channel, which
+/// takes no notice while a follower of the session is connected, so a
+/// follower started because Claude Code refused the channel gets them all.
+/// Unknown
 /// session: 404; ended: 400 `unknown_session`, before any wait, and also
 /// at once when the session ends during the wait, so a follower stops
 /// without waiting out its poll. A daemon that begins shutting down
@@ -474,13 +482,18 @@ pub async fn notices(
     s.store_call(move |st| live_session(st, &check)).await?;
     let mut rights = a.read_rights();
     let grant = a.grant().map(str::to_string);
+    let kind = match q.via.as_deref() {
+        Some("channel") => FollowKind::Channel,
+        _ => FollowKind::Follower,
+    };
     // Declared first, so it runs after the follower guard below drops.
     let _lapse = FollowLapse {
         s: s.clone(),
         sid: sid.clone(),
+        kind,
     };
-    let was_following = s.followers.is_following(&sid);
-    let _following = s.followers.enter(&sid);
+    let was_following = s.followers.has(&sid, kind);
+    let _following = s.followers.enter_as(&sid, kind);
     if !was_following {
         follow_changed(&s, &sid);
     }
@@ -509,6 +522,8 @@ pub async fn notices(
         let who = sid.clone();
         let prior = vis.take();
         let (prior_rights, grant) = (rights.clone(), grant.clone());
+        // The channel leaves the notices to a follower of the session.
+        let yields = kind == FollowKind::Channel && s.followers.is_following(&sid);
         let (view, rights_now, announced) = s
             .store_call(move |st| {
                 live_session(st, &who)?;
@@ -517,16 +532,20 @@ pub async fn notices(
                 let readable = |a: &Artifact| rights.allows(a);
                 let readable: Option<&(dyn Fn(&Artifact) -> bool + Sync)> =
                     rights.is_person_agent().then_some(&readable);
-                let announced = st.take_notices(&who, &base, &view, readable)?;
+                let announced = if yields {
+                    None
+                } else {
+                    Some(st.take_notices(&who, &base, &view, readable)?)
+                };
                 Ok((view, rights, announced))
             })
             .await?;
         vis = Some(view);
         rights = rights_now;
-        if announced.stale {
+        if announced.as_ref().is_some_and(|a| a.stale) {
             continue;
         }
-        let notices = announced.notices;
+        let notices = announced.map(|a| a.notices).unwrap_or_default();
         if !notices.is_empty() || Instant::now() >= deadline {
             let lines: Vec<String> = notices.iter().map(render_notice).collect();
             return Ok(Json(
@@ -567,14 +586,19 @@ fn follow_changed(s: &AppState, sid: &str) {
 struct FollowLapse {
     s: AppState,
     sid: String,
+    kind: FollowKind,
 }
 
 impl Drop for FollowLapse {
     fn drop(&mut self) {
-        let (s, sid) = (self.s.clone(), std::mem::take(&mut self.sid));
+        let (s, sid, kind) = (self.s.clone(), std::mem::take(&mut self.sid), self.kind);
+        let grace = match kind {
+            FollowKind::Channel => crate::feedback::Followers::CHANNEL_RECENT,
+            _ => crate::feedback::Followers::RECENT,
+        };
         clax_rt::spawn(async move {
-            clax_rt::time::sleep(crate::feedback::Followers::RECENT + Duration::from_secs(1)).await;
-            if !s.followers.is_following(&sid) {
+            clax_rt::time::sleep(grace + Duration::from_secs(1)).await;
+            if !s.followers.has(&sid, kind) {
                 follow_changed(&s, &sid);
             }
         });

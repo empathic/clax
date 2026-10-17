@@ -44,12 +44,16 @@ const CHANNEL_UNSURE: &str = "Claude Code was launched with the Clax channel, bu
 tell Clax whether it registered it: organization policy (channelsEnabled), the --channels \
 allowlist or the sign-in method can refuse it, and then it drops each notice silently";
 
+/// What the person is told, once, about a channel that may have been
+/// refused: only they saw Claude Code's startup screen.
+pub const CHANNEL_ASK: &str = "If Claude Code said the Clax channel was blocked when it \
+started, relaunch without the channel flag so I can be woken.";
+
 /// What to do about a channel that may have been refused.
-const CHANNEL_DO: &str = "Start nothing if Claude Code's startup screen listed the Clax channel \
-as loaded: a comment sent to you wakes this session through it. If it said the channel was \
-blocked or not loaded, comments will not wake you while idle: tell the person, and that \
-relaunching Claude Code without the channel flag lets the clax feedback follow follower wake \
-you instead.";
+const CHANNEL_DO: &str = "Start nothing: a comment sent to you should wake this session through \
+the Clax channel, but Claude Code does not confirm the channel loaded. Tell the person once, in \
+chat: \"If Claude Code said the Clax channel was blocked when it started, relaunch without the \
+channel flag so I can be woken.\" Then end your turn when you are done.";
 
 /// Whether a comment wakes an idle session with push `push` (as `status`
 /// reports it: the daemon's, refined by the shim), by which path, and what
@@ -217,7 +221,12 @@ mod tests {
             "{w}"
         );
         let d = w["do"].as_str().unwrap();
-        assert!(d.contains("startup screen") && d.contains("without"), "{d}");
+        assert!(d.contains("Tell the person once, in chat"), "{d}");
+        assert!(d.contains(CHANNEL_ASK), "{d}");
+        assert!(
+            !d.contains("startup screen"),
+            "the agent cannot see it: {d}"
+        );
         assert!(
             session_line(&w).starts_with("Push: probably available"),
             "{}",

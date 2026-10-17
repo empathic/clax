@@ -177,7 +177,10 @@ pub async fn list_agents(
                 };
                 // Whether a comment wakes the live agent while it is idle.
                 // Not in an agent's listing, whose outputs stay as they were.
-                let wakes = wakes.as_ref().map(|w| x.ended_at.is_none().then(|| w.session(x)));
+                let wakes = wakes
+                    .as_ref()
+                    .filter(|_| x.ended_at.is_none())
+                    .and_then(|w| w.session(x));
                 let (state, since) = if let Some(end) = &x.ended_at {
                     ("ended", Some(end.clone()))
                 } else if r.asking {
@@ -195,7 +198,7 @@ pub async fn list_agents(
                         "threads_owned": null, "working": null, "unread": null,
                     }));
                     if let (Some(w), Some(o)) = (wakes, out.last_mut()) {
-                        o["wakes"] = json!(w);
+                        o["wakes"] = w;
                     }
                     continue;
                 }
@@ -243,7 +246,7 @@ pub async fn list_agents(
                     "unread": (!agent).then(|| unread.get(&x.id).copied().unwrap_or(0)),
                 }));
                 if let (Some(w), Some(o)) = (wakes, out.last_mut()) {
-                    o["wakes"] = json!(w);
+                    o["wakes"] = w;
                 }
             }
             Ok(json!({"agents": out}))

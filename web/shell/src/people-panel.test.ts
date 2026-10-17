@@ -121,13 +121,14 @@ describe("PeoplePanel's agents that comments do not wake", () => {
       { handle: "a_web", harness: "claude", live: true, name: "web", person: ALEX, wakes: false },
       { handle: "a_api", harness: "pi", live: true, name: "api", person: ALEX, wakes: true },
       { handle: "a_old", harness: "claude", live: false, name: "old", person: ALEX, wakes: false },
+      { handle: "a_chan", harness: "claude", live: true, name: "chan", person: ALEX, wakes: "unsure" },
     ];
     const s = view(null) as unknown as Record<string, unknown>;
     const ctl = { numbers: () => new Map(), forgetReopen: vi.fn(), setNotice: vi.fn(), setMe: vi.fn(), setShareWhere: vi.fn() };
     const v = mount(PeoplePanel, { ctl: ctl as never, s: { ...s, agents, data: { artifact: { participants: { people: [], agents } }, versions: [] } } as never, onClose: vi.fn() });
     await settle();
     const rows = [...v.root.querySelectorAll(".prow.agent")];
-    expect(rows.map(r => r.querySelector(".nowake")?.textContent ?? null)).toEqual(["Won't be woken by your comments until it next acts.", null, null]);
+    expect(rows.map(r => r.querySelector(".nowake")?.textContent ?? null)).toEqual(["Won't be woken by your comments until it next acts.", null, null, "May not be woken by your comments: Claude Code does not confirm its channel."]);
     v.unmount();
   });
 });

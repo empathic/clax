@@ -283,8 +283,16 @@ async fn a_follower_poll_marks_its_agent_woken_on_the_page() {
         .unwrap()
         .clone();
     assert_eq!(me["wakes"], false, "{me}");
-    let page = ts.get(&format!("/a/{aid}")).await.text().await.unwrap();
-    assert!(page.contains("\"wakes\":false"), "the first load names it");
+    let page = ts
+        .get_authed(&format!("/a/{aid}"))
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        page.contains("\"wakes\":false"),
+        "the owner's first load names it"
+    );
     let req = ts.authed(
         ts.client
             .get(format!("{}/api/sessions/{sid}/notices?wait=30", ts.base)),
@@ -301,4 +309,67 @@ async fn a_follower_poll_marks_its_agent_woken_on_the_page() {
     let pid = pi["id"].as_str().unwrap().to_string();
     let paid = published(&ts, &pid).await;
     assert_eq!(wakes(&ts, &paid).await, true);
+}
+
+/// The shim's channel poll leaves Claude Code unsure, and takes no notice
+/// while a follower of the session is connected, so a follower started
+/// because Claude Code refused the channel gets every notice.
+#[tokio::test]
+async fn a_channel_is_unsure_and_yields_its_notices_to_a_follower() {
+    let ts = TestServer::spawn().await;
+    let sid = claude_session(&ts).await;
+    let aid = published(&ts, &sid).await;
+    let wakes = |ts: &TestServer, aid: &str| {
+        let req = ts.authed(ts.client.get(format!("{}/api/artifacts/{aid}", ts.base)));
+        async move {
+            let v: Value = req.send().await.unwrap().json().await.unwrap();
+            v["artifact"]["participants"]["agents"][0]["wakes"].clone()
+        }
+    };
+    let channel = |ts: &TestServer, sid: &str, wait: u64| {
+        let req = ts.authed(ts.client.get(format!(
+            "{}/api/sessions/{sid}/notices?wait={wait}&via=channel",
+            ts.base
+        )));
+        async move { req.send().await.unwrap().json::<Value>().await.unwrap() }
+    };
+    let poll = tokio::spawn(channel(&ts, &sid, 30));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while wakes(&ts, &aid).await != "unsure" {
+        assert!(Instant::now() < deadline, "the channel never counted");
+        tokio::task::yield_now().await;
+    }
+    let push: Value = ts
+        .get_authed(&format!("/api/sessions/{sid}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            &push["push"]["tier"],
+            &push["push"]["available"],
+            &push["push"]["sure"]
+        ),
+        (&json!("channel"), &json!(true), &json!(false)),
+        "{push}"
+    );
+    poll.abort();
+    // A follower connects: the channel takes nothing, the follower all.
+    let req = ts.authed(
+        ts.client
+            .get(format!("{}/api/sessions/{sid}/notices?wait=30", ts.base)),
+    );
+    let follower =
+        tokio::spawn(async move { req.send().await.unwrap().json::<Value>().await.unwrap() });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while wakes(&ts, &aid).await != true {
+        assert!(Instant::now() < deadline, "the follower never counted");
+        tokio::task::yield_now().await;
+    }
+    send_comment(&ts, &aid).await;
+    let quiet = channel(&ts, &sid, 0).await;
+    assert!(quiet["notices"].as_array().unwrap().is_empty(), "{quiet}");
+    let got = follower.await.unwrap();
+    assert_eq!(got["notices"].as_array().unwrap().len(), 1, "{got}");
 }

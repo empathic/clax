@@ -237,7 +237,7 @@ pub async fn assemble(
                 None => None,
             };
             let mut participants = st.participants(&lookup)?;
-            wakes.mark(&mut participants);
+            crate::routes::sessions::Wakes::mark_with(Some(&wakes), &mut participants);
             let mut artifact = with_owner(
                 &a,
                 owner.as_ref(),

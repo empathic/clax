@@ -302,7 +302,7 @@ async fn forward_notices(client: DaemonClient, peer: rmcp::Peer<rmcp::RoleServer
     let mut backoff = Duration::from_secs(1);
     loop {
         let polled = tokio::time::Instant::now();
-        match client.notices(NOTICE_WAIT_S).await {
+        match client.notices_via(NOTICE_WAIT_S, Some("channel")).await {
             Ok(v) => {
                 backoff = Duration::from_secs(1);
                 let notices = v["notices"].as_array().cloned().unwrap_or_default();
