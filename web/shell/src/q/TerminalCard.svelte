@@ -7,10 +7,9 @@
   // answer. **Ask me here** sends the agent word to ask it in Clax instead
   // (following the keyboard trail rule, `guardedAction`); for Claude Code's
   // terminal dialog it says the dialog stays until Esc. Closed, it says what
-  // closed it, for the list's usual moment. Its styles travel with the
-  // question module's chunk and carry the card's (`.qcard`) frame
-  // themselves, as QuestionCard's styles inject only once a QuestionCard
-  // mounts.
+  // closed it, for the list's usual moment. It loads on demand (`later`);
+  // its styles, injected on mount, carry the card's (`.qcard`) frame
+  // themselves, as QuestionCard's inject only once a QuestionCard mounts.
   import type { QuestionView } from "../api";
   import { relativeTime } from "../format";
   import { closedLabel, cutHeader } from "./model";
@@ -52,9 +51,9 @@
     {#if p.q.source === "hook"}<p class="esc small muted">{TERMINAL_ESC}</p>{/if}
     <div class="acts">
       <button type="button" class="primary" disabled={busy} onclick={pull}>Ask me here</button>
-      {#if failed}<span class="err small">Not sent: try again</span>{/if}
     </div>
-    <p class="act-hint" role="status">{hint ?? ""}</p>
+    <!-- One live region while open: a failure, else the trail's hint. -->
+    <p class="act-hint" role="status">{#if failed}<span class="err">Not sent: try again</span>{:else}{hint ?? ""}{/if}</p>
   {:else}
     <p class="closed" role="status">{closedLabel(p.q)}</p>
   {/if}

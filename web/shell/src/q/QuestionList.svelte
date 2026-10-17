@@ -1,8 +1,9 @@
 <svelte:options css="injected" />
 
 <script lang="ts">
-  // Question cards (a terminal card for an in-terminal question), keyed by question (a card's draft belongs to its
-  // question), answered through the feed. A card that leaves while it holds
+  // Question cards (a terminal card, loaded on demand, for an in-terminal
+  // question), keyed by question (a card's draft belongs to its question),
+  // answered through the feed. A card that leaves while it holds
   // focus (its closed state over) hands focus to the card that takes its
   // place, else the one before, else the nearest region around the list
   // that still shows: focus never drops to the page. Its styles include
