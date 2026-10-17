@@ -3,7 +3,14 @@ load("//bazel:cargo.bzl", "cargo_package")
 
 cargo_package(
     build_script_data = ["//web:extension_key"],
-    compile_data = ["//web:extension/manifest.json"] + glob(["tests/toolpath/**"]),
+    compile_data = ["//web:extension/manifest.json"],
+    # The vectors clax-core's own tests include (src/audit/args.rs,
+    # src/gitctx_capture_tests.rs); the rest are clax-store's, so an edit to
+    # them recompiles no library.
+    test_compile_data = [
+        "tests/toolpath/args-hash-vectors.json",
+        "tests/toolpath/git-capture-vectors.json",
+    ],
     test_data = [
         # The sources the delivery guard scans (src/feedback.rs).
         ":rust_sources",
