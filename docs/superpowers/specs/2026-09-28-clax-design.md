@@ -132,22 +132,33 @@ Components:
 
 ```
 Cargo.toml                         workspace, edition 2024
-crates/
-  clax-core/                       types, IDs, storage (SQLite + files), anchors, events
-  clax-server/                     axum HTTP/SSE server, REST API, MCP-over-HTTP, sample provider
+crates/                            (docs/superpowers/specs/2026-10-16-workspace-layout-design.md)
+  clax-core/                       shared vocabulary and pure rules: IDs, records, anchors, events,
+                                   config, signing, visibility vocabulary; no SQL, no HTTP server
+  clax-store/                      the SQLite store: schema, migrations, queries, visibility, audit export
+  clax-sample/                     the sample() capability's providers, quota and cache
+  clax-realtime/                   the daemon's in-memory delivery: event hub, rooms, presence,
+                                   feedback and question waiters, Codex push, live-page IDs
+  clax-http/                       what every route shares: AppState, ApiError, request identity,
+                                   middleware, the JSON views
+  clax-server/                     the daemon: every route, the router, the shell, serve()
   clax-mcp/                        stdio MCP shim (rmcp), session registration, feedback piggyback
   clax-hooks/                      per-harness hook protocol adapters (Claude Code, Codex JSON shapes)
-  clax-cli/                        binary `clax`: serve, mcp, hook, publish, list, open, ..., doctor
+  clax-commands/                   every `clax` subcommand and the blocking daemon client
+  clax-embedded/                   the files the binary carries: web UI, extension, plugins, launcher
+  clax-cli/                        binary `clax`: wires the daemon and the embedded files into the commands
+  clax-testkit/                    the in-process test daemon, its clients and fixtures (tests only)
+  clax-fake-exe/                   test helper executables, no workspace dependency (tests only)
 web/
   shell/                           Svelte 5 (runes) + TypeScript, Vite SPA: gallery, artifact shell, comment sidebar
   bridge/                          vanilla TypeScript: window.claude.use, comment mode, clips
   extension/                       the Clax Chrome extension (MV3): worker, loader, overlay, composer,
-                                   side panel (built to dist-extension/, embedded into clax-cli;
+                                   side panel (built to dist-extension/, embedded by clax-embedded;
                                    dist-extension-test/ is the browser tests' build)
   contract/                        the .d.ts files pages are written against (copied from claude.ai 0.2.61)
   e2e/                             Playwright tests; chrome-overlay.spec.ts with extension-fixtures.ts and
                                    live-site/ (the Vite dev-server app the extension is tested on)
-  dist/                            built assets, embedded into clax-server via rust-embed
+  dist/                            built assets, embedded by clax-embedded via rust-embed
 plugins/
   claude-code/                     .claude-plugin/plugin.json, .mcp.json, hooks/, skills/, commands/, scripts/
   clax/                            Codex plugin: .codex-plugin/plugin.json, .mcp.json, hooks/, skills/, scripts/
@@ -171,12 +182,25 @@ scripts/*release*, check-version.sh, bump-version.sh
 install.sh                         installs a release into ~/.local/bin, for `clax` on PATH without a checkout
 ```
 
-Dependency graph:
+Dependency graph (each crate depends only on crates above it;
+`scripts/check-crate-layers.py` checks it):
 
 ```
-clax-cli ── clax-server ── clax-core
-        ├── clax-mcp    ── clax-core
-        └── clax-hooks  ── clax-core
+                         clax-core
+                 ┌───────────┼──────────────────┬──────────────┐
+            clax-store   clax-sample        clax-mcp      clax-hooks
+                 │           │                 │              │
+           clax-realtime     │                 │              │
+                 │           │                 │              │
+             clax-http ──────┘                 │              │
+                 │                             │              │
+            clax-server ───────────────────────┘              │
+                 │                                            │
+                 │        clax-commands ── clax-store, clax-mcp, clax-hooks
+                 │              │
+                 └──── clax-cli ┴── clax-embedded (no workspace dependency)
+
+  tests only:  clax-testkit ── clax-server (and everything above it), clax-fake-exe
 ```
 
 Key crates: `axum`, `tokio`, `tower-http`, `rusqlite` (bundled),

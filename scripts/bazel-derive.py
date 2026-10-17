@@ -13,8 +13,8 @@ Run by scripts/bazel-sync.sh, which writes or compares the output:
                                         features Cargo gives it (features())
 
 workspace: each workspace crate's version, targets, default features, path
-dependencies, the features its tests turn on in other workspace crates, and
-whether it has a build script; and the rustc flags of
+dependencies and dev-dependencies (refusing one that turns features on),
+and whether it has a build script; and the rustc flags of
 [workspace.lints.rust].
 """
 

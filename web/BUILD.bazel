@@ -152,7 +152,7 @@ exports_files(
 )
 
 # The shell's files the Rust code and its tests include, to check that both
-# sides agree (include_str! in crates/clax-server and crates/clax-cli).
+# sides agree (include_str! in crates/clax-server and crates/clax-commands).
 filegroup(
     name = "shell_cases",
     srcs = glob([
