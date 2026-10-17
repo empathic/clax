@@ -6,7 +6,8 @@
 use crate::routes::{
     approvals, artifacts, assets, connect, content, docs, drafts, extension, feedback, git_token,
     grants, health, inbox, live, live_layers, mcp_http, people, perf, questions, remotes, room,
-    sample, sessions, sites, snapshot, stream, threads, token, toolpath, viewers, watches, working,
+    sample, sessions, sites, snapshot, stream, surface, threads, token, toolpath, viewers, watches,
+    working,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::routes::{events, mcp};
@@ -195,6 +196,11 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             "/api/sessions/{id}/tool-call-ids",
             post(sessions::tool_call_ids),
         )
+        .route(
+            "/api/sessions/{id}/where-to-ask",
+            get(surface::where_to_ask),
+        )
+        .route("/api/sessions/{id}/terminal", post(surface::terminal))
         .route(
             "/api/sessions/{id}/questions",
             post(questions::create.layer(ask_limit)),

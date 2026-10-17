@@ -251,6 +251,8 @@ need!(QuestionsPoll, Ask, "ask", Own, DEFAULT_LIMIT);
 need!(QuestionsWithdraw, Ask, "ask", Own, DEFAULT_LIMIT);
 need!(QuestionsRelease, Ask, "ask", Own, DEFAULT_LIMIT);
 need!(QuestionsTerminal, Ask, "ask", Own, DEFAULT_LIMIT);
+need!(SessionWhereToAsk, Ask, "ask", Own, DEFAULT_LIMIT);
+need!(SessionTerminal, None, Own, DEFAULT_LIMIT);
 need!(ApprovalsAsk, Ask, "ask", Own, DEFAULT_LIMIT);
 need!(ApprovalsPoll, Ask, "ask", Own, DEFAULT_LIMIT);
 need!(ApprovalsList, None, Own, DEFAULT_LIMIT);
@@ -445,6 +447,12 @@ pub const ROUTES: &[(&str, &str, NeedInfo)] = &[
         "/api/sessions/{id}/tool-call-ids",
         ToolCallIdReport::INFO,
     ),
+    (
+        "GET",
+        "/api/sessions/{id}/where-to-ask",
+        SessionWhereToAsk::INFO,
+    ),
+    ("POST", "/api/sessions/{id}/terminal", SessionTerminal::INFO),
 ];
 
 /// A [`ROUTE_NEEDS`] entry: handler, right (type and action), class.
@@ -524,6 +532,8 @@ pub const ROUTE_NEEDS: &[RouteNeed] = &[
     route_need!("people::list_agents", AgentsList),
     route_need!("toolpath::session_tool_call", ToolCallReport),
     route_need!("sessions::tool_call_ids", ToolCallIdReport),
+    route_need!("surface::where_to_ask", SessionWhereToAsk),
+    route_need!("surface::terminal", SessionTerminal),
 ];
 
 /// The `Filtered` needs whose filter is live: a person's agent reaches

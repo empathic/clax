@@ -15,7 +15,6 @@
   // questions about the live page above its threads, and **Inbox** with the
   // unread count.
   import Sidebar from "../../../shell/src/ui/Sidebar.svelte";
-  import SidebarQuestions from "../../../shell/src/q/SidebarQuestions.svelte";
   import type { Thread } from "../../../shell/src/threads";
   import { agentName } from "../../../shell/src/view/history-model";
   import { presenceMap, roster } from "../../../shell/src/view/presence-model";
@@ -211,6 +210,11 @@
   $effect(() => { if (s?.error) saved = ""; });
   /** The owner's tabs: shown once the daemon took the extension as the owner. */
   const owner = $derived(!!link.inbox?.owner && !!link.questions);
+  // The Page view's question block loads with the first question about the
+  // tab's page (the panel's first paint carries none of it), and stays, so
+  // a card leaving with focus can hand it on.
+  let asked = $state(false);
+  $effect(() => { if (!asked && s?.page && link.questions?.byArtifact(s.page.artifact_id).length) asked = true; });
   let tab = $state<"page" | "inbox">("page");
   const inboxTab = $derived(owner && tab === "inbox");
   const unreadCount = $derived(link.inbox?.unread ?? 0);
@@ -275,10 +279,10 @@
     {:else}
     <!-- The Page view: for the owner, the open questions about the live page come first. -->
     <div class="tabpanel" role={owner ? "tabpanel" : undefined} id="ptab-page-panel" aria-labelledby={owner ? "ptab-page" : undefined}>
-    {#if s.enabled && s.page && owner && link.questions}
+    {#if s.enabled && s.page && owner && link.questions && asked}
       <!-- No thread card here shows its questions: a question in a thread is a card, whose thread link the worker opens. -->
       <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-      <div class="questions" onclick={daemonLink}><SidebarQuestions aid={s.page.artifact_id} feed={link.questions} slots={false} {now} /></div>
+      <div class="questions" onclick={daemonLink}>{#await import("./PageQuestions.svelte") then { default: PageQuestions }}<PageQuestions aid={s.page.artifact_id} feed={link.questions} {now} />{/await}</div>
     {/if}
     {#if s.viewer && !s.viewer.display_name}
       <label class="name"><span>Your name</span>
@@ -410,5 +414,5 @@
   .tabpanel { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   .questions { padding: 12px var(--gutter) 0; }
   .questions :global(.side-q) { margin-bottom: 0; }
-  .questions:has(> :global(.side-q[hidden])) { display: none; }
+  .questions:has(> :global(.side-q[hidden])), .questions:empty { display: none; }
 </style>

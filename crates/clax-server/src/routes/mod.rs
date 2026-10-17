@@ -32,6 +32,7 @@ pub mod sessions;
 pub mod sites;
 pub mod snapshot;
 pub mod stream;
+pub mod surface;
 pub mod threads;
 pub mod token;
 pub mod toolpath;

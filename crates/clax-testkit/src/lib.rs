@@ -17,6 +17,7 @@ pub mod mcp;
 pub mod people;
 pub mod remotes;
 mod server;
+pub mod where_to_ask;
 
 pub use client::*;
 pub use clock::*;

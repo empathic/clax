@@ -63,10 +63,11 @@ pub fn renew_for_tier(ctx: &FeedbackCtx, session_id: &str, tier: Tier) {
 
 /// Feedback reached `session_id`: marks it working on each item's artifact
 /// and thread, records the records it starts under `audit`, and announces
-/// the changes.
+/// the changes. It also records the delivery on the session
+/// (`Store::note_delivery`), the newest item's artifact and thread.
 ///
 /// # Errors
-/// When reading the session fails.
+/// When reading the session or recording the delivery fails.
 pub fn mark_items(
     ctx: &FeedbackCtx,
     audit: &AuditCtx,
@@ -98,5 +99,10 @@ pub fn mark_items(
         changed.merge(ctx.working.mark(&who, aid, &tids));
     }
     settle(st, audit, &ctx.events, &ctx.working, &changed);
+    // The newest item is what the session acts on next: Clax instigated it,
+    // at that thread (spec 2026-10-16-ask-where-attention-is-design §1).
+    if let Some(last) = items.last() {
+        st.note_delivery(session_id, &last.artifact_id, Some(last.thread_id.as_str()))?;
+    }
     Ok(())
 }

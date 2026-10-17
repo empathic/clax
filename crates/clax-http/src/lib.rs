@@ -4,7 +4,8 @@
 //! `grant_auth`, `db_caller`, `viewer`, `extension`), the middleware
 //! (`host`, `http_cache`, `live_access`, the audit context and journal),
 //! the body limits and shared headers, the listener's socket options
-//! (`conn`), and the JSON views of threads, questions, inbox items,
+//! (`conn`), the suggestion of where a session asks its person
+//! (`surface`), and the JSON views of threads, questions, inbox items,
 //! approvals, grants and artifacts (`views`). The routes themselves, the
 //! router and `serve` are `clax-server`'s.
 
@@ -33,6 +34,7 @@ pub mod pushes;
 pub mod seats;
 pub mod socket_caps;
 pub mod state;
+pub mod surface;
 pub mod viewer;
 pub mod views;
 pub mod wrap_cache;

@@ -3445,6 +3445,8 @@ router), and a test fails when it differs:
 | `GET /api/agents` | Own | none | 2 MiB | yes |
 | `POST /api/sessions/{id}/tool-calls` | Own | none | 2 MiB | yes |
 | `POST /api/sessions/{id}/tool-call-ids` | Own | none | 2 MiB | yes |
+| `GET /api/sessions/{id}/where-to-ask` | Own | `clax-ask` `ask` | 2 MiB | yes |
+| `POST /api/sessions/{id}/terminal` | Own | none | 2 MiB | yes |
 
 | Route | Class | Refuses the owner's agents |
 |---|---|---|

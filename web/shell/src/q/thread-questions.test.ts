@@ -37,17 +37,6 @@ describe("questions in threads and in the terminal", () => {
     m.unmount();
   });
 
-  it("keeps a question in an open thread as a card where no thread card shows questions", async () => {
-    const feed = await feedOf([view({ id: "QT", thread: { id: "t1", open: true } })]);
-    const m = mount(SidebarQuestions, { aid: AID, feed, slots: false });
-    expect([...m.root.querySelectorAll<HTMLElement>(".qcard")].map(c => c.dataset.question)).toEqual(["QT"]);
-    await settle();
-    expect(m.root.querySelector("a.q-thread")).toBeNull();
-    const about = m.root.querySelector<HTMLAnchorElement>(".qcard a.about")!;
-    expect([about.textContent, about.getAttribute("href")]).toEqual(["in a thread", `/a/${AID}?thread=t1`]);
-    m.unmount();
-  });
-
   it("shows an in-terminal question as a terminal card, whose Ask me here posts the pull", async () => {
     const t = view({ id: "QN", in_terminal: true, source: "hook" });
     const feed = await feedOf([t]);

@@ -7,23 +7,17 @@
   // it for 4 s, then leaves. The block is there (hidden) while nothing is
   // open, so a card leaving with focus can hand it on; its heading shows
   // only with a card or a link. Its styles are QuestionList's.
-  import type { QuestionView } from "../api";
   import type { QuestionFeed } from "./feed.svelte";
   import QuestionList from "./QuestionList.svelte";
   import { later, need } from "./later.svelte";
   import { inThread } from "./model";
   import { shared } from "./shared";
 
-  const p: {
-    aid: string; feed?: QuestionFeed; now?: Date;
-    /** False where no thread card shows its questions (the side panel): a question in a thread is a card here too. */
-    slots?: boolean;
-  } = $props();
+  const p: { aid: string; feed?: QuestionFeed; now?: Date } = $props();
   const feed = $derived(p.feed ?? shared().questions);
   const all = $derived(feed.byArtifact(p.aid));
-  const held = (q: QuestionView) => p.slots !== false && !!inThread(q);
-  const cards = $derived(all.filter(q => !held(q)));
-  const threaded = $derived(all.filter(q => held(q) && q.status === "open"));
+  const cards = $derived(all.filter(q => !inThread(q)));
+  const threaded = $derived(all.filter(q => inThread(q) && q.status === "open"));
   const open = $derived(all.filter(q => q.status === "open").length);
   const shown = $derived(cards.length + threaded.length);
   $effect(() => { if (threaded.length) void need(); });

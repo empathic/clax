@@ -777,8 +777,9 @@ describe("Panel for the owner's questions and inbox", () => {
     const { l, asked } = owner();
     l.questions.list([fixtures.view({ artifact: { id: AID, title: "Home", kind: "live" } }), fixtures.view({ id: "01J9Q0000000000000000000BB", artifact: { id: "8r4m0nzy3c5v", title: "Other", kind: "html" } })]);
     const { container } = render(Panel, { props: { link: l as never, now: NOW } });
+    // The block loads with the first question about the page.
+    await vi.waitFor(() => expect(container.querySelectorAll(".qcard")).toHaveLength(1));
     const cards = container.querySelectorAll(".qcard");
-    expect(cards).toHaveLength(1);
     expect(screen.getByRole("heading", { name: /Questions for you/ })).toBeTruthy();
     // First in the Page view: above the name field, the thread filters and search, and the threads.
     const follows = (el: Element) => !!(cards[0].compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING);
@@ -805,7 +806,7 @@ describe("Panel for the owner's questions and inbox", () => {
     l.questions.list([fixtures.view({ artifact: { id: AID, title: "Home", kind: "live" }, thread: { id: TID, open: true } })]);
     const { container } = render(Panel, { props: { link: l as never, now: NOW } });
     // No thread card in the panel shows its questions: the card is in the Page view's block, not a link to one.
-    expect(container.querySelectorAll(".questions .qcard")).toHaveLength(1);
+    await vi.waitFor(() => expect(container.querySelectorAll(".questions .qcard")).toHaveLength(1));
     expect(container.querySelector(".questions a.q-thread")).toBeNull();
     expect(screen.getByRole("heading", { name: /Questions for you/ }).textContent).toBe("Questions for you 1");
     const about = container.querySelector<HTMLAnchorElement>(".qcard a.about")!;

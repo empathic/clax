@@ -1411,13 +1411,14 @@ impl Hub {
         self.holds_surface("")
     }
 
-    /// Whether a surface of the person with recipient key `person` (empty:
-    /// the owner) is open: a stream of theirs, attached or detached within
-    /// [`GRACE`], holds the `questions` or the `inbox` topic (spec
-    /// 2026-10-06-agent-questions-and-inbox-design §4.4, §6.3). Reads the
-    /// topics' channels, which a stream leaves only when it unsubscribes or
-    /// is dropped (a detached one at the sweep, done here first), so no
-    /// stream is scanned.
+    /// Whether Clax can show a question to the person with recipient key
+    /// `person` (empty: the owner): a stream of theirs, attached or detached
+    /// within [`GRACE`], holds the `questions` or the `inbox` topic (spec
+    /// 2026-10-06-agent-questions-and-inbox-design §4.4, §6.3). A tab holds
+    /// them while hidden, so this is never engagement
+    /// (`clax_http::surface`). Reads the topics' channels, which a stream
+    /// leaves only when it unsubscribes or is dropped (a detached one at the
+    /// sweep, done here first), so no stream is scanned.
     pub fn holds_surface(&self, person: &str) -> bool {
         let mut g = self.lock();
         sweep_locked(&mut g, Instant::now());
@@ -1427,6 +1428,21 @@ impl Hub {
         ]
         .iter()
         .any(|c| g.chans.get(c).is_some_and(|ch| !ch.subs.is_empty()))
+    }
+
+    /// Whether the extension's side panel of the person with recipient key
+    /// `person` is open: a stream of theirs opened through the extension
+    /// gateway, attached now, holds `questions` (the panel's worker holds it
+    /// only while a panel is open, spec 2026-10-06 §9.6). Unlike
+    /// [`Hub::holds_surface`] it scans the streams.
+    pub fn holds_panel(&self, person: &str) -> bool {
+        let g = self.lock();
+        g.streams.values().any(|s| {
+            s.credential.is_some()
+                && s.detached_at.is_none()
+                && s.person.as_deref() == Some(person)
+                && s.topics.contains_key(&Topic::Questions)
+        })
     }
 
     /// The recipient keys whose `inbox` topic a stream, attached or
@@ -2707,6 +2723,36 @@ mod tests {
             hub.update(&s.id, &sam, &[], &[]),
             Err(SubError::UnknownStream)
         );
+    }
+
+    #[test]
+    fn only_an_attached_extension_stream_holding_questions_is_a_panel() {
+        let hub = Hub::new(Default::default());
+        let owner = viewer(Level::Owner, Some("u_o"));
+        let tab = hub.open_for(owner.clone(), true, None, None, Some(String::new()));
+        hub.update(&tab.id, &owner, &[Topic::Questions], &[])
+            .unwrap();
+        assert!(
+            hub.holds_surface("") && !hub.holds_panel(""),
+            "a tab is no panel"
+        );
+        let panel = hub.open_for(
+            owner.clone(),
+            true,
+            Some("cred".into()),
+            None,
+            Some(String::new()),
+        );
+        hub.update_via(&panel.id, &owner, Some("cred"), &[Topic::Inbox], &[])
+            .unwrap();
+        assert!(
+            !hub.holds_panel(""),
+            "the panel's inbox alone is not its questions"
+        );
+        hub.update_via(&panel.id, &owner, Some("cred"), &[Topic::Questions], &[])
+            .unwrap();
+        assert!(hub.holds_panel(""));
+        assert!(!hub.holds_panel("u_sam"), "another person's");
     }
 
     #[test]
