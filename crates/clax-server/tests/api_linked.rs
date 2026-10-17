@@ -216,18 +216,25 @@ impl Pair {
 }
 
 /// Polls `f` until it answers `Some`, for up to 10 s.
+/// `f`'s value once it has one, checked again every 50 ms. No wall-clock
+/// limit: a load that slows the daemons only delays it, and a condition
+/// that never holds is ended by the test runner's timeout, whose output
+/// names `what`.
 async fn until<T, F, Fut>(what: &str, mut f: F) -> T
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Option<T>>,
 {
-    for _ in 0..200 {
+    for tries in 0u32.. {
         if let Some(v) = f().await {
             return v;
         }
+        if tries == 200 {
+            eprintln!("still waiting: {what}");
+        }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    panic!("never: {what}");
+    unreachable!("the loop returns")
 }
 
 fn whole() -> Value {
@@ -1081,10 +1088,7 @@ async fn a_local_ask_on_a_linked_artifact_is_asked_there_and_answered_from_there
         )
         .await;
     assert_eq!(s, 200, "{v}");
-    let answered = tokio::time::timeout(Duration::from_secs(20), waiting)
-        .await
-        .expect("the local ask returns")
-        .unwrap();
+    let answered = waiting.await.unwrap();
     assert_eq!(answered["status"], "answered", "{answered}");
     assert_eq!(
         answered["answers"],
@@ -1184,6 +1188,36 @@ async fn the_public_copy_names_the_local_agent_the_sync_relays_for() {
         (a.len() == 1 && a[0]["name"] == "clax-sync").then_some(())
     })
     .await;
+}
+
+/// An open copy there is waited on by one poll at a time, however often
+/// the sync wakes: the remote holds at most four polls of one question.
+#[tokio::test]
+async fn an_open_copy_holds_one_poll_there_however_often_the_sync_wakes() {
+    let p = Pair::new().await;
+    let sid = p.local_agent("asker").await;
+    let q = p.ask(&sid, Some(&p.aid), "Which colour?").await;
+    let qid = q["id"].as_str().unwrap().to_string();
+    let there = p.hosted_question("Which colour?").await;
+    let rqid = there["id"].as_str().unwrap().to_string();
+    p.public.ts.wait_question_waiters(&rqid, 1).await;
+    for _ in 0..5 {
+        p.backstop().await;
+    }
+    p.sleeper.wait_for(BACKSTOP, 1).await;
+    assert_eq!(p.public.ts.question_waiters(&rqid).await, 1);
+    // Answered there, the local question closes.
+    let (s, v) = p
+        .public
+        .browser(
+            reqwest::Method::POST,
+            &format!("/api/questions/{rqid}/answer"),
+            json!({"answers": [{"selected": ["Blue"]}]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let answered = p.ask_wait(&sid, &qid, 30).await;
+    assert_eq!(answered["status"], "answered", "{answered}");
 }
 
 #[tokio::test]

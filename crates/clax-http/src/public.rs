@@ -213,6 +213,7 @@ const MAX_ANSWER_BYTES: usize = 4 * 1024 * 1024;
 
 /// One remote's REST API, as an agent of its person (or, before sign-in,
 /// as no one).
+#[derive(Clone)]
 pub struct Client {
     origin: String,
     http: reqwest::Client,

@@ -374,6 +374,7 @@ async fn run(s: AppState, rid: String, kick: Arc<Notify>, retry: Arc<Notify>) {
         acks: Vec::new(),
         agents: HashMap::new(),
         asked_in: HashMap::new(),
+        copy_waits: HashMap::new(),
     };
     let mut full = true;
     let mut backoff = Duration::ZERO;
@@ -530,6 +531,10 @@ struct Sync {
     /// The local questions whose copies were asked there, by the name of
     /// the session in `agents` they were asked in.
     asked_in: HashMap<String, String>,
+    /// A wait there on each open copy, by its question ID there: one
+    /// request each at a time (a remote holds few polls of one question),
+    /// kept across feedback polls.
+    copy_waits: HashMap<String, clax_rt::JoinHandle<()>>,
 }
 
 /// The local agent the sync names as the one it relays for on local
@@ -575,6 +580,57 @@ impl Sync {
             clax_http::public::sendable(c.end_session()).await;
         }
         self.asked_in.clear();
+        for (_, w) in self.copy_waits.drain() {
+            w.abort();
+        }
+    }
+
+    /// Starts a wait on each open copy there that has none, in the sync's
+    /// session (a keyed copy is any of the token's sessions' to read), and
+    /// ends the waits of copies no longer open here. A wait that finds its
+    /// copy no longer open there, or cannot ask, kicks a cycle and ends;
+    /// one that ran out waits again.
+    async fn wait_on_copies(&mut self) {
+        let rid = self.rid.clone();
+        let open: HashSet<String> = self
+            .s
+            .store_call(move |st| {
+                Ok(st
+                    .live_linked_questions(&rid)?
+                    .into_iter()
+                    .filter_map(|r| r.remote_question_id)
+                    .collect())
+            })
+            .await
+            .unwrap_or_default();
+        self.copy_waits.retain(|q, w| {
+            let keep = open.contains(q) && !w.is_finished();
+            if !keep {
+                w.abort();
+            }
+            keep
+        });
+        let Some(c) = self.client.as_ref() else {
+            return;
+        };
+        let sid = c.session().map(|s| s.0.clone()).unwrap_or_default();
+        for q in open {
+            if self.copy_waits.contains_key(&q) {
+                continue;
+            }
+            let (c, s, rid) = (c.clone(), self.s.clone(), self.rid.clone());
+            let path = format!("/api/sessions/{sid}/questions/{q}?wait={WAIT_S}");
+            let w = clax_rt::spawn(async move {
+                loop {
+                    match clax_http::public::sendable(c.get(&path)).await {
+                        Ok(v) if v["question"]["status"] == "open" => {}
+                        _ => break,
+                    }
+                }
+                s.linked.kick(Some(&rid));
+            });
+            self.copy_waits.insert(q, w);
+        }
     }
 
     /// The client, signed in and in the sync's session, watching every
@@ -668,38 +724,15 @@ impl Sync {
         }
         let sid = c.session().map(|s| s.0.clone()).unwrap_or_default();
         // An answer to a copy asked in a local agent's session there wakes
-        // that session, not the sync's: the sync also waits on each open
-        // copy, any of which answering starts a cycle.
-        let rid = self.rid.clone();
-        let open: Vec<String> = self
-            .s
-            .store_call(move |st| {
-                Ok(st
-                    .live_linked_questions(&rid)?
-                    .into_iter()
-                    .filter_map(|r| r.remote_question_id)
-                    .collect())
-            })
-            .await
-            .unwrap_or_default();
-        let feedback_path = format!("/api/sessions/{sid}/feedback?tier=wait&wait={WAIT_S}");
-        let feedback = Box::pin(clax_http::public::sendable(c.get(&feedback_path)));
-        let paths: Vec<String> = open
-            .iter()
-            .map(|q| format!("/api/sessions/{sid}/questions/{q}?wait={WAIT_S}"))
-            .collect();
-        let v = if paths.is_empty() {
-            feedback.await.map_err(|f| f.message)?
-        } else {
-            let waits: Vec<_> = paths
-                .iter()
-                .map(|p| Box::pin(clax_http::public::sendable(c.get(p))))
-                .collect();
-            tokio::select! {
-                v = feedback => v.map_err(|f| f.message)?,
-                _ = futures::future::select_all(waits) => return Ok(()),
-            }
-        };
+        // that session, not the sync's: each open copy has a wait of its
+        // own, which starts a cycle once the copy is no longer open there.
+        self.wait_on_copies().await;
+        let c = self.client.as_ref().expect("connected");
+        let v = clax_http::public::sendable(c.get(&format!(
+            "/api/sessions/{sid}/feedback?tier=wait&wait={WAIT_S}"
+        )))
+        .await
+        .map_err(|f| f.message)?;
         for i in v["feedback"].as_array().into_iter().flatten() {
             if let Some(t) = i["thread_id"].as_str() {
                 self.acks.push(t.to_string());
