@@ -52,6 +52,15 @@ async fn as_lan(
     next.run(req).await
 }
 
+/// The checkout's web UI (`web/dist`, Bazel's build of it under Bazel), read
+/// from disk: the tests read it as run-time data, so a web UI edit reruns
+/// them without recompiling them. Empty when the UI is not built.
+pub fn web_ui() -> Arc<dyn clax_core::embedded::FileTree> {
+    Arc::new(clax_core::embedded::DiskTree::new(
+        clax_fake_exe::repo().join("web/dist"),
+    ))
+}
+
 /// A running test daemon with its own temporary home and the fixed token `test-token`.
 pub struct TestServer {
     pub base: String,
@@ -237,9 +246,9 @@ impl TestServer {
             ))),
             vis_gen,
             test_delays: true,
-            // The build's web UI; tests of the shell serve their own with
-            // `spawn_with`, a `DiskTree` of a scratch directory.
-            web: clax_server::routes::shell::built_in(),
+            // The checkout's web UI; tests of the shell serve their own
+            // with `spawn_with_web`.
+            web: web_ui(),
         };
         f(&mut state);
         state.audit_wake.install(&state.store);

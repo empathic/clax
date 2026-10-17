@@ -1,0 +1,54 @@
+//! The web UI (`web/dist`): the shell the daemon serves and the bridge
+//! pages load.
+
+use crate::File;
+
+/// `CLAX_WEB_DIST_DIR`, set by `build.rs`: the checkout's `web/dist`, or
+/// Bazel's build of it.
+#[derive(rust_embed::RustEmbed)]
+#[folder = "$CLAX_WEB_DIST_DIR"]
+struct Assets;
+
+/// The file at `path` (relative to `web/dist`), or none.
+pub fn web_ui(path: &str) -> Option<File> {
+    Assets::get(path).map(|f| File {
+        sha256: f.metadata.sha256_hash(),
+        data: f.data,
+    })
+}
+
+/// Every file's path, sorted.
+pub fn web_ui_paths() -> Vec<String> {
+    let mut out: Vec<String> = Assets::iter().map(|p| p.into_owned()).collect();
+    out.sort();
+    out
+}
+
+/// The directory a build that reads its web UI from disk reads (a debug
+/// build that does not embed it): the binary serves it as a directory, so
+/// a rebuild under a running daemon is served at once. None when the web
+/// UI is embedded. A build that embeds names no directory: Bazel's is the
+/// build action's sandbox.
+pub fn web_ui_dir() -> Option<&'static str> {
+    #[cfg(all(debug_assertions, not(clax_embedded)))]
+    let dir = Some(env!("CLAX_WEB_DIST_DIR"));
+    #[cfg(any(not(debug_assertions), clax_embedded))]
+    let dir = None;
+    dir
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A build that embeds its web UI carries the bridge with its hash.
+    #[cfg(any(not(debug_assertions), clax_embedded))]
+    #[test]
+    fn an_embedded_build_carries_the_bridge() {
+        use sha2::Digest;
+        let f = web_ui("_clax/bridge.js").expect("the bridge is built");
+        assert_eq!(f.sha256, <[u8; 32]>::from(sha2::Sha256::digest(&f.data)));
+        assert!(web_ui_paths().iter().any(|p| p == "artifact.html"));
+        assert_eq!(web_ui_dir(), None);
+    }
+}

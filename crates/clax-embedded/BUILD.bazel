@@ -1,0 +1,33 @@
+load("//bazel:cargo.bzl", "cargo_package")
+
+# What the crate embeds (src/web.rs, src/extension.rs, src/plugins.rs): the
+# build script reads the directories, and rust-embed and include_str! read
+# the files at compile time.
+EMBEDDED = [
+    "//:marketplaces",
+    "//plugins:embedded",
+    "//plugins/pi:embedded",
+    "//web:dist",
+    "//web:dist_extension",
+]
+
+cargo_package(
+    build_script_data = EMBEDDED,
+    build_script_env = {
+        "CLAX_EXTENSION_DIST_DIR": "$(execpath //web:dist_extension)",
+        "CLAX_PLUGINS_DIR": "$${pwd}/$(BINDIR)/plugins",
+        "CLAX_WEB_DIST_DIR": "$(execpath //web:dist)",
+    },
+    # The plugin trees and other files the sources include, beside them in
+    # bazel-bin, where rules_rust places sources that compile with
+    # generated files. This is the one crate whose compile inputs are
+    # generated (the web builds), so the only one that pays for it.
+    compile_data = [
+        "//:marketplaces_bin",
+        "//plugins:embedded_bin",
+        "//plugins/pi:embedded_bin",
+        "//scripts:ensure_clax_bin",
+        "//web:dist",
+        "//web:dist_extension",
+    ],
+)

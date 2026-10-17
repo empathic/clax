@@ -11,6 +11,7 @@ CRATES = {
         "default_features": [],
         "deps": [
             "//crates/clax-core:clax_core",
+            "//crates/clax-embedded:clax_embedded",
             "//crates/clax-hooks:clax_hooks",
             "//crates/clax-mcp:clax_mcp",
             "//crates/clax-server:clax_server"
@@ -44,6 +45,20 @@ CRATES = {
         "lib": "clax_core",
         "lib_root": "src/lib.rs",
         "name": "clax-core",
+        "tests": {},
+        "version": "0.4.0"
+    },
+    "crates/clax-embedded": {
+        "bins": {},
+        "default_features": [],
+        "deps": [],
+        "dev_deps": [],
+        "edition": "2024",
+        "features": [],
+        "has_build_script": True,
+        "lib": "clax_embedded",
+        "lib_root": "src/lib.rs",
+        "name": "clax-embedded",
         "tests": {},
         "version": "0.4.0"
     },
@@ -116,7 +131,7 @@ CRATES = {
         ],
         "edition": "2024",
         "features": [],
-        "has_build_script": True,
+        "has_build_script": False,
         "lib": "clax_server",
         "lib_root": "src/lib.rs",
         "name": "clax-server",

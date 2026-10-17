@@ -404,6 +404,7 @@ dependencies = [
  "chrono",
  "clap",
  "clax-core",
+ "clax-embedded",
  "clax-fake-exe",
  "clax-hooks",
  "clax-mcp",
@@ -415,7 +416,6 @@ dependencies = [
  "reqwest",
  "rmcp",
  "rusqlite",
- "rust-embed",
  "semver",
  "serde",
  "serde_json",
@@ -458,6 +458,14 @@ dependencies = [
  "ulid",
  "unicode-security",
  "url",
+]
+
+[[package]]
+name = "clax-embedded"
+version = "0.4.0"
+dependencies = [
+ "rust-embed",
+ "sha2",
 ]
 
 [[package]]
@@ -525,7 +533,6 @@ dependencies = [
  "reqwest",
  "rmcp",
  "rusqlite",
- "rust-embed",
  "serde",
  "serde_json",
  "sha2",

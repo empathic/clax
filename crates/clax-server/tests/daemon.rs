@@ -127,7 +127,7 @@ async fn serve_picks_a_free_port_writes_info_and_shuts_down_on_request() {
         // Push off: these daemons never reach the real `codex`.
         codex: Default::default(),
         sample: std::sync::Arc::new(clax_server::sample::Sampler::disabled()),
-        web: clax_server::routes::shell::built_in(),
+        web: clax_testkit::web_ui(),
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     let info = rx.await.unwrap();
@@ -168,7 +168,7 @@ fn config_on(home: &Home, port: u16) -> ServeConfig {
         reap_interval: std::time::Duration::from_secs(60),
         codex: Default::default(),
         sample: std::sync::Arc::new(clax_server::sample::Sampler::disabled()),
-        web: clax_server::routes::shell::built_in(),
+        web: clax_testkit::web_ui(),
     }
 }
 
@@ -263,7 +263,7 @@ async fn shutdown_completes_while_an_sse_client_stays_connected() {
         // Push off: these daemons never reach the real `codex`.
         codex: Default::default(),
         sample: std::sync::Arc::new(clax_server::sample::Sampler::disabled()),
-        web: clax_server::routes::shell::built_in(),
+        web: clax_testkit::web_ui(),
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     let info = rx.await.unwrap();
@@ -305,7 +305,7 @@ async fn serve_exits_when_daemon_json_is_deleted() {
         // Push off: these daemons never reach the real `codex`.
         codex: Default::default(),
         sample: std::sync::Arc::new(clax_server::sample::Sampler::disabled()),
-        web: clax_server::routes::shell::built_in(),
+        web: clax_testkit::web_ui(),
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     rx.await.unwrap();
@@ -332,7 +332,7 @@ async fn reaper_ends_idle_sessions_whose_process_is_gone() {
         // Push off: these daemons never reach the real `codex`.
         codex: Default::default(),
         sample: std::sync::Arc::new(clax_server::sample::Sampler::disabled()),
-        web: clax_server::routes::shell::built_in(),
+        web: clax_testkit::web_ui(),
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     let info = rx.await.unwrap();

@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 /// The wrapper this binary was built with; the plugins carry copies.
-pub const LAUNCHER: &str = include_str!("../../../scripts/ensure-clax.sh");
+pub const LAUNCHER: &str = clax_embedded::LAUNCHER;
 
 /// How long a `clax --version` may take.
 pub const VERSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);

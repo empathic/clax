@@ -10,54 +10,9 @@ use axum::extract::{Path, RawQuery};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::embedded::FileTree;
-use std::sync::Arc;
 
 /// Where the bridge bundle sits in the web UI.
 const BRIDGE: &str = "_clax/bridge.js";
-
-/// The web UI this build embeds (`web/dist` at build time): a release
-/// build's, and a debug build's that embeds its files (`clax_embedded`,
-/// Bazel's).
-#[cfg(any(not(debug_assertions), clax_embedded))]
-#[derive(rust_embed::RustEmbed)]
-#[folder = "$CLAX_WEB_DIST_DIR"]
-struct Assets;
-
-/// [`Assets`] as a [`FileTree`].
-#[cfg(any(not(debug_assertions), clax_embedded))]
-struct Embedded;
-
-#[cfg(any(not(debug_assertions), clax_embedded))]
-impl FileTree for Embedded {
-    fn get(&self, path: &str) -> Option<clax_core::embedded::EmbeddedFile> {
-        <Assets as rust_embed::RustEmbed>::get(path).map(|f| clax_core::embedded::EmbeddedFile {
-            sha256: f.metadata.sha256_hash(),
-            data: f.data,
-        })
-    }
-
-    fn paths(&self) -> Vec<String> {
-        let mut out: Vec<String> = <Assets as rust_embed::RustEmbed>::iter()
-            .map(|p| p.into_owned())
-            .collect();
-        out.sort();
-        out
-    }
-}
-
-/// The web UI a daemon serves unless told otherwise
-/// (`ServeConfig::web`): the embedded one, or in a debug build that does
-/// not embed it, the checkout's `web/dist` read from disk on every request,
-/// so `just dev` serves each rebuild at once.
-pub fn built_in() -> Arc<dyn FileTree> {
-    #[cfg(all(debug_assertions, not(clax_embedded)))]
-    let web = Arc::new(clax_core::embedded::DiskTree::new(env!(
-        "CLAX_WEB_DIST_DIR"
-    )));
-    #[cfg(any(not(debug_assertions), clax_embedded))]
-    let web = Arc::new(Embedded);
-    web
-}
 
 /// A short content hash: the first 12 hex digits of a SHA-256.
 fn short_hash(sha256: &[u8; 32]) -> String {
@@ -415,24 +370,6 @@ mod tests {
         assert!(
             within(limit, std::future::pending()).await.is_none(),
             "a store slower than the limit"
-        );
-    }
-
-    /// A build that embeds its web UI versions the bridge by the embedded
-    /// bundle, with no file on disk to read.
-    #[cfg(any(not(debug_assertions), clax_embedded))]
-    #[test]
-    fn an_embedded_build_versions_the_embedded_bridge() {
-        let v = bridge_version(&Embedded);
-        assert_eq!(v.len(), 12, "{v:?}");
-        assert_eq!(
-            v,
-            short_hash(
-                &<Assets as rust_embed::RustEmbed>::get(BRIDGE)
-                    .unwrap()
-                    .metadata
-                    .sha256_hash()
-            )
         );
     }
 

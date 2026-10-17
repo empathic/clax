@@ -11,6 +11,7 @@ mod plugin_bin;
 mod plugins;
 mod remote;
 mod term;
+mod web_ui;
 
 use clap::error::ErrorKind;
 use clap::{Parser, Subcommand};

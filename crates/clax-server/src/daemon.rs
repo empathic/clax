@@ -200,9 +200,8 @@ pub struct ServeConfig {
     /// The `sample` capability's provider and settings (`clax serve` uses
     /// [`crate::sample::Sampler::from_home`] on its own environment).
     pub sample: Arc<crate::sample::Sampler>,
-    /// The web UI the daemon serves (`clax serve` uses
-    /// [`crate::routes::shell::built_in`], or a [`clax_core::embedded::DiskTree`]
-    /// of `--web-dist`).
+    /// The web UI the daemon serves (`clax serve` passes the one the binary
+    /// embeds, or a [`clax_core::embedded::DiskTree`] of `--web-dist`).
     pub web: Arc<dyn clax_core::embedded::FileTree>,
 }
 

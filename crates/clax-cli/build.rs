@@ -1,78 +1,14 @@
-//! Rebuilds the binary when the plugin tree (`src/plugins.rs`) or the
-//! Chrome extension (`src/extension_files.rs`) it embeds changes, including
-//! when a file is added. rust-embed's `include_bytes!` makes cargo track the files that existed at the last build, but not new
-//! ones, so this script names every embedded directory as well. The list is
-//! also written to `$OUT_DIR/plugin-dirs.txt` for a test to check.
-//!
-//! Also sets `CLAX_BUILD_COMMIT` (see [`build_commit`]), `CLAX_PLUGINS_DIR`
-//! (the plugin trees `src/plugins.rs` embeds: the environment's value when
-//! set, as Bazel sets it, else the checkout's `plugins/`), and
-//! `CLAX_EXTENSION_DIST_DIR`, the extension build `src/extension_files.rs`
-//! embeds: the environment's value when set (Bazel sets it to its build of
-//! the extension), else the checkout's `web/dist-extension`.
+//! Sets `CLAX_BUILD_COMMIT` (see [`build_commit`]), so a new commit
+//! recompiles this crate. The files the binary embeds are `clax-embedded`'s,
+//! whose build script names them.
 
 use std::path::{Path, PathBuf};
-
-/// The embedded roots, relative to the repository, as in `src/plugins.rs`.
-const DIRS: &[&str] = &[
-    "plugins/claude-code",
-    "plugins/clax",
-    "plugins/clax-grok",
-    "plugins/pi/src",
-    "plugins/pi/skills",
-    "plugins/pi/scripts",
-    "web/dist-extension",
-];
-const FILES: &[&str] = &[
-    "plugins/pi/package.json",
-    "plugins/pi/README.md",
-    ".claude-plugin/marketplace.json",
-    ".agents/plugins/marketplace.json",
-    ".grok-plugin/marketplace.json",
-];
-
-fn walk(repo: &Path, rel: PathBuf, out: &mut Vec<PathBuf>) {
-    let Ok(rd) = std::fs::read_dir(repo.join(&rel)) else {
-        return;
-    };
-    out.push(rel.clone());
-    let mut subs: Vec<PathBuf> = rd
-        .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-        .map(|e| rel.join(e.file_name()))
-        .collect();
-    subs.sort();
-    for s in subs {
-        walk(repo, s, out);
-    }
-}
 
 fn main() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("set by cargo"));
     let repo = manifest.join("../..");
     println!("cargo:rerun-if-changed=build.rs");
-    let mut dirs = Vec::new();
-    for d in DIRS {
-        walk(&repo, PathBuf::from(d), &mut dirs);
-    }
-    for d in &dirs {
-        println!("cargo:rerun-if-changed={}", repo.join(d).display());
-    }
-    for f in FILES {
-        println!("cargo:rerun-if-changed={}", repo.join(f).display());
-    }
-    let list: String = dirs.iter().map(|d| format!("{}\n", d.display())).collect();
-    let out = PathBuf::from(std::env::var("OUT_DIR").expect("set by cargo"));
-    std::fs::write(out.join("plugin-dirs.txt"), list).expect("OUT_DIR is writable");
     build_commit(&repo);
-    println!("cargo::rerun-if-env-changed=CLAX_PLUGINS_DIR");
-    let plugins =
-        std::env::var("CLAX_PLUGINS_DIR").unwrap_or_else(|_| format!("{}/plugins", repo.display()));
-    println!("cargo::rustc-env=CLAX_PLUGINS_DIR={plugins}");
-    println!("cargo::rerun-if-env-changed=CLAX_EXTENSION_DIST_DIR");
-    let dist = std::env::var("CLAX_EXTENSION_DIST_DIR")
-        .unwrap_or_else(|_| format!("{}/web/dist-extension/", repo.display()));
-    println!("cargo::rustc-env=CLAX_EXTENSION_DIST_DIR={dist}");
 }
 
 /// Sets `CLAX_BUILD_COMMIT`, the commit `clax` is built from: the
