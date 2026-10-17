@@ -4,13 +4,14 @@
 
 load("@aspect_rules_js//js:defs.bzl", "js_library")
 load("@rules_apple//apple:versioning.bzl", "apple_bundle_version")
-load("@rules_dart//dart:defs.bzl", "dart_analysis_config", "dart_analysis_options", "dart_binary", "dart_library")
+load("@rules_dart//dart:defs.bzl", "dart_analysis_config", "dart_analysis_options", "dart_analysis_test", "dart_binary", "dart_library")
 load("@rules_flutter//flutter:defs.bzl", "flutter_application", "flutter_library", "flutter_test")
 load("@rules_flutter//flutter:macos.bzl", "flutter_macos_app")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel/flutter:android.bzl", "flutter_fat_apk")
 load("//bazel/flutter:macos.bzl", "debug_app", "integration_main", "macos_helper")
+load("//bazel/flutter:tests.bzl", "flutter_test_suite")
 
 js_library(
     name = "kit",
@@ -49,6 +50,7 @@ flutter_library(
     name = "clax_app",
     package_name = "clax_app",
     srcs = glob(["lib/**/*.dart"]),
+    tags = ["no-dart-format"],
     deps = [
         "@clax_app_pub//:archive",
         "@clax_app_pub//:cryptography",
@@ -69,9 +71,12 @@ flutter_library(
     ],
 )
 
-# The app's unit and widget tests (`flutter test`), a target per file, each
-# against the app's sources and the files its tests read. Those that run
-# the real daemon (*_real_test.dart) get the warmed debug clax.
+# The app's unit and widget tests (`flutter test`), a test target per file,
+# //apps/clax_app:<dir>_<file>, each run in a flutter_tester of its own and
+# compiled with the other files of its directory (bazel/flutter/tests.bzl
+# says why), against the app's sources and the files its tests read. The
+# *_real_test.dart files, which run the real daemon, form a suite of their
+# own with the warmed debug clax.
 TEST_SUPPORT = glob(
     [
         "test/**/*.dart",
@@ -99,8 +104,34 @@ TEST_DATA = glob(
     "//web:contract_files",
 ]
 
-[flutter_test(
-    name = test[len("test/"):-len(".dart")].replace("/", "_"),
+REAL_TESTS = glob(["test/**/*_real_test.dart"])
+
+# {suite: its test files}: a directory's, the top level's, and the real ones.
+SUITES = {
+    "real": REAL_TESTS,
+    "root": glob(
+        ["test/*_test.dart"],
+        exclude = REAL_TESTS,
+    ),
+} | {
+    d: glob(
+        ["test/%s/**/*_test.dart" % d],
+        exclude = REAL_TESTS,
+    )
+    for d in [
+        "agent",
+        "bundle",
+        "clax",
+        "daemon",
+        "eval",
+        "home",
+        "platform",
+        "ui",
+    ]
+}
+
+[flutter_test_suite(
+    name = "tests_%s" % suite,
     size = "medium",
     package_name = "clax_app",
     srcs = TEST_SUPPORT,
@@ -115,20 +146,56 @@ TEST_DATA = glob(
     data = TEST_DATA + ([
         "//crates/clax-cli:clax",
         "//crates/clax-cli:clax_warm",
-    ] if test.endswith("_real_test.dart") else []),
-    # UNIT_TEST_ASSETS and APP_NAME, as `flutter test` sets them:
-    # flutter_test then reads an asset from disk at once, where through the
-    # engine the read would not finish within a test's fake time.
-    env = {
-        "APP_NAME": "clax_app",
-        "UNIT_TEST_ASSETS": "apps/clax_app/%s_flutter_assets" % test[len("test/"):-len(".dart")].replace("/", "_"),
-    } | ({"CLAX_TEST_BIN": "crates/clax-cli/clax"} if test.endswith("_real_test.dart") else {}),
-    main = test,
+    ] if suite == "real" else []),
+    # APP_NAME, as `flutter test` sets it beside UNIT_TEST_ASSETS
+    # (flutter_test_suite): flutter_test then reads an asset from disk at
+    # once, where through the engine the read would not finish within a
+    # test's fake time.
+    env = {"APP_NAME": "clax_app"} | ({"CLAX_TEST_BIN": "crates/clax-cli/clax"} if suite == "real" else {}),
+    names = {t: t[len("test/"):-len(".dart")].replace("/", "_") for t in files},
+    tests = files,
     deps = [
         ":clax_app",
         "@clax_app_pub//:flutter_test",
     ],
-) for test in glob(["test/**/*_test.dart"])]
+) for suite, files in SUITES.items() if files]
+
+# A test file in no suite would never run.
+[fail("%s is in no suite of SUITES (apps/clax_app/BUILD.bazel): add its directory" % t) for t in glob(["test/**/*_test.dart"]) if not [s for s in SUITES.values() if t in s]]
+
+# `flutter analyze` (analysis_options.yaml) over the app's Dart: its
+# library, and its tests, integration tests and tools as a library of their
+# own, which nothing compiles but the analysis. No format check: the app's
+# code is not `dart format`ted.
+flutter_library(
+    name = "checked_sources",
+    package_name = "clax_app",
+    srcs = glob([
+        "integration_test/*.dart",
+        "test/**/*.dart",
+        "tool/**/*.dart",
+    ]),
+    tags = [
+        "manual",
+        "no-dart-format",
+    ],
+    deps = [
+        ":clax_app",
+        "@clax_app_pub//:archive",
+        "@clax_app_pub//:cryptography",
+        "@clax_app_pub//:flutter_test",
+        "@clax_app_pub//:integration_test",
+        "@clax_app_pub//:xml",
+    ],
+)
+
+dart_analysis_test(
+    name = "dart_analyze",
+    targets = [
+        ":checked_sources",
+        ":clax_app",
+    ],
+)
 
 # The prompt's copies of the contract match it (scripts/sync-app-prompt.sh).
 sh_test(

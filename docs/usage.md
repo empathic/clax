@@ -538,10 +538,11 @@ takes the NDK from `ANDROID_NDK_HOME`, else
 tools as before; `scripts/run.sh --dry-run <recipe>` says what one would
 run.
 
-- `just app-test` runs the app's checks: `dart analyze` over every Dart
-  target (`apps/clax_app/analysis_options.yaml`), each test file of `test/`
-  as its own target (`//apps/clax_app:<dir>_<file>`; the `*_real_test.dart`
-  files against Bazel's debug `clax`), the prompt copies
+- `just app-test` runs the app's checks: `dart analyze` over the app's
+  Dart (`//apps/clax_app:dart_analyze`, by
+  `apps/clax_app/analysis_options.yaml`), each test file of `test/` as its
+  own target (`//apps/clax_app:<dir>_<file>`; the `*_real_test.dart` files
+  against Bazel's debug `clax`), the prompt copies
   (`//apps/clax_app:prompt_sync`, `scripts/sync-app-prompt.sh --check`,
   which checks that the prompt assets in `apps/clax_app/assets/prompt`
   still copy `docs/contract.md`'s "Page contract" and "Runtime

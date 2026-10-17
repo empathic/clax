@@ -218,8 +218,8 @@ macOS) and the two keys below.
 
 | Target (`//apps/clax_app:…`) | What it is | Native twin |
 |---|---|---|
-| `<dir>_<file>` (127, one per `test/**/*_test.dart`) | `flutter test` of that file; the `*_real_test.dart` ones against the warmed debug `clax` | `flutter test` |
-| (the `dart_analyze` aspect, `.bazelrc`) | `flutter analyze` over every Dart target a test run names, by `analysis_options.yaml`; any diagnostic fails | `flutter analyze` |
+| `<dir>_<file>` (127, one per `test/**/*_test.dart`) | `flutter test` of that file, in a `flutter_tester` of its own; the `*_real_test.dart` ones against the warmed debug `clax` | `flutter test` |
+| `dart_analyze` | `flutter analyze`: the app's library, and its tests, integration tests and tools (`:checked_sources`), by `analysis_options.yaml`; any diagnostic fails | `flutter analyze` |
 | `prompt_sync`, `version_sync` | the prompt's copies of the contract; pubspec.yaml's version is the one the BUILD file gives the APK and the macOS app | `scripts/sync-app-prompt.sh --check` |
 | `apk`, `apk_test` | the release APK for arm64-v8a and x86_64 (`bazel/flutter/android.bzl`), and a check of it against what Gradle makes | `flutter build apk` |
 | `macos_app`, `macos_app_test` | `clax_app.app` (a zip) with the embedded `clax` signed as a sandboxed helper (`bazel/flutter/macos.bzl`), and a check of it; macOS only | `flutter build macos` |
@@ -300,13 +300,20 @@ build's "Embed clax" phase signs it (a debug app's helper without them).
 It is ad hoc signed throughout; a Developer ID identity is a native-build
 concern (`macos/Runner/Configs/AppInfo.xcconfig`, `Signing.xcconfig`).
 
-**The tests** run `flutter_tester` as `flutter test` does, with
+**The tests** are compiled a directory at a time (`tests_<dir>_all`,
+`manual`; `bazel/flutter/tests.bzl`): a `.dill` carries the whole app and
+Flutter, 64 MB, and one per file made 7.6 GB of them, written again to the
+shared cache on every edit of the app. Each file still runs in its own
+`flutter_tester`, as under `flutter test`: the suite's entry point runs
+the file `CLAX_TEST_FILE` names, so no file sees what another left in a
+global (the test binding's HTTP override is one). They run `flutter_tester` as `flutter test` does, with
 `UNIT_TEST_ASSETS` and `APP_NAME` set as it sets them (so assets load
 within a test's fake time). A test finds the app's files and its scratch
 directory through `test/support/paths.dart`, the same under `flutter test`
 (run in `apps/clax_app`) and Bazel (run in the runfiles tree). A test file
 another test imports for its fakes is listed in `TEST_SUPPORT` in
-`apps/clax_app/BUILD.bazel`. An integration test runs in the debug app
+`apps/clax_app/BUILD.bazel`. A new test directory under `test/` is added
+to `SUITES` there. An integration test runs in the debug app
 (`debug_app`, `-c dbg`: JIT, Runner's `#if DEBUG` test-input channel,
 `DebugProfile.entitlements`), whose entry point (`integration_main`) runs
 the test and exits with its result.
@@ -408,7 +415,7 @@ Performance gates nothing in either (`just perf` measures on demand).
 | crate layers | `//scripts:crate_layers` |
 | no hard links | `//scripts:no_hard_links` (the check's own test), and `scripts/check-no-hard-links.sh` over the tracked files outside Bazel |
 | pipefail pipes | `//scripts:pipefail_pipes`, and `scripts/check-pipefail-pipes.sh` over the tracked files outside Bazel |
-| app (flutter analyze + test) | the `dart_analyze` aspect and the flutter_test targets of `//apps/clax_app`, with `:prompt_sync`, `:version_sync`, `:apk_test` and `:macos_app_test` ("The Clax app") |
+| app (flutter analyze + test) | `//apps/clax_app:dart_analyze` and the test files' targets, with `:prompt_sync`, `:version_sync`, `:apk_test` and `:macos_app_test` ("The Clax app") |
 | build app clax | `//scripts:build_app_clax` (the native script's dry runs) |
 
 Bazel adds: `scripts/bazel-sync.sh --check` first, `//scripts:bazel_gc`,
