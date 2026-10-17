@@ -1,3 +1,5 @@
+<svelte:options css="injected" />
+
 <script lang="ts">
   // The questions asked in one thread (spec
   // 2026-10-16-ask-where-attention-is-design §2), inside its card beneath
@@ -12,3 +14,7 @@
 </script>
 
 <div class="thread-q" hidden={!list.length}><QuestionList {list} {feed} here={p.aid} now={p.now} /></div>
+
+<style>
+  :global { .thread-q { margin: 8px 0 4px; } }
+</style>

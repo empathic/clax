@@ -13,7 +13,8 @@
   // mounts.
   import type { QuestionView } from "../api";
   import { relativeTime } from "../format";
-  import { TERMINAL_ESC, closedLabel, cutHeader, terminalLine } from "./model";
+  import { closedLabel, cutHeader } from "./model";
+  import { TERMINAL_ESC, terminalLine } from "./terminal";
   import { trail } from "./trail";
 
   const p: {

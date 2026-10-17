@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { view } from "./fixtures";
-import { agentLabel, answerLine, closedLabel, complete, cutHeader, emptyDraft, inThread, nextOpen, pick, previewOf, shownLabel, terminalLine, toBody, typeOther } from "./model";
+import { agentLabel, answerLine, closedLabel, complete, cutHeader, emptyDraft, inThread, nextOpen, pick, previewOf, shownLabel, toBody, typeOther } from "./model";
+import { terminalLine } from "./terminal";
 
 describe("question model", () => {
   it("tracks completeness per kind and builds the body", () => {

@@ -161,11 +161,12 @@ describe("the questions in the artifact view", () => {
     const stop = qmod.artifact(AID, { keyboardTrail: { onClear: () => () => {} }, guardedAction: (_e, _v, act) => { act(); return null; } }, stream as never);
     for (const f of stream.on.values()) f({ type: "ready" });
     await settle();
-    // The thread cards' component loads with the first question in a shown thread.
+    // The thread cards' questions load with the first question in an open thread.
     await vi.waitFor(() => { flush(); expect([...document.querySelectorAll(".thread-q-slot .qcard")].map(c => (c as HTMLElement).dataset.question)).toEqual(["QT"]); });
     expect([...document.querySelectorAll(".questions-slot .qcard")].map(c => (c as HTMLElement).dataset.question)).toEqual(["QA"]);
     expect(document.querySelector(".questions-slot h2")!.textContent).toBe("Questions for you 2");
-    expect(document.querySelector<HTMLAnchorElement>(".questions-slot a.q-thread")!.getAttribute("href")).toBe("?thread=t1");
+    // The links to threads load with the first question in an open thread.
+    await vi.waitFor(() => { flush(); expect(document.querySelector<HTMLAnchorElement>(".questions-slot a.q-thread")?.getAttribute("href")).toBe("?thread=t1"); });
     // A card mounted later gets its questions too.
     const late = document.createElement("div");
     late.className = "thread-q-slot";

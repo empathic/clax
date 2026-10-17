@@ -7,15 +7,14 @@
   // place, else the one before, else the nearest region around the list
   // that still shows: focus never drops to the page. Its styles include
   // those of the blocks that always hold a list: the sidebar's
-  // (SidebarQuestions, with its links to the threads' questions), a
-  // thread card's (ThreadQuestions) and the gallery's summary
-  // (GallerySummary), and the
+  // (SidebarQuestions) and the gallery's summary (GallerySummary), and the
   // visually hidden text of the cards and rows (the act-hint rules are the
   // theme's): a surface that shows a card or a row without a list carries
   // that rule itself.
   import type { QuestionView } from "../api";
   import type { QuestionFeed } from "./feed.svelte";
   import QuestionCard from "./QuestionCard.svelte";
+  import { later, need } from "./later.svelte";
 
   const p: { list: QuestionView[]; feed: QuestionFeed; here?: string | null; now?: Date } = $props();
   // The list's element, from its focus events (no `bind:this`: see
@@ -33,6 +32,8 @@
     const to = e.relatedTarget as Node | null;
     if (to && !box?.contains(to)) held = null;
   };
+  // The terminal card loads with the first in-terminal question shown.
+  $effect(() => { if (p.list.some(q => q.in_terminal)) void need(); });
   // A card that held focus left, and focus went nowhere: the card now in
   // its place takes it, else the one before, else the nearest shown section,
   // sidebar or main around the list (made focusable).
@@ -53,8 +54,7 @@
 <div class="qlist" onfocusin={onIn} onfocusout={onOut}>
   {#each p.list as q (q.id)}
     {#if q.in_terminal}
-      <!-- Loaded with the first in-terminal question shown. -->
-      {#await import("./TerminalCard.svelte") then { default: TerminalCard }}<TerminalCard {q} others={p.list} now={p.now} onPull={() => p.feed.pull(q.id)} />{/await}
+      {#if later.parts}<later.parts.TerminalCard {q} others={p.list} now={p.now} onPull={() => p.feed.pull(q.id)} />{/if}
     {:else}
       <QuestionCard {q} others={p.list} here={p.here} now={p.now}
         onAnswer={b => p.feed.answer(q.id, b)} onDecline={() => p.feed.decline(q.id)}
@@ -70,8 +70,6 @@
     .irow .sr, .qcard .act-hint[data-sr] { position: absolute; width: 1px; height: 1px; margin: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     .side-q { margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
     .side-q:focus { outline: none; }
-    .side-q .q-thread { display: block; margin: 0 0 8px; font: 500 13px/18px var(--font); color: var(--accent-ink); overflow-wrap: anywhere; text-underline-offset: 3px; }
-    .thread-q { margin: 8px 0 4px; }
     .inbox-sum h2 .sw { border-radius: 0 8px 8px 0; background: var(--you); }
     .inbox-sum h2 a { color: inherit; text-decoration: none; }
     .inbox-sum h2 a:hover { text-decoration: underline; text-underline-offset: 3px; }

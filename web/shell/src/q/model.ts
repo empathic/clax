@@ -80,12 +80,6 @@ export function agentLabel(agent: QAgent | null, others: (QAgent | null)[]): str
  * thread, or a resolved or deleted one). */
 export const inThread = (q: QuestionView): string | null => (q.thread?.open ? q.thread.id : null);
 
-/** An in-terminal question's line (spec 2026-10-16-ask-where-attention-is-design §3). */
-export const terminalLine = (q: QuestionView, others: (QAgent | null)[]): string => `${agentLabel(q.agent, others)} is asking you in the terminal`;
-
-/** What Ask me here cannot do for Claude Code's terminal dialog. */
-export const TERMINAL_ESC = "After Ask me here, the terminal's dialog stays open until you press Esc there.";
-
 /** What a closed question says happened. */
 export function closedLabel(q: QuestionView): string {
   switch (q.status) {

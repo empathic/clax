@@ -11,6 +11,8 @@ import type { EventStream } from "../stream";
 import InboxLink from "./InboxLink.svelte";
 import { setBadge } from "./badge";
 import type { Notifier } from "./notify";
+import { need } from "./later.svelte";
+import { inThread } from "./model";
 import { shared } from "./shared";
 import SidebarQuestions from "./SidebarQuestions.svelte";
 import { type Trail, useTrail } from "./trail";
@@ -89,42 +91,26 @@ export function artifact(aid: string, trail: Trail, stream: EventStream, doc: Do
   }
   doc.addEventListener("clax-questions-slot", onSlot);
   fill(doc.querySelector(".sidebar > .questions-slot"));
-  // Each thread card's slot (`ThreadCard`'s `.thread-q-slot`) shows the
-  // questions asked in that thread; cards come and go with the threads, so
-  // a MutationObserver finds slots added and removed. The slots' component
-  // loads with the first question asked in a thread shown here.
+  // The questions asked in each thread show inside its card
+  // (`thread-slots`), loaded (`later`) with the first asked in an open
+  // thread here.
   const { questions } = shared();
-  const threads = new Map<HTMLElement, Record<string, unknown>>();
-  let Thread: typeof import("./ThreadQuestions.svelte").default | null = null;
-  let loading = false;
+  let slots: (() => void) | null = null;
   let live = true;
-  const sweep = () => {
-    const slots = [...doc.querySelectorAll<HTMLElement>(".thread-q-slot[data-thread]")];
-    if (!Thread) {
-      if (!loading && slots.some(el => questions.byThread(el.dataset.thread!).length)) {
-        loading = true;
-        void import("./ThreadQuestions.svelte").then(m => { Thread = m.default; if (live) sweep(); });
-      }
-      return;
-    }
-    for (const el of slots) if (!threads.has(el)) threads.set(el, mount(Thread, { target: el, props: { aid, tid: el.dataset.thread! } }));
-    for (const [el, c] of threads) if (!el.isConnected) { void unmount(c); threads.delete(el); }
+  const check = () => {
+    if (slots || !questions.byArtifact(aid).some(inThread)) return;
+    slots = () => {};
+    void need().then(m => { if (live) slots = m ? m.followSlots(doc, aid) : null; });
   };
-  // Only an element added or removed can add or remove a slot.
-  const elements = (ns: NodeList) => [...ns].some(n => n.nodeType === Node.ELEMENT_NODE);
-  const watch = new MutationObserver(rs => { if (rs.some(r => elements(r.addedNodes) || elements(r.removedNodes))) sweep(); });
-  watch.observe(doc.body, { childList: true, subtree: true });
-  const unlisten = questions.listen(sweep);
-  sweep();
+  const unlisten = questions.listen(check);
+  check();
   off.push(() => {
     doc.removeEventListener("clax-questions-slot", onSlot);
     if (side) void unmount(side.c);
     side = null;
     live = false;
-    watch.disconnect();
     unlisten();
-    for (const c of threads.values()) void unmount(c);
-    threads.clear();
+    slots?.();
   }, followDot(doc, aid));
   return () => {
     for (const f of off) f();
