@@ -121,8 +121,7 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-server",
         "tests": {
-            "integration": "tests/integration.rs",
-            "web_dist": "tests/web_dist.rs"
+            "integration": "tests/integration.rs"
         },
         "version": "0.4.0"
     },

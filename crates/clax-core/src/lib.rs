@@ -8,6 +8,7 @@ pub mod clips;
 pub mod config;
 pub mod daemon;
 pub mod db;
+pub mod embedded;
 pub mod error;
 pub mod events;
 pub mod extension;

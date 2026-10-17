@@ -344,7 +344,7 @@ async fn supporting_html_files_are_wrapped_like_the_index_and_others_are_not() {
     let html = res.text().await.unwrap();
     assert_eq!(html.matches("/_clax/bridge.js").count(), 1, "{html}");
     // The bridge goes right after the doctype, before any page script.
-    let tag = bridge_tag_for(id, 1, "0.2.61", "about.html", &bridge_version());
+    let tag = bridge_tag_for(id, 1, "0.2.61", "about.html", &bridge_version(&*ts.web));
     assert!(
         html.starts_with(&format!(
             "<!doctype html>{tag}<html><head><title>About</title>"
@@ -359,7 +359,7 @@ async fn supporting_html_files_are_wrapped_like_the_index_and_others_are_not() {
         .await
         .unwrap();
     // A fragment gets the skeleton, with the bridge first in its <head>.
-    let tag = bridge_tag_for(id, 1, "0.2.61", "docs/part.htm", &bridge_version());
+    let tag = bridge_tag_for(id, 1, "0.2.61", "docs/part.htm", &bridge_version(&*ts.web));
     assert!(
         part.starts_with(&format!(
             "<!doctype html><html><head>{tag}<meta charset=utf8>"
@@ -492,7 +492,7 @@ async fn the_bridge_is_named_by_version_and_only_the_versioned_url_is_immutable_
     let ts = TestServer::spawn().await;
     let created = ts.publish("R", &[("index.html", "<p>i</p>")]).await;
     let id = created["artifact"]["id"].as_str().unwrap();
-    let v = bridge_version();
+    let v = bridge_version(&*ts.web);
     let v = v.as_str();
     let html = ts.get(&format!("/c/{id}/v/1/")).await.text().await.unwrap();
     assert!(

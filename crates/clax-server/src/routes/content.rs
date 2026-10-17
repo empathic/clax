@@ -174,7 +174,7 @@ async fn lookup(
     always_wrap: bool,
 ) -> Result<Served, ApiError> {
     let cache = s.wrap_cache.clone();
-    let bridge = bridge_version();
+    let bridge = bridge_version(&*s.web);
     // A page wrapped concurrently with a debug rebuild may keep the old
     // `?v=`; a debug build serves every bridge URL revalidated, current bytes.
     cache.follow_bridge(&bridge);

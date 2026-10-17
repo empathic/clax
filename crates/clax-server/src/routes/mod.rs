@@ -71,7 +71,7 @@ fn with_timeout(router: Router<AppState>, d: Duration) -> Router<AppState> {
 
 pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -> Router {
     // Hash the bridge bundle now, not on the first page served.
-    shell::bridge_version();
+    shell::bridge_version(&*state.web);
     let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any);
     let publish_limit = DefaultBodyLimit::max(crate::limits::PUBLISH_BODY_LIMIT);
     let asset_limit = DefaultBodyLimit::max(crate::limits::UPLOAD_BODY_LIMIT);

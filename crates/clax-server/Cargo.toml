@@ -54,8 +54,3 @@ tokio-tungstenite.workspace = true
 [[test]]
 name = "integration"
 path = "tests/integration.rs"
-
-# The tests that override the web UI directory, which is process-wide.
-[[test]]
-name = "web_dist"
-path = "tests/web_dist.rs"

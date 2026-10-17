@@ -1,29 +1,20 @@
-//! `/a/…` with the bootstrap block and the server-rendered frame, served from
-//! a web UI override (see `tests/web_dist.rs`).
+//! `/a/…` with the bootstrap block and the server-rendered frame, from a test
+//! daemon serving a scratch web UI.
 #![cfg(debug_assertions)]
 
 use clax_server::boot::FRAME_SANDBOX;
-use clax_server::routes::shell::set_web_dist;
 use clax_testkit::TestServer;
 use serde_json::{Value, json};
 
 const ENTRY: &str = include_str!("../../../web/shell/artifact.html");
 const OPEN: &str = r#"<script type="application/json" id="clax-boot">"#;
 
-/// Serves the web UI from a scratch copy of the artifact entry until the
-/// returned guard drops.
-async fn dist() -> tokio::sync::MutexGuard<'static, ()> {
-    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    let guard = crate::web_dist_lock().await;
-    let dir = DIR.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("clax-shell-boot-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("artifact.html"), ENTRY).unwrap();
-        std::fs::write(dir.join("index.html"), "<p>gallery</p>").unwrap();
-        dir
-    });
-    set_web_dist(dir.clone());
-    guard
+/// A scratch web UI: the artifact entry and a stand-in gallery.
+fn dist() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("artifact.html"), ENTRY).unwrap();
+    std::fs::write(dir.path().join("index.html"), "<p>gallery</p>").unwrap();
+    dir
 }
 
 /// The bootstrap block's text and its parsed value.
@@ -70,8 +61,8 @@ fn without_sessions(mut api: Value) -> Value {
 
 #[tokio::test]
 async fn embeds_what_the_api_answers_and_never_the_token() {
-    let _dist = dist().await;
-    let ts = TestServer::spawn().await;
+    let dist = dist();
+    let ts = TestServer::spawn_with_web(dist.path()).await;
     let created = ts.publish("Report", &[("index.html", "<p>x</p>")]).await;
     let id = created["artifact"]["id"].as_str().unwrap().to_string();
     ts.thread(&id, 1, "first").await;
@@ -108,8 +99,8 @@ async fn embeds_what_the_api_answers_and_never_the_token() {
 
 #[tokio::test]
 async fn names_no_session_and_no_clip_path() {
-    let _dist = dist().await;
-    let ts = TestServer::spawn().await;
+    let dist = dist();
+    let ts = TestServer::spawn_with_web(dist.path()).await;
     let s = ts.register_session("claude", "boot-session").await;
     let sid = s["id"].as_str().unwrap().to_string();
     let id = ts.publish_as(&sid, "Owned", "<p>x</p>").await["artifact"]["id"]
@@ -163,8 +154,8 @@ async fn names_no_session_and_no_clip_path() {
 
 #[tokio::test]
 async fn names_the_cookies_viewer_only() {
-    let _dist = dist().await;
-    let ts = TestServer::spawn().await;
+    let dist = dist();
+    let ts = TestServer::spawn_with_web(dist.path()).await;
     let id = ts.publish("V", &[("index.html", "<p>x</p>")]).await["artifact"]["id"]
         .as_str()
         .unwrap()
@@ -211,8 +202,8 @@ async fn names_the_cookies_viewer_only() {
 
 #[tokio::test]
 async fn hostile_titles_and_comments_stay_data() {
-    let _dist = dist().await;
-    let ts = TestServer::spawn().await;
+    let dist = dist();
+    let ts = TestServer::spawn_with_web(dist.path()).await;
     let title = "</script><b>x</b><!--clax:frame--><img src=x onerror=\"alert(1)\">";
     let id = ts.publish(title, &[("index.html", "<p>x</p>")]).await["artifact"]["id"]
         .as_str()
@@ -249,8 +240,8 @@ async fn hostile_titles_and_comments_stay_data() {
 
 #[tokio::test]
 async fn renders_the_frame_only_when_the_mode_is_known() {
-    let _dist = dist().await;
-    let ts = TestServer::spawn().await;
+    let dist = dist();
+    let ts = TestServer::spawn_with_web(dist.path()).await;
     let created = ts
         .publish(
             "F",
@@ -342,8 +333,8 @@ async fn renders_the_frame_only_when_the_mode_is_known() {
 
 #[tokio::test]
 async fn the_etag_covers_the_injected_bytes() {
-    let _dist = dist().await;
-    let ts = TestServer::spawn().await;
+    let dist = dist();
+    let ts = TestServer::spawn_with_web(dist.path()).await;
     let id = ts.publish("E", &[("index.html", "<p>x</p>")]).await["artifact"]["id"]
         .as_str()
         .unwrap()
@@ -389,8 +380,8 @@ async fn the_etag_covers_the_injected_bytes() {
 
 #[tokio::test]
 async fn an_unknown_artifact_gets_the_bare_entry() {
-    let _dist = dist().await;
-    let ts = TestServer::spawn().await;
+    let dist = dist();
+    let ts = TestServer::spawn_with_web(dist.path()).await;
     let res = page(
         &ts,
         "/a/7q3k9mzx2b4t",
@@ -406,8 +397,8 @@ async fn an_unknown_artifact_gets_the_bare_entry() {
 
 #[tokio::test]
 async fn a_host_the_api_refuses_gets_no_data() {
-    let _dist = dist().await;
-    let ts = TestServer::spawn().await;
+    let dist = dist();
+    let ts = TestServer::spawn_with_web(dist.path()).await;
     let id = ts
         .publish("Secret plans", &[("index.html", "<p>x</p>")])
         .await["artifact"]["id"]
@@ -477,8 +468,8 @@ async fn a_host_the_api_refuses_gets_no_data() {
 
 #[tokio::test]
 async fn no_page_may_frame_the_shell() {
-    let _dist = dist().await;
-    let ts = TestServer::spawn().await;
+    let dist = dist();
+    let ts = TestServer::spawn_with_web(dist.path()).await;
     let id = ts.publish("F", &[("index.html", "<p>x</p>")]).await["artifact"]["id"]
         .as_str()
         .unwrap()
@@ -516,8 +507,8 @@ async fn no_page_may_frame_the_shell() {
 /// 2026-10-08-multi-agent-multi-person §10).
 #[tokio::test]
 async fn boot_marks_the_owners_viewer() {
-    let _dist = dist().await;
-    let ts = TestServer::spawn().await;
+    let dist = dist();
+    let ts = TestServer::spawn_with_web(dist.path()).await;
     let id = ts.publish("V", &[("index.html", "<p>x</p>")]).await["artifact"]["id"]
         .as_str()
         .unwrap()
