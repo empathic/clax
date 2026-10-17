@@ -83,6 +83,35 @@ describe("the questions in the artifact view", () => {
     m.unmount();
   });
 
+  // Before the tests that reset modules: a card these load later must share the statically imported list's Svelte runtime.
+  it("a question whose thread is gone or resolved is a card in the sidebar block", async () => {
+    const resolved = view({ id: "QR", thread: { id: "t1", open: false } });
+    const { feed } = await feedOf([resolved]);
+    const aside = document.createElement("aside");
+    aside.className = "sidebar";
+    document.body.append(aside);
+    const m = mount(SidebarQuestions, { aid: AID, feed }, aside);
+    expect([...m.root.querySelectorAll<HTMLElement>(".qcard")].map(c => c.dataset.question)).toEqual(["QR"]);
+    expect(m.root.querySelector("a.q-thread")).toBeNull();
+    m.unmount();
+  });
+
+  it("shows an in-terminal question as a terminal card, whose Ask me here posts the pull", async () => {
+    const t = view({ id: "QN", in_terminal: true, source: "hook" });
+    const { feed } = await feedOf([t]);
+    const m = mount(SidebarQuestions, { aid: AID, feed });
+    // The terminal card loads with the first in-terminal question shown.
+    await vi.waitFor(() => { flush(); expect(m.root.querySelector<HTMLElement>(".qcard.in-terminal")?.dataset.question).toBe("QN"); });
+    const fetched = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({ question: { ...t, status: "withdrawn", pulled: true, closed_at: "2026-10-07T09:10:00.000Z" } })));
+    vi.stubGlobal("fetch", fetched);
+    await feed.pull("QN");
+    flush();
+    expect(fetched.mock.calls[0][0]).toBe("/api/questions/QN/pull");
+    expect(fetched.mock.calls[0][1]!.method).toBe("POST");
+    expect(m.root.querySelector(".qcard .closed")!.textContent).toBe("Sent to claude: it asks here next");
+    m.unmount();
+  });
+
   it("puts Inbox in the top bar, fills the sidebar's slot each time it mounts, and marks the threads controls while a question is open", async () => {
     vi.resetModules();
     const q = view();
@@ -132,7 +161,8 @@ describe("the questions in the artifact view", () => {
     const stop = qmod.artifact(AID, { keyboardTrail: { onClear: () => () => {} }, guardedAction: (_e, _v, act) => { act(); return null; } }, stream as never);
     for (const f of stream.on.values()) f({ type: "ready" });
     await settle();
-    expect([...document.querySelectorAll(".thread-q-slot .qcard")].map(c => (c as HTMLElement).dataset.question)).toEqual(["QT"]);
+    // The thread cards' component loads with the first question in a shown thread.
+    await vi.waitFor(() => { flush(); expect([...document.querySelectorAll(".thread-q-slot .qcard")].map(c => (c as HTMLElement).dataset.question)).toEqual(["QT"]); });
     expect([...document.querySelectorAll(".questions-slot .qcard")].map(c => (c as HTMLElement).dataset.question)).toEqual(["QA"]);
     expect(document.querySelector(".questions-slot h2")!.textContent).toBe("Questions for you 2");
     expect(document.querySelector<HTMLAnchorElement>(".questions-slot a.q-thread")!.getAttribute("href")).toBe("?thread=t1");
@@ -149,34 +179,6 @@ describe("the questions in the artifact view", () => {
     stop();
     flush();
     expect(document.querySelector(".thread-q-slot .qcard")).toBeNull();
-  });
-
-  it("a question whose thread is gone or resolved is a card in the sidebar block", async () => {
-    const resolved = view({ id: "QR", thread: { id: "t1", open: false } });
-    const { feed } = await feedOf([resolved]);
-    const aside = document.createElement("aside");
-    aside.className = "sidebar";
-    document.body.append(aside);
-    const m = mount(SidebarQuestions, { aid: AID, feed }, aside);
-    expect([...m.root.querySelectorAll<HTMLElement>(".qcard")].map(c => c.dataset.question)).toEqual(["QR"]);
-    expect(m.root.querySelector("a.q-thread")).toBeNull();
-    m.unmount();
-  });
-
-  it("shows an in-terminal question as a terminal card, whose Ask me here posts the pull", async () => {
-    const t = view({ id: "QN", in_terminal: true, source: "hook" });
-    const { feed } = await feedOf([t]);
-    const m = mount(SidebarQuestions, { aid: AID, feed });
-    const card = m.root.querySelector<HTMLElement>(".qcard.in-terminal")!;
-    expect(card.dataset.question).toBe("QN");
-    const fetched = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({ question: { ...t, status: "withdrawn", pulled: true, closed_at: "2026-10-07T09:10:00.000Z" } })));
-    vi.stubGlobal("fetch", fetched);
-    await feed.pull("QN");
-    flush();
-    expect(fetched.mock.calls[0][0]).toBe("/api/questions/QN/pull");
-    expect(fetched.mock.calls[0][1]!.method).toBe("POST");
-    expect(m.root.querySelector(".qcard .closed")!.textContent).toBe("Sent to claude: it asks here next");
-    m.unmount();
   });
 
   it("closes the notifications shown once nothing is left unread, as after a bulk mark", async () => {

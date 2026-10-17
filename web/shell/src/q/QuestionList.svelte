@@ -16,7 +16,6 @@
   import type { QuestionView } from "../api";
   import type { QuestionFeed } from "./feed.svelte";
   import QuestionCard from "./QuestionCard.svelte";
-  import TerminalCard from "./TerminalCard.svelte";
 
   const p: { list: QuestionView[]; feed: QuestionFeed; here?: string | null; now?: Date } = $props();
   // The list's element, from its focus events (no `bind:this`: see
@@ -54,7 +53,8 @@
 <div class="qlist" onfocusin={onIn} onfocusout={onOut}>
   {#each p.list as q (q.id)}
     {#if q.in_terminal}
-      <TerminalCard {q} others={p.list} now={p.now} onPull={() => p.feed.pull(q.id)} />
+      <!-- Loaded with the first in-terminal question shown. -->
+      {#await import("./TerminalCard.svelte") then { default: TerminalCard }}<TerminalCard {q} others={p.list} now={p.now} onPull={() => p.feed.pull(q.id)} />{/await}
     {:else}
       <QuestionCard {q} others={p.list} here={p.here} now={p.now}
         onAnswer={b => p.feed.answer(q.id, b)} onDecline={() => p.feed.decline(q.id)}

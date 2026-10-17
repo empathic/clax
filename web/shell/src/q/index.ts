@@ -13,7 +13,6 @@ import { setBadge } from "./badge";
 import type { Notifier } from "./notify";
 import { shared } from "./shared";
 import SidebarQuestions from "./SidebarQuestions.svelte";
-import ThreadQuestions from "./ThreadQuestions.svelte";
 import { type Trail, useTrail } from "./trail";
 import { followBadge, followDot } from "./wire";
 
@@ -92,24 +91,38 @@ export function artifact(aid: string, trail: Trail, stream: EventStream, doc: Do
   fill(doc.querySelector(".sidebar > .questions-slot"));
   // Each thread card's slot (`ThreadCard`'s `.thread-q-slot`) shows the
   // questions asked in that thread; cards come and go with the threads, so
-  // a MutationObserver finds slots added and removed.
+  // a MutationObserver finds slots added and removed. The slots' component
+  // loads with the first question asked in a thread shown here.
+  const { questions } = shared();
   const threads = new Map<HTMLElement, Record<string, unknown>>();
+  let Thread: typeof import("./ThreadQuestions.svelte").default | null = null;
+  let loading = false;
+  let live = true;
   const sweep = () => {
-    for (const el of doc.querySelectorAll<HTMLElement>(".thread-q-slot[data-thread]")) {
-      if (!threads.has(el)) threads.set(el, mount(ThreadQuestions, { target: el, props: { aid, tid: el.dataset.thread! } }));
+    const slots = [...doc.querySelectorAll<HTMLElement>(".thread-q-slot[data-thread]")];
+    if (!Thread) {
+      if (!loading && slots.some(el => questions.byThread(el.dataset.thread!).length)) {
+        loading = true;
+        void import("./ThreadQuestions.svelte").then(m => { Thread = m.default; if (live) sweep(); });
+      }
+      return;
     }
+    for (const el of slots) if (!threads.has(el)) threads.set(el, mount(Thread, { target: el, props: { aid, tid: el.dataset.thread! } }));
     for (const [el, c] of threads) if (!el.isConnected) { void unmount(c); threads.delete(el); }
   };
   // Only an element added or removed can add or remove a slot.
   const elements = (ns: NodeList) => [...ns].some(n => n.nodeType === Node.ELEMENT_NODE);
   const watch = new MutationObserver(rs => { if (rs.some(r => elements(r.addedNodes) || elements(r.removedNodes))) sweep(); });
   watch.observe(doc.body, { childList: true, subtree: true });
+  const unlisten = questions.listen(sweep);
   sweep();
   off.push(() => {
     doc.removeEventListener("clax-questions-slot", onSlot);
     if (side) void unmount(side.c);
     side = null;
+    live = false;
     watch.disconnect();
+    unlisten();
     for (const c of threads.values()) void unmount(c);
     threads.clear();
   }, followDot(doc, aid));
