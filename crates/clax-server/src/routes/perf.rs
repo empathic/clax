@@ -7,15 +7,15 @@
 //! - `GET /api/admin/perf/verify`: how long the gateway's latest signature
 //!   verifications took ([`VerifyTimes`]), the gate's `sig_verify_us`.
 
-use crate::auth::RequireToken;
-use crate::error::ApiError;
-use crate::state::AppState;
 use axum::{
     Json,
     extract::{RawQuery, State},
     http::StatusCode,
 };
 use clax_core::perf::Calibration;
+use clax_http::auth::RequireToken;
+use clax_http::error::ApiError;
+use clax_http::state::AppState;
 use serde_json::{Value, json};
 
 /// Runs the calibration read once and answers `{"ms": <milliseconds>}`,
@@ -28,7 +28,7 @@ use serde_json::{Value, json};
 /// itself is admitted: the token narrowed with `?as_level=` (as an agent's
 /// db tools narrow it) is refused with 403.
 pub async fn calibrate(
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
     State(s): State<AppState>,
     RawQuery(q): RawQuery,
@@ -67,7 +67,7 @@ pub async fn calibrate(
 /// "median_us": <µs or null>}`: the gateway's latest signature
 /// verifications ([`VerifyTimes`]).
 pub async fn verify_times(
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
     State(s): State<AppState>,
 ) -> Json<Value> {

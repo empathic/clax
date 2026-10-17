@@ -1,15 +1,5 @@
 //! REST routes for artifacts and versions.
 
-use crate::agent::{Agent, ArtifactsList, TokenOrAgent, page_marker, person_agent_session};
-use crate::error::ApiError;
-use crate::headers::SESSION_HEADER;
-use crate::headers::parse_id;
-use crate::state::AppState;
-use crate::views::artifact::LivePart;
-use crate::views::artifact::live_part;
-use crate::views::artifact::strip_sessions;
-use crate::views::artifact::with_owner;
-use crate::views::thread::VisFor;
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::rejection::PathRejection;
@@ -24,6 +14,16 @@ use clax_core::model::Session;
 use clax_core::publish::{PublishRequest, require_title, validate};
 use clax_core::store::live::LivePage;
 use clax_core::{ArtifactId, CoreError, Event, MetaPatch, Participants, Store};
+use clax_http::agent::{Agent, ArtifactsList, TokenOrAgent, page_marker, person_agent_session};
+use clax_http::error::ApiError;
+use clax_http::headers::SESSION_HEADER;
+use clax_http::headers::parse_id;
+use clax_http::state::AppState;
+use clax_http::views::artifact::LivePart;
+use clax_http::views::artifact::live_part;
+use clax_http::views::artifact::strip_sessions;
+use clax_http::views::artifact::with_owner;
+use clax_http::views::thread::VisFor;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -168,7 +168,7 @@ pub struct ListQuery {
 /// token, no session ID is included. With `?artifact=<aid>`, that artifact
 /// alone, or none when it is not live (400 for a malformed ID). Live pages
 /// are left out for a caller that may not see them
-/// ([`crate::live_access::sees_live_pages`]), and for a person's agent every
+/// ([`clax_http::live_access::sees_live_pages`]), and for a person's agent every
 /// artifact its rights do not let it read, answered as if it did not
 /// exist. An agent channel's fields are filtered for its reader (spec
 /// §8.3, O9).
@@ -180,7 +180,7 @@ pub async fn list(
     q: Result<Query<ListQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
-    let local = crate::live_access::sees_live_pages(&headers, &extensions, &s.token);
+    let local = clax_http::live_access::sees_live_pages(&headers, &extensions, &s.token);
     let reads = a.read_rights();
     let vf = VisFor::of(&a.caller, &s);
     let artifacts = match q.artifact.as_deref().map(parse_id).transpose()? {
@@ -305,7 +305,7 @@ pub async fn list(
 /// the answer is filtered for an agent channel's reader.
 pub async fn create(
     State(s): State<AppState>,
-    TokenOrAgent(a): TokenOrAgent<crate::agent::ArtifactsCreate>,
+    TokenOrAgent(a): TokenOrAgent<clax_http::agent::ArtifactsCreate>,
     audit: AuditCtx,
     headers: HeaderMap,
     req: Result<JsonBytes, JsonRejection>,
@@ -356,9 +356,9 @@ pub async fn create(
 /// Who publishes for `caller` (spec §8.2): a person's agent's person (none
 /// for a grant of the owner's row); `None` otherwise, which takes the
 /// publishing session's person.
-fn publisher(caller: &crate::auth::Caller) -> Option<String> {
+fn publisher(caller: &clax_http::auth::Caller) -> Option<String> {
     match caller {
-        crate::auth::Caller::PersonAgent { person, .. } => person.clone(),
+        clax_http::auth::Caller::PersonAgent { person, .. } => person.clone(),
         _ => None,
     }
 }
@@ -367,17 +367,17 @@ fn publisher(caller: &crate::auth::Caller) -> Option<String> {
 /// filtered for an agent channel's reader. Without the token, no session ID
 /// is included. From a browser with a viewer
 /// (the owner for the owner cookie, else the viewer cookie's; see
-/// [`crate::identity`]), also that viewer's `attention`, and the response is
+/// [`clax_http::identity`]), also that viewer's `attention`, and the response is
 /// private to the cookie.
 pub async fn get(
     State(s): State<AppState>,
-    a: Agent<crate::agent::ArtifactsGet>,
+    a: Agent<clax_http::agent::ArtifactsGet>,
     extensions: axum::http::Extensions,
     headers: HeaderMap,
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let id = parse_id(&path(aid)?)?;
-    let who = crate::identity::Identity::from_parts(&headers, &extensions, &s.token);
+    let who = clax_http::identity::Identity::from_parts(&headers, &extensions, &s.token);
     let working = s.working.for_artifact(id.as_str());
     let has_viewer = who.owner_browser() || who.cookie.is_some();
     let vf = VisFor::of(&a.caller, &s);
@@ -443,12 +443,12 @@ pub struct PatchBody {
 /// (spec 2026-10-08 §9.6).
 pub async fn presence(
     State(s): State<AppState>,
-    a: Agent<crate::agent::Presence>,
+    a: Agent<clax_http::agent::Presence>,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(p)?)?;
     let reg = s.presence.clone();
-    let vf = crate::views::thread::VisFor::of(&a.caller, &s);
+    let vf = clax_http::views::thread::VisFor::of(&a.caller, &s);
     let people = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
@@ -465,7 +465,7 @@ pub async fn presence(
 /// agent channel's reader.
 pub async fn patch(
     State(s): State<AppState>,
-    a: TokenOrAgent<crate::agent::ArtifactsPatch>,
+    a: TokenOrAgent<clax_http::agent::ArtifactsPatch>,
     headers: HeaderMap,
     audit: AuditCtx,
     aid: Result<Path<String>, PathRejection>,
@@ -477,7 +477,7 @@ pub async fn patch(
     // Who sets the text fields (spec §8.2): a person's agent's person, else
     // the owner; a page's patch also carries its page's authors.
     let by = match &a.0.caller {
-        crate::auth::Caller::PersonAgent { person, .. } => {
+        clax_http::auth::Caller::PersonAgent { person, .. } => {
             clax_core::visibility::Author::of_token(person.as_deref())
         }
         _ => clax_core::visibility::Author::Owner,
@@ -519,7 +519,7 @@ pub async fn patch(
 /// `no_session`), as it writes.
 pub async fn delete(
     State(s): State<AppState>,
-    a: TokenOrAgent<crate::agent::ArtifactsDelete>,
+    a: TokenOrAgent<clax_http::agent::ArtifactsDelete>,
     audit: AuditCtx,
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<StatusCode, ApiError> {
@@ -550,7 +550,7 @@ pub async fn delete(
 /// without the token, no session ID.
 pub async fn list_versions(
     State(s): State<AppState>,
-    a: Agent<crate::agent::VersionsList>,
+    a: Agent<clax_http::agent::VersionsList>,
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
@@ -575,7 +575,7 @@ pub async fn list_versions(
 /// someone it has not approved stays withheld.
 pub async fn publish(
     State(s): State<AppState>,
-    TokenOrAgent(a): TokenOrAgent<crate::agent::Publish>,
+    TokenOrAgent(a): TokenOrAgent<clax_http::agent::Publish>,
     audit: AuditCtx,
     headers: HeaderMap,
     aid: Result<Path<String>, PathRejection>,
@@ -666,7 +666,7 @@ pub async fn publish(
 /// no session ID.
 pub async fn get_version(
     State(s): State<AppState>,
-    a: Agent<crate::agent::VersionGet>,
+    a: Agent<clax_http::agent::VersionGet>,
     params: Result<Path<(String, u32)>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let (aid, n) = path(params)?;
@@ -693,7 +693,7 @@ pub async fn get_version(
 /// channel's reader may not see left out (`files_withheld`).
 pub async fn files(
     State(s): State<AppState>,
-    a: Agent<crate::agent::FilesList>,
+    a: Agent<clax_http::agent::FilesList>,
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;

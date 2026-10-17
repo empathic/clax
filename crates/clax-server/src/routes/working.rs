@@ -1,19 +1,19 @@
 //! Working routes (spec §6, §10 "Working").
 
 use super::artifacts::{body, path};
-use crate::agent::TokenOrAgent;
-use crate::audit::DeferredAudit;
-#[cfg(debug_assertions)]
-use crate::auth::RequireToken;
-use crate::error::ApiError;
-use crate::headers::parse_id;
-use crate::state::AppState;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use clax_core::model::Session;
 use clax_core::working::{Actor, End, Ended, MAX_WORKING_THREADS, SetWorking, clean_message};
 use clax_core::{ArtifactId, CoreError, Store};
+use clax_http::agent::TokenOrAgent;
+use clax_http::audit::DeferredAudit;
+#[cfg(debug_assertions)]
+use clax_http::auth::RequireToken;
+use clax_http::error::ApiError;
+use clax_http::headers::parse_id;
+use clax_http::state::AppState;
 use clax_realtime::working::settle;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -90,7 +90,7 @@ pub struct SetBody {
 /// record records `working.start` as the session's agent.
 pub async fn put(
     State(s): State<AppState>,
-    TokenOrAgent(a): TokenOrAgent<crate::agent::WorkingPut>,
+    TokenOrAgent(a): TokenOrAgent<clax_http::agent::WorkingPut>,
     audit: DeferredAudit,
     p: Result<Path<(String, String)>, PathRejection>,
     req: Result<Json<SetBody>, JsonRejection>,
@@ -144,7 +144,7 @@ pub struct ClearQuery {
 /// `finished` inbox item; it records `working.stop` as the session's agent.
 pub async fn delete(
     State(s): State<AppState>,
-    TokenOrAgent(a): TokenOrAgent<crate::agent::WorkingDelete>,
+    TokenOrAgent(a): TokenOrAgent<clax_http::agent::WorkingDelete>,
     audit: DeferredAudit,
     p: Result<Path<(String, String)>, PathRejection>,
     q: Result<Query<ClearQuery>, QueryRejection>,
@@ -179,7 +179,7 @@ pub async fn delete(
 /// `GET /api/sessions/<sid>/working` (token): `{working}` with session fields.
 pub async fn for_session(
     State(s): State<AppState>,
-    _a: TokenOrAgent<crate::agent::WorkingForSession>,
+    _a: TokenOrAgent<clax_http::agent::WorkingForSession>,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let sid = path(p)?;
@@ -196,20 +196,20 @@ pub async fn for_session(
 /// `GET /api/working` (token): `{working}`, every live record with its
 /// session and artifact (the working roster), newest `started_at` first.
 /// Live pages are left out for a caller that may not see them
-/// ([`crate::live_access::sees_live_pages`]); for a person's agent, so is every
+/// ([`clax_http::live_access::sees_live_pages`]); for a person's agent, so is every
 /// artifact it may not read, and the session of another credential is not
 /// named (spec §6.7). Each message is filtered for an agent channel's
 /// reader.
 pub async fn roster(
     State(s): State<AppState>,
-    TokenOrAgent(a): TokenOrAgent<crate::agent::WorkingRoster>,
+    TokenOrAgent(a): TokenOrAgent<clax_http::agent::WorkingRoster>,
     extensions: axum::http::Extensions,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    let local = crate::live_access::sees_live_pages(&headers, &extensions, &s.token);
+    let local = clax_http::live_access::sees_live_pages(&headers, &extensions, &s.token);
     let reads = a.read_rights();
     let grant = a.grant().map(str::to_string);
-    let vf = crate::views::thread::VisFor::of(&a.caller, &s);
+    let vf = clax_http::views::thread::VisFor::of(&a.caller, &s);
     let records = s.working.roster();
     let list = s
         .store_call(move |st| {
@@ -247,12 +247,12 @@ pub async fn roster(
 /// a session; each message filtered for an agent channel's reader.
 pub async fn for_artifact(
     State(s): State<AppState>,
-    a: crate::agent::Agent<crate::agent::WorkingForArtifact>,
+    a: clax_http::agent::Agent<clax_http::agent::WorkingForArtifact>,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(p)?)?;
     let w = s.working.clone();
-    let vf = crate::views::thread::VisFor::of(&a.caller, &s);
+    let vf = clax_http::views::thread::VisFor::of(&a.caller, &s);
     let list = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
@@ -266,7 +266,7 @@ pub async fn for_artifact(
 /// `POST /api/sessions/<sid>/working/renew` (W): `{renewed}`.
 pub async fn renew(
     State(s): State<AppState>,
-    _a: TokenOrAgent<crate::agent::WorkingRenew>,
+    _a: TokenOrAgent<clax_http::agent::WorkingRenew>,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let sid = path(p)?;
@@ -285,7 +285,7 @@ pub async fn renew(
 /// records `working.stop` (reason `explicit`) as the session's agent.
 pub async fn end(
     State(s): State<AppState>,
-    _a: TokenOrAgent<crate::agent::WorkingEnd>,
+    _a: TokenOrAgent<clax_http::agent::WorkingEnd>,
     audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -315,7 +315,7 @@ pub struct SkewBody {
 #[cfg(debug_assertions)]
 pub async fn skew(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
     req: Result<Json<SkewBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {

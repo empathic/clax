@@ -1029,7 +1029,7 @@ fn every_route() -> Vec<(String, String, bool)> {
             "viewers" => include_str!("../src/routes/viewers.rs"),
             "watches" => include_str!("../src/routes/watches.rs"),
             "working" => include_str!("../src/routes/working.rs"),
-            "agent" => include_str!("../src/agent.rs"),
+            "agent" => include_str!("../../clax-http/src/agent.rs"),
             "perf" => return None,
             _ => return None,
         })
@@ -1342,7 +1342,7 @@ async fn the_token_never_names_a_grants_session_on_any_session_route() {
 #[tokio::test]
 async fn the_extractor_refuses_a_persons_agent_on_an_owner_agents_route() {
     use axum::extract::FromRequestParts;
-    use clax_server::agent::{Agent, FeedbackPoll, ThreadsAll, VerifiedGrant};
+    use clax_http::agent::{Agent, FeedbackPoll, ThreadsAll, VerifiedGrant};
     let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
     let s2 = slot.clone();
     let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), move |st| {
@@ -1375,10 +1375,10 @@ async fn the_extractor_refuses_a_persons_agent_on_an_owner_agents_route() {
         r.err().map(|e| e.code)
     );
     // Every Filtered route's filter is live.
-    for (_, _, need) in clax_server::agent::ROUTES {
-        if need.class == clax_server::agent::Class::Filtered {
+    for (_, _, need) in clax_http::agent::ROUTES {
+        if need.class == clax_http::agent::Class::Filtered {
             assert!(
-                clax_server::agent::FILTERED_LIVE.contains(&need.name),
+                clax_http::agent::FILTERED_LIVE.contains(&need.name),
                 "{}",
                 need.name
             );

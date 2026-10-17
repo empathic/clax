@@ -2895,10 +2895,10 @@ people, or stream events, refuse the owner's agents too, with 403
 **Grant** routes are the grant flow. `Right` is checked at the artifact
 the path names (403 `not_permitted`). A thread write other than creating
 a thread also needs `clax-comments` `read` there. This table is generated
-from the route declarations (`agent::ROUTE_NEEDS` and the router), and a
-test fails when it differs:
+from the route declarations (`clax_http::agent::ROUTE_NEEDS` and the
+router), and a test fails when it differs:
 
-<!-- route-table:begin: generated from agent::ROUTE_NEEDS by the test the_contract_route_table_is_the_declared_one in crates/clax-server/src/routes/mod.rs; CLAX_UPDATE_GOLDEN=1 rewrites it -->
+<!-- route-table:begin: generated from clax_http::agent::ROUTE_NEEDS by the test the_contract_route_table_is_the_declared_one in crates/clax-server/src/routes/mod.rs; CLAX_UPDATE_GOLDEN=1 rewrites it -->
 | Route | Class | Right | Body limit | A person's agents |
 |---|---|---|---|---|
 | `GET /api/sessions` | Own | none | 2 MiB | yes |

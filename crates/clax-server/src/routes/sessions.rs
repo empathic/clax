@@ -1,18 +1,18 @@
 //! REST routes for harness sessions.
 
 use super::artifacts::{body, path};
-use crate::agent::{
-    SessionsGet, SessionsJoin, SessionsList, SessionsPatch, SessionsRegister, TokenOrAgent,
-};
-use crate::audit::DeferredAudit;
-use crate::error::ApiError;
-use crate::state::AppState;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use clax_core::model::Session;
 use clax_core::{CoreError, JoinSession, NameSource, Proved, RegisterSession};
+use clax_http::agent::{
+    SessionsGet, SessionsJoin, SessionsList, SessionsPatch, SessionsRegister, TokenOrAgent,
+};
+use clax_http::audit::DeferredAudit;
+use clax_http::error::ApiError;
+use clax_http::state::AppState;
 use clax_realtime::push::CodexPush;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -237,7 +237,7 @@ pub async fn patch(
             };
             if b.ended {
                 let ended = st.end_session_touched(&audit, &id)?;
-                crate::state::sessions_ended(
+                clax_http::state::sessions_ended(
                     &state,
                     &ctx,
                     st,
@@ -293,7 +293,7 @@ pub async fn get(
 ) -> Result<Json<Value>, ApiError> {
     let id = path(id)?;
     let rights = match &a.caller {
-        crate::auth::Caller::PersonAgent { rights, .. } => rights.to_json(),
+        clax_http::auth::Caller::PersonAgent { rights, .. } => rights.to_json(),
         _ => clax_core::rights::Rights::full().to_json(),
     };
     let (session, codex_home, push_error, person) = s
@@ -378,7 +378,7 @@ fn push_info(
 /// a request with the token.
 pub async fn push_status(
     State(s): State<AppState>,
-    d: crate::agent::DeniedToGrants,
+    d: clax_http::agent::DeniedToGrants,
 ) -> Json<Value> {
     let mut codex = json!({
         "available": s.codex.available(),
@@ -435,7 +435,7 @@ fn clax_tool(bare: &str) -> bool {
 /// [`ToolCallIdReport::validate`]: clax_core::audit::ToolCallIdReport::validate
 pub async fn tool_call_ids(
     State(s): State<AppState>,
-    _a: crate::agent::TokenOrAgent<crate::agent::ToolCallIdReport>,
+    _a: clax_http::agent::TokenOrAgent<clax_http::agent::ToolCallIdReport>,
     audit: DeferredAudit,
     id: Result<Path<String>, PathRejection>,
     req: Result<Json<clax_core::audit::ToolCallIdReport>, JsonRejection>,

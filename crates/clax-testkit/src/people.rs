@@ -150,7 +150,7 @@ impl World {
     }
 
     /// [`World::two_people`] on a daemon whose state `f` configures first.
-    pub async fn two_people_with(f: impl FnOnce(&mut clax_server::state::AppState)) -> World {
+    pub async fn two_people_with(f: impl FnOnce(&mut clax_http::state::AppState)) -> World {
         let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), f).await;
         let sam = ts.connect_person("Sam", "clax:collaborator").await;
         let mia = ts.connect_person("Mia", "clax:collaborator").await;
@@ -744,7 +744,7 @@ fn body_for(method: &str, path: &str, thread: &str) -> Option<Value> {
 fn denied(method: &str, path: &str) -> bool {
     let path = path.split('?').next().unwrap();
     let parts: Vec<&str> = path.split('/').collect();
-    !clax_server::agent::ROUTES.iter().any(|(m, p, _)| {
+    !clax_http::agent::ROUTES.iter().any(|(m, p, _)| {
         let pattern: Vec<&str> = p.split('/').collect();
         let same = |a: &str, b: &str| {
             a == b || (a.starts_with('{') && !a.starts_with("{*")) || {

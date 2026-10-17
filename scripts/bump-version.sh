@@ -23,7 +23,7 @@ def sub(path, pattern, count=1):
     pending[path] = out
 
 sub("Cargo.toml", r'(\[workspace\.package\]\s*\nversion\s*=\s*")([^"]+)(")')
-for crate in ("clax-core", "clax-server", "clax-cli", "clax-mcp", "clax-hooks", "clax-testkit", "clax-embedded", "clax-commands", "clax-sample", "clax-realtime"):
+for crate in ("clax-core", "clax-server", "clax-cli", "clax-mcp", "clax-hooks", "clax-testkit", "clax-embedded", "clax-commands", "clax-sample", "clax-realtime", "clax-http"):
     sub("Cargo.lock", r'(^name = "%s"\nversion = ")([^"]+)(")' % re.escape(crate))
 for f in ("plugins/claude-code/.claude-plugin/plugin.json", "plugins/clax/.codex-plugin/plugin.json", "plugins/clax-grok/.grok-plugin/plugin.json", "plugins/pi/package.json"):
     sub(f, r'(^  "version": ")([^"]+)(")')

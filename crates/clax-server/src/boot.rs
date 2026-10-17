@@ -3,11 +3,11 @@
 //! the frame mode is known, the content frame. String injection at comment
 //! markers the shell build keeps; no template engine.
 
-use crate::error::ApiError;
 use crate::shell_route::ShellRoute;
-use crate::state::AppState;
-use crate::views::artifact::with_owner;
 use axum::http::{HeaderMap, header};
+use clax_http::error::ApiError;
+use clax_http::state::AppState;
+use clax_http::views::artifact::with_owner;
 use serde_json::{Value, json};
 
 /// The frame's sandbox, as `FRAME_SANDBOX` in `web/shell/src/view/frame-host.ts`.
@@ -149,7 +149,7 @@ fn frame_origin(headers: &HeaderMap, id: &str) -> Option<Option<String>> {
 /// the bootstrap holds nothing that names a session.
 fn without_sessions(artifact: Value, versions: Value) -> Value {
     let mut v = json!({"artifact": artifact, "versions": versions});
-    crate::views::artifact::strip_sessions(&mut v);
+    clax_http::views::artifact::strip_sessions(&mut v);
     v
 }
 
@@ -158,7 +158,7 @@ fn without_sessions(artifact: Value, versions: Value) -> Value {
 /// from `GET /api/artifacts/<id>` (less its session IDs),
 /// `GET /api/artifacts/<id>/threads?include_resolved=true` without the token
 /// (no `clip_path`), and `GET /api/viewers/me` for the request's existing
-/// viewer (the owner's for the owner cookie, see [`crate::identity`]): never
+/// viewer (the owner's for the owner cookie, see [`clax_http::identity`]): never
 /// the token or a cookie, and no viewer is created (but the owner's row,
 /// made on first use).
 pub async fn assemble(
@@ -170,7 +170,7 @@ pub async fn assemble(
     let ShellRoute::Artifact { id, version, file } = route else {
         return Ok(None);
     };
-    let who = crate::identity::Identity::of(headers, &s.token, peer);
+    let who = clax_http::identity::Identity::of(headers, &s.token, peer);
     let owner_browser = who.is_owner();
     let codex = s.feedback_ctx().codex_push();
     let lookup = id.clone();
@@ -199,7 +199,7 @@ pub async fn assemble(
             let mut cursor: Option<String> = None;
             loop {
                 let (page, next) = st.list_threads(&lookup, true, cursor.as_deref(), 200)?;
-                threads.extend(crate::views::thread::thread_views_as(
+                threads.extend(clax_http::views::thread::thread_views_as(
                     st, &page, codex, false, &reads,
                 )?);
                 match next {
@@ -216,7 +216,7 @@ pub async fn assemble(
                 owner.as_ref(),
                 &working,
                 &st.participants(&lookup)?,
-                crate::views::artifact::live_part(st, &a)?.as_ref(),
+                clax_http::views::artifact::live_part(st, &a)?.as_ref(),
             );
             Ok(Some((a, artifact, versions, threads, viewer, attention)))
         })

@@ -7,10 +7,6 @@
 use super::live::{
     OwnerWrite, RefileCtx, clean_title, mover, origin_of, owner_reads, page_url, target_page,
 };
-use crate::error::ApiError;
-use crate::identity::Identity;
-use crate::state::AppState;
-use crate::viewer::SameOrigin;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{Query, State};
@@ -18,6 +14,10 @@ use clax_core::audit::AuditCtx;
 use clax_core::store::joined::JoinedSite;
 use clax_core::store::site::{KIND_JOIN, KIND_MERGE, MAX_REFILE, MoveBy, Refile};
 use clax_core::{Event, Store};
+use clax_http::error::ApiError;
+use clax_http::identity::Identity;
+use clax_http::state::AppState;
+use clax_http::viewer::SameOrigin;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -40,7 +40,7 @@ pub(crate) fn site_view(site: &JoinedSite) -> Value {
 /// not finished has still to re-file); one entry per joined site.
 pub async fn list(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
 ) -> Result<Json<Value>, ApiError> {
@@ -89,7 +89,7 @@ pub struct SuggestQuery {
 /// within a day) for. Never writes.
 pub async fn suggest(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
     q: Result<Query<SuggestQuery>, QueryRejection>,
@@ -235,7 +235,7 @@ fn join_batch(
 /// `unknown_site`, `too_many_origins`, `too_many_rules`.
 pub async fn join(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     OwnerWrite(who): OwnerWrite,
     audit: AuditCtx,
@@ -287,7 +287,7 @@ pub struct SplitBody {
 /// 409 `joining` while the site has a join to finish.
 pub async fn split(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     _w: OwnerWrite,
     audit: AuditCtx,
@@ -334,7 +334,7 @@ pub struct AnswerBody {
 /// `same_origin`.
 pub async fn answer(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     _w: OwnerWrite,
     audit: AuditCtx,

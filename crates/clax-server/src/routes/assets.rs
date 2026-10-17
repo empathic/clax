@@ -1,11 +1,6 @@
 //! Asset upload, listing, deletion, and the /_blob/<id> byte route.
 
-use crate::agent::{Agent, AssetsUpload, DeniedToGrants, TokenOrAgent};
-use crate::error::ApiError;
-use crate::headers::parse_id;
-use crate::live_access::SeesLive;
 use crate::routes::artifacts::path;
-use crate::state::AppState;
 use axum::Json;
 use axum::body::Body;
 use axum::extract::multipart::MultipartRejection;
@@ -15,6 +10,11 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::CoreError;
 use clax_core::audit::AuditCtx;
+use clax_http::agent::{Agent, AssetsUpload, DeniedToGrants, TokenOrAgent};
+use clax_http::error::ApiError;
+use clax_http::headers::parse_id;
+use clax_http::live_access::SeesLive;
+use clax_http::state::AppState;
 use serde_json::{Value, json};
 
 pub(crate) fn multipart_error(status: StatusCode, message: String) -> ApiError {
@@ -53,9 +53,9 @@ pub async fn upload(
             "a live page keeps only its snapshots; it takes no assets",
         ));
     }
-    crate::agent::person_agent_session(&a.0.caller)?;
-    let via_page = crate::agent::page_marker(&a.0.caller, &headers)?;
-    let vf = crate::views::thread::VisFor::of(&a.0.caller, &s);
+    clax_http::agent::person_agent_session(&a.0.caller)?;
+    let via_page = clax_http::agent::page_marker(&a.0.caller, &headers)?;
+    let vf = clax_http::views::thread::VisFor::of(&a.0.caller, &s);
     let mut mp = mp.map_err(|e| multipart_error(e.status(), e.body_text()))?;
     while let Some(field) = mp
         .next_field()
@@ -75,7 +75,7 @@ pub async fn upload(
             .await
             .map_err(|e| multipart_error(e.status(), e.body_text()))?;
         let person = match &a.0.caller {
-            crate::auth::Caller::PersonAgent { person, .. } => person.clone(),
+            clax_http::auth::Caller::PersonAgent { person, .. } => person.clone(),
             _ => None,
         };
         let vf = vf.clone();
@@ -109,12 +109,12 @@ pub async fn upload(
 /// its name and what its bytes decide withheld (spec §8.3).
 pub async fn list(
     State(s): State<AppState>,
-    a: Agent<crate::agent::AssetsList>,
+    a: Agent<clax_http::agent::AssetsList>,
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let aid = path(aid)?;
     let id = parse_id(&aid)?;
-    let vf = crate::views::thread::VisFor::of(&a.caller, &s);
+    let vf = clax_http::views::thread::VisFor::of(&a.caller, &s);
     let assets = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
@@ -129,11 +129,11 @@ pub async fn list(
 /// `no_session`), as it uploads.
 pub async fn delete(
     State(s): State<AppState>,
-    a: TokenOrAgent<crate::agent::AssetsDelete>,
+    a: TokenOrAgent<clax_http::agent::AssetsDelete>,
     audit: AuditCtx,
     params: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<StatusCode, ApiError> {
-    crate::agent::person_agent_session(&a.0.caller)?;
+    clax_http::agent::person_agent_session(&a.0.caller)?;
     let (aid, asset_id) = path(params)?;
     let id = parse_id(&aid)?;
     s.store_call(move |st| match st.get_asset(&asset_id)? {

@@ -1,6 +1,6 @@
 //! The latency gate's state the daemon keeps: the calibration database
 //! and the gateway's latest signature-verification times. The routes that
-//! read them are `crate::routes::perf`.
+//! read them are `clax_server::routes::perf`.
 
 use clax_core::perf::Calibration;
 use std::collections::VecDeque;

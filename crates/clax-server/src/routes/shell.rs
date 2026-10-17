@@ -2,14 +2,14 @@
 //! shell's two entries (the gallery and the artifact view) and static
 //! assets.
 
-use crate::error::ApiError;
-use crate::http_cache::{self, IMMUTABLE, REVALIDATE};
 use crate::routes::artifacts::path;
 use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, RawQuery};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::embedded::FileTree;
+use clax_http::error::ApiError;
+use clax_http::http_cache::{self, IMMUTABLE, REVALIDATE};
 
 /// Where the bridge bundle sits in the web UI.
 const BRIDGE: &str = "_clax/bridge.js";
@@ -79,8 +79,8 @@ fn entry(web: &dyn FileTree, req: &HeaderMap, name: &str) -> Result<Response, Ap
 /// `/`, `/inbox` and `/people`: the gallery's entry, which shows the
 /// gallery, the inbox or People by its path.
 pub async fn gallery_page(
-    axum::extract::State(s): axum::extract::State<crate::state::AppState>,
-    _d: crate::agent::DeniedToGrants,
+    axum::extract::State(s): axum::extract::State<clax_http::state::AppState>,
+    _d: clax_http::agent::DeniedToGrants,
     req: HeaderMap,
 ) -> Result<Response, ApiError> {
     entry(&*s.web, &req, "index.html")
@@ -91,7 +91,7 @@ pub async fn gallery_page(
 /// it too).
 ///
 /// The data is the API's, so it follows the API's host rule
-/// ([`crate::auth::request_host_allowed`], checked before anything is read):
+/// ([`clax_http::auth::request_host_allowed`], checked before anything is read):
 /// a request whose `Host` the API would refuse (a DNS name rebound to this
 /// machine) gets the bare entry, whose own API calls then fail. A store error
 /// or a store slower than the API's timeout also gives the bare entry, and
@@ -101,8 +101,8 @@ pub async fn gallery_page(
 /// `private, no-cache` with `Vary: Cookie`, and its `ETag` is over the exact
 /// bytes sent, so a revalidation answers `304` only for the same bytes.
 pub async fn artifact_page(
-    axum::extract::State(s): axum::extract::State<crate::state::AppState>,
-    d: crate::agent::DeniedToGrants,
+    axum::extract::State(s): axum::extract::State<clax_http::state::AppState>,
+    d: clax_http::agent::DeniedToGrants,
     uri: axum::http::Uri,
     extensions: axum::http::Extensions,
     req: HeaderMap,
@@ -118,10 +118,10 @@ pub async fn artifact_page(
         return entry(&*s.web, &req, "artifact.html");
     };
     let template = String::from_utf8_lossy(&f.data).into_owned();
-    let injected = if crate::auth::request_host_allowed(&req, &uri, &extensions) {
+    let injected = if clax_http::auth::request_host_allowed(&req, &uri, &extensions) {
         within(
             s.request_timeout,
-            crate::boot::assemble(&s, route, &req, crate::identity::peer_of(&extensions)),
+            crate::boot::assemble(&s, route, &req, clax_http::identity::peer_of(&extensions)),
         )
         .await
     } else {
@@ -234,8 +234,8 @@ const CONTRACT_FILES: &[(&str, &str)] = &[
 /// definitions, and `contract/clax-extensions.d.ts` Clax's additions to
 /// them, as plain text.
 pub async fn static_file(
-    axum::extract::State(s): axum::extract::State<crate::state::AppState>,
-    _d: crate::agent::DeniedToGrants,
+    axum::extract::State(s): axum::extract::State<clax_http::state::AppState>,
+    _d: clax_http::agent::DeniedToGrants,
     p: Result<Path<String>, PathRejection>,
     RawQuery(query): RawQuery,
     req: HeaderMap,

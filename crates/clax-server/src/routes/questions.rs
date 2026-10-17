@@ -11,18 +11,6 @@
 //! the viewer routes' origin rules.
 
 use super::artifacts::{body, body_within, path};
-use crate::agent::{DeniedToGrants, TokenOrAgent};
-use crate::audit::DeferredAudit;
-use crate::auth::Caller;
-#[cfg(debug_assertions)]
-use crate::auth::RequireToken;
-use crate::error::ApiError;
-use crate::identity::Identity;
-use crate::state::AppState;
-use crate::viewer::SameOrigin;
-use crate::views::inbox::recipient_of;
-use crate::views::question::{announce, arm_grace, start_grace, view as question_view};
-use crate::views::thread::VisFor;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
@@ -32,6 +20,18 @@ use clax_core::audit::AuditCtx;
 use clax_core::questions::{Answer, Question, from_claude, from_claude_answers, validate_ask};
 use clax_core::store::questions::{Close, ListStatus, NewQuestion, Source, Status};
 use clax_core::{CoreError, Store};
+use clax_http::agent::{DeniedToGrants, TokenOrAgent};
+use clax_http::audit::DeferredAudit;
+use clax_http::auth::Caller;
+#[cfg(debug_assertions)]
+use clax_http::auth::RequireToken;
+use clax_http::error::ApiError;
+use clax_http::identity::Identity;
+use clax_http::state::AppState;
+use clax_http::viewer::SameOrigin;
+use clax_http::views::inbox::recipient_of;
+use clax_http::views::question::{announce, arm_grace, start_grace, view as question_view};
+use clax_http::views::thread::VisFor;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::time::Duration;
@@ -86,7 +86,7 @@ fn live(db: &Store, sid: &str) -> clax_core::Result<()> {
 
 /// `v`, a question's view, as the asking agent may see it (spec §8.2): its
 /// artifact's title, an author field, through the agent's visibility `vf`
-/// ([`crate::views::thread::Vis::filter_question`]). Runs on a store thread.
+/// ([`clax_http::views::thread::Vis::filter_question`]). Runs on a store thread.
 fn for_asker(db: &Store, vf: &VisFor, mut v: Value) -> clax_core::Result<Value> {
     vf.build(db)?.filter_question(db, &mut v)?;
     Ok(v)
@@ -167,7 +167,7 @@ pub struct CreateBody {
 /// released).
 pub async fn create(
     State(s): State<AppState>,
-    TokenOrAgent(a): TokenOrAgent<crate::agent::QuestionsCreate>,
+    TokenOrAgent(a): TokenOrAgent<clax_http::agent::QuestionsCreate>,
     audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
     req: Result<Json<CreateBody>, JsonRejection>,
@@ -320,7 +320,7 @@ pub struct WaitQuery {
 /// new poll is refused rather than an older one ended).
 pub async fn poll(
     State(s): State<AppState>,
-    TokenOrAgent(a): TokenOrAgent<crate::agent::QuestionsPoll>,
+    TokenOrAgent(a): TokenOrAgent<clax_http::agent::QuestionsPoll>,
     p: Result<Path<(String, String)>, PathRejection>,
     q: Result<Query<WaitQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -435,7 +435,7 @@ async fn session_close(
 /// (reason `explicit`).
 pub async fn withdraw(
     State(s): State<AppState>,
-    TokenOrAgent(a): TokenOrAgent<crate::agent::QuestionsWithdraw>,
+    TokenOrAgent(a): TokenOrAgent<clax_http::agent::QuestionsWithdraw>,
     audit: DeferredAudit,
     p: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Json<Value>, QuestionError> {
@@ -450,7 +450,7 @@ pub async fn withdraw(
 /// not open. Records `question.release` (reason `timer`).
 pub async fn release(
     State(s): State<AppState>,
-    TokenOrAgent(a): TokenOrAgent<crate::agent::QuestionsRelease>,
+    TokenOrAgent(a): TokenOrAgent<clax_http::agent::QuestionsRelease>,
     audit: DeferredAudit,
     p: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Json<Value>, QuestionError> {
@@ -473,7 +473,7 @@ pub struct TerminalBody {
 /// the owner, who answered (`answered_via: terminal`).
 pub async fn terminal(
     State(s): State<AppState>,
-    TokenOrAgent(a): TokenOrAgent<crate::agent::QuestionsTerminal>,
+    TokenOrAgent(a): TokenOrAgent<clax_http::agent::QuestionsTerminal>,
     audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
     req: Result<Json<TerminalBody>, JsonRejection>,

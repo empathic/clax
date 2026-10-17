@@ -64,7 +64,7 @@ impl ManualSleeper {
     }
 }
 
-/// A [`clax_server::agent::Timer`] whose time moves only when the test advances
+/// A [`clax_http::agent::Timer`] whose time moves only when the test advances
 /// it ([`ManualTimer::advance`]).
 #[derive(Default)]
 pub struct ManualTimer {
@@ -74,7 +74,7 @@ pub struct ManualTimer {
 /// The time a [`ManualTimer`] reads, and each pending sleep's deadline.
 type TimerState = (Duration, Vec<(Duration, tokio::sync::oneshot::Sender<()>)>);
 
-impl clax_server::agent::Timer for ManualTimer {
+impl clax_http::agent::Timer for ManualTimer {
     fn now(&self) -> Duration {
         self.state.lock().unwrap().0
     }

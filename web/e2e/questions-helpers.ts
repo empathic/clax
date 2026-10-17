@@ -32,7 +32,7 @@ export async function waitAnswer(base: string, token: string, sid: string, qid: 
   return ((await api(base, token, `/api/sessions/${sid}/questions/${qid}?wait=10`)) as { question: QuestionView }).question;
 }
 
-/** The owner cookie a browser of the owner's carries (crates/clax-server/src/identity.rs). */
+/** The owner cookie a browser of the owner's carries (crates/clax-http/src/identity.rs). */
 export function ownerCookie(base: string, token: string): string {
   const port = new URL(base).port || "80";
   const value = createHash("sha256").update("clax owner cookie\n").update(token).digest("hex");

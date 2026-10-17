@@ -4,17 +4,17 @@
 
 use super::artifacts::{body, path};
 use super::live::{page_url, page_view};
-use crate::agent::{DeniedToGrants, TokenOrAgent};
-use crate::audit::DeferredAudit;
-use crate::auth::RequireToken;
-use crate::error::ApiError;
-use crate::state::AppState;
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use clax_core::{ArtifactId, CoreError, Event};
+use clax_http::agent::{DeniedToGrants, TokenOrAgent};
+use clax_http::audit::DeferredAudit;
+use clax_http::auth::RequireToken;
+use clax_http::error::ApiError;
+use clax_http::state::AppState;
 use clax_realtime::feedback::apply;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -34,7 +34,7 @@ struct WatchBody {
 /// agent (audit spec §6.4).
 pub async fn put(
     State(s): State<AppState>,
-    TokenOrAgent(a): TokenOrAgent<crate::agent::WatchesPut>,
+    TokenOrAgent(a): TokenOrAgent<clax_http::agent::WatchesPut>,
     audit: DeferredAudit,
     p: Result<Path<(String, String)>, PathRejection>,
     raw: Bytes,
@@ -67,7 +67,7 @@ pub async fn put(
 /// as the session's agent.
 pub async fn delete(
     State(s): State<AppState>,
-    TokenOrAgent(a): TokenOrAgent<crate::agent::WatchesDelete>,
+    TokenOrAgent(a): TokenOrAgent<clax_http::agent::WatchesDelete>,
     audit: DeferredAudit,
     p: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<StatusCode, ApiError> {
@@ -84,7 +84,7 @@ pub async fn delete(
 /// The session's watches. Token-gated like every `/api/sessions*` read.
 pub async fn list(
     State(s): State<AppState>,
-    _a: TokenOrAgent<crate::agent::WatchesList>,
+    _a: TokenOrAgent<clax_http::agent::WatchesList>,
     sid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let sid = path(sid)?;

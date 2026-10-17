@@ -524,7 +524,7 @@ async fn all_threads_listing_is_filtered_for_owner_agents() {
 
 /// The owner's browser without the token (the owner cookie alone) is no
 /// token: no session IDs, and a name to reopen or delete a thread, as for
-/// any viewer (`crate::identity`: the owner cookie alone grants no more
+/// any viewer (`clax_http::identity`: the owner cookie alone grants no more
 /// than a viewer cookie does).
 #[tokio::test]
 async fn the_owners_cookie_alone_is_not_the_token() {

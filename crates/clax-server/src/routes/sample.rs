@@ -9,13 +9,6 @@
 //! route streams `start`, `text`, `tool_call`, and one `done` or `error` over
 //! SSE; closing the stream cancels the call.
 
-use crate::agent::DeniedToGrants;
-use crate::auth::RequireToken;
-use crate::error::ApiError;
-use crate::headers::parse_id;
-use crate::identity::Identity;
-use crate::state::AppState;
-use crate::viewer::SameOrigin;
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
@@ -23,6 +16,13 @@ use axum::http::StatusCode;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use chrono::NaiveDate;
+use clax_http::agent::DeniedToGrants;
+use clax_http::auth::RequireToken;
+use clax_http::error::ApiError;
+use clax_http::headers::parse_id;
+use clax_http::identity::Identity;
+use clax_http::state::AppState;
+use clax_http::viewer::SameOrigin;
 use clax_sample::cache::AnswerCache;
 use clax_sample::flight::Done;
 use clax_sample::flight::{self, Flight, Out};

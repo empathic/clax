@@ -5,13 +5,13 @@
 //! (spec L6); it is serialized without its cookie value.
 
 use super::artifacts::body;
-use crate::auth::RequireToken;
-use crate::error::ApiError;
-use crate::state::AppState;
 use axum::Json;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use clax_core::extension::CREDENTIAL_TTL_DAYS;
+use clax_http::auth::RequireToken;
+use clax_http::error::ApiError;
+use clax_http::state::AppState;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -29,7 +29,7 @@ pub struct MintBody {
 /// filter covers (spec §7.5).
 pub async fn mint(
     State(s): State<AppState>,
-    d: crate::agent::DeniedToGrants,
+    d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
     b: Result<Json<MintBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -50,7 +50,7 @@ pub async fn mint(
         })
         .await?;
     // A ninth credential revokes the oldest.
-    crate::extension::end_dead_streams(&s);
+    clax_http::extension::end_dead_streams(&s);
     Ok(Json(json!({
         "credential": m.credential,
         "viewer": owner,
@@ -63,7 +63,7 @@ pub async fn mint(
 /// none; reading this never makes it).
 pub async fn status(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
 ) -> Result<Json<Value>, ApiError> {
     let (live, viewer) = s
@@ -82,13 +82,13 @@ pub async fn status(
 /// live.
 pub async fn revoke(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
 ) -> Result<Json<Value>, ApiError> {
     let creds = s.ext_creds.clone();
     let n = s
         .store_call(move |st| creds.refresh(st, |st| st.revoke_extension_credentials()))
         .await?;
-    crate::extension::end_dead_streams(&s);
+    clax_http::extension::end_dead_streams(&s);
     Ok(Json(json!({"revoked": n})))
 }

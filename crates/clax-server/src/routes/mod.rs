@@ -28,9 +28,6 @@ pub mod viewers;
 pub mod watches;
 pub mod working;
 
-use crate::auth::RequireToken;
-use crate::error::ApiError;
-use crate::state::AppState;
 use axum::error_handling::HandleErrorLayer;
 use axum::{
     Router,
@@ -39,6 +36,11 @@ use axum::{
     http::StatusCode,
     routing::{delete, get, post},
 };
+use clax_http::agent::{self, DeniedToGrants};
+use clax_http::auth::RequireToken;
+use clax_http::error::ApiError;
+use clax_http::limits;
+use clax_http::state::AppState;
 use std::time::Duration;
 use tower::ServiceBuilder;
 use tower::timeout::TimeoutLayer;
@@ -73,9 +75,9 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
     // Hash the bridge bundle now, not on the first page served.
     shell::bridge_version(&*state.web);
     let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any);
-    let publish_limit = DefaultBodyLimit::max(crate::limits::PUBLISH_BODY_LIMIT);
-    let asset_limit = DefaultBodyLimit::max(crate::limits::UPLOAD_BODY_LIMIT);
-    let ask_limit = DefaultBodyLimit::max(crate::limits::ASK_BODY_LIMIT);
+    let publish_limit = DefaultBodyLimit::max(clax_http::limits::PUBLISH_BODY_LIMIT);
+    let asset_limit = DefaultBodyLimit::max(clax_http::limits::UPLOAD_BODY_LIMIT);
+    let ask_limit = DefaultBodyLimit::max(clax_http::limits::ASK_BODY_LIMIT);
     let api_fast = Router::new()
         .route("/api/token", get(token::token))
         .route("/api/artifacts", get(artifacts::list))
@@ -244,14 +246,14 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             "/api/artifacts/{aid}/docs/{*path}",
             get(docs::get)
                 .put(docs::put.layer(DefaultBodyLimit::max(
-                    <crate::agent::DocsPut as crate::agent::Need>::LIMIT,
+                    <agent::DocsPut as agent::Need>::LIMIT,
                 )))
                 .patch(docs::patch)
                 .delete(docs::delete),
         )
         .route(
             "/api/artifacts/{aid}/docs:batch",
-            post(docs::batch.layer(DefaultBodyLimit::max(crate::limits::DOCS_BATCH_LIMIT))),
+            post(docs::batch.layer(DefaultBodyLimit::max(clax_http::limits::DOCS_BATCH_LIMIT))),
         )
         .route(
             "/api/artifacts/{aid}/docs:str_replace",
@@ -341,12 +343,9 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .route("/api/_test/feedback/{id}/expire", post(feedback::expire))
         .route("/api/_test/feedback/{id}/hold", post(feedback::hold))
         .route("/api/_test/grants/sweep", post(grants::test_sweep))
-        .route("/api/_test/agent/gate", get(crate::agent::test_gate))
-        .route("/api/_test/caller", get(crate::agent::test_caller))
-        .route(
-            "/api/_test/sessions/{id}/caller",
-            get(crate::agent::test_caller),
-        )
+        .route("/api/_test/agent/gate", get(agent::test_gate))
+        .route("/api/_test/caller", get(agent::test_caller))
+        .route("/api/_test/sessions/{id}/caller", get(agent::test_caller))
         .route("/api/_test/grants/index", get(grants::test_index))
         .route(
             "/api/_test/grants/index/fail",
@@ -358,9 +357,9 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
     } else {
         api_fast
     };
-    let api_fast = api_fast.layer(axum::middleware::from_fn(crate::http_cache::api_etag));
+    let api_fast = api_fast.layer(axum::middleware::from_fn(clax_http::http_cache::api_etag));
     let api_fast =
-        with_timeout(api_fast, state.request_timeout).layer(crate::http_cache::compression());
+        with_timeout(api_fast, state.request_timeout).layer(clax_http::http_cache::compression());
     let api_slow = Router::new()
         .route(
             "/api/artifacts",
@@ -376,7 +375,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         )
         .route(
             "/api/artifacts/{aid}/threads",
-            post(threads::create.layer(DefaultBodyLimit::max(crate::limits::THREAD_BODY_LIMIT))),
+            post(threads::create.layer(DefaultBodyLimit::max(limits::THREAD_BODY_LIMIT))),
         )
         .route(
             "/api/live/threads",
@@ -398,7 +397,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         api_slow
     };
     let api_slow =
-        with_timeout(api_slow, state.publish_timeout).layer(crate::http_cache::compression());
+        with_timeout(api_slow, state.publish_timeout).layer(clax_http::http_cache::compression());
     let shell_routes = Router::new()
         .route("/", get(shell::gallery_page))
         .route("/inbox", get(shell::gallery_page))
@@ -409,7 +408,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         // `/a/<id>[/v/<n>]/<file>`: the shell reads the version and page from the path.
         .route("/a/{aid}/{*rest}", get(shell::artifact_page))
         .route("/_clax/{*path}", get(shell::static_file))
-        .layer(crate::http_cache::compression());
+        .layer(clax_http::http_cache::compression());
     let mcp = mcp::router(&state);
     #[cfg(debug_assertions)]
     let mcp = if state.test_delays {
@@ -456,7 +455,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         let tx = std::sync::Arc::new(tx);
         r = r.route(
             "/api/admin/shutdown",
-            post(move |_d: crate::agent::DeniedToGrants, _t: RequireToken| {
+            post(move |_d: DeniedToGrants, _t: RequireToken| {
                 let tx = tx.clone();
                 async move {
                     let _ = tx.send(true);
@@ -470,7 +469,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
     // matched, over every route above.
     let r = r.route_layer(axum::middleware::from_fn_with_state(
         state.clone(),
-        crate::agent::verify_layer,
+        agent::verify_layer,
     ));
     // Live pages answer 404 to callers that may not see them, before any
     // handler runs (spec 2026-10-05-chrome-overlay-design L10).
@@ -479,11 +478,11 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
     // 2026-10-05-chrome-overlay-design L5).
     r.layer(axum::middleware::from_fn_with_state(
         state.clone(),
-        crate::live_access::hide_live_pages,
+        clax_http::live_access::hide_live_pages,
     ))
     .layer(axum::middleware::from_fn_with_state(
         state.clone(),
-        crate::extension::gateway,
+        clax_http::extension::gateway,
     ))
     .with_state(state)
 }
@@ -524,7 +523,7 @@ async fn test_audit_ctx(ctx: clax_core::audit::AuditCtx) -> axum::Json<serde_jso
 
 #[cfg(debug_assertions)]
 async fn test_sleep(
-    _d: crate::agent::DeniedToGrants,
+    _d: DeniedToGrants,
     axum::extract::Path(ms): axum::extract::Path<u64>,
 ) -> StatusCode {
     tokio::time::sleep(Duration::from_millis(ms)).await;
@@ -536,7 +535,7 @@ async fn test_sleep(
 #[cfg(debug_assertions)]
 async fn test_slow_publish(
     axum::extract::State(s): axum::extract::State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: DeniedToGrants,
     axum::extract::Path(ms): axum::extract::Path<u64>,
 ) -> Result<StatusCode, ApiError> {
     let events = s.events.clone();
@@ -788,7 +787,7 @@ mod l10 {
             "viewers" => include_str!("viewers.rs"),
             "watches" => include_str!("watches.rs"),
             "working" => include_str!("working.rs"),
-            "agent" => include_str!("../agent.rs"),
+            "agent" => include_str!("../../../clax-http/src/agent.rs"),
             "mcp" => include_str!("mcp.rs"),
             "people" => include_str!("people.rs"),
             _ => return None,
@@ -846,7 +845,10 @@ mod l10 {
                 e += 1;
             }
             let (m, f) = (&text[s..at], &text[at + 2..e]);
-            if !m.is_empty() && !f.is_empty() && !["axum", "routing", "crate"].contains(&m) {
+            if !m.is_empty()
+                && !f.is_empty()
+                && !["axum", "routing", "crate", "clax_http"].contains(&m)
+            {
                 out.push((m.to_string(), f.to_string()));
             }
             i = at + 2;
@@ -867,7 +869,7 @@ mod l10 {
     /// Resolving an [`AuditCtx`](clax_core::audit::AuditCtx) makes the
     /// owner's or a first-time viewer's row when it is missing, so only
     /// handlers that record events take it (or a
-    /// [`DeferredAudit`](crate::audit::DeferredAudit) to resolve it later),
+    /// [`DeferredAudit`](clax_http::audit::DeferredAudit) to resolve it later),
     /// and no `GET` handler does.
     #[test]
     fn no_get_route_resolves_the_audit_context() {
@@ -909,7 +911,7 @@ mod l10 {
 
     /// The handlers of routes that are not `GET` and take no audit context
     /// ([`AuditCtx`](clax_core::audit::AuditCtx) or
-    /// [`DeferredAudit`](crate::audit::DeferredAudit)), and why.
+    /// [`DeferredAudit`](clax_http::audit::DeferredAudit)), and why.
     const UNAUDITED: &[(&str, &str)] = &[
         ("working::renew", "a heartbeat (§6.11)"),
         (
@@ -1078,11 +1080,11 @@ mod l10 {
         text: &str,
         m: &str,
         f: &str,
-    ) -> Option<crate::agent::NeedInfo> {
+    ) -> Option<clax_http::agent::NeedInfo> {
         method_handlers(text)
             .into_iter()
             .find(|(_, hm, hf)| hm == m && hf == f)
-            .and_then(|(method, _, _)| crate::agent::need_of(&method.parse().unwrap(), path))
+            .and_then(|(method, _, _)| clax_http::agent::need_of(&method.parse().unwrap(), path))
     }
 
     /// The need an `Agent<…>` or `TokenOrAgent<…>` in `sig` names.
@@ -1109,7 +1111,7 @@ mod l10 {
                 }
                 let fsrc = function(module_source(&m), &f);
                 let sig = &fsrc[..fsrc.find('{').unwrap()];
-                let declared = crate::agent::ROUTES
+                let declared = clax_http::agent::ROUTES
                     .iter()
                     .find(|(rm, rp, _)| *rm == method && *rp == path);
                 match (agent_need(sig), declared) {
@@ -1127,7 +1129,7 @@ mod l10 {
                 }
             }
         }
-        for (m, p, _) in crate::agent::ROUTES {
+        for (m, p, _) in clax_http::agent::ROUTES {
             assert!(
                 seen.contains(&(m.to_string(), p.to_string())),
                 "agent::ROUTES declares {m} {p}, which no handler serves"
@@ -1163,8 +1165,8 @@ mod l10 {
         let src = &src[..src.find("mod l10 {").unwrap()];
         for (path, text) in routes(src) {
             let concrete = path.replace("{aid}", aid);
-            if crate::live_access::live_route(&concrete)
-                || crate::live_access::artifact_in(&concrete).as_deref() == Some(aid)
+            if clax_http::live_access::live_route(&concrete)
+                || clax_http::live_access::artifact_in(&concrete).as_deref() == Some(aid)
             {
                 continue;
             }
@@ -1199,7 +1201,7 @@ mod l10 {
                                  the extractor's .artifact() or .named_artifact()"
                             );
                         }
-                        let agent = include_str!("../agent.rs");
+                        let agent = include_str!("../../../clax-http/src/agent.rs");
                         let extractor = function(agent, "named_artifact");
                         assert!(
                             agent.contains("s.live_ids.contains(a.as_str())")
@@ -1212,8 +1214,8 @@ mod l10 {
                             .unwrap_or_else(|| panic!("{name} takes no declared Agent"));
                         assert!(
                             !need.grants
-                                || (need.class == crate::agent::Class::Filtered
-                                    && !crate::agent::FILTERED_LIVE.contains(&need.name)),
+                                || (need.class == clax_http::agent::Class::Filtered
+                                    && !clax_http::agent::FILTERED_LIVE.contains(&need.name)),
                             "{name} is open to a person's agent: give it another guard"
                         );
                     }
@@ -1272,7 +1274,7 @@ mod l10 {
                             !src.contains("InboxQuery {") || src.contains("recipient: me"),
                             "{name} builds a query of no one's inbox"
                         );
-                        let inbox = include_str!("../views/inbox.rs");
+                        let inbox = include_str!("../../../clax-http/src/views/inbox.rs");
                         assert!(
                             function(inbox, "recipient_of").contains("who.person(st)"),
                             "recipient_of no longer reads who.person"
@@ -1300,7 +1302,7 @@ mod l10 {
             "/api/live/sites/split",
             "/api/live/sites/answer",
         ] {
-            assert!(crate::live_access::live_route(p), "{p}");
+            assert!(clax_http::live_access::live_route(p), "{p}");
             assert!(routes(src).iter().any(|(r, _)| r == p), "{p} is not routed");
         }
         // `/mcp` is a `route_service` behind the token.
@@ -1321,8 +1323,8 @@ mod agents {
     use super::l10::{
         function, handlers, method_handlers, module_source, module_source_opt, routes,
     };
-    use crate::agent::Class;
     use clax_core::rights::RightType;
+    use clax_http::agent::Class;
 
     /// The route table of spec §7.5 for the routes an agent reaches, copied
     /// here as data: method, path, class, right (type and action).
@@ -1843,7 +1845,7 @@ mod agents {
                 let (_, _, class, right) =
                     expected.unwrap_or_else(|| panic!("{method} {path}: {name} takes Agent<{n}>, but spec §7.5 gives agents no such route"));
                 expected_seen.insert((method.clone(), path.clone()));
-                let info = crate::agent::need_of(&method.parse().unwrap(), path)
+                let info = clax_http::agent::need_of(&method.parse().unwrap(), path)
                     .unwrap_or_else(|| panic!("{method} {path}: agent::ROUTES lacks it"));
                 assert_eq!(info.name, n, "{method} {path}: {name}");
                 assert_eq!(
@@ -1856,7 +1858,7 @@ mod agents {
                     OWNER_AGENTS_ONLY.contains(&(method.as_str(), path.as_str())),
                     "{method} {path}: whether a person's agent may use it"
                 );
-                let entry = crate::agent::ROUTE_NEEDS
+                let entry = clax_http::agent::ROUTE_NEEDS
                     .iter()
                     .find(|(hn, _, _)| hn == name)
                     .unwrap_or_else(|| panic!("ROUTE_NEEDS lacks {name}"));
@@ -1866,7 +1868,8 @@ mod agents {
                 // the session's `Visibility` (clax-core's delivery guard
                 // checks that every feedback item and notice is built
                 // under one).
-                if info.class == Class::Filtered && crate::agent::FILTERED_LIVE.contains(&info.name)
+                if info.class == Class::Filtered
+                    && clax_http::agent::FILTERED_LIVE.contains(&info.name)
                 {
                     assert!(
                         h.src.contains("vis.filter_")
@@ -1914,7 +1917,7 @@ mod agents {
                 "spec §7.5 opens {m} {p} to agents, but no handler there takes Agent<N>"
             );
         }
-        for (h, _, _) in crate::agent::ROUTE_NEEDS {
+        for (h, _, _) in clax_http::agent::ROUTE_NEEDS {
             assert!(
                 used.contains(*h),
                 "ROUTE_NEEDS lists {h}, which no route uses"
@@ -1967,7 +1970,10 @@ mod agents {
             .collect();
         modules.push(("mod".into(), src));
         modules.push(("mcp".into(), include_str!("mcp.rs")));
-        modules.push(("db_caller".into(), include_str!("../db_caller.rs")));
+        modules.push((
+            "db_caller".into(),
+            include_str!("../../../clax-http/src/db_caller.rs"),
+        ));
         modules.dedup_by(|a, b| a.0 == b.0);
         assert!(modules.len() > 20, "{}", modules.len());
         for (m, s) in modules {
@@ -1988,7 +1994,7 @@ mod agents {
     }
 
     /// The marker lines around the route table in `docs/contract.md`.
-    const TABLE_BEGIN: &str = "<!-- route-table:begin: generated from agent::ROUTE_NEEDS by the test the_contract_route_table_is_the_declared_one in crates/clax-server/src/routes/mod.rs; CLAX_UPDATE_GOLDEN=1 rewrites it -->";
+    const TABLE_BEGIN: &str = "<!-- route-table:begin: generated from clax_http::agent::ROUTE_NEEDS by the test the_contract_route_table_is_the_declared_one in crates/clax-server/src/routes/mod.rs; CLAX_UPDATE_GOLDEN=1 rewrites it -->";
     const TABLE_END: &str = "<!-- route-table:end -->";
 
     /// A body limit as the contract writes it.
@@ -2003,7 +2009,7 @@ mod agents {
     }
 
     /// The contract's route table (spec §7.5) as the handlers declare it:
-    /// every route an agent reaches, in [`crate::agent::ROUTE_NEEDS`]'s
+    /// every route an agent reaches, in [`clax_http::agent::ROUTE_NEEDS`]'s
     /// order, with its class, right, body limit and whether a person's
     /// agent may use it; then every other route, with its class and
     /// whether it refuses the owner's agents (`not_for_agents`).
@@ -2012,14 +2018,14 @@ mod agents {
         let mut out = String::from(
             "| Route | Class | Right | Body limit | A person's agents |\n|---|---|---|---|---|\n",
         );
-        for (name, right, class) in crate::agent::ROUTE_NEEDS {
+        for (name, right, class) in clax_http::agent::ROUTE_NEEDS {
             let routed: Vec<&Handler> = handlers.iter().filter(|h| h.name == *name).collect();
             assert!(
                 !routed.is_empty(),
                 "ROUTE_NEEDS lists {name}, which no route uses"
             );
             for h in routed {
-                let info = crate::agent::need_of(&h.method.parse().unwrap(), &h.path)
+                let info = clax_http::agent::need_of(&h.method.parse().unwrap(), &h.path)
                     .unwrap_or_else(|| panic!("{} {}: agent::ROUTES lacks it", h.method, h.path));
                 assert_eq!((info.right, info.class), (*right, *class), "{name}");
                 let right = match right {

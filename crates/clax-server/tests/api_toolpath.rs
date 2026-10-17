@@ -270,7 +270,7 @@ async fn ctx_bad_headers_are_invalid_not_errors() {
 
 #[test]
 fn nudge_never_blocks() {
-    let wake = clax_server::audit::AuditWake::new();
+    let wake = clax_http::audit::AuditWake::new();
     let rx = wake.take_receiver().expect("the appender's receiver");
     assert!(wake.take_receiver().is_none(), "one appender");
     // Nobody drains the channel: every nudge past the first finds it full.
@@ -2861,8 +2861,8 @@ async fn lan_viewer_cannot_export() {
     let host = ts.base.trim_start_matches("http://");
     let events = format!(
         "{}={}",
-        clax_server::auth::events_cookie_name(host),
-        clax_server::auth::events_cookie_value(&ts.token)
+        clax_http::auth::events_cookie_name(host),
+        clax_http::auth::events_cookie_value(&ts.token)
     );
     for path in ["/api/toolpath/export", "/api/toolpath/status"] {
         let refused = [
@@ -3021,7 +3021,7 @@ async fn one_export_runs_at_a_time() {
 // --- the journal appender (spec §7) -----------------------------------------
 
 use clax_core::toolpath::segment::{MemFs, SegmentConfig, SegmentWriter};
-use clax_server::audit::{Appender, JournalStart, JournalStatus, start_journal};
+use clax_http::audit::{Appender, JournalStart, JournalStatus, start_journal};
 use std::sync::Arc;
 
 const JOURNAL: &str = "/home/toolpath/journal";
@@ -3073,7 +3073,7 @@ async fn journal_off_still_records_table_and_catches_up() {
         JournalStart {
             store: ts.store.clone(),
             dir: ts.home.root().join("toolpath/journal"),
-            wake: clax_server::audit::AuditWake::new(),
+            wake: clax_http::audit::AuditWake::new(),
             status: ts.journal.clone(),
             version: "test".into(),
         },
@@ -3209,7 +3209,7 @@ async fn eio_backs_off_and_retries_same_batch() {
 async fn the_journal_thread_follows_the_config_and_closes_at_stop() {
     let ts = TestServer::spawn().await;
     let dir = ts.home.root().join("toolpath/journal");
-    let start = |wake: Arc<clax_server::audit::AuditWake>| JournalStart {
+    let start = |wake: Arc<clax_http::audit::AuditWake>| JournalStart {
         store: ts.store.clone(),
         dir: dir.clone(),
         wake,
@@ -3218,7 +3218,7 @@ async fn the_journal_thread_follows_the_config_and_closes_at_stop() {
     };
     // An invalid [toolpath] leaves the journal off and says why.
     let bad = start_journal(
-        start(clax_server::audit::AuditWake::new()),
+        start(clax_http::audit::AuditWake::new()),
         Err(clax_core::CoreError::invalid(
             "bad_config",
             "[toolpath] other: unknown field",
@@ -3239,7 +3239,7 @@ async fn the_journal_thread_follows_the_config_and_closes_at_stop() {
     // On: the thread recovers and writes; stopping it catches up, syncs and
     // closes the segment.
     ts.publish("Notes", &[("index.html", "<h1>n</h1>")]).await;
-    let wake = clax_server::audit::AuditWake::new();
+    let wake = clax_http::audit::AuditWake::new();
     let j = start_journal(
         start(wake.clone()),
         Ok(clax_core::config::ToolpathConfig::default()),
@@ -3464,7 +3464,7 @@ fn a_wedged_appender_does_not_hold_the_daemons_exit() {
         JournalStatus::off(None),
     );
     let rx = wake.take_receiver().unwrap();
-    let h = clax_server::audit::spawn_appender(a, rx, wake.clone()).unwrap();
+    let h = clax_http::audit::spawn_appender(a, rx, wake.clone()).unwrap();
     // Its first write never returns; the stop gives up at its limit.
     let started = std::time::Instant::now();
     let stopped = rt.block_on(h.stop_within(std::time::Duration::from_millis(300)));
@@ -3491,7 +3491,7 @@ async fn a_responsive_appender_stops_within_its_limit() {
     let fs = MemFs::new();
     let a = appender(&ts, &fs, manual_clock(), JournalStatus::off(None));
     let rx = wake.take_receiver().unwrap();
-    let h = clax_server::audit::spawn_appender(a, rx, wake.clone()).unwrap();
+    let h = clax_http::audit::spawn_appender(a, rx, wake.clone()).unwrap();
     assert!(h.stop_within(std::time::Duration::from_secs(10)).await);
     let text = String::from_utf8(fs.state().files.values().next().unwrap().clone()).unwrap();
     assert!(text.ends_with("{\"PathClose\":{}}\n"));

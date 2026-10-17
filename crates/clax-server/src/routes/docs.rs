@@ -9,7 +9,7 @@
 //! SSE event, which carries the path and version but never the body.
 //!
 //! Agent channels (spec §7.5 docs row, §8.2, §8.3) get every document
-//! through [`crate::views::thread::Vis`]: one whose authors their reader may not
+//! through [`clax_http::views::thread::Vis`]: one whose authors their reader may not
 //! see is its placeholder (`{doc_id, version, withheld: {authors}}`) when
 //! read or written by its path, and in a listing is never matched,
 //! ordered or listed, only counted in `withheld_count`. A write whose
@@ -21,12 +21,6 @@
 //! busy whatever its holder.
 
 use super::artifacts::{JsonBytes, body, parse_body, path};
-use crate::db_caller::CallerParts;
-use crate::error::ApiError;
-use crate::headers::parse_id;
-use crate::state::AppState;
-use crate::viewer::SameOrigin;
-use crate::views::thread::{Vis, VisFor};
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
@@ -36,6 +30,12 @@ use clax_core::store::docs::{
     Acquire, BatchOp, BatchWrite, DocChange, DocQuery, Pin, StrReplace, parse_where,
 };
 use clax_core::{CoreError, Event, EventBus, Store};
+use clax_http::db_caller::CallerParts;
+use clax_http::error::ApiError;
+use clax_http::headers::parse_id;
+use clax_http::state::AppState;
+use clax_http::viewer::SameOrigin;
+use clax_http::views::thread::{Vis, VisFor};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -107,7 +107,7 @@ pub struct WriteBody {
 /// `path` when it is missing or the caller may not read it.
 pub async fn get(
     State(s): State<AppState>,
-    a: crate::agent::Agent<crate::agent::DocsGet>,
+    a: clax_http::agent::Agent<clax_http::agent::DocsGet>,
     _o: SameOrigin,
     who: CallerParts,
     p: DocParams,
@@ -136,7 +136,7 @@ pub async fn get(
 /// Replaces or creates the document: `{doc, created}`.
 pub async fn put(
     State(s): State<AppState>,
-    a: crate::agent::Agent<crate::agent::DocsPut>,
+    a: clax_http::agent::Agent<clax_http::agent::DocsPut>,
     _o: SameOrigin,
     who: CallerParts,
     audit: AuditCtx,
@@ -173,7 +173,7 @@ pub async fn put(
 /// may not see the document, 403 `withheld` before the pin or the merge.
 pub async fn patch(
     State(s): State<AppState>,
-    a: crate::agent::Agent<crate::agent::DocsPatch>,
+    a: clax_http::agent::Agent<clax_http::agent::DocsPatch>,
     _o: SameOrigin,
     who: CallerParts,
     audit: AuditCtx,
@@ -220,7 +220,7 @@ pub struct DeleteQuery {
 /// Deletes the document: `{deleted}` (`false` when there was none).
 pub async fn delete(
     State(s): State<AppState>,
-    a: crate::agent::Agent<crate::agent::DocsDelete>,
+    a: clax_http::agent::Agent<clax_http::agent::DocsDelete>,
     _o: SameOrigin,
     who: CallerParts,
     audit: AuditCtx,
@@ -272,7 +272,7 @@ pub struct ListQuery {
 /// paged, and `withheld_count` counts the collection's others.
 pub async fn list(
     State(s): State<AppState>,
-    a: crate::agent::Agent<crate::agent::DocsList>,
+    a: clax_http::agent::Agent<clax_http::agent::DocsList>,
     _o: SameOrigin,
     who: CallerParts,
     aid: Result<Path<String>, PathRejection>,
@@ -339,7 +339,7 @@ pub struct BatchBody {
 /// batch with 403 `withheld`, naming its index and path.
 pub async fn batch(
     State(s): State<AppState>,
-    a: crate::agent::Agent<crate::agent::DocsBatch>,
+    a: clax_http::agent::Agent<clax_http::agent::DocsBatch>,
     _o: SameOrigin,
     who: CallerParts,
     audit: AuditCtx,
@@ -417,7 +417,7 @@ pub struct StrReplaceBody {
 /// looked at.
 pub async fn str_replace(
     State(s): State<AppState>,
-    a: crate::agent::Agent<crate::agent::DocsStrReplace>,
+    a: clax_http::agent::Agent<clax_http::agent::DocsStrReplace>,
     _o: SameOrigin,
     who: CallerParts,
     audit: AuditCtx,
@@ -475,7 +475,7 @@ pub struct AcquireBody {
 /// busy whatever its holder.
 pub async fn acquire(
     State(s): State<AppState>,
-    a: crate::agent::Agent<crate::agent::DocsAcquire>,
+    a: clax_http::agent::Agent<clax_http::agent::DocsAcquire>,
     _o: SameOrigin,
     who: CallerParts,
     audit: AuditCtx,

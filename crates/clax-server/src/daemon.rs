@@ -2,7 +2,6 @@
 //! the open-file limit, and shutdown. The discovery files clients read are
 //! `clax_core::daemon`.
 
-use crate::state::AppState;
 use clax_core::daemon::DaemonInfo;
 use clax_core::daemon::StartingInfo;
 use clax_core::daemon::browser_host;
@@ -15,6 +14,7 @@ use clax_core::daemon::remove_daemon_info;
 use clax_core::daemon::write_daemon_info;
 use clax_core::daemon::write_starting_info;
 use clax_core::{EventBus, Home, Store};
+use clax_http::state::AppState;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -296,9 +296,9 @@ pub async fn serve(
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let events_shutdown = shutdown_tx.subscribe();
     let live_ids = Arc::new(clax_realtime::live::LiveIds::load(&store)?);
-    let ext_creds = Arc::new(crate::extension::Credentials::load(&store)?);
-    let grant_auth = Arc::new(crate::grant_auth::GrantAuth::load(&store)?);
-    let vis_gen = crate::state::VisGen::install(&store);
+    let ext_creds = Arc::new(clax_http::extension::Credentials::load(&store)?);
+    let grant_auth = Arc::new(clax_http::grant_auth::GrantAuth::load(&store)?);
+    let vis_gen = clax_http::state::VisGen::install(&store);
     let state = AppState {
         store,
         home: cfg.home.clone(),
@@ -307,8 +307,8 @@ pub async fn serve(
         started_at,
         version: cfg.version,
         shutdown: events_shutdown,
-        wrap_cache: Arc::new(crate::wrap_cache::WrapCache::new(
-            crate::wrap_cache::DEFAULT_MAX_BYTES,
+        wrap_cache: Arc::new(clax_http::wrap_cache::WrapCache::new(
+            clax_http::wrap_cache::DEFAULT_MAX_BYTES,
         )),
         request_timeout: Duration::from_secs(30),
         publish_timeout: Duration::from_secs(120),
@@ -338,9 +338,9 @@ pub async fn serve(
         terminal_after_s,
         calibration: Arc::default(),
         verify_times: Arc::default(),
-        audit_wake: crate::audit::AuditWake::new(),
-        journal: crate::audit::JournalStatus::off(None),
-        exports: crate::exports::Exports::new(),
+        audit_wake: clax_http::audit::AuditWake::new(),
+        journal: clax_http::audit::JournalStatus::off(None),
+        exports: clax_http::exports::Exports::new(),
         call_ids: Arc::new(clax_realtime::call_ids::CallIdWait::new(
             clax_realtime::call_ids::CALL_ID_GRACE,
             clax_realtime::call_ids::CALL_ID_CAP,
@@ -349,8 +349,8 @@ pub async fn serve(
         port,
         lan_host: None,
         grant_auth,
-        agent_gate: Arc::new(crate::agent::Gate::new(Arc::new(
-            crate::agent::TokioTimer::default(),
+        agent_gate: Arc::new(clax_http::agent::Gate::new(Arc::new(
+            clax_http::agent::TokioTimer::default(),
         ))),
         vis_gen,
         test_delays: false,
@@ -359,10 +359,10 @@ pub async fn serve(
     state.audit_wake.install(&state.store);
     // The appender recovers the journal and catches it up on its own
     // thread, so the daemon serves at once.
-    let journal = crate::audit::start_journal(
-        crate::audit::JournalStart {
+    let journal = clax_http::audit::start_journal(
+        clax_http::audit::JournalStart {
             store: state.store.clone(),
-            dir: crate::audit::journal_dir(&cfg.home),
+            dir: clax_http::audit::journal_dir(&cfg.home),
             wake: state.audit_wake.clone(),
             status: state.journal.clone(),
             version: cfg.version.to_string(),
@@ -388,8 +388,8 @@ pub async fn serve(
         })
     });
     state.stream.listen(&state.events);
-    crate::views::inbox::listen(&state);
-    crate::views::approval::listen(&state);
+    clax_http::views::inbox::listen(&state);
+    clax_http::views::approval::listen(&state);
     crate::routes::people::listen(&state);
     tracing::info!(codex = ?state.codex.bin, source = ?state.codex.source, "codex push");
     tracing::info!(provider = ?state.sample.provider_name(), "sample provider");
@@ -454,7 +454,7 @@ pub async fn serve(
                         store.mark_resumed();
                     }
                     let r = reap_idle(&ctx, store, SESSION_IDLE, &pid_alive)?;
-                    crate::views::question::announce_ids(&st, store, &r.withdrawn_questions);
+                    clax_http::views::question::announce_ids(&st, store, &r.withdrawn_questions);
                     Ok(r)
                 })
                 .await;
@@ -506,8 +506,8 @@ pub async fn serve(
     let (fired_tx, fired_rx) = oneshot::channel::<()>();
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let server = axum::serve(
-        crate::auth::TunedListener(listener),
-        app.into_make_service_with_connect_info::<crate::auth::Conn>(),
+        clax_http::auth::TunedListener(listener),
+        app.into_make_service_with_connect_info::<clax_http::auth::Conn>(),
     )
     .with_graceful_shutdown(async move {
         tokio::select! {

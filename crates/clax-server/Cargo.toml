@@ -14,6 +14,7 @@ workspace = true
 clax-core = { path = "../clax-core" }
 clax-sample = { path = "../clax-sample" }
 clax-realtime = { path = "../clax-realtime" }
+clax-http = { path = "../clax-http" }
 anyhow.workspace = true
 axum.workspace = true
 chrono.workspace = true

@@ -1,13 +1,8 @@
 //! Serves published page content: every HTML page (the index and supporting
 //! `text/html` files) wrapped with the bridge, other supporting files as stored.
 
-use crate::error::ApiError;
-use crate::headers::parse_id;
-use crate::host::OnArtifactOrigin;
-use crate::http_cache;
 use crate::routes::artifacts::path;
 use crate::routes::shell::bridge_version;
-use crate::state::AppState;
 use axum::body::Body;
 use axum::extract::rejection::PathRejection;
 use axum::extract::{Extension, Path, State};
@@ -18,6 +13,11 @@ use clax_core::model::FileMeta;
 use clax_core::publish::INDEX;
 use clax_core::wrap::wrap_page;
 use clax_core::{ArtifactId, CoreError};
+use clax_http::error::ApiError;
+use clax_http::headers::parse_id;
+use clax_http::host::OnArtifactOrigin;
+use clax_http::http_cache;
+use clax_http::state::AppState;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -109,7 +109,7 @@ fn framed_by_shell(
 }
 
 pub async fn redirect_to_slash(
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     p: Result<Path<(String, u32)>, PathRejection>,
 ) -> Result<Redirect, ApiError> {
     let (aid, n) = path(p)?;
@@ -119,7 +119,7 @@ pub async fn redirect_to_slash(
 
 pub async fn index(
     State(s): State<AppState>,
-    d: crate::agent::DeniedToGrants,
+    d: clax_http::agent::DeniedToGrants,
     origin: Option<Extension<OnArtifactOrigin>>,
     req: HeaderMap,
     p: Result<Path<(String, u32)>, PathRejection>,
@@ -206,7 +206,7 @@ async fn lookup(
 /// is not UTF-8, which is revalidated like every page.
 pub async fn file(
     State(s): State<AppState>,
-    d: crate::agent::DeniedToGrants,
+    d: clax_http::agent::DeniedToGrants,
     origin: Option<Extension<OnArtifactOrigin>>,
     req: HeaderMap,
     p: Result<Path<(String, u32, String)>, PathRejection>,
@@ -275,15 +275,15 @@ pub async fn file(
 /// sandbox` because it shares the API's origin. A file an agent channel's
 /// reader may not see answers 403 `withheld` with its authors; while the
 /// version withholds any file, so does a path it lacks
-/// ([`crate::views::thread::Vis::filter_file_content`]).
+/// ([`clax_http::views::thread::Vis::filter_file_content`]).
 pub async fn raw_file(
     State(s): State<AppState>,
-    a: crate::agent::Agent<crate::agent::FileContent>,
+    a: clax_http::agent::Agent<clax_http::agent::FileContent>,
     p: Result<Path<(String, u32, String)>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let (aid, n, rel) = path(p)?;
     let id = parse_id(&aid)?;
-    let vf = crate::views::thread::VisFor::of(&a.caller, &s);
+    let vf = clax_http::views::thread::VisFor::of(&a.caller, &s);
     let found = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;

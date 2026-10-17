@@ -4,11 +4,6 @@
 //! prints.
 
 use super::artifacts::{body, path};
-use crate::agent::{FeedbackAck, FeedbackNotices, FeedbackPoll, TokenOrAgent};
-#[cfg(debug_assertions)]
-use crate::auth::RequireToken;
-use crate::error::ApiError;
-use crate::state::AppState;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
@@ -21,6 +16,11 @@ use clax_core::store::questions::Status;
 use clax_core::visibility::Visibility;
 use clax_core::working::Clock;
 use clax_core::{CoreError, Store, TakeFeedback, Tier};
+use clax_http::agent::{FeedbackAck, FeedbackNotices, FeedbackPoll, TokenOrAgent};
+#[cfg(debug_assertions)]
+use clax_http::auth::RequireToken;
+use clax_http::error::ApiError;
+use clax_http::state::AppState;
 use clax_realtime::feedback::apply;
 use clax_realtime::questions::QuestionWaiters;
 use serde::Deserialize;
@@ -61,7 +61,7 @@ fn late_answers(
     let mut views = Vec::with_capacity(rows.len());
     let mut blocks = Vec::with_capacity(rows.len());
     for q in &rows {
-        views.push(crate::views::question::view(st, q)?);
+        views.push(clax_http::views::question::view(st, q)?);
         let header = q.questions.first().map_or("", |x| x.header.as_str());
         let head = match q.status {
             Status::Declined => format!(
@@ -118,7 +118,7 @@ pub(crate) enum Woke {
 /// §8.4, M17).
 pub(crate) async fn wait_for_change(
     notified: std::pin::Pin<&mut tokio::sync::futures::Notified<'_>>,
-    vis_gen: &crate::state::VisGen,
+    vis_gen: &clax_http::state::VisGen,
     seen: u64,
     deadline: Instant,
     stopping: std::pin::Pin<&mut (impl std::future::Future<Output = ()> + ?Sized)>,
@@ -296,7 +296,7 @@ pub async fn poll(
                     Some(a) => a,
                     None => {
                         live_session(st, &sid)?;
-                        std::sync::Arc::new(crate::audit::session_ctx(st, &headers, &sid)?)
+                        std::sync::Arc::new(clax_http::audit::session_ctx(st, &headers, &sid)?)
                     }
                 };
                 let view = view_at(st, &sid, prior, seen)?;
@@ -571,7 +571,7 @@ pub async fn ack(
 #[cfg(debug_assertions)]
 pub async fn expire(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
     sid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -597,7 +597,7 @@ pub struct HoldBody {
 #[cfg(debug_assertions)]
 pub async fn hold(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
     sid: Result<Path<String>, PathRejection>,
     b: Result<Json<HoldBody>, JsonRejection>,
@@ -631,7 +631,7 @@ pub struct WaitersQuery {
 #[cfg(debug_assertions)]
 pub async fn waiters(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
     sid: Result<Path<String>, PathRejection>,
     q: Result<Query<WaitersQuery>, QueryRejection>,
@@ -659,9 +659,9 @@ pub async fn waiters(
 #[cfg(test)]
 mod tests {
     use super::{Woke, wait_for_change};
-    use crate::state::VisGen;
     use clax_core::audit::AuditCtx;
     use clax_core::{Home, Store};
+    use clax_http::state::VisGen;
     use std::time::Duration;
     use tokio::sync::Notify;
     use tokio::time::Instant;

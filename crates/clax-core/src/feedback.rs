@@ -924,8 +924,8 @@ mod tests {
     fn feedback_items_are_built_only_under_visibility() {
         let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let mut files = Vec::new();
-        let dirs =
-            ["clax-core", "clax-realtime", "clax-server"].map(|c| crates.join(c).join("src"));
+        let dirs = ["clax-core", "clax-http", "clax-realtime", "clax-server"]
+            .map(|c| crates.join(c).join("src"));
         for dir in dirs {
             let mut stack = vec![dir];
             while let Some(d) = stack.pop() {

@@ -1,11 +1,11 @@
 //! SSE fan-out of the event bus.
 
-use crate::state::AppState;
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use clax_core::db::{Caller, Level};
 use clax_core::{Event, Stamped};
+use clax_http::state::AppState;
 use futures::stream::Stream;
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -53,8 +53,8 @@ impl Drop for OpenStream {
 /// check that a page holds no more than one. `{open}`.
 #[cfg(debug_assertions)]
 pub async fn open_streams(
-    _d: crate::agent::DeniedToGrants,
-    _t: crate::auth::RequireToken,
+    _d: clax_http::agent::DeniedToGrants,
+    _t: clax_http::auth::RequireToken,
 ) -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!({ "open": OPEN_STREAMS.load(Ordering::Relaxed) }))
 }
@@ -89,10 +89,10 @@ fn list(v: Option<String>) -> Option<BTreeSet<String>> {
 /// `data/users/<id>/` path reaches only that viewer, and any other reaches
 /// only subscribers whose level may read the path (for a path in an opened
 /// `{self}` subtree, the level its own viewer needs). The subscriber's level
-/// and viewer ([`crate::db_caller::Subscriber`]: the token from
+/// and viewer ([`clax_http::db_caller::Subscriber`]: the token from
 /// `Authorization`, `?token=` or the events cookie, and the viewer cookie)
 /// are fixed when the stream opens. A stream opened by a request that may
-/// not see live pages ([`crate::live_access::sees_live_pages`]) carries no event
+/// not see live pages ([`clax_http::live_access::sees_live_pages`]) carries no event
 /// of a live page.
 ///
 /// Every event, `ready` included, carries an SSE `id` (`<epoch>-<n>`). A
@@ -108,16 +108,16 @@ fn list(v: Option<String>) -> Option<BTreeSet<String>> {
 /// when the daemon begins shutting down.
 pub async fn events(
     State(s): State<AppState>,
-    d: crate::agent::DeniedToGrants,
+    d: clax_http::agent::DeniedToGrants,
     Query(q): Query<EventsQuery>,
     extensions: axum::http::Extensions,
     headers: HeaderMap,
-    who: crate::db_caller::Subscriber,
-) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, crate::error::ApiError> {
+    who: clax_http::db_caller::Subscriber,
+) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, clax_http::error::ApiError> {
     // The event stream serves people (spec §7.5): an agent reads through
     // the filtered routes.
     d.refuse_agents()?;
-    let hidden = (!crate::live_access::sees_live_pages(&headers, &extensions, &s.token))
+    let hidden = (!clax_http::live_access::sees_live_pages(&headers, &extensions, &s.token))
         .then(|| s.live_ids.clone());
     let who = who.or_events_cookie();
     // Resolved when the stream opens: a name set later takes effect on reconnect.

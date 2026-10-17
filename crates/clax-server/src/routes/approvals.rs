@@ -17,14 +17,6 @@
 //! `GET /api/sessions/<sid>/approvals/<rid>?wait=` (as questions wait).
 
 use super::artifacts::{body, path};
-use crate::agent::{Agent, DeniedToGrants, TokenOrAgent};
-use crate::audit::DeferredAudit;
-use crate::auth::Caller;
-use crate::error::ApiError;
-use crate::identity::Identity;
-use crate::state::AppState;
-use crate::viewer::SameOrigin;
-use crate::views::approval::{approval_view, request_view};
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
@@ -33,6 +25,14 @@ use clax_core::store::approvals::{
     AskApproval, Decision, OVERFLOW_BANNER, RequestStatus, Scope, UNCONNECTED, Via,
 };
 use clax_core::{CoreError, Store};
+use clax_http::agent::{Agent, DeniedToGrants, TokenOrAgent};
+use clax_http::audit::DeferredAudit;
+use clax_http::auth::Caller;
+use clax_http::error::ApiError;
+use clax_http::identity::Identity;
+use clax_http::state::AppState;
+use clax_http::viewer::SameOrigin;
+use clax_http::views::approval::{approval_view, request_view};
 use clax_realtime::feedback::apply_decision;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -45,7 +45,7 @@ use tokio::time::Instant;
 /// rights exclude (§7.5).
 fn may_read(
     st: &Store,
-    reads: &crate::agent::ReadRights,
+    reads: &clax_http::agent::ReadRights,
     aid: Option<&str>,
 ) -> clax_core::Result<bool> {
     let Some(aid) = aid.filter(|_| reads.is_person_agent()) else {
@@ -104,12 +104,12 @@ fn browser_approver(c: &Caller, what: &str) -> Result<Option<String>, ApiError> 
 /// withheld from it.
 pub async fn list(
     State(s): State<AppState>,
-    a: Agent<crate::agent::ApprovalsList>,
+    a: Agent<clax_http::agent::ApprovalsList>,
     _o: SameOrigin,
 ) -> Result<Json<Value>, ApiError> {
     let me = whose(&a.caller)?;
     let reads = a.read_rights();
-    let vf = crate::views::thread::VisFor::of(&a.caller, &s);
+    let vf = clax_http::views::thread::VisFor::of(&a.caller, &s);
     let v = s
         .store_call(move |st| {
             let vis = vf.build(st)?;
@@ -144,7 +144,7 @@ pub struct RequestsQuery {
 /// `invalid_query` for another status.
 pub async fn requests(
     State(s): State<AppState>,
-    a: Agent<crate::agent::ApprovalRequestsList>,
+    a: Agent<clax_http::agent::ApprovalRequestsList>,
     _o: SameOrigin,
     q: Result<Query<RequestsQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -394,7 +394,7 @@ pub struct AskBody {
 /// Recorded as `approval.request` by the session's agent.
 pub async fn ask(
     State(s): State<AppState>,
-    TokenOrAgent(a): TokenOrAgent<crate::agent::ApprovalsAsk>,
+    TokenOrAgent(a): TokenOrAgent<clax_http::agent::ApprovalsAsk>,
     audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
     req: Result<Json<AskBody>, JsonRejection>,
@@ -459,7 +459,7 @@ pub struct WaitQuery {
 /// hold it already.
 pub async fn poll(
     State(s): State<AppState>,
-    TokenOrAgent(a): TokenOrAgent<crate::agent::ApprovalsPoll>,
+    TokenOrAgent(a): TokenOrAgent<clax_http::agent::ApprovalsPoll>,
     p: Result<Path<(String, String)>, PathRejection>,
     q: Result<Query<WaitQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {

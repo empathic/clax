@@ -36,6 +36,7 @@ tempfile.workspace = true
 clax-fake-exe = { path = "../clax-fake-exe" }
 rusqlite.workspace = true
 clax-testkit = { path = "../clax-testkit" }
+clax-http = { path = "../clax-http" }
 
 [[test]]
 name = "integration"

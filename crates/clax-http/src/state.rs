@@ -127,10 +127,10 @@ pub struct AppState {
     /// `[questions] terminal_after_s`, read when the daemon starts.
     pub terminal_after_s: u64,
     /// The latency gate's calibration database, built on first use
-    /// ([`crate::routes::perf`]).
+    /// (`clax_server::routes::perf`).
     pub calibration: crate::perf::Slot,
     /// How long the gateway's latest signature verifications took, for the
-    /// latency gate ([`crate::routes::perf::verify_times`]).
+    /// latency gate (`clax_server::routes::perf::verify_times`).
     pub verify_times: Arc<crate::perf::VerifyTimes>,
     /// The journal appender's wake-up, which `store` nudges after each
     /// commit that recorded an audit event.
@@ -157,7 +157,7 @@ pub struct AppState {
     /// The visibility generation (spec 2026-10-08-multi-agent-multi-person M17).
     pub vis_gen: VisGen,
     /// Debug builds: whether requests honour the `x-clax-test-delay-ms`
-    /// header (`crate::routes`), so a test can make a real route slow.
+    /// header (`clax_server::routes`), so a test can make a real route slow.
     /// `false` in every daemon `serve` starts; the testkit's daemon sets it.
     pub test_delays: bool,
 }
