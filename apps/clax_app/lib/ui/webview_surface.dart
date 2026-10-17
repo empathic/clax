@@ -68,6 +68,7 @@ class WebViewAppSurface implements AppSurface, CapturableSurface {
       // Not every platform view takes a background colour.
       c.setBackgroundColor(background).catchError((Object _) {});
     }
+    noPinchZoom(c);
   }
 
   /// The daemon's base URL (`http://127.0.0.1:<port>`).
@@ -253,4 +254,13 @@ class WebViewAppSurface implements AppSurface, CapturableSurface {
     _faults.close();
     _elsewhere.close();
   }
+}
+
+/// Turns off the WebView's own pinch and double-tap zoom, so an app page
+/// stays at its laid-out scale (Android zooms every page by default).
+/// Platforms without it are left as they are.
+void noPinchZoom(WebViewController c) {
+  try {
+    c.enableZoom(false).catchError((Object _) {});
+  } on Object catch (_) {}
 }
