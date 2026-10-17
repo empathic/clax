@@ -1208,7 +1208,10 @@ async fn an_open_copy_holds_one_poll_there_however_often_the_sync_wakes() {
         p.backstop().await;
     }
     p.sleeper.wait_for(BACKSTOP, 1).await;
-    assert_eq!(p.public.ts.question_waiters(&rqid).await, 1);
+    // A wake ends the poll there and starts the next, so the count can be
+    // 0 for a moment: wait for it to be 1. Polls left holding would keep it
+    // above 1, and this wait would fail.
+    p.public.ts.wait_question_waiters(&rqid, 1).await;
     // Answered there, the local question closes.
     let (s, v) = p
         .public
