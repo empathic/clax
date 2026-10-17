@@ -98,8 +98,9 @@ The engine:
   comments, the draft's edits over what the app held, the agent's notes,
   cost), and the thread offers **Keep going** (the Retry hook): a change
   run that starts from those edits where the app still holds what they
-  were made on, else (after an hour, or the app changed) from the app,
-  with the notes either way. A change and its Keep goings share $6; each
+  were made on, else (the app changed) from the app, with the notes
+  either way; the draft has no age limit (owner, 2026-10-16) beyond the
+  day an unfinished change is kept. A change and its Keep goings share $6; each
   run's cost cap is what is left, at most $1.50.
 - The system prompt is rewritten for depth: a real plan, the kit, a
   designed look, tests for logic, several screens where the app needs

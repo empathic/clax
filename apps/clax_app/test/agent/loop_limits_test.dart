@@ -379,8 +379,8 @@ void main() {
     expect(notes.last, 'Renaming the button');
   });
 
-  test('an expired draft starts over from the app with the notes, and the '
-      'agent is told to say so', () async {
+  test('a Keep going hours after the stop still starts from the kept '
+      'draft', () async {
     final item = api.sendComment(aid, 'Rename Save', queue: false);
     await unfinished.put(
       UnfinishedChange(
@@ -389,7 +389,7 @@ void main() {
         commentIds: [item.commentId],
         limit: '120 seconds',
         spentUsd: 1.5,
-        at: clock.now().subtract(const Duration(hours: 2)),
+        at: clock.now().subtract(const Duration(hours: 5)),
         notes: const ['Renaming the button'],
         edits: {'index.html': page.replaceFirst('Save', 'Keep')},
         before: {'index.html': fingerprint(page)},
@@ -397,19 +397,20 @@ void main() {
     );
     final loop = loopWith([
       [
-        const ScriptedCall('finish', {
-          'reply': 'Started over.',
-          'resolve': false,
-        }),
+        const ScriptedCall('render', {'file': null}),
+        const ScriptedCall('finish', {'reply': 'Renamed.', 'resolve': true}),
       ],
     ]);
     await loop.change(aid, [item], session: sid, keepGoing: true);
 
-    expect(runner.states.single.draft.files['index.html'], page);
+    expect(
+      runner.states.single.draft.files['index.html'],
+      contains('<button>Keep'),
+    );
     final first = runner.text(0);
-    expect(first, contains('its unfinished draft has expired'));
-    expect(first, contains('Say in reply that you started over'));
-    expect(first, contains('"Renaming the button"'));
+    expect(first, contains('already holds that run'));
+    expect(first, isNot(contains('started over')));
+    expect(api.filesOf(aid, 2)['index.html'], contains('<button>Keep'));
   });
 
   test('Keep going with a comment the kept change did not answer runs as a '
@@ -472,34 +473,30 @@ void main() {
     },
   );
 
-  test(
-    'the unfinished file drops a stale change and an expired draft',
-    () async {
-      final dir = await _tempDir();
-      final now = DateTime.utc(2026, 10, 15, 12);
-      UnfinishedChange at(String t, DateTime when) => UnfinishedChange(
-        artifactId: 'a',
-        threadIds: [t],
-        commentIds: const ['c'],
-        limit: '10 turns',
-        spentUsd: 1,
-        at: when,
-        notes: const ['n'],
-        edits: const {'index.html': 'x'},
-        before: const {'index.html': null},
-      );
-      final f = FileUnfinishedChanges(dir.file('u.json'), now: () => now);
-      await f.put(at('old', now.subtract(const Duration(hours: 25))));
-      await f.put(at('expired', now.subtract(const Duration(hours: 2))));
-      await f.put(at('fresh', now));
-      final again = FileUnfinishedChanges(dir.file('u.json'), now: () => now);
-      expect(await again.get('old'), isNull);
-      final expired = (await again.get('expired'))!;
-      expect(expired.edits, isEmpty);
-      expect(expired.notes, ['n']);
-      expect((await again.get('fresh'))!.edits, isNotEmpty);
-    },
-  );
+  test('the unfinished file drops a stale change and keeps the draft of a '
+      'younger one', () async {
+    final dir = await _tempDir();
+    final now = DateTime.utc(2026, 10, 15, 12);
+    UnfinishedChange at(String t, DateTime when) => UnfinishedChange(
+      artifactId: 'a',
+      threadIds: [t],
+      commentIds: const ['c'],
+      limit: '10 turns',
+      spentUsd: 1,
+      at: when,
+      notes: const ['n'],
+      edits: const {'index.html': 'x'},
+      before: const {'index.html': null},
+    );
+    final f = FileUnfinishedChanges(dir.file('u.json'), now: () => now);
+    await f.put(at('old', now.subtract(const Duration(hours: 25))));
+    await f.put(at('hours', now.subtract(const Duration(hours: 5))));
+    await f.put(at('fresh', now));
+    final again = FileUnfinishedChanges(dir.file('u.json'), now: () => now);
+    expect(await again.get('old'), isNull);
+    expect((await again.get('hours'))!.edits, {'index.html': 'x'});
+    expect((await again.get('fresh'))!.edits, isNotEmpty);
+  });
 
   test('the unfinished file keeps a change across instances', () async {
     final dir = await _tempDir();

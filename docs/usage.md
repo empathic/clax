@@ -634,8 +634,8 @@ same signature and do not ask.
   says which limit it hit ("too big for one go — it needed more than 10
   steps"), with the agent's note of what is left when it gave up for
   lack of room, and offers **Keep going**:
-  it goes on from the stopped run's unfinished draft and notes, or, after
-  an hour, starts over with the notes. A change and its Keep goings may
+  it goes on from the stopped run's unfinished draft and notes, or, when
+  the app changed under that draft, starts over with the notes. A change and its Keep goings may
   cost $6 together; the reply says what is left when under half. A build
   that spent its $6 waits; Resume on it starts a new $6.
 - **Questions.** When the agent asks you something while its app is on
