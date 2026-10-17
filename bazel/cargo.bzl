@@ -51,8 +51,8 @@ def cargo_package(
         warm-up stamp and CLAX_TEST_BIN.
       test_env: environment variables for every test.
       shard_counts: {test name: shards}.
-      split_tests: {[[test]] name: {"not": [module stems of tests/ it does
-        not declare], "groups": N}}: the modules that test's root declares,
+      split_tests: {[[test]] name: {"groups": N}}: the modules of tests/
+        (every one a module of that test's root, which checks it),
         each gated in the root by
         `#[cfg(any(not(clax_split), clax_split = "<module>"))]`, are dealt
         in name order into N test targets, `<test>__1` … `<test>__N`, with
@@ -224,7 +224,7 @@ def cargo_package(
             stems = [f.split("/")[-1][:-len(".rs")] for f in native.glob(["tests/*.rs"], allow_empty = True)]
             stems += [f.split("/")[-2] for f in native.glob(["tests/*/mod.rs"], allow_empty = True)]
             spec = split_tests[name]
-            modules = ["root"] + sorted([m for m in stems if m not in roots and m != "common" and m not in spec["not"]])
+            modules = ["root"] + sorted([m for m in stems if m not in roots and m != "common"])
             groups = spec["groups"]
             for g in range(groups):
                 cfgs = ["--cfg", "clax_split"]

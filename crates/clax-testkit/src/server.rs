@@ -75,6 +75,8 @@ pub struct TestServer {
     pub journal: Arc<clax_server::audit::JournalStatus>,
     /// The bounds on agents' unverified bodies.
     pub agent_gate: Arc<clax_server::agent::Gate>,
+    /// The web UI the daemon serves.
+    pub web: Arc<dyn clax_core::embedded::FileTree>,
     extension_id: String,
     _dir: tempfile::TempDir,
 }
@@ -82,6 +84,13 @@ pub struct TestServer {
 impl TestServer {
     pub async fn spawn() -> TestServer {
         Self::spawn_with(|_| {}).await
+    }
+
+    /// A test daemon serving the web UI from `dir` (laid out like
+    /// `web/dist`), read from disk on every request.
+    pub async fn spawn_with_web(dir: impl Into<std::path::PathBuf>) -> TestServer {
+        let web = Arc::new(clax_core::embedded::DiskTree::new(dir));
+        Self::spawn_with(move |s| s.web = web).await
     }
 
     pub async fn spawn_with(f: impl FnOnce(&mut AppState)) -> TestServer {
@@ -228,6 +237,9 @@ impl TestServer {
             ))),
             vis_gen,
             test_delays: true,
+            // The build's web UI; tests of the shell serve their own with
+            // `spawn_with`, a `DiskTree` of a scratch directory.
+            web: clax_server::routes::shell::built_in(),
         };
         f(&mut state);
         state.audit_wake.install(&state.store);
@@ -243,6 +255,7 @@ impl TestServer {
         let extension_id = state.extension_id.clone();
         let journal = state.journal.clone();
         let agent_gate = state.agent_gate.clone();
+        let web = state.web.clone();
         let app = if shutdown {
             clax_server::build_router_with_shutdown(state, tokio::sync::watch::channel(false).0)
         } else {
@@ -270,6 +283,7 @@ impl TestServer {
             addr,
             journal,
             agent_gate,
+            web,
             extension_id,
             _dir: dir,
         }

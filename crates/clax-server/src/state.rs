@@ -68,6 +68,9 @@ pub struct AppState {
     /// Flips to `true` when the daemon begins shutting down; long-lived streams end on it.
     pub shutdown: tokio::sync::watch::Receiver<bool>,
     pub wrap_cache: Arc<WrapCache>,
+    /// The web UI the shell routes serve (`routes::shell`): the build's own
+    /// ([`crate::routes::shell::built_in`]) or a directory read from disk.
+    pub web: Arc<dyn clax_core::embedded::FileTree>,
     /// Deadline for ordinary `/api` requests.
     pub request_timeout: Duration,
     /// Deadline for the publish routes and asset upload.

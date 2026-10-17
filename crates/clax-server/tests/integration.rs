@@ -1,6 +1,6 @@
 //! The integration tests of `clax-server` in one test binary, a module per file
-//! in `tests/` (but for those of `tests/web_dist.rs`): every test binary costs
-//! a link and, on macOS, an assessment of the new executable on its first run.
+//! in `tests/`: every test binary costs a link and, on macOS, an assessment of
+//! the new executable on its first run.
 //!
 //! Bazel builds each module as its own test target instead (`clax_split`,
 //! `bazel/cargo.bzl`), so an edit recompiles, relinks and reruns each module
@@ -97,6 +97,8 @@ mod api_watches;
 mod api_working;
 #[cfg(any(not(clax_split), clax_split = "api_working_auto"))]
 mod api_working_auto;
+#[cfg(any(not(clax_split), clax_split = "bridge_dev"))]
+mod bridge_dev;
 #[cfg(any(not(clax_split), clax_split = "daemon"))]
 mod daemon;
 #[cfg(any(not(clax_split), clax_split = "golden_single_owner"))]
@@ -105,6 +107,10 @@ mod golden_single_owner;
 mod harness_ids;
 #[cfg(any(not(clax_split), clax_split = "sample_anthropic"))]
 mod sample_anthropic;
+#[cfg(any(not(clax_split), clax_split = "shell_boot"))]
+mod shell_boot;
+#[cfg(any(not(clax_split), clax_split = "shell_entries"))]
+mod shell_entries;
 
 /// Cargo's test autodiscovery is off for this crate (`autotests = false` in
 /// its manifest), so a file in `tests/`, or a directory there with a
@@ -114,7 +120,7 @@ mod sample_anthropic;
 #[test]
 fn every_test_file_is_a_module() {
     let tests = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
-    let roots = ["integration", "web_dist"];
+    let roots = ["integration"];
     let declared: Vec<String> = roots
         .iter()
         .map(|r| std::fs::read_to_string(tests.join(format!("{r}.rs"))).unwrap())

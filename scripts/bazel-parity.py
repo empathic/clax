@@ -24,7 +24,7 @@ TEST = re.compile(r"^test (.+?)(?: - should panic)? \.\.\. (ok|FAILED|ignored)\b
 # Tests that exist under Bazel only, by design.
 BAZEL_ONLY = {
     # The debug build that embeds its web UI is Bazel's (clax_embedded).
-    ("clax-server", "routes::shell::tests::an_embedded_debug_build_versions_the_embedded_bridge"),
+    ("clax-server", "routes::shell::tests::an_embedded_build_versions_the_embedded_bridge"),
 }
 
 

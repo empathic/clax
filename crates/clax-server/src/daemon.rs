@@ -200,6 +200,10 @@ pub struct ServeConfig {
     /// The `sample` capability's provider and settings (`clax serve` uses
     /// [`crate::sample::Sampler::from_home`] on its own environment).
     pub sample: Arc<crate::sample::Sampler>,
+    /// The web UI the daemon serves (`clax serve` uses
+    /// [`crate::routes::shell::built_in`], or a [`clax_core::embedded::DiskTree`]
+    /// of `--web-dist`).
+    pub web: Arc<dyn clax_core::embedded::FileTree>,
 }
 
 /// Binds the first port of [`port_range`]`(start)` that no other program
@@ -351,6 +355,7 @@ pub async fn serve(
         ))),
         vis_gen,
         test_delays: false,
+        web: cfg.web.clone(),
     };
     state.audit_wake.install(&state.store);
     // The appender recovers the journal and catches it up on its own

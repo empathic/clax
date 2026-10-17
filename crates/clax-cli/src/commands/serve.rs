@@ -34,9 +34,12 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
             )
             .init();
         #[cfg(debug_assertions)]
-        if let Some(dir) = &a.web_dist {
-            clax_server::routes::shell::set_web_dist(dir.clone());
-        }
+        let web: std::sync::Arc<dyn clax_core::embedded::FileTree> = match &a.web_dist {
+            Some(dir) => std::sync::Arc::new(clax_core::embedded::DiskTree::new(dir)),
+            None => clax_server::routes::shell::built_in(),
+        };
+        #[cfg(not(debug_assertions))]
+        let web = clax_server::routes::shell::built_in();
         let rt = tokio::runtime::Runtime::new()?;
         let cfg = ServeConfig {
             home: home.clone(),
@@ -53,6 +56,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
                 home.root(),
                 |k| std::env::var(k).ok(),
             )),
+            web,
         };
         return rt.block_on(serve(cfg, None));
     }

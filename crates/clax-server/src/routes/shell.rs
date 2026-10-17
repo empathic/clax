@@ -1,5 +1,6 @@
-//! Serves the embedded web UI: the shell's two entries (the gallery and the
-//! artifact view) and static assets.
+//! Serves the web UI (the daemon's [`FileTree`], `AppState::web`): the
+//! shell's two entries (the gallery and the artifact view) and static
+//! assets.
 
 use crate::error::ApiError;
 use crate::http_cache::{self, IMMUTABLE, REVALIDATE};
@@ -8,63 +9,54 @@ use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, RawQuery};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use rust_embed::RustEmbed;
+use clax_core::embedded::FileTree;
+use std::sync::Arc;
 
-#[derive(RustEmbed)]
+/// Where the bridge bundle sits in the web UI.
+const BRIDGE: &str = "_clax/bridge.js";
+
+/// The web UI this build embeds (`web/dist` at build time): a release
+/// build's, and a debug build's that embeds its files (`clax_embedded`,
+/// Bazel's).
+#[cfg(any(not(debug_assertions), clax_embedded))]
+#[derive(rust_embed::RustEmbed)]
 #[folder = "$CLAX_WEB_DIST_DIR"]
 struct Assets;
 
-/// Where the bridge bundle sits in [`Assets`].
-const BRIDGE: &str = "_clax/bridge.js";
+/// [`Assets`] as a [`FileTree`].
+#[cfg(any(not(debug_assertions), clax_embedded))]
+struct Embedded;
 
-/// Debug builds only: the directory the web UI is read from in place of
-/// `web/dist` (see [`set_web_dist`]).
-#[cfg(debug_assertions)]
-static WEB_DIST: std::sync::RwLock<Option<std::path::PathBuf>> = std::sync::RwLock::new(None);
-
-/// Debug builds only: serves the web UI from `dir` (laid out like `web/dist`)
-/// instead of `web/dist`, for the whole process. Tests that change the built
-/// files use it, so no test writes the real `web/dist` that `just dev` serves.
-#[cfg(debug_assertions)]
-pub fn set_web_dist(dir: std::path::PathBuf) {
-    *WEB_DIST.write().unwrap_or_else(|e| e.into_inner()) = Some(dir);
-}
-
-/// The directory a debug build reads the web UI from.
-#[cfg(debug_assertions)]
-fn web_dist() -> std::path::PathBuf {
-    WEB_DIST
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
-        .unwrap_or_else(|| DEFAULT_WEB_DIST.into())
-}
-
-/// The directory a debug build reads when no [`set_web_dist`] override is
-/// set: `web/dist`. A build that embeds its web UI (`clax_embedded`) reads
-/// its embed instead and names no directory: Bazel's path is the action's
-/// sandbox, which differs between the metadata and the library actions of a
-/// pipelined build, so naming it would give the two different crate hashes.
-#[cfg(all(debug_assertions, not(clax_embedded)))]
-const DEFAULT_WEB_DIST: &str = env!("CLAX_WEB_DIST_DIR");
-#[cfg(all(debug_assertions, clax_embedded))]
-const DEFAULT_WEB_DIST: &str = "";
-
-/// A file of the web UI (`path` relative to `web/dist`): embedded in a release
-/// build, read from disk (see [`set_web_dist`]) in a debug build.
-fn asset(path: &str) -> Option<rust_embed::EmbeddedFile> {
-    #[cfg(debug_assertions)]
-    if WEB_DIST.read().unwrap_or_else(|e| e.into_inner()).is_some() {
-        let rel = std::path::Path::new(path);
-        if !rel
-            .components()
-            .all(|c| matches!(c, std::path::Component::Normal(_)))
-        {
-            return None;
-        }
-        return rust_embed::utils::read_file_from_fs(&web_dist().join(rel)).ok();
+#[cfg(any(not(debug_assertions), clax_embedded))]
+impl FileTree for Embedded {
+    fn get(&self, path: &str) -> Option<clax_core::embedded::EmbeddedFile> {
+        <Assets as rust_embed::RustEmbed>::get(path).map(|f| clax_core::embedded::EmbeddedFile {
+            sha256: f.metadata.sha256_hash(),
+            data: f.data,
+        })
     }
-    Assets::get(path)
+
+    fn paths(&self) -> Vec<String> {
+        let mut out: Vec<String> = <Assets as rust_embed::RustEmbed>::iter()
+            .map(|p| p.into_owned())
+            .collect();
+        out.sort();
+        out
+    }
+}
+
+/// The web UI a daemon serves unless told otherwise
+/// (`ServeConfig::web`): the embedded one, or in a debug build that does
+/// not embed it, the checkout's `web/dist` read from disk on every request,
+/// so `just dev` serves each rebuild at once.
+pub fn built_in() -> Arc<dyn FileTree> {
+    #[cfg(all(debug_assertions, not(clax_embedded)))]
+    let web = Arc::new(clax_core::embedded::DiskTree::new(env!(
+        "CLAX_WEB_DIST_DIR"
+    )));
+    #[cfg(any(not(debug_assertions), clax_embedded))]
+    let web = Arc::new(Embedded);
+    web
 }
 
 /// A short content hash: the first 12 hex digits of a SHA-256.
@@ -72,56 +64,15 @@ fn short_hash(sha256: &[u8; 32]) -> String {
     sha256[..6].iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// The short hash of the bridge bundle as it reads now; empty when the UI is
-/// not built.
-fn hash_bridge() -> String {
-    asset(BRIDGE)
-        .map(|f| short_hash(&f.metadata.sha256_hash()))
+/// The bridge version of `web`: a short hash of its bridge bundle, which
+/// bridge tags carry as `/_clax/bridge.js?v=<version>`. Empty when the UI is
+/// not built. A tree read from disk is rehashed whenever the bundle's
+/// modification time or size changes ([`clax_core::embedded::DiskTree`]),
+/// so a bridge rebuilt under a running daemon gets a new version.
+pub fn bridge_version(web: &dyn FileTree) -> String {
+    web.sha256(BRIDGE)
+        .map(|h| short_hash(&h))
         .unwrap_or_default()
-}
-
-/// The bridge version: a short hash of the bridge bundle, which bridge tags
-/// carry as `/_clax/bridge.js?v=<version>`. Empty when the UI is not built.
-///
-/// A release build embeds the bundle, so the version is computed once (the
-/// router computes it at startup).
-#[cfg(not(debug_assertions))]
-pub fn bridge_version() -> String {
-    static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    VERSION.get_or_init(hash_bridge).clone()
-}
-
-/// The bridge version: a short hash of the bridge bundle, which bridge tags
-/// carry as `/_clax/bridge.js?v=<version>`. Empty when the UI is not built.
-///
-/// A debug build reads `web/dist` from disk on every request, and `just dev`
-/// rebuilds the bridge under a running daemon, so the version follows the
-/// file: it is rehashed whenever the file's path, modification time or size
-/// changes. A debug build that embeds its web UI (`clax_embedded`) and has
-/// no `set_web_dist` override versions the embedded bundle, once.
-#[cfg(debug_assertions)]
-pub fn bridge_version() -> String {
-    #[cfg(clax_embedded)]
-    if WEB_DIST.read().unwrap_or_else(|e| e.into_inner()).is_none() {
-        static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-        return VERSION.get_or_init(hash_bridge).clone();
-    }
-    type Stamp = (std::path::PathBuf, Option<std::time::SystemTime>, u64);
-    static SEEN: std::sync::Mutex<Option<(Stamp, String)>> = std::sync::Mutex::new(None);
-    let path = web_dist().join(BRIDGE);
-    let Ok(m) = std::fs::metadata(&path) else {
-        return String::new();
-    };
-    let stamp = (path, m.modified().ok(), m.len());
-    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((s, v)) = seen.as_ref()
-        && *s == stamp
-    {
-        return v.clone();
-    }
-    let v = hash_bridge();
-    *seen = Some((stamp, v.clone()));
-    v
 }
 
 /// The bridge's `Cache-Control`: in a release build, immutable at the URL
@@ -156,8 +107,8 @@ fn unframeable(mut res: Response) -> Response {
 }
 
 /// An entry of the shell (`index.html` or `artifact.html`) as an HTML page.
-fn entry(req: &HeaderMap, name: &str) -> Result<Response, ApiError> {
-    match asset(name) {
+fn entry(web: &dyn FileTree, req: &HeaderMap, name: &str) -> Result<Response, ApiError> {
+    match web.get(name) {
         Some(f) => Ok(unframeable(http_cache::html(
             req,
             &String::from_utf8_lossy(&f.data),
@@ -173,10 +124,11 @@ fn entry(req: &HeaderMap, name: &str) -> Result<Response, ApiError> {
 /// `/`, `/inbox` and `/people`: the gallery's entry, which shows the
 /// gallery, the inbox or People by its path.
 pub async fn gallery_page(
+    axum::extract::State(s): axum::extract::State<crate::state::AppState>,
     _d: crate::agent::DeniedToGrants,
     req: HeaderMap,
 ) -> Result<Response, ApiError> {
-    entry(&req, "index.html")
+    entry(&*s.web, &req, "index.html")
 }
 
 /// `/a/…`: `artifact.html` with the first-load data ([`crate::boot`]), or the
@@ -205,10 +157,10 @@ pub async fn artifact_page(
     d.refuse_agents()?;
     let route = crate::shell_route::parse_shell_path(uri.path());
     if matches!(route, crate::shell_route::ShellRoute::Gallery) {
-        return entry(&req, "index.html");
+        return entry(&*s.web, &req, "index.html");
     }
-    let Some(f) = asset("artifact.html") else {
-        return entry(&req, "artifact.html");
+    let Some(f) = s.web.get("artifact.html") else {
+        return entry(&*s.web, &req, "artifact.html");
     };
     let template = String::from_utf8_lossy(&f.data).into_owned();
     let injected = if crate::auth::request_host_allowed(&req, &uri, &extensions) {
@@ -327,6 +279,7 @@ const CONTRACT_FILES: &[(&str, &str)] = &[
 /// definitions, and `contract/clax-extensions.d.ts` Clax's additions to
 /// them, as plain text.
 pub async fn static_file(
+    axum::extract::State(s): axum::extract::State<crate::state::AppState>,
     _d: crate::agent::DeniedToGrants,
     p: Result<Path<String>, PathRejection>,
     RawQuery(query): RawQuery,
@@ -361,7 +314,7 @@ pub async fn static_file(
     // dot (a bundler's manifest) are never served.
     let part = path.starts_with("bridge/");
     let hidden = path.split('/').any(|c| c.starts_with('.'));
-    let Some(f) = (!hidden).then(|| asset(&file)).flatten() else {
+    let Some(f) = (!hidden).then(|| s.web.get(&file)).flatten() else {
         let mut res = ApiError::not_found().into_response();
         if part {
             res.headers_mut().insert(
@@ -379,7 +332,7 @@ pub async fn static_file(
             .to_string()
     };
     if file == BRIDGE {
-        let cc = bridge_cache_control(query.as_deref(), &short_hash(&f.metadata.sha256_hash()));
+        let cc = bridge_cache_control(query.as_deref(), &short_hash(&f.sha256));
         return Ok(http_cache::tagged(&req, &f.data, cc, || {
             ([(header::CONTENT_TYPE, ct)], f.data.clone().into_owned()).into_response()
         }));
@@ -465,16 +418,21 @@ mod tests {
         );
     }
 
-    /// A debug build with its web UI embedded (`clax_embedded`, Bazel's)
-    /// names the bridge by the embedded bundle, with no file on disk to read.
-    #[cfg(all(debug_assertions, clax_embedded))]
+    /// A build that embeds its web UI versions the bridge by the embedded
+    /// bundle, with no file on disk to read.
+    #[cfg(any(not(debug_assertions), clax_embedded))]
     #[test]
-    fn an_embedded_debug_build_versions_the_embedded_bridge() {
-        let v = bridge_version();
+    fn an_embedded_build_versions_the_embedded_bridge() {
+        let v = bridge_version(&Embedded);
         assert_eq!(v.len(), 12, "{v:?}");
         assert_eq!(
             v,
-            short_hash(&Assets::get(BRIDGE).unwrap().metadata.sha256_hash())
+            short_hash(
+                &<Assets as rust_embed::RustEmbed>::get(BRIDGE)
+                    .unwrap()
+                    .metadata
+                    .sha256_hash()
+            )
         );
     }
 

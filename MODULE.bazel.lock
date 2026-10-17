@@ -576,7 +576,7 @@
           "FILE:@@//Cargo.toml 30b65453c3798a9070c794a471ac010e89fac5100f3c0389799346e3a73341fa",
           "FILE:@@//crates/clax-core/Cargo.toml fabce63eb278d081888f4481e87c1777a1ec72970b796401f864476e20bc40d2",
           "FILE:@@//crates/clax-fake-exe/Cargo.toml d9b84359e174089cf720dfc6dedb3920f2fb53253b98dd4ecb9216e5fcfcd1df",
-          "FILE:@@//crates/clax-server/Cargo.toml d5fd4843b6cbfa5bad91650e6367a97ad8d634f8ec35246f28e8197b5bbe87e0",
+          "FILE:@@//crates/clax-server/Cargo.toml cf00e79d45e31fdbcf3b37384a54e7126db0de32f20f49ad89a984c0def4d2bc",
           "FILE:@@//crates/clax-mcp/Cargo.toml 015f9f9bd48c8aaa7f0b4e6bada2f67a644d5724846a912e436322ce301ebb69",
           "FILE:@@//crates/clax-testkit/Cargo.toml 698610d566402a313773ece4c79622207245ec6f8ba096fdb15c11cd0d465d84",
           "FILE:@@//crates/clax-hooks/Cargo.toml a1f6ce6aa68490b9bb1159ced65b7b715cdd742fbd79d7a0b8d8c45fe4cdd0e3",

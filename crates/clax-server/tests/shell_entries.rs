@@ -1,8 +1,7 @@
-//! `/` serves the gallery entry and `/a/…` the artifact entry, served from a web
-//! UI override (see `tests/web_dist.rs`).
+//! `/` serves the gallery entry and `/a/…` the artifact entry, from a test
+//! daemon serving a scratch web UI.
 #![cfg(debug_assertions)]
 
-use clax_server::routes::shell::set_web_dist;
 use clax_testkit::TestServer;
 
 #[tokio::test]
@@ -16,9 +15,7 @@ async fn each_route_gets_its_own_entry() {
         "export {};",
     )
     .unwrap();
-    let _dist = crate::web_dist_lock().await;
-    set_web_dist(dist.path().to_path_buf());
-    let ts = TestServer::spawn().await;
+    let ts = TestServer::spawn_with_web(dist.path()).await;
     let body = |p: &'static str| {
         let ts = &ts;
         async move { ts.get(p).await.text().await.unwrap() }
