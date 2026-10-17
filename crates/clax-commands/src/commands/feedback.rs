@@ -22,9 +22,17 @@ pub enum Cmd {
     /// tool call, its Stop hook, or wait_for_feedback. The session is
     /// --session (a Clax session ID), or --agent with --harness-session (the
     /// harness's own ID), or, inside Grok Build, GROK_SESSION_ID. Exits 0
-    /// once the session has ended. With --once, it exits after the first
-    /// comment, for a harness that wakes when a background command exits
-    /// (Claude Code).
+    /// once the session has ended.
+    ///
+    /// In Claude Code, run it without --once under the Monitor tool
+    /// (timeout_ms 1800000, started again when it expires): each line is
+    /// an event that wakes the session, and nothing needs starting again
+    /// per comment. In Grok Build, run it under the monitor tool with
+    /// persistent: true. With --once it exits after the first comment, for
+    /// a harness that wakes only when a background command exits (Claude
+    /// Code's Bash run_in_background, started again after each comment).
+    /// The `watch` tool's result gives the command for this session as
+    /// `wake.follow_command`.
     Follow(FollowArgs),
 }
 
@@ -65,9 +73,10 @@ pub struct FollowArgs {
     #[arg(long, hide = true, default_value_t = 60)]
     pub grace_secs: u64,
     /// Exit 0 after the first poll that printed at least one line, so a
-    /// harness that wakes when a background command exits (Claude Code) is
-    /// woken by the first comment. The agent starts it again after handling
-    /// the comment.
+    /// harness that wakes only when a background command exits (Claude
+    /// Code's Bash run_in_background) is woken by the first comment. The
+    /// agent starts it again after handling the comment. Under Claude
+    /// Code's Monitor tool, leave it off.
     #[arg(long)]
     pub once: bool,
 }
