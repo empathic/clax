@@ -6,7 +6,7 @@ async fn slow_api_requests_time_out_with_json_408() {
         state.request_timeout = std::time::Duration::from_millis(200);
     })
     .await;
-    let res = ts.get("/api/_test/sleep/1000").await;
+    let res = ts.get_authed("/api/_test/sleep/1000").await;
     assert_eq!(res.status(), 408);
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["error"]["code"], "timeout");
@@ -60,8 +60,10 @@ async fn write_side_effects_survive_a_handler_timeout() {
     let mut stream = events.bytes_stream();
     assert!(saw_event(&mut stream, "event: ready").await);
     let res = ts
-        .client
-        .post(format!("{}/api/_test/slow_publish/300", ts.base))
+        .authed(
+            ts.client
+                .post(format!("{}/api/_test/slow_publish/300", ts.base)),
+        )
         .send()
         .await
         .unwrap();
@@ -184,4 +186,40 @@ async fn mcp_is_outside_the_request_timeout() {
     assert_eq!(res.status(), 200);
     let text = res.text().await.unwrap();
     assert!(text.contains("\"serverInfo\""), "{text}");
+}
+
+/// The test routes that hold a request or a store worker take the owner's
+/// token and a bounded sleep; the audit context is served by the testkit's
+/// daemon alone, never by one `serve` starts.
+#[tokio::test]
+async fn the_test_routes_refuse_callers_without_the_token() {
+    let ts = TestServer::spawn().await;
+    let sleep = ts.get("/api/_test/sleep/1").await;
+    assert_eq!(sleep.status(), 401, "sleep without the token");
+    let publish = ts
+        .client
+        .post(format!("{}/api/_test/slow_publish/1", ts.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(publish.status(), 401, "slow_publish without the token");
+    let list: serde_json::Value = ts.get_authed("/api/artifacts").await.json().await.unwrap();
+    assert_eq!(list["artifacts"].as_array().unwrap().len(), 0, "nothing made");
+
+    for (method, path) in [
+        (reqwest::Method::GET, "/api/_test/sleep/60001"),
+        (reqwest::Method::POST, "/api/_test/slow_publish/60001"),
+    ] {
+        let res = ts
+            .authed(ts.client.request(method, format!("{}{path}", ts.base)))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 400, "{path}: over the cap");
+    }
+
+    let served = TestServer::spawn_with(|s| s.test_daemon = false).await;
+    let ctx = served.get_authed("/api/_test/audit/ctx").await;
+    assert_eq!(ctx.status(), 404, "audit ctx outside the testkit's daemon");
+    assert_eq!(ts.get_authed("/api/_test/audit/ctx").await.status(), 200);
 }

@@ -297,7 +297,7 @@ async fn long_poll_is_exempt_from_the_request_timeout() {
     tokio::time::timeout(Duration::from_secs(5), started)
         .await
         .expect("the poll is in progress");
-    let cut = ts.get_authed("/api/_test/sleep/600000").await;
+    let cut = ts.get_authed("/api/_test/sleep/60000").await;
     assert_eq!(cut.status(), 408, "a timed request outliving the timeout");
     assert_eq!(waiters.count(&sid), 1, "the poll outlived it");
     stop.send(true).unwrap();

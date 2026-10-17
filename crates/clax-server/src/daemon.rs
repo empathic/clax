@@ -354,7 +354,7 @@ pub async fn serve(
             clax_http::agent::TokioTimer::default(),
         ))),
         vis_gen,
-        test_delays: false,
+        test_daemon: false,
         web: cfg.web.clone(),
     };
     state.audit_wake.install(&state.store);

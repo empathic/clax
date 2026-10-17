@@ -313,8 +313,16 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
     #[cfg(debug_assertions)]
     let api_fast = api_fast
         .route("/api/_test/sleep/{ms}", get(test_sleep))
-        .route("/api/_test/slow_publish/{ms}", post(test_slow_publish))
-        .route("/api/_test/audit/ctx", get(test_audit_ctx));
+        .route("/api/_test/slow_publish/{ms}", post(test_slow_publish));
+    // The audit context answers every caller, cookie and LAN viewer
+    // included (what it reports is the point), so it takes no token and is
+    // served by the testkit's daemon alone.
+    #[cfg(debug_assertions)]
+    let api_fast = if state.test_daemon {
+        api_fast.route("/api/_test/audit/ctx", get(test_audit_ctx))
+    } else {
+        api_fast
+    };
     #[cfg(debug_assertions)]
     let api_fast = api_fast
         .route("/api/_test/working/skew", post(working::skew))
@@ -352,7 +360,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             post(grants::test_fail_index),
         );
     #[cfg(debug_assertions)]
-    let api_fast = if state.test_delays {
+    let api_fast = if state.test_daemon {
         api_fast.layer(axum::middleware::from_fn(test_delay))
     } else {
         api_fast
@@ -391,7 +399,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         // A join merges pages as moves do.
         .route("/api/live/sites/join", post(sites::join));
     #[cfg(debug_assertions)]
-    let api_slow = if state.test_delays {
+    let api_slow = if state.test_daemon {
         api_slow.layer(axum::middleware::from_fn(test_delay))
     } else {
         api_slow
@@ -411,7 +419,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .layer(clax_http::http_cache::compression());
     let mcp = mcp::router(&state);
     #[cfg(debug_assertions)]
-    let mcp = if state.test_delays {
+    let mcp = if state.test_daemon {
         mcp.layer(axum::middleware::from_fn(test_delay))
     } else {
         mcp
@@ -490,7 +498,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
 /// Sleeps for the milliseconds in the `x-clax-test-delay-ms` request
 /// header, if any, before handling the request. It sits inside each route
 /// group's timeout layer, so tests can make a real route slow. Debug
-/// builds add it only when [`AppState::test_delays`] is set: the testkit's
+/// builds add it only when [`AppState::test_daemon`] is set: the testkit's
 /// daemon, never one `serve` starts.
 #[cfg(debug_assertions)]
 async fn test_delay(
@@ -521,26 +529,48 @@ async fn test_audit_ctx(ctx: clax_core::audit::AuditCtx) -> axum::Json<serde_jso
     }))
 }
 
+/// The longest sleep the test routes take: they hold a request, or a
+/// store worker, for at most this long.
+#[cfg(debug_assertions)]
+const TEST_SLEEP_MAX_MS: u64 = 60_000;
+
+/// `ms`, refused (400 `bad_request`) above [`TEST_SLEEP_MAX_MS`].
+#[cfg(debug_assertions)]
+fn test_sleep_ms(ms: u64) -> Result<Duration, ApiError> {
+    if ms > TEST_SLEEP_MAX_MS {
+        return Err(ApiError::bad_request(
+            "bad_request",
+            format!("sleeps are at most {TEST_SLEEP_MAX_MS} ms"),
+        ));
+    }
+    Ok(Duration::from_millis(ms))
+}
+
+/// Sleeps `ms` milliseconds, then answers 200: the owner's token only.
 #[cfg(debug_assertions)]
 async fn test_sleep(
     _d: DeniedToGrants,
+    _t: RequireToken,
     axum::extract::Path(ms): axum::extract::Path<u64>,
-) -> StatusCode {
-    tokio::time::sleep(Duration::from_millis(ms)).await;
-    StatusCode::OK
+) -> Result<StatusCode, ApiError> {
+    tokio::time::sleep(test_sleep_ms(ms)?).await;
+    Ok(StatusCode::OK)
 }
 
 /// Creates an artifact after sleeping inside the blocking closure, publishing the event from the
-/// same closure, so tests can observe write side effects surviving a handler timeout.
+/// same closure, so tests can observe write side effects surviving a handler timeout. The
+/// owner's token only.
 #[cfg(debug_assertions)]
 async fn test_slow_publish(
     axum::extract::State(s): axum::extract::State<AppState>,
     _d: DeniedToGrants,
+    _t: RequireToken,
     axum::extract::Path(ms): axum::extract::Path<u64>,
 ) -> Result<StatusCode, ApiError> {
+    let sleep = test_sleep_ms(ms)?;
     let events = s.events.clone();
     s.store_call(move |st| {
-        std::thread::sleep(Duration::from_millis(ms));
+        std::thread::sleep(sleep);
         let p = clax_core::publish::validate(
             serde_json::from_value(serde_json::json!({
                 "title": "slow",
@@ -741,15 +771,15 @@ mod l10 {
     const INLINE: &[(&str, &str)] = &[
         (
             "/api/_test/sleep/{ms}",
-            "debug builds only; names no artifact",
+            "debug builds only; RequireToken; names no artifact",
         ),
         (
             "/api/_test/slow_publish/{ms}",
-            "debug builds only; makes an HTML artifact",
+            "debug builds only; RequireToken; makes an HTML artifact",
         ),
         (
             "/api/_test/audit/ctx",
-            "debug builds only; names no artifact",
+            "debug builds only, the testkit's daemon only; names no artifact",
         ),
         ("/api/admin/shutdown", "RequireToken"),
     ];
