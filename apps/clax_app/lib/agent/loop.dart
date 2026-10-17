@@ -610,6 +610,31 @@ class AgentLoop {
     return outcome;
   }
 
+  /// The stop count and spend the latest limit reply of this app on
+  /// [threadIds] states ([parseLimitProgress]), or null.
+  Future<({int stops, double spentUsd})?> _carriedFrom(
+    String aid,
+    List<String> threadIds,
+  ) async {
+    try {
+      ({int stops, double spentUsd})? best;
+      for (final t in await _api.threads(aid)) {
+        if (!threadIds.contains(t.id)) continue;
+        for (final c in t.comments.reversed) {
+          if (!c.byAgent || c.viaHarness != appHarness) continue;
+          if (parseLimitProgress(c.body) case final p?) {
+            if (best == null || p.stops > best.stops) best = p;
+            break;
+          }
+        }
+      }
+      return best;
+    } on Object catch (e) {
+      _log('the limit replies of $aid are unavailable: $e');
+      return null;
+    }
+  }
+
   /// The [UnfinishedChange] kept for [items]' threads on [aid], when it
   /// answered every one of [items]; else null, with [lost] true when
   /// nothing is kept for them (or it cannot be read), false when what is
@@ -1063,7 +1088,11 @@ class AgentLoop {
       resume = holds ? _Resume.draft : _Resume.changed;
       if (resume == _Resume.draft) start = kept.edits;
     }
-    final spentBefore = kept?.spentUsd ?? 0;
+    // With nothing kept, the count and spend go on from the thread's last
+    // limit reply.
+    final carried = lost ? await _carriedFrom(aid, threadIds) : null;
+    final spentBefore = kept?.spentUsd ?? carried?.spentUsd ?? 0;
+    final stopsBefore = kept?.stops ?? carried?.stops ?? 0;
     final draftFiles = {...snap.files};
     for (final e in start.entries) {
       if (e.value case final v?) {
@@ -1097,7 +1126,7 @@ class AgentLoop {
         cancelled: scope.future,
         clock: _clock,
         changeSpentUsd: spentBefore,
-        changeStops: kept?.stops ?? 0,
+        changeStops: stopsBefore,
         changeNotes: kept?.notes ?? const [],
         startedOver: lost || resume == _Resume.changed,
       ),
@@ -1130,10 +1159,10 @@ class AgentLoop {
           fromBundle: bundled,
           keepGoing: kept == null
               ? (lost
-                    ? const KeepGoingNote(
+                    ? KeepGoingNote(
                         limit: '',
-                        stops: 0,
-                        notes: [],
+                        stops: stopsBefore,
+                        notes: const [],
                         why: 'what that run left is no longer kept',
                       )
                     : null)
@@ -1181,7 +1210,7 @@ class AgentLoop {
       ran,
       earlierNotes: kept?.notes ?? const [],
       earlierAnswers: kept?.answers,
-      earlierStops: kept?.stops ?? 0,
+      earlierStops: stopsBefore,
     );
 
     final outcome = ran.outcome;
