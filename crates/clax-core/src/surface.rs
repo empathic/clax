@@ -50,7 +50,8 @@ pub struct Suggestion {
     pub why: String,
 }
 
-/// The person's last prompt to the session in the terminal.
+/// The person's last prompt, or inferred turn, to the session in the
+/// terminal.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TerminalSignal {
     pub at: DateTime<Utc>,
@@ -106,7 +107,9 @@ fn place_of(s: &Signals) -> Place {
 /// Clax signal to weigh it against are unsure, and unsure leans to Clax.
 /// An inferred turn a minute or more newer than the newest Clax signal
 /// gives the terminal, as a prompt would. With no Clax tab or panel open,
-/// Clax cannot show a question: the terminal, clear.
+/// Clax cannot show a question: the terminal, clear. The `why` speaks of
+/// the person in the third person, for the agent, and names an open panel
+/// whatever the suggestion.
 pub fn suggest(s: &Signals, now: DateTime<Utc>) -> Suggestion {
     let place = place_of(s);
     let make = |surface, confidence, why: String| Suggestion {
@@ -119,7 +122,8 @@ pub fn suggest(s: &Signals, now: DateTime<Utc>) -> Suggestion {
         return make(
             Surface::Terminal,
             Confidence::Clear,
-            "No Clax tab or panel of yours is open, so Clax cannot show the question.".into(),
+            "No Clax tab or panel of the person's is open, so Clax cannot show the question."
+                .into(),
         );
     }
     let panel = if s.panel_open {
@@ -140,12 +144,12 @@ pub fn suggest(s: &Signals, now: DateTime<Utc>) -> Suggestion {
     let in_terminal = |t: &TerminalSignal| {
         if t.inferred {
             format!(
-                "your last terminal turn on this session was {} s ago (inferred: this harness reports no prompts)",
+                "the person's last terminal turn on this session was {} s ago (inferred: this harness reports no prompts)",
                 ago(t.at)
             )
         } else {
             format!(
-                "you typed to this session in the terminal {} s ago",
+                "the person typed to this session in the terminal {} s ago",
                 ago(t.at)
             )
         }
@@ -155,7 +159,7 @@ pub fn suggest(s: &Signals, now: DateTime<Utc>) -> Suggestion {
             Surface::Clax,
             Confidence::Unsure,
             format!(
-                "Neither the terminal nor Clax has seen you in the last {} minutes; Clax is the default.{panel}",
+                "Neither the terminal nor Clax has seen the person in the last {} minutes; Clax is the default.{panel}",
                 QUIET_SECS / 60
             ),
         )
@@ -168,16 +172,25 @@ pub fn suggest(s: &Signals, now: DateTime<Utc>) -> Suggestion {
             Surface::Clax,
             Confidence::Unsure,
             format!(
-                "Your last terminal turn, {} s ago, is inferred: this harness reports no prompts, and Clax has seen nothing of you.{panel}",
+                "The person's last terminal turn, {} s ago, is inferred: this harness reports no prompts, and Clax has seen nothing of the person.{panel}",
                 ago(t.at)
             ),
         ),
-        (Some(t), c) if c.is_none_or(|c| t.at > c) => match c.filter(|c| t.at - *c < tie) {
-            Some(c) => make(
+        (Some(t), c) if c.is_none_or(|c| t.at > c) => match c {
+            Some(c) if t.at - c < tie => make(
                 Surface::Clax,
                 Confidence::Unsure,
                 format!(
-                    "{}, and you were active in Clax {} s ago, too close to tell.{panel}",
+                    "{}, and the person was active in Clax {} s ago, too close to tell.{panel}",
+                    capitalized(&in_terminal(t)),
+                    ago(c)
+                ),
+            ),
+            Some(c) => make(
+                Surface::Terminal,
+                Confidence::Clear,
+                format!(
+                    "{}, after the person's last activity in Clax, {} s ago.{panel}",
                     capitalized(&in_terminal(t)),
                     ago(c)
                 ),
@@ -186,17 +199,26 @@ pub fn suggest(s: &Signals, now: DateTime<Utc>) -> Suggestion {
                 Surface::Terminal,
                 Confidence::Clear,
                 format!(
-                    "{}, after your last activity in Clax.",
+                    "{}; Clax has seen nothing of the person.{panel}",
                     capitalized(&in_terminal(t))
                 ),
             ),
         },
-        (t, Some(c)) => match t.filter(|t| c - t.at < tie) {
-            Some(t) => make(
+        (t, Some(c)) => match t {
+            Some(t) if c - t.at < tie => make(
                 Surface::Clax,
                 Confidence::Unsure,
                 format!(
-                    "You were active in Clax {} s ago and {}, too close to tell.{panel}",
+                    "The person was active in Clax {} s ago and {}, too close to tell.{panel}",
+                    ago(c),
+                    in_terminal(t)
+                ),
+            ),
+            Some(t) => make(
+                Surface::Clax,
+                Confidence::Clear,
+                format!(
+                    "The person was active on this session's page in Clax {} s ago; before that, {}.{panel}",
                     ago(c),
                     in_terminal(t)
                 ),
@@ -205,7 +227,7 @@ pub fn suggest(s: &Signals, now: DateTime<Utc>) -> Suggestion {
                 Surface::Clax,
                 Confidence::Clear,
                 format!(
-                    "You were active on this session's page in Clax {} s ago, after your last prompt in the terminal.",
+                    "The person was active on this session's page in Clax {} s ago; the terminal has seen no prompt or turn from the person.{panel}",
                     ago(c)
                 ),
             ),
@@ -479,13 +501,165 @@ mod tests {
         let x = suggest(&s, now());
         assert_eq!(x.confidence, Confidence::Unsure);
         assert!(x.why.contains("panel"), "{}", x.why);
-        assert_eq!(
-            says(&Signals {
+        let x = suggest(
+            &Signals {
                 terminal: typed(5),
                 ..s
-            }),
+            },
+            now(),
+        );
+        assert_eq!(
+            (x.surface, x.confidence),
             (Surface::Terminal, Confidence::Clear)
         );
+        assert!(
+            x.why.contains("panel"),
+            "a clear why names it too: {}",
+            x.why
+        );
+    }
+
+    #[test]
+    fn a_side_with_no_signal_is_never_said_to_have_one() {
+        let x = suggest(
+            &Signals {
+                terminal: typed(10),
+                ..open()
+            },
+            now(),
+        );
+        assert_eq!(x.surface, Surface::Terminal);
+        assert!(!x.why.contains("after"), "{}", x.why);
+        assert!(
+            x.why.contains("Clax has seen nothing of the person"),
+            "{}",
+            x.why
+        );
+
+        let x = suggest(
+            &Signals {
+                clax_at: Some(at(10)),
+                ..open()
+            },
+            now(),
+        );
+        assert_eq!(
+            (x.surface, x.confidence),
+            (Surface::Clax, Confidence::Clear)
+        );
+        assert!(!x.why.contains("after"), "{}", x.why);
+        assert!(
+            x.why.contains("the terminal has seen no prompt or turn"),
+            "{}",
+            x.why
+        );
+
+        let x = suggest(
+            &Signals {
+                clax_at: Some(at(10)),
+                terminal: Some(TerminalSignal {
+                    at: at(200),
+                    inferred: true,
+                }),
+                ..open()
+            },
+            now(),
+        );
+        assert_eq!(
+            (x.surface, x.confidence),
+            (Surface::Clax, Confidence::Clear)
+        );
+        assert!(
+            !x.why.contains("last prompt"),
+            "an inferred turn is no prompt: {}",
+            x.why
+        );
+        assert!(x.why.contains("inferred"), "{}", x.why);
+    }
+
+    #[test]
+    fn every_why_speaks_of_the_person_to_the_agent() {
+        let inferred = |secs_ago| {
+            Some(TerminalSignal {
+                at: at(secs_ago),
+                inferred: true,
+            })
+        };
+        let cases = [
+            Signals {
+                clax_open: false,
+                ..open()
+            },
+            open(),
+            Signals {
+                terminal: typed(10),
+                ..open()
+            },
+            Signals {
+                terminal: typed(10),
+                clax_at: Some(at(200)),
+                ..open()
+            },
+            Signals {
+                terminal: typed(10),
+                clax_at: Some(at(30)),
+                ..open()
+            },
+            Signals {
+                terminal: typed(200),
+                clax_at: Some(at(10)),
+                ..open()
+            },
+            Signals {
+                terminal: typed(30),
+                clax_at: Some(at(10)),
+                ..open()
+            },
+            Signals {
+                clax_at: Some(at(10)),
+                ..open()
+            },
+            Signals {
+                terminal: inferred(5),
+                ..open()
+            },
+            Signals {
+                terminal: inferred(5),
+                clax_at: Some(at(200)),
+                ..open()
+            },
+            Signals {
+                terminal: inferred(200),
+                clax_at: Some(at(10)),
+                ..open()
+            },
+        ];
+        for s in cases {
+            for panel_open in [false, true] {
+                let why = suggest(
+                    &Signals {
+                        panel_open,
+                        ..s.clone()
+                    },
+                    now(),
+                )
+                .why;
+                let words: Vec<String> = why
+                    .split(|c: char| !c.is_alphanumeric() && c != '\'')
+                    .map(str::to_lowercase)
+                    .collect();
+                assert!(
+                    !words
+                        .iter()
+                        .any(|w| ["you", "your", "yours"].contains(&w.as_str())),
+                    "{why}"
+                );
+                // An open panel is a Clax surface: `clax_open` holds whenever it does.
+                if s.clax_open {
+                    assert_eq!(why.contains("panel is open"), panel_open, "{why}");
+                }
+            }
+        }
     }
 
     #[test]
