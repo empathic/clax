@@ -5,7 +5,10 @@ cargo_package(
     build_script_data = ["//web:extension_key"],
     compile_data = ["//web:extension/manifest.json"] + glob(["tests/toolpath/**"]),
     test_data = [
-        "//crates/clax-server:srcs",
+        # The sources the delivery guard scans (src/feedback.rs).
+        ":rust_sources",
+        "//crates/clax-realtime:rust_sources",
+        "//crates/clax-server:rust_sources",
         "//plugins/pi:test_fixtures",
     ],
 )
