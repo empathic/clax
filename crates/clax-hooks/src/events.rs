@@ -533,7 +533,9 @@ pub fn tool_call_id(
     Ok(HookOutput::none())
 }
 
-/// Tier 3. Adds pending feedback to the prompt as additional context.
+/// Tier 3. Reports the person's prompt (it is terminal activity, spec
+/// 2026-10-16-ask-where-attention-is-design §1) and adds pending feedback,
+/// and where to ask, to the prompt as additional context, in one request.
 ///
 /// # Errors
 /// When the input has no `session_id` or a daemon request fails.
@@ -541,7 +543,8 @@ pub fn prompt(harness: &str, input: &HookInput, daemon: &dyn Daemon) -> anyhow::
     let Some(sid) = live_session(harness, input, daemon)? else {
         return Ok(HookOutput::none());
     };
-    Ok(match feedback_text(daemon, &sid, "tier=prompt_hook")? {
+    let text = feedback_text(daemon, &sid, "tier=prompt_hook&prompt=true")?;
+    Ok(match text {
         Some(text) => HookOutput::additional_context("UserPromptSubmit", &text),
         None => HookOutput::none(),
     })
@@ -1022,7 +1025,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_adds_context() {
+    fn prompt_adds_context_and_reports_the_prompt() {
         let d = fake(Some("P"));
         assert_eq!(
             prompt("claude", &HookInput::parse(r#"{"session_id":"s1"}"#), &d).unwrap(),
@@ -1032,7 +1035,9 @@ mod tests {
             d.seen
                 .borrow()
                 .iter()
-                .any(|p| p == "/api/sessions/S/feedback?tier=prompt_hook")
+                .any(|p| p == "/api/sessions/S/feedback?tier=prompt_hook&prompt=true"),
+            "{:?}",
+            d.seen.borrow()
         );
     }
 

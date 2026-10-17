@@ -1,11 +1,14 @@
 //! Mirroring Claude Code's `AskUserQuestion` into Clax (spec
 //! 2026-10-06-agent-questions-and-inbox-design §4.4). `PreToolUse` mirrors the
 //! call and, when the session has a page (it has published or watched an
-//! artifact) and a Clax surface of the owner's is open, waits for the
+//! artifact) and the daemon's suggestion of where the person is names Clax
+//! (spec 2026-10-16-ask-where-attention-is-design §3), waits for the
 //! person's answer there: answered → allow with the answers as the tool's
 //! input; skipped → deny; moved to the terminal, timed out, or any failure →
-//! no output, so the terminal dialog appears. `PostToolUse` records the
-//! terminal's answer on a question that was moved there.
+//! no output, so the terminal dialog appears. When the suggestion names the
+//! terminal, the daemon records an in-terminal question in Clax and the hook
+//! prints nothing, so the terminal dialog appears at once. `PostToolUse`
+//! records the terminal's answer on a question asked or moved there.
 
 use crate::events::{Daemon, live_session};
 use crate::input::HookInput;
@@ -31,8 +34,10 @@ pub enum Outcome {
     /// Moved to the terminal in Clax, or withdrawn (its session ended, or
     /// the daemon shut down), while the hook waited.
     Released,
-    /// The daemon chose `terminal` mode: the session had no page, no Clax
-    /// surface was open, or `terminal_after_s` is 0.
+    /// The daemon chose `terminal` mode: the question is about no artifact
+    /// (it is created released), or the session's suggestion of where to
+    /// ask names the terminal or `terminal_after_s` is 0 (it is created as
+    /// an open in-terminal question).
     Terminal,
     /// `terminal_after_s` passed with no answer; the hook released it.
     Timeout,
@@ -200,7 +205,7 @@ fn settle(tool_input: &Value, q: &Value) -> anyhow::Result<Option<(HookOutput, O
 }
 
 /// `PostToolUse` for `AskUserQuestion`: records the terminal's answers on
-/// the question that was moved to the terminal, if any.
+/// the question asked in or moved to the terminal, if any.
 ///
 /// # Errors
 /// When the session lookup or the request fails (the caller exits 0).
@@ -296,15 +301,17 @@ mod tests {
             ),
         )
     }
+    /// The create reply for `mode`: `wait` is open in Clax; `terminal` is
+    /// an open in-terminal question, as the daemon makes one when the
+    /// session's suggestion names the terminal.
     fn created(mode: &str) -> Step {
-        let status = if mode == "wait" { "open" } else { "released" };
-        (
-            "POST",
-            "/api/sessions/S1/questions".into(),
-            Ok(
-                json!({"question": {"id": Q, "status": status}, "mode": mode, "terminal_after_s": 600}),
-            ),
-        )
+        let body = if mode == "wait" {
+            json!({"question": {"id": Q, "status": "open"}, "mode": mode, "terminal_after_s": 600})
+        } else {
+            json!({"question": {"id": Q, "status": "open", "in_terminal": true}, "mode": mode,
+                "terminal_after_s": 600, "where_to_ask": {"surface": "terminal"}})
+        };
+        ("POST", "/api/sessions/S1/questions".into(), Ok(body))
     }
     fn polled(wait: &str, status: &str, answers: Value) -> Step {
         (
@@ -474,14 +481,37 @@ mod tests {
     }
 
     #[test]
-    fn terminal_mode_prints_nothing_and_returns_at_once() {
-        let d = Fake::new(vec![sessions(), created("terminal")]);
+    fn a_question_about_no_artifact_prints_nothing_and_returns_at_once() {
+        let d = Fake::new(vec![
+            sessions(),
+            (
+                "POST",
+                "/api/sessions/S1/questions".into(),
+                Ok(
+                    json!({"question": {"id": Q, "status": "released"}, "mode": "terminal",
+                    "terminal_after_s": 600}),
+                ),
+            ),
+        ]);
         let a = ask_logged(&input(), &d, Budget::default());
         assert_eq!(
             (a.out, a.outcome, a.mode),
             (HookOutput::none(), Outcome::Terminal, Some("terminal"))
         );
         assert_eq!(d.seen.borrow().len(), 2, "no poll");
+    }
+
+    #[test]
+    fn an_in_terminal_question_shows_the_dialog_at_once() {
+        let d = Fake::new(vec![sessions(), created("terminal")]);
+        let a = ask_logged(&input(), &d, Budget::default());
+        assert_eq!((a.outcome, a.mode), (Outcome::Terminal, Some("terminal")));
+        assert_eq!(
+            a.out,
+            HookOutput::none(),
+            "no output: the terminal dialog appears"
+        );
+        assert_eq!(d.seen.borrow().len(), 2, "no poll, no release");
     }
 
     #[test]
