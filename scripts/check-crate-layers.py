@@ -6,14 +6,22 @@
 The layout (docs/superpowers/specs/2026-10-16-workspace-layout-design.md
 §2.1) orders the crates: each may depend only on the crates above it, never
 sideways or up. ALLOWED below is that picture, crate by crate. The check
-reads the workspace's members from ROOT/Cargo.toml (default: the
-repository) and each member's [dependencies] and [build-dependencies]; a
-workspace crate named there and not in the crate's ALLOWED set fails it, as
-does a member ALLOWED does not know. Dev-dependencies are not checked: a
-crate's tests may reach the test support and the crates they drive (Bazel's
-derivation already refuses features turned on there).
+reads the workspace (default: the repository) through `cargo metadata
+--no-deps`, so every way a manifest can name a dependency counts: a
+`[dependencies]` line, a `[dependencies.<name>]` table, a
+`[target.'<cfg>'.dependencies]` table and a renamed dependency (`package =
+"…"`) alike. A normal or build dependency on a workspace crate not in the
+crate's ALLOWED set fails it, as does a member ALLOWED does not know.
+Dev-dependencies are not checked: a crate's tests may reach the test
+support and the crates they drive (Bazel's derivation already refuses
+features turned on there).
+
+Cargo is `$CARGO` when set (the Bazel test sets it to the toolchain's),
+else `cargo` on PATH.
 """
-import re
+import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -45,60 +53,45 @@ ALLOWED = {
 }
 
 
-def tables(text):
-    """The keys of each table of a Cargo.toml: {table: [key]}, a
-    `[target.'<cfg>'.dependencies]` table counted as `dependencies`. Enough
-    TOML for the workspace's manifests (the tests' Python has no tomllib):
-    `[table]` headers and `key = ...` or `key.workspace = ...` lines."""
-    out, table = {}, None
-    for line in text.splitlines():
-        line = line.split("#", 1)[0].strip()
-        m = re.fullmatch(r"\[([^\[\]]+)\]", line)
-        if m:
-            table = m.group(1)
-            for kind in ("dependencies", "build-dependencies", "dev-dependencies"):
-                if table.startswith("target.") and table.endswith("." + kind):
-                    table = kind
-            out.setdefault(table, [])
-            continue
-        m = re.match(r"([A-Za-z0-9_-]+)(\.[A-Za-z0-9_-]+)?\s*=", line)
-        if m and table is not None:
-            out[table].append(m.group(1))
-    return out
-
-
-def members_of(text):
-    m = re.search(r"^members\s*=\s*\[(.*?)\]", text, re.S | re.M)
-    return re.findall(r'"([^"]+)"', m.group(1)) if m else []
-
-
-def package_name(text):
-    m = re.search(r'^\[package\][^\[]*?^name\s*=\s*"([^"]+)"', text, re.S | re.M)
-    return m.group(1)
+def metadata(root):
+    """`cargo metadata --no-deps` of the workspace at `root`, offline."""
+    cargo = os.environ.get("CARGO") or "cargo"
+    out = subprocess.run(
+        [cargo, "metadata", "--format-version", "1", "--no-deps", "--offline",
+         "--manifest-path", str(root / "Cargo.toml")],
+        capture_output=True, text=True)
+    if out.returncode != 0:
+        sys.exit("error: cargo metadata failed:\n" + out.stderr)
+    return json.loads(out.stdout)
 
 
 def main():
     root = Path(sys.argv[1] if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent)
-    manifests = {}
-    for m in members_of((root / "Cargo.toml").read_text()):
-        text = (root / m / "Cargo.toml").read_text()
-        manifests[package_name(text)] = (m, tables(text))
+    meta = metadata(root.resolve())
+    members = set(meta["workspace_members"])
+    packages = {p["name"]: p for p in meta["packages"] if p["id"] in members}
     bad = []
-    for name, (path, doc) in sorted(manifests.items()):
+    for name, p in sorted(packages.items()):
+        path = Path(p["manifest_path"]).parent.relative_to(root.resolve())
         if name not in ALLOWED:
             bad.append(f"{path}: {name} has no place in the layout (scripts/check-crate-layers.py ALLOWED)")
             continue
-        for table in ("dependencies", "build-dependencies"):
-            for dep in doc.get(table, []):
-                if dep in manifests and dep not in ALLOWED[name]:
-                    bad.append(f"{path}/Cargo.toml [{table}]: {name} may not depend on {dep}")
+        for d in p["dependencies"]:
+            kind = d["kind"] or "normal"
+            if kind == "dev" or d["name"] not in packages:
+                continue
+            if d["name"] not in ALLOWED[name]:
+                how = f" (as {d['rename']})" if d.get("rename") else ""
+                where = f" for {d['target']}" if d.get("target") else ""
+                bad.append(f"{path}/Cargo.toml: {name} may not depend on {d['name']}{how}"
+                           f" ({kind} dependency{where})")
     for line in bad:
         print(f"error: {line}", file=sys.stderr)
     if bad:
         print("The layering rule: a crate depends only on crates above it in "
               "docs/superpowers/specs/2026-10-16-workspace-layout-design.md §2.1.", file=sys.stderr)
         return 1
-    print(f"crate layers: {len(manifests)} crates, every dependency in order")
+    print(f"crate layers: {len(packages)} crates, every dependency in order")
     return 0
 
 

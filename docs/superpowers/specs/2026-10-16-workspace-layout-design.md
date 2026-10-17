@@ -818,8 +818,10 @@ migration decided as follows.
 - **`Rights::parse_internal` is `pub`:** the store reads the internal form
   of a grant's rights, and now from another crate.
 - **`cargo_package` declares a `manifest` target** (each crate's
-  `Cargo.toml`), which `//scripts:crate_layers` reads to check the layering
-  rule (`scripts/check-crate-layers.py`). Dev-dependencies are not checked
+  `Cargo.toml`), which `//scripts:crate_layers` hands, with the
+  toolchain's `cargo`, to the layering check (`scripts/check-crate-layers.py`,
+  which reads `cargo metadata --no-deps`, so a dependency table, a target
+  table and a renamed dependency all count). Dev-dependencies are not checked
   by it: tests reach the support crates and the crates they drive, and the
   derivation already refuses features turned on there.
 - **The debug test routes that hold a request or a store worker take the
