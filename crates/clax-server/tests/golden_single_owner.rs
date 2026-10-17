@@ -189,7 +189,7 @@ fn exes() -> Vec<String> {
 /// Writes the `daemon.json` the CLI and hooks discover the daemon by: this
 /// process's PID, the test daemon's port and token.
 fn write_daemon_json(ts: &TestServer) {
-    let info = clax_server::daemon::DaemonInfo {
+    let info = clax_core::daemon::DaemonInfo {
         port: ts.addr.port(),
         pid: std::process::id(),
         token: ts.token.clone(),
@@ -199,7 +199,7 @@ fn write_daemon_json(ts: &TestServer) {
         exe: None,
         commit: None,
     };
-    clax_server::daemon::write_daemon_info(&ts.home, &info).unwrap();
+    clax_core::daemon::write_daemon_info(&ts.home, &info).unwrap();
 }
 
 /// The MCP tools of session `s`, as its shim serves them.
@@ -1886,7 +1886,7 @@ async fn write_fixture() {
         db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
             .unwrap();
     }
-    let end = clax_core::store::stamp(clax_core::working::Clock::now(clock.as_ref()));
+    let end = clax_core::time::stamp(clax_core::working::Clock::now(clock.as_ref()));
     assert!(
         end.as_str() < FIXED_T,
         "the fixture ends at {end}, before {FIXED_T}"

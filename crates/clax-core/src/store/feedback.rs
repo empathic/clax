@@ -30,7 +30,7 @@ pub struct TakeFeedback {
 
 /// `secs_ago` seconds before `now`, as the store writes times.
 fn ts(now: chrono::DateTime<chrono::Utc>, secs_ago: i64) -> String {
-    super::stamp(now - chrono::Duration::seconds(secs_ago))
+    crate::time::stamp(now - chrono::Duration::seconds(secs_ago))
 }
 
 /// Live sessions a sent thread on artifact `aid` goes to: the owner (first)

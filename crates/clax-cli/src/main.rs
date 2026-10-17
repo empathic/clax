@@ -220,7 +220,7 @@ impl Cli {
         let port = clax_core::config::HomeConfig::load(home.root())
             .and_then(|c| c.serve_port())
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        Ok(port.unwrap_or(clax_server::daemon::DEFAULT_PORT))
+        Ok(port.unwrap_or(clax_core::daemon::DEFAULT_PORT))
     }
 }
 
@@ -472,7 +472,7 @@ mod tests {
         let home = clax_core::Home::at(dir.path().to_path_buf());
         assert_eq!(
             cli(&["clax", "list"]).port_for_with(&home, None).unwrap(),
-            clax_server::daemon::DEFAULT_PORT
+            clax_core::daemon::DEFAULT_PORT
         );
         std::fs::write(dir.path().join("config.toml"), "[serve]\nport = 7481\n").unwrap();
         assert_eq!(

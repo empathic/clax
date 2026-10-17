@@ -68,7 +68,7 @@ fn viewer_by_cookie(
 /// The replacement time at or before which a replaced legacy cookie names
 /// no one.
 fn swap_cutoff(st: &Store) -> String {
-    super::stamp(st.now_utc() - chrono::Duration::seconds(LEGACY_SWAP_GRACE_SECS))
+    crate::time::stamp(st.now_utc() - chrono::Duration::seconds(LEGACY_SWAP_GRACE_SECS))
 }
 
 /// Records `cookie` (its hash) as a cookie of viewer row `id`.

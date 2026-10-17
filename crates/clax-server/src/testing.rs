@@ -1,9 +1,9 @@
 //! An in-process daemon on an ephemeral port, for integration tests
 //! in this crate and in crates that call the daemon over HTTP.
 
-use crate::daemon::{browser_host, probe_host};
 use crate::wrap_cache::WrapCache;
 use crate::{AppState, build_router};
+use clax_core::daemon::{browser_host, probe_host};
 use clax_core::working::{Clock, ManualClock, SystemClock};
 use clax_core::{EventBus, Home, Store};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};

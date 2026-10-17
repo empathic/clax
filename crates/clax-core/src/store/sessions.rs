@@ -563,7 +563,7 @@ impl Store {
             let person = person_of_grant(tx, grant)?;
             let now = self.now();
             let recent =
-                super::stamp(self.now_utc() - Duration::from_secs(Self::SESSION_IDLE_SECS));
+                crate::time::stamp(self.now_utc() - Duration::from_secs(Self::SESSION_IDLE_SECS));
             let existing = match (&r.harness_session_id, r.parent_pid) {
                 (Some(hid), parent) => {
                     match find_live(
@@ -1217,8 +1217,8 @@ impl Store {
     /// withdrawn.
     pub fn reap_sessions(&self, idle: Duration, pid_alive: &dyn Fn(u32) -> bool) -> Result<Reaped> {
         let now = self.now_utc();
-        let local = super::stamp(now - idle);
-        let remote = super::stamp(now - Duration::from_secs(Self::REMOTE_SESSION_IDLE_SECS));
+        let local = crate::time::stamp(now - idle);
+        let remote = crate::time::stamp(now - Duration::from_secs(Self::REMOTE_SESSION_IDLE_SECS));
         // A remote session could not reach the daemon while it was down or
         // its machine slept: its idle time counts from the resume.
         let resumed = self.resumed_at();
@@ -1296,7 +1296,8 @@ impl Store {
         let Some((from, reason, ended_at, saved)) = prev else {
             return Ok(None);
         };
-        let window = super::stamp(self.now_utc() - Duration::from_secs(Self::RESTORE_WINDOW_SECS));
+        let window =
+            crate::time::stamp(self.now_utc() - Duration::from_secs(Self::RESTORE_WINDOW_SECS));
         if reason.as_deref() != Some(EndReason::Idle.as_str()) || ended_at < window {
             return Ok(None);
         }
@@ -1451,7 +1452,8 @@ impl Store {
     /// threads it owns. Callers scope it to a reader.
     pub fn roster(&self) -> Result<Vec<RosterAgent>> {
         use std::collections::HashMap;
-        let since = super::stamp(self.now_utc() - Duration::from_secs(Self::ROSTER_ENDED_SECS));
+        let since =
+            crate::time::stamp(self.now_utc() - Duration::from_secs(Self::ROSTER_ENDED_SECS));
         self.with_read(|c| {
             let sessions: Vec<Session> = {
                 let mut stmt = c.prepare_cached(&format!(

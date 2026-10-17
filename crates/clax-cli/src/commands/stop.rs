@@ -6,11 +6,10 @@ pub fn run(cli: &crate::Cli, home: &Home) -> anyhow::Result<()> {
         Some(c) => {
             c.shutdown()?;
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while std::time::Instant::now() < deadline && clax_server::daemon::pid_alive(c.info.pid)
-            {
+            while std::time::Instant::now() < deadline && clax_core::daemon::pid_alive(c.info.pid) {
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
-            let stopped = !clax_server::daemon::pid_alive(c.info.pid);
+            let stopped = !clax_core::daemon::pid_alive(c.info.pid);
             if !stopped {
                 eprintln!(
                     "warning: daemon (pid {}) is still draining connections",

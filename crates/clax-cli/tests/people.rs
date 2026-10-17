@@ -34,7 +34,7 @@ struct Owner<'a> {
 
 impl<'a> Owner<'a> {
     fn new(w: &'a World) -> Owner<'a> {
-        let info = clax_server::daemon::DaemonInfo {
+        let info = clax_core::daemon::DaemonInfo {
             port: w.ts.addr.port(),
             pid: std::process::id(),
             token: w.ts.token.clone(),
@@ -44,7 +44,7 @@ impl<'a> Owner<'a> {
             exe: None,
             commit: None,
         };
-        clax_server::daemon::write_daemon_info(&w.ts.home, &info).unwrap();
+        clax_core::daemon::write_daemon_info(&w.ts.home, &info).unwrap();
         Owner {
             w,
             dir: tempfile::tempdir().unwrap(),

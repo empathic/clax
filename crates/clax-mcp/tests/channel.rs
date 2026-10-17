@@ -4,8 +4,8 @@
 //! shim over raw JSON-RPC lines.
 
 use clax_core::Home;
+use clax_core::daemon::read_daemon_info;
 use clax_fake_exe::clax_bin;
-use clax_server::daemon::read_daemon_info;
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
 use std::path::Path;
@@ -200,7 +200,7 @@ impl FakeClaude {
         (
             format!(
                 "http://{}:{}",
-                clax_server::daemon::probe_host(&info.bind),
+                clax_core::daemon::probe_host(&info.bind),
                 info.port
             ),
             info.token,

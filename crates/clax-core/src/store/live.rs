@@ -46,7 +46,7 @@ pub const PICK_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
 /// The oldest `created_at` of a pick still kept at `now`.
 fn pick_cutoff(now: chrono::DateTime<chrono::Utc>) -> String {
     let ttl = chrono::Duration::from_std(PICK_TTL).expect("the TTL fits");
-    super::stamp(now - ttl)
+    crate::time::stamp(now - ttl)
 }
 
 /// How many times [`Store::store_snapshot`] tries to write a version while

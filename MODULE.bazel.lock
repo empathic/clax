@@ -574,7 +574,7 @@
           "REPO_MAPPING:rules_rust+,rules_cc rules_cc+",
           "FILE:@@//Cargo.lock 0a342ae2fb653b26275e0ecc2ccecbad2479eceba8e0cdcadbb849afe64c51f4",
           "FILE:@@//Cargo.toml 32ddbb4deb04fb30f8f09c0a7d63478953ead66b0a378da2b5e1028fce1bd518",
-          "FILE:@@//crates/clax-core/Cargo.toml 0f0e2043d8b335fcd31b29872566e7d39fd26931c9f820f39da31ef3045446f2",
+          "FILE:@@//crates/clax-core/Cargo.toml fabce63eb278d081888f4481e87c1777a1ec72970b796401f864476e20bc40d2",
           "FILE:@@//crates/clax-fake-exe/Cargo.toml d9b84359e174089cf720dfc6dedb3920f2fb53253b98dd4ecb9216e5fcfcd1df",
           "FILE:@@//crates/clax-server/Cargo.toml 1351467f68290e24a6237573397a8817bcfb56b4451a962db4df983d6bc3e682",
           "FILE:@@//crates/clax-mcp/Cargo.toml 1a154cf67692955a64e3de69d3822913660c78a8b307a263e6072e1af56ce511",

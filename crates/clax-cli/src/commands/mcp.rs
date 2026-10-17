@@ -1,9 +1,9 @@
 use crate::client::Client;
 use clax_core::Home;
-use clax_mcp::shim::{self, Endpoint, Harness};
-use clax_server::daemon::{
+use clax_core::daemon::{
     DaemonLock, first_unheld_port, pid_alive, port_held, port_range, read_daemon_info,
 };
+use clax_mcp::shim::{self, Endpoint, Harness};
 use std::sync::Arc;
 use std::time::Duration;
 

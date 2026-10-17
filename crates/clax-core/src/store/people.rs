@@ -736,11 +736,11 @@ fn matches(presented: &str, stored: Option<&str>) -> bool {
 
 impl Store {
     fn ago(&self, secs: i64) -> String {
-        super::stamp(self.now_utc() - Duration::seconds(secs))
+        crate::time::stamp(self.now_utc() - Duration::seconds(secs))
     }
 
     fn browser_expiry(&self) -> String {
-        super::stamp(self.now_utc() + Duration::seconds(BROWSER_LINK_TTL_SECS))
+        crate::time::stamp(self.now_utc() + Duration::seconds(BROWSER_LINK_TTL_SECS))
     }
 
     /// Redeems a browser link's `code` (spec §6.5): once, within
@@ -912,7 +912,7 @@ impl Store {
                     sha256_hex(&canon),
                     viewer_id,
                     now,
-                    super::stamp(self.now_utc() + Duration::seconds(INVITE_TTL_SECS))
+                    crate::time::stamp(self.now_utc() + Duration::seconds(INVITE_TTL_SECS))
                 ],
             )?;
             let invite = tx.query_row(

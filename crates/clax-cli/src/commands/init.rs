@@ -876,7 +876,7 @@ impl InitLock {
     pub(crate) fn acquire(home: &Home) -> std::io::Result<InitLock> {
         super::extension::create_home(home)?;
         let f = std::fs::File::create(home.root().join("init.lock"))?;
-        clax_server::daemon::retry_interrupted(|| f.lock())?;
+        clax_core::daemon::retry_interrupted(|| f.lock())?;
         Ok(InitLock(f))
     }
 }

@@ -446,7 +446,7 @@ pub fn merged(base: &Value, patch: Value) -> Value {
 
 /// `ms` milliseconds after `now`, as the store writes times.
 fn now_plus(now: chrono::DateTime<chrono::Utc>, ms: u64) -> String {
-    super::stamp(now + chrono::Duration::milliseconds(ms as i64))
+    crate::time::stamp(now + chrono::Duration::milliseconds(ms as i64))
 }
 
 /// The live artifact's declared capabilities; `NotFound` when it is missing

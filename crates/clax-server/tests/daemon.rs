@@ -1,8 +1,9 @@
 use clax_core::Home;
-use clax_server::daemon::{
-    DaemonInfo, DaemonLock, ServeConfig, pid_alive, port_held, read_daemon_info, retry_interrupted,
-    serve, write_daemon_info,
+use clax_core::daemon::{
+    DaemonInfo, DaemonLock, pid_alive, port_held, read_daemon_info, retry_interrupted,
+    write_daemon_info,
 };
+use clax_server::daemon::{ServeConfig, serve};
 use std::net::{IpAddr, Ipv4Addr};
 
 #[test]
@@ -398,7 +399,7 @@ async fn reaper_ends_idle_sessions_whose_process_is_gone() {
 
 #[test]
 fn a_record_without_exe_still_parses() {
-    let v: clax_server::daemon::DaemonInfo = serde_json::from_str(
+    let v: clax_core::daemon::DaemonInfo = serde_json::from_str(
         r#"{"port":1,"pid":2,"token":"t","started_at":"s","bind":"127.0.0.1","version":"0.2.0"}"#,
     )
     .unwrap();

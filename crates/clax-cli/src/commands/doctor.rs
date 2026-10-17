@@ -1,8 +1,8 @@
 use super::doctor_agent::{self, DoctorAgent};
 use crate::client::Client;
 use anyhow::Context;
+use clax_core::daemon::DaemonLock;
 use clax_core::{ArtifactId, Home, Store};
-use clax_server::daemon::DaemonLock;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
@@ -559,7 +559,7 @@ fn config_check(home: &Home, env: Option<std::ffi::OsString>) -> serde_json::Val
         (None, Ok(None)) => check(
             "config",
             true,
-            format!("default port {}", clax_server::daemon::DEFAULT_PORT),
+            format!("default port {}", clax_core::daemon::DEFAULT_PORT),
         ),
     }
 }

@@ -169,9 +169,9 @@ fn serve_child(dir: &std::path::Path) -> Child {
 /// Takes the home's start lock. Only the home's root is created, so the
 /// `artifacts` directory appears when `clax serve` runs `ensure_dirs`, just
 /// before it waits for this lock.
-fn lock(dir: &std::path::Path) -> clax_server::daemon::DaemonLock {
+fn lock(dir: &std::path::Path) -> clax_core::daemon::DaemonLock {
     std::fs::create_dir_all(dir.join("ax")).unwrap();
-    clax_server::daemon::DaemonLock::acquire(&clax_core::Home::at(dir.join("ax"))).unwrap()
+    clax_core::daemon::DaemonLock::acquire(&clax_core::Home::at(dir.join("ax"))).unwrap()
 }
 
 /// Returns once `child` has reached the start lock (a freshly built binary
