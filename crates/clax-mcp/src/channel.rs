@@ -37,6 +37,13 @@ url_or_id set to artifact_id and thread_id set to thread_id, act on the comment,
 comments_reply, and call comments_resolve when done. If you have already handled that thread, do \
 nothing. Nothing is sent back over the channel.";
 
+/// Added to the server instructions in place of [`INSTRUCTIONS`] when the
+/// launch flag is absent: no channel notice will come.
+pub const NO_CHANNEL_INSTRUCTIONS: &str = "This session was not launched with the Clax channel, so \
+a comment sent to you does not wake it while it is idle. After you publish or watch, read the \
+`wake` block of the `watch` result (or call `status` and read `push`) and do what its `do` says: \
+usually start its `follow_command` in the background with the Monitor tool.";
+
 /// Whether the parent's command line names a Clax channel entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LaunchFlag {
@@ -146,6 +153,21 @@ impl ChannelState {
         matches!(self.launch_flag, LaunchFlag::Present { .. })
     }
 
+    /// The channel part of the server instructions: [`INSTRUCTIONS`] when
+    /// the launch flag is present, [`NO_CHANNEL_INSTRUCTIONS`] when it is
+    /// absent, and both, each conditional, when it could not be read.
+    pub fn instructions(&self) -> String {
+        match self.launch_flag {
+            LaunchFlag::Present { .. } => INSTRUCTIONS.to_string(),
+            LaunchFlag::Absent => NO_CHANNEL_INSTRUCTIONS.to_string(),
+            LaunchFlag::Unknown(_) => format!(
+                "When this session was launched with the Clax channel (`status` reports \
+`push.tier` \"channel\"): {INSTRUCTIONS}\n\nOtherwise a comment sent to you does not wake the \
+session while it is idle: read the `wake` block of the `watch` result and do what its `do` says."
+            ),
+        }
+    }
+
     /// `status.push.channel`.
     pub fn to_json(&self) -> Value {
         let (state, flag, entry, why) = match &self.launch_flag {
@@ -184,20 +206,11 @@ pub fn event_params(notice: &Value, line: &str) -> Value {
     }})
 }
 
-/// `s` as one single-quoted shell word.
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
-
 /// `status.push.follow_command` under Grok Build: the command its `monitor`
 /// tool runs to wake the session on each comment, with the binary and the
 /// harness session ID each one shell word.
 pub fn grok_follow_command(bin: &str, harness_session_id: &str) -> String {
-    format!(
-        "{} feedback follow --agent grok --harness-session {}",
-        shell_quote(bin),
-        shell_quote(harness_session_id)
-    )
+    clax_core::wake::follow_command(bin, "grok", harness_session_id, false)
 }
 
 /// `status.push` under Claude Code: the daemon's `push`, refined. The tier is
@@ -224,11 +237,8 @@ pub fn push_for_status(
             push["tier"] = json!("follow");
         }
         if let Some(hs) = harness_session_id {
-            push["follow_command"] = json!(format!(
-                "{} feedback follow --once --agent claude --harness-session {}",
-                shell_quote(bin),
-                shell_quote(hs)
-            ));
+            push["follow_command"] =
+                json!(clax_core::wake::follow_command(bin, "claude", hs, true));
         }
     }
     push["channel"] = ch.to_json();
@@ -287,6 +297,25 @@ mod tests {
         ] {
             assert_eq!(launch_flag(&argv(line)), LaunchFlag::Absent, "{line}");
         }
+    }
+
+    #[test]
+    fn the_instructions_describe_notices_only_when_the_flag_is_present() {
+        let of = |launch_flag| ChannelState { launch_flag }.instructions();
+        let present = of(LaunchFlag::Present {
+            flag: "--channels".into(),
+            entry: ENTRY.into(),
+        });
+        assert_eq!(present, INSTRUCTIONS);
+        let absent = of(LaunchFlag::Absent);
+        assert!(!absent.contains("<channel"), "{absent}");
+        assert!(
+            absent.contains("`wake`") && absent.contains("Monitor"),
+            "{absent}"
+        );
+        let unknown = of(LaunchFlag::Unknown("ps failed".into()));
+        assert!(unknown.starts_with("When this session was launched with the Clax channel"));
+        assert!(unknown.contains("`wake`"), "{unknown}");
     }
 
     #[test]

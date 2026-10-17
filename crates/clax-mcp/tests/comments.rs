@@ -1345,3 +1345,134 @@ async fn ask_waits_at_most_50_s_under_codex() {
     clock.fire(Duration::from_secs(50));
     assert_eq!(call.await.unwrap()["status"], "open");
 }
+
+/// Tools attributed to a fresh session of `harness` (harness session ID
+/// `hs`), and that session's ID.
+async fn wake_tools(ts: &TestServer, harness: &str, hs: &str) -> (ClaxTools, String) {
+    let s: Session = serde_json::from_value(ts.register_session(harness, hs).await).unwrap();
+    let sid = s.id.clone();
+    let tools = ClaxTools::new(
+        DaemonClient::new(ts.base.clone(), ts.token.clone(), Some(sid.clone())),
+        format!("http://localhost:{}", ts.addr.port()),
+        Some(s),
+        ts.home.log_path(),
+    );
+    (tools, sid)
+}
+
+/// `watch`'s `wake` on `aid` with `replies`.
+async fn wake_of(t: &ClaxTools, aid: &str, replies: bool) -> Value {
+    let (v, _) = blocks(
+        &t.watch(Parameters(WatchArgs {
+            url_or_id: aid.to_string(),
+            on: None,
+            replies: Some(replies),
+        }))
+        .await
+        .unwrap(),
+    );
+    v["wake"].clone()
+}
+
+#[tokio::test]
+async fn watch_says_whether_a_comment_wakes_the_idle_session_and_what_to_start() {
+    use clax_mcp::channel::{ChannelState, LaunchFlag};
+    let ts = TestServer::spawn().await;
+    let bin = std::env::current_exe().unwrap().display().to_string();
+    // Claude Code without the channel or a follower: start the follower.
+    let (t, sid) = wake_tools(&ts, "claude", "cc-1").await;
+    let t = t.with_channel(ChannelState {
+        launch_flag: LaunchFlag::Absent,
+    });
+    let aid = publish(&t).await;
+    let w = wake_of(&t, &aid, true).await;
+    assert_eq!(
+        (&w["when_idle"], &w["via"]),
+        (&json!(false), &Value::Null),
+        "{w}"
+    );
+    assert_eq!(
+        w["follow_command"],
+        format!("'{bin}' feedback follow --agent claude --harness-session 'cc-1'")
+    );
+    assert_eq!(
+        w["follow_once_command"],
+        format!("'{bin}' feedback follow --once --agent claude --harness-session 'cc-1'")
+    );
+    assert!(w["do"].as_str().unwrap().contains("Monitor"), "{w}");
+    // Replies off: nothing wakes it for this watch, and nothing is started.
+    let off = wake_of(&t, &aid, false).await;
+    assert_eq!(off["when_idle"], false);
+    assert!(off.get("follow_command").is_none(), "{off}");
+    assert!(
+        off["do"].as_str().unwrap().starts_with("Start nothing"),
+        "{off}"
+    );
+    // With a follower connected (a notices poll in progress): start nothing.
+    let req = reqwest::Client::new()
+        .get(format!("{}/api/sessions/{sid}/notices?wait=30", ts.base))
+        .bearer_auth(&ts.token);
+    let poll = tokio::spawn(async move { req.send().await.map(|r| r.status()) });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let w = loop {
+        let w = wake_of(&t, &aid, true).await;
+        if w["when_idle"] == true {
+            break w;
+        }
+        assert!(Instant::now() < deadline, "the follower never counted: {w}");
+        tokio::task::yield_now().await;
+    };
+    assert_eq!(w["via"], "follower", "{w}");
+    assert!(w.get("follow_command").is_none(), "{w}");
+    poll.abort();
+    // Launched with the channel: woken through it.
+    let (c, _) = wake_tools(&ts, "claude", "cc-2").await;
+    let c = c.with_channel(ChannelState {
+        launch_flag: LaunchFlag::Present {
+            flag: "--channels".into(),
+            entry: "plugin:clax@clax".into(),
+        },
+    });
+    let w = wake_of(&c, &publish(&c).await, true).await;
+    assert_eq!(
+        (&w["when_idle"], &w["via"]),
+        (&json!(true), &json!("channel")),
+        "{w}"
+    );
+    // Pi: its extension injects.
+    let (p, _) = wake_tools(&ts, "pi", "pi-1").await;
+    let w = wake_of(&p, &publish(&p).await, true).await;
+    assert_eq!(
+        (&w["when_idle"], &w["via"]),
+        (&json!(true), &json!("inject")),
+        "{w}"
+    );
+    // Grok without a monitor: start the follower under it.
+    let (g, _) = wake_tools(&ts, "grok", "g-1").await;
+    let w = wake_of(&g, &publish(&g).await, true).await;
+    assert_eq!(w["when_idle"], false, "{w}");
+    assert_eq!(
+        w["follow_command"],
+        format!("'{bin}' feedback follow --agent grok --harness-session 'g-1'")
+    );
+    // Codex: woken by codex queue exactly when the daemon can run it;
+    // otherwise told to tell the person.
+    let (x, xsid) = wake_tools(&ts, "codex", "cx-1").await;
+    let w = wake_of(&x, &publish(&x).await, true).await;
+    let push: Value = reqwest::Client::new()
+        .get(format!("{}/api/sessions/{xsid}", ts.base))
+        .bearer_auth(&ts.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    if push["push"]["available"] == true {
+        assert_eq!(w["via"], "queue", "{w}");
+    } else {
+        assert_eq!(w["when_idle"], false, "{w}");
+        assert!(w.get("follow_command").is_none(), "{w}");
+        assert!(w["do"].as_str().unwrap().contains("Tell the person"), "{w}");
+    }
+}

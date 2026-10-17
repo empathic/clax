@@ -717,7 +717,7 @@ describe("comments", () => {
     expect(parts(await pi.callToolAsPi("clax_comments_resolve", { url_or_id: aid, thread_id: sent }, ctx)).json).toMatchObject({ resolved: true, status: "resolved" });
     const t = await api(daemon, `/api/artifacts/${aid}/threads/${sent}`);
     expect(t.thread.comments[1]).toMatchObject({ author_kind: "agent", author_name: "pi" });
-    expect(parts(await pi.callToolAsPi("clax_watch", { url_or_id: aid, replies: false }, ctx)).json).toMatchObject({ watching: true, replies_armed: false });
+    expect(parts(await pi.callToolAsPi("clax_watch", { url_or_id: aid, replies: false }, ctx)).json).toMatchObject({ watching: true, replies_armed: false, wake: { when_idle: false, via: null } });
     const status = parts(await pi.callToolAsPi("clax_status", {}, ctx)).json;
     expect(status.watches[0]).toMatchObject({ artifact_id: aid, replies_armed: false });
     expect(status.push).toMatchObject({ tier: "inject", available: true });
@@ -726,7 +726,7 @@ describe("comments", () => {
   it("watch, comments_read, and wait_for_feedback take a page URL", async () => {
     const { pi, ctx } = load(daemon.home, "pi-live");
     const w = parts(await pi.callToolAsPi("clax_watch", { url_or_id: "http://localhost:5173/" }, ctx)).json;
-    expect(w).toMatchObject({ page_url: "http://localhost:5173/", scope: "http://localhost:5173/*", watching: true, replies_armed: true, site: { name: "http://localhost:5173", joined: false, origins: ["http://localhost:5173"] } });
+    expect(w).toMatchObject({ page_url: "http://localhost:5173/", scope: "http://localhost:5173/*", watching: true, replies_armed: true, wake: { when_idle: true, via: "inject" }, site: { name: "http://localhost:5173", joined: false, origins: ["http://localhost:5173"] } });
     expect(w.url).toMatch(new RegExp(`/a/${w.artifact_id}$`));
     // `@agent` sends the thread.
     const { aid, tid } = await liveThread("http://localhost:5173/settings", "@agent the button overflows");

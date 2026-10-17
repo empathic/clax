@@ -505,7 +505,7 @@
     },
     {
       "name": "status",
-      "description": "Report the Clax daemon's URL and version, the session publishes are attributed to, your agent `name`, the `person` you act for, your `rights`, and `remote: true` when the daemon is on another machine. Pass `name` to name yourself for the task at hand, such as `fix-chart-axis` (letters, digits, `.`, `_` and `-`; unique among live agents; once your person renames you, the name is theirs).",
+      "description": "Report the Clax daemon's URL and version, the session publishes are attributed to, your agent `name`, the `person` you act for, your `rights`, and `remote: true` when the daemon is on another machine; `watches` (what this session follows) and `push`, how comments sent to you are delivered and whether one wakes this session while it is idle (`available`, `tier`, `reason`, and the background `follow_command` that would wake it). Call it when comments are not reaching you. Pass `name` to name yourself for the task at hand, such as `fix-chart-axis` (letters, digits, `.`, `_` and `-`; unique among live agents; once your person renames you, the name is theirs).",
       "annotations": {
         "readOnlyHint": false,
         "destructiveHint": false,
@@ -553,7 +553,7 @@
     },
     {
       "name": "watch",
-      "description": "Watch an artifact, or a web page by its URL (your dev server's, such as `http://localhost:5173/`, which covers every page under it, on every address of its site when the person joined several into one), so comments sent to the agent on it reach this session (`on`, default true; `on: false` stops). `replies` (default true) lets them end your turn through the Stop hook or wake the session where the harness allows. Publishing an artifact already watches it with replies on.",
+      "description": "Watch an artifact, or a web page by its URL (your dev server's, such as `http://localhost:5173/`, which covers every page under it, on every address of its site when the person joined several into one), so comments sent to the agent on it reach this session (`on`, default true; `on: false` stops). `replies` (default true) lets them end your turn through the Stop hook or wake the session where the harness allows. The result's `wake` says whether a comment wakes this session while it is idle (`when_idle`, `via`) and, when it does not, gives `follow_command` and in `do` the one thing to do next (usually: start `follow_command` in the background): `replies_armed` alone does not mean you will be woken. Publishing an artifact already watches it with replies on.",
       "annotations": {
         "readOnlyHint": false,
         "destructiveHint": false,

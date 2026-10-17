@@ -1319,6 +1319,15 @@ class Tools {
       : { thread_id: a.thread_id, resolved: true, status: r.thread?.status ?? null };
   }
 
+  /** The `wake` block of a watch (as `clax_core::wake::block` words it):
+   * this extension's injection loop wakes an idle Pi session with each
+   * comment on a watch with replies armed; with replies off nothing does. */
+  private static wake(armed: boolean): Json {
+    return armed
+      ? { when_idle: true, via: "inject", do: "Start nothing: a comment sent to you wakes this session through the Clax Pi extension. End your turn when you are done." }
+      : { when_idle: false, via: null, reason: "replies are off for this watch", do: "Start nothing: comments on it arrive with your next clax tool call, the person's next message, or wait_for_feedback, and never wake you." };
+  }
+
   async watch(ctx: ExtensionContext, a: Static<typeof WatchArgs>): Promise<Json> {
     const c = this.clientFor(ctx);
     const t = await this.targetOf(c, a.url_or_id);
@@ -1334,6 +1343,7 @@ class Tools {
           site: r.site ? { name: r.site.name ?? null, joined: !!r.site.joined, origins: Array.isArray(r.site.origins) ? r.site.origins.map((o: { origin: string }) => o.origin) : [] } : null,
           watching: true,
           replies_armed: r.live_watch?.replies_armed ?? null,
+          wake: Tools.wake(r.live_watch?.replies_armed === true),
         };
       }
       const r = await this.call(() => c.liveUnwatch(t.url));
@@ -1342,7 +1352,7 @@ class Tools {
     const id = t.id;
     if (a.on ?? true) {
       const r = await this.call(() => c.watch(id, a.replies ?? true));
-      return { artifact_id: id, url: this.artifactUrl(c, id), watching: true, replies_armed: r.watch?.replies_armed ?? null };
+      return { artifact_id: id, url: this.artifactUrl(c, id), watching: true, replies_armed: r.watch?.replies_armed ?? null, wake: Tools.wake(r.watch?.replies_armed === true) };
     }
     await this.call(() => c.unwatch(id));
     return { artifact_id: id, url: this.artifactUrl(c, id), watching: false, replies_armed: false };
@@ -1902,7 +1912,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       "Upload local files as assets of a Clax artifact and get URLs for the page",
       AssetUploadArgs, (ctx, a) => tools.assetUpload(ctx, a));
     define("status", "Clax status",
-      "Report the Clax daemon's URL and version, the session publishes are attributed to, your agent `name`, the `person` you act for, your `rights`, and `remote: true` when the daemon is on another machine. Pass `name` to name yourself for the task at hand, such as `fix-chart-axis` (letters, digits, `.`, `_` and `-`; unique among live agents; once your person renames you, the name is theirs).",
+      "Report the Clax daemon's URL and version, the session publishes are attributed to, your agent `name`, the `person` you act for, your `rights`, and `remote: true` when the daemon is on another machine; `watches` (what this session follows) and `push`, how comments sent to you are delivered and whether one wakes this session while it is idle (`available`, `tier`, `reason`, and the background `follow_command` that would wake it). Call it when comments are not reaching you. Pass `name` to name yourself for the task at hand, such as `fix-chart-axis` (letters, digits, `.`, `_` and `-`; unique among live agents; once your person renames you, the name is theirs).",
       "Report the Clax daemon, this session and your agent name, or set the name",
       StatusArgs, (ctx, a) => tools.status(ctx, a));
     define("comments_read", "Clax comments read",
@@ -1922,7 +1932,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       "Hand a Clax comment thread to another agent, or release it",
       CommentsHandoffArgs, (ctx, a) => tools.commentsHandoff(ctx, a));
     define("watch", "Clax watch",
-      "Watch an artifact, or a web page by its URL (your dev server's, such as `http://localhost:5173/`, which covers every page under it, on every address of its site when the person joined several into one), so comments sent to the agent on it reach this session (`on`, default true; `on: false` stops). `replies` (default true) lets them end your turn through the Stop hook or wake the session where the harness allows. Publishing an artifact already watches it with replies on.",
+      "Watch an artifact, or a web page by its URL (your dev server's, such as `http://localhost:5173/`, which covers every page under it, on every address of its site when the person joined several into one), so comments sent to the agent on it reach this session (`on`, default true; `on: false` stops). `replies` (default true) lets them end your turn through the Stop hook or wake the session where the harness allows. The result's `wake` says whether a comment wakes this session while it is idle (`when_idle`, `via`) and, when it does not, gives `follow_command` and in `do` the one thing to do next (usually: start `follow_command` in the background): `replies_armed` alone does not mean you will be woken. Publishing an artifact already watches it with replies on.",
       "Watch a Clax artifact for comments sent to you, or stop watching it",
       WatchArgs, (ctx, a) => tools.watch(ctx, a));
     define("working", "Clax working",

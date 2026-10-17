@@ -316,6 +316,16 @@ fn declares_the_channel_and_never_permission_relay() {
         json!({"claude/channel": {}}),
         "{r}"
     );
+    // Launched without the channel: no notice will come, and the
+    // instructions say so instead of describing notices.
+    let i = r["result"]["instructions"].as_str().unwrap();
+    assert!(!i.contains("<channel source="), "{i}");
+    assert!(
+        i.contains("not launched with the Clax channel") && i.contains("`wake`"),
+        "{i}"
+    );
+    let mut c = FakeClaude::launch(FLAG);
+    let r = c.initialize("2025-06-18");
     let i = r["result"]["instructions"].as_str().unwrap();
     assert!(
         i.contains("<channel source=\"plugin:clax:clax\"") && i.contains("comments_read"),

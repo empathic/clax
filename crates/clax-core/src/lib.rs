@@ -40,6 +40,7 @@ pub mod secret;
 pub mod sig;
 pub mod time;
 pub mod visibility;
+pub mod wake;
 pub mod working;
 pub mod wrap;
 
