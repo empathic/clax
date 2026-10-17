@@ -723,10 +723,27 @@ describe("comments", () => {
     expect(status.push).toMatchObject({ tier: "inject", available: true });
   });
 
+  it("watch says a comment wakes the session only while the injection loop runs", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-wake");
+    // Before session_start the loop cannot run: nothing wakes the session.
+    const aid = parts(await pi.callToolAsPi("clax_publish", { html: "<h2>Goals</h2>", title: "Pi wake" }, ctx)).json.artifact_id;
+    const before = parts(await pi.callToolAsPi("clax_watch", { url_or_id: aid }, ctx)).json.wake;
+    expect(before).toMatchObject({ when_idle: false, via: null });
+    expect(before.reason).toContain("injection loop is not running");
+    expect(before.do).toContain("Tell the person");
+    await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    const after = parts(await pi.callToolAsPi("clax_watch", { url_or_id: aid }, ctx)).json.wake;
+    expect(after).toMatchObject({ when_idle: true, via: "inject", sure: true });
+    // Once the session shuts down, the loop is stopped.
+    await pi.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
+    const ended = parts(await pi.callToolAsPi("clax_watch", { url_or_id: aid }, ctx)).json.wake;
+    expect(ended).toMatchObject({ when_idle: false });
+  });
+
   it("watch, comments_read, and wait_for_feedback take a page URL", async () => {
     const { pi, ctx } = load(daemon.home, "pi-live");
     const w = parts(await pi.callToolAsPi("clax_watch", { url_or_id: "http://localhost:5173/" }, ctx)).json;
-    expect(w).toMatchObject({ page_url: "http://localhost:5173/", scope: "http://localhost:5173/*", watching: true, replies_armed: true, wake: { when_idle: true, via: "inject" }, site: { name: "http://localhost:5173", joined: false, origins: ["http://localhost:5173"] } });
+    expect(w).toMatchObject({ page_url: "http://localhost:5173/", scope: "http://localhost:5173/*", watching: true, replies_armed: true, site: { name: "http://localhost:5173", joined: false, origins: ["http://localhost:5173"] } });
     expect(w.url).toMatch(new RegExp(`/a/${w.artifact_id}$`));
     // `@agent` sends the thread.
     const { aid, tid } = await liveThread("http://localhost:5173/settings", "@agent the button overflows");

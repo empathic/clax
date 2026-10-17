@@ -1319,13 +1319,25 @@ class Tools {
       : { thread_id: a.thread_id, resolved: true, status: r.thread?.status ?? null };
   }
 
-  /** The `wake` block of a watch (as `clax_core::wake::block` words it):
-   * this extension's injection loop wakes an idle Pi session with each
-   * comment on a watch with replies armed; with replies off nothing does. */
-  private static wake(armed: boolean): Json {
-    return armed
-      ? { when_idle: true, via: "inject", do: "Start nothing: a comment sent to you wakes this session through the Clax Pi extension. End your turn when you are done." }
-      : { when_idle: false, via: null, reason: "replies are off for this watch", do: "Start nothing: comments on it arrive with your next clax tool call, the person's next message, or wait_for_feedback, and never wake you." };
+  /** The extension's injection loop, which wakes an idle Pi session with
+   * each comment: `start` starts it for a registered session once Pi has
+   * started the session (it does nothing otherwise), `running` says
+   * whether it runs. Set by the extension; absent, nothing wakes it. */
+  inject?: { start(c: DaemonClient): void; running(): boolean };
+
+  /** The `wake` block of a watch on `c` (as `clax_core::wake::block` words
+   * it): the injection loop wakes an idle Pi session with each comment on
+   * a watch with replies armed, while it runs; with replies off, or with
+   * the loop not running, nothing does. */
+  private wake(c: DaemonClient, armed: boolean): Json {
+    if (!armed) return { when_idle: false, via: null, sure: true, reason: "replies are off for this watch", do: "Start nothing: comments on it arrive with your next clax tool call, the person's next message, or wait_for_feedback, and never wake you." };
+    if (c.session()) this.inject?.start(c);
+    if (this.inject?.running()) return { when_idle: true, via: "inject", sure: true, do: "Start nothing: a comment sent to you wakes this session through the Clax Pi extension. End your turn when you are done." };
+    return {
+      when_idle: false, via: null, sure: true,
+      reason: "the Clax Pi extension's injection loop is not running: Pi has not started this session, or it has shut down",
+      do: "Nothing can wake this session while it is idle. Tell the person that their comments reach you only when you next act (your next clax tool call, the end of a turn, or their next message); while they comment, call wait_for_feedback in a loop instead of ending your turn.",
+    };
   }
 
   async watch(ctx: ExtensionContext, a: Static<typeof WatchArgs>): Promise<Json> {
@@ -1343,7 +1355,7 @@ class Tools {
           site: r.site ? { name: r.site.name ?? null, joined: !!r.site.joined, origins: Array.isArray(r.site.origins) ? r.site.origins.map((o: { origin: string }) => o.origin) : [] } : null,
           watching: true,
           replies_armed: r.live_watch?.replies_armed ?? null,
-          wake: Tools.wake(r.live_watch?.replies_armed === true),
+          wake: this.wake(c, r.live_watch?.replies_armed === true),
         };
       }
       const r = await this.call(() => c.liveUnwatch(t.url));
@@ -1352,7 +1364,7 @@ class Tools {
     const id = t.id;
     if (a.on ?? true) {
       const r = await this.call(() => c.watch(id, a.replies ?? true));
-      return { artifact_id: id, url: this.artifactUrl(c, id), watching: true, replies_armed: r.watch?.replies_armed ?? null, wake: Tools.wake(r.watch?.replies_armed === true) };
+      return { artifact_id: id, url: this.artifactUrl(c, id), watching: true, replies_armed: r.watch?.replies_armed ?? null, wake: this.wake(c, r.watch?.replies_armed === true) };
     }
     await this.call(() => c.unwatch(id));
     return { artifact_id: id, url: this.artifactUrl(c, id), watching: false, replies_armed: false };
@@ -1799,6 +1811,8 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
         clearTimeout(timer);
       }
     });
+
+    tools.inject = { start: startInject, running: () => live && !!stopInject };
 
     pi.on("session_shutdown", async () => {
       live = false;
