@@ -8,7 +8,7 @@ use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use clax_core::model::Viewer;
 use clax_core::rights::Rights;
-use clax_store::visibility::Reader;
+use clax_core::visibility::Reader;
 use std::net::SocketAddr;
 use std::sync::Arc;
 

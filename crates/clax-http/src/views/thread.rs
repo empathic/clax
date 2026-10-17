@@ -4,13 +4,14 @@
 use crate::state::AppState;
 use clax_core::ArtifactId;
 use clax_core::model::{Artifact, Asset, Comment, Thread, Version};
+use clax_core::visibility::UNCONNECTED;
+use clax_core::visibility::placeholder::{self, ApprovalState, WithheldAuthor};
+use clax_core::visibility::{self, Author, Reader};
 use clax_core::working::{SessionWorking, WorkingView};
-use clax_store::approvals::UNCONNECTED;
 use clax_store::docs::{Acquired, Doc, DocPage, Written};
 use clax_store::live::LivePage;
 use clax_store::threads::ThreadOwner;
-use clax_store::visibility::placeholder::{self, ApprovalState, WithheldAuthor};
-use clax_store::visibility::{self, Author, Reader, Visibility};
+use clax_store::visibility::Visibility;
 use clax_store::{DeliveryViewer, Store};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -995,7 +996,7 @@ impl<'a> Withhold<'a> {
     fn artifact(&mut self, a: &Artifact, view: &mut Value) -> clax_core::Result<()> {
         let mut fields = Vec::new();
         let mut withheld: Vec<Author> = Vec::new();
-        for f in clax_store::artifacts::TEXT_FIELDS {
+        for f in clax_core::model::ARTIFACT_TEXT_FIELDS {
             let w = self.vis.withheld_authors(
                 &visibility::authors_of_artifact_field(a, f),
                 &a.id,

@@ -22,6 +22,7 @@ use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use clax_core::CoreError;
+use clax_core::visibility::UNCONNECTED;
 use clax_http::agent::{Agent, DeniedToGrants, TokenOrAgent};
 use clax_http::audit::DeferredAudit;
 use clax_http::auth::Caller;
@@ -32,9 +33,7 @@ use clax_http::viewer::SameOrigin;
 use clax_http::views::approval::{approval_view, request_view};
 use clax_realtime::feedback::apply_decision;
 use clax_store::Store;
-use clax_store::approvals::{
-    AskApproval, Decision, OVERFLOW_BANNER, RequestStatus, Scope, UNCONNECTED, Via,
-};
+use clax_store::approvals::{AskApproval, Decision, OVERFLOW_BANNER, RequestStatus, Scope, Via};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Duration;

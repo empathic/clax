@@ -13,6 +13,7 @@ use axum::response::{IntoResponse, Response};
 use clax_core::audit::AuditCtx;
 use clax_core::feedback::Touched;
 use clax_core::model::{Session, Thread};
+use clax_core::visibility::{OWNER, UNCONNECTED};
 use clax_core::working::StopReason;
 use clax_core::{Anchor, ArtifactId, CoreError, Event};
 use clax_http::agent::{Agent, TokenOrAgent, person_agent_session};
@@ -25,7 +26,6 @@ use clax_http::state::AppState;
 use clax_http::viewer::{SameOrigin, acting_viewer, author};
 use clax_http::views::thread::{VisFor, thread_event_views};
 use clax_realtime::feedback::apply;
-use clax_store::approvals::{OWNER, UNCONNECTED};
 use clax_store::batches::SendBatch;
 use clax_store::threads::{
     AUTHOR_AGENT, AUTHOR_VIEWER, DEFAULT_THREAD_PAGE, NewComment, NewThread, clip_problem,

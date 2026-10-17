@@ -7,11 +7,12 @@
 
 use super::Store;
 use super::threads::{AUTHOR_VIEWER, thread_in};
-use crate::visibility::placeholder::ApprovalState;
-use crate::visibility::{self, Author, Reader, Visibility};
+use crate::visibility::Visibility;
 use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
 use clax_core::feedback::Touched;
 use clax_core::model::Thread;
+use clax_core::visibility::placeholder::ApprovalState;
+use clax_core::visibility::{self, Author, Reader};
 use clax_core::{CoreError, Result, is_public_id, new_ulid};
 use rusqlite::{OptionalExtension, Row, Transaction, params};
 use serde::Serialize;
@@ -20,7 +21,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
-pub use crate::visibility::{OWNER, UNCONNECTED};
+use clax_core::visibility::{OWNER, UNCONNECTED};
 
 /// What an approval covers (§9.1, M13).
 #[derive(Clone, Debug, PartialEq, Eq)]
