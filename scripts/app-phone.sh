@@ -24,6 +24,7 @@
 #
 # Environment:
 #   ANDROID_SERIAL  which device, when more than one is attached
+#   APP_PHONE_WAIT  seconds to wait for a phone after the build (default 900)
 #   JAVA_HOME       natively, a JDK 17 (default: the newest ~/Library/Java/jdk-17*)
 set -euo pipefail
 cd "$(dirname "$0")/.."
