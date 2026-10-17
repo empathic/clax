@@ -218,6 +218,11 @@ class RunState {
   /// about at most once a run.
   final Map<String, ConsentAnswer> readConsents = {};
 
+  /// Whether the run's latest `plan_set` left features to build: a stop
+  /// at a limit then leaves the rest to the build ([plannedStopReply])
+  /// rather than offering Keep going.
+  bool planned = false;
+
   /// Set once by whatever ends the run: `finish`, `give_up`, a cap or a
   /// cancel.
   RunOutcome? outcome;
