@@ -3,7 +3,7 @@
 //! the frame mode is known, the content frame. String injection at comment
 //! markers the shell build keeps; no template engine.
 
-use crate::shell_route::ShellRoute;
+use super::route::ShellRoute;
 use axum::http::{HeaderMap, header};
 use clax_http::error::ApiError;
 use clax_http::state::AppState;
@@ -298,9 +298,10 @@ mod tests {
 
     #[test]
     fn page_src_agrees_with_the_shell() {
-        let cases: Value =
-            serde_json::from_str(include_str!("../../../web/shell/src/frame-src-cases.json"))
-                .unwrap();
+        let cases: Value = serde_json::from_str(include_str!(
+            "../../../../web/shell/src/frame-src-cases.json"
+        ))
+        .unwrap();
         for c in cases.as_array().unwrap() {
             let got = page_src(
                 c["id"].as_str().unwrap(),
@@ -314,7 +315,7 @@ mod tests {
 
     #[test]
     fn the_frame_has_the_shells_attributes() {
-        let host = include_str!("../../../web/shell/src/view/frame-host.ts");
+        let host = include_str!("../../../../web/shell/src/view/frame-host.ts");
         assert!(
             host.contains(&format!(
                 "export const FRAME_SANDBOX = \"{FRAME_SANDBOX}\";"

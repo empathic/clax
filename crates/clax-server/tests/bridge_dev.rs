@@ -4,7 +4,7 @@
 //! copy and the test rewrites that, never the real `web/dist`.
 #![cfg(debug_assertions)]
 
-use clax_server::routes::shell::bridge_version;
+use clax_server::shell::bridge_version;
 use clax_testkit::TestServer;
 
 #[tokio::test]

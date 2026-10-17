@@ -3,7 +3,7 @@ use clax_core::daemon::{
     DaemonInfo, DaemonLock, pid_alive, port_held, read_daemon_info, retry_interrupted,
     write_daemon_info,
 };
-use clax_server::daemon::{ServeConfig, serve};
+use clax_server::serve::{ServeConfig, serve};
 use std::net::{IpAddr, Ipv4Addr};
 
 #[test]

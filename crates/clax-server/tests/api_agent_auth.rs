@@ -995,11 +995,10 @@ async fn session_less_grant_requests_use_person_and_grant_rights() {
     );
 }
 
-/// The routes of `routes/mod.rs` with the method of each handler, and
+/// The routes of `router.rs` with the method of each handler, and
 /// whether the handler takes `Agent<…>`.
 fn every_route() -> Vec<(String, String, bool)> {
-    let src = include_str!("../src/routes/mod.rs");
-    let src = &src[..src.find("mod l10 {").unwrap()];
+    let src = include_str!("../src/router.rs");
     let module = |m: &str| -> Option<&'static str> {
         Some(match m {
             "artifacts" => include_str!("../src/routes/artifacts.rs"),
@@ -1020,7 +1019,7 @@ fn every_route() -> Vec<(String, String, bool)> {
             "room" => include_str!("../src/routes/room.rs"),
             "sample" => include_str!("../src/routes/sample.rs"),
             "sessions" => include_str!("../src/routes/sessions.rs"),
-            "shell" => include_str!("../src/routes/shell.rs"),
+            "shell" => include_str!("../src/shell/mod.rs"),
             "sites" => include_str!("../src/routes/sites.rs"),
             "stream" => include_str!("../src/routes/stream.rs"),
             "threads" => include_str!("../src/routes/threads.rs"),

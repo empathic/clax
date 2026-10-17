@@ -7,7 +7,7 @@ use clax_core::working::{Clock, ManualClock, SystemClock};
 use clax_core::{EventBus, Home};
 use clax_http::AppState;
 use clax_http::wrap_cache::WrapCache;
-use clax_server::build_router;
+use clax_server::router::build_router;
 use clax_store::Store;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -267,7 +267,7 @@ impl TestServer {
         let agent_gate = state.agent_gate.clone();
         let web = state.web.clone();
         let app = if shutdown {
-            clax_server::build_router_with_shutdown(state, tokio::sync::watch::channel(false).0)
+            clax_server::router::build_router_with_shutdown(state, tokio::sync::watch::channel(false).0)
         } else {
             build_router(state)
         }

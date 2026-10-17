@@ -3,9 +3,9 @@ load("//bazel:cargo.bzl", "cargo_package")
 cargo_package(
     # The modules of tests/integration.rs in six test targets (bazel/cargo.bzl).
     split_tests = {"integration": {"groups": 6}},
-    # The runtime contract's type definitions src/routes/shell.rs serves.
+    # The runtime contract's type definitions src/shell/mod.rs serves.
     compile_data = ["//web:contract_files"],
-    # clax-http's sources the route-table guards read (src/routes/mod.rs).
+    # clax-http's sources the route-table guards read (src/routes/guards.rs).
     test_compile_data = [
         "//crates/clax-core:toolpath_vectors",
         "//crates/clax-http:rust_sources",
@@ -37,6 +37,6 @@ cargo_package(
 # (crates/clax-testkit/src/people.rs).
 filegroup(
     name = "router_source",
-    srcs = ["src/routes/mod.rs"],
+    srcs = ["src/router.rs"],
     visibility = ["//crates/clax-testkit:__pkg__"],
 )

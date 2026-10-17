@@ -4,7 +4,7 @@
 use clax_commands::ServeArgs;
 use clax_core::Home;
 use clax_core::embedded::{DiskTree, FileTree};
-use clax_server::daemon::{ServeConfig, serve};
+use clax_server::serve::{ServeConfig, serve};
 use std::sync::Arc;
 use std::time::Duration;
 

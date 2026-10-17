@@ -2,7 +2,7 @@
 //! `text/html` files) wrapped with the bridge, other supporting files as stored.
 
 use crate::routes::artifacts::path;
-use crate::routes::shell::bridge_version;
+use crate::shell::bridge_version;
 use axum::body::Body;
 use axum::extract::rejection::PathRejection;
 use axum::extract::{Extension, Path, State};

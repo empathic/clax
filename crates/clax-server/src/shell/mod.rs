@@ -1,6 +1,10 @@
 //! Serves the web UI (the daemon's [`FileTree`], `AppState::web`): the
 //! shell's two entries (the gallery and the artifact view) and static
-//! assets.
+//! assets. `boot` is the first-load data of `/a/…`, `route` how a shell
+//! path parses.
+
+pub mod boot;
+pub mod route;
 
 use crate::routes::artifacts::path;
 use axum::extract::rejection::PathRejection;
@@ -86,7 +90,7 @@ pub async fn gallery_page(
     entry(&*s.web, &req, "index.html")
 }
 
-/// `/a/…`: `artifact.html` with the first-load data ([`crate::boot`]), or the
+/// `/a/…`: `artifact.html` with the first-load data ([`boot`]), or the
 /// gallery for a path that names no artifact (the shell shows the gallery for
 /// it too).
 ///
@@ -110,8 +114,8 @@ pub async fn artifact_page(
     // The page embeds the artifact, its versions and threads for the browser
     // (spec §7.5): agents read them through the routes the filter covers.
     d.refuse_agents()?;
-    let route = crate::shell_route::parse_shell_path(uri.path());
-    if matches!(route, crate::shell_route::ShellRoute::Gallery) {
+    let route = route::parse_shell_path(uri.path());
+    if matches!(route, route::ShellRoute::Gallery) {
         return entry(&*s.web, &req, "index.html");
     }
     let Some(f) = s.web.get("artifact.html") else {
@@ -121,13 +125,13 @@ pub async fn artifact_page(
     let injected = if clax_http::auth::request_host_allowed(&req, &uri, &extensions) {
         within(
             s.request_timeout,
-            crate::boot::assemble(&s, route, &req, clax_http::identity::peer_of(&extensions)),
+            boot::assemble(&s, route, &req, clax_http::identity::peer_of(&extensions)),
         )
         .await
     } else {
         None
     };
-    let mut res = http_cache::html(&req, &crate::boot::inject(&template, injected.as_ref()));
+    let mut res = http_cache::html(&req, &boot::inject(&template, injected.as_ref()));
     let h = res.headers_mut();
     h.insert(
         header::CACHE_CONTROL,
@@ -142,8 +146,8 @@ pub async fn artifact_page(
 /// data itself.
 async fn within(
     limit: std::time::Duration,
-    assemble: impl std::future::Future<Output = Result<Option<crate::boot::Injected>, ApiError>>,
-) -> Option<crate::boot::Injected> {
+    assemble: impl std::future::Future<Output = Result<Option<boot::Injected>, ApiError>>,
+) -> Option<boot::Injected> {
     match tokio::time::timeout(limit, assemble).await {
         Ok(Ok(i)) => i,
         Ok(Err(e)) => {
@@ -355,7 +359,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_or_slow_bootstrap_is_left_out() {
-        let ok = crate::boot::Injected {
+        let ok = boot::Injected {
             boot: "{}".into(),
             frame: None,
             title: "t".into(),

@@ -590,7 +590,7 @@ impl World {
     }
 
     /// Every call an agent can make: each route of `agent::ROUTES` and
-    /// every Denied route of `routes/mod.rs`, with real IDs (reads on
+    /// every Denied route of `clax-server's `router.rs``, with real IDs (reads on
     /// [`World::read`], writes on [`World::scratch`]), each with a body
     /// that works and the error paths (an unknown thread, a body that is
     /// not JSON). Deletes come last.
@@ -942,11 +942,10 @@ fn a_ready_frame_alone_is_not_enough() {
     ));
 }
 
-/// Every route of `routes/mod.rs` (but the test-only ones): method and
+/// Every route of `clax-server's `router.rs`` (but the test-only ones): method and
 /// path, read from the source as the route guards read it.
 pub fn every_route() -> Vec<(String, String)> {
-    let src = include_str!("../../clax-server/src/routes/mod.rs");
-    let src = &src[..src.find("mod l10 {").unwrap()];
+    let src = include_str!("../../clax-server/src/router.rs");
     let mut out = Vec::new();
     let mut rest = src;
     while let Some(i) = rest.find(".route(") {

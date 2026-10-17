@@ -2,7 +2,7 @@
 //! daemon serving a scratch web UI.
 #![cfg(debug_assertions)]
 
-use clax_server::boot::FRAME_SANDBOX;
+use clax_server::shell::boot::FRAME_SANDBOX;
 use clax_testkit::TestServer;
 use serde_json::{Value, json};
 

@@ -333,7 +333,7 @@ async fn reregistering_after_an_idle_end_restores_watches_and_says_what_ended() 
     r.clock.advance(31 * 60);
     let (feedback, store) = (r.ts.feedback.clone(), r.ts.store.clone());
     let reaped = tokio::task::spawn_blocking(move || {
-        clax_server::daemon::reap_idle(
+        clax_server::serve::reap_idle(
             &feedback,
             &store,
             std::time::Duration::from_secs(clax_store::Store::SESSION_IDLE_SECS),

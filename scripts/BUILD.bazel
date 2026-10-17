@@ -30,7 +30,7 @@ filegroup(
 )
 
 # The plugin hook scripts clax-server's tests compare with each plugin's copy
-# (crates/clax-server/src/routes/mod.rs).
+# (crates/clax-server/src/routes/guards.rs).
 filegroup(
     name = "hook_scripts",
     srcs = [
