@@ -11,9 +11,12 @@
 mod client;
 pub mod clients;
 mod clock;
+pub mod deferred;
 mod events;
 mod fixture;
+pub mod mcp;
 pub mod people;
+pub mod remotes;
 mod server;
 
 pub use client::*;

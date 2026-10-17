@@ -2125,13 +2125,13 @@ impl TokenAgent<'_> {
     }
 
     fn request(&self, method: reqwest::Method) -> reqwest::RequestBuilder {
-        let url = format!("{}{}", self.site.ts.base, crate::api_mcp::ADAPTER);
+        let url = format!("{}{}", self.site.ts.base, clax_testkit::mcp::ADAPTER);
         let mut r = self
             .site
             .ts
             .client
             .request(method, url)
-            .header("accept", crate::api_mcp::ACCEPT)
+            .header("accept", clax_testkit::mcp::ACCEPT)
             .header(HOST, format!("localhost:{}", self.site.ts.addr.port()))
             .bearer_auth(&self.token);
         if let Some(s) = &self.session {
@@ -2143,7 +2143,7 @@ impl TokenAgent<'_> {
     /// `initialize` as the MCP client `client`: the status; the session it
     /// is answered with is kept.
     async fn initialize(&mut self, client: &str) -> u16 {
-        let mut body = crate::api_mcp::initialize();
+        let mut body = clax_testkit::mcp::initialize();
         body["params"]["clientInfo"]["name"] = json!(client);
         let res = self
             .request(reqwest::Method::POST)
@@ -2593,7 +2593,7 @@ async fn held_body(site: &Site, path: &str, token: &str, len: usize) -> tokio::n
         "POST {path} HTTP/1.1\r\nhost: localhost:{port}\r\nconnection: close\r\n\
          authorization: Bearer {token}\r\naccept: {}\r\n\
          content-type: application/json\r\ncontent-length: {len}\r\n\r\n",
-        crate::api_mcp::ACCEPT
+        clax_testkit::mcp::ACCEPT
     );
     stream.write_all(head.as_bytes()).await.unwrap();
     stream
@@ -2642,7 +2642,7 @@ async fn an_agent_tokens_bodies_are_bounded_like_a_signed_grants() {
     };
     let (token, other) = (mint("laptop").await, mint("desktop").await);
     let api = "/api/artifacts";
-    let adapter = crate::api_mcp::ADAPTER;
+    let adapter = clax_testkit::mcp::ADAPTER;
     let r0 = site.ts.agent_gate.state().read;
 
     // One large body of a token at a time, on the API and the adapter
@@ -4947,12 +4947,12 @@ async fn a_local_daemons_agent_reads_its_clip_by_path_as_before() {
     let tid = t["thread"]["id"].as_str().unwrap().to_string();
     let call = json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
         "params": {"name": "comments_read", "arguments": {"url_or_id": aid, "thread_id": tid}}});
-    let res = crate::api_mcp::mcp_post(&ts, crate::api_mcp::ADAPTER, &call)
+    let res = clax_testkit::mcp::mcp_post(&ts, clax_testkit::mcp::ADAPTER, &call)
         .bearer_auth(&ts.token)
         .send()
         .await
         .unwrap();
-    let r = crate::api_mcp::rpc_message(res).await["result"].clone();
+    let r = clax_testkit::mcp::rpc_message(res).await["result"].clone();
     assert_eq!(tool_code(&r), "", "{r}");
     assert!(images(&r).is_empty(), "{r}");
     let t = &tool_json(&r)["threads"][0];
@@ -4996,7 +4996,7 @@ async fn a_clip_address_is_private_to_caches_and_ends_with_its_thread_or_artifac
         let tid = site
             .thread_with_clip(&owner, &aid, "a note", &png_of(8, 8))
             .await;
-        let url = clax_server::hosted::clip_link(&site.ts.state, &aid, &tid).unwrap();
+        let url = clax_http::hosted::clip_link(&site.ts.state, &aid, &tid).unwrap();
         let r = get_at(&site, &host, &path_of(&url)).await;
         assert_eq!(r.status(), 200, "{gone}");
         assert_eq!(
@@ -5033,7 +5033,7 @@ async fn with_a_content_origin_a_clip_is_served_there_alone() {
     let aid = site.titled("Budget").await;
     let png = png_of(8, 8);
     let tid = site.thread_with_clip(&owner, &aid, "a note", &png).await;
-    let url = clax_server::hosted::clip_link(&site.ts.state, &aid, &tid).unwrap();
+    let url = clax_http::hosted::clip_link(&site.ts.state, &aid, &tid).unwrap();
     assert!(
         url.starts_with(&format!("http://[::1]:{port}/_clip/")),
         "{url}"
@@ -5056,13 +5056,13 @@ async fn a_live_pages_clip_is_named_by_no_address() {
     let read = || async {
         let call = json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
             "params": {"name": "comments_read", "arguments": {"url_or_id": aid, "thread_id": tid}}});
-        let res = crate::api_mcp::mcp_post(&site.ts, crate::api_mcp::ADAPTER, &call)
+        let res = clax_testkit::mcp::mcp_post(&site.ts, clax_testkit::mcp::ADAPTER, &call)
             .header(HOST, format!("localhost:{}", site.ts.addr.port()))
             .bearer_auth(&site.ts.token)
             .send()
             .await
             .unwrap();
-        let r = crate::api_mcp::rpc_message(res).await["result"].clone();
+        let r = clax_testkit::mcp::rpc_message(res).await["result"].clone();
         assert_eq!(tool_code(&r), "", "{r}");
         tool_json(&r)["threads"][0].clone()
     };

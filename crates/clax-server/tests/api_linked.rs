@@ -2,8 +2,8 @@
 //! hosted test daemon keeps an artifact's comment threads in step with its
 //! public twin's, both ways.
 
-use crate::api_remotes::{Public, connect, json_of, local_req, post};
 use crate::common::TestServer;
+use clax_testkit::remotes::{Public, connect, json_of, local_req, post};
 use clax_server::linked::{BACKOFF_CAP, BACKOFF_FIRST, BACKSTOP, Linked};
 use clax_testkit::ManualSleeper;
 use reqwest::header::{COOKIE, HOST, ORIGIN};

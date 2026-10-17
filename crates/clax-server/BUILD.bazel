@@ -5,8 +5,9 @@ cargo_package(
     split_tests = {"integration": {"groups": 6}},
     # The runtime contract's type definitions src/shell/mod.rs serves.
     compile_data = ["//web:contract_files"],
-    # clax-http's sources the route-table guards read (src/routes/guards.rs).
-    test_compile_data = [
+    # clax-http's sources the route-table guards read (src/routes/guards.rs),
+    # and the JSON fixtures the tests include (tests/api_mcp_http.rs).
+    test_compile_data = glob(["tests/fixtures/**"]) + [
         "//crates/clax-core:toolpath_vectors",
         "//crates/clax-http:rust_sources",
         "//web:contract_files",

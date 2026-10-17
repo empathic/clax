@@ -209,8 +209,8 @@ impl Site {
         let post = |body: Value, session: Option<&str>| {
             let mut r = self
                 .http
-                .post(format!("{}{}", self.ts.base, crate::api_mcp::ADAPTER))
-                .header("accept", crate::api_mcp::ACCEPT)
+                .post(format!("{}{}", self.ts.base, clax_testkit::mcp::ADAPTER))
+                .header("accept", clax_testkit::mcp::ACCEPT)
                 .header(HOST, &self.host)
                 .bearer_auth(token)
                 .json(&body);
@@ -219,7 +219,7 @@ impl Site {
             }
             r.send()
         };
-        let res = post(crate::api_mcp::initialize(), None).await.unwrap();
+        let res = post(clax_testkit::mcp::initialize(), None).await.unwrap();
         assert_eq!(res.status(), 200);
         let session = res.headers()["mcp-session-id"]
             .to_str()

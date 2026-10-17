@@ -11,10 +11,7 @@ use reqwest::header::{COOKIE, ORIGIN, SET_COOKIE};
 use serde_json::json;
 use std::sync::Arc;
 
-const ENTRY: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../web/shell/artifact.html"
-));
+const ENTRY: &str = include_str!("../../../web/shell/artifact.html");
 
 async fn dist() -> tokio::sync::MutexGuard<'static, ()> {
     static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
