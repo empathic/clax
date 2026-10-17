@@ -1140,10 +1140,11 @@ pub const MIGRATIONS: &[&str] = &[
     // `delivered_*`, its last delivery from Clax and the artifact and thread
     // it was about; `delivered_since_turn`, set by a delivery and cleared by
     // the next reported turn, which then came from Clax, not the terminal;
-    // `delivered_written_at`, when the delivered comment was written, kept
-    // only when the session's own person wrote it (by hand, not through a
-    // page): the delivery's only part in the person's Clax activity.
-    // Every time is the daemon's.
+    // `delivered_written_at`, when the session's own person did what the
+    // delivery carries in Clax, and `delivered_act`, what: `wrote` the
+    // delivered comment (by hand, not through a page), or `answered`,
+    // `skipped` or `pulled` the session's question; the delivery's only
+    // part in the person's Clax activity. Every time is the daemon's.
     "ALTER TABLE questions ADD COLUMN thread_id TEXT;
     ALTER TABLE questions ADD COLUMN in_terminal INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE questions ADD COLUMN pulled_at TEXT;
@@ -1154,7 +1155,8 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE sessions ADD COLUMN delivered_artifact_id TEXT;
     ALTER TABLE sessions ADD COLUMN delivered_thread_id TEXT;
     ALTER TABLE sessions ADD COLUMN delivered_since_turn INTEGER NOT NULL DEFAULT 0;
-    ALTER TABLE sessions ADD COLUMN delivered_written_at TEXT;",
+    ALTER TABLE sessions ADD COLUMN delivered_written_at TEXT;
+    ALTER TABLE sessions ADD COLUMN delivered_act TEXT;",
 ];
 
 /// The audit journal's migration, as a schema version (the
@@ -1817,6 +1819,7 @@ mod tests {
             "delivered_thread_id",
             "delivered_since_turn",
             "delivered_written_at",
+            "delivered_act",
         ] {
             assert!(s.iter().any(|x| x == c), "sessions.{c}");
         }

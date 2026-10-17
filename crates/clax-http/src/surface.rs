@@ -17,7 +17,7 @@ use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use clax_core::CoreError;
 use clax_core::model::Session;
-use clax_core::surface::{Delivery, Signals, Suggestion, TerminalSignal, suggest};
+use clax_core::surface::{Act, ActKind, Delivery, Signals, Suggestion, TerminalSignal, suggest};
 use clax_store::Store;
 use clax_store::engagement::SessionSignals;
 use clax_store::inbox::recipient_key;
@@ -92,7 +92,6 @@ fn gather(s: &AppState, st: &Store, sid: &str, page: Option<&str>) -> clax_core:
                 at,
                 artifact_id: aid,
                 thread_id,
-                written_at: kept.delivered_written_at.as_deref().and_then(parse),
             })
         }
         _ => None,
@@ -123,6 +122,13 @@ fn gather(s: &AppState, st: &Store, sid: &str, page: Option<&str>) -> clax_core:
                 inferred: kept.terminal_inferred,
             }),
         delivery,
+        act: match (
+            kept.delivered_written_at.as_deref().and_then(parse),
+            kept.delivered_act.as_deref().and_then(ActKind::parse),
+        ) {
+            (Some(at), Some(kind)) => Some(Act { at, kind }),
+            _ => None,
+        },
         clax_at,
         artifact_id,
         clax_open: panel_open || s.stream.holds_surface(&key),

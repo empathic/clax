@@ -12,6 +12,7 @@ use clax_core::audit::AuditCtx;
 use clax_core::feedback::{Placeholder, ago, quoted, render_delivery, render_notice};
 use clax_core::model::Artifact;
 use clax_core::questions::render_late;
+use clax_core::surface::ActKind;
 use clax_core::working::Clock;
 use clax_core::{CoreError, Tier};
 use clax_http::agent::{FeedbackAck, FeedbackNotices, FeedbackPoll, TokenOrAgent};
@@ -54,8 +55,8 @@ fn live_session(st: &Store, sid: &str) -> clax_core::Result<()> {
 /// views, and one block per question, a late answer's age read from
 /// `clock` (spec 2026-10-06-agent-questions-and-inbox §6.4), a pull's
 /// asking for the question in Clax ([`pulled_block`]). Each is recorded as
-/// a delivery from Clax at the question's artifact and thread, the
-/// person's act there at its close ([`Store::note_answer`]).
+/// a delivery from Clax, the person's act at its close, placed at the
+/// question's artifact and thread when it has them ([`Store::note_answer`]).
 fn late_answers(
     st: &Store,
     sid: &str,
@@ -68,13 +69,23 @@ fn late_answers(
     let mut blocks = Vec::with_capacity(rows.len());
     for q in &rows {
         // An answer, or a pull, came from Clax: the work it starts is
-        // Clax's, at its thread (spec 2026-10-16-ask-where-attention-is-design §1).
+        // Clax's, at its thread when it has one (spec
+        // 2026-10-16-ask-where-attention-is-design §1).
         // The question is taken already, so a failure to record that is
         // logged and the answer still handed over.
-        if let (Some(aid), Some(at)) = (
-            &q.artifact_id,
-            q.pulled_at.as_deref().or(q.closed_at.as_deref()),
-        ) && let Err(e) = st.note_answer(sid, aid, q.thread_id.as_deref(), at)
+        let act = if q.pulled_at.is_some() {
+            ActKind::Pulled
+        } else if q.status == Status::Declined {
+            ActKind::Skipped
+        } else {
+            ActKind::Answered
+        };
+        let place = q
+            .artifact_id
+            .as_deref()
+            .map(|aid| (aid, q.thread_id.as_deref()));
+        if let Some(at) = q.pulled_at.as_deref().or(q.closed_at.as_deref())
+            && let Err(e) = st.note_answer(sid, place, act, at)
         {
             tracing::warn!(error = %e, question = %q.id, "an answer's delivery not recorded");
         }
@@ -413,7 +424,12 @@ pub async fn poll(
                     None => {
                         live_session(st, &sid)?;
                         let ctx = clax_http::audit::session_ctx(st, &headers, &sid)?;
-                        clax_http::surface::note_poll(&st0, st, &ctx, &sid, prompt, turn_ended)?;
+                        // The feedback is handed over even when this fails.
+                        if let Err(e) =
+                            clax_http::surface::note_poll(&st0, st, &ctx, &sid, prompt, turn_ended)
+                        {
+                            tracing::warn!(error = %e, "a poll's prompt or turn not recorded");
+                        }
                         std::sync::Arc::new(ctx)
                     }
                 };

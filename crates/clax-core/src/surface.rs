@@ -62,17 +62,60 @@ pub struct TerminalSignal {
 
 /// The session's last delivery from Clax: what instigated its work, when
 /// newer than the last prompt. Its time is when the agent took it, never
-/// the person's activity.
+/// the person's activity ([`Act`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Delivery {
     pub at: DateTime<Utc>,
     pub artifact_id: String,
     /// Its thread, when it still is one of `artifact_id`'s.
     pub thread_id: Option<String>,
-    /// When the delivered comment was written, when the session's own
-    /// person wrote it: the delivery's only part in the person's Clax
-    /// activity.
-    pub written_at: Option<DateTime<Utc>>,
+}
+
+/// What the session's own person did in Clax that the last delivery
+/// carried to the session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActKind {
+    /// Wrote the delivered comment, by hand.
+    Wrote,
+    /// Answered the session's question.
+    Answered,
+    /// Skipped the session's question.
+    Skipped,
+    /// Asked for the session's in-terminal question in Clax ("Ask me
+    /// here").
+    Pulled,
+}
+
+impl ActKind {
+    /// Its name as the store keeps it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ActKind::Wrote => "wrote",
+            ActKind::Answered => "answered",
+            ActKind::Skipped => "skipped",
+            ActKind::Pulled => "pulled",
+        }
+    }
+
+    /// The kind named `s` ([`ActKind::as_str`]).
+    pub fn parse(s: &str) -> Option<ActKind> {
+        [
+            ActKind::Wrote,
+            ActKind::Answered,
+            ActKind::Skipped,
+            ActKind::Pulled,
+        ]
+        .into_iter()
+        .find(|k| k.as_str() == s)
+    }
+}
+
+/// The person's own act in Clax behind the last delivery, at its own time:
+/// a delivery's only part in the person's Clax activity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Act {
+    pub at: DateTime<Utc>,
+    pub kind: ActKind,
 }
 
 /// What the daemon knows of a session's person, now.
@@ -80,6 +123,9 @@ pub struct Delivery {
 pub struct Signals {
     pub terminal: Option<TerminalSignal>,
     pub delivery: Option<Delivery>,
+    /// What the person did in Clax that the last delivery carried, also for
+    /// a delivery that places nothing (an inbox question's answer).
+    pub act: Option<Act>,
     /// The person's newest input, or focused report, on a tab of the
     /// session's pages: an unfocused tab gives only its last input; a
     /// hidden tab with no input gives none.
@@ -109,9 +155,10 @@ fn place_of(s: &Signals) -> Place {
 }
 
 /// The suggestion for `s` at `now`. The newest engagement wins: on the
-/// Clax side, input or focus on the session's page and the time the person
-/// wrote the delivered comment (a delivery places the question, and its
-/// own time is never the person's). Signals a minute apart, no signal in five minutes, or an inferred turn with no
+/// Clax side, input or focus on the session's page and the person's own
+/// act behind the last delivery, at its own time (a delivery places the
+/// question, and its own time is never the person's); the `why` names
+/// that act as it was. Signals a minute apart, no signal in five minutes, or an inferred turn with no
 /// Clax signal to weigh it against are unsure, and unsure leans to Clax.
 /// An inferred turn a minute or more newer than the newest Clax signal
 /// gives the terminal, as a prompt would. With no Clax tab or panel open,
@@ -139,14 +186,13 @@ pub fn suggest(s: &Signals, now: DateTime<Utc>) -> Suggestion {
     } else {
         ""
     };
-    // The person's newest Clax activity, and whether it was writing the
-    // delivered comment rather than input on the session's page.
-    let written = s.delivery.as_ref().and_then(|d| d.written_at);
-    let (clax, wrote) = match (s.clax_at, written) {
-        (Some(p), Some(w)) if w > p => (Some(w), true),
-        (Some(p), _) => (Some(p), false),
-        (None, Some(w)) => (Some(w), true),
-        (None, None) => (None, false),
+    // The person's newest Clax activity, and the act behind the last
+    // delivery when it was that rather than input on the session's page.
+    let (clax, act) = match (s.clax_at, s.act) {
+        (Some(p), Some(a)) if a.at > p => (Some(a.at), Some(a.kind)),
+        (Some(p), _) => (Some(p), None),
+        (None, Some(a)) => (Some(a.at), Some(a.kind)),
+        (None, None) => (None, None),
     };
     let term = s.terminal.as_ref();
     let recent = |t: DateTime<Utc>| now - t <= Duration::seconds(QUIET_SECS);
@@ -168,17 +214,14 @@ pub fn suggest(s: &Signals, now: DateTime<Utc>) -> Suggestion {
     };
     // The Clax side in words.
     let in_clax = |c: DateTime<Utc>| {
-        if wrote {
-            format!(
-                "the person wrote in the delivered thread in Clax {} s ago",
-                ago(c)
-            )
-        } else {
-            format!(
-                "the person was active on this session's page in Clax {} s ago",
-                ago(c)
-            )
-        }
+        let did = match act {
+            Some(ActKind::Wrote) => "wrote in the delivered thread in Clax",
+            Some(ActKind::Answered) => "answered this session's question in Clax",
+            Some(ActKind::Skipped) => "skipped this session's question in Clax",
+            Some(ActKind::Pulled) => "pressed Ask me here on this session's question in Clax",
+            None => "was active on this session's page in Clax",
+        };
+        format!("the person {did} {} s ago", ago(c))
     };
     let quiet = || {
         make(
@@ -317,13 +360,19 @@ mod tests {
         })
     }
     /// A delivery of a comment the person wrote and sent at once.
-    fn sent(secs_ago: i64, thread: Option<&str>) -> Option<Delivery> {
-        Some(Delivery {
-            at: at(secs_ago),
-            artifact_id: "7q3k9mzx2b4t".into(),
-            thread_id: thread.map(Into::into),
-            written_at: Some(at(secs_ago)),
-        })
+    fn sent(secs_ago: i64, thread: Option<&str>) -> Signals {
+        Signals {
+            delivery: Some(Delivery {
+                at: at(secs_ago),
+                artifact_id: "7q3k9mzx2b4t".into(),
+                thread_id: thread.map(Into::into),
+            }),
+            act: Some(Act {
+                at: at(secs_ago),
+                kind: ActKind::Wrote,
+            }),
+            ..open()
+        }
     }
     fn says(s: &Signals) -> (Surface, Confidence) {
         let x = suggest(s, now());
@@ -392,8 +441,7 @@ mod tests {
         let x = suggest(
             &Signals {
                 terminal: typed(200),
-                delivery: sent(10, Some("t1")),
-                ..open()
+                ..sent(10, Some("t1"))
             },
             now(),
         );
@@ -412,7 +460,10 @@ mod tests {
                 at: at(10),
                 artifact_id: "7q3k9mzx2b4t".into(),
                 thread_id: Some("t1".into()),
-                written_at: written.map(at),
+            }),
+            act: written.map(|w| Act {
+                at: at(w),
+                kind: ActKind::Wrote,
             }),
             ..open()
         };
@@ -453,12 +504,72 @@ mod tests {
     }
 
     #[test]
+    fn the_why_names_the_persons_act_as_it_was() {
+        let did = |kind: ActKind, thread: Option<&str>| {
+            suggest(
+                &Signals {
+                    terminal: typed(200),
+                    delivery: thread.map(|t| Delivery {
+                        at: at(10),
+                        artifact_id: "7q3k9mzx2b4t".into(),
+                        thread_id: Some(t.into()),
+                    }),
+                    act: Some(Act { at: at(30), kind }),
+                    ..open()
+                },
+                now(),
+            )
+        };
+        for (kind, words) in [
+            (
+                ActKind::Wrote,
+                "The person wrote in the delivered thread in Clax 30 s ago",
+            ),
+            (
+                ActKind::Answered,
+                "The person answered this session's question in Clax 30 s ago",
+            ),
+            (
+                ActKind::Skipped,
+                "The person skipped this session's question in Clax 30 s ago",
+            ),
+            (
+                ActKind::Pulled,
+                "The person pressed Ask me here on this session's question in Clax 30 s ago",
+            ),
+        ] {
+            let x = did(kind, Some("t1"));
+            assert_eq!(
+                (x.surface, x.confidence),
+                (Surface::Clax, Confidence::Clear)
+            );
+            assert!(x.why.starts_with(words), "{kind:?}: {}", x.why);
+            assert_eq!(x.r#where.thread_id.as_deref(), Some("t1"));
+        }
+        // An inbox question's answer places nothing and names no thread.
+        for kind in [ActKind::Answered, ActKind::Skipped, ActKind::Pulled] {
+            let x = did(kind, None);
+            assert_eq!(x.surface, Surface::Clax);
+            assert!(!x.why.contains("thread"), "{kind:?}: {}", x.why);
+            assert_eq!(x.r#where.thread_id, None);
+        }
+        for kind in [
+            ActKind::Wrote,
+            ActKind::Answered,
+            ActKind::Skipped,
+            ActKind::Pulled,
+        ] {
+            assert_eq!(ActKind::parse(kind.as_str()), Some(kind));
+        }
+        assert_eq!(ActKind::parse("typed"), None);
+    }
+
+    #[test]
     fn work_instigated_in_the_terminal_is_placed_on_the_artifact_not_an_older_thread() {
         let x = suggest(
             &Signals {
                 terminal: typed(5),
-                delivery: sent(100, Some("t1")),
-                ..open()
+                ..sent(100, Some("t1"))
             },
             now(),
         );
@@ -759,8 +870,7 @@ mod tests {
         let x = suggest(
             &Signals {
                 terminal: typed(200),
-                delivery: sent(10, Some("t1")),
-                ..open()
+                ..sent(10, Some("t1"))
             },
             now(),
         );

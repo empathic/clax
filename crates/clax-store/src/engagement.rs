@@ -7,6 +7,7 @@
 use super::Store;
 use super::questions::Close;
 use clax_core::audit::AuditCtx;
+use clax_core::surface::ActKind;
 use clax_core::{CoreError, Result};
 use rusqlite::{OptionalExtension, params};
 
@@ -23,11 +24,15 @@ pub struct SessionSignals {
     pub delivered_at: Option<String>,
     pub delivered_artifact_id: Option<String>,
     pub delivered_thread_id: Option<String>,
-    /// When the person did, in Clax, what the delivery carries: wrote its
-    /// comment in a browser (not a page through the `comments` capability,
-    /// not another author), or answered or pulled its question. A
-    /// delivery's own time says only when the agent took it.
+    /// When the session's own person did, in Clax, what the last delivery
+    /// carries: wrote its comment in a browser (not a page through the
+    /// `comments` capability, not another author), or answered, skipped or
+    /// pulled the session's question. A delivery's own time says only when
+    /// the agent took it.
     pub delivered_written_at: Option<String>,
+    /// What the person did at `delivered_written_at`
+    /// ([`clax_core::surface::ActKind::as_str`]).
+    pub delivered_act: Option<String>,
 }
 
 fn unknown_session() -> CoreError {
@@ -144,31 +149,48 @@ impl Store {
                  WHERE id = ?1 AND ended_at IS NULL",
                 params![sid, now, aid, tid, cid, clax_core::model::AUTHOR_VIEWER],
             )?;
+            tx.execute(
+                "UPDATE sessions SET delivered_act =
+                    CASE WHEN delivered_written_at IS NULL THEN NULL ELSE ?2 END
+                 WHERE id = ?1 AND ended_at IS NULL",
+                params![sid, ActKind::Wrote.as_str()],
+            )?;
             Ok(())
         })
     }
 
-    /// Records a delivery from Clax to session `sid` now of its question
-    /// about artifact `aid` (and thread `tid`), which the question's
-    /// recipient, the session's person, answered, skipped or pulled
-    /// ("Ask me here") at `acted_at`: kept as `delivered_written_at`. An
-    /// ended or unknown session records nothing.
+    /// Records a delivery from Clax to session `sid` now of its question,
+    /// which the question's recipient, the session's person, answered,
+    /// skipped or pulled ("Ask me here"), `act`, at `acted_at`: kept as
+    /// `delivered_written_at` and `delivered_act`. The next reported turn is
+    /// Clax's. A question about artifact `aid` (and thread `tid`) places the
+    /// delivery there; one about no artifact (an inbox question) leaves the
+    /// last delivery's time and place as they were. An ended or unknown
+    /// session records nothing.
     pub fn note_answer(
         &self,
         sid: &str,
-        aid: &str,
-        tid: Option<&str>,
+        at: Option<(&str, Option<&str>)>,
+        act: ActKind,
         acted_at: &str,
     ) -> Result<()> {
         let now = self.now();
         self.with_tx(|tx| {
-            tx.execute(
-                "UPDATE sessions SET delivered_at = ?2, delivered_artifact_id = ?3,
-                    delivered_thread_id = ?4, delivered_since_turn = 1,
-                    delivered_written_at = ?5
-                 WHERE id = ?1 AND ended_at IS NULL",
-                params![sid, now, aid, tid, acted_at],
-            )?;
+            match at {
+                Some((aid, tid)) => tx.execute(
+                    "UPDATE sessions SET delivered_at = ?2, delivered_artifact_id = ?3,
+                        delivered_thread_id = ?4, delivered_since_turn = 1,
+                        delivered_written_at = ?5, delivered_act = ?6
+                     WHERE id = ?1 AND ended_at IS NULL",
+                    params![sid, now, aid, tid, acted_at, act.as_str()],
+                )?,
+                None => tx.execute(
+                    "UPDATE sessions SET delivered_since_turn = 1,
+                        delivered_written_at = ?2, delivered_act = ?3
+                     WHERE id = ?1 AND ended_at IS NULL",
+                    params![sid, acted_at, act.as_str()],
+                )?,
+            };
             Ok(())
         })
     }
@@ -178,7 +200,8 @@ impl Store {
         self.with_read(|c| {
             Ok(c.query_row(
                 "SELECT terminal_at, terminal_inferred, delivered_at, delivered_artifact_id,
-                    delivered_thread_id, delivered_written_at FROM sessions WHERE id = ?1",
+                    delivered_thread_id, delivered_written_at, delivered_act
+                 FROM sessions WHERE id = ?1",
                 params![sid],
                 |r| {
                     Ok(SessionSignals {
@@ -188,6 +211,7 @@ impl Store {
                         delivered_artifact_id: r.get(3)?,
                         delivered_thread_id: r.get(4)?,
                         delivered_written_at: r.get(5)?,
+                        delivered_act: r.get(6)?,
                     })
                 },
             )
@@ -277,6 +301,7 @@ mod tests {
                 delivered_artifact_id: Some("7q3k9mzx2b4t".into()),
                 delivered_thread_id: Some("t1".into()),
                 delivered_written_at: None,
+                delivered_act: None,
             }
         );
         assert_eq!(st.session_signals("nope").unwrap(), None);
@@ -406,6 +431,11 @@ mod tests {
                 .unwrap();
             let k = st.session_signals(&sid).unwrap().unwrap();
             assert_eq!(k.delivered_at.as_deref(), Some("2026-10-16T10:10:00.000Z"));
+            assert_eq!(
+                k.delivered_act.as_deref(),
+                k.delivered_written_at.as_ref().map(|_| "wrote"),
+                "an act only with its time"
+            );
             k.delivered_written_at
         };
         assert_eq!(
@@ -432,27 +462,59 @@ mod tests {
         let sid = session(&st, "claude", "h1");
         let aid = crate::test_util::artifact(&st, None);
         c.advance(600);
-        st.note_answer(&sid, aid.as_str(), None, "2026-10-16T10:04:00.000Z")
-            .unwrap();
+        st.note_answer(
+            &sid,
+            Some((aid.as_str(), None)),
+            ActKind::Answered,
+            "2026-10-16T10:04:00.000Z",
+        )
+        .unwrap();
         let k = st.session_signals(&sid).unwrap().unwrap();
         assert_eq!(
             (
                 k.delivered_at.as_deref(),
                 k.delivered_written_at.as_deref(),
+                k.delivered_act.as_deref(),
                 k.delivered_artifact_id.as_deref(),
                 k.delivered_thread_id.as_deref(),
             ),
             (
                 Some("2026-10-16T10:10:00.000Z"),
                 Some("2026-10-16T10:04:00.000Z"),
+                Some("answered"),
                 Some(aid.as_str()),
                 None
             )
         );
         assert!(!st.note_turn(&sid).unwrap(), "the turn it starts is Clax's");
+        // An inbox question, about no artifact: the act and the next turn
+        // are Clax's, and the last delivery's time and place stay.
+        c.advance(60);
+        st.note_answer(&sid, None, ActKind::Pulled, "2026-10-16T10:10:30.000Z")
+            .unwrap();
+        let k = st.session_signals(&sid).unwrap().unwrap();
+        assert_eq!(
+            (
+                k.delivered_at.as_deref(),
+                k.delivered_written_at.as_deref(),
+                k.delivered_act.as_deref(),
+                k.delivered_artifact_id.as_deref(),
+            ),
+            (
+                Some("2026-10-16T10:10:00.000Z"),
+                Some("2026-10-16T10:10:30.000Z"),
+                Some("pulled"),
+                Some(aid.as_str()),
+            )
+        );
+        assert!(!st.note_turn(&sid).unwrap(), "the turn it starts is Clax's");
+        assert!(
+            st.note_turn(&sid).unwrap(),
+            "the turn after is the terminal's"
+        );
         st.end_session(DAEMON, &sid).unwrap();
         c.advance(60);
-        st.note_answer(&sid, aid.as_str(), None, "2026-10-16T10:11:00.000Z")
+        st.note_answer(&sid, None, ActKind::Skipped, "2026-10-16T10:12:00.000Z")
             .unwrap();
         assert_eq!(
             st.session_signals(&sid)
@@ -460,7 +522,7 @@ mod tests {
                 .unwrap()
                 .delivered_written_at
                 .as_deref(),
-            Some("2026-10-16T10:04:00.000Z"),
+            Some("2026-10-16T10:10:30.000Z"),
             "an ended session records nothing"
         );
     }

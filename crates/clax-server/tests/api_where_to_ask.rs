@@ -590,6 +590,13 @@ async fn a_late_answer_is_the_persons_act_in_clax_at_its_answer() {
     );
     assert!(text.ends_with(&clax_line(&v)), "{text}");
     assert_eq!(says(&v), ("clax", "clear"), "{v}");
+    assert!(
+        v["where_to_ask"]["why"]
+            .as_str()
+            .unwrap()
+            .starts_with("The person answered this session's question in Clax 0 s ago"),
+        "{v}"
+    );
     assert_eq!(v["where_to_ask"]["where"], json!({"artifact_id": aid}));
     assert_eq!(
         where_to_ask_reply(&ts, &sid).await["signals"]["delivered_at"],
@@ -652,11 +659,7 @@ async fn claude_hook(ts: &TestServer, event: &str, name: &str, hsid: &str) -> St
     let mut stdin = child.stdin.take().unwrap();
     stdin.write_all(input.to_string().as_bytes()).await.unwrap();
     drop(stdin);
-    // A guard against a hung client, not a budget.
-    let out = tokio::time::timeout(std::time::Duration::from_secs(60), child.wait_with_output())
-        .await
-        .expect("clax hook finished")
-        .unwrap();
+    let out = child.wait_with_output().await.unwrap();
     assert!(
         out.status.success(),
         "{}",
@@ -685,6 +688,7 @@ async fn claude_codes_prompt_hook_records_the_prompt_and_lapses_an_in_terminal_q
     );
     let qid = created["question"]["id"].as_str().unwrap().to_string();
     c.advance(60);
+    let seq = ts.store.newest_seq().unwrap();
     let out = claude_hook(&ts, "prompt", "UserPromptSubmit", "h1").await;
     assert_eq!(
         where_to_ask_reply(&ts, &sid).await["signals"]["terminal_at"],
@@ -692,14 +696,62 @@ async fn claude_codes_prompt_hook_records_the_prompt_and_lapses_an_in_terminal_q
     );
     let q = ts.store.question(&qid).unwrap().unwrap();
     assert_eq!(
-        format!("{:?}", q.status),
-        "Withdrawn",
+        q.status,
+        clax_store::questions::Status::Withdrawn,
         "the prompt lapses the open hook in-terminal question"
     );
+    let reasons: Vec<Value> = ts
+        .store
+        .events_after(seq, 100)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == "question.withdraw" && e.ids.question.as_deref() == Some(&qid))
+        .map(|e| serde_json::from_str::<Value>(&e.body).unwrap()["reason"].clone())
+        .collect();
+    assert_eq!(reasons, [json!("lapsed")]);
     assert!(
         out.contains(
             "[clax] If you ask the person anything now, ask in the terminal (chat) (clear): "
         ),
         "the prompt's context says where to ask: {out}"
+    );
+}
+
+#[tokio::test]
+async fn a_codex_turn_an_inbox_answer_started_is_not_a_terminal_turn() {
+    let (c, ts) = clocked().await;
+    let sid = ts.register_session("codex", "h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let _stream = ts.stream_as_owner(&["questions"]).await;
+    // A question about no artifact waits in the inbox; the person answers it.
+    let asked = json!({"source": "ask", "questions": [{"question": "Which layout?",
+        "header": "Layout", "options": [{"label": "Grid"}, {"label": "List"}]}]});
+    let qid = ts.ask(&sid, asked).await["question"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ts.answer_question(&qid, json!({"answers": [{"selected": ["Grid"]}]}))
+        .await;
+    // The Stop ending the turn that asked hands the answer over, and the
+    // agent goes on with it.
+    let v = poll(&ts, &sid, "tier=stop_hook").await;
+    assert_eq!(v["answers"][0]["id"], qid.as_str(), "{v}");
+    assert_eq!(
+        where_to_ask_reply(&ts, &sid).await["signals"]["terminal_at"],
+        "2026-10-16T10:00:00.000Z"
+    );
+    // The Stop ending the answer's turn is no terminal turn.
+    c.advance(30);
+    poll(&ts, &sid, "tier=stop_hook").await;
+    let a = where_to_ask_reply(&ts, &sid).await;
+    assert_eq!(
+        a["signals"]["terminal_at"], "2026-10-16T10:00:00.000Z",
+        "{a}"
+    );
+    assert!(
+        a["signals"]["delivered_at"].is_null(),
+        "an inbox answer places nothing: {a}"
     );
 }
