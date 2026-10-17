@@ -24,7 +24,7 @@ const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 
 /** The default config.toml: the sample key comes from a variable nobody sets, so no test reaches a real provider. */
 export const NO_KEY_CONFIG = '[sample]\napi_key_env = "CLAX_E2E_UNSET_KEY"\n';
-/** The stub provider: canned, deterministic answers (see crates/clax-server/src/sample/stub.rs). */
+/** The stub provider: canned, deterministic answers (see crates/clax-sample/src/stub.rs). */
 export const STUB_CONFIG = '[sample]\nprovider = "stub"\nstub_delay_ms = 150\n';
 
 export type Daemon = Awaited<ReturnType<typeof startDaemon>>;

@@ -1,15 +1,39 @@
 //! The body of `POST /api/artifacts/<aid>/sample` and its checks
 //! (`sample.d.ts`): what a page may ask, turned into provider turns under the
-//! fixed framing. A refusal here is a 400 before any stream starts, and nothing
-//! reaches the provider.
+//! fixed framing. A refusal here ([`SampleError`]) is a 400 before any stream
+//! starts, and nothing reaches the provider.
 
 use super::SampleSettings;
 use super::provider::{Block, Role, ToolSpec, Turn};
-use crate::error::ApiError;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::time::Duration;
+
+/// A body the checks refuse: the route answers 400 with this code (as the
+/// contract's `error`) and message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SampleError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl SampleError {
+    fn new(code: &'static str, message: impl Into<String>) -> SampleError {
+        SampleError {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for SampleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for SampleError {}
 
 pub const MAX_PROMPT_BYTES: usize = 65_536;
 pub const MAX_TOOLS: usize = 16;
@@ -118,11 +142,11 @@ pub struct Prepared {
     pub input_key: String,
 }
 
-fn invalid(m: impl Into<String>) -> ApiError {
-    ApiError::bad_request("invalid_request", m)
+fn invalid(m: impl Into<String>) -> SampleError {
+    SampleError::new("invalid_request", m)
 }
 
-fn turns_of(input: &Value) -> Result<Vec<(Role, String)>, ApiError> {
+fn turns_of(input: &Value) -> Result<Vec<(Role, String)>, SampleError> {
     match input {
         Value::String(s) if !s.trim().is_empty() => Ok(vec![(Role::User, s.clone())]),
         Value::String(_) => Err(invalid("input is empty")),
@@ -175,11 +199,11 @@ pub fn prepare(
     body: SampleBody,
     settings: &SampleSettings,
     images: bool,
-) -> Result<Prepared, ApiError> {
+) -> Result<Prepared, SampleError> {
     let pairs = turns_of(&body.input)?;
     let bytes: usize = pairs.iter().map(|(_, c)| c.len()).sum();
     if bytes > MAX_PROMPT_BYTES {
-        return Err(ApiError::bad_request(
+        return Err(SampleError::new(
             "prompt_too_large",
             format!("the input is {bytes} bytes; the limit is {MAX_PROMPT_BYTES}"),
         ));
@@ -252,13 +276,13 @@ pub fn prepare(
         ));
     }
     if !body.images.is_empty() && !images {
-        return Err(ApiError::bad_request(
+        return Err(SampleError::new(
             "images_unavailable",
             "this view cannot send images",
         ));
     }
     if body.images.len() > MAX_IMAGES {
-        return Err(ApiError::bad_request(
+        return Err(SampleError::new(
             "image_rejected",
             format!("at most {MAX_IMAGES} images per call"),
         ));
@@ -267,7 +291,7 @@ pub fn prepare(
     let mut image_hash = std::hash::DefaultHasher::new();
     for (i, img) in body.images.iter().enumerate() {
         if !IMAGE_TYPES.contains(&img.media_type.as_str()) {
-            return Err(ApiError::bad_request(
+            return Err(SampleError::new(
                 "image_rejected",
                 format!(
                     "images[{i}] is {}; images are JPEG, PNG, WebP, or GIF",
@@ -278,10 +302,10 @@ pub fn prepare(
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(&img.data)
             .map_err(|_| {
-                ApiError::bad_request("image_rejected", format!("images[{i}] is not base64"))
+                SampleError::new("image_rejected", format!("images[{i}] is not base64"))
             })?;
         if decoded.len() > MAX_IMAGE_BYTES {
-            return Err(ApiError::bad_request(
+            return Err(SampleError::new(
                 "image_rejected",
                 format!("images[{i}] is over {MAX_IMAGE_BYTES} bytes"),
             ));
@@ -354,15 +378,15 @@ pub fn limits_json(images: bool) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sample::SampleSettings;
-    use crate::sample::provider::{Block, Role};
+    use crate::SampleSettings;
+    use crate::provider::{Block, Role};
     use serde_json::json;
 
     fn body(v: serde_json::Value) -> SampleBody {
         serde_json::from_value(v).expect("a well-formed body")
     }
 
-    fn code(r: Result<Prepared, ApiError>) -> &'static str {
+    fn code(r: Result<Prepared, SampleError>) -> &'static str {
         r.expect_err("refused").code
     }
 

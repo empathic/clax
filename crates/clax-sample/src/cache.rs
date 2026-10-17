@@ -73,7 +73,7 @@ impl AnswerCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sample::request::Tier;
+    use crate::request::Tier;
 
     fn done(t: &str) -> Done {
         Done {

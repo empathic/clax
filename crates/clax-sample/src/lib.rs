@@ -1,7 +1,10 @@
 //! The `sample` capability's daemon side (spec §6 "Sample", §9, D10): the
-//! configured provider and settings. `Sampler::disabled()` has no provider:
-//! pages then resolve `use("sample")` to `null` and the routes answer
-//! `sampling_disabled`.
+//! configured provider and settings, the Anthropic and stub providers, a
+//! call's rounds (`flight`), the quota and the answer cache, and the checks
+//! of a page's request (`request`, refusing with a `SampleError` the route
+//! answers 400 with). `Sampler::disabled()` has no provider: pages then
+//! resolve `use("sample")` to `null` and the routes answer
+//! `sampling_disabled`. It knows nothing of HTTP routes or of the store.
 
 pub mod anthropic;
 pub mod cache;

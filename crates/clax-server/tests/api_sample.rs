@@ -1,7 +1,7 @@
-use clax_server::sample::provider::{Block, Role};
-use clax_server::sample::sse::SseParser;
-use clax_server::sample::stub::StubProvider;
-use clax_server::sample::{SampleSettings, Sampler};
+use clax_sample::provider::{Block, Role};
+use clax_sample::sse::SseParser;
+use clax_sample::stub::StubProvider;
+use clax_sample::{SampleSettings, Sampler};
 use clax_testkit::TestServer;
 use serde_json::{Value, json};
 use std::sync::Arc;

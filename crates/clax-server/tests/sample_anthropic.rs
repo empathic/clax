@@ -4,8 +4,8 @@
 use axum::Router;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
-use clax_server::sample::anthropic::AnthropicProvider;
-use clax_server::sample::provider::*;
+use clax_sample::anthropic::AnthropicProvider;
+use clax_sample::provider::*;
 use futures::StreamExt;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};

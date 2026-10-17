@@ -215,7 +215,7 @@ impl TestServer {
             presence: Arc::new(clax_core::presence::Presence::new(clock.clone())),
             rooms: Arc::new(clax_server::room::Rooms::default()),
             // Sampling off; tests that sample set their own with `spawn_with`.
-            sample: Arc::new(clax_server::sample::Sampler::disabled()),
+            sample: Arc::new(clax_sample::Sampler::disabled()),
             stream: clax_server::stream::Hub::new(live_ids.clone()),
             live_ids,
             ext_creds,

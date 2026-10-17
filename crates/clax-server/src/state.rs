@@ -99,7 +99,7 @@ pub struct AppState {
     /// The live rooms of the `room` capability (memory only).
     pub rooms: Arc<crate::room::Rooms>,
     /// The `sample` capability's provider and settings.
-    pub sample: Arc<crate::sample::Sampler>,
+    pub sample: Arc<clax_sample::Sampler>,
     /// The multiplexed event stream's topics and streams (`/api/stream`);
     /// fed by `events` once [`crate::stream::Hub::listen`] has run.
     pub stream: Arc<crate::stream::Hub>,

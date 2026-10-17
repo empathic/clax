@@ -405,6 +405,7 @@ dependencies = [
  "clax-core",
  "clax-embedded",
  "clax-fake-exe",
+ "clax-sample",
  "clax-server",
  "clax-testkit",
  "nix",
@@ -531,6 +532,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "clax-sample"
+version = "0.4.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "clax-core",
+ "futures",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+]
+
+[[package]]
 name = "clax-server"
 version = "0.4.0"
 dependencies = [
@@ -543,6 +561,7 @@ dependencies = [
  "clax-fake-exe",
  "clax-hooks",
  "clax-mcp",
+ "clax-sample",
  "clax-testkit",
  "futures",
  "mime_guess",
@@ -575,6 +594,7 @@ dependencies = [
  "axum",
  "clax-core",
  "clax-fake-exe",
+ "clax-sample",
  "clax-server",
  "futures",
  "reqwest",

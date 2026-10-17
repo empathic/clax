@@ -27,7 +27,6 @@ pub mod push;
 pub mod questions;
 pub mod room;
 pub mod routes;
-pub mod sample;
 pub mod shell_route;
 pub mod state;
 pub mod stream;
