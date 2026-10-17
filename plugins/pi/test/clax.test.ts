@@ -720,7 +720,8 @@ describe("comments", () => {
     expect(parts(await pi.callToolAsPi("clax_watch", { url_or_id: aid, replies: false }, ctx)).json).toMatchObject({ watching: true, replies_armed: false, wake: { when_idle: false, via: null } });
     const status = parts(await pi.callToolAsPi("clax_status", {}, ctx)).json;
     expect(status.watches[0]).toMatchObject({ artifact_id: aid, replies_armed: false });
-    expect(status.push).toMatchObject({ tier: "inject", available: true });
+    // No session_start here, so no injection loop polls: nothing wakes it.
+    expect(status.push).toMatchObject({ tier: "inject", available: false });
   });
 
   it("watch says a comment wakes the session only while the injection loop runs", async () => {

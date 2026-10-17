@@ -284,6 +284,9 @@ pub async fn poll(
     let notify = s.feedback_waiters.get(&sid);
     // While a wait-tier poll waits, tier 5 leaves the session's rows to it.
     let _waiting = (q.wait > 0 && tier == Tier::Wait).then(|| s.feedback_waiters.enter(&sid));
+    // A Pi extension's injection loop keeps the session woken while it polls.
+    let _injecting = (q.wait > 0 && tier == Tier::Inject)
+        .then(|| s.followers.enter_as(&sid, FollowKind::Inject));
     let mut shutdown = s.shutdown.clone();
     // A dropped sender means the state has no shutdown source; never end early then.
     let stopping = async move {

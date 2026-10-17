@@ -304,11 +304,26 @@ async fn a_follower_poll_marks_its_agent_woken_on_the_page() {
         tokio::task::yield_now().await;
     }
     poll.abort();
-    // A Pi session is woken by its extension, with no follower.
+    // A Pi session is woken only while its extension's injection loop
+    // polls: a client merely named pi is not.
     let pi = ts.register_session("pi", "p1").await;
     let pid = pi["id"].as_str().unwrap().to_string();
     let paid = published(&ts, &pid).await;
-    assert_eq!(wakes(&ts, &paid).await, true);
+    assert_eq!(wakes(&ts, &paid).await, false);
+    let req = ts.authed(ts.client.get(format!(
+        "{}/api/sessions/{pid}/feedback?tier=inject&wait=30",
+        ts.base
+    )));
+    let inject = tokio::spawn(async move { req.send().await.unwrap().status() });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while wakes(&ts, &paid).await != true {
+        assert!(
+            Instant::now() < deadline,
+            "the injection loop never counted"
+        );
+        tokio::task::yield_now().await;
+    }
+    inject.abort();
 }
 
 /// The shim's channel poll leaves Claude Code unsure, and takes no notice

@@ -410,6 +410,9 @@ impl Live {
     }
 }
 
+/// Why the Pi extension does not wake this session.
+const PI_NO_LOOP: &str = "the Clax Pi extension's injection loop is not polling for this session (Pi has not started it, it has shut down, or the client is not the Pi extension); comments arrive on the next clax tool call or during wait_for_feedback";
+
 /// How feedback can be pushed to this session (tier 5), and why not when it
 /// cannot. For Codex, `last_error` and `last_error_at` hold the latest
 /// `codex queue` failure (`null` after a success or before any run); a
@@ -447,7 +450,8 @@ fn push_info(
             json!({"tier": tier, "available": reason.is_none(), "reason": reason, "codex_home": codex_home,
                 "last_error": last_error, "last_error_at": last_error_at})
         }
-        "pi" => json!({"tier": "inject", "available": true, "reason": null}),
+        "pi" => json!({"tier": "inject", "available": live.inject,
+            "reason": (!live.inject).then_some(PI_NO_LOOP)}),
         "grok" => {
             let reason = (!live.follower).then_some(
                 "no clax feedback follow is running for this session; the clax-grok skill starts one with Grok's monitor tool after a publish. Meanwhile comments arrive at the end of a turn (Stop hook), on the next clax tool call, or during wait_for_feedback",
@@ -503,7 +507,7 @@ pub fn wakes_when_idle(
     let yes = |b: bool| if b { Wake::Yes } else { Wake::No };
     match harness {
         "codex" => yes(!elsewhere && codex.available() && harness_session_known),
-        "pi" => Wake::Yes,
+        "pi" => yes(live.inject),
         "grok" => yes(live.follower),
         "claude" if live.follower => Wake::Yes,
         "claude" if live.channel => Wake::Unsure,
@@ -861,10 +865,29 @@ mod tests {
         );
     }
 
-    /// A channel alone leaves Claude Code unsure.
+    /// A client named pi is woken only while the extension's injection
+    /// loop polls (or its wait_for_feedback waits); a channel alone leaves
+    /// Claude Code unsure.
     #[test]
-    fn a_channel_alone_is_unsure() {
+    fn pi_needs_its_injection_loop_and_a_channel_alone_is_unsure() {
         let off = CodexPush::from_env(Some("".into()), None);
+        assert_eq!(
+            wakes_when_idle("pi", true, false, &off, Live::default()),
+            Wake::No
+        );
+        assert_eq!(
+            wakes_when_idle(
+                "pi",
+                true,
+                false,
+                &off,
+                Live {
+                    inject: true,
+                    ..Live::default()
+                }
+            ),
+            Wake::Yes
+        );
         let channel = Live {
             channel: true,
             ..Live::default()

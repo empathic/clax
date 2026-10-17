@@ -1441,12 +1441,13 @@ async fn watch_says_whether_a_comment_wakes_the_idle_session_and_what_to_start()
     );
     // Claude Code never says whether it registered the channel.
     assert_eq!(w["sure"], false, "{w}");
-    // Pi: its extension injects.
+    // A client named pi without the extension's injection loop (as on an
+    // MCP endpoint): nothing wakes it.
     let (p, _) = wake_tools(&ts, "pi", "pi-1").await;
     let w = wake_of(&p, &publish(&p).await, true).await;
-    assert_eq!(
-        (&w["when_idle"], &w["via"]),
-        (&json!(true), &json!("inject")),
+    assert_eq!(w["when_idle"], false, "{w}");
+    assert!(
+        w["reason"].as_str().unwrap().contains("injection loop"),
         "{w}"
     );
     // Grok without a monitor: start the follower under it.
