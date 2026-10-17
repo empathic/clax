@@ -139,8 +139,8 @@ typedef _Ran = ({
 });
 
 /// Where a Keep going run starts: from the stopped run's draft, or, when
-/// that draft expired or the app changed under it, over from the app.
-enum _Resume { draft, expired, changed }
+/// the app changed under it, over from the app.
+enum _Resume { draft, changed }
 
 /// Makes new apps and changes them in answer to comments, over the
 /// daemon's API.
@@ -535,9 +535,9 @@ class AgentLoop {
   /// on the app, the agent's notes and what it cost. [keepGoing] runs such
   /// a change on: the draft starts from those edits, where the app still
   /// holds what they were made on, and the first message carries the
-  /// notes; a draft older than [unfinishedDraftAge], or an app that changed
-  /// under it, starts over from the app with the notes, and the run is
-  /// told to say so. The change and its Keep going runs share
+  /// notes; an app that changed under the draft starts over from the app
+  /// with the notes, and the run is told to say so. The draft is kept until
+  /// then, however long ago the run stopped (within [unfinishedKeepAge]). The change and its Keep going runs share
   /// [changeCapUsd]: each run's cost cap is what is left of it, at most
   /// [RunCaps.change]'s. Any other end of a run on these threads forgets
   /// what was kept, as does a [keepGoing] whose comments are not the kept
@@ -931,11 +931,7 @@ class AgentLoop {
       final holds = kept.before.entries.every(
         (e) => fingerprint(snap.files[e.key]) == e.value,
       );
-      resume = kept.expiredAt(_clock.now())
-          ? _Resume.expired
-          : holds
-          ? _Resume.draft
-          : _Resume.changed;
+      resume = holds ? _Resume.draft : _Resume.changed;
       if (resume == _Resume.draft) start = kept.edits;
     }
     final spentBefore = kept?.spentUsd ?? 0;
@@ -1010,7 +1006,6 @@ class AgentLoop {
                       : null,
                   why: switch (resume!) {
                     _Resume.draft => null,
-                    _Resume.expired => 'its unfinished draft has expired',
                     _Resume.changed =>
                       'the app changed under its unfinished draft',
                   },

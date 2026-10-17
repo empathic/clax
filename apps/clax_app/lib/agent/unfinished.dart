@@ -5,14 +5,10 @@ library;
 import 'dart:convert';
 import 'dart:io';
 
-/// How long an unfinished draft is kept for Keep going: as long as the
-/// daemon keeps a draft artifact (`DRAFT_MAX_AGE`,
-/// crates/clax-core/src/store/drafts.rs). After it, Keep going starts
-/// over from the live app with the agent's notes.
-const unfinishedDraftAge = Duration(hours: 1);
-
-/// How long an unfinished change is kept at all: after it, its notes and
-/// cost are forgotten too.
+/// How long an unfinished change is kept: after it, its draft, notes and
+/// cost are forgotten. Until then its draft is kept for Keep going as long
+/// as the app still holds what its edits were made on
+/// ([UnfinishedChange.before]).
 const unfinishedKeepAge = Duration(hours: 24);
 
 /// At most this many of the agent's notes are kept for a change across
@@ -100,23 +96,8 @@ class UnfinishedChange {
   final String? title;
   final Map<String, Object?>? capabilities;
 
-  /// Whether its draft is older than [unfinishedDraftAge] at [now].
-  bool expiredAt(DateTime now) => now.difference(at) > unfinishedDraftAge;
-
   /// Whether it is older than [unfinishedKeepAge] at [now].
   bool staleAt(DateTime now) => now.difference(at) > unfinishedKeepAge;
-
-  /// The same change with its draft dropped, once it expired: its notes
-  /// and cost stay.
-  UnfinishedChange withoutDraft() => UnfinishedChange(
-    artifactId: artifactId,
-    threadIds: threadIds,
-    commentIds: commentIds,
-    limit: limit,
-    spentUsd: spentUsd,
-    at: at,
-    notes: notes,
-  );
 
   Map<String, Object?> toJson() => {
     'artifact': artifactId,
@@ -179,8 +160,7 @@ class MemoryUnfinishedChanges implements UnfinishedChanges {
 /// files once, with fingerprints of what they replaced, for a day at
 /// most), so it is read and written synchronously, as [FileStoppedThreads]
 /// is: the worker never waits on the event loop for it. Each read and
-/// write drops what is older than [unfinishedKeepAge] and the draft of
-/// what is older than [unfinishedDraftAge], at [now].
+/// write drops what is older than [unfinishedKeepAge] at [now].
 class FileUnfinishedChanges implements UnfinishedChanges {
   FileUnfinishedChanges(this.file, {DateTime Function()? now})
     : _now = now ?? DateTime.now;
@@ -217,8 +197,7 @@ class FileUnfinishedChanges implements UnfinishedChanges {
     return out;
   }
 
-  /// Drops what is stale and the drafts that expired; answers whether
-  /// anything changed.
+  /// Drops what is stale; answers whether anything changed.
   bool _prune(Map<String, UnfinishedChange> m) {
     final now = _now();
     var changed = false;
@@ -226,9 +205,6 @@ class FileUnfinishedChanges implements UnfinishedChanges {
       final c = m[t]!;
       if (c.staleAt(now)) {
         m.remove(t);
-        changed = true;
-      } else if (c.expiredAt(now) && c.edits.isNotEmpty) {
-        m[t] = c.withoutDraft();
         changed = true;
       }
     }
