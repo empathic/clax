@@ -1587,8 +1587,8 @@ class Tools {
     if (a.questions !== undefined) {
       const res = await this.call(() => c.askCreate(a.questions!, artifact, a.thread_id, inTerminal));
       qid = String(res.question?.id ?? "");
-      this.rememberSurface(qid, res.surface_open ?? true);
       if (inTerminal) return this.askResult(c, res.question, 0, res.where_to_ask);
+      this.rememberSurface(qid, res.surface_open ?? true);
     } else {
       qid = a.question_id!;
       if (cancel) {
@@ -1713,8 +1713,8 @@ class Tools {
     if (q?.in_terminal) out.in_terminal = true;
     else if (status === "open") out.tell_terminal = `Asked in Clax: ${out.url}`;
     if (whereToAsk) out.where_to_ask = whereToAsk;
-    if (status === "open") out.surface_open = this.askSurface.get(qid) ?? true;
-    else this.askSurface.delete(qid);
+    if (status !== "open") this.askSurface.delete(qid);
+    else if (!q?.in_terminal) out.surface_open = this.askSurface.get(qid) ?? true;
     return out;
   }
 
@@ -2021,7 +2021,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       DbBatchArgs, (ctx, a) => tools.dbBatch(ctx, a));
 
     define("ask", "Clax ask",
-      "Ask the person one to four questions in Clax and wait for the answers (up to `timeout_s`, default 600 s). Each question has a short `header` (at most 12 characters) and two to four `options` (`label`, optional `description`, `preview` text, `recommended`) or none for a free-text answer; `multi_select` allows several; the person may also type an \"Other\" answer. Pass `url_or_id` when the question is about a page, and `thread_id` when it arose in one of its threads, so it shows there. With `in_terminal: true` it asks nothing: it shows the person in Clax that you are asking in the terminal, returns at once, and you cancel it once they answer. If the result says `call_again`, call `ask` again with `question_id`. The answers come back in `reply`, in the person's own words; write the result's `tell_terminal` line in chat. To ask your person to let you see content withheld from you, pass `approval` (`url_or_id`, optional `thread_id`, and `author`, a public ID from the `withheld` summary's `author_ids`) instead of `questions`: the result's `status` is `approved`, `declined` or `open` (then call again with `approval_id`).",
+      "Ask the person one to four questions in Clax and wait for the answers (up to `timeout_s`, default 600 s). Each question has a short `header` (at most 12 characters) and two to four `options` (`label`, optional `description`, `preview` text, `recommended`) or none for a free-text answer; `multi_select` allows several; the person may also type an \"Other\" answer. Pass `url_or_id` when the question is about a page, and `thread_id` when it arose in one of its threads, so it shows there. With `in_terminal: true`, sending each question's `question` and `header` only, it asks nothing: it shows the person in Clax that you are asking in the terminal, returns at once, and you cancel it once they answer. If the result says `call_again`, call `ask` again with `question_id`. The answers come back in `reply`, in the person's own words; write the result's `tell_terminal` line in chat. To ask your person to let you see content withheld from you, pass `approval` (`url_or_id`, optional `thread_id`, and `author`, a public ID from the `withheld` summary's `author_ids`) instead of `questions`: the result's `status` is `approved`, `declined` or `open` (then call again with `approval_id`).",
       "Ask the person questions in Clax and wait for their answers",
       AskArgs, (ctx, a) => tools.ask(ctx, a));
 

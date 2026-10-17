@@ -35,6 +35,11 @@
 //! registered before names existed; items 2 to 5, 8 and 9 change nothing
 //! the collection takes and are tested on their own.
 //!
+//! Inside an `ask` write, a `url` may also have moved from the question's
+//! inbox place to its artifact or thread ([`moved_to_its_place`]): an `ask`
+//! result names the narrowest place the question shows (spec
+//! 2026-10-16-ask-where-attention-is-design §2).
+//!
 //! The golden is regenerated (`write_golden`) only on a rebased base, at
 //! the collector's own commit, before any later change: never to make this
 //! comparison pass.
@@ -881,7 +886,10 @@ async fn golden_now() -> Value {
 /// `where_to_ask` (a feedback poll's suggestion of where to ask the
 /// person, spec 2026-10-16-ask-where-attention-is-design §1) and a question
 /// view's `in_terminal`, `pulled` and `thread` are what asking where the
-/// person is added to every install.
+/// person is added to every install. With them an `ask` result's `url`
+/// names the narrowest place the question shows (spec
+/// 2026-10-16-ask-where-attention-is-design §2), which
+/// [`compare_with_section_19`] accepts as [`moved_to_its_place`].
 pub const ADDITIVE_KEYS: [&str; 15] = [
     "owner",
     "taken_by",
@@ -953,6 +961,28 @@ fn without_where_to_ask<'a>(committed: &str, now: &'a str) -> &'a str {
     }
 }
 
+/// Whether `now` is the `committed` URL of a question's inbox place,
+/// `<base>/inbox?q=<ULID>`, moved to its artifact, `<base>/a/<id>`, or its
+/// thread, `<base>/a/<id>?thread=<ULID>`, on the same base: an `ask`
+/// result's `url` names the narrowest place since asking where the person
+/// is (spec 2026-10-16-ask-where-attention-is-design §2).
+fn moved_to_its_place(committed: &str, now: &str) -> bool {
+    let Some((base, qid)) = committed.split_once("/inbox?q=") else {
+        return false;
+    };
+    let Some(place) = now.strip_prefix(base).and_then(|r| r.strip_prefix("/a/")) else {
+        return false;
+    };
+    let (aid, thread) = match place.split_once("?thread=") {
+        Some((a, t)) => (a, Some(t)),
+        None => (place, None),
+    };
+    clax_core::is_ulid(qid)
+        && !aid.is_empty()
+        && aid.chars().all(|c| c.is_ascii_alphanumeric())
+        && thread.is_none_or(clax_core::is_ulid)
+}
+
 /// The ` (not connected)` marks the fixture's outputs carry, by the name
 /// marked: its two LAN viewers (`Mia`, and the unnamed `Viewer`), and the
 /// owner's unattributed history (`Alex`: the comments from before
@@ -975,16 +1005,29 @@ pub struct Section19 {
 /// 7's marks are counted per name (the word before each), and anything else
 /// is listed in [`Section19::other`]. A mark inside an object whose
 /// `author_public_id` is `owner` is listed in [`Section19::on_owner`].
+/// Inside a write whose `tool` is `ask` on both sides, a string
+/// [`moved_to_its_place`] is no difference.
 pub fn compare_with_section_19(committed: &Value, now: &Value, owner: &str) -> Section19 {
-    fn walk(a: &Value, b: &Value, path: &str, owned: bool, owner: &str, out: &mut Section19) {
+    /// Where the walk is: inside the owner's object, inside an `ask` write.
+    struct At {
+        owned: bool,
+        ask: bool,
+    }
+    fn walk(a: &Value, b: &Value, path: &str, inside: &At, owner: &str, out: &mut Section19) {
         match (a, b) {
             (Value::Object(x), Value::Object(y)) => {
-                let owned =
-                    owned || y.get("author_public_id").and_then(Value::as_str) == Some(owner);
+                let ask = json!("ask");
+                let inside = &At {
+                    owned: inside.owned
+                        || y.get("author_public_id").and_then(Value::as_str) == Some(owner),
+                    ask: inside.ask || (x.get("tool") == Some(&ask) && y.get("tool") == Some(&ask)),
+                };
                 let keys: std::collections::BTreeSet<&String> = x.keys().chain(y.keys()).collect();
                 for k in keys {
                     match (x.get(k), y.get(k)) {
-                        (Some(p), Some(q)) => walk(p, q, &format!("{path}/{k}"), owned, owner, out),
+                        (Some(p), Some(q)) => {
+                            walk(p, q, &format!("{path}/{k}"), inside, owner, out)
+                        }
                         (None, Some(q)) if ADDITIVE_KEYS.contains(&k.as_str()) => {
                             if !solo_value(k, q, owner) {
                                 out.other
@@ -997,10 +1040,11 @@ pub fn compare_with_section_19(committed: &Value, now: &Value, owner: &str) -> S
             }
             (Value::Array(x), Value::Array(y)) if x.len() == y.len() => {
                 for (i, (p, q)) in x.iter().zip(y).enumerate() {
-                    walk(p, q, &format!("{path}[{i}]"), owned, owner, out);
+                    walk(p, q, &format!("{path}[{i}]"), inside, owner, out);
                 }
             }
             (Value::String(x), Value::String(y)) if without_where_to_ask(x, y) == x => {}
+            (Value::String(x), Value::String(y)) if inside.ask && moved_to_its_place(x, y) => {}
             (Value::String(x), Value::String(y))
                 if x != y && without_where_to_ask(x, y).replace(NOT_CONNECTED, "") == *x =>
             {
@@ -1015,7 +1059,7 @@ pub fn compare_with_section_19(committed: &Value, now: &Value, owner: &str) -> S
                         .rev()
                         .collect();
                     *out.marks.entry(name).or_default() += 1;
-                    if owned {
+                    if inside.owned {
                         out.on_owner.push(path.to_string());
                     }
                 }
@@ -1025,7 +1069,11 @@ pub fn compare_with_section_19(committed: &Value, now: &Value, owner: &str) -> S
         }
     }
     let mut out = Section19::default();
-    walk(committed, now, "", false, owner, &mut out);
+    let top = At {
+        owned: false,
+        ask: false,
+    };
+    walk(committed, now, "", &top, owner, &mut out);
     out
 }
 
@@ -1091,6 +1139,39 @@ fn the_section_19_comparison_allows_a_final_where_to_ask_line_only() {
         "answer": {"id": "q1", "pulled": true}});
     let got = compare_with_section_19(&committed, &now, "u_owner");
     assert_eq!(got.other.len(), 2, "{:?}", got.other);
+}
+
+#[test]
+fn the_section_19_comparison_allows_an_ask_url_moved_to_its_place_only() {
+    let base = "http://localhost:<port>";
+    let q = "01M4ER09R8FS06A5PCG14N7GFW";
+    let t = "01M4ER09RCMZN90JP2SXB7ZAVA";
+    let write =
+        |tool: &str, url: String| json!({"tool": tool, "result": {"content": [{"url": url}]}});
+    let inbox = format!("{base}/inbox?q={q}");
+    let committed = json!([write("ask", inbox.clone()), write("ask", inbox.clone())]);
+    let now = json!([
+        write("ask", format!("{base}/a/ky9gdxtxwxqm")),
+        write("ask", format!("{base}/a/ky9gdxtxwxqm?thread={t}")),
+    ]);
+    let got = compare_with_section_19(&committed, &now, "u_owner");
+    assert!(got.other.is_empty(), "{:?}", got.other);
+    // The same move outside an `ask` write, to another base, to no artifact
+    // or to a thread that is no ULID is a difference.
+    let committed = json!([
+        write("list", inbox.clone()),
+        write("ask", inbox.clone()),
+        write("ask", inbox.clone()),
+        write("ask", inbox),
+    ]);
+    let now = json!([
+        write("list", format!("{base}/a/ky9gdxtxwxqm")),
+        write("ask", "http://localhost:9/a/ky9gdxtxwxqm".to_string()),
+        write("ask", format!("{base}/a/")),
+        write("ask", format!("{base}/a/ky9gdxtxwxqm?thread=x")),
+    ]);
+    let got = compare_with_section_19(&committed, &now, "u_owner");
+    assert_eq!(got.other.len(), 4, "{:?}", got.other);
 }
 
 /// The golden check (module docs): the outputs now differ from the

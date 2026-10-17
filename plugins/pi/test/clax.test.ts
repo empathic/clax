@@ -1132,10 +1132,15 @@ describe("comments", () => {
     expect(n).toMatchObject({ in_terminal: true, status: "open", call_again: false });
     expect(n.url).toMatch(new RegExp(`/inbox\\?q=${n.question_id}$`));
     expect(n.tell_terminal).toBeUndefined();
+    expect(n.surface_open).toBeUndefined();
     const item = (await api(daemon, "/api/inbox?kind=question")).items.find((i: any) => i.question?.id === n.question_id);
     expect(item).toMatchObject({ url: `/inbox?q=${n.question_id}`, question: { in_terminal: true } });
     expect(parts(await pi.callToolAsPi("clax_ask", { question_id: n.question_id, cancel: true }, ctx)).json.status).toBe("withdrawn");
+    const other = parts(await pi.callTool("clax_publish", { html: "<h2>Other</h2>", title: "Other page" }, ctx)).json.artifact_id;
+    const elsewhere = await pi.callTool("clax_ask", { questions: askBody("Pick").questions, url_or_id: other, thread_id: tid }, ctx);
+    expect(json(elsewhere).error.code).toBe("invalid_thread");
     for (const args of [
+      { questions: askBody("Pick").questions, url_or_id: aid, thread_id: "../x" },
       { questions: askBody("Pick").questions, thread_id: tid },
       { question_id: n.question_id, in_terminal: true },
       { approval: { url_or_id: aid }, thread_id: tid },

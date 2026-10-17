@@ -1135,7 +1135,10 @@ async fn ask_places_a_question_in_its_thread_and_an_in_terminal_question_in_the_
         (&json!("open"), &json!(true), &json!(false))
     );
     assert_eq!(n["url"], format!("{base}/inbox?q={qid}"));
-    assert!(n.get("tell_terminal").is_none(), "{n}");
+    assert!(
+        n.get("tell_terminal").is_none() && n.get("surface_open").is_none(),
+        "{n}"
+    );
     let items: Value = ts
         .client
         .get(format!("{}/api/inbox?kind=question", ts.base))
@@ -1157,7 +1160,19 @@ async fn ask_places_a_question_in_its_thread_and_an_in_terminal_question_in_the_
     let c = ask(&tools, json!({"question_id": qid, "cancel": true})).await;
     assert_eq!(c["status"], "withdrawn");
 
+    let other = ts.publish("Other", &[("index.html", "<p>other</p>")]).await;
+    let other = other["artifact"]["id"].as_str().unwrap();
+    assert_eq!(
+        ask_err(
+            &tools,
+            json!({"questions": which(), "url_or_id": other, "thread_id": tid})
+        )
+        .await,
+        "invalid_thread",
+        "a thread of another artifact"
+    );
     for bad in [
+        json!({"questions": which(), "url_or_id": aid, "thread_id": "../x"}),
         json!({"questions": which(), "thread_id": tid}),
         json!({"question_id": qid, "in_terminal": true}),
         json!({"approval": {"url_or_id": aid}, "thread_id": tid}),

@@ -2350,7 +2350,7 @@ where to ask them (`where_to_ask`, under "Agent questions"):
   `UserPromptSubmit` hook sends `tier=prompt_hook&prompt=true`) records that
   the person typed a prompt to the session in the terminal, as `POST
   /api/sessions/<sid>/terminal` does: it withdraws the session's open
-  mirrored in-terminal questions (reason `lapsed`). `SessionStart`'s poll
+  hook in-terminal questions (reason `lapsed`). `SessionStart`'s poll
   sends no flag and records nothing.
 - **Inferred turns:** Codex and Grok Build report no prompts. A
   `tier=stop_hook` poll of a `codex` or `grok` session records the end of a
@@ -2371,9 +2371,10 @@ where to ask them (`where_to_ask`, under "Agent questions"):
   (`in Clax`, or `in the terminal (chat)`, and `(unsure)` as the suggestion
   has it). A Stop poll gets the line only beside a delivery, which blocks
   the stop already.
-- An answer, a skip or an Ask me here handed over is a delivery from Clax
-  at the question's artifact and thread, and the person's activity in Clax
-  at the time they acted.
+- An answer, a skip or an Ask me here handed over is a delivery from Clax,
+  placed at the question's artifact and thread when it has them (an inbox
+  question's places nothing), and the person's activity in Clax at the
+  time they acted; `why` names what they did.
 
 Tier 5 for Claude Code announces and never delivers (see "Notices"). The
 shim forwards notices only when its parent's command line names a
@@ -2833,7 +2834,7 @@ nothing; the note is kept in the daemon's memory until that poll.
 | `question_id` | Keep waiting on a question this session asked. |
 | `url_or_id` | Optional, with `questions`: the artifact, or a web page's URL (its live page), the question is about. |
 | `thread_id` | Optional, with `questions` and `url_or_id`: a thread of that artifact the question arose from; the question shows in that thread. |
-| `in_terminal` | Optional, with `questions`: ask nothing in Clax. The question is an in-terminal question, which Clax shows ("<agent> is asking you in the terminal") but takes no answer to; `ask` returns at once, and the agent cancels it (`question_id`, `cancel`) once the person has answered in the terminal or in chat. |
+| `in_terminal` | Optional, with `questions` (each question's `question` and `header` only): ask nothing in Clax. The question is an in-terminal question, which Clax shows ("<agent> is asking you in the terminal") but takes no answer to; `ask` returns at once, and the agent cancels it (`question_id`, `cancel`) once the person has answered in the terminal or in chat. |
 | `timeout_s` | Seconds to wait, raised to 1 and capped at 600; default 600. Under Codex (whose MCP tool timeout is 60 s) the default and the cap are 50. |
 | `cancel` | With `question_id`: withdraw the question. |
 | `approval` | Instead of `questions`: ask the session's person to let the agent see what is withheld from it (spec 2026-10-08 §9.2), `{url_or_id?, thread_id?, author?}` (`author` a public ID from a `withheld` summary's `author_ids`). |
@@ -2871,8 +2872,9 @@ writes in chat so the person at the terminal knows where to answer.
 `GET /api/sessions/<sid>/where-to-ask`), as the create or the poll returned
 it; a `cancel` result and an approval result carry none. With
 `in_terminal: true` the result comes at once from the create, with
-`in_terminal: true`, `status: "open"`, `call_again: false` and no
-`tell_terminal`. An answer `ask` returns is taken: no feedback tier repeats it.
+`in_terminal: true`, `status: "open"`, `call_again: false`, and neither
+`tell_terminal` nor `surface_open`; the agent sends each question's
+`question` and `header` only. An answer `ask` returns is taken: no feedback tier repeats it.
 The question keeps its answer, though: `ask` with its `question_id` reads
 it again even after a feedback poll handed it over as a late answer, so an
 agent that lost a result can recover it, and may see the answer twice. Tier

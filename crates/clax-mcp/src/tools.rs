@@ -2363,10 +2363,10 @@ impl ClaxTools {
                     .as_str()
                     .unwrap_or_default()
                     .to_string();
-                self.remember_surface(&qid, res["surface_open"].as_bool().unwrap_or(true));
                 if in_terminal {
                     return Ok(self.ask_result(&res["question"], 0, &res["where_to_ask"]));
                 }
+                self.remember_surface(&qid, res["surface_open"].as_bool().unwrap_or(true));
                 created = true;
                 qid
             }
@@ -2547,7 +2547,8 @@ impl ClaxTools {
             "call_again": status == "open",
             "note": ASK_NOTE,
         });
-        if q["in_terminal"].as_bool().unwrap_or(false) {
+        let in_terminal = q["in_terminal"].as_bool().unwrap_or(false);
+        if in_terminal {
             out["in_terminal"] = json!(true);
             out["call_again"] = json!(false);
         } else if status == "open" {
@@ -2558,10 +2559,10 @@ impl ClaxTools {
             out["where_to_ask"] = where_to_ask.clone();
         }
         let mut surfaces = self.ask_surface.lock().expect("ask_surface lock");
-        if status == "open" {
-            out["surface_open"] = json!(surfaces.get(qid).copied().unwrap_or(true));
-        } else {
+        if status != "open" {
             surfaces.remove(qid);
+        } else if !in_terminal {
+            out["surface_open"] = json!(surfaces.get(qid).copied().unwrap_or(true));
         }
         out
     }
@@ -3257,7 +3258,7 @@ impl ClaxTools {
     }
 
     #[tool(
-        description = "Ask the person one to four questions in Clax and wait for the answers (up to `timeout_s`, default 600 s). Each question has a short `header` (at most 12 characters) and two to four `options` (`label`, optional `description`, `preview` text, `recommended`) or none for a free-text answer; `multi_select` allows several; the person may also type an \"Other\" answer. Pass `url_or_id` when the question is about a page, and `thread_id` when it arose in one of its threads, so it shows there. With `in_terminal: true` it asks nothing: it shows the person in Clax that you are asking in the terminal, returns at once, and you cancel it once they answer. If the result says `call_again`, call `ask` again with `question_id`. The answers come back in `reply`, in the person's own words; write the result's `tell_terminal` line in chat. To ask your person to let you see content withheld from you, pass `approval` (`url_or_id`, optional `thread_id`, and `author`, a public ID from the `withheld` summary's `author_ids`) instead of `questions`: the result's `status` is `approved`, `declined` or `open` (then call again with `approval_id`).",
+        description = "Ask the person one to four questions in Clax and wait for the answers (up to `timeout_s`, default 600 s). Each question has a short `header` (at most 12 characters) and two to four `options` (`label`, optional `description`, `preview` text, `recommended`) or none for a free-text answer; `multi_select` allows several; the person may also type an \"Other\" answer. Pass `url_or_id` when the question is about a page, and `thread_id` when it arose in one of its threads, so it shows there. With `in_terminal: true`, sending each question's `question` and `header` only, it asks nothing: it shows the person in Clax that you are asking in the terminal, returns at once, and you cancel it once they answer. If the result says `call_again`, call `ask` again with `question_id`. The answers come back in `reply`, in the person's own words; write the result's `tell_terminal` line in chat. To ask your person to let you see content withheld from you, pass `approval` (`url_or_id`, optional `thread_id`, and `author`, a public ID from the `withheld` summary's `author_ids`) instead of `questions`: the result's `status` is `approved`, `declined` or `open` (then call again with `approval_id`).",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -3687,6 +3688,7 @@ mod tests {
             (Some(true), Some(false))
         );
         assert!(r.get("tell_terminal").is_none() && r.get("where_to_ask").is_none());
+        assert!(r.get("surface_open").is_none(), "not asked in Clax: {r}");
         let r = t.ask_result(
             &json!({"id": id, "status": "answered", "artifact": {"id": "a1"}, "thread": null,
                 "questions": [], "answers": []}),
