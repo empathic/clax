@@ -103,6 +103,7 @@ pub mod changelog;
 pub mod device;
 pub mod docs;
 pub mod elevations;
+pub mod engagement;
 pub mod exec;
 pub mod extension;
 pub mod feedback;
