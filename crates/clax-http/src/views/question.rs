@@ -111,6 +111,37 @@ pub fn announce_ids(s: &AppState, st: &Store, ids: &[String]) {
     }
 }
 
+/// Publishes, as a `question` event to its recipient, each open question
+/// asked in thread `tid` as it now is: the thread was resolved, reopened
+/// or deleted, which its view's `thread` shows. Wakes no poll: none of
+/// them changed. Runs on a store thread.
+pub fn announce_thread(s: &AppState, st: &Store, tid: &str) {
+    let ids = match st.open_questions_in_thread(tid) {
+        Ok(ids) => ids,
+        Err(e) => {
+            tracing::warn!(error = %e, "a thread's questions not announced");
+            return;
+        }
+    };
+    for id in ids {
+        let r = st.question(&id).and_then(|q| {
+            q.map(|q| {
+                let v = view(st, &q)?;
+                Ok((st.question_recipient(&q)?, v))
+            })
+            .transpose()
+        });
+        match r {
+            Ok(Some((recipient, question))) => s.events.publish(Event::Question {
+                question,
+                recipient,
+            }),
+            Ok(None) => {}
+            Err(e) => tracing::warn!(error = %e, "a thread's question not announced"),
+        }
+    }
+}
+
 /// Starts the grace for hook question `qid`: after `s.question_grace`, if
 /// no poll has held it and no later grace has started meanwhile, an open
 /// `qid` is withdrawn and announced, recording `question.withdraw` (reason

@@ -314,12 +314,16 @@ fn capitalized(s: &str) -> String {
         .unwrap_or_default()
 }
 
-/// `s` as one line of a delivery's text.
+/// `s` as one line of a delivery's text. A place in Clax is named as
+/// `ask` takes it: the artifact (`url_or_id`) and, within it, the thread.
 pub fn line(s: &Suggestion) -> String {
-    let surface = match (s.surface, &s.r#where.thread_id) {
-        (Surface::Terminal, _) => "in the terminal (chat)".to_string(),
-        (Surface::Clax, Some(t)) => format!("in Clax, in thread {t}"),
-        (Surface::Clax, None) => "in Clax".to_string(),
+    let w = &s.r#where;
+    let surface = match (s.surface, &w.artifact_id, &w.thread_id) {
+        (Surface::Terminal, _, _) => "in the terminal, in chat".to_string(),
+        (Surface::Clax, Some(a), Some(t)) => format!("in Clax, on {a}, in thread {t}"),
+        (Surface::Clax, Some(a), None) => format!("in Clax, on {a}"),
+        (Surface::Clax, None, Some(t)) => format!("in Clax, in thread {t}"),
+        (Surface::Clax, None, None) => "in Clax".to_string(),
     };
     let sure = match s.confidence {
         Confidence::Clear => "clear",
@@ -883,10 +887,35 @@ mod tests {
         );
         assert!(
             line(&x).starts_with(
-                "[clax] If you ask the person anything now, ask in Clax, in thread t1 (clear): "
+                "[clax] If you ask the person anything now, ask in Clax, on 7q3k9mzx2b4t, in thread t1 (clear): "
             ),
             "{}",
             line(&x)
+        );
+        let on_page = Suggestion {
+            r#where: Place {
+                thread_id: None,
+                artifact_id: Some("7q3k9mzx2b4t".into()),
+            },
+            ..x.clone()
+        };
+        assert!(
+            line(&on_page).starts_with(
+                "[clax] If you ask the person anything now, ask in Clax, on 7q3k9mzx2b4t (clear): "
+            ),
+            "{}",
+            line(&on_page)
+        );
+        let terminal = Suggestion {
+            surface: Surface::Terminal,
+            ..x
+        };
+        assert!(
+            line(&terminal).starts_with(
+                "[clax] If you ask the person anything now, ask in the terminal, in chat (clear): "
+            ),
+            "{}",
+            line(&terminal)
         );
     }
 }

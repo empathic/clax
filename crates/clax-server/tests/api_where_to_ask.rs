@@ -123,6 +123,24 @@ async fn a_deleted_delivered_thread_places_the_suggestion_on_its_artifact() {
 }
 
 #[tokio::test]
+async fn a_deleted_delivered_artifact_places_nothing() {
+    let (_c, ts) = clocked().await;
+    let (sid, aid) = paged(&ts, "h1").await;
+    let _stream = ts.stream_as_owner(&["questions"]).await;
+    ts.thread_as_owner(&aid, "Gone soon").await;
+    let v = poll(&ts, &sid, "tier=piggyback").await;
+    assert_eq!(v["where_to_ask"]["where"]["artifact_id"], aid.as_str());
+    let r = ts
+        .authed(ts.client.delete(format!("{}/api/artifacts/{aid}", ts.base)))
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success(), "{}", r.status());
+    let v = where_to_ask_reply(&ts, &sid).await;
+    assert_eq!(v["where_to_ask"]["where"], json!({}), "{v}");
+}
+
+#[tokio::test]
 async fn an_ended_or_unknown_session_has_no_where_to_ask() {
     let (_c, ts) = clocked().await;
     let (sid, _aid) = paged(&ts, "h1").await;
@@ -357,7 +375,7 @@ async fn the_prompt_hooks_poll_records_the_prompt_and_says_where_to_ask() {
     assert_eq!(v["where_to_ask"]["surface"], "terminal");
     assert!(
         v["text"].as_str().unwrap().contains(
-            "[clax] If you ask the person anything now, ask in the terminal (chat) (clear): "
+            "[clax] If you ask the person anything now, ask in the terminal, in chat (clear): "
         ),
         "{v}"
     );
@@ -416,7 +434,9 @@ async fn a_codex_turn_with_no_delivery_counts_as_an_inferred_prompt() {
     let a = where_to_ask_reply(&ts, &sid).await;
     assert_eq!(a["signals"]["terminal_inferred"], true);
     assert_eq!(says(&a), ("clax", "unsure"));
-    // A turn that a thread from Clax started is not a terminal turn.
+    // The next turn's first tool call starts a turn nothing from Clax
+    // started: the person typed it. The thread it takes from Clax makes
+    // the Stop ending that turn Clax's.
     c.advance(30);
     ts.thread_as_owner(&aid, "Bigger?").await;
     poll(&ts, &sid, "tier=piggyback").await;
@@ -424,12 +444,52 @@ async fn a_codex_turn_with_no_delivery_counts_as_an_inferred_prompt() {
     poll(&ts, &sid, "tier=stop_hook").await;
     assert_eq!(
         where_to_ask_reply(&ts, &sid).await["signals"]["terminal_at"],
-        "2026-10-16T10:00:00.000Z"
+        "2026-10-16T10:00:30.000Z"
     );
     // A claude session's Stop infers nothing: its prompts are reported.
     let (claude, _) = paged(&ts, "h2").await;
     poll(&ts, &claude, "tier=stop_hook").await;
     assert!(where_to_ask_reply(&ts, &claude).await["signals"]["terminal_at"].is_null());
+}
+
+#[tokio::test]
+async fn a_codex_tool_poll_after_a_stop_starts_a_turn_the_person_typed() {
+    let (c, ts) = clocked().await;
+    let sid = ts.register_session("codex", "h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let a = ts
+        .publish_as(&sid, "Board", "<main><h2>Goals</h2></main>")
+        .await;
+    let aid = a["artifact"]["id"].as_str().unwrap().to_string();
+    let _stream = ts.stream_as_owner(&["questions"]).await;
+    poll(&ts, &sid, "tier=stop_hook").await;
+    c.advance(17 * 60);
+    owner_tab(&ts, &aid, "t1", true, 0).await;
+    // The tab keeps reporting, unfocused, its input 3 minutes old by the end.
+    for i in 1..=6 {
+        c.advance(30);
+        owner_tab(&ts, &aid, "t1", false, i * 30_000).await;
+    }
+    assert_eq!(
+        says(&where_to_ask_reply(&ts, &sid).await),
+        ("clax", "clear"),
+        "before the new turn shows"
+    );
+    // The person typed to Codex: its first tool call's poll shows the turn.
+    poll(&ts, &sid, "tier=piggyback").await;
+    let v = where_to_ask_reply(&ts, &sid).await;
+    assert_eq!(says(&v), ("terminal", "clear"), "{v}");
+    assert_eq!(v["signals"]["terminal_at"], "2026-10-16T10:20:00.000Z");
+    assert_eq!(v["signals"]["terminal_inferred"], true);
+    // Its later polls are the same turn.
+    c.advance(30);
+    poll(&ts, &sid, "tier=piggyback").await;
+    assert_eq!(
+        where_to_ask_reply(&ts, &sid).await["signals"]["terminal_at"],
+        "2026-10-16T10:20:00.000Z"
+    );
 }
 
 #[tokio::test]
@@ -456,10 +516,20 @@ async fn a_grok_turn_a_stop_handed_a_thread_to_is_not_a_terminal_turn() {
         v["text"]
             .as_str()
             .unwrap()
-            .contains("ask in Clax, in thread"),
+            .contains(&format!("ask in Clax, on {aid}, in thread {tid}")),
         "{v}"
     );
     assert_eq!(v["where_to_ask"]["where"]["thread_id"], tid.as_str());
+    assert_eq!(
+        where_to_ask_reply(&ts, &sid).await["signals"]["terminal_at"],
+        "2026-10-16T10:00:00.000Z"
+    );
+    // The turn the Stop's delivery continues is Clax's: its tool calls
+    // start no terminal turn.
+    c.advance(10);
+    poll(&ts, &sid, "tier=piggyback").await;
+    c.advance(10);
+    poll(&ts, &sid, "tier=piggyback").await;
     assert_eq!(
         where_to_ask_reply(&ts, &sid).await["signals"]["terminal_at"],
         "2026-10-16T10:00:00.000Z"
@@ -477,7 +547,7 @@ async fn a_grok_turn_a_stop_handed_a_thread_to_is_not_a_terminal_turn() {
     poll(&ts, &sid, "tier=stop_hook").await;
     assert_eq!(
         where_to_ask_reply(&ts, &sid).await["signals"]["terminal_at"],
-        "2026-10-16T10:01:00.000Z"
+        "2026-10-16T10:01:20.000Z"
     );
 }
 
@@ -515,9 +585,99 @@ async fn a_late_answer_and_a_pull_are_deliveries_from_clax_at_their_thread() {
         !text.contains("Esc"),
         "an `ask` question has no terminal dialog: {text}"
     );
-    assert!(text.contains("ask in Clax, in thread"), "{text}");
+    assert!(
+        text.contains(&format!("ask in Clax, on {aid}, in thread {tid}")),
+        "{text}"
+    );
     assert_eq!(v["where_to_ask"]["where"]["thread_id"], tid.as_str());
     assert_eq!(v["answers"][0]["pulled"], true, "{v}");
+}
+
+#[tokio::test]
+async fn resolving_reopening_or_deleting_a_thread_announces_its_open_questions() {
+    let (_c, ts) = clocked().await;
+    let (sid, aid) = paged(&ts, "h1").await;
+    let mut ev = ts.stream_as_owner(&["questions"]).await;
+    let tid = ts.thread_as_owner(&aid, "Which?").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let asked = json!({"source": "ask", "artifact_id": aid, "thread_id": tid,
+        "questions": [{"question": "Which layout?", "header": "Layout",
+            "options": [{"label": "Grid"}, {"label": "List"}]}]});
+    let qid = ts.ask(&sid, asked).await["question"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let e = ev.next_named("question").await;
+    assert_eq!(e["question"]["thread"], json!({"id": tid, "open": true}));
+    let thread = format!("/api/artifacts/{aid}/threads/{tid}");
+    let r = ts.post_json(&format!("{thread}/resolve"), json!({})).await;
+    assert_eq!(r.status(), 200);
+    let e = ev.next_named("question").await;
+    assert_eq!(e["question"]["id"], qid.as_str());
+    assert_eq!(e["question"]["thread"], json!({"id": tid, "open": false}));
+    let r = ts.post_json(&format!("{thread}/reopen"), json!({})).await;
+    assert_eq!(r.status(), 200);
+    let e = ev.next_named("question").await;
+    assert_eq!(e["question"]["thread"], json!({"id": tid, "open": true}));
+    ts.delete_thread_as_owner(&aid, &tid).await;
+    let e = ev.next_named("question").await;
+    assert_eq!(
+        (
+            e["question"]["id"].as_str(),
+            e["question"]["status"].as_str()
+        ),
+        (Some(qid.as_str()), Some("open"))
+    );
+    assert!(e["question"]["thread"].is_null(), "{e}");
+}
+
+#[tokio::test]
+async fn ask_me_here_wakes_a_held_wait_for_feedback_poll() {
+    let (_c, ts) = clocked().await;
+    let (sid, aid) = paged(&ts, "h1").await;
+    let _stream = ts.stream_as_owner(&["questions"]).await;
+    let asked = json!({"source": "ask", "in_terminal": true, "artifact_id": aid,
+        "questions": [{"question": "Which layout?", "header": "Layout"}]});
+    let qid = ts.ask(&sid, asked).await["question"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let held = {
+        let (c, url, token) = (
+            ts.client.clone(),
+            format!("{}/api/sessions/{sid}/feedback?tier=wait&wait=600", ts.base),
+            ts.token.clone(),
+        );
+        tokio::spawn(async move {
+            c.get(url)
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap()
+                .json::<Value>()
+                .await
+                .unwrap()
+        })
+    };
+    ts.wait_parked_feedback_polls(&sid, "wait", 1).await;
+    let r = ts
+        .client
+        .post(format!("{}/api/questions/{qid}/pull", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let v = held.await.unwrap();
+    assert_eq!(v["answers"][0]["pulled"], true, "{v}");
+    assert!(
+        v["text"].as_str().unwrap().contains(&format!(
+            "The person wants your question \"Layout\" ({qid}) asked in Clax instead"
+        )),
+        "{v}"
+    );
 }
 
 #[tokio::test]
@@ -607,10 +767,13 @@ async fn a_late_answer_is_the_persons_act_in_clax_at_its_answer() {
 /// The where-to-ask line a poll's reply `v` ends its text with.
 fn clax_line(v: &Value) -> String {
     let w = &v["where_to_ask"];
-    let at = match w["where"]["thread_id"].as_str() {
-        Some(t) => format!("in Clax, in thread {t}"),
-        None if w["surface"] == "clax" => "in Clax".to_string(),
-        None => "in the terminal (chat)".to_string(),
+    let place = &w["where"];
+    let at = match (place["artifact_id"].as_str(), place["thread_id"].as_str()) {
+        _ if w["surface"] != "clax" => "in the terminal, in chat".to_string(),
+        (Some(a), Some(t)) => format!("in Clax, on {a}, in thread {t}"),
+        (Some(a), None) => format!("in Clax, on {a}"),
+        (None, Some(t)) => format!("in Clax, in thread {t}"),
+        (None, None) => "in Clax".to_string(),
     };
     format!(
         "[clax] If you ask the person anything now, ask {at} ({}): {}",
@@ -711,7 +874,7 @@ async fn claude_codes_prompt_hook_records_the_prompt_and_lapses_an_in_terminal_q
     assert_eq!(reasons, [json!("lapsed")]);
     assert!(
         out.contains(
-            "[clax] If you ask the person anything now, ask in the terminal (chat) (clear): "
+            "[clax] If you ask the person anything now, ask in the terminal, in chat (clear): "
         ),
         "the prompt's context says where to ask: {out}"
     );

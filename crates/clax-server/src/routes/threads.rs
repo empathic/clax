@@ -1476,7 +1476,9 @@ struct ResolveBody {
 /// 2026-10-08 §10). An agent resolve
 /// lists a thread no version lists yet as addressed: in the artifact's current
 /// version, or, on a live page, in the page's next snapshot (a pending
-/// address). A request with a foreign `Origin` is refused ([`SameOrigin`]).
+/// address). Each open question asked in the thread is published again as
+/// a `question` event, its `thread.open` now false. A request with a
+/// foreign `Origin` is refused ([`SameOrigin`]).
 pub async fn resolve(
     State(s): State<AppState>,
     a: Agent<clax_http::agent::ThreadResolve>,
@@ -1501,6 +1503,7 @@ pub async fn resolve(
     let ctx = s.feedback_ctx();
     let live = s.live_ids.contains(id.as_str());
     let vf = VisFor::of(&a.caller, &s);
+    let app = s.clone();
     let o = s
         .store_call(move |st| {
             let vis = vf.build(st)?;
@@ -1561,6 +1564,7 @@ pub async fn resolve(
             });
             apply(&ctx, st, &touched);
             publish_thread(&ctx, st, &t)?;
+            clax_http::views::question::announce_thread(&app, st, &tid);
             let view = vis.filter_thread(st, &t, ctx.codex_push(), with_path)?;
             Ok(Outcome::Done(json!({"thread": view})))
         })
@@ -1616,6 +1620,7 @@ async fn require_interact(s: &AppState, authed: bool, who: Identity) -> Result<(
 /// the agent (token and `X-Clax-Session` naming a live session, else 400
 /// `unknown_session`; only on sent threads, otherwise guidance). An unnamed
 /// viewer gets 403 `forbidden`. Answers `{thread}` and publishes the `thread`
+/// event, and each open question asked in the thread again as a `question`
 /// event. A request with a foreign `Origin` is refused ([`SameOrigin`]).
 pub async fn reopen(
     State(s): State<AppState>,
@@ -1641,6 +1646,7 @@ pub async fn reopen(
     let (session, grant) = acting(&a.caller);
     let ctx = s.feedback_ctx();
     let vf = VisFor::of(&a.caller, &s);
+    let app = s.clone();
     let o = s
         .store_call(move |st| {
             let vis = vf.build(st)?;
@@ -1654,6 +1660,7 @@ pub async fn reopen(
             let audit = audit.resolve(st)?;
             let t = st.reopen_thread(&audit, &tid)?;
             publish_thread(&ctx, st, &t)?;
+            clax_http::views::question::announce_thread(&app, st, &tid);
             Ok(Outcome::Done(
                 json!({"thread": vis.filter_thread(st, &t, ctx.codex_push(), with_path)?}),
             ))
@@ -1671,7 +1678,8 @@ pub struct DeleteQuery {
 /// Deletes a thread with its comments, feedback rows, and clip, as the viewer
 /// or, with `?as=agent`, as the agent (the same rules as [`reopen`], the level
 /// check included). Answers `{deleted: true, thread_id}` and publishes
-/// `thread_deleted`. A person's agent deletes from a session (400
+/// `thread_deleted`, and each open question asked in the thread again as a
+/// `question` event, its `thread` now null. A person's agent deletes from a session (400
 /// `no_session`) and only where it may read threads (403 `not_permitted`).
 /// A request with a foreign `Origin` is refused ([`SameOrigin`]).
 pub async fn delete(
@@ -1697,6 +1705,7 @@ pub async fn delete(
     sees_threads(&a, &s, &id).await?;
     let (session, grant) = acting(&a.caller);
     let ctx = s.feedback_ctx();
+    let app = s.clone();
     let o = s
         .store_call_async(move |st| async move {
             let st = &*st;
@@ -1719,6 +1728,7 @@ pub async fn delete(
                 moved: false,
             });
             apply(&ctx, st, &touched);
+            clax_http::views::question::announce_thread(&app, st, &tid);
             Ok(Outcome::Done(json!({"deleted": true, "thread_id": tid})))
         })
         .await?;

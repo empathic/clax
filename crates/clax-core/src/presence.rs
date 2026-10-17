@@ -541,21 +541,28 @@ mod tests {
     fn kept_reports_keep_focus_and_input_across_a_wake() {
         let (c, p) = reg();
         p.report_engaged("a", "v1", None, State::Here, None, "t1", true, Some(1_000));
+        // An unfocused tab counts only by its last input, so a lost input
+        // time would show.
+        p.report_engaged("a", "v3", None, State::Here, None, "t3", false, Some(1_000));
         let kept = p.kept();
-        assert!(kept[0].focused && kept[0].input_ms.is_some());
+        assert!(kept.iter().any(|k| k.focused && k.input_ms.is_some()));
         let back = Presence::new(c.clone());
         back.restore(
             &serde_json::from_str::<Vec<KeptPresence>>(&serde_json::to_string(&kept).unwrap())
                 .unwrap(),
         );
         assert_eq!(back.engaged_at("a", "v1"), p.engaged_at("a", "v1"));
+        assert_eq!(
+            back.engaged_at("a", "v3"),
+            Some(utc("2026-09-30T09:59:59Z"))
+        );
         // A report kept before focus and input were (no `f`, no `i`) restores unfocused.
         let old: Vec<KeptPresence> =
             serde_json::from_str(r#"[{"a":"a","p":"v2","s":"here","t":1790762400000}]"#).unwrap();
         back.restore(&old);
         assert_eq!(
             back.for_artifact("a").len(),
-            2,
+            3,
             "the old report is restored"
         );
         assert_eq!(back.engaged_at("a", "v2"), None);

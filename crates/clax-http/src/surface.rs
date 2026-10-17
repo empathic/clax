@@ -16,6 +16,7 @@ use crate::state::AppState;
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use clax_core::CoreError;
+use clax_core::Tier;
 use clax_core::model::Session;
 use clax_core::surface::{Act, ActKind, Delivery, Signals, Suggestion, TerminalSignal, suggest};
 use clax_store::Store;
@@ -76,9 +77,18 @@ fn gather(s: &AppState, st: &Store, sid: &str, page: Option<&str>) -> clax_core:
         None => st.owner_public_id()?,
     };
     let key = recipient_key(session.person.as_deref()).to_string();
+    // A delivered artifact deleted since places nothing.
+    let delivered_artifact = match kept
+        .delivered_artifact_id
+        .as_deref()
+        .map(clax_core::ArtifactId::parse)
+    {
+        Some(Ok(id)) => st.get_artifact(&id)?.map(|a| a.id.as_str().to_string()),
+        _ => None,
+    };
     let delivery = match (
         kept.delivered_at.as_deref().and_then(parse),
-        kept.delivered_artifact_id.clone(),
+        delivered_artifact,
     ) {
         (Some(at), Some(aid)) => {
             let thread_id = match &kept.delivered_thread_id {
@@ -147,7 +157,8 @@ fn gather(s: &AppState, st: &Store, sid: &str, page: Option<&str>) -> clax_core:
 /// session's own: a connected person's for their agents, else the
 /// owner's; no other viewer's focus or input is read. Only their tabs on
 /// the session's pages (its delivery's artifact and its page) count. A
-/// delivered thread no longer on its artifact places nothing.
+/// delivered artifact deleted since, or a delivered thread no longer on
+/// its artifact, places nothing.
 ///
 /// # Errors
 /// `NotFound` for an unknown session; the store's.
@@ -203,15 +214,19 @@ pub fn where_to_ask_reply(
 }
 
 /// The harnesses no hook reports a prompt for (Codex, Grok Build): each
-/// Stop with no Clax delivery since the last stands for one.
+/// Stop with no Clax delivery since the last stands for one, and so does
+/// the first poll from within a turn after such a Stop.
 pub const INFERRED: [&str; 2] = ["codex", "grok"];
 
-/// Records what a feedback poll of live session `sid` says of its person:
-/// `prompt`, they typed to it (Claude Code's prompt hook), which withdraws
-/// its open hook in-terminal questions under `ctx` and announces each;
-/// `turn_ended`, a Stop hook ended its turn, which for a harness in
-/// [`INFERRED`] stands for a prompt when nothing came from Clax since the
-/// last turn ([`Store::note_turn`]).
+/// Records what a feedback poll of live session `sid` at `tier` says of
+/// its person: `prompt`, they typed to it (Claude Code's prompt hook),
+/// which withdraws its open hook in-terminal questions under `ctx` and
+/// announces each. For a harness in [`INFERRED`], a `stop_hook` poll ends
+/// its turn, which stands for a prompt when nothing came from Clax since
+/// the last turn ([`Store::note_turn`]); any other poll but the Codex
+/// queue's comes from within a turn, and the first after a Stop with
+/// nothing from Clax since starts one the person typed
+/// ([`Store::note_turn_start`]).
 ///
 /// # Errors
 /// The store's.
@@ -221,17 +236,24 @@ pub fn note_poll(
     ctx: &clax_core::audit::AuditCtx,
     sid: &str,
     prompt: bool,
-    turn_ended: bool,
+    tier: Tier,
 ) -> clax_core::Result<()> {
     if prompt {
         let lapsed = st.note_terminal(ctx, sid)?;
         crate::views::question::announce_ids(s, st, &lapsed);
-    } else if turn_ended
-        && st
+        return Ok(());
+    }
+    if tier == Tier::Queue
+        || !st
             .get_session(sid)?
             .is_some_and(|x| INFERRED.contains(&x.harness.as_str()))
     {
+        return Ok(());
+    }
+    if tier == Tier::StopHook {
         st.note_turn(sid)?;
+    } else {
+        st.note_turn_start(sid)?;
     }
     Ok(())
 }

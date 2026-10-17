@@ -248,8 +248,9 @@ pub async fn create(
             qs
         }
     };
-    // A mirrored question waits in Clax only while its person has Clax
-    // open: the owner for the owner's agents, a connected person for theirs.
+    // Whether a Clax surface of the asking agent's person is open (the
+    // owner for the owner's agents, a connected person for theirs),
+    // reported as `surface_open`.
     let asker = match &a.caller {
         Caller::PersonAgent { person, .. } => person.clone(),
         _ => None,

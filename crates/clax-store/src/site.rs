@@ -701,6 +701,16 @@ fn commit_refile(
                     &now,
                 )?);
                 super::inbox::thread_moved(tx, &p.tid, &to.artifact_id)?;
+                // Its questions, and a session's last delivery from it,
+                // are about its new page.
+                tx.execute(
+                    "UPDATE questions SET artifact_id = ?2 WHERE thread_id = ?1",
+                    params![p.tid, to.artifact_id],
+                )?;
+                tx.execute(
+                    "UPDATE sessions SET delivered_artifact_id = ?2 WHERE delivered_thread_id = ?1",
+                    params![p.tid, to.artifact_id],
+                )?;
             }
             let key = PageKey {
                 origin: to.origin.clone(),
@@ -2185,6 +2195,49 @@ mod tests {
         };
         assert_eq!(st.inbox_list(&q(&b)).unwrap().0.len(), 1);
         assert!(st.inbox_list(&q(&a)).unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn a_moved_threads_questions_and_last_delivery_follow_it() {
+        let (_d, st) = store();
+        let sid = session(&st, "claude", "h1");
+        let a = page(&st, "/a", "<p>a");
+        let b = page(&st, "/b", "<p>b");
+        let t = thread(&st, &a, None);
+        let qs = serde_json::from_value(serde_json::json!([{"question": "Which?",
+            "header": "Pick", "options": [{"label": "A"}, {"label": "B"}]}]))
+        .unwrap();
+        let (q, _) = st
+            .create_question(
+                DAEMON,
+                crate::questions::NewQuestion {
+                    session_id: sid.clone(),
+                    artifact_id: Some(a.to_string()),
+                    source: crate::questions::Source::Ask,
+                    tool_use_id: None,
+                    questions: qs,
+                    thread_id: Some(t.id.clone()),
+                    in_terminal: false,
+                    released: false,
+                },
+            )
+            .unwrap();
+        st.note_delivery(&sid, a.as_str(), Some(&t.id), None)
+            .unwrap();
+        st.refile_threads(DAEMON, &[to(&b, &t.id)], &by(KIND_MOVE), &[])
+            .unwrap();
+        assert_eq!(
+            st.question(&q.id).unwrap().unwrap().artifact_id.as_deref(),
+            Some(b.as_str())
+        );
+        let s = st.session_signals(&sid).unwrap().unwrap();
+        assert_eq!(
+            (
+                s.delivered_artifact_id.as_deref(),
+                s.delivered_thread_id.as_deref()
+            ),
+            (Some(b.as_str()), Some(t.id.as_str()))
+        );
     }
 
     #[test]

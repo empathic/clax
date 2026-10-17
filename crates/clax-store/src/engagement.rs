@@ -123,6 +123,54 @@ impl Store {
         })
     }
 
+    /// Live session `sid`, in a harness that reports no prompts (Codex,
+    /// Grok Build), polled for feedback now from within a turn (any tier
+    /// but its Stop hook's or the Codex queue's). The first such poll after
+    /// a reported turn end ([`Store::note_turn`]), when no Clax delivery
+    /// reached the session since that end, shows a new turn the person
+    /// started in the terminal: it is recorded as an inferred prompt now.
+    /// Later polls of the same turn record nothing (when the first came in
+    /// the turn end's own millisecond, the next records it again, later);
+    /// neither does a poll
+    /// before the session's first reported turn end. Returns whether it
+    /// recorded one. A turn a delivery started keeps
+    /// `delivered_since_turn` set, so it is not counted, and its end is
+    /// Clax's as before.
+    ///
+    /// # Errors
+    /// `unknown_session` for a missing or ended session.
+    pub fn note_turn_start(&self, sid: &str) -> Result<bool> {
+        let now = self.now();
+        self.with_tx(|tx| {
+            let row: Option<(Option<String>, Option<String>, bool)> = tx
+                .query_row(
+                    "SELECT turn_at, terminal_at, delivered_since_turn FROM sessions
+                     WHERE id = ?1 AND ended_at IS NULL",
+                    params![sid],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?;
+            let Some((turn_at, terminal_at, delivered)) = row else {
+                return Err(unknown_session());
+            };
+            // Times are the store clock's, one fixed-width UTC format, so
+            // they compare as text.
+            let started = match (&turn_at, &terminal_at) {
+                (None, _) => return Ok(false),
+                (Some(end), Some(t)) => t > end,
+                (Some(_), None) => false,
+            };
+            if delivered || started {
+                return Ok(false);
+            }
+            tx.execute(
+                "UPDATE sessions SET terminal_at = ?2, terminal_inferred = 1 WHERE id = ?1",
+                params![sid, now],
+            )?;
+            Ok(true)
+        })
+    }
+
     /// Records a delivery from Clax to session `sid` now, about artifact
     /// `aid` and, when given, its thread `tid` and comment `cid`. The
     /// comment's creation time is kept as `delivered_written_at` only when
@@ -354,6 +402,45 @@ mod tests {
         // A typed prompt clears the inference.
         st.note_terminal(DAEMON, &sid).unwrap();
         assert!(!st.session_signals(&sid).unwrap().unwrap().terminal_inferred);
+    }
+
+    #[test]
+    fn the_first_poll_after_a_turn_end_with_no_delivery_starts_a_terminal_turn() {
+        let (c, _d, st) = clocked();
+        let sid = session(&st, "codex", "h1");
+        assert!(
+            !st.note_turn_start(&sid).unwrap(),
+            "no turn end reported yet"
+        );
+        st.note_turn(&sid).unwrap();
+        c.advance(1200);
+        assert!(st.note_turn_start(&sid).unwrap());
+        let s = st.session_signals(&sid).unwrap().unwrap();
+        assert_eq!(
+            (s.terminal_at.as_deref(), s.terminal_inferred),
+            (Some("2026-10-16T10:20:00.000Z"), true)
+        );
+        c.advance(10);
+        assert!(!st.note_turn_start(&sid).unwrap(), "the same turn");
+        // A turn a delivery started is Clax's.
+        c.advance(10);
+        st.note_delivery(&sid, "7q3k9mzx2b4t", Some("t1"), None)
+            .unwrap();
+        assert!(!st.note_turn(&sid).unwrap());
+        st.note_delivery(&sid, "7q3k9mzx2b4t", Some("t1"), None)
+            .unwrap();
+        c.advance(10);
+        assert!(!st.note_turn_start(&sid).unwrap());
+        assert_eq!(
+            st.session_signals(&sid)
+                .unwrap()
+                .unwrap()
+                .terminal_at
+                .as_deref(),
+            Some("2026-10-16T10:20:00.000Z")
+        );
+        st.end_session(DAEMON, &sid).unwrap();
+        assert!(st.note_turn_start(&sid).is_err());
     }
 
     #[test]

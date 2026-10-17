@@ -801,6 +801,17 @@ impl Store {
         self.with_read(|c| fetch(c, id))
     }
 
+    /// The IDs of the open questions asked in thread `tid`, oldest first.
+    pub fn open_questions_in_thread(&self, tid: &str) -> Result<Vec<String>> {
+        self.with_read(|c| {
+            let mut s = c.prepare_cached(
+                "SELECT id FROM questions WHERE thread_id = ?1 AND status = 'open' ORDER BY id",
+            )?;
+            Ok(s.query_map(params![tid], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
     /// Question `id` when one of `recipient`'s agents asked it (`None`: the
     /// owner's agents; spec §18): the asking session's person.
     ///

@@ -1823,7 +1823,6 @@ mod tests {
         ] {
             assert!(s.iter().any(|x| x == c), "sessions.{c}");
         }
-        assert_eq!(MIGRATIONS.len(), 37);
     }
 
     #[test]

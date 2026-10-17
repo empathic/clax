@@ -300,8 +300,10 @@ pub struct FeedbackQuery {
 /// `prompt=true` (Claude Code's prompt hook) records a typed prompt first,
 /// withdrawing the session's open hook in-terminal questions; a `stop_hook`
 /// poll of a Codex or Grok session records the turn, which stands for a
-/// prompt when nothing came from Clax since the last
-/// ([`clax_http::surface::note_poll`]). Both are recorded once per poll,
+/// prompt when nothing came from Clax since the last, and its other polls
+/// but `queue` come from within a turn, the first after such a Stop
+/// starting one the person typed ([`clax_http::surface::note_poll`]).
+/// Each is recorded once per poll,
 /// before its first take. A poll that hands anything over, or a
 /// `prompt=true` poll of a session with a page, carries the session's
 /// suggestion as `where_to_ask` and ends `text` with it in one line
@@ -355,7 +357,7 @@ pub async fn poll(
         Some(t) => Tier::parse(t)
             .ok_or_else(|| ApiError::bad_request("invalid_tier", format!("unknown tier '{t}'")))?,
     };
-    let (prompt, turn_ended) = (q.prompt.unwrap_or(false), tier == Tier::StopHook);
+    let prompt = q.prompt.unwrap_or(false);
     let artifact = match q.artifact.as_deref() {
         Some(raw) => Some(a.named_artifact(&s, raw).await?.as_str().to_string()),
         None => None,
@@ -426,7 +428,7 @@ pub async fn poll(
                         let ctx = clax_http::audit::session_ctx(st, &headers, &sid)?;
                         // The feedback is handed over even when this fails.
                         if let Err(e) =
-                            clax_http::surface::note_poll(&st0, st, &ctx, &sid, prompt, turn_ended)
+                            clax_http::surface::note_poll(&st0, st, &ctx, &sid, prompt, tier)
                         {
                             tracing::warn!(error = %e, "a poll's prompt or turn not recorded");
                         }
