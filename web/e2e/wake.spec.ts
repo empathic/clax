@@ -13,6 +13,9 @@ const PAGE = "<main><h2>Quarterly goals</h2></main>";
 test("an agent no comment wakes is marked until a follower connects", async ({ page }) => {
   const s = await registerSession(d.base, d.token, "claude", `wake-${Math.random().toString(36).slice(2)}`);
   const { artifact } = await publishAs(d.base, d.token, s.id, "Wake", { "index.html": PAGE });
+  // The gallery's card draws it the same.
+  await page.goto(`${d.base}/`);
+  await expect(page.locator(".card-wrap", { hasText: "Wake" }).locator(".ros .tok.a")).toHaveClass(/nowake/);
   await openArtifact(page, d.base, artifact.id, 1, "subdomain");
   const token = page.locator(".who .agt .tok.a");
   await expect(token).toHaveClass(/nowake/);
@@ -45,6 +48,9 @@ for (const theme of ["light", "dark"] as const) {
       const { artifact } = await publishAs(d.base, d.token, s.id, "Quarterly goals", { "index.html": PAGE });
       await page.setViewportSize({ width, height: width > 700 ? 800 : 844 });
       await page.emulateMedia({ colorScheme: theme, reducedMotion: "reduce" });
+      await page.goto(`${d.base}/`);
+      await expect(page.locator(".card-wrap", { hasText: "Quarterly goals" }).first().locator(".ros .tok.a.nowake")).toHaveCount(1);
+      await page.screenshot({ path: `${SHOTS}/${theme}-${width}-gallery.png` });
       await openArtifact(page, d.base, artifact.id, 1, "subdomain");
       await expect(page.locator(".who .agt .tok.a.nowake")).toHaveCount(1);
       await page.screenshot({ path: `${SHOTS}/${theme}-${width}-roster.png` });

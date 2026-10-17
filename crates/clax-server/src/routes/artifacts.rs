@@ -262,6 +262,7 @@ pub async fn list(
     let artifacts = match q.artifact.as_deref().map(parse_id).transpose()? {
         Some(id) => {
             let working = s.working.for_artifact(id.as_str());
+            let wakes = super::sessions::Wakes::for_caller(&s, &a.caller);
             s.store_call(move |st| {
                 let Some(a) = st.get_artifact(&id)? else {
                     return Ok(vec![]);
@@ -273,11 +274,13 @@ pub async fn list(
                     Some(sid) => st.get_session(sid)?,
                     None => None,
                 };
+                let mut participants = st.participants(&id)?;
+                super::sessions::Wakes::mark_with(wakes.as_ref(), &mut participants);
                 let mut view = with_owner(
                     &a,
                     owner.as_ref(),
                     &working,
-                    &st.participants(&id)?,
+                    &participants,
                     live_part(st, &a)?.as_ref(),
                 );
                 let vis = vf.build(st)?;
@@ -288,6 +291,7 @@ pub async fn list(
         }
         None => {
             let all = s.working.all();
+            let wakes = super::sessions::Wakes::for_caller(&s, &a.caller);
             // The whole listing costs what the home does: the bulk lane.
             s.store_call_bulk(move |st| {
                 let artifacts = st.list_artifacts()?;
@@ -296,7 +300,10 @@ pub async fn list(
                     .into_iter()
                     .map(|s| (s.id.clone(), s))
                     .collect();
-                let participants = st.participants_all()?;
+                let mut participants = st.participants_all()?;
+                for p in participants.values_mut() {
+                    super::sessions::Wakes::mark_with(wakes.as_ref(), p);
+                }
                 // Pages a join merged away are kept, out of the listing
                 // while the page they were merged into exists; released
                 // ones are listed again (spec §7.2).
@@ -472,7 +479,7 @@ pub async fn get(
     let vf = VisFor::of(&a.caller, &s);
     let reader = SourceReader::new(a.caller.clone(), a.member().cloned(), s.hosted.is_some());
     let (caller, member) = (a.caller.clone(), a.member_rights());
-    let (codex, followers) = (s.codex.clone(), s.followers.clone());
+    let wakes = super::sessions::Wakes::for_caller(&s, &a.caller);
     let mut v = s
         .store_call(move |st| {
             let a = st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
@@ -485,7 +492,7 @@ pub async fn get(
             // Whether each live agent is woken by a comment while idle,
             // which the page shows beside it.
             let mut participants = st.participants(&id)?;
-            super::sessions::mark_wakes(&mut participants, &codex, &followers);
+            super::sessions::Wakes::mark_with(wakes.as_ref(), &mut participants);
             let mut artifact = with_owner(
                 &a,
                 owner.as_ref(),

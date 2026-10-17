@@ -246,6 +246,45 @@ async fn a_follower_poll_marks_its_agent_woken_on_the_page() {
         }
     };
     assert_eq!(wakes(&ts, &aid).await, false);
+    // Every listing the shell reads says the same: the gallery's, the
+    // agents roster, and the page's first load.
+    let listed: Value = ts.get_authed("/api/artifacts").await.json().await.unwrap();
+    let card = listed["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == aid.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(card["participants"]["agents"][0]["wakes"], false, "{card}");
+    let one: Value = ts
+        .get_authed(&format!("/api/artifacts?artifact={aid}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        one["artifacts"][0]["participants"]["agents"][0]["wakes"], false,
+        "{one}"
+    );
+    let session: Value = ts
+        .get_authed(&format!("/api/sessions/{sid}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    let handle = session["session"]["agent_handle"].clone();
+    let roster: Value = ts.get_authed("/api/agents").await.json().await.unwrap();
+    let me = roster["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["handle"] == handle)
+        .unwrap()
+        .clone();
+    assert_eq!(me["wakes"], false, "{me}");
+    let page = ts.get(&format!("/a/{aid}")).await.text().await.unwrap();
+    assert!(page.contains("\"wakes\":false"), "the first load names it");
     let req = ts.authed(
         ts.client
             .get(format!("{}/api/sessions/{sid}/notices?wait=30", ts.base)),

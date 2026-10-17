@@ -260,6 +260,8 @@ export type StripAgent = {
   /** Another Clax's agent: whose Clax it relays from, "Ada's Clax". */
   via?: string;
   blocked: { since: string; questions: number; approvals: number } | null;
+  /** For a live agent, whether a comment sent to it wakes it while idle. */
+  wakes?: boolean | null;
 };
 /** One agent as `GET /api/agents` lists it (§13): another person's agent
  * by `name`, `person`, `live`, `state` and `since` alone. */

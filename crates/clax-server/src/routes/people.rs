@@ -150,6 +150,7 @@ pub async fn list_agents(
     let reads = a.read_rights();
     let vf = clax_http::views::thread::VisFor::of(&a.caller, &s);
     let working = s.working.clone();
+    let wakes = super::sessions::Wakes::for_caller(&s, &a.caller);
     let v = s
         .store_call(move |st| {
             let unread: std::collections::HashMap<String, u32> = if agent {
@@ -174,6 +175,9 @@ pub async fn list_agents(
                 } else {
                     Vec::new()
                 };
+                // Whether a comment wakes the live agent while it is idle.
+                // Not in an agent's listing, whose outputs stay as they were.
+                let wakes = wakes.as_ref().map(|w| x.ended_at.is_none().then(|| w.session(x)));
                 let (state, since) = if let Some(end) = &x.ended_at {
                     ("ended", Some(end.clone()))
                 } else if r.asking {
@@ -190,6 +194,9 @@ pub async fn list_agents(
                         "state": state, "since": since, "blocked": null,
                         "threads_owned": null, "working": null, "unread": null,
                     }));
+                    if let (Some(w), Some(o)) = (wakes, out.last_mut()) {
+                        o["wakes"] = json!(w);
+                    }
                     continue;
                 }
                 let mut kept = Vec::new();
@@ -235,6 +242,9 @@ pub async fn list_agents(
                     "working": working,
                     "unread": (!agent).then(|| unread.get(&x.id).copied().unwrap_or(0)),
                 }));
+                if let (Some(w), Some(o)) = (wakes, out.last_mut()) {
+                    o["wakes"] = json!(w);
+                }
             }
             Ok(json!({"agents": out}))
         })

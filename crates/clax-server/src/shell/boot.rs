@@ -186,6 +186,7 @@ pub async fn assemble(
     };
     let owner_browser = who.is_owner();
     let codex = s.feedback_ctx().codex_push();
+    let wakes = crate::routes::sessions::Wakes::of(s);
     let lookup = id.clone();
     let working = s.working.for_artifact(id.as_str());
     // The source of a fork is named for a reader who may read it, and
@@ -235,11 +236,13 @@ pub async fn assemble(
                 Some(v) => Some(st.attention(&v.id, &lookup)?),
                 None => None,
             };
+            let mut participants = st.participants(&lookup)?;
+            wakes.mark(&mut participants);
             let mut artifact = with_owner(
                 &a,
                 owner.as_ref(),
                 &working,
-                &st.participants(&lookup)?,
+                &participants,
                 clax_http::views::artifact::live_part(st, &a)?.as_ref(),
             );
             let caller = who.caller(st, None);

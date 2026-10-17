@@ -432,19 +432,55 @@ pub fn wakes_when_idle(
     }
 }
 
-/// Sets `wakes` on each live agent of `p` ([`wakes_when_idle`]).
-pub fn mark_wakes(
-    p: &mut clax_store::attention::Participants,
-    codex: &CodexPush,
-    followers: &crate::feedback::Followers,
-) {
-    for a in p.agents.iter_mut().filter(|a| a.live) {
-        a.wakes = Some(wakes_when_idle(
-            &a.harness,
-            a.harness_session_known,
-            codex,
-            followers.is_following(&a.session_id),
-        ));
+/// What [`wakes_when_idle`] reads of the daemon: its `codex` and the
+/// connected followers.
+#[derive(Clone)]
+pub struct Wakes {
+    codex: Arc<CodexPush>,
+    followers: Arc<crate::feedback::Followers>,
+}
+
+impl Wakes {
+    pub fn of(s: &AppState) -> Wakes {
+        Wakes {
+            codex: s.codex.clone(),
+            followers: s.followers.clone(),
+        }
+    }
+
+    /// [`Wakes::of`] for `caller`'s views: none for an agent, whose
+    /// outputs stay as they were (the page is what shows `wakes`).
+    pub fn for_caller(s: &AppState, caller: &clax_http::auth::Caller) -> Option<Wakes> {
+        (!caller.is_agent()).then(|| Wakes::of(s))
+    }
+
+    /// Whether a comment wakes live session `x` while it is idle.
+    pub fn session(&self, x: &Session) -> bool {
+        wakes_when_idle(
+            &x.harness,
+            x.harness_session_id.is_some(),
+            &self.codex,
+            self.followers.is_following(&x.id),
+        )
+    }
+
+    /// Sets `wakes` on each live agent of `p`, when `w` is given.
+    pub fn mark_with(w: Option<&Wakes>, p: &mut clax_store::attention::Participants) {
+        if let Some(w) = w {
+            w.mark(p);
+        }
+    }
+
+    /// Sets `wakes` on each live agent of `p`.
+    pub fn mark(&self, p: &mut clax_store::attention::Participants) {
+        for a in p.agents.iter_mut().filter(|a| a.live) {
+            a.wakes = Some(wakes_when_idle(
+                &a.harness,
+                a.harness_session_known,
+                &self.codex,
+                self.followers.is_following(&a.session_id),
+            ));
+        }
     }
 }
 
