@@ -254,6 +254,10 @@ def _release_transition_impl(_settings, _attr):
         # Gradle's release build type: not debuggable, the AOT snapshot
         # stripped (rules_flutter's -c opt).
         "//command_line_option:compilation_mode": "opt",
+        # No desugared JDK library: at the app's minSdk (29) Android has the
+        # java.time and java.util.stream APIs it backports, and Gradle's L8
+        # shrinks it away; unshrunk it is a second 2.6 MB dex.
+        "//command_line_option:desugar_java8_libs": False,
     }
 
 _release_transition = transition(
@@ -261,6 +265,7 @@ _release_transition = transition(
     inputs = [],
     outputs = [
         "//command_line_option:compilation_mode",
+        "//command_line_option:desugar_java8_libs",
     ],
 )
 

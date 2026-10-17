@@ -268,8 +268,15 @@ flutter_fat_apk(
         "//crates/clax-cli:clax_android_x86_64": "x86_64/libclax.so",
     },
     package_name = "dev.empathic.clax",
+    # Shrunk with R8 as Gradle's release build is: AGP's optimized defaults
+    # and Flutter's rules; each plugin's and library's own rules come with it.
+    proguard_specs = [
+        "//bazel/android:proguard-android-optimize.txt",
+        "//bazel/flutter:flutter_proguard_rules.pro",
+    ],
     pub_hub_name = "clax_app_pub",
     resources = glob(["android/app/src/main/res/**"]),
+    shrink_resources = 1,
     tags = ["no-remote"],
 )
 

@@ -281,16 +281,21 @@ the plugin registrant, every plugin's Android code, and the manifest with
 the plugins' permissions merged in and its relative class names made
 absolute (Gradle resolves them against the namespace before it renames the
 package to the application ID, `dev.empathic.clax`). `release_apk` builds
-it with `-c opt` (not debuggable, the AOT snapshot stripped) and
-`.bazelrc`'s `--experimental_android_compress_java_resources` compresses
-the native libraries as Gradle does for an app that extracts them. Gradle
-is not run at all. Against Gradle's APK (`aapt2 dump badging` and the file
-list, as `:apk_test` checks): the same package, versions, SDK levels,
-permissions, launcher activity, native libraries and debug signature; it
-differs in what AGP adds or strips: no R8 shrinking (four dex files,
-17 MB, against one of 1.2 MB, and Kotlin's `.knm` metadata files left in),
-no baseline profile, resource names not obfuscated, and the `.qual` files
-under `assets/` left out.
+it with `-c opt` (not debuggable, the AOT snapshot stripped) and without
+the desugared JDK library (the app's minSdk, 29, has the APIs it backports,
+and Gradle's L8 shrinks it away), and `.bazelrc`'s
+`--experimental_android_compress_java_resources` compresses the native
+libraries as Gradle does for an app that extracts them. R8 shrinks the
+code with AGP's optimized defaults (`bazel/android/proguard-android-optimize.txt`),
+Flutter's rules (`bazel/flutter/flutter_proguard_rules.pro`, copied from
+Flutter's Gradle plugin) and each plugin's and library's own, and the
+resources with `shrink_resources`. Gradle is not run at all. Against
+Gradle's APK (`aapt2 dump badging` and the file list, as `:apk_test`
+checks): the same package, versions, SDK levels, permissions, launcher
+activity, native libraries and debug signature, and one dex of 1.24 MB
+against Gradle's 1.22 MB; it differs in what AGP adds or strips beyond
+that: no baseline profile, Kotlin's `.knm` metadata files left in, and the
+`.qual` files under `assets/` left out.
 
 **The macOS app** is rules_flutter's `flutter_macos_app` (rules_apple),
 named `clax_app` as Xcode's PRODUCT_NAME, with Runner's entitlements and

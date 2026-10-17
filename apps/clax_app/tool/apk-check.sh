@@ -2,7 +2,7 @@
 # apk-check.sh APK AAPT2 APKSIGNER: checks the Bazel-built APK against what
 # the app's Gradle build makes (apps/clax_app/android/app/build.gradle.kts):
 # its package and version, SDK levels, launcher activity, a release build
-# (not debuggable) that extracts its native libraries, the engine, the app's
+# (not debuggable, shrunk by R8) that extracts its native libraries, the engine, the app's
 # AOT code and the embedded clax for both CPUs, and a debug-key signature.
 set -euo pipefail
 apk="$1" aapt2="$2" apksigner="$3"
@@ -29,6 +29,14 @@ for abi in arm64-v8a x86_64; do
     done
 done
 check "Flutter's assets" "$files" "assets/flutter_assets/assets/home/home.clax"
+# Shrunk by R8, as Gradle's release build is: one dex of about 1.2 MB.
+dexes="$(grep -c '^classes[0-9]*\.dex$' <<<"$files" || true)"
+dex_bytes="$(unzip -l "$apk" classes.dex | awk '$4 == "classes.dex" { print $1 }')"
+if [ "$dexes" = 1 ] && [ "${dex_bytes:-0}" -gt 0 ] && [ "$dex_bytes" -lt 2000000 ]; then
+    ok "one dex, shrunk ($dex_bytes bytes)"
+else
+    bad "one dex under 2 MB (found $dexes, classes.dex $dex_bytes bytes)"
+fi
 certs="$("$apksigner" verify --print-certs "$apk")"
 if grep -q 'certificate DN: C=US, O=Android, CN=Android Debug' <<<"$certs"; then ok "signed with a debug key"; else bad "signed with a debug key: $certs"; fi
 exit "$fails"

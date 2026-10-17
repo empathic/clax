@@ -1,1 +1,4 @@
-exports_files(["rules_flutter.patch"])
+exports_files([
+    "flutter_proguard_rules.pro",
+    "rules_flutter.patch",
+])

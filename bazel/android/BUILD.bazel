@@ -8,6 +8,7 @@ load("@rules_kotlin//kotlin:core.bzl", "define_kt_toolchain")
 
 exports_files([
     "maven_install.json",
+    "proguard-android-optimize.txt",
     "rules_android.patch",
     "rules_android_ndk.patch",
 ])
