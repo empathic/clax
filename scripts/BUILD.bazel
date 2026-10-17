@@ -164,7 +164,10 @@ sh_test(
     data = CRATE_MANIFESTS + [
         ":all",
         "//:Cargo.toml",
+        "@rules_rust//rust/toolchain:current_cargo_files",
     ],
+    # The check reads the workspace through `cargo metadata`.
+    env = {"CARGO": "$(rootpath @rules_rust//rust/toolchain:current_cargo_files)"},
 )
 
 sh_test(

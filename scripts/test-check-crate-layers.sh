@@ -1,17 +1,32 @@
 #!/usr/bin/env bash
-# Checks scripts/check-crate-layers.py: the workspace passes; a copy of its
-# manifests with an upward edge, a sideways edge in a target table, or a
-# crate the layout does not know fails, naming it. Dev-dependencies pass.
+# Checks scripts/check-crate-layers.py on copies of the workspace's
+# manifests (with an empty source file at each target path): the workspace
+# passes; an upward or sideways edge fails, naming it, however the manifest
+# writes it (a [dependencies] line, a [dependencies.<name>] table, a
+# [target.'<cfg>'.dependencies] table or one of its <name> tables, a renamed
+# dependency, a build-dependency); a crate the layout does not know fails.
+# Dev-dependencies pass. Cargo is $CARGO when set (the Bazel test sets it),
+# else cargo on PATH.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 d="$(mktemp -d)"
 trap 'rm -rf "$d"' EXIT
+# cargo metadata reads no registry with --no-deps --offline; its home is
+# scratch so the test reads no developer configuration.
+export CARGO_HOME="$d/cargo-home"
 fails=0
 _fail() { echo "FAIL: $1" >&2; fails=$((fails + 1)); }
 _copy() {
     rm -rf "$d/w" && mkdir -p "$d/w"
     cp Cargo.toml "$d/w/"
-    for m in crates/*/Cargo.toml; do mkdir -p "$d/w/$(dirname "$m")" && cp "$m" "$d/w/$m"; done
+    for m in crates/*/Cargo.toml; do
+        c="$d/w/$(dirname "$m")"
+        mkdir -p "$c/src" && cp "$m" "$c/Cargo.toml" && : > "$c/src/lib.rs"
+        # The target paths the manifest names (src/main.rs, tests/*.rs).
+        sed -n 's/^path = "\([^.][^"]*\.rs\)"$/\1/p' "$m" | while read -r p; do
+            mkdir -p "$c/$(dirname "$p")" && : > "$c/$p"
+        done
+    done
 }
 # _expect pass|fail NAME [TEXT]: runs the check on the copy; TEXT must be in
 # what a failure prints.
@@ -24,27 +39,53 @@ _expect() {
         fail) { [ "$st" != 0 ] && grep -qF "$3" <<<"$out"; } || _fail "$2: $out" ;;
     esac
 }
+# _after FILE HEADER LINE: puts LINE right after the line HEADER in FILE.
+_after() {
+    python3 - "$@" <<'EOF'
+import sys
+f, header, line = sys.argv[1:]
+t = open(f).read()
+assert header + "\n" in t, header
+open(f, "w").write(t.replace(header + "\n", header + "\n" + line + "\n", 1))
+EOF
+}
 
 _copy
 _expect pass "the workspace"
 
 _copy
-printf '\n[dependencies]\nclax-store = { path = "../clax-store" }\n' >> "$d/w/crates/clax-core/Cargo.toml"
-_expect fail "clax-core on clax-store" "clax-core may not depend on clax-store"
+_after "$d/w/crates/clax-core/Cargo.toml" "[dependencies]" 'clax-store = { path = "../clax-store" }'
+_expect fail "a [dependencies] line" "clax-core may not depend on clax-store (normal dependency)"
+
+_copy
+printf '\n[dependencies.clax-store]\npath = "../clax-store"\n' >> "$d/w/crates/clax-mcp/Cargo.toml"
+_expect fail "a [dependencies.<name>] table" "clax-mcp may not depend on clax-store (normal dependency)"
 
 _copy
 printf "\n[target.'cfg(unix)'.dependencies]\nclax-store = { path = \"../clax-store\" }\n" >> "$d/w/crates/clax-mcp/Cargo.toml"
-_expect fail "clax-mcp on clax-store in a target table" "clax-mcp may not depend on clax-store"
+_expect fail "a target table" "clax-mcp may not depend on clax-store (normal dependency for cfg(unix))"
 
 _copy
-# clax-hooks' manifest ends in its [dev-dependencies] table.
-printf 'clax-testkit = { path = "../clax-testkit" }\n' >> "$d/w/crates/clax-hooks/Cargo.toml"
+printf "\n[target.'cfg(unix)'.dependencies.clax-store]\npath = \"../clax-store\"\n" >> "$d/w/crates/clax-hooks/Cargo.toml"
+_expect fail "a target table of one dependency" "clax-hooks may not depend on clax-store (normal dependency for cfg(unix))"
+
+_copy
+_after "$d/w/crates/clax-sample/Cargo.toml" "[dependencies]" 'store = { package = "clax-store", path = "../clax-store" }'
+_expect fail "a renamed dependency" "clax-sample may not depend on clax-store (as store) (normal dependency)"
+
+_copy
+printf '\n[build-dependencies]\nclax-http = { path = "../clax-http" }\n' >> "$d/w/crates/clax-store/Cargo.toml"
+_expect fail "a build-dependency" "clax-store may not depend on clax-http (build dependency)"
+
+_copy
+_after "$d/w/crates/clax-hooks/Cargo.toml" "[dev-dependencies]" 'clax-testkit = { path = "../clax-testkit" }'
 _expect pass "a dev-dependency on the testkit"
 
 _copy
-mkdir -p "$d/w/crates/clax-extra"
-printf '[package]\nname = "clax-extra"\n' > "$d/w/crates/clax-extra/Cargo.toml"
-sed -i.bak 's#"crates/clax-store",#"crates/clax-store",\n    "crates/clax-extra",#' "$d/w/Cargo.toml"
+mkdir -p "$d/w/crates/clax-extra/src"
+printf '[package]\nname = "clax-extra"\nversion = "0.0.0"\nedition = "2024"\n' > "$d/w/crates/clax-extra/Cargo.toml"
+: > "$d/w/crates/clax-extra/src/lib.rs"
+_after "$d/w/Cargo.toml" '    "crates/clax-store",' '    "crates/clax-extra",'
 _expect fail "a crate the layout does not know" "clax-extra has no place in the layout"
 
 if [ "$fails" = 0 ]; then echo "crate layers tests: all passed"; else echo "crate layers tests: $fails failed"; exit 1; fi
