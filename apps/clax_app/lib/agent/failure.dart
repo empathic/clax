@@ -221,6 +221,29 @@ String _agentSaid(String? words) {
   return w.isEmpty ? '' : '\n\nThe agent said: $w';
 }
 
+/// The reason of a change that stopped at the limit [cap] after its run
+/// planned what is left (`plan_set` with features to build), which the
+/// build's runs then build: no Keep going is offered. [landed]: the cap
+/// stop published part of it.
+String plannedStopReason(String cap, {bool landed = false}) =>
+    'This change was too big for one go — it needed ${limitWords(cap)} — '
+    '${landed ? 'so this version has part of it, and the rest is' : 'so what is left of it is'} '
+    'planned and being built in steps: the plan shows each one as it is '
+    'built.';
+
+/// The reply of such a change ([plannedStopReason]), with how far it got
+/// ([limitProgressText]); [checksFailed]: the published render had failing
+/// tests.
+String plannedStopReply(
+  String cap, {
+  bool landed = false,
+  bool checksFailed = false,
+  required LimitProgress progress,
+}) =>
+    '${plannedStopReason(cap, landed: landed)}'
+    '${checksFailed ? ' Some of its checks failed.' : ''}'
+    '${limitProgressText(progress)}';
+
 /// Whether [text] (a reply, or the Working chip's failure text) offers
 /// Keep going.
 bool offersKeepGoing(String text) => text.contains(keepGoingHint);

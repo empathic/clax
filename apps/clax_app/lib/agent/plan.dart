@@ -600,6 +600,7 @@ class PlanSetTool implements Tool {
       freshBuild: plan.freshBuild,
     );
     plan.seen = saved.revision;
+    s.planned = saved.todo.isNotEmpty;
     return ToolOk({
       'features': saved.features.length,
       'todo': saved.todo.length,

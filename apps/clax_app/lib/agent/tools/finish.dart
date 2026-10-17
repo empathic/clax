@@ -279,6 +279,17 @@ class FinishTool implements Tool {
       if (spent == null) {
         return _set(s, await _fail(s, 'it ran out of time ($cap).'));
       }
+      if (s.planned) {
+        // The build builds what is left: no Keep going.
+        return _set(
+          s,
+          await _fail(
+            s,
+            plannedStopReason(cap),
+            reply: plannedStopReply(cap, progress: _plannedProgress(s)),
+          ),
+        );
+      }
       final left = changeCapUsd - spent - s.budget.costUsd;
       return _set(
         s,
@@ -296,7 +307,14 @@ class FinishTool implements Tool {
     }
     final src = _sourceOfSnapshot(clean!);
     final checksFailed = !identical(clean, passed);
-    final reply = spent != null
+    final reply = spent != null && s.planned
+        ? plannedStopReply(
+            cap,
+            landed: true,
+            checksFailed: checksFailed,
+            progress: _plannedProgress(s),
+          )
+        : spent != null
         ? limitLandedReply(
             cap,
             leftUsd: changeCapUsd - spent - s.budget.costUsd,
@@ -317,7 +335,8 @@ class FinishTool implements Tool {
           version: f.version,
           answered: f.answered,
           docsRefused: f.docsRefused,
-          limit: cap,
+          // A planned change is the build's to finish: nothing to keep.
+          limit: s.planned && spent != null ? null : cap,
         );
       }(),
       final _Ended e => e.outcome,
@@ -777,6 +796,18 @@ class GiveUpTool implements Tool {
     final left = changeCapUsd - (spent ?? 0) - s.budget.costUsd;
     final e = limit == null
         ? await _failWith(api, render, _log, s, reason)
+        : s.planned
+        ? await _failWith(
+            api,
+            render,
+            _log,
+            s,
+            plannedStopReason(limit),
+            reply: plannedStopReply(
+              limit,
+              progress: _plannedProgress(s, reason: reason),
+            ),
+          )
         : await _failWith(
             api,
             render,
@@ -810,6 +841,15 @@ LimitProgress limitProgress(
   spentUsd: (s.ctx.changeSpentUsd ?? 0) + s.budget.costUsd,
   notes: [...s.ctx.changeNotes, ...s.narrations, ?reason],
   changed: changedFiles(keptEdits(s.draft.files, from), from),
+);
+
+/// How far a planned change got ([plannedStopReply]): as [limitProgress],
+/// without the draft's files, which the build does not go on from.
+LimitProgress _plannedProgress(RunState s, {String? reason}) => LimitProgress(
+  startedOver: s.ctx.startedOver,
+  stops: s.ctx.changeStops + 1,
+  spentUsd: (s.ctx.changeSpentUsd ?? 0) + s.budget.costUsd,
+  notes: [...s.ctx.changeNotes, ...s.narrations, ?reason],
 );
 
 /// Replies "Couldn't make that change: [reason]" (or [reply], when given)

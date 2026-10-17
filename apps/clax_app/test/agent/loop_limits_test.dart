@@ -585,6 +585,37 @@ void main() {
     expect(runner.text(0), isNot(contains('Keep going')));
   });
 
+  test('a run that plans the rest and then stops at a cap says the rest is '
+      'being built, offers no Keep going and keeps nothing', () async {
+    final item = api.sendComment(aid, 'Add stats', queue: false);
+    final out = await loopWith([
+      [
+        const ScriptedCall('plan_set', {
+          'features': [
+            {'id': 's1', 'title': 'Stats', 'detail': '', 'status': 'todo'},
+          ],
+        }, 'Planning the stats'),
+        for (var i = 0; i < 10; i++) const ScriptedCall('list_files', {}),
+      ],
+    ]).change(aid, [item], session: sid);
+
+    expect(out, isA<ChangeFailed>());
+    final reply = bodies(item.threadId).last;
+    expect(
+      reply,
+      'This change was too big for one go — it needed more than 10 steps — '
+      'so what is left of it is planned and being built in steps: the plan '
+      'shows each one as it is built.\n\n'
+      'Stopped once · \$0.00 of \$6 used\n\n'
+      "The agent's latest notes:\n"
+      '- Planning the stats',
+    );
+    expect(offersKeepGoing(reply), isFalse);
+    expect(isFailureText(reply), isFalse);
+    expect(offersKeepGoing((out as ChangeFailed).reason), isFalse);
+    expect(await unfinished.get(item.threadId), isNull);
+  });
+
   test('a small change keeps the fast path: no plan, one run', () async {
     final item = api.sendComment(aid, 'Rename Save', queue: false);
     final out = await loopWith([

@@ -215,6 +215,14 @@ void main() {
     expect(third, isNot(contains('First decide whether this change fits')));
     expect(runner.seen, hasLength(4));
     expect((await plans.get(aid))!.feature('r1')!.status, FeatureStatus.done);
+    // The run that planned the rest and then stopped offers no Keep going:
+    // its reply says the rest is being built.
+    final planned = api.threadOf(aid, item.threadId).comments[3];
+    expect(planned.body, startsWith('This change was too big for one go'));
+    expect(planned.body, contains('planned and being built in steps'));
+    expect(isKeepGoingReply(planned), isFalse);
+    expect(isAppFailureReply(planned), isFalse);
+    expect(await unfinished.get(item.threadId), isNull);
     expect(
       api.filesOf(aid, api.currentVersion(aid))['index.html'],
       contains('class="red"'),
