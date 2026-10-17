@@ -1062,6 +1062,17 @@ describe("comments", () => {
     expect(r.why).toContain("No Clax tab");
   });
 
+  it("a prompt typed in Pi is terminal activity, and a message an extension sent is not", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-input");
+    await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    const sid = await sessionOf("pi-input");
+    const signals = async () => (await api(daemon, `/api/sessions/${sid}/where-to-ask`)).signals;
+    await pi.emit("input", { type: "input", text: "[clax] a comment", source: "extension" }, ctx);
+    await pi.emit("input", { type: "input", text: "make it blue", source: "interactive" }, ctx);
+    await expect.poll(async () => (await signals()).terminal_at, { timeout: 10_000 }).not.toBeNull();
+    expect((await signals()).terminal_inferred).toBe(false);
+  });
+
   it("clax_ask asks to call again while no answer came, with late answers apart from its reply", async () => {
     const { pi, ctx } = load(daemon.home, "pi-ask");
     parts(await pi.callToolAsPi("clax_list", {}, ctx));

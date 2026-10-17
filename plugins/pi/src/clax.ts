@@ -1893,6 +1893,18 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       await c.endWorking().catch(() => undefined);
     });
 
+    // Terminal activity (spec 2026-10-16-ask-where-attention-is-design §1):
+    // a prompt the person typed, not a message an extension sent (Clax's
+    // deliveries are), tells the daemon where they are. Neither starts a
+    // daemon, registers a session, nor delays the prompt.
+    pi.on("input", async event => {
+      if (event.source !== "extension") {
+        const c = tools.existingClient();
+        if (c?.session()) void c.noteTerminal().catch(() => undefined);
+      }
+      return { action: "continue" };
+    });
+
     // The tools whose successful results carry tier 1 feedback: those
     // registered through `define` (not wait_for_feedback, whose result is feedback).
     const piggybacked = new Set<string>();

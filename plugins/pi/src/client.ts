@@ -815,6 +815,13 @@ export class DaemonClient {
     return this.json(() => `${this.sessionPath()}/where-to-ask`, { method: "GET" });
   }
 
+  /** `POST /api/sessions/<sid>/terminal`: the person typed a prompt (spec
+   * 2026-10-16-ask-where-attention-is-design §1). Only discovers a running
+   * daemon, never starts one. */
+  noteTerminal(): Promise<any> {
+    return this.json(() => `${this.sessionPath()}/terminal`, this.jsonBody("POST", {}), this.discoverFn);
+  }
+
   /** `GET /api/sessions/<sid>/feedback` for `tier`, waiting up to `waitS`
    * seconds (`artifact` narrows it to one artifact): `{feedback, text,
    * waited_s}`. The deadline is `waitS` plus 10 s; `signal` cancels it. */
