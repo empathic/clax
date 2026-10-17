@@ -305,6 +305,16 @@ impl TestServer {
         Self::spawn_on_with_clock(IpAddr::V4(Ipv4Addr::LOCALHOST), clock).await
     }
 
+    /// [`TestServer::spawn_with_clock`] with `f` applied to the state
+    /// before it serves, as [`TestServer::spawn_with`] does.
+    pub async fn spawn_with_clock_and(
+        clock: Arc<ManualClock>,
+        f: impl FnOnce(&mut AppState),
+    ) -> TestServer {
+        let dir = tempfile::tempdir().unwrap();
+        Self::start(dir, IpAddr::V4(Ipv4Addr::LOCALHOST), clock, f, false, None).await
+    }
+
     /// [`TestServer::spawn_with_clock`] listening on `bind` (`0.0.0.0` for
     /// one that may invite people: its invites name [`LAN_LOCAL`]).
     pub async fn spawn_on_with_clock(bind: IpAddr, clock: Arc<ManualClock>) -> TestServer {

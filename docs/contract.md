@@ -2361,7 +2361,9 @@ where to ask them (`where_to_ask`, under "Agent questions"):
   session after a Stop (any tier but `stop_hook` and `queue`: a tool
   result's, `wait_for_feedback`'s), when nothing from Clax was handed to
   it since that Stop, starts a turn the person typed: it is recorded then
-  as an inferred prompt.
+  as an inferred prompt. A Codex queue delivery that lands while a turn is
+  open (a poll came since the last Stop) is run as the next turn, so it
+  counts for that turn, not the open one's Stop alone.
 - Each is recorded once per poll, before its first take.
 - **The where-to-ask line:** a poll that hands anything over (feedback
   items or late answers), or a `prompt=true` poll of a session with a page,

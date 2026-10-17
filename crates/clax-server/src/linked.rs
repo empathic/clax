@@ -1482,6 +1482,7 @@ impl Sync {
         let remote_version = rt["version_n"].as_u64().unwrap_or(0) as u32;
         let anchor: Option<Anchor> = serde_json::from_value(rt["anchor"].clone()).ok();
         let (rid, link, ctx) = (self.rid.clone(), l.clone(), self.s.feedback_ctx());
+        let app = self.s.clone();
         let made = self
             .s
             .store_call(move |st| {
@@ -1548,8 +1549,10 @@ impl Sync {
                             resolved_at: rt2.resolved_at.clone().unwrap_or_default(),
                         });
                         t = rt2;
+                        clax_http::views::question::announce_thread(&app, st, &tid);
                     } else if status == "open" && t.status == "resolved" {
                         t = st.reopen_thread(&audit, &tid)?;
+                        clax_http::views::question::announce_thread(&app, st, &tid);
                     }
                     st.set_synced_status(&tid, &status)?;
                     changed = true;

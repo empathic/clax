@@ -89,7 +89,9 @@ impl Store {
     /// the turn stands for a terminal prompt, recorded as inferred. Returns
     /// whether it did. A delivery sets a flag that the next turn clears
     /// ([`Store::note_delivery`]), so a delivery stamped in the same
-    /// millisecond as the turn before it still counts.
+    /// millisecond as the turn before it still counts. A Codex queue
+    /// delivery that came while this turn was open ([`Store::note_queued`])
+    /// starts the next turn, so it stays set for that one.
     ///
     /// # Errors
     /// `unknown_session` for a missing or ended session.
@@ -113,61 +115,76 @@ impl Store {
                      WHERE id = ?1",
                     params![sid, now],
                 )?;
-            } else {
-                tx.execute(
-                    "UPDATE sessions SET turn_at = ?2, delivered_since_turn = 0 WHERE id = ?1",
-                    params![sid, now],
-                )?;
             }
+            tx.execute(
+                "UPDATE sessions SET turn_at = ?2, turn_open = 0,
+                    delivered_since_turn = queued_since_turn, queued_since_turn = 0
+                 WHERE id = ?1",
+                params![sid, now],
+            )?;
             Ok(from_terminal)
         })
     }
 
     /// Live session `sid`, in a harness that reports no prompts (Codex,
     /// Grok Build), polled for feedback now from within a turn (any tier
-    /// but its Stop hook's or the Codex queue's). The first such poll after
-    /// a reported turn end ([`Store::note_turn`]), when no Clax delivery
-    /// reached the session since that end, shows a new turn the person
-    /// started in the terminal: it is recorded as an inferred prompt now.
-    /// Later polls of the same turn record nothing (when the first came in
-    /// the turn end's own millisecond, the next records it again, later);
-    /// neither does a poll
-    /// before the session's first reported turn end. Returns whether it
-    /// recorded one. A turn a delivery started keeps
-    /// `delivered_since_turn` set, so it is not counted, and its end is
-    /// Clax's as before.
+    /// but its Stop hook's or the Codex queue's): its turn is open until
+    /// the next reported end. The first such poll after a reported turn end
+    /// ([`Store::note_turn`]), when no Clax delivery reached the session
+    /// since that end, shows a new turn the person started in the
+    /// terminal: it is recorded as an inferred prompt now. Later polls of
+    /// the same turn record nothing; neither does a poll before the
+    /// session's first reported turn end. Returns whether it recorded one.
+    /// A turn a delivery started keeps `delivered_since_turn` set, so it is
+    /// not counted, and its end is Clax's as before.
     ///
     /// # Errors
     /// `unknown_session` for a missing or ended session.
     pub fn note_turn_start(&self, sid: &str) -> Result<bool> {
         let now = self.now();
         self.with_tx(|tx| {
-            let row: Option<(Option<String>, Option<String>, bool)> = tx
+            let row: Option<(Option<String>, bool, bool)> = tx
                 .query_row(
-                    "SELECT turn_at, terminal_at, delivered_since_turn FROM sessions
+                    "SELECT turn_at, turn_open, delivered_since_turn FROM sessions
                      WHERE id = ?1 AND ended_at IS NULL",
                     params![sid],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .optional()?;
-            let Some((turn_at, terminal_at, delivered)) = row else {
+            let Some((turn_at, open, delivered)) = row else {
                 return Err(unknown_session());
             };
-            // Times are the store clock's, one fixed-width UTC format, so
-            // they compare as text.
-            let started = match (&turn_at, &terminal_at) {
-                (None, _) => return Ok(false),
-                (Some(end), Some(t)) => t > end,
-                (Some(_), None) => false,
-            };
-            if delivered || started {
+            if open {
                 return Ok(false);
             }
+            let typed = turn_at.is_some() && !delivered;
+            if typed {
+                tx.execute(
+                    "UPDATE sessions SET terminal_at = ?2, terminal_inferred = 1 WHERE id = ?1",
+                    params![sid, now],
+                )?;
+            }
             tx.execute(
-                "UPDATE sessions SET terminal_at = ?2, terminal_inferred = 1 WHERE id = ?1",
-                params![sid, now],
+                "UPDATE sessions SET turn_open = 1 WHERE id = ?1",
+                params![sid],
             )?;
-            Ok(true)
+            Ok(typed)
+        })
+    }
+
+    /// A Codex queue delivery reached live session `sid` now (recorded
+    /// next by [`Store::note_delivery`]). When a turn of it is open, `codex queue` runs the
+    /// delivery as the next turn, so the delivery is kept for that turn
+    /// past the open turn's end ([`Store::note_turn`]); an idle session
+    /// starts its turn with the delivery, which needs nothing more.
+    pub fn note_queued(&self, sid: &str) -> Result<()> {
+        self.with_tx(|tx| {
+            tx.execute(
+                "UPDATE sessions SET queued_since_turn = 1
+                 WHERE id = ?1 AND ended_at IS NULL AND turn_open = 1",
+                params![sid],
+            )?;
+            Ok(())
         })
     }
 
@@ -441,6 +458,37 @@ mod tests {
         );
         st.end_session(DAEMON, &sid).unwrap();
         assert!(st.note_turn_start(&sid).is_err());
+    }
+
+    #[test]
+    fn a_queued_delivery_to_a_busy_session_counts_for_its_next_turn() {
+        let (c, _d, st) = clocked();
+        let sid = session(&st, "codex", "h1");
+        st.note_turn(&sid).unwrap();
+        c.advance(60);
+        assert!(st.note_turn_start(&sid).unwrap(), "a typed turn");
+        // A push lands while that turn runs.
+        st.note_queued(&sid).unwrap();
+        st.note_delivery(&sid, "7q3k9mzx2b4t", Some("t1"), None)
+            .unwrap();
+        c.advance(10);
+        assert!(!st.note_turn(&sid).unwrap());
+        c.advance(10);
+        assert!(!st.note_turn_start(&sid).unwrap(), "the queued turn");
+        c.advance(10);
+        assert!(!st.note_turn(&sid).unwrap(), "the queued turn's end");
+        c.advance(10);
+        assert!(st.note_turn_start(&sid).unwrap(), "typed again");
+        // An idle session's push starts its turn: nothing is kept past it.
+        st.note_turn(&sid).unwrap();
+        st.note_queued(&sid).unwrap();
+        st.note_delivery(&sid, "7q3k9mzx2b4t", Some("t1"), None)
+            .unwrap();
+        c.advance(10);
+        assert!(!st.note_turn_start(&sid).unwrap());
+        assert!(!st.note_turn(&sid).unwrap());
+        c.advance(10);
+        assert!(st.note_turn_start(&sid).unwrap());
     }
 
     #[test]

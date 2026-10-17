@@ -634,6 +634,36 @@ async fn resolving_reopening_or_deleting_a_thread_announces_its_open_questions()
 }
 
 #[tokio::test]
+async fn a_reply_reopening_a_resolved_thread_announces_its_open_questions() {
+    let (_c, ts) = clocked().await;
+    let (sid, aid) = paged(&ts, "h1").await;
+    let mut ev = ts.stream_as_owner(&["questions"]).await;
+    let tid = ts.thread_as_owner(&aid, "Which?").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let asked = json!({"source": "ask", "artifact_id": aid, "thread_id": tid,
+        "questions": [{"question": "Which layout?", "header": "Layout",
+            "options": [{"label": "Grid"}, {"label": "List"}]}]});
+    ts.ask(&sid, asked).await;
+    ev.next_named("question").await;
+    let thread = format!("/api/artifacts/{aid}/threads/{tid}");
+    let r = ts.post_json(&format!("{thread}/resolve"), json!({})).await;
+    assert_eq!(r.status(), 200);
+    let e = ev.next_named("question").await;
+    assert_eq!(e["question"]["thread"], json!({"id": tid, "open": false}));
+    let r = ts
+        .post_json(
+            &format!("{thread}/comments"),
+            json!({"body": "One more thing"}),
+        )
+        .await;
+    assert_eq!(r.status(), 201, "{}", r.text().await.unwrap());
+    let e = ev.next_named("question").await;
+    assert_eq!(e["question"]["thread"], json!({"id": tid, "open": true}));
+}
+
+#[tokio::test]
 async fn ask_me_here_wakes_a_held_wait_for_feedback_poll() {
     let (_c, ts) = clocked().await;
     let (sid, aid) = paged(&ts, "h1").await;

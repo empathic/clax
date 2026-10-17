@@ -1058,10 +1058,12 @@ pub async fn comment(
     let ctx = s.feedback_ctx();
     let live_page = s.live_ids.contains(id.as_str());
     let vf = VisFor::of(&a.caller, &s);
+    let app = s.clone();
     let o = s
         .store_call(move |st| {
             let vis = vf.build(st)?;
             let t = thread_of(st, &id, &tid)?;
+            let was_resolved = t.status == "resolved";
             let mut touched = Touched::default();
             let mut unresolved = Vec::new();
             let c = if agent {
@@ -1158,6 +1160,10 @@ pub async fn comment(
             apply(&ctx, st, &touched);
             let t = thread_of(st, &id, &tid)?;
             publish_thread(&ctx, st, &t)?;
+            // A person's reply reopened it: its open questions move back in.
+            if was_resolved && t.status == "open" {
+                clax_http::views::question::announce_thread(&app, st, &tid);
+            }
             let view = vis.filter_thread(st, &t, ctx.codex_push(), with_path)?;
             let mut out = json!({"comment": vis.filter_comment(&aid, &c), "thread": view});
             if addressed {

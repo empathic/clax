@@ -1140,6 +1140,10 @@ pub const MIGRATIONS: &[&str] = &[
     // `delivered_*`, its last delivery from Clax and the artifact and thread
     // it was about; `delivered_since_turn`, set by a delivery and cleared by
     // the next reported turn, which then came from Clax, not the terminal;
+    // `turn_open`, set by a poll from within a turn and cleared by its end;
+    // `queued_since_turn`, a Codex queue delivery that reached the session
+    // while a turn was open and so starts the next turn, which the turn's
+    // end moves into `delivered_since_turn`;
     // `delivered_written_at`, when the session's own person did what the
     // delivery carries in Clax, and `delivered_act`, what: `wrote` the
     // delivered comment (by hand, not through a page), or `answered`,
@@ -1155,6 +1159,8 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE sessions ADD COLUMN delivered_artifact_id TEXT;
     ALTER TABLE sessions ADD COLUMN delivered_thread_id TEXT;
     ALTER TABLE sessions ADD COLUMN delivered_since_turn INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE sessions ADD COLUMN turn_open INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE sessions ADD COLUMN queued_since_turn INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE sessions ADD COLUMN delivered_written_at TEXT;
     ALTER TABLE sessions ADD COLUMN delivered_act TEXT;",
 ];
@@ -1818,6 +1824,8 @@ mod tests {
             "delivered_artifact_id",
             "delivered_thread_id",
             "delivered_since_turn",
+            "turn_open",
+            "queued_since_turn",
             "delivered_written_at",
             "delivered_act",
         ] {

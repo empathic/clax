@@ -675,3 +675,109 @@ async fn a_batch_reaches_codex_as_one_queued_message_led_by_its_note() {
         "one message holds both"
     );
 }
+
+/// A Codex session's where-to-ask reply.
+async fn signals_of(ts: &TestServer, sid: &str) -> Value {
+    ts.get_authed(&format!("/api/sessions/{sid}/where-to-ask"))
+        .await
+        .json()
+        .await
+        .unwrap()
+}
+
+async fn poll_tier(ts: &TestServer, sid: &str, tier: &str) {
+    let r = ts
+        .get_authed(&format!("/api/sessions/{sid}/feedback?tier={tier}"))
+        .await;
+    assert_eq!(r.status(), 200);
+}
+
+/// A daemon on a manual clock that pushes with `bin`.
+async fn clocked_server(bin: PathBuf) -> (Arc<clax_core::working::ManualClock>, TestServer) {
+    let c = Arc::new(clax_core::working::ManualClock::at("2026-10-16T10:00:00Z"));
+    let ts = TestServer::spawn_with_clock_and(c.clone(), move |s| {
+        s.codex = Arc::new(CodexPush {
+            bin: Some(bin),
+            timeout: Duration::from_secs(10),
+            source: CodexSource::Env,
+            ..Default::default()
+        })
+    })
+    .await;
+    (c, ts)
+}
+
+/// Waits until the queued delivery to `sid` is recorded on it.
+async fn queued(ts: &TestServer, sid: &str) {
+    for _ in 0..100 {
+        if !signals_of(ts, sid).await["signals"]["delivered_at"].is_null() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("the queued delivery was never recorded");
+}
+
+#[tokio::test]
+async fn a_push_to_a_busy_codex_session_starts_its_next_turn_from_clax() {
+    let d = tempfile::tempdir().unwrap();
+    let (c, ts) = clocked_server(fake_codex(d.path(), 0, 0)).await;
+    let (sid, aid) = codex_owner(&ts, Some("cx-busy")).await;
+    let _stream = ts.stream_as_owner(&["questions"]).await;
+    poll_tier(&ts, &sid, "stop_hook").await;
+    // The person types a turn; its first tool call shows it.
+    c.advance(60);
+    poll_tier(&ts, &sid, "piggyback").await;
+    let typed = signals_of(&ts, &sid).await["signals"]["terminal_at"].clone();
+    assert_eq!(typed, "2026-10-16T10:01:00.000Z");
+    // A comment from Clax is pushed while that turn runs.
+    c.advance(10);
+    ts.thread(&aid, 1, "@agent two columns").await;
+    ran(d.path()).await;
+    queued(&ts, &sid).await;
+    // The typed turn ends; the queued turn's first tool call is Clax's.
+    c.advance(10);
+    poll_tier(&ts, &sid, "stop_hook").await;
+    c.advance(10);
+    poll_tier(&ts, &sid, "piggyback").await;
+    let v = signals_of(&ts, &sid).await;
+    assert_eq!(v["signals"]["terminal_at"], typed, "{v}");
+    assert_eq!(v["where_to_ask"]["surface"], "clax", "{v}");
+    // After the queued turn ends, a typed turn is inferred again.
+    c.advance(10);
+    poll_tier(&ts, &sid, "stop_hook").await;
+    c.advance(10);
+    poll_tier(&ts, &sid, "piggyback").await;
+    assert_eq!(
+        signals_of(&ts, &sid).await["signals"]["terminal_at"],
+        "2026-10-16T10:01:50.000Z"
+    );
+}
+
+#[tokio::test]
+async fn a_push_to_an_idle_codex_session_starts_its_turn_from_clax() {
+    let d = tempfile::tempdir().unwrap();
+    let (c, ts) = clocked_server(fake_codex(d.path(), 0, 0)).await;
+    let (sid, aid) = codex_owner(&ts, Some("cx-idle")).await;
+    poll_tier(&ts, &sid, "stop_hook").await;
+    c.advance(60);
+    ts.thread(&aid, 1, "@agent two columns").await;
+    ran(d.path()).await;
+    queued(&ts, &sid).await;
+    // The pushed turn: its tool call and its Stop are Clax's.
+    c.advance(10);
+    poll_tier(&ts, &sid, "piggyback").await;
+    c.advance(10);
+    poll_tier(&ts, &sid, "stop_hook").await;
+    assert_eq!(
+        signals_of(&ts, &sid).await["signals"]["terminal_at"],
+        "2026-10-16T10:00:00.000Z"
+    );
+    // The next turn, with nothing from Clax, is typed.
+    c.advance(10);
+    poll_tier(&ts, &sid, "piggyback").await;
+    assert_eq!(
+        signals_of(&ts, &sid).await["signals"]["terminal_at"],
+        "2026-10-16T10:01:30.000Z"
+    );
+}

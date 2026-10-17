@@ -302,10 +302,15 @@ pub fn dispatch(ctx: &FeedbackCtx, st: &Store, targets: &BTreeSet<String>) {
                         Err(e) => tracing::warn!(error = %e, "releasing feedback failed"),
                     }
                 }
-                if error.is_none()
-                    && let Err(e) = crate::working::mark_items(&ctx, &clax_core::audit::AuditCtx::DAEMON, store, &sid, &marked)
-                {
-                    tracing::warn!(session = %sid, error = %e, "marking a queued session working failed");
+                if error.is_none() {
+                    // A busy session runs the queued message as its next
+                    // turn: the delivery counts for that turn.
+                    if let Err(e) = store.note_queued(&sid) {
+                        tracing::warn!(session = %sid, error = %e, "recording a queued delivery failed");
+                    }
+                    if let Err(e) = crate::working::mark_items(&ctx, &clax_core::audit::AuditCtx::DAEMON, store, &sid, &marked) {
+                        tracing::warn!(session = %sid, error = %e, "marking a queued session working failed");
+                    }
                 }
                 if let Err(e) = store.set_push_error(&sid, error.as_deref()) {
                     tracing::warn!(session = %sid, error = %e, "recording the codex queue outcome failed");
