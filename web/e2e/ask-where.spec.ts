@@ -80,11 +80,21 @@ const timeOnFirstLine = (card: Locator) => card.evaluate(c => {
   return time.top < asker.top + 20 && time.left > asker.left && asking.scrollHeight <= asking.clientHeight && style.borderTopWidth === "0px";
 });
 
-/** A thread card's box and the top of the next thing after its last comment. */
-const cardBox = (card: Locator) => card.evaluate(c => {
-  const r = c.getBoundingClientRect();
+/** Where a thread card sits, measured so that only a question's arrival
+ * and leaving can change it: how far the sidebar is scrolled, the card's
+ * offset below the Open heading (what loads or leaves above that heading,
+ * such as New comment or the sidebar's question block, does not count),
+ * and the height of the card's question slot. The card's own height is
+ * left out: its status line under the thread says how long the thread has
+ * waited on the agent, so it changes and may wrap on its own. */
+const cardPlace = (card: Locator) => card.evaluate(c => {
+  const heading = document.querySelector("aside.sidebar .section-open > h2")!.getBoundingClientRect();
   const slot = c.querySelector(".thread-q-slot")!.getBoundingClientRect();
-  return { top: Math.round(r.top), height: Math.round(r.height), slot: Math.round(slot.height) };
+  return {
+    scroll: Math.round(document.querySelector("aside.sidebar")!.scrollTop),
+    below: Math.round(c.getBoundingClientRect().top - heading.bottom),
+    slot: Math.round(slot.height),
+  };
 });
 
 for (const theme of THEMES) {
@@ -100,7 +110,7 @@ for (const theme of THEMES) {
       await expect(card).toBeVisible();
       // No question: no count, and the card's slot takes no space.
       await expect(inboxCount(page, size)).toHaveCount(0);
-      const before = await cardBox(card);
+      const before = await cardPlace(card);
       expect(before.slot).toBe(0);
       const q = await ask(d.base, d.token, s.id, { source: "ask", artifact_id: artifact.id, thread_id: tid, questions: [SIZE_Q] });
       const inCard = card.locator(`.thread-q-slot .qcard[data-question="${q.question.id}"]`);
@@ -123,16 +133,20 @@ for (const theme of THEMES) {
       await expect(inboxCount(page, size)).toHaveText("1");
       await shot(page, "thread-question", size, theme);
       // Answering it neither selects nor scrolls the thread card; the label shows, then it leaves with no gap.
-      const top = (await cardBox(card)).top;
+      const { scroll, below } = await cardPlace(card);
       await inCard.getByRole("radio").first().check();
       await inCard.getByRole("button", { name: `Answer ${NAME}` }).click();
       await expect(inCard.locator(".closed")).toHaveText("Answered");
       await expect(card).not.toHaveClass(/\bselected\b/);
-      expect((await cardBox(card)).top).toBe(top);
+      expect(await cardPlace(card)).toMatchObject({ scroll, below });
       await expect(inboxCount(page, size)).toHaveCount(0);
       await advance(page, 4000);
       await expect(inCard).toHaveCount(0);
-      await expect.poll(() => cardBox(card)).toEqual(before);
+      // The slot collapses, the card stays where it was and unselected, and the sidebar's block for the question leaves.
+      await expect.poll(() => cardPlace(card)).toEqual(before);
+      await expect(card).not.toHaveClass(/\bselected\b/);
+      await expect(page.locator(".side-q a.q-thread")).toHaveCount(0);
+      await expect(page.locator(".side-q")).toBeHidden();
     });
 
     test(`an in-terminal question shows a terminal card with Ask me here, which says it was sent once pressed, or that it was not (${theme}, ${size.width})`, async ({ page, freshDaemon: d }) => {
@@ -256,18 +270,22 @@ for (const size of SIZES) {
     await showThreads(page, size);
     const card = page.locator(`.thread-card[data-thread="${tid}"]`);
     await expect(card).toBeVisible();
-    const before = await cardBox(card);
+    const before = await cardPlace(card);
+    expect(before.slot).toBe(0);
     const q = await ask(d.base, d.token, s.id, { source: "ask", artifact_id: artifact.id, thread_id: tid, questions: [SIZE_Q] });
     const inCard = card.locator(`.thread-q-slot .qcard[data-question="${q.question.id}"]`);
     await expect(inCard).toBeVisible();
-    const top = (await cardBox(card)).top;
+    const { scroll, below } = await cardPlace(card);
     await inCard.getByRole("button", { name: "Skip" }).click();
     await expect(inCard.locator(".closed")).toHaveText("Skipped");
     await expect(card).not.toHaveClass(/\bselected\b/);
-    expect((await cardBox(card)).top).toBe(top);
+    expect(await cardPlace(card)).toMatchObject({ scroll, below });
     await advance(page, 4000);
     await expect(inCard).toHaveCount(0);
-    await expect.poll(() => cardBox(card)).toEqual(before);
+    await expect.poll(() => cardPlace(card)).toEqual(before);
+    await expect(card).not.toHaveClass(/\bselected\b/);
+    await expect(page.locator(".side-q a.q-thread")).toHaveCount(0);
+    await expect(page.locator(".side-q")).toBeHidden();
   });
 
   test(`a resolved thread's question moves to the sidebar's block as a card (${size.width})`, async ({ page, freshDaemon: d }) => {
