@@ -102,6 +102,32 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     ctl.dispose();
   });
 
+  it("opens the thread the address names once its page greets, and brings its card into view when it renders", async () => {
+    history.replaceState(null, "", `/a/${ID}?thread=t1`);
+    const { ctl, frame } = await started({ threads: [thread("t0"), thread("t1")] });
+    const posted: { type: string; anchor?: unknown }[] = [];
+    frame.contentWindow!.postMessage = ((m: { type: string }) => { posted.push(m); }) as Window["postMessage"];
+    await vi.waitFor(() => expect(ctl.state.get().threads.map(t => t.id)).toEqual(["t0", "t1"]));
+    // Not before the page greets: the jump would have nowhere to go.
+    expect(ctl.state.get().selected).toBeNull();
+    hello(frame.contentWindow!);
+    await vi.waitFor(() => expect(ctl.state.get().selected).toBe("t1"));
+    expect(ctl.state.get().panel).toBe(true);
+    expect(posted.some(m => m.type === "clax:scroll-to")).toBe(true);
+    // The card renders later (the thread list loads after the first paint): it is scrolled to then.
+    const card = document.createElement("article");
+    card.className = "thread-card";
+    card.dataset.thread = "t1";
+    const scrolled = vi.fn();
+    card.scrollIntoView = scrolled;
+    document.body.append(card);
+    await vi.waitFor(() => expect(scrolled).toHaveBeenCalledOnce());
+    // Once only: selecting another thread later is the viewer's.
+    ctl.selectThread(ctl.state.get().threads[0]);
+    await vi.waitFor(() => expect(ctl.state.get().selected).toBe("t0"));
+    ctl.dispose();
+  });
+
   it("has the page move itself to the address bar's fragment, leaving the frame's src and the gate as they were", async () => {
     const { ctl, frame } = await started();
     const posted: { type: string; hash?: string }[] = [];

@@ -3,7 +3,8 @@
 <script lang="ts">
   // An in-terminal question (spec 2026-10-16-ask-where-attention-is-design
   // §3): an agent is asking the person in the terminal, or in chat. It says
-  // who and when, and shows the questions' headers only; it takes no
+  // who and when (and, outside its thread's card, the thread), and shows
+  // the questions' headers only; it takes no
   // answer. **Ask me here** sends the agent word to ask it in Clax instead
   // (following the keyboard trail rule, `guardedAction`); for Claude Code's
   // terminal dialog it says the dialog stays until Esc. Closed, it says what
@@ -12,7 +13,7 @@
   // themselves, as QuestionCard's inject only once a QuestionCard mounts.
   import type { QuestionView } from "../api";
   import { relativeTime } from "../format";
-  import { closedLabel, cutHeader } from "./model";
+  import { aboutLink, closedLabel, cutHeader } from "./model";
   import { TERMINAL_ESC, terminalLine } from "./terminal";
   import { trail } from "./trail";
 
@@ -20,6 +21,10 @@
     q: QuestionView;
     /** The questions listed beside it: an agent is named by harness alone unless another of its harness is among them. */
     others?: QuestionView[];
+    /** The artifact shown around the card: its link is left out. */
+    here?: string | null;
+    /** The thread whose card holds this one: its link is left out. */
+    thread?: string | null;
     now?: Date;
     onPull(): Promise<void>;
   } = $props();
@@ -29,6 +34,8 @@
   $effect(() => trail().keyboardTrail.onClear(() => { hint = null; }));
   const open = $derived(p.q.status === "open");
   const who = $derived(terminalLine(p.q, (p.others ?? [p.q]).map(o => o.agent)));
+  // For a thread, the thread (spec §3), unless the card is in its card.
+  const about = $derived(aboutLink(p.q, p.here, p.thread));
   const pull = (e: Event) => {
     if (busy) return;
     hint = trail().guardedAction(e, "ask here", () => {
@@ -44,6 +51,7 @@
   <header class="qhead">
     <strong class="asker">{who}</strong>
     {#if p.q.agent?.project}<span class="proj">in {p.q.agent.project}</span>{/if}
+    {#if about}<a class="about" href={about.href}>{about.text}</a>{/if}
     <time datetime={p.q.created_at}>{relativeTime(p.q.created_at, p.now ?? new Date())}</time>
   </header>
   <ul class="hdrs" aria-label="Questions">{#each p.q.questions as s (s.question)}<li title={s.header}>{cutHeader(s.header)}</li>{/each}</ul>
@@ -67,6 +75,8 @@
     .qcard.in-terminal:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
     .qcard.in-terminal .qhead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; font-size: 12.5px; color: var(--muted); margin-bottom: 8px; min-width: 0; }
     .qcard.in-terminal .asker { font: 600 13px/20px var(--font); color: var(--agent-ink); overflow-wrap: anywhere; }
+    .qcard.in-terminal .about { color: var(--fg); text-decoration: underline; text-decoration-color: var(--border-hover); text-underline-offset: 2px; }
+    .qcard.in-terminal .about:hover { text-decoration-color: currentColor; }
     .qcard.in-terminal time { margin-left: auto; white-space: nowrap; }
     .qcard.in-terminal .hdrs { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; padding: 0; list-style: none; }
     .qcard.in-terminal .hdrs li { padding: 2px 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); font: 500 12px/16px var(--font); color: var(--muted); white-space: nowrap; }

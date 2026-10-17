@@ -252,6 +252,17 @@ describe("QuestionCard", () => {
     m2.unmount();
   });
 
+  it("links a question asked in an open thread to that thread, as /inbox and the gallery show it, but not inside the thread's card", () => {
+    const q = view({ thread: { id: "01J9T0000000000000000000AA", open: true } });
+    const m = mount(QuestionCard, { q, onAnswer: vi.fn(), onDecline: vi.fn() });
+    const a = m.root.querySelector<HTMLAnchorElement>("a.about")!;
+    expect([a.textContent, a.getAttribute("href")]).toEqual(["Quarterly Review · in a thread", "/a/7q3k9mzx2b4t?thread=01J9T0000000000000000000AA"]);
+    m.unmount();
+    const inside = mount(QuestionCard, { q, here: "7q3k9mzx2b4t", thread: "01J9T0000000000000000000AA", onAnswer: vi.fn(), onDecline: vi.fn() });
+    expect(inside.root.querySelector("a.about")).toBeNull();
+    inside.unmount();
+  });
+
   it("follows the keys: digits pick, arrows move between options, Enter answers once complete", async () => {
     const onAnswer = vi.fn(async () => {});
     const q = view({ questions: [view().questions[0]] });

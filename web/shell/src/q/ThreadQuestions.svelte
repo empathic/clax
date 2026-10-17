@@ -6,14 +6,15 @@
   // its last comment, with the same controls as anywhere. Hidden while none.
   import type { QuestionFeed } from "./feed.svelte";
   import QuestionList from "./QuestionList.svelte";
+  import { inThread } from "./model";
   import { shared } from "./shared";
 
   const p: { aid: string; tid: string; feed?: QuestionFeed; now?: Date } = $props();
   const feed = $derived(p.feed ?? shared().questions);
-  const list = $derived(feed.byThread(p.tid));
+  const list = $derived(feed.cards.filter(q => inThread(q) === p.tid));
 </script>
 
-<div class="thread-q" hidden={!list.length}><QuestionList {list} {feed} here={p.aid} now={p.now} /></div>
+<div class="thread-q" hidden={!list.length}><QuestionList {list} {feed} here={p.aid} thread={p.tid} now={p.now} /></div>
 
 <style>
   :global { .thread-q { margin: 8px 0 4px; } }

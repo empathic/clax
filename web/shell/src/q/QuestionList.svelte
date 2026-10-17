@@ -17,7 +17,7 @@
   import QuestionCard from "./QuestionCard.svelte";
   import { later, need } from "./later.svelte";
 
-  const p: { list: QuestionView[]; feed: QuestionFeed; here?: string | null; now?: Date } = $props();
+  const p: { list: QuestionView[]; feed: QuestionFeed; here?: string | null; thread?: string | null; now?: Date } = $props();
   // The list's element, from its focus events (no `bind:this`: see
   // `QuestionCard`), and the card that last took focus in it, by question
   // and place; forgotten when focus moves out to somewhere else.
@@ -55,9 +55,9 @@
 <div class="qlist" onfocusin={onIn} onfocusout={onOut}>
   {#each p.list as q (q.id)}
     {#if q.in_terminal}
-      {#if later.parts}<later.parts.TerminalCard {q} others={p.list} now={p.now} onPull={() => p.feed.pull(q.id)} />{/if}
+      {#if later.parts}<later.parts.TerminalCard {q} others={p.list} here={p.here} thread={p.thread} now={p.now} onPull={() => p.feed.pull(q.id)} />{/if}
     {:else}
-      <QuestionCard {q} others={p.list} here={p.here} now={p.now}
+      <QuestionCard {q} others={p.list} here={p.here} thread={p.thread} now={p.now}
         onAnswer={b => p.feed.answer(q.id, b)} onDecline={() => p.feed.decline(q.id)}
         onRelease={q.source === "hook" ? () => p.feed.release(q.id) : undefined} />
     {/if}

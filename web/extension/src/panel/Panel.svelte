@@ -132,6 +132,11 @@
     const asked = others.length ? permit(others) : Promise.resolve(true);
     void asked.then(() => link.post({ t: "open-thread", threadId: t.id }));
   }
+  /** A card's link to its thread (a daemon path): the worker opens it, bringing the tab that shows it to the front. */
+  const daemonLink = (e: MouseEvent) => {
+    const h = (e.target as Element).closest("a")?.getAttribute("href");
+    if (h?.[0] === "/" && h[1] !== "/") { e.preventDefault(); link.post({ t: "open-url", url: h, pageUrl: s?.page?.page_url ?? null }); }
+  };
   /** The clips last shown (at most CLIPS), asked of the worker once each while kept (the panel cannot fetch them). */
   const CLIPS = 20;
   const clips = new Map<string, Promise<string | null>>();
@@ -271,7 +276,9 @@
     <!-- The Page view: for the owner, the open questions about the live page come first. -->
     <div class="tabpanel" role={owner ? "tabpanel" : undefined} id="ptab-page-panel" aria-labelledby={owner ? "ptab-page" : undefined}>
     {#if s.enabled && s.page && owner && link.questions}
-      <div class="questions"><SidebarQuestions aid={s.page.artifact_id} feed={link.questions} {now} /></div>
+      <!-- No thread card here shows its questions: a question in a thread is a card, whose thread link the worker opens. -->
+      <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+      <div class="questions" onclick={daemonLink}><SidebarQuestions aid={s.page.artifact_id} feed={link.questions} slots={false} {now} /></div>
     {/if}
     {#if s.viewer && !s.viewer.display_name}
       <label class="name"><span>Your name</span>

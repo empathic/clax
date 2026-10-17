@@ -80,6 +80,15 @@ export function agentLabel(agent: QAgent | null, others: (QAgent | null)[]): str
  * thread, or a resolved or deleted one). */
 export const inThread = (q: QuestionView): string | null => (q.thread?.open ? q.thread.id : null);
 
+/** A card's link: to its thread (`?thread=`, "in a thread") while that is
+ * open and the card is not in the thread's own card (`inCard`), and named
+ * by its artifact's title unless that is the artifact shown (`here`); null
+ * when it needs neither. */
+export function aboutLink(q: QuestionView, here?: string | null, inCard?: string | null): { href: string; text: string } | null {
+  const a = q.artifact, t = q.thread?.open && q.thread.id !== inCard && q.thread.id;
+  return a && (a.id !== here || t) ? { href: `/a/${a.id}${t ? `?thread=${t}` : ""}`, text: a.id === here ? "in a thread" : t ? `${a.title} · in a thread` : a.title } : null;
+}
+
 /** What a closed question says happened. */
 export function closedLabel(q: QuestionView): string {
   switch (q.status) {

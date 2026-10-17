@@ -21,6 +21,16 @@ describe("TerminalCard", () => {
     expect(onPull).toHaveBeenCalledOnce();
     m.unmount();
   });
+  it("names its thread outside the thread's card, and not inside it", () => {
+    const q = view({ in_terminal: true, thread: { id: "t1", open: true } });
+    const out = mount(TerminalCard, { q, onPull: vi.fn(async () => {}) });
+    const a = out.root.querySelector<HTMLAnchorElement>("a.about")!;
+    expect([a.textContent, a.getAttribute("href")]).toEqual(["Quarterly Review · in a thread", "/a/7q3k9mzx2b4t?thread=t1"]);
+    out.unmount();
+    const inside = mount(TerminalCard, { q, here: "7q3k9mzx2b4t", thread: "t1", onPull: vi.fn(async () => {}) });
+    expect(inside.root.querySelector("a.about")).toBeNull();
+    inside.unmount();
+  });
   it("has no Esc note for a question asked in chat", () => {
     const m = mount(TerminalCard, { q: view({ in_terminal: true, source: "ask" }), onPull: vi.fn(async () => {}) });
     expect(m.root.querySelector(".esc")).toBeNull();

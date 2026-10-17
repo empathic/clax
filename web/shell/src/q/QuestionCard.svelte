@@ -32,7 +32,7 @@
   import { ApiError, type AnswerBody, type QuestionStatus, type QuestionView } from "../api";
   import { after } from "../clock";
   import { relativeTime } from "../format";
-  import { agentLabel, answerLine, answerText, closedLabel, complete, cutHeader, emptyDraft, nextOpen, pick, previewOf, questionLink, shownLabel, toBody, typeOther } from "./model";
+  import { aboutLink, agentLabel, answerLine, answerText, closedLabel, complete, cutHeader, emptyDraft, nextOpen, pick, previewOf, questionLink, shownLabel, toBody, typeOther } from "./model";
   import { trail } from "./trail";
 
   type Props = {
@@ -41,6 +41,8 @@
     others?: QuestionView[];
     /** The artifact shown around the card: its link is left out. */
     here?: string | null;
+    /** The thread whose card holds this one: its link is left out. */
+    thread?: string | null;
     now?: Date;
     onAnswer(b: AnswerBody): Promise<void>;
     onDecline(): Promise<void>;
@@ -79,6 +81,7 @@
   const preview = $derived(previewOf(spec, focused, draft[tab]));
   const open = $derived(p.q.status === "open");
   const link = $derived(questionLink(p.q));
+  const about = $derived(aboutLink(p.q, p.here, p.thread));
   const base = $derived(`q-${p.q.id}`);
   // Takes focus back only when it went nowhere (<body>): focus the person
   // moved elsewhere while the action was pending stays where they put it.
@@ -218,7 +221,7 @@
     <strong class="asker">{who}</strong>
     {#if link}<span class="link-tag" data-unlinked={p.q.linked?.unlinked ? "" : undefined} title={link.title}>{link.label}</span>{/if}
     {#if p.q.agent?.project}<span class="proj">in {p.q.agent.project}</span>{/if}
-    {#if p.q.artifact && p.q.artifact.id !== p.here}<a class="about" href={`/a/${p.q.artifact.id}`}>{p.q.artifact.title}</a>{/if}
+    {#if about}<a class="about" href={about.href}>{about.text}</a>{/if}
     <time datetime={p.q.created_at}>{relativeTime(p.q.created_at, p.now ?? new Date())}</time>
   </header>
   {#if !open}

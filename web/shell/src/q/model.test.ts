@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { view } from "./fixtures";
-import { agentLabel, answerLine, closedLabel, complete, cutHeader, emptyDraft, inThread, nextOpen, pick, previewOf, shownLabel, toBody, typeOther } from "./model";
+import { aboutLink, agentLabel, answerLine, closedLabel, complete, cutHeader, emptyDraft, inThread, nextOpen, pick, previewOf, shownLabel, toBody, typeOther } from "./model";
 import { terminalLine } from "./terminal";
 
 describe("question model", () => {
@@ -97,6 +97,15 @@ describe("in-terminal questions and threads", () => {
     expect(inThread(view({ thread: { id: "t1", open: true } }))).toBe("t1");
     expect(inThread(view({ thread: { id: "t1", open: false } }))).toBeNull();
     expect(inThread(view())).toBeNull();
+  });
+  it("links a card to its thread while that is open, except inside the thread's own card", () => {
+    const t = view({ thread: { id: "t1", open: true } });
+    expect(aboutLink(t, null)).toEqual({ href: "/a/7q3k9mzx2b4t?thread=t1", text: "Quarterly Review · in a thread" });
+    expect(aboutLink(t, "7q3k9mzx2b4t")).toEqual({ href: "/a/7q3k9mzx2b4t?thread=t1", text: "in a thread" });
+    expect(aboutLink(t, "7q3k9mzx2b4t", "t1")).toBeNull();
+    expect(aboutLink(view({ thread: { id: "t1", open: false } }), null)).toEqual({ href: "/a/7q3k9mzx2b4t", text: "Quarterly Review" });
+    expect(aboutLink(view(), "7q3k9mzx2b4t")).toBeNull();
+    expect(aboutLink(view({ artifact: null, thread: { id: "t1", open: true } }), null)).toBeNull();
   });
   it("says who asks in the terminal, and what Ask me here did", () => {
     expect(terminalLine(view({ in_terminal: true }), [])).toBe("claude is asking you in the terminal");

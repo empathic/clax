@@ -180,6 +180,9 @@ function readShareWhere(): boolean {
 }
 const threadIds = (ts: Thread[]) => ts.map(t => t.id).join(",");
 
+/** How long a thread the address names waits for its card to render. */
+const REVEAL_MS = 5000;
+
 export class ArtifactController {
   readonly state: Store<ViewState>;
   readonly id: string;
@@ -241,6 +244,11 @@ export class ArtifactController {
   // page, and it is scrolled to once that page greets, or given up after
   // `pageWait.ms` with a notice.
   private pendingScroll: { thread: Thread; cancel: () => void } | null = null;
+  /** The thread the address the view opened at names (`?thread=<id>`, the
+   * inbox's and an `ask` result's links): opened, as a pin's click opens
+   * one, once its page has greeted and the thread is loaded; its card is
+   * then brought into view (`reveal`). */
+  private wantThread: string | null = new URLSearchParams(location.search).get("thread");
   // The frame's latest known fragment.
   private frameHash: string;
   /** A fragment for the frame's page to move to once it greets: an adopted
@@ -509,6 +517,10 @@ export class ArtifactController {
    * taken from that render come from `next`, others from the current state,
    * and `host` is the one that render made or kept. */
   private react(prev: ViewState, next: ViewState, host: CapabilityHost | null): void {
+    if (this.wantThread && this.gate.open) {
+      const t = next.threads.find(x => x.id === this.wantThread);
+      if (t) { this.wantThread = null; this.openPin(t); this.reveal(t.id); }
+    }
     if (threadIds(prev.threads) !== threadIds(next.threads) || this.shown(prev) !== this.shown(next) || prev.origin !== next.origin) this.resolveAll();
     if (prev.commenting !== next.commenting) this.send({ type: "clax:comment-mode", on: next.commenting });
     if (prev.draft !== next.draft) this.draftChanged(next.draft, next.deleted);
@@ -1572,6 +1584,23 @@ export class ArtifactController {
     if (t?.status === "resolved" && Date.now() <= r.until) this.resolveThread(t);
   }
   hover(t: Thread | null): void { this.set({ hovered: t?.id ?? null }); }
+  /** Scrolls thread `tid`'s card into view once it renders (the thread
+   * list loads after the first paint), within `REVEAL_MS`; dropped when the
+   * selection moves on. */
+  private reveal(tid: string): void {
+    const shown = (): boolean => {
+      if (this.s.selected !== tid) return true;
+      const card = [...document.querySelectorAll<HTMLElement>(".thread-card")].find(c => c.dataset.thread === tid);
+      card?.scrollIntoView({ block: "nearest" });
+      return !!card;
+    };
+    if (shown()) return;
+    const watch = new MutationObserver(() => { if (shown()) done(); });
+    const cancel = after(REVEAL_MS, () => done());
+    const done = () => { watch.disconnect(); cancel(); };
+    watch.observe(document.body, { childList: true, subtree: true });
+    this.life.defer(done);
+  }
   /** A pin's click: the sidebar opens on its thread. */
   openPin(t: Thread): void { this.set({ panel: true }); this.selectThread(t); }
 

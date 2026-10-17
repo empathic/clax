@@ -3,20 +3,40 @@
 <script lang="ts">
   // The sidebar's links to the questions asked in open threads (spec
   // 2026-10-16-ask-where-attention-is-design §2): who asks and the
-  // questions' headers. A link scrolls to the thread's card and focuses
-  // its question when the card is on this page; else it navigates to the
-  // thread.
+  // questions' headers. A link to a thread whose card is on this page goes
+  // there: a folded card (a thread of another page) opens first, and once
+  // its question shows, the card scrolls into view and the question takes
+  // focus. With no card on the page it navigates to `?thread=`, which the
+  // view opens.
   import type { QuestionView } from "../api";
+  import { after } from "../clock";
   import { agentLabel, cutHeader } from "./model";
   import { terminalLine } from "./terminal";
 
+  /** How long a link waits for an opened card to show its question. */
+  const OPEN_MS = 3000;
   const p: { list: QuestionView[] } = $props();
+  let stop = () => {};
+  $effect(() => () => stop());
   const go = (e: MouseEvent, tid: string) => {
-    const slot = document.querySelector(`.thread-q-slot[data-thread="${CSS.escape(tid)}"]`);
-    if (!slot) return;
+    const card = [...document.querySelectorAll<HTMLElement>(".thread-card")].find(c => c.dataset.thread === tid);
+    if (!card) return;
     e.preventDefault();
-    slot.scrollIntoView({ block: "nearest" });
-    slot.querySelector<HTMLElement>(".qcard")?.focus();
+    stop();
+    const show = (): boolean => {
+      const slot = card.querySelector<HTMLElement>(".thread-q-slot");
+      const q = slot?.querySelector<HTMLElement>(".qcard");
+      if (!q) return false;
+      slot!.scrollIntoView({ block: "nearest" });
+      q.focus();
+      return true;
+    };
+    if (card.classList.contains("folded")) card.querySelector<HTMLButtonElement>(".card-head")?.click();
+    if (show()) return;
+    const watch = new MutationObserver(() => { if (show()) stop(); });
+    const cancel = after(OPEN_MS, () => stop());
+    stop = () => { watch.disconnect(); cancel(); stop = () => {}; };
+    watch.observe(card, { childList: true, subtree: true });
   };
 </script>
 

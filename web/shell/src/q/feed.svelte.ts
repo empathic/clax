@@ -11,7 +11,6 @@ import { ApiError, type AnswerBody, type InboxFilter, type InboxItem, type Quest
 import { after } from "../clock";
 import type { EventStream, StreamEvent } from "../stream";
 import { type Closing, type Forbidden, answerQuestion, declineQuestion, inboxSummary, listInbox, listQuestions, markInbox, markInboxMany, pullQuestion, releaseQuestion } from "./api";
-import { inThread } from "./model";
 
 /** How long a closed question's card stays, showing what closed it. */
 export const LEAVE_MS = 4000;
@@ -72,11 +71,6 @@ export class QuestionFeed {
   /** The cards about artifact `aid`. */
   byArtifact(aid: string): QuestionView[] {
     return this.cards.filter(q => q.artifact?.id === aid);
-  }
-
-  /** The cards asked in thread `tid` (shown inside its card while it is open). */
-  byThread(tid: string): QuestionView[] {
-    return this.cards.filter(q => inThread(q) === tid);
   }
 
   /** The question `id` as last heard, open or recently closed. */

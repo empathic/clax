@@ -799,6 +799,22 @@ describe("Panel for the owner's questions and inbox", () => {
     await vi.waitFor(() => expect(container.querySelector(".qcard[data-closed]")).toBeTruthy());
   });
 
+  it("shows a question asked in a thread of the live page as a card, whose thread link the worker opens", async () => {
+    const { l } = owner();
+    const TID = "01J9T0000000000000000000AA";
+    l.questions.list([fixtures.view({ artifact: { id: AID, title: "Home", kind: "live" }, thread: { id: TID, open: true } })]);
+    const { container } = render(Panel, { props: { link: l as never, now: NOW } });
+    // No thread card in the panel shows its questions: the card is in the Page view's block, not a link to one.
+    expect(container.querySelectorAll(".questions .qcard")).toHaveLength(1);
+    expect(container.querySelector(".questions a.q-thread")).toBeNull();
+    expect(screen.getByRole("heading", { name: /Questions for you/ }).textContent).toBe("Questions for you 1");
+    const about = container.querySelector<HTMLAnchorElement>(".qcard a.about")!;
+    expect(about.textContent).toBe("in a thread");
+    expect(about.getAttribute("href")).toBe(`/a/${AID}?thread=${TID}`);
+    await fireEvent.click(about);
+    expect(l.sent).toContainEqual({ t: "open-url", url: `/a/${AID}?thread=${TID}`, pageUrl: "http://localhost:5173/" });
+  });
+
   it("shows no tabs and no questions until the daemon took the extension as the owner", () => {
     const { l } = owner({ owner: false });
     l.questions.list([fixtures.view({ artifact: { id: AID, title: "Home", kind: "live" } })]);
