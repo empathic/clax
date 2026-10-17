@@ -25,6 +25,10 @@
   const named = (a: Props["agents"][number]) => a.via ? shownName(a.name || a.harness, a.via) : `${a.name || a.harness}${a.person && a.person.public_id !== p.me ? ` · ${midName(a.person.name)}` : ""}`;
   const ordered = $derived([...p.people].sort((a, b) => Number(b.public_id === p.me) - Number(a.public_id === p.me)));
   const busy = $derived(new Set(p.working.map(w => w.agent)));
+  // A live agent that no comment wakes while idle (`wakes: false`) is drawn
+  // dashed, and says so in its title.
+  const asleep = (a: Props["agents"][number]) => a.live && a.wakes === false;
+  const NOWAKE = " · won't be woken by comments until it next acts";
 </script>
 
 {#snippet roster()}
@@ -45,6 +49,7 @@
   <span class="side agt">
     {#each p.agents.slice(0, p.max) as a (a.handle)}
       {#if busy.has(a.handle)}<span class="tok a work" title={named(a)}>{mark(a)}</span>
+      {:else if asleep(a)}<span class="tok a nowake" title={named(a) + NOWAKE}>{mark(a)}</span>
       {:else}<span class="tok a" title={named(a)}>{mark(a)}</span>{/if}
     {/each}
     {#if p.agents.length > p.max}<span class="tok more">+{p.agents.length - p.max}</span>{/if}
@@ -69,6 +74,7 @@
     .ros.sm .tok.p.here::before, .tok.sm.p.here::before { width: 4px; height: 4px; }
     .tok.p.me::after { content: ""; position: absolute; left: 7px; right: 7px; bottom: 3px; height: 1.5px; background: currentColor; }
     .tok.a { background: var(--accent-tint); color: var(--agent-ink); }
+    .tok.a.nowake { background: none; outline: 1.5px dashed var(--agent-ink); outline-offset: -1.5px; }
     .tok.a.work { background: var(--agent); color: var(--on-accent); padding-left: 13px; }
     .tok.a.work::before { content: ""; position: absolute; left: 5px; top: 50%; width: 4px; height: 4px; margin-top: -2px; border-radius: 50%; background: currentColor; animation: breathe 1.8s ease-in-out infinite; }
     .tok.more { background: none; box-shadow: none; color: var(--muted); min-width: 0; padding: 0 3px; }

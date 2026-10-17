@@ -413,6 +413,41 @@ fn push_info(
     }
 }
 
+/// Whether a comment sent to a live session of `harness` wakes it while it
+/// is idle, as [`push_info`] reports `available`: Codex through `codex
+/// queue` (the daemon's `codex` and the harness session ID known), Pi
+/// through its extension, Claude Code and Grok Build while a notice
+/// follower (`clax feedback follow`, or the shim's channel) is connected.
+pub fn wakes_when_idle(
+    harness: &str,
+    harness_session_known: bool,
+    codex: &CodexPush,
+    following: bool,
+) -> bool {
+    match harness {
+        "codex" => codex.available() && harness_session_known,
+        "pi" => true,
+        "claude" | "grok" => following,
+        _ => false,
+    }
+}
+
+/// Sets `wakes` on each live agent of `p` ([`wakes_when_idle`]).
+pub fn mark_wakes(
+    p: &mut clax_store::attention::Participants,
+    codex: &CodexPush,
+    followers: &crate::feedback::Followers,
+) {
+    for a in p.agents.iter_mut().filter(|a| a.live) {
+        a.wakes = Some(wakes_when_idle(
+            &a.harness,
+            a.harness_session_known,
+            codex,
+            followers.is_following(&a.session_id),
+        ));
+    }
+}
+
 /// `GET /api/push`: whether the daemon can push to Codex, where its `codex`
 /// came from, and why push is unavailable when it is. `bin`, the path of the
 /// daemon's `codex` (it usually names the user's home), is included only for
@@ -566,6 +601,33 @@ pub async fn tool_call_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wakes_when_idle_is_what_push_info_reports_available() {
+        let off = CodexPush::from_env(Some("".into()), None);
+        let on = CodexPush::from_env(Some("/bin/sh".into()), None);
+        assert!(on.available());
+        for harness in ["claude", "codex", "grok", "pi", "by-hand"] {
+            for codex in [&off, &on] {
+                for following in [false, true] {
+                    for hs in [None, Some("h".to_string())] {
+                        let session: Session = serde_json::from_value(json!({
+                            "id": "s", "harness": harness, "pid": null, "parent_pid": 1, "cwd": "/", "ended_at": null, "agent_handle": "a",
+                            "started_at": "2026-01-01T00:00:00Z", "last_seen_at": "2026-01-01T00:00:00Z",
+                            "harness_session_id": hs,
+                        }))
+                        .unwrap();
+                        let push = push_info(&session, codex, None, None, following);
+                        assert_eq!(
+                            wakes_when_idle(harness, hs.is_some(), codex, following),
+                            push["available"] == true,
+                            "{harness} following={following} hs={hs:?} {push}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn only_clax_tools_are_reported() {

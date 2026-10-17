@@ -33,10 +33,13 @@ export type ForkedFrom = { artifact_id: string; version: number; title: string |
  * most recently active; `live` means a send can reach it. An agent carries
  * its name, which it shows as, and its person (`owner` for the owner's
  * agents) from daemons that name agents (spec
- * 2026-10-08-multi-agent-multi-person §10, §11). */
+ * 2026-10-08-multi-agent-multi-person §10, §11). A live agent on
+ * `GET /api/artifacts/<id>` also carries `wakes`: whether a comment sent to
+ * it wakes it while it is idle (false: it sees comments only when it next
+ * acts). */
 export type Participants = { people: { public_id: string; display_name: string | null; seen: number | null }[]; agents: { handle: string; harness: string; live: boolean; name?: string | null; person?: CardPerson;
   /** Another Clax's session (signed in by device code): whose Clax it relays from, "Alex's Clax". */
-  via?: string }[] };
+  via?: string; wakes?: boolean }[] };
 export type AttentionSummary = { addressed: string[]; addressed_v: number | null; new_replies: string[]; open_in: string[]; seen: number | null };
 export type Attention = AttentionSummary & { looked: Record<string, string> };
 /** `sha256`: the file's lowercase hex SHA-256; absent on versions written before content hashes. */

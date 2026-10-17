@@ -110,6 +110,28 @@ describe("PeoplePanel's agents", () => {
   });
 });
 
+describe("PeoplePanel's agents that comments do not wake", () => {
+  afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
+  const settle = async () => { for (let i = 0; i < 5; i++) await Promise.resolve(); flush(); };
+
+  it("says under an idle live agent that no comment wakes it until it next acts, and nothing under one that is woken", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(JSON.stringify(url === "/api/agents" ? { agents: [] } : { viewer: { public_id: "u_1", display_name: "Alex", created_at: "x" } }))));
+    const ALEX = { public_id: "u_1", name: "Alex", owner: true };
+    const agents = [
+      { handle: "a_web", harness: "claude", live: true, name: "web", person: ALEX, wakes: false },
+      { handle: "a_api", harness: "pi", live: true, name: "api", person: ALEX, wakes: true },
+      { handle: "a_old", harness: "claude", live: false, name: "old", person: ALEX, wakes: false },
+    ];
+    const s = view(null) as unknown as Record<string, unknown>;
+    const ctl = { numbers: () => new Map(), forgetReopen: vi.fn(), setNotice: vi.fn(), setMe: vi.fn(), setShareWhere: vi.fn() };
+    const v = mount(PeoplePanel, { ctl: ctl as never, s: { ...s, agents, data: { artifact: { participants: { people: [], agents } }, versions: [] } } as never, onClose: vi.fn() });
+    await settle();
+    const rows = [...v.root.querySelectorAll(".prow.agent")];
+    expect(rows.map(r => r.querySelector(".nowake")?.textContent ?? null)).toEqual(["Won't be woken by your comments until it next acts.", null, null]);
+    v.unmount();
+  });
+});
+
 describe("PeoplePanel's raise for the artifact's creator", () => {
   afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
   const settle = async () => { for (let i = 0; i < 12; i++) await new Promise(r => setTimeout(r, 0)); flush(); };

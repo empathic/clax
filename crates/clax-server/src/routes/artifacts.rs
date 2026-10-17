@@ -472,6 +472,7 @@ pub async fn get(
     let vf = VisFor::of(&a.caller, &s);
     let reader = SourceReader::new(a.caller.clone(), a.member().cloned(), s.hosted.is_some());
     let (caller, member) = (a.caller.clone(), a.member_rights());
+    let (codex, followers) = (s.codex.clone(), s.followers.clone());
     let mut v = s
         .store_call(move |st| {
             let a = st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
@@ -481,11 +482,15 @@ pub async fn get(
                 None => None,
             };
             let vis = vf.build(st)?;
+            // Whether each live agent is woken by a comment while idle,
+            // which the page shows beside it.
+            let mut participants = st.participants(&id)?;
+            super::sessions::mark_wakes(&mut participants, &codex, &followers);
             let mut artifact = with_owner(
                 &a,
                 owner.as_ref(),
                 &working,
-                &st.participants(&id)?,
+                &participants,
                 live_part(st, &a)?.as_ref(),
             );
             vis.filter_artifact(st, &a, &working, &mut artifact)?;
@@ -527,12 +532,12 @@ pub async fn get(
 
 /// 403 `admin_only` when `pinned` or `capabilities` would change artifact
 /// `id`'s and `caller` does not administer it
-/// ([`crate::agent::administers`]): an editor changes contents alone. A
+/// ([`clax_http::agent::administers`]): an editor changes contents alone. A
 /// value equal to the stored one is no change, so an editor's publish that
 /// sends the page's capabilities as they are passes.
 async fn admin_change(
     s: &AppState,
-    caller: &crate::auth::Caller,
+    caller: &clax_http::auth::Caller,
     id: &ArtifactId,
     pinned: Option<bool>,
     capabilities: Option<Value>,
@@ -549,13 +554,13 @@ async fn admin_change(
             };
             let same = pinned.is_none_or(|p| p == cur.pinned)
                 && capabilities.as_ref().is_none_or(|c| *c == cur.capabilities);
-            Ok(same || crate::agent::administers(st, &caller, id.as_str())?)
+            Ok(same || clax_http::agent::administers(st, &caller, id.as_str())?)
         })
         .await?;
     if allowed {
         Ok(())
     } else {
-        Err(crate::agent::admin_only())
+        Err(clax_http::agent::admin_only())
     }
 }
 

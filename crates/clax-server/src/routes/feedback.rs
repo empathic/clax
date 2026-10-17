@@ -474,7 +474,16 @@ pub async fn notices(
     s.store_call(move |st| live_session(st, &check)).await?;
     let mut rights = a.read_rights();
     let grant = a.grant().map(str::to_string);
+    // Declared first, so it runs after the follower guard below drops.
+    let _lapse = FollowLapse {
+        s: s.clone(),
+        sid: sid.clone(),
+    };
+    let was_following = s.followers.is_following(&sid);
     let _following = s.followers.enter(&sid);
+    if !was_following {
+        follow_changed(&s, &sid);
+    }
     let started = Instant::now();
     let deadline = started + Duration::from_secs(q.wait.min(MAX_WAIT_SECS));
     let notify = s.feedback_waiters.get(&sid);
@@ -535,6 +544,40 @@ pub async fn notices(
         if woke == Woke::Stopping {
             return Ok(empty(started.elapsed().as_secs()));
         }
+    }
+}
+
+/// Publishes `agents` to the artifacts session `sid` watches, so the
+/// pages that show whether it is woken while idle refetch their agents: a
+/// follower of it connected, or stopped.
+fn follow_changed(s: &AppState, sid: &str) {
+    let (s, sid) = (s.clone(), sid.to_string());
+    clax_rt::spawn(async move {
+        if let Ok(watches) = s.store_call(move |st| st.list_watches(&sid)).await {
+            s.events.publish(clax_core::Event::Agents {
+                artifacts: watches.into_iter().map(|w| w.artifact_id).collect(),
+            });
+        }
+    });
+}
+
+/// When a notices poll ends, checks once its session's follower stays
+/// counted ([`crate::feedback::Followers::RECENT`]), and calls
+/// [`follow_changed`] when no poll followed.
+struct FollowLapse {
+    s: AppState,
+    sid: String,
+}
+
+impl Drop for FollowLapse {
+    fn drop(&mut self) {
+        let (s, sid) = (self.s.clone(), std::mem::take(&mut self.sid));
+        clax_rt::spawn(async move {
+            clax_rt::time::sleep(crate::feedback::Followers::RECENT + Duration::from_secs(1)).await;
+            if !s.followers.is_following(&sid) {
+                follow_changed(&s, &sid);
+            }
+        });
     }
 }
 

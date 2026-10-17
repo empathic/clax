@@ -6,7 +6,8 @@
   // they share it and the last version each viewed (public, decided: Q7); the
   // agents, by name and, for another person's, with their person, with what
   // they wait on (the roster's states and block times, spec 2026-10-08
-  // §13, for the owner and connected people), work on or last addressed; and this
+  // §13, for the owner and connected people), work on or last addressed, and
+  // when idle whether a comment wakes them (`wakes`); and this
   // viewer's name with the "Share where I'm looking" switch. For the
   // artifact's creator, each agent of a connected machine on it offers
   // "Raise on this artifact" (spec 2026-10-08 §7.4, O11), in a chunk of its
@@ -41,7 +42,8 @@
   const all = $derived([...names.keys()].map(handle => {
     const a = parts.agents.find(x => x.handle === handle);
     // Ended: its session is over (not live) and it works on nothing here.
-    return { handle, harness: a?.harness ?? s.working.find(w => w.agent === handle)?.harness ?? "agent", ended: a?.live === false && !s.working.some(w => w.agent === handle) };
+    // Asleep: a live agent the daemon says no comment wakes while idle (`wakes: false`).
+    return { handle, harness: a?.harness ?? s.working.find(w => w.agent === handle)?.harness ?? "agent", ended: a?.live === false && !s.working.some(w => w.agent === handle), asleep: !!a?.live && a.wakes === false };
   }));
   const agents = $derived(all.filter(a => !a.ended));
   const earlier = $derived(all.filter(a => a.ended));
@@ -172,7 +174,7 @@
       </div>
     {/each}
   {/if}
-  {#snippet agentRow(a: { handle: string; harness: string })}
+  {#snippet agentRow(a: { handle: string; harness: string; asleep: boolean })}
     {@const name = names.get(a.handle) ?? a.harness}
     {@const w = newestFirst(s.working).find(x => x.agent === a.handle)}
     {@const held = waiting(a.handle, name)}
@@ -186,6 +188,7 @@
         {#if !s.commenting}<HaikuLine seed={w.key} />{/if}
       {:else}
         <p>{idleLine(a.handle)}</p>
+        {#if a.asleep}<p class="nowake">Won't be woken by your comments until it next acts.</p>{/if}
       {/if}
       {#if Raise && raises?.holds && raises.raisable?.includes(a.handle)}
         <Raise aid={s.data.artifact.id} handle={a.handle} {name} holds={raises.holds} mine={mineOf(a.handle)} version={versionOf(a.handle)} onChanged={loadRaises} />
@@ -216,6 +219,7 @@
     @media (max-width: 700px) { .people { position: fixed; left: 0; right: 0; top: 56px; bottom: 52px; width: auto; max-height: none; box-shadow: none; border-width: 1px 0 0; border-radius: 0; } }
     .people:focus { outline: none; }
     .prow p.muted { color: var(--muted); } .prow .on { color: var(--agent-ink); font-weight: 600; }
+    .prow p.nowake { color: var(--muted); font-style: italic; }
     .prow .hk { font-size: 12px; color: var(--muted); line-height: 1.5; margin-top: 2px; }
     .prow.edit .nm { font: 600 14px var(--font); color: var(--fg); }
     .prow.edit .viewer-name { flex: 1; min-width: 140px; }

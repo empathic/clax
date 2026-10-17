@@ -30,6 +30,16 @@ pub struct AgentView {
     /// Clax it relays from: `<person>'s Clax`. Absent otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub via: Option<String>,
+    /// Whether a comment sent to it wakes it while it is idle, for a live
+    /// agent; set by the daemon, which knows its push (absent until then).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wakes: Option<bool>,
+    /// Its session; never serialised.
+    #[serde(skip)]
+    pub session_id: String,
+    /// Whether its session's harness session ID is known; never serialised.
+    #[serde(skip)]
+    pub harness_session_known: bool,
 }
 
 /// How a session of another Clax shows whose Clax it relays from.
@@ -162,6 +172,7 @@ macro_rules! agents_sql {
                        (SELECT w.relay_name FROM watches w WHERE w.session_id = s.id AND w.artifact_id = k.aid) AS relay_name,
                        (SELECT w.relay_harness FROM watches w WHERE w.session_id = s.id AND w.artifact_id = k.aid) AS relay_harness,
                        (s.grant_id IS NOT NULL AND EXISTS (SELECT 1 FROM device_codes d WHERE d.grant_id = s.grant_id)) AS relay,
+                       s.harness_session_id IS NOT NULL AS hsk,
                        (s.ended_at IS NULL AND (s.id IS k.owner OR EXISTS
                           (SELECT 1 FROM watches w WHERE w.session_id = s.id AND w.artifact_id = k.aid))) AS live,
                        MAX(COALESCE((SELECT MAX(v.created_at) FROM versions v WHERE v.artifact_id = k.aid AND v.session_id = s.id), ''),
@@ -170,8 +181,8 @@ macro_rules! agents_sql {
                            COALESCE((SELECT w.created_at FROM watches w WHERE w.session_id = s.id AND w.artifact_id = k.aid), ''),
                            s.started_at) AS active_at
                   FROM rel k CROSS JOIN sessions s ON s.id = k.sid)
-            SELECT aid, agent_handle, harness, live, name, person, relay_name, relay_harness, relay FROM
-              (SELECT aid, agent_handle, harness, live, name, person, relay_name, relay_harness, relay,
+            SELECT aid, agent_handle, harness, live, name, person, relay_name, relay_harness, relay, id, hsk FROM
+              (SELECT aid, agent_handle, harness, live, name, person, relay_name, relay_harness, relay, id, hsk,
                       ROW_NUMBER() OVER (PARTITION BY aid ORDER BY live DESC, active_at DESC, id) AS rn
                  FROM ranked)
              WHERE rn <= :limit ORDER BY aid, rn"
@@ -444,6 +455,9 @@ fn participants_in(c: &Connection, aid: Option<&str>) -> Result<BTreeMap<String,
             live: r.get(3)?,
             person,
             via,
+            wakes: None,
+            session_id: r.get(9)?,
+            harness_session_known: r.get(10)?,
         });
     }
     Ok(out)

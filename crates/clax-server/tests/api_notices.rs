@@ -229,3 +229,37 @@ async fn claude_push_reports_a_notice_follower() {
     );
     assert_eq!(poll.await.unwrap(), 200);
 }
+
+/// The page's agent list says whether each live agent is woken by a
+/// comment while idle: a Claude Code session is once a notices poll (a
+/// `clax feedback follow`, or the shim's channel) is connected.
+#[tokio::test]
+async fn a_follower_poll_marks_its_agent_woken_on_the_page() {
+    let ts = TestServer::spawn().await;
+    let sid = claude_session(&ts).await;
+    let aid = published(&ts, &sid).await;
+    let wakes = |ts: &TestServer, aid: &str| {
+        let req = ts.authed(ts.client.get(format!("{}/api/artifacts/{aid}", ts.base)));
+        async move {
+            let v: Value = req.send().await.unwrap().json().await.unwrap();
+            v["artifact"]["participants"]["agents"][0]["wakes"].clone()
+        }
+    };
+    assert_eq!(wakes(&ts, &aid).await, false);
+    let req = ts.authed(
+        ts.client
+            .get(format!("{}/api/sessions/{sid}/notices?wait=30", ts.base)),
+    );
+    let poll = tokio::spawn(async move { req.send().await.unwrap().status() });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while wakes(&ts, &aid).await != true {
+        assert!(Instant::now() < deadline, "the follower never counted");
+        tokio::task::yield_now().await;
+    }
+    poll.abort();
+    // A Pi session is woken by its extension, with no follower.
+    let pi = ts.register_session("pi", "p1").await;
+    let pid = pi["id"].as_str().unwrap().to_string();
+    let paid = published(&ts, &pid).await;
+    assert_eq!(wakes(&ts, &paid).await, true);
+}
