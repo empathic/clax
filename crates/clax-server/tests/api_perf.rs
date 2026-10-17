@@ -25,8 +25,8 @@ async fn every_other_caller_is_refused() {
     let host = ts.base.trim_start_matches("http://");
     let events = format!(
         "{}={}",
-        clax_server::auth::events_cookie_name(host),
-        clax_server::auth::events_cookie_value(&ts.token)
+        clax_http::auth::events_cookie_name(host),
+        clax_http::auth::events_cookie_value(&ts.token)
     );
     let url = format!("{}{PATH}", ts.base);
     for (who, cookie) in [

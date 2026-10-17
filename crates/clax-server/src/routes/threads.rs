@@ -3,15 +3,6 @@
 
 use super::artifacts::{body, path, publishing_session};
 use super::assets::multipart_error;
-use crate::agent::{Agent, TokenOrAgent, person_agent_session};
-use crate::audit::DeferredAudit;
-use crate::auth::Caller;
-use crate::error::ApiError;
-use crate::headers::parse_id;
-use crate::identity::Identity;
-use crate::state::AppState;
-use crate::viewer::{SameOrigin, acting_viewer, author};
-use crate::views::thread::{VisFor, thread_event_views};
 use axum::Json;
 use axum::body::{Body, Bytes};
 use axum::extract::multipart::MultipartRejection;
@@ -29,6 +20,15 @@ use clax_core::store::threads::{
 };
 use clax_core::working::StopReason;
 use clax_core::{Anchor, ArtifactId, CoreError, Event, SendTarget, Store};
+use clax_http::agent::{Agent, TokenOrAgent, person_agent_session};
+use clax_http::audit::DeferredAudit;
+use clax_http::auth::Caller;
+use clax_http::error::ApiError;
+use clax_http::headers::parse_id;
+use clax_http::identity::Identity;
+use clax_http::state::AppState;
+use clax_http::viewer::{SameOrigin, acting_viewer, author};
+use clax_http::views::thread::{VisFor, thread_event_views};
 use clax_realtime::feedback::apply;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -60,7 +60,7 @@ pub fn mentions_agent(body: &str) -> bool {
 }
 
 /// Broadcasts the `thread` event. It reaches every subscriber, so its view
-/// ([`crate::views::thread::thread_event_views`]) has no `clip_path` and no
+/// ([`clax_http::views::thread::thread_event_views`]) has no `clip_path` and no
 /// delivery state, whoever made the change.
 pub(crate) fn publish_thread(
     ctx: &clax_realtime::feedback::FeedbackCtx,
@@ -101,7 +101,7 @@ fn agent_session(
 /// or delete with `as: agent`), and skips the name a viewer needs to
 /// reopen or delete: the daemon token or an agent of another machine. Its
 /// session decides which agent ([`agent_session`]).
-fn may_act_as_agent<N: crate::agent::Need>(a: &Agent<N>) -> bool {
+fn may_act_as_agent<N: clax_http::agent::Need>(a: &Agent<N>) -> bool {
     a.holds_token() || a.caller.is_agent()
 }
 
@@ -121,7 +121,7 @@ fn acting(c: &Caller) -> (Option<String>, Option<String>) {
 fn person_agent_comments(c: &Caller, via_page: bool) -> Result<(), ApiError> {
     person_agent_session(c)?;
     if via_page && matches!(c, Caller::PersonAgent { .. }) {
-        return Err(crate::agent::invalid_via_page());
+        return Err(clax_http::agent::invalid_via_page());
     }
     Ok(())
 }
@@ -129,7 +129,7 @@ fn person_agent_comments(c: &Caller, via_page: bool) -> Result<(), ApiError> {
 /// For a person's agent, that it may read the threads of `id` it writes
 /// to: an agent replies to, resolves, reopens or sends only threads it
 /// can list (403 `not_permitted`).
-async fn sees_threads<N: crate::agent::Need>(
+async fn sees_threads<N: clax_http::agent::Need>(
     a: &Agent<N>,
     s: &AppState,
     id: &ArtifactId,
@@ -170,14 +170,14 @@ pub struct FirstsQuery {
 /// is 400 `invalid_query`. A request with a foreign `Origin` is refused.
 pub async fn approves_first(
     State(s): State<AppState>,
-    d: crate::agent::DeniedToGrants,
+    d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
     p: Result<Path<String>, PathRejection>,
     q: Result<Query<FirstsQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
-    let asker = crate::views::inbox::recipient_of(&s, &who)
+    let asker = clax_http::views::inbox::recipient_of(&s, &who)
         .await
         .map_err(|_| {
             ApiError::forbidden(
@@ -225,7 +225,7 @@ pub struct ListQuery {
 
 pub async fn list(
     State(s): State<AppState>,
-    a: Agent<crate::agent::ThreadsList>,
+    a: Agent<clax_http::agent::ThreadsList>,
     aid: Result<Path<String>, PathRejection>,
     q: Result<Query<ListQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -258,12 +258,12 @@ pub struct AllQuery {
 /// artifact's `threads` are thread views with `clip_path`, oldest first, and
 /// an artifact with none is left out. Artifacts come in the order of
 /// `GET /api/artifacts`. For the owner's agents each field goes through
-/// their visibility ([`crate::views::thread::Vis`]): a withheld title is null
+/// their visibility ([`clax_http::views::thread::Vis`]): a withheld title is null
 /// with `withheld: {authors}`, withheld file names are left out and counted
 /// in `files_withheld`, and the threads are filtered as everywhere.
 pub async fn list_all(
     State(s): State<AppState>,
-    TokenOrAgent(agent): TokenOrAgent<crate::agent::ThreadsAll>,
+    TokenOrAgent(agent): TokenOrAgent<clax_http::agent::ThreadsAll>,
     q: Result<Query<AllQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
@@ -313,7 +313,7 @@ pub async fn list_all(
 
 pub async fn get(
     State(s): State<AppState>,
-    a: Agent<crate::agent::ThreadGet>,
+    a: Agent<clax_http::agent::ThreadGet>,
     p: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let (aid, tid) = path(p)?;
@@ -335,7 +335,7 @@ pub async fn get(
 /// it is read.
 pub async fn clip(
     State(s): State<AppState>,
-    a: Agent<crate::agent::ThreadClip>,
+    a: Agent<clax_http::agent::ThreadClip>,
     p: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let (aid, tid) = path(p)?;
@@ -619,7 +619,7 @@ async fn refuse_merged_away(s: &AppState, aid: &str) -> Result<(), ApiError> {
 
 pub async fn create(
     State(s): State<AppState>,
-    a: Agent<crate::agent::ThreadsCreate>,
+    a: Agent<clax_http::agent::ThreadsCreate>,
     _o: SameOrigin,
     who: Identity,
     audit: DeferredAudit,
@@ -813,7 +813,7 @@ fn respond(o: Outcome, created: StatusCode) -> Response {
 /// written. A request with a foreign `Origin` is refused ([`SameOrigin`]).
 pub async fn comment(
     State(s): State<AppState>,
-    a: Agent<crate::agent::ThreadComment>,
+    a: Agent<clax_http::agent::ThreadComment>,
     _o: SameOrigin,
     who: Identity,
     audit: DeferredAudit,
@@ -1031,7 +1031,7 @@ fn send_target(
 /// ([`SameOrigin`]).
 pub async fn send(
     State(s): State<AppState>,
-    a: Agent<crate::agent::ThreadSend>,
+    a: Agent<clax_http::agent::ThreadSend>,
     _o: SameOrigin,
     audit: DeferredAudit,
     headers: axum::http::HeaderMap,
@@ -1040,7 +1040,7 @@ pub async fn send(
 ) -> Result<Json<Value>, ApiError> {
     let (aid, tid) = path(p)?;
     let id = parse_id(&aid)?;
-    let page = crate::agent::page_marker(&a.caller, &headers)?;
+    let page = clax_http::agent::page_marker(&a.caller, &headers)?;
     let live_page = s.live_ids.contains(id.as_str());
     let b: SendBody = if raw.is_empty() {
         SendBody::default()
@@ -1132,7 +1132,7 @@ fn handoff_target(
 /// `{thread}`, filtered for the caller, with its new `owner`.
 pub async fn handoff(
     State(s): State<AppState>,
-    TokenOrAgent(a): TokenOrAgent<crate::agent::ThreadHandoff>,
+    TokenOrAgent(a): TokenOrAgent<clax_http::agent::ThreadHandoff>,
     audit: DeferredAudit,
     p: Result<Path<(String, String)>, PathRejection>,
     raw: Bytes,
@@ -1209,7 +1209,7 @@ pub struct BatchBody {
 /// tier hands its rows over together.
 pub async fn send_batch(
     State(s): State<AppState>,
-    a: Agent<crate::agent::ThreadsSendBatch>,
+    a: Agent<clax_http::agent::ThreadsSendBatch>,
     _o: SameOrigin,
     who: Identity,
     audit: DeferredAudit,
@@ -1224,7 +1224,7 @@ pub async fn send_batch(
     let vf = VisFor::of(&a.caller, &s);
     let live_page = s.live_ids.contains(id.as_str());
     let agent_person = match &a.caller {
-        crate::auth::Caller::PersonAgent { person, .. } => Some(person.clone()),
+        clax_http::auth::Caller::PersonAgent { person, .. } => Some(person.clone()),
         _ => None,
     };
     let v = s
@@ -1284,7 +1284,7 @@ struct ResolveBody {
 /// address). A request with a foreign `Origin` is refused ([`SameOrigin`]).
 pub async fn resolve(
     State(s): State<AppState>,
-    a: Agent<crate::agent::ThreadResolve>,
+    a: Agent<clax_http::agent::ThreadResolve>,
     _o: SameOrigin,
     who: Identity,
     audit: DeferredAudit,
@@ -1422,7 +1422,7 @@ async fn require_interact(s: &AppState, authed: bool, who: Identity) -> Result<(
 /// event. A request with a foreign `Origin` is refused ([`SameOrigin`]).
 pub async fn reopen(
     State(s): State<AppState>,
-    a: Agent<crate::agent::ThreadReopen>,
+    a: Agent<clax_http::agent::ThreadReopen>,
     _o: SameOrigin,
     who: Identity,
     audit: DeferredAudit,
@@ -1477,7 +1477,7 @@ pub struct DeleteQuery {
 /// A request with a foreign `Origin` is refused ([`SameOrigin`]).
 pub async fn delete(
     State(s): State<AppState>,
-    a: Agent<crate::agent::ThreadDelete>,
+    a: Agent<clax_http::agent::ThreadDelete>,
     _o: SameOrigin,
     who: Identity,
     audit: DeferredAudit,

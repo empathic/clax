@@ -1,4 +1,4 @@
-//! What bounds the daemon's audit exports (`crate::routes::toolpath`).
+//! What bounds the daemon's audit exports (`clax_server::routes::toolpath`).
 
 use std::sync::Arc;
 use std::time::Duration;

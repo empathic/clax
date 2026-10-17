@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 /// never names a session. The
 /// artifact's own `owner_session_id` stays; token-less routes drop it with
 /// [`strip_sessions`].
-pub(crate) fn with_owner(
+pub fn with_owner(
     a: &Artifact,
     owner: Option<&Session>,
     working: &[clax_core::working::WorkingView],
@@ -54,7 +54,7 @@ pub(crate) fn with_owner(
 }
 
 /// A live page with its site's origins, the most recently used first.
-pub(crate) struct LivePart {
+pub struct LivePart {
     pub page: LivePage,
     pub origins: Vec<String>,
     /// A page a join merged away (spec §7.2): the page it was merged into,
@@ -63,7 +63,7 @@ pub(crate) struct LivePart {
 }
 
 /// The live page `a` is, when it is one.
-pub(crate) fn live_part(st: &Store, a: &Artifact) -> clax_core::Result<Option<LivePart>> {
+pub fn live_part(st: &Store, a: &Artifact) -> clax_core::Result<Option<LivePart>> {
     if a.kind != KIND_LIVE {
         return Ok(None);
     }
@@ -100,7 +100,7 @@ pub(crate) fn live_part(st: &Store, a: &Artifact) -> clax_core::Result<Option<Li
 
 /// Leaves out the session IDs a token-less caller must not see (spec §14):
 /// the artifact's `owner_session_id` and each version's `session_id`.
-pub(crate) fn strip_sessions(v: &mut Value) {
+pub fn strip_sessions(v: &mut Value) {
     if let Some(a) = v.get_mut("artifact").and_then(Value::as_object_mut) {
         a.remove("owner_session_id");
     }

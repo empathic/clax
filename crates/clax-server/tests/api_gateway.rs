@@ -644,7 +644,7 @@ async fn an_expired_credential_ends_the_extensions_open_stream() {
     let c = clock.clone();
     let ts = TestServer::spawn_with(move |st| {
         st.ext_creds = std::sync::Arc::new(
-            clax_server::extension::Credentials::load_with(&st.store, c).unwrap(),
+            clax_http::extension::Credentials::load_with(&st.store, c).unwrap(),
         );
     })
     .await;
@@ -668,7 +668,7 @@ async fn a_credential_for_another_extension_id_is_refused() {
         let m = st.store.mint_extension_credential(&"p".repeat(32)).unwrap();
         *o.lock().unwrap() = m.credential;
         st.ext_creds =
-            std::sync::Arc::new(clax_server::extension::Credentials::load(&st.store).unwrap());
+            std::sync::Arc::new(clax_http::extension::Credentials::load(&st.store).unwrap());
     })
     .await;
     let cred = other.lock().unwrap().clone();

@@ -68,6 +68,7 @@ RUST_SOURCES = [
     "//crates/clax-embedded:rust_sources",
     "//crates/clax-fake-exe:rust_sources",
     "//crates/clax-hooks:rust_sources",
+    "//crates/clax-http:rust_sources",
     "//crates/clax-mcp:rust_sources",
     "//crates/clax-realtime:rust_sources",
     "//crates/clax-sample:rust_sources",

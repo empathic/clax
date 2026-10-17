@@ -13,6 +13,7 @@ clax-core = { path = "../clax-core" }
 clax-server = { path = "../clax-server" }
 clax-sample = { path = "../clax-sample" }
 clax-realtime = { path = "../clax-realtime" }
+clax-http = { path = "../clax-http" }
 clax-fake-exe = { path = "../clax-fake-exe" }
 axum.workspace = true
 futures = "0.3"

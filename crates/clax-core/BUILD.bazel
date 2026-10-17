@@ -7,6 +7,7 @@ cargo_package(
     test_data = [
         # The sources the delivery guard scans (src/feedback.rs).
         ":rust_sources",
+        "//crates/clax-http:rust_sources",
         "//crates/clax-realtime:rust_sources",
         "//crates/clax-server:rust_sources",
         "//plugins/pi:test_fixtures",

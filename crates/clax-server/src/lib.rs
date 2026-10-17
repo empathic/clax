@@ -1,32 +1,12 @@
-//! HTTP server for Clax: REST API, content serving, SSE, embedded UI.
+//! The Clax daemon: every route (`routes`), the router, the shell and content serving (`boot`, `shell_route`), and `serve` (`daemon`). What the routes share is `clax-http`'s.
 
-pub mod agent;
-pub mod audit;
-pub mod auth;
-pub mod blocking;
 pub mod boot;
-pub mod conn;
 pub mod daemon;
-pub mod db_caller;
-pub mod error;
-pub mod exports;
-pub mod extension;
-pub mod grant_auth;
-pub mod headers;
-pub mod host;
-pub mod http_cache;
-pub mod identity;
-pub mod limits;
-pub mod live_access;
-pub mod perf;
 pub mod routes;
 pub mod shell_route;
-pub mod state;
-pub mod viewer;
-pub mod views;
-pub mod wrap_cache;
 
-pub use state::AppState;
+use clax_http::AppState;
+use clax_http::{agent, auth, host};
 
 pub fn build_router(state: AppState) -> axum::Router {
     wrap(state.clone(), routes::router(state, None))

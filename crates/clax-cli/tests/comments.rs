@@ -555,8 +555,8 @@ fn the_cli_is_the_owner_the_browsers_are() {
     let host = d.base().trim_start_matches("http://").to_string();
     let cookie = format!(
         "{}={}",
-        clax_server::identity::owner_cookie_name(&host),
-        clax_server::identity::owner_cookie_value(&d.token())
+        clax_http::identity::owner_cookie_name(&host),
+        clax_http::identity::owner_cookie_value(&d.token())
     );
     let browser: Value = d
         .http()

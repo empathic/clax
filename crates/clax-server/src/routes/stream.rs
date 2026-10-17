@@ -2,10 +2,6 @@
 //! /api/stream/<id>`: its subscriptions (see [`clax_realtime::stream`]).
 
 use super::artifacts::{body, path};
-use crate::error::ApiError;
-use crate::headers::parse_id;
-use crate::state::AppState;
-use crate::viewer::SameOrigin;
 use axum::Json;
 use axum::body::Body;
 use axum::extract::rejection::{JsonRejection, PathRejection};
@@ -13,6 +9,10 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::CoreError;
+use clax_http::error::ApiError;
+use clax_http::headers::parse_id;
+use clax_http::state::AppState;
+use clax_http::viewer::SameOrigin;
 use clax_realtime::stream::{Conn, MAX_TOPICS, SubError, Topic, parse_last_event_id};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -22,7 +22,7 @@ use std::convert::Infallible;
 /// (`<stream>:<seq>`) names when it is still held for the same caller.
 ///
 /// The caller (the token in `Authorization` or the events cookie, and the
-/// owner or viewer cookie; see [`crate::identity`]) is resolved once, here, with the levels of the `db`
+/// owner or viewer cookie; see [`clax_http::identity`]) is resolved once, here, with the levels of the `db`
 /// routes; subscriptions made on the
 /// stream must come from the same caller. The body opens with `event: ready`
 /// (`{stream, seq, resumed, topics, caller}`, `caller` being `{level,
@@ -31,7 +31,7 @@ use std::convert::Infallible;
 /// topic the client must refetch, and a `: keep-alive` comment every
 /// `AppState::sse_keep_alive` while idle. It ends when the daemon shuts down
 /// or a newer connection resumes the same stream. A stream opened by a
-/// request that may not see live pages ([`crate::live_access::sees_live_pages`])
+/// request that may not see live pages ([`clax_http::live_access::sees_live_pages`])
 /// receives no gallery event of a live page and cannot subscribe to a live
 /// page's topics; it resumes only from a request of the same kind. A stream
 /// is opened for the person the request speaks for (the owner, or a
@@ -43,22 +43,22 @@ use std::convert::Infallible;
 /// more, once that credential is revoked or expires.
 pub async fn open(
     State(s): State<AppState>,
-    d: crate::agent::DeniedToGrants,
-    who: crate::identity::Identity,
+    d: clax_http::agent::DeniedToGrants,
+    who: clax_http::identity::Identity,
     extensions: axum::http::Extensions,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     // The stream serves people (spec §7.5): an agent reads through the
     // filtered routes.
     d.refuse_agents()?;
-    let local = crate::live_access::sees_live_pages(&headers, &extensions, &s.token);
+    let local = clax_http::live_access::sees_live_pages(&headers, &extensions, &s.token);
     let credential = extensions
-        .get::<crate::extension::ExtensionCredential>()
+        .get::<clax_http::extension::ExtensionCredential>()
         .map(|c| c.hash().to_string());
     let token = token_or_cookie(&who);
     let (caller, person) = s
         .store_call(move |st| {
-            let caller = crate::db_caller::caller_of(st, token, &who)?;
+            let caller = clax_http::db_caller::caller_of(st, token, &who)?;
             Ok((caller, person_key(st, &who)))
         })
         .await?;
@@ -77,7 +77,7 @@ pub async fn open(
     );
     if let Some(hash) = credential {
         let (creds, id) = (s.ext_creds.clone(), s.extension_id.clone());
-        conn = conn.checking(move || crate::extension::is_live(&creds, &hash, &id));
+        conn = conn.checking(move || clax_http::extension::is_live(&creds, &hash, &id));
     }
     let chunks = futures::stream::unfold(conn, |mut c| async move {
         c.next().await.map(|b| (Ok::<_, Infallible>(b), c))
@@ -96,10 +96,10 @@ pub async fn open(
 /// The recipient key of the person `who` speaks for, whose `questions` and
 /// `inbox` topics a stream may hold: empty for the owner, a connected
 /// person's public ID for their browser, `None` for anyone else.
-fn person_key(st: &clax_core::Store, who: &crate::identity::Identity) -> Option<String> {
+fn person_key(st: &clax_core::Store, who: &clax_http::identity::Identity) -> Option<String> {
     match who.person(st) {
-        Ok(crate::auth::Person::Owner) => Some(String::new()),
-        Ok(crate::auth::Person::Viewer(pid)) => Some(pid),
+        Ok(clax_http::auth::Person::Owner) => Some(String::new()),
+        Ok(clax_http::auth::Person::Viewer(pid)) => Some(pid),
         _ => None,
     }
 }
@@ -111,8 +111,8 @@ fn person_key(st: &clax_core::Store, who: &crate::identity::Identity) -> Option<
 /// cookie too: it counts only on a request from this machine that the
 /// browser does not mark as made from another origin ([`Identity::of`]).
 ///
-/// [`Identity::of`]: crate::identity::Identity::of
-fn token_or_cookie(who: &crate::identity::Identity) -> bool {
+/// [`Identity::of`]: clax_http::identity::Identity::of
+fn token_or_cookie(who: &clax_http::identity::Identity) -> bool {
     who.token || who.events_cookie
 }
 
@@ -127,8 +127,8 @@ fn token_or_cookie(who: &crate::identity::Identity) -> bool {
 #[cfg(debug_assertions)]
 pub async fn open_streams(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
-    _t: crate::auth::RequireToken,
+    _d: clax_http::agent::DeniedToGrants,
+    _t: clax_http::auth::RequireToken,
 ) -> axum::Json<Value> {
     let st = s.stream.stats();
     let levels: Vec<Value> = s
@@ -180,11 +180,11 @@ fn topics(names: &[String]) -> Result<Vec<Topic>, ApiError> {
 /// that is not a live page (`questions` and `inbox` it may take). Refuses a foreign `Origin` like the viewer routes.
 pub async fn update(
     State(s): State<AppState>,
-    d: crate::agent::DeniedToGrants,
+    d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
-    who: crate::identity::Identity,
-    sees: crate::live_access::SeesLive,
-    via: Option<axum::Extension<crate::extension::ExtensionCredential>>,
+    who: clax_http::identity::Identity,
+    sees: clax_http::live_access::SeesLive,
+    via: Option<axum::Extension<clax_http::extension::ExtensionCredential>>,
     p: Result<Path<String>, PathRejection>,
     req: Result<Json<UpdateBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -254,7 +254,7 @@ pub async fn update(
                     return Err(CoreError::NotDeclared { capability: "db" });
                 }
             }
-            crate::db_caller::caller_of(st, token, &who)
+            clax_http::db_caller::caller_of(st, token, &who)
         })
         .await?;
     let credential = via.as_ref().map(|c| c.0.hash());

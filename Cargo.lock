@@ -405,6 +405,7 @@ dependencies = [
  "clax-core",
  "clax-embedded",
  "clax-fake-exe",
+ "clax-http",
  "clax-realtime",
  "clax-sample",
  "clax-server",
@@ -509,6 +510,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "clax-http"
+version = "0.4.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "clax-core",
+ "clax-realtime",
+ "clax-sample",
+ "futures",
+ "serde",
+ "serde_json",
+ "sha2",
+ "socket2",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+]
+
+[[package]]
 name = "clax-mcp"
 version = "0.4.0"
 dependencies = [
@@ -577,6 +599,7 @@ dependencies = [
  "clax-core",
  "clax-fake-exe",
  "clax-hooks",
+ "clax-http",
  "clax-mcp",
  "clax-realtime",
  "clax-sample",
@@ -612,6 +635,7 @@ dependencies = [
  "axum",
  "clax-core",
  "clax-fake-exe",
+ "clax-http",
  "clax-realtime",
  "clax-sample",
  "clax-server",

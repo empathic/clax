@@ -17,11 +17,6 @@
 //! open, or a new version stopped declaring `room`), 4409 `replaced` (a newer socket took this peer label), 1001 when the
 //! daemon shuts down.
 
-use crate::db_caller::Subscriber;
-use crate::error::ApiError;
-use crate::headers::parse_id;
-use crate::state::AppState;
-use crate::viewer::SameOrigin;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::response::Response;
@@ -30,6 +25,11 @@ use clax_core::room::{
     MAX_JOINED, Topics, check_json, check_presence, peer_label_ok, room_name_ok, topic_ok,
 };
 use clax_core::{CoreError, Event};
+use clax_http::db_caller::Subscriber;
+use clax_http::error::ApiError;
+use clax_http::headers::parse_id;
+use clax_http::state::AppState;
+use clax_http::viewer::SameOrigin;
 use clax_realtime::room::{Frame, Membership, Rooms, Sender, Who};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -113,7 +113,7 @@ type Streams = StreamMap<Option<String>, BroadcastStream<Arc<Frame>>>;
 /// `GET /api/artifacts/{aid}/room`.
 pub async fn room(
     State(s): State<AppState>,
-    d: crate::agent::DeniedToGrants,
+    d: clax_http::agent::DeniedToGrants,
     Path(aid): Path<String>,
     Query(q): Query<RoomQuery>,
     _o: SameOrigin,

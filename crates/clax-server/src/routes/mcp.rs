@@ -7,13 +7,13 @@
 //! (DNS rebinding). The endpoint is not under the request timeout layers: a
 //! session's event stream stays open.
 
-use crate::auth::RequireToken;
-use crate::limits::PUBLISH_BODY_LIMIT;
-use crate::state::AppState;
 use axum::Router;
 use axum::extract::Request;
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::Response;
+use clax_http::auth::RequireToken;
+use clax_http::limits::PUBLISH_BODY_LIMIT;
+use clax_http::state::AppState;
 use clax_mcp::{ClaxTools, DaemonClient};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
@@ -23,7 +23,7 @@ use std::sync::Arc;
 /// and the token is required. Its internal client sends the agent-channel
 /// marker, so its tools reach the routes as the owner's agent.
 async fn require_token(
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
     req: Request,
     next: Next,

@@ -15,13 +15,6 @@
 
 use super::artifacts::{body, path};
 use super::grants::{announce, announce_ended};
-use crate::agent::DeniedToGrants;
-use crate::audit::DeferredAudit;
-use crate::auth::Caller;
-use crate::error::ApiError;
-use crate::state::AppState;
-use crate::viewer::SameOrigin;
-use crate::views::grant::grant_view;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, State};
@@ -29,6 +22,13 @@ use clax_core::rights::Rights;
 use clax_core::store::approvals::{ScopeKind, UNCONNECTED};
 use clax_core::store::people::{AgentRights, Grant, PersonRow};
 use clax_core::{CoreError, NameSource, Store};
+use clax_http::agent::DeniedToGrants;
+use clax_http::audit::DeferredAudit;
+use clax_http::auth::Caller;
+use clax_http::error::ApiError;
+use clax_http::state::AppState;
+use clax_http::viewer::SameOrigin;
+use clax_http::views::grant::grant_view;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -121,12 +121,12 @@ fn project(cwd: &str) -> &str {
 /// credential.
 pub async fn list_agents(
     State(s): State<AppState>,
-    a: crate::agent::Agent<crate::agent::AgentsList>,
+    a: clax_http::agent::Agent<clax_http::agent::AgentsList>,
     _o: SameOrigin,
     extensions: axum::http::Extensions,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    use crate::views::thread::Handles;
+    use clax_http::views::thread::Handles;
     let handles = Handles::of(&a.caller);
     if handles == Handles::None {
         return Err(ApiError::forbidden(
@@ -144,9 +144,9 @@ pub async fn list_agents(
         _ => None,
     };
     let local = !matches!(a.caller, Caller::Person { .. })
-        && crate::live_access::sees_live_pages(&headers, &extensions, &s.token);
+        && clax_http::live_access::sees_live_pages(&headers, &extensions, &s.token);
     let reads = a.read_rights();
-    let vf = crate::views::thread::VisFor::of(&a.caller, &s);
+    let vf = clax_http::views::thread::VisFor::of(&a.caller, &s);
     let working = s.working.clone();
     let v = s
         .store_call(move |st| {
@@ -368,7 +368,7 @@ fn approvals_of_yours(st: &Store, pid: &str) -> clax_core::Result<Vec<Value>> {
     st.live_approvals(Some(pid))?
         .iter()
         .filter(|a| a.author == owner.public_id)
-        .map(|a| crate::views::approval::approval_view(st, a))
+        .map(|a| clax_http::views::approval::approval_view(st, a))
         .collect()
 }
 
@@ -907,7 +907,7 @@ pub async fn raises(
         .0;
     let aid = q
         .artifact
-        .map(|a| crate::headers::parse_id(&a))
+        .map(|a| clax_http::headers::parse_id(&a))
         .transpose()?;
     let v = s
         .store_call(move |st| {
@@ -982,7 +982,7 @@ pub async fn end_agent(
             let id = session.id.clone();
             let audit = audit.resolve(st)?;
             let ended = st.end_session_by_person(&audit, &id)?;
-            crate::state::sessions_ended(
+            clax_http::state::sessions_ended(
                 &state,
                 &ctx,
                 st,

@@ -5,11 +5,6 @@
 
 use super::assets::multipart_error;
 use super::threads::{announce_new_thread, mentions_agent, publish_thread};
-use crate::error::ApiError;
-use crate::identity::Identity;
-use crate::state::AppState;
-use crate::viewer::{SameOrigin, author};
-use crate::views::thread::{thread_view, thread_views};
 use axum::Json;
 use axum::extract::multipart::MultipartRejection;
 use axum::extract::rejection::QueryRejection;
@@ -24,6 +19,11 @@ use clax_core::store::site::{
 };
 use clax_core::store::threads::{NewThread, clip_problem};
 use clax_core::{Anchor, ArtifactId, CoreError, Event, Store};
+use clax_http::error::ApiError;
+use clax_http::identity::Identity;
+use clax_http::state::AppState;
+use clax_http::viewer::{SameOrigin, author};
+use clax_http::views::thread::{thread_view, thread_views};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -166,7 +166,7 @@ pub struct PageQuery {
 /// ([`rule_view`], or null). Never creates a page.
 pub async fn page(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     q: Result<Query<PageQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -356,7 +356,7 @@ fn replay(
 /// as it is now (`version` is the one it was made on).
 pub async fn thread(
     State(s): State<AppState>,
-    d: crate::agent::DeniedToGrants,
+    d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
     audit: AuditCtx,
@@ -568,7 +568,7 @@ async fn read_snapshot_fields(mut mp: Multipart) -> Result<SnapshotFields, ApiEr
 /// pending or the page does not exist; this route never creates a page.
 pub async fn snapshot(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     audit: AuditCtx,
     mp: Result<Multipart, MultipartRejection>,
@@ -716,7 +716,7 @@ fn summary_status(t: &Value) -> &'static str {
 /// origin's merge rules ([`rule_view`]), oldest first.
 pub async fn site(
     State(s): State<AppState>,
-    d: crate::agent::DeniedToGrants,
+    d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
     q: Result<Query<SiteQuery>, QueryRejection>,
@@ -796,7 +796,7 @@ fn pages_pending_threads(groups: &[(String, Value)]) -> usize {
 pub(crate) struct RefileCtx {
     pub(crate) feedback: clax_realtime::feedback::FeedbackCtx,
     pub(crate) live_ids: std::sync::Arc<clax_realtime::live::LiveIds>,
-    cache: std::sync::Arc<crate::wrap_cache::WrapCache>,
+    cache: std::sync::Arc<clax_http::wrap_cache::WrapCache>,
     pub(crate) audit: AuditCtx,
 }
 
@@ -950,7 +950,7 @@ pub struct MoveBody {
 /// on a live page.
 pub async fn move_thread(
     State(s): State<AppState>,
-    d: crate::agent::DeniedToGrants,
+    d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     OwnerWrite(who): OwnerWrite,
     audit: AuditCtx,
@@ -1018,7 +1018,7 @@ pub async fn move_thread(
 /// oldest first.
 pub async fn rules(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
     q: Result<Query<SiteQuery>, QueryRejection>,
@@ -1055,7 +1055,7 @@ pub struct RuleBody {
 /// `own_origin`, `too_many_rules`.
 pub async fn add_rule(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     OwnerWrite(who): OwnerWrite,
     audit: AuditCtx,
@@ -1133,7 +1133,7 @@ pub async fn add_rule(
 /// (404 after that).
 pub async fn delete_rule(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     OwnerWrite(who): OwnerWrite,
     audit: AuditCtx,

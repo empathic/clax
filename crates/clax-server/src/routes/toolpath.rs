@@ -4,29 +4,29 @@
 //! state, both the owner's alone; and the agent side's tool-call records
 //! (§6.7), `POST /api/sessions/<sid>/tool-calls` and `POST /api/tool-calls`.
 
-use crate::agent::TokenOrAgent;
-use crate::audit::DeferredAudit;
-use crate::auth::RequireToken;
-use crate::error::ApiError;
-use crate::exports::Exports;
-use crate::identity::Identity;
-use crate::state::AppState;
 use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use clax_core::audit::ToolCallReport;
 use clax_core::toolpath::RenderEnv;
 use clax_core::toolpath::project;
+use clax_http::agent::TokenOrAgent;
+use clax_http::audit::DeferredAudit;
+use clax_http::auth::RequireToken;
+use clax_http::error::ApiError;
+use clax_http::exports::Exports;
+use clax_http::identity::Identity;
+use clax_http::state::AppState;
 use std::time::{Duration, Instant};
 
 /// Whether `who` may read the audit history: the owner, by the daemon
 /// token or the owner cookie (spec §8.3). Checked from the credentials
 /// alone, before anything is read or made.
-fn owner_reads_history(who: &Identity) -> Result<(), crate::error::ApiError> {
+fn owner_reads_history(who: &Identity) -> Result<(), clax_http::error::ApiError> {
     if who.token || who.owner_cookie {
         Ok(())
     } else {
-        Err(crate::error::ApiError::forbidden(
+        Err(clax_http::error::ApiError::forbidden(
             "forbidden",
             "only the owner (the token or the owner cookie) reads the audit history",
         ))
@@ -39,8 +39,8 @@ fn owner_reads_history(who: &Identity) -> Result<(), crate::error::ApiError> {
 /// `no_paths` and `pretty`, `true` or `false`, appear at most once). An
 /// unknown or repeated parameter is refused, so a misspelt option never
 /// widens an export.
-pub fn export_query(query: &str) -> Result<project::Export, crate::error::ApiError> {
-    use crate::error::ApiError;
+pub fn export_query(query: &str) -> Result<project::Export, clax_http::error::ApiError> {
+    use clax_http::error::ApiError;
     let mut req = project::Export::default();
     let mut seen: Vec<String> = Vec::new();
     for (k, v) in url::form_urlencoded::parse(query.as_bytes()) {
@@ -180,7 +180,7 @@ pub async fn stream_export<F>(
     content_type: &'static str,
     limits: &Exports,
     start: F,
-) -> Result<axum::response::Response, crate::error::ApiError>
+) -> Result<axum::response::Response, clax_http::error::ApiError>
 where
     F: FnOnce(ChunkWriter) -> tokio::task::JoinHandle<clax_core::Result<()>>,
 {
@@ -197,7 +197,7 @@ where
     let job = start(w);
     let Some(first) = rx.recv().await else {
         return match job.await {
-            Ok(Ok(())) => Err(crate::error::ApiError::new(
+            Ok(Ok(())) => Err(clax_http::error::ApiError::new(
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 "internal",
                 "the export wrote nothing",
@@ -247,10 +247,10 @@ where
 /// `not_for_agents` (spec 2026-10-08-multi-agent-multi-person §7.5).
 pub async fn export(
     axum::extract::State(s): axum::extract::State<AppState>,
-    d: crate::agent::DeniedToGrants,
+    d: clax_http::agent::DeniedToGrants,
     who: Identity,
     axum::extract::RawQuery(query): axum::extract::RawQuery,
-) -> Result<axum::response::Response, crate::error::ApiError> {
+) -> Result<axum::response::Response, clax_http::error::ApiError> {
     owner_reads_history(&who)?;
     d.refuse_agents()?;
     let req = export_query(query.as_deref().unwrap_or(""))?;
@@ -259,7 +259,7 @@ pub async fn export(
         project::Format::Jsonl => "application/x-ndjson",
     };
     let permit = s.exports.permits().try_acquire_owned().map_err(|_| {
-        crate::error::ApiError::new(
+        clax_http::error::ApiError::new(
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             "export_busy",
             "another export is running; try again when it ends",
@@ -295,16 +295,16 @@ pub async fn export(
 /// and `cursor` and `lag_ms` are null while the journal does not run.
 pub async fn status(
     axum::extract::State(s): axum::extract::State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     who: Identity,
-) -> Result<axum::Json<serde_json::Value>, crate::error::ApiError> {
+) -> Result<axum::Json<serde_json::Value>, clax_http::error::ApiError> {
     owner_reads_history(&who)?;
     let newest = s.store_call(|st| st.newest_seq()).await?;
     let j = s.journal.get();
     let lag = s.journal.lag_ms(newest, chrono::Utc::now());
     Ok(axum::Json(serde_json::json!({
         "journal": j.journal,
-        "dir": crate::audit::journal_dir(&s.home),
+        "dir": clax_http::audit::journal_dir(&s.home),
         "segment": j.segment,
         "cursor": j.cursor.filter(|_| j.journal),
         "newest_seq": newest,
@@ -353,7 +353,7 @@ fn tool_call_response(seq: Option<i64>) -> (StatusCode, axum::Json<serde_json::V
 /// naming an artifact it may not read reports a call about none.
 pub async fn session_tool_call(
     State(s): State<AppState>,
-    TokenOrAgent(a): TokenOrAgent<crate::agent::ToolCallReport>,
+    TokenOrAgent(a): TokenOrAgent<clax_http::agent::ToolCallReport>,
     audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
     req: Result<axum::Json<ToolCallReport>, JsonRejection>,
@@ -404,7 +404,7 @@ pub async fn session_tool_call(
 /// sessionless agent.
 pub async fn tool_call(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
     audit: DeferredAudit,
     req: Result<axum::Json<ToolCallReport>, JsonRejection>,

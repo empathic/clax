@@ -14,10 +14,10 @@
 //! The code is in the URL, so every answer is `no-store` and sends no
 //! `Referer` onward.
 
-use crate::state::AppState;
 use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use clax_http::state::AppState;
 
 /// Length of a browser-link code: 32 bytes in unpadded base64url.
 const CODE_LEN: usize = 43;
@@ -65,11 +65,14 @@ fn gone() -> Response {
 /// from the daemon's own machine or from another page.
 pub async fn browser_link(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     code: Result<Path<String>, axum::extract::rejection::PathRejection>,
     req: axum::extract::Request,
 ) -> Response {
-    if crate::identity::is_local(req.headers(), crate::identity::peer_of(req.extensions())) {
+    if clax_http::identity::is_local(
+        req.headers(),
+        clax_http::identity::peer_of(req.extensions()),
+    ) {
         return page(
             StatusCode::FORBIDDEN,
             "Open on the connected machine",
@@ -80,7 +83,7 @@ pub async fn browser_link(
     // `clax connect` opens the link from outside any page (`Sec-Fetch-Site:
     // none`); a page that sends a browser here (a link, a script) would
     // make that browser someone else's (login CSRF).
-    if crate::viewer::fetched_from_elsewhere(req.headers()) {
+    if clax_http::viewer::fetched_from_elsewhere(req.headers()) {
         return page(
             StatusCode::FORBIDDEN,
             "Open from clax connect",
@@ -107,7 +110,7 @@ pub async fn browser_link(
                 Some("/people"),
             );
             res.headers_mut()
-                .insert(header::SET_COOKIE, crate::viewer::set_cookie(&cookie));
+                .insert(header::SET_COOKIE, clax_http::viewer::set_cookie(&cookie));
             res
         }
         Err(e) if e.status == StatusCode::NOT_FOUND => gone(),

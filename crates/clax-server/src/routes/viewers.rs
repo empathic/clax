@@ -9,11 +9,6 @@
 //! a request with a foreign `Origin` ([`SameOrigin`]).
 
 use super::artifacts::body;
-use crate::error::ApiError;
-use crate::headers::parse_id;
-use crate::identity::Identity;
-use crate::state::AppState;
-use crate::viewer::{SameOrigin, set_cookie};
 use axum::Json;
 use axum::extract::Query;
 use axum::extract::State;
@@ -23,6 +18,11 @@ use axum::http::header::SET_COOKIE;
 use axum::response::{IntoResponse, Response};
 use clax_core::CoreError;
 use clax_core::store::viewers::is_legacy_cookie;
+use clax_http::error::ApiError;
+use clax_http::headers::parse_id;
+use clax_http::identity::Identity;
+use clax_http::state::AppState;
+use clax_http::viewer::{SameOrigin, set_cookie};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -105,7 +105,7 @@ async fn respond(s: AppState, who: Identity, name: Option<String>) -> Result<Res
 /// machine) on first contact.
 pub async fn me(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
 ) -> Result<Response, ApiError> {
@@ -118,7 +118,7 @@ pub async fn me(
 /// that lists the viewer.
 pub async fn set_me(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
     req: Result<Json<NameBody>, JsonRejection>,
@@ -148,7 +148,7 @@ pub struct LookupQuery {
 /// `<name> (not connected)`.
 pub async fn lookup(
     State(s): State<AppState>,
-    d: crate::agent::DeniedToGrants,
+    d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     q: Result<Query<LookupQuery>, QueryRejection>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -203,7 +203,7 @@ pub async fn lookup(
     );
     // The owner's agents read a viewer who is not connected as `<name> (not
     // connected)` (spec 2026-10-08 §9.6).
-    let vf = crate::views::thread::VisFor::of(&d.caller(&s).await?, &s);
+    let vf = clax_http::views::thread::VisFor::of(&d.caller(&s).await?, &s);
     let viewers = s
         .store_call(move |st| {
             vf.build(st)?.mark_viewers(&mut viewers, "id");
@@ -222,10 +222,10 @@ pub struct SeenQuery {
 /// this viewer has viewed unpinned; null for none or no cookie.
 pub async fn seen(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
-    sees: crate::live_access::SeesLive,
+    sees: clax_http::live_access::SeesLive,
     q: Result<Query<SeenQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
@@ -254,10 +254,10 @@ pub struct SeenBody {
 /// 400 `no_viewer` without a viewer cookie.
 pub async fn set_seen(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
-    sees: crate::live_access::SeesLive,
+    sees: clax_http::live_access::SeesLive,
     req: Result<Json<SeenBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let b = body(req)?;
@@ -301,10 +301,10 @@ pub struct AttentionQuery {
 /// ...}}`, or `{artifacts: {}}` when it is not live (400 for a malformed ID).
 pub async fn attention(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
-    sees: crate::live_access::SeesLive,
+    sees: clax_http::live_access::SeesLive,
     q: Result<Query<AttentionQuery>, QueryRejection>,
 ) -> Result<Response, ApiError> {
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
@@ -349,10 +349,10 @@ pub async fn attention(
 /// viewer's marks on the artifact. 400 `no_viewer` without a viewer cookie.
 pub async fn set_looked(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
-    sees: crate::live_access::SeesLive,
+    sees: clax_http::live_access::SeesLive,
     req: Result<Json<LookedBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let b = body(req)?;
@@ -408,10 +408,10 @@ pub struct PresenceBody {
 /// [`clax_core::presence::MAX_PEOPLE`] others and none of them is gone.
 pub async fn set_presence(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
-    sees: crate::live_access::SeesLive,
+    sees: clax_http::live_access::SeesLive,
     req: Result<Json<PresenceBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     use clax_core::presence::State as P;

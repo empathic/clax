@@ -5,8 +5,9 @@ use crate::*;
 use clax_core::daemon::{browser_host, probe_host};
 use clax_core::working::{Clock, ManualClock, SystemClock};
 use clax_core::{EventBus, Home, Store};
-use clax_server::wrap_cache::WrapCache;
-use clax_server::{AppState, build_router};
+use clax_http::AppState;
+use clax_http::wrap_cache::WrapCache;
+use clax_server::build_router;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,7 +34,7 @@ async fn as_lan(
     if req.headers().contains_key(LAN_HEADER) {
         let conn = req
             .extensions()
-            .get::<axum::extract::ConnectInfo<clax_server::auth::Conn>>()
+            .get::<axum::extract::ConnectInfo<clax_http::auth::Conn>>()
             .map(|c| c.0);
         let peer = req
             .headers()
@@ -43,7 +44,7 @@ async fn as_lan(
             .unwrap_or(IpAddr::V4(LAN_PEER));
         if let Some(c) = conn {
             req.extensions_mut()
-                .insert(axum::extract::ConnectInfo(clax_server::auth::Conn {
+                .insert(axum::extract::ConnectInfo(clax_http::auth::Conn {
                     peer: SocketAddr::new(peer, c.peer.port()),
                     local: SocketAddr::new(IpAddr::V4(LAN_LOCAL), c.local.port()),
                 }));
@@ -81,9 +82,9 @@ pub struct TestServer {
     pub addr: SocketAddr,
     /// The journal state the status route reports; no appender runs unless
     /// a test starts one with it.
-    pub journal: Arc<clax_server::audit::JournalStatus>,
+    pub journal: Arc<clax_http::audit::JournalStatus>,
     /// The bounds on agents' unverified bodies.
-    pub agent_gate: Arc<clax_server::agent::Gate>,
+    pub agent_gate: Arc<clax_http::agent::Gate>,
     /// The web UI the daemon serves.
     pub web: Arc<dyn clax_core::embedded::FileTree>,
     extension_id: String,
@@ -124,7 +125,7 @@ impl TestServer {
     /// whose bounds on agents' unverified bodies wait and measure rates on
     /// the returned timer.
     pub async fn spawn_agent_timer() -> (TestServer, Arc<ManualTimer>) {
-        Self::spawn_agent_timer_with_budget(clax_server::agent::BUDGET).await
+        Self::spawn_agent_timer_with_budget(clax_http::agent::BUDGET).await
     }
 
     /// [`TestServer::spawn_agent_timer`] with an overall budget of
@@ -133,7 +134,7 @@ impl TestServer {
         let timer = Arc::new(ManualTimer::default());
         let t = timer.clone();
         let ts = Self::spawn_on(IpAddr::V4(Ipv4Addr::UNSPECIFIED), move |s| {
-            s.agent_gate = Arc::new(clax_server::agent::Gate::with_budget(t, budget));
+            s.agent_gate = Arc::new(clax_http::agent::Gate::with_budget(t, budget));
         })
         .await;
         (ts, timer)
@@ -186,12 +187,11 @@ impl TestServer {
         let addr = listener.local_addr().unwrap();
         let port = addr.port();
         let live_ids = Arc::new(clax_realtime::live::LiveIds::load(&store).unwrap());
-        let ext_creds = Arc::new(
-            clax_server::extension::Credentials::load_with(&store, clock.clone()).unwrap(),
-        );
+        let ext_creds =
+            Arc::new(clax_http::extension::Credentials::load_with(&store, clock.clone()).unwrap());
         let started_at = store.now();
-        let grant_auth = Arc::new(clax_server::grant_auth::GrantAuth::load(&store).unwrap());
-        let vis_gen = clax_server::state::VisGen::install(&store);
+        let grant_auth = Arc::new(clax_http::grant_auth::GrantAuth::load(&store).unwrap());
+        let vis_gen = clax_http::state::VisGen::install(&store);
         let mut state = AppState {
             store,
             home: home.clone(),
@@ -200,7 +200,7 @@ impl TestServer {
             started_at,
             version: "test",
             shutdown: tokio::sync::watch::channel(false).1,
-            wrap_cache: Arc::new(WrapCache::new(clax_server::wrap_cache::DEFAULT_MAX_BYTES)),
+            wrap_cache: Arc::new(WrapCache::new(clax_http::wrap_cache::DEFAULT_MAX_BYTES)),
             request_timeout: Duration::from_secs(30),
             publish_timeout: Duration::from_secs(120),
             sse_keep_alive: Duration::from_secs(15),
@@ -227,10 +227,10 @@ impl TestServer {
             terminal_after_s: clax_core::config::TERMINAL_AFTER_S,
             calibration: Arc::default(),
             verify_times: Arc::default(),
-            audit_wake: clax_server::audit::AuditWake::new(),
+            audit_wake: clax_http::audit::AuditWake::new(),
             // No appender; tests of the journal start their own.
-            journal: clax_server::audit::JournalStatus::off(None),
-            exports: clax_server::exports::Exports::new(),
+            journal: clax_http::audit::JournalStatus::off(None),
+            exports: clax_http::exports::Exports::new(),
             call_ids: Arc::new(clax_realtime::call_ids::CallIdWait::new(
                 clax_realtime::call_ids::CALL_ID_GRACE,
                 clax_realtime::call_ids::CALL_ID_CAP,
@@ -241,8 +241,8 @@ impl TestServer {
             // `lan()` requests arrive on.
             lan_host: bind.is_unspecified().then_some(IpAddr::V4(LAN_LOCAL)),
             grant_auth,
-            agent_gate: Arc::new(clax_server::agent::Gate::new(Arc::new(
-                clax_server::agent::TokioTimer::default(),
+            agent_gate: Arc::new(clax_http::agent::Gate::new(Arc::new(
+                clax_http::agent::TokioTimer::default(),
             ))),
             vis_gen,
             test_delays: true,
@@ -253,8 +253,8 @@ impl TestServer {
         f(&mut state);
         state.audit_wake.install(&state.store);
         state.stream.listen(&state.events);
-        clax_server::views::inbox::listen(&state);
-        clax_server::views::approval::listen(&state);
+        clax_http::views::inbox::listen(&state);
+        clax_http::views::approval::listen(&state);
         clax_server::routes::people::listen(&state);
         let events = state.events.clone();
         let store = state.store.clone();
@@ -274,7 +274,7 @@ impl TestServer {
         tokio::spawn(async move {
             axum::serve(
                 listener,
-                app.into_make_service_with_connect_info::<clax_server::auth::Conn>(),
+                app.into_make_service_with_connect_info::<clax_http::auth::Conn>(),
             )
             .await
             .unwrap();
@@ -624,8 +624,8 @@ impl TestServer {
         let host = self.base.trim_start_matches("http://");
         format!(
             "{}={}",
-            clax_server::identity::owner_cookie_name(host),
-            clax_server::identity::owner_cookie_value(&self.token)
+            clax_http::identity::owner_cookie_name(host),
+            clax_http::identity::owner_cookie_value(&self.token)
         )
     }
 
@@ -1057,8 +1057,8 @@ impl TestServer {
     pub async fn wait_gate(
         &self,
         what: &str,
-        f: impl Fn(clax_server::agent::GateState) -> bool,
-    ) -> clax_server::agent::GateState {
+        f: impl Fn(clax_http::agent::GateState) -> bool,
+    ) -> clax_http::agent::GateState {
         self.agent_gate
             .wait_until(f, Duration::from_secs(5))
             .await

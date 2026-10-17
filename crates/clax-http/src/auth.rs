@@ -352,7 +352,7 @@ pub fn api_host_allowed(host: &str, local: Option<SocketAddr>) -> bool {
 /// Whether the request (its `Host`, else the URI's authority, and the
 /// connection it arrived on) may read what the API serves: the
 /// [`api_host_allowed`] rule, shared by [`require_api_host`] and by the shell
-/// page that embeds API data (`crate::boot`).
+/// page that embeds API data (`clax_server::boot`).
 pub fn request_host_allowed(
     headers: &axum::http::HeaderMap,
     uri: &axum::http::Uri,

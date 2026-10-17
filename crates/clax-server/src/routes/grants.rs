@@ -3,7 +3,7 @@
 //!
 //! The client's calls (`POST /api/grants`, `POST|DELETE …/continue`,
 //! `DELETE …/token`) are signed with the client's key and verified before
-//! anything else ([`crate::grant_auth`]). The owner's changes (invites,
+//! anything else ([`clax_http::grant_auth`]). The owner's changes (invites,
 //! approving, denying and revoking grants) need a browser of the owner's
 //! on a same-origin request (M20): the daemon token alone is 403
 //! `browser_required`. Every change is announced on the owner-only `people`
@@ -11,14 +11,6 @@
 //! an error.
 
 use super::artifacts::{body, path};
-use crate::audit::DeferredAudit;
-use crate::auth::Caller;
-use crate::error::ApiError;
-use crate::grant_auth::{self, Refusal, Signed};
-use crate::identity::Identity;
-use crate::state::AppState;
-use crate::viewer::SameOrigin;
-use crate::views::grant::grant_view;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
@@ -31,6 +23,14 @@ use clax_core::store::people::{
     InvitePerson, NewGrant, RevokedGrant,
 };
 use clax_core::{CoreError, Event, Secret, Store};
+use clax_http::audit::DeferredAudit;
+use clax_http::auth::Caller;
+use clax_http::error::ApiError;
+use clax_http::grant_auth::{self, Refusal, Signed};
+use clax_http::identity::Identity;
+use clax_http::state::AppState;
+use clax_http::viewer::SameOrigin;
+use clax_http::views::grant::grant_view;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -80,7 +80,7 @@ pub fn announce_ended(
 ) {
     for r in ended.iter().filter(|r| r.ended) {
         grant_auth::note_stale(s.grant_auth.index.ended(&r.grant_id), "grant ended");
-        crate::state::sessions_ended(
+        clax_http::state::sessions_ended(
             s,
             ctx,
             st,
@@ -108,7 +108,7 @@ pub async fn sweep(s: &AppState) -> Result<usize, ApiError> {
         let ended = st.expire_grants()?;
         announce_ended(&state, &ctx, st, &ended, "expiry");
         // Requests purged since leave the index's record of ended grants.
-        crate::grant_auth::forget_purged(&state.grant_auth.index, st);
+        clax_http::grant_auth::forget_purged(&state.grant_auth.index, st);
         if state.grant_auth.index.rebuild_if_stale(st)? {
             tracing::info!("grant index rebuilt");
         }
@@ -122,8 +122,8 @@ pub async fn sweep(s: &AppState) -> Result<usize, ApiError> {
 #[cfg(debug_assertions)]
 pub async fn test_index(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
-    _t: crate::auth::RequireToken,
+    _d: clax_http::agent::DeniedToGrants,
+    _t: clax_http::auth::RequireToken,
 ) -> Json<Value> {
     let (requests, keys) = s.grant_auth.cached_keys();
     let index = &s.grant_auth.index;
@@ -136,8 +136,8 @@ pub async fn test_index(
 #[cfg(debug_assertions)]
 pub async fn test_fail_index(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
-    _t: crate::auth::RequireToken,
+    _d: clax_http::agent::DeniedToGrants,
+    _t: clax_http::auth::RequireToken,
 ) -> StatusCode {
     s.grant_auth.index.fail_next_change();
     StatusCode::NO_CONTENT
@@ -157,8 +157,8 @@ fn no_store(mut res: Response) -> Response {
 #[cfg(debug_assertions)]
 pub async fn test_sweep(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
-    _t: crate::auth::RequireToken,
+    _d: clax_http::agent::DeniedToGrants,
+    _t: clax_http::auth::RequireToken,
 ) -> Result<Json<Value>, ApiError> {
     let ended = sweep(&s).await?;
     let (requests, keys) = s.grant_auth.cached_keys();
@@ -224,7 +224,7 @@ fn lan_address(s: &AppState) -> Result<IpAddr, ApiError> {
 /// daemon listens on loopback only.
 pub async fn create_invite(
     State(s): State<AppState>,
-    d: crate::agent::DeniedToGrants,
+    d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     caller: Caller,
     audit: DeferredAudit,
@@ -279,7 +279,7 @@ pub async fn create_invite(
 /// their codes.
 pub async fn list_invites(
     State(s): State<AppState>,
-    d: crate::agent::DeniedToGrants,
+    d: clax_http::agent::DeniedToGrants,
     who: Identity,
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
@@ -294,7 +294,7 @@ pub async fn list_invites(
 /// invite used or revoked already stays as it was.
 pub async fn revoke_invite(
     State(s): State<AppState>,
-    d: crate::agent::DeniedToGrants,
+    d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     caller: Caller,
     audit: DeferredAudit,
@@ -468,7 +468,7 @@ struct ContinueClax {
 /// for the owner.
 pub async fn request(
     State(s): State<AppState>,
-    _g: crate::agent::GrantFlow,
+    _g: clax_http::agent::GrantFlow,
     audit: DeferredAudit,
     req: axum::extract::Request,
 ) -> Result<Response, Refusal> {
@@ -587,7 +587,7 @@ pub async fn request(
 /// the owner (it is answered once, at connect, §21 item 3).
 pub async fn poll(
     State(s): State<AppState>,
-    _g: crate::agent::GrantFlow,
+    _g: clax_http::agent::GrantFlow,
     audit: DeferredAudit,
     gid: Result<Path<String>, PathRejection>,
     req: axum::extract::Request,
@@ -688,7 +688,7 @@ pub async fn poll(
 /// grant ends with its tokens and sessions, as a revocation. 204.
 pub async fn disconnect(
     State(s): State<AppState>,
-    _g: crate::agent::GrantFlow,
+    _g: clax_http::agent::GrantFlow,
     audit: DeferredAudit,
     gid: Result<Path<String>, PathRejection>,
     req: axum::extract::Request,
@@ -712,7 +712,7 @@ pub async fn disconnect(
 /// the access token and with it the whole grant (spec §6.4). 204.
 pub async fn revoke_token(
     State(s): State<AppState>,
-    _g: crate::agent::GrantFlow,
+    _g: clax_http::agent::GrantFlow,
     audit: DeferredAudit,
     gid: Result<Path<String>, PathRejection>,
     req: axum::extract::Request,
@@ -742,7 +742,7 @@ pub struct ListGrantsQuery {
 /// status when given.
 pub async fn list(
     State(s): State<AppState>,
-    d: crate::agent::DeniedToGrants,
+    d: clax_http::agent::DeniedToGrants,
     who: Identity,
     q: Result<Query<ListGrantsQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -782,7 +782,7 @@ pub struct ApproveBody {
 /// owner, which take an invite; 409 `name_taken`; 409 `not_pending`.
 pub async fn approve(
     State(s): State<AppState>,
-    d: crate::agent::DeniedToGrants,
+    d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     caller: Caller,
     audit: DeferredAudit,
@@ -839,7 +839,7 @@ pub async fn approve(
 /// `not_pending` unless it is pending.
 pub async fn deny(
     State(s): State<AppState>,
-    d: crate::agent::DeniedToGrants,
+    d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     caller: Caller,
     audit: DeferredAudit,
@@ -867,7 +867,7 @@ pub async fn deny(
 /// already stays as it was.
 pub async fn revoke(
     State(s): State<AppState>,
-    d: crate::agent::DeniedToGrants,
+    d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     caller: Caller,
     audit: DeferredAudit,

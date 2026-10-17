@@ -12,6 +12,7 @@ members = [
     "crates/clax-commands",
     "crates/clax-sample",
     "crates/clax-realtime",
+    "crates/clax-http",
 ]
 
 [workspace.package]
