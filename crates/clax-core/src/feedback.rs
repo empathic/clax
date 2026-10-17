@@ -915,15 +915,18 @@ mod tests {
 
     /// Every `FeedbackItem`, `Notice` and `Placeholder` an agent is handed
     /// is built under a `Visibility` (spec 2026-10-08 §8.6, delivery
-    /// guard): outside test code, in `clax-core` and `clax-server`, each is
-    /// built only inside a function whose signature takes one, and no such
-    /// code hands a take the view that sees everything
-    /// (`Visibility::all()`).
+    /// guard): outside test code, in the crates the daemon delivers from,
+    /// each is built only inside a function whose signature takes one, and
+    /// no such code hands a take the view that sees everything
+    /// (`Visibility::all()`). (The commands' hook builds a `Notice` of its
+    /// own, for Codex, and is not scanned.)
     #[test]
     fn feedback_items_are_built_only_under_visibility() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let mut files = Vec::new();
-        for dir in [root.join("src"), root.join("../clax-server/src")] {
+        let dirs =
+            ["clax-core", "clax-realtime", "clax-server"].map(|c| crates.join(c).join("src"));
+        for dir in dirs {
             let mut stack = vec![dir];
             while let Some(d) = stack.pop() {
                 for e in std::fs::read_dir(&d).unwrap() {

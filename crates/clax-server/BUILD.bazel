@@ -38,10 +38,3 @@ filegroup(
     srcs = ["src/routes/mod.rs"],
     visibility = ["//crates/clax-testkit:__pkg__"],
 )
-
-# The sources clax-core's tests read (crates/clax-core/src/feedback.rs).
-filegroup(
-    name = "srcs",
-    srcs = glob(["src/**"], exclude = ["**/.qual"]),
-    visibility = ["//crates:__subpackages__"],
-)
