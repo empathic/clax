@@ -256,6 +256,8 @@ Performance gates nothing in either (`just perf` measures on demand).
 | plugins | `scripts/test-plugins.sh`, outside Bazel |
 | plugin wrapper | `//scripts:plugin_wrapper` |
 | comment loop | `//scripts:comment_loop` |
+| worker npm ci, worker cargo fmt, worker cargo test, worker cargo clippy, worker wasm, worker e2e | CI's `worker` job, natively (`just worker-test`, then `e2e.mjs`): `crates/clax-worker` is a workspace of its own, outside Bazel |
+| wasm32 check | CI's `worker` job, natively (`scripts/check-wasm.sh`, `just check-wasm`) |
 | no unsafe code | `//scripts:no_unsafe` |
 | crate layers | `//scripts:crate_layers` |
 | no hard links | `//scripts:no_hard_links` (the check's own test), and `scripts/check-no-hard-links.sh` over the tracked files outside Bazel |
@@ -288,7 +290,11 @@ newest cache of the same lockfiles and then of any; only a passing push to
 main saves one, after `scripts/bazel-gc.sh` trims the disk cache to 6 GB
 (Bazel trims only while its server sits idle, which a job never does). `common --config=ci` (`.bazelrc`) bounds the cache to what
 fits a runner and fails on a stale lockfile. The native gates stay as a
-manual workflow (`native-check.yml`). A second job, `perf-log`, runs the
+manual workflow (`native-check.yml`). A second job, `worker`, runs what
+Bazel does not build, natively: `scripts/check-wasm.sh` over the crates a
+hosted Worker runs, and `crates/clax-worker` (a workspace of its own, for
+wasm32 only): `just worker-test`, then its browser e2e (`e2e.mjs`) on a
+web UI built with pnpm. A third job, `perf-log`, runs the
 perf benchmarks after every green push to main and appends a record to the
 `perf-log` branch (`docs/usage.md`, "Developing Clax"); it gates nothing, and is
 the only job with write access.

@@ -33,6 +33,14 @@ plugin-test:
 check-wasm *ARGS:
     ./scripts/check-wasm.sh {{ARGS}}
 
+# Run crates/clax-worker's checks natively (its own workspace, outside Bazel): npm ci, cargo fmt, its tests, clippy, and test-wasm.mjs under `wrangler dev --local`
+worker-test:
+    ./scripts/npm-ci-stamped.sh crates/clax-worker --silent
+    cd crates/clax-worker && cargo fmt --all -- --check
+    cd crates/clax-worker && cargo test -q --workspace
+    cd crates/clax-worker && cargo clippy -q --workspace --all-targets -- -D warnings
+    cd crates/clax-worker && node test-wasm.mjs
+
 # Format the Rust code (the web lint is not a formatter)
 fmt:
     cargo fmt --all
