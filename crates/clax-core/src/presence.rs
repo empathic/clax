@@ -59,6 +59,12 @@ pub struct KeptPresence {
     /// The report's time, in ms.
     #[serde(rename = "t")]
     pub at_ms: i64,
+    /// The tab had focus at its report.
+    #[serde(rename = "f", default, skip_serializing_if = "std::ops::Not::not")]
+    pub focused: bool,
+    /// The person's last input on the tab, in ms.
+    #[serde(rename = "i", default, skip_serializing_if = "Option::is_none")]
+    pub input_ms: Option<i64>,
 }
 
 /// Most tabs one viewer keeps on one artifact; past it the tab whose last
@@ -70,6 +76,10 @@ struct Tab {
     state: State,
     where_: Option<String>,
     last_report: DateTime<Utc>,
+    /// Focused at its last report. Never shown: see [`Presence::engaged_at`].
+    focused: bool,
+    /// The person's last input on it, by this registry's clock.
+    input_at: Option<DateTime<Utc>>,
 }
 
 /// One viewer on one artifact. A viewer may have the artifact open in several
@@ -179,7 +189,42 @@ impl Presence {
         where_: Option<&str>,
         tab: &str,
     ) -> Option<bool> {
+        self.report_engaged(
+            aid,
+            public_id,
+            display_name,
+            state,
+            where_,
+            tab,
+            false,
+            None,
+        )
+    }
+
+    /// [`Presence::report_tab`], with whether the tab has focus and how long
+    /// before this report the person last pressed, typed, pointed or
+    /// scrolled in it (`idle_ms`, read against this registry's clock, so no
+    /// browser's clock enters it; one reaching before any representable time
+    /// is no input). Neither is part of what anyone sees ([`PresenceView`]):
+    /// they serve the person's own agents' suggestion of where to ask
+    /// ([`Presence::engaged_at`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn report_engaged(
+        &self,
+        aid: &str,
+        public_id: &str,
+        display_name: Option<&str>,
+        state: State,
+        where_: Option<&str>,
+        tab: &str,
+        focused: bool,
+        idle_ms: Option<u64>,
+    ) -> Option<bool> {
         let now = self.clock.now();
+        let input_at = idle_ms
+            .and_then(|ms| i64::try_from(ms).ok())
+            .and_then(Duration::try_milliseconds)
+            .and_then(|idle| now.checked_sub_signed(idle));
         let state = if state == State::Gone {
             State::Away
         } else {
@@ -225,6 +270,8 @@ impl Presence {
                 state,
                 where_,
                 last_report: now,
+                focused,
+                input_at,
             },
         );
         // Lapsed tabs go; past MAX_TABS, the oldest.
@@ -346,6 +393,8 @@ impl Presence {
                     state: t.state,
                     r#where: t.where_.clone(),
                     at_ms: t.last_report.timestamp_millis(),
+                    focused: t.focused,
+                    input_ms: t.input_at.map(|i| i.timestamp_millis()),
                 });
             }
         }
@@ -371,6 +420,8 @@ impl Presence {
                 state: k.state,
                 where_: k.r#where.clone(),
                 last_report: at,
+                focused: k.focused,
+                input_at: k.input_ms.and_then(DateTime::from_timestamp_millis),
             });
             entry.shown = combined(entry, self.clock.now());
         }
@@ -399,6 +450,22 @@ impl Presence {
         });
         out
     }
+
+    /// When `public_id` last engaged with `aid`, on a tab whose report has
+    /// not lapsed: the newest of its tabs' last input and, for a tab focused
+    /// at its last report, that report. `None` with no such tab. A hidden
+    /// or unfocused tab without input is no engagement.
+    pub fn engaged_at(&self, aid: &str, public_id: &str) -> Option<DateTime<Utc>> {
+        let now = self.clock.now();
+        let map = self.entries.lock().unwrap();
+        let e = map.get(&(aid.to_string(), public_id.to_string()))?;
+        e.tabs
+            .values()
+            .filter(|t| !lapsed(t, now))
+            .flat_map(|t| [t.input_at, t.focused.then_some(t.last_report)])
+            .flatten()
+            .max()
+    }
 }
 
 #[cfg(test)]
@@ -410,6 +477,131 @@ mod tests {
     fn reg() -> (Arc<ManualClock>, Presence) {
         let c = Arc::new(ManualClock::at("2026-09-30T10:00:00Z"));
         (c.clone(), Presence::new(c))
+    }
+
+    fn utc(s: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    }
+
+    #[test]
+    fn focus_and_input_are_kept_for_the_suggestion_and_never_shown() {
+        let (c, p) = reg();
+        p.report_engaged(
+            "a",
+            "v1",
+            Some("Ann"),
+            State::Here,
+            None,
+            "t1",
+            true,
+            Some(2_000),
+        );
+        assert_eq!(
+            p.engaged_at("a", "v1"),
+            Some(utc("2026-09-30T10:00:00Z")),
+            "focused at its report"
+        );
+        c.advance(10);
+        p.report_engaged(
+            "a",
+            "v1",
+            Some("Ann"),
+            State::Here,
+            None,
+            "t1",
+            false,
+            Some(4_000),
+        );
+        assert_eq!(
+            p.engaged_at("a", "v1"),
+            Some(utc("2026-09-30T10:00:06Z")),
+            "unfocused: its last input"
+        );
+        let shown = serde_json::to_string(&p.for_artifact("a")).unwrap();
+        assert!(
+            !shown.contains("focus") && !shown.contains("input"),
+            "{shown}"
+        );
+        assert_eq!(p.engaged_at("b", "v1"), None);
+        p.report_tab("c", "v1", None, State::Here, None, "t2");
+        assert_eq!(
+            p.engaged_at("c", "v1"),
+            None,
+            "a tab with neither is no engagement"
+        );
+        c.advance(PRESENCE_TTL_SECS + 1);
+        assert_eq!(
+            p.engaged_at("a", "v1"),
+            None,
+            "a lapsed tab is no engagement"
+        );
+    }
+
+    #[test]
+    fn kept_reports_keep_focus_and_input_across_a_wake() {
+        let (c, p) = reg();
+        p.report_engaged("a", "v1", None, State::Here, None, "t1", true, Some(1_000));
+        let kept = p.kept();
+        assert!(kept[0].focused && kept[0].input_ms.is_some());
+        let back = Presence::new(c.clone());
+        back.restore(
+            &serde_json::from_str::<Vec<KeptPresence>>(&serde_json::to_string(&kept).unwrap())
+                .unwrap(),
+        );
+        assert_eq!(back.engaged_at("a", "v1"), p.engaged_at("a", "v1"));
+        // A report kept before focus and input were (no `f`, no `i`) restores unfocused.
+        let old: Vec<KeptPresence> =
+            serde_json::from_str(r#"[{"a":"a","p":"v2","s":"here","t":1790762400000}]"#).unwrap();
+        back.restore(&old);
+        assert_eq!(
+            back.for_artifact("a").len(),
+            2,
+            "the old report is restored"
+        );
+        assert_eq!(back.engaged_at("a", "v2"), None);
+    }
+
+    #[test]
+    fn an_idle_time_past_any_date_is_no_input_and_never_panics() {
+        let (_c, p) = reg();
+        p.report_engaged(
+            "a",
+            "v1",
+            None,
+            State::Here,
+            None,
+            "t1",
+            false,
+            Some(u64::MAX),
+        );
+        assert_eq!(p.engaged_at("a", "v1"), None);
+        p.report_engaged(
+            "a",
+            "v1",
+            None,
+            State::Here,
+            None,
+            "t1",
+            true,
+            Some(u64::MAX),
+        );
+        assert_eq!(
+            p.engaged_at("a", "v1"),
+            Some(utc("2026-09-30T10:00:00Z")),
+            "focus still counts"
+        );
+        p.report_engaged(
+            "a",
+            "v1",
+            None,
+            State::Here,
+            None,
+            "t1",
+            false,
+            Some(i64::MAX.unsigned_abs()),
+        );
+        assert_eq!(p.engaged_at("a", "v1"), None);
+        assert_eq!(p.kept()[0].input_ms, None);
     }
 
     #[test]

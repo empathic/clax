@@ -94,3 +94,41 @@ async fn an_artifact_full_of_people_refuses_a_newcomer_with_429() {
         clax_core::presence::MAX_PEOPLE
     );
 }
+
+#[tokio::test]
+async fn input_time_is_the_daemons_report_time_less_idle_ms() {
+    let c = Arc::new(ManualClock::at("2026-10-16T10:00:00Z"));
+    let ts = TestServer::spawn_with_clock(c.clone()).await;
+    let a = ts.publish("T", &[("index.html", "<p>")]).await;
+    let aid = a["artifact"]["id"].as_str().unwrap().to_string();
+    let owner = ts.owner_public_id().await;
+    let mut ev = ts.events(&format!("?artifact={aid}&types=presence")).await;
+    let r = ts
+        .client
+        .put(format!("{}/api/viewers/me/presence", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"artifact_id": aid, "state": "here", "tab": "t1", "focused": false, "idle_ms": 7000}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    let e = ev.next_named("presence").await;
+    assert!(
+        !e.to_string().contains("focus") && !e.to_string().contains("idle"),
+        "{e}"
+    );
+    assert_eq!(
+        ts.presence.engaged_at(&aid, &owner).map(|t| t.to_rfc3339()),
+        Some("2026-10-16T09:59:53+00:00".to_string())
+    );
+    let r = ts
+        .client
+        .put(format!("{}/api/viewers/me/presence", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"artifact_id": aid, "state": "here", "tab": "t1", "focused": false, "idle_ms": u64::MAX}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    assert_eq!(ts.presence.engaged_at(&aid, &owner), None);
+}

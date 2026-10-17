@@ -406,6 +406,12 @@ pub struct PresenceBody {
     /// from several tabs or browsers of one viewer combine.
     #[serde(default)]
     tab: Option<String>,
+    /// The tab has focus (kept for the viewer's own agents, never shown).
+    #[serde(default)]
+    focused: bool,
+    /// How long before this report the viewer last gave input in the tab.
+    #[serde(default)]
+    idle_ms: Option<u64>,
 }
 
 /// `PUT /api/viewers/me/presence`: reports this viewer here or away on an
@@ -420,6 +426,9 @@ pub struct PresenceBody {
 /// 15 s. 400 `no_viewer` without a viewer cookie;
 /// 429 `limit_reached` when the artifact already lists
 /// [`clax_core::presence::MAX_PEOPLE`] others and none of them is gone.
+/// `focused` and `idle_ms` are kept for the viewer's own agents' suggestion
+/// of where to ask (spec 2026-10-16-ask-where-attention-is-design §1) and
+/// never shown to anyone; a spectator's report records neither.
 pub async fn set_presence(
     State(s): State<AppState>,
     _d: clax_http::agent::DeniedToGrants,
@@ -473,13 +482,15 @@ pub async fn set_presence(
     }
     let changed = s
         .presence
-        .report_tab(
+        .report_engaged(
             &b.artifact_id,
             &v.public_id,
             v.display_name.as_deref(),
             state,
             b.r#where.as_deref(),
             b.tab.as_deref().unwrap_or(""),
+            b.focused,
+            b.idle_ms,
         )
         .ok_or_else(|| {
             ApiError::new(
