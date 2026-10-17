@@ -165,7 +165,7 @@ def cargo_package(
         kwargs = dict(
             common,
             # A test may include the crate's own sources (include_str!).
-            compile_data = (own_data if integration else src_data) + srcs + test_compile_data,
+            compile_data = _uniq((own_data if integration else src_data) + srcs + test_compile_data),
             data = data,
             env = env,
         )
@@ -253,6 +253,11 @@ def cargo_package(
             deps = ([":" + lib] if lib else []) + normal_deps + dev_deps,
             **test_kwargs(name, integration = True)
         )
+
+def _uniq(labels):
+    """`labels` without repeats, in order: a label may be both a crate's
+    compile data and its tests'."""
+    return [x for i, x in enumerate(labels) if x not in labels[:i]]
 
 def _test(name, **kwargs):
     """A rust_test with this workspace's defaults."""

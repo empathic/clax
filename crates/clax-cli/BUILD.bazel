@@ -2,40 +2,26 @@ load("//bazel:cargo.bzl", "cargo_package")
 load("//bazel:opt.bzl", "opt_binary")
 load("//bazel:warm.bzl", "warm_binary")
 
-EMBEDDED = [
-    "//:marketplaces",
-    "//plugins:embedded",
-    "//plugins/pi:embedded",
-]
-
 cargo_package(
     # The modules of tests/integration.rs in three test targets (bazel/cargo.bzl).
     split_tests = {"integration": {"groups": 3}},
-    build_script_data = EMBEDDED + ["//web:dist_extension"],
-    # The extension build and the plugin trees the binary embeds
-    # (src/extension_files.rs, src/plugins.rs): Bazel's copies.
-    build_script_env = {
-        "CLAX_EXTENSION_DIST_DIR": "$(execpath //web:dist_extension)",
-        "CLAX_PLUGINS_DIR": "$${pwd}/$(BINDIR)/plugins",
-    },
-    # The plugin trees and other files the sources include, beside them in
-    # bazel-bin, where rules_rust places sources that compile with
-    # generated files.
+    # The plugins' skills `clax doctor --agent` compares
+    # (src/commands/doctor_agent.rs).
     compile_data = [
-        "//:marketplaces_bin",
-        "//plugins:embedded_bin",
-        "//plugins/pi:embedded_bin",
-        "//scripts:ensure_clax_bin",
-        "//web:dist_extension",
-        "//web:shell_cases_bin",
+        "//plugins:embedded",
+        "//plugins/pi:embedded",
     ],
-    test_compile_data = ["//scripts:ensure-clax.sh"],
+    test_compile_data = [
+        "//scripts:ensure-clax.sh",
+        "//web:shell_cases",
+    ],
     test_data = [
         "//:marketplaces",
         "//plugins:embedded",
         "//plugins/pi:embedded",
         "//plugins/pi:test_fixtures",
         "//scripts:all",
+        "//web:dist",
         "//web:dist_extension",
     ],
     tests_use_clax = [

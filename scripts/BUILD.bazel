@@ -2,15 +2,16 @@ load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel:release_files.bzl", "RELEASE_FILES")
 
-# The plugin wrapper clax embeds (crates/clax-cli/src/plugin_bin.rs).
+# The plugin wrapper clax embeds (crates/clax-embedded/src/lib.rs).
 exports_files(
     ["ensure-clax.sh"],
     visibility = ["//crates:__subpackages__"],
 )
 
-# A crate whose compile inputs include a generated directory has its sources
-# placed in bazel-bin by rules_rust, so its include_str!s of files outside
-# the crate resolve there: these are those files, copied beside it.
+# clax-embedded's compile inputs include generated directories (the web
+# builds), so rules_rust places its sources in bazel-bin, and its
+# include_str!s of files outside the crate resolve there: these are those
+# files, copied beside it.
 copy_to_bin(
     name = "ensure_clax_bin",
     srcs = ["ensure-clax.sh"],
@@ -63,6 +64,7 @@ CLAX_ENV = {"CLAX_TEST_BIN": "$(rootpath //crates/clax-cli:clax)"}
 RUST_SOURCES = [
     "//crates/clax-cli:rust_sources",
     "//crates/clax-core:rust_sources",
+    "//crates/clax-embedded:rust_sources",
     "//crates/clax-fake-exe:rust_sources",
     "//crates/clax-hooks:rust_sources",
     "//crates/clax-mcp:rust_sources",

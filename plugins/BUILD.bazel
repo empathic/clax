@@ -1,6 +1,6 @@
 load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
 
-# The plugin trees clax embeds (crates/clax-cli/src/plugins.rs and its
+# The plugin trees clax embeds (crates/clax-embedded/src/plugins.rs and its
 # build script's list), as compile inputs; Pi's is //plugins/pi:embedded.
 filegroup(
     name = "embedded",
@@ -19,9 +19,10 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
-# A crate whose compile inputs include a generated directory has its sources
-# placed in bazel-bin by rules_rust, so its include_str!s of files outside
-# the crate resolve there: these are those files, copied beside it.
+# clax-embedded's compile inputs include generated directories (the web
+# builds), so rules_rust places its sources in bazel-bin, and its
+# include_str!s of files outside the crate resolve there: these are those
+# files, copied beside it.
 copy_to_bin(
     name = "embedded_bin",
     srcs = [":embedded"],

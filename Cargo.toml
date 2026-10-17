@@ -8,6 +8,7 @@ members = [
     "crates/clax-hooks",
     "crates/clax-fake-exe",
     "crates/clax-testkit",
+    "crates/clax-embedded",
 ]
 
 [workspace.package]

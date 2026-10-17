@@ -170,21 +170,6 @@ filegroup(
     visibility = ["//crates:__subpackages__"],
 )
 
-# A crate whose compile inputs include a generated directory has its sources
-# placed in bazel-bin by rules_rust, so its include_str!s of files outside
-# the crate resolve there: these are those files, copied beside it.
-copy_to_bin(
-    name = "shell_cases_bin",
-    srcs = [":shell_cases"],
-    visibility = ["//crates:__subpackages__"],
-)
-
-copy_to_bin(
-    name = "contract_bin",
-    srcs = [":contract_files"],
-    visibility = ["//crates:__subpackages__"],
-)
-
 # What the unit tests read outside web/.
 UNIT_DATA = [
     ":files",

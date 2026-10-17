@@ -4,7 +4,7 @@ load("//bazel/js:defs.bzl", "npm_script_test")
 
 # The Pi extension under Bazel (docs/bazel.md, "The web side and Pi"): its
 # packages from pnpm-lock.yaml, and its files beside them in bazel-bin, so
-# the real Pi the Rust tests run (crates/clax-server/tests/common/clients.rs)
+# the real Pi the Rust tests run (crates/clax-testkit/src/clients.rs)
 # resolves its imports there.
 
 npm_link_all_packages(name = "node_modules")
@@ -52,9 +52,10 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
-# A crate whose compile inputs include a generated directory has its sources
-# placed in bazel-bin by rules_rust, so its include_str!s of files outside
-# the crate resolve there: these are those files, copied beside it.
+# clax-embedded's compile inputs include generated directories (the web
+# builds), so rules_rust places its sources in bazel-bin, and its
+# include_str!s of files outside the crate resolve there: these are those
+# files, copied beside it.
 copy_to_bin(
     name = "embedded_bin",
     srcs = [":embedded"],
