@@ -16,7 +16,8 @@ typedef AppDocument = ({String path, int version, Map<String, Object?> data});
 typedef AppCollection = ({String path, int count, List<AppDocument> docs});
 
 /// What a Keep going run's first message says about the run it goes on
-/// from: the [limit] it stopped at, the agent's [notes], and the paths
+/// from: the [limit] it stopped at, the agent's [notes] over every earlier
+/// run of the change (oldest first), and the paths
 /// the draft already holds its unfinished edits to ([edited]); or, with
 /// [edited] null, [why] the run starts over from the app instead.
 class KeepGoingNote {
@@ -332,8 +333,8 @@ class PromptBuilder {
     if (k.notes.isNotEmpty) {
       b
         ..writeln(
-          'What that run said as it worked and why it stopped, one JSON '
-          'string per line:',
+          'What the earlier runs of this change said as they worked and '
+          'why they stopped, oldest first, one JSON string per line:',
         )
         ..writeln([for (final n in k.notes) jsonEncode(n)].join('\n'));
     }

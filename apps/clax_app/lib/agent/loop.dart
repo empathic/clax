@@ -617,15 +617,18 @@ class AgentLoop {
   }
 
   /// After a change run on [threadIds] of [aid]: keeps it in [unfinished]
-  /// when it ended at a limit, else forgets what was kept for them.
+  /// when it ended at a limit, else forgets what was kept for them. The
+  /// notes kept are [earlierNotes] (those of the runs a Keep going went on
+  /// from) then this run's, the newest [maxUnfinishedNotes].
   Future<void> _keepUnfinished(
     String aid,
     List<FeedbackItem> items,
     List<String> threadIds,
     Map<String, String> base,
     double spentBefore,
-    _Ran ran,
-  ) async {
+    _Ran ran, {
+    List<String> earlierNotes = const [],
+  }) async {
     final limit = switch (ran.outcome) {
       RunGaveUp(:final limit?) || RunFinished(:final limit?) => limit,
       RunCancelled() || RunInterrupted() => null,
@@ -660,7 +663,11 @@ class AgentLoop {
           limit: limit,
           spentUsd: spentBefore + ran.state.budget.costUsd,
           at: _clock.now(),
-          notes: [...ran.narrations, ?ran.giveUp.givenReason],
+          notes: _newest([
+            ...earlierNotes,
+            ...ran.narrations,
+            ?ran.giveUp.givenReason,
+          ], maxUnfinishedNotes),
           edits: edits,
           before: {for (final p in edits.keys) p: fingerprint(from[p])},
           title: title,
@@ -671,6 +678,9 @@ class AgentLoop {
       _log('keeping the unfinished change of $aid failed: $e');
     }
   }
+
+  static List<String> _newest(List<String> notes, int n) =>
+      notes.length <= n ? notes : notes.sublist(notes.length - n);
 
   /// Runs the next features of artifact [aid]'s plan: a build's
   /// **continue** run ([RunCaps.continueBuild], its cost cap no more than
@@ -1023,7 +1033,15 @@ class AgentLoop {
       startTitle: resume == _Resume.draft ? kept?.title : null,
       startCapabilities: resume == _Resume.draft ? kept?.capabilities : null,
     );
-    await _keepUnfinished(aid, items, threadIds, snap.files, spentBefore, ran);
+    await _keepUnfinished(
+      aid,
+      items,
+      threadIds,
+      snap.files,
+      spentBefore,
+      ran,
+      earlierNotes: kept?.notes ?? const [],
+    );
 
     final outcome = ran.outcome;
     if (outcome is RunGaveUp || outcome is RunDropped) {

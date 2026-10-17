@@ -15,6 +15,10 @@ const unfinishedDraftAge = Duration(hours: 1);
 /// cost are forgotten too.
 const unfinishedKeepAge = Duration(hours: 24);
 
+/// At most this many of the agent's notes are kept for a change across
+/// its Keep going runs: the newest.
+const maxUnfinishedNotes = 60;
+
 /// A short fingerprint of a file's text (FNV-1a over its UTF-8 bytes, with
 /// its length), or null for no file: what [UnfinishedChange.before] keeps
 /// instead of the whole text.
@@ -85,7 +89,8 @@ class UnfinishedChange {
   /// When it stopped.
   final DateTime at;
 
-  /// The agent's words: what it narrated, then why it stopped.
+  /// The agent's words over the change's runs, oldest first: what each
+  /// narrated, then why it stopped; the newest [maxUnfinishedNotes].
   final List<String> notes;
 
   final Map<String, String?> edits;
