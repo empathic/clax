@@ -310,12 +310,21 @@ class AskTool implements Tool {
     }
   }
 
+  /// The questions of this run the person answered or skipped, as the
+  /// run was told of them.
+  final List<QuestionView> answered = [];
+
   /// The `ask` result for [q], forgetting it once it has closed.
   Future<Map<String, Object?>> _settled(QuestionView q) async {
     final isOpen = q.isOpen;
     if (!isOpen) {
       _closed = true;
       await _forget(q.id);
+      if (q.status == 'answered' || q.status == 'declined') {
+        answered
+          ..removeWhere((x) => x.id == q.id)
+          ..add(q);
+      }
     }
     final answers = q.answers;
     return {

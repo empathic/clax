@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:collection';
-import 'dart:convert';
 import 'dart:math' as math;
 
 import '../clax/api.dart';
@@ -1424,43 +1423,5 @@ String lateAnswerText(FeedbackBatch batch, QuestionView q) {
       if (stop > start) return lines.sublist(start, stop + 1).join('\n');
     }
   }
-  String quoted(String s) =>
-      jsonEncode(s)
-          .replaceAll('\u0085', r'\u0085')
-          .replaceAll('\u2028', r'\u2028')
-          .replaceAll('\u2029', r'\u2029');
-  final header = q.questions.isEmpty ? '' : q.questions.first.header;
-  final b = StringBuffer(
-    q.status == 'declined'
-        ? '[clax] The person skipped your question ${quoted(header)} '
-              '(${q.id}):'
-        : '[clax] The person answered your question ${quoted(header)} '
-              '(${q.id}):',
-  );
-  final answers = q.status == 'answered' ? q.answers : null;
-  if (answers == null) {
-    b.write('\n  (skipped)');
-  } else {
-    for (var i = 0; i < q.questions.length && i < answers.length; i++) {
-      final question = q.questions[i];
-      final a = answers[i];
-      final parts = [for (final l in a.selected) quoted(l)];
-      if (a.text case final t?) {
-        parts.add(question.options.isEmpty ? quoted(t) : 'Other: ${quoted(t)}');
-      }
-      b.write('\n  ${_oneLine(question.header)}: ${parts.join(', ')}');
-    }
-  }
-  b.write('\n$end');
-  return b.toString();
+  return answerText(q);
 }
-
-/// [s] with control characters, U+2028 and U+2029 written as `\uXXXX`, as
-/// the daemon's `one_line` does.
-String _oneLine(String s) => String.fromCharCodes(
-  s.runes.expand(
-    (c) => c < 0x20 || (c >= 0x7f && c <= 0x9f) || c == 0x2028 || c == 0x2029
-        ? '\\u${c.toRadixString(16).padLeft(4, '0')}'.runes
-        : [c],
-  ),
-);
