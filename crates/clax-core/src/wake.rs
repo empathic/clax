@@ -97,6 +97,17 @@ with Grok's monitor tool (persistent: true), exactly as given: each line it prin
 notice that wakes you. Keep exactly one running."
             );
         }
+        ("codex", _) => {
+            let why = push["reason"]
+                .as_str()
+                .unwrap_or("the Clax daemon cannot run codex queue");
+            out["do"] = json!(format!(
+                "Nothing can wake this session while it is idle ({why}). Tell the person: \
+\"Codex can't be woken here; running `codex queue` to wake it needs `codex` on the Clax \
+daemon's PATH (or CLAX_CODEX_BIN naming it) and a daemon restart. Until then your comments reach me only when I \
+next act.\" While they comment, call wait_for_feedback in a loop instead of ending your turn."
+            ));
+        }
         _ => out["do"] = json!(TELL_THE_PERSON),
     }
     out
@@ -210,6 +221,23 @@ mod tests {
             assert!(w.get("follow_command").is_none(), "{harness}");
             assert!(w["do"].as_str().unwrap().contains("Tell the person"), "{w}");
         }
+    }
+
+    #[test]
+    fn a_codex_session_without_codex_queue_gives_the_person_the_fix() {
+        let w = block(
+            "codex",
+            &json!({"tier": null, "available": false, "reason": "codex is not on the daemon's PATH; native push disabled"}),
+            "/b",
+            Some("c"),
+        );
+        let d = w["do"].as_str().unwrap();
+        assert!(
+            d.contains("Tell the person: \"Codex can't be woken here; running `codex queue`"),
+            "{d}"
+        );
+        assert!(d.contains("codex is not on the daemon's PATH"), "{d}");
+        assert!(d.contains("CLAX_CODEX_BIN"), "{d}");
     }
 
     #[test]
