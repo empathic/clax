@@ -351,6 +351,11 @@ impl Ledger for FileLedger {
 pub struct StopWake<'a> {
     pub bin: String,
     pub ledger: &'a dyn Ledger,
+    /// Whether Claude Code was launched with the Clax channel (`None`:
+    /// unknown, or another harness). A channel-launched session relies on
+    /// the channel: a lapse of the shim's poll is no reason to start a
+    /// follower.
+    pub channel: Option<bool>,
 }
 
 /// [`stop`], which, when `wake` is given and nothing is pending, also
@@ -415,6 +420,9 @@ fn unwoken(
             kept.woken = true;
             w.ledger.save(&kept)?;
         }
+        return Ok(None);
+    }
+    if harness == "claude" && w.channel == Some(true) {
         return Ok(None);
     }
     let listed = daemon.get(&format!("/api/sessions/{sid}/watches"))?;
@@ -1156,6 +1164,7 @@ mod tests {
         let w = StopWake {
             bin: "/b/clax".into(),
             ledger: l,
+            channel: None,
         };
         let i = HookInput::parse(&format!(
             r#"{{"session_id":"s1","stop_hook_active":{active}}}"#
@@ -1243,6 +1252,30 @@ mod tests {
         // Without a wake check, the stop is as before.
         let i = HookInput::parse(r#"{"session_id":"s1"}"#);
         assert_eq!(stop("claude", &i, &d).unwrap(), HookOutput::none());
+    }
+
+    #[test]
+    fn a_channel_launched_session_is_not_told_to_start_a_follower_when_the_shim_lapses() {
+        // The shim's channel poll lapsed (a daemon restart): push reads
+        // unavailable, but Claude Code was launched with the channel, which
+        // the watch result already said to rely on.
+        let d = wake_fake("claude", false, json!([armed("a1", "t1")]));
+        let l = MemLedger::default();
+        let w = StopWake {
+            bin: "/b/clax".into(),
+            ledger: &l,
+            channel: Some(true),
+        };
+        let i = HookInput::parse(r#"{"session_id":"s1","stop_hook_active":false}"#);
+        assert_eq!(
+            stop_with("claude", &i, &d, Some(&w)).unwrap(),
+            HookOutput::none()
+        );
+        assert_eq!(
+            *l.kept.borrow(),
+            Nudged::default(),
+            "nothing said, nothing kept"
+        );
     }
 
     #[test]

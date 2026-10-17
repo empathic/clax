@@ -1076,6 +1076,9 @@ fn handle(
             let wake = ledger.as_ref().map(|l| events::StopWake {
                 bin: follow_bin(),
                 ledger: l,
+                channel: matches!(agent, Agent::Claude)
+                    .then(|| channel_flag(parent_pid))
+                    .flatten(),
             });
             events::stop_with(agent.harness(), &input, &client, wake.as_ref())
         }

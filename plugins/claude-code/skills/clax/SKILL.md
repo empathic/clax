@@ -419,8 +419,14 @@ thread, do nothing.
 After `watch`, read its result's `wake`; after your first `publish` in a
 session (publishing watches), call `status` and read `push`. Then:
 
-- `wake.when_idle` is true (`push.tier` is `"channel"` or `"follow"`):
-  notices arrive on their own. Start nothing.
+- `wake.via` is `"follower"` (`push.tier` is `"follow"`): a follower
+  already runs. Start nothing.
+- `wake.via` is `"channel"` (`push.tier` is `"channel"`, `sure: false`):
+  the session was launched with the Clax channel, and notices arrive
+  through it. Start nothing, and tell the person once, in chat: "If
+  Claude Code said the Clax channel was blocked when it started, relaunch
+  without the channel flag so I can be woken." Claude Code does not tell
+  Clax whether it loaded the channel.
 - `wake.when_idle` is false with `follow_command` (`push.tier` is null):
   start `wake.follow_command` with the Monitor tool (`timeout_ms`
   1800000). Each line it prints is a notice that wakes you; handle each
@@ -437,7 +443,9 @@ session (publishing watches), call `status` and read `push`. Then:
 If you end your turn with a watch armed and nothing to wake you, the Stop
 hook says so once, with the commands.
 
-Never start a follower while `wake.via` is `"channel"`.
+Never start a follower in a session launched with the channel, even when
+`push` briefly reads unavailable while the channel reconnects; the Stop
+hook does not ask for one there either.
 
 ## Working beside other agents and people
 
