@@ -89,6 +89,8 @@ TEST_SUPPORT = glob(
     "test/platform/device/device_host_test.dart",
     "test/ui/build_view_test.dart",
     "test/ui/bundle_flows_test.dart",
+    # The integration rig's pure helpers, which a unit test runs.
+    "integration_test/newer.dart",
 ]
 
 TEST_DATA = glob(

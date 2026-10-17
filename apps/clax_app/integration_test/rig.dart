@@ -39,6 +39,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
+import 'newer.dart';
+
 const _scratchParent = String.fromEnvironment('CLAX_F10_DIR');
 
 /// The debug Runner's test input (`macos/Runner/MainFlutterWindow.swift`).
@@ -325,18 +327,12 @@ class Rig {
   /// the app's New version toast, as the person does to swap it in; a page
   /// that opened on [version] or later (a new shell document) needs none.
   Future<void> reloadNewer(WidgetTester tester, int version) async {
-    final offered = await until<bool>(
+    final seen = await until<NewerSeen>(
       tester,
       'version $version offered or shown',
-      () {
-        for (final m in messages.reversed) {
-          if (m is NewerMsg && m.version == version) return true;
-          if (m is Ready && m.version >= version) return false;
-        }
-        return null;
-      },
+      () => newerSeen(messages, version),
     );
-    if (!offered) return;
+    if (seen == NewerSeen.shown) return;
     final reload = await until<Finder>(tester, 'the New version toast', () {
       final f = find.descendant(
         of: find.byKey(const ValueKey('newer-toast')),
