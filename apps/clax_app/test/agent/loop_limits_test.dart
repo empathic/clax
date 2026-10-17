@@ -310,6 +310,75 @@ void main() {
     expect((await unfinished.get(item.threadId))!.spentUsd, 4.5);
   });
 
+  test('each Keep going carries the notes of every earlier run, oldest '
+      'first, along with the edits they made', () async {
+    final item = api.sendComment(aid, 'Rename and recolour', queue: false);
+    List<ScriptedCall> stopsAfter(ScriptedCall edit) => [
+      edit,
+      for (var i = 0; i < 10; i++) const ScriptedCall('list_files', {}),
+    ];
+    final loop = loopWith([
+      stopsAfter(
+        const ScriptedCall('str_replace', {
+          'path': 'index.html',
+          'old_str': 'Save',
+          'new_str': 'Keep',
+        }, 'Renaming the button'),
+      ),
+      stopsAfter(
+        const ScriptedCall('str_replace', {
+          'path': 'index.html',
+          'old_str': '<button>',
+          'new_str': '<button class="red">',
+        }, 'Recolouring the button'),
+      ),
+      [
+        const ScriptedCall('render', {'file': null}),
+        const ScriptedCall('finish', {'reply': 'Done.', 'resolve': true}),
+      ],
+    ]);
+    await loop.change(aid, [item], session: sid);
+    await loop.change(aid, [item], session: sid, keepGoing: true);
+    expect((await unfinished.get(item.threadId))!.notes, [
+      'Renaming the button',
+      'Recolouring the button',
+    ]);
+    await loop.change(aid, [item], session: sid, keepGoing: true);
+
+    final third = runner.text(2);
+    expect(third, contains('"Renaming the button"'));
+    expect(third, contains('"Recolouring the button"'));
+    expect(
+      third.indexOf('"Renaming the button"'),
+      lessThan(third.indexOf('"Recolouring the button"')),
+    );
+    expect(
+      runner.states[2].draft.files['index.html'],
+      contains('<button class="red">Keep'),
+    );
+  });
+
+  test('the notes kept for Keep going are bounded, the newest kept', () async {
+    final item = api.sendComment(aid, 'Rename Save', queue: false);
+    await unfinished.put(
+      UnfinishedChange(
+        artifactId: aid,
+        threadIds: [item.threadId],
+        commentIds: [item.commentId],
+        limit: '10 turns',
+        spentUsd: 0,
+        at: clock.now(),
+        notes: [for (var i = 0; i < maxUnfinishedNotes; i++) 'note $i'],
+      ),
+    );
+    await loopWith([unfinishedRun()])
+        .change(aid, [item], session: sid, keepGoing: true);
+    final notes = (await unfinished.get(item.threadId))!.notes;
+    expect(notes, hasLength(maxUnfinishedNotes));
+    expect(notes.first, 'note 1');
+    expect(notes.last, 'Renaming the button');
+  });
+
   test('an expired draft starts over from the app with the notes, and the '
       'agent is told to say so', () async {
     final item = api.sendComment(aid, 'Rename Save', queue: false);
