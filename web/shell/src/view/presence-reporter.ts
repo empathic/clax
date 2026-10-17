@@ -5,7 +5,10 @@
 // stream (re)connect. Each report says whether the tab has focus and how
 // long ago the viewer last gave input in it (never a time, so the browser's
 // clock does not matter); the daemon keeps both for the viewer's own agents
-// and shows them to no one. Gaining or losing focus reports at once; while
+// and shows them to no one. Input there is the viewer's own act: a pointer
+// moving over a window without focus (on its way to another app) is not,
+// and a page opened in the background has none until the viewer acts, so
+// its reports leave `idle_ms` out until then. Gaining or losing focus reports at once; while
 // focus sits in the artifact's frame, where the shell window hears no blur
 // or focus as the viewer leaves the browser or comes back, focus is read
 // again every second.
@@ -21,8 +24,13 @@ export class PresenceReporter {
   /** This page's name in its reports: one viewer (the owner's browsers are
    * one) may have the artifact open in several tabs, which the daemon combines. */
   private readonly tab = Math.random().toString(36).slice(2, 12);
-  /** When the viewer last pressed, typed, moved the pointer or scrolled in the shell. */
+  /** When the viewer last pressed, typed, moved the pointer or scrolled in
+   * the shell, counted from the page's start: whether they are here or away. */
   private lastInput = wall();
+  /** When the viewer last gave input the reports' `idle_ms` describes: as
+   * `lastInput`, but a pointer move only while the window has focus, and
+   * unset until the first. */
+  private engagedInput: number | null = null;
   /** The last report sent: its state, location, focus and time. */
   private reported: { state: "here" | "away"; where: string | null; focused: boolean; at: number } | null = null;
   private timer: (() => void) | undefined;
@@ -31,15 +39,16 @@ export class PresenceReporter {
   private frameWatch: (() => void) | undefined;
   private readonly onVisible = () => { this.report(); this.watchFrame(); };
   private readonly onFocus = () => { this.report(); this.watchFrame(); };
-  private readonly onInput = () => {
+  private readonly onInput = (e: Event) => {
     this.lastInput = wall();
+    if (e.type !== "pointermove" || document.hasFocus()) this.engagedInput = this.lastInput;
     if (this.reported?.state === "away" && document.visibilityState === "visible") this.report();
   };
   /** Leaving the page: away at once, rather than here until the report lapses. */
   readonly leave = () => {
     if (this.done || !this.may(this.state())) return;
     this.reported = { state: "away", where: null, focused: false, at: wall() };
-    void putPresence(this.id, "away", null, this.tab, true, { focused: false, idle_ms: this.idle() });
+    void putPresence(this.id, "away", null, this.tab, true, { focused: false, ...this.idle() });
   };
   private done = false;
 
@@ -52,6 +61,8 @@ export class PresenceReporter {
     addEventListener("pagehide", this.leave);
     for (const t of INPUTS) addEventListener(t, this.onInput, { passive: true, capture: true });
     this.beat = setInterval(() => this.report(true), 30_000);
+    // Focus may already sit in a frame, where no blur will say so.
+    if (document.activeElement?.tagName === "IFRAME") this.watchFrame();
   }
 
   fetch(): void {
@@ -79,7 +90,7 @@ export class PresenceReporter {
     this.timer?.();
     this.timer = undefined;
     this.reported = { state, where, focused, at: wall() };
-    void putPresence(this.id, state, where, this.tab, false, { focused, idle_ms: this.idle() }).then(p => { if (p && !this.done) this.take(p); });
+    void putPresence(this.id, state, where, this.tab, false, { focused, ...this.idle() }).then(p => { if (p && !this.done) this.take(p); });
   }
 
   /** Re-reads focus every second while the tab is visible and focus is in a
@@ -95,8 +106,11 @@ export class PresenceReporter {
     });
   }
 
-  /** How long ago, in whole milliseconds, the viewer last gave input in this tab. */
-  private idle(): number { return Math.max(0, Math.round(wall() - this.lastInput)); }
+  /** `idle_ms`, how long ago in whole milliseconds the viewer last gave
+   * input in this tab; nothing before their first. */
+  private idle(): { idle_ms?: number } {
+    return this.engagedInput === null ? {} : { idle_ms: Math.max(0, Math.round(wall() - this.engagedInput)) };
+  }
 
   /** Lets the next report go out at once (the share switch changed). */
   reset(): void { this.reported = null; }
@@ -115,9 +129,9 @@ export class PresenceReporter {
 }
 
 /** Reports this viewer here or away on `aid` from tab `tab`, with where they look and, when given,
- * whether the tab has focus and how long ago they last gave input in it; answers the artifact's
+ * whether the tab has focus and how long ago they last gave input in it (left out before any); answers the artifact's
  * presence, or null on failure (the next report writes again). */
-export async function putPresence(aid: string, state: "here" | "away", where: string | null, tab: string, keepalive = false, engaged?: { focused: boolean; idle_ms: number }): Promise<Presence | null> {
+export async function putPresence(aid: string, state: "here" | "away", where: string | null, tab: string, keepalive = false, engaged?: { focused: boolean; idle_ms?: number }): Promise<Presence | null> {
   try {
     const r = await fetch("/api/viewers/me/presence", { method: "PUT", keepalive, headers: { "content-type": "application/json" }, body: JSON.stringify({ artifact_id: aid, state, tab, ...where && { where }, ...engaged }) });
     return r.ok ? presenceOf(await r.json()) : null;

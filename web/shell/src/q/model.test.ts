@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { view } from "./fixtures";
 import { aboutLink, agentLabel, answerLine, closedLabel, complete, cutHeader, emptyDraft, inThread, nextOpen, pick, previewOf, shownLabel, toBody, typeOther } from "./model";
-import { terminalLine } from "./terminal";
+import { pulledLabel, terminalLine } from "./terminal";
 
 describe("question model", () => {
   it("tracks completeness per kind and builds the body", () => {
@@ -109,7 +109,7 @@ describe("in-terminal questions and threads", () => {
   });
   it("says who asks in the terminal, and what Ask me here did", () => {
     expect(terminalLine(view({ in_terminal: true }), [])).toBe("claude is asking you in the terminal");
-    expect(closedLabel(view({ in_terminal: true, status: "withdrawn", pulled: true }))).toBe("Sent to claude: it asks here next");
+    expect(pulledLabel(view({ in_terminal: true, status: "withdrawn", pulled: true }))).toBe("Sent to claude: it asks here when it next checks in");
     expect(closedLabel(view({ in_terminal: true, status: "answered", answered_via: "terminal" }))).toBe("Answered in the terminal");
   });
 });

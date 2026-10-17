@@ -7,14 +7,14 @@
   // the questions' headers only; it takes no
   // answer. **Ask me here** sends the agent word to ask it in Clax instead
   // (following the keyboard trail rule, `guardedAction`); for Claude Code's
-  // terminal dialog it says the dialog stays until Esc. Closed, it says what
-  // closed it, for the list's usual moment. It loads on demand (`later`);
+  // terminal dialog it says the dialog stays until Esc, before Ask me here
+  // and after. Closed, it says what closed it, for the list's usual moment. It loads on demand (`later`);
   // its styles, injected on mount, carry the card's (`.qcard`) frame
   // themselves, as QuestionCard's inject only once a QuestionCard mounts.
   import type { QuestionView } from "../api";
   import { relativeTime } from "../format";
   import { aboutLink, closedLabel, cutHeader } from "./model";
-  import { TERMINAL_ESC, terminalLine } from "./terminal";
+  import { TERMINAL_ESC, pulledLabel, terminalLine } from "./terminal";
   import { trail } from "./trail";
 
   const p: {
@@ -63,7 +63,8 @@
     <!-- One live region while open: a failure, else the trail's hint. -->
     <p class="act-hint" role="status">{#if failed}<span class="err">Not sent: try again</span>{:else}{hint ?? ""}{/if}</p>
   {:else}
-    <p class="closed" role="status">{closedLabel(p.q)}</p>
+    <p class="closed" role="status">{p.q.pulled ? pulledLabel(p.q) : closedLabel(p.q)}</p>
+    {#if p.q.pulled && p.q.source === "hook"}<p class="esc small muted">{TERMINAL_ESC}</p>{/if}
   {/if}
 </article>
 

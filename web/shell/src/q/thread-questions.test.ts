@@ -62,7 +62,7 @@ describe("questions in threads and in the terminal", () => {
     flush();
     expect(fetched.mock.calls[0][0]).toBe("/api/questions/QN/pull");
     expect(fetched.mock.calls[0][1]!.method).toBe("POST");
-    expect(m.root.querySelector(".qcard .closed")!.textContent).toBe("Sent to claude: it asks here next");
+    expect(m.root.querySelector(".qcard .closed")!.textContent).toBe("Sent to claude: it asks here when it next checks in");
     m.unmount();
   });
 

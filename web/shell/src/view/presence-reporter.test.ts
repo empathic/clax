@@ -29,11 +29,60 @@ describe("PresenceReporter", () => {
   it("reports focus and idle time, never a timestamp", async () => {
     stub(true);
     const r = reporter();
+    dispatchEvent(new Event("keydown"));
     r.report(true);
     await vi.waitFor(() => expect(bodies.length).toBe(1));
     expect(bodies[0]).toMatchObject({ artifact_id: AID, state: "here", focused: true });
     expect(typeof bodies[0].idle_ms).toBe("number");
     expect(Object.keys(bodies[0]).sort()).toEqual(["artifact_id", "focused", "idle_ms", "state", "tab"]);
+    r.dispose();
+  });
+
+  it("leaves idle_ms out until the first input: a page opened in the background has none", async () => {
+    stub(false);
+    const r = reporter();
+    r.report(true);
+    await vi.waitFor(() => expect(bodies.length).toBe(1));
+    expect(bodies[0]).toMatchObject({ state: "here", focused: false });
+    expect("idle_ms" in bodies[0]).toBe(false);
+    dispatchEvent(new Event("keydown"));
+    clock().advance(2000);
+    r.report(true);
+    await vi.waitFor(() => expect(bodies.length).toBe(2));
+    expect(bodies[1].idle_ms).toBeGreaterThanOrEqual(2000);
+    r.dispose();
+  });
+
+  it("counts a pointer move toward idle_ms only while the window has focus", async () => {
+    const focus = stub(false);
+    const r = reporter();
+    // The pointer crosses a Clax window without focus, on its way elsewhere.
+    dispatchEvent(new Event("pointermove"));
+    r.report(true);
+    await vi.waitFor(() => expect(bodies.length).toBe(1));
+    expect("idle_ms" in bodies[0]).toBe(false);
+    expect(bodies[0].state).toBe("here");
+    focus.mockReturnValue(true);
+    clock().advance(2000);
+    dispatchEvent(new Event("pointermove"));
+    r.report(true);
+    await vi.waitFor(() => expect(bodies.length).toBe(2));
+    expect(bodies[1].idle_ms).toBeGreaterThanOrEqual(0);
+    expect(bodies[1].idle_ms).toBeLessThan(1000);
+    r.dispose();
+  });
+
+  it("watches a frame that already holds focus as it starts", async () => {
+    const focus = stub(true);
+    vi.spyOn(document, "activeElement", "get").mockReturnValue(document.createElement("iframe"));
+    const r = reporter();
+    r.report(true);
+    await vi.waitFor(() => expect(bodies.length).toBe(1));
+    // The viewer leaves for another app with no blur in the shell window.
+    focus.mockReturnValue(false);
+    clock().advance(1000);
+    await vi.waitFor(() => expect(bodies.length).toBe(2));
+    expect(bodies[1].focused).toBe(false);
     r.dispose();
   });
 
@@ -103,6 +152,7 @@ describe("PresenceReporter", () => {
   it("leaving the page reports away, unfocused, with idle_ms, on a keepalive request", async () => {
     stub(true);
     const r = reporter();
+    dispatchEvent(new Event("keydown"));
     dispatchEvent(new Event("pagehide"));
     await vi.waitFor(() => expect(bodies.length).toBe(1));
     expect(bodies[0]).toMatchObject({ artifact_id: AID, state: "away", focused: false });

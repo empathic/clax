@@ -2,7 +2,7 @@
 // §2, §3), against the real daemon, at 1280 and 390 wide, light and dark:
 // a thread's question arriving live inside its thread card, counted in the
 // sidebar and the Inbox, and leaving it as it was once answered or skipped;
-// a resolved thread's question in the sidebar's block (once fetched again); the sidebar's link
+// a resolved thread's question moving live to the sidebar's block; the sidebar's link
 // opening a folded card; an in-terminal question's terminal card with Ask
 // me here, what it says once pressed and when sending fails; the terminal
 // card in /inbox and the gallery; `?thread=` opening its thread.
@@ -167,7 +167,7 @@ for (const theme of THEMES) {
       await expect(inboxCount(page, size)).toHaveText("2");
       await shot(page, "terminal-card", size, theme);
       await pull.click();
-      await expect(side.locator(".closed")).toHaveText(`Sent to ${NAME}: it asks here next`);
+      await expect(side.locator(".closed")).toHaveText(`Sent to ${NAME}: it asks here when it next checks in`);
       await expect(side).toHaveAttribute("data-closed", "");
       const pulled = await api(d.base, d.token, `/api/sessions/${s.id}/questions/${n.question.id}`) as { question: { status: string; pulled?: boolean } };
       expect(pulled.question).toMatchObject({ status: "withdrawn", pulled: true });
@@ -281,11 +281,8 @@ for (const size of SIZES) {
     await expect(page.locator(`.thread-card[data-thread="${tid}"] .qcard[data-question="${q.question.id}"]`)).toBeVisible();
     await expect(page.locator(".side-q .qcard")).toHaveCount(0);
     await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads/${tid}/resolve`, { method: "POST", session: s.id, body: JSON.stringify({ as: "agent" }) });
-    // The question's view says whether its thread is open; the daemon sends
-    // no question change when its thread resolves, so the page learns it on
-    // its next fetch of the questions.
-    await page.reload();
-    await showThreads(page, size);
+    // The daemon sends the question again when its thread resolves: the
+    // open page moves it with no reload.
     const sideCard = page.locator(`.side-q .qcard[data-question="${q.question.id}"]`);
     await expect(sideCard).toBeVisible();
     await expect(sideCard.getByRole("button", { name: `Answer ${NAME}` })).toBeVisible();

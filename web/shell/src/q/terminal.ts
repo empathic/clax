@@ -10,3 +10,7 @@ export const terminalLine = (q: QuestionView, others: (QAgent | null)[]): string
 
 /** What Ask me here cannot do for Claude Code's terminal dialog. */
 export const TERMINAL_ESC = "After Ask me here, the terminal's dialog stays open until you press Esc there.";
+
+/** A pulled question's line (Ask me here): the agent learns of it at its
+ * next feedback poll, so the line promises no sooner. */
+export const pulledLabel = (q: QuestionView): string => `Sent to ${agentLabel(q.agent, [])}: it asks here when it next checks in`;

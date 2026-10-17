@@ -44,8 +44,12 @@ describe("TerminalCard", () => {
     await vi.waitFor(() => { flush(); expect(m.root.querySelector(".err")?.textContent).toBe("Not sent: try again"); });
     m.unmount();
     const c = mount(TerminalCard, { q: view({ in_terminal: true, status: "withdrawn", pulled: true }), onPull: vi.fn(async () => {}) });
-    expect(c.root.querySelector(".closed")!.textContent).toBe("Sent to claude: it asks here next");
+    expect(c.root.querySelector(".closed")!.textContent).toBe("Sent to claude: it asks here when it next checks in");
     expect(c.root.querySelector("button")).toBeNull();
     c.unmount();
+    // Claude Code's terminal dialog stays until Esc, and the card still says so.
+    const h = mount(TerminalCard, { q: view({ in_terminal: true, source: "hook", status: "withdrawn", pulled: true }), onPull: vi.fn(async () => {}) });
+    expect(h.root.querySelector(".esc")?.textContent).toBe("After Ask me here, the terminal's dialog stays open until you press Esc there.");
+    h.unmount();
   });
 });

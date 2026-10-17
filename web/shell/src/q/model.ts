@@ -89,13 +89,14 @@ export function aboutLink(q: QuestionView, here?: string | null, inCard?: string
   return a && (a.id !== here || t) ? { href: `/a/${a.id}${t ? `?thread=${t}` : ""}`, text: a.id === here ? "in a thread" : t ? `${a.title} · in a thread` : a.title } : null;
 }
 
-/** What a closed question says happened. */
+/** What a closed question says happened (a pulled in-terminal question's
+ * card says it itself: `pulledLabel`). */
 export function closedLabel(q: QuestionView): string {
   switch (q.status) {
     case "answered": return q.answered_via === "terminal" ? "Answered in the terminal" : "Answered";
     case "declined": return "Skipped";
     case "released": return "Moved to the terminal";
-    case "withdrawn": return q.pulled ? `Sent to ${agentLabel(q.agent, [])}: it asks here next` : `${agentLabel(q.agent, [])} stopped waiting`;
+    case "withdrawn": return `${agentLabel(q.agent, [])} stopped waiting`;
     default: return "Open";
   }
 }
