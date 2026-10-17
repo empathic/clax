@@ -616,9 +616,11 @@ impl Wakes {
         }
     }
 
-    /// Sets `wakes` on each live agent of `p` this listing shows it for.
+    /// Sets `wakes` on each live agent of `p` this listing shows it for,
+    /// except an agent of another Clax shown through its sync (`via`):
+    /// that Clax relays comments to it and wakes it by its own push.
     pub fn mark(&self, p: &mut clax_store::attention::Participants) {
-        for a in p.agents.iter_mut().filter(|a| a.live) {
+        for a in p.agents.iter_mut().filter(|a| a.live && a.via.is_none()) {
             if !self.shows(a.person.public_id.as_deref(), a.person.owner) {
                 continue;
             }

@@ -1155,6 +1155,9 @@ async fn the_public_copy_names_the_local_agent_the_sync_relays_for() {
     let person = named[0]["person"]["name"].as_str().unwrap().to_string();
     assert_eq!(named[0]["via"], format!("{person}'s Clax"), "{named:?}");
     assert_eq!(named[0]["harness"], "claude", "{named:?}");
+    // Whether a comment wakes it is for the Clax it runs on, which relays
+    // comments to it: this one does not say.
+    assert!(named[0].get("wakes").is_none(), "{named:?}");
     // Its question is asked there as that agent, from that Clax.
     p.ask(&sid, Some(&p.aid), "Which colour?").await;
     let there = p.hosted_question("Which colour?").await;
@@ -1172,6 +1175,7 @@ async fn the_public_copy_names_the_local_agent_the_sync_relays_for() {
         .find(|a| a["name"] == "asker")
         .unwrap_or_else(|| panic!("{v}"));
     assert_eq!(asker["via"], format!("{person}'s Clax"), "{v}");
+    assert!(asker["wakes"].is_null(), "{v}");
     // Its session ending here leaves the sync's own name there.
     let (s, v) = p
         .local_req(
