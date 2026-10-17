@@ -221,6 +221,43 @@ void main() {
     );
   });
 
+  test('a Keep going whose kept change is gone still runs as a Keep going: '
+      'the run is told it starts over, and its reply says so', () async {
+    workerWith([
+      [
+        const ScriptedCall('str_replace', {
+          'path': 'index.html',
+          'old_str': 'Save',
+          'new_str': 'Keep',
+        }, 'Renaming the button'),
+        for (var i = 0; i < 10; i++) const ScriptedCall('list_files', {}),
+      ],
+      [
+        const ScriptedCall('str_replace', {
+          'path': 'index.html',
+          'old_str': 'Save',
+          'new_str': 'Keep',
+        }),
+        const ScriptedCall('render', {'file': null}),
+        const ScriptedCall('finish', {'reply': 'Renamed.', 'resolve': true}),
+      ],
+    ]).start();
+    await idle();
+    final item = api.sendComment(aid, 'Rename Save');
+    await until(() => bodies(item.threadId).length == 2);
+    await idle();
+    await unfinished.remove([item.threadId]);
+
+    expect(await worker.retry(aid, item.threadId), isTrue);
+    await until(() => api.currentVersion(aid) == 2);
+    await idle();
+    expect(runner.seen, hasLength(2));
+    expect(runner.text(1), contains('Keep going'));
+    expect(runner.text(1), contains('no longer kept'));
+    expect(runner.text(1), contains('Rename Save'));
+    expect(bodies(item.threadId).last, '$startedOverLine Renamed.');
+  });
+
   test(r'a change that has spent its $6 does not keep going', () async {
     workerWith([]).start();
     await idle();

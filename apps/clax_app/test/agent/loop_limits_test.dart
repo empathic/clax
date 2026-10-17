@@ -264,6 +264,7 @@ void main() {
       contains('the app changed under its unfinished draft'),
     );
     expect(runner.text(1), contains('"Renaming the button"'));
+    expect(bodies(item.threadId).last, '$startedOverLine Started over.');
   });
 
   test('Keep going starts from the kept draft, tells the agent what the '
@@ -618,8 +619,8 @@ void main() {
     },
   );
 
-  test('the unfinished file drops a stale change and keeps the draft of a '
-      'younger one', () async {
+  test('the unfinished file keeps a change however old it is, and past '
+      'its size drops the oldest', () async {
     final dir = await _tempDir();
     final now = DateTime.utc(2026, 10, 15, 12);
     UnfinishedChange at(String t, DateTime when) => UnfinishedChange(
@@ -630,26 +631,27 @@ void main() {
       spentUsd: 1,
       at: when,
       notes: const ['n'],
-      edits: const {'index.html': 'x'},
+      edits: {'index.html': 'x' * 400},
       before: const {'index.html': null},
     );
-    final f = FileUnfinishedChanges(dir.file('u.json'), now: () => now);
-    await f.put(at('old', now.subtract(const Duration(hours: 25))));
-    await f.put(at('hours', now.subtract(const Duration(hours: 5))));
-    await f.put(at('fresh', now));
-    final again = FileUnfinishedChanges(dir.file('u.json'), now: () => now);
-    expect(await again.get('old'), isNull);
-    expect((await again.get('hours'))!.edits, {'index.html': 'x'});
-    expect((await again.get('fresh'))!.edits, isNotEmpty);
+    final f = FileUnfinishedChanges(dir.file('u.json'), maxBytes: 1500);
+    await f.put(at('month', now.subtract(const Duration(days: 30))));
+    await f.put(at('day', now.subtract(const Duration(days: 2))));
+    var again = FileUnfinishedChanges(dir.file('u.json'), maxBytes: 1500);
+    expect((await again.get('month'))!.edits['index.html'], hasLength(400));
+    expect((await again.get('day'))!.notes, ['n']);
+
+    await again.put(at('fresh', now));
+    again = FileUnfinishedChanges(dir.file('u.json'), maxBytes: 1500);
+    expect(await again.get('month'), isNull);
+    expect(await again.get('day'), isNotNull);
+    expect(await again.get('fresh'), isNotNull);
+    expect(dir.file('u.json').lengthSync(), lessThanOrEqualTo(1500));
   });
 
   test('the unfinished file keeps a change across instances', () async {
     final dir = await _tempDir();
-    final at = DateTime.utc(2026, 10, 15);
-    final file = FileUnfinishedChanges(
-      dir.file('unfinished.json'),
-      now: () => at,
-    );
+    final file = FileUnfinishedChanges(dir.file('unfinished.json'));
     final c = UnfinishedChange(
       artifactId: 'a',
       threadIds: const ['t1', 't2'],
@@ -665,18 +667,12 @@ void main() {
       title: 'T',
     );
     await file.put(c);
-    final again = FileUnfinishedChanges(
-      dir.file('unfinished.json'),
-      now: () => at,
-    );
+    final again = FileUnfinishedChanges(dir.file('unfinished.json'));
     final read = (await again.get('t2'))!;
     expect(read.toJson(), c.toJson());
     await again.remove(['t1', 't2']);
     expect(
-      await FileUnfinishedChanges(
-        dir.file('unfinished.json'),
-        now: () => at,
-      ).get('t1'),
+      await FileUnfinishedChanges(dir.file('unfinished.json')).get('t1'),
       isNull,
     );
   });

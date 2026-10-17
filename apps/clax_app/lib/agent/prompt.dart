@@ -36,7 +36,8 @@ class KeepGoingNote {
 
   final String limit;
 
-  /// How many runs of the change stopped at a limit.
+  /// How many runs of the change stopped at a limit; 0 when what they
+  /// left is no longer kept.
   final int stops;
   final List<String> notes;
 
@@ -341,9 +342,13 @@ class PromptBuilder {
     b
       ..writeln()
       ..writeln(
-        'Keep going: this change has stopped at its limit '
-        '${timesWords(k.stops)} (last at ${k.limit}) before it finished, and '
-        'the person asked it to keep going.',
+        k.stops > 0
+            ? 'Keep going: this change has stopped at its limit '
+                  '${timesWords(k.stops)} (last at ${k.limit}) before it '
+                  'finished, and the person asked it to keep going.'
+            : 'Keep going: an earlier run of this change stopped at its '
+                  'limit before it finished, and the person asked it to keep '
+                  'going.',
       );
     if (k.edited case final paths?) {
       b.writeln(
@@ -366,7 +371,8 @@ class PromptBuilder {
     } else {
       b.writeln(
         'Its draft is gone (${k.why}), so you start over from the app as '
-        'it is. Say in reply that you started over.',
+        'it is. Clax\'s reply tells the person you started again from the '
+        'current app; your reply says what you made.',
       );
     }
     if (k.notes.isNotEmpty) {

@@ -753,11 +753,13 @@ same signature and do not ask.
   becomes a short build plan instead: the reply says so and the Working
   chip shows the build, as for a new app. A change that still runs out
   says which limit it hit ("too big for one go — it needed more than 10
-  steps"), with the agent's note of what is left when it gave up for
-  lack of room, and offers **Keep going**:
-  it goes on from the stopped run's unfinished draft and notes, or, when
-  the app changed under that draft, starts over with the notes. A change and its Keep goings may
-  cost $6 together; the reply says what is left when under half. A build
+  steps"), how often it stopped and what it cost, the files its draft
+  changed so far and the agent's latest notes, and offers **Keep going**:
+  it goes on from the stopped run's unfinished draft, notes and answers,
+  kept until the app changes under that draft. When the draft cannot be
+  used, Keep going starts again from the current app and its reply says
+  so. After a second stop, Keep going plans the rest as a build instead.
+  A change and its Keep goings may cost $6 together. A build
   that spent its $6 waits; Resume on it starts a new $6.
 - **Questions.** When the agent asks you something while its app is on
   screen, the question docks in a sheet at the bottom, with a light tap

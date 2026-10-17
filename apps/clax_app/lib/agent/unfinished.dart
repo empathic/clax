@@ -8,11 +8,12 @@ import 'dart:io';
 import 'failure.dart' show FileChange;
 import 'line_diff.dart';
 
-/// How long an unfinished change is kept: after it, its draft, notes and
-/// cost are forgotten. Until then its draft is kept for Keep going as long
-/// as the app still holds what its edits were made on
-/// ([UnfinishedChange.before]).
-const unfinishedKeepAge = Duration(hours: 24);
+/// At most this many bytes of unfinished changes are kept on disk
+/// ([FileUnfinishedChanges]): past it the oldest changes are dropped. No
+/// age drops a change: its draft is kept for Keep going as long as the app
+/// still holds what its edits were made on ([UnfinishedChange.before]),
+/// and the worker forgets it once its threads close.
+const maxUnfinishedBytes = 8 * 1024 * 1024;
 
 /// At most this many of the agent's notes are kept for a change across
 /// its Keep going runs: the newest.
@@ -138,9 +139,6 @@ class UnfinishedChange {
   final String? title;
   final Map<String, Object?>? capabilities;
 
-  /// Whether it is older than [unfinishedKeepAge] at [now].
-  bool staleAt(DateTime now) => now.difference(at) > unfinishedKeepAge;
-
   Map<String, Object?> toJson() => {
     'artifact': artifactId,
     'threads': threadIds,
@@ -202,23 +200,19 @@ class MemoryUnfinishedChanges implements UnfinishedChanges {
 /// change}}`, read once and written whole through a temporary file and a
 /// rename; a file that does not parse reads as empty, and a change that
 /// does not parse is left out. The file stays small (a draft's edited
-/// files once, with fingerprints of what they replaced, for a day at
-/// most), so it is read and written synchronously, as [FileStoppedThreads]
-/// is: the worker never waits on the event loop for it. Each read and
-/// write drops what is older than [unfinishedKeepAge] at [now].
+/// files once, with fingerprints of what they replaced, at most
+/// [maxBytes]), so it is read and written synchronously, as
+/// [FileStoppedThreads] is: the worker never waits on the event loop for
+/// it. A write that would pass [maxBytes] drops the oldest changes first
+/// (by [UnfinishedChange.at]), keeping at least the newest.
 class FileUnfinishedChanges implements UnfinishedChanges {
-  FileUnfinishedChanges(this.file, {DateTime Function()? now})
-    : _now = now ?? DateTime.now;
+  FileUnfinishedChanges(this.file, {this.maxBytes = maxUnfinishedBytes});
 
   final File file;
-  final DateTime Function() _now;
+  final int maxBytes;
   Map<String, UnfinishedChange>? _byThread;
 
-  Map<String, UnfinishedChange> get _all {
-    final m = _byThread ??= _read();
-    if (_prune(m)) _save(m);
-    return m;
-  }
+  Map<String, UnfinishedChange> get _all => _byThread ??= _read();
 
   Map<String, UnfinishedChange> _read() {
     final out = <String, UnfinishedChange>{};
@@ -242,30 +236,25 @@ class FileUnfinishedChanges implements UnfinishedChanges {
     return out;
   }
 
-  /// Drops what is stale; answers whether anything changed.
-  bool _prune(Map<String, UnfinishedChange> m) {
-    final now = _now();
-    var changed = false;
-    for (final t in m.keys.toList()) {
-      final c = m[t]!;
-      if (c.staleAt(now)) {
-        m.remove(t);
-        changed = true;
-      }
-    }
-    return changed;
-  }
-
   void _save(Map<String, UnfinishedChange> m) {
+    String encode() => jsonEncode({
+      'version': 1,
+      'threads': {for (final e in m.entries) e.key: e.value.toJson()},
+    });
+    var text = encode();
+    // A change kept under several threads is one change: its artifact and
+    // when it stopped name it.
+    String key(UnfinishedChange c) =>
+        '${c.artifactId} ${c.at.toUtc().toIso8601String()}';
+    while (utf8.encode(text).length > maxBytes) {
+      if ({for (final c in m.values) key(c)}.length < 2) break;
+      final oldest = m.values.reduce((a, b) => b.at.isBefore(a.at) ? b : a);
+      m.removeWhere((_, c) => key(c) == key(oldest));
+      text = encode();
+    }
     file.parent.createSync(recursive: true);
     final tmp = File('${file.path}.tmp');
-    tmp.writeAsStringSync(
-      jsonEncode({
-        'version': 1,
-        'threads': {for (final e in m.entries) e.key: e.value.toJson()},
-      }),
-      flush: true,
-    );
+    tmp.writeAsStringSync(text, flush: true);
     tmp.renameSync(file.path);
   }
 

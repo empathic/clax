@@ -178,10 +178,11 @@ class FinishTool implements Tool {
         throw ToolInputError('finish takes no "$k"; it takes reply, resolve.');
       }
     }
-    final reply = switch (input['reply']) {
+    final said = switch (input['reply']) {
       final String r when r.trim().isNotEmpty => r.trim(),
       _ => throw const ToolInputError('reply must be a non-empty string.'),
     };
+    final reply = s.ctx.startedOver ? '$startedOverLine $said' : said;
     final resolve = switch (input['resolve']) {
       final bool b => b,
       _ => throw const ToolInputError('resolve must be true or false.'),
@@ -804,6 +805,7 @@ LimitProgress limitProgress(
   required Map<String, String> from,
   String? reason,
 }) => LimitProgress(
+  startedOver: s.ctx.startedOver,
   stops: s.ctx.changeStops + 1,
   spentUsd: (s.ctx.changeSpentUsd ?? 0) + s.budget.costUsd,
   notes: [...s.ctx.changeNotes, ...s.narrations, ?reason],
