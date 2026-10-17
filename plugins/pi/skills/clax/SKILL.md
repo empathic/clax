@@ -367,13 +367,37 @@ person wants live feedback; stop when the person says to stop. Each
 call returns within `timeout_s` because harnesses cap a single tool call
 (Codex at 60 seconds).
 
+## Where to ask
+
+Before you ask the person anything, find where to ask them now, and ask
+there only:
+
+1. Read the suggestion: call `where_to_ask`. An `ask` result carries it
+   too, and a delivery from Clax ends with a line saying where to ask
+   ("[clax] If you ask the person anything now, …"). It names a `surface`,
+   `clax` or `terminal`; `where` (a `thread_id` and `artifact_id`, the
+   narrowest place in Clax); a `confidence`, `clear` or `unsure`; and
+   `why`.
+2. Ask on the surface it names, at the place it names, and only there. In
+   Clax: `ask` with `url_or_id` and, for a thread, `thread_id`. In the
+   terminal: in chat (or the harness's own question tool).
+3. Tell the other surface. After asking in Clax, write the result's
+   `tell_terminal` line ("Asked in Clax: <url>") in chat. Before asking in
+   chat, post `ask` with `in_terminal: true` (each question's `question`
+   and `header` only, and the place), so Clax shows that you are asking in
+   the terminal; cancel it (`question_id`, `cancel: true`) once they
+   answer. If the person chooses **Ask me here** in Clax, a delivery tells
+   you they want the question asked in Clax: ask it there with `ask`.
+4. Keep discussion where it started: answer work a Clax thread started in
+   that thread with `comments_reply`, and work started in chat in chat.
+
+An `unsure` suggestion names Clax. When you know better (the person said
+"I'm on my phone", or "ask me here"), follow that and say why.
+
 ## Asking the person
 
 When you need a decision, a choice between options, or something only the
-person knows, and they are working with you in Clax (you published or watch
-a page this session, or they sent you a comment), ask with `ask` instead of
-asking in chat. Pass `url_or_id` when the question is about a page, so it
-shows there.
+person knows, ask where "Where to ask" says.
 
 - One to four questions per call. Each has a short `header` (at most 12
   characters) and two to four `options` with a `description` each; mark the
@@ -382,11 +406,6 @@ shows there.
   `multi_select` when several may apply. The person can always type their
   own answer instead.
 - When the result says `call_again`, call `ask` again with `question_id`.
-  If it also says `surface_open: false`, the person may not have Clax open:
-  you may ask in chat too, and call `ask` with `question_id` and
-  `cancel: true` once they answer there. If `cancel` returns
-  `status: "answered"`, they answered in Clax too: use those answers or
-  reconcile them with what they said in chat.
 - The answers to your question come back in the result's `reply`. An
   `answers` array on any tool result (`ask`'s included) holds late answers
   to other questions you asked.
