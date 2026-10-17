@@ -244,6 +244,22 @@ String plannedStopReply(
     '${checksFailed ? ' Some of its checks failed.' : ''}'
     '${limitProgressText(progress)}';
 
+/// The stop count and spend a limit reply states ([limitProgressText]:
+/// "Stopped twice · $2.10 of $6 used"), or null when [body] states none:
+/// what a Keep going with nothing kept goes on counting from.
+({int stops, double spentUsd})? parseLimitProgress(String body) {
+  final m = RegExp(
+    r'(?:^|\n)Stopped (once|twice|(\d+) times) · \$(\d+\.\d\d) of \$\d+ used',
+  ).firstMatch(body);
+  if (m == null) return null;
+  final stops = switch (m[1]) {
+    'once' => 1,
+    'twice' => 2,
+    _ => int.parse(m[2]!),
+  };
+  return (stops: stops, spentUsd: double.parse(m[3]!));
+}
+
 /// Whether [text] (a reply, or the Working chip's failure text) offers
 /// Keep going.
 bool offersKeepGoing(String text) => text.contains(keepGoingHint);

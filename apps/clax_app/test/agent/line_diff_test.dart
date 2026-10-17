@@ -74,6 +74,18 @@ void main() {
     );
   });
 
+  test('parseLimitProgress reads back the count and spend of a reply', () {
+    String reply(int stops, double spent) => limitFailureReply(
+      '10 turns',
+      leftUsd: 6 - spent,
+      progress: LimitProgress(stops: stops, spentUsd: spent),
+    );
+    expect(parseLimitProgress(reply(1, 0.4)), (stops: 1, spentUsd: 0.4));
+    expect(parseLimitProgress(reply(2, 2.1)), (stops: 2, spentUsd: 2.1));
+    expect(parseLimitProgress(reply(7, 5.95)), (stops: 7, spentUsd: 5.95));
+    expect(parseLimitProgress('Stopped once, says a person'), isNull);
+  });
+
   group('limitProgressText', () {
     test('names at most five files, then how many more', () {
       final text = limitProgressText(

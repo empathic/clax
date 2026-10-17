@@ -385,8 +385,9 @@ class PromptBuilder {
       ..writeln(
         k.stops > 0
             ? 'Keep going: this change has stopped at its limit '
-                  '${timesWords(k.stops)} (last at ${k.limit}) before it '
-                  'finished, and the person asked it to keep going.'
+                  '${timesWords(k.stops)}'
+                  '${k.limit.isEmpty ? '' : ' (last at ${k.limit})'} before '
+                  'it finished, and the person asked it to keep going.'
             : 'Keep going: an earlier run of this change stopped at its '
                   'limit before it finished, and the person asked it to keep '
                   'going.',

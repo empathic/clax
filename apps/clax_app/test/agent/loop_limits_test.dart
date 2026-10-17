@@ -701,6 +701,37 @@ void main() {
     expect(await unfinished.get(buildDraftKey(aid)), isNull);
   });
 
+  test('a Keep going with nothing kept carries the stop count and spend of '
+      'the thread\'s last limit reply', () async {
+    final item = api.sendComment(aid, 'Rename Save', queue: false);
+    await api.replyAsAgent(
+      aid,
+      item.threadId,
+      limitFailureReply(
+        '10 turns',
+        leftUsd: 3,
+        progress: const LimitProgress(stops: 2, spentUsd: 3),
+      ),
+    );
+    await loopWith([
+      [for (var i = 0; i < 11; i++) const ScriptedCall('list_files', {})],
+    ]).change(aid, [item], session: sid, keepGoing: true);
+
+    expect(runner.states.single.ctx.changeSpentUsd, 3.0);
+    expect(runner.states.single.budget.caps.costUsd, 1.5);
+    final first = runner.text(0);
+    expect(first, contains('has stopped at its limit twice'));
+    expect(first, contains('too big for a change run'));
+    expect(first, contains('no longer kept'));
+    expect(
+      bodies(item.threadId).last,
+      contains('Stopped 3 times · \$3.00 of \$6 used'),
+    );
+    final kept = (await unfinished.get(item.threadId))!;
+    expect(kept.stops, 3);
+    expect(kept.spentUsd, 3.0);
+  });
+
   test('a small change keeps the fast path: no plan, one run', () async {
     final item = api.sendComment(aid, 'Rename Save', queue: false);
     final out = await loopWith([
