@@ -7,7 +7,7 @@
 #   scripts/clax-owner-signin.sh clax.dev     # that host's record
 set -euo pipefail
 records="${CLAX_DEPLOY_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/clax/deploy}"
-if [ $# -gt 0 ]; then record="$records/$1.json"; else record="$(ls -t "$records"/*.json 2>/dev/null | head -1)"; fi
+if [ $# -gt 0 ]; then record="$records/$1.json"; else record="$(ls -t "$records"/*.json 2>/dev/null | sed -n 1p)"; fi
 [ -n "${record:-}" ] && [ -f "$record" ] || { echo "clax-owner-signin: no deploy record in $records" >&2; exit 1; }
 node --input-type=module - "$record" <<'JS'
 import { readFileSync } from "node:fs";

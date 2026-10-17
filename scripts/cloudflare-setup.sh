@@ -141,15 +141,15 @@ command -v node >/dev/null || fail "node is missing: install Node 26 (https://no
 node_major="$(node -p 'process.versions.node.split(".")[0]')"
 [ "$node_major" -ge 26 ] || fail "node $node_major found; Node 26 or later is needed"
 command -v rustup >/dev/null || fail "rustup is missing: install it from https://rustup.rs"
-(cd "$root" && rustup target list --installed) | grep -qx wasm32-unknown-unknown ||
+(cd "$root" && rustup target list --installed) | grep -x wasm32-unknown-unknown >/dev/null ||
   (cd "$root" && rustup target add wasm32-unknown-unknown)
 # The same LLVM search scripts/check-wasm.sh and build.sh use.
 llvm_ok=0
 for d in "${LLVM_BIN:-}" "$HOME/.local/homebrew/opt/llvm/bin" /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin /usr/lib/llvm-*/bin; do
   [ -n "$d" ] && [ -x "$d/clang" ] && [ -x "$d/llvm-ar" ] &&
-    "$d/clang" --print-targets 2>/dev/null | grep -q '^ *wasm32 ' && { llvm_ok=1; break; }
+    "$d/clang" --print-targets 2>/dev/null | grep '^ *wasm32 ' >/dev/null && { llvm_ok=1; break; }
 done
-if [ "$llvm_ok" = 0 ] && command -v clang >/dev/null && clang --print-targets 2>/dev/null | grep -q '^ *wasm32 '; then llvm_ok=1; fi
+if [ "$llvm_ok" = 0 ] && command -v clang >/dev/null && clang --print-targets 2>/dev/null | grep '^ *wasm32 ' >/dev/null; then llvm_ok=1; fi
 [ "$llvm_ok" = 1 ] || fail "no clang that targets wasm32: install LLVM (macOS: brew install llvm; Debian/Ubuntu: apt install clang lld llvm), or set LLVM_BIN"
 echo "ok"
 
@@ -170,7 +170,7 @@ npm_install "$root/web"
 npm_install "$worker"
 
 wrangler() { (cd "$worker" && ./node_modules/.bin/wrangler "$@"); }
-signed_in() { ! wrangler whoami 2>&1 | grep -qi "not authenticated\|You are not logged in"; }
+signed_in() { ! wrangler whoami 2>&1 | grep -i "not authenticated\|You are not logged in" >/dev/null; }
 
 say "Checking the Cloudflare login"
 if signed_in; then
