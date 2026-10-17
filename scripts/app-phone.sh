@@ -19,7 +19,8 @@
 # Cargo's output is shared by every copy (target/app-phone-cargo).
 #
 # Either way, uncommitted changes are left out (it says so) and while it
-# builds it prints the step it is on, and the time every 30 s.
+# builds it prints the step it is on, and the time every 30 s. A phone need
+# not be attached until the build is done: it then waits for one.
 #
 # Environment:
 #   ANDROID_SERIAL  which device, when more than one is attached
@@ -78,15 +79,27 @@ else
     adb="$(command -v adb)"
 fi
 
-devices="$("$adb" devices | awk 'NR > 1 && $2 == "device" { print $1 }')"
-if [ -z "${ANDROID_SERIAL:-}" ]; then
+# The attached phones, and those waiting for USB debugging to be allowed.
+attached() { "$adb" devices | awk 'NR > 1 && $2 == "device" { print $1 }'; }
+unauthorized() { "$adb" devices | awk 'NR > 1 && $2 == "unauthorized" { print $1 }'; }
+# pick: sets ANDROID_SERIAL to the one attached phone; 1 when there is none,
+# 2 (after naming them) when there is more than one.
+pick() {
+    [ -n "${ANDROID_SERIAL:-}" ] && return 0
+    local devices; devices="$(attached)"
     case "$(printf '%s\n' "$devices" | grep -c .)" in
-        0) echo "app-phone: no phone attached (adb devices lists none); plug it in and allow USB debugging" >&2
-           [ -n "$act" ] && exit 1 ;;
+        0) return 1 ;;
         1) export ANDROID_SERIAL="$devices" ;;
         *) echo "app-phone: more than one device; set ANDROID_SERIAL to one of:" >&2
-           printf '%s\n' "$devices" | sed 's/^/  /' >&2; exit 1 ;;
+           printf '%s\n' "$devices" | sed 's/^/  /' >&2; return 2 ;;
     esac
+}
+# A phone need not be attached until the build is done (APP_PHONE_WAIT
+# seconds, 900 by default, are allowed for it then); two or more stop now.
+picked=0; pick || picked=$?
+[ "$picked" = 2 ] && exit 1
+if [ "$picked" = 1 ]; then
+    echo "app-phone: no phone attached yet; it is needed once the build is done"
 fi
 
 if [ "$mode" = bazel ]; then
@@ -104,7 +117,7 @@ if [ -z "$act" ]; then
         else echo "would build HEAD $sha with Bazel in a clean copy at $where (log: target/app-phone/$sha.log)"; fi
     elif [ -f "$apk" ]; then echo "would install the APK already built for $sha"
     else echo "would build HEAD $sha in $where with Gradle (log: target/app-phone/$sha.log)"; fi
-    echo "would install it on ${ANDROID_SERIAL:-the attached phone} with $adb, keeping its data, open Clax and check its daemon stays up"
+    echo "would install it on ${ANDROID_SERIAL:-the phone attached by then} with $adb, keeping its data, open Clax and check its daemon stays up"
     echo "run again with --i-know-what-i-am-doing (or: just app-phone) to do it"
     exit 0
 fi
@@ -164,6 +177,32 @@ elif [ ! -f "$apk" ]; then
     # Keep the newest three copies (and their logs).
     ls -1t target/app-phone | { grep -v '\.log$' | grep -vx tree || true; } | tail -n +4 | while read -r old; do
         rm -rf "target/app-phone/$old" "target/app-phone/$old.log"
+    done
+fi
+
+# Wait for the phone, if it was not attached when the build began.
+picked=0; pick || picked=$?
+[ "$picked" = 2 ] && exit 1
+if [ "$picked" = 1 ]; then
+    wait_s="${APP_PHONE_WAIT:-900}"
+    echo "app-phone: built; plug in the phone and allow USB debugging (waiting up to $((wait_s / 60)) min)"
+    start=$SECONDS told=0 asked=""
+    while :; do
+        picked=0; pick || picked=$?
+        [ "$picked" = 0 ] && break
+        [ "$picked" = 2 ] && exit 1
+        e=$((SECONDS - start))
+        if [ "$e" -ge "$wait_s" ]; then
+            echo "app-phone: no phone after $((wait_s / 60)) min; the APK is kept, so run again to install it" >&2
+            exit 1
+        fi
+        if [ -z "$asked" ] && [ -n "$(unauthorized)" ]; then
+            asked=1; echo "app-phone: a phone is attached but USB debugging is not allowed yet: tap Allow on the phone"
+        fi
+        if [ $((e - told)) -ge 60 ]; then
+            told=$e; printf 'app-phone: still waiting for a phone (%dm%02ds)\n' $((e / 60)) $((e % 60))
+        fi
+        sleep 2
     done
 fi
 
