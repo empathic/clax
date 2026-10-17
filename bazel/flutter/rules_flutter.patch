@@ -1,3 +1,18 @@
+diff --git a/flutter/extensions.bzl b/flutter/extensions.bzl
+--- a/flutter/extensions.bzl
++++ b/flutter/extensions.bzl
+@@ -26,7 +26,10 @@ _DEFAULT_NAME = "flutter"
+ 
+ # Flutter SDK packages that exist as source under packages/ in the Flutter repo.
+ # sky_engine is excluded — it provides dart:ui which is already in platform_strong.dill.
+-_FLUTTER_SDK_PACKAGES = {"flutter": True, "flutter_test": True, "flutter_driver": True, "flutter_localizations": True, "flutter_web_plugins": True}
++# integration_test too, as a Dart library: an app that runs its tests and
++# reports their result itself needs none of its native code (a patch Clax
++# keeps: bazel/flutter/rules_flutter.patch).
++_FLUTTER_SDK_PACKAGES = {"flutter": True, "flutter_test": True, "flutter_driver": True, "flutter_localizations": True, "flutter_web_plugins": True, "integration_test": True}
+ 
+ def _parse_version(v):
+     """Splits a version string into a list of ints for comparison."""
 diff --git a/flutter/private/flutter_asset_bundle.bzl b/flutter/private/flutter_asset_bundle.bzl
 --- a/flutter/private/flutter_asset_bundle.bzl
 +++ b/flutter/private/flutter_asset_bundle.bzl
