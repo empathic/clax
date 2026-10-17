@@ -1038,7 +1038,7 @@ impl Store {
             .filter(|c| {
                 c.author_kind == AUTHOR_VIEWER
                     && vis.sees(
-                        &crate::visibility::authors_of_comment(c),
+                        &clax_core::visibility::authors_of_comment(c),
                         &t.artifact_id,
                         Some(tid),
                     )
@@ -1518,7 +1518,10 @@ impl Store {
         live: bool,
     ) -> Result<(Thread, clax_core::feedback::Touched)> {
         let by = format!("agent:{}", sess.harness);
-        let person = sess.person.as_deref().unwrap_or(super::approvals::OWNER);
+        let person = sess
+            .person
+            .as_deref()
+            .unwrap_or(clax_core::visibility::OWNER);
         self.resolve_thread_then(ctx, tid, &by, Some(person), |tx, t| {
             check_not_taken_in(tx, tid, &sess.id)?;
             if t.artifact_id != id.as_str() {

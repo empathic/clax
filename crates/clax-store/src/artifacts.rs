@@ -3,14 +3,15 @@
 use super::Store;
 use super::changelog::{fill_addresses, link_version};
 use super::live::{LivePage, live_page_of_conn};
-use crate::approvals::OWNER;
-use crate::visibility::{Author, file_authors};
 use clax_core::audit::{AuditCtx, AuditKind, AuditRecord, content_manifest_sha256, sha256_hex};
 use clax_core::live::KIND_LIVE;
+use clax_core::model::ARTIFACT_TEXT_FIELDS;
 use clax_core::model::{
     Artifact, ArtifactAuthors, CONTRACT_VERSION, FileMeta, Version, VersionAuthors,
 };
 use clax_core::publish::{FileChange, INDEX, ValidatedPublish};
+use clax_core::visibility::OWNER;
+use clax_core::visibility::{Author, file_authors};
 use clax_core::{ArtifactId, CoreError, Result, new_ulid};
 use rusqlite::{OptionalExtension, Row, params};
 use std::collections::BTreeMap;
@@ -278,7 +279,7 @@ impl Store {
             };
             // The fields it sets are the patcher's now, and a page's
             // patch also its page's authors' (spec §8.2).
-            let set: Vec<&str> = TEXT_FIELDS
+            let set: Vec<&str> = ARTIFACT_TEXT_FIELDS
                 .into_iter()
                 .zip([
                     patch.title.is_some(),
@@ -793,10 +794,6 @@ pub(super) const SELECT_VERSION: &str =
         (SELECT harness FROM sessions s WHERE s.id = versions.session_id) AS agent_harness
      FROM versions";
 
-/// The text fields of an artifact that carry authors of their own (spec
-/// §8.2): `artifacts.text_authors_json`'s keys.
-pub use clax_core::model::ARTIFACT_TEXT_FIELDS as TEXT_FIELDS;
-
 /// Author tokens, each once in first-seen order.
 fn tokens(authors: impl IntoIterator<Item = Author>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -910,7 +907,7 @@ fn version_authors(
     ))
 }
 
-/// `current`'s text authors with each field of [`TEXT_FIELDS`] in `set`
+/// `current`'s text authors with each field of [`ARTIFACT_TEXT_FIELDS`] in `set`
 /// now `authors`'s, as stored: `None` when every field is the owner's
 /// alone and the creator (`creator`) is the owner.
 fn text_authors(
@@ -932,7 +929,7 @@ fn text_authors(
     } else {
         // A field it does not list is the creator's: list every field, so
         // the stored map stands alone.
-        for f in TEXT_FIELDS {
+        for f in ARTIFACT_TEXT_FIELDS {
             map.entry(f.to_string())
                 .or_insert_with(|| vec![Some(creator.unwrap_or(OWNER).to_string())]);
         }
@@ -943,7 +940,7 @@ fn text_authors(
 /// The text fields `p` sets (all of them for version 1, which makes them).
 fn fields_set(p: &ValidatedPublish, first: bool) -> Vec<&'static str> {
     if first {
-        return TEXT_FIELDS.to_vec();
+        return ARTIFACT_TEXT_FIELDS.to_vec();
     }
     let given = [
         p.title.is_some(),
@@ -951,7 +948,7 @@ fn fields_set(p: &ValidatedPublish, first: bool) -> Vec<&'static str> {
         p.icon.is_some(),
         p.capabilities.is_some(),
     ];
-    TEXT_FIELDS
+    ARTIFACT_TEXT_FIELDS
         .into_iter()
         .zip(given)
         .filter_map(|(f, g)| g.then_some(f))

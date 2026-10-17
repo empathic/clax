@@ -159,7 +159,7 @@ pub struct Identity {
     pub agent_marker: bool,
 }
 
-pub use crate::headers::SESSION_HEADER;
+use crate::headers::SESSION_HEADER;
 /// The agent-channel marker's header (`agent`).
 pub const CHANNEL_HEADER: &str = "x-clax-channel";
 

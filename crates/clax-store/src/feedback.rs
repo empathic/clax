@@ -5,7 +5,7 @@ use super::Store;
 use super::approvals::Route;
 use super::artifacts::{SELECT_VERSION, live_artifact_in, row_to_version};
 use super::threads::{AUTHOR_AGENT, AUTHOR_VIEWER, take_in, thread_in, thread_record};
-use crate::visibility::{self, Author, Reader, Visibility};
+use crate::visibility::Visibility;
 use clax_core::anchor::Anchor;
 use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
 use clax_core::feedback::{
@@ -13,6 +13,7 @@ use clax_core::feedback::{
     Tier, Touched,
 };
 use clax_core::model::{Artifact, Feedback, Thread, Version};
+use clax_core::visibility::{self, Author, Reader};
 use clax_core::{ArtifactId, CoreError, Result, new_ulid};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::collections::{BTreeMap, HashMap};
@@ -669,18 +670,18 @@ impl Held {
                         &aid,
                         None,
                     )? {
-                        Some(by) => crate::visibility::placeholder::title_by(&by),
+                        Some(by) => clax_core::visibility::placeholder::title_by(&by),
                         None => a.title.clone(),
                     }
                 }
-                None => crate::visibility::placeholder::title_by(&sight.names(&[])?),
+                None => clax_core::visibility::placeholder::title_by(&sight.names(&[])?),
             };
             let keys: Vec<String> = authors
                 .iter()
                 .filter_map(|a| match a {
                     Author::Owner => owner.clone(),
                     Author::Person(p) => Some(p.clone()),
-                    Author::Unconnected => Some(super::approvals::UNCONNECTED.to_string()),
+                    Author::Unconnected => Some(clax_core::visibility::UNCONNECTED.to_string()),
                     Author::System => None,
                 })
                 .collect();
@@ -690,7 +691,7 @@ impl Held {
                 &aid,
                 &tid,
                 &keys,
-            )? == crate::visibility::placeholder::ApprovalState::Requested;
+            )? == clax_core::visibility::placeholder::ApprovalState::Requested;
             let author_ids = keys
                 .iter()
                 .filter(|k| clax_core::is_public_id(k))
@@ -1309,7 +1310,7 @@ impl Store {
                 });
                 if let Some(w) = shown {
                     if w.title.is_some() {
-                        p.title = crate::visibility::placeholder::title_by(
+                        p.title = clax_core::visibility::placeholder::title_by(
                             w.title.as_deref().unwrap_or_default(),
                         );
                     }
@@ -1747,7 +1748,7 @@ impl Store {
                             None,
                         )?
                     {
-                        title = crate::visibility::placeholder::title_by(&by);
+                        title = clax_core::visibility::placeholder::title_by(&by);
                     }
                 }
                 let changed = tx.execute(

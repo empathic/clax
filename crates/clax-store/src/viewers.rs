@@ -3,12 +3,12 @@
 //! others by a public ID.
 
 use super::Store;
-use crate::approvals::OWNER;
 use clax_core::audit::{Actor, AuditCtx, AuditKind, AuditRecord, Via, sha256_hex};
 use clax_core::gitctx::GitField;
 use clax_core::ids::{is_public_id, is_ulid, new_public_id};
 use clax_core::model::Viewer;
 use clax_core::secret::{Secret, is_viewer_cookie, viewer_cookie};
+use clax_core::visibility::OWNER;
 use clax_core::{CoreError, Result};
 use rusqlite::{OptionalExtension, params};
 
@@ -847,7 +847,7 @@ mod tests {
 
     #[test]
     fn making_the_owners_row_after_an_agent_read_connects_the_owner() {
-        use crate::visibility::Author;
+        use clax_core::visibility::Author;
         let (_d, st) = store();
         // An agent reads first: who is connected is cached with no owner.
         assert!(

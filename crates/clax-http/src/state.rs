@@ -206,8 +206,9 @@ mod tests {
     use super::VisGen;
     use clax_core::Home;
     use clax_core::audit::AuditCtx;
+    use clax_core::visibility::UNCONNECTED;
     use clax_store::Store;
-    use clax_store::approvals::{Scope, UNCONNECTED, Via};
+    use clax_store::approvals::{Scope, Via};
 
     #[tokio::test]
     async fn waiting_after_a_generation_wakes_on_the_next_bump() {

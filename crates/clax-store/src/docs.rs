@@ -18,10 +18,11 @@
 //! write that changes nothing (deleting a missing document) records nothing.
 
 use super::Store;
-use crate::approvals::OWNER;
-use crate::visibility::{Author, Visibility, authors_of_doc};
+use crate::visibility::Visibility;
 use clax_core::audit::{AuditCtx, AuditKind, AuditRecord, sha256_hex};
 use clax_core::db::{Caller, Op, Rules, collection_path, doc_path, invalid_argument};
+use clax_core::visibility::OWNER;
+use clax_core::visibility::{Author, authors_of_doc};
 use clax_core::{ArtifactId, CoreError, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
@@ -2557,7 +2558,8 @@ mod tests {
     mod per_reader {
         use super::*;
         use crate::people::tests::{approved, store};
-        use crate::visibility::{Reader, Visibility};
+        use crate::visibility::Visibility;
+        use clax_core::visibility::Reader;
 
         struct Two {
             _dir: tempfile::TempDir,

@@ -63,7 +63,7 @@ pub fn request_view(st: &Store, r: &ApprovalRequest) -> clax_core::Result<Value>
 /// An approval's view: who may see whose content, at which scope, with
 /// its page's title (`artifact_title`) while the page is live.
 pub fn approval_view(st: &Store, a: &Approval) -> clax_core::Result<Value> {
-    let author = if a.author == clax_store::approvals::UNCONNECTED {
+    let author = if a.author == clax_core::visibility::UNCONNECTED {
         json!({"public_id": null, "name": "Viewers who are not connected"})
     } else {
         person(st, &a.author)?
@@ -151,7 +151,7 @@ pub fn card(
             let mut authors = Vec::new();
             for a in p["authors"].as_array().into_iter().flatten() {
                 match a.as_str() {
-                    Some(clax_store::approvals::OWNER) | None => {
+                    Some(clax_core::visibility::OWNER) | None => {
                         authors.push(person(st, &st.owner_viewer(true)?.public_id)?)
                     }
                     Some(pid) => authors.push(person(st, pid)?),

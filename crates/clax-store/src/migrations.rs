@@ -793,7 +793,7 @@ pub(super) fn rust_step(tx: &rusqlite::Transaction<'_>, version: u32) -> clax_co
              VALUES (?1, NULL, ?2, 'everywhere', ?3, 'migration')",
             rusqlite::params![
                 clax_core::new_ulid(),
-                super::approvals::UNCONNECTED,
+                clax_core::visibility::UNCONNECTED,
                 clax_core::time::stamp_now()
             ],
         )?;

@@ -3,12 +3,11 @@
 //! approvals in the store at a generation of its visibility (M17), and who
 //! is connected, for marking unconnected authors' names (§9.6). The
 //! vocabulary it filters by (readers, authors, the placeholders) is
-//! `clax_core::visibility`'s, re-exported here.
-
-pub use clax_core::visibility::*;
+//! `clax_core::visibility`'s.
 
 use crate::Store;
 use clax_core::Result;
+use clax_core::visibility::{Author, NOT_CONNECTED, OWNER, Reader, UNCONNECTED, normalise};
 use rusqlite::{OptionalExtension, params};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -336,6 +335,7 @@ pub(crate) const APPROVALS_OF: &str = "SELECT author, scope, artifact_id, thread
 mod tests {
     use super::*;
     use clax_core::model::{Thread, Version};
+    use clax_core::visibility::*;
 
     #[test]
     fn only_authors_who_are_not_connected_are_marked() {
@@ -2019,7 +2019,7 @@ mod tests {
         // An artifact created by a person: every field theirs.
         let mia = w.publish_as(Some(&w.mia), &[("index.html", "<p>m</p>")]);
         let m = w.st.get_artifact(&mia).unwrap().unwrap();
-        for f in crate::artifacts::TEXT_FIELDS {
+        for f in clax_core::model::ARTIFACT_TEXT_FIELDS {
             assert_eq!(authors_of_artifact_field(&m, f), vec![p(&w.mia)], "{f}");
         }
     }
