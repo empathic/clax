@@ -765,7 +765,7 @@ migration decided as follows.
   `events`, `clock`, `fixture`, `people`, `clients`), re-exported at the
   root with globs, so tests keep writing `clax_testkit::TestServer`.
 - **The contract's `.d.ts` files stay in `clax-server`'s
-  `routes/shell.rs`:** they are small, change with the routes that serve
+  `shell/mod.rs`:** they are small, change with the routes that serve
   them, and moving them would make a contract edit rebuild the binary's
   embed for no gain.
 - **`Bundle` has no `web_ui`:** the commands never read the web UI; the
@@ -831,3 +831,9 @@ migration decided as follows.
   viewer, an agent), so it takes no token and only the testkit's daemon
   serves it: `AppState::test_daemon` (named `test_delays` above, renamed
   when it came to gate that route too).
+- **The guard tests leave `routes/mod.rs` for `routes/guards.rs`** (§3.2
+  kept them in `routes/mod.rs`): `routes/mod.rs` only declares the handler
+  modules, `router.rs` is the router alone, and the guards read the
+  router's source from there. `clax_server::daemon` became
+  `clax_server::serve`, so `daemon` names only `clax_core::daemon`, the
+  discovery files.

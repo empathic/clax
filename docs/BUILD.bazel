@@ -1,5 +1,5 @@
 # The contract the Rust tests check the daemon against
-# (crates/clax-server/src/routes/mod.rs).
+# (crates/clax-server/src/routes/guards.rs).
 filegroup(
     name = "contract",
     srcs = ["contract.md"],

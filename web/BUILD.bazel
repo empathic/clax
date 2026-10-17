@@ -163,7 +163,7 @@ filegroup(
     visibility = ["//crates:__subpackages__"],
 )
 
-# The contract files clax-server embeds (src/routes/shell.rs).
+# The contract files clax-server embeds (src/shell/mod.rs).
 filegroup(
     name = "contract_files",
     srcs = glob(["contract/**"], exclude = ["**/.qual"]),

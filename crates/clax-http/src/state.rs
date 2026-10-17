@@ -69,7 +69,7 @@ pub struct AppState {
     /// Flips to `true` when the daemon begins shutting down; long-lived streams end on it.
     pub shutdown: tokio::sync::watch::Receiver<bool>,
     pub wrap_cache: Arc<WrapCache>,
-    /// The web UI the shell routes serve (`routes::shell`): the binary's
+    /// The web UI the shell routes serve (`clax_server::shell`): the binary's
     /// embedded one, or a directory read from disk.
     pub web: Arc<dyn clax_core::embedded::FileTree>,
     /// Deadline for ordinary `/api` requests.

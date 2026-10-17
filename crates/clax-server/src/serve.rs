@@ -400,7 +400,7 @@ pub async fn serve(
     let (state_working, state_events) = (state.working.clone(), state.events.clone());
     let state_presence = state.presence.clone();
     let state_stream = state.stream.clone();
-    let app = crate::build_router_with_shutdown(state, shutdown_tx.clone());
+    let app = crate::router::build_router_with_shutdown(state, shutdown_tx.clone());
     if let Some(tx) = ready {
         let _ = tx.send(info.clone());
     }

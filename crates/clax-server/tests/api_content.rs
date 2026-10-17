@@ -1,5 +1,5 @@
 use clax_core::wrap::bridge_tag_for;
-use clax_server::routes::shell::bridge_version;
+use clax_server::shell::bridge_version;
 use clax_testkit::TestServer;
 
 #[tokio::test]

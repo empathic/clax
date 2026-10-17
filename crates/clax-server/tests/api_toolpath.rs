@@ -2779,7 +2779,7 @@ async fn working_ends_name_their_cause() {
     let seq = last_seq(&ts);
     let (feedback, store) = (ts.feedback.clone(), ts.store.clone());
     let reaped = tokio::task::spawn_blocking(move || {
-        clax_server::daemon::reap_idle(
+        clax_server::serve::reap_idle(
             &feedback,
             &store,
             std::time::Duration::from_secs(300),
