@@ -36,9 +36,9 @@ jobs:
         run: bazelisk run //web:playwright -- install-deps chromium
 
       # Every check: the sync check, format and clippy, the Rust tests, the
-      # web and Pi checks, the script gates, the checks run outside Bazel
-      # and the hard-link scan. Performance is measured on demand (`just
-      # perf`), not here. Each phase's time goes to the job summary.
+      # web and Pi checks, the script gates and the checks run outside
+      # Bazel. Performance is measured on demand (`just perf`), not here.
+      # Each phase's time goes to the job summary.
       - name: Run scripts/bazel-test.sh --ci
         run: scripts/bazel-test.sh --ci
 
