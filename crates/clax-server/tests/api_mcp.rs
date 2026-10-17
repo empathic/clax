@@ -49,7 +49,7 @@ async fn mcp_refuses_a_non_local_host(path: &str) {
 }
 both!(mcp_refuses_a_non_local_host);
 
-async fn mcp_lists_the_twenty_six_tools(path: &str) {
+async fn mcp_lists_the_tools(path: &str) {
     let ts = TestServer::spawn().await;
     let res = mcp_post(&ts, path, &initialize())
         .bearer_auth(&ts.token)
@@ -165,7 +165,7 @@ async fn mcp_lists_the_twenty_six_tools(path: &str) {
     let listed: Value = ts.get("/api/artifacts").await.json().await.unwrap();
     assert_eq!(listed["artifacts"][0]["title"], "Via MCP");
 }
-both!(mcp_lists_the_twenty_six_tools);
+both!(mcp_lists_the_tools);
 
 #[tokio::test]
 async fn raw_file_route_serves_unwrapped_bytes_sandboxed() {

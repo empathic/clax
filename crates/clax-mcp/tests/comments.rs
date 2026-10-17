@@ -3,7 +3,7 @@
 use clax_core::model::Session;
 use clax_mcp::tools::{
     CommentsReadArgs, CommentsReplyArgs, CommentsResolveArgs, ListArgs, PublishArgs, StatusArgs,
-    WaitArgs, WatchArgs, WorkingArgs,
+    WaitArgs, WatchArgs, WhereToAskArgs, WorkingArgs,
 };
 use clax_mcp::{ClaxTools, DaemonClient};
 use clax_testkit::{FAKE_PNG, TestServer};
@@ -1002,6 +1002,43 @@ async fn ask_err(tools: &ClaxTools, args: Value) -> String {
 
 fn which() -> Value {
     json!([{"question": "Which?", "header": "Pick", "options": [{"label": "A"}, {"label": "B"}]}])
+}
+
+/// `where_to_ask` returns the session's suggestion alone, without the
+/// route's `signals`: with no Clax tab or panel of the person's open, the
+/// terminal, clearly.
+#[tokio::test]
+async fn where_to_ask_returns_the_sessions_suggestion() {
+    let ts = TestServer::spawn().await;
+    let (tools, _) = session_tools(&ts).await;
+    let r = tools
+        .where_to_ask(Parameters(WhereToAskArgs {}))
+        .await
+        .unwrap();
+    let v = blocks(&r).0;
+    assert_eq!(v["surface"], "terminal", "{v}");
+    assert_eq!(v["confidence"], "clear", "{v}");
+    assert!(v["why"].is_string(), "{v}");
+    assert!(v.get("signals").is_none(), "{v}");
+}
+
+/// Without a session (the daemon's `/mcp`) there is no one to ask.
+#[tokio::test]
+async fn where_to_ask_needs_a_session() {
+    let ts = TestServer::spawn().await;
+    let tools = ClaxTools::new(
+        DaemonClient::new(ts.base.clone(), ts.token.clone(), None),
+        format!("http://localhost:{}", ts.addr.port()),
+        None,
+        ts.home.log_path(),
+    );
+    let r = tools
+        .where_to_ask(Parameters(WhereToAskArgs {}))
+        .await
+        .unwrap();
+    assert_eq!(r.is_error, Some(true), "{r:?}");
+    let v: Value = serde_json::from_str(&r.content[0].as_text().unwrap().text).unwrap();
+    assert_eq!(v["error"]["code"], "no_session", "{v}");
 }
 
 #[tokio::test]

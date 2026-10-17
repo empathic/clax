@@ -2921,8 +2921,8 @@ the agent knows better (the person said where they are), it follows that
 and says why. This is the session's person's engagement across the terminal
 and Clax, not the per-artifact viewer attention of "Versions, seen marks
 and attention" (`GET /api/viewers/me/attention`). Errors besides the common
-ones: `no_session` (the daemon's `/mcp`), `unknown_session`,
-`daemon_unreachable`.
+ones: `no_session` (the daemon's `/mcp`), `not_found` (the daemon has no
+such session), `unknown_session` (the session ended), `daemon_unreachable`.
 
 ### Mirroring `AskUserQuestion` (Claude Code)
 
