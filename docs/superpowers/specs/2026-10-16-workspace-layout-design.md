@@ -1,7 +1,7 @@
 # The Rust workspace's crate and module layout
 
 Date: 2026-10-16
-Status: proposal, awaiting the owner's decisions (§9)
+Status: decided (§9, 2026-10-16); carried out on branch `layout`, with the rulings of §10
 
 Goal, in order: a layout a newcomer can read (the name of a crate or module
 says what is in it, and the dependency graph says what may call what), then
@@ -688,7 +688,10 @@ unless the closing session wrote the record (§9, question 4).
     it and cannot depend on a crate below the server.
 11. **Rustc's incremental compilation under Bazel.** Already decided
     against: its incremental directory is full of hard links
-    (`docs/bazel.md`, "Speed").
+    (`docs/bazel.md`, "Speed"). The owner's ruling of 2026-10-16 on hard
+    links ("Hard links that we create are banned, not those created by well
+    tested tools") no longer forbids it, but it stays off: "Disk filling up
+    is a bigger issue right now than slightly slower incremental builds."
 
 ## 9. Open questions for the owner
 
@@ -697,25 +700,106 @@ unless the closing session wrote the record (§9, question 4).
    `clax-testkit`. Others considered: `clax-delivery` for `clax-realtime`;
    `clax-api` or `clax-server-core` for `clax-http`; `clax-assets` for
    `clax-embedded`; `clax-test-daemon` for `clax-testkit`.
+   **Decided:** the proposed names.
 2. **The binary's package stays `clax-cli`,** with the commands in
    `clax-commands`. Recommended: yes; nothing a user types changes.
+   **Decided:** not asked; the recommendation stands.
 3. **The `clax-core`/`clax-store` split (step 10).** The largest step and
    the one most in the way of open branches. Recommended: do it, after
    steps 1-9 have landed and been measured; it is what makes clients unable
    to reach SQL and stops store edits from rebuilding `clax-mcp` and
-   `clax-hooks`.
+   `clax-hooks`. **Decided:** "In this pass, last": every other step first,
+   measured, then the store, on the same branch.
 4. **Moving qualifier records.** Approve once, for this migration, the
    convention of §6.2 (re-record at the new path citing the old ID, resolve
    the old with `reason:obsolete` and the new ID), so the migrating session
    may close records it did not write. Recommended: approve. Otherwise each
    step leaves its old records open for the owner to close.
+   **Decided:** "Approve the move": each record pinned to moved code is
+   recorded again at its new path, and the old one closed citing the new
+   record's ID.
 5. **Test routes in debug daemons.** §5.2 compiles the three `test-routes`
    routes into every debug build, as the other 25 `/api/_test/` routes
    are, with the delay header honoured only in the testkit. Recommended:
    accept; the alternative is a router hook (§8, alternative 4).
+   **Decided:** "Debug builds serve them": the three routes are under
+   `debug_assertions`, the delay header is honoured only where the testkit
+   turns it on (`AppState::test_delays`), no test features remain, and the
+   Bazel derivation refuses one.
 6. **`clax-commands` opens the store directly** (`doctor`, `init`'s
    credential revoke), so it depends on `clax-store` and is rebuilt by
    store edits. Recommended: keep for now; concern `30b40937` already
-   tracks the risk that brings.
+   tracks the risk that brings. **Decided:** not asked; the recommendation
+   stands.
 7. **Record `e3918e09`** names a file deleted in `baa15c24`: close it, or
    re-anchor it on `crates/clax-server/tests/common/clients.rs`.
+   **Decided:** not asked; re-anchored as recommended, on that file's new
+   home, `crates/clax-testkit/src/clients.rs` (record `62a2827d`).
+
+The owner also set the order of the goals: "We should be thinking about the
+total layout for readability and maintainability first and speed of
+compilation second", and, for build settings, "Disk filling up is a bigger
+issue right now than slightly slower incremental builds."
+
+## 10. Rulings made while carrying it out
+
+Where the plan above left a choice open or did not fit the code, the
+migration decided as follows.
+
+- **`live_access` stays an HTTP module** (`clax-http/src/live_access.rs`):
+  `hide_live_pages` is middleware and `sees_live_pages` reads a request's
+  connection; only `LiveIds` is in-memory delivery (`clax-realtime`).
+- **`FeedbackCtx`'s builders sit in `state.rs`** (`feedback_ctx`,
+  `sessions_ended`): they read `AppState`, which `clax-realtime` may not
+  name.
+- **`conn` (the accepted connections' socket options) is `clax-http`'s,
+  not `clax-server`'s:** the connect-info impl for the tuned listener
+  (`auth::TunedListener`) must sit in the crate that defines `Conn`, by the
+  orphan rule, and `TunedListener` calls `tune_connection`.
+- **The test fixtures move to `crates/clax-testkit/fixtures/`,** except
+  `harness-ids`, which only `clax-server`'s `tests/harness_ids.rs` reads:
+  it stays in `crates/clax-server/tests/fixtures/`.
+- **`clax-testkit` is never a unit-test dependency:** a crate's `src/`
+  tests use its own helpers; only `tests/` reach the testkit.
+- **`clax-testkit`'s root is split into modules** (`server`, `client`,
+  `events`, `clock`, `fixture`, `people`, `clients`), re-exported at the
+  root with globs, so tests keep writing `clax_testkit::TestServer`.
+- **The contract's `.d.ts` files stay in `clax-server`'s
+  `routes/shell.rs`:** they are small, change with the routes that serve
+  them, and moving them would make a contract edit rebuild the binary's
+  embed for no gain.
+- **`Bundle` has no `web_ui`:** the commands never read the web UI; the
+  daemon gets it as `ServeConfig::web`, built by the binary's
+  `Env::serve` (`clax-cli/src/serve.rs`, `bundle.rs`).
+- **`clax-embedded` exports `LAUNCHER`, a `&'static str` constant,** in
+  place of a `launcher()` function.
+- **The test daemon serves `web/dist` from disk** (`clax_testkit::web_ui`,
+  a `DiskTree`), so the testkit does not link the embed.
+- **No library with rmeta consumers reads `env!` of a sandbox path.**
+  Bazel's pipelined build compiles a crate's metadata and its rlib in two
+  sandboxes; a path in the crate (an `env!` set from `$(execpath)`) differs
+  between them, so does the crate hash, and a dependent built against the
+  metadata fails to link (E0463). `clax-embedded` passes its directories
+  only to rust-embed, whose embedded bytes are the same in both.
+- **`cargo_package` drops repeated labels** in `compile_data` (`_uniq` in
+  `bazel/cargo.bzl`): a test's compile data is the library's plus its own,
+  and Bazel refuses a label listed twice.
+- **The commands reach the binary's `Env` through a process-wide
+  `OnceLock`** (`clax_commands::run` sets it once), not through an argument
+  threaded into every command; unit tests, which run no binary, read a
+  bundle of the checkout's launcher and empty trees.
+- **`doctor --agent` still compiles in the plugins' `SKILL.md` files**
+  (`clax-commands/src/commands/doctor_agent.rs`, `include_str!`), so a
+  skill edit rebuilds the commands; they belong behind `Bundle`, a follow-up
+  recorded on those lines.
+- **`SampleError` becomes `ApiError` by `From`,** in `clax-http`'s
+  `error.rs`: a 400 with the check's code and message, as before.
+- **The delivery guard** (`clax-core/src/feedback.rs`,
+  `feedback_items_are_built_only_under_visibility`) names the crates it
+  scans, the daemon's (`clax-core`, `clax-store`, `clax-realtime`,
+  `clax-http`, `clax-server`), rather than every crate: the commands' hook
+  builds a `Notice` type of its own.
+- **The route-table guards skip a `clax_http::` prefix** as they skip
+  `crate::`, and the router imports `agent` and `limits` so each route
+  stays one line the guards can read.
+
