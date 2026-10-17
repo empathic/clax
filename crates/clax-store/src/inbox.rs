@@ -1671,6 +1671,8 @@ pub struct AgentGroup {
     pub person: Option<String>,
     /// The session has not ended.
     pub live: bool,
+    /// A session of another Clax (its grant a device sign-in's).
+    pub relay: bool,
     pub unread: u32,
     /// The newest unread item's `seq` (0 with none).
     pub newest: i64,
@@ -1699,6 +1701,7 @@ impl Store {
                 harness: String::new(),
                 person: None,
                 live: false,
+                relay: false,
                 unread: 0,
                 newest: 0,
                 blocked_since: None,
@@ -1741,17 +1744,20 @@ impl Store {
             }
             let mut out = Vec::with_capacity(by.len());
             for (sid, mut g) in by {
-                type Row = (String, Option<String>, String, Option<String>, Option<String>);
+                type Row = (String, Option<String>, String, Option<String>, Option<String>, bool);
                 let row: Option<Row> = c
                     .query_row(
-                        "SELECT agent_handle, name, harness, ended_at, person FROM sessions WHERE id = ?1",
+                        "SELECT agent_handle, name, harness, ended_at, person,
+                                grant_id IS NOT NULL AND EXISTS (SELECT 1 FROM device_codes d WHERE d.grant_id = sessions.grant_id)
+                           FROM sessions WHERE id = ?1",
                         params![sid],
-                        |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?, x.get(3)?, x.get(4)?)),
+                        |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?, x.get(3)?, x.get(4)?, x.get(5)?)),
                     )
                     .optional()?;
-                let Some((handle, name, harness, ended, person)) = row else {
+                let Some((handle, name, harness, ended, person, relay)) = row else {
                     continue;
                 };
+                g.relay = relay;
                 g.handle = handle;
                 g.name = name;
                 g.harness = harness;

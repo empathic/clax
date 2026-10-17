@@ -188,7 +188,7 @@ fn strip_view(
                 n
             }
         };
-        out.push(json!({
+        let mut v = json!({
             "handle": g.handle,
             "name": g.name,
             "harness": g.harness,
@@ -202,7 +202,12 @@ fn strip_view(
                 "questions": g.questions,
                 "approvals": g.approvals,
             })),
-        }));
+        });
+        // Another Clax's agent: whose Clax it relays from.
+        if g.relay {
+            v["via"] = json!(clax_core::store::attention::relay_via(&person_name));
+        }
+        out.push(v);
     }
     Ok(json!(out))
 }

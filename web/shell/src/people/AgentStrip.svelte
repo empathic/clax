@@ -24,7 +24,7 @@
       <button type="button" class="achip" data-blocked={a.blocked ? "" : undefined} aria-pressed={a.handle === selected}
         onclick={() => onPick(a.handle === selected ? null : a.handle)}>
         <b>{a.name ?? a.harness}</b
-        >{#if a.own === false && a.person_name}{" "}<span class="aperson">· {a.person_name}</span>{/if
+        >{#if a.via}{" "}<span class="aperson">· via {a.via}</span>{:else if a.own === false && a.person_name}{" "}<span class="aperson">· {a.person_name}</span>{/if
         }{#if a.blocked?.questions}{" "}<span>· waiting on you {waitedFor(a.blocked.since, now)}</span>{" "}<small>({blockedOn(a.blocked)})</small
         >{:else if a.blocked}{" "}<span>· {blockedOn(a.blocked)} for you · {waitedFor(a.blocked.since, now)}</span
         >{:else}{#if !a.live}{" "}<span>· ended</span>{/if}{#if a.unread}{" "}<span>· {a.unread} unread</span>{/if}{/if}</button>

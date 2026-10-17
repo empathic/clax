@@ -1157,6 +1157,18 @@ async fn the_public_copy_names_the_local_agent_the_sync_relays_for() {
     let there = p.hosted_question("Which colour?").await;
     assert_eq!(there["agent"]["name"], "asker", "{there}");
     assert_eq!(there["agent"]["via"], format!("{person}'s Clax"), "{there}");
+    // The inbox's agent strip there names it so too.
+    let (s, v) = p
+        .public
+        .browser(reqwest::Method::GET, "/api/inbox?group=agent", json!(null))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let strip = v["agents"].as_array().cloned().unwrap_or_default();
+    let asker = strip
+        .iter()
+        .find(|a| a["name"] == "asker")
+        .unwrap_or_else(|| panic!("{v}"));
+    assert_eq!(asker["via"], format!("{person}'s Clax"), "{v}");
     // Its session ending here leaves the sync's own name there.
     let (s, v) = p
         .local_req(

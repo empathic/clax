@@ -260,6 +260,7 @@ test("a local agent's question is asked on the hosted copy, answered there, and 
     const inboxCard = owner.locator(`.qcard[data-question="${rq.id}"]`).first();
     const inboxRow = owner.locator(".irow", { hasText: "Which Friday" }).first();
     await expect(inboxCard.or(inboxRow)).toBeVisible({ timeout: 20_000 });
+    await expect(owner.locator(".astrip .achip").first()).toHaveText(/^\S+ · via Ada's Clax · waiting on you/);
     await shoot(owner, "questions-hosted-inbox", async () => { await owner.reload(); await inboxCard.or(inboxRow).waitFor(); });
     await owner.goto(`${origin}/a/${raid}`);
     const there = owner.locator(`.qcard[data-question="${rq.id}"]`).first();

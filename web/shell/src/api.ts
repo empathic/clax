@@ -254,6 +254,8 @@ export type StripAgent = {
   handle: string; name: string | null; harness: string; live: boolean; unread: number;
   /** Its person's public ID (null: the owner's) and name, and whether it is the caller's own person's agent. */
   person?: string | null; person_name?: string; own?: boolean;
+  /** Another Clax's agent: whose Clax it relays from, "Ada's Clax". */
+  via?: string;
   blocked: { since: string; questions: number; approvals: number } | null;
 };
 /** One agent as `GET /api/agents` lists it (§13): another person's agent

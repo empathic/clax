@@ -34,6 +34,10 @@ describe("AgentStrip", () => {
       "web · 3 unread",
       "pi · ended · 1 unread",
     ]);
+    // Another Clax's agent says whose Clax it relays from, in place of its person.
+    const relayed = mount(AgentStrip, { agents: [agent({ handle: "a_rel", name: "claude", harness: "claude", own: false, person_name: "Ada", via: "Ada's Clax", blocked: { since: "2026-10-09T10:18:00.000Z", questions: 1, approvals: 0 } })], now, selected: null, onPick: vi.fn() });
+    expect(chips(relayed.root)[0].textContent!.replace(/\s+/g, " ").trim()).toBe("claude · via Ada's Clax · waiting on you 12 min (1 question)");
+    relayed.unmount();
     m.update({ agents: AGENTS, now: new Date("2026-10-09T11:35:00.000Z"), selected: null, onPick: vi.fn() });
     expect(chips(m.root)[0].textContent).toContain("waiting on you 1 h 17 min");
   });
