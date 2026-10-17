@@ -542,8 +542,11 @@ class AgentLoop {
   /// holds what they were made on, and the first message carries the
   /// notes and what the person answered of its questions; an app that
   /// changed under the draft starts over from the app
-  /// with the notes, and the run is told to say so. The draft is kept until
-  /// then, however long ago the run stopped (within [unfinishedKeepAge]). The change and its Keep going runs share
+  /// with the notes, and the run is told so. The draft is kept until
+  /// then, however long ago the run stopped. With nothing kept, a
+  /// [keepGoing] starts over from the app too, told so; a run that starts
+  /// over opens its replies with [startedOverLine]. The change and its Keep
+  /// going runs share
   /// [changeCapUsd]: each run's cost cap is what is left of it, at most
   /// [RunCaps.change]'s. Any other end of a run on these threads forgets
   /// what was kept, as does a [keepGoing] whose comments are not the kept
@@ -562,14 +565,16 @@ class AgentLoop {
     final threadIds = [
       ...{for (final i in items) i.threadId},
     ];
-    final kept = keepGoing ? await _unfinishedOf(aid, items) : null;
+    final (:kept, :lost) = keepGoing
+        ? await _unfinishedOf(aid, items)
+        : (kept: null, lost: false);
     await _takeOverQuestions(items, session, keep: answering);
     await _quiet(
       'mark working',
       () => _api.setWorking(
         aid,
         on: true,
-        note: kept == null
+        note: kept == null && !lost
             ? _workingNote(items)
             : 'Keep going: ${_workingNote(items)}',
         threadIds: threadIds,
@@ -597,6 +602,7 @@ class AgentLoop {
               onProgress,
               answers,
               kept,
+              lost: lost,
             );
     } finally {
       await _quiet('clear working', () => _api.setWorking(aid, on: false));
@@ -605,20 +611,23 @@ class AgentLoop {
   }
 
   /// The [UnfinishedChange] kept for [items]' threads on [aid], when it
-  /// answered every one of [items]; null otherwise, or when it cannot be
-  /// read.
-  Future<UnfinishedChange?> _unfinishedOf(
+  /// answered every one of [items]; else null, with [lost] true when
+  /// nothing is kept for them (or it cannot be read), false when what is
+  /// kept answered other comments (the person wrote again).
+  Future<({UnfinishedChange? kept, bool lost})> _unfinishedOf(
     String aid,
     List<FeedbackItem> items,
   ) async {
     try {
       final c = await unfinished.get(items.first.threadId);
-      if (c == null || c.artifactId != aid) return null;
+      if (c == null || c.artifactId != aid) return (kept: null, lost: true);
       final ids = c.commentIds.toSet();
-      return items.every((i) => ids.contains(i.commentId)) ? c : null;
+      return items.every((i) => ids.contains(i.commentId))
+          ? (kept: c, lost: false)
+          : (kept: null, lost: false);
     } on Object catch (e) {
       _log('the unfinished change of $aid is unavailable: $e');
-      return null;
+      return (kept: null, lost: true);
     }
   }
 
@@ -909,8 +918,9 @@ class AgentLoop {
     Future<void>? cancelled,
     ProgressSink? onProgress,
     String? answers,
-    UnfinishedChange? kept,
-  ) async {
+    UnfinishedChange? kept, {
+    bool lost = false,
+  }) async {
     final cancel = CancelWatch(cancelled);
     Future<ChangeOutcome> fail(String reason) async {
       final answered = await _replyFailure(
@@ -1017,6 +1027,7 @@ class AgentLoop {
         changeSpentUsd: spentBefore,
         changeStops: kept?.stops ?? 0,
         changeNotes: kept?.notes ?? const [],
+        startedOver: lost || resume == _Resume.changed,
       ),
       RunCaps(
         turns: caps.turns,
@@ -1046,7 +1057,14 @@ class AgentLoop {
           plan: plan,
           fromBundle: bundled,
           keepGoing: kept == null
-              ? null
+              ? (lost
+                    ? const KeepGoingNote(
+                        limit: '',
+                        stops: 0,
+                        notes: [],
+                        why: 'what that run left is no longer kept',
+                      )
+                    : null)
               : KeepGoingNote(
                   limit: kept.limit,
                   stops: kept.stops,

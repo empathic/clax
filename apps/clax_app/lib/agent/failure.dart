@@ -38,6 +38,13 @@ const changeCapUsd = 6.0;
 /// Less than this left of [changeCapUsd] is too little for another run.
 const minKeepGoingUsd = 0.05;
 
+/// What a Keep going run's reply opens with when it could not go on from
+/// the stopped run's draft (the app changed under it, or it was not kept)
+/// and started again from the app as it is.
+const startedOverLine =
+    "Started again from the current app: the stopped run's draft could not "
+    'be used.';
+
 /// A change that has stopped at a limit this many times is planned rather
 /// than run on: its Keep going run puts what is left into plan features,
 /// and the build's continue runs build them.
@@ -113,8 +120,11 @@ class LimitProgress {
     required this.spentUsd,
     this.notes = const [],
     this.changed = const [],
+    this.startedOver = false,
   });
 
+  /// This run started again from the app ([startedOverLine]).
+  final bool startedOver;
   final int stops;
   final double spentUsd;
   final List<String> notes;
@@ -128,7 +138,8 @@ class LimitProgress {
 /// notes, one per line, a note repeated in a row quoted once.
 String limitProgressText(LimitProgress p) {
   final b = StringBuffer(
-    '\n\nStopped ${timesWords(p.stops)} · '
+    '\n\n${p.startedOver ? '$startedOverLine\n' : ''}'
+    'Stopped ${timesWords(p.stops)} · '
     '\$${p.spentUsd.toStringAsFixed(2)} of '
     '\$${changeCapUsd.toStringAsFixed(0)} used',
   );

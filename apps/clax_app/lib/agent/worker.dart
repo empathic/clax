@@ -1197,7 +1197,10 @@ class FeedbackWorker {
   /// it ([isKeepGoingReply]) and the change is kept in
   /// [AgentLoop.unfinished], the change's comments (on each of its
   /// threads) are queued to go on from where it stopped. A kept change
-  /// that has spent its [changeCapUsd] runs nothing.
+  /// that has spent its [changeCapUsd] runs nothing. With nothing kept,
+  /// the comments the limit replies answered ([keptGoingComments]) are
+  /// queued as a Keep going all the same, which starts over from the app
+  /// and says so: Keep going never quietly runs the change afresh.
   Future<bool> retry(String aid, String tid) async {
     if (!_started || _known(aid, tid)) return false;
     final List<ThreadView> all;
@@ -1233,6 +1236,18 @@ class FeedbackWorker {
         _kick();
         return true;
       }
+    }
+    if (t.comments.isNotEmpty &&
+        isKeepGoingReply(t.comments.last) &&
+        (unfinished == null || unfinished.artifactId != aid)) {
+      // Nothing is kept of the stopped change: it still runs as a Keep
+      // going, which is told it starts over from the app and says so.
+      final items = [for (final c in keptGoingComments(t)) _item(aid, t, c)];
+      if (items.isEmpty) return false;
+      _failed.remove(tid);
+      _queue.add(_Job(aid, items: items, keepGoing: true));
+      _kick();
+      return true;
     }
     if (_stopped.containsKey(tid)) {
       // A stopped change runs again with the comments it had.
@@ -1388,6 +1403,22 @@ class FeedbackWorker {
         resent: true,
         createdAt: c.createdAt,
       );
+}
+
+/// The viewer comments of [t] that its trailing limit replies answered:
+/// those after the last agent comment that is not a Keep going reply
+/// ([isKeepGoingReply]), before the replies.
+List<ThreadComment> keptGoingComments(ThreadView t) {
+  var end = t.comments.length;
+  while (end > 0 && isKeepGoingReply(t.comments[end - 1])) {
+    end--;
+  }
+  final before = t.comments.sublist(0, end);
+  final since = before.lastIndexWhere((c) => c.byAgent) + 1;
+  return [
+    for (final c in before.skip(since))
+      if (c.authorKind == 'viewer') c,
+  ];
 }
 
 /// The viewer comments a failed change of [t] answered: those after the

@@ -81,6 +81,7 @@ class RunContext {
     this.changeSpentUsd,
     this.changeStops = 0,
     this.changeNotes = const [],
+    this.startedOver = false,
   });
 
   final RequestKind kind;
@@ -125,6 +126,10 @@ class RunContext {
 
   /// For a change: the agent's notes over its earlier runs, oldest first.
   final List<String> changeNotes;
+
+  /// A Keep going that could not go on from the stopped run's draft and
+  /// started again from the app: its replies open with [startedOverLine].
+  final bool startedOver;
 }
 
 /// How a run ended.
