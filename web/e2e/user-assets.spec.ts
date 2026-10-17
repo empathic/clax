@@ -50,17 +50,20 @@ test("LAN: user is not the owner, resolves other viewers by name, and can write 
   const { artifact } = await publishWith(d.base, d.token, "Who LAN", who, { user: { scopes: ["profile"] }, db: {} });
   const f = await openArtifact(page, d.base, artifact.id, 1, "sandbox", { lan: true });
   expect(await facts(f)).toMatchObject({ isOwner: false, canEdit: false, dataWrite: false, filesWrite: false, idShape: true, search: 0, other: "Ärger Ölund", stranger: "" });
+  // A name no test gives this worker's shared daemon's owner (comment-flows
+  // names the owner Sam): one that reads like the owner's is refused.
   const name = await nameField(page);
-  await name.fill("Sam");
-  await Promise.all([page.waitForResponse(r => r.url().endsWith("/api/viewers/me") && r.request().method() === "PUT"), name.press("Enter")]);
+  await name.fill("Lan Reader");
+  const [named] = await Promise.all([page.waitForResponse(r => r.url().endsWith("/api/viewers/me") && r.request().method() === "PUT"), name.press("Enter")]);
+  expect(named.status(), await named.text()).toBe(200);
   // can() is fixed for the life of the frame's document: naming does not change it.
   await f.locator("#refresh").click();
-  await expect.poll(async () => (await facts(f)).name).toBe("Sam");
-  expect(await facts(f)).toMatchObject({ name: "Sam", dataWrite: false });
+  await expect.poll(async () => (await facts(f)).name).toBe("Lan Reader");
+  expect(await facts(f)).toMatchObject({ name: "Lan Reader", dataWrite: false });
   // The next document is given the named viewer's level.
   await f.evaluate(() => location.reload()).catch(() => { /* the reload ends this document mid-call */ });
   await expect.poll(async () => (await facts(f)).dataWrite).toBe(true);
-  expect(await facts(f)).toMatchObject({ name: "Sam", other: "Ärger Ölund", isOwner: false });
+  expect(await facts(f)).toMatchObject({ name: "Lan Reader", other: "Ärger Ölund", isOwner: false });
   const { artifact: g } = await publishWith(d.base, d.token, "Gallery LAN", html("gallery.html"), { assets: {} });
   const page2 = await page.context().newPage();
   const f2 = await openArtifact(page2, d.base, g.id, 1, "sandbox", { lan: true });

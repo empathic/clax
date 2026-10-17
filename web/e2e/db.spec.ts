@@ -55,12 +55,15 @@ test("LAN: an unnamed viewer reads but cannot write; naming them makes them a wr
   await expect(f.locator("#out")).toHaveText(JSON.stringify({ n: 0, lag: null, changes: [] }));
   await f.locator("#add").click();
   await expect(f.locator("#err")).toHaveText("invalid_argument");
+  // A name no test gives this worker's shared daemon's owner (comment-flows
+  // names the owner Sam): one that reads like the owner's is refused.
   const name = await nameField(page);
-  await name.fill("Sam");
-  await Promise.all([
+  await name.fill("Lan Writer");
+  const [named] = await Promise.all([
     page.waitForResponse(r => r.url().endsWith("/api/viewers/me") && r.request().method() === "PUT"),
     name.press("Enter"),
   ]);
+  expect(named.status(), await named.text()).toBe(200);
   await f.locator("#add").click();
   await expect(f.locator("#out")).toContainText('"n":1');
 });
