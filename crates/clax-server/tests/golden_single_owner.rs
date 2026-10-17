@@ -862,7 +862,10 @@ async fn golden_now() -> Value {
 
 /// §19 item 6's additive keys: where the golden lacks one, its value now
 /// must be the single-owner value [`solo_value`] accepts.
-pub const ADDITIVE_KEYS: [&str; 9] = [
+/// `wake` (the watch result's) and `wakes` (a live agent's, in a listing
+/// for anyone but an agent) say how a comment reaches an idle session,
+/// which depends on its harness, not on how many people the install has.
+pub const ADDITIVE_KEYS: [&str; 11] = [
     "owner",
     "taken_by",
     "name",
@@ -872,6 +875,8 @@ pub const ADDITIVE_KEYS: [&str; 9] = [
     "rights",
     "may_fork",
     "linked",
+    "wake",
+    "wakes",
 ];
 
 /// Whether `v`, the value of item 6's key `key` that the golden lacks, is
@@ -899,6 +904,8 @@ pub fn solo_value(key: &str, v: &Value, owner: &str) -> bool {
         "rights" => *v == clax_core::rights::Rights::full().to_json(),
         "may_fork" => *v == json!(true),
         "linked" => v.is_null(),
+        "wake" => v["when_idle"].is_boolean() && v["do"].is_string(),
+        "wakes" => v.is_boolean(),
         _ => false,
     }
 }
