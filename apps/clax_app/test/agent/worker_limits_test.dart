@@ -266,6 +266,29 @@ void main() {
     expect(bodies(item.threadId).last, '$startedOverLine Renamed.');
   });
 
+  test(
+    'a change that planned features and then gave up starts no build',
+    () async {
+      workerWith([
+        [
+          const ScriptedCall('plan_set', {
+            'features': [
+              {'id': 's1', 'title': 'Stats', 'detail': '', 'status': 'todo'},
+            ],
+          }),
+          const ScriptedCall('give_up', {'reason': 'it needs the camera'}),
+        ],
+      ]).start();
+      await idle();
+      final item = api.sendComment(aid, 'Add stats from the camera');
+      await until(() => bodies(item.threadId).length == 2);
+      await idle();
+      expect(bodies(item.threadId).last, failureReply('it needs the camera'));
+      expect(worker.buildOf(aid), isNull);
+      expect(runner.seen, hasLength(1));
+    },
+  );
+
   test(r'a change that has spent its $6 does not keep going', () async {
     workerWith([]).start();
     await idle();
