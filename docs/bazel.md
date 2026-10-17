@@ -101,9 +101,9 @@ a new use of a crate already in a `Cargo.toml`. A change to any
 `scripts/bazel-sync.sh` writes:
 
 - `bazel/workspace.bzl`: each crate's version, targets (`[[test]]`
-  included), features, path dependencies, the features its tests turn on in
-  other workspace crates, its build script, and the workspace lints as
-  rustc flags;
+  included), features, path dependencies and dev-dependencies, its build
+  script, and the workspace lints as rustc flags (a dev-dependency that
+  turns a workspace crate's features on is refused, not derived);
 - `bazel/release_files.bzl`: `scripts/test-release.files` as labels;
 - `bazel/playwright/browsers.bzl`: the Chromium the locked Playwright runs,
   with checksums (rewritten only when the locked version moves);
@@ -140,7 +140,8 @@ which declares, with `<lib>` the library's crate name:
   each module with `#[cfg(any(not(clax_split), clax_split = "<module>"))]`;
   Cargo sets no `clax_split` and builds them all into one binary, as before;
 - `build_script` when the crate has one;
-- `rust_sources`, for source scans.
+- `rust_sources`, for source scans, and `manifest`, the crate's
+  `Cargo.toml`, for the layering check.
 
 A BUILD file names only what a crate reads outside `src/`: what it embeds,
 what its tests read. `//crates/clax-cli:clax_warm` runs the binary once
@@ -155,10 +156,14 @@ checks build the release binary. `//web:dist` (with `dist_extension`,
 `//web:perf_usable_full`) are `manual`: performance is measured on demand
 (`just perf`, which reruns them and prints their numbers) and gates nothing.
 
-A crate whose compile inputs include a generated directory (the web UI)
-has its sources placed in `bazel-bin` by rules_rust, so the repository
-files its sources include sit there too (the `*_bin` copies in the BUILD
-files).
+A crate whose compile inputs include a generated directory has its
+sources placed in `bazel-bin` by rules_rust, so the repository files its
+sources include sit there too (the `*_bin` copies in the BUILD files).
+`clax-embedded` is the one such crate: it alone embeds the web UI, the
+extension and the plugins, so a web edit recompiles it and the binary, not
+the daemon. Which crate may depend on which is
+`scripts/check-crate-layers.py` (`//scripts:crate_layers`), from
+`docs/superpowers/specs/2026-10-16-workspace-layout-design.md` §2.1.
 
 ## macOS first runs
 
@@ -236,7 +241,7 @@ Performance gates nothing in either (`just perf` measures on demand).
 | pi extension | `//plugins/pi:typecheck`, `//plugins/pi:test` |
 | playwright browser, web e2e | `//web:e2e_gesture`, `//web:e2e_chrome_overlay`, `//web:e2e_rest` (Chromium from `@chromium//:browsers`) |
 | build clax, build tests | the build of `//crates/...` in the one `bazel test` |
-| cargo nextest (or cargo test) | every Rust test target, `tests(//crates/...)`, the integration tests a target per module |
+| cargo nextest (or cargo test) | every Rust test target, `tests(//crates/...)`, the integration tests in a few targets per crate |
 | cargo fmt --check | `--config=fmt` over `//crates/...` |
 | cargo clippy | `--config=clippy` over `//crates/...`: each library, binary and test target; `crates/clax-commands` again with its own `clippy.toml` |
 | release build | `//crates/clax-cli:clax_opt` |
@@ -398,7 +403,8 @@ recompiles it and everything after it.
 - **Embedded files in debug builds.** Bazel's debug `clax` embeds the web
   UI, the extension and the plugins (`--cfg clax_embedded`, rust-embed's
   `debug-embed`); Cargo's reads them from the checkout. The one test of
-  that, `an_embedded_debug_build_versions_the_embedded_bridge`, runs only
+  that, `web::tests::an_embedded_build_carries_the_bridge` in
+  clax-embedded, runs only
   under Bazel (`scripts/bazel-parity.py` knows it).
 - **Features.** crate_universe keeps one feature list per crate, so Bazel's
   third-party crates have the workspace's merged features, as

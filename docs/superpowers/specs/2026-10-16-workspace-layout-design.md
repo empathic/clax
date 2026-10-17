@@ -803,3 +803,22 @@ migration decided as follows.
   `crate::`, and the router imports `agent` and `limits` so each route
   stays one line the guards can read.
 
+- **`store::people::CONTINUE_WAIT_SECS` and `store::inbox::is_item_id` stay
+  in `clax-store`** (§3.1 moved them to `clax-core`): no pure module reads
+  either, only the store and the daemon's routes, which depend on the store.
+- **`RegisterSession` moves to `clax_core::model`** (re-exported at the
+  core root and as `clax_store::RegisterSession`): `clax-mcp` builds one
+  for the daemon, and holding it in the store would have made the tool set
+  link SQLite.
+- **The toolpath vectors stay in `clax-core/tests/toolpath/`:**
+  `clax-store`'s tests read them across the crate boundary (`#[path]` and
+  `include_str!` of `../../../clax-core/tests/toolpath/…`, and
+  `//crates/clax-core:toolpath_vectors` as test data), as the web and Pi
+  tests already do, so the shared vectors keep one home.
+- **`Rights::parse_internal` is `pub`:** the store reads the internal form
+  of a grant's rights, and now from another crate.
+- **`cargo_package` declares a `manifest` target** (each crate's
+  `Cargo.toml`), which `//scripts:crate_layers` reads to check the layering
+  rule (`scripts/check-crate-layers.py`). Dev-dependencies are not checked
+  by it: tests reach the support crates and the crates they drive, and the
+  derivation already refuses features turned on there.

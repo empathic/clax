@@ -271,6 +271,18 @@ Checks and builds run with Bazel when Bazelisk is installed and with Cargo
 and pnpm otherwise; `docs/bazel.md` has which recipe runs what, the
 `-native` twins, `just bazel-sync` and `just bazel-gc`.
 
+The Rust workspace is layered, each crate depending only on the crates
+above it: `clax-core` (shared types and pure rules), then `clax-store` (the
+SQLite store), `clax-sample`, `clax-mcp` and `clax-hooks`; `clax-realtime`
+(in-memory delivery); `clax-http` (what every route shares); `clax-server`
+(the routes and `serve()`); `clax-commands` (every subcommand);
+`clax-embedded` (the files the binary carries); and `clax-cli`, the binary
+that wires them together. Test support is `clax-testkit` (the in-process
+test daemon, for integration tests only) and `clax-fake-exe`.
+`docs/superpowers/specs/2026-10-16-workspace-layout-design.md` §2 says what
+belongs where, and `scripts/check-crate-layers.py`, a quality gate, fails a
+dependency out of order.
+
 Two loops, both on a home of their own, `~/.clax-dev`, whose daemon listens on
 port 7481 (its `config.toml` says `[serve] port = 7481`, or the port in
 `CLAX_DEV_PORT`, written by whichever of `just watch` and `just dev` runs
