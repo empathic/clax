@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { normalize, reconcile, sections, moveTo, star, unstar, opened, isNew, groupOf, groupKey, groupNameOf, makeGroup, addToGroup, removeFromGroup, moveInGroup, renameGroup, setLook, ungroup } from '../home/arrange.js';
+import { normalize, reconcile, sections, moveTo, star, unstar, opened, isNew, groupOf, groupKey, groupNameOf, makeGroup, addToGroup, removeFromGroup, moveInGroup, renameGroup, setLook, ungroup, bigApps, setBigTiles } from '../home/arrange.js';
 
 const app = (id, hoursAgo = 0, icon = {}) => ({ id, title: id.toUpperCase(), updatedAt: new Date(Date.UTC(2026, 9, 16, 12) - hoursAgo * 3600e3).toISOString(), build: null, icon });
 const A = app('a', 1), B = app('b', 2), C = app('c', 3), D = app('d', 4);
@@ -178,5 +178,36 @@ describe('groups', () => {
     l = reconcile(removeFromGroup(l, 'b'), apps);
     expect(l.order).toEqual(['a', 'b', 'c']);
     expect(l.groups).toEqual({});
+  });
+});
+
+describe('bigApps', () => {
+  const now = new Date('2026-10-16T12:00:00Z');
+  const opensOf = (n, day = '2026-10-16', last = `${day}T10:00:00.000Z`) => ({ n, last, days: { [day]: n } });
+  const apps = ['a', 'b', 'c', 'd', 'e', 's', 'g1', 'g2'].map((id) => app(id));
+  const layout = (extra = {}) => reconcile({
+    starred: ['s'], order: ['a', 'b', 'c', 'd', 'e', 'g:x'], groups: { x: { name: 'X', apps: ['g1', 'g2'] } }, seen: [],
+    opens: { a: opensOf(9), b: opensOf(7), c: opensOf(5, '2026-10-03'), d: opensOf(12, '2026-10-02'), e: opensOf(4), s: opensOf(30), g1: opensOf(30) },
+    ...extra,
+  }, apps);
+
+  test('the three opened most in the last 14 days, at least 5 opens each, outside Starred and groups', () => {
+    expect([...bigApps(layout(), now)].sort()).toEqual(['a', 'b', 'c']);
+  });
+
+  test('opens older than 14 days do not count', () => {
+    expect(bigApps(layout(), new Date('2026-10-17T00:30:00Z')).has('c')).toBe(false);
+  });
+
+  test('ties go to the later open, then the ID; only three grow', () => {
+    const l = layout({ opens: { a: opensOf(6), b: opensOf(6, '2026-10-16', '2026-10-16T11:00:00.000Z'), c: opensOf(6), d: opensOf(6) } });
+    expect([...bigApps(l, now)]).toEqual(['b', 'a', 'c']);
+  });
+
+  test('turned off, nothing grows; the setting is kept', () => {
+    const off = setBigTiles(layout(), false);
+    expect(off.bigTiles).toBe(false);
+    expect(bigApps(off, now).size).toBe(0);
+    expect(bigApps(setBigTiles(off, true), now).size).toBe(3);
   });
 });

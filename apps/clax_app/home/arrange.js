@@ -6,7 +6,8 @@
 //
 //   {v: 1, starred: [appId], order: [appId | "g:<groupId>"],
 //    groups: {groupId: {name, look: "folder" | "pile", apps: [appId]}},
-//    seen: [appId], opens: {appId: {n, last, days: {"YYYY-MM-DD": n}}}}
+//    seen: [appId], opens: {appId: {n, last, days: {"YYYY-MM-DD": n}}},
+//    bigTiles: boolean (absent means true)}
 
 export const LAYOUT_PATH = 'layout/main';
 /** The days `opens[id].days` keeps, today included. */
@@ -152,6 +153,31 @@ export function opened(layout, id, now) {
 
 /** Whether app `id` has not been opened from the home screen yet. */
 export const isNew = (layout, id) => !layout.seen.includes(id);
+
+/** How many apps under All apps grow to a 2×2 tile, and the opens in the
+ * last OPEN_DAYS days each needs. */
+export const BIG_TOP = 3;
+export const BIG_MIN = 5;
+
+/** The apps under All apps (not in Starred or a group) that take a 2×2
+ * cell at `now`: the BIG_TOP opened most from the home screen in the last
+ * OPEN_DAYS UTC days, with at least BIG_MIN opens each, most first, ties
+ * to the one opened later, then by ID. None when `bigTiles` is false. */
+export function bigApps(layout, now) {
+  const l = normalize(layout);
+  if (l.bigTiles === false) return new Set();
+  const since = daysBefore(now, OPEN_DAYS - 1);
+  const loose = new Set(l.order.filter((k) => !isGroupKey(k)));
+  const ranked = Object.entries(l.opens)
+    .filter(([id]) => loose.has(id))
+    .map(([id, o]) => ({ id, n: Object.entries(o.days).reduce((sum, [d, c]) => (d >= since ? sum + c : sum), 0), last: o.last ?? '' }))
+    .filter((r) => r.n >= BIG_MIN)
+    .sort((a, b) => b.n - a.n || b.last.localeCompare(a.last) || a.id.localeCompare(b.id));
+  return new Set(ranked.slice(0, BIG_TOP).map((r) => r.id));
+}
+
+/** Big tiles on or off (`bigTiles`, true when absent). */
+export const setBigTiles = (layout, on) => ({ ...normalize(layout), bigTiles: !!on });
 
 /** The longest a group's name may be, in characters. */
 const NAME_MAX = 40;
