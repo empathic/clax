@@ -461,7 +461,8 @@ mod tests {
 
     #[test]
     fn a_draft_copies_the_owners_documents_at_version_one_and_stays_unlisted() {
-        let (_d, st) = store();
+        // On the pool and the home's files: it reopens the home.
+        let (_d, st) = crate::test_util::pool_store();
         let app = artifact_with_caps(&st, json!({"db": {}}));
         set(&st, &app, "notes/n1", json!({"t": 1}), &OWNER);
         set(&st, &app, "notes/n1", json!({"t": 2}), &OWNER);
@@ -577,7 +578,8 @@ mod tests {
 
     #[test]
     fn delete_removes_every_row_and_the_files_and_spares_apps() {
-        let (_d, st) = store();
+        // On the pool and the home's files: it reads the draft's directory.
+        let (_d, st) = crate::test_util::pool_store();
         let app = artifact_with_caps(&st, json!({"db": {}}));
         set(&st, &app, "notes/n1", json!({}), &OWNER);
         let d = st
@@ -686,7 +688,8 @@ mod tests {
 
     #[test]
     fn the_sweep_goes_on_past_a_draft_it_cannot_delete() {
-        let (_d, st) = store();
+        // On the pool and the home's files: it reads the draft's directory.
+        let (_d, st) = crate::test_util::pool_store();
         let stuck = st
             .create_draft(DAEMON, None, publish("Stuck", None))
             .unwrap();

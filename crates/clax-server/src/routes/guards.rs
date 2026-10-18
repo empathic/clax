@@ -216,6 +216,7 @@ mod l10 {
 
     pub(super) fn module_source_opt(m: &str) -> Option<&'static str> {
         Some(match m {
+            "app_drafts" => include_str!("app_drafts.rs"),
             "approvals" => include_str!("approvals.rs"),
             "artifacts" => include_str!("artifacts.rs"),
             "assets" => include_str!("assets.rs"),

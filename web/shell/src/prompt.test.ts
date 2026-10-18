@@ -187,7 +187,7 @@ describe("PromptDialog", () => {
     const state = new Store({
       pinnedVersion: null, startFile: "index.html", data: { versions: [] }, error: null, origin: null,
       deleted: false, threads: [], resolved: {}, draft: null, hint: null, notice: null, file: null,
-      working: [], decided: null, looked: {}, sheet: null, busy: 0, ask,
+      working: [], decided: null, looked: {}, sheet: null, busy: 0, ask, drafts: [], spectator: null,
     } as unknown as ViewState);
     const ctl = { id: "7q3k9mzx2b4t", state, shown: () => 1, missing: () => null } as unknown as ArtifactController;
     const { root } = mount(StageIsland, { ctl });
