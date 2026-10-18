@@ -776,6 +776,29 @@ test('a release on an app before 600 ms is an ordinary drop into its slot', asyn
   expect(Object.keys((await stored()).groups)).toEqual([]);
 });
 
+test('an app held over a starred app makes the folder first in All apps, scrolled into view', async () => {
+  const clock = manualClock();
+  const at = SAMPLE.apps[7].updatedAt;
+  const extra = Array.from({ length: 40 }, (_, i) => ({ id: `app-x${i}`, title: `Extra ${i}`, updatedAt: at, build: null, icon: { monogram: 'X', hue: 9 * i } }));
+  const apps = [...SAMPLE.apps, ...extra];
+  const ids = apps.map((a) => a.id);
+  const starred = ['app-mood', 'app-notes', ...extra.map((a) => a.id)];
+  await show({ makes: [], apps }, { clock, layout: { v: 1, starred, order: ids.filter((id) => !starred.includes(id)), seen: ids } });
+  await wait(() => section('starred').length === starred.length);
+  scrollTo(0, 0);
+  await drag(clock, 'app-notes', centre('app-mood'), { pause: 700 });
+  await wait(async () => Object.keys((await stored()).groups ?? {}).length === 1);
+  await wait(() => ui.exists('.h-group'));
+  const l = await stored();
+  const [gid] = Object.keys(l.groups);
+  expect(l.groups[gid].apps).toEqual(['app-mood', 'app-notes']);
+  expect(l.starred.includes('app-mood') || l.starred.includes('app-notes')).toBe(false);
+  expect(l.order[0]).toBe(`g:${gid}`);
+  const r = document.querySelector('.h-group').getBoundingClientRect();
+  expect(r.top >= 0 && r.bottom <= innerHeight).toBe(true);
+  scrollTo(0, 0);
+});
+
 test("resting on an app's centre makes room there, and a drop before 600 ms takes its place", async () => {
   const clock = manualClock();
   await show({ makes: [] }, { clock });

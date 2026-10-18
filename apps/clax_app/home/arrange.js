@@ -231,21 +231,20 @@ export function groupNameOf(a, b) {
 
 /** App `draggedId` dropped on app `targetId`: a new folder `gid` named
  * `name`, holding the target then the dragged app, at the target's place
- * in All apps (a starred target leaves Starred: groups are not starred).
- * A group dropped on anything, or on itself, makes nothing; so does a
- * `gid` already in use. */
+ * in All apps; a target in Starred leaves it (groups are not starred), and
+ * the folder goes first in All apps, right under Starred. A group dropped
+ * on anything, or on itself, makes nothing; so does a `gid` already in use. */
 export function makeGroup(layout, targetId, draggedId, gid, name) {
   const l = normalize(layout);
   if (isGroupKey(targetId) || isGroupKey(draggedId) || targetId === draggedId || !isId(gid) || l.groups[gid]) return l;
   // The target's place among All apps' entries once the dragged app is
-  // out; a starred or grouped target's is the end.
+  // out; one not in All apps has none.
   const at = l.order.filter((k) => k !== draggedId).indexOf(targetId);
   const out = moveTo(moveTo(l, draggedId, 'all', 0), targetId, 'all', 0);
   const order = out.order.filter((k) => k !== targetId && k !== draggedId);
-  const i = at >= 0 ? at : order.length;
   return {
     ...out,
-    order: [...order.slice(0, i), groupKey(gid), ...order.slice(i)],
+    order: at >= 0 ? [...order.slice(0, at), groupKey(gid), ...order.slice(at)] : insertShown(order, groupKey(gid), 0),
     groups: { ...out.groups, [gid]: { name, look: 'folder', apps: [targetId, draggedId] } },
   };
 }

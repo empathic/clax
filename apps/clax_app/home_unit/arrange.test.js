@@ -146,10 +146,11 @@ describe('groups', () => {
     expect(reconcile(makeGroup(base(), 'c', 'a', 'g1', 'G'), apps).order).toEqual(['b', 'g:g1']);
   });
 
-  test('a starred target leaves Starred for the new group; a group never goes in a group', () => {
+  test('a starred target leaves Starred for the new group, first in All apps; a group never goes in a group', () => {
     const l = reconcile(makeGroup(base(), 'd', 'c', 'g1', 'G'), apps);
     expect(l.starred).toEqual([]);
-    expect(l.order).toEqual(['a', 'b', 'g:g1']);
+    expect(l.order).toEqual(['g:g1', 'a', 'b']);
+    expect(l.groups.g1.apps).toEqual(['d', 'c']);
     const g = reconcile(makeGroup(base(), 'a', 'b', 'g1', 'G'), apps);
     expect(makeGroup(g, 'c', 'g:g1', 'g2', 'H')).toEqual(g);
     expect(addToGroup(g, 'g1', 'g:g1')).toEqual(g);

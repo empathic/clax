@@ -540,6 +540,8 @@ function arranger(st, clock) {
   let hover = null;
   // A slot the pointer moved to, waiting REORDER_MS: {t, cancel}.
   let pending = null;
+  // The key of a group a drop just made, to scroll into view once drawn.
+  let reveal = null;
   const tileEl = (key) => st.wrap?.querySelector(`.h-tile[data-key="${CSS.escape(key)}"]`) ?? null;
   const gridOf = (section) => st.wrap?.querySelector(`.h-section[data-section="${section}"] .h-grid`) ?? null;
 
@@ -820,8 +822,8 @@ function arranger(st, clock) {
   }
 
   /** App `id` dropped on hovered tile `target` (an app's or a group's
-   * key): a new folder of the two, or the app added to the group, shown
-   * at once and written. */
+   * key): a new folder of the two, scrolled into view once drawn, or the
+   * app added to the group, shown at once and written. */
   function groupDrop(d, target) {
     let op;
     if (isGroupKey(target)) {
@@ -832,6 +834,8 @@ function arranger(st, clock) {
       const gid = Math.random().toString(36).slice(2, 10);
       const name = groupNameOf(st.apps.find((a) => a.id === other), st.apps.find((a) => a.id === d.id));
       op = (l) => makeGroup(l, other, d.id, gid, name);
+      // Made on a starred app, it lands under All apps, maybe off screen.
+      reveal = `g:${gid}`;
     }
     clearHover();
     d.prov = op(st.shown);
@@ -1002,6 +1006,8 @@ function arranger(st, clock) {
     afterRender() {
       relayout(drag !== null || dropped);
       dropped = false;
+      const shown = reveal && tileEl(reveal);
+      if (shown) { reveal = null; shown.scrollIntoView({ block: 'nearest' }); }
       if (drag) track();
     },
     /** Alt+arrows on entry `id`'s tile (an app's ID or a group's key): one
