@@ -429,6 +429,26 @@ test('a Star whose write fails says so and leaves the app where it was', async (
   expect(section('all')).toEqual(ids);
 });
 
+test('the save-failure notice drops the kept call it replaces: a tap on it opens nothing', async () => {
+  const ids = SAMPLE.apps.map((a) => a.id);
+  const home = fakeHome({ makes: [] });
+  const base = fakeDb({ [LAYOUT]: { v: 1, starred: [], order: ids, seen: ids } });
+  const failing = { doc: (path) => ({ ...base.doc(path), set: () => Promise.reject({ code: 'failed', message: 'disk full' }) }) };
+  let opens = 0;
+  home.open = () => { opens++; return Promise.reject({ code: 'no_gesture', message: 'tap' }); };
+  mount(root(), home, { db: failing });
+  await wait(() => section('all').length === ids.length);
+  await ui.click('[data-id="app-groceries"]');
+  await wait(() => ui.text('.h-notice') === 'Tap again to open Groceries');
+  const el = document.querySelector('[data-id="app-run"]');
+  el.focus();
+  el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', altKey: true, bubbles: true }));
+  await wait(() => ui.text('.h-notice') === "Couldn't save your arrangement");
+  await ui.click('.h-notice');
+  await new Promise((r) => setTimeout(r, 0));
+  expect(opens).toBe(1);
+});
+
 test('a page whose db cannot be had says the arrangement cannot be saved, and a Star changes nothing', async () => {
   const home = fakeHome({ makes: [] });
   home.menuPick = 'star';

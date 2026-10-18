@@ -748,7 +748,9 @@ function useActions(home) {
     pending.current = null;
     kept?.resolve(undefined);
   };
+  // A notice replaces the one shown, and with it any call kept for a tap.
   const say = (text) => {
+    drop();
     clearTimeout(timer.current);
     setNotice({ text });
     timer.current = setTimeout(() => { setNotice(null); drop(); }, NOTICE_MS);
@@ -765,8 +767,8 @@ function useActions(home) {
       const code = codeOf(e);
       if (code === 'no_gesture') {
         return new Promise((resolve) => {
-          pending.current = { method, args, what, resolve };
           say(`Tap again to ${what}`);
+          pending.current = { method, args, what, resolve };
         });
       }
       if (code === 'bad_request' && args.length) say('That app is no longer here');
