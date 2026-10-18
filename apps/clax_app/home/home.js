@@ -1780,19 +1780,34 @@ function useActions(home) {
  * travel) before its release opens search, and the most it shows. */
 const PULL_PX = 64;
 const PULL_MAX = 96;
+/** How far a touch moves before the pull decides whether it is one. */
+const PULL_DECIDE_PX = 6;
+
+/** Whether `el` is in an element scrolled sideways (overflowing it, as a
+ * fanned pile's row with more apps than fit). */
+function inSidewaysScroll(el) {
+  for (let n = el instanceof Element ? el : null; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+    if (n.scrollWidth > n.clientWidth && /^(auto|scroll)$/.test(getComputedStyle(n).overflowX)) return true;
+  }
+  return false;
+}
 
 /** A touch drag down from the top of the page, while `on`: as it goes,
  * `data-pulling` on the page's root and `--pull` (0 to 1, at PULL_PX)
  * slide a ghost of the search field down under the bar; released past
- * PULL_PX it calls `onOpen`. A held tile or an open folder has the finger
- * instead. */
+ * PULL_PX it calls `onOpen`. The touch is a pull only if it starts with
+ * the page at its top, outside anything that scrolls sideways, and its
+ * first PULL_DECIDE_PX of travel go more down than sideways; until then,
+ * and for any other touch, the browser keeps it. A held tile or an open
+ * folder has the finger instead. */
 function usePullSearch(onOpen, on) {
   const go = useRef(onOpen);
   go.current = onOpen;
   useEffect(() => {
     if (!on) return undefined;
     const root = document.documentElement;
-    let s = { y: null, d: 0 };
+    // The touch's start, whether it is a pull (null until decided) and how far it shows.
+    let s = { x: 0, y: null, pull: null, d: 0 };
     const show = (d) => {
       if (d > 0) {
         root.setAttribute('data-pulling', '');
@@ -1802,15 +1817,22 @@ function usePullSearch(onOpen, on) {
         root.style.removeProperty('--pull');
       }
     };
+    const idle = () => ({ x: 0, y: null, pull: null, d: 0 });
     const start = (e) => {
-      const free = e.touches.length === 1 && scrollY <= 0 && !document.querySelector('.h-folder');
-      s = { y: free ? e.touches[0].clientY : null, d: 0 };
+      const free = e.touches.length === 1 && scrollY <= 0 && !document.querySelector('.h-folder') && !inSidewaysScroll(e.target);
+      s = free ? { x: e.touches[0].clientX, y: e.touches[0].clientY, pull: null, d: 0 } : idle();
     };
     const move = (e) => {
       if (s.y == null) return;
       // A held or dragged tile has the finger, not the page.
-      if (document.querySelector('.h-tile[data-held]')) { s = { y: null, d: 0 }; show(0); return; }
+      if (document.querySelector('.h-tile[data-held]')) { s = idle(); show(0); return; }
+      const dx = e.touches[0].clientX - s.x;
       const dy = e.touches[0].clientY - s.y;
+      if (s.pull === null) {
+        if (Math.hypot(dx, dy) < PULL_DECIDE_PX) return;
+        if (!(dy > Math.abs(dx))) { s = idle(); return; }
+        s.pull = true;
+      }
       if (dy <= 0) { s.d = 0; show(0); return; }
       if (e.cancelable) e.preventDefault();
       s.d = Math.min(PULL_MAX, dy * 0.5);
@@ -1818,7 +1840,7 @@ function usePullSearch(onOpen, on) {
     };
     const end = () => {
       const far = s.d >= PULL_PX;
-      s = { y: null, d: 0 };
+      s = idle();
       show(0);
       if (far) go.current();
     };

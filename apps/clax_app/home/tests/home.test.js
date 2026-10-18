@@ -1276,6 +1276,56 @@ test('a pull down from the top past 64 px opens search, and a short one does not
   await wait(() => !ui.exists('.h-search'));
 });
 
+test("a sideways swipe on a fanned pile's row is the row's, however it drifts down; a pull is taken only once it is mostly down", async () => {
+  if (typeof Touch !== 'function') return;
+  const clock = manualClock();
+  const ids = SAMPLE.apps.map((a) => a.id);
+  const layout = { v: 1, starred: [], order: ['g:p1', ...ids.slice(6)], groups: { p1: { name: 'Lots', look: 'pile', apps: ids.slice(0, 6) } }, seen: ids };
+  await show({ makes: [] }, { clock, layout });
+  scrollTo(0, 0);
+  await ui.click('.h-group');
+  clock.advance(1000);
+  await wait(() => ui.exists('.h-fan'));
+  clock.advance(1000);
+  const row = document.querySelector('.h-fan');
+  expect(row.scrollWidth > row.clientWidth).toBe(true);
+  // Each call says whether the page's own handlers took the touch from the browser.
+  const send = (target, type, x, y) => {
+    const t = new Touch({ identifier: 1, target, clientX: x, clientY: y });
+    const e = new TouchEvent(type, { bubbles: true, cancelable: true, touches: type === 'touchend' ? [] : [t], changedTouches: [t] });
+    target.dispatchEvent(e);
+    return e.defaultPrevented;
+  };
+  const pulling = () => document.documentElement.hasAttribute('data-pulling');
+  const tile = row.querySelector('.h-tile[data-id]');
+  const r = tile.getBoundingClientRect();
+  const [x, y] = [r.x + r.width / 2, r.y + r.height / 2];
+  send(tile, 'touchstart', x, y);
+  expect([send(tile, 'touchmove', x - 2, y + 1), send(tile, 'touchmove', x - 30, y + 12), send(tile, 'touchmove', x - 60, y + 200)]).toEqual([false, false, false]);
+  expect(pulling()).toBe(false);
+  send(tile, 'touchend', x - 60, y + 200);
+  // Elsewhere, a move mostly sideways is never a pull, even as it turns down.
+  send(document.body, 'touchstart', 200, 100);
+  expect([send(document.body, 'touchmove', 230, 110), send(document.body, 'touchmove', 240, 300)]).toEqual([false, false]);
+  expect(pulling()).toBe(false);
+  send(document.body, 'touchend', 240, 300);
+  // The first few px decide nothing: a move mostly down after them pulls.
+  send(document.body, 'touchstart', 200, 100);
+  expect(send(document.body, 'touchmove', 202, 101)).toBe(false);
+  expect(pulling()).toBe(false);
+  expect(send(document.body, 'touchmove', 204, 140)).toBe(true);
+  expect(pulling()).toBe(true);
+  send(document.body, 'touchend', 204, 140);
+  await new Promise((done) => setTimeout(done, 0));
+  expect(ui.exists('.h-search')).toBe(false);
+  // Escape gathers the pile once the page listens for it, a frame or so after the row shows.
+  await wait(() => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    clock.advance(1000);
+    return !ui.exists('.h-fan');
+  });
+});
+
 test('while search shows results, tiles() gives them', async () => {
   const home = fakeHome({ makes: [] });
   const reports = [];
