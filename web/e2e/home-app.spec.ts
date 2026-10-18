@@ -53,7 +53,7 @@ test.describe("its tests in the inspect view", () => {
     const tests = (await ofType(page, "tests"))[0] as HostMessage & { passed: number; failed: unknown[]; skipped: number };
     expect(tests.failed).toEqual([]);
     expect(tests.skipped).toBe(0);
-    expect(tests.passed).toBe(50);
+    expect(tests.passed).toBe(61);
   });
 });
 
@@ -244,6 +244,30 @@ test.describe("over a fake host", () => {
     await expect(page.locator('.h-section[data-section="starred"] [data-id="app-notes"]')).toHaveCount(1);
   });
 
+  test("a mouse held over another app makes a folder, and a tap opens it", async ({ page }) => {
+    await page.clock.install();
+    await serve(page, { makes: [] });
+    await expect(page.locator(".h-tile[data-id]")).toHaveCount(8);
+    const box = async (sel: string) => (await page.locator(sel).boundingBox())!;
+    const from = await box('[data-id="app-mood"]');
+    const to = await box('[data-id="app-habits"]');
+    const [x0, y0] = [from.x + from.width / 2, from.y + from.height / 2];
+    const [x1, y1] = [to.x + to.width / 2, to.y + to.height / 2];
+    await page.mouse.move(x0, y0);
+    await page.mouse.down();
+    await page.mouse.move(x0 + 30, y0, { steps: 2 });
+    await page.mouse.move(x1, y1, { steps: 4 });
+    await page.clock.runFor(650);
+    await expect(page.locator('[data-id="app-habits"][data-grouping]')).toHaveCount(1);
+    await page.mouse.up();
+    await page.clock.runFor(1500);
+    await expect(page.locator('.h-group[data-look="folder"]')).toHaveCount(1);
+    await expect(page.locator(".h-group .h-label")).toHaveText("Group");
+    await page.locator(".h-group").click();
+    await expect(page.locator(".h-folder .h-tile[data-id]")).toHaveCount(2);
+    await expect(page.locator(".h-folder .h-folder-name")).toHaveText("Group");
+  });
+
   test("without the home capability it says to open it in Clax", async ({ page }) => {
     await serve(page);
     await expect(page.locator(".h-message")).toContainText("This is a Clax home screen.Open it in the Clax app.");
@@ -296,10 +320,14 @@ test.describe("renders", () => {
           // A drag caught midway: the tile lifted under the pointer, its
           // neighbours moved aside to show where it lands.
           const habits = (await page.locator('[data-id="app-habits"]').boundingBox())!;
+          const cells = () => page.locator(".h-tile[data-id]").evaluateAll(els => els.map(e => `${(e as HTMLElement).style.gridColumn}/${(e as HTMLElement).style.gridRow}`));
+          const placed = await cells();
           await page.mouse.move(habits.x + habits.width / 2, habits.y + 40);
           await page.mouse.down();
           await page.mouse.move(habits.x + habits.width / 2 + 60, habits.y + 80, { steps: 4 });
           await expect(page.locator(".h-page[data-dragging]")).toHaveCount(1);
+          // The neighbours make room once the pointer rests in the new slot.
+          await expect.poll(cells).not.toEqual(placed);
           await expect.poll(() => page.locator(".h-tile[data-id]:not([data-dragging])").evaluateAll(els => els.every(e => !(e as HTMLElement).style.transform))).toBe(true);
           await page.screenshot({ path: join(shots, `home-drag-${size}-${scheme}.png`), animations: "disabled" });
           await page.mouse.up();
@@ -323,6 +351,43 @@ test.describe("renders", () => {
           await expect(page.locator(".h-drop[data-over]")).toHaveCount(1);
           await expect.poll(() => page.locator(".h-tile[data-id]:not([data-dragging])").evaluateAll(els => els.every(e => !(e as HTMLElement).style.transform))).toBe(true);
           await page.screenshot({ path: join(shots, `home-drop-${size}-${scheme}.png`), animations: "disabled" });
+          await page.mouse.up();
+          // Two starred apps, a folder of three and a pile of four (drawn
+          // as a folder until piles have their own look), then the folder
+          // open, then an app held over another, outlined to group.
+          await page.evaluate(async () => {
+            const { mount } = await import(`${location.origin}/home.js`);
+            const { fakeHome, fakeDb, SAMPLE } = await import(`${location.origin}/kit/fake-home.js`);
+            const at = SAMPLE.apps[7].updatedAt;
+            const apps = [...SAMPLE.apps,
+              { id: "app-tide", title: "Tide table", updatedAt: at, build: null, icon: { monogram: "TT", hue: 200 } },
+              { id: "app-steps", title: "Step counter", updatedAt: at, build: null, icon: { word: "fitness" } },
+              { id: "app-water", title: "Water", updatedAt: at, build: null, icon: { word: "water" } }];
+            const ids = apps.map((a: { id: string }) => a.id);
+            const layout = {
+              v: 1, starred: ["app-run", "app-notes"], order: ["g:g1", "app-steps", "g:g2", "app-water"], seen: ids,
+              groups: { g1: { name: "Lists", look: "folder", apps: ["app-groceries", "app-budget", "app-plants"] }, g2: { name: "Fun", look: "pile", apps: ["app-habits", "app-recipes", "app-mood", "app-tide"] } },
+            };
+            mount(document.getElementById("app"), fakeHome({ makes: [], apps }), { db: fakeDb({ "layout/main": layout }) });
+          });
+          await expect(page.locator(".h-group")).toHaveCount(2);
+          await page.evaluate(() => Promise.all([...document.images].map(i => i.decode().catch(() => {}))));
+          await page.screenshot({ path: join(shots, `home-groups-${size}-${scheme}.png`), animations: "disabled" });
+          await page.locator('.h-group[data-group="g1"]').click();
+          await expect(page.locator(".h-folder .h-tile[data-id]")).toHaveCount(3);
+          await page.evaluate(() => Promise.all([...document.images].map(i => i.decode().catch(() => {}))));
+          await page.screenshot({ path: join(shots, `home-folder-${size}-${scheme}.png`), animations: "disabled" });
+          await page.locator(".h-folder-scrim").click({ position: { x: 4, y: 4 } });
+          await expect(page.locator(".h-folder")).toHaveCount(0);
+          const water = (await page.locator('[data-id="app-water"]').boundingBox())!;
+          const steps = (await page.locator('[data-id="app-steps"]').boundingBox())!;
+          await page.mouse.move(water.x + water.width / 2, water.y + water.height / 2);
+          await page.mouse.down();
+          await page.mouse.move(water.x + water.width / 2 + 20, water.y + water.height / 2, { steps: 2 });
+          await page.mouse.move(steps.x + steps.width / 2, steps.y + steps.height / 2, { steps: 2 });
+          await expect(page.locator('[data-id="app-steps"][data-grouping]')).toHaveCount(1);
+          await expect.poll(() => page.locator(".h-tile[data-key]:not([data-dragging])").evaluateAll(els => els.every(e => !(e as HTMLElement).style.transform))).toBe(true);
+          await page.screenshot({ path: join(shots, `home-grouping-${size}-${scheme}.png`), animations: "disabled" });
           await page.mouse.up();
           await page.evaluate(async () => {
             const { mount } = await import(`${location.origin}/home.js`);

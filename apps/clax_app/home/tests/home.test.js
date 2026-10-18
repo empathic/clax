@@ -473,8 +473,8 @@ test('a layout from a later release keeps its groups and unknown fields through 
   const ids = SAMPLE.apps.map((a) => a.id);
   const later = { v: 1, starred: [], order: ['app-run', 'g:g1', 'app-habits', 'app-recipes', 'app-budget', 'app-mood'], groups: { g1: { name: 'Lists', look: 'pile', apps: ['app-groceries', 'app-notes', 'app-plants'] } }, seen: ids, opens: {}, bigTiles: false, wallpaper: { kind: 'dots' } };
   const home = await show({ makes: [] }, { layout: later });
-  await wait(() => section('all').length === SAMPLE.apps.length);
-  expect(section('all')).toEqual(['app-run', 'app-groceries', 'app-notes', 'app-plants', 'app-habits', 'app-recipes', 'app-budget', 'app-mood']);
+  await wait(() => ui.exists('.h-group[data-group="g1"]'));
+  expect(section('all')).toEqual(['app-run', 'app-habits', 'app-recipes', 'app-budget', 'app-mood']);
   expect(document.querySelectorAll('.h-tile[data-new]').length).toBe(0);
   home.menuPick = 'star';
   document.querySelector('[data-id="app-mood"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
@@ -759,4 +759,175 @@ test('tiles are reported once they come to rest, not while they move', async () 
   const run = reports[1].find((t) => t.id === 'app-run');
   const r = document.querySelector('[data-id="app-run"]').getBoundingClientRect();
   expect(run.rect).toEqual({ x: r.x, y: r.y, w: r.width, h: r.height });
+});
+
+const groupLayout = (look = 'folder') => {
+  const ids = SAMPLE.apps.map((a) => a.id);
+  return { v: 1, starred: [], order: ['app-run', 'g:g1', ...ids.filter((id) => !['app-run', 'app-groceries', 'app-notes'].includes(id))], groups: { g1: { name: 'Lists', look, apps: ['app-groceries', 'app-notes'] } }, seen: ids };
+};
+
+test('holding a tile 600 ms over another app outlines a group, and dropping makes a folder named Group', async () => {
+  const clock = manualClock();
+  await show({ makes: [] }, { clock });
+  await wait(async () => !!(await stored()));
+  const el = document.querySelector('[data-id="app-mood"]');
+  const a = centre('app-mood');
+  const t = centre('app-habits');
+  el.dispatchEvent(pointer('pointerdown', a)); clock.advance(400);
+  // Off its own centre, near no other tile's, then onto the target's centre at once.
+  el.dispatchEvent(pointer('pointermove', { x: a.x + 30, y: a.y + 10 })); clock.advance(100);
+  el.dispatchEvent(pointer('pointermove', t));
+  clock.advance(599);
+  expect(ui.exists('[data-grouping]')).toBe(false);
+  clock.advance(1);
+  await wait(() => ui.exists('[data-id="app-habits"][data-grouping]'));
+  el.dispatchEvent(pointer('pointerup', t)); clock.advance(1500);
+  await wait(() => ui.exists('.h-group[data-look="folder"]'));
+  const l = await stored();
+  const [gid] = Object.keys(l.groups);
+  expect(l.groups[gid]).toEqual({ name: 'Group', look: 'folder', apps: ['app-habits', 'app-mood'] });
+  expect(ui.text('.h-group .h-label')).toBe('Group');
+  expect(ui.exists('[data-grouping]')).toBe(false);
+});
+
+test('a release on an app before 600 ms is an ordinary drop into its slot', async () => {
+  const clock = manualClock();
+  await show({ makes: [] }, { clock });
+  await wait(async () => !!(await stored()));
+  await drag(clock, 'app-run', centre('app-budget'));
+  await wait(async () => (await stored()).order.indexOf('app-run') === 4);
+  expect(Object.keys((await stored()).groups)).toEqual([]);
+});
+
+test('dropping an app on a group adds it', async () => {
+  const clock = manualClock();
+  await show({ makes: [] }, { clock, layout: groupLayout() });
+  const g = document.querySelector('.h-group').getBoundingClientRect();
+  await drag(clock, 'app-plants', { x: g.x + g.width / 2, y: g.y + g.height / 2 });
+  await wait(async () => (await stored()).groups.g1.apps.includes('app-plants'));
+  expect(ui.exists('[data-id="app-plants"]')).toBe(false);
+});
+
+test('a group drags like an app, never into another group', async () => {
+  const clock = manualClock();
+  await show({ makes: [] }, { clock, layout: groupLayout() });
+  await wait(() => ui.exists('.h-group'));
+  const el = document.querySelector('.h-group');
+  const r = el.getBoundingClientRect();
+  const a = { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  const to = centre('app-budget');
+  el.dispatchEvent(pointer('pointerdown', a)); clock.advance(400);
+  for (let i = 1; i <= 6; i++) { clock.advance(30); el.dispatchEvent(pointer('pointermove', { x: a.x + (to.x - a.x) * i / 6, y: a.y + (to.y - a.y) * i / 6 })); }
+  clock.advance(700);
+  expect(ui.exists('[data-grouping]')).toBe(false);
+  el.dispatchEvent(pointer('pointerup', to)); clock.advance(1500);
+  await wait(async () => (await stored()).order.indexOf('g:g1') === 4);
+  expect((await stored()).groups.g1.apps).toEqual(['app-groceries', 'app-notes']);
+});
+
+test('a tap opens the folder over a dimmed grid; its name renames; back closes it', async () => {
+  const home = await show({ makes: [] }, { layout: groupLayout() });
+  await ui.click('.h-group');
+  await wait(() => ui.exists('.h-folder'));
+  expect(ui.exists('.h-folder-scrim')).toBe(true);
+  expect([...document.querySelectorAll('.h-folder .h-tile[data-id]')].map((t) => t.dataset.id)).toEqual(['app-groceries', 'app-notes']);
+  await ui.click('.h-folder-name');
+  const input = document.querySelector('.h-folder input[aria-label="Group name"]');
+  input.value = 'Shopping';
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  await wait(async () => (await stored()).groups.g1.name === 'Shopping');
+  await wait(() => ui.text('.h-folder-name') === 'Shopping');
+  await ui.click('.h-folder [data-id="app-notes"]');
+  await wait(() => home.calls.some((c) => c.method === 'open'));
+  history.back();
+  await wait(() => !ui.exists('.h-folder'));
+});
+
+test('Escape cancels a rename; the scrim closes the folder', async () => {
+  await show({ makes: [] }, { layout: groupLayout() });
+  await ui.click('.h-group');
+  await wait(() => ui.exists('.h-folder'));
+  await ui.click('.h-folder-name');
+  const input = document.querySelector('.h-folder input[aria-label="Group name"]');
+  input.value = 'Nope';
+  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await wait(() => ui.exists('.h-folder-name'));
+  expect(ui.exists('.h-folder')).toBe(true);
+  expect((await stored()).groups.g1.name).toBe('Lists');
+  await ui.click('.h-folder-scrim');
+  await wait(() => !ui.exists('.h-folder'));
+});
+
+test("the group's own menu renames, switches its look and ungroups", async () => {
+  await show({ makes: [] }, { layout: groupLayout() });
+  document.querySelector('.h-group').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+  await wait(() => ui.exists('.h-group-menu'));
+  expect([...document.querySelectorAll('.h-group-menu [role="menuitem"]')].map((b) => b.textContent)).toEqual(['Rename', 'Show as pile', 'Ungroup']);
+  await ui.click('Show as pile');
+  await wait(async () => (await stored()).groups.g1.look === 'pile');
+  expect(ui.exists('.h-group-menu')).toBe(false);
+  document.querySelector('.h-group').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+  await wait(() => ui.exists('.h-group-menu'));
+  expect(ui.text('.h-group-menu')).toContain('Show as folder');
+  await ui.click('Rename');
+  await wait(() => ui.exists('.h-folder input[aria-label="Group name"]'));
+  await ui.click('.h-folder-scrim');
+  await wait(() => !ui.exists('.h-folder'));
+  document.querySelector('.h-group').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+  await wait(() => ui.exists('.h-group-menu'));
+  await ui.click('Ungroup');
+  await wait(async () => Object.keys((await stored()).groups).length === 0);
+  expect(section('all').slice(0, 3)).toEqual(['app-run', 'app-groceries', 'app-notes']);
+});
+
+test('an app in a group offers Remove from group in its menu', async () => {
+  const home = await show({ makes: [] }, { layout: groupLayout() });
+  await ui.click('.h-group');
+  await wait(() => ui.exists('.h-folder'));
+  home.menuPick = 'remove';
+  document.querySelector('.h-folder [data-id="app-notes"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+  await wait(async () => !(await stored()).groups.g1);
+  expect(home.calls.at(-1).args[2]).toEqual({ items: [{ id: 'star', label: 'Star' }, { id: 'remove', label: 'Remove from group' }] });
+  await wait(() => !ui.exists('.h-folder'));
+});
+
+test('dragging inside the folder reorders its apps', async () => {
+  const clock = manualClock();
+  await show({ makes: [] }, { clock, layout: { ...groupLayout(), groups: { g1: { name: 'Lists', look: 'folder', apps: ['app-groceries', 'app-notes', 'app-plants'] } } } });
+  await ui.click('.h-group');
+  await wait(() => ui.exists('.h-folder'));
+  await drag(clock, 'app-plants', centre('app-groceries'));
+  await wait(async () => (await stored()).groups.g1.apps.join() === 'app-plants,app-groceries,app-notes');
+  expect([...document.querySelectorAll('.h-folder .h-tile[data-id]')].map((t) => t.dataset.id)).toEqual(['app-plants', 'app-groceries', 'app-notes']);
+  await ui.click('.h-folder-scrim');
+  await wait(() => !ui.exists('.h-folder'));
+});
+
+test('dragging an app out past the folder edge takes it out of the group', async () => {
+  const clock = manualClock();
+  await show({ makes: [] }, { clock, layout: { ...groupLayout(), groups: { g1: { name: 'Lists', look: 'folder', apps: ['app-groceries', 'app-notes', 'app-plants'] } } } });
+  await ui.click('.h-group');
+  await wait(() => ui.exists('.h-folder'));
+  const panel = document.querySelector('.h-folder-panel').getBoundingClientRect();
+  await drag(clock, 'app-plants', { x: panel.x + panel.width / 2, y: panel.bottom + 60 });
+  await wait(async () => !(await stored()).groups.g1.apps.includes('app-plants'));
+  expect(ui.exists('.h-folder')).toBe(false);
+  // Out of the group, it goes right after it.
+  await wait(() => section('all').join() === 'app-run,app-plants,app-habits,app-recipes,app-budget,app-mood');
+});
+
+test('tiles() leaves group tiles out, and while a folder is open gives only its apps', async () => {
+  const home = fakeHome({ makes: [] });
+  const reports = [];
+  home.tiles = async (list) => { reports.push(list.map((t) => t.id)); };
+  db = fakeDb({ [LAYOUT]: groupLayout() });
+  mount(root(), home, { db });
+  await wait(() => reports.length >= 1);
+  expect(reports.at(-1).includes('app-groceries')).toBe(false);
+  expect(reports.at(-1).every((id) => id.startsWith('app-'))).toBe(true);
+  await ui.click('.h-group');
+  await wait(() => reports.at(-1).join() === 'app-groceries,app-notes');
+  await ui.click('.h-folder-scrim');
+  await wait(() => !ui.exists('.h-folder'));
 });

@@ -254,19 +254,29 @@ body {
 /* New app steps aside while a tile is dragged, leaving its corner free. */
 .h-fab { transition: opacity var(--k-fast) var(--k-ease); }
 .h-page[data-dragging] .h-fab { opacity: 0; pointer-events: none; }
-/* Where a drag stars an app while nothing is starred. */
+/* A dragged tile's name on a backing of its own, readable over the
+ * zone's border and the tiles it passes. */
+.h-tile[data-dragging] .h-label {
+  padding: 0 6px; border-radius: 8px;
+  background: var(--h-surface);
+}
+/* Where a drag stars an app while nothing is starred. Its star and words
+ * stack on the side away from the dragged tile (data-side), so the tile
+ * never covers them. */
 .h-drop {
   margin: 8px 4px; height: 116px; border-radius: 20px;
   border: 2px dashed color-mix(in srgb, var(--h-primary) 60%, transparent);
-  display: flex; align-items: center; gap: 8px; padding: 0 20px; color: var(--h-on-variant);
+  display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 4px;
+  padding: 0 20px; color: var(--h-on-variant);
   font: 500 14px/20px var(--k-font); letter-spacing: 0.1px;
 }
+.h-drop[data-side="end"] { align-items: flex-end; }
 .h-drop[data-over] { background: color-mix(in srgb, var(--h-primary) 10%, transparent); color: var(--h-primary); }
 @media (prefers-reduced-motion: reduce) { .h-icon > * { transition: none; } }
 
 /* What an action that failed says, and Tap again to retry it. */
 .h-notice {
-  position: fixed; z-index: 3; left: 50%; transform: translateX(-50%);
+  position: fixed; z-index: 8; left: 50%; transform: translateX(-50%);
   bottom: calc(88px + var(--k-safe-bottom)); max-width: min(560px, calc(100vw - 32px));
   padding: 14px 16px; border: 0; border-radius: 4px;
   background: var(--h-inverse); color: var(--h-on-inverse); box-shadow: var(--h-menu-shadow);
@@ -283,3 +293,64 @@ html { overscroll-behavior-y: contain; }
 .h-pull svg { fill: none; }
 .h-pull-arc { stroke: var(--h-primary); stroke-width: 2.5; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 12px 12px; }
 .h-pull-busy svg { animation: h-spin 1s linear infinite; }
+
+/* Groups. A folder tile: up to four small icons on a tonal square. */
+.h-face.h-folder-face, :root[data-theme="dark"] .h-face.h-folder-face {
+  background: var(--h-sc); color: var(--h-on-sc);
+  display: grid; grid-template-columns: repeat(2, 26px); grid-auto-rows: 26px;
+  gap: 2px; padding: 3px; place-content: start;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .h-face.h-folder-face { background: var(--h-sc); color: var(--h-on-sc); }
+}
+.h-folder-face .h-face { width: 26px; height: 26px; border-radius: 7px; }
+.h-folder-face .h-face img { width: 26px; height: 26px; }
+.h-folder-face .h-glyph svg { width: 14px; height: 14px; }
+.h-folder-face .h-mono { font-size: 10px; }
+.h-folder-face .h-emoji { font-size: 14px; }
+/* The ring around the app a dragged one would group with. */
+.h-icon > .h-group-outline {
+  position: absolute; inset: -6px; border-radius: 20px; pointer-events: none;
+  border: 3px solid var(--h-primary);
+  opacity: 0; transform: scale(0.94);
+  transition: opacity 120ms var(--k-ease), transform 120ms var(--k-ease);
+}
+.h-tile[data-grouping] .h-icon > .h-group-outline { opacity: 1; transform: scale(1.06); }
+.h-tile[data-grouping] .h-icon > .h-face { transform: scale(1.06); }
+.h-tile[data-grouping-with] .h-label { visibility: hidden; }
+@media (prefers-reduced-motion: reduce) { .h-icon > .h-group-outline { transition: none; } }
+
+/* An open folder over the dimmed home screen. */
+.h-folder {
+  position: fixed; inset: 0; z-index: 6; overflow-y: auto; outline: none;
+  display: grid; place-items: center;
+  padding: calc(16px + var(--k-safe-top)) 16px calc(16px + var(--k-safe-bottom));
+}
+.h-scrim.h-folder-scrim { z-index: 0; background: rgba(0, 0, 0, 0.32); }
+.h-folder-panel {
+  position: relative; max-width: min(480px, calc(100vw - 32px)); padding: 12px 0 8px;
+  border-radius: 28px; background: var(--h-menu-bg); box-shadow: var(--h-menu-shadow);
+  transition: background var(--k-fast) var(--k-ease), box-shadow var(--k-fast) var(--k-ease);
+}
+/* A dragged app past the edge leaves the group on release: the panel fades. */
+.h-folder[data-out] .h-folder-panel { background: color-mix(in srgb, var(--h-menu-bg) 50%, transparent); box-shadow: none; }
+.h-folder-head { display: flex; justify-content: center; padding: 0 16px 8px; min-height: 40px; }
+.h-folder-name {
+  display: inline-flex; align-items: center; gap: 8px;
+  max-width: 100%; padding: 6px 12px 6px 16px; border: 0; border-radius: 20px;
+  background: color-mix(in srgb, var(--h-on-surface) 6%, transparent); color: var(--h-on-surface); cursor: text;
+  font: 400 22px/28px var(--k-font); letter-spacing: 0;
+}
+.h-folder-name-text { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.h-folder-name .h-glyph { color: var(--h-on-variant); flex: none; }
+.h-folder-name:hover, .h-folder-name:active { background: var(--h-state); }
+.h-folder-input {
+  width: 100%; max-width: 320px; padding: 6px 8px; border: 0; border-radius: 0;
+  border-bottom: 2px solid var(--h-primary); outline: none;
+  background: transparent; color: var(--h-on-surface); text-align: center;
+  font: 400 22px/28px var(--k-font); letter-spacing: 0;
+}
+
+/* A group's own menu, at its tile. */
+.h-scrim.h-group-scrim { z-index: 6; }
+.h-menu.h-group-menu { position: fixed; top: auto; right: auto; z-index: 7; min-width: 200px; }
