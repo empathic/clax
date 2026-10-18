@@ -16,8 +16,6 @@ clax-rt = { path = "../clax-rt" }
 axum.workspace = true
 chrono.workspace = true
 futures = "0.3"
-rand.workspace = true
-reqwest = { workspace = true, features = ["stream", "rustls-tls"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.11"
@@ -31,7 +29,6 @@ tokio = { workspace = true, features = ["sync", "macros"] }
 tower.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
-url.workspace = true
 
 # Native only: the Worker's wasm32 build has no tokio runtime, sockets or
 # processes (see clax-server's crate documentation).
