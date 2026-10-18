@@ -354,3 +354,25 @@ html { overscroll-behavior-y: contain; }
 /* A group's own menu, at its tile. */
 .h-scrim.h-group-scrim { z-index: 6; }
 .h-menu.h-group-menu { position: fixed; top: auto; right: auto; z-index: 7; min-width: 200px; }
+
+/* A pile: up to five icons stacked, each a little turned, the first on
+ * top; an outline of the page's colour parts each from the one under it. */
+.h-pile-face { position: relative; display: block; width: 60px; height: 60px; }
+.h-pile-card { position: absolute; inset: 0; transition: transform var(--k-fast) var(--k-ease); }
+.h-pile-card .h-face { outline: 1px solid var(--h-surface); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.24); }
+/* Fanned out, the pile stays as a lighter outline of itself. */
+.h-group[data-fanned] .h-pile-face { opacity: 0.4; }
+.h-tile[data-grouping] .h-icon > .h-pile-face { transform: scale(1.06); }
+/* A fanned pile's apps, in the row under it: cells as wide as the grid's,
+ * scrolling sideways when there are more than fit. */
+.h-fan {
+  display: flex; gap: 4px; overflow-x: auto; overflow-y: hidden;
+  scroll-snap-type: x proximity; overscroll-behavior-x: contain; scrollbar-width: none;
+  border-radius: 20px; background: color-mix(in srgb, var(--h-sc) 50%, transparent);
+}
+.h-fan::-webkit-scrollbar { display: none; }
+.h-fan .h-tile {
+  flex: 0 0 calc((100% - (var(--cols, 4) - 1) * 4px) / var(--cols, 4));
+  scroll-snap-align: start;
+}
+@media (prefers-reduced-motion: reduce) { .h-pile-card { transition: none; } }

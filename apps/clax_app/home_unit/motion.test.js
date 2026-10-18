@@ -42,6 +42,47 @@ describe('createMotion', () => {
     expect(a.style.transform).toBe('');
   });
 
+  test('a tile sent to an offset springs there, stays there, and says so once', () => {
+    const clock = manualClock();
+    let settled = 0;
+    let arrived = 0;
+    const m = createMotion(clock, { onSettle: () => settled++ });
+    const a = el();
+    m.to('a', a, -80, -40, () => arrived++);
+    expect(m.moving).toBe(true);
+    clock.advance(48);
+    expect(a.style.transform).toMatch(/^translate\(-[1-9]/);
+    expect(arrived).toBe(0);
+    clock.advance(1000);
+    expect(a.style.transform).toBe('translate(-80px, -40px)');
+    expect(m.moving).toBe(false);
+    expect([arrived, settled]).toEqual([1, 1]);
+  });
+
+  test('a tile sent somewhere and then moved again springs home and never says it arrived', () => {
+    const clock = manualClock();
+    let arrived = 0;
+    const m = createMotion(clock);
+    const a = el();
+    m.to('a', a, -80, 0, () => arrived++);
+    clock.advance(64);
+    m.from('a', a, -30, 0);
+    clock.advance(1000);
+    expect(a.style.transform).toBe('');
+    expect(arrived).toBe(0);
+  });
+
+  test('with reduced motion a tile sent somewhere is there at once', () => {
+    const clock = manualClock();
+    let arrived = 0;
+    const m = createMotion(clock, { reduced: true });
+    const a = el();
+    m.to('a', a, -80, 10, () => arrived++);
+    expect(a.style.transform).toBe('translate(-80px, 10px)');
+    expect(arrived).toBe(1);
+    expect(m.moving).toBe(false);
+  });
+
   test('with reduced motion nothing springs', () => {
     const clock = manualClock();
     let settled = 0;

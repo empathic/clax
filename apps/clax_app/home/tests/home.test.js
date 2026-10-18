@@ -931,3 +931,87 @@ test('tiles() leaves group tiles out, and while a folder is open gives only its 
   await ui.click('.h-folder-scrim');
   await wait(() => !ui.exists('.h-folder'));
 });
+
+test('Alt+arrows move a focused app within an open folder, and two presses before the write both count', async () => {
+  await show({ makes: [] }, { layout: { ...groupLayout(), groups: { g1: { name: 'Lists', look: 'folder', apps: ['app-groceries', 'app-notes', 'app-plants'] } } } });
+  await ui.click('.h-group');
+  await wait(() => ui.exists('.h-folder'));
+  const inFolder = () => [...document.querySelectorAll('.h-folder .h-tile[data-id]')].map((t) => t.dataset.id).join();
+  const el = document.querySelector('.h-folder [data-id="app-groceries"]');
+  el.focus();
+  el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', altKey: true, bubbles: true }));
+  el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', altKey: true, bubbles: true }));
+  await wait(async () => (await stored()).groups.g1.apps.join() === 'app-notes,app-plants,app-groceries');
+  await wait(() => inFolder() === 'app-notes,app-plants,app-groceries');
+  expect(document.activeElement.dataset.id).toBe('app-groceries');
+  document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', altKey: true, bubbles: true }));
+  await wait(async () => (await stored()).groups.g1.apps.join() === 'app-notes,app-groceries,app-plants');
+  expect(ui.exists('.h-folder')).toBe(true);
+  await ui.click('.h-folder-scrim');
+  await wait(() => !ui.exists('.h-folder'));
+});
+
+test('a pile shows up to five tilted icons, the same tilt every load', async () => {
+  const ids = SAMPLE.apps.map((a) => a.id);
+  const layout = { v: 1, starred: [], order: ['g:p1', 'app-mood', 'app-notes'], groups: { p1: { name: 'Lots', look: 'pile', apps: ids.filter((id) => !['app-mood', 'app-notes'].includes(id)) } }, seen: ids };
+  await show({ makes: [] }, { layout });
+  const tilts = () => [...document.querySelectorAll('.h-pile-card')].map((c) => c.style.transform);
+  expect(tilts().length).toBe(5);
+  expect(new Set(tilts()).size).toBeGreaterThan(1);
+  expect(ui.text('.h-group[data-look="pile"] .h-label')).toBe('Lots');
+  const first = tilts();
+  await show({ makes: [] }, { layout });
+  expect(tilts()).toEqual(first);
+});
+
+test('a tap fans the pile out in a row below it, pushing the grid down; a tap outside gathers it', async () => {
+  const clock = manualClock();
+  const home = await show({ makes: [] }, { clock, layout: groupLayout('pile') });
+  const below = document.querySelector('[data-id="app-mood"]').getBoundingClientRect().y;
+  await ui.click('.h-group');
+  clock.advance(1000);
+  await wait(() => ui.exists('.h-fan[data-group="g1"]'));
+  expect([...document.querySelectorAll('.h-fan .h-tile[data-id]')].map((t) => t.dataset.id)).toEqual(['app-groceries', 'app-notes']);
+  expect(document.querySelector('[data-id="app-mood"]').getBoundingClientRect().y).toBeGreaterThan(below);
+  await ui.click('.h-fan [data-id="app-notes"]');
+  await wait(() => home.calls.some((c) => c.method === 'open' && c.args[0] === 'app-notes'));
+  document.querySelector('.h-key, .h-bar').click();
+  clock.advance(1000);
+  await wait(() => !ui.exists('.h-fan'));
+  clock.advance(1000);
+  await wait(() => document.querySelector('[data-id="app-mood"]').getBoundingClientRect().y === below);
+});
+
+test("tiles() reports a fanned pile's apps", async () => {
+  const home = fakeHome({ makes: [] });
+  const reports = [];
+  home.tiles = async (list) => { reports.push(list.map((t) => t.id)); };
+  db = fakeDb({ [LAYOUT]: groupLayout('pile') });
+  const clock = manualClock();
+  mount(root(), home, { db, clock });
+  await wait(() => reports.length >= 1);
+  await ui.click('.h-group');
+  clock.advance(1000);
+  await wait(() => reports.at(-1).includes('app-notes'));
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  clock.advance(1000);
+  await wait(() => !ui.exists('.h-fan'));
+});
+
+test('Alt+arrows move a focused app along a fanned pile', async () => {
+  const clock = manualClock();
+  await show({ makes: [] }, { clock, layout: groupLayout('pile') });
+  await ui.click('.h-group');
+  clock.advance(1000);
+  await wait(() => ui.exists('.h-fan'));
+  const el = document.querySelector('.h-fan [data-id="app-groceries"]');
+  el.focus();
+  el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', altKey: true, bubbles: true }));
+  await wait(async () => (await stored()).groups.g1.apps.join() === 'app-notes,app-groceries');
+  clock.advance(1000);
+  await wait(() => [...document.querySelectorAll('.h-fan .h-tile[data-id]')].map((t) => t.dataset.id).join() === 'app-notes,app-groceries');
+  expect(document.activeElement.dataset.id).toBe('app-groceries');
+  document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  clock.advance(1000);
+  await wait(() => !ui.exists('.h-fan'));
+});

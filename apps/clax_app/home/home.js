@@ -15,7 +15,9 @@
 // Held 600 ms over another app's centre, a dragged app makes a group of
 // the two; dropped on a group, it joins it. A group shows as a folder tile
 // that opens over the grid, where its apps are renamed, reordered and
-// dragged out; its own menu renames, switches its look and ungroups it.
+// dragged out, or as a pile of tilted icons that fans out in place into a
+// row below it, pushing the rows after it down; its own menu renames,
+// switches its look and ungroups it.
 //
 // `start()` mounts the page over the real capabilities; `mount(root, home,
 // {db, clock})` mounts it over any objects with the same calls (the tests
@@ -28,7 +30,7 @@ import {
 } from './arrange.js';
 import { layoutStore } from './store.js';
 import { realClock, velocityOf, tossRest, TOSS_MIN } from './physics.js';
-import { pack, geometry, slotAt, centreUnder } from './grid.js';
+import { pack, geometry, slotAt, centreUnder, tiltOf } from './grid.js';
 import { createPress } from './drag.js';
 import { createMotion } from './motion.js';
 
@@ -210,24 +212,42 @@ function AppTile({ app, fresh, cell, dragging, ctl, onOpen, onMenu, tkey = tileK
   </button>`;
 }
 
+/** How many of a pile's icons its face stacks. */
+const PILE_MAX = 5;
+/** The `i`th card of group `gid`'s pile: turned by `tiltOf`, shifted up
+ * to 4 px each way (from the tilts past the pile's), and a little smaller
+ * than an icon, so the cards under the top one show at its edges. */
+const pileTransform = (gid, i) => {
+  const dx = Math.round(tiltOf(gid, i + PILE_MAX) * 5) / 10;
+  const dy = Math.round(tiltOf(gid, i + 2 * PILE_MAX) * 5) / 10;
+  return `translate(${dx}px, ${dy}px) rotate(${tiltOf(gid, i)}deg) scale(0.86)`;
+};
+
 /** Group `entry`'s tile (`{key, group: {id, name, look}, apps}`), in cell
- * `cell`: a folder face of its first four apps' icons over its name (a
- * pile draws as a folder too). Its press goes to `ctl` as an app's does:
- * a tap opens the group, a hold then a release or a context menu asks for
- * the group's own menu, a hold then a move drags it. It has no `data-id`:
- * Clax is never told of it, so a tap on the start-up image there opens
- * nothing. */
-function GroupTile({ entry, cell, dragging, ctl, onOpenGroup, onGroupMenu }) {
+ * `cell`, over its name: a folder's face is its first four apps' icons on
+ * a tonal square; a pile's is its first five apps' icons stacked, the
+ * first on top, each turned and shifted by `pileTransform` (so a pile
+ * looks the same each time). Its press goes to `ctl` as an app's does: a tap opens a folder or
+ * fans a pile out (`fanned` while it is), a hold then a release or a
+ * context menu asks for the group's own menu, a hold then a move drags it.
+ * It has no `data-id`: Clax is never told of it, so a tap on the start-up
+ * image there opens nothing. */
+function GroupTile({ entry, cell, dragging, fanned, ctl, onOpenGroup, onFanGroup, onGroupMenu }) {
   const { group, apps } = entry;
   const press = ctl.pressOf(entry.key);
+  const pile = group.look === 'pile';
+  const cards = apps.slice(0, PILE_MAX).map((a, i) => ({ a, i })).reverse();
   return html`<button type="button" class="h-tile h-group" data-group=${group.id} data-look=${group.look} data-key=${entry.key}
-    data-dragging=${dragging ? '' : undefined} aria-label=${`${group.name}, group of ${apps.length} apps`} style=${cellStyle(cell)}
+    data-dragging=${dragging ? '' : undefined} data-fanned=${fanned ? '' : undefined} aria-expanded=${pile ? !!fanned : undefined}
+    aria-label=${`${group.name}, group of ${apps.length} apps`} style=${cellStyle(cell)}
     onPointerDown=${(e) => ctl.down(e, entry.key)}
     onContextMenu=${(e) => { e.preventDefault(); if (!press.contextMenu()) onGroupMenu(group.id, faceRect(e.currentTarget)); }}
-    onClick=${() => { if (press.takeClick()) onOpenGroup(group.id); }}
+    onClick=${() => { if (press.takeClick()) (pile ? onFanGroup : onOpenGroup)(group.id); }}
     onKeyDown=${(e) => ctl.key(entry.key, e)}>
     <span class="h-icon">
-      <span class="h-face h-folder-face" data-kind="folder">${apps.slice(0, 4).map((a) => html`<${AppFace} key=${a.id} app=${a} />`)}</span>
+      ${pile
+        ? html`<span class="h-pile-face" data-kind="pile">${cards.map(({ a, i }) => html`<span key=${a.id} class="h-pile-card" style=${{ transform: pileTransform(group.id, i) }}><${AppFace} app=${a} /></span>`)}</span>`
+        : html`<span class="h-face h-folder-face" data-kind="folder">${apps.slice(0, 4).map((a) => html`<${AppFace} key=${a.id} app=${a} />`)}</span>`}
       <span class="h-group-outline" aria-hidden="true" />
     </span>
     <span class="h-label h-two">${group.name}</span>
@@ -309,11 +329,18 @@ const columnsFor = (width) => Math.max(1, Math.ceil(width / (112 + 4)));
 const tileKeyOf = (id) => `a:${id}`;
 /** The tile key of an entry of Starred or All apps: an app's ID or a group's key. */
 const entryTileKey = (key) => (isGroupKey(key) ? key : tileKeyOf(key));
+/** The key of app `id`'s tile in a fanned pile's row, which is also its
+ * press's ID in the grid's arranger. */
+const fanKeyOf = (id) => `p:${id}`;
+const isFanKey = (key) => key.startsWith('p:');
+/** The tile key of a press ID of the grid's arranger. */
+const pressTileKey = (id) => (isFanKey(id) ? id : entryTileKey(id));
 
 /** Each tile's cell by its key, with its section: Starred's apps, then
  * All apps' makes, apps and groups (a cell each), each packed in `cols`
- * columns. */
-function placement(layout, apps, makes, cols) {
+ * columns. With group `fan` fanned out, the rows of All apps after its
+ * pile's row move down one, leaving that row to its fan. */
+function placement(layout, apps, makes, cols, fan = null) {
   const s = sections(layout, apps);
   const lists = {
     starred: s.starred.map((e) => tileKeyOf(e.app.id)),
@@ -321,25 +348,53 @@ function placement(layout, apps, makes, cols) {
   };
   const out = new Map();
   for (const [section, keys] of Object.entries(lists)) {
-    for (const c of pack(keys.map((key) => ({ key, span: 1 })), cols).cells) out.set(c.key, { ...c, section });
+    const { cells } = pack(keys.map((key) => ({ key, span: 1 })), cols);
+    const pile = section === 'all' && fan ? cells.find((c) => c.key === `g:${fan}`) : null;
+    for (const c of cells) out.set(c.key, { ...c, row: pile && c.row > pile.row ? c.row + 1 : c.row, section });
   }
   return out;
 }
 
+/** The 1-based grid row of group `fan`'s fan, under its pile's cell in
+ * `cells` (placement's), or null. */
+const fanRowOf = (cells, fan) => {
+  const c = fan ? cells.get(`g:${fan}`) : null;
+  return c ? c.row + 2 : null;
+};
+
+/** Pile `entry`'s apps fanned out in grid row `row`, across the grid, in
+ * a row of cells as wide as the grid's that scrolls sideways; each opens
+ * on a tap and asks for its menu as in the grid (through the arranger's
+ * `ctl.fan`). */
+function Fan({ entry, row, layout, ctl, onOpen, onMenu }) {
+  return html`<div class="h-fan" data-group=${entry.group.id} role="group" aria-label=${entry.group.name}
+    style=${{ gridColumn: '1 / -1', gridRow: `${row}` }}>
+    ${entry.apps.map((a) => html`<${AppTile} key=${fanKeyOf(a.id)} tkey=${fanKeyOf(a.id)} app=${a} fresh=${isNew(layout, a.id)}
+      ctl=${ctl.fan} onOpen=${onOpen} onMenu=${onMenu} />`)}
+  </div>`;
+}
+
 /** Starred (only when something is starred, headed) above All apps (headed
  * then), each a grid of `cols` columns; the makes go first under All apps.
- * A group takes a cell as its folder tile. While app `drag` is dragged,
+ * A group takes a cell as its folder or pile tile; the pile `fan.gid`
+ * fanned out has its row of apps under it. While app `drag` is dragged,
  * All apps is headed, and an empty Starred is a zone to drop on (a group
  * is never starred: dragging one opens no zone). */
-function Sections({ layout, apps, makes, cols, drag, ctl, onOpen, onMenu, onOpenGroup, onGroupMenu, act }) {
+function Sections({ layout, apps, makes, cols, drag, fan, ctl, onOpen, onMenu, onOpenGroup, onFanGroup, onGroupMenu, act }) {
   const s = sections(layout, apps);
-  const cells = placement(layout, apps, makes, cols);
+  const fanned = fan ? s.all.find((e) => e.group?.id === fan.gid && e.group.look === 'pile') ?? null : null;
+  const cells = placement(layout, apps, makes, cols, fanned ? fan.gid : null);
   const tile = (app) => html`<${AppTile} key=${tileKeyOf(app.id)} app=${app} fresh=${isNew(layout, app.id)} cell=${cells.get(tileKeyOf(app.id))}
     dragging=${drag === app.id} ctl=${ctl} onOpen=${onOpen} onMenu=${onMenu} />`;
   const starred = s.starred.length > 0;
   const zone = !starred && drag != null && !isGroupKey(drag);
-  const entry = (e) => (e.app ? tile(e.app) : html`<${GroupTile} key=${e.key} entry=${e} cell=${cells.get(e.key)} dragging=${drag === e.key}
-    ctl=${ctl} onOpenGroup=${onOpenGroup} onGroupMenu=${onGroupMenu} />`);
+  const entry = (e) => {
+    if (e.app) return tile(e.app);
+    const group = html`<${GroupTile} key=${e.key} entry=${e} cell=${cells.get(e.key)} dragging=${drag === e.key} fanned=${e === fanned}
+      ctl=${ctl} onOpenGroup=${onOpenGroup} onFanGroup=${onFanGroup} onGroupMenu=${onGroupMenu} />`;
+    if (e !== fanned) return group;
+    return [group, html`<${Fan} key=${`fan:${e.group.id}`} entry=${e} row=${fanRowOf(cells, fan.gid)} layout=${layout} ctl=${ctl} onOpen=${onOpen} onMenu=${onMenu} />`];
+  };
   return html`
     ${starred && html`<section class="h-section" data-section="starred" aria-label="Starred" style=${`--cols:${cols}`}>
       <h2 class="h-heading">Starred</h2>
@@ -395,14 +450,17 @@ const REORDER_MS = 120;
 /** The grid's arranging, over the state `st` the Grid keeps current
  * (`wrap`, `layout`, `shown` (what the page shows, a drop's or a key's
  * move included before its write lands: every move starts from it),
- * `apps`, `makes`, `cols`, `motion`, `reduced`, `change`, `onMenu`,
- * `onGroupMenu`, `setDrag`, `setHeld`, `onDragging`): each entry's press
- * (`pressOf`, by app ID or group key), the drag it starts, and the
- * keyboard's moves. During a drag the tiles are placed and moved here, at
- * once, with no render; the page renders the drag's start and its drop.
- * A dragged app resting HOVER_MS on another app's centre outlines it, and
- * a drop then makes a group of the two; on a group's centre it outlines it
- * at once, and a drop adds the app to it. */
+ * `apps`, `makes`, `cols`, `fanGid` (the pile fanned out, or null),
+ * `motion`, `reduced`, `change`, `onMenu`, `onGroupMenu`, `setDrag`,
+ * `setHeld`, `onDragging`, `gatherNow`): each entry's press (`pressOf`, by
+ * app ID or group key, or by fan key for an app in the fanned pile's row,
+ * through `fan`), the drag it starts, and the keyboard's moves. During a
+ * drag the tiles are placed and moved here, at once, with no render; the
+ * page renders the drag's start and its drop. A drag gathers a fanned pile
+ * at once. A dragged app resting HOVER_MS on another app's centre outlines
+ * it, and a drop then makes a group of the two; on a group's centre it
+ * outlines it at once, and a drop adds the app to it. A fanned pile's apps
+ * spring out of the pile as its row opens. */
 function arranger(st, clock) {
   const presses = new Map();
   let active = null;
@@ -433,7 +491,7 @@ function arranger(st, clock) {
    * tiles stay under the finger. */
   function relayout(steady = false) {
     if (!st.wrap) return;
-    const cells = placement(drag?.prov ?? st.shown, st.apps, st.makes, st.cols);
+    const cells = placement(drag?.prov ?? st.shown, st.apps, st.makes, st.cols, st.fanGid);
     const animate = lastCols === st.cols;
     lastCols = st.cols;
     const els = [...st.wrap.querySelectorAll('.h-tile[data-key]')];
@@ -455,11 +513,18 @@ function arranger(st, clock) {
     scrolled = scrollY;
     const next = new Map();
     const moves = [];
+    const pileEl = st.fanGid ? tileEl(`g:${st.fanGid}`) : null;
+    const pile = pileEl ? layoutPos(pileEl) : null;
     els.forEach((el, i) => {
       const key = el.dataset.key;
       const p = layoutPos(el, offsets[i]);
       next.set(key, p);
       if (drag && key === drag.key) return;
+      // A fanned pile's app new to the page comes out of the pile.
+      if (isFanKey(key) && !pos.has(key)) {
+        if (pile && animate) moves.push([key, el, pile.x - p.x, pile.y - p.y, 0, 0]);
+        return;
+      }
       if (landing?.key === key) {
         moves.push([key, el, landing.x - p.x, landing.y - p.y, landing.vx, landing.vy]);
         landing = null;
@@ -475,7 +540,7 @@ function arranger(st, clock) {
       if (vx || vy) st.motion.bump(key, el, vx, vy);
     }
     if (drag) hold();
-    if (focus && (!document.activeElement || document.activeElement === document.body)) tileEl(entryTileKey(focus))?.focus();
+    if (focus && (!document.activeElement || document.activeElement === document.body)) tileEl(pressTileKey(focus))?.focus();
   }
 
   /** Holds the dragged tile under the pointer, where it was taken. */
@@ -515,7 +580,7 @@ function arranger(st, clock) {
    * pointer `p` is near (another app's or a group's), or null. */
   function hoverAt(p) {
     if (isGroupKey(drag.id)) return null;
-    const cells = placement(drag.prov ?? st.shown, st.apps, st.makes, st.cols);
+    const cells = placement(drag.prov ?? st.shown, st.apps, st.makes, st.cols, st.fanGid);
     for (const section of ['starred', 'all']) {
       const grid = gridOf(section);
       if (!grid) continue;
@@ -663,7 +728,36 @@ function arranger(st, clock) {
     st.change(op).then(() => { if (mine === seq) st.setHeld(null); });
   }
 
+  /** The press of app `app`'s tile in the fanned pile's row (fan key
+   * `key`): a hold then a release asks for its menu; it does not drag. */
+  function fanHandlersFor(key, app) {
+    const unlift = () => {
+      const el = tileEl(key);
+      if (el) delete el.dataset.held;
+      blocking(false);
+    };
+    return {
+      lift() {
+        const el = tileEl(key);
+        if (el) el.dataset.held = '';
+        blocking(true);
+      },
+      unlift,
+      menu() {
+        unlift();
+        const el = tileEl(key);
+        const a = st.apps.find((x) => x.id === app);
+        if (el && a) st.onMenu(a, faceRect(el));
+      },
+      dragStart() {},
+      dragMove() {},
+      dragEnd: unlift,
+      dragCancel: unlift,
+    };
+  }
+
   function handlersFor(id) {
+    if (isFanKey(id)) return fanHandlersFor(id, id.slice(2));
     const key = entryTileKey(id);
     return {
       lift() {
@@ -687,6 +781,7 @@ function arranger(st, clock) {
       dragStart(p) {
         const el = tileEl(key);
         if (!el) return;
+        st.gatherNow();
         const r = el.getBoundingClientRect();
         focus = null;
         drag = { id, key, from: st.shown.starred.includes(id) ? 'starred' : 'all', grab: { x: p.x - r.left, y: p.y - r.top }, last: p, target: null, prov: null };
@@ -755,7 +850,7 @@ function arranger(st, clock) {
     };
   }
 
-  return {
+  const ctl = {
     relayout,
     get dragging() { return drag !== null; },
     pressOf(id) {
@@ -775,7 +870,7 @@ function arranger(st, clock) {
     /** A press or a focus anywhere but on the tile last moved by keyboard:
      * a later render leaves the focus where the person put it. */
     elsewhere(e) {
-      if (focus && !(e.target instanceof Element && e.target.closest(`.h-tile[data-key="${CSS.escape(entryTileKey(focus))}"]`))) focus = null;
+      if (focus && !(e.target instanceof Element && e.target.closest(`.h-tile[data-key="${CSS.escape(pressTileKey(focus))}"]`))) focus = null;
     },
     /** The page hidden or left, or the pointer lost, mid-press: the press
      * ends as if cancelled and every tile goes to its place at once, so
@@ -793,11 +888,14 @@ function arranger(st, clock) {
       dropped = false;
       if (drag) track();
     },
-    /** Alt+arrows on entry `id`'s tile (an app's ID or a group's key): one entry left or right, or a row
-     * (`cols` entries) up or down, within its section, from where it is
-     * shown. */
+    /** Alt+arrows on entry `id`'s tile (an app's ID or a group's key): one
+     * entry left or right, or a row (`cols` entries) up or down, within its
+     * section, from where it is shown; on an app in the fanned pile's row
+     * (a fan key), Alt+Left and Alt+Right move it one place along its
+     * group. */
     key(id, e) {
       if (!e.altKey || drag) return;
+      if (isFanKey(id)) { fanKey(id, e); return; }
       const n = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -st.cols, ArrowDown: st.cols }[e.key];
       if (!n) return;
       e.preventDefault();
@@ -820,17 +918,71 @@ function arranger(st, clock) {
       for (const p of presses.values()) p.cancel();
     },
   };
+  /** The fanned pile's tiles' calls, by app ID, onto their fan keys. */
+  ctl.fan = {
+    pressOf: (id) => ctl.pressOf(fanKeyOf(id)),
+    down: (e, id) => ctl.down(e, fanKeyOf(id)),
+    key: (id, e) => ctl.key(fanKeyOf(id), e),
+  };
+  return ctl;
+
+  /** Alt+Left or Alt+Right on fan key `id`: its app one place along its group. */
+  function fanKey(id, e) {
+    const n = { ArrowLeft: -1, ArrowRight: 1 }[e.key];
+    if (!n) return;
+    e.preventDefault();
+    const app = id.slice(2);
+    const l = st.shown;
+    const gid = groupOf(l, app);
+    const list = gid ? l.groups[gid].apps : [];
+    const i = list.indexOf(app);
+    const to = clamp(i + n, 0, list.length - 1);
+    if (i < 0 || to === i) return;
+    focus = id;
+    const next = moveInGroup(l, gid, app, to);
+    st.shown = next;
+    const mine = ++seq;
+    st.setHeld(next);
+    st.change((x) => moveInGroup(x, gid, app, to)).then(() => { if (mine === seq) st.setHeld(null); });
+  }
 }
 
-function Grid({ layout, apps, makes, motion, reduced, clock, change, onOpen, onMenu, onOpenGroup, onGroupMenu, act, onDragging }) {
+/** The grid of Starred and All apps, arranged by `arranger`. `fan`
+ * ({gid, closing}, or null) is the pile fanned out: its row shows under
+ * it, still shown while `closing` (its apps going back into the pile, by
+ * `gatherFan`). `gatherNow()` drops the fan with no motion, as a drag
+ * starts. */
+/** The longest a fan's gathering waits for its apps to reach the pile. */
+const GATHER_MS = 1000;
+
+/** Springs each app of the fanned row back onto group `gid`'s pile, then
+ * calls `done` (at once with `reduced`, or with no row or pile; at the
+ * latest GATHER_MS on, should a later layout move a tile on). */
+function gatherFan(gid, motion, reduced, clock, done) {
+  const els = [...document.querySelectorAll('.h-fan .h-tile[data-key]')];
+  const pileEl = document.querySelector(`.h-tile[data-key="${CSS.escape(`g:${gid}`)}"]`);
+  if (reduced || !pileEl || !els.length) { done(); return; }
+  const pile = layoutPos(pileEl);
+  let left = els.length;
+  let stop = null;
+  const end = () => { stop?.(); done(); };
+  for (const el of els) {
+    const p = layoutPos(el);
+    motion.to(el.dataset.key, el, pile.x - p.x, pile.y - p.y, () => { if (--left === 0) end(); });
+  }
+  if (left > 0) stop = clock.after(GATHER_MS, done);
+}
+
+function Grid({ layout, apps, makes, motion, reduced, clock, change, fan, onOpen, onMenu, onOpenGroup, onFanGroup, onGroupMenu, act, onDragging, gatherNow }) {
   const ref = useRef(null);
   const [cols, setCols] = useState(4);
   const [drag, setDrag] = useState(null);
   // The arrangement a drop made, shown until its write settles.
   const [held, setHeld] = useState(null);
   const shown = held ?? layout;
+  const fanGid = fan && shown.groups[fan.gid]?.look === 'pile' ? fan.gid : null;
   const st = useRef({}).current;
-  Object.assign(st, { wrap: ref.current, layout, shown, apps, makes, cols, motion, reduced, change, onMenu, onGroupMenu, setDrag, setHeld, onDragging });
+  Object.assign(st, { wrap: ref.current, layout, shown, apps, makes, cols, fanGid, motion, reduced, change, onMenu, onGroupMenu, setDrag, setHeld, onDragging, gatherNow });
   const ctl = useMemo(() => arranger(st, clock), [clock]);
   useLayoutEffect(() => {
     const el = ref.current;
@@ -848,6 +1000,15 @@ function Grid({ layout, apps, makes, motion, reduced, clock, change, onOpen, onM
     st.wrap = ref.current;
     ctl.afterRender();
   });
+  // A fan opened again while it gathers springs its apps back out.
+  const closing = !!fan?.closing;
+  useLayoutEffect(() => {
+    if (closing) return;
+    for (const el of ref.current?.querySelectorAll('.h-fan .h-tile[data-key]') ?? []) {
+      const o = offsetOf(el);
+      if (o.x || o.y) motion.from(el.dataset.key, el, o.x, o.y);
+    }
+  }, [closing, fan?.gid]);
   useEffect(() => {
     const move = (e) => ctl.pointer('move', e);
     const up = (e) => ctl.pointer('up', e);
@@ -881,8 +1042,8 @@ function Grid({ layout, apps, makes, motion, reduced, clock, change, onOpen, onM
     };
   }, [ctl]);
   return html`<div class="h-grid-wrap" ref=${ref}>
-    <${Sections} layout=${shown} apps=${apps} makes=${makes} cols=${cols} drag=${drag} ctl=${ctl} onOpen=${onOpen} onMenu=${onMenu}
-      onOpenGroup=${onOpenGroup} onGroupMenu=${onGroupMenu} act=${act} />
+    <${Sections} layout=${shown} apps=${apps} makes=${makes} cols=${cols} drag=${drag} fan=${fanGid ? fan : null} ctl=${ctl} onOpen=${onOpen} onMenu=${onMenu}
+      onOpenGroup=${onOpenGroup} onFanGroup=${onFanGroup} onGroupMenu=${onGroupMenu} act=${act} />
   </div>`;
 }
 
@@ -903,7 +1064,8 @@ function folderMeasures(width) {
  * current (`wrap`, `gid`, `ids`, `apps`, `cols`, `motion`, `change`,
  * `onMenu`, `setHeld`, `close`): each app's press, as in the grid. A drag
  * inside reorders the group; a drop more than OUT_PX outside the panel
- * takes the app out of the group and closes the folder. */
+ * takes the app out of the group and closes the folder. Alt+arrows on a
+ * focused app move it one place left or right, or a row up or down. */
 function folderArranger(st, clock) {
   const presses = new Map();
   let active = null;
@@ -911,6 +1073,8 @@ function folderArranger(st, clock) {
   let pos = new Map();
   let block = false;
   let seq = 0;
+  // The app last moved by keyboard, kept focused across renders.
+  let focus = null;
   const keyOf = (id) => `f:${id}`;
   const tileEl = (id) => st.wrap?.querySelector(`.h-tile[data-key="${CSS.escape(keyOf(id))}"]`) ?? null;
   const panel = () => st.wrap?.querySelector('.h-folder-panel') ?? null;
@@ -947,6 +1111,7 @@ function folderArranger(st, clock) {
     pos = next;
     for (const [key, el, dx, dy] of moves) st.motion.from(key, el, dx, dy);
     if (drag) hold();
+    if (focus && (!document.activeElement || document.activeElement === document.body || document.activeElement === st.wrap)) tileEl(focus)?.focus();
   }
 
   function hold() {
@@ -1050,6 +1215,7 @@ function folderArranger(st, clock) {
     },
     down(e, id) {
       if (drag || (active && active.phase !== 'idle')) return;
+      focus = null;
       active = this.pressOf(id);
       if (e.pointerType === 'mouse' && e.button === 0) {
         try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* a pointer the browser does not know */ }
@@ -1064,7 +1230,23 @@ function folderArranger(st, clock) {
     pointer(type, e) { active?.[type](e); },
     touchMove(e) { if (block && e.cancelable) e.preventDefault(); },
     afterRender: relayout,
-    key() {},
+    key(id, e) {
+      if (!e.altKey || drag) return;
+      const n = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -st.cols, ArrowDown: st.cols }[e.key];
+      if (!n) return;
+      e.preventDefault();
+      const i = st.ids.indexOf(id);
+      const to = clamp(i + n, 0, st.ids.length - 1);
+      if (i < 0 || to === i) return;
+      focus = id;
+      // Shown at once, so a press before the write lands moves on from here.
+      const order = place(st.ids, id, to);
+      const gid = st.gid;
+      st.ids = order;
+      const mine = ++seq;
+      st.setHeld(order);
+      st.change((l) => moveInGroup(l, gid, id, to)).then(() => { if (mine === seq) st.setHeld(null); });
+    },
     stop() { for (const p of presses.values()) p.cancel(); },
   };
 }
@@ -1508,31 +1690,91 @@ function Home({ home, db, clock }) {
   // back closes it; and the group menu shown ({gid, rect}).
   const [folder, setFolder] = useState(null);
   const [groupMenu, setGroupMenu] = useState(null);
-  const openGroup = useCallback((gid, editing = false) => {
-    setGroupMenu(null);
-    setFolder({ gid, editing });
+  const reduced = useReducedMotion();
+  const settled = useRef(() => {});
+  const motion = useMemo(() => createMotion(clock, { reduced, onSettle: () => settled.current() }), [clock, reduced]);
+  useEffect(() => () => motion.stop(), [motion]);
+  // The pile fanned out ({gid, closing}), on the same history entry.
+  const [fan, setFan] = useState(null);
+  const moving = useRef(null);
+  moving.current = { motion, reduced };
+  const fanNow = useRef(null);
+  fanNow.current = fan;
+  const pushEntry = () => {
     if (folderNav.back) folderNav.push = true;
     else if (history.state?.clax !== 'group') history.pushState({ clax: 'group' }, '', '#group');
-  }, []);
-  const closeGroup = useCallback(() => {
-    setFolder(null);
+  };
+  const popEntry = () => {
     folderNav.push = false;
     if (!folderNav.back && history.state?.clax === 'group') {
       folderNav.back = true;
       history.back();
     }
+  };
+  const openGroup = useCallback((gid, editing = false) => {
+    setGroupMenu(null);
+    setFan(null);
+    setFolder({ gid, editing });
+    pushEntry();
+  }, []);
+  const closeGroup = useCallback(() => {
+    setFolder(null);
+    popEntry();
+  }, []);
+  // The fan's apps go back into the pile, from the event that gathers it,
+  // and then the row goes.
+  const closeFan = () => {
+    const f = fanNow.current;
+    if (!f || f.closing) return;
+    const closing = { ...f, closing: true };
+    fanNow.current = closing;
+    setFan(closing);
+    gatherFan(f.gid, moving.current.motion, moving.current.reduced, clock, () => setFan((x) => (x === closing ? null : x)));
+  };
+  const gather = useCallback(() => {
+    if (!fanNow.current || fanNow.current.closing) return;
+    closeFan();
+    popEntry();
+  }, []);
+  // A tap on a pile fans it out, or gathers it when it is fanned already.
+  const fanGroup = useCallback((gid) => {
+    setGroupMenu(null);
+    const f = fanNow.current;
+    if (f && f.gid === gid && !f.closing) { gather(); return; }
+    fanNow.current = { gid, closing: false };
+    setFan(fanNow.current);
+    pushEntry();
+  }, []);
+  const gatherNow = useCallback(() => {
+    if (!fanNow.current) return;
+    fanNow.current = null;
+    setFan(null);
+    popEntry();
   }, []);
   useEffect(() => {
-    const close = () => setFolder(null);
+    const close = () => { setFolder(null); closeFan(); };
     folderNav.listen();
     folderNav.close = close;
     return () => { if (folderNav.close === close) folderNav.close = null; };
   }, []);
-  // A folder or a menu whose group is gone (dissolved, ungrouped, removed elsewhere) closes.
+  // While a pile is fanned out, a tap outside its row and the group tiles,
+  // or Escape, gathers it.
+  const fanOpen = !!fan && !fan.closing;
+  useEffect(() => {
+    if (!fanOpen) return undefined;
+    const click = (e) => { if (!(e.target instanceof Element && e.target.closest('.h-fan, .h-group'))) gather(); };
+    const key = (e) => { if (e.key === 'Escape' && !document.querySelector('.h-folder, .h-group-menu, .h-more .h-menu')) gather(); };
+    document.addEventListener('click', click);
+    document.addEventListener('keydown', key);
+    return () => { document.removeEventListener('click', click); document.removeEventListener('keydown', key); };
+  }, [fanOpen]);
+  // A folder, a fan or a menu whose group is gone (dissolved, ungrouped,
+  // removed elsewhere) closes; so does a fan whose group became a folder.
   useEffect(() => {
     if (folder && layout && !layout.groups[folder.gid]) closeGroup();
     if (groupMenu && layout && !layout.groups[groupMenu.gid]) setGroupMenu(null);
-  }, [layout, folder, groupMenu]);
+    if (fan && layout && layout.groups[fan.gid]?.look !== 'pile') gatherNow();
+  }, [layout, folder, groupMenu, fan]);
   const showGroupMenu = useCallback((gid, rect) => setGroupMenu({ gid, rect }), []);
   const closeGroupMenu = useCallback(() => setGroupMenu(null), []);
   const pickGroup = (what) => {
@@ -1557,10 +1799,6 @@ function Home({ home, db, clock }) {
       if (typeof v?.opened === 'string') change((l) => opened(l, v.opened, clock.date()));
     }).catch(() => {});
   }, [home, drawn]);
-  const reduced = useReducedMotion();
-  const settled = useRef(() => {});
-  const motion = useMemo(() => createMotion(clock, { reduced, onSettle: () => settled.current() }), [clock, reduced]);
-  useEffect(() => () => motion.stop(), [motion]);
   settled.current = useTiles(home, drawn, motion);
   const [dragging, setDragging] = useState(false);
 
@@ -1580,8 +1818,9 @@ function Home({ home, db, clock }) {
   } else if (!list.length && !going.length) {
     body = html`<${Message} glyph="sparkles" title="Say what you want, and Clax makes it." hint="“A tracker for my runs with a weekly total”" />`;
   } else {
-    body = html`<${Grid} layout=${layout} apps=${list} makes=${going} motion=${motion} reduced=${reduced} clock=${clock} change=${change}
-      onOpen=${openApp} onMenu=${menuOf} onOpenGroup=${openGroup} onGroupMenu=${showGroupMenu} act=${act} onDragging=${setDragging} />`;
+    body = html`<${Grid} layout=${layout} apps=${list} makes=${going} motion=${motion} reduced=${reduced} clock=${clock} change=${change} fan=${fan}
+      onOpen=${openApp} onMenu=${menuOf} onOpenGroup=${openGroup} onFanGroup=${fanGroup} onGroupMenu=${showGroupMenu} act=${act} onDragging=${setDragging}
+      gatherNow=${gatherNow} />`;
   }
   const entryOf = (gid) => (list ? sections(layout, list).all.find((e) => e.group?.id === gid) ?? null : null);
   const open = folder && entryOf(folder.gid);

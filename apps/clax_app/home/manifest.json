@@ -3,7 +3,7 @@
   "icon": "home",
   "capabilities": { "home": {}, "db": {} },
   "lineage": "l_wnceg6o3kdr4qxg2xo3be6bdlq",
-  "version": 9,
-  "release": "1.2.0",
+  "version": 10,
+  "release": "1.3.0",
   "kit": ["preact.js", "icons.js", "kit.css", "kit.js", "fake-home.js", "LICENSES.txt"]
 }

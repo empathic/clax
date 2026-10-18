@@ -53,7 +53,7 @@ test.describe("its tests in the inspect view", () => {
     const tests = (await ofType(page, "tests"))[0] as HostMessage & { passed: number; failed: unknown[]; skipped: number };
     expect(tests.failed).toEqual([]);
     expect(tests.skipped).toBe(0);
-    expect(tests.passed).toBe(61);
+    expect(tests.passed).toBe(66);
   });
 });
 
@@ -268,6 +268,30 @@ test.describe("over a fake host", () => {
     await expect(page.locator(".h-folder .h-folder-name")).toHaveText("Group");
   });
 
+  test("a tap fans a pile out below it, and a tap on the top bar gathers it", async ({ page }) => {
+    await page.clock.install();
+    const ids = ["app-run", "app-groceries", "app-habits", "app-recipes", "app-budget", "app-plants", "app-mood", "app-notes"];
+    const layout = { v: 1, starred: [], order: ["app-run", "g:g1", ...ids.filter(id => !["app-run", "app-groceries", "app-notes"].includes(id))], groups: { g1: { name: "Lists", look: "pile", apps: ["app-groceries", "app-notes"] } }, seen: ids };
+    await serve(page, { makes: [], docs: { "layout/main": layout } });
+    await expect(page.locator('.h-group[data-look="pile"] .h-pile-card')).toHaveCount(2);
+    const before = (await page.locator('[data-id="app-mood"]').boundingBox())!;
+    await page.locator(".h-group").tap();
+    await page.clock.runFor(1000);
+    await expect(page.locator(".h-fan .h-tile[data-id]")).toHaveCount(2);
+    await expect.poll(async () => (await page.locator('[data-id="app-mood"]').boundingBox())!.y).toBeGreaterThan(before.y);
+    await page.locator(".h-title").tap();
+    await page.clock.runFor(1000);
+    await expect(page.locator(".h-fan")).toHaveCount(0);
+    await expect.poll(async () => (await page.locator('[data-id="app-mood"]').boundingBox())!.y).toBe(before.y);
+    // Back gathers it too.
+    await page.locator(".h-group").tap();
+    await page.clock.runFor(1000);
+    await expect(page.locator(".h-fan")).toHaveCount(1);
+    await page.goBack();
+    await page.clock.runFor(1000);
+    await expect(page.locator(".h-fan")).toHaveCount(0);
+  });
+
   test("without the home capability it says to open it in Clax", async ({ page }) => {
     await serve(page);
     await expect(page.locator(".h-message")).toContainText("This is a Clax home screen.Open it in the Clax app.");
@@ -352,9 +376,9 @@ test.describe("renders", () => {
           await expect.poll(() => page.locator(".h-tile[data-id]:not([data-dragging])").evaluateAll(els => els.every(e => !(e as HTMLElement).style.transform))).toBe(true);
           await page.screenshot({ path: join(shots, `home-drop-${size}-${scheme}.png`), animations: "disabled" });
           await page.mouse.up();
-          // Two starred apps, a folder of three and a pile of four (drawn
-          // as a folder until piles have their own look), then the folder
-          // open, then an app held over another, outlined to group.
+          // Two starred apps, a folder of three and a pile of four, then
+          // the folder open, then the pile fanned out, then an app held
+          // over another, outlined to group.
           await page.evaluate(async () => {
             const { mount } = await import(`${location.origin}/home.js`);
             const { fakeHome, fakeDb, SAMPLE } = await import(`${location.origin}/kit/fake-home.js`);
@@ -379,6 +403,14 @@ test.describe("renders", () => {
           await page.screenshot({ path: join(shots, `home-folder-${size}-${scheme}.png`), animations: "disabled" });
           await page.locator(".h-folder-scrim").click({ position: { x: 4, y: 4 } });
           await expect(page.locator(".h-folder")).toHaveCount(0);
+          await page.locator('.h-group[data-group="g2"]').click();
+          await expect(page.locator(".h-fan .h-tile[data-id]")).toHaveCount(4);
+          await expect.poll(() => page.locator(".h-tile[data-key]").evaluateAll(els => els.every(e => !(e as HTMLElement).style.transform))).toBe(true);
+          await page.evaluate(() => Promise.all([...document.images].map(i => i.decode().catch(() => {}))));
+          await page.screenshot({ path: join(shots, `home-pile-${size}-${scheme}.png`), animations: "disabled" });
+          await page.locator(".h-title").click();
+          await expect(page.locator(".h-fan")).toHaveCount(0);
+          await expect.poll(() => page.locator(".h-tile[data-key]").evaluateAll(els => els.every(e => !(e as HTMLElement).style.transform))).toBe(true);
           const water = (await page.locator('[data-id="app-water"]').boundingBox())!;
           const steps = (await page.locator('[data-id="app-steps"]').boundingBox())!;
           await page.mouse.move(water.x + water.width / 2, water.y + water.height / 2);
