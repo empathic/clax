@@ -535,6 +535,49 @@ test('hold and drag a tile onto another place in All apps: it lands there and th
   expect(document.querySelector('[data-id="app-run"]').style.transform).toBe('');
 });
 
+test('a second drag before the first drop is written starts from the arrangement shown', async () => {
+  const clock = manualClock();
+  const ids = SAMPLE.apps.map((a) => a.id);
+  const base = fakeDb({ [LAYOUT]: { v: 1, starred: [], order: ids, seen: ids } });
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  db = { doc: (path) => { const d = base.doc(path); return { ...d, set: async (v) => { await gate; return d.set(v); } }; } };
+  mount(root(), fakeHome({ makes: [] }), { db, clock });
+  await wait(() => section('all').length === ids.length);
+  await drag(clock, 'app-run', centre('app-budget'));
+  const run = document.querySelector('[data-id="app-run"]');
+  await wait(() => run.style.gridRow === '2 / span 1' && run.style.gridColumn === '1 / span 1');
+  const el = document.querySelector('[data-id="app-notes"]');
+  const a = centre('app-notes');
+  el.dispatchEvent(pointer('pointerdown', a));
+  clock.advance(400);
+  el.dispatchEvent(pointer('pointermove', { x: a.x + 12, y: a.y }));
+  expect([run.style.gridRow, run.style.gridColumn]).toEqual(['2 / span 1', '1 / span 1']);
+  el.dispatchEvent(pointer('pointerup', { x: a.x + 12, y: a.y }));
+  clock.advance(1500);
+  release();
+  await wait(async () => (await base.doc(LAYOUT).get()).data().order.indexOf('app-run') === 4);
+  expect(section('all').indexOf('app-run')).toBe(4);
+});
+
+test('a drop into Starred dragged again before it is written lands in Starred', async () => {
+  const clock = manualClock();
+  const ids = SAMPLE.apps.map((a) => a.id);
+  const base = fakeDb({ [LAYOUT]: { v: 1, starred: ['app-mood'], order: ids.filter((id) => id !== 'app-mood'), seen: ids } });
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  db = { doc: (path) => { const d = base.doc(path); return { ...d, set: async (v) => { await gate; return d.set(v); } }; } };
+  mount(root(), fakeHome({ makes: [] }), { db, clock });
+  await wait(() => section('starred').length === 1);
+  await drag(clock, 'app-run', centre('app-mood'));
+  await wait(() => section('starred').join() === 'app-run,app-mood');
+  await drag(clock, 'app-run', centre('app-mood'));
+  expect(document.querySelector('[data-id="app-run"]').style.transform).toBe('');
+  release();
+  await wait(async () => (await base.doc(LAYOUT).get()).data().starred.join() === 'app-mood,app-run');
+  await wait(() => section('starred').join() === 'app-mood,app-run');
+});
+
 test('a hold released without moving still asks for the menu, and nothing moves', async () => {
   const clock = manualClock();
   const home = await show({ makes: [] }, { clock });

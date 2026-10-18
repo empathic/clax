@@ -347,7 +347,8 @@ function toSegment(c, a, b) {
 }
 
 /** The grid's arranging, over the state `st` the Grid keeps current
- * (`wrap`, `layout`, `shown`, `apps`, `makes`, `cols`, `motion`,
+ * (`wrap`, `layout`, `shown` (what the page shows, a drop's or a key's
+ * move included before its write lands: every move starts from it), `apps`, `makes`, `cols`, `motion`,
  * `reduced`, `change`, `onMenu`, `setDrag`, `setHeld`, `onDragging`):
  * each app's press (`pressOf`), the drag it starts, and the keyboard's
  * moves. During a drag the tiles are placed and moved here, at once, with
@@ -434,7 +435,7 @@ function arranger(st, clock) {
    * its entries (the dragged app's left out) the app would take there. */
   function slotIn(section, p) {
     const grid = gridOf(section);
-    const s = sections(st.layout, st.apps);
+    const s = sections(st.shown, st.apps);
     const entries = s[section].filter((e) => e.key !== drag.id);
     const owners = [];
     entries.forEach((e, i) => {
@@ -465,7 +466,7 @@ function arranger(st, clock) {
     st.wrap?.querySelector('.h-drop')?.toggleAttribute('data-over', !!t.zone);
     if (drag.target && t.section === drag.target.section && t.index === drag.target.index) return;
     drag.target = t;
-    drag.prov = moveTo(st.layout, drag.id, t.section, t.index);
+    drag.prov = moveTo(st.shown, drag.id, t.section, t.index);
     relayout();
   }
 
@@ -531,7 +532,7 @@ function arranger(st, clock) {
         if (!el) return;
         const r = el.getBoundingClientRect();
         focus = null;
-        drag = { id, key, from: st.layout.starred.includes(id) ? 'starred' : 'all', grab: { x: p.x - r.left, y: p.y - r.top }, last: p, target: null, prov: null };
+        drag = { id, key, from: st.shown.starred.includes(id) ? 'starred' : 'all', grab: { x: p.x - r.left, y: p.y - r.top }, last: p, target: null, prov: null };
         el.dataset.held = '';
         blocking(true);
         st.setDrag(id);
@@ -568,7 +569,7 @@ function arranger(st, clock) {
           }
         }
         d.target = t;
-        d.prov = moveTo(st.layout, id, t.section, t.index);
+        d.prov = moveTo(st.shown, id, t.section, t.index);
         relayout();
         const el = tileEl(key);
         if (t.section === d.from) {
