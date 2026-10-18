@@ -971,6 +971,36 @@ test("the group's own menu renames, switches its look and ungroups", async () =>
   expect(section('all').slice(0, 3)).toEqual(['app-run', 'app-groceries', 'app-notes']);
 });
 
+test("back closes the group's own menu, and only it; Escape leaves its history entry too", async () => {
+  const menu = () => document.querySelector('.h-group').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+  await show({ makes: [] }, { layout: groupLayout() });
+  menu();
+  await wait(() => ui.exists('.h-group-menu'));
+  expect(history.state?.clax).toBe('menu');
+  history.back();
+  await wait(() => !ui.exists('.h-group-menu'));
+  expect(ui.exists('.h-group')).toBe(true);
+  menu();
+  await wait(() => ui.exists('.h-group-menu'));
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await wait(() => !ui.exists('.h-group-menu') && history.state?.clax !== 'menu');
+  // Over a fanned pile, back closes the menu and leaves the pile fanned.
+  const clock = manualClock();
+  await show({ makes: [] }, { clock, layout: groupLayout('pile') });
+  await ui.click('.h-group');
+  clock.advance(1000);
+  await wait(() => ui.exists('.h-fan'));
+  menu();
+  await wait(() => ui.exists('.h-group-menu'));
+  history.back();
+  await wait(() => !ui.exists('.h-group-menu'));
+  clock.advance(1000);
+  expect(ui.exists('.h-fan')).toBe(true);
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  clock.advance(1000);
+  await wait(() => !ui.exists('.h-fan') && history.state?.clax !== 'group');
+});
+
 test('an app in a group offers Remove from group in its menu', async () => {
   const home = await show({ makes: [] }, { layout: groupLayout() });
   await ui.click('.h-group');

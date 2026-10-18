@@ -1590,7 +1590,7 @@ function Folder({ group, apps, layout, motion, clock, change, onOpen, onMenu, cl
 
 /** Group `group`'s own menu, anchored at its tile's icon `rect`: Rename,
  * Show as pile or Show as folder, and Ungroup; `pick` gets "rename",
- * "look" or "ungroup". The scrim or Escape closes it. */
+ * "look" or "ungroup". The scrim, Escape or back closes it. */
 function GroupMenu({ group, rect, pick, close }) {
   useEffect(() => {
     const key = (e) => { if (e.key === 'Escape') close(); };
@@ -1883,11 +1883,13 @@ function useLayout(store, apps, clock, failed) {
 
 /** The page's own history entries, for the window (one listener, so a
  * close's back that lands while the page mounts again is still heard):
- * "group" while a folder is open or a pile fanned out, "search" while
- * search is open. `enter(kind)` takes kind's entry, `leave(kind)` goes
- * back off it; `back` is set while such a `history.back()` is on its way,
- * and `push` names the entry to take once it lands. Any other back calls
- * the `closers` of each kind whose entry is no longer the top one. */
+ * "group" while a folder is open or a pile fanned out, "menu" while a
+ * group's own menu is open (over a fanned pile's entry, when one is),
+ * "search" while search is open. `enter(kind)` takes kind's entry,
+ * `leave(kind)` goes back off it; `back` is set while such a
+ * `history.back()` is on its way, and `push` names the entry to take once
+ * it lands, unless the back landed on one of that kind. Any other back
+ * calls the `closers` of each kind whose entry is no longer the top one. */
 const nav = {
   back: false,
   push: null,
@@ -1901,7 +1903,7 @@ const nav = {
         this.back = false;
         const kind = this.push;
         this.push = null;
-        if (kind) history.pushState({ clax: kind }, '', `#${kind}`);
+        if (kind && history.state?.clax !== kind) history.pushState({ clax: kind }, '', `#${kind}`);
         return;
       }
       const top = history.state?.clax;
@@ -1950,9 +1952,16 @@ function Home({ home, db, clock }) {
     else if (picked === 'remove') change((l) => removeFromGroup(l, app.id));
   }), [act, change, layout]);
   // The open folder ({gid, editing}), with a history entry of its own so
-  // back closes it; and the group menu shown ({gid, rect}).
+  // back closes it; and the group menu shown ({gid, rect}), with one too.
   const [folder, setFolder] = useState(null);
   const [groupMenu, setGroupMenu] = useState(null);
+  const menuOpen = useRef(false);
+  const closeGroupMenu = useCallback(() => {
+    if (!menuOpen.current) return;
+    menuOpen.current = false;
+    setGroupMenu(null);
+    nav.leave('menu');
+  }, []);
   const reduced = useReducedMotion();
   const settled = useRef(() => {});
   const motion = useMemo(() => createMotion(clock, { reduced, onSettle: () => settled.current() }), [clock, reduced]);
@@ -1979,7 +1988,7 @@ function Home({ home, db, clock }) {
   }, []);
   const openGroup = useCallback((gid, editing = false) => {
     closeSearch();
-    setGroupMenu(null);
+    closeGroupMenu();
     setFan(null);
     setFolder({ gid, editing });
     pushEntry();
@@ -2006,7 +2015,7 @@ function Home({ home, db, clock }) {
   // A tap on a pile fans it out, or gathers it when it is fanned already.
   const fanGroup = useCallback((gid) => {
     closeSearch();
-    setGroupMenu(null);
+    closeGroupMenu();
     const f = fanNow.current;
     if (f && f.gid === gid && !f.closing) { gather(); return; }
     fanNow.current = { gid, closing: false };
@@ -2023,7 +2032,7 @@ function Home({ home, db, clock }) {
   // so its entry is the only one of the page's own.
   const openSearch = useCallback(() => {
     if (searchOpen.current) return;
-    setGroupMenu(null);
+    closeGroupMenu();
     gatherNow();
     searchOpen.current = true;
     setQuery('');
@@ -2048,6 +2057,12 @@ function Home({ home, db, clock }) {
     nav.closers.group = close;
     return () => { if (nav.closers.group === close) delete nav.closers.group; };
   }, []);
+  useEffect(() => {
+    const close = () => { menuOpen.current = false; setGroupMenu(null); };
+    nav.listen();
+    nav.closers.menu = close;
+    return () => { if (nav.closers.menu === close) delete nav.closers.menu; };
+  }, []);
   // While a pile is fanned out, a tap outside its row and the group tiles,
   // or Escape, gathers it.
   const fanOpen = !!fan && !fan.closing;
@@ -2063,14 +2078,17 @@ function Home({ home, db, clock }) {
   // removed elsewhere) closes; so does a fan whose group became a folder.
   useEffect(() => {
     if (folder && layout && !layout.groups[folder.gid]) closeGroup();
-    if (groupMenu && layout && !layout.groups[groupMenu.gid]) setGroupMenu(null);
+    if (groupMenu && layout && !layout.groups[groupMenu.gid]) closeGroupMenu();
     if (fan && layout && layout.groups[fan.gid]?.look !== 'pile') gatherNow();
   }, [layout, folder, groupMenu, fan]);
-  const showGroupMenu = useCallback((gid, rect) => setGroupMenu({ gid, rect }), []);
-  const closeGroupMenu = useCallback(() => setGroupMenu(null), []);
+  const showGroupMenu = useCallback((gid, rect) => {
+    menuOpen.current = true;
+    setGroupMenu({ gid, rect });
+    nav.enter('menu');
+  }, []);
   const pickGroup = (what) => {
     const { gid } = groupMenu;
-    setGroupMenu(null);
+    closeGroupMenu();
     if (what === 'rename') openGroup(gid, true);
     else if (what === 'look') {
       const look = layout.groups[gid]?.look === 'pile' ? 'folder' : 'pile';
