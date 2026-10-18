@@ -17,10 +17,10 @@ files).
 | `fake-home.js` | `fakeHome(state)`, a stand-in for the home screen's `home` capability with sample apps and makes, and `fakeDb(docs)`, one for `db`'s documents, for a home app's tests and the agent's renders (`add_kit` part `home`) | Clax |
 
 The shipped home app (`apps/clax_app/home/`) carries its own copies of
-the kit files its `manifest.json` names, as they were when its bundle was
-last packed: a kit edit reaches it only with its next release (see
-`docs/usage.md`, "The home app"), and `test/home/home_bundle_test.dart`
-reports the drift without failing.
+the kit files its `manifest.json` names: every build of the app packs them
+into its bundle from this directory, so a kit edit reaches the home app
+with the next build, as a new release (see `docs/usage.md`, "The home
+app").
 
 The map loads nothing itself: a page may reach other hosts only through
 `net` (docs/contract.md, "Fetching from the network"), so `map.js` fetches

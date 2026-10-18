@@ -50,3 +50,8 @@ app.*.map.json
 # The macOS clax and Android libclax.so, placed by scripts/build-app-clax.sh
 /build-native/
 /android/app/src/main/jniLibs/
+
+# The home bundle, packed by scripts/build-home-bundle.sh for a native build
+# (Bazel builds it as //apps/clax_app:home_bundle)
+/assets/home/home.clax
+/assets/home/release.json

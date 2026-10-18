@@ -1,14 +1,9 @@
-// The shipped home app bundle (assets/home/home.clax, packed from home/ by
+// The home app bundle the app ships (assets/home/home.clax, built from
+// home/ by //apps/clax_app:home_bundle, or natively by
 // scripts/build-home-bundle.sh): it reads and verifies as any bundle,
-// carries what home/manifest.json says, matches assets/home/release.json,
-// and holds today's home/ sources, so a change to them without packing
-// again fails here.
-//
-// The bundle carries its own copy of the kit files the manifest names, as
-// they were at its last packing, and may lag assets/kit/: a kit edit does
-// not fail here (only the holder of the home signing key can pack again;
-// see docs/usage.md, "The home app"). The kit drift check below reports
-// the files that differ, as a skipped test with its reason.
+// carries what home/manifest.json says, matches its release record
+// (assets/home/release.json), and holds today's home/ sources and the kit
+// files the manifest names, byte for byte.
 import 'dart:convert';
 import 'dart:io';
 
@@ -32,19 +27,33 @@ void main() {
     'home.clax verifies and carries the manifest it was packed from',
     () async {
       final m = (await shipped()).manifest;
-      expect(m.title, 'Home');
+      expect(m.title, manifest['title']);
       expect(m.icon.word, manifest['icon']);
       expect(m.capabilities, manifest['capabilities']);
       expect(m.capabilities.keys, containsAll(['home', 'db']));
-      expect(m.lineage, manifest['lineage']);
-      expect(m.version, manifest['version']);
-      expect(release['release'], manifest['release']);
+      expect(m.version, greaterThan(manifest['version'] as int));
       expect(release['version'], m.version);
+      expect(release['release'], '${manifest['release']}.${m.version}');
       expect(release['lineage'], m.lineage);
       expect(release['hash'], m.contentSha256);
       expect(release['key'], m.author.key);
     },
   );
+
+  test('home.clax is the release, under the home app\'s key and lineage, '
+      'or a development build, on the development lineage', () async {
+    final m = (await shipped()).manifest;
+    if (m.author.key == manifest['key']) {
+      expect(m.lineage, manifest['lineage']);
+    } else {
+      expect(
+        m.lineage,
+        manifest['dev_lineage'],
+        reason: 'a bundle under another key than home/manifest.json\'s '
+            'must not take the home app\'s lineage',
+      );
+    }
+  });
 
   test('home.clax holds the current home/ sources and the kit files the '
       'manifest names', () async {
@@ -60,48 +69,12 @@ void main() {
       }
       want[path] = e.readAsBytesSync();
     }
-    final own = {
-      for (final p in b.files.keys)
-        if (!p.startsWith('kit/')) p,
-    };
-    expect(own, want.keys.toSet(), reason: 'run just home-bundle');
-    expect(
-      {
-        for (final p in b.files.keys)
-          if (p.startsWith('kit/')) p,
-      },
-      {for (final n in kit) 'kit/$n'},
-      reason: 'run just home-bundle',
-    );
+    for (final n in kit) {
+      want['kit/$n'] = File(appPath('assets/kit/$n')).readAsBytesSync();
+    }
+    expect(b.files.keys.toSet(), want.keys.toSet());
     for (final MapEntry(:key, :value) in want.entries) {
-      expect(b.files[key], value, reason: '$key differs; run just home-bundle');
+      expect(b.files[key], value, reason: '$key differs from its source');
     }
   });
-
-  test('kit drift: the kit files home.clax carries against assets/kit/ '
-      '(reported, never failing)', () async {
-    final b = await shipped();
-    final drifted = [
-      for (final n in kit)
-        if (!_same(b.files['kit/$n'], File(appPath('assets/kit/$n')).readAsBytesSync()))
-          n,
-    ];
-    if (drifted.isNotEmpty) {
-      markTestSkipped(
-        'home.clax carries older copies of assets/kit/ '
-        '${drifted.join(', ')}; the home app keeps working with them. The '
-        'holder of the home signing key picks up the new kit by raising '
-        'version and release in home/manifest.json and running just '
-        'home-bundle.',
-      );
-    }
-  });
-}
-
-bool _same(List<int>? a, List<int> b) {
-  if (a == null || a.length != b.length) return false;
-  for (var i = 0; i < a.length; i++) {
-    if (a[i] != b[i]) return false;
-  }
-  return true;
 }

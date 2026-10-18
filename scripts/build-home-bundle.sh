@@ -1,23 +1,25 @@
 #!/bin/sh
 # build-home-bundle.sh [--i-know-what-i-am-doing]: packs the home app's
 # source (apps/clax_app/home/, with the kit files its manifest names) into
-# the bundle the Clax app ships, apps/clax_app/assets/home/home.clax, and
-# its release record, apps/clax_app/assets/home/release.json, with
-# apps/clax_app/tool/pack_home.dart. Without the flag it is a dry run: it
-# says what it would write and writes nothing. `just home-bundle` passes
-# the flag.
+# the bundle a native build of the Clax app ships,
+# apps/clax_app/assets/home/home.clax, and its release record,
+# apps/clax_app/assets/home/release.json, with
+# apps/clax_app/tool/pack_home.dart run by `dart run`. Both are build
+# outputs, ignored by git. Without the flag it is a dry run: it says the
+# version it would give and writes nothing. The native builds that need the
+# bundle (scripts/run.sh app-apk, app-macos and app-test with
+# CLAX_BUILD=native) run it with the flag; under Bazel the bundle is
+# //apps/clax_app:home_bundle, which every app build depends on.
 #
-# The bundle is signed by the home app's own Ed25519 key, whose seed is kept
-# outside the repository, owner-only, at
+# The version, and the seed that signs the bundle, are this machine's home
+# release (apps/clax_app/tool/home-version.sh): the version is the last one
+# while the sources are unchanged and the next one when they changed,
+# recorded in the ledger beside the home app's release key,
 # ${XDG_CONFIG_HOME:-~/.config}/clax/home-bundle/key (CLAX_HOME_BUNDLE_KEY
-# names another file). The first packing makes it; every later release must
-# be signed by the same key, so keep that file backed up: without it,
-# packing a new release stops (pack_home.dart says why).
-#
-# Under `bazelisk run //apps/clax_app:home_bundle` (what `just home-bundle`
-# runs when Bazel is installed) CLAX_PACK_HOME names Bazel's build of
-# pack_home.dart and BUILD_WORKSPACE_DIRECTORY the checkout; otherwise the
-# script runs pack_home.dart with `dart run`.
+# names another file). That key's seed is kept outside the repository,
+# owner-only; every release must be signed by it, so keep that directory
+# backed up. Without the key (and without a ledger) the bundle is signed by
+# the development key, on the development lineage.
 set -eu
 
 act=0
@@ -27,37 +29,25 @@ case "${1:-}" in
     *) echo "usage: $0 [--i-know-what-i-am-doing]" >&2; exit 2 ;;
 esac
 
-if [ -n "${BUILD_WORKSPACE_DIRECTORY:-}" ]; then
-    root="$BUILD_WORKSPACE_DIRECTORY"
-else
-    root="$(cd "$(dirname "$0")/.." && pwd)"
-fi
-app="$root/apps/clax_app"
-key="${CLAX_HOME_BUNDLE_KEY:-${XDG_CONFIG_HOME:-$HOME/.config}/clax/home-bundle/key}"
+app="$(cd "$(dirname "$0")/../apps/clax_app" && pwd)"
+command -v dart > /dev/null || { echo "build-home-bundle.sh: dart (from Flutter) is not on PATH" >&2; exit 1; }
 
-pack=""
-if [ -n "${CLAX_PACK_HOME:-}" ]; then
-    # A runfiles path: absolute before the cd below.
-    pack="$(cd "$(dirname "$CLAX_PACK_HOME")" && pwd)/$(basename "$CLAX_PACK_HOME")"
-else
-    command -v dart > /dev/null || { echo "build-home-bundle.sh: dart (from Flutter) is not on PATH" >&2; exit 1; }
-fi
-
-# The seed file and its directory are the owner's only.
-umask 077
-if [ "$act" -eq 1 ]; then
-    mkdir -p "$(dirname "$key")"
-    set -- --key "$key" --write
-else
-    set -- --key "$key"
-fi
-
-cd "$app"
-if [ -n "$pack" ]; then
-    "$pack" --app "$app" "$@"
-else
-    dart run tool/pack_home.dart "$@"
-fi
 if [ "$act" -eq 0 ]; then
-    echo "run again with --i-know-what-i-am-doing (or: just home-bundle) to write"
+    release="$("$app/tool/home-version.sh" "$app" peek)"
+else
+    release="$("$app/tool/home-version.sh" "$app" record)"
 fi
+field() { printf '%s\n' "$release" | sed -n "s/^$1=//p"; }
+version="$(field version)" key="$(field key)" mode="$(field mode)"
+what="v$version, signed by $key"
+[ "$mode" = dev ] && what="$what (the development key: no release key on this machine)"
+
+if [ "$act" -eq 0 ]; then
+    echo "would pack apps/clax_app/home into apps/clax_app/assets/home/home.clax and release.json: $what"
+    echo "run again with --i-know-what-i-am-doing to write"
+    exit 0
+fi
+set -- --app "$app" --key "$key" --version "$version" --out "$app/assets/home"
+[ "$mode" = dev ] && set -- "$@" --dev
+cd "$app"
+dart run tool/pack_home.dart "$@"

@@ -224,7 +224,7 @@ macOS) and the two keys below.
 | `apk`, `apk_test` | the release APK for arm64-v8a and x86_64 (`bazel/flutter/android.bzl`), and a check of it against what Gradle makes | `flutter build apk` |
 | `macos_app`, `macos_app_test` | `clax_app.app` (a zip) with the embedded `clax` signed as a sandboxed helper (`bazel/flutter/macos.bzl`), and a check of it; macOS only | `flutter build macos` |
 | `integration_<name>` (manual) | `integration_test/<name>_test.dart` in the debug app, run in the logged-in session | `flutter test <file> -d macos` |
-| `home_bundle` (run) | `scripts/build-home-bundle.sh` with `pack_home` compiled by rules_dart; writes into the checkout | `dart run tool/pack_home.dart` |
+| `home_bundle`, `home_version_test` | the home app's bundle, `assets/home/home.clax` and `release.json`, packed from `home/` by `pack_home` (compiled by rules_dart) and signed: an asset of `app`, so of the APK and the macOS app; and a check of how its version is chosen | `scripts/build-home-bundle.sh` |
 | `//crates/clax-cli:clax_android_arm64`, `:clax_android_x86_64` | `clax` optimized and stripped for each Android CPU with the NDK, as `<abi>/libclax.so` (`bazel/android/clax.bzl`) | `scripts/build-app-clax.sh android` |
 
 Everything but the integration tests is in `just ci` (`tests(//...)`).
@@ -258,9 +258,32 @@ The integration tests open the app's window and take minutes each, so
 Two inputs are this machine's, not pinned: the Android debug key
 (`~/.android/debug.keystore`, `bazel/android/debug_keystore.bzl`; without
 one, rules_android's own signs the APK, which then does not install over
-an APK signed on a developer's machine), and the home bundle's signing key
-(`~/.config/clax/home-bundle/key`, read only by the `home_bundle` run
-target).
+an APK signed on a developer's machine), and the home app's release
+(`bazel/flutter/home_release.bzl`, the `@clax_home_release` repository):
+its signing key, `~/.config/clax/home-bundle/key`, and the ledger of the
+versions this machine gave the home bundle, `releases` beside it.
+
+**The home bundle's version** is chosen at each build, with nothing to
+bump or commit: `apps/clax_app/tool/home-version.sh` takes a SHA-256 over
+`home/` and `assets/kit/` and keeps the ledger's last version while the
+sources have its digest, else records the next one (above
+`home/manifest.json`'s `version` too). So an APK or macOS app whose home
+sources changed carries a higher version than any earlier build on this
+machine, and the installed app updates its home app from it (the trust
+rules, `lib/bundle/trust.dart`); a rebuild of the same sources gives the
+same version and the same bytes. The release is `<release>.<version>`
+(`release` in the manifest names the series). `@clax_home_release` is a
+`local` repository that watches the sources, the key and the ledger, so
+it is evaluated again when one changes, a build in another checkout
+included; the bundle is built locally (`no-remote`). Without the key, on
+a machine with no ledger (CI), the bundle is signed by the development key
+(`tool/home-dev.key`, whose seed is public) on the development lineage
+(`dev_lineage`): a separate app to an install of the released home app,
+which never updates from it. A machine with a ledger and no key stops,
+naming the key's path. Keep `~/.config/clax/home-bundle` backed up: a lost
+key means a new lineage, and a lost ledger means the versions start again
+from the manifest's, below what installs have (raise `version` in
+`home/manifest.json` past the last one shipped).
 
 **rules_flutter's patches** (`bazel/flutter/rules_flutter.patch`), each
 small enough to offer upstream: an app's assets are keyed by their path in

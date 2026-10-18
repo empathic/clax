@@ -18,6 +18,13 @@
 # installed without rebuilding, and the newest three copies are kept.
 # Cargo's output is shared by every copy (target/app-phone-cargo).
 #
+# Either way the APK carries the home app's bundle, packed and signed from
+# HEAD's apps/clax_app/home by the same build (//apps/clax_app:home_bundle;
+# natively scripts/build-home-bundle.sh), at the version this machine's
+# home release gives those sources (apps/clax_app/tool/home-version.sh): a
+# higher one than any earlier build's when they changed, so the phone's
+# home app updates. Nothing is packed or committed by hand.
+#
 # Either way, uncommitted changes are left out (it says so) and while it
 # builds it prints the step it is on, and the time every 30 s. A phone need
 # not be attached until the build is done: it then waits for one.
@@ -112,12 +119,31 @@ else
     apk="$where/apps/clax_app/build/app/outputs/flutter-apk/app-release.apk"
 fi
 
+# home_release: the home bundle HEAD's build would carry, from HEAD's home
+# sources, without recording anything.
+home_release() {
+    local t out version
+    t="$(mktemp -d)"
+    git archive HEAD apps/clax_app/home apps/clax_app/assets/kit apps/clax_app/tool | tar -x -C "$t"
+    out="$(apps/clax_app/tool/home-version.sh "$t/apps/clax_app" peek 2>&1)" || { rm -rf "$t"; echo "no home bundle: $out"; return; }
+    version="$(sed -n 's/^version=//p' <<<"$out")"
+    series="$(sed -n 's/^ *"release": *"\([^"]*\)".*/\1/p' "$t/apps/clax_app/home/manifest.json")"
+    rm -rf "$t"
+    if [ "$(sed -n 's/^mode=//p' <<<"$out")" = dev ]; then
+        echo "v$version (release $series.$version), signed by the development key: no release key on this machine"
+    else
+        echo "v$version (release $series.$version), signed by the home app's release key"
+    fi
+}
+
 if [ -z "$act" ]; then
     if [ "$mode" = bazel ]; then
         if [ "$where" = . ]; then echo "would build HEAD $sha here with Bazel (//apps/clax_app:apk; log: target/app-phone/$sha.log)"
-        else echo "would build HEAD $sha with Bazel in a clean copy at $where (log: target/app-phone/$sha.log)"; fi
+        else echo "would build HEAD $sha with Bazel (//apps/clax_app:apk) in a clean copy at $where (log: target/app-phone/$sha.log)"; fi
     elif [ -f "$apk" ]; then echo "would install the APK already built for $sha"
     else echo "would build HEAD $sha in $where with Gradle (log: target/app-phone/$sha.log)"; fi
+    [ "$mode" = native ] && [ -f "$apk" ] ||
+        echo "that build packs HEAD's home app (apps/clax_app/home) into the APK's home bundle: $(home_release)"
     echo "would install it on ${ANDROID_SERIAL:-the phone attached by then} with $adb, keeping its data, open Clax and check its daemon stays up"
     echo "run again with --i-know-what-i-am-doing (or: just app-phone) to do it"
     exit 0

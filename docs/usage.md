@@ -616,9 +616,9 @@ dialog included.
 
 **The home app.** The home screen is an app of its own, built from
 `apps/clax_app/home/` (`index.html`, `home.js`, `home.css`, its tests, and
-`manifest.json` naming its title, capabilities, lineage, `version`,
-`release` and the kit files it carries) into the bundle the app ships,
-`apps/clax_app/assets/home/home.clax`, with its release record
+`manifest.json` naming its title, capabilities, lineage, release key,
+release series and the kit files it carries) into the bundle the app
+ships, `assets/home/home.clax`, with its release record
 `assets/home/release.json`. On the first run the app installs it and
 records its ID in `home.json`; at each start it updates the installed home
 app from a newer shipped release (silently, unless the person changed it:
@@ -627,30 +627,36 @@ capability it uses is "The home screen's capability" in
 `docs/contract.md`; `assets/kit/fake-home.js` stands in for it in its
 tests (`add_kit` part `home`).
 
+The bundle is a build output: every build of the app packs it from the
+sources (`//apps/clax_app:home_bundle`, an asset of the APK and the macOS
+app; natively `scripts/build-home-bundle.sh`, which `app-apk`, `app-macos`
+and `app-test` run first), so `just app-phone`, `just app-apk` and `just
+app-macos` ship the current `home/` with nothing to pack or commit. Its
+version is chosen by the build (`apps/clax_app/tool/home-version.sh`):
+the same while `home/` and `assets/kit/` are unchanged, and higher than
+any earlier build's on this machine when they changed, so a phone given a
+new build updates its home app. The release is `<release>.<version>`, the
+manifest's `release` naming the series; `version` there is the floor the
+built versions start above.
+
 The bundle is signed by the home app's own key, and every release must be
 signed by the same one: an install treats a bundle under another key as a
 different app. Its seed is kept outside the repository, owner-only, at
 `~/.config/clax/home-bundle/key` on the owner's Mac (`CLAX_HOME_BUNDLE_KEY`
-names another file), so **only the key holder can pack a release**. To
-release a change to `home/` or to the kit files it carries, raise
-`version` and `release` in `home/manifest.json`, then run:
+names another file), beside `releases`, the ledger of the versions given;
+keep that directory backed up. The manifest's `key` is the key's public
+half, and a build with another key stops. A machine without the key (CI,
+or anyone else's) signs with the development key, `tool/home-dev.key`, on
+the development lineage: its app installs that home app as a different
+one, which a release never updates.
 
 ```
-./scripts/build-home-bundle.sh   # a dry run: says what it would write
-just home-bundle                 # packs and writes home.clax and release.json
+just home-bundle                 # builds the bundle alone and prints its path
+./scripts/build-home-bundle.sh   # natively, a dry run: says the version it would give
 ```
 
-(With Bazel, `just home-bundle` runs `//apps/clax_app:home_bundle`: the
-same script with `tool/pack_home.dart` compiled by Bazel, writing into the
-checkout; `just home-bundle-native` runs it with `dart run`.)
-
-and commit both outputs with the sources. Packing unchanged sources writes
-nothing; packing changed files under the shipped version, or without the
-key, stops and says why. `test/home/home_bundle_test.dart` fails when
-`home/` changed and was not packed. A kit edit does not fail it: the
-bundle keeps the kit copies it was packed with, and the test reports the
-drift as a skipped test naming the files, until the key holder packs the
-next release.
+`test/home/home_bundle_test.dart` checks that the built bundle verifies,
+matches its release record and holds today's `home/` and kit files.
 
 **On an Android phone.** Turn on developer options and USB debugging, plug
 the phone in, and from the checkout run:

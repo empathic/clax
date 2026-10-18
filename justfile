@@ -127,13 +127,13 @@ app-phone:
 app-phone-native:
     CLAX_BUILD=native ./scripts/app-phone.sh --i-know-what-i-am-doing
 
-# Pack the home app (apps/clax_app/home) into the bundle the Clax app ships, apps/clax_app/assets/home/home.clax, signed by the home app's key in ~/.config/clax/home-bundle
+# Build the home app's bundle (apps/clax_app/home), as every app build does, and print its path
 home-bundle:
-    ./scripts/run.sh home-bundle --i-know-what-i-am-doing
+    ./scripts/run.sh home-bundle
 
-# Pack the home bundle natively (dart run)
+# Pack the home app's bundle natively (dart run) into apps/clax_app/assets/home
 home-bundle-native:
-    CLAX_BUILD=native ./scripts/run.sh home-bundle --i-know-what-i-am-doing
+    CLAX_BUILD=native ./scripts/run.sh home-bundle
 
 # Build the Clax app's macOS app and print its path
 app-macos:

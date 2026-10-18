@@ -22,7 +22,7 @@
 #   scripts/run.sh app-apk           the Clax app's release APK, and print its path
 #   scripts/run.sh app-macos         the Clax app's macOS app, and print its path
 #   scripts/run.sh app-clax [args]   the Clax app's embedded clax builds ([android|macos|all] [--debug] natively)
-#   scripts/run.sh home-bundle [args] pack the home app's bundle (--i-know-what-i-am-doing writes it)
+#   scripts/run.sh home-bundle       the home app's bundle, as the app builds pack it, and print its path
 #   scripts/run.sh which             say which build system would run, and why
 #   scripts/run.sh --dry-run <task>  say what would run, and run nothing
 #
@@ -211,7 +211,7 @@ _bazel() {
                 _bazel_out //crates/clax-cli:clax_android_x86_64 &&
                 _bazel_out //crates/clax-cli:clax_opt
             ;;
-        home-bundle) _run "${b[@]}" run --lockfile_mode=error //apps/clax_app:home_bundle -- "$@" ;;
+        home-bundle) _bazel_out //apps/clax_app:home_bundle ;;
     esac
 }
 
@@ -258,28 +258,35 @@ _native() {
         rust-project) echo "Natively rust-analyzer reads Cargo.toml: nothing to generate." ;;
         web) _run bash -c 'cd web && pnpm install --frozen-lockfile' && _run ./scripts/build-web.sh ;;
         app-test)
-            _run bash -c 'bin="$(apps/clax_app/tool/test-bin.sh)" && cd apps/clax_app && CLAX_TEST_BIN="$bin" tool/check.sh'
+            _run ./scripts/build-home-bundle.sh --i-know-what-i-am-doing &&
+                _run bash -c 'bin="$(apps/clax_app/tool/test-bin.sh)" && cd apps/clax_app && CLAX_TEST_BIN="$bin" tool/check.sh'
             ;;
         app-integration)
             # One file per flutter call: a second file in the same call fails to launch.
             _run ./scripts/build-app-clax.sh macos &&
+                _run ./scripts/build-home-bundle.sh --i-know-what-i-am-doing &&
                 _run bash -c 'cd apps/clax_app && for f in integration_test/*_test.dart; do flutter test "$f" -d macos || exit 1; done'
             ;;
         app-apk)
             # arm64 and x86_64 only (the ABIs clax is built for); disable-abi-filtering keeps
             # Flutter's Gradle plugin from adding armeabi-v7a back to the app's abiFilters.
             _run ./scripts/build-app-clax.sh android &&
+                _run ./scripts/build-home-bundle.sh --i-know-what-i-am-doing &&
                 _run echo "app-apk: packaging the APK with Gradle" &&
                 _run bash -c 'cd apps/clax_app && flutter build apk --release --target-platform android-arm64,android-x64 -P disable-abi-filtering=true' &&
                 { [ "$dry" = 1 ] || echo "$PWD/apps/clax_app/build/app/outputs/flutter-apk/app-release.apk"; }
             ;;
         app-macos)
             _run ./scripts/build-app-clax.sh macos &&
+                _run ./scripts/build-home-bundle.sh --i-know-what-i-am-doing &&
                 _run bash -c 'cd apps/clax_app && flutter build macos --release' &&
                 { [ "$dry" = 1 ] || echo "$PWD/apps/clax_app/build/macos/Build/Products/Release/clax_app.app"; }
             ;;
         app-clax) _run ./scripts/build-app-clax.sh "$@" ;;
-        home-bundle) _run ./scripts/build-home-bundle.sh "$@" ;;
+        home-bundle)
+            _run ./scripts/build-home-bundle.sh --i-know-what-i-am-doing &&
+                { [ "$dry" = 1 ] || echo "$PWD/apps/clax_app/assets/home/home.clax"; }
+            ;;
     esac
 }
 

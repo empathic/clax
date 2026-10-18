@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# apk-check.sh APK AAPT2 APKSIGNER: checks the Bazel-built APK against what
+# apk-check.sh APK AAPT2 APKSIGNER HOME: checks the Bazel-built APK against what
 # the app's Gradle build makes (apps/clax_app/android/app/build.gradle.kts):
 # its package and version, SDK levels, launcher activity, a release build
 # (not debuggable, shrunk by R8) that extracts its native libraries, the engine, the app's
-# AOT code and the embedded clax for both CPUs, and a debug-key signature.
+# AOT code and the embedded clax for both CPUs, the home bundle HOME (the
+# one //apps/clax_app:home_bundle built), and a debug-key signature.
 set -euo pipefail
-apk="$1" aapt2="$2" apksigner="$3"
+apk="$1" aapt2="$2" apksigner="$3" home="$4"
 fails=0
 ok() { echo "PASS: $1"; }
 bad() { echo "FAIL: $1"; fails=1; }
@@ -29,6 +30,12 @@ for abi in arm64-v8a x86_64; do
     done
 done
 check "Flutter's assets" "$files" "assets/flutter_assets/assets/home/home.clax"
+check "the home bundle's release record" "$files" "assets/flutter_assets/assets/home/release.json"
+if unzip -p "$apk" assets/flutter_assets/assets/home/home.clax | cmp -s - "$home"; then
+    ok "the home bundle built from the sources"
+else
+    bad "the home bundle built from the sources (assets/home/home.clax differs from $home)"
+fi
 # Shrunk by R8, as Gradle's release build is: one dex of about 1.2 MB.
 dexes="$(grep -c '^classes[0-9]*\.dex$' <<<"$files" || true)"
 dex_bytes="$(unzip -l "$apk" classes.dex | awk '$4 == "classes.dex" { print $1 }')"

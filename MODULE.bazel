@@ -273,3 +273,8 @@ use_repo(android_sdk, "androidsdk")
 # (bazel/android/debug_keystore.bzl).
 debug_keystore = use_extension("//bazel/android:debug_keystore.bzl", "debug_keystore")
 use_repo(debug_keystore, "android_debug_keystore")
+
+# The home app's bundle version and signing key on this machine
+# (bazel/flutter/home_release.bzl).
+home_release = use_extension("//bazel/flutter:home_release.bzl", "home_release")
+use_repo(home_release, "clax_home_release")

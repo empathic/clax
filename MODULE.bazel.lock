@@ -365,6 +365,19 @@
         }
       }
     },
+    "//bazel/flutter:home_release.bzl%home_release": {
+      "general": {
+        "bzlTransitiveDigest": "4v9FYcyhsM/1NlsSoy0QNZRrts2+AK/M4KcwDDnR+uE=",
+        "usagesDigest": "Sd3frtAbjsFgdWVMElljEneZyWadlggq6zbBPA1Zd1c=",
+        "recordedInputs": [],
+        "generatedRepoSpecs": {
+          "clax_home_release": {
+            "repoRuleId": "@@//bazel/flutter:home_release.bzl%_home_release",
+            "attributes": {}
+          }
+        }
+      }
+    },
     "//bazel/playwright:repo.bzl%playwright": {
       "general": {
         "bzlTransitiveDigest": "2weRmhqQEQzClQqyTZh/4eKB7K5ulmysaUZnDknEFaI=",
