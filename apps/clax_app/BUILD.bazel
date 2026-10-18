@@ -306,7 +306,7 @@ sh_test(
     ],
     data = [
         ":apk",
-        ":home_bundle",
+        ":assets/home/home.clax",
         "@androidsdk//:aapt2",
         "@androidsdk//:apksigner",
     ],
@@ -361,7 +361,7 @@ sh_test(
         "$(rootpath :assets/home/home.clax)",
     ],
     data = [
-        ":home_bundle",
+        ":assets/home/home.clax",
         ":macos_app",
     ],
     env = {

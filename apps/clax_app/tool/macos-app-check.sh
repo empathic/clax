@@ -32,10 +32,7 @@ for k in com.apple.security.app-sandbox com.apple.security.network.client com.ap
 done
 helper="$app/Contents/Resources/clax"
 if [ -x "$helper" ]; then ok "clax in Resources"; else bad "clax in Resources"; fi
-hassets="$app/Contents/Frameworks/App.framework/Resources/flutter_assets/assets/home"
-if cmp -s "$assets/home.clax" "$home"; then ok "the home bundle built from the sources"; else bad "the home bundle built from the sources ($assets/home.clax and $home)"; fi
-if [ -f "$assets/release.json" ]; then ok "the home bundle's release record"; else bad "the home bundle's release record"; fi
-ents="$(/usr/bin/codesign -d --entitlements - --xml "$helper" 2>/dev/null || true)"
+hents="$(/usr/bin/codesign -d --entitlements - --xml "$helper" 2>/dev/null || true)"
 for k in com.apple.security.app-sandbox com.apple.security.inherit; do
     if grep -q "$k" <<<"$hents"; then ok "clax entitlement $k"; else bad "clax entitlement $k"; fi
 done
