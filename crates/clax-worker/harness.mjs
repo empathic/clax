@@ -122,10 +122,28 @@ export async function start(dir, config, n, port) {
   return { base, port, stop, log };
 }
 
-/** Runs ./build.sh unless `--no-build` was given. */
+/** Whether the built Worker carries web/dist's current index.html. */
+export function embedsWebUi() {
+  try {
+    const wasm = readFileSync(join(HERE, "build/index_bg.wasm"));
+    return wasm.indexOf(readFileSync(join(HERE, "../../web/dist/index.html"))) >= 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Runs ./build.sh unless `--no-build` was given, then fails unless the
+ * Worker embeds web/dist's current index.html: a Worker built before the
+ * web UI, or from an older one, serves pages the checkout no longer has. */
 export async function build() {
-  if (process.argv.includes("--no-build")) return;
-  const b = spawn(join(HERE, "build.sh"), [], { cwd: HERE, stdio: ["ignore", "inherit", "inherit"] });
-  await exited(b);
-  if (b.exitCode !== 0) throw new Error(`./build.sh failed (${b.exitCode ?? b.signalCode})`);
+  const skip = process.argv.includes("--no-build");
+  if (!skip) {
+    const b = spawn(join(HERE, "build.sh"), [], { cwd: HERE, stdio: ["ignore", "inherit", "inherit"] });
+    await exited(b);
+    if (b.exitCode !== 0) throw new Error(`./build.sh failed (${b.exitCode ?? b.signalCode})`);
+  }
+  if (!embedsWebUi()) {
+    const fix = skip ? "build the web UI (scripts/build-web.sh), then rebuild the Worker (drop --no-build)" : "build the web UI (scripts/build-web.sh)";
+    throw new Error(`build/index_bg.wasm does not embed web/dist/index.html: ${fix}`);
+  }
 }

@@ -105,10 +105,12 @@ jobs:
           cache-dependency-path: web/pnpm-lock.yaml
       - name: Check the Worker's crates for wasm32
         run: scripts/check-wasm.sh
-      - name: Run the Worker's checks (just worker-test)
-        run: just worker-test
+      # Before the Worker builds: it embeds web/dist (crates/clax-worker/
+      # build.rs refuses a wasm32 build without it).
       - name: Build the web UI
         run: scripts/pnpm-install-stamped.sh web --silent && scripts/build-web.sh
+      - name: Run the Worker's checks (just worker-test)
+        run: just worker-test
       - name: Install Chromium
         run: cd web && pnpm exec playwright install --with-deps chromium
       # The Clax server in its Durable Object under wrangler dev --local, in

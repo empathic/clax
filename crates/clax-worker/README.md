@@ -10,7 +10,8 @@ a wake, the alarm).
 ## Developing
 
 From this directory: `npm install`, build the web UI first
-(`../../scripts/build-web.sh`), then
+(`../../scripts/build-web.sh`: the Worker embeds `web/dist`, its wasm build
+refuses to run without it, `build.rs`, and recompiles when it changes), then
 
 - `npm run dev`: `wrangler dev --local` on `.wrangler/state` (runs
   `build.sh`);

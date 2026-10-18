@@ -53,7 +53,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync
 import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { join, resolve } from "node:path";
-import { HERE, baseConfig } from "./harness.mjs";
+import { HERE, baseConfig, embedsWebUi } from "./harness.mjs";
 
 const WRANGLER = join(HERE, "node_modules/.bin/wrangler");
 // Nothing generated lives under crates/: the deploy config goes in the
@@ -317,16 +317,6 @@ function writeRecord(pub, record) {
   chmodSync(recordPath(pub), 0o600);
 }
 
-/** Whether the built Worker carries web/dist's current index.html. */
-function embedsWebUi() {
-  try {
-    const wasm = readFileSync(join(HERE, "build/index_bg.wasm"));
-    return wasm.indexOf(readFileSync(join(HERE, "../../web/dist/index.html"))) >= 0;
-  } catch {
-    return false;
-  }
-}
-
 /** The upload size `wrangler deploy` printed: {total, gzip} in KiB. */
 function uploadSize(text) {
   const m = /Total Upload:\s*([\d.]+)\s*KiB\s*\/\s*gzip:\s*([\d.]+)\s*KiB/.exec(text);
@@ -471,9 +461,10 @@ async function main() {
     step("Build: skipped (--no-build)");
   }
   if (!existsSync(config.main)) throw new Error(`no ${config.main}: build first (drop --no-build)`);
-  // The Worker embeds web/dist when clax-worker compiles (rust-embed, src/web.rs), and
-  // cargo does not see web/dist change: a Worker built before the web UI
-  // serves "ui_not_built" for /setup and every other shell page.
+  // The Worker embeds web/dist when clax-worker compiles (rust-embed,
+  // src/web.rs; build.rs rebuilds it when web/dist changes). A Worker that
+  // embeds another web UI serves "ui_not_built" or stale pages for /setup
+  // and every other shell page, so the upload is checked, not assumed.
   if (!embedsWebUi()) {
     if (!o.build) throw new Error(`build/index_bg.wasm does not embed web/dist/index.html: drop --no-build`);
     step("Build: the Worker embedded an older web UI; rebuilding clax-worker");
