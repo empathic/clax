@@ -4,11 +4,18 @@
 // (`await claude.use("home")`), which only the app recorded as the home
 // screen is granted; anywhere else the page says to open it in Clax.
 //
-// `start()` mounts the page over the real capability; `mount(root, home)`
-// mounts it over any object with the same calls (the tests pass
-// kit/fake-home.js).
-import { html, render, useState, useEffect, useLayoutEffect, useRef, useCallback } from './kit/preact.js';
+// The arrangement (Starred, the order of All apps, which apps are new, how
+// often each is opened) is the `layout/main` document in the page's own
+// `db` (arrange.js, store.js).
+//
+// `start()` mounts the page over the real capabilities; `mount(root, home,
+// {db, clock})` mounts it over any objects with the same calls (the tests
+// pass kit/fake-home.js's fakeHome and fakeDb).
+import { html, render, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from './kit/preact.js';
 import { icon as kitIcon } from './kit/icons.js';
+import { reconcile, normalize, sections, star, unstar, opened, isNew } from './arrange.js';
+import { layoutStore } from './store.js';
+import { realClock } from './physics.js';
 
 // Lucide glyphs the kit does not carry (lucide-static 0.460.0, ISC; see
 // kit/LICENSES.txt).
@@ -155,19 +162,20 @@ function AppFace({ app }) {
 const HOLD_MS = 500;
 const SLOP_PX = 10;
 
-/** Press handlers for a tile: a tap calls `onTap`. Held still for HOLD_MS,
+/** Press handlers for a tile, timed by `clock`: a tap calls `onTap`. Held
+ * still for HOLD_MS,
  * the press arms (the tile shrinks a little, `data-held`), and its release
  * calls `onHold` once while the click that follows does nothing: the
  * release, not the timer, is the person's gesture, so the app accepts what
  * `onHold` asks. A context menu outside a press (a mouse's right click, the
  * keyboard's menu key) calls `onHold` at once; one during a press is the
  * WebView's own long press, and the press's release answers it. */
-function usePress(onTap, onHold) {
-  const s = useRef({ timer: 0, x: 0, y: 0, pressing: false, armed: false, swallow: false, el: null });
+function usePress(onTap, onHold, clock) {
+  const s = useRef({ timer: null, x: 0, y: 0, pressing: false, armed: false, swallow: false, el: null });
   const disarm = () => {
     const c = s.current;
-    clearTimeout(c.timer);
-    c.timer = 0;
+    if (c.timer) c.timer();
+    c.timer = null;
     c.pressing = false;
     c.armed = false;
     if (c.el) delete c.el.dataset.held;
@@ -180,11 +188,11 @@ function usePress(onTap, onHold) {
       disarm();
       const el = e.currentTarget;
       Object.assign(s.current, { x: e.clientX, y: e.clientY, pressing: true, swallow: false, el });
-      s.current.timer = setTimeout(() => {
-        s.current.timer = 0;
+      s.current.timer = clock.after(HOLD_MS, () => {
+        s.current.timer = null;
         s.current.armed = true;
         el.dataset.held = '';
-      }, HOLD_MS);
+      });
     },
     onPointerMove(e) {
       const c = s.current;
@@ -223,17 +231,18 @@ function faceRect(el) {
   return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
 }
 
-function AppTile({ app, act }) {
+/** App `app`'s tile: a tap calls `onOpen(app)`, a held press's release or
+ * a context menu `onMenu(app, rect)`; `fresh` marks it "New". */
+function AppTile({ app, fresh, clock, onOpen, onMenu }) {
   const b = app.build;
-  const press = usePress(
-    () => act('open', [app.id], `open ${app.title}`),
-    (el) => act('menu', [app.id, faceRect(el)], `show ${app.title}'s menu`),
-  );
-  const label = b ? `${app.title}, building, ${b.done} of ${b.total} done` : app.title;
-  return html`<button type="button" class="h-tile" data-id=${app.id} aria-label=${label} ...${press}>
+  const press = usePress(() => onOpen(app), (el) => onMenu(app, faceRect(el)), clock);
+  const said = b ? `${app.title}, building, ${b.done} of ${b.total} done` : app.title;
+  const label = fresh ? `${said}, new` : said;
+  return html`<button type="button" class="h-tile" data-id=${app.id} data-new=${fresh ? '' : undefined} aria-label=${label} ...${press}>
     <span class="h-icon">
       <${AppFace} app=${app} />
       ${b && html`<span class="h-over"><${Ring} done=${b.done} total=${b.total} /></span>`}
+      ${fresh && html`<span class="h-new" aria-hidden="true">New</span>`}
     </span>
     <span class="h-label h-two">${app.title}</span>
   </button>`;
@@ -309,7 +318,28 @@ function Bar({ act, refresh, unread }) {
  * px, 4 px apart (Flutter's SliverGridDelegateWithMaxCrossAxisExtent). */
 const columnsFor = (width) => Math.max(1, Math.ceil(width / (112 + 4)));
 
-function Grid({ apps, makes, act }) {
+/** Starred (only when something is starred, headed) above All apps (headed
+ * then), each a grid of `cols` columns; the makes go first under All apps.
+ * A group's apps show in the group's place. */
+function Sections({ layout, apps, makes, cols, clock, onOpen, onMenu, act }) {
+  const s = sections(layout, apps);
+  const tile = (app) => html`<${AppTile} key=${`a:${app.id}`} app=${app} fresh=${isNew(layout, app.id)} clock=${clock} onOpen=${onOpen} onMenu=${onMenu} />`;
+  const headed = s.starred.length > 0;
+  return html`
+    ${headed && html`<section class="h-section" data-section="starred" aria-label="Starred" style=${`--cols:${cols}`}>
+      <h2 class="h-heading">Starred</h2>
+      <div class="h-grid">${s.starred.map((e) => tile(e.app))}</div>
+    </section>`}
+    <section class="h-section" data-section="all" aria-label="All apps" style=${`--cols:${cols}`}>
+      ${headed && html`<h2 class="h-heading">All apps</h2>`}
+      <div class="h-grid">
+        ${makes.map((m) => html`<${MakeTile} key=${`m:${m.id}`} make=${m} act=${act} />`)}
+        ${s.all.flatMap((e) => (e.app ? [tile(e.app)] : e.apps.map(tile)))}
+      </div>
+    </section>`;
+}
+
+function Grid({ layout, apps, makes, clock, onOpen, onMenu, act }) {
   const ref = useRef(null);
   const [cols, setCols] = useState(4);
   useLayoutEffect(() => {
@@ -325,14 +355,10 @@ function Grid({ apps, makes, act }) {
     return () => removeEventListener('resize', measure);
   }, []);
   return html`<div class="h-grid-wrap" ref=${ref}>
-    <div class="h-grid" style=${`--cols:${cols}`}>
-      ${makes.map((m) => html`<${MakeTile} key=${`m:${m.id}`} make=${m} act=${act} />`)}
-      ${apps.map((a) => html`<${AppTile} key=${`a:${a.id}`} app=${a} act=${act} />`)}
-    </div>
+    <${Sections} layout=${layout} apps=${apps} makes=${makes} cols=${cols} clock=${clock} onOpen=${onOpen} onMenu=${onMenu} act=${act} />
   </div>`;
 }
 
-const newestFirst = (apps) => [...apps].sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
 const codeOf = (e) => (typeof e === 'string' ? e : e?.code ?? e?.error);
 const isRefused = (e) => codeOf(e) === 'refused';
 
@@ -374,8 +400,8 @@ function useTopic(home, event, load, initial) {
 
 const NOTICE_MS = 4000;
 
-/** `act(method, args, what)`: calls `home[method](...args)` and catches its
- * rejection. `no_gesture` (the call did not come with the person's tap)
+/** `act(method, args, what)`: calls `home[method](...args)` and resolves
+ * its value, or `undefined` when it failed. `no_gesture` (the call did not come with the person's tap)
  * keeps the call for the next tap on the page that lands on no other
  * control, and says "Tap again to <what>"; another failure says so
  * briefly. A new action, or a tap on another control, drops a kept one. */
@@ -396,7 +422,7 @@ function useActions(home) {
     } catch (e) {
       p = Promise.reject(e);
     }
-    return p.then(() => { setNotice(null); }, (e) => {
+    return p.then((v) => { setNotice(null); return v; }, (e) => {
       const code = codeOf(e);
       if (code === 'no_gesture') {
         pending.current = { method, args, what };
@@ -406,6 +432,7 @@ function useActions(home) {
       } else {
         say(`Couldn't ${what}`);
       }
+      return undefined;
     });
   }, [home]);
   useEffect(() => {
@@ -519,7 +546,53 @@ function useTiles(home, drawn) {
   }, [report]);
 }
 
-function Home({ home }) {
+/** How long the first read of the arrangement may take before the grid
+ * draws without it. */
+const LAYOUT_MS = 2000;
+
+/** The arrangement over `apps`: null until the apps and the stored layout
+ * (or LAYOUT_MS without an answer) are in. `change(op)` applies `op` to
+ * the stored layout made to match the apps and writes the result; with no
+ * layout stored yet the first load writes one with every listed app seen.
+ * With an empty app list the stored layout is changed as it is, so a list
+ * that is briefly empty never drops an ID. */
+function useLayout(store, apps, clock) {
+  const [body, setBody] = useState(undefined);
+  const [late, setLate] = useState(false);
+  const wrote = useRef(false);
+  useEffect(() => {
+    let live = true;
+    store.load().then((b) => { if (live) setBody(b ?? null); }, () => { if (live) setBody(null); });
+    const stop = store.watch((b) => { if (live) setBody(b ?? null); });
+    return () => { live = false; stop(); };
+  }, [store]);
+  const listed = Array.isArray(apps);
+  useEffect(() => {
+    if (!listed || body !== undefined) return undefined;
+    return clock.after(LAYOUT_MS, () => setLate(true));
+  }, [listed, body === undefined]);
+  const fit = useCallback((b, first) => (apps.length ? reconcile(b ?? {}, apps, { first }) : normalize(b)), [apps]);
+  const change = useCallback((op) => store.change((b) => {
+    const next = op(fit(b, b == null));
+    return apps.length ? reconcile(next, apps) : next;
+  }).then((b) => { setBody(b); return b; }, () => undefined), [store, fit, apps]);
+  useEffect(() => {
+    if (!listed || body !== null || wrote.current || !apps.length) return;
+    wrote.current = true;
+    change((l) => l);
+  }, [listed, body, change]);
+  const layout = useMemo(() => {
+    if (!listed) return null;
+    if (body === undefined) return late ? reconcile({}, apps, { first: true }) : null;
+    return reconcile(body ?? {}, apps, { first: body === null });
+  }, [listed, apps, body, late]);
+  return [layout, change];
+}
+
+/** What the home app adds to app `id`'s menu. */
+const menuItems = (layout, id) => (layout.starred.includes(id) ? [{ id: 'unstar', label: 'Unstar' }] : [{ id: 'star', label: 'Star' }]);
+
+function Home({ home, db, clock }) {
   const [apps, appsError, reloadApps] = useTopic(home, 'apps', (h) => h.apps(), null);
   const [makes, , reloadMakes] = useTopic(home, 'makes', (h) => h.makes(), []);
   const [unread, , reloadUnread] = useTopic(home, 'unread', (h) => h.unread(), 0);
@@ -530,9 +603,18 @@ function Home({ home }) {
   );
   const [act, notice] = useActions(home);
   const { pull, busy } = usePull(refresh);
+  const store = useMemo(() => layoutStore(db, { clock }), [db, clock]);
+  const [layout, change] = useLayout(store, apps, clock);
+  const openApp = useCallback((app) => act('open', [app.id], `open ${app.title}`).then((v) => {
+    if (v !== undefined) change((l) => opened(l, app.id, clock.date()));
+  }), [act, change, clock]);
+  const menuOf = useCallback((app, rect) => act('menu', [app.id, rect, { items: menuItems(layout, app.id) }], `show ${app.title}'s menu`).then((picked) => {
+    if (picked === 'star') change((l) => star(l, app.id));
+    else if (picked === 'unstar') change((l) => unstar(l, app.id));
+  }), [act, change, layout]);
   // Clax keeps its own home screen over this page until it is told the
   // grid (or the empty state, or the load error) is drawn: once per load.
-  const drawn = Array.isArray(apps) || !!appsError;
+  const drawn = (Array.isArray(apps) && layout !== null) || !!appsError;
   const toldShown = useRef(false);
   useEffect(() => {
     if (!home || !drawn || toldShown.current) return;
@@ -546,7 +628,7 @@ function Home({ home }) {
       <${Message} glyph="home" title="This is a Clax home screen." hint="Open it in the Clax app." />
     </main>`;
   }
-  const list = Array.isArray(apps) ? newestFirst(apps) : null;
+  const list = Array.isArray(apps) && layout !== null ? apps : null;
   const going = Array.isArray(makes) ? makes : [];
   let body;
   if (!list && appsError) {
@@ -557,7 +639,7 @@ function Home({ home }) {
   } else if (!list.length && !going.length) {
     body = html`<${Message} glyph="sparkles" title="Say what you want, and Clax makes it." hint="“A tracker for my runs with a weekly total”" />`;
   } else {
-    body = html`<${Grid} apps=${list} makes=${going} act=${act} />`;
+    body = html`<${Grid} layout=${layout} apps=${list} makes=${going} clock=${clock} onOpen=${openApp} onMenu=${menuOf} act=${act} />`;
   }
   return html`<main class="h-page">
     <${Bar} act=${act} refresh=${refresh} unread=${typeof unread === 'number' ? unread : 0} />
@@ -579,18 +661,18 @@ function Home({ home }) {
 let mounts = 0;
 
 /** Shows the home screen in `root` over `home` (the `home` capability, or
- * null when it is unavailable), replacing what was shown there. */
-export function mount(root, home) {
-  render(html`<${Home} key=${++mounts} home=${home ?? null} />`, root);
+ * null when it is unavailable) and `db` (the page's documents, where the
+ * arrangement is kept; null keeps it in memory), with `clock` timing the
+ * hold, the motion and the reads, replacing what was shown there. */
+export function mount(root, home, { db = null, clock = realClock } = {}) {
+  render(html`<${Home} key=${++mounts} home=${home ?? null} db=${db} clock=${clock} />`, root);
 }
 
-/** Shows the home screen over this page's `home` capability. */
+/** Shows the home screen over this page's `home` and `db` capabilities. */
 export async function start(root = document.getElementById('app')) {
   let home = null;
-  try {
-    home = (await window.claude?.use?.('home')) ?? null;
-  } catch {
-    home = null;
-  }
-  mount(root, home);
+  let db = null;
+  try { home = (await window.claude?.use?.('home')) ?? null; } catch { home = null; }
+  try { db = home ? ((await window.claude?.use?.('db')) ?? null) : null; } catch { db = null; }
+  mount(root, home, { db });
 }

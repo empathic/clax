@@ -53,7 +53,7 @@ test.describe("its tests in the inspect view", () => {
     const tests = (await ofType(page, "tests"))[0] as HostMessage & { passed: number; failed: unknown[]; skipped: number };
     expect(tests.failed).toEqual([]);
     expect(tests.skipped).toBe(0);
-    expect(tests.passed).toBe(23);
+    expect(tests.passed).toBe(30);
   });
 });
 
@@ -119,7 +119,7 @@ test.describe("in app mode, through the shell", () => {
     await host(page, `attestPointer({ pointer: 1, phase: "up", x: ${x}, y: ${y} })`);
     await expect.poll(serveCalls).toContain("menu");
     const menu = calls.find(c => c.method === "menu")!;
-    expect(menu.args).toEqual([{ id: "app-groceries", rect: { x: expect.any(Number), y: expect.any(Number), w: 60, h: 60 } }]);
+    expect(menu.args).toEqual([{ id: "app-groceries", rect: { x: expect.any(Number), y: expect.any(Number), w: 60, h: 60 }, items: [{ id: "star", label: "Star" }] }]);
     // The release's click opens nothing, and nothing says the call failed.
     expect((await serveCalls()).filter(m => m === "open")).toEqual([]);
     await expect(frame.locator(".h-notice")).toHaveCount(0);
@@ -130,8 +130,9 @@ const ORIGIN = "http://home.test";
 const TYPES: Record<string, string> = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".txt": "text/plain" };
 
 /** Serves the home app at ORIGIN; with `fake`, `claude.use("home")`
- * resolves the fake capability over that state (`window.fakeHomeCalls`
- * keeps its calls), else the page has no `claude` at all. */
+ * resolves the fake capability over that state (`window.fakeHome` keeps
+ * its calls) and `claude.use("db")` a fake `db` seeded with `fake.docs`
+ * and kept across reloads, else the page has no `claude` at all. */
 async function serve(page: Page, fake?: Record<string, unknown>) {
   const files = homeFiles();
   await page.route(`${ORIGIN}/**`, route => {
@@ -145,8 +146,9 @@ async function serve(page: Page, fake?: Record<string, unknown>) {
       const w = window as unknown as Record<string, unknown>;
       w.claude = {
         use: async (name: string) => {
+          const { fakeHome, fakeDb } = await import(`${location.origin}/kit/fake-home.js`);
+          if (name === "db") return (w.fakeDb ??= fakeDb((state as { docs?: Record<string, unknown> }).docs ?? {}, { persist: "clax-home-db" }));
           if (name !== "home") return null;
-          const { fakeHome } = await import(`${location.origin}/kit/fake-home.js`);
           const home = fakeHome(state);
           w.fakeHome = home;
           return home;
@@ -176,7 +178,7 @@ test.describe("over a fake host", () => {
       { method: "menu", args: ["app-habits", await page.locator('[data-id="app-habits"] .h-face').evaluate(el => {
         const r = el.getBoundingClientRect();
         return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
-      })] },
+      }), { items: [{ id: "star", label: "Star" }] }] },
       { method: "openInbox", args: [] },
     ]);
     // Four to a row on a phone, cells at most 112 px.
@@ -184,6 +186,23 @@ test.describe("over a fake host", () => {
     expect(new Set(boxes.slice(0, 4).map(b => b.y)).size).toBe(1);
     expect(boxes[4].y).toBeGreaterThan(boxes[0].y);
     expect(boxes[0].w).toBeLessThan(113);
+  });
+
+  test("stars from the menu, marks a new app, and keeps the arrangement across a reload", async ({ page }) => {
+    const seen = ["app-run", "app-groceries", "app-habits", "app-recipes", "app-budget", "app-plants", "app-mood"];
+    await serve(page, { makes: [], docs: { "layout/main": { v: 1, starred: [], order: [], seen } } });
+    await expect(page.locator('[data-id="app-notes"][data-new]')).toHaveCount(1);
+    await page.evaluate(() => { (window as unknown as { fakeHome: { menuPick: string } }).fakeHome.menuPick = "star"; });
+    await page.locator('[data-id="app-plants"]').click({ button: "right" });
+    await expect(page.locator('.h-section[data-section="starred"] [data-id="app-plants"]')).toHaveCount(1);
+    await page.reload();
+    await expect(page.locator('.h-section[data-section="starred"] [data-id="app-plants"]')).toHaveCount(1);
+    await expect(page.locator('[data-id="app-notes"][data-new]')).toHaveCount(1);
+    await page.locator('[data-id="app-notes"]').tap();
+    await expect(page.locator('[data-id="app-notes"][data-new]')).toHaveCount(0);
+    await page.reload();
+    await expect(page.locator(".h-tile[data-id]")).toHaveCount(8);
+    await expect(page.locator("[data-new]")).toHaveCount(0);
   });
 
   test("without the home capability it says to open it in Clax", async ({ page }) => {
@@ -225,6 +244,16 @@ test.describe("renders", () => {
           await expect(page.locator(".h-notice")).toHaveText("Tap again to open Run tracker");
           await page.evaluate(() => Promise.all([...document.images].map(i => i.decode().catch(() => {}))));
           await page.screenshot({ path: join(shots, `home-states-${size}-${scheme}.png`), animations: "disabled" });
+          await page.evaluate(async () => {
+            const { mount } = await import(`${location.origin}/home.js`);
+            const { fakeHome, fakeDb, SAMPLE } = await import(`${location.origin}/kit/fake-home.js`);
+            const ids = SAMPLE.apps.map((a: { id: string }) => a.id);
+            const db = fakeDb({ "layout/main": { v: 1, starred: ["app-run", "app-notes"], order: ids.filter((id: string) => !["app-run", "app-notes", "app-mood"].includes(id)), seen: ids.filter((id: string) => id !== "app-mood") } });
+            mount(document.getElementById("app"), fakeHome({ makes: [] }), { db });
+          });
+          await expect(page.locator(".h-heading")).toHaveCount(2);
+          await page.evaluate(() => Promise.all([...document.images].map(i => i.decode().catch(() => {}))));
+          await page.screenshot({ path: join(shots, `home-starred-${size}-${scheme}.png`), animations: "disabled" });
           await page.evaluate(async () => {
             const { mount } = await import(`${location.origin}/home.js`);
             const { fakeHome } = await import(`${location.origin}/kit/fake-home.js`);

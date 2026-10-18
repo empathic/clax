@@ -1,18 +1,24 @@
 // The home screen's tests, run by the inspect view's harness (test, expect,
 // ui). Each test mounts the page over its own fake `home` capability.
 import { mount } from '../home.js';
-import { fakeHome, SAMPLE } from '../kit/fake-home.js';
+import { fakeHome, fakeDb, SAMPLE } from '../kit/fake-home.js';
+import { manualClock } from '../physics.js';
 
 const root = () => document.getElementById('app');
 const tiles = () => [...document.querySelectorAll('.h-tile')];
 const labels = () => tiles().map((t) => t.querySelector('.h-label').textContent.trim());
 
-async function show(state) {
+const LAYOUT = 'layout/main';
+let db;
+async function show(state, { layout, clock } = {}) {
   const home = fakeHome(state);
-  mount(root(), home);
+  db = fakeDb(layout ? { [LAYOUT]: layout } : {});
+  mount(root(), home, { db, clock });
   await ui.waitFor(() => document.querySelector('.h-grid, .h-message'));
   return home;
 }
+const section = (name) => [...document.querySelectorAll(`.h-section[data-section="${name}"] .h-tile[data-id]`)].map((t) => t.dataset.id);
+const stored = async () => (await db.doc(LAYOUT).get()).data();
 
 const wait = (fn) => ui.waitFor(fn, 3000);
 
@@ -82,6 +88,7 @@ test('a context menu asks for the menu at the tile; a long press arms, then asks
   const r = tile.querySelector('.h-icon').getBoundingClientRect();
   const rect = { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
   expect(first.args[1]).toEqual(rect);
+  expect(first.args[2]).toEqual({ items: [{ id: 'star', label: 'Star' }] });
   expect(rect.w).toBe(60);
 
   const opts = { bubbles: true, cancelable: true, pointerId: 7, isPrimary: true, pointerType: 'touch', clientX: r.x + 10, clientY: r.y + 10 };
@@ -92,7 +99,7 @@ test('a context menu asks for the menu at the tile; a long press arms, then asks
   expect(home.calls.length).toBe(1);
   tile.dispatchEvent(new PointerEvent('pointerup', opts));
   await wait(() => home.calls.length === 2);
-  expect(home.calls[1]).toEqual({ method: 'menu', args: ['app-habits', rect] });
+  expect(home.calls[1]).toEqual({ method: 'menu', args: ['app-habits', rect, { items: [{ id: 'star', label: 'Star' }] }] });
   expect('held' in tile.dataset).toBe(false);
   tile.click();
   expect(home.calls.map((c) => c.method)).toEqual(['menu', 'menu']);
@@ -230,7 +237,7 @@ test('follows the app list, the makes and the unread count as they change', asyn
 });
 
 test('without the home capability the page says to open it in Clax, with no grid', async () => {
-  mount(root(), null);
+  mount(root(), null, { db: fakeDb() });
   await ui.waitFor(() => ui.exists('.h-message'));
   expect(ui.text()).toContain('This is a Clax home screen. Open it in the Clax app.');
   expect(ui.exists('.h-grid')).toBe(false);
@@ -239,13 +246,13 @@ test('without the home capability the page says to open it in Clax, with no grid
 
 test('a refused capability reads as unavailable; another failure offers Try again', async () => {
   const refused = { ...fakeHome(), apps: () => Promise.reject(Object.assign(new Error('refused'), { code: 'refused' })) };
-  mount(root(), refused);
+  mount(root(), refused, { db: fakeDb() });
   await wait(() => ui.text().includes('This is a Clax home screen.'));
   let fail = true;
   const flaky = fakeHome();
   const apps = flaky.apps;
   flaky.apps = () => (fail ? Promise.reject(new Error('offline')) : apps());
-  mount(root(), flaky);
+  mount(root(), flaky, { db: fakeDb() });
   await wait(() => ui.text().includes("Couldn't load your apps"));
   fail = false;
   await ui.click('Try again');
@@ -260,7 +267,7 @@ test('tells Clax once the grid is drawn, after the apps arrive', async () => {
   home.apps = async () => { await gate; return apps(); };
   const shown = [];
   home.shown = async () => { shown.push(tiles().length); };
-  mount(root(), home);
+  mount(root(), home, { db: fakeDb() });
   await ui.waitFor(() => document.querySelector('.h-fab'));
   expect(shown).toEqual([]);
   release();
@@ -284,7 +291,7 @@ test('tells Clax where each app tile is, again when they move', async () => {
   const home = fakeHome({ makes: [] });
   const reports = [];
   home.tiles = async (list) => { reports.push(list); };
-  mount(root(), home);
+  mount(root(), home, { db: fakeDb() });
   await wait(() => reports.length === 1);
   const first = reports[0];
   expect(first.map((t) => t.id)).toEqual(tiles().filter((t) => t.dataset.id).map((t) => t.dataset.id));
@@ -304,11 +311,105 @@ test('says where the tiles are only after it said it was drawn, even with no app
   const order = [];
   home.shown = async () => { order.push('shown'); };
   home.tiles = async (list) => { order.push(list.length); };
-  mount(root(), home);
+  mount(root(), home, { db: fakeDb() });
   await ui.waitFor(() => document.querySelector('.h-fab'));
   await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
   expect(order).toEqual([]);
   release();
   await wait(() => order.length === 2);
   expect(order).toEqual(['shown', 0]);
+});
+
+test('the first load writes every listed app as seen, so none reads New; an app made after reads New', async () => {
+  const home = await show({ makes: [] });
+  await wait(async () => (await stored())?.seen?.length === SAMPLE.apps.length);
+  expect(document.querySelectorAll('.h-tile[data-new]').length).toBe(0);
+  expect(labels()).toEqual(SAMPLE.apps.map((a) => a.title));
+  home.set({ apps: [{ id: 'app-tide', title: 'Tide table', updatedAt: '2026-10-17T00:00:00Z', build: null, icon: { monogram: 'TT', hue: 200 } }, ...SAMPLE.apps] });
+  await wait(() => ui.exists('[data-id="app-tide"][data-new]'));
+  expect(labels()[0]).toBe('Tide table');
+  expect(document.querySelector('[data-id="app-tide"]').getAttribute('aria-label')).toBe('Tide table, new');
+  expect(ui.text('[data-id="app-tide"] .h-new')).toBe('New');
+});
+
+test('opening a new app from the home screen clears its mark and counts the open', async () => {
+  const seen = SAMPLE.apps.map((a) => a.id).filter((id) => id !== 'app-notes');
+  const clock = manualClock(0, Date.UTC(2026, 9, 16, 12));
+  await show({ makes: [] }, { layout: { order: [], seen }, clock });
+  await wait(() => ui.exists('[data-id="app-notes"][data-new]'));
+  await ui.click('[data-id="app-notes"]');
+  await wait(() => !ui.exists('[data-id="app-notes"][data-new]'));
+  const l = await stored();
+  expect(l.seen).toContain('app-notes');
+  expect(l.opens['app-notes']).toEqual({ n: 1, last: '2026-10-16T12:00:00.000Z', days: { '2026-10-16': 1 } });
+});
+
+test('Star from the menu moves the app to Starred; Unstar puts it first under All apps', async () => {
+  const home = await show({ makes: [] });
+  home.menuPick = 'star';
+  document.querySelector('[data-id="app-plants"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+  await wait(() => section('starred').length === 1);
+  expect(section('starred')).toEqual(['app-plants']);
+  expect(section('all').includes('app-plants')).toBe(false);
+  expect([...document.querySelectorAll('.h-heading')].map((h) => h.textContent)).toEqual(['Starred', 'All apps']);
+  expect((await stored()).starred).toEqual(['app-plants']);
+  home.menuPick = (id, rect, opts) => opts.items[0].id;
+  document.querySelector('[data-id="app-plants"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+  await wait(() => section('starred').length === 0);
+  expect(home.calls.at(-1).args[2]).toEqual({ items: [{ id: 'unstar', label: 'Unstar' }] });
+  expect(section('all')[0]).toBe('app-plants');
+  expect(ui.exists('.h-heading')).toBe(false);
+});
+
+test("Clax's own menu item or a dismissal changes nothing", async () => {
+  const home = await show({ makes: [] });
+  await wait(async () => !!(await stored()));
+  const before = db.writes.length;
+  home.menuPick = null;
+  document.querySelector('[data-id="app-plants"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+  await wait(() => home.calls.length === 1);
+  await new Promise((r) => setTimeout(r, 0));
+  expect(db.writes.length).toBe(before);
+  expect(section('starred')).toEqual([]);
+});
+
+test('follows the arrangement written from another device', async () => {
+  await show({ makes: [] });
+  await wait(async () => !!(await stored()));
+  db.put(LAYOUT, { ...(await stored()), starred: ['app-mood', 'app-run'] });
+  await wait(() => section('starred').join() === 'app-mood,app-run');
+});
+
+test('a layout from a later release keeps its groups and unknown fields through a star', async () => {
+  const ids = SAMPLE.apps.map((a) => a.id);
+  const later = { v: 1, starred: [], order: ['app-run', 'g:g1', 'app-habits', 'app-recipes', 'app-budget', 'app-mood'], groups: { g1: { name: 'Lists', look: 'pile', apps: ['app-groceries', 'app-notes', 'app-plants'] } }, seen: ids, opens: {}, bigTiles: false, wallpaper: { kind: 'dots' } };
+  const home = await show({ makes: [] }, { layout: later });
+  await wait(() => section('all').length === SAMPLE.apps.length);
+  expect(section('all')).toEqual(['app-run', 'app-groceries', 'app-notes', 'app-plants', 'app-habits', 'app-recipes', 'app-budget', 'app-mood']);
+  expect(document.querySelectorAll('.h-tile[data-new]').length).toBe(0);
+  home.menuPick = 'star';
+  document.querySelector('[data-id="app-mood"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+  await wait(async () => (await stored()).starred.includes('app-mood'));
+  const l = await stored();
+  expect(l.groups.g1).toEqual(later.groups.g1);
+  expect(l.order).toContain('g:g1');
+  expect(l.bigTiles).toBe(false);
+  expect(l.wallpaper).toEqual({ kind: 'dots' });
+});
+
+test('a layout read that does not answer within 2 s draws the grid newest first and writes nothing', async () => {
+  const clock = manualClock();
+  const home = fakeHome({ makes: [] });
+  let listed = false;
+  const apps = home.apps;
+  home.apps = async () => { const v = await apps(); listed = true; return v; };
+  const stuck = { doc: () => ({ get: () => new Promise(() => {}), onSnapshot: () => () => {}, acquire: () => new Promise(() => {}), set: () => new Promise(() => {}) }) };
+  mount(root(), home, { db: stuck, clock });
+  await wait(() => listed);
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  expect(home.shownCount).toBe(0);
+  // The 2 s wait starts once the apps are in; move the clock until it ends.
+  await wait(() => { clock.advance(500); return home.shownCount === 1; });
+  expect(clock.now()).toBeGreaterThan(1999);
+  expect(labels()).toEqual(SAMPLE.apps.map((a) => a.title));
 });
