@@ -17,8 +17,7 @@ pub fn dir(home: &Home) -> PathBuf {
 }
 
 /// Before a migration changes an existing database (one whose
-/// `user_version` is above 0 and below `known`, or any existing database
-/// when `repair` says a repair will change it), copies it whole, with
+/// `user_version` is above 0 and below `known`), copies it whole, with
 /// what its write-ahead log holds, to
 /// `<home>/backups/clax-<version>-<UTC time>.db` (`VACUUM INTO` a
 /// temporary name, then renamed, so a copy that exists is complete), then
@@ -32,11 +31,10 @@ pub fn before_migrate(
     conn: &Connection,
     home: &Home,
     known: u32,
-    repair: bool,
     now: DateTime<Utc>,
 ) -> Result<Option<PathBuf>> {
     let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if version == 0 || (version >= known && !repair) {
+    if version == 0 || version >= known {
         return Ok(None);
     }
     let fail = |e: &dyn std::fmt::Display| CoreError::MigrationFailed {
@@ -134,11 +132,7 @@ mod tests {
         conn.pragma_update(None, "user_version", 10).unwrap();
         for day in 2..=6 {
             let now = format!("2026-10-{day:02}T00:00:00Z").parse().unwrap();
-            assert!(
-                before_migrate(&conn, &home, 12, false, now)
-                    .unwrap()
-                    .is_some()
-            );
+            assert!(before_migrate(&conn, &home, 12, now).unwrap().is_some());
         }
         assert_eq!(
             names(&backups),
@@ -152,7 +146,7 @@ mod tests {
         // Once a later upgrade starts from a newer version, the pin moves on.
         conn.pragma_update(None, "user_version", 11).unwrap();
         let now = "2026-10-07T00:00:00Z".parse().unwrap();
-        before_migrate(&conn, &home, 12, false, now).unwrap();
+        before_migrate(&conn, &home, 12, now).unwrap();
         assert_eq!(
             names(&backups),
             [

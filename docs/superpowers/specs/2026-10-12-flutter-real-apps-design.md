@@ -148,7 +148,7 @@ claude.use("net")`; `net.fetch(url, {method, headers, body})` →
 /api/artifacts/{id}/net:fetch`: https only, host declared by the live
 version and granted by the owner, no loopback or private addresses (after
 DNS), 5 MB, 20 s. Consent once per app for its host list; the grant lives
-in the daemon (migration 29). The content security policy keeps
+in the daemon (migration 40). The content security policy keeps
 `connect-src 'none'`. A draft (round-2 spec §5.1) holds no grants and is
 never asked about: its fetches use its live app's grants, for hosts both
 the draft and the live app declare, checked on each fetch; a new app's
@@ -158,7 +158,7 @@ draft gets `not_granted`.
 
 The existing `sample` capability, on the phone: the app passes the API key
 to the daemon at start (never logged), consent once per app, default model
-`claude-haiku-5-5`, a per-app daily cost cap (default $0.50, migration 30
+`claude-haiku-5-5`, a per-app daily cost cap (default $0.50, migration 41
 if a table is needed).
 
 ### C8. App inspector (task I1)

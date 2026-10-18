@@ -1255,8 +1255,13 @@ pub const HOSTED_MIGRATION: u32 = 27;
 /// copies of migrations 24 to 26, 30 and 36 ([`repair`]), as a schema
 /// version.
 pub const REPAIR_MIGRATION: u32 = 37;
-/// What each of the Clax app's migrations (27 to 31, in order) leaves in
-/// the schema: a table, or a column of `artifacts`.
+
+/// The first of the Clax app's migrations (cross-app read grants), as a
+/// schema version; the app's follow it in [`APP_MIGRATION_MARKS`]'s order.
+pub const APP_MIGRATION: u32 = 38;
+
+/// What each of the Clax app's migrations ([`APP_MIGRATION`] onwards, in
+/// order) leaves in the schema: a table, or a column of `artifacts`.
 const APP_MIGRATION_MARKS: [(&str, &str); 5] = [
     ("table", "db_read_grants"),
     ("column", "draft_of"),
@@ -1265,56 +1270,78 @@ const APP_MIGRATION_MARKS: [(&str, &str); 5] = [
     ("column", "draft_inherit_net"),
 ];
 
-/// Brings a database written by a `flutter-app` build from before that
-/// branch was rebased onto the multi-person migrations into this
-/// numbering, in `tx`; `Ok(None)` for any other database, left untouched.
+/// Brings a database written by an earlier `flutter-app` build, which
+/// numbered the app's migrations differently, into this numbering, in
+/// `tx`; `Ok(None)` for any other database, left untouched. Returns the
+/// `user_version` it had and the one it has now.
 ///
-/// Those builds numbered the app's migrations from 24 (cross-app read
-/// grants 24, drafts 25, network grants 26, model use 27, a draft's
-/// network inheritance 28), where this list has the multi-person ones
-/// ([`PEOPLE_MIGRATION`] to [`INBOX_MIGRATION`]) and the app's follow at
-/// 27 to 31. Such a database is recognised by its schema, not its
-/// `user_version` alone: a version from 24 to 28, the `db_read_grants`
-/// table, and no `invites` table (which migration 24 makes). Each app
-/// migration's mark ([`APP_MIGRATION_MARKS`]) must be present exactly up
-/// to the one its version names, or the database is refused
+/// Those builds numbered the app's migrations (see [`APP_MIGRATION_MARKS`])
+/// from 24, before the multi-person migrations ([`PEOPLE_MIGRATION`] to
+/// [`INBOX_MIGRATION`]) were under them, and later from 27, right after
+/// them, where this list has hosted mode's sign-in
+/// ([`HOSTED_MIGRATION`]) to the repair ([`REPAIR_MIGRATION`]) and the
+/// app's from [`APP_MIGRATION`]. Such a database is recognised by its
+/// schema, not its `user_version` alone: the `db_read_grants` table and no
+/// `hosted_setup` table (which [`HOSTED_MIGRATION`] makes); with the
+/// `invites` table (which [`PEOPLE_MIGRATION`] makes) its app migrations
+/// start at 27, without it at 24, and its version must name one of them.
+/// Each app migration's mark must be present exactly up to the one its
+/// version names, or the database is refused
 /// ([`clax_core::CoreError::MigrationFailed`]) and left as it was.
 ///
-/// The multi-person migrations' SQL and Rust steps run on it (they touch
-/// none of the app's tables and add no column the app's migrations add),
-/// and `user_version` becomes the app migration it already holds in this
-/// numbering (its old version plus 3). Returns that version.
-pub(super) fn adopt_pre_rebase_flutter_app(
+/// The migrations it lacks below [`APP_MIGRATION`] run on it, SQL and Rust
+/// step each: the multi-person ones when it has no `invites`, then
+/// [`HOSTED_MIGRATION`] to [`REPAIR_MIGRATION`], none of which touches the
+/// app's tables or adds a column the app's migrations add; the repair
+/// gives a database of an earlier revision of the multi-person migrations
+/// their final schema. `user_version` then becomes the app migration it
+/// already holds in this numbering.
+pub(super) fn adopt_earlier_flutter_app(
     tx: &rusqlite::Transaction<'_>,
-) -> clax_core::Result<Option<u32>> {
+) -> clax_core::Result<Option<(u32, u32)>> {
     let version: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    let old_last = PEOPLE_MIGRATION + APP_MIGRATION_MARKS.len() as u32 - 1;
-    if !(PEOPLE_MIGRATION..=old_last).contains(&version)
-        || !has_mark(tx, "table", "db_read_grants")?
-        || has_mark(tx, "table", "invites")?
-    {
+    if !has_mark(tx, "table", "db_read_grants")? || has_mark(tx, "table", "hosted_setup")? {
         return Ok(None);
     }
-    let held = (version - PEOPLE_MIGRATION + 1) as usize;
+    let people = has_mark(tx, "table", "invites")?;
+    let first = if people {
+        INBOX_MIGRATION + 1
+    } else {
+        PEOPLE_MIGRATION
+    };
+    let last = first + APP_MIGRATION_MARKS.len() as u32 - 1;
+    let refuse = |why: String| clax_core::CoreError::MigrationFailed {
+        at: version,
+        detail: format!(
+            "a database from an earlier Clax app build at version {version} {why}; it was left unchanged"
+        ),
+    };
+    if !(first..=last).contains(&version) {
+        return Err(refuse(format!(
+            "holds the app's tables, but its version is not one of that build's ({first} to {last})"
+        )));
+    }
+    let held = (version - first + 1) as usize;
     for (i, (kind, name)) in APP_MIGRATION_MARKS.iter().enumerate() {
         if has_mark(tx, kind, name)? != (i < held) {
-            return Err(clax_core::CoreError::MigrationFailed {
-                at: version,
-                detail: format!(
-                    "a database from an earlier Clax app build at version {version} \
-                     {} the {kind} {name}; it was left unchanged",
-                    if i < held { "lacks" } else { "already has" }
-                ),
-            });
+            return Err(refuse(format!(
+                "{} the {kind} {name}",
+                if i < held { "lacks" } else { "already has" }
+            )));
         }
     }
-    for v in PEOPLE_MIGRATION..=INBOX_MIGRATION {
+    let below = if people {
+        HOSTED_MIGRATION
+    } else {
+        PEOPLE_MIGRATION
+    };
+    for v in below..=REPAIR_MIGRATION {
         tx.execute_batch(MIGRATIONS[v as usize - 1])?;
         rust_step(tx, v)?;
     }
-    let now = INBOX_MIGRATION + held as u32;
+    let now = REPAIR_MIGRATION + held as u32;
     tx.pragma_update(None, "user_version", now)?;
-    Ok(Some(now))
+    Ok(Some((version, now)))
 }
 
 /// Whether the schema has the table `name` (`kind` "table") or the
@@ -1326,112 +1353,6 @@ fn has_mark(tx: &rusqlite::Transaction<'_>, kind: &str, name: &str) -> clax_core
         "SELECT EXISTS (SELECT 1 FROM pragma_table_info('artifacts') WHERE name = ?1)"
     };
     Ok(tx.query_row(sql, [name], |r| r.get(0))?)
-}
-
-/// What the final multi-person migrations ([`PEOPLE_MIGRATION`] to
-/// [`INBOX_MIGRATION`]) hold that an earlier revision of them lacked: the
-/// migration, the kind of schema object, its name, and the SQL that adds
-/// it. The earlier revision is otherwise the same, and no later migration
-/// touches these objects.
-const MULTI_PERSON_REVISIONS: [(u32, &str, &str, &str); 4] = [
-    (
-        PEOPLE_MIGRATION,
-        "table",
-        "viewer_cookies",
-        "CREATE TABLE viewer_cookies (
-            sha256 TEXT PRIMARY KEY,
-            viewer_id TEXT NOT NULL REFERENCES viewers(id),
-            created_at TEXT NOT NULL,
-            legacy INTEGER NOT NULL DEFAULT 0,
-            replaced_at TEXT
-        );
-        CREATE INDEX viewer_cookies_by_viewer ON viewer_cookies(viewer_id);",
-    ),
-    (
-        VISIBILITY_MIGRATION,
-        "index",
-        "approval_requests_by_target",
-        "CREATE INDEX approval_requests_by_target ON approval_requests(
-            COALESCE(approver, ''), artifact_id, author, status);",
-    ),
-    (
-        VISIBILITY_MIGRATION,
-        "index",
-        "approval_requests_by_thread",
-        "CREATE INDEX approval_requests_by_thread ON approval_requests(thread_id, status);",
-    ),
-    (
-        VISIBILITY_MIGRATION,
-        "feedback column",
-        "no_access_at",
-        "ALTER TABLE feedback ADD COLUMN no_access_at TEXT;",
-    ),
-];
-
-/// The revisions in [`MULTI_PERSON_REVISIONS`] a database written by an
-/// earlier revision of the multi-person migrations still lacks, recognised
-/// by its schema: a `user_version` at or past the revision's migration, the
-/// `invites` table (which [`PEOPLE_MIGRATION`] makes), and the revision's
-/// object missing. Empty for any other database.
-fn missing_multi_person_revisions(
-    c: &rusqlite::Connection,
-) -> clax_core::Result<Vec<&'static (u32, &'static str, &'static str, &'static str)>> {
-    let version: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    let exists = |sql: &str, name: &str| -> clax_core::Result<bool> {
-        Ok(c.query_row(sql, [name], |r| r.get(0))?)
-    };
-    let object = "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = ?2 AND name = ?1)";
-    if version < PEOPLE_MIGRATION
-        || !c.query_row(object, ["invites", "table"], |r| r.get::<_, bool>(0))?
-    {
-        return Ok(Vec::new());
-    }
-    let mut missing = Vec::new();
-    for rev in &MULTI_PERSON_REVISIONS {
-        let (at, kind, name, _) = rev;
-        if version < *at {
-            continue;
-        }
-        let present = if *kind == "feedback column" {
-            exists(
-                "SELECT EXISTS (SELECT 1 FROM pragma_table_info('feedback') WHERE name = ?1)",
-                name,
-            )?
-        } else {
-            c.query_row(object, [*name, *kind], |r| r.get(0))?
-        };
-        if !present {
-            missing.push(rev);
-        }
-    }
-    Ok(missing)
-}
-
-/// Whether [`repair_multi_person_revisions`] would change this database.
-pub(super) fn needs_multi_person_repair(c: &rusqlite::Connection) -> clax_core::Result<bool> {
-    Ok(!missing_multi_person_revisions(c)?.is_empty())
-}
-
-/// Brings a database written by an earlier revision of the multi-person
-/// migrations (the `flutter-app` branch's builds before it moved onto
-/// their final revision, which left their `user_version` unchanged) to
-/// the final revision's schema, in `tx`: it adds each object of
-/// [`MULTI_PERSON_REVISIONS`] the database lacks, and, with
-/// `viewer_cookies`, keeps every viewer's cookie (its row ID, which those
-/// revisions used) working as [`PEOPLE_MIGRATION`]'s Rust step does. It
-/// only adds; no row is changed or removed. Returns the names of the
-/// objects it added, empty for any other database.
-pub(super) fn repair_multi_person_revisions(
-    tx: &rusqlite::Transaction<'_>,
-) -> clax_core::Result<Vec<&'static str>> {
-    let missing = missing_multi_person_revisions(tx)?;
-    for (_, _, name, sql) in &missing {
-        tx.execute_batch(sql)?;
-        if *name == "viewer_cookies" {
-            legacy_viewer_cookies(tx)?;
-        }
-    }
-    Ok(missing.into_iter().map(|(_, _, name, _)| *name).collect())
 }
 
 /// Runs the Rust part of the migration that brings the schema to
@@ -1849,7 +1770,8 @@ fn install_id(tx: &rusqlite::Transaction<'_>) -> clax_core::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AUDIT_MIGRATION, INBOX_MIGRATION, MIGRATIONS, PEOPLE_MIGRATION, VISIBILITY_MIGRATION,
+        APP_MIGRATION, AUDIT_MIGRATION, INBOX_MIGRATION, MIGRATIONS, PEOPLE_MIGRATION,
+        REPAIR_MIGRATION, VISIBILITY_MIGRATION,
     };
     use crate::Store;
     use crate::test_util::DAEMON;
@@ -2548,19 +2470,20 @@ mod tests {
         }
     }
 
-    /// Migration 28 adds the draft columns: every artifact it finds stays
+    /// Migration 39 adds the draft columns: every artifact it finds stays
     /// listed (`hidden = 0`) and is a draft of nothing.
     #[test]
-    fn migration_28_keeps_every_artifact_listed() {
+    fn migration_39_keeps_every_artifact_listed() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         home.ensure_dirs().unwrap();
         {
             let c = Connection::open(home.db_path()).unwrap();
-            for sql in &MIGRATIONS[..27] {
+            for sql in &MIGRATIONS[..APP_MIGRATION as usize] {
                 c.execute_batch(sql).unwrap();
             }
-            c.pragma_update(None, "user_version", 27).unwrap();
+            c.pragma_update(None, "user_version", APP_MIGRATION)
+                .unwrap();
             c.execute_batch(
                 "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
                     VALUES ('7q3k9mzx2b4t', 't', 'x', 'x', 1, '0');",
@@ -3561,9 +3484,8 @@ mod tests {
 
     /// A database as a `flutter-app` build from before the multi-person
     /// migrations (24 to 26) left it: migrations 1 to 23, then the first
-    /// `app` of the app's migrations (27 onwards here), numbered from 24,
-    /// with apps, versions, documents, a comment, an inbox item and the
-    /// grants and drafts those migrations hold. Returns its rows.
+    /// `app` of the app's migrations ([`APP_MIGRATION`] onwards here),
+    /// numbered from 24, with the rows of [`app_rows`]. Returns its rows.
     fn pre_rebase_flutter_app(home: &Home, app: usize) -> Vec<(String, Vec<String>)> {
         home.ensure_dirs().unwrap();
         let c = Connection::open(home.db_path()).unwrap();
@@ -3571,7 +3493,7 @@ mod tests {
         for sql in &MIGRATIONS[..AUDIT_MIGRATION as usize] {
             c.execute_batch(sql).unwrap();
         }
-        let first = INBOX_MIGRATION as usize;
+        let first = APP_MIGRATION as usize - 1;
         for sql in &MIGRATIONS[first..first + app] {
             c.execute_batch(sql).unwrap();
         }
@@ -3582,6 +3504,44 @@ mod tests {
         .unwrap();
         c.pragma_update(None, "user_version", AUDIT_MIGRATION + app as u32)
             .unwrap();
+        app_rows(&c, app)
+    }
+
+    /// A database as this branch's builds before akesling/clax-artifacts's
+    /// migrations 27 to 37 left it: migrations 1 to 26 with their Rust
+    /// steps, then the first `app` of the app's migrations ([`APP_MIGRATION`]
+    /// onwards here), numbered from 27, with the rows of [`app_rows`].
+    /// Returns its rows.
+    fn earlier_app_numbering(home: &Home, app: usize) -> Vec<(String, Vec<String>)> {
+        let c = earlier_app_schema(home, app);
+        app_rows(&c, app)
+    }
+
+    /// [`earlier_app_numbering`]'s schema and version, with no rows but the
+    /// ones the migrations' Rust steps write.
+    fn earlier_app_schema(home: &Home, app: usize) -> Connection {
+        home.ensure_dirs().unwrap();
+        let mut c = Connection::open(home.db_path()).unwrap();
+        c.pragma_update(None, "journal_mode", "wal").unwrap();
+        let tx = c.transaction().unwrap();
+        for v in 1..=INBOX_MIGRATION {
+            tx.execute_batch(MIGRATIONS[v as usize - 1]).unwrap();
+            super::rust_step(&tx, v).unwrap();
+        }
+        let first = APP_MIGRATION as usize - 1;
+        for sql in &MIGRATIONS[first..first + app] {
+            tx.execute_batch(sql).unwrap();
+        }
+        tx.pragma_update(None, "user_version", INBOX_MIGRATION + app as u32)
+            .unwrap();
+        tx.commit().unwrap();
+        c
+    }
+
+    /// Apps, versions, documents, a comment, an inbox item and the grants
+    /// and drafts the first `app` of the app's migrations hold, written to
+    /// `c`; returns its rows ([`kept_rows`]).
+    fn app_rows(c: &Connection, app: usize) -> Vec<(String, Vec<String>)> {
         c.execute_batch(
             "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version, doc_seq)
                 VALUES ('7q3k9mzx2b4t', 'Budget', 'x', 'x', 2, '0', 3),
@@ -3634,7 +3594,7 @@ mod tests {
             )
             .unwrap();
         }
-        kept_rows(&c, app)
+        kept_rows(c, app)
     }
 
     fn assert_pre_rebase_flutter_app_upgrades(app: usize) {
@@ -3705,8 +3665,10 @@ mod tests {
     }
 
     #[test]
-    fn the_app_migrations_follow_the_inbox_migration_in_this_order() {
-        let first = INBOX_MIGRATION as usize;
+    fn the_app_migrations_follow_the_repair_migration_in_this_order() {
+        assert_eq!(APP_MIGRATION, REPAIR_MIGRATION + 1);
+        assert_eq!(MIGRATIONS.len() as u32, APP_MIGRATION + 4);
+        let first = APP_MIGRATION as usize - 1;
         assert!(MIGRATIONS[first].contains("CREATE TABLE db_read_grants"));
         assert!(MIGRATIONS[first + 1].contains("ADD COLUMN draft_of"));
         assert!(MIGRATIONS[first + 2].contains("CREATE TABLE net_grants"));
@@ -3750,7 +3712,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         home.ensure_dirs().unwrap();
-        let at = INBOX_MIGRATION as usize;
+        let at = REPAIR_MIGRATION as usize;
         {
             let c = Connection::open(home.db_path()).unwrap();
             for sql in &MIGRATIONS[..at] {
@@ -3761,7 +3723,7 @@ mod tests {
                 ["0".repeat(32)],
             )
             .unwrap();
-            // Migration 28 adds this column: it fails.
+            // Migration 39 adds this column: it fails.
             c.execute_batch("ALTER TABLE artifacts ADD COLUMN draft_of TEXT;")
                 .unwrap();
             c.pragma_update(None, "user_version", at as u32).unwrap();
@@ -3771,7 +3733,7 @@ mod tests {
             Err(e) => e,
         };
         assert!(
-            matches!(&err, clax_core::CoreError::MigrationFailed { at: 27, detail }
+            matches!(&err, clax_core::CoreError::MigrationFailed { at: 38, detail }
                 if detail.contains("draft_of")),
             "{err:?}"
         );
@@ -3779,7 +3741,7 @@ mod tests {
         let v: u32 = c
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 27, "migration 27 committed, 28 rolled back");
+        assert_eq!(v, 38, "migration 38 committed, 39 rolled back");
     }
 
     #[test]
@@ -3902,14 +3864,15 @@ mod tests {
 
     const LAN: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB0";
 
-    /// A database as a build of the earlier revision of the multi-person
-    /// migrations left it at the latest version: this list's schema without
-    /// what the final revision added ([`super::MULTI_PERSON_REVISIONS`]),
-    /// with an owner, a LAN viewer whose cookie is its row ID, an artifact,
-    /// a thread sent to an agent, an approval request and a read grant.
+    /// A database as this branch's builds of the earlier revision of the
+    /// multi-person migrations left it, at the earlier app numbering's last
+    /// version (31): that schema without what the final revision added
+    /// (`viewer_cookies`, two `approval_requests` indexes and
+    /// `feedback.no_access_at`, which migration 37's repair makes), with an
+    /// owner, a LAN viewer whose cookie is its row ID, an artifact, a thread
+    /// sent to an agent, an approval request and a read grant.
     fn earlier_multi_person(home: &Home) {
-        drop(Store::open(home).unwrap());
-        let c = Connection::open(home.db_path()).unwrap();
+        let c = earlier_app_schema(home, 5);
         c.execute_batch(&format!(
             "DROP TABLE viewer_cookies;
              DROP INDEX approval_requests_by_target;
@@ -3962,34 +3925,65 @@ mod tests {
             .unwrap()
     }
 
+    /// Each table's columns (in name order, as `pragma_table_info` gives
+    /// them) and every other schema object as [`schema_of`] gives it: a
+    /// schema up to the order of its columns, which an upgrade's added
+    /// columns change.
+    fn shape_of(c: &Connection) -> Vec<String> {
+        schema_of(c)
+            .into_iter()
+            .map(|(kind, name, sql)| {
+                if kind != "table" {
+                    return format!("{kind} {name} {sql}");
+                }
+                let mut stmt = c
+                    .prepare(
+                        "SELECT name || ' ' || type || ' ' || \"notnull\" || ' ' || COALESCE(dflt_value, '') || ' ' || pk
+                         FROM pragma_table_info(?1) ORDER BY name",
+                    )
+                    .unwrap();
+                let cols: Vec<String> = stmt
+                    .query_map([&name], |r| r.get(0))
+                    .unwrap()
+                    .collect::<rusqlite::Result<_>>()
+                    .unwrap();
+                format!("table {name} {}", cols.join(", "))
+            })
+            .collect()
+    }
+
+    /// A fresh database's [`shape_of`].
+    fn fresh_shape() -> Vec<String> {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        drop(Store::open(&home).unwrap());
+        shape_of(&Connection::open(home.db_path()).unwrap())
+    }
+
     #[test]
     fn a_database_of_the_earlier_multi_person_revision_gets_the_final_schema_and_keeps_its_rows() {
-        let fresh_dir = tempfile::tempdir().unwrap();
-        let fresh_home = Home::at(fresh_dir.path().join("ax"));
-        drop(Store::open(&fresh_home).unwrap());
-        let fresh = schema_of(&Connection::open(fresh_home.db_path()).unwrap());
-
+        let fresh = fresh_shape();
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         earlier_multi_person(&home);
         let before = earlier_rows(&Connection::open(home.db_path()).unwrap());
         assert_ne!(
-            schema_of(&Connection::open(home.db_path()).unwrap()),
+            shape_of(&Connection::open(home.db_path()).unwrap()),
             fresh,
             "the fixture lacks the final revision"
         );
 
         let st = Store::open(&home).unwrap();
-        let (version, schema, after, ok) = st
+        let (version, shape, after, ok) = st
             .with_read(|c| {
                 let v: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
                 let ok: String = c.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
-                Ok((v, schema_of(c), earlier_rows(c), ok))
+                Ok((v, shape_of(c), earlier_rows(c), ok))
             })
             .unwrap();
         assert_eq!(version, MIGRATIONS.len() as u32);
         assert_eq!(ok, "ok");
-        assert_eq!(schema, fresh, "the final revision's schema");
+        assert_eq!(shape, fresh, "the final schema");
         assert_eq!(after, before, "every row kept");
         // The LAN viewer's cookie, its row ID, keeps naming it.
         let v = st.get_viewer(LAN).unwrap().unwrap();
@@ -3997,18 +3991,116 @@ mod tests {
         drop(st);
 
         let copies = crate::backup::list(&crate::backup::dir(&home));
-        assert_eq!(copies.len(), 1, "copied before the repair: {copies:?}");
+        assert_eq!(copies.len(), 1, "copied before the upgrade: {copies:?}");
         let copy = Connection::open(&copies[0]).unwrap();
         assert_eq!(earlier_rows(&copy), before, "the copy holds the old rows");
-        assert!(
-            super::needs_multi_person_repair(&copy).unwrap(),
-            "the copy is from before the repair"
-        );
+        let cookies: i64 = copy
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema WHERE name = 'viewer_cookies'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cookies, 0, "the copy is from before the repair");
 
         // Opening it again changes nothing and copies nothing.
         drop(Store::open(&home).unwrap());
         let copies = crate::backup::list(&crate::backup::dir(&home));
         assert_eq!(copies.len(), 1, "{copies:?}");
+    }
+
+    /// A database this branch's builds left at version `26 + app` of the
+    /// earlier app numbering opens at the latest version in this numbering
+    /// with every row kept, the final schema up to column order, the
+    /// multi-person migrations' Rust steps not run again, and a copy of it
+    /// as it was taken first; opening it again changes nothing.
+    fn assert_earlier_app_numbering_upgrades(app: usize) {
+        let fresh = fresh_shape();
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let before = earlier_app_numbering(&home, app);
+        let old = INBOX_MIGRATION + app as u32;
+        let st = Store::open(&home).unwrap();
+        let (version, after, shape, approvals, ok) = st
+            .with_read(|c| {
+                let v: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+                let approvals: i64 = c.query_row(
+                    "SELECT COUNT(*) FROM approvals WHERE created_via = 'migration'",
+                    [],
+                    |r| r.get(0),
+                )?;
+                let ok: String = c.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+                Ok((v, kept_rows(c, app), shape_of(c), approvals, ok))
+            })
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as u32, "from {old}");
+        assert_eq!(after, before, "every row kept from {old}");
+        assert_eq!(ok, "ok", "from {old}");
+        assert_eq!(shape, fresh, "the final schema, from {old}");
+        assert_eq!(approvals, 1, "migration 25's step ran once, from {old}");
+        assert_eq!(
+            st.list_artifacts().unwrap().len(),
+            2,
+            "the draft stays unlisted, from {old}"
+        );
+        drop(st);
+        let copies = crate::backup::list(&crate::backup::dir(&home));
+        assert_eq!(copies.len(), 1, "{copies:?}");
+        let name = copies[0].file_name().unwrap().to_str().unwrap().to_string();
+        assert!(name.starts_with(&format!("clax-{old}-")), "{name}");
+        let copy = Connection::open(&copies[0]).unwrap();
+        let v: u32 = copy
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, old);
+        assert_eq!(kept_rows(&copy, app), before, "the copy holds the old rows");
+        drop(Store::open(&home).unwrap());
+        let copies = crate::backup::list(&crate::backup::dir(&home));
+        assert_eq!(copies.len(), 1, "opened again: {copies:?}");
+    }
+
+    #[test]
+    fn a_database_at_the_earlier_app_numbering_31_keeps_every_row_and_is_copied_first() {
+        assert_earlier_app_numbering_upgrades(5);
+    }
+
+    #[test]
+    fn databases_at_the_earlier_app_numbering_27_to_30_upgrade() {
+        for app in 1..=4 {
+            assert_earlier_app_numbering_upgrades(app);
+        }
+    }
+
+    #[test]
+    fn an_earlier_app_numbering_database_whose_schema_disagrees_with_its_version_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        // Version 31 names a draft's network inheritance, which this
+        // database lacks.
+        earlier_app_numbering(&home, 4);
+        {
+            let c = Connection::open(home.db_path()).unwrap();
+            c.pragma_update(None, "user_version", 31).unwrap();
+        }
+        let err = match Store::open(&home) {
+            Ok(_) => panic!("an inconsistent database must be refused"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(&err, clax_core::CoreError::MigrationFailed { at: 31, detail }
+                if detail.contains("draft_inherit_net")),
+            "{err:?}"
+        );
+        let c = Connection::open(home.db_path()).unwrap();
+        let (v, hosted): (u32, i64) = c
+            .query_row(
+                "SELECT (SELECT user_version FROM pragma_user_version),
+                        (SELECT COUNT(*) FROM sqlite_schema WHERE name = 'hosted_setup')",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((v, hosted), (31, 0));
     }
 
     #[test]
@@ -4040,16 +4132,5 @@ mod tests {
             .with_read(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
             .unwrap();
         assert_eq!(v, MIGRATIONS.len() as u32);
-    }
-
-    #[test]
-    fn the_multi_person_revisions_are_the_sql_their_migrations_hold() {
-        let squash = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
-        for (at, _, name, sql) in &super::MULTI_PERSON_REVISIONS {
-            assert!(
-                squash(MIGRATIONS[*at as usize - 1]).contains(&squash(sql)),
-                "{name} is not in migration {at}"
-            );
-        }
     }
 }

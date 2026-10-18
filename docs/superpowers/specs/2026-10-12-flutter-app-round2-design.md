@@ -313,7 +313,7 @@ draft), `ChangeAnswered` (finish with no file change), `ChangeFailed`
 `POST /api/drafts` (token) with `{of: <aid>|null, title, capabilities,
 files}` creates a **draft artifact**: an ordinary artifact row with
 `draft_of` (the app's ID, or empty for a new app) and `hidden = 1`
-(migration 28, `ALTER TABLE artifacts ADD COLUMN …`). It answers
+(migration 39, `ALTER TABLE artifacts ADD COLUMN …`). It answers
 `{draft: {id, of, version, docs_copied, docs_truncated}}`.
 
 - **Documents.** For `of`, the app's documents are copied into the draft at
@@ -686,7 +686,7 @@ at most three live calls (R§12, Live).
 
 | Layer | What |
 |---|---|
-| Rust | drafts: create with and without `of`, the document copy (cap, private documents excluded), hidden from every listing route and topic (one audit test listing them), threads refused, reads of other apps through `of`'s grants, delete and sweep (injected clock), migration 28. |
+| Rust | drafts: create with and without `of`, the document copy (cap, private documents excluded), hidden from every listing route and topic (one audit test listing them), threads refused, reads of other apps through `of`'s grants, delete and sweep (injected clock), migration 39. |
 | Web unit | hold-then-drag: arm, drag text range, drag area, small drag = tap, second finger, cancel, scroll before arming untouched, `touchmove` cancelled only when dragging; inspect: ring buffer order and cap, settle with an injected timer, outline limits, half-scale retry; host `inspect`, `inspection`, `composeArtifact`, consent auto-decline in inspect mode; app-mode question sheet, `openQuestions`, `questions {open}`. |
 | Web e2e | touch hold-drag selects a range and picks it; area drag picks an area; `?inspect=1` returns a PNG and an error a page threw at load. |
 | Dart unit | Toolbox per tool (paths, sizes, exactly-once replace, staged writes need a read, pins, caps, gate), `finish` (every branch of R§4.5 with `FakeClaxApi`, the ledger written before the publish, restore on refusal, newer comment left out), Messages runner against the fake Messages API (scripted streamed turns: tool loop, append-only history byte-equal across turns, cache fields, eager fields, max_tokens resend, refusal, soft and hard caps, cost sums, cancel mid-turn, network-cut resume per turn), `ask` (Clax's arguments and result over the session routes: answered, declined, open with `call_again`, `question_id` again, `cancel`, `surface_open` false), the asked-questions map and the late-answer re-run from a feedback poll's `answers`, the cap publish of the last clean draft, worker (retry, progress events), `ClaxStream`, line diff. |

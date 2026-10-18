@@ -430,7 +430,7 @@ abstract interface class AgentBackend {
 - **Consent.** A may read B's documents when A declares the read, B
   declares `db` (else 403 `not_declared`, the token included), and either
   B shares with A or the owner granted it. Grants are rows of
-  `db_read_grants(reader_id, source_id, granted_at)` (migration 27), made
+  `db_read_grants(reader_id, source_id, granted_at)` (migration 38), made
   by `PUT /api/artifacts/<A>/db-grants/<B>` and removed by `DELETE` (token),
   listed by `GET /api/artifacts/<A>/db-grants`. Deleting either artifact
   removes its rows. A grant follows the declaration: a publish or `PATCH`
@@ -467,7 +467,7 @@ abstract interface class AgentBackend {
 |---|---|---|
 | Harness `app` | `routes/sessions.rs` `HARNESSES`; `push_info` (`tier: "wait"`, available); feedback tier mapping (`store/feedback.rs`); display name "Clax app" (`toolpath/mod.rs`) | Registration accepts `app`; comments sent to an `app` session wait for its feedback poll. |
 | Version restore | `POST /api/artifacts/<aid>/versions:restore` `{"version": n, "if_version": cur}` | Publishes version `n`'s files as a new version (`label: "Restored v<n>"`, `note: "Restored version <n>"`), atomically, in one store transaction, writing each of `n`'s files again into the new version's directory with its bytes, type and hash (the store keeps a directory per version, so each restore adds `n`'s size on disk); carried-forward files not in `n` are removed; capabilities and documents are untouched. 409 `conflict` as publish; 404 for an unknown `n`. Emits `version`; the audit's `version.publish` adds `restored_from: n`, and its `carried` names only files unchanged from the previous version. |
-| `db.read` / `db.share` | `db.rs`, `capabilities.rs`, `store/docs.rs`, `db_caller.rs`, `routes/docs.rs`, migration 27 | §3.8. |
+| `db.read` / `db.share` | `db.rs`, `capabilities.rs`, `store/docs.rs`, `db_caller.rs`, `routes/docs.rs`, migration 38 | §3.8. |
 | `docs:collections` | `routes/docs.rs` | §3.8. |
 
 The restore route is `versions:restore` with the version in the body
@@ -568,7 +568,7 @@ Deterministic only; no test or gate calls a model.
 
 | Layer | Tests |
 |---|---|
-| Rust | Integration tests for the `app` harness, `versions:restore` (atomicity, conflict, unknown version, blobs reused, documents untouched), migration 27, `db.read`/`db.share` validation, grants, the reader header (allowed, not granted, read-only, private documents, stream filtering), `docs:collections`. |
+| Rust | Integration tests for the `app` harness, `versions:restore` (atomicity, conflict, unknown version, blobs reused, documents untouched), migration 38, `db.read`/`db.share` validation, grants, the reader header (allowed, not granted, read-only, private documents, stream filtering), `docs:collections`. |
 | Web unit (vitest) | Bridge long-press (timer injected: hold, slop, second finger, cancel, release picks, tap unchanged), selection guard on/off, scroll report throttle and restore; shell app mode (class, lazy host, every `claxHost` method, every host message, Send = post + send, auto-follow keeps file/fragment and asks restore), `db.artifact` (declaration check, consent prompt, reader header, subscription filtering). |
 | Web e2e (Playwright) | `?app=1` with a stubbed `window.ClaxHost`: touch long-press picks (touch emulation) and Send sends; a published version auto-follows with data kept and scroll restored; restore; one page reads another's documents after consent. |
 | Flutter unit | Supervisor with a fake `ProcessStarter` and clock (start, health wait, stale PID, restart backoff, failure after five, resume); supervisor against the real debug `clax` (`CLAX_TEST_BIN`); `ClaxApi` against a scripted in-process HTTP server and against the real debug daemon; edit schema/validation; `AgentLoop` with `ScriptedBackend` and `FakeClaxApi` (new, change, edits, retries, conflict, failure reply, db ops, other-apps summary limits); `MessagesApiBackend` against an in-process fake Messages API (request shape, cache block, image block, refusal, max_tokens, HTTP errors, key never logged); `ClaudeCliBackend` against `test/fixtures/fake-claude.sh` (arguments, stdin, `structured_output`, `result` fallback, non-zero exit, timeout). |

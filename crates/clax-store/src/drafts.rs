@@ -1,6 +1,6 @@
 //! Draft artifacts (spec 2026-10-12-flutter-app-round2-design §5.1): an
 //! agent's work in progress, published and rendered like any artifact but
-//! hidden from every listing (`hidden = 1`, migration 28).
+//! hidden from every listing (`hidden = 1`, migration 39).
 //!
 //! A draft of an app (`draft_of`) starts with a copy of the app's documents
 //! that the owner reads, private per-viewer subtrees left out, so a page
