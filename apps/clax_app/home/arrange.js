@@ -1,8 +1,13 @@
 // The home screen's arrangement: the `layout/main` document in the home
 // app's own documents, and the rules over it. Nothing here touches the
-// page or the store. Every function returns a new layout and keeps the
-// fields it does not know, so a layout a later release wrote survives an
-// earlier one's write (add fields, never change the meaning of one).
+// page or the store. Every function returns a new layout and keeps what
+// it does not know, so a layout a later release wrote survives an earlier
+// one's write (add fields, never change the meaning of one): unknown
+// fields, at the top and in a group or an open count; a group's unknown
+// look (shown as a folder); an order entry of an unknown kind (a string
+// "<kind>:…" other than "g:…", or an object), in place and not shown; and
+// a `v` above 1, never lowered. keepNewer puts back, before a write, the
+// known fields of such a layout that this release cannot read.
 //
 //   {v: 1, starred: [appId], order: [appId | "g:<groupId>"],
 //    groups: {groupId: {name, look: "folder" | "pile", apps: [appId]}},
@@ -18,9 +23,20 @@ export const groupKey = (gid) => GROUP + gid;
 export const isGroupKey = (key) => typeof key === 'string' && key.startsWith(GROUP);
 const gidOf = (key) => key.slice(GROUP.length);
 const isId = (v) => typeof v === 'string' && v.length > 0 && v.length <= 64;
-const isKey = (v) => isId(v) || (isGroupKey(v) && isId(gidOf(v)));
-const ids = (v, ok = isId) => (Array.isArray(v) ? [...new Set(v.filter(ok))] : []);
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : null);
+/** An order entry of a kind this release does not know: kept, not shown. */
+const isOther = (v) => (typeof v === 'string' && /^[^:]+:/.test(v) && !isGroupKey(v)) || obj(v) !== null;
+const isKey = (v) => isOther(v) || isId(v) || (isGroupKey(v) && isId(gidOf(v)));
+const ids = (v, ok = isId) => (Array.isArray(v) ? [...new Set(v.filter(ok))] : []);
+/** `list` (an order) with `key` put before its `index`-th shown entry,
+ * clamped: an index counts only the entries the page shows. */
+const insertShown = (list, key, index) => {
+  const at = list.flatMap((k, i) => (isOther(k) ? [] : [i]));
+  const n = Math.max(0, Math.min(Number.isFinite(index) ? Math.trunc(index) : at.length, at.length));
+  const i = n < at.length ? at[n] : list.length;
+  return [...list.slice(0, i), key, ...list.slice(i)];
+};
+const shownIndex = (list, key) => list.filter((k) => !isOther(k)).indexOf(key);
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 export const dayOf = (date) => date.toISOString().slice(0, 10);
 const daysBefore = (date, n) => dayOf(new Date(date.getTime() - n * 86_400_000));
@@ -32,7 +48,7 @@ export function normalize(body) {
   const groups = {};
   for (const [gid, g] of Object.entries(obj(b.groups) ?? {})) {
     if (!isId(gid) || !obj(g)) continue;
-    groups[gid] = { ...g, name: typeof g.name === 'string' && g.name.trim() ? g.name : 'Group', look: g.look === 'pile' ? 'pile' : 'folder', apps: ids(g.apps) };
+    groups[gid] = { ...g, name: typeof g.name === 'string' && g.name.trim() ? g.name : 'Group', look: typeof g.look === 'string' && g.look ? g.look : 'folder', apps: ids(g.apps) };
   }
   const opens = {};
   for (const [id, o] of Object.entries(obj(b.opens) ?? {})) {
@@ -41,7 +57,29 @@ export function normalize(body) {
     for (const [d, n] of Object.entries(obj(o.days) ?? {})) if (DAY.test(d) && Number.isInteger(n) && n > 0) days[d] = n;
     opens[id] = { ...o, n: Number.isInteger(o.n) && o.n > 0 ? o.n : 0, last: typeof o.last === 'string' ? o.last : null, days };
   }
-  return { ...b, v: Number.isInteger(b.v) && b.v >= 1 ? b.v : 1, starred: ids(b.starred), order: ids(b.order, isKey), groups, seen: ids(b.seen), opens };
+  const order = Array.isArray(b.order) ? b.order.filter((k, i) => isKey(k) && (typeof k !== 'string' || b.order.indexOf(k) === i)) : [];
+  return { ...b, v: Number.isFinite(b.v) && b.v >= 1 ? b.v : 1, starred: ids(b.starred), order, groups, seen: ids(b.seen), opens };
+}
+
+/** Whether a stored known field's value is one this release reads. */
+const READS = {
+  starred: Array.isArray,
+  order: Array.isArray,
+  seen: Array.isArray,
+  groups: (v) => obj(v) !== null,
+  opens: (v) => obj(v) !== null,
+  bigTiles: (v) => typeof v === 'boolean',
+};
+
+/** The body to write when `next` replaces `stored`: when `stored` is a
+ * later release's layout (`v` above 1), its `v`, never lowered, and each
+ * known field there whose value this release cannot read, as it was. */
+export function keepNewer(stored, next) {
+  const s = obj(stored);
+  if (!s || !(Number.isFinite(s.v) && s.v > 1)) return next;
+  const out = { ...next, v: Math.max(s.v, Number.isFinite(next?.v) ? next.v : 1) };
+  for (const [k, reads] of Object.entries(READS)) if (s[k] !== undefined && !reads(s[k])) out[k] = s[k];
+  return out;
 }
 
 const newestFirst = (apps) => [...apps].sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
@@ -74,7 +112,8 @@ export function reconcile(layout, apps, { first = false } = {}) {
     else if (m.length === 1) order.push(m[0]);
   };
   for (const key of l.order) {
-    if (isGroupKey(key)) {
+    if (isOther(key)) order.push(key);
+    else if (isGroupKey(key)) {
       const gid = gidOf(key);
       if (members[gid] && !named.has(gid)) placeGroup(gid);
     } else if (take(key)) order.push(key);
@@ -96,11 +135,12 @@ export function sections(layout, apps) {
   return {
     starred: layout.starred.map(appEntry).filter(Boolean),
     all: layout.order.map((key) => {
+      if (isOther(key)) return null;
       if (!isGroupKey(key)) return appEntry(key);
       const gid = gidOf(key);
       const g = layout.groups[gid];
       const list = g ? g.apps.map((id) => byId.get(id)).filter(Boolean) : [];
-      return list.length ? { key, group: { id: gid, name: g.name, look: g.look }, apps: list } : null;
+      return list.length ? { key, group: { id: gid, name: g.name, look: g.look === 'pile' ? 'pile' : 'folder' }, apps: list } : null;
     }).filter(Boolean),
   };
 }
@@ -125,7 +165,7 @@ export function moveTo(layout, key, section, index) {
     return [...list.slice(0, i), key, ...list.slice(i)];
   };
   const starred = section === 'starred' ? into(out(l.starred)) : out(l.starred);
-  const order = section === 'all' ? into(out(l.order)) : out(l.order);
+  const order = section === 'all' ? insertShown(out(l.order), key, index) : out(l.order);
   return { ...l, starred, order, groups };
 }
 
@@ -228,7 +268,7 @@ export function removeFromGroup(layout, id) {
   const l = normalize(layout);
   const gid = groupOf(l, id);
   if (!gid) return l;
-  return moveTo(l, id, 'all', l.order.indexOf(groupKey(gid)) + 1);
+  return moveTo(l, id, 'all', shownIndex(l.order, groupKey(gid)) + 1);
 }
 
 /** App `id` to `index` among group `gid`'s apps (clamped). */

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { normalize, reconcile, sections, moveTo, star, unstar, opened, isNew, groupOf, groupKey, groupNameOf, makeGroup, addToGroup, removeFromGroup, moveInGroup, renameGroup, setLook, ungroup, bigApps, setBigTiles } from '../home/arrange.js';
+import { normalize, reconcile, sections, moveTo, star, unstar, opened, isNew, groupOf, groupKey, groupNameOf, makeGroup, addToGroup, removeFromGroup, moveInGroup, renameGroup, setLook, ungroup, bigApps, setBigTiles, keepNewer } from '../home/arrange.js';
 
 const app = (id, hoursAgo = 0, icon = {}) => ({ id, title: id.toUpperCase(), updatedAt: new Date(Date.UTC(2026, 9, 16, 12) - hoursAgo * 3600e3).toISOString(), build: null, icon });
 const A = app('a', 1), B = app('b', 2), C = app('c', 3), D = app('d', 4);
@@ -15,7 +15,7 @@ describe('normalize', () => {
   });
 
   test('drops malformed entries and duplicates', () => {
-    const n = normalize({ starred: ['a', 'a', 3, ''], order: 'b', groups: { x: { apps: ['c'], look: 'cube' }, '': {} }, opens: { a: { n: -1, days: { '2026-10-16': 2, nope: 1 } } } });
+    const n = normalize({ starred: ['a', 'a', 3, ''], order: 'b', groups: { x: { apps: ['c'], look: 7 }, '': {} }, opens: { a: { n: -1, days: { '2026-10-16': 2, nope: 1 } } } });
     expect(n.starred).toEqual(['a']);
     expect(n.order).toEqual([]);
     expect(n.groups).toEqual({ x: { name: 'Group', look: 'folder', apps: ['c'] } });
@@ -209,5 +209,76 @@ describe('bigApps', () => {
     expect(off.bigTiles).toBe(false);
     expect(bigApps(off, now).size).toBe(0);
     expect(bigApps(setBigTiles(off, true), now).size).toBe(3);
+  });
+});
+
+describe('a layout a later release wrote', () => {
+  const now = new Date(Date.UTC(2026, 9, 16, 12));
+
+  test('keeps a look it does not know, shown as a folder until a known look is set', () => {
+    const later = { order: ['g:x'], groups: { x: { name: 'Tools', look: 'stack', apps: ['a', 'b'] } }, seen: ['a', 'b'] };
+    const l = reconcile(later, [A, B]);
+    expect(l.groups.x.look).toBe('stack');
+    expect(sections(l, [A, B]).all[0].group.look).toBe('folder');
+    expect(star(l, 'c').groups.x.look).toBe('stack');
+    expect(setLook(l, 'x', 'pile').groups.x.look).toBe('pile');
+  });
+
+  test('keeps order entries of kinds it does not know in place, and does not show them', () => {
+    const spacer = { kind: 'spacer', size: 2 };
+    const later = { order: ['a', 's:1', 'b', spacer, 'g:x', 's:1'], groups: { x: { name: 'X', apps: ['c', 'd'] } }, seen: ['a', 'b', 'c', 'd'] };
+    expect(normalize(later).order).toEqual(['a', 's:1', 'b', spacer, 'g:x']);
+    const l = reconcile(later, [A, B, C, D]);
+    expect(l.order).toEqual(['a', 's:1', 'b', spacer, 'g:x']);
+    expect(sections(l, [A, B, C, D]).all.map((e) => e.key)).toEqual(['a', 'b', 'g:x']);
+    // A gone app goes; the entries around it stay.
+    expect(reconcile(later, [A, C, D]).order).toEqual(['a', 's:1', spacer, 'g:x']);
+  });
+
+  test('indexes into All apps count only the entries shown', () => {
+    const later = { order: ['s:1', 'a', 's:2', 'b', 'g:x'], groups: { x: { name: 'X', apps: ['c', 'd'] } } };
+    const l = reconcile(later, [A, B, C, D]);
+    expect(moveTo(l, 'b', 'all', 0).order).toEqual(['s:1', 'b', 'a', 's:2', 'g:x']);
+    expect(moveTo(l, 'a', 'all', 1).order).toEqual(['s:1', 's:2', 'b', 'a', 'g:x']);
+    expect(moveTo(l, 'a', 'all', 9).order).toEqual(['s:1', 's:2', 'b', 'g:x', 'a']);
+    expect(removeFromGroup(l, 'c').order).toEqual(['s:1', 'a', 's:2', 'b', 'g:x', 'c']);
+    expect(ungroup(l, 'x').order).toEqual(['s:1', 'a', 's:2', 'b', 'c', 'd']);
+    expect(makeGroup(l, 'a', 'b', 'y', 'Y').order).toEqual(['s:1', 'g:y', 's:2', 'g:x']);
+  });
+
+  test('keeps fields it does not know through every change', () => {
+    const later = { v: 1, order: ['a', 'b', 'c'], seen: ['a'], wallpaper: { kind: 'dots' }, pinnedRow: ['a'] };
+    const changes = [
+      (l) => reconcile(l, [A, B, C]),
+      (l) => star(l, 'a'),
+      (l) => unstar(star(l, 'a'), 'a'),
+      (l) => opened(l, 'b', now),
+      (l) => makeGroup(l, 'a', 'b', 'y', 'Y'),
+      (l) => ungroup(makeGroup(l, 'a', 'b', 'y', 'Y'), 'y'),
+      (l) => setBigTiles(l, false),
+    ];
+    for (const change of changes) {
+      const l = change(later);
+      expect(l.wallpaper).toEqual({ kind: 'dots' });
+      expect(l.pinnedRow).toEqual(['a']);
+    }
+  });
+
+  test('keeps a v above 1 through every change and never lowers it', () => {
+    expect(normalize({ v: 2 }).v).toBe(2);
+    expect(normalize({ v: 2.5 }).v).toBe(2.5);
+    expect(reconcile({ v: 3, order: ['a'] }, [A]).v).toBe(3);
+    expect(opened(star({ v: 2 }, 'a'), 'a', now).v).toBe(2);
+    expect(keepNewer({ v: 2 }, { v: 1, starred: [] }).v).toBe(2);
+  });
+
+  test('a v above 1 writes back unchanged the known fields it cannot read', () => {
+    const stored = { v: 2, starred: { a: 1 }, order: 'by-use', groups: ['x'], seen: ['a'], opens: 5, bigTiles: 'auto', note: 'n' };
+    const next = reconcile(stored, [A, B]);
+    expect(keepNewer(stored, next)).toEqual({ ...next, starred: { a: 1 }, order: 'by-use', groups: ['x'], opens: 5, bigTiles: 'auto' });
+    // A v 1 layout's malformed fields are its own: they are replaced.
+    const old = { ...stored, v: 1 };
+    expect(keepNewer(old, reconcile(old, [A, B]))).toEqual(reconcile(old, [A, B]));
+    expect(keepNewer(null, { v: 1 })).toEqual({ v: 1 });
   });
 });

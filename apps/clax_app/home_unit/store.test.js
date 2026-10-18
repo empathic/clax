@@ -78,6 +78,13 @@ describe('layoutStore', () => {
     expect(db.writes).toEqual([]);
   });
 
+  test("a change keeps a later release's v and the fields it cannot read", async () => {
+    const db = fakeDb({ [LAYOUT_PATH]: { v: 2, starred: { a: 1 }, seen: [] } });
+    const s = layoutStore(db, { clock: manualClock() });
+    await s.change((b) => ({ ...b, v: 1, starred: [], seen: ['a'] }));
+    expect(await s.load()).toEqual({ v: 2, starred: { a: 1 }, seen: ['a'] });
+  });
+
   test('without db it keeps the layout in memory', async () => {
     const s = layoutStore(null, { clock: manualClock() });
     expect(await s.load()).toBeNull();

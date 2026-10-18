@@ -6,7 +6,7 @@
 // document changes or after RETRY_MS, at most TRIES times, then the change
 // rejects `{code: "busy"}`. Without `db` (a plain browser) the layout
 // lives in memory for the page's life.
-import { LAYOUT_PATH } from './arrange.js';
+import { LAYOUT_PATH, keepNewer } from './arrange.js';
 
 const LEASE_MS = 2000;
 const RETRY_MS = 1000;
@@ -52,7 +52,7 @@ export function layoutStore(db, { clock, holder = `home-${Math.random().toString
         }
         await lease();
         const current = await read();
-        const next = op(current);
+        const next = keepNewer(current, op(current));
         if (!same(next, current)) await ref.set(next);
         return next;
       };
