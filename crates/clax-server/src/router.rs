@@ -5,12 +5,12 @@
 
 use crate::routes::{
     app_drafts, approvals, artifacts, assets, connect, content, docs, drafts, extension, feedback,
-    git_token, grants, health, inbox, live, live_layers, mcp_http, net, people, perf, questions,
+    git_token, grants, health, inbox, live, live_layers, mcp_http, people, perf, questions,
     remotes, room, sample, sessions, sites, snapshot, stream, surface, threads, token, toolpath,
     viewers, watches, working,
 };
 #[cfg(not(target_arch = "wasm32"))]
-use crate::routes::{events, mcp};
+use crate::routes::{events, mcp, net};
 use crate::shell;
 #[cfg(not(target_arch = "wasm32"))]
 use axum::error_handling::HandleErrorLayer;
@@ -283,10 +283,6 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
                 .put(sample::grant)
                 .delete(sample::revoke),
         )
-        .route(
-            "/api/artifacts/{aid}/net-grants",
-            get(net::grants).put(net::grant).delete(net::revoke),
-        )
         .route("/api/artifacts/{aid}/working", get(working::for_artifact))
         .route("/api/artifacts/{aid}/presence", get(artifacts::presence))
         .route("/api/artifacts/{aid}/snapshot", get(snapshot::snapshot))
@@ -351,6 +347,13 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             "/api/agents/{handle}/elevate",
             axum::routing::put(people::elevate_agent).delete(people::unelevate_agent),
         );
+    // The `net` capability fetches from this machine (sockets, DNS, a disk
+    // cache): the daemon's alone, as a Durable Object has none of them.
+    #[cfg(not(target_arch = "wasm32"))]
+    let api_fast = api_fast.route(
+        "/api/artifacts/{aid}/net-grants",
+        get(net::grants).put(net::grant).delete(net::revoke),
+    );
     #[cfg(debug_assertions)]
     let api_fast = api_fast
         .route("/api/_test/sleep/{ms}", get(test_sleep))
@@ -494,11 +497,6 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             "/api/artifacts/{aid}/sample/{call}/tool_result",
             post(sample::tool_result),
         )
-        // Bounded by the fetch's own deadline (`net::TIMEOUT`).
-        .route(
-            "/api/artifacts/{aid}/net:fetch",
-            post(net::fetch.layer(DefaultBodyLimit::max(net::NET_BODY_LIMIT))),
-        )
         .route("/api/sessions/{id}/feedback", get(feedback::poll))
         .route("/api/sessions/{id}/notices", get(feedback::notices))
         // A long-poll: outside the request timeout, as the feedback poll.
@@ -524,6 +522,13 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             "/api/artifacts/{aid}/versions/{n}/files/{*path}",
             get(content::raw_file),
         );
+    // Bounded by the fetch's own deadline (`net::TIMEOUT`); the daemon's
+    // alone, as the grants above.
+    #[cfg(not(target_arch = "wasm32"))]
+    let r = r.route(
+        "/api/artifacts/{aid}/net:fetch",
+        post(net::fetch.layer(DefaultBodyLimit::max(net::NET_BODY_LIMIT))),
+    );
     // What holds its connection open: the daemon's. A Durable Object
     // carries the streams and rooms over its own hibernatable sockets and
     // serves `/mcp` with the tool set's JSON-RPC adapter (see the crate

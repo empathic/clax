@@ -23,6 +23,7 @@ pub mod live_layers;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mcp;
 pub mod mcp_http;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod net;
 pub mod people;
 pub mod perf;
