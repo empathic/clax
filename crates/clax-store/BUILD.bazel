@@ -2,7 +2,17 @@ load("//bazel:cargo.bzl", "cargo_package")
 
 cargo_package(
     # clax-core's tool path test vectors, which the audit export's tests
-    # read (src/toolpath/tests.rs, redact.rs, and seal.rs by #[path]).
-    test_compile_data = ["//crates/clax-core:toolpath_vectors"],
+    # read (src/toolpath/tests.rs, redact.rs, and seal.rs by #[path]), and
+    # the older builds' migrations the repair's tests include
+    # (src/migrations.rs).
+    test_compile_data = glob(["tests/fixtures/**"]) + ["//crates/clax-core:toolpath_vectors"],
     test_data = ["//crates/clax-core:toolpath_vectors"],
+)
+
+# The older builds' migrations (tests/fixtures/old-migrations), which the
+# server's and the Worker's repair tests include too.
+filegroup(
+    name = "old_migrations",
+    srcs = glob(["tests/fixtures/old-migrations/*.sql"]),
+    visibility = ["//crates/clax-server:__pkg__"],
 )

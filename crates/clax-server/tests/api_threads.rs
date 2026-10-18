@@ -2332,3 +2332,99 @@ async fn a_thread_view_names_the_clip_file_to_local_agents_alone() {
     );
     assert!(!remote.to_string().contains(file), "{remote}");
 }
+
+/// Migrations 24 to 35 as commit 84b5e5c28 (branch
+/// akesling/clax-artifacts-pre-rebase-2026-10-16) wrote them: earlier
+/// copies of 24 and 25, which a hosted daemon's database was migrated with.
+const PRE_REBASE_MIGRATIONS: &str =
+    include_str!("../../clax-store/tests/fixtures/old-migrations/pre-rebase-84b5e5c28.sql");
+
+const OLD_AID: &str = "7q3k9mzx2b4t";
+/// The LAN viewer's row ID: its `clax_viewer` cookie before
+/// `viewer_cookies`.
+const OLD_SAM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+const OLD_SAM_PUBLIC: &str = "u_0123456789abcdef012345";
+
+/// A whole database at schema 35 as that build left it (the current
+/// migrations 1 to 23 and the steps it ran, then its 24 to 35), with an
+/// artifact, an owner and a LAN viewer, a live agent the owner raised
+/// (`sessions.elevate_json`), and a thread with the viewer's comment, the
+/// agent's reply and its delivery.
+fn pre_rebase_home() -> String {
+    let mut sql = String::new();
+    for m in &clax_store::migrations::MIGRATIONS[..23] {
+        sql.push_str(m);
+        sql.push_str(";\n");
+    }
+    sql.push_str("INSERT INTO install (k, v) VALUES ('id', '000102030405060708090a0b0c0d0e0f');\n");
+    sql.push_str(PRE_REBASE_MIGRATIONS);
+    let mut anchor = element_anchor();
+    anchor["file"] = json!("index.html");
+    let rights = clax_core::rights::Rights::preset(clax_core::rights::PRESET_READER)
+        .unwrap()
+        .to_json()
+        .to_string();
+    sql.push_str(&format!(
+        "INSERT INTO approvals (id, approver, author, scope, created_at, created_via)
+            VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FB0', NULL, '*unconnected', 'everywhere',
+                    '2026-10-15T09:00:00.000Z', 'migration');
+         INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
+            VALUES ('{OLD_AID}', 'Plan', '2026-10-15T10:00:00.000Z', '2026-10-15T10:00:00.000Z', 1, '0');
+         INSERT INTO versions (artifact_id, n, created_at, files_json)
+            VALUES ('{OLD_AID}', 1, '2026-10-15T10:00:00.000Z', '{{}}');
+         INSERT INTO viewers (id, display_name, created_at, public_id, owner, claimed)
+            VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FAO', 'Alex', '2026-10-15T09:00:00.000Z',
+                    'u_ffffffffffffffffffff00', 1, 1);
+         INSERT INTO viewers (id, display_name, created_at, public_id)
+            VALUES ('{OLD_SAM}', 'Sam', '2026-10-15T09:30:00.000Z', '{OLD_SAM_PUBLIC}');
+         INSERT INTO sessions (id, harness, cwd, started_at, last_seen_at, agent_handle, elevate_json)
+            VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FAX', 'claude-code', '/w', '2026-10-15T10:00:00.000Z',
+                    '2026-10-15T10:05:00.000Z', 'a_0123456789abcdef012345', '{rights}');
+         INSERT INTO threads (id, artifact_id, version_n, anchor_json, created_at)
+            VALUES ('t1', '{OLD_AID}', 1, '{anchor}', '2026-10-15T10:01:00.000Z');
+         INSERT INTO comments (id, thread_id, author_kind, author_name, author_public_id, body, created_at)
+            VALUES ('c1', 't1', 'viewer', 'Sam', '{OLD_SAM_PUBLIC}', 'Shorter, please',
+                    '2026-10-15T10:01:00.000Z');
+         INSERT INTO comments (id, thread_id, author_kind, author_name, via_session_id, body, created_at)
+            VALUES ('c2', 't1', 'agent', 'claude-code', '01ARZ3NDEKTSV4RRFFQ69G5FAX', 'Done',
+                    '2026-10-15T10:02:00.000Z');
+         INSERT INTO feedback (id, thread_id, comment_id, target_session_id, created_at)
+            VALUES ('f1', 't1', 'c1', '01ARZ3NDEKTSV4RRFFQ69G5FAX', '2026-10-15T10:01:00.000Z');
+         CREATE TABLE fixture_files (path TEXT NOT NULL, content BLOB NOT NULL);
+         PRAGMA user_version = 35;"
+    ));
+    sql
+}
+
+/// On a home an older build migrated with earlier copies of migrations 24
+/// and 25, once migration 37 has repaired it, the threads list answers 200
+/// to an anonymous caller and to the owner, with the thread's comments, and
+/// the LAN viewer's row-ID cookie still names them.
+#[tokio::test]
+async fn the_threads_list_answers_on_a_home_an_older_build_migrated() {
+    let ts = TestServer::from_sql_with_clock(&pre_rebase_home(), "2026-10-17T12:00:00Z").await;
+    let path = format!("/api/artifacts/{OLD_AID}/threads?include_resolved=true");
+    for res in [ts.get(&path).await, ts.get_authed(&path).await] {
+        let status = res.status();
+        let v: Value = res.json().await.unwrap();
+        assert_eq!(status, 200, "{v}");
+        let bodies: Vec<&str> = v["threads"][0]["comments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["body"].as_str().unwrap())
+            .collect();
+        assert_eq!(bodies, ["Shorter, please", "Done"], "{v}");
+    }
+    let me: Value = ts
+        .client
+        .get(format!("{}/api/viewers/me", ts.base))
+        .header("cookie", format!("clax_viewer={OLD_SAM}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(me["viewer"]["public_id"], OLD_SAM_PUBLIC, "{me}");
+}

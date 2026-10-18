@@ -128,3 +128,83 @@ fn the_store_opens_writes_and_reopens_on_the_vfs() {
     assert!(listed.iter().all(|a| a.current_version == 2));
     assert_eq!(store.integrity_check().unwrap(), "ok");
 }
+
+/// Migrations 24 to 35 as commit 84b5e5c28 (branch
+/// akesling/clax-artifacts-pre-rebase-2026-10-16) wrote them: earlier
+/// copies of 24 and 25, which a hosted daemon's database was migrated with.
+const PRE_REBASE_MIGRATIONS: &str =
+    include_str!("../../clax-store/tests/fixtures/old-migrations/pre-rebase-84b5e5c28.sql");
+
+#[test]
+fn the_store_repairs_a_database_an_older_build_migrated_on_the_vfs() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("clax"));
+    let pages = Rc::new(MemPages::default());
+    {
+        let (conn, _registered) = clax_do_vfs::open("instance.db", pages.clone())
+            .expect("the database opens")
+            .into_parts();
+        let mut sql = String::new();
+        for m in &clax_store::migrations::MIGRATIONS[..23] {
+            sql.push_str(m);
+            sql.push_str(";\n");
+        }
+        sql.push_str(
+            "INSERT INTO install (k, v) VALUES ('id', '000102030405060708090a0b0c0d0e0f');\n",
+        );
+        sql.push_str(PRE_REBASE_MIGRATIONS);
+        let rights = clax_core::rights::Rights::preset(clax_core::rights::PRESET_READER)
+            .unwrap()
+            .to_json()
+            .to_string();
+        sql.push_str(&format!(
+            r#"INSERT INTO approvals (id, approver, author, scope, created_at, created_via)
+                VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FB0', NULL, '*unconnected', 'everywhere',
+                        '2026-10-15T09:00:00.000Z', 'migration');
+             INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
+                VALUES ('7q3k9mzx2b4t', 'Plan', '2026-10-15T10:00:00.000Z', '2026-10-15T10:00:00.000Z', 1, '0');
+             INSERT INTO versions (artifact_id, n, created_at, files_json)
+                VALUES ('7q3k9mzx2b4t', 1, '2026-10-15T10:00:00.000Z', '{{}}');
+             INSERT INTO viewers (id, display_name, created_at, public_id)
+                VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FAV', 'Sam', '2026-10-15T09:30:00.000Z',
+                        'u_0123456789abcdef012345');
+             INSERT INTO sessions (id, harness, cwd, started_at, last_seen_at, agent_handle, elevate_json)
+                VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FAX', 'claude-code', '/w', '2026-10-15T10:00:00.000Z',
+                        '2026-10-15T10:05:00.000Z', 'a_0123456789abcdef012345', '{rights}');
+             INSERT INTO threads (id, artifact_id, version_n, anchor_json, created_at)
+                VALUES ('t1', '7q3k9mzx2b4t', 1,
+                        '{{"kind":"element","selector":"main","quote":"Plan","prefix":"","suffix":"","html_hash":"sha256:00","rect":null,"custom_name":null,"file":"index.html"}}',
+                        '2026-10-15T10:01:00.000Z');
+             INSERT INTO comments (id, thread_id, author_kind, author_name, author_public_id, body, created_at)
+                VALUES ('c1', 't1', 'viewer', 'Sam', 'u_0123456789abcdef012345', 'Shorter, please',
+                        '2026-10-15T10:01:00.000Z');
+             INSERT INTO feedback (id, thread_id, comment_id, target_session_id, created_at)
+                VALUES ('f1', 't1', 'c1', '01ARZ3NDEKTSV4RRFFQ69G5FAX', '2026-10-15T10:01:00.000Z');
+             PRAGMA user_version = 35;"#
+        ));
+        conn.execute_batch(&sql).unwrap();
+    }
+
+    let (store, _registered) = open_store(&pages, &home);
+    let aid = ArtifactId::parse("7q3k9mzx2b4t").unwrap();
+    let (threads, _) = store.list_threads(&aid, true, None, 50).unwrap();
+    assert_eq!(threads.len(), 1);
+    assert_eq!(threads[0].comments[0].body, "Shorter, please");
+    store.thread_extras(&threads, false).unwrap();
+    let raised = store
+        .agent_rights("01ARZ3NDEKTSV4RRFFQ69G5FAX")
+        .unwrap()
+        .expect("a live agent");
+    assert!(
+        raised.elevation_by(None).is_some(),
+        "the owner's elevation is kept"
+    );
+    assert!(
+        store
+            .get_viewer("01ARZ3NDEKTSV4RRFFQ69G5FAV")
+            .unwrap()
+            .is_some(),
+        "the row-ID cookie names its viewer"
+    );
+    assert_eq!(store.integrity_check().unwrap(), "ok");
+}

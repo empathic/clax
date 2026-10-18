@@ -400,8 +400,19 @@ impl TestServer {
         let path = fixtures_dir().join(name);
         let sql = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+        Self::from_sql_with_clock(&sql, at).await
+    }
+
+    /// A test daemon on a database made by fixture text `sql` (as
+    /// [`load_fixture`] loads a fixture file), its clock stopped at `at`
+    /// (RFC 3339). The store migrates the database on open, as a daemon
+    /// does.
+    ///
+    /// # Panics
+    /// When `sql` cannot be loaded, or `at` does not parse.
+    pub async fn from_sql_with_clock(sql: &str, at: &str) -> TestServer {
         let dir = tempfile::tempdir().unwrap();
-        load_fixture(&Home::at(dir.path().join("ax")), &sql);
+        load_fixture(&Home::at(dir.path().join("ax")), sql);
         let clock = Arc::new(ManualClock::at(at));
         Self::start(
             dir,

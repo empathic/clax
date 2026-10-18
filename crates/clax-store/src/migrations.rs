@@ -1111,6 +1111,22 @@ pub const MIGRATIONS: &[&str] = &[
         WHERE rights_json = '[{"actions":["create"],"locations":["*"],"type":"clax-artifacts"},{"actions":["delete","read","update"],"locations":["own"],"type":"clax-artifacts"},{"actions":["read","reply","resolve","send","watch","write"],"locations":["own"],"type":"clax-comments"},{"actions":["read","write"],"level":"admin","locations":["own"],"type":"clax-db"}]';
     ALTER TABLE watches ADD COLUMN relay_name TEXT;
     ALTER TABLE watches ADD COLUMN relay_harness TEXT;"#,
+    // 37: the repair of a database that builds of unmerged branches
+    // migrated with earlier copies of migrations 24 to 26, 30 and 36 under
+    // the same numbers, so the final ones never ran on it. Its Rust step
+    // (`repair`) does all of it, as what it does depends on what the
+    // database holds: it makes every table, column and index those
+    // migrations make in their final form that is missing, with the data
+    // their steps fill in (each viewer's legacy cookie when it makes
+    // `viewer_cookies`, the `*unconnected` approval when it makes
+    // `approvals`, each question's person when it adds `questions.person`),
+    // moves the owner's elevation of each live agent from
+    // `sessions.elevate_json` to `session_elevations` and drops the column,
+    // and rebuilds `push_approvals` without `upto` and `inbox_items` without
+    // the `push` kind. On a database the final migrations made it changes
+    // nothing. A repaired table's added columns come last, so its column
+    // order may differ from a new database's; no read depends on it.
+    "",
 ];
 
 /// The audit journal's migration, as a schema version (the
@@ -1134,6 +1150,11 @@ pub const INBOX_MIGRATION: u32 = 26;
 /// links, guests, bearer grants and link access), as a schema version.
 pub const HOSTED_MIGRATION: u32 = 27;
 
+/// The migration that repairs a database migrated by builds with earlier
+/// copies of migrations 24 to 26, 30 and 36 ([`repair`]), as a schema
+/// version.
+pub const REPAIR_MIGRATION: u32 = 37;
+
 /// Runs the Rust part of the migration that brings the schema to
 /// `version`, in that migration's transaction, after its SQL.
 pub(super) fn rust_step(tx: &rusqlite::Transaction<'_>, version: u32) -> clax_core::Result<()> {
@@ -1144,16 +1165,372 @@ pub(super) fn rust_step(tx: &rusqlite::Transaction<'_>, version: u32) -> clax_co
         legacy_viewer_cookies(tx)?;
     }
     if version == VISIBILITY_MIGRATION {
-        tx.execute(
-            "INSERT INTO approvals (id, approver, author, scope, created_at, created_via)
-             VALUES (?1, NULL, ?2, 'everywhere', ?3, 'migration')",
-            rusqlite::params![
-                clax_core::new_ulid(),
-                clax_core::visibility::UNCONNECTED,
-                clax_core::time::stamp_now()
-            ],
-        )?;
+        unconnected_approval(tx)?;
     }
+    if version == REPAIR_MIGRATION {
+        repair(tx)?;
+    }
+    Ok(())
+}
+
+/// The owner's one approval of `*unconnected` everywhere (migration 25).
+fn unconnected_approval(tx: &rusqlite::Transaction<'_>) -> clax_core::Result<()> {
+    tx.execute(
+        "INSERT INTO approvals (id, approver, author, scope, created_at, created_via)
+         VALUES (?1, NULL, ?2, 'everywhere', ?3, 'migration')",
+        rusqlite::params![
+            clax_core::new_ulid(),
+            clax_core::visibility::UNCONNECTED,
+            clax_core::time::stamp_now()
+        ],
+    )?;
+    Ok(())
+}
+
+/// The tables migrations 24, 25 and 30 make, as their final text makes
+/// them, for [`repair`] to make where missing.
+const REPAIR_TABLES: &str = "CREATE TABLE IF NOT EXISTS viewer_cookies (
+        sha256 TEXT PRIMARY KEY,
+        viewer_id TEXT NOT NULL REFERENCES viewers(id),
+        created_at TEXT NOT NULL,
+        legacy INTEGER NOT NULL DEFAULT 0,
+        replaced_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS invites (
+        id TEXT PRIMARY KEY,
+        code_sha256 TEXT NOT NULL UNIQUE,
+        viewer_id TEXT NOT NULL REFERENCES viewers(id),
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        used_at TEXT,
+        grant_id TEXT,
+        revoked_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS grants (
+        id TEXT PRIMARY KEY,
+        viewer_id TEXT REFERENCES viewers(id),
+        status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'denied', 'revoked', 'expired')),
+        via TEXT NOT NULL CHECK (via IN ('invite', 'request')),
+        client_key TEXT NOT NULL,
+        client_name TEXT NOT NULL,
+        peer_ip TEXT NOT NULL,
+        user_code_sha256 TEXT,
+        wrong_codes INTEGER NOT NULL DEFAULT 0,
+        continue_sha256 TEXT NOT NULL,
+        continue_t INTEGER,
+        continue_nonce TEXT,
+        manage_sha256 TEXT,
+        narrow_json TEXT,
+        created_at TEXT NOT NULL,
+        decided_at TEXT,
+        last_used_at TEXT,
+        ended_at TEXT,
+        ended_by TEXT,
+        browser_sha256 TEXT,
+        browser_expires_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS grant_tokens (
+        sha256 TEXT PRIMARY KEY,
+        grant_id TEXT NOT NULL REFERENCES grants(id),
+        created_at TEXT NOT NULL,
+        revoked_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS session_elevations (
+        session_id TEXT NOT NULL,
+        granter TEXT,
+        access_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        version TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS approvals (
+        id TEXT PRIMARY KEY,
+        approver TEXT,
+        author TEXT NOT NULL,
+        scope TEXT NOT NULL CHECK (scope IN ('thread', 'artifact', 'everywhere')),
+        artifact_id TEXT,
+        thread_id TEXT,
+        created_at TEXT NOT NULL,
+        created_via TEXT NOT NULL CHECK (created_via IN ('shell', 'extension', 'connect', 'migration')),
+        request_id TEXT,
+        revoked_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS approval_requests (
+        id TEXT PRIMARY KEY,
+        approver TEXT,
+        author TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        thread_id TEXT,
+        session_id TEXT,
+        cause TEXT NOT NULL CHECK (cause IN ('ask', 'routing')),
+        count INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'open'
+            CHECK (status IN ('open', 'approved', 'declined', 'withdrawn')),
+        decided_scope TEXT CHECK (decided_scope IN ('thread', 'artifact', 'everywhere')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        decided_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS doc_authors (
+        artifact_id TEXT NOT NULL,
+        path TEXT NOT NULL,
+        author TEXT NOT NULL,
+        PRIMARY KEY (artifact_id, path, author)
+    );
+    CREATE TABLE IF NOT EXISTS page_authors (
+        kind TEXT NOT NULL CHECK (kind IN ('comment', 'asset')),
+        id TEXT NOT NULL,
+        author TEXT NOT NULL,
+        PRIMARY KEY (kind, id, author)
+    );
+    CREATE TABLE IF NOT EXISTS remote_assets (
+        remote_id TEXT NOT NULL,
+        remote_artifact_id TEXT NOT NULL,
+        asset_id TEXT NOT NULL,
+        url TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (remote_id, remote_artifact_id, asset_id)
+    );
+    CREATE TABLE IF NOT EXISTS publish_keys (
+        grant_id TEXT NOT NULL,
+        key TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        n INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (grant_id, key)
+    );";
+
+/// The columns migrations 24 to 26 and 36 add to existing tables, and
+/// those a table of 24 gained after its first copy, as (table, column,
+/// definition) in their final text, for [`repair`] to add where missing.
+const REPAIR_COLUMNS: &[(&str, &str, &str)] = &[
+    ("viewers", "person", "INTEGER NOT NULL DEFAULT 0"),
+    ("viewers", "person_revoked_at", "TEXT"),
+    ("viewers", "rights_json", "TEXT"),
+    ("viewer_cookies", "replaced_at", "TEXT"),
+    ("grants", "continue_t", "INTEGER"),
+    ("grants", "continue_nonce", "TEXT"),
+    ("grants", "browser_sha256", "TEXT"),
+    ("grants", "browser_expires_at", "TEXT"),
+    ("sessions", "grant_id", "TEXT"),
+    ("sessions", "person", "TEXT"),
+    ("sessions", "name", "TEXT"),
+    (
+        "sessions",
+        "name_source",
+        "TEXT CHECK (name_source IN ('derived', 'agent', 'person'))",
+    ),
+    ("sessions", "narrow_json", "TEXT"),
+    (
+        "sessions",
+        "ended_reason",
+        "TEXT\n        CHECK (ended_reason IN ('idle', 'exit', 'revoked', 'person'))",
+    ),
+    ("sessions", "ended_watches_json", "TEXT"),
+    ("sessions", "secret_sha256", "TEXT"),
+    ("session_elevations", "version", "TEXT NOT NULL DEFAULT ''"),
+    ("artifacts", "person", "TEXT"),
+    ("versions", "person", "TEXT"),
+    ("versions", "by_page", "INTEGER NOT NULL DEFAULT 0"),
+    ("versions", "file_authors_json", "TEXT"),
+    ("assets", "person", "TEXT"),
+    ("feedback", "placeholder_at", "TEXT"),
+    ("feedback", "no_access_at", "TEXT"),
+    ("artifacts", "text_authors_json", "TEXT"),
+    ("send_batches", "sender", "TEXT"),
+    ("threads", "resolved_by_person", "TEXT"),
+    ("questions", "person", "TEXT"),
+    ("watches", "relay_name", "TEXT"),
+    ("watches", "relay_harness", "TEXT"),
+];
+
+/// `push_approvals` as migration 30 makes it, for [`repair`] to rebuild one
+/// without `upto`: its rows are copied out, and back into the table made
+/// with migration 30's text (not renamed into place, which would store its
+/// name quoted). A kept row approves up to version 0, so its push asks
+/// again rather than reach a version no one approved.
+const REPAIR_PUSH_APPROVALS: &str = "CREATE TABLE push_approvals_37 AS
+        SELECT question_id, artifact_id, remote_id, session_id, created_at, used_at
+        FROM push_approvals;
+    DROP TABLE push_approvals;
+    CREATE TABLE push_approvals (
+        question_id TEXT PRIMARY KEY,
+        artifact_id TEXT NOT NULL,
+        remote_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        upto INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        used_at TEXT
+    );
+    INSERT INTO push_approvals (question_id, artifact_id, remote_id, session_id, upto,
+        created_at, used_at)
+        SELECT question_id, artifact_id, remote_id, session_id, 0, created_at, used_at
+        FROM push_approvals_37;
+    DROP TABLE push_approvals_37;";
+
+/// `inbox_items` as migration 30 rebuilds it, with the `push` kind, for
+/// [`repair`] to rebuild one without it, keeping every `seq` so the
+/// contentless `inbox_fts` keeps naming its items; its indexes follow in
+/// [`REPAIR_INDEXES`].
+const REPAIR_INBOX: &str = "CREATE TABLE inbox_items_37 (
+        seq INTEGER PRIMARY KEY,
+        id TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL CHECK (kind IN ('reply', 'version', 'published', 'question', 'finished',
+                                           'approval', 'connection', 'ended', 'push')),
+        key TEXT NOT NULL UNIQUE,
+        recipient TEXT,
+        artifact_id TEXT,
+        thread_id TEXT,
+        comment_id TEXT,
+        version_n INTEGER,
+        question_id TEXT,
+        session_id TEXT,
+        harness TEXT,
+        request_id TEXT,
+        grant_id TEXT,
+        detail_json TEXT,
+        created_at TEXT NOT NULL,
+        read_at TEXT
+    );
+    INSERT INTO inbox_items_37 SELECT seq, id, kind, key, recipient, artifact_id, thread_id,
+        comment_id, version_n, question_id, session_id, harness, request_id, grant_id, detail_json,
+        created_at, read_at FROM inbox_items;
+    DROP TABLE inbox_items;
+    ALTER TABLE inbox_items_37 RENAME TO inbox_items;";
+
+/// The indexes migrations 24 to 26, 30 and 35 make, as their final text
+/// makes them, for [`repair`] to make where missing, after its columns.
+const REPAIR_INDEXES: &str = "CREATE INDEX IF NOT EXISTS viewer_cookies_by_viewer ON viewer_cookies(viewer_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS grants_browser ON grants(browser_sha256) WHERE browser_sha256 IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS grants_live_key ON grants(client_key) WHERE status IN ('pending', 'approved');
+    CREATE INDEX IF NOT EXISTS grants_by_viewer ON grants(viewer_id, status);
+    CREATE INDEX IF NOT EXISTS grants_pending ON grants(created_at) WHERE status = 'pending';
+    CREATE INDEX IF NOT EXISTS grant_tokens_by_grant ON grant_tokens(grant_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS session_elevations_key ON session_elevations(session_id, COALESCE(granter, ''));
+    CREATE INDEX IF NOT EXISTS session_elevations_by_granter ON session_elevations(granter) WHERE granter IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS sessions_live_name ON sessions(name COLLATE NOCASE)
+        WHERE ended_at IS NULL AND name IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS sessions_by_grant ON sessions(grant_id, harness, parent_pid) WHERE grant_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS approvals_live ON approvals(
+        COALESCE(approver, ''), author, scope, COALESCE(artifact_id, ''), COALESCE(thread_id, ''))
+        WHERE revoked_at IS NULL;
+    CREATE INDEX IF NOT EXISTS approvals_by_approver ON approvals(COALESCE(approver, ''), author) WHERE revoked_at IS NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS approval_requests_open ON approval_requests(
+        COALESCE(approver, ''), author, artifact_id, COALESCE(thread_id, ''))
+        WHERE status = 'open';
+    CREATE INDEX IF NOT EXISTS approval_requests_by_session ON approval_requests(session_id, status);
+    CREATE INDEX IF NOT EXISTS approval_requests_by_target ON approval_requests(
+        COALESCE(approver, ''), artifact_id, author, status);
+    CREATE INDEX IF NOT EXISTS approval_requests_by_thread ON approval_requests(thread_id, status);
+    CREATE INDEX IF NOT EXISTS inbox_unread ON inbox_items(COALESCE(recipient, ''), seq) WHERE read_at IS NULL;
+    CREATE INDEX IF NOT EXISTS inbox_by_recipient ON inbox_items(COALESCE(recipient, ''), seq);
+    CREATE INDEX IF NOT EXISTS inbox_by_artifact ON inbox_items(COALESCE(recipient, ''), artifact_id, seq);
+    CREATE INDEX IF NOT EXISTS inbox_by_kind ON inbox_items(COALESCE(recipient, ''), kind, seq);
+    CREATE INDEX IF NOT EXISTS inbox_by_harness ON inbox_items(COALESCE(recipient, ''), harness, seq);
+    CREATE INDEX IF NOT EXISTS inbox_by_session ON inbox_items(COALESCE(recipient, ''), session_id, seq);
+    CREATE INDEX IF NOT EXISTS inbox_by_created ON inbox_items(created_at, seq);
+    CREATE INDEX IF NOT EXISTS inbox_by_thread ON inbox_items(thread_id) WHERE thread_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS inbox_by_question ON inbox_items(question_id) WHERE question_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS inbox_by_request ON inbox_items(request_id) WHERE request_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS viewers_people ON viewers(public_id) WHERE person = 1;
+    CREATE INDEX IF NOT EXISTS questions_open_by_person ON questions(COALESCE(person, ''), created_at, id)
+        WHERE status = 'open';
+    CREATE INDEX IF NOT EXISTS questions_closed_by_person ON questions(COALESCE(person, ''), closed_at, id)
+        WHERE status <> 'open';
+    CREATE INDEX IF NOT EXISTS question_keys_by_question ON question_keys(question_id, grant_id);";
+
+fn has_table(tx: &rusqlite::Transaction<'_>, table: &str) -> clax_core::Result<bool> {
+    Ok(tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        [table],
+        |r| r.get(0),
+    )?)
+}
+
+fn has_column(
+    tx: &rusqlite::Transaction<'_>,
+    table: &str,
+    column: &str,
+) -> clax_core::Result<bool> {
+    Ok(tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
+        [table, column],
+        |r| r.get(0),
+    )?)
+}
+
+/// Brings a database that builds with earlier copies of migrations 24 to
+/// 26, 30 and 36 migrated to the schema the final ones make (migration
+/// 37); changes nothing on a database they made. Each step checks what is
+/// there first, so a second run changes nothing either.
+///
+/// - Makes the missing tables ([`REPAIR_TABLES`]) and adds the missing
+///   columns ([`REPAIR_COLUMNS`]), then makes the missing indexes
+///   ([`REPAIR_INDEXES`]).
+/// - Where it makes `viewer_cookies`, keeps each viewer's row-ID cookie
+///   working as migration 24's step does ([`legacy_viewer_cookies`]);
+///   where it makes `approvals`, makes migration 25's approval
+///   ([`unconnected_approval`]); where it adds `questions.person`, fills
+///   it in from each question's session as migration 26 does.
+/// - Where `sessions.elevate_json` exists, the earlier copy of migration
+///   24's owner elevation of an agent, makes each live session's into its
+///   owner row of `session_elevations` (granter NULL, a new version), as
+///   the owner's raise makes it now, and drops the column. An ended
+///   session's is not kept, as an elevation ends with its session.
+/// - Rebuilds `push_approvals` without `upto` ([`REPAIR_PUSH_APPROVALS`])
+///   and `inbox_items` without the `push` kind ([`REPAIR_INBOX`]).
+fn repair(tx: &rusqlite::Transaction<'_>) -> clax_core::Result<()> {
+    let had_cookies = has_table(tx, "viewer_cookies")?;
+    let had_approvals = has_table(tx, "approvals")?;
+    tx.execute_batch(REPAIR_TABLES)?;
+    for &(table, column, def) in REPAIR_COLUMNS {
+        if has_column(tx, table, column)? {
+            continue;
+        }
+        tx.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {def};"))?;
+        if (table, column) == ("questions", "person") {
+            tx.execute_batch(
+                "UPDATE questions SET person = (SELECT s.person FROM sessions s WHERE s.id = questions.session_id);",
+            )?;
+        }
+    }
+    if !had_cookies {
+        legacy_viewer_cookies(tx)?;
+    }
+    if !had_approvals {
+        unconnected_approval(tx)?;
+    }
+    if has_column(tx, "sessions", "elevate_json")? {
+        let raised: Vec<(String, String)> = {
+            let mut stmt = tx.prepare(
+                "SELECT id, elevate_json FROM sessions
+                 WHERE elevate_json IS NOT NULL AND ended_at IS NULL",
+            )?;
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?
+        };
+        let now = clax_core::time::stamp_now();
+        for (sid, access) in raised {
+            tx.execute(
+                "INSERT OR IGNORE INTO session_elevations
+                    (session_id, granter, access_json, created_at, version)
+                 VALUES (?1, NULL, ?2, ?3, ?4)",
+                rusqlite::params![sid, access, now, clax_core::new_ulid()],
+            )?;
+        }
+        tx.execute_batch("ALTER TABLE sessions DROP COLUMN elevate_json;")?;
+    }
+    if has_table(tx, "push_approvals")? && !has_column(tx, "push_approvals", "upto")? {
+        tx.execute_batch(REPAIR_PUSH_APPROVALS)?;
+    }
+    let inbox: String = tx.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'inbox_items'",
+        [],
+        |r| r.get(0),
+    )?;
+    if !inbox.contains("'push'") {
+        tx.execute_batch(REPAIR_INBOX)?;
+    }
+    tx.execute_batch(REPAIR_INDEXES)?;
     Ok(())
 }
 
@@ -2242,5 +2619,529 @@ mod tests {
             Err::<(), _>(clax_core::CoreError::NotFound)
         });
         assert!(matches!(r, Err(clax_core::CoreError::NotFound)), "{r:?}");
+    }
+
+    /// Migration 37 on databases that builds with earlier copies of
+    /// migrations 24 to 26, 30 and 36 migrated (`tests/fixtures/old-migrations`).
+    mod repair {
+        use super::super::{MIGRATIONS, REPAIR_MIGRATION, rust_step, unconnected_approval};
+        use crate::Store;
+        use clax_core::Home;
+        use clax_core::ids::ArtifactId;
+        use clax_core::rights::{PRESET_READER, Rights};
+        use clax_core::visibility::Reader;
+        use rusqlite::{Connection, params};
+        use std::collections::BTreeMap;
+
+        /// Each fixture: an older build's migrations from its `first` to its
+        /// `user_version`, as that build wrote them.
+        pub(crate) const OLD_BUILDS: &[(&str, &str)] = &[
+            (
+                "pre-rebase-84b5e5c28",
+                include_str!("../tests/fixtures/old-migrations/pre-rebase-84b5e5c28.sql"),
+            ),
+            (
+                "rebased-d1a1c089",
+                include_str!("../tests/fixtures/old-migrations/rebased-d1a1c089.sql"),
+            ),
+            (
+                "rust-int-e1808eb5",
+                include_str!("../tests/fixtures/old-migrations/rust-int-e1808eb5.sql"),
+            ),
+            (
+                "rust-int-c308495e6",
+                include_str!("../tests/fixtures/old-migrations/rust-int-c308495e6.sql"),
+            ),
+            (
+                "rust-int-fc6a2add6",
+                include_str!("../tests/fixtures/old-migrations/rust-int-fc6a2add6.sql"),
+            ),
+            (
+                "main-ac3ee2d4f",
+                include_str!("../tests/fixtures/old-migrations/main-ac3ee2d4f.sql"),
+            ),
+            (
+                "main-27fbe8882",
+                include_str!("../tests/fixtures/old-migrations/main-27fbe8882.sql"),
+            ),
+            (
+                "main-47e94e36b",
+                include_str!("../tests/fixtures/old-migrations/main-47e94e36b.sql"),
+            ),
+            (
+                "pre-main-rebase-95d2a88db",
+                include_str!("../tests/fixtures/old-migrations/pre-main-rebase-95d2a88db.sql"),
+            ),
+        ];
+
+        const AID: &str = "7q3k9mzx2b4t";
+        /// The LAN viewer's row ID: its `clax_viewer` cookie before
+        /// `viewer_cookies`.
+        const SAM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+        const SAM_PUBLIC: &str = "u_0123456789abcdef012345";
+        const LIVE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
+        const ENDED: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
+
+        fn header(sql: &str, key: &str) -> u32 {
+            let tag = format!("-- {key}: ");
+            sql.lines()
+                .find_map(|l| l.strip_prefix(&tag))
+                .unwrap_or_else(|| panic!("no {key} line"))
+                .trim()
+                .parse()
+                .unwrap()
+        }
+
+        fn has_column(c: &Connection, table: &str, column: &str) -> bool {
+            c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
+                params![table, column],
+                |r| r.get(0),
+            )
+            .unwrap()
+        }
+
+        fn has_table(c: &Connection, table: &str) -> bool {
+            c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                [table],
+                |r| r.get(0),
+            )
+            .unwrap()
+        }
+
+        fn rights() -> String {
+            Rights::preset(PRESET_READER).unwrap().to_json().to_string()
+        }
+
+        /// A database as the build of fixture `sql` left it: the current
+        /// migrations before its first (with their Rust steps), then its own,
+        /// each with the step every older build ran after migration 25 (the
+        /// `*unconnected` approval), then rows of every kind the threads list
+        /// reads: an owner and a LAN viewer, a live and an ended agent session
+        /// (each with the owner's elevation where `sessions.elevate_json`
+        /// holds it), a thread with the viewer's comment, the agent's reply,
+        /// and the viewer's comment's delivery to the agent.
+        pub(crate) fn old_build(home: &Home, sql: &str) {
+            home.ensure_dirs().unwrap();
+            let mut c = Connection::open(home.db_path()).unwrap();
+            let first = header(sql, "first");
+            let last = header(sql, "user_version");
+            for v in 1..first {
+                let tx = c.transaction().unwrap();
+                tx.execute_batch(MIGRATIONS[v as usize - 1]).unwrap();
+                rust_step(&tx, v).unwrap();
+                tx.commit().unwrap();
+            }
+            let mut parts = sql.split("\n-- migration: ").skip(1);
+            for v in first..=last {
+                let part = parts.next().unwrap_or_else(|| panic!("no migration {v}"));
+                let (n, body) = part.split_once('\n').unwrap();
+                assert_eq!(n.trim().parse::<u32>().unwrap(), v);
+                let tx = c.transaction().unwrap();
+                tx.execute_batch(body).unwrap();
+                if v == 25 {
+                    unconnected_approval(&tx).unwrap();
+                }
+                tx.commit().unwrap();
+            }
+            assert!(parts.next().is_none());
+            c.pragma_update(None, "user_version", last).unwrap();
+            let anchor = serde_json::to_string(&crate::test_util::anchor()).unwrap();
+            c.execute_batch(&format!(
+                "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
+                    VALUES ('{AID}', 'Plan', '2026-10-15T10:00:00.000Z', '2026-10-15T10:00:00.000Z', 1, '0');
+                 INSERT INTO versions (artifact_id, n, created_at, files_json)
+                    VALUES ('{AID}', 1, '2026-10-15T10:00:00.000Z', '{{}}');
+                 INSERT INTO viewers (id, display_name, created_at, public_id, owner, claimed)
+                    VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FAO', 'Alex', '2026-10-15T09:00:00.000Z',
+                            'u_ffffffffffffffffffff00', 1, 1);
+                 INSERT INTO viewers (id, display_name, created_at, public_id)
+                    VALUES ('{SAM}', 'Sam', '2026-10-15T09:30:00.000Z', '{SAM_PUBLIC}');
+                 INSERT INTO sessions (id, harness, cwd, started_at, last_seen_at, agent_handle)
+                    VALUES ('{LIVE}', 'claude-code', '/w', '2026-10-15T10:00:00.000Z',
+                            '2026-10-15T10:05:00.000Z', 'h_live');
+                 INSERT INTO sessions (id, harness, cwd, started_at, last_seen_at, ended_at, agent_handle)
+                    VALUES ('{ENDED}', 'codex', '/w', '2026-10-15T09:00:00.000Z',
+                            '2026-10-15T09:05:00.000Z', '2026-10-15T09:05:00.000Z', 'h_ended');
+                 INSERT INTO threads (id, artifact_id, version_n, anchor_json, created_at)
+                    VALUES ('t1', '{AID}', 1, '{anchor}', '2026-10-15T10:01:00.000Z');
+                 INSERT INTO comments (id, thread_id, author_kind, author_name, author_public_id, body, created_at)
+                    VALUES ('c1', 't1', 'viewer', 'Sam', '{SAM_PUBLIC}', 'Shorter, please',
+                            '2026-10-15T10:01:00.000Z');
+                 INSERT INTO comments (id, thread_id, author_kind, author_name, via_session_id, body, created_at)
+                    VALUES ('c2', 't1', 'agent', 'claude-code', '{LIVE}', 'Done', '2026-10-15T10:02:00.000Z');
+                 INSERT INTO feedback (id, thread_id, comment_id, target_session_id, created_at)
+                    VALUES ('f1', 't1', 'c1', '{LIVE}', '2026-10-15T10:01:00.000Z');"
+            ))
+            .unwrap();
+            if has_column(&c, "sessions", "elevate_json") {
+                c.execute("UPDATE sessions SET elevate_json = ?1", [rights()])
+                    .unwrap();
+            }
+        }
+
+        /// Every schema object but SQLite's own, by (type, name), as text with
+        /// its whitespace collapsed; a table's column and constraint
+        /// definitions sorted, as a repaired table's added columns come last.
+        fn schema(c: &Connection) -> BTreeMap<(String, String), String> {
+            let mut q = c
+                .prepare(
+                    "SELECT type, name, sql FROM sqlite_master
+                     WHERE name NOT LIKE 'sqlite_%' AND sql IS NOT NULL",
+                )
+                .unwrap();
+            q.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
+            .unwrap()
+            .map(|r| {
+                let (ty, name, sql) = r.unwrap();
+                let sql = sql.split_whitespace().collect::<Vec<_>>().join(" ");
+                let sql = if ty == "table" {
+                    sorted_definitions(&sql)
+                } else {
+                    sql
+                };
+                ((ty, name), sql)
+            })
+            .collect()
+        }
+
+        /// `CREATE TABLE name (a, b, ...)` with its top-level definitions
+        /// sorted.
+        fn sorted_definitions(sql: &str) -> String {
+            let Some(open) = sql.find('(') else {
+                return sql.to_string();
+            };
+            let (head, body) = sql.split_at(open);
+            let body = &body[1..body.rfind(')').unwrap()];
+            let mut defs = Vec::new();
+            let (mut depth, mut start, mut quoted) = (0, 0, false);
+            for (i, ch) in body.char_indices() {
+                match ch {
+                    '\'' => quoted = !quoted,
+                    '(' if !quoted => depth += 1,
+                    ')' if !quoted => depth -= 1,
+                    ',' if !quoted && depth == 0 => {
+                        defs.push(body[start..i].trim().to_string());
+                        start = i + 1;
+                    }
+                    _ => {}
+                }
+            }
+            defs.push(body[start..].trim().to_string());
+            defs.sort();
+            format!("{}({})", head.trim_end(), defs.join(", "))
+        }
+
+        fn fresh_schema() -> BTreeMap<(String, String), String> {
+            let dir = tempfile::tempdir().unwrap();
+            let home = Home::at(dir.path().join("ax"));
+            drop(Store::open(&home).unwrap());
+            schema(&Connection::open(home.db_path()).unwrap())
+        }
+
+        fn diff(
+            got: &BTreeMap<(String, String), String>,
+            want: &BTreeMap<(String, String), String>,
+        ) -> Vec<String> {
+            let mut out = Vec::new();
+            for (k, v) in want {
+                match got.get(k) {
+                    None => out.push(format!("missing {k:?}")),
+                    Some(g) if g != v => {
+                        out.push(format!("differs {k:?}:\n  got  {g}\n  want {v}"))
+                    }
+                    _ => {}
+                }
+            }
+            for k in got.keys().filter(|k| !want.contains_key(*k)) {
+                out.push(format!("extra {k:?}"));
+            }
+            out
+        }
+
+        fn user_version(c: &Connection) -> u32 {
+            c.query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap()
+        }
+
+        #[test]
+        fn each_fixture_is_an_older_schema_than_the_current_one() {
+            let fresh = fresh_schema();
+            for (name, sql) in OLD_BUILDS {
+                let dir = tempfile::tempdir().unwrap();
+                let home = Home::at(dir.path().join("ax"));
+                old_build(&home, sql);
+                let c = Connection::open(home.db_path()).unwrap();
+                assert!(
+                    !diff(&schema(&c), &fresh).is_empty(),
+                    "{name} differs from the current schema"
+                );
+            }
+        }
+
+        #[test]
+        fn migration_37_brings_each_older_build_to_the_current_schema_and_keeps_its_rows() {
+            let fresh = fresh_schema();
+            for (name, sql) in OLD_BUILDS {
+                let dir = tempfile::tempdir().unwrap();
+                let home = Home::at(dir.path().join("ax"));
+                old_build(&home, sql);
+                let (had_cookies, had_elevate) = {
+                    let c = Connection::open(home.db_path()).unwrap();
+                    (
+                        has_table(&c, "viewer_cookies"),
+                        has_column(&c, "sessions", "elevate_json"),
+                    )
+                };
+                let st = Store::open(&home).unwrap();
+                let c = Connection::open(home.db_path()).unwrap();
+                assert_eq!(user_version(&c), MIGRATIONS.len() as u32, "{name}");
+                let d = diff(&schema(&c), &fresh);
+                assert!(d.is_empty(), "{name}:\n{}", d.join("\n"));
+
+                // The viewer, the thread and its comments are kept, and the
+                // threads list reads them as `GET /api/artifacts/{aid}/threads`
+                // does: the visibility for each reader, then the threads, then
+                // each thread's extras, owner's person and live page.
+                let kept: String = c
+                    .query_row("SELECT public_id FROM viewers WHERE id = ?1", [SAM], |r| {
+                        r.get(0)
+                    })
+                    .unwrap();
+                assert_eq!(kept, SAM_PUBLIC, "{name}: the viewer is kept");
+                if !had_cookies {
+                    let sam = st
+                        .get_viewer(SAM)
+                        .unwrap()
+                        .expect("the row-ID cookie names the viewer");
+                    assert_eq!(sam.public_id, SAM_PUBLIC, "{name}");
+                }
+                let aid = ArtifactId::parse(AID).unwrap();
+                st.owner_sees_all().unwrap();
+                crate::visibility::Visibility::for_reader(&st, &Reader::Owner, 0).unwrap();
+                crate::visibility::Visibility::for_reader(
+                    &st,
+                    &Reader::Person(SAM_PUBLIC.into()),
+                    0,
+                )
+                .unwrap();
+                let (threads, _) = st.list_threads(&aid, true, None, 50).unwrap();
+                assert_eq!(threads.len(), 1, "{name}");
+                let bodies: Vec<&str> = threads[0]
+                    .comments
+                    .iter()
+                    .map(|c| c.body.as_str())
+                    .collect();
+                assert_eq!(bodies, ["Shorter, please", "Done"], "{name}");
+                for codex in [false, true] {
+                    assert_eq!(
+                        st.thread_extras(&threads, codex).unwrap().len(),
+                        1,
+                        "{name}"
+                    );
+                }
+                st.agent_person(None).unwrap();
+                st.live_page_of(&aid).unwrap();
+
+                // The LAN viewer's row-ID cookie names it where the repair made
+                // `viewer_cookies`; where the table was there, no cookie of
+                // theirs is added back.
+                let legacy: Vec<(String, i64)> = {
+                    let mut q = c
+                        .prepare("SELECT viewer_id, legacy FROM viewer_cookies WHERE sha256 = ?1")
+                        .unwrap();
+                    q.query_map([clax_core::secret::sha256_hex(SAM)], |r| {
+                        Ok((r.get(0)?, r.get(1)?))
+                    })
+                    .unwrap()
+                    .collect::<rusqlite::Result<_>>()
+                    .unwrap()
+                };
+                if had_cookies {
+                    assert!(legacy.is_empty(), "{name}: {legacy:?}");
+                } else {
+                    assert_eq!(legacy, [(SAM.to_string(), 1)], "{name}");
+                    let owner_cookies: i64 = c
+                        .query_row(
+                            "SELECT COUNT(*) FROM viewer_cookies k JOIN viewers v ON v.id = k.viewer_id
+                             WHERE v.owner = 1",
+                            [],
+                            |r| r.get(0),
+                        )
+                        .unwrap();
+                    assert_eq!(owner_cookies, 0, "{name}: no owner cookie");
+                }
+
+                // The live agent keeps the owner's elevation `elevate_json`
+                // held; the ended one has none.
+                let live = st.agent_rights(LIVE).unwrap().expect("a live agent");
+                let raised = live.elevation_by(None).map(|r| r.to_json().to_string());
+                assert_eq!(raised, had_elevate.then(rights), "{name}");
+                if had_elevate {
+                    assert_eq!(
+                        live.elevations[0].version.len(),
+                        26,
+                        "{name}: a ULID version"
+                    );
+                }
+                let ended: i64 = c
+                    .query_row(
+                        "SELECT COUNT(*) FROM session_elevations WHERE session_id = ?1",
+                        [ENDED],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(ended, 0, "{name}");
+
+                // Exactly one `*unconnected` approval.
+                let approvals: i64 = c
+                    .query_row(
+                        "SELECT COUNT(*) FROM approvals WHERE author = ?1 AND created_via = 'migration'",
+                        [clax_core::visibility::UNCONNECTED],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(approvals, 1, "{name}");
+                assert_eq!(
+                    c.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
+                        .unwrap(),
+                    "ok",
+                    "{name}"
+                );
+            }
+        }
+
+        #[test]
+        fn migration_37_changes_nothing_on_a_current_database_and_nothing_when_run_again() {
+            let mut homes = vec![("new", None)];
+            homes.extend(OLD_BUILDS.iter().map(|(n, sql)| (*n, Some(*sql))));
+            for (name, sql) in homes {
+                let dir = tempfile::tempdir().unwrap();
+                let home = Home::at(dir.path().join("ax"));
+                if let Some(sql) = sql {
+                    old_build(&home, sql);
+                }
+                drop(Store::open(&home).unwrap());
+                let mut c = Connection::open(home.db_path()).unwrap();
+                let rows = |c: &Connection| -> Vec<i64> {
+                    [
+                        "viewer_cookies",
+                        "session_elevations",
+                        "approvals",
+                        "inbox_items",
+                        "push_approvals",
+                        "sessions",
+                    ]
+                    .iter()
+                    .map(|t| {
+                        c.query_row(&format!("SELECT COUNT(*) FROM {t}"), [], |r| r.get(0))
+                            .unwrap()
+                    })
+                    .collect()
+                };
+                let (before, rows_before) = (schema(&c), rows(&c));
+                let raw = |c: &Connection| -> Vec<String> {
+                    let mut q = c
+                        .prepare("SELECT sql FROM sqlite_master ORDER BY name")
+                        .unwrap();
+                    q.query_map([], |r| r.get::<_, Option<String>>(0))
+                        .unwrap()
+                        .map(|r| r.unwrap().unwrap_or_default())
+                        .collect()
+                };
+                let raw_before = raw(&c);
+                let tx = c.transaction().unwrap();
+                rust_step(&tx, REPAIR_MIGRATION).unwrap();
+                tx.commit().unwrap();
+                assert_eq!(raw(&c), raw_before, "{name}: the schema text is unchanged");
+                assert_eq!(schema(&c), before, "{name}");
+                assert_eq!(rows(&c), rows_before, "{name}");
+                assert_eq!(user_version(&c), MIGRATIONS.len() as u32, "{name}");
+            }
+        }
+
+        #[test]
+        fn migration_37_leaves_a_database_the_current_migrations_made_as_it_is() {
+            let dir = tempfile::tempdir().unwrap();
+            let home = Home::at(dir.path().join("ax"));
+            home.ensure_dirs().unwrap();
+            let mut c = Connection::open(home.db_path()).unwrap();
+            for v in 1..REPAIR_MIGRATION {
+                let tx = c.transaction().unwrap();
+                tx.execute_batch(MIGRATIONS[v as usize - 1]).unwrap();
+                rust_step(&tx, v).unwrap();
+                tx.pragma_update(None, "user_version", v).unwrap();
+                tx.commit().unwrap();
+            }
+            let dump = |c: &Connection| -> Vec<(String, Option<String>)> {
+                let mut q = c
+                    .prepare("SELECT name, sql FROM sqlite_master ORDER BY name")
+                    .unwrap();
+                q.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .unwrap()
+                    .collect::<rusqlite::Result<_>>()
+                    .unwrap()
+            };
+            let before = dump(&c);
+            let tx = c.transaction().unwrap();
+            tx.execute_batch(MIGRATIONS[REPAIR_MIGRATION as usize - 1])
+                .unwrap();
+            rust_step(&tx, REPAIR_MIGRATION).unwrap();
+            tx.commit().unwrap();
+            assert_eq!(dump(&c), before);
+        }
+
+        #[test]
+        fn migration_37_carries_inbox_items_and_push_approvals_through_their_rebuilds() {
+            let (_, sql) = OLD_BUILDS
+                .iter()
+                .find(|(n, _)| *n == "rust-int-c308495e6")
+                .unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let home = Home::at(dir.path().join("ax"));
+            old_build(&home, sql);
+            {
+                let c = Connection::open(home.db_path()).unwrap();
+                c.execute_batch(&format!(
+                    "INSERT INTO inbox_items (seq, id, kind, key, artifact_id, created_at)
+                        VALUES (5, '01ARZ3NDEKTSV4RRFFQ69G5FB1', 'published', 'published:{AID}', '{AID}', 'x');
+                     INSERT INTO push_approvals (question_id, artifact_id, remote_id, session_id, created_at)
+                        VALUES ('q1', '{AID}', 'r1', '{LIVE}', 'x');"
+                ))
+                .unwrap();
+            }
+            let st = Store::open(&home).unwrap();
+            let c = Connection::open(home.db_path()).unwrap();
+            let item: (i64, String) = c
+                .query_row("SELECT seq, kind FROM inbox_items", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .unwrap();
+            assert_eq!(item, (5, "published".to_string()));
+            let upto: i64 = c
+                .query_row(
+                    "SELECT upto FROM push_approvals WHERE question_id = 'q1'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(upto, 0, "a kept approval reaches no version");
+            // The `push` kind is accepted (the transaction is rolled back).
+            let r = st.with_tx(|tx| {
+                tx.execute_batch(
+                    "INSERT INTO inbox_items (id, kind, key, created_at)
+                        VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FB2', 'push', 'push:x', 'x');",
+                )?;
+                Err::<(), _>(clax_core::CoreError::NotFound)
+            });
+            assert!(matches!(r, Err(clax_core::CoreError::NotFound)), "{r:?}");
+        }
     }
 }
