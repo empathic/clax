@@ -49,7 +49,11 @@ class _Actions implements HomeActions {
   @override
   void newApp() {}
   @override
-  void menu(String id, Rect anchor) {}
+  Future<String?> menu(
+    String id,
+    Rect anchor,
+    List<HomeMenuItem> items,
+  ) async => null;
   @override
   void openInbox() {}
   @override

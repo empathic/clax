@@ -79,6 +79,47 @@ describe("the home capability", () => {
     expect(sent[2]).toMatchObject({ cap: "home", method: "menu", args: [{ id: "a1", rect: { x: 1, y: 2, w: 3, h: 4 } }] });
   });
 
+  it("menu forwards the page's items, and sends {id, rect} alone without them", async () => {
+    const sent = link(true);
+    const { e } = env({ home: {} });
+    const host = new CapabilityHost(Promise.resolve(e), REGISTRY, null);
+    const rect = { x: 1, y: 2, w: 3, h: 4 };
+    void host.handle({ type: "clax:call", id: "m1", ns: "home", method: "menu", args: ["a1", rect, { items: [{ id: "star", label: " Star " }, { id: "rm", label: "Remove from group" }] }] });
+    void host.handle({ type: "clax:call", id: "m2", ns: "home", method: "menu", args: ["a1", rect] });
+    void host.handle({ type: "clax:call", id: "m3", ns: "home", method: "menu", args: ["a1", rect, {}] });
+    void host.handle({ type: "clax:call", id: "m4", ns: "home", method: "menu", args: ["a1", rect, { items: [{ id: "a", label: "x".repeat(32) }] }] });
+    await vi.waitFor(() => expect(sent.filter(s => s.method === "menu")).toHaveLength(4));
+    const menus = sent.filter(s => s.method === "menu");
+    expect(menus[0].args).toEqual([{ id: "a1", rect, items: [{ id: "star", label: "Star" }, { id: "rm", label: "Remove from group" }] }]);
+    expect(menus[1].args).toEqual([{ id: "a1", rect }]);
+    expect(menus[2].args).toEqual([{ id: "a1", rect }]);
+    expect(menus[3].args).toEqual([{ id: "a1", rect, items: [{ id: "a", label: "x".repeat(32) }] }]);
+  });
+
+  it("menu refuses bad items with bad_request and sends nothing", async () => {
+    const sent = link(true);
+    const { e, posted } = env({ home: {} });
+    const host = new CapabilityHost(Promise.resolve(e), REGISTRY, null);
+    const rect = { x: 1, y: 2, w: 3, h: 4 };
+    const five = Array.from({ length: 5 }, (_, i) => ({ id: `i${i}`, label: "x" }));
+    for (const options of [
+      { items: five },
+      { items: [{ id: "a", label: "x".repeat(33) }] },
+      { items: [{ id: "a", label: "   " }] },
+      { items: [{ id: "", label: "Star" }] },
+      { items: [{ id: "a".repeat(65), label: "Star" }] },
+      { items: [{ id: "a", label: "Star" }, { id: "a", label: "Unstar" }] },
+      { items: [{ id: "a", label: "Line\nbreak" }] },
+      { items: [{ id: 3, label: "Star" }] },
+      { items: "star" },
+      "star",
+    ]) {
+      await host.handle({ type: "clax:call", id: "b", ns: "home", method: "menu", args: ["a1", rect, options] });
+      expect(posted.at(-1), JSON.stringify(options)).toMatchObject({ ok: false, error: { code: "bad_request" } });
+    }
+    expect(sent).toHaveLength(0);
+  });
+
   it("passes the app's refusal on, and asks nothing for a bad call or one without a gesture", async () => {
     const sent = link(true);
     const { e, posted } = env({ home: {} });

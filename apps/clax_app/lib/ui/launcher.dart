@@ -340,7 +340,9 @@ class _LauncherState extends State<Launcher> {
                       building: _host.buildOf(apps[i].id),
                       onTap: () => widget.open(apps[i].id),
                       // The menu is a bottom sheet: no anchor.
-                      onLongPress: () => _actions.menu(apps[i].id, Rect.zero),
+                      onLongPress: () => unawaited(
+                        _actions.menu(apps[i].id, Rect.zero, const []),
+                      ),
                     );
                   },
                 ),
@@ -996,7 +998,8 @@ IconData? iconFor(String? word) => switch (word?.trim().toLowerCase()) {
 /// failure) is kept for the next New. A make's tile shows its build view
 /// again, caught up, or asks "Make it again?" for an interrupted one.
 ///
-/// The menu of an app: Open; Inspect, which pushes the [AppInspector] with
+/// The menu of an app: the home app's items, above a divider, then Open;
+/// Inspect, which pushes the [AppInspector] with
 /// [inspectorPermissions] (a version opened from its history going to
 /// [onOpenTarget]); with [bundles], Share app; Resume build for a build
 /// that stopped with features to build. The inbox pushes [InboxScreen] on
@@ -1181,10 +1184,13 @@ class HomeFlows implements HomeActions {
         phase == BuildPhase.failed;
   }
 
-  Future<void> _menu(ArtifactSummary app) async {
+  /// Shows [app]'s menu: [items] first, then Clax's own. Resolves with the
+  /// picked item's ID as the sheet closes, or null for one of Clax's own
+  /// (whose action then runs) or a dismissal.
+  Future<String?> _menu(ArtifactSummary app, List<HomeMenuItem> items) async {
     final resume = await _resumable(app.id);
     final at = contextOf();
-    if (at == null || !at.mounted) return;
+    if (at == null || !at.mounted) return null;
     final choice = await showModalBottomSheet<String>(
       context: at,
       builder: (context) => SafeArea(
@@ -1199,6 +1205,13 @@ class HomeFlows implements HomeActions {
                 style: Theme.of(context).textTheme.titleMedium,
               ),
             ),
+            for (final i in items)
+              ListTile(
+                key: ValueKey('home-item-${i.id}'),
+                title: Text(i.label),
+                onTap: () => Navigator.of(context).pop('item:${i.id}'),
+              ),
+            if (items.isNotEmpty) const Divider(),
             ListTile(
               leading: const Icon(Icons.open_in_new_rounded),
               title: const Text('Open'),
@@ -1236,6 +1249,15 @@ class HomeFlows implements HomeActions {
         ),
       ),
     );
+    if (choice != null && choice.startsWith('item:')) {
+      return choice.substring(5);
+    }
+    if (choice != null) unawaited(_act(app, choice));
+    return null;
+  }
+
+  /// Runs Clax's own menu item [choice] on [app].
+  Future<void> _act(ArtifactSummary app, String choice) async {
     final c = contextOf();
     if (c == null || !c.mounted) return;
     switch (choice) {
@@ -1302,11 +1324,12 @@ class HomeFlows implements HomeActions {
   }
 
   @override
-  void menu(String id, Rect anchor) {
-    if (!mounted) return;
+  Future<String?> menu(String id, Rect anchor, List<HomeMenuItem> items) async {
+    if (!mounted) return null;
     for (final a in host.summaries ?? const <ArtifactSummary>[]) {
-      if (a.id == id) unawaited(_menu(a));
+      if (a.id == id) return _menu(a, items);
     }
+    return null;
   }
 
   @override

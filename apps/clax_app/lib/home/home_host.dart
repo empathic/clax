@@ -96,6 +96,10 @@ class HomeState {
   final bool needsKey;
 }
 
+/// An item a home app adds to an app's menu: [id] is what `menu` resolves
+/// with when the person picks it, [label] what the menu shows.
+typedef HomeMenuItem = ({String id, String label});
+
 /// What the home screen asks of the app's screens: each opens its screen
 /// or sheet over the home screen.
 abstract class HomeActions {
@@ -109,8 +113,11 @@ abstract class HomeActions {
   /// Shows the New app sheet.
   void newApp();
 
-  /// Shows app [id]'s long-press menu, anchored at [anchor].
-  void menu(String id, Rect anchor);
+  /// Shows app [id]'s long-press menu, anchored at [anchor]: [items] (the
+  /// home app's own) first, above a divider, then Clax's. Resolves with
+  /// the picked item's ID, or null when the person picked one of Clax's
+  /// own items or dismissed the menu.
+  Future<String?> menu(String id, Rect anchor, List<HomeMenuItem> items);
 
   void openInbox();
   void openSettings();
@@ -363,7 +370,8 @@ class HomeHost extends ChangeNotifier {
   /// Answers the home app's call [method] with [args] (named arguments,
   /// as the shell sends them). Throws [HomeRefused] when [callerAid] is
   /// not the home app, and [HomeBadRequest] for a method or arguments the
-  /// capability does not take.
+  /// capability does not take. `menu` resolves the picked item's ID, or
+  /// null; every other call that opens something resolves null.
   Future<Object?> call(
     String callerAid,
     String method,
@@ -391,7 +399,11 @@ class HomeHost extends ChangeNotifier {
       case 'newApp':
         actions.newApp();
       case 'menu':
-        actions.menu(_appId(args), _rect(args['rect']));
+        return actions.menu(
+          _appId(args),
+          _rect(args['rect']),
+          _items(args['items']),
+        );
       case 'openInbox':
         actions.openInbox();
       case 'openSettings':
@@ -438,6 +450,41 @@ class HomeHost extends ChangeNotifier {
     'openSettings',
     'importApp',
   };
+
+  /// The most items a home app may add to a menu, and the longest label.
+  static const maxMenuItems = 4;
+  static const maxMenuLabel = 32;
+
+  /// `menu`'s items: none when absent; each label trimmed.
+  static List<HomeMenuItem> _items(Object? v) {
+    if (v == null) return const [];
+    const bad = HomeBadRequest(
+      'menu takes up to $maxMenuItems items {id, label}: IDs of 1 to 64 '
+      'characters, each once, and labels of 1 to $maxMenuLabel characters '
+      'of plain text',
+    );
+    if (v is! List || v.length > maxMenuItems) throw bad;
+    final seen = <String>{};
+    return [
+      for (final i in v)
+        switch (i) {
+          {'id': final String id, 'label': final String label}
+              when id.isNotEmpty &&
+                  id.length <= 64 &&
+                  _plain(label.trim()) &&
+                  seen.add(id) =>
+            (id: id, label: label.trim()),
+          _ => throw bad,
+        },
+    ];
+  }
+
+  /// Whether [s] is a label: 1 to [maxMenuLabel] code points, none a
+  /// control character.
+  static bool _plain(String s) =>
+      s.isNotEmpty &&
+      s.runes.length <= maxMenuLabel &&
+      !s.runes.any((r) => r < 0x20 || r == 0x7f);
 
   static List<HomeTile> _tilesOf(Object? v) {
     if (v is! List || v.length > maxTiles) {

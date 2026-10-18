@@ -300,7 +300,8 @@ declare namespace ClaxExtensions {
    * `shown()`, and shows its own, with Undo last change and Reset, when
    * no `shown()` comes within 10 s of the page loading. Rejections are `{code, message}` with `code` one of
    * `refused` (not the home app), `bad_request` (an ID not on the home
-   * screen, a malformed rect), `no_gesture` or `unavailable`.
+   * screen, a malformed rect, bad menu items), `no_gesture` or
+   * `unavailable`.
    */
   namespace Home {
     /** An app's icon: its own (`url`, an image URL to show in an `<img>`),
@@ -348,6 +349,14 @@ declare namespace ClaxExtensions {
       key: boolean;
     }
 
+    /** An item a home app adds to an app's menu. */
+    interface MenuItem {
+      /** What `menu` resolves with when the person picks it: 1 to 64 characters, each item its own. */
+      id: string;
+      /** What the menu shows: plain text, 1 to 32 characters. */
+      label: string;
+    }
+
     interface Home {
       /** The person's apps, newest first. */
       apps(): Promise<App[]>;
@@ -363,8 +372,12 @@ declare namespace ClaxExtensions {
       openMake(id: string): Promise<void>;
       /** Shows the New app sheet; the make then appears in `makes()`. */
       newApp(): Promise<void>;
-      /** Shows app `id`'s menu (Open, Inspect, Share app, Resume build) anchored at `rect`. */
-      menu(id: string, rect: Rect): Promise<void>;
+      /** Shows app `id`'s menu anchored at `rect`: the page's `items` (at
+       * most 4) first, above a divider, then Clax's own (Open, Inspect,
+       * Share app, Resume build). Resolves with the picked item's `id`, or
+       * `null` when the person picked one of Clax's own or dismissed it.
+       * Bad items reject `bad_request`. */
+      menu(id: string, rect: Rect, options?: { items?: MenuItem[] }): Promise<string | null>;
       openInbox(): Promise<void>;
       openSettings(): Promise<void>;
       /** Opens the system picker to import a `.clax` app. */

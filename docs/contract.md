@@ -5444,7 +5444,7 @@ as `deviceEvent {cap: "home", name, data}`.
 | `open(id)` | Opens app `id`, as a tap on its tile. |
 | `openMake(id)` | Shows make `id`'s build view, or asks "Make it again?" for an interrupted one. |
 | `newApp()` | Shows the New app sheet; the make then appears in `makes()`. |
-| `menu(id, {x, y, w, h})` | Shows app `id`'s menu (Open, Inspect, Share app, Resume build) anchored at that rectangle, in CSS pixels from the viewport's top left. |
+| `menu(id, {x, y, w, h}, {items})` | Shows app `id`'s menu anchored at that rectangle, in CSS pixels from the viewport's top left: the page's `items` (at most 4 `{id, label}`, labels plain text of at most 32 characters) first, above a divider, then Clax's own (Open, Inspect, Share app, Resume build). Resolves with the picked item's `id`, or `null` for one of Clax's own or a dismissal. `items` may be left out. |
 | `openInbox()`, `openSettings()`, `importApp()` | Opens the inbox, Settings, or the system picker for a `.clax` file. |
 | `shown()` | Says the page has drawn the home screen (its apps, the empty state or the load error). Clax keeps its own home screen over the page until then, and shows its own with Undo last change and Reset when no `shown()` comes within 10 s of the page loading. Call it once per load, from an effect after that render. |
 | `tiles(list)` | Says where each app's tile is now: `list` is `[{id, rect: {x, y, w, h}}]` in CSS pixels from the viewport's top left, at most 512. Call it after each render that moves tiles, and on scroll and resize. Clax keeps the last list with an image of the page, shows that image at once on its next cold start until `shown()`, and then opens the app whose tile a tap on the image fell on, when that app is still in `apps()`. |
@@ -5456,7 +5456,7 @@ latest value of each. The calls that open something must come from the
 person's tap or key press in the page (`no_gesture` otherwise); the reads,
 `shown()` and `tiles()` need none. Calls reject `{code, message}` with `refused` (not the home
 app), `bad_request` (an unknown method, an ID not on the home screen, a
-malformed rectangle), `no_gesture` or `unavailable`.
+malformed rectangle or menu items), `no_gesture` or `unavailable`.
 
 A Clax release may ship a new home bundle. At start the app compares it
 with the installed home app by the bundle trust rules ("Sharing apps"): an

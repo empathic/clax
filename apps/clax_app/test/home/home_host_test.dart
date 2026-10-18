@@ -26,6 +26,9 @@ FakeClaxApi _api() {
 
 class _Actions implements HomeActions {
   final calls = <(String, List<Object?>)>[];
+
+  /// What the next `menu` resolves with.
+  String? menuAnswer;
   @override
   void open(String id) => calls.add(('open', [id]));
   @override
@@ -33,7 +36,15 @@ class _Actions implements HomeActions {
   @override
   void newApp() => calls.add(('newApp', []));
   @override
-  void menu(String id, Rect anchor) => calls.add(('menu', [id, anchor]));
+  Future<String?> menu(
+    String id,
+    Rect anchor,
+    List<HomeMenuItem> items,
+  ) async {
+    calls.add(('menu', [id, anchor, items]));
+    return menuAnswer;
+  }
+
   @override
   void openInbox() => calls.add(('openInbox', []));
   @override
@@ -263,9 +274,108 @@ void main() {
     expect(actions.calls.map((c) => [c.$1, ...c.$2]), [
       ['open', aid],
       ['newApp'],
-      ['menu', aid, const Rect.fromLTWH(1, 2, 3, 4)],
+      ['menu', aid, const Rect.fromLTWH(1, 2, 3, 4), const <HomeMenuItem>[]],
       ['openInbox'],
     ]);
+  });
+
+  test("menu passes the page's items and resolves the picked item's ID", () async {
+    final aid = api.seedArtifact('Runs', _page);
+    await host.load();
+    actions.menuAnswer = 'star';
+    final picked = await host.call(home, 'menu', {
+      'id': aid,
+      'rect': {'x': 1, 'y': 2, 'w': 3, 'h': 4},
+      'items': [
+        {'id': 'star', 'label': ' Star '},
+        {'id': 'rm', 'label': 'Remove from group'},
+      ],
+    });
+    expect(picked, 'star');
+    expect(actions.calls.single.$2[2], [
+      (id: 'star', label: 'Star'),
+      (id: 'rm', label: 'Remove from group'),
+    ]);
+    actions.menuAnswer = null;
+    expect(
+      await host.call(home, 'menu', {
+        'id': aid,
+        'rect': {'x': 0, 'y': 0, 'w': 1, 'h': 1},
+      }),
+      isNull,
+    );
+  });
+
+  test('menu takes a label of 32 characters', () async {
+    final aid = api.seedArtifact('Runs', _page);
+    await host.load();
+    await host.call(home, 'menu', {
+      'id': aid,
+      'rect': {'x': 0, 'y': 0, 'w': 1, 'h': 1},
+      'items': [
+        {'id': 'a', 'label': 'é' * 32},
+      ],
+    });
+    expect(actions.calls.single.$2[2], [(id: 'a', label: 'é' * 32)]);
+  });
+
+  test('menu refuses bad items as a bad request and shows nothing', () async {
+    final aid = api.seedArtifact('Runs', _page);
+    await host.load();
+    final rect = {'x': 0, 'y': 0, 'w': 1, 'h': 1};
+    for (final items in <Object?>[
+      [
+        for (var i = 0; i < 5; i++) {'id': 'i$i', 'label': 'x'},
+      ],
+      [
+        {'id': 'a', 'label': 'x' * 33},
+      ],
+      [
+        {'id': 'a', 'label': '  '},
+      ],
+      [
+        {'id': '', 'label': 'Star'},
+      ],
+      [
+        {'id': 'a' * 65, 'label': 'Star'},
+      ],
+      [
+        {'id': 'a', 'label': 'Star'},
+        {'id': 'a', 'label': 'Unstar'},
+      ],
+      [
+        {'id': 'a', 'label': 'Line\nbreak'},
+      ],
+      [
+        {'id': 3, 'label': 'Star'},
+      ],
+      'star',
+    ]) {
+      await expectLater(
+        host.call(home, 'menu', {'id': aid, 'rect': rect, 'items': items}),
+        throwsA(isA<HomeBadRequest>()),
+        reason: '$items',
+      );
+    }
+    expect(actions.calls, isEmpty);
+  });
+
+  test('while actions are held, menu resolves null without showing', () async {
+    final aid = api.seedArtifact('Runs', _page);
+    await host.load();
+    host.holdActions = () => true;
+    actions.menuAnswer = 'star';
+    expect(
+      await host.call(home, 'menu', {
+        'id': aid,
+        'rect': {'x': 0, 'y': 0, 'w': 1, 'h': 1},
+        'items': [
+          {'id': 'star', 'label': 'Star'},
+        ],
+      }),
+      isNull,
+    );
+    expect(actions.calls, isEmpty);
   });
 
   test(
