@@ -1118,6 +1118,71 @@ test("tiles() reports a fanned pile's apps", async () => {
   await wait(() => !ui.exists('.h-fan'));
 });
 
+const pileOfThree = () => ({
+  ...groupLayout('pile'),
+  order: ['app-run', 'g:g1', 'app-habits', 'app-recipes', 'app-budget', 'app-mood'],
+  groups: { g1: { name: 'Lists', look: 'pile', apps: ['app-groceries', 'app-notes', 'app-plants'] } },
+});
+const fanned = () => [...document.querySelectorAll('.h-fan .h-tile[data-id]')].map((t) => t.dataset.id).join();
+
+test("an app dragged along a fanned pile's row reorders the group, and the pile stays fanned", async () => {
+  const clock = manualClock();
+  await show({ makes: [] }, { clock, layout: pileOfThree() });
+  await ui.click('.h-group');
+  clock.advance(1000);
+  await wait(() => ui.exists('.h-fan'));
+  await drag(clock, 'app-plants', centre('app-groceries'));
+  await wait(async () => (await stored()).groups.g1.apps.join() === 'app-plants,app-groceries,app-notes');
+  await wait(() => fanned() === 'app-plants,app-groceries,app-notes');
+  expect(ui.exists('.h-tile[data-held], .h-tile[data-dragging]')).toBe(false);
+  expect(document.querySelector('.h-fan [data-id="app-plants"]').style.position).toBe('');
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  clock.advance(1000);
+  await wait(() => !ui.exists('.h-fan'));
+});
+
+test("an app dragged out of a fanned pile's row into the grid leaves the group there", async () => {
+  const clock = manualClock();
+  await show({ makes: [] }, { clock, layout: pileOfThree() });
+  await ui.click('.h-group');
+  clock.advance(1000);
+  await wait(() => ui.exists('.h-fan'));
+  await drag(clock, 'app-notes', centre('app-mood'));
+  await wait(async () => (await stored()).groups.g1.apps.join() === 'app-groceries,app-plants');
+  expect((await stored()).order.indexOf('app-notes')).toBe(5);
+  await wait(() => section('all').includes('app-notes') && fanned() === 'app-groceries,app-plants');
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  clock.advance(1000);
+  await wait(() => !ui.exists('.h-fan'));
+});
+
+test("a drag while a pile is fanned keeps it fanned and drops where the tiles show, past the fan's row", async () => {
+  const clock = manualClock();
+  const at = SAMPLE.apps[7].updatedAt;
+  const extra = Array.from({ length: 10 }, (_, i) => ({ id: `app-a${i + 1}`, title: `Extra ${i + 1}`, updatedAt: at, build: null, icon: { monogram: 'A', hue: 30 * i } }));
+  const apps = [SAMPLE.apps[1], SAMPLE.apps[7], ...extra];
+  const ids = apps.map((a) => a.id);
+  const layout = { v: 1, starred: [], order: ['g:g1', ...extra.map((a) => a.id)], groups: { g1: { name: 'Lists', look: 'pile', apps: ['app-groceries', 'app-notes'] } }, seen: ids };
+  await show({ makes: [], apps }, { clock, layout });
+  await ui.click('.h-group');
+  clock.advance(1000);
+  await wait(() => ui.exists('.h-fan'));
+  clock.advance(1000);
+  const to = centre('app-a5');
+  const el = document.querySelector('[data-id="app-a10"]');
+  const a = centre('app-a10');
+  el.dispatchEvent(pointer('pointerdown', a)); clock.advance(400);
+  el.dispatchEvent(pointer('pointermove', { x: a.x + 20, y: a.y })); clock.advance(30);
+  expect(ui.exists('.h-fan')).toBe(true);
+  el.dispatchEvent(pointer('pointermove', to)); clock.advance(200);
+  el.dispatchEvent(pointer('pointerup', to)); clock.advance(1500);
+  await wait(async () => (await stored()).order.indexOf('app-a10') === 5);
+  expect(ui.exists('.h-fan')).toBe(true);
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  clock.advance(1000);
+  await wait(() => !ui.exists('.h-fan'));
+});
+
 test('Alt+arrows move a focused app along a fanned pile', async () => {
   const clock = manualClock();
   await show({ makes: [] }, { clock, layout: groupLayout('pile') });

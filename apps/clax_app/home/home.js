@@ -416,8 +416,8 @@ const fanRowOf = (cells, fan) => {
 
 /** Pile `entry`'s apps fanned out in grid row `row`, across the grid, in
  * a row of cells as wide as the grid's that scrolls sideways; each opens
- * on a tap and asks for its menu as in the grid (through the arranger's
- * `ctl.fan`). */
+ * on a tap, asks for its menu and drags as in the grid (through the
+ * arranger's `ctl.fan`). */
 function Fan({ entry, row, layout, ctl, onOpen, onMenu }) {
   return html`<div class="h-fan" data-group=${entry.group.id} role="group" aria-label=${entry.group.name}
     style=${{ gridColumn: '1 / -1', gridRow: `${row}` }}>
@@ -510,8 +510,10 @@ const REORDER_MS = 120;
  * app ID or group key, or by fan key for an app in the fanned pile's row,
  * through `fan`), the drag it starts, and the keyboard's moves. During a
  * drag the tiles are placed and moved here, at once, with no render; the
- * page renders the drag's start and its drop. A drag gathers a fanned pile
- * at once. The neighbours make room wherever the pointer rests, a tile's
+ * page renders the drag's start and its drop. Dragging a fanned pile
+ * gathers it at once; any other drag leaves its row open, and an app in
+ * that row drags along it (its neighbours there making room) or out of it
+ * into the grid, out of the group. The neighbours make room wherever the pointer rests, a tile's
  * centre included; a dragged app whose pointer stays HOVER_MS near another
  * tile's centre, all but still, brings that tile back under it, outlined,
  * and a drop then makes a group of the two apps or adds the app to the
@@ -567,6 +569,19 @@ function arranger(st, clock) {
       // its size at once; the spring below carries it from where it was.
       if (el.dataset.id && ('big' in el.dataset) !== (c.span === 2)) el.toggleAttribute('data-big', c.span === 2);
     }
+    // The fanned pile's row follows its pile; while one of its apps is
+    // dragged along it, the app the drag would go before makes room.
+    const fanEl = st.wrap.querySelector('.h-fan');
+    if (fanEl) {
+      const row = fanRowOf(cells, st.fanGid);
+      if (row && fanEl.style.gridRow !== String(row)) fanEl.style.gridRow = String(row);
+      const gap = drag?.fan && drag.target?.section === 'fan' ? drag.target.index : -1;
+      const w = drag?.fan ? `${(tileEl(drag.key)?.offsetWidth ?? 0) + 4}px` : '';
+      [...fanEl.querySelectorAll('.h-tile[data-key]')].filter((el) => el.dataset.key !== drag?.key).forEach((el, i) => {
+        const m = i === gap ? w : '';
+        if (el.style.marginLeft !== m) el.style.marginLeft = m;
+      });
+    }
     const all = gridOf('all');
     const top = all ? all.getBoundingClientRect().top + scrollY : null;
     // A page that shrank may have scrolled back already: `shift` is how far
@@ -620,7 +635,8 @@ function arranger(st, clock) {
    * there, the one whose cell, packed after the entries before it (a big
    * app's 2×2 included), has its centre nearest the point; a 1×1 drag's
    * point is the pointer, a 2×2's the centre of the tile held under it.
-   * Nearest a make's cell, the first slot. */
+   * Nearest a make's cell, the first slot. With a pile fanned out, the
+   * cells past its band are a row lower, as placement draws them. */
   function slotIn(section, p) {
     const grid = gridOf(section);
     const entries = sections(st.shown, st.apps)[section].filter((e) => e.key !== drag.id);
@@ -639,22 +655,45 @@ function arranger(st, clock) {
       const b = cellBox(cell, g);
       return Math.hypot(b.x + b.w / 2 - q.x, b.y + b.h / 2 - q.y);
     };
+    const items = entries.map((e) => ({ key: e.key, span: spanOf(e.key) }));
+    const pile = section === 'all' && st.fanGid ? `g:${st.fanGid}` : null;
     let index = 0;
     let dist = Math.min(Infinity, ...pack(lead, st.cols).cells.map(far));
-    const before = [...lead];
     for (let i = 0; i <= entries.length; i++) {
-      const { cells } = pack([...before, { key: drag.id, span: n }], st.cols);
-      const d = far(cells.at(-1));
+      // The dragged entry's cell at slot `i`: packing the entries before it
+      // is enough, unless a fanned pile's band may take in later ones.
+      const list = [...lead, ...items.slice(0, i), { key: null, span: n }, ...(pile ? items.slice(i) : [])];
+      const { cells } = pack(list, st.cols);
+      let c = cells[lead.length + i];
+      if (pile) {
+        const pc = cells.find((x) => x.key === pile);
+        if (pc && c.row > bandEnd(cells, pc.row)) c = { ...c, row: c.row + 1 };
+      }
+      const d = far(c);
       if (d < dist) { dist = d; index = i; }
-      if (i < entries.length) before.push({ key: entries[i].key, span: spanOf(entries[i].key) });
     }
     return { section, index };
   }
 
+  /** The slot among the fanned pile's other apps at viewport point `p`,
+   * for an app of it dragged, when `p` is over its row: {section: "fan",
+   * index}; else null. */
+  function fanSlot(p) {
+    const row = drag.fan ? st.wrap?.querySelector('.h-fan') : null;
+    if (!row || !inside(row.getBoundingClientRect(), p)) return null;
+    const others = (st.shown.groups[drag.fan]?.apps ?? []).filter((id) => id !== drag.id);
+    const w = (tileEl(drag.key)?.offsetWidth ?? 1) + 4;
+    const x = p.x - row.getBoundingClientRect().left + row.scrollLeft;
+    return { section: 'fan', index: clamp(Math.floor(x / w), 0, others.length) };
+  }
+
   /** Where a drop at viewport point `p` puts the dragged entry: a group
-   * stays in All apps. */
+   * stays in All apps; an app of the fanned pile over its row moves along
+   * it. */
   function targetAt(p) {
     if (isGroupKey(drag.id)) return slotIn('all', p);
+    const fan = fanSlot(p);
+    if (fan) return fan;
     const star = st.wrap?.querySelector('.h-section[data-section="starred"]');
     if (star && inside(star.getBoundingClientRect(), p)) {
       return star.classList.contains('h-drop') ? { section: 'starred', index: 0, zone: true } : slotIn('starred', p);
@@ -683,7 +722,7 @@ function arranger(st, clock) {
       const g = geometry(r.width, st.cols);
       const i = centreUnder(list, g, p.x - r.left, p.y - r.top, CENTRE_PX);
       const key = i < 0 ? null : list[i].key;
-      if (!key || key === drag.key || key.startsWith('m:')) return null;
+      if (!key || key === drag.key || key === `g:${drag.fan}` || key.startsWith('m:')) return null;
       const b = cellBox(list[i], g);
       return { key, section, c: { x: b.x + b.w / 2, y: b.y + b.h / 2 } };
     }
@@ -739,10 +778,11 @@ function arranger(st, clock) {
 
   const cancelPending = () => { pending?.cancel(); pending = null; };
   const sameSlot = (a, b) => !!a && !!b && a.section === b.section && a.index === b.index && !!a.zone === !!b.zone;
-  /** The neighbours make room for the dragged entry at slot `t`. */
+  /** The neighbours make room for the dragged entry at slot `t`: in its
+   * fanned pile's row, the apps there; anywhere else, the grid's tiles. */
   function commit(t) {
     drag.target = t;
-    drag.prov = moveTo(st.shown, drag.id, t.section, t.index);
+    drag.prov = t.section === 'fan' ? null : moveTo(st.shown, drag.id, t.section, t.index);
     relayout();
   }
 
@@ -819,6 +859,27 @@ function arranger(st, clock) {
     st.onDragging(false);
     const el = tileEl(d.key);
     if (el) delete el.dataset.held;
+    if (d.fan && el) unfix(d.key, el);
+  }
+
+  /** Lifts app tile `el` (fan key `key`) of a fanned pile's row out of the
+   * row's clipping, where it is, for a drag: the row closes up behind it. */
+  function fix(el) {
+    const t = offsetOf(el);
+    const r = el.getBoundingClientRect();
+    Object.assign(el.style, { position: 'fixed', left: `${r.left - t.x}px`, top: `${r.top - t.y}px`, width: `${r.width}px`, height: `${r.height}px`, margin: '0' });
+    el.dataset.dragging = '';
+  }
+
+  /** Puts a tile `fix` lifted back in its row, springing from where it shows. */
+  function unfix(key, el) {
+    const seen = el.getBoundingClientRect();
+    for (const k of ['position', 'left', 'top', 'width', 'height', 'margin']) el.style[k] = '';
+    delete el.dataset.dragging;
+    const t = offsetOf(el);
+    const r = el.getBoundingClientRect();
+    st.motion.from(key, el, seen.left - (r.left - t.x), seen.top - (r.top - t.y));
+    pos.set(key, layoutPos(el));
   }
 
   /** App `id` dropped on hovered tile `target` (an app's or a group's
@@ -847,37 +908,13 @@ function arranger(st, clock) {
     st.change(op).then(() => { if (mine === seq) st.setHeld(null); });
   }
 
-  /** The press of app `app`'s tile in the fanned pile's row (fan key
-   * `key`): a hold then a release asks for its menu; it does not drag. */
-  function fanHandlersFor(key, app) {
-    const unlift = () => {
-      const el = tileEl(key);
-      if (el) delete el.dataset.held;
-      blocking(false);
-    };
-    return {
-      lift() {
-        const el = tileEl(key);
-        if (el) el.dataset.held = '';
-        blocking(true);
-      },
-      unlift,
-      menu() {
-        unlift();
-        const el = tileEl(key);
-        const a = st.apps.find((x) => x.id === app);
-        if (el && a) st.onMenu(a, faceRect(el));
-      },
-      dragStart() {},
-      dragMove() {},
-      dragEnd: unlift,
-      dragCancel: unlift,
-    };
-  }
-
-  function handlersFor(id) {
-    if (isFanKey(id)) return fanHandlersFor(id, id.slice(2));
-    const key = entryTileKey(id);
+  /** The press of `pressId`'s tile: an entry of Starred or All apps (an
+   * app's ID or a group's key), or an app in the fanned pile's row (its fan
+   * key), which drags along the row or out of it into the grid. */
+  function handlersFor(pressId) {
+    const inFan = isFanKey(pressId);
+    const id = inFan ? pressId.slice(2) : pressId;
+    const key = pressTileKey(pressId);
     return {
       lift() {
         const el = tileEl(key);
@@ -900,10 +937,19 @@ function arranger(st, clock) {
       dragStart(p) {
         const el = tileEl(key);
         if (!el) return;
-        st.gatherNow();
+        // A fanned pile dragged gathers; the fan's row stays for any other.
+        if (id === `g:${st.fanGid}`) st.gatherNow();
+        const fan = inFan ? groupOf(st.shown, id) : null;
+        if (inFan && !fan) return;
         const r = el.getBoundingClientRect();
         focus = null;
-        drag = { id, key, from: st.shown.starred.includes(id) ? 'starred' : 'all', grab: { x: p.x - r.left, y: p.y - r.top }, last: p, target: null, prov: null };
+        const from = fan ? 'fan' : st.shown.starred.includes(id) ? 'starred' : 'all';
+        drag = { id, key, fan, from, grab: { x: p.x - r.left, y: p.y - r.top }, last: p, target: null, prov: null };
+        if (fan) {
+          fix(el);
+          drag.target = { section: 'fan', index: st.shown.groups[fan].apps.indexOf(id) };
+          relayout();
+        }
         el.dataset.held = '';
         blocking(true);
         st.setDrag(id);
@@ -927,6 +973,7 @@ function arranger(st, clock) {
         const toss = Math.hypot(v.vx, v.vy) > TOSS_MIN;
         if (!toss && hover?.ready && onHover(p)) { groupDrop(d, hover.key); return; }
         let t = targetAt(p);
+        if (t.section === 'fan') { fanDrop(d, t); return; }
         if (toss && !t.zone) {
           const grid = gridOf(t.section);
           if (grid) {
@@ -950,9 +997,11 @@ function arranger(st, clock) {
           st.motion.let(key);
           if (toss && el) st.motion.bump(key, el, v.vx, v.vy);
         } else if (el) {
-          // It lands in the other section once that renders.
+          // It lands in the other section (or, out of a fanned pile, in the
+          // grid) once that renders.
           const r = el.getBoundingClientRect();
-          landing = { key, x: r.left + scrollX, y: r.top + scrollY, vx: toss ? v.vx : 0, vy: toss ? v.vy : 0 };
+          landing = { key: entryTileKey(id), x: r.left + scrollX, y: r.top + scrollY, vx: toss ? v.vx : 0, vy: toss ? v.vy : 0 };
+          if (d.fan) el.style.visibility = 'hidden';
         }
         end(d);
         const mine = ++seq;
@@ -963,11 +1012,26 @@ function arranger(st, clock) {
         if (!drag) return;
         const d = drag;
         d.prov = null;
+        d.target = null;
         relayout();
         st.motion.let(key);
         end(d);
       },
     };
+  }
+
+  /** App `d.id` of a fanned pile dropped on its row at slot `t`: moved
+   * there along its group, shown at once and written. */
+  function fanDrop(d, t) {
+    const gid = d.fan;
+    const app = d.id;
+    end(d);
+    relayout();
+    const next = moveInGroup(st.shown, gid, app, t.index);
+    st.shown = next;
+    const mine = ++seq;
+    st.setHeld(next);
+    st.change((l) => moveInGroup(l, gid, app, t.index)).then(() => { if (mine === seq) st.setHeld(null); });
   }
 
   const ctl = {
@@ -1072,8 +1136,8 @@ function arranger(st, clock) {
 /** The grid of Starred and All apps, arranged by `arranger`. `fan`
  * ({gid, closing}, or null) is the pile fanned out: its row shows under
  * it, still shown while `closing` (its apps going back into the pile, by
- * `gatherFan`). `gatherNow()` drops the fan with no motion, as a drag
- * starts. */
+ * `gatherFan`). `gatherNow()` drops the fan with no motion, as a drag of
+ * its pile starts. */
 /** The longest a fan's gathering waits for its apps to reach the pile. */
 const GATHER_MS = 1000;
 

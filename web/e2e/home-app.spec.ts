@@ -53,7 +53,7 @@ test.describe("its tests in the inspect view", () => {
     const tests = (await ofType(page, "tests"))[0] as HostMessage & { passed: number; failed: unknown[]; skipped: number };
     expect(tests.failed).toEqual([]);
     expect(tests.skipped).toBe(0);
-    expect(tests.passed).toBe(82);
+    expect(tests.passed).toBe(85);
   });
 });
 
@@ -430,6 +430,20 @@ test.describe("renders", () => {
           await expect.poll(() => page.locator(".h-tile[data-key]").evaluateAll(els => els.every(e => !(e as HTMLElement).style.transform))).toBe(true);
           await page.evaluate(() => Promise.all([...document.images].map(i => i.decode().catch(() => {}))));
           await page.screenshot({ path: join(shots, `home-pile-${size}-${scheme}.png`), animations: "disabled" });
+          // One of its apps caught mid-drag out of the row, the row closed
+          // up behind it; the page losing focus then puts it back.
+          const recipes = (await page.locator('.h-fan [data-id="app-recipes"]').boundingBox())!;
+          await page.mouse.move(recipes.x + recipes.width / 2, recipes.y + recipes.height / 2);
+          await page.mouse.down();
+          await page.mouse.move(recipes.x + recipes.width / 2 + 30, recipes.y + recipes.height / 2 + 110, { steps: 4 });
+          await expect(page.locator('.h-fan [data-id="app-recipes"][data-dragging]')).toHaveCount(1);
+          await expect.poll(() => page.locator(".h-fan .h-tile:not([data-dragging])").evaluateAll(els => els.every(e => !(e as HTMLElement).style.marginLeft))).toBe(true);
+          await expect.poll(() => page.locator(".h-tile[data-id]:not([data-dragging])").evaluateAll(els => els.every(e => !(e as HTMLElement).style.transform))).toBe(true);
+          await page.screenshot({ path: join(shots, `home-pile-drag-${size}-${scheme}.png`), animations: "disabled" });
+          await page.evaluate(() => dispatchEvent(new Event("blur")));
+          await page.mouse.up();
+          await expect(page.locator(".h-page[data-dragging]")).toHaveCount(0);
+          await expect(page.locator(".h-fan .h-tile[data-id]")).toHaveCount(4);
           await page.locator(".h-title").click();
           await expect(page.locator(".h-fan")).toHaveCount(0);
           await expect.poll(() => page.locator(".h-tile[data-key]").evaluateAll(els => els.every(e => !(e as HTMLElement).style.transform))).toBe(true);
