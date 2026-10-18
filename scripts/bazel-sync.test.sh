@@ -4,7 +4,8 @@
 # changed workspace lint, a stale MODULE.bazel.lock (Bazel's error, faked), a
 # Rust version that differs from rust-toolchain.toml, a workspace crate
 # without a BUILD.bazel, and a job limit in .bazelrc each fail, naming the
-# cause; --check never writes a file.
+# cause; --check never writes a file. A sync whose resolution rewrites
+# Cargo.lock (crate_universe, faked) resolves again, so one run is enough.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 T="$(cd "$(mktemp -d)" && pwd -P)"
@@ -52,5 +53,17 @@ if check; then fail "a crate without BUILD.bazel fails"; elif grep -q 'crates/cl
 
 fresh; printf 'build --jobs=4\n' >> "$T/r/.bazelrc"
 if check; then fail "a job limit fails"; else pass "a job limit in .bazelrc fails"; fi
+
+# A Cargo.lock that names a workspace crate at another version than its
+# manifest: the fake rewrites it on resolving, as crate_universe does, and
+# logs each resolution.
+V="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$HERE/Cargo.toml" | head -1)"
+printf '#!/bin/sh\necho resolve >> "$BAZEL_SYNC_TEST_LOG"\nperl -0pi -e '"'"'s/(name = "clax-fake-exe"\\nversion = ")0\\.0\\.1"/${1}%s"/'"'"' Cargo.lock\n' "$V" | fake_exe "$T/bin/bazel-repin"
+fresh; edit 's/(name = "clax-fake-exe"\nversion = ")[^"]+"/${1}0.0.1"/' "$T/r/Cargo.lock"
+: > "$T/resolves"
+if (cd "$T/r" && BAZEL_SYNC_TEST_LOG="$T/resolves" BAZEL_SYNC_BAZEL="$T/bin/bazel-repin" scripts/bazel-sync.sh) >"$T/out" 2>&1 \
+    && [ "$(wc -l < "$T/resolves" | tr -d ' ')" = 2 ] && grep -q "resolving again" "$T/out"; then
+    pass "a sync whose resolution rewrites Cargo.lock resolves again"
+else fail "a sync whose resolution rewrites Cargo.lock resolves again ($(wc -l < "$T/resolves") resolutions: $(cat "$T/out"))"; fi
 
 exit "$FAILED"

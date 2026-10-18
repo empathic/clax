@@ -16,7 +16,8 @@
 #   bazel/playwright/browsers.bzl
 #                         the Chromium builds the locked Playwright runs
 #   MODULE.bazel.lock     the pinned third-party crates (Cargo.lock) and
-#                         packages (each pnpm-lock.yaml)
+#                         packages (each pnpm-lock.yaml), resolved again
+#                         when resolving rewrote Cargo.lock
 # Checked: the Rust version in MODULE.bazel against rust-toolchain.toml, a
 # BUILD.bazel in every workspace crate, no job or core limit in .bazelrc,
 # and each third-party crate's features against Cargo's.
@@ -109,11 +110,24 @@ fi
 log="$(mktemp)"
 trap 'rm -f "$log"' EXIT
 if [ "$mode" = write ]; then
-    if ! "$bazel" mod deps --lockfile_mode=update >/dev/null 2>"$log"; then
-        cat "$log" >&2
-        echo "error: bazel could not resolve the modules; MODULE.bazel.lock was not rewritten" >&2
-        exit 1
-    fi
+    # crate_universe rewrites a Cargo.lock that its manifests no longer
+    # match (a workspace crate's version left behind by a bump) after
+    # MODULE.bazel.lock has recorded the old file's hash; resolving again
+    # records the new one. Cargo.lock must hold still within three rounds.
+    for round in 1 2 3; do
+        before="$(cksum < Cargo.lock)"
+        if ! "$bazel" mod deps --lockfile_mode=update >/dev/null 2>"$log"; then
+            cat "$log" >&2
+            echo "error: bazel could not resolve the modules; MODULE.bazel.lock was not rewritten" >&2
+            exit 1
+        fi
+        [ "$(cksum < Cargo.lock)" = "$before" ] && break
+        if [ "$round" = 3 ]; then
+            echo "error: Cargo.lock changed on every resolution; MODULE.bazel.lock may not match it" >&2
+            exit 1
+        fi
+        echo "bazel: resolving the modules rewrote Cargo.lock; resolving again" >&2
+    done
 elif ! "$bazel" mod deps --lockfile_mode=error >/dev/null 2>"$log"; then
     # Bazel names the lockfile when that is what is wrong; anything else
     # (a syntax error, no network) is its own failure and is shown as such.
