@@ -28,11 +28,11 @@
 #
 # You sign in yourself, in your browser. In order, it
 #
-# 1. checks the tools it needs (node 26, rustup with the wasm32 target, an
+# 1. checks the tools it needs (node 26, pnpm, rustup with the wasm32 target, an
 #    LLVM whose clang targets wasm32, git) and says how to get any that is
 #    missing, adding only the rustup target itself, which is per-user;
-# 2. installs the web UI's and the Worker's npm packages when their
-#    lockfiles changed since the last install;
+# 2. installs the web UI's packages with pnpm and the Worker's with npm when
+#    their lockfiles changed since the last install;
 # 3. checks `wrangler whoami`: when you are not signed in and the script runs
 #    on a terminal, it starts `wrangler login` for you to complete in the
 #    browser (`--login` does only that); otherwise it stops and says so (a
@@ -138,6 +138,7 @@ fi
 say "Checking tools"
 command -v git >/dev/null || fail "git is missing"
 command -v node >/dev/null || fail "node is missing: install Node 26 (https://nodejs.org)"
+command -v pnpm >/dev/null || fail "pnpm is missing: install it (https://pnpm.io/installation)"
 node_major="$(node -p 'process.versions.node.split(".")[0]')"
 [ "$node_major" -ge 26 ] || fail "node $node_major found; Node 26 or later is needed"
 command -v rustup >/dev/null || fail "rustup is missing: install it from https://rustup.rs"
@@ -153,21 +154,9 @@ if [ "$llvm_ok" = 0 ] && command -v clang >/dev/null && clang --print-targets 2>
 [ "$llvm_ok" = 1 ] || fail "no clang that targets wasm32: install LLVM (macOS: brew install llvm; Debian/Ubuntu: apt install clang lld llvm), or set LLVM_BIN"
 echo "ok"
 
-# Installs a package directory's npm packages when its lockfile changed
-# since the last install here.
-npm_install() {
-  local dir="$1" stamp="$1/node_modules/.cloudflare-setup-lock"
-  if [ -d "$dir/node_modules" ] && [ -f "$stamp" ] && cmp -s "$dir/package-lock.json" "$stamp"; then
-    echo "$dir: packages up to date"
-  else
-    (cd "$dir" && npm ci)
-    cp "$dir/package-lock.json" "$stamp"
-  fi
-}
-
 say "Installing packages"
-npm_install "$root/web"
-npm_install "$worker"
+"$root/scripts/pnpm-install-stamped.sh" "$root/web"
+"$root/scripts/npm-ci-stamped.sh" "$worker"
 
 wrangler() { (cd "$worker" && ./node_modules/.bin/wrangler "$@"); }
 signed_in() { ! wrangler whoami 2>&1 | grep -i "not authenticated\|You are not logged in" >/dev/null; }

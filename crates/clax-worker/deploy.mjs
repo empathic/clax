@@ -471,13 +471,13 @@ async function main() {
     step("Build: skipped (--no-build)");
   }
   if (!existsSync(config.main)) throw new Error(`no ${config.main}: build first (drop --no-build)`);
-  // The server embeds web/dist when clax-server compiles (rust-embed), and
+  // The Worker embeds web/dist when clax-worker compiles (rust-embed, src/web.rs), and
   // cargo does not see web/dist change: a Worker built before the web UI
   // serves "ui_not_built" for /setup and every other shell page.
   if (!embedsWebUi()) {
     if (!o.build) throw new Error(`build/index_bg.wasm does not embed web/dist/index.html: drop --no-build`);
-    step("Build: the Worker embedded an older web UI; rebuilding clax-server");
-    await run("cargo", ["clean", "-q", "--release", "--target", "wasm32-unknown-unknown", "-p", "clax-server"]);
+    step("Build: the Worker embedded an older web UI; rebuilding clax-worker");
+    await run("cargo", ["clean", "-q", "--release", "--target", "wasm32-unknown-unknown", "-p", "clax-worker"]);
     await buildWorker();
     if (!embedsWebUi()) throw new Error("build/index_bg.wasm still does not embed web/dist/index.html");
   }
