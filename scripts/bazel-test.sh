@@ -195,9 +195,11 @@ if [ "$ci" = 1 ]; then
     # Everything else in one invocation, so builds, lints and tests share
     # the machine instead of queueing: the format check and clippy over
     # every crate, and every test (Rust, web, Pi, script gates). The perf
-    # benchmarks are `manual`: on demand only (`just perf`).
+    # benchmarks are `manual`: on demand only (`just perf`). //web:playwright
+    # is no test, but CI runs it before this script (`install-deps`), so it
+    # is built here too.
     _pass "every check" \
-        '//crates/... + tests(//...) except attr(tags, "\bmanual\b", //...)' \
+        '//crates/... + //web:playwright + tests(//...) except attr(tags, "\bmanual\b", //...)' \
         --config=fmt --config=clippy "$@"
     # Cargo reads a crate's clippy.toml from beside its Cargo.toml. Bazel
     # takes one for the whole command, so each crate that has one is also
