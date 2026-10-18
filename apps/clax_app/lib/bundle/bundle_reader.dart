@@ -84,7 +84,14 @@ abstract final class BundleReader {
     // 2. The manifest.
     final mEntry = entries['manifest.json'];
     if (mEntry == null) throw _notBundle('it has no manifest.json');
-    final manifestBytes = mEntry.inflate(bytes, maxManifestBytes);
+    final manifestBytes = mEntry.inflate(
+      bytes,
+      maxManifestBytes,
+      damaged: const BundleError(
+        'bad_manifest',
+        'manifest.json is not a whole deflate stream',
+      ),
+    );
     if (manifestBytes == null) {
       throw const BundleError('too_large', 'manifest.json is over 256 KiB');
     }
@@ -177,27 +184,45 @@ int maxDeflateBlocks(int max) => 2 + max ~/ 8192;
 
 /// [data], a raw deflate stream, inflated: null when it holds more than
 /// [max] bytes (inflating stops before it would pass [max], whatever any
-/// header says), more than [maxDeflateBlocks] blocks, or is not valid
-/// deflate. The stream is read with two zero bytes after it: `archive`'s
-/// decoder looks a whole longest code ahead before each code, so a stream
-/// whose last code is shorter than that would otherwise end early. A
-/// stream cut short may then read as a shorter one; the reader's size and
-/// hash checks refuse it.
+/// header says), more than [maxDeflateBlocks] blocks, or is not a whole,
+/// valid deflate stream.
 Uint8List? inflateAtMost(Uint8List data, int max) {
-  final out = _CappedOutput(max);
-  final padded = Uint8List(data.length + _lookahead)..setRange(0, data.length, data);
   try {
-    final inflate = Inflate.lazy(InputMemoryStream(padded), output: out);
+    return _inflate(data, max);
+  } on _Overflow {
+    return null;
+  } on _Damaged {
+    return null;
+  }
+}
+
+/// [data] inflated as [inflateAtMost] says, throwing [_Overflow] past
+/// [max] bytes or [maxDeflateBlocks] blocks and [_Damaged] when it is not
+/// a whole, valid deflate stream.
+///
+/// The stream is read with two zero bytes after it: `archive`'s decoder
+/// looks a whole longest code ahead before each code, so a stream whose
+/// last code is shorter than that would otherwise end early. The decoder
+/// gives back the whole bytes it looked ahead by, so a stream that ends
+/// past [data], in those zero bytes, was cut short and is refused.
+Uint8List _inflate(Uint8List data, int max) {
+  final out = _CappedOutput(max);
+  final padded = Uint8List(data.length + _lookahead)
+    ..setRange(0, data.length, data);
+  final input = InputMemoryStream(padded);
+  try {
+    final inflate = Inflate.lazy(input, output: out);
     var blocks = 1;
     final most = maxDeflateBlocks(max);
     while (inflate.inflateBlock()) {
-      if (++blocks > most) return null;
+      if (++blocks > most) throw _Overflow();
     }
   } on _Overflow {
-    return null;
+    rethrow;
   } on Object {
-    return null;
+    throw _Damaged();
   }
+  if (input.position > data.length) throw _Damaged();
   return out.getBytes();
 }
 
@@ -206,6 +231,8 @@ Uint8List? inflateAtMost(Uint8List data, int max) {
 const _lookahead = 2;
 
 class _Overflow implements Exception {}
+
+class _Damaged implements Exception {}
 
 /// An output that throws [_Overflow] before it would hold more than
 /// [max] bytes plus one.
@@ -267,8 +294,9 @@ class _Entry {
 
   /// The entry's bytes, or null past [max] bytes, when its compressed
   /// size is over [max] plus 1 KiB (deflate never needs more for data it
-  /// shrinks), or when damaged.
-  Uint8List? inflate(Uint8List zip, int max) {
+  /// shrinks), or when damaged; [damaged], when given, is thrown for a
+  /// damaged entry instead.
+  Uint8List? inflate(Uint8List zip, int max, {BundleError? damaged}) {
     if (compressedSize > max + 1024) return null;
     final raw = Uint8List.sublistView(
       zip,
@@ -276,7 +304,14 @@ class _Entry {
       dataStart + compressedSize,
     );
     if (method == 0) return raw.length > max ? null : raw;
-    return inflateAtMost(raw, max);
+    try {
+      return _inflate(raw, max);
+    } on _Overflow {
+      return null;
+    } on _Damaged {
+      if (damaged != null) throw damaged;
+      return null;
+    }
   }
 }
 
