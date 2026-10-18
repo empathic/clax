@@ -235,11 +235,18 @@ impl Store {
             Ok(())
         })?;
         self.hidden.insert(id.as_str());
-        let written =
-            self.write_version_then(ctx, &id, 0, &p, &BTreeMap::new(), None, |tx, _| match of {
+        let written = self.block_on(self.write_version_then_async(
+            ctx,
+            &id,
+            0,
+            &p,
+            &BTreeMap::new(),
+            None,
+            |tx, _| match of {
                 Some(of) => copy_docs(tx, of, &id, &now),
                 None => Ok((0, false)),
-            });
+            },
+        ));
         match written {
             Ok((artifact, version, (docs_copied, docs_truncated))) => Ok(NewDraft {
                 artifact,
