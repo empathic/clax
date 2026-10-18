@@ -50,8 +50,9 @@ fn content_path(path: &str) -> Option<Option<ArtifactId>> {
 /// `/draft/*` are rewritten to `/c/<id>/v/*` and `/c/<id>/draft/*`,
 /// `/_blob/<asset>` (or `/_blob/<id>/<asset>`) to `/_blob/<id>/<asset>`, which
 /// serves only the artifact's own assets (a `/_blob/<other ID>/<asset>`
-/// becomes a path that matches no asset), and everything else is a JSON 404;
-/// other hosts are untouched.
+/// becomes a path that matches no asset; on a hosted daemon `/_blob/*`
+/// passes through, its keyed URLs naming one asset each), and everything
+/// else is a JSON 404; other hosts are untouched.
 ///
 /// Every response on an artifact host, and every response under `/c/` on any
 /// host, carries the artifact's content policy (`content_policy` with its
@@ -80,17 +81,23 @@ pub async fn rewrite_artifact_host(
             .query()
             .map(|q| format!("?{q}"))
             .unwrap_or_default();
-        let blob = path.strip_prefix("/_blob/").map(|rest| {
-            // The artifact's own assets only: `/_blob/<asset>` and
-            // `/_blob/<this ID>/<asset>` both name this artifact's.
-            let asset = rest
-                .strip_prefix(&format!("{}/", id.as_str()))
-                .unwrap_or(rest);
-            format!("/_blob/{}/{asset}", id.as_str())
-        });
+        // A hosted daemon's assets are served at their keys
+        // (`hosted::asset_url`), which already name one asset each: their
+        // paths pass through as they are.
+        let blob = path
+            .strip_prefix("/_blob/")
+            .filter(|_| s.hosted.is_none())
+            .map(|rest| {
+                // The artifact's own assets only: `/_blob/<asset>` and
+                // `/_blob/<this ID>/<asset>` both name this artifact's.
+                let asset = rest
+                    .strip_prefix(&format!("{}/", id.as_str()))
+                    .unwrap_or(rest);
+                format!("/_blob/{}/{asset}", id.as_str())
+            });
         let new_path = if let Some(blob) = blob {
             blob
-        } else if path == "/healthz" || path.starts_with("/_clax/") {
+        } else if path == "/healthz" || path.starts_with("/_clax/") || path.starts_with("/_blob/") {
             path
         } else if path.starts_with("/v/") || path.starts_with("/draft/") {
             format!("/c/{}{}", id.as_str(), path)

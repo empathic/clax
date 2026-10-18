@@ -179,7 +179,9 @@ pub async fn blob(
     // An asset's bytes serve browsers (spec §7.5): agents read through the routes the filter covers.
     d.refuse_agents()?;
     let asset_id = path(asset_id)?;
-    let (asset, bytes) = find_blob(&s, asset_id, None, sees).await?;
+    let live_ids = s.live_ids.clone();
+    let seen = move |aid: &str| sees.check(&live_ids, aid).is_ok();
+    let (asset, bytes) = find_blob(&s, asset_id, None, seen).await?;
     Ok(send_blob(&asset, bytes))
 }
 
@@ -199,25 +201,24 @@ pub async fn scoped_blob(
     d.refuse_agents()?;
     let (aid, asset_id) = path(params)?;
     let id = parse_id(&aid)?;
-    let (asset, bytes) = find_blob(&s, asset_id, Some(id), sees).await?;
+    let live_ids = s.live_ids.clone();
+    let seen = move |aid: &str| sees.check(&live_ids, aid).is_ok();
+    let (asset, bytes) = find_blob(&s, asset_id, Some(id), seen).await?;
     Ok(send_blob(&asset, bytes))
 }
 
-/// The asset and its bytes; `NotFound` when it is missing, of a live page
-/// `sees` may not see, or, with `owner`, another artifact's. The row is
-/// checked before any bytes are read.
+/// The asset and its bytes; `NotFound` when it is missing, of an artifact
+/// `seen` refuses (a live page the caller may not see), or, with `owner`,
+/// another artifact's. The row is checked before any bytes are read.
 async fn find_blob(
     s: &AppState,
     asset_id: String,
     owner: Option<clax_core::ArtifactId>,
-    sees: SeesLive,
+    seen: impl Fn(&str) -> bool + Send + 'static,
 ) -> Result<(clax_core::model::Asset, Vec<u8>), ApiError> {
-    let live_ids = s.live_ids.clone();
     Ok(s.store_call_async(move |st| async move {
         let asset = st.get_asset(&asset_id)?.ok_or(CoreError::NotFound)?;
-        if owner.is_some_and(|o| o.as_str() != asset.artifact_id)
-            || sees.check(&live_ids, &asset.artifact_id).is_err()
-        {
+        if owner.is_some_and(|o| o.as_str() != asset.artifact_id) || !seen(&asset.artifact_id) {
             return Err(CoreError::NotFound);
         }
         let bytes = st
