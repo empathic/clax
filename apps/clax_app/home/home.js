@@ -14,8 +14,9 @@
 // motion.js's springs on the page's clock: a held tile lifts and can be
 // dragged across Starred and All apps, its neighbours making room; a quick
 // release tosses it on (physics.js); Alt+arrows move a focused tile.
-// Held 600 ms over another app's centre, a dragged app makes a group of
-// the two; dropped on a group, it joins it. A group shows as a folder tile
+// Held still 600 ms over another app's centre, a dragged app makes a group
+// of the two; so held over a group, it joins it; a toss never groups. A
+// group shows as a folder tile
 // that opens over the grid, where its apps are renamed, reordered and
 // dragged out, or as a pile of tilted icons that fans out in place into a
 // row below it, pushing the rows after it down; its own menu renames,
@@ -491,12 +492,13 @@ function toSegment(c, a, b) {
   return Math.hypot(a.x + f * dx - c.x, a.y + f * dy - c.y);
 }
 
-/** How long a dragged app rests on another app's centre before a drop
- * there makes a group of the two. */
+/** How long a dragged app's pointer rests within CENTRE_PX of another
+ * tile's centre, moving at most STILL_PX, before a drop there groups. */
 const HOVER_MS = 600;
+const CENTRE_PX = 24;
+const STILL_PX = 8;
 /** How long the pointer rests in a new slot before the neighbours make
- * room there: a quick move onto a tile's centre leaves that tile in place,
- * to be grouped with. */
+ * room there, on a tile's centre as anywhere else. */
 const REORDER_MS = 120;
 
 /** The grid's arranging, over the state `st` the Grid keeps current
@@ -509,10 +511,12 @@ const REORDER_MS = 120;
  * through `fan`), the drag it starts, and the keyboard's moves. During a
  * drag the tiles are placed and moved here, at once, with no render; the
  * page renders the drag's start and its drop. A drag gathers a fanned pile
- * at once. A dragged app resting HOVER_MS on another app's centre outlines
- * it, and a drop then makes a group of the two; on a group's centre it
- * outlines it at once, and a drop adds the app to it. A fanned pile's apps
- * spring out of the pile as its row opens. */
+ * at once. The neighbours make room wherever the pointer rests, a tile's
+ * centre included; a dragged app whose pointer stays HOVER_MS near another
+ * tile's centre, all but still, brings that tile back under it, outlined,
+ * and a drop then makes a group of the two apps or adds the app to the
+ * group. A toss never groups. A fanned pile's apps spring out of the pile
+ * as its row opens. */
 function arranger(st, clock) {
   const presses = new Map();
   let active = null;
@@ -528,8 +532,11 @@ function arranger(st, clock) {
   let block = false;
   let edge = null;
   let seq = 0;
-  // The tile under the dragged app's pointer, near its centre:
-  // {key, ready, cancel}, `ready` once a drop there groups.
+  // The tile whose centre the dragged app's pointer is near: {key,
+  // section, c (its centre, from its grid's top left, where it was drawn
+  // as the hover began), still (where the pointer's rest began), before
+  // (the drag's slot then, in which the tile is under the pointer), ready
+  // (once a drop there groups), cancel}.
   let hover = null;
   // A slot the pointer moved to, waiting REORDER_MS: {t, cancel}.
   let pending = null;
@@ -653,8 +660,15 @@ function arranger(st, clock) {
     return slotIn('all', p);
   }
 
-  /** The key of the tile, as drawn, whose centre the dragged app's
-   * pointer `p` is near (another app's or a group's), or null. */
+  /** Viewport point `p` from `section`'s grid's top left, or null. */
+  function inGrid(section, p) {
+    const r = gridOf(section)?.getBoundingClientRect();
+    return r ? { x: p.x - r.left, y: p.y - r.top } : null;
+  }
+
+  /** The tile, as drawn, whose centre is within CENTRE_PX of the dragged
+   * app's pointer `p` (another app's or a group's): {key, section, c},
+   * or null. */
   function hoverAt(p) {
     if (isGroupKey(drag.id)) return null;
     const cells = placement(drag.prov ?? st.shown, st.apps, st.makes, st.cols, st.fanGid, clock.date());
@@ -664,9 +678,12 @@ function arranger(st, clock) {
       const r = grid.getBoundingClientRect();
       if (!inside(r, p)) continue;
       const list = [...cells.values()].filter((c) => c.section === section);
-      const i = centreUnder(list, geometry(r.width, st.cols), p.x - r.left, p.y - r.top);
+      const g = geometry(r.width, st.cols);
+      const i = centreUnder(list, g, p.x - r.left, p.y - r.top, CENTRE_PX);
       const key = i < 0 ? null : list[i].key;
-      return key && key !== drag.key && !key.startsWith('m:') ? key : null;
+      if (!key || key === drag.key || key.startsWith('m:')) return null;
+      const b = cellBox(list[i], g);
+      return { key, section, c: { x: b.x + b.w / 2, y: b.y + b.h / 2 } };
     }
     return null;
   }
@@ -678,23 +695,44 @@ function arranger(st, clock) {
     if (drag) tileEl(drag.key)?.removeAttribute('data-grouping-with');
     hover = null;
   }
-  /** Hovers tile `key` (or none): a group is outlined at once, an app
-   * after HOVER_MS. */
-  function setHover(key) {
-    if (hover?.key === key) return;
-    clearHover();
-    if (!key) return;
-    const h = { key, ready: false, cancel: null };
-    hover = h;
-    const ready = () => {
-      if (hover !== h) return;
+
+  /** Whether viewport point `p` is still within CENTRE_PX of the hovered
+   * tile's centre, where it was drawn as the hover began. */
+  function onHover(p) {
+    const q = hover && inGrid(hover.section, p);
+    return !!q && Math.hypot(q.x - hover.c.x, q.y - hover.c.y) <= CENTRE_PX;
+  }
+
+  /** Follows the hover: the pointer leaving the hovered centre ends it, a
+   * move of more than STILL_PX starts its rest again, and a rest of
+   * HOVER_MS readies it; with none, a centre under the pointer starts one.
+   * Ready, the tile is put back under the pointer (the neighbours may have
+   * made room since) and outlined. */
+  function followHover(p, none) {
+    if (hover && (none || !onHover(p))) clearHover();
+    if (!hover) {
+      const at = none ? null : hoverAt(p);
+      if (!at) return;
+      hover = { ...at, still: null, before: drag.target, ready: false, cancel: null };
+    }
+    if (hover.ready) return;
+    const h = hover;
+    const q = inGrid(h.section, p);
+    if (h.still && Math.hypot(q.x - h.still.x, q.y - h.still.y) <= STILL_PX) return;
+    h.still = q;
+    h.cancel?.();
+    h.cancel = clock.after(HOVER_MS, () => {
+      if (hover !== h || !drag) return;
       h.ready = true;
-      tileEl(key)?.setAttribute('data-grouping', '');
+      cancelPending();
+      if (!sameSlot(h.before, drag.target)) {
+        if (h.before) commit(h.before);
+        else { drag.target = null; drag.prov = null; relayout(); }
+      }
+      tileEl(h.key)?.setAttribute('data-grouping', '');
       // The dragged tile's name gives way to the one it groups with.
-      if (drag) tileEl(drag.key)?.setAttribute('data-grouping-with', '');
-    };
-    if (isGroupKey(key)) ready();
-    else h.cancel = clock.after(HOVER_MS, ready);
+      tileEl(drag.key)?.setAttribute('data-grouping-with', '');
+    });
   }
 
   const cancelPending = () => { pending?.cancel(); pending = null; };
@@ -717,16 +755,16 @@ function arranger(st, clock) {
     zone.dataset.side = r.left + r.width / 2 < z.left + z.width / 2 ? 'end' : 'start';
   }
 
-  /** Follows the pointer: near another tile's centre it hovers that tile
-   * and moves nothing; elsewhere, once the pointer rests REORDER_MS in a
-   * new slot, the neighbours make room there. */
+  /** Follows the pointer: once it rests REORDER_MS in a new slot, the
+   * neighbours make room there; near another tile's centre it also hovers
+   * that tile (followHover), and once that hover is ready nothing moves
+   * until the pointer leaves the centre. */
   function track() {
     const t = targetAt(drag.last);
     st.wrap?.querySelector('.h-drop')?.toggleAttribute('data-over', !!t.zone);
     sideOfZone();
-    const over = t.zone ? null : hoverAt(drag.last);
-    setHover(over);
-    if (over) { cancelPending(); return; }
+    followHover(drag.last, !!t.zone);
+    if (hover?.ready) { cancelPending(); return; }
     if (sameSlot(t, drag.target)) { cancelPending(); return; }
     if (!drag.target) { cancelPending(); commit(t); return; }
     if (sameSlot(t, pending?.t)) return;
@@ -880,9 +918,10 @@ function arranger(st, clock) {
         const d = drag;
         d.last = p;
         cancelPending();
-        if (hover?.ready && hover.key === hoverAt(p)) { groupDrop(d, hover.key); return; }
+        // A release at speed is a toss, never a group.
         const v = st.reduced ? { vx: 0, vy: 0 } : velocityOf(samples);
         const toss = Math.hypot(v.vx, v.vy) > TOSS_MIN;
+        if (!toss && hover?.ready && onHover(p)) { groupDrop(d, hover.key); return; }
         let t = targetAt(p);
         if (toss && !t.zone) {
           const grid = gridOf(t.section);

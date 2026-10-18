@@ -776,11 +776,101 @@ test('a release on an app before 600 ms is an ordinary drop into its slot', asyn
   expect(Object.keys((await stored()).groups)).toEqual([]);
 });
 
-test('dropping an app on a group adds it', async () => {
+test("resting on an app's centre makes room there, and a drop before 600 ms takes its place", async () => {
+  const clock = manualClock();
+  await show({ makes: [] }, { clock });
+  await wait(async () => !!(await stored()));
+  const habits = document.querySelector('[data-id="app-habits"]');
+  const was = [habits.style.gridRow, habits.style.gridColumn];
+  const el = document.querySelector('[data-id="app-mood"]');
+  const a = centre('app-mood');
+  const t = centre('app-habits');
+  el.dispatchEvent(pointer('pointerdown', a)); clock.advance(400);
+  el.dispatchEvent(pointer('pointermove', { x: a.x + 30, y: a.y + 10 })); clock.advance(100);
+  el.dispatchEvent(pointer('pointermove', t));
+  clock.advance(200);
+  expect([habits.style.gridRow, habits.style.gridColumn].join() === was.join()).toBe(false);
+  expect(ui.exists('[data-grouping]')).toBe(false);
+  el.dispatchEvent(pointer('pointerup', t)); clock.advance(1500);
+  await wait(async () => (await stored()).order.indexOf('app-mood') === 2);
+  expect(Object.keys((await stored()).groups)).toEqual([]);
+});
+
+test("a pointer that keeps moving about an app's centre never groups", async () => {
+  const clock = manualClock();
+  await show({ makes: [] }, { clock });
+  await wait(async () => !!(await stored()));
+  const el = document.querySelector('[data-id="app-mood"]');
+  const a = centre('app-mood');
+  const t = centre('app-habits');
+  el.dispatchEvent(pointer('pointerdown', a)); clock.advance(400);
+  el.dispatchEvent(pointer('pointermove', { x: a.x + 30, y: a.y + 10 })); clock.advance(100);
+  // Within the centre's 24 px, 12 px back and forth every 150 ms.
+  for (let i = 0; i < 8; i++) {
+    el.dispatchEvent(pointer('pointermove', { x: t.x + (i % 2 ? 6 : -6), y: t.y }));
+    clock.advance(150);
+  }
+  expect(ui.exists('[data-grouping]')).toBe(false);
+  el.dispatchEvent(pointer('pointerup', { x: t.x + 6, y: t.y })); clock.advance(1500);
+  await wait(async () => (await stored()).order.indexOf('app-mood') === 2);
+  expect(Object.keys((await stored()).groups)).toEqual([]);
+});
+
+test('a group is outlined only after a 600 ms rest on its centre; a drop before that takes its slot', async () => {
   const clock = manualClock();
   await show({ makes: [] }, { clock, layout: groupLayout() });
   const g = document.querySelector('.h-group').getBoundingClientRect();
-  await drag(clock, 'app-plants', { x: g.x + g.width / 2, y: g.y + g.height / 2 });
+  const t = { x: g.x + g.width / 2, y: g.y + g.height / 2 };
+  const el = document.querySelector('[data-id="app-plants"]');
+  const a = centre('app-plants');
+  el.dispatchEvent(pointer('pointerdown', a)); clock.advance(400);
+  el.dispatchEvent(pointer('pointermove', { x: a.x + 30, y: a.y + 10 })); clock.advance(100);
+  el.dispatchEvent(pointer('pointermove', t));
+  clock.advance(300);
+  expect(ui.exists('[data-grouping]')).toBe(false);
+  el.dispatchEvent(pointer('pointerup', t)); clock.advance(1500);
+  await wait(async () => (await stored()).order.indexOf('app-plants') === 1);
+  expect((await stored()).groups.g1.apps).toEqual(['app-groceries', 'app-notes']);
+});
+
+test('a toss or a fast move over a group never adds to it, even after a rest there', async () => {
+  const clock = manualClock();
+  const base = fakeDb({ [LAYOUT]: groupLayout() });
+  let writes = 0;
+  db = { doc: (path) => { const d = base.doc(path); return { ...d, set: (v) => { writes++; return d.set(v); } }; } };
+  mount(root(), fakeHome({ makes: [] }), { db, clock });
+  await wait(() => ui.exists('.h-group'));
+  const groupCentre = () => { const g = document.querySelector('.h-group').getBoundingClientRect(); return { x: g.x + g.width / 2, y: g.y + g.height / 2 }; };
+  // Thrown across the group's centre, released at speed on it.
+  let n = writes;
+  await drag(clock, 'app-plants', groupCentre(), { steps: 3, ms: 60, pause: 0 });
+  await wait(() => writes > n);
+  expect((await stored()).groups.g1.apps).toEqual(['app-groceries', 'app-notes']);
+  expect((await stored()).order).toContain('app-plants');
+  // Rested on it until outlined, then flicked 16 px and released at speed.
+  const t = groupCentre();
+  const el = document.querySelector('[data-id="app-plants"]');
+  const a = centre('app-plants');
+  el.dispatchEvent(pointer('pointerdown', a)); clock.advance(400);
+  el.dispatchEvent(pointer('pointermove', { x: a.x + 30, y: a.y + 10 })); clock.advance(100);
+  el.dispatchEvent(pointer('pointermove', t));
+  clock.advance(700);
+  await wait(() => ui.exists('.h-group[data-grouping]'));
+  clock.advance(8);
+  el.dispatchEvent(pointer('pointermove', { x: t.x + 8, y: t.y }));
+  clock.advance(8);
+  n = writes;
+  el.dispatchEvent(pointer('pointerup', { x: t.x + 16, y: t.y })); clock.advance(1500);
+  await wait(() => writes > n);
+  expect((await stored()).groups.g1.apps).toEqual(['app-groceries', 'app-notes']);
+  expect((await stored()).order).toContain('app-plants');
+});
+
+test('dropping an app on a group after a 600 ms rest adds it', async () => {
+  const clock = manualClock();
+  await show({ makes: [] }, { clock, layout: groupLayout() });
+  const g = document.querySelector('.h-group').getBoundingClientRect();
+  await drag(clock, 'app-plants', { x: g.x + g.width / 2, y: g.y + g.height / 2 }, { pause: 700 });
   await wait(async () => (await stored()).groups.g1.apps.includes('app-plants'));
   expect(ui.exists('[data-id="app-plants"]')).toBe(false);
 });
