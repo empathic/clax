@@ -77,8 +77,12 @@ jobs:
         if: endsWith(matrix.target, '-linux-musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - uses: extractions/setup-just@v2
-      # A release build embeds web/dist, so the web UI is built first.
+      # A release build embeds web/dist, so the web UI is built first, with
+      # pnpm as the binary is built with cargo: the runners carry bazelisk,
+      # and a Bazel build leaves no pnpm store for setup-node's cache.
       - name: Build web bundle
+        env:
+          CLAX_BUILD: native
         run: just web
       - name: Build
         # cc looks for aarch64-linux-musl-gcc, which musl-tools does not
