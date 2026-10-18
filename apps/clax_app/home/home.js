@@ -618,6 +618,14 @@ function arranger(st, clock) {
     elsewhere(e) {
       if (focus && !(e.target instanceof Element && e.target.closest(`.h-tile[data-key="${CSS.escape(tileKeyOf(focus))}"]`))) focus = null;
     },
+    /** The page hidden or left, or the pointer lost, mid-press: the press
+     * ends as if cancelled and every tile goes to its place at once, so
+     * nothing stays held and the tiles are reported again. */
+    abandon() {
+      if (!active || active.phase === 'idle') return;
+      active.cancel();
+      st.motion.rest();
+    },
     /** A pointer event anywhere on the page, for the press it belongs to. */
     pointer(type, e) { active?.[type](e); },
     touchMove(e) { if (block && e.cancelable) e.preventDefault(); },
@@ -687,6 +695,12 @@ function Grid({ layout, apps, makes, motion, reduced, clock, change, onOpen, onM
     const cancel = (e) => ctl.pointer('cancel', e);
     const touch = (e) => ctl.touchMove(e);
     const elsewhere = (e) => ctl.elsewhere(e);
+    const abandon = () => ctl.abandon();
+    const hidden = () => { if (document.visibilityState === 'hidden') ctl.abandon(); };
+    document.addEventListener('visibilitychange', hidden);
+    document.addEventListener('lostpointercapture', abandon);
+    addEventListener('pagehide', abandon);
+    addEventListener('blur', abandon);
     document.addEventListener('pointerdown', elsewhere, true);
     document.addEventListener('focusin', elsewhere);
     document.addEventListener('pointermove', move);
@@ -694,6 +708,10 @@ function Grid({ layout, apps, makes, motion, reduced, clock, change, onOpen, onM
     document.addEventListener('pointercancel', cancel);
     document.addEventListener('touchmove', touch, { passive: false });
     return () => {
+      document.removeEventListener('visibilitychange', hidden);
+      document.removeEventListener('lostpointercapture', abandon);
+      removeEventListener('pagehide', abandon);
+      removeEventListener('blur', abandon);
       document.removeEventListener('pointerdown', elsewhere, true);
       document.removeEventListener('focusin', elsewhere);
       document.removeEventListener('pointermove', move);

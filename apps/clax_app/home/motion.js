@@ -3,7 +3,8 @@
 // frame loop over the page's clock. A dragged tile is held where the
 // pointer puts it. `onSettle` runs each time every tile has come to rest.
 // With reduced motion, tiles go straight to their places. `stop()` ends
-// every motion and puts each tile at its place.
+// every motion and puts each tile at its place; `rest()` does too, and
+// settles.
 import { springStep, atRest } from './physics.js';
 
 export function createMotion(clock, { reduced = false, onSettle = () => {} } = {}) {
@@ -74,6 +75,12 @@ export function createMotion(clock, { reduced = false, onSettle = () => {} } = {
       stopFrame = null;
       for (const t of tiles.values()) t.el.style.transform = '';
       tiles.clear();
+    },
+    /** Every tile at its place at once, held ones too, then `onSettle`:
+     * for a page that may run no frames (hidden) and must still settle. */
+    rest() {
+      this.stop();
+      onSettle();
     },
   };
 }

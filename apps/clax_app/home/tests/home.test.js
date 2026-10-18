@@ -578,6 +578,49 @@ test('a drop into Starred dragged again before it is written lands in Starred', 
   await wait(() => section('starred').join() === 'app-mood,app-run');
 });
 
+test('a drag whose release never comes ends when the page loses focus, and the tiles are reported again', async () => {
+  const clock = manualClock();
+  const home = fakeHome({ makes: [] });
+  const reports = [];
+  home.tiles = async (list) => { reports.push(list); };
+  db = fakeDb();
+  mount(root(), home, { db, clock });
+  await wait(() => reports.length === 1);
+  const el = document.querySelector('[data-id="app-run"]');
+  const a = centre('app-run');
+  el.dispatchEvent(pointer('pointerdown', a));
+  clock.advance(400);
+  el.dispatchEvent(pointer('pointermove', { x: a.x + 120, y: a.y }));
+  await wait(() => ui.exists('.h-page[data-dragging]'));
+  dispatchEvent(new Event('blur'));
+  await wait(() => !ui.exists('.h-page[data-dragging]'));
+  expect(ui.exists('.h-tile[data-held], .h-tile[data-dragging]')).toBe(false);
+  expect(el.style.transform).toBe('');
+  home.set({ apps: SAMPLE.apps.slice(0, 2) });
+  await wait(() => reports.at(-1).length === 2);
+  await ui.click('[data-id="app-groceries"]');
+  await wait(() => home.calls.some((c) => c.method === 'open'));
+});
+
+test('a held press ends when the page is hidden or the pointer is lost', async () => {
+  const clock = manualClock();
+  const home = await show({ makes: [] }, { clock });
+  const el = document.querySelector('[data-id="app-run"]');
+  el.dispatchEvent(pointer('pointerdown', centre('app-run')));
+  clock.advance(400);
+  expect('held' in el.dataset).toBe(true);
+  Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+  try { document.dispatchEvent(new Event('visibilitychange')); } finally { delete document.visibilityState; }
+  expect('held' in el.dataset).toBe(false);
+  el.dispatchEvent(pointer('pointerdown', centre('app-run'), 'mouse'));
+  el.dispatchEvent(pointer('pointermove', { x: centre('app-run').x + 40, y: centre('app-run').y }, 'mouse'));
+  await wait(() => ui.exists('.h-page[data-dragging]'));
+  el.dispatchEvent(new PointerEvent('lostpointercapture', { bubbles: true, pointerId: 9, pointerType: 'mouse' }));
+  await wait(() => !ui.exists('.h-page[data-dragging]'));
+  el.dispatchEvent(pointer('pointerup', centre('app-run'), 'mouse'));
+  expect(home.calls).toEqual([]);
+});
+
 test('a hold released without moving still asks for the menu, and nothing moves', async () => {
   const clock = manualClock();
   const home = await show({ makes: [] }, { clock });

@@ -84,4 +84,18 @@ describe('createMotion timing and stop', () => {
     clock.advance(1000);
     expect(a.style.transform).toBe('');
   });
+
+  test('rest puts every tile in place at once, held ones too, and settles', () => {
+    const clock = manualClock();
+    let settled = 0;
+    const m = createMotion(clock, { onSettle: () => settled++ });
+    const a = el();
+    const b = el();
+    m.hold('a', a, 40, 30);
+    m.from('b', b, 100, 0);
+    m.rest();
+    expect([a.style.transform, b.style.transform]).toEqual(['', '']);
+    expect(m.moving).toBe(false);
+    expect(settled).toBe(1);
+  });
 });
