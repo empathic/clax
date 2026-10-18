@@ -1388,6 +1388,16 @@ test('the three apps opened most take 2×2 tiles with a larger icon; the order i
   expect(section('all')).toEqual(SAMPLE.apps.map((a) => a.id));
 });
 
+test('opening an app that ties the third big tile leaves the big tiles as they are, and keeps them as `big`', async () => {
+  await show({ makes: [] }, { clock: busyClock(), layout: busy() });
+  await wait(() => document.querySelectorAll('[data-big]').length === 3);
+  // Notes's fifth open ties Plants at 5, and is the later one.
+  await ui.click('[data-id="app-notes"]');
+  await wait(async () => (await stored()).opens['app-notes'].n === 5);
+  expect([...(await stored()).big].sort()).toEqual(['app-budget', 'app-mood', 'app-plants']);
+  await wait(() => bigs().join() === 'app-budget,app-mood,app-plants');
+});
+
 test("a big tile's icon lines up with its first row's icons, its name right under it", async () => {
   await show({ makes: [] }, { clock: busyClock(), layout: busy() });
   await wait(() => document.querySelectorAll('[data-big]').length === 3);

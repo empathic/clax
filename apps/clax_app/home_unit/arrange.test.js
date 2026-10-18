@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { normalize, reconcile, sections, moveTo, star, unstar, opened, isNew, groupOf, groupKey, groupNameOf, makeGroup, addToGroup, removeFromGroup, moveInGroup, renameGroup, setLook, ungroup, bigApps, setBigTiles, keepNewer } from '../home/arrange.js';
+import { normalize, reconcile, sections, moveTo, star, unstar, opened, isNew, groupOf, groupKey, groupNameOf, makeGroup, addToGroup, removeFromGroup, moveInGroup, renameGroup, setLook, ungroup, bigApps, keepBig, setBigTiles, keepNewer } from '../home/arrange.js';
 
 const app = (id, hoursAgo = 0, icon = {}) => ({ id, title: id.toUpperCase(), updatedAt: new Date(Date.UTC(2026, 9, 16, 12) - hoursAgo * 3600e3).toISOString(), build: null, icon });
 const A = app('a', 1), B = app('b', 2), C = app('c', 3), D = app('d', 4);
@@ -203,6 +203,37 @@ describe('bigApps', () => {
   test('ties go to the later open, then the ID; only three grow', () => {
     const l = layout({ opens: { a: opensOf(6), b: opensOf(6, '2026-10-16', '2026-10-16T11:00:00.000Z'), c: opensOf(6), d: opensOf(6) } });
     expect([...bigApps(l, now)]).toEqual(['b', 'a', 'c']);
+  });
+
+  test('on a tie at the third place the app already big keeps its tile, though the other was opened later', () => {
+    const opens = { a: opensOf(9), b: opensOf(7), c: opensOf(6), d: opensOf(6, '2026-10-16', '2026-10-16T11:00:00.000Z') };
+    expect([...bigApps(layout({ opens }), now)].sort()).toEqual(['a', 'b', 'd']);
+    expect([...bigApps(layout({ opens, big: ['a', 'b', 'c'] }), now)].sort()).toEqual(['a', 'b', 'c']);
+  });
+
+  test('another app takes a big tile only with 2 opens more than the app that has it', () => {
+    const l = (d) => layout({ big: ['a', 'b', 'c'], opens: { a: opensOf(9), b: opensOf(8), c: opensOf(6), d: opensOf(d) } });
+    expect([...bigApps(l(7), now)].sort()).toEqual(['a', 'b', 'c']);
+    expect([...bigApps(l(8), now)].sort()).toEqual(['a', 'b', 'd']);
+  });
+
+  test('an app already big keeps its tile until its opens fall 2 below 5', () => {
+    const l = (n, big) => layout({ big, opens: { a: opensOf(9), b: opensOf(7), c: opensOf(n) } });
+    expect(bigApps(l(4, ['a', 'b', 'c']), now).has('c')).toBe(true);
+    expect(bigApps(l(3, ['a', 'b', 'c']), now).has('c')).toBe(false);
+    expect(bigApps(l(4, ['a', 'b']), now).has('c')).toBe(false);
+    // Starred or in a group, it is never big.
+    expect(bigApps(layout({ big: ['s', 'g1'] }), now).has('s')).toBe(false);
+  });
+
+  test('keepBig keeps the apps big at a time as the layout\'s `big`, which the next ranking starts from', () => {
+    let l = keepBig(layout({ opens: { a: opensOf(9), b: opensOf(7), c: opensOf(6), d: opensOf(5) } }), now);
+    expect([...l.big].sort()).toEqual(['a', 'b', 'c']);
+    l = opened(l, 'd', now);
+    expect([...bigApps(l, now)].sort()).toEqual(['a', 'b', 'c']);
+    expect(normalize({ big: ['a', 'a', 7] }).big).toEqual(['a']);
+    expect(normalize({}).big).toBeUndefined();
+    expect(keepBig(setBigTiles(l, false), now).big).toEqual([]);
   });
 
   test('turned off, nothing grows; the setting is kept', () => {

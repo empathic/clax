@@ -36,7 +36,7 @@ import { icon as kitIcon } from './kit/icons.js';
 import {
   reconcile, normalize, sections, star, unstar, opened, isNew, moveTo, isGroupKey, groupOf,
   groupNameOf, makeGroup, addToGroup, removeFromGroup, moveInGroup, renameGroup, setLook, ungroup,
-  bigApps, setBigTiles,
+  bigApps, keepBig, setBigTiles,
 } from './arrange.js';
 import { layoutStore } from './store.js';
 import { realClock, velocityOf, tossRest, TOSS_MIN } from './physics.js';
@@ -1934,7 +1934,8 @@ const UNSAVED_TEXT = "Couldn't save your arrangement";
  * (or LAYOUT_MS without an answer) are in. `change(op)` applies `op` to
  * the stored layout made to match the apps and writes the result, which
  * shows once it is written; a write that fails changes nothing on screen
- * and calls `failed()`. With no layout stored yet the first load writes
+ * and calls `failed()`. Each write keeps the apps on big tiles then as
+ * `big` (arrange.js keepBig), ranked from those shown before it. With no layout stored yet the first load writes
  * one with every listed app seen. With an empty app list the stored layout
  * is changed as it is, so a list that is briefly empty never drops an ID. */
 function useLayout(store, apps, clock, failed) {
@@ -1954,9 +1955,11 @@ function useLayout(store, apps, clock, failed) {
   }, [listed, body === undefined]);
   const fit = useCallback((b, first) => (apps.length ? reconcile(b ?? {}, apps, { first }) : normalize(b)), [apps]);
   const change = useCallback((op) => store.change((b) => {
-    const next = op(fit(b, b == null));
-    return apps.length ? reconcile(next, apps) : next;
-  }).then((b) => { setBody(b); return b; }, () => { failed(); return undefined; }), [store, fit, apps]);
+    // Ranked from the big tiles shown before it, a layout written without `big` included.
+    const now = clock.date();
+    const next = op(keepBig(fit(b, b == null), now));
+    return keepBig(apps.length ? reconcile(next, apps) : next, now);
+  }).then((b) => { setBody(b); return b; }, () => { failed(); return undefined; }), [store, fit, apps, clock]);
   useEffect(() => {
     if (!listed || body !== null || wrote.current || !apps.length) return;
     wrote.current = true;
