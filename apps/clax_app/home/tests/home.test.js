@@ -1157,6 +1157,31 @@ test("an app dragged out of a fanned pile's row into the grid leaves the group t
   await wait(() => !ui.exists('.h-fan'));
 });
 
+test("an app dragged out of a fanned pile whose write fails shows in the row again", async () => {
+  const clock = manualClock();
+  const base = fakeDb({ [LAYOUT]: pileOfThree() });
+  const failing = { doc: (path) => ({ ...base.doc(path), set: () => Promise.reject({ code: 'failed', message: 'disk full' }) }) };
+  mount(root(), fakeHome({ makes: [] }), { db: failing, clock });
+  await wait(() => ui.exists('.h-group'));
+  await ui.click('.h-group');
+  clock.advance(1000);
+  await wait(() => ui.exists('.h-fan'));
+  clock.advance(1000);
+  const before = document.querySelector('.h-fan [data-id="app-notes"]');
+  await drag(clock, 'app-notes', centre('app-mood'));
+  await wait(() => ui.text('.h-notice') === "Couldn't save your arrangement");
+  await wait(() => fanned() === 'app-groceries,app-notes,app-plants' && !ui.exists('.h-grid > [data-id="app-notes"]'));
+  // The drop's render took the hidden tile out of the row; the row draws it afresh.
+  const after = document.querySelector('.h-fan [data-id="app-notes"]');
+  expect(after === before).toBe(false);
+  expect(after.style.visibility).toBe('');
+  await wait(() => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    clock.advance(1000);
+    return !ui.exists('.h-fan');
+  });
+});
+
 test("a drag while a pile is fanned keeps it fanned and drops where the tiles show, past the fan's row", async () => {
   const clock = manualClock();
   const at = SAMPLE.apps[7].updatedAt;
