@@ -213,21 +213,20 @@ async fn find_blob(
     sees: SeesLive,
 ) -> Result<(clax_core::model::Asset, Vec<u8>), ApiError> {
     let live_ids = s.live_ids.clone();
-    Ok(s
-        .store_call_async(move |st| async move {
-            let asset = st.get_asset(&asset_id)?.ok_or(CoreError::NotFound)?;
-            if owner.is_some_and(|o| o.as_str() != asset.artifact_id)
-                || sees.check(&live_ids, &asset.artifact_id).is_err()
-            {
-                return Err(CoreError::NotFound);
-            }
-            let bytes = st
-                .asset_bytes_async(&asset)
-                .await?
-                .ok_or(CoreError::NotFound)?;
-            Ok((asset, bytes))
-        })
-        .await?)
+    Ok(s.store_call_async(move |st| async move {
+        let asset = st.get_asset(&asset_id)?.ok_or(CoreError::NotFound)?;
+        if owner.is_some_and(|o| o.as_str() != asset.artifact_id)
+            || sees.check(&live_ids, &asset.artifact_id).is_err()
+        {
+            return Err(CoreError::NotFound);
+        }
+        let bytes = st
+            .asset_bytes_async(&asset)
+            .await?
+            .ok_or(CoreError::NotFound)?;
+        Ok((asset, bytes))
+    })
+    .await?)
 }
 
 fn send_blob(asset: &clax_core::model::Asset, bytes: Vec<u8>) -> Response {

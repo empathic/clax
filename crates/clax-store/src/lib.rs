@@ -111,8 +111,8 @@ pub mod extension;
 pub mod feedback;
 pub mod forks;
 pub mod github;
-pub mod hosted;
 pub mod grants;
+pub mod hosted;
 pub mod inbox;
 pub mod joined;
 pub mod linked;
@@ -694,7 +694,11 @@ fn migrate_steps(conn: &mut Connection) -> Result<()> {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         if let Some((from, to)) = migrations::adopt_earlier_flutter_app(&tx)? {
             tx.commit()?;
-            tracing::warn!(from, to, "renumbered a database from an earlier Clax app build");
+            tracing::warn!(
+                from,
+                to,
+                "renumbered a database from an earlier Clax app build"
+            );
         }
     }
     loop {

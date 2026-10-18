@@ -13,12 +13,12 @@
 mod api_agent_auth;
 #[cfg(any(not(clax_split), clax_split = "api_agents"))]
 mod api_agents;
-#[cfg(any(not(clax_split), clax_split = "api_approvals"))]
-mod api_approvals;
 #[cfg(any(not(clax_split), clax_split = "api_app_drafts"))]
 mod api_app_drafts;
 #[cfg(any(not(clax_split), clax_split = "api_app_session"))]
 mod api_app_session;
+#[cfg(any(not(clax_split), clax_split = "api_approvals"))]
+mod api_approvals;
 #[cfg(any(not(clax_split), clax_split = "api_artifacts"))]
 mod api_artifacts;
 #[cfg(any(not(clax_split), clax_split = "api_assets"))]

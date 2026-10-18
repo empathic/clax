@@ -1319,17 +1319,8 @@ impl Store {
                 }
             }
         }
-        self.record_version_locked(
-            ctx,
-            id,
-            expected,
-            p,
-            prev,
-            session_id,
-            step,
-            then,
-        )
-        .await
+        self.record_version_locked(ctx, id, expected, p, prev, session_id, step, then)
+            .await
     }
 
     /// The rest of [`Store::write_version_then_async`], under the content
