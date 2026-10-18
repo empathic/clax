@@ -6,7 +6,9 @@
 //
 // The arrangement (Starred, the order of All apps, which apps are new, how
 // often each is opened) is the `layout/main` document in the page's own
-// `db` (arrange.js, store.js).
+// `db` (arrange.js, store.js). The apps under All apps opened most lately
+// (arrange.js's `bigApps`) take a 2×2 cell with a 120 px icon, unless Big
+// tiles for apps you use, in the ⋮ menu, is off.
 //
 // Each tile is placed in its cell (grid.js's `pack`) and moved by
 // motion.js's springs on the page's clock: a held tile lifts and can be
@@ -33,10 +35,11 @@ import { icon as kitIcon } from './kit/icons.js';
 import {
   reconcile, normalize, sections, star, unstar, opened, isNew, moveTo, isGroupKey, groupOf,
   groupNameOf, makeGroup, addToGroup, removeFromGroup, moveInGroup, renameGroup, setLook, ungroup,
+  bigApps, setBigTiles,
 } from './arrange.js';
 import { layoutStore } from './store.js';
 import { realClock, velocityOf, tossRest, TOSS_MIN } from './physics.js';
-import { pack, geometry, slotAt, centreUnder, tiltOf } from './grid.js';
+import { pack, geometry, cellBox, slotAt, centreUnder, tiltOf } from './grid.js';
 import { createPress } from './drag.js';
 import { createMotion } from './motion.js';
 import { search } from './search.js';
@@ -198,7 +201,8 @@ const cellStyle = (c) => (c ? { gridColumn: `${c.col + 1} / span ${c.span}`, gri
  * press: a tap opens, a hold then a release asks for the menu, a hold then
  * a move drags); a context menu outside a press asks for the menu at once;
  * Alt+arrows move it. `fresh` marks it "New"; `group`, the name of the
- * group it is in, shows under its name (in search's results). */
+ * group it is in, shows under its name (in search's results). A tile whose
+ * cell spans 2 is big (`data-big`): its icon draws at 120 px. */
 function AppTile({ app, fresh, cell, dragging, group, ctl, onOpen, onMenu, tkey = tileKeyOf(app.id) }) {
   const b = app.build;
   const press = ctl.pressOf(app.id);
@@ -206,7 +210,7 @@ function AppTile({ app, fresh, cell, dragging, group, ctl, onOpen, onMenu, tkey 
   const said = group ? `${built}, in ${group}` : built;
   const label = fresh ? `${said}, new` : said;
   return html`<button type="button" class="h-tile" data-id=${app.id} data-key=${tkey} data-new=${fresh ? '' : undefined}
-    data-dragging=${dragging ? '' : undefined} aria-label=${label} style=${cellStyle(cell)}
+    data-dragging=${dragging ? '' : undefined} data-big=${cell?.span === 2 ? '' : undefined} aria-label=${label} style=${cellStyle(cell)}
     onPointerDown=${(e) => ctl.down(e, app.id)}
     onContextMenu=${(e) => { e.preventDefault(); if (!press.contextMenu()) onMenu(app, faceRect(e.currentTarget)); }}
     onClick=${() => { if (press.takeClick()) onOpen(app); }}
@@ -294,7 +298,9 @@ function Message({ glyph, title, hint, action }) {
   </div>`;
 }
 
-function More({ act, refresh }) {
+/** The ⋮ menu: Import app…, Refresh, and, once the arrangement is read
+ * (`bigOn` not null), the Big tiles for apps you use switch (`onBigTiles(on)`). */
+function More({ act, refresh, bigOn, onBigTiles }) {
   const [open, setOpen] = useState(false);
   useEffect(() => {
     if (!open) return undefined;
@@ -310,11 +316,15 @@ function More({ act, refresh }) {
       <div class="h-menu" role="menu">
         <button type="button" role="menuitem" class="h-menu-item" onClick=${() => { setOpen(false); act('importApp', [], 'import an app'); }}>Import app…</button>
         <button type="button" role="menuitem" class="h-menu-item" onClick=${() => { setOpen(false); refresh(); }}>Refresh</button>
+        ${bigOn !== null && html`<button type="button" role="menuitemcheckbox" aria-checked=${bigOn ? 'true' : 'false'} class="h-menu-item h-menu-check"
+          onClick=${() => { setOpen(false); onBigTiles(!bigOn); }}>
+          <span>Big tiles for apps you use</span>${bigOn && html`<${Glyph} name="check" size=${20} />`}
+        </button>`}
       </div>`}
   </span>`;
 }
 
-function Bar({ act, refresh, unread, onSearch }) {
+function Bar({ act, refresh, unread, onSearch, bigOn, onBigTiles }) {
   return html`<header class="h-bar">
     <h1 class="h-title">Clax</h1>
     <div class="h-actions">
@@ -326,7 +336,7 @@ function Bar({ act, refresh, unread, onSearch }) {
         </span>
       </button>
       <button type="button" class="h-action" aria-label="Settings" onClick=${() => act('openSettings', [], 'open Settings')}><${Glyph} name="settings" /></button>
-      <${More} act=${act} refresh=${refresh} />
+      <${More} act=${act} refresh=${refresh} bigOn=${bigOn} onBigTiles=${onBigTiles} />
     </div>
   </header>`;
 }
@@ -365,30 +375,42 @@ const isFanKey = (key) => key.startsWith('p:');
 /** The tile key of a press ID of the grid's arranger. */
 const pressTileKey = (id) => (isFanKey(id) ? id : entryTileKey(id));
 
+/** The last row of the band of `cells` holding row `row`: the first row
+ * from `row` on that no 2×2 cell runs past. */
+function bandEnd(cells, row) {
+  let end = row;
+  while (cells.some((c) => c.row <= end && c.row + c.span - 1 > end)) end++;
+  return end;
+}
+
 /** Each tile's cell by its key, with its section: Starred's apps, then
- * All apps' makes, apps and groups (a cell each), each packed in `cols`
- * columns. With group `fan` fanned out, the rows of All apps after its
- * pile's row move down one, leaving that row to its fan. */
-function placement(layout, apps, makes, cols, fan = null) {
+ * All apps' makes, apps and groups, each packed in `cols` columns. Under
+ * All apps the apps `bigApps` picks at `now` take a 2×2 cell, every other
+ * entry a cell. With group `fan` fanned out, the rows of All apps after its
+ * pile's band (its row, and the second row of a 2×2 beside it) move down
+ * one, leaving that row to its fan. */
+function placement(layout, apps, makes, cols, fan, now) {
   const s = sections(layout, apps);
+  const big = bigApps(layout, now);
   const lists = {
-    starred: s.starred.map((e) => tileKeyOf(e.app.id)),
-    all: [...makes.map((m) => `m:${m.id}`), ...s.all.map((e) => entryTileKey(e.key))],
+    starred: s.starred.map((e) => ({ key: tileKeyOf(e.app.id), span: 1 })),
+    all: [...makes.map((m) => ({ key: `m:${m.id}`, span: 1 })), ...s.all.map((e) => ({ key: entryTileKey(e.key), span: e.app && big.has(e.key) ? 2 : 1 }))],
   };
   const out = new Map();
-  for (const [section, keys] of Object.entries(lists)) {
-    const { cells } = pack(keys.map((key) => ({ key, span: 1 })), cols);
+  for (const [section, items] of Object.entries(lists)) {
+    const { cells } = pack(items, cols);
     const pile = section === 'all' && fan ? cells.find((c) => c.key === `g:${fan}`) : null;
-    for (const c of cells) out.set(c.key, { ...c, row: pile && c.row > pile.row ? c.row + 1 : c.row, section });
+    const end = pile ? bandEnd(cells, pile.row) : null;
+    for (const c of cells) out.set(c.key, { ...c, row: pile && c.row > end ? c.row + 1 : c.row, section });
   }
   return out;
 }
 
-/** The 1-based grid row of group `fan`'s fan, under its pile's cell in
+/** The 1-based grid row of group `fan`'s fan, under its pile's band in
  * `cells` (placement's), or null. */
 const fanRowOf = (cells, fan) => {
   const c = fan ? cells.get(`g:${fan}`) : null;
-  return c ? c.row + 2 : null;
+  return c ? bandEnd([...cells.values()].filter((x) => x.section === 'all'), c.row) + 2 : null;
 };
 
 /** Pile `entry`'s apps fanned out in grid row `row`, across the grid, in
@@ -404,15 +426,16 @@ function Fan({ entry, row, layout, ctl, onOpen, onMenu }) {
 }
 
 /** Starred (only when something is starred, headed) above All apps (headed
- * then), each a grid of `cols` columns; the makes go first under All apps.
+ * then), each a grid of `cols` columns; the makes go first under All apps,
+ * and its apps opened most at `now` take 2×2 cells.
  * A group takes a cell as its folder or pile tile; the pile `fan.gid`
  * fanned out has its row of apps under it. While app `drag` is dragged,
  * All apps is headed, and an empty Starred is a zone to drop on (a group
  * is never starred: dragging one opens no zone). */
-function Sections({ layout, apps, makes, cols, drag, fan, ctl, onOpen, onMenu, onOpenGroup, onFanGroup, onGroupMenu, act }) {
+function Sections({ layout, apps, makes, cols, now, drag, fan, ctl, onOpen, onMenu, onOpenGroup, onFanGroup, onGroupMenu, act }) {
   const s = sections(layout, apps);
   const fanned = fan ? s.all.find((e) => e.group?.id === fan.gid && e.group.look === 'pile') ?? null : null;
-  const cells = placement(layout, apps, makes, cols, fanned ? fan.gid : null);
+  const cells = placement(layout, apps, makes, cols, fanned ? fan.gid : null, now);
   const tile = (app) => html`<${AppTile} key=${tileKeyOf(app.id)} app=${app} fresh=${isNew(layout, app.id)} cell=${cells.get(tileKeyOf(app.id))}
     dragging=${drag === app.id} ctl=${ctl} onOpen=${onOpen} onMenu=${onMenu} />`;
   const starred = s.starred.length > 0;
@@ -520,7 +543,7 @@ function arranger(st, clock) {
    * tiles stay under the finger. */
   function relayout(steady = false) {
     if (!st.wrap) return;
-    const cells = placement(drag?.prov ?? st.shown, st.apps, st.makes, st.cols, st.fanGid);
+    const cells = placement(drag?.prov ?? st.shown, st.apps, st.makes, st.cols, st.fanGid, clock.date());
     const animate = lastCols === st.cols;
     lastCols = st.cols;
     const els = [...st.wrap.querySelectorAll('.h-tile[data-key]')];
@@ -531,6 +554,9 @@ function arranger(st, clock) {
       const s = cellStyle(c);
       if (el.style.gridColumn !== s.gridColumn) el.style.gridColumn = s.gridColumn;
       if (el.style.gridRow !== s.gridRow) el.style.gridRow = s.gridRow;
+      // A tile that grows or shrinks while no render runs (mid-drag) takes
+      // its size at once; the spring below carries it from where it was.
+      if (el.dataset.id && ('big' in el.dataset) !== (c.span === 2)) el.toggleAttribute('data-big', c.span === 2);
     }
     const all = gridOf('all');
     const top = all ? all.getBoundingClientRect().top + scrollY : null;
@@ -582,16 +608,38 @@ function arranger(st, clock) {
 
   /** The slot at viewport point `p` in `section`'s grid: the index among
    * its entries (the dragged one left out) the dragged entry would take
-   * there. */
+   * there, the one whose cell, packed after the entries before it (a big
+   * app's 2×2 included), has its centre nearest the point; a 1×1 drag's
+   * point is the pointer, a 2×2's the centre of the tile held under it.
+   * Nearest a make's cell, the first slot. */
   function slotIn(section, p) {
     const grid = gridOf(section);
     const entries = sections(st.shown, st.apps)[section].filter((e) => e.key !== drag.id);
     if (!grid) return { section, index: 0 };
-    const lead = section === 'all' ? st.makes.length : 0;
-    const { cells } = pack(Array.from({ length: lead + entries.length + 1 }, (_, key) => ({ key, span: 1 })), st.cols);
+    const big = section === 'all' ? bigApps(st.shown, clock.date()) : new Set();
+    const spanOf = (key) => (big.has(key) ? 2 : 1);
+    const lead = Array.from({ length: section === 'all' ? st.makes.length : 0 }, () => ({ key: null, span: 1 }));
     const r = grid.getBoundingClientRect();
-    const c = Math.max(0, slotAt(cells, geometry(r.width, st.cols), p.x - r.left, p.y - r.top) - lead);
-    return { section, index: Math.min(c, entries.length) };
+    const g = geometry(r.width, st.cols);
+    const n = spanOf(drag.id);
+    const el = tileEl(drag.key);
+    const q = n === 2 && el
+      ? { x: p.x - drag.grab.x + el.offsetWidth / 2 - r.left, y: p.y - drag.grab.y + el.offsetHeight / 2 - r.top }
+      : { x: p.x - r.left, y: p.y - r.top };
+    const far = (cell) => {
+      const b = cellBox(cell, g);
+      return Math.hypot(b.x + b.w / 2 - q.x, b.y + b.h / 2 - q.y);
+    };
+    let index = 0;
+    let dist = Math.min(Infinity, ...pack(lead, st.cols).cells.map(far));
+    const before = [...lead];
+    for (let i = 0; i <= entries.length; i++) {
+      const { cells } = pack([...before, { key: drag.id, span: n }], st.cols);
+      const d = far(cells.at(-1));
+      if (d < dist) { dist = d; index = i; }
+      if (i < entries.length) before.push({ key: entries[i].key, span: spanOf(entries[i].key) });
+    }
+    return { section, index };
   }
 
   /** Where a drop at viewport point `p` puts the dragged entry: a group
@@ -609,7 +657,7 @@ function arranger(st, clock) {
    * pointer `p` is near (another app's or a group's), or null. */
   function hoverAt(p) {
     if (isGroupKey(drag.id)) return null;
-    const cells = placement(drag.prov ?? st.shown, st.apps, st.makes, st.cols, st.fanGid);
+    const cells = placement(drag.prov ?? st.shown, st.apps, st.makes, st.cols, st.fanGid, clock.date());
     for (const section of ['starred', 'all']) {
       const grid = gridOf(section);
       if (!grid) continue;
@@ -1059,7 +1107,7 @@ function Grid({ layout, apps, makes, motion, reduced, clock, change, fan, onOpen
     };
   }, [ctl]);
   return html`<div class="h-grid-wrap" ref=${ref}>
-    <${Sections} layout=${shown} apps=${apps} makes=${makes} cols=${cols} drag=${drag} fan=${fanGid ? fan : null} ctl=${ctl} onOpen=${onOpen} onMenu=${onMenu}
+    <${Sections} layout=${shown} apps=${apps} makes=${makes} cols=${cols} now=${clock.date()} drag=${drag} fan=${fanGid ? fan : null} ctl=${ctl} onOpen=${onOpen} onMenu=${onMenu}
       onOpenGroup=${onOpenGroup} onFanGroup=${onFanGroup} onGroupMenu=${onGroupMenu} act=${act} />
   </div>`;
 }
@@ -1847,6 +1895,7 @@ function Home({ home, db, clock }) {
   const [act, notice, say] = useActions(home);
   const store = useMemo(() => layoutStore(db, { clock }), [db, clock]);
   const [layout, change] = useLayout(store, apps, clock, useCallback(() => say(UNSAVED_TEXT), []));
+  const onBigTiles = useCallback((on) => change((l) => setBigTiles(l, on)), [change]);
   const openApp = useCallback((app) => act('open', [app.id], `open ${app.title}`).then((v) => {
     if (v !== undefined) change((l) => opened(l, app.id, clock.date()));
   }), [act, change, clock]);
@@ -2030,7 +2079,8 @@ function Home({ home, db, clock }) {
   const open = folder && entryOf(folder.gid);
   const menuFor = groupMenu && entryOf(groupMenu.gid);
   return html`<main class="h-page" data-dragging=${dragging ? '' : undefined}>
-    <${Bar} act=${act} refresh=${refresh} unread=${typeof unread === 'number' ? unread : 0} onSearch=${openSearch} />
+    <${Bar} act=${act} refresh=${refresh} unread=${typeof unread === 'number' ? unread : 0} onSearch=${openSearch}
+      bigOn=${layout ? layout.bigTiles !== false : null} onBigTiles=${onBigTiles} />
     ${searching
       ? html`<${SearchField} query=${query} setQuery=${setQuery} onGo=${() => goFirst.current()} onClose=${closeSearch} />`
       : list && html`<${SearchGhost} />`}

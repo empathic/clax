@@ -53,7 +53,7 @@ test.describe("its tests in the inspect view", () => {
     const tests = (await ofType(page, "tests"))[0] as HostMessage & { passed: number; failed: unknown[]; skipped: number };
     expect(tests.failed).toEqual([]);
     expect(tests.skipped).toBe(0);
-    expect(tests.passed).toBe(69);
+    expect(tests.passed).toBe(76);
   });
 });
 
@@ -474,6 +474,52 @@ test.describe("renders", () => {
           await expect(page.locator(".h-search-ghost")).toBeVisible();
           await page.screenshot({ path: join(shots, `home-search-pull-${size}-${scheme}.png`), animations: "disabled" });
           await page.evaluate(() => { document.documentElement.removeAttribute("data-pulling"); document.documentElement.style.removeProperty("--pull"); });
+          // Big tiles: the three apps opened most this fortnight on 2×2
+          // cells among 1×1s, beside a starred app and a folder; then one
+          // caught mid-drag; then the ⋮ menu's switch, and the grid with
+          // it off.
+          await page.evaluate(async () => {
+            const { mount } = await import(`${location.origin}/home.js`);
+            const { fakeHome, fakeDb, SAMPLE } = await import(`${location.origin}/kit/fake-home.js`);
+            const at = SAMPLE.apps[7].updatedAt;
+            const apps = [...SAMPLE.apps,
+              { id: "app-tide", title: "Tide table", updatedAt: at, build: null, icon: { monogram: "TT", hue: 200 } },
+              { id: "app-steps", title: "Step counter", updatedAt: at, build: null, icon: { word: "fitness" } },
+              { id: "app-water", title: "Water", updatedAt: at, build: null, icon: { word: "water" } }];
+            const ids = apps.map((a: { id: string }) => a.id);
+            const now = new Date();
+            const day = now.toISOString().slice(0, 10);
+            const o = (n: number) => ({ n, last: now.toISOString(), days: { [day]: n } });
+            const layout = {
+              v: 1, starred: ["app-run"], seen: ids,
+              order: ["app-groceries", "app-budget", "g:g1", "app-habits", "app-mood", "app-recipes", "app-tide", "app-plants", "app-water"],
+              groups: { g1: { name: "Lists", look: "folder", apps: ["app-notes", "app-steps"] } },
+              opens: { "app-budget": o(9), "app-mood": o(6), "app-plants": o(5), "app-habits": o(4) },
+            };
+            mount(document.getElementById("app"), fakeHome({ makes: [], apps }), { db: fakeDb({ "layout/main": layout }) });
+          });
+          await expect(page.locator(".h-tile[data-big]")).toHaveCount(3);
+          await page.evaluate(() => Promise.all([...document.images].map(i => i.decode().catch(() => {}))));
+          await page.screenshot({ path: join(shots, `home-big-${size}-${scheme}.png`), animations: "disabled" });
+          const mood = (await page.locator('[data-id="app-mood"]').boundingBox())!;
+          await page.mouse.move(mood.x + mood.width / 2, mood.y + mood.height / 2);
+          await page.mouse.down();
+          await page.mouse.move(mood.x + mood.width / 2 + 40, mood.y + mood.height / 2 - 70, { steps: 4 });
+          await expect(page.locator(".h-page[data-dragging]")).toHaveCount(1);
+          await expect.poll(() => page.locator(".h-tile[data-id]:not([data-dragging])").evaluateAll(els => els.every(e => !(e as HTMLElement).style.transform))).toBe(true);
+          await page.screenshot({ path: join(shots, `home-big-drag-${size}-${scheme}.png`), animations: "disabled" });
+          // The page losing focus ends the drag where it began.
+          await page.evaluate(() => dispatchEvent(new Event("blur")));
+          await page.mouse.up();
+          await expect(page.locator(".h-page[data-dragging]")).toHaveCount(0);
+          await page.getByRole("button", { name: "More" }).click();
+          await expect(page.getByRole("menuitemcheckbox", { name: "Big tiles for apps you use" })).toHaveAttribute("aria-checked", "true");
+          await page.screenshot({ path: join(shots, `home-big-menu-${size}-${scheme}.png`), animations: "disabled" });
+          await page.getByRole("menuitemcheckbox", { name: "Big tiles for apps you use" }).click();
+          await expect(page.locator(".h-tile[data-big]")).toHaveCount(0);
+          await page.mouse.move(1, viewport.height - 1);
+          await expect.poll(() => page.locator(".h-tile[data-key]").evaluateAll(els => els.every(e => !(e as HTMLElement).style.transform))).toBe(true);
+          await page.screenshot({ path: join(shots, `home-big-off-${size}-${scheme}.png`), animations: "disabled" });
           await page.evaluate(async () => {
             const { mount } = await import(`${location.origin}/home.js`);
             const { fakeHome } = await import(`${location.origin}/kit/fake-home.js`);

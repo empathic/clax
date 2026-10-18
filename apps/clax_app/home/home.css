@@ -113,7 +113,7 @@ body {
 .h-scrim { position: fixed; inset: 0; z-index: 3; border: 0; background: transparent; cursor: default; }
 .h-menu {
   position: absolute; top: 40px; right: 0; z-index: 4;
-  min-width: 112px; max-width: 280px; padding: 8px 0; border-radius: 4px;
+  width: max-content; min-width: 112px; max-width: 280px; padding: 8px 0; border-radius: 4px;
   background: var(--h-menu-bg); box-shadow: var(--h-menu-shadow);
 }
 .h-menu-item {
@@ -122,6 +122,8 @@ body {
   font: 500 14px/20px var(--k-font); letter-spacing: 0.1px; cursor: pointer;
 }
 .h-menu-item:active, .h-menu-item:hover { background: var(--h-state); }
+.h-menu-check { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.h-menu-check .h-glyph { color: var(--h-primary); }
 
 /* Key banner. */
 .h-key {
@@ -164,13 +166,13 @@ body {
   position: relative; will-change: transform;
 }
 .h-tile:active { background: var(--h-state); }
-.h-icon { position: relative; width: 60px; height: 60px; flex: none; }
+.h-icon { position: relative; width: var(--face, 60px); height: var(--face, 60px); flex: none; }
 .h-face {
-  width: 60px; height: 60px; border-radius: 15px; overflow: hidden;
+  width: var(--face, 60px); height: var(--face, 60px); border-radius: calc(var(--face, 60px) / 4); overflow: hidden;
   display: grid; place-items: center;
   background: var(--t-a); color: var(--t-b);
 }
-.h-face img { width: 60px; height: 60px; object-fit: cover; -webkit-user-drag: none; }
+.h-face img { width: var(--face, 60px); height: var(--face, 60px); object-fit: cover; -webkit-user-drag: none; }
 .h-emoji { font-size: 28px; line-height: 1; }
 .h-mono { font: 600 22px/1 var(--k-font); letter-spacing: 0; }
 .h-make { background: var(--h-pc); color: var(--h-on-pc); }
@@ -183,7 +185,7 @@ body {
   :root:not([data-theme="light"]) .h-face.h-make.h-failed { background: var(--h-ec); color: var(--h-on-ec); }
 }
 .h-over {
-  position: absolute; inset: 0; border-radius: 15px; display: grid; place-items: center;
+  position: absolute; inset: 0; border-radius: calc(var(--face, 60px) / 4); display: grid; place-items: center;
   background: color-mix(in srgb, var(--h-surface) 82%, transparent);
 }
 .h-label {
@@ -197,6 +199,12 @@ body {
   overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
 }
 .h-status.h-error { color: var(--h-error); }
+/* A big tile: an app opened most lately, over a 2×2 cell, its icon twice
+ * the size, centred with its name; the name keeps its size. */
+.h-tile[data-big] { --face: 120px; height: auto; justify-content: center; }
+.h-tile[data-big] .h-emoji { font-size: 56px; }
+.h-tile[data-big] .h-mono { font-size: 44px; }
+.h-tile[data-big] .h-face[data-kind="word"] svg { width: 56px; height: 56px; stroke-width: 2; }
 
 /* Rings. */
 .h-ring { position: relative; width: 36px; height: 36px; display: block; }
@@ -339,7 +347,7 @@ html[data-pulling] :is(.h-key, .h-grid-wrap, .h-message) { transform: translateY
 .h-folder-face .h-emoji { font-size: 14px; }
 /* The ring around the app a dragged one would group with. */
 .h-icon > .h-group-outline {
-  position: absolute; inset: -6px; border-radius: 20px; pointer-events: none;
+  position: absolute; inset: -6px; border-radius: calc(var(--face, 60px) / 4 + 5px); pointer-events: none;
   border: 3px solid var(--h-primary);
   opacity: 0; transform: scale(0.94);
   transition: opacity 120ms var(--k-ease), transform 120ms var(--k-ease);

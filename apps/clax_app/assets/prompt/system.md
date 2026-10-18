@@ -318,6 +318,9 @@ starts the person's apps. Changing it is a change like any other.
   arrangement. Show any app the document does not place. `groups`
   (folders and piles) and `g:<groupId>` entries in `order` are shown by the
   shipped home app from release 1.3.0.
+  `bigTiles: false` (in `layout/main`) turns off the 2×2 tiles the shipped
+  home app gives the three apps opened most in the last 14 days (release
+  1.5.0).
 - `use("home")` resolves null in a browser, in your renders and tests, and
   in every other app: show "This is a Clax home screen. Open it in the Clax
   app." then. Test it with the kit's `home` part: mount the page over
