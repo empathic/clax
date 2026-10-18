@@ -52,22 +52,25 @@
   let unPeople: (() => void) | undefined;
   let Q = $state<typeof import("../q") | null>(null);
   let Page = $state<typeof import("../q/InboxPage.svelte").default | null>(null);
+  let Summary = $state<typeof import("../q/GallerySummary.svelte").default | null>(null);
   // Whether this browser has an inbox (the owner's or a connected person's): null until known.
   let owner = $state<boolean | null>(null);
   const lazy = () => import("./gallery-working");
   // `q` comes through the lazy module, which also hands it the page's stream.
   // A gallery destroyed meanwhile asks no more and imports nothing: a late
   // import would load the question module after the page (or a test) moved on.
-  // `/inbox` loads its page's own chunk beside the module.
+  // `/inbox` loads its page's own chunk beside the module, and `/` the
+  // unread summary's.
   // The lazy module, once loaded (on every path): People in the header comes from it.
   let lm = $state<typeof import("./gallery-working") | null>(null);
-  const loadQ = (m: typeof import("./gallery-working")) => { if (!destroyed) lm = m; return m.inboxBrowser(mine, life.signal).then(o => (o && !destroyed ? Promise.all([m.q(), inbox ? m.inboxPage() : null]) : null)).then(async r => {
+  const loadQ = (m: typeof import("./gallery-working")) => { if (!destroyed) lm = m; return m.inboxBrowser(mine, life.signal).then(o => (o && !destroyed ? Promise.all([m.q(), inbox ? m.inboxPage() : null, inbox || people ? null : m.summary()]) : null)).then(async r => {
     if (destroyed) return;
     if (!r) { owner = false; return; }
     Q = r[0];
     Q.start(m.pageStream());
     owner = true;
     Page = r[1]?.default ?? null;
+    Summary = r[2]?.default ?? null;
   }, () => {}); };
   const describe = (e: unknown) => (e instanceof Error ? e.message : String(e));
   // Each list seeds the working feed; the first one, once rendered, starts its stream.
@@ -113,7 +116,7 @@
 </header>
 <main class="gal">
   {#if inbox}{#if owner && Page}<Page />{:else if owner === false}<p class="empty">This browser has no inbox: open the owner's at http://localhost:{location.port}/inbox on the computer Clax runs on.</p>{/if}{:else if !people}
-  {#if Q}<Q.GallerySummary />{/if}
+  {#if Summary}<Summary />{/if}
   {#if error}<p class="empty">Could not load artifacts: {error}</p>{/if}
   {#if artifacts && artifacts.length === 0}
     <div class="empty-gallery"><Mark size="hero" apart /><p>When an agent publishes a page, it lands here.</p><p class="muted">Or publish one yourself with <code>clax publish index.html</code>.</p></div>

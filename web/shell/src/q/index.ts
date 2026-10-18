@@ -18,7 +18,6 @@ import SidebarQuestions from "./SidebarQuestions.svelte";
 import { type Trail, useTrail } from "./trail";
 import { followBadge, followDot } from "./wire";
 
-export { default as GallerySummary } from "./GallerySummary.svelte";
 export { default as InboxLink } from "./InboxLink.svelte";
 
 /** Where a notification's click leads: in this tab on the gallery and the

@@ -46,10 +46,12 @@ export class CardSync extends Sync {
 }
 export { inboxBrowser } from "../owner";
 export { pageStream };
-/** The question module (the inbox's summary, Inbox, notifications). */
+/** The question module (Inbox, the feeds, notifications). */
 export const q = () => import("../q");
 /** The inbox page, its own chunk: `/inbox` loads it beside `q`. */
 export const inboxPage = () => import("../q/InboxPage.svelte");
+/** The gallery's unread summary, its own chunk: `/` loads it beside `q`. */
+export const summary = () => import("../q/GallerySummary.svelte");
 /** `/people`: mounts the People page (its own chunk) at the end of
  * `target`, following the page's stream. The result removes it. */
 export function peoplePage(target: Element): () => void {
