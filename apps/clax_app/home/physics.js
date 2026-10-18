@@ -62,3 +62,54 @@ export function manualClock(startMs = 0, dateMs = Date.UTC(2026, 9, 16, 12)) {
     },
   };
 }
+
+/** A tile's spring, per axis, unit mass: it arrives in about 300 ms and
+ * overshoots once, by about 3%. */
+export const SPRING = Object.freeze({ k: 380, c: 26 });
+const MAX_DT = 1 / 30;
+
+/** `s` ({x, v}) after `dt` seconds of the spring toward `target`. A step
+ * longer than 1/30 s is taken in parts, so a slow frame never throws a
+ * tile off. */
+export function springStep(s, target, dt, { k, c } = SPRING) {
+  let { x, v } = s;
+  for (let left = dt; left > 1e-9; left -= MAX_DT) {
+    const h = Math.min(left, MAX_DT);
+    v += (-k * (x - target) - c * v) * h;
+    x += v * h;
+  }
+  return { x, v };
+}
+
+/** Whether a spring is close enough to `target`, slowly enough, to stop. */
+export const atRest = (s, target) => Math.abs(s.x - target) < 0.5 && Math.abs(s.v) < 5;
+
+/** A tossed tile's decay time: released at v px/s it comes to rest
+ * v × TOSS_TAU px on. */
+export const TOSS_TAU = 0.325;
+/** The release speed, in px/s, above which a release is a toss. */
+export const TOSS_MIN = 600;
+
+/** `p` ({x, y, vx, vy}) after `dt` seconds of a toss. */
+export function tossStep(p, dt) {
+  const f = Math.exp(-dt / TOSS_TAU);
+  const g = TOSS_TAU * (1 - f);
+  return { x: p.x + p.vx * g, y: p.y + p.vy * g, vx: p.vx * f, vy: p.vy * f };
+}
+/** Where a toss from `p` comes to rest. */
+export const tossRest = (p) => ({ x: p.x + p.vx * TOSS_TAU, y: p.y + p.vy * TOSS_TAU });
+/** Whether a toss is slow enough to end. */
+export const tossDone = (p) => Math.hypot(p.vx, p.vy) < 20;
+
+/** The pointer samples a release's speed is taken over. */
+export const SPEED_MS = 80;
+
+/** The pointer's velocity in px/s over the samples ({t ms, x, y}) of the
+ * last SPEED_MS; zero for fewer than two. */
+export function velocityOf(samples) {
+  if (samples.length < 2) return { vx: 0, vy: 0 };
+  const last = samples[samples.length - 1];
+  const first = samples.find((s) => last.t - s.t <= SPEED_MS) ?? last;
+  const dt = (last.t - first.t) / 1000;
+  return dt > 0 ? { vx: (last.x - first.x) / dt, vy: (last.y - first.y) / dt } : { vx: 0, vy: 0 };
+}
