@@ -2623,7 +2623,7 @@
         {
           "binary": {
             "path": "<exe>",
-            "version": "0.4.0"
+            "version": "<version>"
           },
           "daemon_url": "http://localhost:<port>",
           "daemon_version": "test",
@@ -6754,7 +6754,7 @@
         {
           "binary": {
             "path": "<exe>",
-            "version": "0.4.0"
+            "version": "<version>"
           },
           "daemon_url": "http://localhost:<port>",
           "daemon_version": "test",
@@ -10425,7 +10425,7 @@
         {
           "binary": {
             "path": "<exe>",
-            "version": "0.4.0"
+            "version": "<version>"
           },
           "daemon_url": "http://localhost:<port>",
           "daemon_version": "test",
@@ -14383,7 +14383,7 @@
           ],
           "binary": {
             "path": "<exe>",
-            "version": "0.4.0"
+            "version": "<version>"
           },
           "daemon_url": "http://localhost:<port>",
           "daemon_version": "test",
@@ -18120,7 +18120,7 @@
         {
           "binary": {
             "path": "<exe>",
-            "version": "0.4.0"
+            "version": "<version>"
           },
           "daemon_url": "http://localhost:<port>",
           "daemon_version": "test",
@@ -22112,7 +22112,7 @@
         {
           "binary": {
             "path": "<exe>",
-            "version": "0.4.0"
+            "version": "<version>"
           },
           "daemon_url": "http://localhost:<port>",
           "daemon_version": "test",

@@ -701,7 +701,9 @@ fn newest_ulid_ms(text: &str) -> u64 {
 /// - `127.0.0.1:<port>` and `localhost:<port>` lose the test daemon's port
 ///   (`:<port>`), and the temporary home's path becomes `<home>`;
 /// - each client working directory becomes `<cwd>`, each client executable
-///   `<exe>`, and a `pid` or `parent_pid` holding a client's PID `"<pid>"`.
+///   `<exe>`, and a `pid` or `parent_pid` holding a client's PID `"<pid>"`;
+/// - a `binary` object's `version` (the build's version, which a release
+///   changes) becomes `"<version>"`.
 pub fn normalise_minted(mut value: Value) -> Value {
     let minted = value
         .as_object_mut()
@@ -769,6 +771,17 @@ impl Normaliser {
         {
             return Value::String("<minted>".into());
         }
+        let v = match (key, v) {
+            (Some("binary"), Value::Object(mut o)) => {
+                if let Some(ver) = o.get_mut("version")
+                    && ver.is_string()
+                {
+                    *ver = Value::String("<version>".into());
+                }
+                Value::Object(o)
+            }
+            (_, v) => v,
+        };
         match v {
             Value::String(s) => Value::String(self.text(&s)),
             Value::Number(x)
@@ -1105,7 +1118,7 @@ fn normalise_minted_replaces_only_the_listed_values() {
         "other_port": "http://localhost:5123/",
         "clip_path": "/tmp/x/ax/artifacts/abc/clips/t.png",
         "cwd": "/tmp/s/work",
-        "binary": {"path": "/tmp/t/deps/golden-1"},
+        "binary": {"path": "/tmp/t/deps/golden-1", "version": "9.9.9"},
         "pid": 77,
         "parent_pid": 4200,
         "ids": [old, new_a, new_b, new_a],
@@ -1127,7 +1140,7 @@ fn normalise_minted_replaces_only_the_listed_values() {
             "other_port": "http://localhost:5123/",
             "clip_path": "<home>/artifacts/abc/clips/t.png",
             "cwd": "<cwd>",
-            "binary": {"path": "<exe>"},
+            "binary": {"path": "<exe>", "version": "<version>"},
             "pid": "<pid>",
             "parent_pid": 4200,
             "ids": [old, "<ulid:1>", "<ulid:2>", "<ulid:1>"],
