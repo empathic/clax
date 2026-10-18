@@ -14,7 +14,9 @@
 // and `key`, which returns a function that stops the calls. Each action is
 // kept in `home.calls` as `{method, args}` instead of opening anything;
 // `home.shownCount` counts the page's `shown()` calls (a test asserts the
-// page said once that it was drawn: `home.shownCount === 1`); and
+// page said once that it was drawn: `home.shownCount === 1`), which resolve
+// `{opened: home.replayed}` when `home.replayed` names an app (as Clax
+// answers after opening it from a tap on its start-up image), else null; and
 // `home.set({apps, makes, unread, needsKey})` changes the state and calls
 // the listeners of what changed, as the app does when a make finishes or an
 // app changes.
@@ -108,7 +110,8 @@ export function fakeHome(state = {}) {
     openInbox: act('openInbox'),
     openSettings: act('openSettings'),
     importApp: act('importApp'),
-    shown: async () => { shown++; return null; },
+    replayed: null,
+    shown: async () => { shown++; return home.replayed ? { opened: home.replayed } : null; },
     get shownCount() { return shown; },
     on(name, fn) {
       if (!listeners[name]) throw new TypeError(`no home event named ${JSON.stringify(name)}`);

@@ -370,6 +370,18 @@ test('opening a new app from the home screen clears its mark and counts the open
   expect(l.opens['app-notes']).toEqual({ n: 1, last: '2026-10-16T12:00:00.000Z', days: { '2026-10-16': 1 } });
 });
 
+test('an app Clax opened from a tap on its start-up image counts as opened and loses its New mark', async () => {
+  const seen = SAMPLE.apps.map((a) => a.id).filter((id) => id !== 'app-notes');
+  const home = fakeHome({ makes: [] });
+  home.replayed = 'app-notes';
+  db = fakeDb({ [LAYOUT]: { v: 1, starred: [], order: [], seen } });
+  mount(root(), home, { db });
+  await wait(() => home.shownCount === 1);
+  await wait(async () => (await stored()).opens?.['app-notes']?.n === 1);
+  await wait(() => ui.exists('[data-id="app-notes"]') && !ui.exists('[data-id="app-notes"][data-new]'));
+  expect((await stored()).seen).toContain('app-notes');
+});
+
 test('Star from the menu moves the app to Starred; Unstar puts it first under All apps', async () => {
   const home = await show({ makes: [] });
   home.menuPick = 'star';

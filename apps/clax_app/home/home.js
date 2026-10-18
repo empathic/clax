@@ -631,7 +631,11 @@ function Home({ home, db, clock }) {
   useEffect(() => {
     if (!home || !drawn || toldShown.current) return;
     toldShown.current = true;
-    Promise.resolve(home.shown?.()).catch(() => {});
+    // Clax may have opened an app from a tap on its image of this page
+    // before it was drawn: that is an open from the home screen too.
+    Promise.resolve(home.shown?.()).then((v) => {
+      if (typeof v?.opened === 'string') change((l) => opened(l, v.opened, clock.date()));
+    }).catch(() => {});
   }, [home, drawn]);
   useTiles(home, drawn);
 

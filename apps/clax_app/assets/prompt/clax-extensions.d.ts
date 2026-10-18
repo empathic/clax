@@ -384,8 +384,11 @@ declare namespace ClaxExtensions {
       importApp(): Promise<void>;
       /** Says the page has drawn the home screen: the grid with its apps,
        * the empty state or the load error. Call it once per load, after
-       * the first such render (from an effect, not a tap). */
-      shown(): Promise<void>;
+       * the first such render (from an effect, not a tap). Resolves
+       * `{opened: id}` when Clax opened app `id` from a tap on the image of
+       * the home screen it showed until then (an open from the home screen,
+       * as a tap on the tile), else `null`. */
+      shown(): Promise<{ opened: string } | null>;
       /** Says where each app's tile is now, after each render that moves
        * them (and on scroll and resize): Clax keeps the last ones with an
        * image of the page, which it shows at once on its next start, and
