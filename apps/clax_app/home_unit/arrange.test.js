@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { normalize, reconcile, sections, moveTo, star, unstar, opened, isNew, groupOf, groupKey } from '../home/arrange.js';
+import { normalize, reconcile, sections, moveTo, star, unstar, opened, isNew, groupOf, groupKey, groupNameOf, makeGroup, addToGroup, removeFromGroup, moveInGroup, renameGroup, setLook, ungroup } from '../home/arrange.js';
 
 const app = (id, hoursAgo = 0, icon = {}) => ({ id, title: id.toUpperCase(), updatedAt: new Date(Date.UTC(2026, 9, 16, 12) - hoursAgo * 3600e3).toISOString(), build: null, icon });
 const A = app('a', 1), B = app('b', 2), C = app('c', 3), D = app('d', 4);
@@ -126,5 +126,57 @@ describe('opened', () => {
     l = opened(l, 'a', new Date('2026-10-16T13:00:00Z'));
     expect(isNew(l, 'a')).toBe(false);
     expect(l.opens.a).toEqual({ n: 6, last: '2026-10-16T13:00:00.000Z', days: { '2026-10-03': 1, '2026-10-16': 2 } });
+  });
+});
+
+describe('groups', () => {
+  const apps = [A, B, C, D];
+  const base = () => reconcile({ starred: ['d'], order: ['a', 'b', 'c'], seen: ['a', 'b', 'c', 'd'] }, apps);
+
+  test('a group is named from the common icon word, else Group', () => {
+    expect(groupNameOf(app('x', 0, { word: 'Money' }), app('y', 0, { word: 'money ' }))).toBe('Money');
+    expect(groupNameOf(app('x', 0, { word: 'money' }), app('y', 0, { word: 'chart' }))).toBe('Group');
+    expect(groupNameOf(app('x', 0, { emoji: '🍲' }), app('y', 0, {}))).toBe('Group');
+  });
+
+  test("dropping an app on another makes a folder at the target's place, target first", () => {
+    const l = reconcile(makeGroup(base(), 'b', 'a', 'g1', 'Group'), apps);
+    expect(l.order).toEqual(['g:g1', 'c']);
+    expect(l.groups.g1).toEqual({ name: 'Group', look: 'folder', apps: ['b', 'a'] });
+    expect(reconcile(makeGroup(base(), 'c', 'a', 'g1', 'G'), apps).order).toEqual(['b', 'g:g1']);
+  });
+
+  test('a starred target leaves Starred for the new group; a group never goes in a group', () => {
+    const l = reconcile(makeGroup(base(), 'd', 'c', 'g1', 'G'), apps);
+    expect(l.starred).toEqual([]);
+    expect(l.order).toEqual(['a', 'b', 'g:g1']);
+    const g = reconcile(makeGroup(base(), 'a', 'b', 'g1', 'G'), apps);
+    expect(makeGroup(g, 'c', 'g:g1', 'g2', 'H')).toEqual(g);
+    expect(addToGroup(g, 'g1', 'g:g1')).toEqual(g);
+  });
+
+  test('add, move inside, remove, rename, look, ungroup', () => {
+    let l = reconcile(makeGroup(base(), 'a', 'b', 'g1', 'G'), apps);
+    l = reconcile(addToGroup(l, 'g1', 'c'), apps);
+    expect(l.groups.g1.apps).toEqual(['a', 'b', 'c']);
+    expect(l.order).toEqual(['g:g1']);
+    l = moveInGroup(l, 'g1', 'c', 0);
+    expect(l.groups.g1.apps).toEqual(['c', 'a', 'b']);
+    l = reconcile(removeFromGroup(l, 'a'), apps);
+    expect(l.order).toEqual(['g:g1', 'a']);
+    expect(renameGroup(l, 'g1', '  Tools  ').groups.g1.name).toBe('Tools');
+    expect(renameGroup(l, 'g1', '   ').groups.g1.name).toBe('G');
+    expect(renameGroup(l, 'g1', 'x'.repeat(60)).groups.g1.name).toHaveLength(40);
+    expect(setLook(l, 'g1', 'pile').groups.g1.look).toBe('pile');
+    const u = reconcile(ungroup(l, 'g1'), apps);
+    expect(u.order).toEqual(['c', 'b', 'a']);
+    expect(u.groups).toEqual({});
+  });
+
+  test('removing the second-last app dissolves the group into the one left', () => {
+    let l = reconcile(makeGroup(base(), 'a', 'b', 'g1', 'G'), apps);
+    l = reconcile(removeFromGroup(l, 'b'), apps);
+    expect(l.order).toEqual(['a', 'b', 'c']);
+    expect(l.groups).toEqual({});
   });
 });

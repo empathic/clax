@@ -152,3 +152,85 @@ export function opened(layout, id, now) {
 
 /** Whether app `id` has not been opened from the home screen yet. */
 export const isNew = (layout, id) => !layout.seen.includes(id);
+
+/** The longest a group's name may be, in characters. */
+const NAME_MAX = 40;
+
+/** A new group's name: the icon word `a` and `b` share, capitalised, else "Group". */
+export function groupNameOf(a, b) {
+  const word = (x) => (typeof x?.icon?.word === 'string' ? x.icon.word.trim().toLowerCase() : '');
+  const w = word(a);
+  return w && w === word(b) ? w[0].toUpperCase() + w.slice(1) : 'Group';
+}
+
+/** App `draggedId` dropped on app `targetId`: a new folder `gid` named
+ * `name`, holding the target then the dragged app, at the target's place
+ * in All apps (a starred target leaves Starred: groups are not starred).
+ * A group dropped on anything, or on itself, makes nothing; so does a
+ * `gid` already in use. */
+export function makeGroup(layout, targetId, draggedId, gid, name) {
+  const l = normalize(layout);
+  if (isGroupKey(targetId) || isGroupKey(draggedId) || targetId === draggedId || !isId(gid) || l.groups[gid]) return l;
+  // The target's place among All apps' entries once the dragged app is
+  // out; a starred or grouped target's is the end.
+  const at = l.order.filter((k) => k !== draggedId).indexOf(targetId);
+  const out = moveTo(moveTo(l, draggedId, 'all', 0), targetId, 'all', 0);
+  const order = out.order.filter((k) => k !== targetId && k !== draggedId);
+  const i = at >= 0 ? at : order.length;
+  return {
+    ...out,
+    order: [...order.slice(0, i), groupKey(gid), ...order.slice(i)],
+    groups: { ...out.groups, [gid]: { name, look: 'folder', apps: [targetId, draggedId] } },
+  };
+}
+
+/** App `id` into group `gid` at `index` among its apps (clamped), out of
+ * wherever it was. A group never goes in a group: that changes nothing. */
+export function addToGroup(layout, gid, id, index = Infinity) {
+  const l = normalize(layout);
+  if (isGroupKey(id) || !l.groups[gid]) return l;
+  const out = moveTo(l, id, 'all', 0);
+  const order = out.order.filter((k) => k !== id);
+  const apps = out.groups[gid].apps.filter((k) => k !== id);
+  const i = Math.max(0, Math.min(Number.isFinite(index) ? Math.trunc(index) : apps.length, apps.length));
+  return { ...out, order, groups: { ...out.groups, [gid]: { ...out.groups[gid], apps: [...apps.slice(0, i), id, ...apps.slice(i)] } } };
+}
+
+/** App `id` out of its group, into All apps right after the group; an app
+ * in no group stays where it is. */
+export function removeFromGroup(layout, id) {
+  const l = normalize(layout);
+  const gid = groupOf(l, id);
+  if (!gid) return l;
+  return moveTo(l, id, 'all', l.order.indexOf(groupKey(gid)) + 1);
+}
+
+/** App `id` to `index` among group `gid`'s apps (clamped). */
+export const moveInGroup = (layout, gid, id, index) => addToGroup(layout, gid, id, index);
+
+/** Group `gid` named `name`, trimmed, at most NAME_MAX characters; an
+ * empty name changes nothing. */
+export function renameGroup(layout, gid, name) {
+  const l = normalize(layout);
+  const n = [...String(name ?? '').trim()].slice(0, NAME_MAX).join('');
+  if (!n || !l.groups[gid]) return l;
+  return { ...l, groups: { ...l.groups, [gid]: { ...l.groups[gid], name: n } } };
+}
+
+/** Group `gid` shown as a folder or as a pile; any other look changes nothing. */
+export function setLook(layout, gid, look) {
+  const l = normalize(layout);
+  if (!l.groups[gid] || (look !== 'folder' && look !== 'pile')) return l;
+  return { ...l, groups: { ...l.groups, [gid]: { ...l.groups[gid], look } } };
+}
+
+/** Group `gid` gone, its apps in its place in All apps, in its order. */
+export function ungroup(layout, gid) {
+  const l = normalize(layout);
+  const g = l.groups[gid];
+  if (!g) return l;
+  const groups = { ...l.groups };
+  delete groups[gid];
+  const order = l.order.flatMap((k) => (k === groupKey(gid) ? g.apps : [k]));
+  return { ...l, order, groups };
+}
