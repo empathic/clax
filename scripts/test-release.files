@@ -3,6 +3,23 @@
 # (bazel/release_files.bzl).
 Cargo.toml
 Cargo.lock
+crates/clax-core/Cargo.toml
+crates/clax-server/Cargo.toml
+crates/clax-cli/Cargo.toml
+crates/clax-mcp/Cargo.toml
+crates/clax-hooks/Cargo.toml
+crates/clax-fake-exe/Cargo.toml
+crates/clax-testkit/Cargo.toml
+crates/clax-embedded/Cargo.toml
+crates/clax-commands/Cargo.toml
+crates/clax-sample/Cargo.toml
+crates/clax-realtime/Cargo.toml
+crates/clax-http/Cargo.toml
+crates/clax-store/Cargo.toml
+crates/clax-git/Cargo.toml
+crates/clax-rt/Cargo.toml
+crates/clax-content-git/Cargo.toml
+crates/clax-worker/Cargo.lock
 .claude-plugin/marketplace.json
 plugins/claude-code/.claude-plugin/plugin.json
 plugins/clax/.codex-plugin/plugin.json

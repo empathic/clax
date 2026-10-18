@@ -11,6 +11,8 @@ exports_files([
     ".bazelversion",
     "README.md",
     ".claude-plugin/marketplace.json",
+    # Read by scripts/test-release.sh: crates/clax-worker has no BUILD file.
+    "crates/clax-worker/Cargo.lock",
 ])
 
 # The workspace version, which the extension's manifest takes

@@ -81,6 +81,10 @@ def cargo_package(
         srcs = ["Cargo.toml"],
         visibility = ["//visibility:public"],
     )
+
+    # The manifest itself, for the release script test (bazel/release_files.bzl):
+    # scripts/bump-version.sh reads which crates take the workspace version.
+    native.exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
     features = crate["default_features"]
     lib = crate["lib"]
 

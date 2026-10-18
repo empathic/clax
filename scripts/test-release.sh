@@ -38,14 +38,28 @@ if (cd "$T" && scripts/bump-version.sh 9.8.7 >/dev/null) && [ "$(cd "$T" && scri
     && cmp -s "$T/scripts/ensure-clax.sh" "$T/plugins/claude-code/scripts/ensure-clax.sh" \
     && cmp -s "$T/scripts/ensure-clax.sh" "$T/plugins/pi/scripts/ensure-clax.sh" \
     && grep -q '^This is Clax plugin 9.8.7\.' "$T/plugins/pi/skills/clax/SKILL.md" \
-    && python3 "$T/scripts/sync-skill-tools.py" --check >/dev/null; then
+    && python3 "$T/scripts/sync-skill-tools.py" --check >/dev/null \
+    && grep -A1 '^name = "clax-fake-exe"$' "$T/Cargo.lock" | grep -q '^version = "9.8.7"$'; then
     pass "bump-version writes every version, the launcher copies and skill blocks included"
 else fail "bump-version writes every version"; fi
+# The Worker's lock: every Clax crate it names by path at the new version,
+# its own two crates (0.0.0) and every registry package as they were.
+lock_diff="$(diff "$HERE/crates/clax-worker/Cargo.lock" "$T/crates/clax-worker/Cargo.lock" | grep '^[<>]' | sort | uniq -c)"
+crates="$(awk '/^name = "clax-/ {n=$3} /^version = / && n {print n, $3; n=""}' "$T/crates/clax-worker/Cargo.lock")"
+if echo "$crates" | grep -v '"0.0.0"' | grep -v '"9.8.7"' | grep -q . || ! echo "$crates" | grep -q '"9.8.7"' \
+    || echo "$lock_diff" | grep -v 'version = "' | grep -q .; then
+    fail "bump-version writes the Worker's Cargo.lock ($crates; $lock_diff)"
+else pass "bump-version writes the Worker's Cargo.lock, and only its Clax crates' versions"; fi
 
 sed -i.bak 's/"version": "9.8.7"/"version": "9.8.6"/' "$T/plugins/clax/.codex-plugin/plugin.json"
 out="$(cd "$T" && scripts/check-version.sh 2>&1)"; rc=$?
 if [ "$rc" = 1 ] && echo "$out" | grep "plugins/clax/.codex-plugin/plugin.json: 9.8.6" >/dev/null; then pass "a stray version is named"
 else fail "a stray version is named ($out)"; fi
+
+sed -i.bak '/^name = "clax-core"$/{n;s/9.8.7/9.8.6/;}' "$T/crates/clax-worker/Cargo.lock"
+out="$(cd "$T" && scripts/check-version.sh 2>&1)"; rc=$?
+if [ "$rc" = 1 ] && echo "$out" | grep "crates/clax-worker/Cargo.lock clax-core: 9.8.6" >/dev/null; then pass "a stray Worker lock version is named"
+else fail "a stray Worker lock version is named ($out)"; fi
 
 # A fresh copy of the version files, for the cases below that need one.
 fresh() {

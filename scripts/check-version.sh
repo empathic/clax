@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Checks that every place a Clax version is written agrees: the manifests,
-# Cargo.lock, the copies of ensure-clax.sh and the skills' tool blocks.
+# both Cargo.lock files, the copies of ensure-clax.sh and the skills' tool
+# blocks.
 #   check-version.sh           exit 0 when they agree; print each one when not
 #   check-version.sh v1.2.3    also require the tag to be v<version>
 #   check-version.sh --print   print the version (after checking)
@@ -34,8 +35,21 @@ for path in ("scripts/ensure-clax.sh", "plugins/claude-code/scripts/ensure-clax.
     versions[f"{path} CLAX_VERSION"] = first(r'^CLAX_VERSION="([^"]+)"', open(path).read())
 for path in ("plugins/claude-code/skills/clax/SKILL.md", "plugins/clax/skills/clax/SKILL.md", "plugins/pi/skills/clax/SKILL.md", "plugins/clax-grok/skills/clax/SKILL.md"):
     versions[f"{path} tool block"] = first(r'^This is Clax plugin (\S+?)\.(?:\s|$)', open(path).read())
-for crate in ("clax-core", "clax-server", "clax-cli", "clax-mcp", "clax-hooks", "clax-testkit", "clax-embedded", "clax-commands", "clax-sample", "clax-realtime", "clax-http", "clax-store", "clax-rt", "clax-git", "clax-content-git"):
-    versions[f"Cargo.lock {crate}"] = first(r'^name = "%s"\nversion = "([^"]+)"' % re.escape(crate), lock)
+# Every member that takes the workspace version, in both lockfiles: the
+# Worker's (crates/clax-worker, a workspace of its own) names those it uses.
+members = re.search(r'^members\s*=\s*\[(.*?)\]', cargo, re.M | re.S)
+worker_lock = open("crates/clax-worker/Cargo.lock").read()
+for member in re.findall(r'"([^"]+)"', members.group(1)) if members else []:
+    manifest = open(f"{member}/Cargo.toml").read()
+    if not re.search(r'^version(\.workspace\s*=\s*true|\s*=\s*\{\s*workspace\s*=\s*true\s*\})', manifest, re.M):
+        continue
+    crate = first(r'^name\s*=\s*"([^"]+)"', manifest)
+    pattern = r'^name = "%s"\nversion = "([^"]+)"' % re.escape(crate)
+    versions[f"Cargo.lock {crate}"] = first(pattern, lock)
+    if re.search(pattern, worker_lock, re.M):
+        versions[f"crates/clax-worker/Cargo.lock {crate}"] = first(pattern, worker_lock)
+if members is None:
+    versions["Cargo.toml [workspace] members"] = None
 
 args = sys.argv[1:]
 values = set(versions.values())

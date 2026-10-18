@@ -492,7 +492,7 @@ Only a person cuts one. Its downloads work only while the repository is
 public.
 
 ```
-scripts/bump-version.sh 0.4.0     # every version, and the skills' tool blocks
+scripts/bump-version.sh 0.4.0     # every version, both Cargo.lock files and the skills' tool blocks
 just ci
 git commit -am "Release 0.4.0"
 git tag -s v0.4.0 -m "Clax 0.4.0"
