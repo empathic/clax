@@ -79,8 +79,9 @@ change, and it lands in place with their data kept.
 
 - One app declares `{"home": {}}`: Clax's home screen, reached with
   `await window.claude.use("home")` (`apps()`, `makes()`, `unread()`,
-  `needsKey()`, the actions `open`, `openMake`, `newApp`, `menu`,
-  `openInbox`, `openSettings`, `importApp`, `shown`, and `on(name, fn)`;
+  `needsKey()`, the actions `open`, `openMake`, `newApp`,
+  `menu(id, {x, y, w, h}, {items})`, `openInbox`, `openSettings`,
+  `importApp`, `shown`, and `on(name, fn)`;
   types in `ClaxExtensions.Home` below).
 - Keep its `home.shown()` call, made once per load right after the grid
   (or the empty state, or the load error) is drawn: without it Clax treats
@@ -88,7 +89,9 @@ change, and it lands in place with their data kept.
 - It is a launcher first: keep opening an app by its tile, New app, the
   tile's menu on a long press, the inbox, Settings and the key banner
   reachable. Never hide an app the person did not ask to hide; keep the
-  order or groups they asked for in `db`.
+  arrangement in `layout/main` (`{v: 1, starred, order, groups, seen,
+  opens}`) readable by the shipped home app:
+  add fields, never change the meaning of one.
 
 ## Changing an app
 

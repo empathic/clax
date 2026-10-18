@@ -334,6 +334,16 @@ void main() {
       }
     });
 
+    test("the home screen section gives the arrangement's document and its rule", () async {
+      for (final f in ['assets/prompt/system.md', 'assets/prompt/single-call.md']) {
+        final md = await rootBundle.loadString(f);
+        final home = md.substring(md.indexOf('## The home screen'));
+        expect(home, contains('`layout/main`'), reason: f);
+        expect(home, contains('add fields, never change the meaning of one'), reason: f);
+        expect(home, contains('menu(id, {x, y, w, h}, {items})'), reason: f);
+      }
+    });
+
     test('names every tool in toolOrder', () async {
       final md = await rootBundle.loadString('assets/prompt/system.md');
       for (final name in toolOrder) {
