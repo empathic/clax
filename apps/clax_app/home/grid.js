@@ -29,9 +29,11 @@ export function pack(items, cols) {
   return { cells, rows };
 }
 
-/** The measures of a grid `width` CSS px wide in `cols` columns. */
-export function geometry(width, cols, { gapX = 4, gapY = 8, cellH = 116 } = {}) {
-  return { cols, cellW: (width - gapX * (cols - 1)) / cols, cellH, gapX, gapY };
+/** The measures of a grid `width` CSS px wide in `cols` columns: its
+ * cells, and each cell's icon, `face` px across (twice that on a 2×2),
+ * `iconTop` px down the cell. */
+export function geometry(width, cols, { gapX = 4, gapY = 8, cellH = 116, face = 60, iconTop = 8 } = {}) {
+  return { cols, cellW: (width - gapX * (cols - 1)) / cols, cellH, gapX, gapY, face, iconTop };
 }
 
 /** `cell`'s box, from the grid's top left. */
@@ -57,13 +59,24 @@ export function slotAt(cells, g, x, y) {
   return best;
 }
 
-/** The index of the cell whose centre is within `radius` px of (x, y),
- * from the grid's top left, or -1. */
+/** The centre of `cell`'s icon, from the grid's top left: across the
+ * middle of the cell, near its top. */
+export function iconCentre(cell, g) {
+  const b = cellBox(cell, g);
+  return { x: b.x + b.w / 2, y: b.y + g.iconTop + (g.face * cell.span) / 2 };
+}
+
+/** The index of the cell whose icon's centre is nearest (x, y), from the
+ * grid's top left, when that is within `radius` px; else -1. */
 export function centreUnder(cells, g, x, y, radius = 24) {
-  const i = slotAt(cells, g, x, y);
-  if (i < 0) return -1;
-  const b = cellBox(cells[i], g);
-  return Math.hypot(b.x + b.w / 2 - x, b.y + b.h / 2 - y) <= radius ? i : -1;
+  let best = -1;
+  let dist = Infinity;
+  cells.forEach((cell, i) => {
+    const c = iconCentre(cell, g);
+    const d = Math.hypot(c.x - x, c.y - y);
+    if (d < dist) { dist = d; best = i; }
+  });
+  return dist <= radius ? best : -1;
 }
 
 /** The tilt, in degrees from −8 to 8, of the `i`th icon of group `gid`'s

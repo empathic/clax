@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { pack, geometry, cellBox, slotAt, centreUnder, tiltOf } from '../home/grid.js';
+import { pack, geometry, cellBox, slotAt, centreUnder, iconCentre, tiltOf } from '../home/grid.js';
 
 const at = (r) => r.cells.map((c) => `${c.key}@${c.col},${c.row}${c.span === 2 ? '×2' : ''}`);
 
@@ -46,6 +46,19 @@ test('centreUnder finds a tile only near its centre', () => {
   const b = cellBox(cells[1], g);
   expect(centreUnder(cells, g, b.x + b.w / 2 + 10, b.y + b.h / 2 - 10)).toBe(1);
   expect(centreUnder(cells, g, b.x + 4, b.y + 4)).toBe(-1);
+});
+
+test("centreUnder aims at the icon's centre, near the top of a 1×1 cell and of a 2×2, not at the cell's", () => {
+  const g = geometry(412, 4);
+  const { cells } = pack([{ key: 'a' }, { key: 'B', span: 2 }], 4);
+  const a = cellBox(cells[0], g);
+  const b = cellBox(cells[1], g);
+  // Each icon's top is 8 px down its cell: 60 px across, 120 on a 2×2.
+  expect(iconCentre(cells[0], g)).toEqual({ x: a.x + a.w / 2, y: 38 });
+  expect(iconCentre(cells[1], g)).toEqual({ x: b.x + b.w / 2, y: 68 });
+  expect(centreUnder(cells, g, a.x + a.w / 2, 38)).toBe(0);
+  expect(centreUnder(cells, g, b.x + b.w / 2, 68)).toBe(1);
+  expect(centreUnder(cells, g, b.x + b.w / 2, b.y + b.h / 2)).toBe(-1);
 });
 
 test('a pile tilts the same way every time, within 8°', () => {

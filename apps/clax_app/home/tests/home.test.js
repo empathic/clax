@@ -481,6 +481,7 @@ test('a layout read that does not answer within 2 s draws the grid newest first 
 });
 
 const centre = (id) => { const r = document.querySelector(`[data-id="${id}"]`).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; };
+const faceCentre = (id) => { const r = document.querySelector(`[data-id="${id}"] .h-face`).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; };
 const pointer = (type, { x, y }, kind = 'touch', id = 9) => new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: id, isPrimary: true, pointerType: kind, button: 0, clientX: x, clientY: y });
 /** Drags tile `from` to `to`: held (touch) or not (mouse), moved in
  * `steps` over `ms`, then still for `pause` ms before the release (a drop;
@@ -1428,7 +1429,7 @@ test('a starred app dragged into All apps, where it grows, takes the slot its 2�
   expect((await stored()).order.indexOf('app-budget')).toBe(3);
 });
 
-test('a big tile drags to a new place and stays 2×2; an app held over it groups with it', async () => {
+test("a big tile drags to a new place and stays 2×2; an app held on its icon's centre groups with it", async () => {
   const clock = busyClock();
   await show({ makes: [] }, { clock, layout: busy() });
   await wait(() => document.querySelectorAll('[data-big]').length === 3);
@@ -1439,7 +1440,7 @@ test('a big tile drags to a new place and stays 2×2; an app held over it groups
   expect('big' in el.dataset).toBe(true);
   expect(el.style.gridColumn).toBe('1 / span 2');
   expect(el.style.gridRow).toBe('1 / span 2');
-  await drag(clock, 'app-notes', centre('app-budget'), { pause: 700 });
+  await drag(clock, 'app-notes', faceCentre('app-budget'), { pause: 700 });
   await wait(async () => Object.keys((await stored()).groups ?? {}).length === 1);
   const [g] = Object.values((await stored()).groups);
   expect(g.apps.sort()).toEqual(['app-budget', 'app-notes']);

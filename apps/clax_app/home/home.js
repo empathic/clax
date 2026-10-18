@@ -14,7 +14,7 @@
 // motion.js's springs on the page's clock: a held tile lifts and can be
 // dragged across Starred and All apps, its neighbours making room; a quick
 // release tosses it on (physics.js); Alt+arrows move a focused tile.
-// Held still 600 ms over another app's centre, a dragged app makes a group
+// Held still 600 ms over another app's icon's centre, a dragged app makes a group
 // of the two; so held over a group, it joins it; a toss never groups. A
 // group shows as a folder tile
 // that opens over the grid, where its apps are renamed, reordered and
@@ -40,7 +40,7 @@ import {
 } from './arrange.js';
 import { layoutStore } from './store.js';
 import { realClock, velocityOf, tossRest, TOSS_MIN } from './physics.js';
-import { pack, geometry, cellBox, slotAt, centreUnder, tiltOf } from './grid.js';
+import { pack, geometry, cellBox, slotAt, centreUnder, iconCentre, tiltOf } from './grid.js';
 import { createPress } from './drag.js';
 import { createMotion } from './motion.js';
 import { search } from './search.js';
@@ -493,7 +493,8 @@ function toSegment(c, a, b) {
 }
 
 /** How long a dragged app's pointer rests within CENTRE_PX of another
- * tile's centre, moving at most STILL_PX, before a drop there groups. */
+ * tile's icon's centre (grid.js iconCentre, on a 2×2 tile's large icon
+ * too), moving at most STILL_PX, before a drop there groups. */
 const HOVER_MS = 600;
 const CENTRE_PX = 24;
 const STILL_PX = 8;
@@ -534,8 +535,8 @@ function arranger(st, clock) {
   let block = false;
   let edge = null;
   let seq = 0;
-  // The tile whose centre the dragged app's pointer is near: {key,
-  // section, c (its centre, from its grid's top left, where it was drawn
+  // The tile whose icon's centre the dragged app's pointer is near: {key,
+  // section, c (that centre, from its grid's top left, where it was drawn
   // as the hover began), still (where the pointer's rest began), before
   // (the drag's slot then, in which the tile is under the pointer), ready
   // (once a drop there groups), cancel}.
@@ -710,7 +711,7 @@ function arranger(st, clock) {
     return r ? { x: p.x - r.left, y: p.y - r.top } : null;
   }
 
-  /** The tile, as drawn, whose centre is within CENTRE_PX of the dragged
+  /** The tile, as drawn, whose icon's centre is within CENTRE_PX of the dragged
    * app's pointer `p` (another app's or a group's): {key, section, c},
    * or null. */
   function hoverAt(p) {
@@ -726,8 +727,7 @@ function arranger(st, clock) {
       const i = centreUnder(list, g, p.x - r.left, p.y - r.top, CENTRE_PX);
       const key = i < 0 ? null : list[i].key;
       if (!key || key === drag.key || key === `g:${drag.fan}` || key.startsWith('m:')) return null;
-      const b = cellBox(list[i], g);
-      return { key, section, c: { x: b.x + b.w / 2, y: b.y + b.h / 2 } };
+      return { key, section, c: iconCentre(list[i], g) };
     }
     return null;
   }
@@ -741,7 +741,7 @@ function arranger(st, clock) {
   }
 
   /** Whether viewport point `p` is still within CENTRE_PX of the hovered
-   * tile's centre, where it was drawn as the hover began. */
+   * tile's icon's centre, where it was drawn as the hover began. */
   function onHover(p) {
     const q = hover && inGrid(hover.section, p);
     return !!q && Math.hypot(q.x - hover.c.x, q.y - hover.c.y) <= CENTRE_PX;
