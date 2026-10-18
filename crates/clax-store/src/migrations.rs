@@ -3489,6 +3489,8 @@ mod tests {
             });
             assert!(matches!(r, Err(clax_core::CoreError::NotFound)), "{r:?}");
         }
+    }
+
     /// The rows a renumbering or upgrade must keep, table by table, each
     /// as one text per row in a stable order.
     fn kept_rows(c: &Connection, app: usize) -> Vec<(String, Vec<String>)> {
