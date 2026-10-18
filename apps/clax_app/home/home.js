@@ -8,14 +8,22 @@
 // often each is opened) is the `layout/main` document in the page's own
 // `db` (arrange.js, store.js).
 //
+// Each tile is placed in its cell (grid.js's `pack`) and moved by
+// motion.js's springs on the page's clock: a held tile lifts and can be
+// dragged across Starred and All apps, its neighbours making room; a quick
+// release tosses it on (physics.js); Alt+arrows move a focused tile.
+//
 // `start()` mounts the page over the real capabilities; `mount(root, home,
 // {db, clock})` mounts it over any objects with the same calls (the tests
 // pass kit/fake-home.js's fakeHome and fakeDb).
 import { html, render, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from './kit/preact.js';
 import { icon as kitIcon } from './kit/icons.js';
-import { reconcile, normalize, sections, star, unstar, opened, isNew } from './arrange.js';
+import { reconcile, normalize, sections, star, unstar, opened, isNew, moveTo } from './arrange.js';
 import { layoutStore } from './store.js';
-import { realClock } from './physics.js';
+import { realClock, velocityOf, tossRest, TOSS_MIN } from './physics.js';
+import { pack, geometry, slotAt } from './grid.js';
+import { createPress } from './drag.js';
+import { createMotion } from './motion.js';
 
 // Lucide glyphs the kit does not carry (lucide-static 0.460.0, ISC; see
 // kit/LICENSES.txt).
@@ -159,71 +167,6 @@ function AppFace({ app }) {
   </span>`;
 }
 
-const HOLD_MS = 500;
-const SLOP_PX = 10;
-
-/** Press handlers for a tile, timed by `clock`: a tap calls `onTap`. Held
- * still for HOLD_MS,
- * the press arms (the tile shrinks a little, `data-held`), and its release
- * calls `onHold` once while the click that follows does nothing: the
- * release, not the timer, is the person's gesture, so the app accepts what
- * `onHold` asks. A context menu outside a press (a mouse's right click, the
- * keyboard's menu key) calls `onHold` at once; one during a press is the
- * WebView's own long press, and the press's release answers it. */
-function usePress(onTap, onHold, clock) {
-  const s = useRef({ timer: null, x: 0, y: 0, pressing: false, armed: false, swallow: false, el: null });
-  const disarm = () => {
-    const c = s.current;
-    if (c.timer) c.timer();
-    c.timer = null;
-    c.pressing = false;
-    c.armed = false;
-    if (c.el) delete c.el.dataset.held;
-  };
-  useEffect(() => disarm, []);
-  if (!onHold) return { onClick: onTap };
-  return {
-    onPointerDown(e) {
-      if (e.pointerType === 'mouse' && e.button !== 0) return;
-      disarm();
-      const el = e.currentTarget;
-      Object.assign(s.current, { x: e.clientX, y: e.clientY, pressing: true, swallow: false, el });
-      s.current.timer = clock.after(HOLD_MS, () => {
-        s.current.timer = null;
-        s.current.armed = true;
-        el.dataset.held = '';
-      });
-    },
-    onPointerMove(e) {
-      const c = s.current;
-      if (c.pressing && Math.hypot(e.clientX - c.x, e.clientY - c.y) > SLOP_PX) disarm();
-    },
-    onPointerUp(e) {
-      const armed = s.current.armed;
-      disarm();
-      if (!armed) return;
-      s.current.swallow = true;
-      onHold(e.currentTarget);
-    },
-    onPointerCancel: disarm,
-    onPointerLeave(e) { if (e.pointerType === 'mouse') disarm(); },
-    onContextMenu(e) {
-      e.preventDefault();
-      if (s.current.pressing) return;
-      s.current.swallow = true;
-      onHold(e.currentTarget);
-    },
-    onClick(e) {
-      if (s.current.swallow) {
-        s.current.swallow = false;
-        e.preventDefault();
-        return;
-      }
-      onTap(e);
-    },
-  };
-}
-
 /** The viewport rectangle of `el`'s icon (its unscaled box), in whole CSS
  * pixels. */
 function faceRect(el) {
@@ -231,14 +174,25 @@ function faceRect(el) {
   return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
 }
 
-/** App `app`'s tile: a tap calls `onOpen(app)`, a held press's release or
- * a context menu `onMenu(app, rect)`; `fresh` marks it "New". */
-function AppTile({ app, fresh, clock, onOpen, onMenu }) {
+/** A tile's grid placement for its cell `c`, as a style object (so a
+ * re-render never clears the transform the motion draws). */
+const cellStyle = (c) => (c ? { gridColumn: `${c.col + 1} / span ${c.span}`, gridRow: `${c.row + 1} / span ${c.span}` } : undefined);
+
+/** App `app`'s tile, in cell `cell`: its press goes to `ctl` (drag.js's
+ * press: a tap opens, a hold then a release asks for the menu, a hold then
+ * a move drags); a context menu outside a press asks for the menu at once;
+ * Alt+arrows move it. `fresh` marks it "New". */
+function AppTile({ app, fresh, cell, dragging, ctl, onOpen, onMenu }) {
   const b = app.build;
-  const press = usePress(() => onOpen(app), (el) => onMenu(app, faceRect(el)), clock);
+  const press = ctl.pressOf(app.id);
   const said = b ? `${app.title}, building, ${b.done} of ${b.total} done` : app.title;
   const label = fresh ? `${said}, new` : said;
-  return html`<button type="button" class="h-tile" data-id=${app.id} data-new=${fresh ? '' : undefined} aria-label=${label} ...${press}>
+  return html`<button type="button" class="h-tile" data-id=${app.id} data-key=${tileKeyOf(app.id)} data-new=${fresh ? '' : undefined}
+    data-dragging=${dragging ? '' : undefined} aria-label=${label} style=${cellStyle(cell)}
+    onPointerDown=${(e) => ctl.down(e, app.id)}
+    onContextMenu=${(e) => { e.preventDefault(); if (!press.contextMenu()) onMenu(app, faceRect(e.currentTarget)); }}
+    onClick=${() => { if (press.takeClick()) onOpen(app); }}
+    onKeyDown=${(e) => ctl.key(app.id, e)}>
     <span class="h-icon">
       <${AppFace} app=${app} />
       ${b && html`<span class="h-over"><${Ring} done=${b.done} total=${b.total} /></span>`}
@@ -251,13 +205,13 @@ function AppTile({ app, fresh, clock, onOpen, onMenu }) {
 const MAKE_STATUS = { making: 'Making…', offline: 'Offline', waiting: 'Waiting…', interrupted: 'Interrupted', failed: "Couldn't make it" };
 const MAKE_GLYPH = { offline: 'cloudOff', waiting: 'hourglass', interrupted: 'rotateCcw', failed: 'alertCircle' };
 
-function MakeTile({ make, act }) {
+function MakeTile({ make, cell, act }) {
   const state = MAKE_STATUS[make.state] ? make.state : 'making';
   const status = MAKE_STATUS[state];
   const said = state !== 'making';
   const p = make.progress;
   const spoken = state === 'offline' ? 'Waiting for connection' : status;
-  return html`<button type="button" class="h-tile" data-make=${make.id} aria-label=${`${make.request}, ${spoken}`} onClick=${() => act('openMake', [make.id], `open ${make.request}`)}>
+  return html`<button type="button" class="h-tile" data-make=${make.id} data-key=${`m:${make.id}`} style=${cellStyle(cell)} aria-label=${`${make.request}, ${spoken}`} onClick=${() => act('openMake', [make.id], `open ${make.request}`)}>
     <span class="h-icon">
       <span class=${`h-face h-make${state === 'failed' ? ' h-failed' : ''}`} data-kind="make">
         ${!said && (p && p.total > 0 ? html`<${Ring} done=${p.done} total=${p.total} />` : html`<${Spinner} />`)}
@@ -318,30 +272,387 @@ function Bar({ act, refresh, unread }) {
  * px, 4 px apart (Flutter's SliverGridDelegateWithMaxCrossAxisExtent). */
 const columnsFor = (width) => Math.max(1, Math.ceil(width / (112 + 4)));
 
+/** A tile's key in the page: "a:<app ID>", or "m:<make ID>". */
+const tileKeyOf = (id) => `a:${id}`;
+
+/** Each tile's cell by its key, with its section: Starred's apps, then
+ * All apps' makes and apps (a group's apps in the group's place), each
+ * packed in `cols` columns. */
+function placement(layout, apps, makes, cols) {
+  const s = sections(layout, apps);
+  const lists = {
+    starred: s.starred.map((e) => tileKeyOf(e.app.id)),
+    all: [...makes.map((m) => `m:${m.id}`), ...s.all.flatMap((e) => (e.app ? [e.app] : e.apps).map((a) => tileKeyOf(a.id)))],
+  };
+  const out = new Map();
+  for (const [section, keys] of Object.entries(lists)) {
+    for (const c of pack(keys.map((key) => ({ key, span: 1 })), cols).cells) out.set(c.key, { ...c, section });
+  }
+  return out;
+}
+
 /** Starred (only when something is starred, headed) above All apps (headed
  * then), each a grid of `cols` columns; the makes go first under All apps.
- * A group's apps show in the group's place. */
-function Sections({ layout, apps, makes, cols, clock, onOpen, onMenu, act }) {
+ * A group's apps show in the group's place. While app `drag` is dragged,
+ * All apps is headed, and an empty Starred is a zone to drop on. */
+function Sections({ layout, apps, makes, cols, drag, ctl, onOpen, onMenu, act }) {
   const s = sections(layout, apps);
-  const tile = (app) => html`<${AppTile} key=${`a:${app.id}`} app=${app} fresh=${isNew(layout, app.id)} clock=${clock} onOpen=${onOpen} onMenu=${onMenu} />`;
-  const headed = s.starred.length > 0;
+  const cells = placement(layout, apps, makes, cols);
+  const tile = (app) => html`<${AppTile} key=${tileKeyOf(app.id)} app=${app} fresh=${isNew(layout, app.id)} cell=${cells.get(tileKeyOf(app.id))}
+    dragging=${drag === app.id} ctl=${ctl} onOpen=${onOpen} onMenu=${onMenu} />`;
+  const starred = s.starred.length > 0;
+  const zone = !starred && drag != null;
   return html`
-    ${headed && html`<section class="h-section" data-section="starred" aria-label="Starred" style=${`--cols:${cols}`}>
+    ${starred && html`<section class="h-section" data-section="starred" aria-label="Starred" style=${`--cols:${cols}`}>
       <h2 class="h-heading">Starred</h2>
       <div class="h-grid">${s.starred.map((e) => tile(e.app))}</div>
     </section>`}
+    ${zone && html`<section class="h-section h-drop" data-section="starred" aria-label="Starred"><${Glyph} name="star" /><span>Drop here to star</span></section>`}
     <section class="h-section" data-section="all" aria-label="All apps" style=${`--cols:${cols}`}>
-      ${headed && html`<h2 class="h-heading">All apps</h2>`}
+      ${(starred || zone) && html`<h2 class="h-heading">All apps</h2>`}
       <div class="h-grid">
-        ${makes.map((m) => html`<${MakeTile} key=${`m:${m.id}`} make=${m} act=${act} />`)}
+        ${makes.map((m) => html`<${MakeTile} key=${`m:${m.id}`} make=${m} cell=${cells.get(`m:${m.id}`)} act=${act} />`)}
         ${s.all.flatMap((e) => (e.app ? [tile(e.app)] : e.apps.map(tile)))}
       </div>
     </section>`;
 }
 
-function Grid({ layout, apps, makes, clock, onOpen, onMenu, act }) {
+/** How near the viewport's top (below the bar) or bottom a dragged tile
+ * scrolls the page, and how fast at the very edge, in px/s. */
+const EDGE_PX = 48;
+const EDGE_SPEED = 720;
+/** The share of a toss's velocity a tile it passes is bumped by. */
+const BUMP = 0.15;
+
+/** `el`'s transform offset as the motion drew it. */
+function offsetOf(el) {
+  const m = /translate\((-?[\d.]+)px, (-?[\d.]+)px\)/.exec(el.style.transform);
+  return m ? { x: Number(m[1]), y: Number(m[2]) } : { x: 0, y: 0 };
+}
+/** Where the page lays `el` out (its box less its transform), from the
+ * document's top left. */
+function layoutPos(el, t = offsetOf(el)) {
+  const r = el.getBoundingClientRect();
+  return { x: r.left - t.x + scrollX, y: r.top - t.y + scrollY };
+}
+const inside = (r, p) => p.x >= r.left && p.x <= r.right && p.y >= r.top && p.y <= r.bottom;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+/** The distance from point `c` to the segment from `a` to `b`. */
+function toSegment(c, a, b) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const n = dx * dx + dy * dy;
+  const f = n > 0 ? clamp(((c.x - a.x) * dx + (c.y - a.y) * dy) / n, 0, 1) : 0;
+  return Math.hypot(a.x + f * dx - c.x, a.y + f * dy - c.y);
+}
+
+/** The grid's arranging, over the state `st` the Grid keeps current
+ * (`wrap`, `layout`, `shown`, `apps`, `makes`, `cols`, `motion`,
+ * `reduced`, `change`, `onMenu`, `setDrag`, `setHeld`, `onDragging`):
+ * each app's press (`pressOf`), the drag it starts, and the keyboard's
+ * moves. During a drag the tiles are placed and moved here, at once, with
+ * no render; the page renders the drag's start and its drop. */
+function arranger(st, clock) {
+  const presses = new Map();
+  let active = null;
+  let drag = null;
+  let pos = new Map();
+  let lastCols = null;
+  let allTop = null;
+  // The page's scroll when the tiles were last placed or scrolled by a drag.
+  let scrolled = 0;
+  let dropped = false;
+  let landing = null;
+  let focus = null;
+  let block = false;
+  let edge = null;
+  let seq = 0;
+  const tileEl = (key) => st.wrap?.querySelector(`.h-tile[data-key="${CSS.escape(key)}"]`) ?? null;
+  const gridOf = (section) => st.wrap?.querySelector(`.h-section[data-section="${section}"] .h-grid`) ?? null;
+
+  /** Places every tile in its cell of the shown arrangement (the drag's
+   * while one is on) and springs each one that moved from where it was.
+   * With `steady`, a render that moved All apps' grid up or down (the drop zone
+   * and the headings coming or going) scrolls the page with it, so the
+   * tiles stay under the finger. */
+  function relayout(steady = false) {
+    if (!st.wrap) return;
+    const cells = placement(drag?.prov ?? st.shown, st.apps, st.makes, st.cols);
+    const animate = lastCols === st.cols;
+    lastCols = st.cols;
+    const els = [...st.wrap.querySelectorAll('.h-tile[data-key]')];
+    const offsets = els.map((el) => offsetOf(el));
+    for (const el of els) {
+      const c = cells.get(el.dataset.key);
+      if (!c || c.section !== el.closest('.h-section')?.dataset.section) continue;
+      const s = cellStyle(c);
+      if (el.style.gridColumn !== s.gridColumn) el.style.gridColumn = s.gridColumn;
+      if (el.style.gridRow !== s.gridRow) el.style.gridRow = s.gridRow;
+    }
+    const all = gridOf('all');
+    const top = all ? all.getBoundingClientRect().top + scrollY : null;
+    // A page that shrank may have scrolled back already: `shift` is how far
+    // it scrolled since the tiles were placed, which moves nothing.
+    if (steady && top != null && allTop != null && Math.abs(top - allTop) >= 0.5) scrollTo(scrollX, scrolled + top - allTop);
+    const shift = steady ? scrollY - scrolled : 0;
+    allTop = top;
+    scrolled = scrollY;
+    const next = new Map();
+    const moves = [];
+    els.forEach((el, i) => {
+      const key = el.dataset.key;
+      const p = layoutPos(el, offsets[i]);
+      next.set(key, p);
+      if (drag && key === drag.key) return;
+      if (landing?.key === key) {
+        moves.push([key, el, landing.x - p.x, landing.y - p.y, landing.vx, landing.vy]);
+        landing = null;
+        return;
+      }
+      const o = pos.get(key);
+      if (!o || !animate || (Math.abs(o.x - p.x) < 0.5 && Math.abs(o.y + shift - p.y) < 0.5)) return;
+      moves.push([key, el, o.x + offsets[i].x - p.x, o.y + shift + offsets[i].y - p.y, 0, 0]);
+    });
+    pos = next;
+    for (const [key, el, dx, dy, vx, vy] of moves) {
+      st.motion.from(key, el, dx, dy);
+      if (vx || vy) st.motion.bump(key, el, vx, vy);
+    }
+    if (drag) hold();
+    if (focus && (!document.activeElement || document.activeElement === document.body)) tileEl(tileKeyOf(focus))?.focus();
+  }
+
+  /** Holds the dragged tile under the pointer, where it was taken. */
+  function hold() {
+    const el = tileEl(drag.key);
+    if (!el) return;
+    const p = layoutPos(el);
+    st.motion.hold(drag.key, el, drag.last.x + scrollX - drag.grab.x - p.x, drag.last.y + scrollY - drag.grab.y - p.y);
+  }
+
+  /** The slot at viewport point `p` in `section`'s grid: the index among
+   * its entries (the dragged app's left out) the app would take there. */
+  function slotIn(section, p) {
+    const grid = gridOf(section);
+    const s = sections(st.layout, st.apps);
+    const entries = s[section].filter((e) => e.key !== drag.id);
+    const owners = [];
+    entries.forEach((e, i) => {
+      const n = e.app ? 1 : e.apps.filter((a) => a.id !== drag.id).length;
+      for (let k = 0; k < n; k++) owners.push(i);
+    });
+    if (!grid) return { section, index: 0 };
+    const lead = section === 'all' ? st.makes.length : 0;
+    const { cells } = pack(Array.from({ length: lead + owners.length + 1 }, (_, key) => ({ key, span: 1 })), st.cols);
+    const r = grid.getBoundingClientRect();
+    const c = Math.max(0, slotAt(cells, geometry(r.width, st.cols), p.x - r.left, p.y - r.top) - lead);
+    return { section, index: c >= owners.length ? entries.length : owners[c] };
+  }
+
+  /** Where a drop at viewport point `p` puts the dragged app. */
+  function targetAt(p) {
+    const star = st.wrap?.querySelector('.h-section[data-section="starred"]');
+    if (star && inside(star.getBoundingClientRect(), p)) {
+      return star.classList.contains('h-drop') ? { section: 'starred', index: 0, zone: true } : slotIn('starred', p);
+    }
+    return slotIn('all', p);
+  }
+
+  /** Follows the pointer: when the slot under it changes, the neighbours
+   * make room there. */
+  function retarget() {
+    const t = targetAt(drag.last);
+    st.wrap?.querySelector('.h-drop')?.toggleAttribute('data-over', !!t.zone);
+    if (drag.target && t.section === drag.target.section && t.index === drag.target.index) return;
+    drag.target = t;
+    drag.prov = moveTo(st.layout, drag.id, t.section, t.index);
+    relayout();
+  }
+
+  const blocking = (on) => { block = on; };
+  const speedAt = (y) => {
+    const top = document.querySelector('.h-bar')?.getBoundingClientRect().bottom ?? 0;
+    if (y < top + EDGE_PX) return -EDGE_SPEED * Math.min(1, (top + EDGE_PX - y) / EDGE_PX);
+    if (y > innerHeight - EDGE_PX) return EDGE_SPEED * Math.min(1, (y - innerHeight + EDGE_PX) / EDGE_PX);
+    return 0;
+  };
+  const stopEdge = () => { edge?.(); edge = null; };
+  function startEdge() {
+    stopEdge();
+    let last = clock.now();
+    const tick = (now) => {
+      const dt = Math.min(0.1, (now - last) / 1000);
+      last = now;
+      if (!drag) return;
+      const v = speedAt(drag.last.y);
+      if (v) {
+        const before = scrollY;
+        scrollBy(0, v * dt);
+        scrolled = scrollY;
+        if (scrollY !== before) { hold(); retarget(); }
+      }
+      edge = clock.frame(tick);
+    };
+    edge = clock.frame(tick);
+  }
+
+  function end(d) {
+    stopEdge();
+    blocking(false);
+    drag = null;
+    dropped = true;
+    st.setDrag(null);
+    st.onDragging(false);
+    const el = tileEl(d.key);
+    if (el) delete el.dataset.held;
+  }
+
+  function handlersFor(id) {
+    const key = tileKeyOf(id);
+    return {
+      lift() {
+        const el = tileEl(key);
+        if (el) el.dataset.held = '';
+        blocking(true);
+      },
+      unlift() {
+        const el = tileEl(key);
+        if (el) delete el.dataset.held;
+        blocking(false);
+      },
+      menu() {
+        this.unlift();
+        const el = tileEl(key);
+        const app = st.apps.find((a) => a.id === id);
+        if (el && app) st.onMenu(app, faceRect(el));
+      },
+      dragStart(p) {
+        const el = tileEl(key);
+        if (!el) return;
+        const r = el.getBoundingClientRect();
+        focus = null;
+        drag = { id, key, from: st.layout.starred.includes(id) ? 'starred' : 'all', grab: { x: p.x - r.left, y: p.y - r.top }, last: p, target: null, prov: null };
+        el.dataset.held = '';
+        blocking(true);
+        st.setDrag(id);
+        st.onDragging(true);
+        hold();
+        startEdge();
+      },
+      dragMove(p) {
+        if (!drag) return;
+        drag.last = p;
+        hold();
+        retarget();
+      },
+      dragEnd(p, samples) {
+        if (!drag) return;
+        const d = drag;
+        d.last = p;
+        const v = st.reduced ? { vx: 0, vy: 0 } : velocityOf(samples);
+        const toss = Math.hypot(v.vx, v.vy) > TOSS_MIN;
+        let t = targetAt(p);
+        if (toss && !t.zone) {
+          const grid = gridOf(t.section);
+          if (grid) {
+            const r = grid.getBoundingClientRect();
+            const rest = tossRest({ x: p.x, y: p.y, vx: v.vx, vy: v.vy });
+            const q = { x: clamp(rest.x, r.left, r.right), y: clamp(rest.y, r.top, r.bottom) };
+            t = slotIn(t.section, q);
+            const half = geometry(r.width, st.cols).cellW / 2;
+            for (const el of grid.querySelectorAll('.h-tile[data-key]')) {
+              if (el.dataset.key === key) continue;
+              const b = el.getBoundingClientRect();
+              if (toSegment({ x: b.left + b.width / 2, y: b.top + b.height / 2 }, p, q) < half) st.motion.bump(el.dataset.key, el, v.vx * BUMP, v.vy * BUMP);
+            }
+          }
+        }
+        d.target = t;
+        d.prov = moveTo(st.layout, id, t.section, t.index);
+        relayout();
+        const el = tileEl(key);
+        if (t.section === d.from) {
+          st.motion.let(key);
+          if (toss && el) st.motion.bump(key, el, v.vx, v.vy);
+        } else if (el) {
+          // It lands in the other section once that renders.
+          const r = el.getBoundingClientRect();
+          landing = { key, x: r.left + scrollX, y: r.top + scrollY, vx: toss ? v.vx : 0, vy: toss ? v.vy : 0 };
+        }
+        end(d);
+        const mine = ++seq;
+        st.setHeld(d.prov);
+        st.change((l) => moveTo(l, id, t.section, t.index)).then(() => { if (mine === seq) st.setHeld(null); });
+      },
+      dragCancel() {
+        if (!drag) return;
+        const d = drag;
+        d.prov = null;
+        relayout();
+        st.motion.let(key);
+        end(d);
+      },
+    };
+  }
+
+  return {
+    relayout,
+    get dragging() { return drag !== null; },
+    pressOf(id) {
+      let p = presses.get(id);
+      if (!p) presses.set(id, (p = createPress(handlersFor(id), clock)));
+      return p;
+    },
+    down(e, id) {
+      if (drag || (active && active.phase !== 'idle')) return;
+      focus = null;
+      active = this.pressOf(id);
+      if (e.pointerType === 'mouse' && e.button === 0) {
+        try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* a pointer the browser does not know */ }
+      }
+      active.down(e);
+    },
+    /** A pointer event anywhere on the page, for the press it belongs to. */
+    pointer(type, e) { active?.[type](e); },
+    touchMove(e) { if (block && e.cancelable) e.preventDefault(); },
+    afterRender() {
+      relayout(drag !== null || dropped);
+      dropped = false;
+      if (drag) retarget();
+    },
+    /** Alt+arrows on app `id`'s tile: one entry left or right, or a row
+     * (`cols` entries) up or down, within its section. */
+    key(id, e) {
+      if (!e.altKey || drag) return;
+      const n = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -st.cols, ArrowDown: st.cols }[e.key];
+      if (!n) return;
+      e.preventDefault();
+      const l = st.shown;
+      const section = l.starred.includes(id) ? 'starred' : 'all';
+      const entries = sections(l, st.apps)[section];
+      const i = entries.findIndex((x) => x.key === id || x.apps?.some((a) => a.id === id));
+      const to = clamp(i + n, 0, entries.length - 1);
+      if (i < 0 || to === i) return;
+      focus = id;
+      st.change((x) => moveTo(x, id, section, to));
+    },
+    stop() {
+      stopEdge();
+      for (const p of presses.values()) p.cancel();
+    },
+  };
+}
+
+function Grid({ layout, apps, makes, motion, reduced, clock, change, onOpen, onMenu, act, onDragging }) {
   const ref = useRef(null);
   const [cols, setCols] = useState(4);
+  const [drag, setDrag] = useState(null);
+  // The arrangement a drop made, shown until its write settles.
+  const [held, setHeld] = useState(null);
+  const shown = held ?? layout;
+  const st = useRef({}).current;
+  Object.assign(st, { wrap: ref.current, layout, shown, apps, makes, cols, motion, reduced, change, onMenu, setDrag, setHeld, onDragging });
+  const ctl = useMemo(() => arranger(st, clock), [clock]);
   useLayoutEffect(() => {
     const el = ref.current;
     const measure = () => setCols(columnsFor(el.clientWidth));
@@ -354,8 +665,29 @@ function Grid({ layout, apps, makes, clock, onOpen, onMenu, act }) {
     addEventListener('resize', measure);
     return () => removeEventListener('resize', measure);
   }, []);
+  useLayoutEffect(() => {
+    st.wrap = ref.current;
+    ctl.afterRender();
+  });
+  useEffect(() => {
+    const move = (e) => ctl.pointer('move', e);
+    const up = (e) => ctl.pointer('up', e);
+    const cancel = (e) => ctl.pointer('cancel', e);
+    const touch = (e) => ctl.touchMove(e);
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up);
+    document.addEventListener('pointercancel', cancel);
+    document.addEventListener('touchmove', touch, { passive: false });
+    return () => {
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', up);
+      document.removeEventListener('pointercancel', cancel);
+      document.removeEventListener('touchmove', touch);
+      ctl.stop();
+    };
+  }, [ctl]);
   return html`<div class="h-grid-wrap" ref=${ref}>
-    <${Sections} layout=${layout} apps=${apps} makes=${makes} cols=${cols} clock=${clock} onOpen=${onOpen} onMenu=${onMenu} act=${act} />
+    <${Sections} layout=${shown} apps=${apps} makes=${makes} cols=${cols} drag=${drag} ctl=${ctl} onOpen=${onOpen} onMenu=${onMenu} act=${act} />
   </div>`;
 }
 
@@ -473,6 +805,8 @@ function usePull(refresh) {
     };
     const move = (e) => {
       if (s.current.y == null) return;
+      // A held or dragged tile has the finger, not the page.
+      if (document.querySelector('.h-tile[data-held]')) { s.current = { y: null, d: 0 }; setPull(0); return; }
       const dy = e.touches[0].clientY - s.current.y;
       if (dy <= 0) { s.current.d = 0; setPull(0); return; }
       if (e.cancelable) e.preventDefault();
@@ -519,19 +853,21 @@ const TILES_MS = 50;
 
 /** Tells Clax where each app's tile is (`home.tiles`), once the home
  * screen is `drawn` (after `shown`: Clax takes no tiles before it), then
- * after each render that moves one and on scroll and resize, so the image
- * of the home screen it shows at its next start opens the app under a
- * tap. */
-function useTiles(home, drawn) {
+ * after each render that moves one, on scroll and resize, and each time
+ * the tiles come to rest, so the image of the home screen it shows at its
+ * next start opens the app under a tap. Nothing goes while a tile moves
+ * (`motion.moving`). Returns the report, for the motion's settling. */
+function useTiles(home, drawn, motion) {
   const frame = useRef(0);
   const last = useRef('');
   const report = useCallback(() => {
-    if (!home?.tiles || !drawn) return;
+    if (!home?.tiles || !drawn || motion.moving) return;
     // A short timer, not an animation frame: a WebView that is covered or
     // in a window the system counts hidden runs no frames, and Clax still
     // wants the tiles under its image.
     clearTimeout(frame.current);
     frame.current = setTimeout(() => {
+      if (motion.moving) return;
       const tiles = [...document.querySelectorAll('.h-tile[data-id]')].slice(0, MAX_TILES).map((el) => {
         const r = el.getBoundingClientRect();
         return { id: el.dataset.id, rect: { x: r.x, y: r.y, w: r.width, h: r.height } };
@@ -541,7 +877,7 @@ function useTiles(home, drawn) {
       last.current = key;
       Promise.resolve(home.tiles(tiles)).catch(() => {});
     }, TILES_MS);
-  }, [home, drawn]);
+  }, [home, drawn, motion]);
   useEffect(report);
   useEffect(() => {
     addEventListener('scroll', report, { passive: true });
@@ -552,6 +888,20 @@ function useTiles(home, drawn) {
       removeEventListener('resize', report);
     };
   }, [report]);
+  return report;
+}
+
+/** Whether the person asks for reduced motion, following its changes. */
+function useReducedMotion() {
+  const q = useMemo(() => (typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null), []);
+  const [reduced, setReduced] = useState(() => !!q?.matches);
+  useEffect(() => {
+    if (!q?.addEventListener) return undefined;
+    const heard = () => setReduced(q.matches);
+    q.addEventListener('change', heard);
+    return () => q.removeEventListener('change', heard);
+  }, [q]);
+  return reduced;
 }
 
 /** How long the first read of the arrangement may take before the grid
@@ -637,7 +987,12 @@ function Home({ home, db, clock }) {
       if (typeof v?.opened === 'string') change((l) => opened(l, v.opened, clock.date()));
     }).catch(() => {});
   }, [home, drawn]);
-  useTiles(home, drawn);
+  const reduced = useReducedMotion();
+  const settled = useRef(() => {});
+  const motion = useMemo(() => createMotion(clock, { reduced, onSettle: () => settled.current() }), [clock, reduced]);
+  useEffect(() => () => motion.stop(), [motion]);
+  settled.current = useTiles(home, drawn, motion);
+  const [dragging, setDragging] = useState(false);
 
   if (!home || (appsError && isRefused(appsError))) {
     return html`<main class="h-page h-away">
@@ -655,9 +1010,10 @@ function Home({ home, db, clock }) {
   } else if (!list.length && !going.length) {
     body = html`<${Message} glyph="sparkles" title="Say what you want, and Clax makes it." hint="“A tracker for my runs with a weekly total”" />`;
   } else {
-    body = html`<${Grid} layout=${layout} apps=${list} makes=${going} clock=${clock} onOpen=${openApp} onMenu=${menuOf} act=${act} />`;
+    body = html`<${Grid} layout=${layout} apps=${list} makes=${going} motion=${motion} reduced=${reduced} clock=${clock} change=${change}
+      onOpen=${openApp} onMenu=${menuOf} act=${act} onDragging=${setDragging} />`;
   }
-  return html`<main class="h-page">
+  return html`<main class="h-page" data-dragging=${dragging ? '' : undefined}>
     <${Bar} act=${act} refresh=${refresh} unread=${typeof unread === 'number' ? unread : 0} />
     <${PullRing} pull=${pull} busy=${busy} />
     ${needsKey === true && html`<div class="h-key">

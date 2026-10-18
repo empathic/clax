@@ -78,7 +78,8 @@ test('a tap opens the app, and a making tile its make', async () => {
 });
 
 test('a context menu asks for the menu at the tile; a long press arms, then asks on release, and does not open', async () => {
-  const home = await show({ makes: [] });
+  const clock = manualClock();
+  const home = await show({ makes: [] }, { clock });
   const tile = document.querySelector('[data-id="app-habits"]');
   tile.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
   await wait(() => home.calls.length === 1);
@@ -95,7 +96,10 @@ test('a context menu asks for the menu at the tile; a long press arms, then asks
   tile.dispatchEvent(new PointerEvent('pointerdown', opts));
   // The WebView's own long press comes while the finger is down: the release answers it.
   tile.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
-  await wait(() => 'held' in tile.dataset);
+  clock.advance(399);
+  expect('held' in tile.dataset).toBe(false);
+  clock.advance(1);
+  expect('held' in tile.dataset).toBe(true);
   expect(home.calls.length).toBe(1);
   tile.dispatchEvent(new PointerEvent('pointerup', opts));
   await wait(() => home.calls.length === 2);
@@ -477,4 +481,151 @@ test('a layout read that does not answer within 2 s draws the grid newest first 
   await wait(() => { clock.advance(500); return home.shownCount === 1; });
   expect(clock.now()).toBeGreaterThan(1999);
   expect(labels()).toEqual(SAMPLE.apps.map((a) => a.title));
+});
+
+const centre = (id) => { const r = document.querySelector(`[data-id="${id}"]`).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; };
+const pointer = (type, { x, y }, kind = 'touch', id = 9) => new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: id, isPrimary: true, pointerType: kind, button: 0, clientX: x, clientY: y });
+/** Drags tile `from` to `to`: held (touch) or not (mouse), moved in
+ * `steps` over `ms`, then still for `pause` ms before the release (a drop;
+ * `pause: 0` releases at speed, a toss), then the springs run out. */
+async function drag(clock, from, to, { kind = 'touch', steps = 6, ms = 160, hold = true, pause = 100 } = {}) {
+  const el = document.querySelector(`[data-id="${from}"]`);
+  const a = centre(from);
+  el.dispatchEvent(pointer('pointerdown', a, kind));
+  if (hold) clock.advance(400);
+  for (let i = 1; i <= steps; i++) {
+    clock.advance(ms / steps);
+    el.dispatchEvent(pointer('pointermove', { x: a.x + (to.x - a.x) * i / steps, y: a.y + (to.y - a.y) * i / steps }, kind));
+  }
+  if (pause) {
+    clock.advance(pause);
+    el.dispatchEvent(pointer('pointermove', to, kind));
+  }
+  el.dispatchEvent(pointer('pointerup', to, kind));
+  clock.advance(1500);
+}
+
+test('hold and drag a tile onto another place in All apps: it lands there and the order sticks', async () => {
+  const clock = manualClock();
+  await show({ makes: [] }, { clock });
+  await wait(async () => !!(await stored()));
+  await drag(clock, 'app-run', centre('app-budget'));
+  await wait(async () => (await stored()).order.indexOf('app-run') === 4);
+  expect(section('all').indexOf('app-run')).toBe(4);
+  expect(document.querySelector('[data-id="app-run"]').style.transform).toBe('');
+});
+
+test('a hold released without moving still asks for the menu, and nothing moves', async () => {
+  const clock = manualClock();
+  const home = await show({ makes: [] }, { clock });
+  const el = document.querySelector('[data-id="app-run"]');
+  el.dispatchEvent(pointer('pointerdown', centre('app-run')));
+  clock.advance(400);
+  expect('held' in el.dataset).toBe(true);
+  el.dispatchEvent(pointer('pointerup', centre('app-run')));
+  await wait(() => home.calls.length === 1);
+  expect(home.calls[0].method).toBe('menu');
+});
+
+test('a touch that moves before the hold scrolls and lifts nothing; a tap still opens', async () => {
+  const clock = manualClock();
+  const home = await show({ makes: [] }, { clock });
+  const el = document.querySelector('[data-id="app-run"]');
+  const a = centre('app-run');
+  el.dispatchEvent(pointer('pointerdown', a));
+  clock.advance(100);
+  el.dispatchEvent(pointer('pointermove', { x: a.x, y: a.y - 40 }));
+  clock.advance(1000);
+  expect('held' in el.dataset).toBe(false);
+  el.dispatchEvent(pointer('pointerup', { x: a.x, y: a.y - 40 }));
+  expect(home.calls).toEqual([]);
+  await ui.click('[data-id="app-run"]');
+  await wait(() => home.calls.length === 1);
+  expect(home.calls[0].method).toBe('open');
+});
+
+test('a drag with nothing starred shows the Starred drop zone, and a drop there stars', async () => {
+  const clock = manualClock();
+  await show({ makes: [] }, { clock });
+  expect(ui.exists('.h-drop')).toBe(false);
+  const el = document.querySelector('[data-id="app-plants"]');
+  const a = centre('app-plants');
+  el.dispatchEvent(pointer('pointerdown', a));
+  clock.advance(400);
+  el.dispatchEvent(pointer('pointermove', { x: a.x, y: a.y - 20 }));
+  await wait(() => ui.exists('.h-section[data-section="starred"].h-drop'));
+  expect(ui.text('.h-drop')).toContain('Drop here to star');
+  const z = document.querySelector('.h-drop').getBoundingClientRect();
+  el.dispatchEvent(pointer('pointermove', { x: z.x + 40, y: z.y + z.height / 2 }));
+  el.dispatchEvent(pointer('pointerup', { x: z.x + 40, y: z.y + z.height / 2 }));
+  clock.advance(1500);
+  await wait(() => section('starred').join() === 'app-plants');
+  expect(ui.exists('.h-drop')).toBe(false);
+});
+
+test('dragging out of Starred into All apps unstars', async () => {
+  const clock = manualClock();
+  const ids = SAMPLE.apps.map((a) => a.id);
+  await show({ makes: [] }, { clock, layout: { starred: ['app-run'], order: ids.slice(1), seen: ids } });
+  await wait(() => section('starred').length === 1);
+  await drag(clock, 'app-run', centre('app-mood'));
+  await wait(() => section('starred').length === 0);
+  expect(section('all')).toContain('app-run');
+});
+
+test('a mouse drags at once, without the hold', async () => {
+  const clock = manualClock();
+  await show({ makes: [] }, { clock });
+  await wait(async () => !!(await stored()));
+  await drag(clock, 'app-notes', centre('app-run'), { kind: 'mouse', hold: false });
+  await wait(() => section('all')[0] === 'app-notes');
+});
+
+test('a toss carries the tile on with its speed and it snaps to the nearest cell', async () => {
+  const clock = manualClock();
+  await show({ makes: [] }, { clock });
+  await wait(async () => !!(await stored()));
+  const a = centre('app-run');
+  const b = centre('app-groceries');
+  const step = b.x - a.x;
+  // About a cell in 60 ms, released at speed: it comes to rest about two cells further on.
+  await drag(clock, 'app-run', { x: a.x + step, y: a.y }, { steps: 3, ms: 60, pause: 0 });
+  await wait(async () => (await stored()).order.indexOf('app-run') >= 2);
+});
+
+test('Alt+arrows move a focused tile one cell', async () => {
+  await show({ makes: [] });
+  await wait(async () => !!(await stored()));
+  const el = document.querySelector('[data-id="app-run"]');
+  el.focus();
+  el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', altKey: true, bubbles: true }));
+  await wait(() => section('all')[1] === 'app-run');
+  expect(document.activeElement.dataset.id).toBe('app-run');
+  document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', altKey: true, bubbles: true }));
+  await wait(() => section('all')[0] === 'app-run');
+});
+
+test('tiles are reported once they come to rest, not while they move', async () => {
+  const clock = manualClock();
+  const home = fakeHome({ makes: [] });
+  const reports = [];
+  home.tiles = async (list) => { reports.push(list); };
+  db = fakeDb();
+  mount(root(), home, { db, clock });
+  await wait(() => reports.length === 1);
+  const el = document.querySelector('[data-id="app-run"]');
+  const a = centre('app-run');
+  el.dispatchEvent(pointer('pointerdown', a));
+  clock.advance(400);
+  el.dispatchEvent(pointer('pointermove', { x: a.x + 120, y: a.y }));
+  clock.advance(200);
+  // An absence: no report may come while the tile is held.
+  await new Promise((r) => setTimeout(r, 120));
+  expect(reports.length).toBe(1);
+  el.dispatchEvent(pointer('pointerup', { x: a.x + 120, y: a.y }));
+  clock.advance(1500);
+  await wait(() => reports.length === 2);
+  const run = reports[1].find((t) => t.id === 'app-run');
+  const r = document.querySelector('[data-id="app-run"]').getBoundingClientRect();
+  expect(run.rect).toEqual({ x: r.x, y: r.y, w: r.width, h: r.height });
 });

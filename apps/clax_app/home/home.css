@@ -22,6 +22,7 @@
   --h-state: rgba(26, 27, 33, 0.1);
   --h-fab-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 4px 8px 3px rgba(0, 0, 0, 0.15);
   --h-menu-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 6px 2px rgba(0, 0, 0, 0.15);
+  --h-lift-shadow: var(--h-fab-shadow);
 
   --k-bg: var(--h-surface);
   --k-surface: var(--h-surface);
@@ -50,6 +51,7 @@
     --h-inverse: #e2e2e9;
     --h-on-inverse: #2f3036;
     --h-state: rgba(226, 226, 233, 0.1);
+    --h-lift-shadow: 0 0 0 1px rgba(226, 226, 233, 0.22), 0 6px 16px 2px rgba(0, 0, 0, 0.6);
   }
   :root:not([data-theme="light"]) .h-face { background: var(--t-b); color: var(--t-a); }
 }
@@ -72,6 +74,7 @@
   --h-inverse: #e2e2e9;
   --h-on-inverse: #2f3036;
   --h-state: rgba(226, 226, 233, 0.1);
+  --h-lift-shadow: 0 0 0 1px rgba(226, 226, 233, 0.22), 0 6px 16px 2px rgba(0, 0, 0, 0.6);
 }
 
 html, body { background: var(--h-surface); color: var(--h-on-surface); }
@@ -137,7 +140,7 @@ body {
 .h-grid-wrap { padding: 8px 16px 112px; }
 .h-grid {
   display: grid; grid-template-columns: repeat(var(--cols, 4), minmax(0, 1fr));
-  column-gap: 4px; row-gap: 8px;
+  column-gap: 4px; row-gap: 8px; grid-auto-rows: 116px;
 }
 .h-section + .h-section { margin-top: 8px; }
 /* A heading starts where the first column's 60 px icon does. */
@@ -158,6 +161,7 @@ body {
   background: transparent; color: var(--h-on-surface); font: inherit; letter-spacing: inherit;
   cursor: pointer; touch-action: manipulation;
   -webkit-touch-callout: none; -webkit-user-select: none; user-select: none;
+  position: relative; will-change: transform;
 }
 .h-tile:active { background: var(--h-state); }
 .h-icon { position: relative; width: 60px; height: 60px; flex: none; }
@@ -236,9 +240,29 @@ body {
 }
 .h-fab:active { background: color-mix(in srgb, var(--h-on-pc) 10%, var(--h-pc)); }
 
-/* A press held long enough to ask for the menu on release. */
-.h-icon > * { transition: transform var(--k-fast) var(--k-ease); }
-.h-tile[data-held] .h-icon > * { transform: scale(0.92); }
+/* A press held long enough to lift the tile: it grows and casts a shadow,
+ * and stays so while it is dragged, above its neighbours. */
+.h-icon > * { transition: transform var(--k-fast) var(--k-ease), box-shadow var(--k-fast) var(--k-ease); }
+.h-tile[data-held] .h-icon > * { transform: scale(1.08); }
+.h-tile[data-held] .h-face, .h-tile[data-dragging] .h-face { box-shadow: var(--h-lift-shadow); }
+.h-tile[data-held], .h-tile[data-held]:active { background: transparent; }
+.h-tile[data-dragging] { z-index: 5; pointer-events: none; }
+.h-page[data-dragging] .h-tile:not([data-dragging]) { cursor: grabbing; }
+/* Room to scroll by while a drag is on, so the drop zone opening above
+ * the grid never moves the tiles under the finger. */
+.h-page[data-dragging] { padding-bottom: 100vh; }
+/* New app steps aside while a tile is dragged, leaving its corner free. */
+.h-fab { transition: opacity var(--k-fast) var(--k-ease); }
+.h-page[data-dragging] .h-fab { opacity: 0; pointer-events: none; }
+/* Where a drag stars an app while nothing is starred. */
+.h-drop {
+  margin: 8px 4px; height: 116px; border-radius: 20px;
+  border: 2px dashed color-mix(in srgb, var(--h-primary) 60%, transparent);
+  display: flex; align-items: center; gap: 8px; padding: 0 20px; color: var(--h-on-variant);
+  font: 500 14px/20px var(--k-font); letter-spacing: 0.1px;
+}
+.h-drop[data-over] { background: color-mix(in srgb, var(--h-primary) 10%, transparent); color: var(--h-primary); }
+@media (prefers-reduced-motion: reduce) { .h-icon > * { transition: none; } }
 
 /* What an action that failed says, and Tap again to retry it. */
 .h-notice {

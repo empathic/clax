@@ -53,7 +53,7 @@ test.describe("its tests in the inspect view", () => {
     const tests = (await ofType(page, "tests"))[0] as HostMessage & { passed: number; failed: unknown[]; skipped: number };
     expect(tests.failed).toEqual([]);
     expect(tests.skipped).toBe(0);
-    expect(tests.passed).toBe(34);
+    expect(tests.passed).toBe(43);
   });
 });
 
@@ -205,6 +205,45 @@ test.describe("over a fake host", () => {
     await expect(page.locator("[data-new]")).toHaveCount(0);
   });
 
+  test("a touch hold then drag reorders, and a mouse drag to Starred stars", async ({ page }) => {
+    await page.clock.install();
+    await serve(page, { makes: [] });
+    await expect(page.locator(".h-tile[data-id]")).toHaveCount(8);
+    const box = async (sel: string) => (await page.locator(sel).boundingBox())!;
+    const from = await box('[data-id="app-run"]');
+    const to = await box('[data-id="app-budget"]');
+    const cdp = await page.context().newCDPSession(page);
+    const touch = (type: "touchStart" | "touchMove" | "touchEnd", x: number, y: number) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: type === "touchEnd" ? [] : [{ x, y, id: 1 }] });
+    const [x0, y0] = [from.x + from.width / 2, from.y + from.height / 2];
+    const [x1, y1] = [to.x + to.width / 2, to.y + to.height / 2];
+    await touch("touchStart", x0, y0);
+    await page.clock.runFor(450);
+    for (let i = 1; i <= 8; i++) { await touch("touchMove", x0 + (x1 - x0) * i / 8, y0 + (y1 - y0) * i / 8); await page.clock.runFor(30); }
+    await page.clock.runFor(150);
+    await touch("touchEnd", x1, y1);
+    await page.clock.runFor(1500);
+    await expect.poll(() => page.locator('.h-section[data-section="all"] .h-tile[data-id]').evaluateAll(els => els.map(e => (e as HTMLElement).dataset.id).indexOf("app-run"))).toBe(4);
+    await expect.poll(() => page.locator(".h-tile[data-id]").evaluateAll(els => els.every(e => !(e as HTMLElement).style.transform))).toBe(true);
+    // The release opened nothing.
+    expect((await calls(page)).filter(c => (c as { method: string }).method === "open")).toEqual([]);
+    const notes = await box('[data-id="app-notes"]');
+    await page.mouse.move(notes.x + 30, notes.y + 30);
+    await page.mouse.down();
+    await page.mouse.move(notes.x + 30, notes.y + 10, { steps: 2 });
+    await expect(page.locator(".h-drop")).toBeVisible();
+    // The zone opens above the grid without moving the tiles under the
+    // pointer; held near the top edge, the page scrolls it into view.
+    const bar = await box(".h-bar");
+    await page.mouse.move(notes.x + 30, bar.y + bar.height + 8, { steps: 4 });
+    await page.clock.runFor(1000);
+    const zone = await box(".h-drop");
+    expect(zone.y).toBeGreaterThanOrEqual(bar.y + bar.height);
+    await page.mouse.move(zone.x + 40, zone.y + 40, { steps: 6 });
+    await page.mouse.up();
+    await page.clock.runFor(1500);
+    await expect(page.locator('.h-section[data-section="starred"] [data-id="app-notes"]')).toHaveCount(1);
+  });
+
   test("without the home capability it says to open it in Clax", async ({ page }) => {
     await serve(page);
     await expect(page.locator(".h-message")).toContainText("This is a Clax home screen.Open it in the Clax app.");
@@ -254,6 +293,37 @@ test.describe("renders", () => {
           await expect(page.locator(".h-heading")).toHaveCount(2);
           await page.evaluate(() => Promise.all([...document.images].map(i => i.decode().catch(() => {}))));
           await page.screenshot({ path: join(shots, `home-starred-${size}-${scheme}.png`), animations: "disabled" });
+          // A drag caught midway: the tile lifted under the pointer, its
+          // neighbours moved aside to show where it lands.
+          const habits = (await page.locator('[data-id="app-habits"]').boundingBox())!;
+          await page.mouse.move(habits.x + habits.width / 2, habits.y + 40);
+          await page.mouse.down();
+          await page.mouse.move(habits.x + habits.width / 2 + 60, habits.y + 80, { steps: 4 });
+          await expect(page.locator(".h-page[data-dragging]")).toHaveCount(1);
+          await expect.poll(() => page.locator(".h-tile[data-id]:not([data-dragging])").evaluateAll(els => els.every(e => !(e as HTMLElement).style.transform))).toBe(true);
+          await page.screenshot({ path: join(shots, `home-drag-${size}-${scheme}.png`), animations: "disabled" });
+          await page.mouse.up();
+          // With nothing starred, a drag opens the zone to star by dropping:
+          // scrolled into view, with the pointer over it.
+          await page.evaluate(async () => {
+            const { mount } = await import(`${location.origin}/home.js`);
+            const { fakeHome, fakeDb, SAMPLE } = await import(`${location.origin}/kit/fake-home.js`);
+            const ids = SAMPLE.apps.map((a: { id: string }) => a.id);
+            mount(document.getElementById("app"), fakeHome({ makes: [] }), { db: fakeDb({ "layout/main": { v: 1, starred: [], order: ids, seen: ids } }) });
+          });
+          await expect(page.locator(".h-tile[data-id]")).toHaveCount(8);
+          const plants = (await page.locator('[data-id="app-plants"]').boundingBox())!;
+          await page.mouse.move(plants.x + plants.width / 2, plants.y + 40);
+          await page.mouse.down();
+          await page.mouse.move(plants.x + plants.width / 2, plants.y + 20, { steps: 2 });
+          await expect(page.locator(".h-drop")).toHaveCount(1);
+          await page.evaluate(() => scrollTo(0, 0));
+          const drop = (await page.locator(".h-drop").boundingBox())!;
+          await page.mouse.move(drop.x + drop.width / 2, drop.y + drop.height / 2, { steps: 4 });
+          await expect(page.locator(".h-drop[data-over]")).toHaveCount(1);
+          await expect.poll(() => page.locator(".h-tile[data-id]:not([data-dragging])").evaluateAll(els => els.every(e => !(e as HTMLElement).style.transform))).toBe(true);
+          await page.screenshot({ path: join(shots, `home-drop-${size}-${scheme}.png`), animations: "disabled" });
+          await page.mouse.up();
           await page.evaluate(async () => {
             const { mount } = await import(`${location.origin}/home.js`);
             const { fakeHome } = await import(`${location.origin}/kit/fake-home.js`);
