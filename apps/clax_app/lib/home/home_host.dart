@@ -213,6 +213,11 @@ class HomeHost extends ChangeNotifier {
   var _dead = false;
 
   List<ArtifactSummary>? _summaries;
+
+  /// Gallery changes heard before the first load answered, by app ID:
+  /// the app as fetched then, or null for a delete. The first answer
+  /// takes them in, so no partial list is ever reported.
+  final _early = <String, ArtifactSummary?>{};
   Object? _loadError;
   int _unread = 0;
   bool _needsKey;
@@ -630,7 +635,7 @@ class HomeHost extends ChangeNotifier {
     try {
       final apps = await api.listArtifacts();
       if (_dead || n != _loads) return;
-      _summaries = _newestFirst(apps);
+      _summaries = _newestFirst(_withEarly(apps));
       _loadError = null;
       _syncPlans();
       _wantIcons();
@@ -660,6 +665,24 @@ class HomeHost extends ChangeNotifier {
     _changed();
   }
 
+  /// [listed] with the changes heard before it answered: a delete
+  /// removes the app, and an app fetched then replaces its listed self
+  /// unless the list holds a later version.
+  List<ArtifactSummary> _withEarly(List<ArtifactSummary> listed) {
+    if (_early.isEmpty) return listed;
+    final byId = {for (final a in listed) a.id: a};
+    for (final MapEntry(key: aid, value: heard) in _early.entries) {
+      final had = byId[aid];
+      if (heard == null) {
+        byId.remove(aid);
+      } else if (had == null || heard.currentVersion >= had.currentVersion) {
+        byId[aid] = heard;
+      }
+    }
+    _early.clear();
+    return byId.values.toList();
+  }
+
   static List<ArtifactSummary> _newestFirst(List<ArtifactSummary> apps) =>
       List.of(apps)..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
 
@@ -686,7 +709,11 @@ class HomeHost extends ChangeNotifier {
     final aid = e.data['artifact_id'];
     if (aid is! String) return;
     if (e.type == 'artifact_deleted') {
-      _summaries = _summaries?.where((a) => a.id != aid).toList();
+      if (_summaries == null) {
+        _early[aid] = null;
+        return;
+      }
+      _summaries = _summaries!.where((a) => a.id != aid).toList();
       _syncPlans();
       _changed();
       return;
@@ -694,9 +721,14 @@ class HomeHost extends ChangeNotifier {
     try {
       final summary = (await api.getArtifact(aid)).artifact;
       if (_dead) return;
+      final listed = _summaries;
+      if (listed == null) {
+        _early[aid] = summary;
+        return;
+      }
       _summaries = _newestFirst([
         summary,
-        ...?_summaries?.where((a) => a.id != aid),
+        ...listed.where((a) => a.id != aid),
       ]);
       _syncPlans();
       _wantIcons();

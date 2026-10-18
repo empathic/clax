@@ -24,6 +24,20 @@ FakeClaxApi _api() {
   );
 }
 
+/// A fake whose app list, once taken, answers only when [gate] completes.
+class _GatedApi extends FakeClaxApi {
+  _GatedApi() : super(clock: _api().clock);
+
+  final gate = Completer<void>();
+
+  @override
+  Future<List<ArtifactSummary>> listArtifacts() async {
+    final listed = await super.listArtifacts();
+    await gate.future;
+    return listed;
+  }
+}
+
 class _Actions implements HomeActions {
   final calls = <(String, List<Object?>)>[];
 
@@ -220,6 +234,49 @@ void main() {
     await pumpEventQueue();
     expect(host.state.apps.map((a) => a.id), [fresh]);
     expect([for (final a in told.last.data as List) (a as Map)['id']], [fresh]);
+  });
+
+  test('gallery events before the first list answers wait for it: apps() '
+      'and the apps event never carry a partial list', () async {
+    final gated = _GatedApi();
+    final gatedHome = gated.seedArtifact('Home', _page);
+    final runs = gated.seedArtifact('Runs', _page);
+    final plain = gated.seedArtifact('Plain', _page);
+    final gone = gated.seedArtifact('Gone', _page);
+    final early = HomeHost(
+      api: gated,
+      stream: gated.stream(),
+      closeStream: true,
+      makes: makes,
+      builds: BuildLink(plans: plans, control: control),
+      settings: HomeSettings(homeAppId: gatedHome),
+      actions: actions,
+    );
+    addTearDown(early.dispose);
+    final told = <HomeEvent>[];
+    early.events.listen(told.add);
+    await pumpEventQueue();
+
+    // The list was taken; a new app and a delete arrive before it answers.
+    final fresh = gated.seedArtifact('Fresh', _page);
+    gated.emit(ClaxEvent(type: 'version', data: {'artifact_id': fresh, 'n': 1}));
+    gated.emit(ClaxEvent(type: 'artifact_deleted', data: {'artifact_id': gone}));
+    await pumpEventQueue();
+    expect(await early.call(gatedHome, 'apps', {}), isEmpty);
+    expect(early.summaries, isNull);
+    for (final e in told.where((e) => e.name == 'apps')) {
+      expect(e.data, isEmpty);
+    }
+
+    gated.gate.complete();
+    await pumpEventQueue();
+    final apps = await early.call(gatedHome, 'apps', {}) as List;
+    expect([for (final a in apps) (a as Map)['id']], [fresh, plain, runs]);
+    expect(
+      [for (final a in told.lastWhere((e) => e.name == 'apps').data as List)
+        (a as Map)['id']],
+      [fresh, plain, runs],
+    );
   });
 
   test('a make that changes while nobody listens reads as it stands', () async {
