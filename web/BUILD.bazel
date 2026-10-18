@@ -177,11 +177,16 @@ filegroup(
     ],
 )
 
-# What the unit tests and the typecheck read outside web/ (the browser
-# tests of the hosted demo import demo/lib).
+# What the unit tests and the typecheck read outside web/: the toolpath
+# vectors, the browser tests of the hosted demo (they import demo/lib), and
+# the home app's modules, its unit tests and the kit
+# (apps/clax_app/home_unit).
 UNIT_DATA = [
     ":files",
     ":node_modules",
+    "//apps/clax_app:home",
+    "//apps/clax_app:home_unit",
+    "//apps/clax_app:kit",
     "//crates/clax-core:toolpath_vectors_bin",
     "//demo:files",
 ]

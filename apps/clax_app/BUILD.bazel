@@ -30,6 +30,15 @@ js_library(
     ),
     visibility = ["//web:__pkg__"],
 )
+
+js_library(
+    name = "home_unit",
+    srcs = glob(
+        ["home_unit/**"],
+        exclude = ["**/.qual"],
+    ),
+    visibility = ["//web:__pkg__"],
+)
 exports_files(["pubspec.lock"])
 
 # `flutter analyze`'s rules for the app's Dart targets (the dart_analyze

@@ -18,6 +18,13 @@
 // `home.set({apps, makes, unread, needsKey})` changes the state and calls
 // the listeners of what changed, as the app does when a make finishes or an
 // app changes.
+//
+// `menu(id, rect, {items})` checks the items as the app does (at most 4
+// `{id, label}`, labels of 1 to 32 characters; `bad_request` otherwise),
+// keeps the call, and resolves `home.menuPick`: an item's ID, `null` (the
+// default: Clax's own item or a dismissal), or a function of the call's
+// arguments. `fakeDb(docs, {persist, now})` stands in for `db`'s documents
+// (below).
 
 /** An app icon as the daemon serves it: a `data:` URL of an SVG with a
  * gradient and a white glyph. */
@@ -52,6 +59,28 @@ export const SAMPLE = Object.freeze({
 
 const copy = (v) => JSON.parse(JSON.stringify(v));
 
+const MENU_ITEMS = 4;
+const MENU_LABEL = 32;
+
+/** Rejects as the app does when `options.items` is not up to MENU_ITEMS
+ * `{id, label}` with IDs of 1 to 64 characters, each once, and labels of
+ * 1 to MENU_LABEL characters of plain text. */
+function checkItems(options) {
+  if (options == null) return;
+  const bad = () => Promise.reject({ code: 'bad_request', message: `menu takes up to ${MENU_ITEMS} items {id, label}` });
+  if (typeof options !== 'object') return bad();
+  const list = options.items;
+  if (list === undefined) return;
+  if (!Array.isArray(list) || list.length > MENU_ITEMS) return bad();
+  const seen = new Set();
+  for (const i of list) {
+    const label = typeof i?.label === 'string' ? i.label.trim() : '';
+    const plain = [...label].every((ch) => ch.codePointAt(0) >= 0x20 && ch.codePointAt(0) !== 0x7f);
+    if (typeof i?.id !== 'string' || !i.id || i.id.length > 64 || seen.has(i.id) || !label || [...label].length > MENU_LABEL || !plain) return bad();
+    seen.add(i.id);
+  }
+}
+
 /** A fake `home` capability over `state` (missing fields from SAMPLE). */
 export function fakeHome(state = {}) {
   const s = { ...copy(SAMPLE), ...copy(state) };
@@ -60,7 +89,7 @@ export function fakeHome(state = {}) {
   let shown = 0;
   const act = (method) => async (...args) => { calls.push({ method, args: copy(args) }); return null; };
   const emit = (name, data) => { for (const fn of [...listeners[name]]) fn(copy(data)); };
-  return {
+  const home = {
     apps: async () => copy(s.apps),
     makes: async () => copy(s.makes),
     unread: async () => s.unread,
@@ -68,7 +97,14 @@ export function fakeHome(state = {}) {
     open: act('open'),
     openMake: act('openMake'),
     newApp: act('newApp'),
-    menu: act('menu'),
+    menuPick: null,
+    async menu(...args) {
+      const refused = checkItems(args[2]);
+      if (refused) return refused;
+      calls.push({ method: 'menu', args: copy(args) });
+      const pick = home.menuPick;
+      return (typeof pick === 'function' ? pick(...args) : pick) ?? null;
+    },
     openInbox: act('openInbox'),
     openSettings: act('openSettings'),
     importApp: act('importApp'),
@@ -87,5 +123,67 @@ export function fakeHome(state = {}) {
       if ('unread' in next) { s.unread = next.unread; emit('unread', s.unread); }
       if ('needsKey' in next) { s.needsKey = next.needsKey; emit('key', s.needsKey); }
     },
+  };
+  return home;
+}
+
+/** A stand-in for the `db` capability's documents, for a home app's tests
+ * and renders: `doc(path)` with `get`, `set`, `delete`, `onSnapshot` and
+ * `acquire` (a lease other holders wait out; `now` gives its time). `docs`
+ * seeds it as {path: body}; `persist` names a sessionStorage key that
+ * keeps the documents across reloads of the page. `writes` lists each
+ * `set` as {path, data}; `put(path, data)` writes as another device would
+ * (listeners hear it); `hold(path, holder, ms)` gives another holder the
+ * lease. */
+export function fakeDb(docs = {}, { persist, now = () => Date.now() } = {}) {
+  const kept = () => {
+    try {
+      const s = persist ? sessionStorage.getItem(persist) : null;
+      return s ? JSON.parse(s) : null;
+    } catch { return null; }
+  };
+  const store = new Map(Object.entries(kept() ?? copy(docs)));
+  const leases = new Map();
+  const listeners = new Map();
+  const writes = [];
+  const save = () => {
+    try { if (persist) sessionStorage.setItem(persist, JSON.stringify(Object.fromEntries(store))); } catch { /* storage refused: memory only */ }
+  };
+  const snap = (path) => {
+    const d = store.get(path);
+    return { id: path.split('/').pop(), exists: d !== undefined, data: () => (d === undefined ? undefined : copy(d)), metadata: { fromCache: false, hasPendingWrites: false } };
+  };
+  const tell = (path) => { for (const fn of [...(listeners.get(path) ?? [])]) fn(snap(path)); };
+  const write = (path, data) => { store.set(path, copy(data)); save(); tell(path); };
+  return {
+    doc(path) {
+      const parts = String(path).split('/');
+      if (parts.length % 2 || parts.some((p) => !p)) throw new TypeError(`not a document path: ${path}`);
+      return {
+        id: parts.at(-1),
+        path,
+        get: async () => snap(path),
+        set: async (data) => { writes.push({ path, data: copy(data) }); write(path, data); },
+        delete: async () => { store.delete(path); save(); tell(path); },
+        onSnapshot(next) {
+          const set = listeners.get(path) ?? new Set();
+          listeners.set(path, set);
+          set.add(next);
+          queueMicrotask(() => { if (set.has(next)) next(snap(path)); });
+          return () => set.delete(next);
+        },
+        async acquire({ holder, ttlMs = 30000 }) {
+          const t = now();
+          const held = leases.get(path);
+          if (held && held.until > t && held.holder !== holder) return { acquired: false, expiresAt: new Date(held.until).toISOString() };
+          const until = t + Math.min(600000, Math.max(1000, ttlMs || 30000));
+          leases.set(path, { holder, until });
+          return { acquired: true, version: 1, expiresAt: new Date(until).toISOString(), holder };
+        },
+      };
+    },
+    writes,
+    put: (path, data) => write(path, data),
+    hold: (path, holder, ms) => leases.set(path, { holder, until: now() + ms }),
   };
 }
