@@ -138,6 +138,32 @@ test('an action refused for want of a tap says so, and the next tap on the notic
   await wait(() => !ui.exists('.h-notice'));
 });
 
+test('an open or a menu retried from the notice keeps its change: the open counts, the picked Star stars', async () => {
+  const seen = SAMPLE.apps.map((a) => a.id).filter((id) => id !== 'app-notes');
+  const home = await show({ makes: [] }, { layout: { order: [], seen } });
+  await wait(() => ui.exists('[data-id="app-notes"][data-new]'));
+  const open = home.open;
+  const menu = home.menu;
+  let refuse = true;
+  home.open = (...a) => (refuse ? Promise.reject({ code: 'no_gesture', message: 'tap' }) : open(...a));
+  home.menu = (...a) => (refuse ? Promise.reject({ code: 'no_gesture', message: 'tap' }) : menu(...a));
+  await ui.click('[data-id="app-notes"]');
+  await wait(() => ui.text('.h-notice') === 'Tap again to open Notes');
+  refuse = false;
+  await ui.click('.h-notice');
+  await wait(() => !ui.exists('[data-id="app-notes"][data-new]'));
+  expect((await stored()).opens['app-notes'].n).toBe(1);
+
+  refuse = true;
+  home.menuPick = 'star';
+  document.querySelector('[data-id="app-plants"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+  await wait(() => ui.text('.h-notice') === "Tap again to show Plant care's menu");
+  refuse = false;
+  await ui.click('.h-notice');
+  await wait(() => section('starred').join() === 'app-plants');
+  expect((await stored()).starred).toEqual(['app-plants']);
+});
+
 test('a tap on another control drops a refused action instead of retrying it', async () => {
   const home = await show({ makes: [] });
   home.open = () => Promise.reject({ code: 'no_gesture', message: 'tap' });

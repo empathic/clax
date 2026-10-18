@@ -401,21 +401,28 @@ function useTopic(home, event, load, initial) {
 const NOTICE_MS = 4000;
 
 /** `act(method, args, what)`: calls `home[method](...args)` and resolves
- * its value, or `undefined` when it failed. `no_gesture` (the call did not come with the person's tap)
- * keeps the call for the next tap on the page that lands on no other
- * control, and says "Tap again to <what>"; another failure says so
- * briefly. A new action, or a tap on another control, drops a kept one. */
+ * its value, or `undefined` when it failed. `no_gesture` (the call did not
+ * come with the person's tap) keeps the call for the next tap on the page
+ * that lands on no other control, and says "Tap again to <what>"; the
+ * promise then resolves with the retried call's value, or `undefined` once
+ * the kept call is dropped. Another failure says so briefly. A new action,
+ * a tap on another control, or the notice going drops a kept one. */
 function useActions(home) {
   const [notice, setNotice] = useState(null);
   const pending = useRef(null);
   const timer = useRef(0);
-  const say = (text, retry = false) => {
+  const drop = () => {
+    const kept = pending.current;
+    pending.current = null;
+    kept?.resolve(undefined);
+  };
+  const say = (text) => {
     clearTimeout(timer.current);
-    setNotice({ text, retry });
-    timer.current = setTimeout(() => { setNotice(null); pending.current = null; }, NOTICE_MS);
+    setNotice({ text });
+    timer.current = setTimeout(() => { setNotice(null); drop(); }, NOTICE_MS);
   };
   const act = useCallback((method, args, what) => {
-    pending.current = null;
+    drop();
     let p;
     try {
       p = Promise.resolve(home[method](...args));
@@ -425,13 +432,13 @@ function useActions(home) {
     return p.then((v) => { setNotice(null); return v; }, (e) => {
       const code = codeOf(e);
       if (code === 'no_gesture') {
-        pending.current = { method, args, what };
-        say(`Tap again to ${what}`, true);
-      } else if (code === 'bad_request' && args.length) {
-        say('That app is no longer here');
-      } else {
-        say(`Couldn't ${what}`);
+        return new Promise((resolve) => {
+          pending.current = { method, args, what, resolve };
+          say(`Tap again to ${what}`);
+        });
       }
+      if (code === 'bad_request' && args.length) say('That app is no longer here');
+      else say(`Couldn't ${what}`);
       return undefined;
     });
   }, [home]);
@@ -440,11 +447,12 @@ function useActions(home) {
       const kept = pending.current;
       if (!kept) return;
       const other = e.target?.closest?.('button, a, [role=button], input, select, textarea');
-      if (other && !other.classList.contains('h-notice')) { pending.current = null; return; }
-      act(kept.method, kept.args, kept.what);
+      if (other && !other.classList.contains('h-notice')) { drop(); return; }
+      pending.current = null;
+      kept.resolve(act(kept.method, kept.args, kept.what));
     };
     document.addEventListener('click', tap, true);
-    return () => { document.removeEventListener('click', tap, true); clearTimeout(timer.current); };
+    return () => { document.removeEventListener('click', tap, true); clearTimeout(timer.current); drop(); };
   }, [act]);
   return [act, notice];
 }
