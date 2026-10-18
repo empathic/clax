@@ -636,6 +636,20 @@ test('Alt+arrows pressed again before the first move is written both count', asy
   expect(section('all').indexOf('app-run')).toBe(2);
 });
 
+test('after an Alt+arrow move, a press elsewhere keeps a later render from focusing the tile', async () => {
+  const home = await show({ makes: [], unread: 0 });
+  await wait(async () => !!(await stored()));
+  const el = document.querySelector('[data-id="app-run"]');
+  el.focus();
+  el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', altKey: true, bubbles: true }));
+  await wait(async () => (await stored()).order.indexOf('app-run') === 1);
+  document.activeElement.blur();
+  document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 4, pointerType: 'mouse', clientX: 2, clientY: 600 }));
+  home.set({ unread: 2 });
+  await wait(() => ui.exists('.h-badge'));
+  expect(document.activeElement?.dataset?.id ?? null).toBe(null);
+});
+
 test('tiles are reported once they come to rest, not while they move', async () => {
   const clock = manualClock();
   const home = fakeHome({ makes: [] });

@@ -612,6 +612,11 @@ function arranger(st, clock) {
       }
       active.down(e);
     },
+    /** A press or a focus anywhere but on the tile last moved by keyboard:
+     * a later render leaves the focus where the person put it. */
+    elsewhere(e) {
+      if (focus && !(e.target instanceof Element && e.target.closest(`.h-tile[data-key="${CSS.escape(tileKeyOf(focus))}"]`))) focus = null;
+    },
     /** A pointer event anywhere on the page, for the press it belongs to. */
     pointer(type, e) { active?.[type](e); },
     touchMove(e) { if (block && e.cancelable) e.preventDefault(); },
@@ -680,11 +685,16 @@ function Grid({ layout, apps, makes, motion, reduced, clock, change, onOpen, onM
     const up = (e) => ctl.pointer('up', e);
     const cancel = (e) => ctl.pointer('cancel', e);
     const touch = (e) => ctl.touchMove(e);
+    const elsewhere = (e) => ctl.elsewhere(e);
+    document.addEventListener('pointerdown', elsewhere, true);
+    document.addEventListener('focusin', elsewhere);
     document.addEventListener('pointermove', move);
     document.addEventListener('pointerup', up);
     document.addEventListener('pointercancel', cancel);
     document.addEventListener('touchmove', touch, { passive: false });
     return () => {
+      document.removeEventListener('pointerdown', elsewhere, true);
+      document.removeEventListener('focusin', elsewhere);
       document.removeEventListener('pointermove', move);
       document.removeEventListener('pointerup', up);
       document.removeEventListener('pointercancel', cancel);
