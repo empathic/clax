@@ -1,6 +1,6 @@
 // The home screen's tests, run by the inspect view's harness (test, expect,
 // ui). Each test mounts the page over its own fake `home` capability.
-import { mount } from '../home.js';
+import { mount, start } from '../home.js';
 import { fakeHome, fakeDb, SAMPLE } from '../kit/fake-home.js';
 import { manualClock } from '../physics.js';
 
@@ -396,6 +396,33 @@ test("Clax's own menu item or a dismissal changes nothing", async () => {
   await wait(() => home.calls.length === 1);
   await new Promise((r) => setTimeout(r, 0));
   expect(db.writes.length).toBe(before);
+  expect(section('starred')).toEqual([]);
+});
+
+test('a Star whose write fails says so and leaves the app where it was', async () => {
+  const ids = SAMPLE.apps.map((a) => a.id);
+  const home = fakeHome({ makes: [] });
+  const base = fakeDb({ [LAYOUT]: { v: 1, starred: [], order: ids, seen: ids } });
+  const failing = { doc: (path) => ({ ...base.doc(path), set: () => Promise.reject({ code: 'failed', message: 'disk full' }) }) };
+  mount(root(), home, { db: failing });
+  await wait(() => section('all').length === ids.length);
+  home.menuPick = 'star';
+  document.querySelector('[data-id="app-plants"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+  await wait(() => ui.text('.h-notice') === "Couldn't save your arrangement");
+  expect(section('starred')).toEqual([]);
+  expect(section('all')).toEqual(ids);
+});
+
+test('a page whose db cannot be had says the arrangement cannot be saved, and a Star changes nothing', async () => {
+  const home = fakeHome({ makes: [] });
+  home.menuPick = 'star';
+  await start(root(), { use: async (name) => (name === 'home' ? home : Promise.reject(new Error('no db'))) });
+  await wait(() => section('all').length === SAMPLE.apps.length);
+  await wait(() => ui.text('.h-notice') === "Couldn't save your arrangement");
+  document.querySelector('[data-id="app-plants"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+  await wait(() => home.calls.length === 1);
+  await new Promise((r) => setTimeout(r, 0));
+  await wait(() => ui.text('.h-notice') === "Couldn't save your arrangement");
   expect(section('starred')).toEqual([]);
 });
 

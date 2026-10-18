@@ -454,7 +454,7 @@ function useActions(home) {
     document.addEventListener('click', tap, true);
     return () => { document.removeEventListener('click', tap, true); clearTimeout(timer.current); drop(); };
   }, [act]);
-  return [act, notice];
+  return [act, notice, say];
 }
 
 const PULL_PX = 64;
@@ -558,13 +558,17 @@ function useTiles(home, drawn) {
  * draws without it. */
 const LAYOUT_MS = 2000;
 
+/** What the page says when the arrangement could not be written. */
+const UNSAVED_TEXT = "Couldn't save your arrangement";
+
 /** The arrangement over `apps`: null until the apps and the stored layout
  * (or LAYOUT_MS without an answer) are in. `change(op)` applies `op` to
- * the stored layout made to match the apps and writes the result; with no
- * layout stored yet the first load writes one with every listed app seen.
- * With an empty app list the stored layout is changed as it is, so a list
- * that is briefly empty never drops an ID. */
-function useLayout(store, apps, clock) {
+ * the stored layout made to match the apps and writes the result, which
+ * shows once it is written; a write that fails changes nothing on screen
+ * and calls `failed()`. With no layout stored yet the first load writes
+ * one with every listed app seen. With an empty app list the stored layout
+ * is changed as it is, so a list that is briefly empty never drops an ID. */
+function useLayout(store, apps, clock, failed) {
   const [body, setBody] = useState(undefined);
   const [late, setLate] = useState(false);
   const wrote = useRef(false);
@@ -583,7 +587,7 @@ function useLayout(store, apps, clock) {
   const change = useCallback((op) => store.change((b) => {
     const next = op(fit(b, b == null));
     return apps.length ? reconcile(next, apps) : next;
-  }).then((b) => { setBody(b); return b; }, () => undefined), [store, fit, apps]);
+  }).then((b) => { setBody(b); return b; }, () => { failed(); return undefined; }), [store, fit, apps]);
   useEffect(() => {
     if (!listed || body !== null || wrote.current || !apps.length) return;
     wrote.current = true;
@@ -609,10 +613,10 @@ function Home({ home, db, clock }) {
     () => Promise.all([reloadApps(), reloadMakes(), reloadUnread(), reloadKey()]),
     [reloadApps, reloadMakes, reloadUnread, reloadKey],
   );
-  const [act, notice] = useActions(home);
+  const [act, notice, say] = useActions(home);
   const { pull, busy } = usePull(refresh);
   const store = useMemo(() => layoutStore(db, { clock }), [db, clock]);
-  const [layout, change] = useLayout(store, apps, clock);
+  const [layout, change] = useLayout(store, apps, clock, useCallback(() => say(UNSAVED_TEXT), []));
   const openApp = useCallback((app) => act('open', [app.id], `open ${app.title}`).then((v) => {
     if (v !== undefined) change((l) => opened(l, app.id, clock.date()));
   }), [act, change, clock]);
@@ -676,11 +680,21 @@ export function mount(root, home, { db = null, clock = realClock } = {}) {
   render(html`<${Home} key=${++mounts} home=${home ?? null} db=${db} clock=${clock} />`, root);
 }
 
-/** Shows the home screen over this page's `home` and `db` capabilities. */
-export async function start(root = document.getElementById('app')) {
+/** A `db` that refuses every read and write: the page's own documents
+ * when they cannot be had, so each change says it could not be saved
+ * instead of living in memory until the next load. */
+const UNAVAILABLE = (() => {
+  const refuse = () => Promise.reject(Object.assign(new Error('db is unavailable'), { code: 'unavailable' }));
+  return Object.freeze({ doc: () => ({ get: refuse, acquire: refuse, set: refuse, onSnapshot: () => () => {} }) });
+})();
+
+/** Shows the home screen over the `home` and `db` capabilities `claude`
+ * grants (the page's own, `window.claude`, by default). With `home` but no
+ * `db`, the arrangement cannot be saved, and the page says so. */
+export async function start(root = document.getElementById('app'), claude = window.claude) {
   let home = null;
   let db = null;
-  try { home = (await window.claude?.use?.('home')) ?? null; } catch { home = null; }
-  try { db = home ? ((await window.claude?.use?.('db')) ?? null) : null; } catch { db = null; }
-  mount(root, home, { db });
+  try { home = (await claude?.use?.('home')) ?? null; } catch { home = null; }
+  try { db = home ? ((await claude?.use?.('db')) ?? null) : null; } catch { db = null; }
+  mount(root, home, { db: home && !db ? UNAVAILABLE : db });
 }
