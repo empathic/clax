@@ -384,7 +384,7 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "clax-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -412,7 +412,7 @@ dependencies = [
 
 [[package]]
 name = "clax-commands"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -442,7 +442,7 @@ dependencies = [
 
 [[package]]
 name = "clax-content-git"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -457,7 +457,7 @@ dependencies = [
 
 [[package]]
 name = "clax-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -492,7 +492,7 @@ dependencies = [
 
 [[package]]
 name = "clax-embedded"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "rust-embed",
  "sha2",
@@ -500,14 +500,14 @@ dependencies = [
 
 [[package]]
 name = "clax-fake-exe"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "tempfile",
 ]
 
 [[package]]
 name = "clax-git"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "axum",
  "miniz_oxide",
@@ -521,7 +521,7 @@ dependencies = [
 
 [[package]]
 name = "clax-hooks"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clax-core",
@@ -534,7 +534,7 @@ dependencies = [
 
 [[package]]
 name = "clax-http"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -565,7 +565,7 @@ dependencies = [
 
 [[package]]
 name = "clax-mcp"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -594,7 +594,7 @@ dependencies = [
 
 [[package]]
 name = "clax-realtime"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bytes",
  "chrono",
@@ -613,7 +613,7 @@ dependencies = [
 
 [[package]]
 name = "clax-rt"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "futures-channel",
  "futures-util",
@@ -626,7 +626,7 @@ dependencies = [
 
 [[package]]
 name = "clax-sample"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -644,7 +644,7 @@ dependencies = [
 
 [[package]]
 name = "clax-server"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -692,7 +692,7 @@ dependencies = [
 
 [[package]]
 name = "clax-store"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -717,7 +717,7 @@ dependencies = [
 
 [[package]]
 name = "clax-testkit"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "axum",
