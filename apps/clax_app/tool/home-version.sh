@@ -83,6 +83,8 @@ if [ "$mode" = peek ]; then
     version="$(version_for)"
 else
     # One writer at a time: builds in two checkouts may record at once.
+    # The ledger sits beside the key, the owner's only.
+    umask 077
     lock="$ledger.lock"
     mkdir -p "$(dirname "$ledger")"
     tries=0
