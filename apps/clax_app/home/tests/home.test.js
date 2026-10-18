@@ -625,6 +625,17 @@ test('Alt+arrows move a focused tile one cell', async () => {
   await wait(() => section('all')[0] === 'app-run');
 });
 
+test('Alt+arrows pressed again before the first move is written both count', async () => {
+  await show({ makes: [] });
+  await wait(async () => !!(await stored()));
+  const el = document.querySelector('[data-id="app-run"]');
+  el.focus();
+  el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', altKey: true, bubbles: true }));
+  el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', altKey: true, bubbles: true }));
+  await wait(async () => (await stored()).order.indexOf('app-run') === 2);
+  expect(section('all').indexOf('app-run')).toBe(2);
+});
+
 test('tiles are reported once they come to rest, not while they move', async () => {
   const clock = manualClock();
   const home = fakeHome({ makes: [] });

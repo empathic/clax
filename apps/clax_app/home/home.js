@@ -621,7 +621,8 @@ function arranger(st, clock) {
       if (drag) retarget();
     },
     /** Alt+arrows on app `id`'s tile: one entry left or right, or a row
-     * (`cols` entries) up or down, within its section. */
+     * (`cols` entries) up or down, within its section, from where it is
+     * shown. */
     key(id, e) {
       if (!e.altKey || drag) return;
       const n = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -st.cols, ArrowDown: st.cols }[e.key];
@@ -634,7 +635,12 @@ function arranger(st, clock) {
       const to = clamp(i + n, 0, entries.length - 1);
       if (i < 0 || to === i) return;
       focus = id;
-      st.change((x) => moveTo(x, id, section, to));
+      // Shown at once, so a press before the write lands moves on from here.
+      const next = moveTo(l, id, section, to);
+      st.shown = next;
+      const mine = ++seq;
+      st.setHeld(next);
+      st.change((x) => moveTo(x, id, section, to)).then(() => { if (mine === seq) st.setHeld(null); });
     },
     stop() {
       stopEdge();
