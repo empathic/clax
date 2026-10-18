@@ -19,6 +19,12 @@
 // row below it, pushing the rows after it down; its own menu renames,
 // switches its look and ungroups it.
 //
+// The ⌕ in the top bar, or a pull down from the top of the page, opens a
+// search field above the grid (search.js ranks the matches): while it has
+// text, every app whose title matches, groups' included, shows in one
+// grid in their place. Enter opens the first; Escape, Backspace in the
+// empty field, its close button and back close it.
+//
 // `start()` mounts the page over the real capabilities; `mount(root, home,
 // {db, clock})` mounts it over any objects with the same calls (the tests
 // pass kit/fake-home.js's fakeHome and fakeDb).
@@ -33,6 +39,7 @@ import { realClock, velocityOf, tossRest, TOSS_MIN } from './physics.js';
 import { pack, geometry, slotAt, centreUnder, tiltOf } from './grid.js';
 import { createPress } from './drag.js';
 import { createMotion } from './motion.js';
+import { search } from './search.js';
 
 // Lucide glyphs the kit does not carry (lucide-static 0.460.0, ISC; see
 // kit/LICENSES.txt).
@@ -190,11 +197,13 @@ const cellStyle = (c) => (c ? { gridColumn: `${c.col + 1} / span ${c.span}`, gri
 /** App `app`'s tile, in cell `cell`: its press goes to `ctl` (drag.js's
  * press: a tap opens, a hold then a release asks for the menu, a hold then
  * a move drags); a context menu outside a press asks for the menu at once;
- * Alt+arrows move it. `fresh` marks it "New". */
-function AppTile({ app, fresh, cell, dragging, ctl, onOpen, onMenu, tkey = tileKeyOf(app.id) }) {
+ * Alt+arrows move it. `fresh` marks it "New"; `group`, the name of the
+ * group it is in, shows under its name (in search's results). */
+function AppTile({ app, fresh, cell, dragging, group, ctl, onOpen, onMenu, tkey = tileKeyOf(app.id) }) {
   const b = app.build;
   const press = ctl.pressOf(app.id);
-  const said = b ? `${app.title}, building, ${b.done} of ${b.total} done` : app.title;
+  const built = b ? `${app.title}, building, ${b.done} of ${b.total} done` : app.title;
+  const said = group ? `${built}, in ${group}` : built;
   const label = fresh ? `${said}, new` : said;
   return html`<button type="button" class="h-tile" data-id=${app.id} data-key=${tkey} data-new=${fresh ? '' : undefined}
     data-dragging=${dragging ? '' : undefined} aria-label=${label} style=${cellStyle(cell)}
@@ -208,7 +217,8 @@ function AppTile({ app, fresh, cell, dragging, ctl, onOpen, onMenu, tkey = tileK
       ${fresh && html`<span class="h-new" aria-hidden="true">New</span>`}
       <span class="h-group-outline" aria-hidden="true" />
     </span>
-    <span class="h-label h-two">${app.title}</span>
+    <span class=${`h-label ${group ? 'h-one' : 'h-two'}`}>${app.title}</span>
+    ${group && html`<span class="h-status h-in-group">${group}</span>`}
   </button>`;
 }
 
@@ -304,10 +314,11 @@ function More({ act, refresh }) {
   </span>`;
 }
 
-function Bar({ act, refresh, unread }) {
+function Bar({ act, refresh, unread, onSearch }) {
   return html`<header class="h-bar">
     <h1 class="h-title">Clax</h1>
     <div class="h-actions">
+      <button type="button" class="h-action" aria-label="Search" onClick=${onSearch}><${Glyph} name="search" /></button>
       <button type="button" class="h-action" aria-label=${unread > 0 ? `Inbox, ${unread} unread` : 'Inbox'} onClick=${() => act('openInbox', [], 'open the inbox')}>
         <span class="h-badged">
           <${Glyph} name="inbox" />
@@ -323,6 +334,24 @@ function Bar({ act, refresh, unread }) {
 /** The launcher's column count for a grid `width` wide: cells at most 112
  * px, 4 px apart (Flutter's SliverGridDelegateWithMaxCrossAxisExtent). */
 const columnsFor = (width) => Math.max(1, Math.ceil(width / (112 + 4)));
+
+/** The launcher's column count for the element `ref` holds, following its width. */
+function useColumns(ref) {
+  const [cols, setCols] = useState(4);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    const measure = () => setCols(columnsFor(el.clientWidth));
+    measure();
+    if (typeof ResizeObserver === 'function') {
+      const o = new ResizeObserver(measure);
+      o.observe(el);
+      return () => o.disconnect();
+    }
+    addEventListener('resize', measure);
+    return () => removeEventListener('resize', measure);
+  }, []);
+  return cols;
+}
 
 /** A tile's key in the page: "a:<app ID>", "g:<group ID>" (an order
  * entry's own key), "m:<make ID>", or "f:<app ID>" in an open folder. */
@@ -975,7 +1004,7 @@ function gatherFan(gid, motion, reduced, clock, done) {
 
 function Grid({ layout, apps, makes, motion, reduced, clock, change, fan, onOpen, onMenu, onOpenGroup, onFanGroup, onGroupMenu, act, onDragging, gatherNow }) {
   const ref = useRef(null);
-  const [cols, setCols] = useState(4);
+  const cols = useColumns(ref);
   const [drag, setDrag] = useState(null);
   // The arrangement a drop made, shown until its write settles.
   const [held, setHeld] = useState(null);
@@ -984,18 +1013,6 @@ function Grid({ layout, apps, makes, motion, reduced, clock, change, fan, onOpen
   const st = useRef({}).current;
   Object.assign(st, { wrap: ref.current, layout, shown, apps, makes, cols, fanGid, motion, reduced, change, onMenu, onGroupMenu, setDrag, setHeld, onDragging, gatherNow });
   const ctl = useMemo(() => arranger(st, clock), [clock]);
-  useLayoutEffect(() => {
-    const el = ref.current;
-    const measure = () => setCols(columnsFor(el.clientWidth));
-    measure();
-    if (typeof ResizeObserver === 'function') {
-      const o = new ResizeObserver(measure);
-      o.observe(el);
-      return () => o.disconnect();
-    }
-    addEventListener('resize', measure);
-    return () => removeEventListener('resize', measure);
-  }, []);
   useLayoutEffect(() => {
     st.wrap = ref.current;
     ctl.afterRender();
@@ -1044,6 +1061,136 @@ function Grid({ layout, apps, makes, motion, reduced, clock, change, fan, onOpen
   return html`<div class="h-grid-wrap" ref=${ref}>
     <${Sections} layout=${shown} apps=${apps} makes=${makes} cols=${cols} drag=${drag} fan=${fanGid ? fan : null} ctl=${ctl} onOpen=${onOpen} onMenu=${onMenu}
       onOpenGroup=${onOpenGroup} onFanGroup=${onFanGroup} onGroupMenu=${onGroupMenu} act=${act} />
+  </div>`;
+}
+
+/** The presses of search's results, by app ID: a tap opens, a hold then a
+ * release asks for the menu (`st.onMenu`), and nothing drags. */
+function resultsPresses(st, clock) {
+  const presses = new Map();
+  let active = null;
+  let block = false;
+  const tileEl = (id) => st.wrap?.querySelector(`.h-tile[data-id="${CSS.escape(id)}"]`) ?? null;
+  const handlersFor = (id) => {
+    const unlift = () => {
+      const el = tileEl(id);
+      if (el) delete el.dataset.held;
+      block = false;
+    };
+    return {
+      lift() {
+        const el = tileEl(id);
+        if (el) el.dataset.held = '';
+        block = true;
+      },
+      unlift,
+      menu() {
+        unlift();
+        const el = tileEl(id);
+        const app = st.apps.find((a) => a.id === id);
+        if (el && app) st.onMenu(app, faceRect(el));
+      },
+      dragStart() {},
+      dragMove() {},
+      dragEnd: unlift,
+      dragCancel: unlift,
+    };
+  };
+  return {
+    pressOf(id) {
+      let p = presses.get(id);
+      if (!p) presses.set(id, (p = createPress(handlersFor(id), clock)));
+      return p;
+    },
+    down(e, id) {
+      if (active && active.phase !== 'idle') return;
+      active = this.pressOf(id);
+      active.down(e);
+    },
+    key() {},
+    pointer(type, e) { active?.[type](e); },
+    touchMove(e) { if (block && e.cancelable) e.preventDefault(); },
+    abandon() { if (active && active.phase !== 'idle') active.cancel(); },
+    stop() { for (const p of presses.values()) p.cancel(); },
+  };
+}
+
+/** What search found for `query` (`found`, {app, group}, best first), as
+ * one grid of the launcher's columns, each app in a group with the group's
+ * name under its own; or that nothing matches. */
+function Results({ query, found, layout, apps, clock, onOpen, onMenu }) {
+  const ref = useRef(null);
+  const cols = useColumns(ref);
+  const st = useRef({}).current;
+  Object.assign(st, { wrap: ref.current, apps, onMenu });
+  const ctl = useMemo(() => resultsPresses(st, clock), [clock]);
+  useLayoutEffect(() => { st.wrap = ref.current; });
+  useEffect(() => {
+    const move = (e) => ctl.pointer('move', e);
+    const up = (e) => ctl.pointer('up', e);
+    const cancel = (e) => ctl.pointer('cancel', e);
+    const touch = (e) => ctl.touchMove(e);
+    const abandon = () => ctl.abandon();
+    const hidden = () => { if (document.visibilityState === 'hidden') ctl.abandon(); };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up);
+    document.addEventListener('pointercancel', cancel);
+    document.addEventListener('touchmove', touch, { passive: false });
+    document.addEventListener('visibilitychange', hidden);
+    document.addEventListener('lostpointercapture', abandon);
+    addEventListener('pagehide', abandon);
+    addEventListener('blur', abandon);
+    return () => {
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', up);
+      document.removeEventListener('pointercancel', cancel);
+      document.removeEventListener('touchmove', touch);
+      document.removeEventListener('visibilitychange', hidden);
+      document.removeEventListener('lostpointercapture', abandon);
+      removeEventListener('pagehide', abandon);
+      removeEventListener('blur', abandon);
+      ctl.stop();
+    };
+  }, [ctl]);
+  const { cells } = pack(found.map((f) => ({ key: f.app.id, span: 1 })), cols);
+  return html`<div class="h-grid-wrap" ref=${ref}>
+    <section class="h-results" aria-label="Search results" style=${`--cols:${cols}`}>
+      ${found.length
+        ? html`<div class="h-grid">${found.map((f, i) => html`<${AppTile} key=${f.app.id} tkey=${`r:${f.app.id}`} app=${f.app} fresh=${isNew(layout, f.app.id)}
+            cell=${cells[i]} group=${f.group ?? undefined} ctl=${ctl} onOpen=${onOpen} onMenu=${onMenu} />`)}</div>`
+        : html`<p class="h-results-empty">No apps match “${query.trim()}”</p>`}
+    </section>
+  </div>`;
+}
+
+/** The entries search looks through, in the home screen's order: Starred's
+ * apps, then All apps' with each group's apps at its place, under its name. */
+const searchEntries = (layout, apps) => {
+  const s = sections(layout, apps);
+  return [
+    ...s.starred.map((e) => ({ app: e.app, group: null })),
+    ...s.all.flatMap((e) => (e.app ? [{ app: e.app, group: null }] : e.apps.map((app) => ({ app, group: e.group.name })))),
+  ];
+};
+
+/** The search field, focused as it opens: Enter opens the first match
+ * (`onGo`), Backspace in an empty field and its close button close search
+ * (`onClose`). */
+function SearchField({ query, setQuery, onGo, onClose }) {
+  const field = useRef(null);
+  useLayoutEffect(() => { field.current?.focus(); }, []);
+  return html`<div class="h-search" role="search">
+    <label class="h-search-box">
+      <${Glyph} name="search" class="h-search-glyph" />
+      <input ref=${field} type="search" class="h-search-input" aria-label="Search apps" placeholder="Search apps" enterkeyhint="go"
+        autocomplete="off" autocapitalize="off" spellcheck="false" value=${query}
+        onInput=${(e) => setQuery(e.currentTarget.value)}
+        onKeyDown=${(e) => {
+          if (e.key === 'Enter') { e.preventDefault(); onGo(); }
+          else if (e.key === 'Backspace' && e.currentTarget.value === '') { e.preventDefault(); onClose(); }
+        }} />
+      <button type="button" class="h-search-close" aria-label="Close search" onClick=${onClose}><${Glyph} name="x" /></button>
+    </label>
   </div>`;
 }
 
@@ -1469,63 +1616,70 @@ function useActions(home) {
   return [act, notice, say];
 }
 
+/** How far a pull down from the top of the page goes (half the finger's
+ * travel) before its release opens search, and the most it shows. */
 const PULL_PX = 64;
 const PULL_MAX = 96;
 
-/** Pull-to-refresh, as the launcher's: a touch drag down from the top of
- * the page shows the ring; released past PULL_PX it calls `refresh` and
- * spins until that settles. */
-function usePull(refresh) {
-  const [pull, setPull] = useState(0);
-  const [busy, setBusy] = useState(false);
-  const s = useRef({ y: null, d: 0 });
+/** A touch drag down from the top of the page, while `on`: as it goes,
+ * `data-pulling` on the page's root and `--pull` (0 to 1, at PULL_PX)
+ * slide a ghost of the search field down under the bar; released past
+ * PULL_PX it calls `onOpen`. A held tile or an open folder has the finger
+ * instead. */
+function usePullSearch(onOpen, on) {
+  const go = useRef(onOpen);
+  go.current = onOpen;
   useEffect(() => {
+    if (!on) return undefined;
+    const root = document.documentElement;
+    let s = { y: null, d: 0 };
+    const show = (d) => {
+      if (d > 0) {
+        root.setAttribute('data-pulling', '');
+        root.style.setProperty('--pull', String(Math.min(1, d / PULL_PX)));
+      } else {
+        root.removeAttribute('data-pulling');
+        root.style.removeProperty('--pull');
+      }
+    };
     const start = (e) => {
-      s.current = { y: e.touches.length === 1 && scrollY <= 0 ? e.touches[0].clientY : null, d: 0 };
+      const free = e.touches.length === 1 && scrollY <= 0 && !document.querySelector('.h-folder');
+      s = { y: free ? e.touches[0].clientY : null, d: 0 };
     };
     const move = (e) => {
-      if (s.current.y == null) return;
+      if (s.y == null) return;
       // A held or dragged tile has the finger, not the page.
-      if (document.querySelector('.h-tile[data-held]')) { s.current = { y: null, d: 0 }; setPull(0); return; }
-      const dy = e.touches[0].clientY - s.current.y;
-      if (dy <= 0) { s.current.d = 0; setPull(0); return; }
+      if (document.querySelector('.h-tile[data-held]')) { s = { y: null, d: 0 }; show(0); return; }
+      const dy = e.touches[0].clientY - s.y;
+      if (dy <= 0) { s.d = 0; show(0); return; }
       if (e.cancelable) e.preventDefault();
-      s.current.d = Math.min(PULL_MAX, dy * 0.5);
-      setPull(s.current.d);
+      s.d = Math.min(PULL_MAX, dy * 0.5);
+      show(s.d);
     };
     const end = () => {
-      const far = s.current.d >= PULL_PX;
-      s.current = { y: null, d: 0 };
-      setPull(0);
-      if (!far) return;
-      setBusy(true);
-      Promise.resolve(refresh()).finally(() => setBusy(false));
+      const far = s.d >= PULL_PX;
+      s = { y: null, d: 0 };
+      show(0);
+      if (far) go.current();
     };
     addEventListener('touchstart', start, { passive: true });
     addEventListener('touchmove', move, { passive: false });
     addEventListener('touchend', end);
     addEventListener('touchcancel', end);
     return () => {
+      show(0);
       removeEventListener('touchstart', start);
       removeEventListener('touchmove', move);
       removeEventListener('touchend', end);
       removeEventListener('touchcancel', end);
     };
-  }, [refresh]);
-  return { pull, busy };
+  }, [on]);
 }
 
-function PullRing({ pull, busy }) {
-  if (!busy && pull <= 0) return null;
-  const y = busy ? PULL_PX : pull;
-  const f = Math.min(1, pull / PULL_PX);
-  return html`<div class=${`h-pull${busy ? ' h-pull-busy' : ''}`} role=${busy ? 'progressbar' : undefined} aria-label=${busy ? 'Refreshing' : undefined}
-    style=${`transform:translate(-50%, ${y - 40}px);opacity:${busy ? 1 : f}`}>
-    <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
-      <circle class="h-pull-arc" cx="12" cy="12" r="9" stroke-dasharray=${busy ? '20 100' : `${f * 50} 100`} />
-    </svg>
-  </div>`;
-}
+/** The search field as a pull shows it, before it opens. */
+const SearchGhost = () => html`<div class="h-search-ghost" aria-hidden="true">
+  <span class="h-search-box"><${Glyph} name="search" class="h-search-glyph" /><span class="h-search-hint">Search apps</span></span>
+</div>`;
 
 const MAX_TILES = 512;
 /** How long a burst of renders or scroll events settles before the tiles go. */
@@ -1634,15 +1788,17 @@ function useLayout(store, apps, clock, failed) {
   return [layout, change];
 }
 
-/** The open folder's history entry, for the window (one listener, so a
+/** The page's own history entries, for the window (one listener, so a
  * close's back that lands while the page mounts again is still heard):
- * `back` while a close's `history.back()` is on its way, `push` when a
- * folder opened meanwhile and takes a new entry once it lands; any other
- * back off the entry calls `close`. */
-const folderNav = {
+ * "group" while a folder is open or a pile fanned out, "search" while
+ * search is open. `enter(kind)` takes kind's entry, `leave(kind)` goes
+ * back off it; `back` is set while such a `history.back()` is on its way,
+ * and `push` names the entry to take once it lands. Any other back calls
+ * the `closers` of each kind whose entry is no longer the top one. */
+const nav = {
   back: false,
-  push: false,
-  close: null,
+  push: null,
+  closers: {},
   listening: false,
   listen() {
     if (this.listening) return;
@@ -1650,11 +1806,25 @@ const folderNav = {
     addEventListener('popstate', () => {
       if (this.back) {
         this.back = false;
-        if (this.push) { this.push = false; history.pushState({ clax: 'group' }, '', '#group'); }
+        const kind = this.push;
+        this.push = null;
+        if (kind) history.pushState({ clax: kind }, '', `#${kind}`);
         return;
       }
-      if (history.state?.clax !== 'group') this.close?.();
+      const top = history.state?.clax;
+      for (const [kind, close] of Object.entries(this.closers)) if (top !== kind) close?.();
     });
+  },
+  enter(kind) {
+    if (this.back) this.push = kind;
+    else if (history.state?.clax !== kind) history.pushState({ clax: kind }, '', `#${kind}`);
+  },
+  leave(kind) {
+    if (this.push === kind) this.push = null;
+    if (!this.back && history.state?.clax === kind) {
+      this.back = true;
+      history.back();
+    }
   },
 };
 
@@ -1675,7 +1845,6 @@ function Home({ home, db, clock }) {
     [reloadApps, reloadMakes, reloadUnread, reloadKey],
   );
   const [act, notice, say] = useActions(home);
-  const { pull, busy } = usePull(refresh);
   const store = useMemo(() => layoutStore(db, { clock }), [db, clock]);
   const [layout, change] = useLayout(store, apps, clock, useCallback(() => say(UNSAVED_TEXT), []));
   const openApp = useCallback((app) => act('open', [app.id], `open ${app.title}`).then((v) => {
@@ -1700,18 +1869,22 @@ function Home({ home, db, clock }) {
   moving.current = { motion, reduced };
   const fanNow = useRef(null);
   fanNow.current = fan;
-  const pushEntry = () => {
-    if (folderNav.back) folderNav.push = true;
-    else if (history.state?.clax !== 'group') history.pushState({ clax: 'group' }, '', '#group');
-  };
-  const popEntry = () => {
-    folderNav.push = false;
-    if (!folderNav.back && history.state?.clax === 'group') {
-      folderNav.back = true;
-      history.back();
-    }
-  };
+  const pushEntry = () => nav.enter('group');
+  const popEntry = () => nav.leave('group');
+  // Search: null while closed, else the field's text, with a history entry
+  // of its own so back closes it.
+  const [query, setQuery] = useState(null);
+  const searching = query !== null;
+  const searchOpen = useRef(false);
+  searchOpen.current = searching;
+  const closeSearch = useCallback(() => {
+    if (!searchOpen.current) return;
+    searchOpen.current = false;
+    setQuery(null);
+    nav.leave('search');
+  }, []);
   const openGroup = useCallback((gid, editing = false) => {
+    closeSearch();
     setGroupMenu(null);
     setFan(null);
     setFolder({ gid, editing });
@@ -1738,6 +1911,7 @@ function Home({ home, db, clock }) {
   }, []);
   // A tap on a pile fans it out, or gathers it when it is fanned already.
   const fanGroup = useCallback((gid) => {
+    closeSearch();
     setGroupMenu(null);
     const f = fanNow.current;
     if (f && f.gid === gid && !f.closing) { gather(); return; }
@@ -1751,11 +1925,34 @@ function Home({ home, db, clock }) {
     setFan(null);
     popEntry();
   }, []);
+  // Opening search gathers a fanned pile and closes the group menu first,
+  // so its entry is the only one of the page's own.
+  const openSearch = useCallback(() => {
+    if (searchOpen.current) return;
+    setGroupMenu(null);
+    gatherNow();
+    searchOpen.current = true;
+    setQuery('');
+    nav.enter('search');
+  }, []);
+  useEffect(() => {
+    const close = () => { searchOpen.current = false; setQuery(null); };
+    nav.listen();
+    nav.closers.search = close;
+    return () => { if (nav.closers.search === close) delete nav.closers.search; };
+  }, []);
+  // Escape closes search, unless a menu or a folder takes it.
+  useEffect(() => {
+    if (!searching) return undefined;
+    const key = (e) => { if (e.key === 'Escape' && !document.querySelector('.h-folder, .h-group-menu, .h-more .h-menu')) closeSearch(); };
+    document.addEventListener('keydown', key);
+    return () => document.removeEventListener('keydown', key);
+  }, [searching]);
   useEffect(() => {
     const close = () => { setFolder(null); closeFan(); };
-    folderNav.listen();
-    folderNav.close = close;
-    return () => { if (folderNav.close === close) folderNav.close = null; };
+    nav.listen();
+    nav.closers.group = close;
+    return () => { if (nav.closers.group === close) delete nav.closers.group; };
   }, []);
   // While a pile is fanned out, a tap outside its row and the group tiles,
   // or Escape, gathers it.
@@ -1801,6 +1998,8 @@ function Home({ home, db, clock }) {
   }, [home, drawn]);
   settled.current = useTiles(home, drawn, motion);
   const [dragging, setDragging] = useState(false);
+  usePullSearch(openSearch, !searching && drawn && !appsError);
+  const goFirst = useRef(() => {});
 
   if (!home || (appsError && isRefused(appsError))) {
     return html`<main class="h-page h-away">
@@ -1809,12 +2008,17 @@ function Home({ home, db, clock }) {
   }
   const list = Array.isArray(apps) && layout !== null ? apps : null;
   const going = Array.isArray(makes) ? makes : [];
+  goFirst.current = () => {};
   let body;
   if (!list && appsError) {
     body = html`<${Message} glyph="cloudOff" title="Couldn't load your apps"
       action=${html`<button type="button" class="h-text-button" onClick=${reloadApps}>Try again</button>`} />`;
   } else if (!list) {
     body = null;
+  } else if (searching && query.trim()) {
+    const found = search(query, searchEntries(layout, list));
+    goFirst.current = () => { if (found[0]) openApp(found[0].app); };
+    body = html`<${Results} query=${query} found=${found} layout=${layout} apps=${list} clock=${clock} onOpen=${openApp} onMenu=${menuOf} />`;
   } else if (!list.length && !going.length) {
     body = html`<${Message} glyph="sparkles" title="Say what you want, and Clax makes it." hint="“A tracker for my runs with a weekly total”" />`;
   } else {
@@ -1826,8 +2030,10 @@ function Home({ home, db, clock }) {
   const open = folder && entryOf(folder.gid);
   const menuFor = groupMenu && entryOf(groupMenu.gid);
   return html`<main class="h-page" data-dragging=${dragging ? '' : undefined}>
-    <${Bar} act=${act} refresh=${refresh} unread=${typeof unread === 'number' ? unread : 0} />
-    <${PullRing} pull=${pull} busy=${busy} />
+    <${Bar} act=${act} refresh=${refresh} unread=${typeof unread === 'number' ? unread : 0} onSearch=${openSearch} />
+    ${searching
+      ? html`<${SearchField} query=${query} setQuery=${setQuery} onGo=${() => goFirst.current()} onClose=${closeSearch} />`
+      : list && html`<${SearchGhost} />`}
     ${needsKey === true && html`<div class="h-key">
       <${Glyph} name="key" />
       <span class="h-key-text">Add your Claude API key to start making apps</span>

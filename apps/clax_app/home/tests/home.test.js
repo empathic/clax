@@ -198,29 +198,6 @@ test('Refresh in More loads everything again', async () => {
   await wait(() => loads === 1);
 });
 
-test('a pull down from the top loads everything again', async () => {
-  if (typeof Touch !== 'function') return;
-  const home = await show({ makes: [] });
-  const apps = home.apps;
-  let loads = 0;
-  home.apps = () => { loads++; return apps(); };
-  scrollTo(0, 0);
-  const touch = (y) => new Touch({ identifier: 1, target: document.body, clientX: 200, clientY: y });
-  const send = (type, y) => document.body.dispatchEvent(new TouchEvent(type, { bubbles: true, cancelable: true, touches: type === 'touchend' ? [] : [touch(y)], changedTouches: [touch(y)] }));
-  send('touchstart', 100);
-  send('touchmove', 140);
-  send('touchmove', 260);
-  await wait(() => ui.exists('.h-pull'));
-  send('touchend', 260);
-  await wait(() => loads === 1);
-  await wait(() => !ui.exists('.h-pull'));
-  send('touchstart', 100);
-  send('touchmove', 140);
-  send('touchend', 140);
-  await new Promise((done) => setTimeout(done, 0));
-  expect(loads).toBe(1);
-});
-
 test('New app, Inbox, Settings and Import app… ask the app', async () => {
   const home = await show({ unread: 4 });
   expect(ui.text('.h-badge')).toBe('4');
@@ -1014,4 +991,93 @@ test('Alt+arrows move a focused app along a fanned pile', async () => {
   document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   clock.advance(1000);
   await wait(() => !ui.exists('.h-fan'));
+});
+
+const searchField = async () => {
+  await ui.click('[aria-label="Search"]');
+  await wait(() => ui.exists('.h-search input'));
+  return document.querySelector('.h-search input');
+};
+const typeIn = (input, value) => {
+  input.value = value;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+};
+const press = (input, key) => input.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+
+test('the search icon opens a focused field; typing filters every app, groups too; Enter opens the first', async () => {
+  const clock = manualClock(0, Date.UTC(2026, 9, 16, 12));
+  const home = await show({ makes: [] }, { clock, layout: groupLayout() });
+  const input = await searchField();
+  expect(document.activeElement).toBe(input);
+  expect(input.getAttribute('aria-label')).toBe('Search apps');
+  expect(ui.exists('.h-section[data-section="all"]')).toBeTruthy();
+  typeIn(input, 'NOT');
+  await wait(() => ui.exists('.h-results'));
+  expect(ui.exists('.h-section')).toBe(false);
+  expect([...document.querySelectorAll('.h-results .h-tile[data-id]')].map((t) => t.dataset.id)).toEqual(['app-notes']);
+  expect(ui.text('.h-results [data-id="app-notes"] .h-in-group')).toBe('Lists');
+  press(input, 'Enter');
+  await wait(() => home.calls.some((c) => c.method === 'open'));
+  expect(home.calls.find((c) => c.method === 'open').args).toEqual(['app-notes']);
+  await wait(async () => (await stored()).opens['app-notes']?.n === 1);
+  press(input, 'Escape');
+  await wait(() => !ui.exists('.h-search'));
+});
+
+test('no match says so; Escape closes search; Backspace in an empty field closes it, as does the close button', async () => {
+  await show({ makes: [] });
+  let input = await searchField();
+  typeIn(input, 'zzz');
+  await wait(() => ui.exists('.h-results') && ui.text('.h-results').includes('No apps match “zzz”'));
+  press(input, 'Escape');
+  await wait(() => !ui.exists('.h-search'));
+  expect(ui.exists('.h-section[data-section="all"]')).toBeTruthy();
+  input = await searchField();
+  typeIn(input, 'r');
+  press(input, 'Backspace');
+  await new Promise((done) => setTimeout(done, 0));
+  expect(ui.exists('.h-search')).toBe(true);
+  typeIn(input, '');
+  press(input, 'Backspace');
+  await wait(() => !ui.exists('.h-search'));
+  await searchField();
+  await ui.click('[aria-label="Close search"]');
+  await wait(() => !ui.exists('.h-search'));
+});
+
+test('a pull down from the top past 64 px opens search, and a short one does not; nothing reloads', async () => {
+  if (typeof Touch !== 'function') return;
+  const home = await show({ makes: [] });
+  let loads = 0;
+  const apps = home.apps;
+  home.apps = () => { loads++; return apps(); };
+  scrollTo(0, 0);
+  const touch = (y) => new Touch({ identifier: 1, target: document.body, clientX: 200, clientY: y });
+  const send = (type, y) => document.body.dispatchEvent(new TouchEvent(type, { bubbles: true, cancelable: true, touches: type === 'touchend' ? [] : [touch(y)], changedTouches: [touch(y)] }));
+  send('touchstart', 100); send('touchmove', 140); send('touchend', 140);
+  await new Promise((done) => setTimeout(done, 0));
+  expect(ui.exists('.h-search')).toBe(false);
+  send('touchstart', 100); send('touchmove', 160); send('touchmove', 260);
+  expect(document.documentElement.hasAttribute('data-pulling')).toBe(true);
+  send('touchend', 260);
+  await wait(() => ui.exists('.h-search input'));
+  expect(document.documentElement.hasAttribute('data-pulling')).toBe(false);
+  expect(loads).toBe(0);
+  expect(ui.exists('.h-pull')).toBe(false);
+  press(document.querySelector('.h-search input'), 'Escape');
+  await wait(() => !ui.exists('.h-search'));
+});
+
+test('while search shows results, tiles() gives them', async () => {
+  const home = fakeHome({ makes: [] });
+  const reports = [];
+  home.tiles = async (list) => { reports.push(list.map((t) => t.id)); };
+  db = fakeDb();
+  mount(root(), home, { db });
+  await wait(() => reports.length >= 1);
+  const input = await searchField();
+  typeIn(input, 'gro');
+  await wait(() => reports.at(-1).join() === 'app-groceries');
+  press(input, 'Escape');
+  await wait(() => !ui.exists('.h-search'));
 });

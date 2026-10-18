@@ -283,16 +283,45 @@ body {
   font: 400 14px/20px var(--k-font); letter-spacing: 0.25px; text-align: left; cursor: pointer;
 }
 
-/* Pull to refresh. */
+/* Search: the field under the bar, staying there as the page scrolls. */
 html { overscroll-behavior-y: contain; }
-.h-pull {
-  position: fixed; z-index: 1; left: 50%; top: calc(56px + var(--k-safe-top));
-  width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center;
-  background: var(--h-menu-bg); box-shadow: var(--h-menu-shadow);
+.h-search, .h-search-ghost {
+  position: sticky; top: calc(56px + var(--k-safe-top)); z-index: 1;
+  padding: 4px 16px 8px; background: var(--h-surface);
 }
-.h-pull svg { fill: none; }
-.h-pull-arc { stroke: var(--h-primary); stroke-width: 2.5; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 12px 12px; }
-.h-pull-busy svg { animation: h-spin 1s linear infinite; }
+.h-search-box {
+  display: flex; align-items: center; gap: 12px;
+  height: 48px; padding: 0 4px 0 16px; border-radius: 24px;
+  background: var(--h-sc); color: var(--h-on-sc); cursor: text;
+}
+.h-search-glyph { flex: none; }
+/* 16 px, so a phone does not zoom in on focus. */
+.h-search-input, .h-search-hint {
+  flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: none;
+  background: transparent; color: var(--h-on-surface);
+  font: 400 16px/24px var(--k-font); letter-spacing: 0.5px;
+}
+.h-search-hint { display: flex; align-items: center; }
+.h-search-input::placeholder, .h-search-hint { color: var(--h-on-variant); opacity: 1; }
+.h-search-input::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; display: none; }
+.h-search-close {
+  flex: none; width: 40px; height: 40px; display: grid; place-items: center;
+  border: 0; border-radius: 50%; padding: 0; background: transparent; color: var(--h-on-sc); cursor: pointer;
+}
+.h-search-close:active, .h-search-close:hover { background: var(--h-state); }
+/* A pull down from the top slides the field out from under the bar and
+ * the page down with it, to where the field puts it once open (60 px). */
+.h-search-ghost {
+  position: fixed; left: 0; right: 0; pointer-events: none; visibility: hidden;
+  background: transparent; transform: translateY(calc((var(--pull, 0) - 1) * 60px));
+}
+.h-search-ghost .h-search-box { opacity: var(--pull, 0); }
+html[data-pulling] .h-search-ghost { visibility: visible; }
+html[data-pulling] :is(.h-key, .h-grid-wrap, .h-message) { transform: translateY(calc(var(--pull, 0) * 60px)); }
+.h-results-empty {
+  margin: 48px 16px 0; text-align: center; color: var(--h-on-variant);
+  font: 400 16px/24px var(--k-font); letter-spacing: 0.5px;
+}
 
 /* Groups. A folder tile: up to four small icons on a tonal square. */
 .h-face.h-folder-face, :root[data-theme="dark"] .h-face.h-folder-face {

@@ -53,7 +53,7 @@ test.describe("its tests in the inspect view", () => {
     const tests = (await ofType(page, "tests"))[0] as HostMessage & { passed: number; failed: unknown[]; skipped: number };
     expect(tests.failed).toEqual([]);
     expect(tests.skipped).toBe(0);
-    expect(tests.passed).toBe(66);
+    expect(tests.passed).toBe(69);
   });
 });
 
@@ -292,6 +292,28 @@ test.describe("over a fake host", () => {
     await expect(page.locator(".h-fan")).toHaveCount(0);
   });
 
+  test("search finds an app as it is typed and Enter opens it; a pull down opens search, and back closes it", async ({ page }) => {
+    await serve(page, { makes: [] });
+    await expect(page.locator(".h-tile[data-id]")).toHaveCount(8);
+    await page.getByRole("button", { name: "Search", exact: true }).tap();
+    await expect(page.getByRole("searchbox", { name: "Search apps" })).toBeFocused();
+    await page.keyboard.type("gro");
+    await expect(page.locator(".h-results .h-tile[data-id]")).toHaveCount(1);
+    await page.keyboard.press("Enter");
+    await expect.poll(async () => (await calls(page)).at(-1)).toEqual({ method: "open", args: ["app-groceries"] });
+    await page.goBack();
+    await expect(page.locator(".h-search")).toHaveCount(0);
+    await expect(page.locator('.h-section[data-section="all"] .h-tile[data-id]')).toHaveCount(8);
+    const cdp = await page.context().newCDPSession(page);
+    const touch = (type: "touchStart" | "touchMove" | "touchEnd", y: number) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: type === "touchEnd" ? [] : [{ x: 200, y, id: 1 }] });
+    await touch("touchStart", 120);
+    for (let y = 140; y <= 300; y += 20) await touch("touchMove", y);
+    await touch("touchEnd", 300);
+    await expect(page.getByRole("searchbox", { name: "Search apps" })).toBeFocused();
+    await page.goBack();
+    await expect(page.locator(".h-search")).toHaveCount(0);
+  });
+
   test("without the home capability it says to open it in Clax", async ({ page }) => {
     await serve(page);
     await expect(page.locator(".h-message")).toContainText("This is a Clax home screen.Open it in the Clax app.");
@@ -421,6 +443,37 @@ test.describe("renders", () => {
           await expect.poll(() => page.locator(".h-tile[data-key]:not([data-dragging])").evaluateAll(els => els.every(e => !(e as HTMLElement).style.transform))).toBe(true);
           await page.screenshot({ path: join(shots, `home-grouping-${size}-${scheme}.png`), animations: "disabled" });
           await page.mouse.up();
+          // Search for "re" over a starred app, a folder and the rest:
+          // one match from each, the folder's named under it; then a
+          // query that matches nothing; then a pull caught midway.
+          await page.evaluate(async () => {
+            const { mount } = await import(`${location.origin}/home.js`);
+            const { fakeHome, fakeDb, SAMPLE } = await import(`${location.origin}/kit/fake-home.js`);
+            const ids = SAMPLE.apps.map((a: { id: string }) => a.id);
+            const layout = {
+              v: 1, starred: ["app-recipes", "app-notes"], order: ["app-run", "g:g1", "app-habits", "app-mood"], seen: ids,
+              groups: { g1: { name: "Lists", look: "folder", apps: ["app-groceries", "app-budget", "app-plants"] } },
+            };
+            mount(document.getElementById("app"), fakeHome({ makes: [] }), { db: fakeDb({ "layout/main": layout }) });
+          });
+          await expect(page.locator(".h-group")).toHaveCount(1);
+          await page.getByRole("button", { name: "Search", exact: true }).click();
+          await page.keyboard.type("re");
+          // The pointer leaves the button, so it shows no hover.
+          await page.mouse.move(1, viewport.height - 1);
+          await expect(page.locator(".h-results .h-tile[data-id]")).toHaveCount(3);
+          await expect(page.locator(".h-results .h-in-group")).toHaveText(["Lists"]);
+          await page.evaluate(() => Promise.all([...document.images].map(i => i.decode().catch(() => {}))));
+          await page.screenshot({ path: join(shots, `home-search-${size}-${scheme}.png`), animations: "disabled" });
+          await page.keyboard.type("zzz");
+          await expect(page.locator(".h-results-empty")).toHaveText("No apps match “rezzz”");
+          await page.screenshot({ path: join(shots, `home-search-none-${size}-${scheme}.png`), animations: "disabled" });
+          await page.keyboard.press("Escape");
+          await expect(page.locator(".h-search")).toHaveCount(0);
+          await page.evaluate(() => { document.documentElement.setAttribute("data-pulling", ""); document.documentElement.style.setProperty("--pull", "0.7"); });
+          await expect(page.locator(".h-search-ghost")).toBeVisible();
+          await page.screenshot({ path: join(shots, `home-search-pull-${size}-${scheme}.png`), animations: "disabled" });
+          await page.evaluate(() => { document.documentElement.removeAttribute("data-pulling"); document.documentElement.style.removeProperty("--pull"); });
           await page.evaluate(async () => {
             const { mount } = await import(`${location.origin}/home.js`);
             const { fakeHome } = await import(`${location.origin}/kit/fake-home.js`);
