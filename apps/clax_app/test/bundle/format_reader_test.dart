@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io' show ZLibEncoder;
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -212,6 +213,83 @@ void main() {
       final deflated = Deflate(data).getBytes();
       expect(inflateAtMost(Uint8List.fromList(deflated), data.length), data, reason: s);
     }
+  });
+
+  group('a deflated entry cut short or with bytes flipped', () {
+    // Each case checks the damaged entry's stream reaches the reader as
+    // deflate; the codes are those of the entry's own checks, so the
+    // zero bytes inflateAtMost reads after a stream cannot let a damaged
+    // entry through as whole or as another error.
+    const codes = {
+      'files/index.html': {'bad_file'},
+      'seed.jsonl': {'bad_seed'},
+      // A flip may inflate to other bytes that parse: then the signature
+      // no longer matches them.
+      'manifest.json': {'bad_manifest', 'bad_signature'},
+    };
+
+    test('the undamaged bundle reads', () async {
+      final r = await BundleReader.read(await _deflatedBundle());
+      expect(r.files['index.html'], _page);
+      expect(r.seed, hasLength(12));
+    });
+
+    for (final MapEntry(key: name, value: allowed) in codes.entries) {
+      test('$name cut short by 1 to 8 bytes, or to half', () async {
+        final n = (await _deflatedStreams())[name]!.length;
+        for (final cut in {1, 2, 3, 4, 5, 6, 7, 8, n ~/ 2}) {
+          await _expectReadRefusedWith(
+            await _deflatedBundle(
+              name: name,
+              damage: (s) => Uint8List.sublistView(s, 0, s.length - cut),
+            ),
+            allowed,
+            '$name cut by $cut of $n bytes',
+          );
+        }
+      });
+
+      test('$name with any one byte flipped', () async {
+        final n = (await _deflatedStreams())[name]!.length;
+        for (var at = 0; at < n; at++) {
+          await _expectReadRefusedWith(
+            await _deflatedBundle(
+              name: name,
+              damage: (s) => Uint8List.fromList(s)..[at] ^= 0xff,
+            ),
+            allowed,
+            '$name with byte $at of $n flipped',
+          );
+        }
+      });
+    }
+
+    test('inflateAtMost of any strict prefix of a stream is null', () {
+      final rng = Random(7);
+      final inputs = [
+        'x' * 13,
+        'word0 word1 ',
+        utf8.decode(_page),
+        String.fromCharCodes(List.generate(700, (_) => 32 + rng.nextInt(95))),
+      ];
+      for (final s in inputs) {
+        final data = utf8.encode(s);
+        for (final deflated in [
+          Deflate(data).getBytes(),
+          ZLibEncoder(raw: true).convert(data),
+        ]) {
+          final whole = Uint8List.fromList(deflated);
+          expect(inflateAtMost(whole, data.length), data);
+          for (var len = 0; len < whole.length; len++) {
+            expect(
+              inflateAtMost(Uint8List.sublistView(whole, 0, len), data.length),
+              isNull,
+              reason: '${s.length} bytes as ${whole.length}, cut to $len',
+            );
+          }
+        }
+      }
+    });
   });
 
   test('compression method 12 is not_a_bundle', () async {
@@ -487,6 +565,86 @@ void main() {
       );
     });
   });
+}
+
+/// The page of [_deflatedBundle]: text that deflate shrinks.
+final _page = b(
+  '<!doctype html><title>Plants</title><ul>'
+  '${[for (var i = 0; i < 24; i++) '<li id="p$i">plant $i: water ${i * 3 % 7} days</li>'].join()}'
+  '</ul>',
+);
+
+/// The seed of [_deflatedBundle].
+final _seedText = b(
+  [
+    for (var i = 0; i < 12; i++)
+      '{"path":"plants/p$i","data":{"name":"plant $i","days":${i * 3 % 7}}}\n',
+  ].join(),
+);
+
+Future<Map<String, Object?>> _deflatedManifest() async {
+  final files = {'index.html': _page};
+  final m = manifestJson(
+    files,
+    seed: {'sha256': sha256Hex(_seedText), 'size': _seedText.length, 'docs': 12},
+  );
+  (m['author']! as Map)['key'] = await publicKeyFromSeed(keySeed);
+  return m;
+}
+
+/// The entries of [_deflatedBundle] by name: raw deflate streams, but for
+/// `manifest.sig`, which is stored.
+Future<Map<String, Uint8List>> _deflatedStreams() async {
+  final m = await _deflatedManifest();
+  final mbytes = b('${const JsonEncoder.withIndent('  ').convert(m)}\n');
+  Uint8List deflate(Uint8List d) {
+    final out = Uint8List.fromList(Deflate(d).getBytes());
+    expect(out.length, lessThan(d.length));
+    return out;
+  }
+
+  return {
+    'manifest.json': deflate(mbytes),
+    'manifest.sig': b(await signManifest(mbytes, keySeed)),
+    'files/index.html': deflate(_page),
+    'seed.jsonl': deflate(_seedText),
+  };
+}
+
+/// A signed bundle of [_page] and [_seedText] whose manifest, file and
+/// seed are deflated, with [damage] applied to the stream of the entry
+/// [name].
+Future<Uint8List> _deflatedBundle({
+  String? name,
+  Uint8List Function(Uint8List stream)? damage,
+}) async {
+  final streams = await _deflatedStreams();
+  if (name != null) streams[name] = damage!(streams[name]!);
+  final z = BundleWriter.zip([
+    for (final MapEntry(:key, :value) in streams.entries) ZipEntry(key, value),
+  ]);
+  for (final key in streams.keys) {
+    if (key == 'manifest.sig') continue;
+    _u16(z, _central(z, key) + 10, 8);
+    _u16(z, _local(z, key) + 8, 8);
+  }
+  return z;
+}
+
+/// Expects reading [bytes] to throw a [BundleError] whose code is in
+/// [codes].
+Future<void> _expectReadRefusedWith(
+  Uint8List bytes,
+  Set<String> codes,
+  String what,
+) async {
+  try {
+    await BundleReader.read(bytes);
+  } on BundleError catch (e) {
+    expect(codes, contains(e.code), reason: '$what: ${e.code} ${e.message}');
+    return;
+  }
+  fail('$what read as whole');
 }
 
 int _cdOffset(Uint8List z) =>
