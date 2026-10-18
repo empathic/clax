@@ -1312,6 +1312,18 @@ test('the three apps opened most take 2×2 tiles with a larger icon; the order i
   expect(section('all')).toEqual(SAMPLE.apps.map((a) => a.id));
 });
 
+test("a big tile's icon lines up with its first row's icons, its name right under it", async () => {
+  await show({ makes: [] }, { clock: busyClock(), layout: busy() });
+  await wait(() => document.querySelectorAll('[data-big]').length === 3);
+  // Mood journal's 2×2 starts in the row Notes is in.
+  const mood = document.querySelector('[data-id="app-mood"]');
+  const face = mood.querySelector('.h-face').getBoundingClientRect();
+  const notes = document.querySelector('[data-id="app-notes"] .h-face').getBoundingClientRect();
+  expect(Math.round(face.top)).toBe(Math.round(notes.top));
+  const label = mood.querySelector('.h-label').getBoundingClientRect();
+  expect(Math.round(label.top - face.bottom)).toBe(8);
+});
+
 test('Big tiles for apps you use, in More, turns them off and on, and is kept', async () => {
   await show({ makes: [] }, { clock: busyClock(), layout: busy() });
   await wait(() => document.querySelectorAll('[data-big]').length === 3);

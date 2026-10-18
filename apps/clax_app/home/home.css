@@ -200,8 +200,9 @@ body {
 }
 .h-status.h-error { color: var(--h-error); }
 /* A big tile: an app opened most lately, over a 2×2 cell, its icon twice
- * the size, centred with its name; the name keeps its size. */
-.h-tile[data-big] { --face: 120px; height: auto; justify-content: center; }
+ * the size, its top in line with the icons of its first row and its name
+ * under it; the name keeps its size. */
+.h-tile[data-big] { --face: 120px; height: auto; justify-content: flex-start; }
 .h-tile[data-big] .h-emoji { font-size: 56px; }
 .h-tile[data-big] .h-mono { font-size: 44px; }
 .h-tile[data-big] .h-face[data-kind="word"] svg { width: 56px; height: 56px; stroke-width: 2; }
