@@ -314,6 +314,28 @@ test.describe("over a fake host", () => {
     await expect(page.locator(".h-search")).toHaveCount(0);
   });
 
+  test("Rename from a group's menu opened over search leaves one entry, which one back pops", async ({ page }) => {
+    const ids = ["app-run", "app-groceries", "app-habits", "app-recipes", "app-budget", "app-plants", "app-mood", "app-notes"];
+    const layout = { v: 1, starred: [], order: ["app-run", "g:g1", ...ids.filter(id => !["app-run", "app-groceries", "app-notes"].includes(id))], groups: { g1: { name: "Lists", look: "folder", apps: ["app-groceries", "app-notes"] } }, seen: ids };
+    await serve(page, { makes: [], docs: { "layout/main": layout } });
+    await expect(page.locator(".h-group")).toHaveCount(1);
+    const hash = () => page.evaluate(() => location.hash);
+    // Search open with its field empty shows the grid, and the group's menu opens over it.
+    await page.getByRole("button", { name: "Search", exact: true }).tap();
+    await expect(page.getByRole("searchbox", { name: "Search apps" })).toBeFocused();
+    await page.locator(".h-group").click({ button: "right" });
+    await expect(page.locator(".h-group-menu")).toBeVisible();
+    await expect.poll(hash).toBe("#menu");
+    await page.getByRole("menuitem", { name: "Rename" }).click();
+    await expect(page.locator('.h-folder input[aria-label="Group name"]')).toBeVisible();
+    await expect(page.locator(".h-search")).toHaveCount(0);
+    await expect.poll(hash).toBe("#group");
+    await page.goBack();
+    await expect(page.locator(".h-folder")).toHaveCount(0);
+    await expect.poll(hash).toBe("");
+    await expect(page.locator(".h-search, .h-group-menu")).toHaveCount(0);
+  });
+
   test("without the home capability it says to open it in Clax", async ({ page }) => {
     await serve(page);
     await expect(page.locator(".h-message")).toContainText("This is a Clax home screen.Open it in the Clax app.");

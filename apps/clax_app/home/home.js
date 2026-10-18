@@ -1974,25 +1974,41 @@ function useLayout(store, apps, clock, failed) {
  * close's back that lands while the page mounts again is still heard):
  * "group" while a folder is open or a pile fanned out, "menu" while a
  * group's own menu is open (over a fanned pile's entry, when one is),
- * "search" while search is open. `enter(kind)` takes kind's entry,
- * `leave(kind)` goes back off it; `back` is set while such a
- * `history.back()` is on its way, and `push` names the entry to take once
- * it lands, unless the back landed on one of that kind. Any other back
+ * "search" while search is open. Each entry's state names its kind
+ * (`clax`) and the page's entries under it (`under`, bottom first).
+ * `enter(kind)` takes kind's entry; `leave(kind)` goes back off it, and off
+ * any entry above it, or undoes an enter of kind still waiting. `backs` counts the entries being gone back off and
+ * `going` those the traversal on its way leaves: a leave while one is on
+ * its way adds to `backs`, and the rest go once it lands, so each leave
+ * takes its own entry. `push` names the entry to take once every back has
+ * landed, unless the last one landed on one of that kind. Any other back
  * calls the `closers` of each kind whose entry is no longer the top one. */
 const nav = {
-  back: false,
+  backs: 0,
+  going: 0,
   push: null,
   closers: {},
   listening: false,
+  /** The page's own entries, bottom first, as history stands now. */
+  stack() {
+    const s = history.state;
+    return s?.clax ? [...(Array.isArray(s.under) ? s.under : []), s.clax] : [];
+  },
+  /** Takes kind's entry over the page's others. */
+  take(kind) {
+    history.pushState({ clax: kind, under: this.stack() }, '', `#${kind}`);
+  },
   listen() {
     if (this.listening) return;
     this.listening = true;
     addEventListener('popstate', () => {
-      if (this.back) {
-        this.back = false;
+      if (this.going) {
+        this.backs -= this.going;
+        this.going = 0;
+        if (this.backs > 0) { this.going = this.backs; history.go(-this.backs); return; }
         const kind = this.push;
         this.push = null;
-        if (kind && history.state?.clax !== kind) history.pushState({ clax: kind }, '', `#${kind}`);
+        if (kind && history.state?.clax !== kind) this.take(kind);
         return;
       }
       const top = history.state?.clax;
@@ -2000,15 +2016,20 @@ const nav = {
     });
   },
   enter(kind) {
-    if (this.back) this.push = kind;
-    else if (history.state?.clax !== kind) history.pushState({ clax: kind }, '', `#${kind}`);
+    if (this.backs) this.push = kind;
+    else if (history.state?.clax !== kind) this.take(kind);
   },
   leave(kind) {
-    if (this.push === kind) this.push = null;
-    if (!this.back && history.state?.clax === kind) {
-      this.back = true;
-      history.back();
-    }
+    // An enter still waiting for the backs to land is undone, and with it
+    // the leave: the entry it would have taken or reused stays as it is.
+    if (this.push === kind) { this.push = null; return; }
+    // The entries as they will stand once the backs on their way land.
+    const ahead = this.stack();
+    ahead.length = Math.max(0, ahead.length - this.backs);
+    const i = ahead.lastIndexOf(kind);
+    if (i < 0) return;
+    this.backs += ahead.length - i;
+    if (!this.going) { this.going = this.backs; history.go(-this.backs); }
   },
 };
 
