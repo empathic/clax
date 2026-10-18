@@ -57,7 +57,7 @@ if check; then fail "a job limit fails"; else pass "a job limit in .bazelrc fail
 # A Cargo.lock that names a workspace crate at another version than its
 # manifest: the fake rewrites it on resolving, as crate_universe does, and
 # logs each resolution.
-V="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$HERE/Cargo.toml" | head -1)"
+V="$("$HERE/scripts/check-version.sh" --print)"
 printf '#!/bin/sh\necho resolve >> "$BAZEL_SYNC_TEST_LOG"\nperl -0pi -e '"'"'s/(name = "clax-fake-exe"\\nversion = ")0\\.0\\.1"/${1}%s"/'"'"' Cargo.lock\n' "$V" | fake_exe "$T/bin/bazel-repin"
 fresh; edit 's/(name = "clax-fake-exe"\nversion = ")[^"]+"/${1}0.0.1"/' "$T/r/Cargo.lock"
 : > "$T/resolves"
