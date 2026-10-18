@@ -105,7 +105,9 @@ export const tossDone = (p) => Math.hypot(p.vx, p.vy) < 20;
 export const SPEED_MS = 80;
 
 /** The pointer's velocity in px/s over the samples ({t ms, x, y}) of the
- * last SPEED_MS; zero for fewer than two. */
+ * SPEED_MS up to the newest, which is the release: a pointer held still
+ * before the release counts as still, and one with no move in the last
+ * SPEED_MS has zero velocity. Zero for fewer than two samples. */
 export function velocityOf(samples) {
   if (samples.length < 2) return { vx: 0, vy: 0 };
   const last = samples[samples.length - 1];

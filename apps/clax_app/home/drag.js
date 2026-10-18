@@ -4,7 +4,8 @@
 // without moving asks for the menu. A mouse drags once it moves SLOP_PX
 // with its main button down, with no hold. A touch that moves SLOP_PX
 // before the hold is the page scrolling: the press lets go. The click
-// after a menu or a drag is swallowed.
+// after a menu or a drag is swallowed. A drag ends with its recent move
+// samples and, last, the release point at the clock's time.
 import { SPEED_MS } from './physics.js';
 
 export const HOLD_MS = 400;
@@ -50,8 +51,11 @@ export function createPress(h, clock) {
       if (!s || e.pointerId !== s.id) return;
       const was = s;
       end();
-      if (was.phase === 'drag') { swallow = true; h.dragEnd(at(e), was.samples); }
-      else if (was.phase === 'lifted') { swallow = true; h.menu(); }
+      if (was.phase === 'drag') {
+        swallow = true;
+        const p = at(e);
+        h.dragEnd(p, [...was.samples, p]);
+      } else if (was.phase === 'lifted') { swallow = true; h.menu(); }
     },
     cancel(e) {
       if (!s || (e && e.pointerId !== s.id)) return;

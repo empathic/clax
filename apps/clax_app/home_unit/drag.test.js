@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { createPress, HOLD_MS } from '../home/drag.js';
-import { manualClock } from '../home/physics.js';
+import { manualClock, velocityOf } from '../home/physics.js';
 
 function rig() {
   const clock = manualClock();
@@ -31,13 +31,13 @@ describe('createPress', () => {
     expect(p.takeClick()).toBe(true);
   });
 
-  test('lifted, a move past 8 px drags, and the release ends the drag with the recent samples', () => {
+  test('lifted, a move past 8 px drags, and the release ends the drag with the recent samples and the release point', () => {
     const { p, ev, log, clock } = rig();
     p.down(ev(10, 10)); clock.advance(HOLD_MS);
     clock.advance(16); p.move(ev(30, 10));
     clock.advance(16); p.move(ev(50, 10));
     p.up(ev(50, 10));
-    expect(log).toEqual([['lift'], ['dragStart', '30,10'], ['dragMove', '30,10'], ['dragMove', '50,10'], ['dragEnd', '50,10', 2]]);
+    expect(log).toEqual([['lift'], ['dragStart', '30,10'], ['dragMove', '30,10'], ['dragMove', '50,10'], ['dragEnd', '50,10', 3]]);
     expect(p.takeClick()).toBe(false);
   });
 
@@ -91,5 +91,36 @@ describe('createPress and scrolling', () => {
     p.down(ev(10, 10)); p.move({ ...ev(80, 80), pointerId: 2 });
     clock.advance(HOLD_MS);
     expect(log).toEqual([['lift']]);
+  });
+});
+
+describe('createPress and the release speed', () => {
+  // A mouse drag of six 20 px moves 16 ms apart, then `stillMs` without a
+  // move, then the release: the samples the drag ends with.
+  function fling(stillMs) {
+    const clock = manualClock();
+    let ended = null;
+    const noop = () => {};
+    const p = createPress({ lift: noop, unlift: noop, menu: noop, dragStart: noop, dragMove: noop, dragCancel: noop, dragEnd: (q, s) => { ended = s; } }, clock);
+    const ev = (x) => ({ pointerId: 1, pointerType: 'mouse', button: 0, clientX: x, clientY: 0 });
+    p.down(ev(0));
+    for (let i = 1; i <= 6; i++) { clock.advance(16); p.move(ev(20 * i)); }
+    clock.advance(stillMs);
+    p.up(ev(120));
+    return ended;
+  }
+
+  test('a drag held still 500 ms before the release is not tossed', () => {
+    expect(velocityOf(fling(500))).toEqual({ vx: 0, vy: 0 });
+  });
+
+  test('a drag released while moving keeps its speed', () => {
+    expect(velocityOf(fling(0))).toEqual({ vx: 1250, vy: 0 });
+  });
+
+  test('a pause shorter than the speed window slows the release', () => {
+    const v = velocityOf(fling(40));
+    expect(v.vx).toBeGreaterThan(0);
+    expect(v.vx).toBeLessThan(1250);
   });
 });

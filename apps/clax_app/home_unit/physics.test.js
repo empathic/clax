@@ -44,4 +44,12 @@ describe('velocityOf', () => {
     const samples = [{ t: 0, x: 0, y: 0 }, { t: 100, x: 0, y: 0 }, { t: 140, x: 40, y: 0 }, { t: 180, x: 80, y: -20 }];
     expect(velocityOf(samples)).toEqual({ vx: 1000, vy: -250 });
   });
+
+  test('the newest sample is the release: still time before it counts', () => {
+    const moves = [0, 16, 32, 48, 64, 80].map((t, i) => ({ t, x: 20 * (i + 1), y: 0 }));
+    expect(velocityOf([...moves, { t: 80, x: 120, y: 0 }])).toEqual({ vx: 1250, vy: 0 });
+    expect(velocityOf([...moves, { t: 580, x: 120, y: 0 }])).toEqual({ vx: 0, vy: 0 });
+    expect(velocityOf([...moves, { t: 160, x: 120, y: 0 }])).toEqual({ vx: 0, vy: 0 });
+    expect(velocityOf([...moves, { t: 120, x: 120, y: 0 }]).vx).toBeCloseTo(40 / 0.072);
+  });
 });
