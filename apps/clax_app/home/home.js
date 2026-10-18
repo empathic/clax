@@ -633,7 +633,8 @@ function arranger(st, clock) {
   /** The slot at viewport point `p` in `section`'s grid: the index among
    * its entries (the dragged one left out) the dragged entry would take
    * there, the one whose cell, packed after the entries before it (a big
-   * app's 2×2 included), has its centre nearest the point; a 1×1 drag's
+   * app's 2×2 included, the dragged one's as it would be there), has its
+   * centre nearest the point; a 1×1 drag's
    * point is the pointer, a 2×2's the centre of the tile held under it.
    * Nearest a make's cell, the first slot. With a pile fanned out, the
    * cells past its band are a row lower, as placement draws them. */
@@ -641,7 +642,9 @@ function arranger(st, clock) {
     const grid = gridOf(section);
     const entries = sections(st.shown, st.apps)[section].filter((e) => e.key !== drag.id);
     if (!grid) return { section, index: 0 };
-    const big = section === 'all' ? bigApps(st.shown, clock.date()) : new Set();
+    // Sized as they would be with the dragged entry in this section: a
+    // starred app brought into All apps may grow there (and another shrink).
+    const big = section === 'all' ? bigApps(moveTo(st.shown, drag.id, 'all', 0), clock.date()) : new Set();
     const spanOf = (key) => (big.has(key) ? 2 : 1);
     const lead = Array.from({ length: section === 'all' ? st.makes.length : 0 }, () => ({ key: null, span: 1 }));
     const r = grid.getBoundingClientRect();

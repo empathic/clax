@@ -1352,6 +1352,20 @@ test('a starred app stays 1×1 however often it is opened', async () => {
   expect(bigs()).toEqual(['app-mood', 'app-plants']);
 });
 
+test('a starred app dragged into All apps, where it grows, takes the slot its 2×2 shows at', async () => {
+  const clock = busyClock();
+  const l = busy();
+  await show({ makes: [] }, { clock, layout: { ...l, starred: ['app-budget'], order: l.order.filter((id) => id !== 'app-budget') } });
+  await wait(() => section('starred').length === 1 && document.querySelectorAll('[data-big]').length === 2);
+  const r = document.querySelector('.h-section[data-section="all"] .h-grid').getBoundingClientRect();
+  const cellW = (r.width - 12) / 4;
+  // The centre of the 2×2 block at column 1, row 2: a 1×1 sized there
+  // would land a slot later.
+  await drag(clock, 'app-budget', { x: r.left + cellW + 2, y: r.top + 124 + 120 });
+  await wait(async () => (await stored()).order.includes('app-budget'));
+  expect((await stored()).order.indexOf('app-budget')).toBe(3);
+});
+
 test('a big tile drags to a new place and stays 2×2; an app held over it groups with it', async () => {
   const clock = busyClock();
   await show({ makes: [] }, { clock, layout: busy() });
