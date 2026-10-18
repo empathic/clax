@@ -204,6 +204,16 @@ void main() {
     expect(inflateAtMost(Uint8List.fromList([0xff, 0xff]), 10), isNull);
   });
 
+  test('a stream whose last code needs fewer bits than the longest code inflates whole', () {
+    // A fixed Huffman stream of 13 "x"s ends with bits to spare for its
+    // end-of-block code but not for a 9-bit lookahead.
+    for (final s in ['x' * 13, 'word0 word1 ']) {
+      final data = utf8.encode(s);
+      final deflated = Deflate(data).getBytes();
+      expect(inflateAtMost(Uint8List.fromList(deflated), data.length), data, reason: s);
+    }
+  });
+
   test('compression method 12 is not_a_bundle', () async {
     final z = await craft(manifestJson(_files()), _files());
     _u16(z, _central(z, 'files/index.html') + 10, 12);

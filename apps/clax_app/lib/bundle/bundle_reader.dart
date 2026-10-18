@@ -178,11 +178,16 @@ int maxDeflateBlocks(int max) => 2 + max ~/ 8192;
 /// [data], a raw deflate stream, inflated: null when it holds more than
 /// [max] bytes (inflating stops before it would pass [max], whatever any
 /// header says), more than [maxDeflateBlocks] blocks, or is not valid
-/// deflate.
+/// deflate. The stream is read with two zero bytes after it: `archive`'s
+/// decoder looks a whole longest code ahead before each code, so a stream
+/// whose last code is shorter than that would otherwise end early. A
+/// stream cut short may then read as a shorter one; the reader's size and
+/// hash checks refuse it.
 Uint8List? inflateAtMost(Uint8List data, int max) {
   final out = _CappedOutput(max);
+  final padded = Uint8List(data.length + _lookahead)..setRange(0, data.length, data);
   try {
-    final inflate = Inflate.lazy(InputMemoryStream(data), output: out);
+    final inflate = Inflate.lazy(InputMemoryStream(padded), output: out);
     var blocks = 1;
     final most = maxDeflateBlocks(max);
     while (inflate.inflateBlock()) {
@@ -195,6 +200,10 @@ Uint8List? inflateAtMost(Uint8List data, int max) {
   }
   return out.getBytes();
 }
+
+/// The bytes after a stream that cover `archive`'s lookahead of up to 15
+/// bits past its last code.
+const _lookahead = 2;
 
 class _Overflow implements Exception {}
 
