@@ -6,6 +6,16 @@ import { fakeDb } from '../assets/kit/fake-home.js';
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
+/** `db` with `onRead(n)` run after its n-th read of a document answers. */
+const racing = (db, onRead) => ({
+  ...db,
+  doc(path) {
+    const ref = db.doc(path);
+    let n = 0;
+    return { ...ref, get: async () => { const snap = await ref.get(); await onRead(++n); return snap; } };
+  },
+});
+
 describe('layoutStore', () => {
   test('loads null with no document, then each change writes the whole body', async () => {
     const db = fakeDb();
@@ -83,6 +93,54 @@ describe('layoutStore', () => {
     const s = layoutStore(db, { clock: manualClock() });
     await s.change((b) => ({ ...b, v: 1, starred: [], seen: ['a'] }));
     expect(await s.load()).toEqual({ v: 2, starred: { a: 1 }, seen: ['a'] });
+  });
+
+  test('a write landing between the read and the write is read again and the change made over it', async () => {
+    const db = fakeDb({ [LAYOUT_PATH]: { starred: [], order: ['a', 'b'] } });
+    const s = layoutStore(racing(db, (n) => { if (n === 1) db.put(LAYOUT_PATH, { starred: [], order: ['b', 'a'] }); }), { clock: manualClock() });
+    await s.change((b) => ({ ...b, starred: [...b.starred, 'a'] }));
+    expect(await s.load()).toEqual({ starred: ['a'], order: ['b', 'a'] });
+    expect(db.writes).toEqual([{ path: LAYOUT_PATH, data: { starred: ['a'], order: ['b', 'a'] } }]);
+  });
+
+  test('a body that changes on every read rejects busy after 10 tries and writes nothing', async () => {
+    const db = fakeDb({ [LAYOUT_PATH]: { n: 0 } });
+    const s = layoutStore(racing(db, (n) => db.put(LAYOUT_PATH, { n })), { clock: manualClock() });
+    await expect(s.change((b) => ({ ...b, mine: true }))).rejects.toMatchObject({ code: 'busy' });
+    expect(db.writes).toEqual([]);
+  });
+
+  test('the lease is renewed while a change runs', async () => {
+    const clock = manualClock();
+    const db = fakeDb({ [LAYOUT_PATH]: { n: 0 } }, { now: () => clock.now() });
+    let answer;
+    const slow = new Promise((r) => { answer = r; });
+    const s = layoutStore(racing(db, (n) => (n === 1 ? slow : undefined)), { clock, holder: 'the-phone' });
+    const p = s.change((b) => ({ ...b, n: b.n + 1 }));
+    for (let i = 0; i < 5; i++) { await tick(); clock.advance(1000); }
+    await tick();
+    expect((await db.doc(LAYOUT_PATH).acquire({ holder: 'the-mac', ttlMs: 2000 })).acquired).toBe(false);
+    answer();
+    await p;
+    expect(await s.load()).toEqual({ n: 1 });
+  });
+
+  test('a lease taken over during a change is waited for, then the body read again before writing', async () => {
+    const clock = manualClock();
+    const db = fakeDb({ [LAYOUT_PATH]: { order: ['a'] } }, { now: () => clock.now() });
+    const s = layoutStore(racing(db, (n) => {
+      if (n !== 1) return;
+      db.hold(LAYOUT_PATH, 'the-mac', 3000);
+      db.put(LAYOUT_PATH, { order: ['a', 'b'] });
+    }), { clock, holder: 'the-phone' });
+    let done = false;
+    const p = s.change((b) => ({ ...b, starred: ['a'] })).then(() => { done = true; });
+    await tick(); await tick();
+    expect(done).toBe(false);
+    expect(db.writes).toEqual([]);
+    for (let i = 0; i < 5 && !done; i++) { clock.advance(1000); await tick(); }
+    await p;
+    expect(await s.load()).toEqual({ order: ['a', 'b'], starred: ['a'] });
   });
 
   test('without db it keeps the layout in memory', async () => {
