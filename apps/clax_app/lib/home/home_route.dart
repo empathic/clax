@@ -192,7 +192,7 @@ class _HomeRouteState extends State<HomeRoute> {
     if (mounted && aid == _home) {
       widget.snapshot?.shown(aid, [
         for (final a in widget.host.state.apps) a.id,
-      ], widget.host.actions.open);
+      ], widget.host.openReplayed);
     }
     final load = _waiting;
     if (!mounted || load == null || aid != _shownAid) return;

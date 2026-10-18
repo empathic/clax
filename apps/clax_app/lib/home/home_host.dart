@@ -283,6 +283,7 @@ class HomeHost extends ChangeNotifier {
   final _tiles = StreamController<List<HomeTile>>.broadcast(sync: true);
   List<HomeTile>? _lastTiles;
   var _shownThisLoad = false;
+  String? _replayed;
   var _pageLoads = 0;
   var _tileReports = 0;
 
@@ -300,6 +301,14 @@ class HomeHost extends ChangeNotifier {
   /// unchanged.
   ({int loads, int tiles}) get renderMark =>
       (loads: _pageLoads, tiles: _tileReports);
+
+  /// Opens app [id] for a tap on the image of the home screen shown until
+  /// the page's `shown` call, which answers `{opened: id}` so the page
+  /// counts the open as one from the home screen.
+  void openReplayed(String id) {
+    _replayed = id;
+    actions.open(id);
+  }
 
   /// The home app's page loaded a document (its shell's `ready`): the
   /// tiles of the page before are forgotten, and tile reports count again
@@ -376,7 +385,9 @@ class HomeHost extends ChangeNotifier {
   /// as the shell sends them). Throws [HomeRefused] when [callerAid] is
   /// not the home app, and [HomeBadRequest] for a method or arguments the
   /// capability does not take. `menu` resolves the picked item's ID, or
-  /// null; every other call that opens something resolves null.
+  /// null; every other call that opens something resolves null. `shown`
+  /// resolves `{opened: id}` when its listeners opened app `id` for a tap
+  /// on the image of the home screen ([openReplayed]), else null.
   Future<Object?> call(
     String callerAid,
     String method,
@@ -417,7 +428,11 @@ class HomeHost extends ChangeNotifier {
         actions.importApp();
       case 'shown':
         _shownThisLoad = true;
+        _replayed = null;
         _shown.add(callerAid);
+        final opened = _replayed;
+        _replayed = null;
+        if (opened != null) return {'opened': opened};
       case 'tiles':
         final t = _tilesOf(args['tiles']);
         if (_shownThisLoad) {

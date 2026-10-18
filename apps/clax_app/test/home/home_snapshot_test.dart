@@ -629,9 +629,17 @@ void main() {
       await tester.tapAt(const Offset(50, 50));
       await pageOpens();
       expect(actions.opened, isEmpty);
-      await tester.runAsync(() => host.call(home, 'shown', const {}));
+      final answer = await tester.runAsync(
+        () => host.call(home, 'shown', const {}),
+      );
       await tester.pump();
       expect(actions.opened, [notes], reason: 'the kept tap, once');
+      expect(answer, {'opened': notes}, reason: 'the page counts that open');
+      expect(
+        await tester.runAsync(() => host.call(home, 'shown', const {})),
+        isNull,
+        reason: 'no kept tap, nothing opened',
+      );
       await pageOpens();
       expect(actions.opened, [notes], reason: 'within the grace');
       clock.advance(const Duration(milliseconds: 300));
