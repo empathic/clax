@@ -135,7 +135,20 @@ test("docked right by default, its edge drags and keys resize it, a double click
 test("docked left, then at the bottom, each resized by its edge and kept across a reload, holding its place before its code loads", async ({ page }) => {
   await page.setViewportSize(DESKTOP);
   const { frame } = await open(page, "left-bottom");
-  await page.getByRole("button", { name: "Dock threads left" }).click();
+  // Tab from the top bar's last control: the page first while docked right.
+  const nextAfterTopbar = async () => {
+    await page.locator(".topbar").getByRole("button").last().focus();
+    await page.keyboard.press("Tab");
+    return page.evaluate(() => (document.activeElement?.closest(".drawer") ? "drawer" : "page"));
+  };
+  expect(await nextAfterTopbar()).toBe("page");
+  const left = page.getByRole("button", { name: "Dock threads left" });
+  await left.focus();
+  await page.keyboard.press("Enter");
+  // Docked left, the threads come before the page in the page and in Tab order, and the switch keeps focus.
+  await expect(left).toBeFocused();
+  expect(await page.evaluate(() => !!(document.querySelector("div.drawer")!.compareDocumentPosition(document.querySelector(".stage")!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
+  expect(await nextAfterTopbar()).toBe("drawer");
   const viewer = await box(page.locator(".viewer"));
   expect((await box(drawer(page))).x).toBe(viewer.x);
   expect((await box(stage(page))).x).toBe(viewer.x + 392);
@@ -145,7 +158,8 @@ test("docked left, then at the bottom, each resized by its edge and kept across 
   await pinOnHeading(page, frame);
 
   await page.getByRole("button", { name: "Dock threads at the bottom" }).click();
-  const edge = page.getByRole("separator", { name: "Resize threads height" });
+  expect(await nextAfterTopbar()).toBe("page");
+  const edge =page.getByRole("separator", { name: "Resize threads height" });
   await expect(edge).toHaveAttribute("aria-orientation", "horizontal");
   let b = await box(drawer(page));
   expect([b.x, b.width, b.height]).toEqual([viewer.x, viewer.width, 280]);

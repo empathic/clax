@@ -111,6 +111,33 @@
   let stopDrag: ((cancel: boolean) => void) | null = null;
   $effect(() => () => stopDrag?.(false));
 
+  // Docked left wider than a phone, the sidebar's island (this drawer's
+  // parent, `display: contents`) goes before the stage in the page, so Tab
+  // reaches the threads before the page as the eye does; otherwise, and
+  // when the drawer unmounts, back after it. The stage, which holds the
+  // frame, never moves. Focus inside the drawer is kept across the move.
+  let root: HTMLElement | undefined = $state();
+  const wide = typeof matchMedia === "function" ? matchMedia("(min-width: 701px)") : null;
+  let isWide = $state(wide?.matches ?? true);
+  $effect(() => {
+    if (!wide) return;
+    const f = () => { isWide = wide.matches; };
+    wide.addEventListener("change", f);
+    return () => wide.removeEventListener("change", f);
+  });
+  const place = (first: boolean) => {
+    const island = root?.parentElement;
+    const stage = island?.parentElement?.querySelector<HTMLElement>(":scope > .stage");
+    if (!island?.classList.contains("island") || !stage) return;
+    if (first ? island.nextElementSibling === stage : stage.nextElementSibling === island) return;
+    const focused = island.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
+    if (first) stage.before(island);
+    else stage.after(island);
+    focused?.focus();
+  };
+  $effect(() => place(p.layout === "left" && isWide));
+  $effect(() => () => place(false));
+
   function key(e: KeyboardEvent, grip: Grip) {
     const d = keyMove(e.key, e.shiftKey, grip, p.layout);
     const m = d && measure();
@@ -143,7 +170,7 @@
     onpointerdown={e => drag(e, grip)} onkeydown={e => key(e, grip)} ondblclick={() => drawer.set(reset(p, grip))}></div>
 {/snippet}
 
-<div class="drawer">
+<div class="drawer" bind:this={root}>
   <!-- The bar moves the floating window for a pointer; its move button does for the keys. -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="drawer-bar" bind:this={bar} onpointerdown={barDown}>
