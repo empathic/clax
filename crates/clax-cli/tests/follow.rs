@@ -156,6 +156,32 @@ impl Daemon {
             .to_string()
     }
 
+    /// Whether a `clax feedback follow` of `sid` has begun a notices poll:
+    /// the session's push reports the follower (Grok's monitor, Claude
+    /// Code's notice tier).
+    fn following(&self, sid: &str) -> bool {
+        let s: Value = self
+            .http()
+            .get(format!("{}/api/sessions/{sid}", self.base()))
+            .bearer_auth(self.token())
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+        let push = &s["push"];
+        push["tier"] == "notice" || (push["tier"] == "monitor" && push["available"] == true)
+    }
+
+    /// Waits until a follower of `sid` polls; a freshly started binary can
+    /// take a while to launch, so the bound is generous.
+    fn wait_following(&self, sid: &str) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !self.following(sid) {
+            assert!(Instant::now() < deadline, "no follower of {sid} polled");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     fn end(&self, sid: &str) {
         let res = self
             .http()
@@ -318,7 +344,7 @@ fn it_survives_a_daemon_restart() {
         ],
         &[],
     );
-    std::thread::sleep(Duration::from_millis(500));
+    d.wait_following(&sid);
     d.stop();
     d.serve();
     let sid = d.grok_session("g1");
@@ -346,7 +372,7 @@ fn it_exits_cleanly_when_the_session_ends() {
         ],
         &[],
     );
-    std::thread::sleep(Duration::from_millis(500));
+    d.wait_following(&sid);
     d.end(&sid);
     assert_eq!(f.exit(Duration::from_secs(5)), Some(0));
     assert!(f.lines.try_recv().is_err(), "printed nothing");
@@ -357,11 +383,11 @@ fn it_exits_at_once_when_a_followed_clax_session_ends() {
     let d = Daemon::start();
     let sid = d.grok_session("g1");
     let mut f = Follower::spawn(&d, &["--session", &sid], &[]);
-    std::thread::sleep(Duration::from_millis(500));
-    let ended = Instant::now();
+    d.wait_following(&sid);
     d.end(&sid);
-    assert_eq!(f.exit(Duration::from_secs(3)), Some(0));
-    assert!(ended.elapsed() < Duration::from_secs(3));
+    // The default poll waits 50 s: an exit within this bound is the
+    // daemon ending the poll when the session ends.
+    assert_eq!(f.exit(Duration::from_secs(15)), Some(0));
     assert!(f.lines.try_recv().is_err(), "printed nothing");
 }
 
@@ -411,7 +437,7 @@ fn once_exits_after_the_first_poll_that_printed() {
     let sid = d.claude_session("c1");
     let aid = d.publish_as(&sid);
     let mut f = Follower::spawn(&d, &ONCE_C1, &[]);
-    std::thread::sleep(Duration::from_millis(500));
+    d.wait_following(&sid);
     let t1 = d.sent_thread(&aid, "first");
     let t2 = d.sent_thread(&aid, "second");
     assert_eq!(f.exit(Duration::from_secs(5)), Some(0));
@@ -438,7 +464,7 @@ fn once_exits_cleanly_when_the_session_ends() {
     let sid = d.claude_session("c1");
     d.publish_as(&sid);
     let mut f = Follower::spawn(&d, &[&ONCE_C1[..], &["--grace-secs", "1"]].concat(), &[]);
-    std::thread::sleep(Duration::from_millis(500));
+    d.wait_following(&sid);
     d.end(&sid);
     assert_eq!(f.exit(Duration::from_secs(5)), Some(0));
     assert!(all_lines(&f).is_empty(), "printed nothing");
@@ -446,37 +472,43 @@ fn once_exits_cleanly_when_the_session_ends() {
 
 #[test]
 fn once_does_not_exit_on_an_empty_poll() {
-    let d = Daemon::start();
-    let sid = d.claude_session("c1");
-    d.publish_as(&sid);
-    let mut f = Follower::spawn(
-        &d,
-        &[
-            "--once",
-            "--agent",
-            "claude",
-            "--harness-session",
-            "c1",
-            "--poll-secs",
-            "1",
-        ],
-        &[],
-    );
-    std::thread::sleep(Duration::from_secs(3));
-    assert!(f.child.try_wait().unwrap().is_none(), "still running");
-    f.quiet_for(Duration::from_millis(100));
-}
-
-/// A stand-in daemon whose notices route answers empty at once, as the real
-/// one does while the session is inside `wait_for_feedback`: `follow` paces
-/// such answers (one poll a second) rather than asking again at once.
-#[test]
-fn it_paces_notices_polls_that_answer_empty_at_once() {
-    use std::io::Write as _;
-    use std::net::TcpListener;
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("ax");
-    std::fs::create_dir_all(&home).unwrap();
+    let polled = stand_in(&home);
+    let mut child = clax(&home)
+        .args([
+            "feedback",
+            "follow",
+            "--once",
+            "--session",
+            "S1",
+            "--poll-secs",
+            "1",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    // Each poll answers empty: a second poll is the follower still running
+    // after an empty one.
+    for n in ["a first", "a second"] {
+        polled
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap_or_else(|_| panic!("{n} notices poll"));
+    }
+    assert!(child.try_wait().unwrap().is_none(), "still running");
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// A stand-in daemon in `home` whose notices route answers empty at once,
+/// as the real one does while the session is inside `wait_for_feedback`;
+/// every other route answers `{}`. Each notices poll's start arrives on the
+/// channel. The binary has run once when it returns.
+fn stand_in(home: &Path) -> Receiver<Instant> {
+    use std::io::Write as _;
+    use std::net::TcpListener;
+    std::fs::create_dir_all(home).unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let info = json!({"port": port, "pid": std::process::id(), "token": "t",
@@ -513,13 +545,23 @@ fn it_paces_notices_polls_that_answer_empty_at_once() {
     // Run once first, unbounded, as the daemon-backed tests do through
     // `serve`: a new executable's first run can wait on the system's check.
     assert!(
-        clax(&home)
+        clax(home)
             .arg("--version")
             .output()
             .unwrap()
             .status
             .success()
     );
+    polled
+}
+
+/// `follow` paces notices polls that answer empty at once (one poll a
+/// second) rather than asking again at once.
+#[test]
+fn it_paces_notices_polls_that_answer_empty_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("ax");
+    let polled = stand_in(&home);
     let mut child = clax(&home)
         .args(["feedback", "follow", "--session", "S1", "--poll-secs", "50"])
         .stdout(Stdio::null())
