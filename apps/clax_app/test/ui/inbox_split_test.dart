@@ -156,6 +156,28 @@ void main() {
     expect(button.onPressed, isNull, reason: 'nothing left unread');
   }, variant: _android);
 
+  testWidgets('in the 360 list pane every filter chip shows whole, also at '
+      '200% text', (tester) async {
+    for (final scale in [1.0, 2.0]) {
+      tester.platformDispatcher.textScaleFactorTestValue = scale;
+      await pumpRail(tester, 1280);
+      final list = tester.getRect(find.byKey(const ValueKey('inbox-list-pane')));
+      for (final label in ['All', 'Unread', 'Questions', 'Changes']) {
+        final chip = tester.getRect(
+          find.ancestor(of: find.text(label), matching: find.byType(FilterChip)),
+        );
+        expect(chip.left, greaterThanOrEqualTo(list.left), reason: label);
+        expect(
+          chip.right,
+          lessThanOrEqualTo(list.right),
+          reason: '$label at $scale',
+        );
+      }
+      await tester.pumpWidget(const SizedBox());
+    }
+    tester.platformDispatcher.clearTextScaleFactorTestValue();
+  }, variant: _android);
+
   testWidgets('beside the rail at 720 the inbox is one pane: a row shows its '
       'thread in the list\'s place with Back, and the platform\'s Back goes '
       'to the list, then Home', (tester) async {

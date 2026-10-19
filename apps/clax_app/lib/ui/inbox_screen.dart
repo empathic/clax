@@ -671,29 +671,43 @@ class _InboxScreenState extends State<InboxScreen> implements InboxMarking {
             ],
           ),
         ),
-        SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          padding: EdgeInsets.fromLTRB(gutter, 0, gutter, ClaxSpace.s8),
-          child: Row(
-            children: [
-              for (final f in widget.filters) ...[
-                FilterChip(
-                  label: Text(f.label),
-                  selected: _filter == f,
-                  showCheckmark: false,
-                  onSelected: (_) {
-                    if (_filter != f) _setFilter(() => _filter = f);
-                  },
-                ),
-                if (f != widget.filters.last)
-                  const SizedBox(width: ClaxSpace.s8),
+        // A screen's chips scroll sideways; a 360 list pane's wrap, so
+        // none is cut at its edge.
+        if (widget.pane)
+          Padding(
+            padding: EdgeInsets.fromLTRB(gutter, 0, gutter, ClaxSpace.s8),
+            child: Wrap(
+              spacing: ClaxSpace.s8,
+              runSpacing: ClaxSpace.s8,
+              children: [for (final f in widget.filters) _chip(f)],
+            ),
+          )
+        else
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            padding: EdgeInsets.fromLTRB(gutter, 0, gutter, ClaxSpace.s8),
+            child: Row(
+              children: [
+                for (final f in widget.filters) ...[
+                  _chip(f),
+                  if (f != widget.filters.last)
+                    const SizedBox(width: ClaxSpace.s8),
+                ],
               ],
-            ],
+            ),
           ),
-        ),
       ],
     );
   }
+
+  Widget _chip(InboxFilter f) => FilterChip(
+    label: Text(f.label),
+    selected: _filter == f,
+    showCheckmark: false,
+    onSelected: (_) {
+      if (_filter != f) _setFilter(() => _filter = f);
+    },
+  );
 
   void _commitSearch() {
     final q = _search.text.trim();
