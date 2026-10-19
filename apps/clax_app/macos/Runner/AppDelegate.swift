@@ -34,6 +34,58 @@ class AppDelegate: FlutterAppDelegate {
     super.applicationWillFinishLaunching(notification)
     installBundles()
     installMenus()
+    ClaxEngine.windows.open = { [weak self] kind in self?.openWindow(kind) ?? false }
+  }
+
+  /// The Settings and Inbox windows while they are open, by kind.
+  private var further: [String: NSWindow] = [:]
+
+  /// Makes and shows the window of [kind], a further view of the one
+  /// engine that Dart draws by its kind (`ClaxViews`): `settings`, 600
+  /// points wide, whose height Dart fits to each tab and whose toolbar is
+  /// its tabs; or `inbox`, 900×640 at first, resizable, its frame kept as
+  /// "ClaxInbox". When the window closes its view is let go of. False for
+  /// another kind.
+  private func openWindow(_ kind: String) -> Bool {
+    let settings = kind == "settings"
+    guard settings || kind == "inbox" else { return false }
+    let controller = FlutterViewController(
+      engine: ClaxEngine.shared, nibName: nil, bundle: nil)
+    controller.backgroundColor = SidebarView.background
+    let size = settings ? NSSize(width: 600, height: 420) : NSSize(width: 900, height: 640)
+    let style: NSWindow.StyleMask =
+      settings
+      ? [.titled, .closable]
+      : [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+    let window = NSWindow(
+      contentRect: NSRect(origin: .zero, size: size), styleMask: style, backing: .buffered,
+      defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentViewController = controller
+    window.setContentSize(size)
+    window.title = settings ? "Settings" : "Inbox"
+    if !settings {
+      window.titlebarAppearsTransparent = true
+      window.contentMinSize = NSSize(width: 640, height: 420)
+    }
+    let view = controller.viewIdentifier
+    ClaxEngine.toolbars.attach(window, view: view, preference: settings)
+    ClaxEngine.windows.register(
+      window, view: view, kind: kind, sidebar: nil,
+      onClose: { [weak self, weak window] in
+        ClaxEngine.toolbars.detach(view)
+        self?.further[kind] = nil
+        // After the close, so the engine lets go of the view once the
+        // window is done with it.
+        DispatchQueue.main.async { window?.contentViewController = nil }
+      })
+    further[kind] = window
+    let name = settings ? "ClaxSettings" : "ClaxInbox"
+    if !window.setFrameUsingName(name) { window.center() }
+    window.setFrameAutosaveName(name)
+    if settings { window.setContentSize(size) }
+    window.makeKeyAndOrderFront(nil)
+    return true
   }
 
   private var menuBridge: MenuBridge?
@@ -46,8 +98,8 @@ class AppDelegate: FlutterAppDelegate {
   /// `lib/ui/app_menu.dart`).
   ///
   /// Both act on a window by its Flutter view: the menu bar on the main
-  /// window's (the first window's while no window of Clax's is main),
-  /// Edit on the key window's.
+  /// window's, also while Settings or the Inbox is in front, Edit on the
+  /// key window's.
   private func installMenus() {
     guard menuBridge == nil, let menu = NSApp.mainMenu else { return }
     let messenger = ClaxEngine.shared.binaryMessenger
@@ -55,7 +107,7 @@ class AppDelegate: FlutterAppDelegate {
     let menuChannel = FlutterMethodChannel(name: "dev.empathic.clax/menu", binaryMessenger: messenger)
     let menus = MenuBridge(
       send: { menuChannel.invokeMethod($0, arguments: $1) },
-      currentView: { windows.view(of: NSApp.mainWindow) ?? windows.mainView })
+      currentView: { windows.mainView })
     menuChannel.setMethodCallHandler { call, result in
       let known = menus.handle(
         call.method, call.arguments, reply: result,

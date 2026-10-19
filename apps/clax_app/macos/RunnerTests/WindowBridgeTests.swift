@@ -168,6 +168,47 @@ final class WindowBridgeTests: XCTestCase {
     XCTAssertEqual(call("kind", 1).reply as? String, "main")
   }
 
+  func testOpenBringsAWindowOfThatKindForwardOrMakesOne() {
+    var made: [String] = []
+    bridge.open = { kind in
+      made.append(kind)
+      return kind == "settings"
+    }
+    XCTAssertEqual(call("open", ["kind": "main"]).reply as? Bool, true)
+    XCTAssertEqual(made, [], "the main window is there")
+    XCTAssertEqual(call("open", ["kind": "settings"]).reply as? Bool, true)
+    XCTAssertEqual(call("open", ["kind": "nonsense"]).reply as? Bool, false)
+    XCTAssertEqual(made, ["settings", "nonsense"])
+    let other = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 200, height: 200), styleMask: [.titled, .closable],
+      backing: .buffered, defer: false)
+    other.isReleasedWhenClosed = false
+    defer { other.close() }
+    bridge.register(other, view: 2, kind: "settings", sidebar: nil)
+    made = []
+    XCTAssertEqual(call("open", ["kind": "settings"]).reply as? Bool, true)
+    XCTAssertEqual(made, [], "one Settings window at a time")
+    XCTAssertNotNil(call("open", [:]).failed)
+    bridge.open = nil
+    XCTAssertEqual(call("open", ["kind": "inbox"]).reply as? Bool, false)
+  }
+
+  func testSetContentHeightKeepsTheWindowsTopEdge() {
+    let other = NSWindow(
+      contentRect: NSRect(x: 100, y: 100, width: 600, height: 400),
+      styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    other.isReleasedWhenClosed = false
+    defer { other.close() }
+    bridge.register(other, view: 2, kind: "settings", sidebar: nil)
+    let top = other.frame.maxY
+    XCTAssertNil(call("setContentHeight", ["view": 2, "height": 300, "animate": false]).failed)
+    XCTAssertEqual(other.contentLayoutRect.height, 300, accuracy: 0.5)
+    XCTAssertEqual(other.frame.maxY, top, accuracy: 0.5)
+    XCTAssertEqual(other.contentLayoutRect.width, 600, accuracy: 0.5)
+    XCTAssertNotNil(call("setContentHeight", ["view": 2]).failed)
+    XCTAssertNotNil(call("setContentHeight", ["view": 2, "height": -1]).failed)
+  }
+
   func testUnknownMethodsAreNotHandled() {
     XCTAssertFalse(call("nonsense", nil).known)
   }

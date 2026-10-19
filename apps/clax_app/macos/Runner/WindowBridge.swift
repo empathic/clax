@@ -8,15 +8,19 @@ import WebKit
 /// go to [handle]:
 ///
 /// - `dev.empathic.clax/windows`: `kind` {view} answers the kind of window
-///   showing the view (`main`), or nil for one no window shows. The bridge
-///   sends `focused` {view} when a window becomes key, so that Flutter's one
-///   primary focus moves into its view.
+///   showing the view (`main`, `settings` or `inbox`), or nil for one no
+///   window shows. `open` {kind} brings the window of that kind forward,
+///   making it first ([open]) when there is none, and answers whether one
+///   shows. The bridge sends `focused` {view} when a window becomes key, so
+///   that Flutter's one primary focus moves into its view.
 /// - `dev.empathic.clax/window`: `setTitle` {view, title, subtitle},
 ///   `setSidebarWidth` {view, width}, `setEscapeWanted` {view, on} and
 ///   `titlebar` {view}, which answers the window's title bar ([Titlebar]:
 ///   {top, leading}). The bridge sends `titlebar` {view, top, leading} when
 ///   it changes, and `escape` {view} for an Escape it took from a page
-///   ([escape]). `dragWindow` {view}: the left button went down on nothing
+///   ([escape]). `setContentHeight` {view, height, animate?} makes the
+///   window's content that tall, its top edge where it was (a Settings
+///   window fits each tab). `dragWindow` {view}: the left button went down on nothing
 ///   Flutter draws as a control in the window's toolbar row, so the window
 ///   follows the mouse from that press ([mouseDown]) while the button is
 ///   held; the second press of a double click does the title bar's double
@@ -56,6 +60,9 @@ final class WindowBridge: NSObject {
   private let buttonDown: () -> Bool
   /// The last left press in a window's toolbar row, until a drag takes it.
   private var press: (event: NSEvent, window: NSWindow)?
+  /// Makes and shows a window of a kind (`settings`, `inbox`) that has
+  /// none; whether it could.
+  var open: ((String) -> Bool)?
 
   init(
     chrome: @escaping (String, Any?) -> Void, windows: @escaping (String, Any?) -> Void,
@@ -168,6 +175,27 @@ final class WindowBridge: NSObject {
     case "kind":
       let id = (args as? NSNumber)?.int64Value ?? view
       reply(id.flatMap { entries[$0]?.kind })
+    case "open":
+      guard let kind = map?["kind"] as? String else {
+        fail("open takes {kind}")
+        return true
+      }
+      if let window = entries.values.first(where: { $0.kind == kind })?.window {
+        window.makeKeyAndOrderFront(nil)
+        reply(true)
+      } else {
+        reply(open?(kind) ?? false)
+      }
+    case "setContentHeight":
+      guard let view, let height = (map?["height"] as? NSNumber)?.doubleValue, height > 0 else {
+        fail("setContentHeight takes {view, height}")
+        return true
+      }
+      if let window = entries[view]?.window {
+        Self.setContentHeight(
+          window, CGFloat(height), animate: map?["animate"] as? Bool ?? true)
+      }
+      reply(nil)
     case "setTitle":
       guard let view, let title = map?["title"] as? String else {
         fail("setTitle takes {view, title, subtitle}")
@@ -209,6 +237,19 @@ final class WindowBridge: NSObject {
       return false
     }
     return true
+  }
+
+  /// Makes [window]'s content [height] points tall, no taller than its
+  /// screen allows, keeping its top edge where it is.
+  static func setContentHeight(_ window: NSWindow, _ height: CGFloat, animate: Bool) {
+    let content = window.contentLayoutRect
+    let chrome = window.frame.height - content.height
+    var h = height + chrome
+    if let screen = window.screen?.visibleFrame { h = min(h, screen.height) }
+    let frame = window.frame
+    guard abs(frame.height - h) >= 0.5 else { return }
+    let next = NSRect(x: frame.minX, y: frame.maxY - h, width: frame.width, height: h)
+    window.setFrame(next, display: true, animate: animate && window.isVisible)
   }
 
   /// Whether [event] is Escape, pressed in [window] while a page's

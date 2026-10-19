@@ -12,9 +12,12 @@ import 'window_drag.dart';
 /// The Mac app's windows (`macos/Runner/WindowBridge.swift`) over the
 /// method channel `dev.empathic.clax/windows`. Each window shows one view
 /// of the app's one Flutter engine:
-/// - `kind` {view} answers the kind of window showing that view (`main`),
-///   or null for a view no window shows: the engine's implicit view, which
-///   stays empty while the engine runs several views.
+/// - `kind` {view} answers the kind of window showing that view (`main`,
+///   `settings` or `inbox`), or null for a view no window shows: the
+///   engine's implicit view, which stays empty while the engine runs
+///   several views.
+/// - `open` {kind} brings the window of that kind forward, making it when
+///   there is none ([open]).
 /// - `focused` {view}, from the native side: that view's window became the
 ///   key window, so Flutter's one primary focus moves into that view.
 abstract final class MacWindows {
@@ -29,6 +32,17 @@ abstract final class MacWindows {
     } on MissingPluginException {
       final implicit = WidgetsBinding.instance.platformDispatcher.implicitView;
       return implicit?.viewId == view ? 'main' : null;
+    }
+  }
+
+  /// Brings the window of [kind] (`main`, `settings` or `inbox`) forward,
+  /// making it when there is none; whether one shows. False without the
+  /// native side (a test, or another platform).
+  static Future<bool> open(String kind) async {
+    try {
+      return await channel.invokeMethod<bool>('open', {'kind': kind}) ?? false;
+    } on MissingPluginException {
+      return false;
     }
   }
 
@@ -51,19 +65,44 @@ abstract final class MacWindows {
   });
 }
 
+/// What the Mac app's further windows (Settings, the Inbox) show, by kind:
+/// set by the app's root once its state is up, so every window shares its
+/// services, and read by [ClaxViews]. Each builder is given the window's
+/// view ID.
+class WindowContents extends ChangeNotifier {
+  final _builders = <String, Widget Function(int view)>{};
+
+  /// Makes [builder] what windows of [kind] show; null shows nothing.
+  void set(String kind, Widget Function(int view)? builder) {
+    if (builder == null) {
+      if (_builders.remove(kind) == null) return;
+    } else {
+      _builders[kind] = builder;
+    }
+    notifyListeners();
+  }
+
+  /// What a window of [kind] showing [view] shows; null for nothing yet.
+  Widget? build(String kind, int view) => _builders[kind]?.call(view);
+}
+
 /// The root of the Mac app, given to `runWidget`: one [View] for each
 /// window, by the kind [MacWindows.kind] names. The main window shows
-/// [main]. A view no window shows is not drawn. Content runs under the
+/// [main]; a further window (Settings, the Inbox) shows what [further]
+/// gives its kind. A view no window shows is not drawn. Content runs under the
 /// window's transparent toolbar row and is padded below it
 /// ([MacWindow.titlebar]), as a phone's is below its status bar; a screen
 /// that draws its bar in that row, beside the window buttons, finds it
 /// with [WindowTitlebar.of]. A press in the row that no control takes
 /// moves the window ([WindowRowDrag]).
 class ClaxViews extends StatefulWidget {
-  const ClaxViews({super.key, required this.main});
+  const ClaxViews({super.key, required this.main, this.further});
 
   /// The main window's content.
   final Widget main;
+
+  /// What the further windows show; none when null.
+  final WindowContents? further;
 
   @override
   State<ClaxViews> createState() => _ClaxViewsState();
@@ -107,17 +146,34 @@ class _ClaxViewsState extends State<ClaxViews> with WidgetsBindingObserver {
   }
 
   @override
-  Widget build(BuildContext context) => ViewCollection(
+  Widget build(BuildContext context) {
+    final further = widget.further;
+    if (further == null) return _views();
+    return ListenableBuilder(
+      listenable: further,
+      builder: (context, _) => _views(),
+    );
+  }
+
+  Widget _views() => ViewCollection(
     views: [
       for (final v in WidgetsBinding.instance.platformDispatcher.views)
-        if (_kinds[v.viewId] == 'main')
+        if (_content(v) case final content?)
           View(
             key: ValueKey(v.viewId),
             view: v,
-            child: _BelowTitlebar(view: v, child: widget.main),
+            child: _BelowTitlebar(view: v, child: content),
           ),
     ],
   );
+
+  /// What [v]'s window shows; null when no window shows it, or nothing is
+  /// given for its kind yet.
+  Widget? _content(FlutterView v) => switch (_kinds[v.viewId]) {
+    null => null,
+    'main' => widget.main,
+    final kind => widget.further?.build(kind, v.viewId),
+  };
 }
 
 /// [child] with the window's title bar height added to its top padding,
