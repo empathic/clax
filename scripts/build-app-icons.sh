@@ -29,7 +29,7 @@
 # `text PATH` or `png PATH SIZE`. --preview DIR renders, into DIR only, what
 # the icons look like where they are shown: the adaptive icon under several
 # launcher masks with its safe zone, the monochrome layer themed light and
-# dark, and the macOS icon light and dark at 1024 and 16 px.
+# dark, and the macOS icon light and dark at 1024, 64, 32 and 16 px.
 #
 # Works from any directory.
 set -euo pipefail
@@ -70,6 +70,18 @@ PLAY_STORE = ("apps/clax_app/icons/play-store-512.png", 512)
 # continuous corners and the standard drop shadow, the mark 560 wide.
 APPLE = {"canvas": 1024, "body": 824, "radius": 185, "mark": 560,
          "shadow": {"dy": 10, "blur": 5, "opacity": 0.3}}
+# The macOS icon's small sizes, where the 1024 design scaled down fuses the
+# dot with the arcs: px -> the mark's width on the 1024 grid and a simpler
+# geometry in the mark's viewBox, with shallower arcs set further out, a
+# heavier stroke and a bigger dot, so a gap of about 1.5 px parts each arc
+# from the dot at 16 px (and about 2 px at 32). Larger sizes draw the mark.
+SMALL_GEOMETRY = {
+    "stroke": 3,
+    "you": "M1.5 3a5.6667 5.6667 0 0 1 0 10",
+    "agent": "M20.5 3a5.6667 5.6667 0 0 0 0 10",
+    "dot": {"cx": 11, "cy": 8, "r": 2},
+}
+APPLE_SMALL = {16: dict(SMALL_GEOMETRY, mark=704), 32: dict(SMALL_GEOMETRY, mark=640)}
 # AppIcon.appiconset's slots: (points, scale); the file is app_icon_<px>.png.
 MACOS_SLOTS = [(16, 1), (16, 2), (32, 1), (32, 2), (128, 1), (128, 2),
                (256, 1), (256, 2), (512, 1), (512, 2)]
@@ -121,11 +133,16 @@ def source_hash():
 # --- The mark ---------------------------------------------------------------
 
 VW, VH = mark["viewBox"]
-DOT = mark["dot"]
-# The dot as a path: two half arcs (a vector drawable has no circle).
-DOT_D = "M%s %sa%s %s 0 1 0 %s 0a%s %s 0 1 0 %s 0" % (
-    n(DOT["cx"] - DOT["r"]), n(DOT["cy"]), n(DOT["r"]), n(DOT["r"]), n(2 * DOT["r"]),
-    n(DOT["r"]), n(DOT["r"]), n(-2 * DOT["r"]))
+
+
+def dot_d(dot):
+    """A dot as a path: two half arcs (a vector drawable has no circle)."""
+    return "M%s %sa%s %s 0 1 0 %s 0a%s %s 0 1 0 %s 0" % (
+        n(dot["cx"] - dot["r"]), n(dot["cy"]), n(dot["r"]), n(dot["r"]), n(2 * dot["r"]),
+        n(dot["r"]), n(dot["r"]), n(-2 * dot["r"]))
+
+
+DOT_D = dot_d(mark["dot"])
 
 
 def outline(d, width):
@@ -166,7 +183,11 @@ def placed(cx, cy, width):
     return cx - VW * s / 2, cy - VH * s / 2, s
 
 
-def mark_svg(cx, cy, width, pal):
+def mark_svg(cx, cy, width, pal, geometry=None):
+    """The mark `width` wide at (cx, cy) in `pal`'s colours; `geometry`
+    (stroke, you, agent, dot) replaces design/mark.json's shapes."""
+    g = geometry or {"stroke": mark["stroke"], "you": mark["you"]["d"],
+                     "agent": mark["agent"]["d"], "dot": mark["dot"]}
     tx, ty, s = placed(cx, cy, width)
     return (
         '<g transform="translate(%s %s) scale(%s)">'
@@ -174,9 +195,9 @@ def mark_svg(cx, cy, width, pal):
         '<path d="%s" fill="none" stroke="%s" stroke-width="%s" stroke-linecap="%s"/>'
         '<path d="%s" fill="%s"/></g>'
     ) % (n(tx), n(ty), n(s),
-         mark["you"]["d"], pal["you"], n(mark["stroke"]), mark["cap"],
-         mark["agent"]["d"], pal["agent"], n(mark["stroke"]), mark["cap"],
-         DOT_D, pal["dot"])
+         g["you"], pal["you"], n(g["stroke"]), mark["cap"],
+         g["agent"], pal["agent"], n(g["stroke"]), mark["cap"],
+         dot_d(g["dot"]), pal["dot"])
 
 
 def svg(view, body, size=None, defs=""):
@@ -322,7 +343,8 @@ def continuous_rect(x, y, w, h, r):
 
 
 def apple_svg(size, mode):
-    """The macOS icon on Apple's 1024 grid: the body, its shadow, the mark."""
+    """The macOS icon on Apple's 1024 grid: the body, its shadow, the mark
+    (APPLE_SMALL's at its sizes)."""
     a = APPLE
     c, b = a["canvas"], a["body"]
     o = (c - b) / 2
@@ -342,7 +364,9 @@ def apple_svg(size, mode):
     else:
         fill = color("raised", "dark")
     body = '<path d="%s" fill="%s" filter="url(#s)"/>' % (continuous_rect(o, o, b, b, a["radius"]), fill)
-    return svg((0, 0, c, c), body + mark_svg(c / 2, c / 2, a["mark"], palette(mode)), size, defs)
+    small = APPLE_SMALL.get(size)
+    width = small["mark"] if small else a["mark"]
+    return svg((0, 0, c, c), body + mark_svg(c / 2, c / 2, width, palette(mode), small), size, defs)
 
 
 def appiconset():
@@ -514,7 +538,7 @@ def preview(dest):
     for mode in ("light", "dark"):
         tint = {"you": color("agent-ink", mode), "agent": color("agent-ink", mode), "dot": color("agent-ink", mode)}
         shots["icon-mono-%s.png" % mode] = (adaptive_svg(432, "circle", color("accent-tint", mode), tint), 432)
-        for px in (1024, 16):
+        for px in (1024, 64, 32, 16):
             shots["mac-%s-%d.png" % (mode, px)] = (apple_svg(px, mode), px)
     with tempfile.TemporaryDirectory() as tmp:
         for name, (s, px) in shots.items():
