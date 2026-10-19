@@ -306,6 +306,23 @@ test("at phone width the threads are the full-screen sheet with the Page | Threa
   await expect(sheet).toHaveCount(0);
 });
 
+/** `l` is focused from the keyboard and its edge line is drawn in --focus. */
+async function expectFocusRing(page: Page, l: Locator) {
+  await expect(l).toBeFocused();
+  expect(await l.evaluate(e => e.matches(":focus-visible"))).toBe(true);
+  const focus = await page.evaluate(() => { const p = document.body.appendChild(document.createElement("i")); p.style.color = "var(--focus)"; const c = getComputedStyle(p).color; p.remove(); return c; });
+  await expect.poll(() => l.evaluate(e => getComputedStyle(e, "::after").backgroundColor)).toBe(focus);
+  await settle(page);
+}
+
+test("an edge reached from the keyboard shows its focus line in --focus", async ({ page }) => {
+  await page.setViewportSize(DESKTOP);
+  await open(page, "focus");
+  await page.getByRole("button", { name: "Hide threads" }).focus();
+  await page.keyboard.press("Tab");
+  await expectFocusRing(page, page.getByRole("separator", { name: "Resize threads width" }));
+});
+
 const SHOTS = process.env.CLAX_DRAWER_SHOTS;
 test.describe("screenshots", () => {
   test.skip(!SHOTS, "set CLAX_DRAWER_SHOTS=<dir> to photograph the drawer's layouts");
@@ -321,9 +338,21 @@ test.describe("screenshots", () => {
         await settle(page);
         await page.screenshot({ path: `${SHOTS}/${theme}-desktop-${layout}.png` });
       }
-      await page.getByRole("separator", { name: "Resize threads window width" }).focus();
-      await settle(page);
+      // Reached from the keyboard, so :focus-visible draws the edge's ring.
+      await page.getByRole("button", { name: "Hide threads" }).focus();
+      await page.keyboard.press("Tab");
+      const fw = page.getByRole("separator", { name: "Resize threads window width" });
+      await expect(fw).toBeFocused();
+      await expectFocusRing(page, fw);
       await page.screenshot({ path: `${SHOTS}/${theme}-desktop-float-focus.png` });
+      await page.keyboard.press("Tab");
+      await expectFocusRing(page, page.getByRole("separator", { name: "Resize threads window height" }));
+      await page.screenshot({ path: `${SHOTS}/${theme}-desktop-float-focus-height.png` });
+      await page.getByRole("button", { name: "Dock threads right" }).click();
+      await page.getByRole("button", { name: "Hide threads" }).focus();
+      await page.keyboard.press("Tab");
+      await expectFocusRing(page, page.getByRole("separator", { name: "Resize threads width" }));
+      await page.screenshot({ path: `${SHOTS}/${theme}-desktop-right-focus.png` });
       await page.setViewportSize({ width: 390, height: 844 });
       await page.reload();
       await page.getByRole("group", { name: "Page or threads" }).getByRole("button", { name: /^Threads/ }).click();
