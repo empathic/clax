@@ -522,6 +522,7 @@ void main() {
       'form': 'wide',
       'toolbar': true,
       'pointer': 'mouse',
+      'query': '',
     };
     expect(await host.call(home, 'chrome', {}), held);
     expect(host.chrome.toolbar, isTrue);
@@ -553,6 +554,48 @@ void main() {
         free,
       ],
     );
+  });
+
+  test('while the toolbar is held its search text is chrome()\'s query, one '
+      'event per change; the last release clears it', () async {
+    final told = <HomeEvent>[];
+    host.events.listen(told.add);
+    await pumpEventQueue();
+    told.clear();
+    // Without the toolbar there is no query to set.
+    host.setQuery('gro');
+    expect(host.query, '');
+    expect(await host.call(home, 'chrome', {}), isNot(contains('query')));
+    final a = Object();
+    host.holdToolbar(a, true);
+    host.setQuery('gro');
+    host.setQuery('gro');
+    await pumpEventQueue();
+    expect(host.query, 'gro');
+    expect(await host.call(home, 'chrome', {}), containsPair('query', 'gro'));
+    host.holdToolbar(a, false);
+    await pumpEventQueue();
+    expect(host.query, '');
+    expect(
+      [
+        for (final e in told)
+          if (e.name == 'chrome') (e.data! as Map)['query'],
+      ],
+      ['', 'gro', null],
+    );
+    // Held again, the search starts empty.
+    host.holdToolbar(a, true);
+    expect(await host.call(home, 'chrome', {}), containsPair('query', ''));
+  });
+
+  test('refresh lists the apps and counts the unread again', () async {
+    await host.load();
+    final aid = api.seedArtifact('Runs', _page);
+    expect(host.state.apps.map((a) => a.id), isNot(contains(aid)));
+    api.calls.clear();
+    await host.refresh();
+    expect(host.state.apps.map((a) => a.id), contains(aid));
+    expect(api.callNames, containsAll(['listArtifacts', 'inboxSummary']));
   });
 
   test('open, newApp and menu call the matching action', () async {

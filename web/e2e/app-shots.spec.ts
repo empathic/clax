@@ -163,6 +163,16 @@ for (const form of Object.keys(FORMS) as Form[]) {
         await take(page, "home-toolbar", form, theme);
       });
 
+      // The same, with "r" typed in the toolbar's search: the grid shows
+      // the search's results.
+      if (form === "mac") test(`home-toolbar-search ${form} ${theme}`, async ({ page }) => {
+        await page.setViewportSize({ width: 1200 - 221, height: 800 });
+        await serve(page, homeFiles(), { chrome: { platform: "macos", form: "wide", toolbar: true, pointer: "mouse", query: "r" } });
+        await expect(page.locator(".h-results")).toHaveCount(1);
+        await expect(page.locator(".h-search")).toHaveCount(0);
+        await take(page, "home-toolbar-search", form, theme);
+      });
+
       test(`home-making ${form} ${theme}`, async ({ page }) => {
         await serve(page, homeFiles(), { makes: MAKES, apps: MAKING_APPS });
         await expect(page.locator(".h-tile")).toHaveCount(MAKES.length + MAKING_APPS.length);

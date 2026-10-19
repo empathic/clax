@@ -106,6 +106,8 @@ class CommentsCommand extends ChangeNotifier {
 ///   closes. Home (⇧⌘H) closes every screen down to the grid.
 /// - Show Sidebar or Hide Sidebar (⌃⌘S) runs [toggleSidebar], while a
 ///   split window (`SplitShell`) has a sidebar to toggle.
+/// - Reload App (⌘R) runs [reload]: the home screen's Refresh while it is
+///   what the window shows.
 ///
 /// The other commands' items stay disabled. Key equivalents are the menu's,
 /// so they work while a page's WebView has the keyboard focus; Esc is the
@@ -119,6 +121,7 @@ class ClaxMenuBar extends StatefulWidget {
     this.home,
     this.settings,
     this.toggleSidebar,
+    this.reload,
     this.titles = const {},
   });
 
@@ -137,6 +140,9 @@ class ClaxMenuBar extends StatefulWidget {
 
   /// Hides or shows the split window's sidebar; null disables the item.
   final VoidCallback? toggleSidebar;
+
+  /// What View › Reload App runs; null disables the item.
+  final VoidCallback? reload;
 
   /// Titles in place of `MainMenu.xib`'s.
   final Map<ClaxCommand, String> titles;
@@ -221,6 +227,7 @@ class _ClaxMenuBarState extends State<ClaxMenuBar> {
     ClaxCommand.importApp => widget.home?.importApp,
     ClaxCommand.inbox => widget.home?.openInbox,
     ClaxCommand.toggleSidebar => widget.toggleSidebar,
+    ClaxCommand.reload => widget.reload,
     ClaxCommand.comment => widget.comments.comment,
     ClaxCommand.toggleThreads => widget.comments.toggle,
     ClaxCommand.back => _hasNavigator ? _back : null,

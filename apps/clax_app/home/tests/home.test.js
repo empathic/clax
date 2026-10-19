@@ -1335,6 +1335,31 @@ test('the search icon opens a focused field; typing filters every app, groups to
   await wait(() => !ui.exists('.h-search'));
 });
 
+test('with the window\'s toolbar, its search text (chrome\'s query) filters the grid as the page\'s own search does', async () => {
+  const toolbar = { platform: 'macos', form: 'wide', toolbar: true, pointer: 'mouse', query: '' };
+  const home = await show({ makes: [], chrome: toolbar }, { layout: groupLayout() });
+  await wait(() => ui.exists('.h-section[data-section="all"]') && !ui.exists('.h-bar'));
+  home.set({ chrome: { ...toolbar, query: 'NOT' } });
+  await wait(() => ui.exists('.h-results'));
+  expect(ui.exists('.h-section')).toBe(false);
+  // The page draws no field of its own over the toolbar's.
+  expect(ui.exists('.h-search')).toBe(false);
+  expect([...document.querySelectorAll('.h-results .h-tile[data-id]')].map((t) => t.dataset.id)).toEqual(['app-notes']);
+  expect(ui.text('.h-results [data-id="app-notes"] .h-in-group')).toBe('Lists');
+  home.set({ chrome: { ...toolbar, query: 'zzz' } });
+  await wait(() => ui.text('.h-results-empty') === 'No apps match “zzz”');
+  // Spaces alone, or an empty field, show the grid again.
+  home.set({ chrome: { ...toolbar, query: '  ' } });
+  await wait(() => !ui.exists('.h-results') && ui.exists('.h-section[data-section="all"]'));
+  // An older Clax sends no query: the grid stays.
+  home.set({ chrome: { platform: 'macos', form: 'wide', toolbar: true, pointer: 'mouse' } });
+  await wait(() => ui.exists('.h-section[data-section="all"]'));
+  // Without the toolbar its query is not the page's.
+  home.set({ chrome: { platform: 'android', form: 'phone', toolbar: false, pointer: 'touch', query: 'NOT' } });
+  await wait(() => ui.exists('.h-bar'));
+  expect(ui.exists('.h-results')).toBe(false);
+});
+
 test('no match says so; Escape closes search; Backspace in an empty field closes it, as does the close button', async () => {
   await show({ makes: [] });
   let input = await searchField();

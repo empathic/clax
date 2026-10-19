@@ -293,9 +293,11 @@ starts the person's apps. Changing it is a change like any other.
   `{id, label}` items of the page's own, shown first; it resolves the picked
   item's `id`, or `null`), `openInbox()`, `openSettings()`, `importApp()`,
   which Clax carries out (call them from a tap), `shown()`, and `chrome()`
-  (`{platform, form, toolbar, pointer}`: say "Click" for `pointer:
-  "mouse"`, "Tap" for `"touch"`; an older Clax rejects it, read that as a
-  phone by touch). `home.on(name, fn)` hears `apps`, `makes`, `unread`,
+  (`{platform, form, toolbar, pointer, query?}`: say "Click" for `pointer:
+  "mouse"`, "Tap" for `"touch"`; with `toolbar` the page draws no bar,
+  search field or New app, and searches its apps for `query`, the
+  toolbar's search text; an older Clax rejects it, read that as a phone by
+  touch). `home.on(name, fn)` hears `apps`, `makes`, `unread`,
   `key` and `chrome`, each topic's whole latest value; it returns `stop`.
   The types are `ClaxExtensions.Home` below.
 - Call `home.shown()` once per load, from an effect right after the page

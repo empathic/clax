@@ -675,6 +675,16 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
               _toolbarClicked(c.id);
             }
           }),
+        )
+        ..add(
+          MacToolbar.searches.listen((s) {
+            if (mounted &&
+                s.id == 'search' &&
+                s.view == _toolbarView &&
+                MacToolbar.owns(this, view: s.view)) {
+              widget.home?.setQuery(s.text);
+            }
+          }),
         );
     }
     _subs.add(
@@ -685,6 +695,9 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     if (widget.home case final h?) {
       _subs.add(
         h.events.listen((e) {
+          // The home app's toolbar items follow whether the window holds
+          // the toolbar for it.
+          if (e.name == 'chrome') _watchesChanged();
           if (!mounted || !_homeServed) return;
           if (_toldVisible == false) {
             // Told in one go, the latest of each, when it shows again.
@@ -934,7 +947,10 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   /// top screen and not covered (whether Clax is in front or not): Back
   /// and Forward, the app's title and version as the window's title,
   /// Location while a location watch runs (a click tells what uses it),
-  /// Comment, Threads with the open threads' count, and Share. Otherwise
+  /// Comment, Threads with the open threads' count, and Share; the home
+  /// app's, while the window holds the toolbar for it
+  /// ([HomeHost.holdToolbar]), Refresh ([HomeHost.refresh]) and a search
+  /// field whose text is its search ([HomeHost.setQuery]). Otherwise
   /// it gives the toolbar back, empty, for the screen in front to draw its
   /// own bar in the row.
   void _reportToolbar() {
@@ -963,6 +979,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     if (_toolbarView == view) _toolbarView = null;
     _titleSent = null;
     if (!MacToolbar.owns(this, view: view)) return;
+    // The search field goes with the items, and its text with it.
+    if (widget.mode == AppMode.home) widget.home?.setQuery('');
     MacToolbar.clear(this, view: view);
     unawaited(MacWindow.setTitle('Clax', view: view));
   }
@@ -1017,6 +1035,20 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
           symbol: 'square.and.arrow.up',
           label: 'Share',
         ),
+      if (widget.mode == AppMode.home &&
+          (widget.home?.chrome.toolbar ?? false)) ...const [
+        ToolbarItemSpec(
+          'refresh',
+          symbol: 'arrow.clockwise',
+          label: 'Refresh',
+        ),
+        ToolbarItemSpec(
+          'search',
+          symbol: 'magnifyingglass',
+          label: 'Search apps',
+          search: true,
+        ),
+      ],
     ];
   }
 
@@ -1038,6 +1070,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
           setState(() => _tab = PanelTab.threads);
           _setOpen(true);
         }
+      case 'refresh':
+        unawaited(widget.home?.refresh());
       case 'share':
         if (_toolbarView case final view?) {
           unawaited(widget.share?.call(context, ToolbarShareFiles(view: view)));

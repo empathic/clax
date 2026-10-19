@@ -255,6 +255,33 @@ void main() {
     );
   }, variant: _mac);
 
+  testWidgets('View › Reload App runs what it is given, as Refresh for the '
+      'home screen; without it it is disabled', (tester) async {
+    var refreshed = 0;
+    Widget bar({VoidCallback? reload}) => ClaxMenuBar(
+      comments: CommentsCommand(),
+      reload: reload,
+      titles: {ClaxCommand.reload: reload == null ? 'Reload App' : 'Refresh'},
+      child: const MaterialApp(home: Text('apps')),
+    );
+    await tester.pumpWidget(bar(reload: () => refreshed++));
+    await tester.pump();
+    expect(enabled(ClaxCommand.reload), isTrue);
+    expect(
+      menuCalls.where((c) => c.method == 'setTitle').last.arguments,
+      containsPair('title', 'Refresh'),
+    );
+    await choose(tester, ClaxCommand.reload);
+    expect(refreshed, 1);
+    await tester.pumpWidget(bar());
+    await tester.pump();
+    expect(enabled(ClaxCommand.reload), isFalse);
+    expect(
+      menuCalls.where((c) => c.method == 'setTitle').last.arguments,
+      containsPair('title', 'Reload App'),
+    );
+  }, variant: _mac);
+
   testWidgets('without the home screen’s flows New App…, Import App… and '
       'Inbox are disabled', (tester) async {
     await tester.pumpWidget(

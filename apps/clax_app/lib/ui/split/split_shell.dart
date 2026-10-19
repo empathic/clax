@@ -30,7 +30,10 @@ import 'sidebar_model.dart';
 ///   sidebar comes over it when toggled, and goes once a row is chosen.
 ///
 /// [toggleSidebar] hides and shows it, as ⌃⌘S (Control-S on Material)
-/// does. ⌘F (Control-F) shows it and puts the keyboard in its filter.
+/// does. ⌘F (Control-F) shows it and puts the keyboard in its filter;
+/// with Home selected in a Mac window whose toolbar has the home app's
+/// search item (`search`, [MacToolbar.focusSearch]), ⌘F goes there
+/// instead, since that search is the grid's.
 ///
 /// Where the window has Mac chrome ([hasDesktopWindowChrome]) the
 /// sidebar is clear over the window's sidebar material
@@ -218,6 +221,19 @@ class SplitShellState extends State<SplitShell> {
     }
   }
 
+  /// ⌘F: the toolbar's search with Home selected, when the window's
+  /// toolbar has one; the sidebar's filter otherwise.
+  Future<void> _find() async {
+    final view = _view;
+    if (hasDesktopWindowChrome &&
+        view != null &&
+        widget.model.selection is HomeSelected &&
+        await MacToolbar.focusSearch('search', view: view)) {
+      return;
+    }
+    if (mounted) _showFilter();
+  }
+
   void _showFilter() {
     setState(() {
       if (_wide) {
@@ -342,7 +358,7 @@ class SplitShellState extends State<SplitShell> {
           LogicalKeyboardKey.keyF,
           meta: apple,
           control: !apple,
-        ): _showFilter,
+        ): () => unawaited(_find()),
       },
       child: body,
     );

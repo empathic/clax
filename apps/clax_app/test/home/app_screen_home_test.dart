@@ -7,8 +7,11 @@ import 'package:clax_app/home/home_settings.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/host_protocol.dart';
+import 'package:clax_app/ui/mac/mac_toolbar.dart';
+import 'package:clax_app/ui/mac/window_channel.dart';
 import 'package:clax_app/ui/make_service.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/fake_surface.dart';
@@ -68,7 +71,11 @@ void main() {
 
   final openedApps = <String>[];
 
-  Future<FakeAppSurface> pump(WidgetTester tester, String aid) async {
+  Future<FakeAppSurface> pump(
+    WidgetTester tester,
+    String aid, {
+    AppMode mode = AppMode.app,
+  }) async {
     final surface = FakeAppSurface();
     await tester.pumpWidget(
       MaterialApp(
@@ -83,6 +90,7 @@ void main() {
           timings: const NoTimings(),
           worker: const Stream.empty(),
           home: host,
+          mode: mode,
           openApp: openedApps.add,
         ),
       ),
@@ -203,4 +211,76 @@ void main() {
     ]);
     expect(results.map((r) => r.code), ['bad_request', 'bad_request']);
   });
+
+  testWidgets(
+    'on the Mac, while the window holds the toolbar for it, the home app\'s '
+    'toolbar has Refresh and a search field whose text is chrome()\'s query',
+    (tester) async {
+      MacToolbar.reset();
+      final items = <List<Object?>>[];
+      final m = tester.binding.defaultBinaryMessenger;
+      m.setMockMethodCallHandler(MacToolbar.channel, (call) async {
+        if (call.method == 'setItems') {
+          items.add([
+            for (final i in (call.arguments as Map)['items'] as List)
+              (i as Map)['search'] == true ? 'search ${i['label']}' : i['id'],
+          ]);
+        }
+        return null;
+      });
+      m.setMockMethodCallHandler(MacWindow.channel, (_) async => null);
+      addTearDown(() {
+        m.setMockMethodCallHandler(MacToolbar.channel, null);
+        m.setMockMethodCallHandler(MacWindow.channel, null);
+      });
+      Future<void> fromToolbar(String method, Map<String, Object> args) =>
+          m.handlePlatformMessage(
+            MacToolbar.channel.name,
+            MacToolbar.channel.codec.encodeMethodCall(MethodCall(method, args)),
+            (_) {},
+          );
+
+      await pump(tester, home, mode: AppMode.home);
+      await tester.pumpAndSettle();
+      // Its own bar carries search and Refresh.
+      expect(items.last, ['back', 'forward', 'comment', 'threads']);
+
+      final split = Object();
+      host.holdToolbar(split, true);
+      await tester.pumpAndSettle();
+      expect(items.last, [
+        'back',
+        'forward',
+        'comment',
+        'threads',
+        'refresh',
+        'search Search apps',
+      ]);
+
+      final view = tester.view.viewId;
+      await fromToolbar('search', {'view': view, 'id': 'search', 'text': 'gro'});
+      await tester.pump();
+      expect(host.query, 'gro');
+      // Another window's search is that window's.
+      await fromToolbar('search', {
+        'view': view + 1,
+        'id': 'search',
+        'text': 'x',
+      });
+      await tester.pump();
+      expect(host.query, 'gro');
+
+      api.calls.clear();
+      await fromToolbar('clicked', {'view': view, 'id': 'refresh'});
+      await tester.pumpAndSettle();
+      expect(api.callNames, containsAll(['listArtifacts', 'inboxSummary']));
+
+      host.holdToolbar(split, false);
+      await tester.pump();
+      await tester.pump();
+      expect(items.last, ['back', 'forward', 'comment', 'threads']);
+      expect(host.query, '');
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+  );
 }

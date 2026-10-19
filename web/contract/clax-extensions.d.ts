@@ -355,6 +355,11 @@ declare namespace ClaxExtensions {
       /** The pointer in use: say "Click" for `mouse` (a mouse or a
        * trackpad), "Tap" for `touch`. */
       pointer: "touch" | "mouse";
+      /** With `toolbar`, the text in the toolbar's search field (`""`
+       * while it is empty): search the apps for it as for the page's own
+       * field; each change comes as a `chrome` event. Missing where the
+       * window has no toolbar search. */
+      query?: string;
     }
 
     /** What `on(name)` hears: each topic's whole latest value. */

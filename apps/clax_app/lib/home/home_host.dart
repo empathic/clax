@@ -455,8 +455,29 @@ class HomeHost extends ChangeNotifier {
     } else {
       _toolbarHolders.remove(holder);
     }
+    if (_toolbarHolders.isEmpty) _query = '';
     if (before != _toolbarHolders.isEmpty) _changed();
   }
+
+  String _query = '';
+
+  /// The text of the window's toolbar search ('' for none), which
+  /// `chrome()` gives as `query` while the toolbar is held
+  /// ([holdToolbar]); '' while it is not.
+  String get query => _query;
+
+  /// The window's toolbar search now reads [text]: the home app hears one
+  /// `chrome` event when that changes its query. Nothing changes while no
+  /// holder holds the toolbar, and the last release clears it.
+  void setQuery(String text) {
+    if (_toolbarHolders.isEmpty || text == _query) return;
+    _query = text;
+    _changed();
+  }
+
+  /// Lists the apps and counts the unread again, from the daemon (the
+  /// window's Refresh).
+  Future<void> refresh() => Future.wait([load(), loadUnread()]);
 
   /// Whether the API key is missing.
   bool get needsKey => _needsKey;
@@ -669,6 +690,7 @@ class HomeHost extends ChangeNotifier {
       'form': chrome.form,
       'toolbar': chrome.toolbar,
       'pointer': chrome.pointer,
+      if (chrome.toolbar) 'query': _query,
     },
     _ => state.needsKey,
   };

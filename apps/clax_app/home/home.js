@@ -26,7 +26,10 @@
 // search field above the grid (search.js ranks the matches): while it has
 // text, every app whose title matches, groups' included, shows in one
 // grid in their place. Enter opens the first; Escape, Backspace in the
-// empty field, its close button and back close it.
+// empty field, its close button and back close it. Under the window's own
+// toolbar (`chrome().toolbar`) the page draws no bar or field: the
+// toolbar's search field's text (`chrome().query`) filters the grid the
+// same way.
 //
 // `start()` mounts the page over the real capabilities; `mount(root, home,
 // {db, clock})` mounts it over any objects with the same calls (the tests
@@ -2163,6 +2166,9 @@ function Home({ home, db, clock }) {
   // With the window's toolbar (a split window's sidebar, menus and toolbar)
   // the page draws no bar, search or New app of its own.
   const ownBar = chrome?.toolbar !== true;
+  // There the window's toolbar search is the page's search: its text comes
+  // as chrome's query.
+  const toolbarQuery = !ownBar && typeof chrome?.query === 'string' ? chrome.query : '';
   const refresh = useCallback(
     () => Promise.all([reloadApps(), reloadMakes(), reloadUnread(), reloadKey()]),
     [reloadApps, reloadMakes, reloadUnread, reloadKey],
@@ -2362,10 +2368,11 @@ function Home({ home, db, clock }) {
       action=${html`<button type="button" class="h-filled-button" onClick=${reloadApps}>Try again</button>`} />`;
   } else if (!list) {
     body = null;
-  } else if (searching && query.trim()) {
-    const found = search(query, searchEntries(layout, list));
+  } else if ((searching && query.trim()) || toolbarQuery.trim()) {
+    const text = ownBar ? query : toolbarQuery;
+    const found = search(text, searchEntries(layout, list));
     goFirst.current = () => { if (found[0]) openApp(found[0].app); };
-    body = html`<${Results} query=${query} found=${found} layout=${layout} apps=${list} clock=${clock} onOpen=${openApp} onMenu=${menuOf} />`;
+    body = html`<${Results} query=${text} found=${found} layout=${layout} apps=${list} clock=${clock} onOpen=${openApp} onMenu=${menuOf} />`;
   } else if (!list.length && !going.length) {
     fab = false;
     body = html`<${Message} glyph="mark" title="Say what you need, and Clax makes it." hint="Like “a tracker for my runs, with a weekly total.”"

@@ -21,8 +21,9 @@
 // answers after opening it from a tap on its start-up image), else null; and
 // `home.set({apps, makes, unread, needsKey})` changes the state and calls
 // the listeners of what changed, as the app does when a make finishes or an
-// app changes; `home.set({chrome})` as the window changes form or the
-// pointer in use changes.
+// app changes; `home.set({chrome})` as the window changes form, the
+// pointer in use changes or the toolbar's search text (`chrome.query`)
+// changes.
 //
 // `menu(id, rect, {items})` checks the items as the app does (at most 4
 // `{id, label}`, labels of 1 to 32 characters; `bad_request` otherwise),

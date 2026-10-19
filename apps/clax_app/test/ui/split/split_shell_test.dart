@@ -22,6 +22,8 @@ void main() {
   late List<MethodCall> window;
   late List<MethodCall> toolbar;
   double? keptWidth;
+  // Whether the window's toolbar has a search item (focusSearch's answer).
+  var searchItem = false;
   final menus = <String>[];
   var now = DateTime.utc(2026, 10, 19, 9);
 
@@ -44,7 +46,7 @@ void main() {
     });
     m.setMockMethodCallHandler(MacToolbar.channel, (c) async {
       toolbar.add(c);
-      return null;
+      return c.method == 'focusSearch' ? searchItem : null;
     });
     addTearDown(() {
       m.setMockMethodCallHandler(MacWindow.channel, null);
@@ -176,6 +178,50 @@ void main() {
     );
     await tester.pump();
     expect(find.byType(ClaxSidebar), findsOneWidget);
+  }, variant: _mac);
+
+  testWidgets('Command-F puts the keyboard in the toolbar\'s search with Home '
+      'selected, and in the sidebar\'s filter otherwise or without one', (
+    tester,
+  ) async {
+    await pumpShell(
+      tester,
+      size: const Size(1200, 800),
+    );
+    Future<void> commandF() async {
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyF);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.meta);
+      await tester.pump();
+      await tester.pump();
+    }
+
+    bool filterFocused() => tester
+        .widget<TextField>(find.byKey(const ValueKey('sidebar-filter')))
+        .focusNode!
+        .hasFocus;
+
+    searchItem = true;
+    await tester.tap(find.text('Home'));
+    await commandF();
+    expect(sent(toolbar, 'focusSearch'), [
+      {'view': tester.view.viewId, 'id': 'search'},
+    ]);
+    expect(filterFocused(), isFalse);
+
+    // A Home with no search item in the toolbar: the filter.
+    searchItem = false;
+    await commandF();
+    expect(sent(toolbar, 'focusSearch'), hasLength(2));
+    expect(filterFocused(), isTrue);
+
+    // With an app selected, the filter, and no search is asked for.
+    searchItem = true;
+    await tester.tap(find.text('Groceries'));
+    await tester.pump();
+    await commandF();
+    expect(sent(toolbar, 'focusSearch'), hasLength(2));
+    expect(filterFocused(), isTrue);
   }, variant: _mac);
 
   testWidgets('at 700 on the Mac the sidebar is hidden until toggled, and '
