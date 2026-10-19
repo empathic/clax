@@ -198,6 +198,32 @@ void main() {
       expect(args['armMs'], isNull);
     }, variant: _mac);
 
+    testWidgets('an armed dialog sends armMs', (tester) async {
+      final fake = _FakeDialogs((_) => {'index': 0, 'suppressed': false});
+      await tester.pumpWidget(
+        _page((context) {
+          unawaited(
+            ClaxDialog.ask(
+              context,
+              title: 'Allow?',
+              actions: const [
+                ClaxDialogAction('Don’t allow'),
+                ClaxDialogAction('Allow', kind: ClaxButtonKind.primary),
+              ],
+              defaultIndex: 1,
+              arming: const ClaxArming(
+                delay: Duration(milliseconds: 500),
+                waiting: 'Allow in a moment…',
+              ),
+            ),
+          );
+        }),
+      );
+      await tester.tap(find.text('Go'));
+      await tester.pumpAndSettle();
+      expect((fake.calls.single.arguments as Map)['armMs'], 500);
+    }, variant: _mac);
+
     testWidgets('a destructive action is a warning and never the default', (
       tester,
     ) async {
