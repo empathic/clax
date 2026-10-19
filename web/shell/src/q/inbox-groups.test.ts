@@ -11,8 +11,11 @@ const board = (over: Partial<Group> = {}): Group => ({ key: "7q3k9mzx2b4t", arti
 describe("inbox groups", () => {
   it("keys an item by its artifact, and items about none together", () => {
     expect([groupKey(R), groupKey(C)]).toEqual(["7q3k9mzx2b4t", NO_ARTIFACT]);
-    const g = fromWire({ artifact: null, total: 2, unread: 1, newest_at: C.created_at, items: [C], next_cursor: null });
+    const g = fromWire({ artifact_id: null, artifact: null, total: 2, unread: 1, newest_at: C.created_at, items: [C], next_cursor: null });
     expect([g.key, groupTitle(g), groupHref(g)]).toEqual([NO_ARTIFACT, "Other", null]);
+    // A page's group whose first item names no artifact keeps the page's key.
+    const hidden = fromWire({ artifact_id: "7q3k9mzx2b4t", artifact: null, total: 1, unread: 1, newest_at: R.created_at, items: [R], next_cursor: null });
+    expect([hidden.key, groupTitle(hidden), groupHref(hidden)]).toEqual(["7q3k9mzx2b4t", "a deleted page", null]);
   });
 
   it("titles a group by its page and links it while the page has a title", () => {

@@ -285,8 +285,8 @@ export type InboxPage = { items: InboxItem[]; next_cursor: string | null; unread
  * are about (null for the group of items about none), how many match and
  * how many of those are unread, its newest match's time, its newest
  * matches, and the `before` of the rest (listed with `artifact=<ID>`, or
- * `artifact=none`). */
-export type InboxGroup = { artifact: InboxItem["artifact"]; total: number; unread: number; newest_at: string; items: InboxItem[]; next_cursor: string | null };
+ * `artifact=none`). `artifact_id` keys it: the artifact's ID, null for none. */
+export type InboxGroup = { artifact_id: string | null; artifact: InboxItem["artifact"]; total: number; unread: number; newest_at: string; items: InboxItem[]; next_cursor: string | null };
 /** One page of `GET /api/inbox?group=artifact`, newest group first. */
 export type InboxGroupPage = { groups: InboxGroup[]; next_cursor: string | null; unread: number; total?: number | "10000+" };
 /** `GET /api/inbox/summary`: open questions oldest first, the five newest unread other items. */

@@ -19,8 +19,9 @@ export type Group = { key: string; artifact: InboxItem["artifact"]; total: numbe
 /** The key of the group `i` belongs in. */
 export const groupKey = (i: Pick<InboxItem, "artifact">): string => i.artifact?.id ?? NO_ARTIFACT;
 
+/** A group as the daemon sends it, keyed by the daemon's grouping key, never by its first item's view. */
 export const fromWire = (g: InboxGroup): Group => ({
-  key: g.artifact?.id ?? NO_ARTIFACT, artifact: g.artifact, total: g.total, unread: g.unread,
+  key: g.artifact_id ?? NO_ARTIFACT, artifact: g.artifact, total: g.total, unread: g.unread,
   newestAt: g.newest_at, items: g.items, next: g.next_cursor,
 });
 

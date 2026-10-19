@@ -1088,6 +1088,9 @@ async fn group_by_artifact_counts_every_match_and_pages_each_group() {
         "Board: its publication and six replies; newest group first: {g}"
     );
     assert_eq!(groups[0]["artifact"]["title"], "Board");
+    // Each group is keyed by its artifact's ID, null for the items about none.
+    assert_eq!(groups[0]["artifact_id"], aid.as_str());
+    assert!(groups[1]["artifact_id"].is_null());
     assert_eq!(groups[0]["items"][0]["reply"]["body"], "the newest note");
     assert_eq!(groups[0]["newest_at"], groups[0]["items"][0]["created_at"]);
     assert_eq!(groups[1]["items"][0]["kind"], "question");

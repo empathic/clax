@@ -249,7 +249,8 @@ fn query_of<T>(q: Result<Query<T>, QueryRejection>) -> Result<T, ApiError> {
 /// `{groups, next_cursor, unread, total?}`: the matches grouped by the
 /// artifact they are about, one group (`artifact: null`) for those about
 /// none, newest group (by its newest match) first. Each group is
-/// `{artifact, total, unread, newest_at, items, next_cursor}`: the
+/// `{artifact_id, artifact, total, unread, newest_at, items,
+/// next_cursor}`: its key (the artifact's ID, null for none), the
 /// artifact as its items name it, how many match and how many of those are
 /// unread (every match counted, not only those listed), its newest match's
 /// time, its `rows` newest matches (default 3, 1 to 20), and the `before`
@@ -374,6 +375,7 @@ pub async fn list(
                     None => Value::Null,
                 };
                 views.push(json!({
+                    "artifact_id": g.artifact_id,
                     "artifact": artifact,
                     "total": g.total,
                     "unread": g.unread,

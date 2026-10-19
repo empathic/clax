@@ -3249,7 +3249,9 @@ cursor or body) and 404 `not_found`.
   → `{groups, next_cursor, unread, total?}`: the matches grouped by the
   artifact they are about, one group (`artifact: null`) for the items
   about none, newest group (by its newest match) first. Each group is
-  `{artifact, total, unread, newest_at, items, next_cursor}`:
+  `{artifact_id, artifact, total, unread, newest_at, items, next_cursor}`:
+  - `artifact_id` keys the group: the artifact's ID, or null for the items
+    about none.
   - `artifact` is the artifact as its items name it (`{id, title, kind,
     page_url}`), or null.
   - `total` counts every match in the group and `unread` those of them

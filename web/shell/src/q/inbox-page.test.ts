@@ -28,7 +28,7 @@ function groupsOf(items: InboxItem[], rows: number) {
   const by = new Map<string, InboxItem[]>();
   for (const i of items) by.set(i.artifact?.id ?? "none", [...(by.get(i.artifact?.id ?? "none") ?? []), i]);
   return [...by.values()].map(g => ({
-    artifact: g[0].artifact, total: g.length, unread: g.filter(i => !i.read).length, newest_at: g[0].created_at,
+    artifact_id: g[0].artifact?.id ?? null, artifact: g[0].artifact, total: g.length, unread: g.filter(i => !i.read).length, newest_at: g[0].created_at,
     items: g.slice(0, rows), next_cursor: g.length > rows ? String(g[rows - 1].seq) : null,
   }));
 }
