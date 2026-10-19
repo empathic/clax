@@ -3255,9 +3255,11 @@ mod tests {
         .unwrap();
         let seq: i64 = st
             .with_read(|c| {
-                Ok(c.query_row("SELECT seq FROM inbox_items WHERE id = 'i2'", [], |r| {
-                    r.get(0)
-                })?)
+                Ok(
+                    c.query_row("SELECT seq FROM inbox_items WHERE id = 'i2'", [], |r| {
+                        r.get(0)
+                    })?,
+                )
             })
             .unwrap();
         assert_eq!(

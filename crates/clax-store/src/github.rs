@@ -324,7 +324,11 @@ impl Store {
     ///
     /// # Errors
     /// `quota_exceeded`, naming the cap.
-    pub(super) fn check_quota_in(&self, c: &rusqlite::Connection, person: Option<&str>) -> Result<()> {
+    pub(super) fn check_quota_in(
+        &self,
+        c: &rusqlite::Connection,
+        person: Option<&str>,
+    ) -> Result<()> {
         let (Some(caps), Some(person)) = (self.member_caps(), person) else {
             return Ok(());
         };
