@@ -25,7 +25,10 @@ pub fn check_title(title: &str) -> Result<String> {
         return Err(CoreError::invalid("invalid_title", "a title is required"));
     }
     crate::publish::check_meta_text(Some(t), None, None).map_err(|e| match e {
-        CoreError::Invalid { code, .. } if code == "title_too_long" => CoreError::invalid(
+        CoreError::Invalid {
+            code: "title_too_long",
+            ..
+        } => CoreError::invalid(
             "invalid_title",
             format!("a title is at most {MAX_TITLE_CHARS} characters"),
         ),
