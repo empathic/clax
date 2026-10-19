@@ -16,8 +16,12 @@
 // (`app-comment-tab-dark-page`). Comment mode, on the phone and the Mac:
 // its bar under the page (`app-comment-bar`, and at 340 dp,
 // `app-comment-bar-narrow`), the bar while the page is slow
-// (`app-comment-waiting`), a pick's composer (`app-composer`) and a
-// composer the page opened (`app-composer-page`). The status and gesture bar stand-ins draw
+// (`app-comment-waiting`), a pick's composer (`app-composer`; on the Mac
+// a popover under the picked row) and a composer the page opened
+// (`app-composer-page`). In wide windows, Android's and the Mac's, the
+// threads pane beside the page (`app-threads-pane`), and with a pick's
+// composer too (`app-threads-composer`: heading the pane on Android, a
+// popover over the page on the Mac). The status and gesture bar stand-ins draw
 // their icons in the brightness the screen's bands ask the system for
 // (`SystemChrome.latestStyle`), not the theme's.
 import 'dart:async';
@@ -300,6 +304,37 @@ Future<void> _open(
     await s.tester.pumpWidget(const SizedBox());
     await s.tester.pump(const Duration(seconds: 5));
 }
+
+/// A pick of the page's Wednesday row, where [_PageSurface] draws it.
+const _wed = Draft(
+  key: 'p1',
+  label: '“Wed 8.0 km”',
+  quote: 'Wed  8.0 km',
+  text: '',
+  clip: DraftClip.pending,
+  at: Rect.fromLTWH(20, 110, 130, 32),
+);
+
+const _paneThreads = [
+  ThreadSummary(
+    id: 't1',
+    status: 'open',
+    summary: 'Show the weekly total under the list',
+    sent: true,
+    comments: 2,
+    version: 1,
+    label: '“Sat 12.4 km”',
+  ),
+  ThreadSummary(
+    id: 't2',
+    status: 'open',
+    summary: 'Kilometres with one decimal, please',
+    sent: false,
+    comments: 1,
+    version: 1,
+    label: 'Whole app',
+  ),
+];
 
 void main() {
   shots(
@@ -588,18 +623,53 @@ void main() {
       then: const [
         StateMsg(
           commenting: false,
-          draft: Draft(
-            key: 'p1',
-            label: '“Wed 8.0 km”',
-            quote: 'Wed  8.0 km',
-            text: '',
-            clip: DraftClip.pending,
-          ),
+          draft: _wed,
           busy: false,
         ),
       ],
     ),
     forms: const [phone, mac],
+  );
+  // The threads pane: the app's Threads action, then what the shell says.
+  Future<void> threadsOpen(
+    Shot s,
+    String name, {
+    List<HostMessage> then = const [],
+  }) async {
+    final actions = StreamController<AppAction>.broadcast(sync: true);
+    addTearDown(actions.close);
+    final surface = _PageSurface();
+    await _open(
+      s,
+      name,
+      surface,
+      const ChromeMsg(_blue, Colors.white),
+      status: Brightness.light,
+      navigation: Brightness.dark,
+      actions: actions.stream,
+      bands: false,
+      after: () async {
+        surface.push(const ThreadsMsg(_paneThreads));
+        actions.add(AppAction.threads);
+        await s.settle();
+        then.forEach(surface.push);
+      },
+    );
+  }
+
+  shots(
+    'app-threads-pane',
+    (s) => threadsOpen(s, 'app-threads-pane'),
+    forms: const [wide, mac],
+  );
+  shots(
+    'app-threads-composer',
+    (s) => threadsOpen(
+      s,
+      'app-threads-composer',
+      then: const [StateMsg(commenting: false, draft: _wed, busy: false)],
+    ),
+    forms: const [wide, mac],
   );
   shots(
     'app-composer-page',

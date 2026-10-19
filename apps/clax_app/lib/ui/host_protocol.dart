@@ -7,7 +7,7 @@ library;
 import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
-import 'dart:ui' show Color;
+import 'dart:ui' show Color, Rect;
 
 /// A message from the shell, posted as JSON on the `ClaxHost` channel.
 sealed class HostMessage {
@@ -167,6 +167,7 @@ final class Draft {
     this.kind = 'element',
     this.quote,
     this.byPage = false,
+    this.at,
   });
 
   factory Draft.fromJson(Map<String, Object?> j) => Draft(
@@ -175,6 +176,7 @@ final class Draft {
     label: j['label'] as String,
     quote: j['quote'] as String?,
     byPage: j['byPage'] as bool? ?? false,
+    at: _rectOf(j['at']),
     text: j['text'] as String,
     clip: switch (j['clip']) {
       'pending' => DraftClip.pending,
@@ -208,8 +210,27 @@ final class Draft {
   /// own words.
   final bool byPage;
 
+  /// Where the viewer's pick is in the WebView, in logical pixels from its
+  /// top left, as the page reported it at the pick; null for a composer
+  /// the page opened, one on the whole app, or a page that did not say.
+  final Rect? at;
+
   /// Whether this is a comment on the whole app.
   bool get wholeApp => kind == 'artifact';
+
+  /// [v] as a rectangle {x, y, w, h} of finite numbers with no negative
+  /// size, else null.
+  static Rect? _rectOf(Object? v) {
+    if (v case {
+      'x': final num x,
+      'y': final num y,
+      'w': final num w,
+      'h': final num h,
+    } when [x, y, w, h].every((n) => n.isFinite) && w >= 0 && h >= 0) {
+      return Rect.fromLTWH(x.toDouble(), y.toDouble(), w.toDouble(), h.toDouble());
+    }
+    return null;
+  }
 }
 
 /// The screenshot of open composer [key] (a PNG), posted once for each

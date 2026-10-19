@@ -10,10 +10,14 @@ import 'theme.dart';
 /// The panel's tabs.
 enum PanelTab { threads, versions }
 
-/// The threads and versions panel over an app. While the app's composer
-/// is open on a wide screen ([composer]) it heads the side panel, above
-/// the threads; on a narrow one the screen shows the composer instead of
-/// the panel.
+/// The threads and versions panel over an app: a pane beside the page at
+/// `ClaxWidth.expanded` and up ([wide]; the screen sizes it, 320 wide by
+/// default, its edge resizing it within `ClaxLayout.threadsPaneMin` and
+/// `threadsPaneMax`), a lower panel below that. While the app's composer
+/// is open ([composer]) it heads the pane, above the threads, in the
+/// Material family; the Apple family's composer is a popover over the
+/// page instead, and on a narrow Material screen the composer docks in
+/// the panel's place.
 class AppPanel extends StatelessWidget {
   const AppPanel({
     super.key,

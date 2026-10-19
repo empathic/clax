@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:ui' show Color;
+import 'dart:ui' show Color, Rect;
 
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -102,6 +102,15 @@ void main() {
         '{"type":"state","commenting":false,"draft":{"key":"g","kind":"custom","label":"Rate this","quote":null,"text":"","clip":"none","byPage":true},"busy":false}',
       ) as StateMsg;
       expect(byPage.draft!.byPage, isTrue);
+      expect(byPage.draft!.at, isNull);
+      Rect? at(String json) => (HostMessage.parse(
+        '{"type":"state","commenting":false,"draft":{"label":"x","text":"","clip":"none","at":$json},"busy":false}',
+      ) as StateMsg).draft!.at;
+      expect(at('{"x":10,"y":20.5,"w":300,"h":40}'), const Rect.fromLTWH(10, 20.5, 300, 40));
+      // Anything else is no place.
+      expect(at('{"x":10,"y":20,"w":-1,"h":40}'), isNull);
+      expect(at('{"x":10,"y":20,"w":1}'), isNull);
+      expect(at('"here"'), isNull);
       expect(
         HostMessage.parse(
           '{"type":"state","commenting":false,"draft":{"label":"x","text":"","clip":"none","byPage":"yes"},"busy":false}',

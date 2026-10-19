@@ -1,6 +1,5 @@
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'host_protocol.dart';
 import 'kit/text_field.dart';
@@ -294,7 +293,9 @@ class SnippetCard extends StatelessWidget {
 ///
 /// Send is enabled with some text while nothing is being sent ([sending]);
 /// it reads "Sending…" while the shell posts, which waits for a
-/// screenshot still being taken.
+/// screenshot still being taken. With [returnSends] (the Mac's popover)
+/// Return in the field is Send and ⇧Return starts a new line; while an
+/// input method is composing, Return is the input method's.
 class CommentComposer extends StatelessWidget {
   const CommentComposer({
     super.key,
@@ -312,9 +313,13 @@ class CommentComposer extends StatelessWidget {
     this.compact = false,
     this.bottomInset = 0,
     this.appIcon,
+    this.returnSends = false,
   });
 
   final Draft draft;
+
+  /// Whether Return in the field sends, and ⇧Return starts a new line.
+  final bool returnSends;
   final Uint8List? clip;
 
   /// The app's icon, for a composer its page opened ([SnippetCard]).
@@ -387,7 +392,7 @@ class CommentComposer extends StatelessWidget {
               ),
               const SizedBox(width: 8),
               Expanded(
-                child: ClaxTextField(
+                child: _keys(ClaxTextField(
                   key: const ValueKey('composer-field'),
                   controller: controller,
                   focusNode: focusNode,
@@ -397,7 +402,7 @@ class CommentComposer extends StatelessWidget {
                   keyboardType: TextInputType.multiline,
                   textCapitalization: TextCapitalization.sentences,
                   hint: x.listening ? 'Listening…' : 'What should change?',
-                ),
+                )),
               ),
             ],
           ),
@@ -440,6 +445,39 @@ class CommentComposer extends StatelessWidget {
           : null,
       clipBehavior: docked ? Clip.antiAlias : Clip.none,
       child: body,
+    );
+  }
+
+  /// [field] with Return as Send and ⇧Return as a new line, when
+  /// [returnSends].
+  Widget _keys(Widget field) {
+    if (!returnSends) return field;
+    return Focus(
+      canRequestFocus: false,
+      skipTraversal: true,
+      onKeyEvent: (node, e) {
+        if (e is! KeyDownEvent && e is! KeyRepeatEvent) {
+          return KeyEventResult.ignored;
+        }
+        if (e.logicalKey != LogicalKeyboardKey.enter &&
+            e.logicalKey != LogicalKeyboardKey.numpadEnter) {
+          return KeyEventResult.ignored;
+        }
+        final value = controller.value;
+        if (value.composing.isValid && !value.composing.isCollapsed) {
+          return KeyEventResult.ignored;
+        }
+        if (HardwareKeyboard.instance.isShiftPressed) {
+          final sel = value.selection.isValid
+              ? value.selection
+              : TextSelection.collapsed(offset: value.text.length);
+          controller.value = value.replaced(sel, '\n');
+        } else if (value.text.trim().isNotEmpty && !sending) {
+          onSend();
+        }
+        return KeyEventResult.handled;
+      },
+      child: field,
     );
   }
 

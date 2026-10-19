@@ -263,6 +263,7 @@ class AppScreen extends StatefulWidget {
     this.onRallied,
     this.onDictateChanged,
     this.onCommentTabMoved,
+    this.onThreadsWidth,
     this.onRetry,
     this.onStop,
     this.onCancelThread,
@@ -363,6 +364,10 @@ class AppScreen extends StatefulWidget {
   /// The Comment tab was moved to this fraction of the height, for the
   /// caller to keep in [AppSettings.commentTabAt].
   final ValueChanged<double>? onCommentTabMoved;
+
+  /// The threads pane's edge was dragged to this width, for the caller to
+  /// keep in [AppSettings.threadsWidth].
+  final ValueChanged<double>? onThreadsWidth;
 
   /// Runs the failed change of thread `tid` of app `aid` again, posting
   /// nothing, and answers whether a change was queued; null when the app
@@ -503,8 +508,9 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   int? _newer;
   int? _newerShown;
 
-  // The panel.
+  // The panel, and its width as a pane beside the page.
   var _open = false;
+  late double _paneWidth = _clampPane(widget.settings.threadsWidth);
   var _tab = PanelTab.threads;
   ArtifactDetail? _detail;
   String? _detailError;
@@ -1195,7 +1201,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
             _shellText = '';
             _text.clear();
           }
-          if (picked && !_open) {
+          // The panel shows the composer, unless it pops over the page.
+          if (picked && !_open && !_popsOver) {
             _open = true;
             _peekFromBar = _bar;
           }
@@ -2276,6 +2283,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     required bool docked,
     bool compact = false,
     double bottom = 0,
+    bool returnSends = false,
   }) => CommentComposer(
     draft: _draft!,
     clip: _clip,
@@ -2294,6 +2302,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     docked: docked,
     compact: compact,
     bottomInset: bottom,
+    returnSends: returnSends,
   );
 
   // --- the view ---
@@ -2332,30 +2341,34 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       resizeToAvoidBottomInset: !composing,
       body: LayoutBuilder(
         builder: (context, box) {
-          final wide =
-              ClaxWidth.fromWidth(box.maxWidth) >= ClaxWidth.expanded;
+          _width = box.maxWidth;
+          final size = ClaxWidth.fromWidth(box.maxWidth);
+          final wide = size >= ClaxWidth.expanded;
+          // The Apple family's composer is a popover at the pick, over the
+          // page, from medium up.
+          final pop = composing && _popsOver;
           final bottomInset = MediaQuery.paddingOf(context).bottom;
           final keyboard = MediaQuery.viewInsetsOf(context).bottom;
-          final shown = _open || composing;
+          final shown = _open || (composing && !pop);
           final double extent = !shown
               ? 0
               : wide
-              ? 360
-              : composing
+              ? _paneWidth
+              : composing && !pop
               ? AppPanel.peekHeight + bottomInset
               : box.maxHeight * 0.45;
-          final flex = Flex(
+          Widget flex = Flex(
             direction: wide ? Axis.horizontal : Axis.vertical,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Expanded(child: _page(context, wide)),
+              Expanded(child: _page(context, wide, pop: pop)),
               SizedBox(
                 width: wide ? extent : null,
                 height: wide ? null : extent,
                 child: !shown
                     ? null
-                    : wide || !composing
-                    ? _panel(wide)
+                    : wide || !composing || pop
+                    ? _panel(wide, composer: !pop)
                     : ColoredBox(
                         color: Theme.of(context)
                             .colorScheme
@@ -2364,7 +2377,34 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
               ),
             ],
           );
-          if (!composing || wide) return flex;
+          if (wide && shown) {
+            flex = Stack(
+              fit: StackFit.expand,
+              children: [
+                flex,
+                // The pane's edge resizes it.
+                Positioned(
+                  right: extent - 3,
+                  width: 7,
+                  top: 0,
+                  bottom: 0,
+                  child: MouseRegion(
+                    cursor: SystemMouseCursors.resizeColumn,
+                    child: GestureDetector(
+                      key: const ValueKey('threads-pane-edge'),
+                      behavior: HitTestBehavior.opaque,
+                      onHorizontalDragUpdate: (d) => setState(
+                        () => _paneWidth = _clampPane(_paneWidth - d.delta.dx),
+                      ),
+                      onHorizontalDragEnd: (_) =>
+                          widget.onThreadsWidth?.call(_paneWidth),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          }
+          if (!composing || wide || pop) return flex;
           // On a narrow screen the composer is docked at the bottom, over
           // the page's lower edge, and above the keyboard while it is up.
           final top = MediaQuery.paddingOf(context).top;
@@ -2443,7 +2483,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     ),
   );
 
-  Widget _page(BuildContext context, bool wide) {
+  Widget _page(BuildContext context, bool wide, {bool pop = false}) {
     final scheme = Theme.of(context).colorScheme;
     final bar = _bar && !_open && _draft == null && !_covered && !_gone;
     final shown = _open || _draft != null;
@@ -2474,7 +2514,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
                           SafeArea(
                             bottom: holdsBottom,
                             right: !shown || !wide,
-                            child: _pageStack(context),
+                            child: _pageStack(context, pop: pop),
                           ),
                           _top(context, watches),
                         ],
@@ -2614,7 +2654,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     );
   }
 
-  Widget _pageStack(BuildContext context) => Stack(
+  Widget _pageStack(BuildContext context, {bool pop = false}) => Stack(
     fit: StackFit.expand,
     children: [
       Listener(
@@ -2680,8 +2720,49 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
             },
           ),
         ),
+      if (pop && _draft != null) _composerPopover(context, _draft!),
     ],
   );
+
+  /// The screen's width at its last layout.
+  double _width = 0;
+
+  /// Whether a composer pops over the page at the pick (the Apple family
+  /// from [ClaxWidth.medium]) rather than heading the panel or docking at
+  /// the bottom.
+  bool get _popsOver =>
+      ClaxFamily.of(context) == ClaxFamily.apple &&
+      ClaxWidth.fromWidth(_width) >= ClaxWidth.medium;
+
+  /// The width a pane's edge may take it to.
+  static double _clampPane(double w) => w
+      .clamp(ClaxLayout.threadsPaneMin, ClaxLayout.threadsPaneMax)
+      .toDouble();
+
+  /// The composer as a popover over the page ([ComposerPopoverLayout]):
+  /// at [draft]'s pick, else at the page's top.
+  Widget _composerPopover(BuildContext context, Draft draft) {
+    final p = claxPalette(context);
+    return Positioned.fill(
+      child: CustomSingleChildLayout(
+        delegate: ComposerPopoverLayout(draft.at),
+        child: Material(
+          key: const ValueKey('composer-popover'),
+          color: Theme.of(context).colorScheme.surfaceContainerLow,
+          elevation: 8,
+          shadowColor: Colors.black.withValues(alpha: 0.4),
+          shape: RoundedRectangleBorder(
+            side: BorderSide(color: p.border),
+            borderRadius: BorderRadius.circular(ClaxRadius.md),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: SingleChildScrollView(
+            child: _composer(docked: false, returnSends: true),
+          ),
+        ),
+      ),
+    );
+  }
 
   /// Over the page's top, 8 dp under the status bar and inside the side
   /// insets: the first-run hint across, and the Clax pill at the right
@@ -2823,14 +2904,14 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
           _noticeDismissed ||
           widget.settings.showCommentTab);
 
-  Widget _panel(bool wide) => KeyedSubtree(
+  Widget _panel(bool wide, {bool composer = true}) => KeyedSubtree(
     key: const ValueKey('app-panel'),
     child: AppPanel(
       wide: wide,
       tab: _tab,
       onTab: (t) => setState(() => _tab = t),
       onClose: () => _setOpen(false),
-      composer: _draft == null ? null : _composer(docked: false),
+      composer: _draft == null || !composer ? null : _composer(docked: false),
       clipOf: _clipOf,
       threads: _threads,
       onThread: _openThread,
@@ -2847,6 +2928,57 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       ),
     ),
   );
+}
+
+/// Places the composer's popover in the page ([ComposerPopoverLayout.at]
+/// is the pick, in the page's coordinates): [width] wide (less where the
+/// page is narrower), under the pick when it fits there, else above it,
+/// else as low as the page allows; centred on the pick and kept [margin]
+/// inside the page. Without a pick it sits at the page's top, centred.
+class ComposerPopoverLayout extends SingleChildLayoutDelegate {
+  const ComposerPopoverLayout(this.at, {this.width = 360, this.margin = 8});
+
+  final Rect? at;
+  final double width, margin;
+
+  @override
+  BoxConstraints getConstraintsForChild(BoxConstraints constraints) {
+    final w = (constraints.maxWidth - 2 * margin).clamp(0.0, width);
+    return BoxConstraints(
+      minWidth: w,
+      maxWidth: w,
+      maxHeight: (constraints.maxHeight - 2 * margin).clamp(
+        0.0,
+        double.infinity,
+      ),
+    );
+  }
+
+  @override
+  Offset getPositionForChild(Size size, Size childSize) {
+    final a = at;
+    double clampX(double x) =>
+        x.clamp(margin, (size.width - margin - childSize.width).clamp(margin, double.infinity));
+    if (a == null) {
+      return Offset(clampX((size.width - childSize.width) / 2), margin);
+    }
+    final x = clampX(a.center.dx - childSize.width / 2);
+    final below = a.bottom + margin;
+    final above = a.top - margin - childSize.height;
+    final double y;
+    if (below + childSize.height <= size.height - margin) {
+      y = below;
+    } else if (above >= margin) {
+      y = above;
+    } else {
+      y = (size.height - margin - childSize.height).clamp(margin, double.infinity);
+    }
+    return Offset(x, y);
+  }
+
+  @override
+  bool shouldRelayout(ComposerPopoverLayout old) =>
+      old.at != at || old.width != width || old.margin != margin;
 }
 
 /// A notifier the screen fires on each of its rebuilds.

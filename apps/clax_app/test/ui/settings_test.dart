@@ -207,6 +207,22 @@ void main() {
       }
     });
 
+    test("the threads pane's width round trips; one outside 280 to 420 is "
+        'the default', () async {
+      final store = SettingsStore(file);
+      expect((await store.load()).threadsWidth, 320);
+      await store.save(AppSettings(threadsWidth: 380));
+      expect(
+        jsonDecode(file.readAsStringSync()),
+        containsPair('threads_width', 380.0),
+      );
+      expect((await store.load()).copy().threadsWidth, 380);
+      for (final bad in [200, 500, 'wide']) {
+        file.writeAsStringSync(jsonEncode({'threads_width': bad}));
+        expect((await store.load()).threadsWidth, 320, reason: '$bad');
+      }
+    });
+
     test('last is the defaults, then what was last loaded or saved', () async {
       final store = SettingsStore(file);
       expect(store.last.dictationCues, isTrue);

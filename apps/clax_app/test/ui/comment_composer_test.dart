@@ -8,6 +8,7 @@ import 'package:clax_app/ui/kit/text_field.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// A 1 x 1 PNG.
@@ -57,6 +58,7 @@ void main() {
     bool plan = false,
     bool sending = false,
     Widget? appIcon,
+    bool returnSends = false,
   }) async {
     tester.view.devicePixelRatio = 3;
     tester.view.physicalSize = Size(width, 700) * 3;
@@ -81,6 +83,7 @@ void main() {
                 onCancel: () => pressed.add('cancel'),
                 onAddToPlan: plan ? () => pressed.add('plan') : null,
                 appIcon: appIcon,
+                returnSends: returnSends,
               ),
             ),
           ),
@@ -89,6 +92,38 @@ void main() {
     );
     await tester.pump();
   }
+
+  testWidgets('with returnSends Return sends some text, never none, and is '
+      'the input method\'s while it composes; without it Return sends '
+      'nothing', (tester) async {
+    await pump(tester, _element, returnSends: true);
+    await tester.tap(find.byKey(const ValueKey('composer-field')));
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    expect(pressed, isEmpty, reason: 'no text');
+    text.value = const TextEditingValue(
+      text: 'にほん',
+      selection: TextSelection.collapsed(offset: 3),
+      composing: TextRange(start: 0, end: 3),
+    );
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    expect(pressed, isEmpty, reason: 'composing');
+    text.value = const TextEditingValue(
+      text: 'bigger',
+      selection: TextSelection.collapsed(offset: 6),
+    );
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    expect(pressed, ['send']);
+
+    pressed.clear();
+    await pump(tester, _element);
+    await tester.tap(find.byKey(const ValueKey('composer-field')));
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    expect(pressed, isEmpty);
+  });
 
   test("pngSize reads a PNG's header, and nothing else", () {
     expect(pngSize(_png), const Size(1, 1));

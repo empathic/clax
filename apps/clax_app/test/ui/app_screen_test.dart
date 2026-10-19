@@ -193,6 +193,7 @@ void main() {
     bool developer = false,
     Future<void> Function(BuildContext, BundleFiles)? share,
     VoidCallback? leave,
+    ValueChanged<double>? onThreadsWidth,
   }) async {
     phone(tester, size: size);
     final (api, aid) = await (seed ?? _seeded)();
@@ -231,6 +232,7 @@ void main() {
       initialComment: initialComment,
       share: share,
       leave: leave,
+      onThreadsWidth: onThreadsWidth,
     );
     await tester.pumpWidget(
       MaterialApp(
@@ -423,18 +425,157 @@ void main() {
     },
   );
 
-  testWidgets('on a wide screen the panel is a 360 px side panel', (
-    tester,
-  ) async {
-    final rig = await pumpScreen(tester, size: const Size(1200, 800));
+  testWidgets(
+    'at expanded widths the panel is a 320 pane beside the page, which its '
+    'edge resizes within 280 to 420 and keeps',
+    (tester) async {
+      final kept = <double>[];
+      final rig = await pumpScreen(
+        tester,
+        size: const Size(1280, 800),
+        onThreadsWidth: kept.add,
+      );
+      rig.surface.push(rig.ready());
+      await openPanel(tester);
+      final pane = find.byKey(const ValueKey('app-panel'));
+      final page = find.byKey(const ValueKey('fake-surface'));
+      expect(tester.getRect(pane).width, 320);
+      expect(tester.getRect(pane).right, 1280);
+      expect(tester.getRect(page).right, closeTo(tester.getRect(pane).left, 0.01));
+      final edge = find.byKey(const ValueKey('threads-pane-edge'));
+      await tester.drag(edge, const Offset(-200, 0));
+      await tester.pumpAndSettle();
+      expect(tester.getRect(pane).width, 420);
+      expect(tester.getRect(page).right, closeTo(tester.getRect(pane).left, 0.01));
+      await tester.drag(edge, const Offset(300, 0));
+      await tester.pumpAndSettle();
+      expect(tester.getRect(pane).width, 280);
+      expect(kept, [420, 280]);
+      // Closed before the test's platform goes, so the window's Escape is
+      // given back.
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(pane, findsNothing);
+    },
+    variant: TargetPlatformVariant({TargetPlatform.android, TargetPlatform.macOS}),
+  );
+
+  testWidgets('the pane opens at the width the settings keep', (tester) async {
+    final rig = await pumpScreen(
+      tester,
+      size: const Size(1280, 800),
+      settings: AppSettings(threadsWidth: 400),
+    );
     rig.surface.push(rig.ready());
     await openPanel(tester);
-    final panel = tester.getRect(find.byKey(const ValueKey('app-panel')));
-    expect(panel.width, 360);
-    expect(panel.right, 1200);
-    final page = tester.getRect(find.byKey(const ValueKey('fake-surface')));
-    expect(page.right, closeTo(panel.left, 0.01));
+    expect(tester.getRect(find.byKey(const ValueKey('app-panel'))).width, 400);
   });
+
+  testWidgets(
+    'on the Mac at 1200 the composer is a 360 popover under the pick, over '
+    'the page; Return sends and Shift-Return starts a new line',
+    (tester) async {
+      final rig = await pumpScreen(
+        tester,
+        size: const Size(1200, 800),
+        settings: AppSettings(dictateComments: false),
+      );
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      rig.surface.push(
+        const StateMsg(
+          commenting: false,
+          draft: Draft(
+            label: 'h1',
+            text: '',
+            clip: DraftClip.pending,
+            at: Rect.fromLTWH(100, 200, 300, 40),
+          ),
+          busy: false,
+        ),
+      );
+      await tester.pumpAndSettle();
+      final page = tester.getRect(find.byKey(const ValueKey('fake-surface')));
+      final pop = find.byKey(const ValueKey('composer-popover'));
+      expect(pop, findsOneWidget);
+      expect(find.byKey(const ValueKey('app-panel')), findsNothing);
+      expect(find.byKey(const ValueKey('composer-sheet')), findsNothing);
+      final box = tester.getRect(pop);
+      expect(box.width, 360);
+      // Under the pick, centred on it.
+      expect(box.top, page.top + 240 + 8);
+      expect(box.center.dx, closeTo(page.left + 250, 0.01));
+      // The page keeps its size.
+      expect(page.width, 1200);
+
+      final field = find.byKey(const ValueKey('composer-field'));
+      await tester.tap(field);
+      await tester.enterText(field, 'make it');
+      await tester.pump();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shift);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shift);
+      await tester.pump();
+      final text = tester
+          .widget<EditableText>(
+            find.descendant(of: field, matching: find.byType(EditableText)),
+          )
+          .controller;
+      expect(text.text, 'make it\n');
+      expect(
+        rig.surface.js.where((j) => j.contains('submitDraft')),
+        isEmpty,
+      );
+      text.text = 'make it blue';
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(
+        rig.surface.js.last,
+        'window.claxHost?.submitDraft({text:"make it blue"})',
+      );
+      // Closed before the test's platform goes, so the window's Escape is
+      // given back.
+      rig.surface.push(_Rig.noDraft);
+      await tester.pumpAndSettle();
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+  );
+
+  testWidgets(
+    'the popover goes above a pick near the page\'s bottom, stays inside the '
+    'page, and sits at the top without a pick',
+    (tester) async {
+      final rig = await pumpScreen(
+        tester,
+        size: const Size(1200, 800),
+        settings: AppSettings(dictateComments: false),
+      );
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      StateMsg at(Rect? r) => StateMsg(
+        commenting: false,
+        draft: Draft(label: 'h1', text: '', clip: DraftClip.pending, at: r),
+        busy: false,
+      );
+      rig.surface.push(at(const Rect.fromLTWH(1100, 740, 80, 30)));
+      await tester.pumpAndSettle();
+      final page = tester.getRect(find.byKey(const ValueKey('fake-surface')));
+      var box = tester.getRect(find.byKey(const ValueKey('composer-popover')));
+      expect(box.bottom, page.top + 740 - 8);
+      expect(box.right, page.right - 8);
+      rig.surface.push(_Rig.noDraft);
+      await tester.pumpAndSettle();
+      rig.surface.push(at(null));
+      await tester.pumpAndSettle();
+      box = tester.getRect(find.byKey(const ValueKey('composer-popover')));
+      expect(box.top, page.top + 8);
+      expect(box.center.dx, closeTo(page.center.dx, 0.01));
+      rig.surface.push(_Rig.noDraft);
+      await tester.pumpAndSettle();
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+  );
 
   testWidgets(
     "a pick docks the app's composer and dictates into its field; its Send sends the text; the timing waits for Send",

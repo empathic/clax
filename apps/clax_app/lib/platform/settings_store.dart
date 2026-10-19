@@ -48,6 +48,7 @@ class AppSettings {
     this.showCommentTab = false,
     this.commentTabAt = 0.62,
     this.sidebarWidth = 220,
+    this.threadsWidth = 320,
   }) : model = model ?? defaultModel,
        authorName = cleanAuthorName(authorName),
        rallied = rallied ?? [];
@@ -106,6 +107,11 @@ class AppSettings {
   /// (`ClaxLayout.sidebarMin` to `sidebarMax`); the person drags its edge.
   double sidebarWidth;
 
+  /// The threads pane's width beside an app at expanded widths, in logical
+  /// pixels, from 280 to 420 (`ClaxLayout.threadsPaneMin` to
+  /// `threadsPaneMax`); the person drags its edge.
+  double threadsWidth;
+
   AppSettings copy() => AppSettings(
     backend: backend,
     model: model,
@@ -120,6 +126,7 @@ class AppSettings {
     showCommentTab: showCommentTab,
     commentTabAt: commentTabAt,
     sidebarWidth: sidebarWidth,
+    threadsWidth: threadsWidth,
   );
 
   Map<String, Object?> toJson() => {
@@ -136,6 +143,7 @@ class AppSettings {
     'show_comment_tab': showCommentTab,
     'comment_tab_at': commentTabAt,
     'sidebar_width': sidebarWidth,
+    'threads_width': threadsWidth,
   };
 
   /// Reads [j], keeping the default for any value that is missing, of the
@@ -173,6 +181,10 @@ class AppSettings {
     final width = j['sidebar_width'];
     if (width is num && width >= 180 && width <= 320) {
       s.sidebarWidth = width.toDouble();
+    }
+    final threads = j['threads_width'];
+    if (threads is num && threads >= 280 && threads <= 420) {
+      s.threadsWidth = threads.toDouble();
     }
     return s;
   }
