@@ -45,6 +45,8 @@ class AppSettings {
     this.developer = false,
     this.aiConsent,
     List<String>? rallied,
+    this.showCommentTab = false,
+    this.commentTabAt = 0.62,
   }) : model = model ?? defaultModel,
        authorName = cleanAuthorName(authorName),
        rallied = rallied ?? [];
@@ -90,6 +92,15 @@ class AppSettings {
   /// once per app.
   List<String> rallied;
 
+  /// Whether an open app shows the Comment tab (Android) while its notice
+  /// can be seen too; without it the tab shows only while notifications
+  /// are off. Shown as "Show the Comment tab".
+  bool showCommentTab;
+
+  /// Where the Comment tab's centre sits, as a fraction of the screen's
+  /// height, from 0 to 1; the person moves it with a long-press and drag.
+  double commentTabAt;
+
   AppSettings copy() => AppSettings(
     backend: backend,
     model: model,
@@ -101,6 +112,8 @@ class AppSettings {
     developer: developer,
     aiConsent: aiConsent,
     rallied: List.of(rallied),
+    showCommentTab: showCommentTab,
+    commentTabAt: commentTabAt,
   );
 
   Map<String, Object?> toJson() => {
@@ -114,6 +127,8 @@ class AppSettings {
     'developer': developer,
     'ai_consent': aiConsent,
     'rallied': rallied,
+    'show_comment_tab': showCommentTab,
+    'comment_tab_at': commentTabAt,
   };
 
   /// Reads [j], keeping the default for any value that is missing, of the
@@ -144,6 +159,10 @@ class AppSettings {
     if (consent is bool) s.aiConsent = consent;
     final rallied = j['rallied'];
     if (rallied is List) s.rallied = rallied.whereType<String>().toList();
+    final tab = j['show_comment_tab'];
+    if (tab is bool) s.showCommentTab = tab;
+    final at = j['comment_tab_at'];
+    if (at is num && at >= 0 && at <= 1) s.commentTabAt = at.toDouble();
     return s;
   }
 }

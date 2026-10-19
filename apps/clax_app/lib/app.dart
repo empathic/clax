@@ -1453,6 +1453,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           secureKey: _s.key,
           cliSupported: _s.cliSupported,
           asksAiConsent: _s.aiConsent.required,
+          notificationsAllowed: _notice?.allowed,
           timings: _s.timings.recent(10),
           fingerprint: _s.bundleKey == null
               ? null
@@ -2258,6 +2259,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         _keep((s) => s.rallied = {...s.rallied, aid}.toList()),
       ),
       onDictateChanged: (on) => unawaited(_keep((s) => s.dictateComments = on)),
+      onCommentTabMoved: (at) => unawaited(_keep((s) => s.commentTabAt = at)),
       icons: _icons,
     ),
   );

@@ -176,6 +176,7 @@ void main() {
     VoidCallback? onHintShown,
     ValueChanged<String>? onRallied,
     ValueChanged<bool>? onDictateChanged,
+    ValueChanged<double>? onCommentTabMoved,
     Future<bool> Function(String aid, String tid)? onRetry,
     void Function(String aid)? onStop,
     Future<bool> Function(String aid, String tid)? onCancelThread,
@@ -215,6 +216,7 @@ void main() {
       onHintShown: onHintShown,
       onRallied: onRallied,
       onDictateChanged: onDictateChanged,
+      onCommentTabMoved: onCommentTabMoved,
       onRetry: onRetry,
       onStop: onStop,
       onCancelThread: onCancelThread,
@@ -1488,7 +1490,7 @@ void main() {
   group('comment mode, the notice and the hint', () {
     final bar = find.byKey(const ValueKey('comment-bar'));
     final panel = find.byKey(const ValueKey('app-panel'));
-    final handle = find.byKey(const ValueKey('panel-handle'));
+    final handle = find.byKey(const ValueKey('comment-tab'));
     final hint = find.byKey(const ValueKey('first-run-hint'));
     List<String> modes(_Rig rig) =>
         rig.surface.js.where((j) => j.contains('CommentMode')).toList();
@@ -1521,7 +1523,65 @@ void main() {
       expect(hint, findsNothing);
     });
 
-    testWidgets('with notifications off the edge handle is the way in, until '
+    testWidgets('with notifications on the Comment tab shows only with Show '
+        'the Comment tab', (tester) async {
+      var rig = await pumpScreen(tester, notice: FakeAppNotice());
+      rig.surface.push(rig.ready());
+      await tester.pumpAndSettle();
+      expect(handle, findsNothing);
+
+      rig = await pumpScreen(
+        tester,
+        notice: FakeAppNotice(),
+        settings: AppSettings(showCommentTab: true),
+      );
+      rig.surface.push(rig.ready());
+      await tester.pumpAndSettle();
+      expect(handle, findsOneWidget);
+    });
+
+    testWidgets('the Comment tab sits at the saved place, outside the '
+        'back-gesture zone, and a move is told', (tester) async {
+      final moved = <double>[];
+      final rig = await pumpScreen(
+        tester,
+        notice: FakeAppNotice(allow: false),
+        settings: AppSettings(commentTabAt: 0.4),
+        onCommentTabMoved: moved.add,
+      );
+      tester.view.systemGestureInsets = const FakeViewPadding(right: 24 * 3);
+      rig.surface.push(rig.ready());
+      await tester.pumpAndSettle();
+      final box = tester.getRect(handle);
+      expect(box.right, 360 - 28);
+      // A fraction of the page's height, under the 24 dp status bar.
+      expect(box.center.dy, closeTo(24 + 756 * 0.4, 1));
+      final g = await tester.startGesture(box.center);
+      await tester.pump(kLongPressTimeout + const Duration(milliseconds: 50));
+      await g.moveBy(const Offset(0, 78));
+      await tester.pump();
+      await g.up();
+      await tester.pumpAndSettle();
+      expect(moved.single, closeTo((756 * 0.4 + 78) / 756, 0.001));
+      expect(tester.getRect(handle).center.dy, closeTo(box.center.dy + 78, 1));
+    });
+
+    testWidgets("the Comment tab's Comment turns comment mode on with the "
+        'bar, and the tab goes while it is on', (tester) async {
+      final rig = await pumpScreen(tester, notice: FakeAppNotice(allow: false));
+      rig.surface.push(rig.ready());
+      await tester.pumpAndSettle();
+      await tester.tap(handle);
+      await tester.pumpAndSettle();
+      expect(find.text('Threads (0)'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('comment')));
+      await tester.pumpAndSettle();
+      expect(bar, findsOneWidget);
+      expect(modes(rig), [enter]);
+      expect(handle, findsNothing);
+    });
+
+    testWidgets('with notifications off the Comment tab is the way in, until '
         'they are allowed', (tester) async {
       final notice = FakeAppNotice(allow: false);
       final rig = await pumpScreen(tester, notice: notice);
@@ -1529,6 +1589,8 @@ void main() {
       await tester.pumpAndSettle();
       expect(notice.calls, ['allowed'], reason: 'nothing is posted');
       await tester.tap(handle);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('threads')));
       await tester.pumpAndSettle();
       expect(panel, findsOneWidget);
       expect(modes(rig), [enter]);
@@ -1548,7 +1610,7 @@ void main() {
       expect(notice.shown, '${rig.aid} Runs');
     });
 
-    testWidgets('a swiped-away notice leaves the edge handle until the screen '
+    testWidgets('a swiped-away notice leaves the Comment tab until the screen '
         'next comes to the front, which posts it again', (tester) async {
       final notice = FakeAppNotice();
       final rig = await pumpScreen(tester, notice: notice);
@@ -1559,6 +1621,8 @@ void main() {
       await tester.pumpAndSettle();
       expect(handle, findsOneWidget);
       await tester.tap(handle);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('threads')));
       await tester.pumpAndSettle();
       expect(panel, findsOneWidget);
       await tester.binding.handlePopRoute();

@@ -8,8 +8,12 @@
 // (`app-working-folded`), the build (`app-building`), a new version once
 // its toast went (`app-new-version`) and location in use
 // (`app-location`); the New version toast at the top (`app-toast`); the
-// first-run hint with Turn on (`app-hint`); and the Rally of 10 a moment
-// into its rally (`app-rally`). The status and gesture bar stand-ins draw
+// first-run hint with Turn on (`app-hint`); the Comment tab with
+// notifications off, 24 dp inside a 24 dp back-gesture zone
+// (`app-comment-tab`), and its menu open over a change under way
+// (`app-comment-tab-menu`); and the Rally of 10 a moment into its rally
+// (`app-rally`). On the dark page, the Comment tab too
+// (`app-comment-tab-dark-page`). The status and gesture bar stand-ins draw
 // their icons in the brightness the screen's bands ask the system for
 // (`SystemChrome.latestStyle`), not the theme's.
 import 'dart:async';
@@ -231,7 +235,7 @@ Future<void> _open(
   BuildLink? build,
   DeviceHost? device,
   Future<void> Function(String aid)? before,
-  void Function()? after,
+  FutureOr<void> Function()? after,
 }) async {
     final api = FakeClaxApi();
     final aid = api.seedArtifact('Runs', {'index.html': '<h1>Runs</h1>'});
@@ -275,7 +279,7 @@ Future<void> _open(
     then.forEach(surface.push);
     await s.settle();
     if (after != null) {
-      after();
+      await after();
       await s.settle();
     }
     style.value = SystemChrome.latestStyle;
@@ -326,7 +330,7 @@ void main() {
     BuildLink? build,
     DeviceHost? device,
     Future<void> Function(String aid)? before,
-    void Function()? after,
+    FutureOr<void> Function()? after,
   }) => _open(
     s,
     name,
@@ -443,6 +447,32 @@ void main() {
     forms: const [phone],
     textScales: _both,
   );
+  // A back-gesture zone as Android's default sensitivity gives it.
+  void gestureZone(Shot s) => s.tester.view.systemGestureInsets =
+      FakeViewPadding(right: 24 * s.form.dpr);
+  shots(
+    'app-comment-tab',
+    (s) => page(
+      s,
+      'app-comment-tab',
+      notice: FakeAppNotice(allow: false),
+      before: (_) async => gestureZone(s),
+    ),
+    forms: const [phone],
+    textScales: _both,
+  );
+  shots(
+    'app-comment-tab-menu',
+    (s) => page(
+      s,
+      'app-comment-tab-menu',
+      notice: FakeAppNotice(allow: false),
+      then: const [Sent('thread-1')],
+      before: (_) async => gestureZone(s),
+      after: () => s.tester.tap(find.byKey(const ValueKey('comment-tab'))),
+    ),
+    forms: const [phone],
+  );
   shots(
     'app-rally',
     (s) => page(s, 'app-rally', version: 9, then: const [Landed(10)]),
@@ -463,6 +493,25 @@ void main() {
       const ChromeMsg(black, charcoal),
       status: Brightness.light,
       navigation: Brightness.light,
+    ),
+    forms: const [phone],
+  );
+  shots(
+    'app-comment-tab-dark-page',
+    (s) => _open(
+      s,
+      'app-comment-tab-dark-page',
+      _PageSurface(
+        head: black,
+        body: const Color(0xFF121212),
+        ink: const Color(0xFFE6E6E6),
+        tabs: charcoal,
+      ),
+      const ChromeMsg(black, charcoal),
+      status: Brightness.light,
+      navigation: Brightness.light,
+      notice: FakeAppNotice(allow: false),
+      before: (_) async => gestureZone(s),
     ),
     forms: const [phone],
   );

@@ -1,6 +1,7 @@
 // Settings rendered in every form and theme into CLAX_SHOTS_DIR (skipped
 // without it), the phone also at 130% and 200%: the top with no key, the top
-// with a saved key, About with its haiku, and the Model menu open.
+// with a saved key, About with its haiku, and the Model menu open; on the
+// phone, Notifications while they are off.
 import 'dart:io';
 import 'dart:math';
 
@@ -33,6 +34,7 @@ Future<void> _settings(
   String surface, {
   String? key,
   Future<void> Function(WidgetTester tester)? then,
+  Future<bool> Function()? notificationsAllowed,
 }) async {
   final dir = Directory.systemTemp.createTempSync('clax-shots-settings-');
   addTearDown(() => dir.deleteSync(recursive: true));
@@ -63,6 +65,7 @@ Future<void> _settings(
           homeVersion: () async => '1.6',
           haikus: () async => haikus!,
           random: Random(4),
+          notificationsAllowed: notificationsAllowed,
         ),
         title: 'Settings',
       ),
@@ -92,11 +95,31 @@ Future<void> _toAbout(WidgetTester tester) async {
   );
 }
 
+Future<void> _toNotifications(WidgetTester tester) async {
+  final header = find.text('Notifications');
+  await tester.scrollUntilVisible(header, 200, scrollable: _list);
+  // Its header near the top, under the collapsed title.
+  await tester.runAsync(
+    () => Scrollable.ensureVisible(tester.element(header), alignment: 0.1),
+  );
+}
+
 Future<void> _openModel(WidgetTester tester) async {
   await tester.tap(find.text('Model'));
 }
 
 void main() {
+  shots(
+    'settings-notifications',
+    (s) => _settings(
+      s,
+      'settings-notifications',
+      then: _toNotifications,
+      notificationsAllowed: () async => false,
+    ),
+    forms: const [phone],
+    textScales: const [1.0, 2.0],
+  );
   for (final (forms, scales) in [
     ([phone], [1.0, 1.3, 2.0]),
     ([wide, mac], [1.0]),

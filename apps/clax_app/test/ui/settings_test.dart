@@ -158,6 +158,39 @@ void main() {
       expect(s.dictationCues, isTrue);
     });
 
+    test("the Comment tab's switch and place round trip; bad values are "
+        'the defaults', () async {
+      final store = SettingsStore(file);
+      final d = await store.load();
+      expect(d.showCommentTab, isFalse);
+      expect(d.commentTabAt, 0.62);
+      await store.save(AppSettings(showCommentTab: true, commentTabAt: 0.3));
+      expect(
+        jsonDecode(file.readAsStringSync()),
+        allOf(
+          containsPair('show_comment_tab', true),
+          containsPair('comment_tab_at', 0.3),
+        ),
+      );
+      final s = await store.load();
+      expect(s.showCommentTab, isTrue);
+      expect(s.commentTabAt, 0.3);
+      expect(s.copy().commentTabAt, 0.3);
+      expect(s.copy().showCommentTab, isTrue);
+      for (final bad in [
+        {'show_comment_tab': 1, 'comment_tab_at': 'low'},
+        {'comment_tab_at': 1.5},
+        {'comment_tab_at': -0.1},
+      ]) {
+        file.writeAsStringSync(jsonEncode(bad));
+        final b = await store.load();
+        expect(b.showCommentTab, isFalse, reason: '$bad');
+        expect(b.commentTabAt, 0.62, reason: '$bad');
+      }
+      file.writeAsStringSync(jsonEncode({'comment_tab_at': 1}));
+      expect((await store.load()).commentTabAt, 1.0, reason: 'an int is a number');
+    });
+
     test('last is the defaults, then what was last loaded or saved', () async {
       final store = SettingsStore(file);
       expect(store.last.dictationCues, isTrue);
@@ -193,6 +226,7 @@ void main() {
     List<String> haikus = const ['One haiku', 'Two haiku', 'Three haiku'],
     TargetPlatform platform = TargetPlatform.android,
     bool asksAiConsent = false,
+    Future<bool> Function()? notificationsAllowed,
   }) async {
     await tester.pumpWidget(
       MaterialApp(
@@ -207,6 +241,7 @@ void main() {
           homeVersion: homeVersion,
           haikus: () async => haikus,
           asksAiConsent: asksAiConsent,
+          notificationsAllowed: notificationsAllowed,
         ),
       ),
     );
@@ -828,6 +863,111 @@ void main() {
       find.textContaining('Copyright © 2026 Empathic, Inc.'),
       findsOneWidget,
     );
+  });
+  group('Notifications', () {
+    late List<String> native;
+    var allowed = false;
+
+    setUp(() {
+      native = [];
+      allowed = false;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+            const MethodChannel('dev.empathic.clax/native'),
+            (call) async {
+              native.add(call.method);
+              return true;
+            },
+          );
+    });
+    tearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+            const MethodChannel('dev.empathic.clax/native'),
+            null,
+          ),
+    );
+
+    Future<void> pump(WidgetTester tester, {SettingsStore? store}) async {
+      tall(tester);
+      await pumpSettings(
+        tester,
+        store: store ?? SettingsStore(file),
+        key: FakeKey(),
+        home: homeControls(),
+        notificationsAllowed: () async => allowed,
+      );
+    }
+
+    testWidgets('the section comes after Sharing and before Home screen', (
+      tester,
+    ) async {
+      await pump(tester);
+      final order = ['Sharing', 'Notifications', 'Home screen'];
+      final tops = [
+        for (final h in order) tester.getTopLeft(find.text(h).first).dy,
+      ];
+      expect(tops[1], greaterThan(tops[0]));
+      expect(tops[2], greaterThan(tops[1]));
+    });
+
+    testWidgets('without notices (macOS) there is no section', (tester) async {
+      tall(tester);
+      await pumpSettings(
+        tester,
+        store: SettingsStore(file),
+        key: FakeKey(),
+        home: homeControls(),
+      );
+      expect(find.text('Notifications'), findsNothing);
+      expect(find.text('Show the Comment tab'), findsNothing);
+    });
+
+    testWidgets('off, it says so; Open settings opens the app’s system '
+        'settings, and coming back checks again', (tester) async {
+      await pump(tester);
+      expect(find.byKey(const ValueKey('notifications-state')), findsOneWidget);
+      expect(
+        tester
+            .widget<Text>(
+              find.descendant(
+                of: find.byKey(const ValueKey('notifications-state')),
+                matching: find.byType(Text),
+              ),
+            )
+            .data,
+        'Off',
+      );
+      await tester.tap(find.text('Open settings'));
+      await tester.pumpAndSettle();
+      expect(native, ['openAppSettings']);
+
+      allowed = true;
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('notifications-state')),
+          matching: find.text('On'),
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('Show the Comment tab is a switch, saved', (tester) async {
+      final store = SettingsStore(file);
+      await pump(tester, store: store);
+      expect(find.byType(ClaxSwitch), findsWidgets);
+      await tester.tap(find.text('Show the Comment tab'));
+      await tester.pump();
+      expect(store.last.showCommentTab, isTrue);
+      expect((await store.load()).showCommentTab, isTrue);
+    });
   });
 
   group('Home screen', () {

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' show Random;
 
 import 'package:flutter/material.dart';
@@ -26,6 +27,12 @@ import 'tokens.g.dart';
 ///   Anthropic, with Turn off once they may;
 /// - Dictation: whether it starts on its own, and its sounds and vibration;
 /// - Sharing: the name bundles carry and the sharing key's fingerprint;
+/// - Notifications, where there are notices ([notificationsAllowed],
+///   Android): whether they are on, read again each time Clax comes back
+///   to the front; Open settings, the app's page in the system settings
+///   (`openAppSettings` on `dev.empathic.clax/native`); and "Show the
+///   Comment tab" ([AppSettings.showCommentTab]), which shows it while
+///   notifications are on too;
 /// - Home screen ([home]);
 /// - About: Clax's [version], the home screen's ([homeVersion]), the
 ///   licences page ([showClaxLicences]) and a haiku, a different one each
@@ -51,6 +58,7 @@ class SettingsScreen extends StatefulWidget {
     this.haikus,
     this.random,
     this.asksAiConsent = false,
+    this.notificationsAllowed,
   });
 
   final SettingsStore store;
@@ -88,6 +96,14 @@ class SettingsScreen extends StatefulWidget {
   /// false, so the next run asks again.
   final bool asksAiConsent;
 
+  /// Whether notifications are on for Clax (`AppNotice.allowed`); null
+  /// where Clax shows no notice (macOS), and then there is no
+  /// Notifications section.
+  final Future<bool> Function()? notificationsAllowed;
+
+  /// The channel Open settings goes through.
+  static const native = MethodChannel('dev.empathic.clax/native');
+
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
@@ -108,11 +124,42 @@ class _SettingsScreenState extends State<SettingsScreen> {
   /// The haiku About showed last, which the next visit does not repeat.
   static String? _lastHaiku;
 
+  /// Whether notifications are on; null before the first read.
+  bool? _notifications;
+  AppLifecycleListener? _lifecycle;
+
   @override
   void initState() {
     super.initState();
     _init();
     _loadHaikus();
+    if (widget.notificationsAllowed != null) {
+      unawaited(_readNotifications());
+      // Back from the system settings, they may have changed.
+      _lifecycle = AppLifecycleListener(
+        onResume: () => unawaited(_readNotifications()),
+      );
+    }
+  }
+
+  Future<void> _readNotifications() async {
+    bool on;
+    try {
+      on = await widget.notificationsAllowed!();
+    } on Object {
+      on = false;
+    }
+    if (mounted) setState(() => _notifications = on);
+  }
+
+  Future<void> _openAppSettings() async {
+    try {
+      await SettingsScreen.native.invokeMethod<bool>('openAppSettings');
+    } on PlatformException {
+      // Nothing to open.
+    } on MissingPluginException {
+      // Nothing to open.
+    }
   }
 
   Future<void> _init() async {
@@ -181,6 +228,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   void dispose() {
+    _lifecycle?.dispose();
     _key.dispose();
     _path.dispose();
     _name.dispose();
@@ -358,6 +406,36 @@ class _SettingsScreenState extends State<SettingsScreen> {
             'A sharing key is made the first time you share an app',
           ),
         ),
+      if (widget.notificationsAllowed != null) ...[
+        const _Header('Notifications'),
+        ListTile(
+          title: const Text('Notifications for Clax'),
+          subtitle: Text(
+            _notifications == false
+                ? 'Turn them on to comment from the shade'
+                : 'Comment and Threads are in the shade',
+          ),
+          trailing: _Value(
+            switch (_notifications) {
+              true => 'On',
+              false => 'Off',
+              null => '',
+            },
+            key: const ValueKey('notifications-state'),
+          ),
+        ),
+        ListTile(
+          title: const Text('Open settings'),
+          subtitle: const Text('Clax’s page in Android settings'),
+          onTap: () => unawaited(_openAppSettings()),
+        ),
+        _SwitchRow(
+          title: 'Show the Comment tab',
+          subtitle: 'Also while notifications are on',
+          value: s.showCommentTab,
+          onChanged: (v) => _change((s) => s.showCommentTab = v),
+        ),
+      ],
       if (widget.home case final h?) ...[
         const _Header('Home screen'),
         _HomeSection(controls: h),
@@ -718,7 +796,7 @@ class _Inset extends StatelessWidget {
 
 /// A row's value at its trailing end, in `muted`.
 class _Value extends StatelessWidget {
-  const _Value(this.text);
+  const _Value(this.text, {super.key});
   final String text;
 
   @override

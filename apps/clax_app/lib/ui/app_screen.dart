@@ -25,6 +25,7 @@ import 'change_sheet.dart';
 import 'change_tracker.dart';
 import 'comment_bar.dart';
 import 'comment_composer.dart';
+import 'comment_tab.dart';
 import 'developer.dart';
 import 'host_protocol.dart';
 import 'kit/kit.dart';
@@ -64,10 +65,14 @@ import 'working_chip.dart';
 ///   inactive, and its route on top) it shows the notice named after the
 ///   app, and clears it as it leaves, goes under another route or the app
 ///   goes to the background. Each time it comes to the front it asks
-///   whether notifications are allowed; when they are not, or the person
+///   whether notifications are allowed; when they are not, when the person
 ///   swiped the notice away (until the screen next comes to the front and
-///   shows it again), a thin handle on the right edge opens the panel
-///   instead.
+///   shows it again), or always with [AppSettings.showCommentTab], the
+///   [CommentTab] is the way in: at its saved place
+///   ([AppSettings.commentTabAt], a move told to
+///   [AppScreen.onCommentTabMoved]) outside the back-gesture zone, its menu
+///   offering Comment, Threads (n) and the change in progress. It goes
+///   while comment mode is on.
 /// - **Comment mode.** Comment turns it on and puts the [CommentBar] under
 ///   the page (the page shrinks above it, so none of it is covered): "Tap
 ///   anything to comment on it" (a tap on the page picks), Comment on the
@@ -98,7 +103,8 @@ import 'working_chip.dart';
 ///   Comment tab is; with them on, the shade. It stays until it is
 ///   dismissed, an action is used or notifications are turned on;
 ///   [AppScreen.onHintShown] is called as it first shows.
-/// - **Panel.** A two-finger swipe left, Threads, the edge handle, or
+/// - **Panel.** A two-finger swipe left, Threads (the notice's or the
+///   Comment tab's), or
 ///   (macOS) App › Threads (⌘K) opens it and turns comment mode on; a swipe
 ///   right, back, Escape or ⌘K closes it and turns comment mode off (left
 ///   on while the comment bar is up, which the panel then shows again). While
@@ -231,6 +237,7 @@ class AppScreen extends StatefulWidget {
     this.onHintShown,
     this.onRallied,
     this.onDictateChanged,
+    this.onCommentTabMoved,
     this.onRetry,
     this.onStop,
     this.onCancelThread,
@@ -291,7 +298,7 @@ class AppScreen extends StatefulWidget {
   final CommentsCommand? comments;
 
   /// The open app's notice, shown while the screen is in front; null where
-  /// there is none (macOS), and then no edge handle is shown either.
+  /// there is none (macOS), and then no Comment tab is shown either.
   final AppNoticeSlot? notice;
 
   /// Comment and Threads asked for this app (the notice's actions).
@@ -314,6 +321,10 @@ class AppScreen extends StatefulWidget {
   /// Voice in the comment bar changed whether a pick starts dictation, for
   /// the caller to keep.
   final ValueChanged<bool>? onDictateChanged;
+
+  /// The Comment tab was moved to this fraction of the height, for the
+  /// caller to keep in [AppSettings.commentTabAt].
+  final ValueChanged<double>? onCommentTabMoved;
 
   /// Runs the failed change of thread `tid` of app `aid` again, posting
   /// nothing, and answers whether a change was queued; null when the app
@@ -409,12 +420,15 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   /// Whether a pick starts dictation (Voice).
   late bool _dictate = widget.settings.dictateComments;
 
+  /// Where the Comment tab sits, as a fraction of the height.
+  late double _tabAt = widget.settings.commentTabAt;
+
   // The notice: whether it can be seen (null until asked), the app's title
   // it shows, and the first-run hint.
   bool? _noticeAllowed;
 
   /// The person swiped the notice away; until the screen next comes to the
-  /// front, the edge handle is the way in.
+  /// front, the Comment tab is the way in.
   var _noticeDismissed = false;
   Future<String>? _title;
   var _hint = false;
@@ -2112,13 +2126,25 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
             ),
           ),
         ),
-      // Only where the notice cannot be seen: the way in then.
-      if (!_open && !_covered && (_noticeAllowed == false || _noticeDismissed))
-        Positioned(
-          right: 0,
-          top: 0,
-          bottom: 0,
-          child: Center(child: _handle(context)),
+      // Where the notice cannot be seen, or when asked for: the way in.
+      if (_showsTab)
+        Positioned.fill(
+          child: CommentTab(
+            threads: _openThreads,
+            onComment: () => _act(AppAction.comment),
+            onThreads: () => _act(AppAction.threads),
+            change: _changes.working
+                ? (
+                    label: 'Change in progress',
+                    onOpen: () => unawaited(_showChange()),
+                  )
+                : null,
+            at: _tabAt,
+            onMoved: (at) {
+              _tabAt = at;
+              widget.onCommentTabMoved?.call(at);
+            },
+          ),
         ),
     ],
   );
@@ -2253,34 +2279,15 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     );
   }
 
-  Widget _handle(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Semantics(
-      button: true,
-      label: 'Comments',
-      child: GestureDetector(
-        key: const ValueKey('panel-handle'),
-        behavior: HitTestBehavior.opaque,
-        onTap: () => _setOpen(true),
-        child: SizedBox(
-          width: 20,
-          height: 88,
-          child: Align(
-            alignment: Alignment.centerRight,
-            child: Container(
-              width: 5,
-              height: 56,
-              margin: const EdgeInsets.only(right: 3),
-              decoration: BoxDecoration(
-                color: scheme.onSurface.withValues(alpha: 0.28),
-                borderRadius: BorderRadius.circular(3),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
+  /// Whether the Comment tab shows: on Android (with a notice), outside
+  /// comment mode, while the notice cannot be seen or when asked for.
+  bool get _showsTab =>
+      widget.notice != null &&
+      !_wantComment &&
+      !_covered &&
+      (_noticeAllowed == false ||
+          _noticeDismissed ||
+          widget.settings.showCommentTab);
 
   Widget _panel(bool wide) => KeyedSubtree(
     key: const ValueKey('app-panel'),
