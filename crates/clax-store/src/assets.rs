@@ -102,13 +102,18 @@ impl Store {
     /// The bytes are written to the content store (whole, before they are visible there)
     /// before the row is inserted, so a visible row always has its bytes; if the insert
     /// fails the bytes are deleted (should that fail, they are unreferenced and harmless).
+    /// The check that the artifact is live, the bytes' write and the row's
+    /// transaction (which checks again) run under the artifact's content
+    /// lock, which a delete holds across its mark and its content removal,
+    /// so an upload never leaves bytes or a row for a deleted artifact.
     /// The size cap ([`MAX_ASSET_BYTES`]) is inclusive. The row's transaction
     /// records `asset.upload` under `ctx`, with the bytes' SHA-256.
     ///
     /// # Errors
     /// `Invalid { code: "unsupported_type" }` for a type failing [`is_supported`],
     /// `Invalid { code: "asset_too_large" }` when `bytes` exceeds the cap,
-    /// `NotFound` when the artifact does not exist, and I/O or database errors otherwise.
+    /// `NotFound` when the artifact does not exist or is deleted, and I/O
+    /// or database errors otherwise.
     pub fn add_asset(
         &self,
         ctx: &AuditCtx,
@@ -156,6 +161,9 @@ impl Store {
                 format!("asset exceeds {MAX_ASSET_BYTES} bytes"),
             ));
         }
+        #[cfg(test)]
+        self.point("asset.add.write");
+        let _lock = self.lock_content(id).await?;
         self.get_artifact(id)?.ok_or(CoreError::NotFound)?;
         let asset = Asset {
             id: new_ulid(),
@@ -171,6 +179,7 @@ impl Store {
         self.content.put_asset(&key, bytes).await?;
         let rec = upload_record(&asset, Some(&sha256_hex(bytes)));
         let inserted = self.with_tx(|c| {
+            super::artifacts::live_artifact_in(c, id.as_str())?.ok_or(CoreError::NotFound)?;
             c.execute("INSERT INTO assets (id, artifact_id, content_type, size, ext, created_at, person) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![asset.id, asset.artifact_id, asset.content_type, asset.size as i64, asset.ext, asset.created_at, person])?;
             let page = if via_page {
@@ -195,14 +204,19 @@ impl Store {
         }
     }
 
-    /// Looks up an asset by ID. Returns `Ok(None)` when no such asset exists.
+    /// Looks up an asset by ID. Returns `Ok(None)` when no such asset exists
+    /// or its artifact is deleted (its row and bytes wait for
+    /// [`Store::delete_assets_of_deleted_artifacts`]; they are never served).
     ///
     /// # Errors
     /// Database errors only.
     pub fn get_asset(&self, asset_id: &str) -> Result<Option<Asset>> {
         self.with_read(|c| {
             Ok(c.query_row(
-                &format!("{SELECT} WHERE id = ?1"),
+                &format!(
+                    "{SELECT} WHERE id = ?1
+                        AND artifact_id IN (SELECT id FROM artifacts WHERE deleted_at IS NULL)"
+                ),
                 params![asset_id],
                 row_to_asset,
             )
@@ -447,6 +461,34 @@ mod tests {
             store.delete_asset(DAEMON, &a.id),
             Err(CoreError::NotFound)
         ));
+    }
+
+    #[test]
+    fn an_upload_racing_the_artifacts_delete_stores_nothing() {
+        let (_d, store) = store();
+        let id = crate::test_util::artifact(&store, None);
+        // The delete lands after the upload is accepted, before its bytes go in.
+        let gone = id.clone();
+        store.at_point("asset.add.write", move |st| {
+            st.delete_artifact(DAEMON, &gone).unwrap();
+        });
+        assert!(matches!(
+            store.add_asset(DAEMON, &id, "image/png", &[1, 2, 3]),
+            Err(CoreError::NotFound)
+        ));
+        assert!(store.list_assets(&id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_deleted_artifacts_assets_are_not_found() {
+        let (_d, store) = store();
+        let id = crate::test_util::artifact(&store, None);
+        let a = store
+            .add_asset(DAEMON, &id, "image/png", &[1, 2, 3])
+            .unwrap();
+        store.delete_artifact(DAEMON, &id).unwrap();
+        assert!(store.get_asset(&a.id).unwrap().is_none());
+        assert!(store.read_asset(&a.id).unwrap().is_none());
     }
 
     #[test]
