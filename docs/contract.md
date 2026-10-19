@@ -1329,7 +1329,12 @@ nothing in a comment is fetched. A link is kept only for an absolute
 `rel="noopener noreferrer nofollow"`; a link to any other address shows as
 its text alone. Nothing in a comment is hidden from the people reading it:
 a link reference definition (`[x]: https://…`, and so `[//]: # (…)`) shows
-as its text, and a comment nested 20 levels deep shows whole as its text.
+as its text, a link's or an image's title shows after it, a link with no
+text is named by its address, the address of a link that is not made
+follows its text, a code fence's info string shows with the code, and a
+comment nested 20 levels deep, or whose reading would leave out any other
+of its words, shows whole as its text. Previews show a link's address
+after its text.
 Headings are set a step above the comment's text. Previews on one line (a
 folded thread, a pin's title, an inbox row, a notification, a version's
 addressed threads) show the text with the Markdown syntax taken away; an

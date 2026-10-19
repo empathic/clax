@@ -14,12 +14,14 @@
 // parser.
 import MarkdownIt, { type Token } from "markdown-it";
 
-/** Text-level content. A `link`'s `href` has passed `safeHref`. */
+/** Text-level content. A `link`'s `href` has passed `safeHref`; its
+ * `addr` is the address as written, when its text does not already say it
+ * (plain text shows it after the text; a rendered link shows it on hover). */
 export type Inline =
   | { t: "text"; v: string }
   | { t: "code"; v: string }
   | { t: "em" | "strong" | "del"; c: Inline[] }
-  | { t: "link"; href: string; c: Inline[] }
+  | { t: "link"; href: string; addr: string | null; c: Inline[] }
   | { t: "br" };
 
 export type Align = "left" | "center" | "right" | null;
@@ -71,6 +73,12 @@ class TooDeep extends Error {}
 // reading a comment that agents read whole. It shows as its text.
 const md = new MarkdownIt("default", { html: false, linkify: true, typographer: false, breaks: false, maxNesting: NESTING }).disable("reference");
 
+/** The words of `s`: its runs of letters and digits. */
+const words = (s: string): string[] => s.match(/[\p{L}\p{N}]+/gu) ?? [];
+
+/** Whether every word of `s` is among `of`'s. */
+const said = (s: string, of: string): boolean => { const w = new Set(words(of)); return words(s).every(x => w.has(x)); };
+
 /** `t`'s attribute `name`, "" when it has none. */
 const attr = (t: Token, name: string): string => String(t.attrGet(name) ?? "");
 
@@ -109,21 +117,31 @@ function inline(ns: Node[], inLink = false): Inline[] {
       case "em_open": out.push({ t: "em", c: inline(c, inLink) }); break;
       case "strong_open": out.push({ t: "strong", c: inline(c, inLink) }); break;
       case "s_open": out.push({ t: "del", c: inline(c, inLink) }); break;
+      // Every word of a link shows: a link with no text is named by its
+      // address; the address of a link that is not made (another scheme,
+      // a relative address) follows its text; a title follows the link.
       case "link_open": {
         const kids = inline(c, true);
+        const label = inlineText(kids);
+        const addr = md.normalizeLinkText(attr(t, "href"));
+        const auto = t.markup === "linkify" || t.markup === "autolink";
         const href = inLink ? null : safeHref(attr(t, "href"));
-        // A link with no text (`[](…)`) is named by its address, never hidden.
-        if (href) out.push({ t: "link", href, c: inlineText(kids).trim() ? kids : [{ t: "text", v: href }] });
-        else put(kids);
+        if (href) out.push({ t: "link", href, addr: auto || said(addr, label) ? null : addr, c: label.trim() ? kids : [{ t: "text", v: addr }] });
+        else { put(kids); if (addr && !auto && !said(addr, label)) text(label.trim() ? ` (${addr})` : addr); }
+        const title = attr(t, "title");
+        if (title) text(` (${title})`);
         break;
       }
       case "image": {
         // Never an image: a link to it, named by its alt text or its address.
-        const src = attr(t, "src");
-        const label = inlineText(inline(nest(t.children ?? []), true)) || src;
-        const href = inLink ? null : safeHref(src);
-        if (href) out.push({ t: "link", href, c: [{ t: "text", v: label }] });
-        else text(label);
+        const alt = inlineText(inline(nest(t.children ?? []), true));
+        const addr = md.normalizeLinkText(attr(t, "src"));
+        const label = alt.trim() ? alt : addr;
+        const href = inLink ? null : safeHref(attr(t, "src"));
+        if (href) out.push({ t: "link", href, addr: label === addr ? null : addr, c: [{ t: "text", v: label }] });
+        else text(label === addr ? label : `${label} (${addr})`);
+        const title = attr(t, "title");
+        if (title) text(` (${title})`);
         break;
       }
       // Text, escapes and entities (already decoded), and anything else: as text.
@@ -200,28 +218,38 @@ function blocks(ns: Node[]): Block[] {
   return out;
 }
 
-/** `src` as Markdown blocks; a body the parser cannot read, or nested
- * as deep as `NESTING` (`TooDeep`), is one paragraph of its text. */
+// What Markdown spends of a body's words, and only that: character
+// references, list markers and task markers.
+const MARKUP = /&(?:#\d+|#[xX][\da-fA-F]+|[A-Za-z][A-Za-z\d]*);|^[ \t>]*(?:\d+[.)]|[-*+])[ \t]+(?:\[[ xX]\][ \t]+)?/gm;
+
+/** `src` as Markdown blocks. A body the parser cannot read, nested as deep
+ * as `NESTING` (`TooDeep`), or whose reading would leave out any of its
+ * words (a table row's cells past its header's, or anything not foreseen)
+ * is one paragraph of its text: nothing in a comment is hidden from the
+ * people reading it, while agents read it whole. */
 export function parse(src: string): Block[] {
   const asText = (): Block[] => (src.trim() ? [{ t: "p", c: [{ t: "text", v: src }] }] : []);
   try {
     const ts = md.parse(src, {});
-    return ts.some(t => t.level >= NESTING - 1) ? asText() : blocks(nest(ts));
+    if (ts.some(t => t.level >= NESTING - 1)) return asText();
+    const bs = blocks(nest(ts));
+    return said(src.replace(MARKUP, " "), bs.map(blockText).join("\n")) ? bs : asText();
   } catch {
     return asText();
   }
 }
 
-const inlineText = (c: Inline[]): string =>
-  c.map(x => (x.t === "text" || x.t === "code" ? x.v : x.t === "br" ? "\n" : inlineText(x.c))).join("");
+/** `c` as text; with `addr`, a link's address follows its text. */
+const inlineText = (c: Inline[], addr = false): string =>
+  c.map(x => (x.t === "text" || x.t === "code" ? x.v : x.t === "br" ? "\n" : x.t === "link" && addr && x.addr ? `${inlineText(x.c, addr)} (${x.addr})` : inlineText(x.c, addr))).join("");
 
 function blockText(b: Block): string {
   switch (b.t) {
-    case "p": case "line": case "h": return inlineText(b.c);
+    case "p": case "line": case "h": return inlineText(b.c, true);
     case "pre": return [b.info, b.v].filter(Boolean).join("\n");
     case "quote": return b.c.map(blockText).join("\n");
     case "list": return b.items.map(i => i.c.map(blockText).join("\n")).join("\n");
-    case "table": return [b.head, ...b.rows].map(r => r.map(inlineText).join(" ")).join("\n");
+    case "table": return [b.head, ...b.rows].map(r => r.map(c => inlineText(c, true)).join(" ")).join("\n");
     case "hr": return "";
   }
 }
