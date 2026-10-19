@@ -42,7 +42,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if ! xcrun simctl list devices | grep -q "($udid) (Booted)"; then
+if ! xcrun simctl list devices | grep "($udid) (Booted)" >/dev/null; then
     echo "ios-integration: booting the simulator $udid"
     booted=1
 fi

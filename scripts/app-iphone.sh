@@ -115,7 +115,7 @@ if [ "${#missing[@]}" -gt 0 ] && [ -n "$act" ]; then
 fi
 
 # The build number: the ledger's last for HEAD's marketing version, plus one.
-version="$(git show HEAD:apps/clax_app/pubspec.yaml | sed -nE 's/^version: *([0-9][0-9.]*)(\+.*)?$/\1/p' | head -n 1)"
+version="$(git show HEAD:apps/clax_app/pubspec.yaml | sed -nE 's/^version: *([0-9][0-9.]*)(\+.*)?$/\1/p' | sed -n 1p)"
 [ -n "$version" ] || { echo "app-iphone: HEAD's apps/clax_app/pubspec.yaml has no version: <name>+<code> line" >&2; exit 1; }
 # last_number: the ledger's number for $version, 0 when it has none; fails
 # naming the first line it cannot read.
@@ -341,7 +341,7 @@ while :; do
     rm -f "$info"
     xcrun devicectl device copy from --device "$device" --domain-type appDataContainer \
         --domain-identifier "$bundle_id" --source "$daemon_path" --destination "$info" --quiet >/dev/null 2>&1 || true
-    if [ "$(sed -nE 's/^ *"pid" *: *([0-9]+).*/\1/p' "$info" 2>/dev/null | head -n 1)" = "$pid" ]; then break; fi
+    if [ "$(sed -nE 's/^ *"pid" *: *([0-9]+).*/\1/p' "$info" 2>/dev/null | sed -n 1p)" = "$pid" ]; then break; fi
     if [ $((SECONDS - start)) -ge "$daemon_wait" ]; then
         echo "app-iphone: the daemon did not come up in $daemon_wait s (no daemon.json naming PID $pid in the app's data container)" >&2
         exit 1

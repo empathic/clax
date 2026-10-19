@@ -51,7 +51,7 @@ manifest="$("$aapt2" dump xmltree --file AndroidManifest.xml "$apk")"
 activity_theme="$(awk '/E: activity/ { t = "" } /android:theme/ { t = $0 } /android:name.*"dev.empathic.clax_app.MainActivity"/ { sub(/.*=@/, "", t); print t; exit }' <<<"$manifest")"
 launch_id="$(sed -n 's/^ *resource \(0x[0-9a-f]*\) style\/LaunchTheme$/\1/p' <<<"$resources")"
 if [ -n "$launch_id" ] && [ "$activity_theme" = "$launch_id" ]; then ok "MainActivity opens on LaunchTheme"; else bad "MainActivity opens on LaunchTheme (theme $activity_theme, LaunchTheme ${launch_id:-missing})"; fi
-if sed -n '/ style\/LaunchTheme$/{n;p;}' <<<"$resources" | grep -q 'parent=style/Theme.Clax.Starting '; then
+if sed -n '/ style\/LaunchTheme$/{n;p;}' <<<"$resources" | grep 'parent=style/Theme.Clax.Starting ' >/dev/null; then
     ok "LaunchTheme is the splash theme"
 else
     bad "LaunchTheme is the splash theme (its parent is not Theme.Clax.Starting)"

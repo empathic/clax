@@ -59,7 +59,7 @@ want NSAppTransportSecurity.NSExceptionDomains.localhost.NSExceptionAllowsInsecu
 for k in NSAppTransportSecurity.NSAllowsArbitraryLoads UIRequiresFullScreen UIBackgroundModes; do
     if has "$k"; then bad "no $k"; else ok "no $k"; fi
 done
-if plutil -convert xml1 -o - "$info" | grep -q '\$('; then
+if plutil -convert xml1 -o - "$info" | grep '\$(' >/dev/null; then
     bad "no Xcode variable left in Info.plist"
 else
     ok "no Xcode variable left in Info.plist"
@@ -91,7 +91,7 @@ done
 # keeps its package (rules_flutter's flutter_ios_privacy_manifests).
 for p in file_picker flutter_local_notifications flutter_secure_storage flutter_timezone \
     geolocator image_picker package_info_plus share_plus webview_flutter; do
-    m="$(find "$app" -maxdepth 1 -name "*_pub__${p}_*PrivacyInfo.xcprivacy" | head -1)"
+    m="$(find "$app" -maxdepth 1 -name "*_pub__${p}_*PrivacyInfo.xcprivacy" | sed -n 1p)"
     if [ -n "$m" ] && plutil -lint -s "$m"; then ok "$p's privacy manifest"; else bad "$p's privacy manifest"; fi
 done
 assets="$app/Frameworks/App.framework/flutter_assets/assets/home"

@@ -65,7 +65,7 @@ done
 case "\$1 \$2 \${3:-}" in
     "devicectl list devices")
         # Each listing takes the next file of \$tmp/devices.d, the last one for good.
-        next="\$(ls "$tmp/devices.d" | sort -n | head -n 1)"
+        next="\$(ls "$tmp/devices.d" | sort -n | sed -n 1p)"
         cat "$tmp/devices.d/\$next" > "\$json"
         [ "\$(ls "$tmp/devices.d" | wc -l)" -gt 1 ] && rm "$tmp/devices.d/\$next"
         ;;

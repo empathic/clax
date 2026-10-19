@@ -60,7 +60,7 @@ fi
 
 # The chosen simulator's UDID and state, when it exists (the first of that name).
 found="$(xcrun simctl list devices |
-    sed -nE "s/^ +$device \(([0-9A-F-]{36})\) \(([A-Za-z ]+)\).*/\1 \2/p" | head -n 1)"
+    sed -nE "s/^ +$device \(([0-9A-F-]{36})\) \(([A-Za-z ]+)\).*/\1 \2/p" | sed -n 1p)"
 udid="${found%% *}"
 state="${found#* }"
 
@@ -176,7 +176,7 @@ echo "app-ios: launched Clax (PID $pid); waiting up to $wait_s s for its daemon"
 # and the port; /healthz on that port answers with the same PID.
 data="$(xcrun simctl get_app_container "$udid" "$bundle_id" data)"
 info="$data/Library/Application Support/clax-home/daemon.json"
-field() { sed -nE "s/^ *\"$1\" *: *([0-9]+).*/\1/p" "$info" 2>/dev/null | head -n 1; }
+field() { sed -nE "s/^ *\"$1\" *: *([0-9]+).*/\1/p" "$info" 2>/dev/null | sed -n 1p; }
 start=$SECONDS port=""
 while :; do
     if [ "$(field pid)" = "$pid" ]; then
