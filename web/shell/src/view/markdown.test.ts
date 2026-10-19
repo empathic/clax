@@ -18,7 +18,7 @@ function render(src: string): HTMLElement {
 /** What a rendered tree may hold: the elements the renderer makes, no
  * attribute but these, every link to http(s) or mailto. */
 const ELEMENTS = new Set(["DIV", "P", "SPAN", "H3", "H4", "H5", "H6", "PRE", "CODE", "BLOCKQUOTE", "UL", "OL", "LI", "INPUT", "TABLE", "THEAD", "TBODY", "TR", "TH", "TD", "HR", "EM", "STRONG", "DEL", "BR", "A"]);
-const ATTRIBUTES = new Set(["class", "href", "target", "rel", "start", "type", "disabled", "checked", "style"]);
+const ATTRIBUTES = new Set(["class", "href", "target", "rel", "start", "type", "disabled", "checked", "style", "aria-label"]);
 function assertInert(root: HTMLElement): void {
   for (const el of [root, ...root.querySelectorAll("*")]) {
     expect(ELEMENTS.has(el.tagName), `element ${el.tagName}`).toBe(true);
@@ -231,7 +231,7 @@ describe("parse: GitHub-flavored Markdown", () => {
     expect([...el.querySelectorAll("ul")[0].children].map(li => li.textContent)).toEqual(["one", "two"]);
     expect(el.querySelector("ol")!.getAttribute("start")).toBe("3");
     const boxes = [...el.querySelectorAll<HTMLInputElement>("li.task > input")];
-    expect(boxes.map(b => [b.checked, b.disabled])).toEqual([[false, true], [true, true]]);
+    expect(boxes.map(b => [b.checked, b.disabled, b.getAttribute("aria-label")])).toEqual([[false, true, "not done"], [true, true, "done"]]);
     expect([...el.querySelectorAll("li.task")].map(li => li.textContent)).toEqual(["todo", "done"]);
   });
 
