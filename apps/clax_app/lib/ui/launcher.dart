@@ -23,6 +23,7 @@ import 'make_service.dart';
 import 'making_screen.dart';
 import 'new_sheet.dart';
 import 'theme.dart';
+import 'tile_label.dart';
 import 'tokens.g.dart';
 
 /// The home screen: the owner's apps, newest first, live from the daemon's
@@ -437,19 +438,6 @@ class _HomeCell extends StatelessWidget {
   );
 }
 
-/// The style of a launcher cell's label.
-TextStyle _labelStyle(BuildContext context) =>
-    Theme.of(context).textTheme.bodyMedium!.copyWith(height: 1.25);
-
-/// A centred label of at most [lines] lines.
-Widget _label(String text, TextStyle style, {int lines = 2}) => Text(
-  text,
-  maxLines: lines,
-  overflow: TextOverflow.ellipsis,
-  textAlign: TextAlign.center,
-  style: style,
-);
-
 class _AppTile extends StatelessWidget {
   const _AppTile({
     super.key,
@@ -477,7 +465,7 @@ class _AppTile extends StatelessWidget {
   /// A cell's height: the icon, a gap and two lines of the label at the
   /// current text scale, so a wrapped title always fits.
   static double extent(BuildContext context) {
-    final style = _labelStyle(context);
+    final style = TileLabel.styleOf(context);
     final size = MediaQuery.textScalerOf(context).scale(style.fontSize!);
     final line = (size * style.height!).ceilToDouble();
     return _top + iconSize(context) + _gap + line * 2 + 4;
@@ -493,46 +481,92 @@ class _AppTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     final b = building;
+    final badge = LiveAppBadge(
+      app: app,
+      icons: icons,
+      size: iconSize(context),
+      radius: iconRadius(context),
+    );
     return _HomeCell(
       semantics: b == null
           ? app.title
           : '${app.title}, building, ${b.done} of ${b.total} done',
       onTap: onTap,
       onLongPress: onLongPress,
-      icon: Stack(
-        fit: StackFit.expand,
-        children: [
-          LiveAppBadge(
-            app: app,
-            icons: icons,
-            size: iconSize(context),
-            radius: iconRadius(context),
-          ),
-          if (b != null)
-            DecoratedBox(
-              decoration: BoxDecoration(
-                color: scheme.surface.withValues(alpha: 0.82),
-                borderRadius: BorderRadius.circular(iconRadius(context)),
-              ),
-              child: Center(
-                child: _BuildRing(done: b.done, total: b.total),
-              ),
+      icon: b == null
+          ? badge
+          : _Building(
+              key: const ValueKey('tile-building'),
+              radius: iconRadius(context),
+              count: '${b.done}/${b.total}',
+              child: badge,
             ),
-        ],
-      ),
-      label: _label(app.title, _labelStyle(context)),
+      label: TileLabel(app.title),
     );
   }
 }
 
-/// A make going on, as a launcher tile: its request and a ring
-/// (indeterminate until its plan has features, then filled to the features
-/// done); or "Offline" (its run waits for the Claude API's connection, read
-/// out as "Waiting for connection"),
-/// "Waiting…" (for a slot), "Interrupted" (the app's last run ended before
-/// it), or "Couldn't make it" once it failed.
+/// An icon whose build goes: [child] at full strength in a 3 dp `agent`
+/// ring, with [count] ("2/5") in a [ClaxBadge] at its top end corner.
+class _Building extends StatelessWidget {
+  const _Building({
+    super.key,
+    required this.radius,
+    required this.count,
+    required this.child,
+  });
+
+  final double radius;
+  final String count;
+  final Widget child;
+
+  static const _gap = 2.0;
+  static const _ring = 3.0;
+
+  @override
+  Widget build(BuildContext context) {
+    const out = _gap + _ring;
+    return Stack(
+      fit: StackFit.expand,
+      clipBehavior: Clip.none,
+      children: [
+        child,
+        Positioned(
+          left: -out,
+          top: -out,
+          right: -out,
+          bottom: -out,
+          child: IgnorePointer(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                border: Border.all(
+                  color: claxPalette(context).agent,
+                  width: _ring,
+                ),
+                borderRadius: BorderRadius.circular(radius + out),
+              ),
+            ),
+          ),
+        ),
+        PositionedDirectional(
+          top: -7,
+          end: -9,
+          child: ClaxBadge.label(count),
+        ),
+      ],
+    );
+  }
+}
+
+/// A make going on, as a launcher tile: its request on one line and how
+/// it stands on the second, in that state's colour: "Making…" (its face
+/// the breathing [ClaxMark] on `accent-tint`, in a ring filled to the
+/// features done once its plan has features, with "3/7" in a badge),
+/// "Offline" (its run waits for the Claude API's connection, read out as
+/// "Waiting for connection"), "Waiting…" (for a slot), "Interrupted" (the
+/// app's last run ended before it), or "Couldn't make it", in `danger`,
+/// once it failed.
 class MakingTile extends StatelessWidget {
   const MakingTile({
     super.key,
@@ -544,7 +578,7 @@ class MakingTile extends StatelessWidget {
   final MakeSession session;
   final VoidCallback onTap;
 
-  /// The plans, for the ring; null shows it indeterminate.
+  /// The plans, for the ring; null shows the mark alone.
   final BuildLink? link;
 
   @override
@@ -565,8 +599,7 @@ class MakingTile extends StatelessWidget {
   );
 
   Widget _tile(BuildContext context, ({int done, int total})? count) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
+    final p = claxPalette(context);
     final failed = session.failure != null && !session.running;
     final offline = session.running && session.waitingForConnection;
     final status = failed
@@ -578,109 +611,108 @@ class MakingTile extends StatelessWidget {
         : session.queued
         ? 'Waiting…'
         : 'Making…';
-    // Making shows its ring; the others say where they stand in words.
+    // Making shows the breathing mark; the others say where they stand
+    // with a glyph.
     final said = failed || offline || session.interrupted || session.queued;
-    final style = _labelStyle(context);
+    final counted = !said && count != null && count.total > 0;
+    final face = DecoratedBox(
+      decoration: BoxDecoration(
+        color: failed ? p.dangerTint : p.accentTint,
+        borderRadius: BorderRadius.circular(_AppTile.iconRadius(context)),
+      ),
+      child: Center(
+        child: !said
+            ? counted
+                  ? _MakeRing(done: count.done, total: count.total)
+                  : const ClaxMark(
+                      key: ValueKey('tile-making'),
+                      size: 28,
+                      state: ClaxMarkState.working,
+                    )
+            : Icon(
+                key: offline ? const ValueKey('tile-offline') : null,
+                failed
+                    ? Icons.error_outline_rounded
+                    : offline
+                    ? Icons.cloud_off_rounded
+                    : session.interrupted
+                    ? Icons.replay_rounded
+                    : Icons.hourglass_empty_rounded,
+                color: failed ? p.danger : p.agentInk,
+                size: 28,
+              ),
+      ),
+    );
     return _HomeCell(
       key: const ValueKey('making-tile'),
       semantics:
           '${session.request}, ${offline ? 'Waiting for connection' : status}',
       onTap: onTap,
-      icon: DecoratedBox(
-        decoration: BoxDecoration(
-          color: failed ? scheme.errorContainer : scheme.primaryContainer,
-          borderRadius: BorderRadius.circular(_AppTile.iconRadius(context)),
-        ),
-        child: Center(
-          child: !said
-              ? count == null || count.total == 0
-                    ? const _MakingRing()
-                    : _BuildRing(done: count.done, total: count.total)
-              : Icon(
-                  key: offline ? const ValueKey('tile-offline') : null,
-                  failed
-                      ? Icons.error_outline_rounded
-                      : offline
-                      ? Icons.cloud_off_rounded
-                      : session.interrupted
-                      ? Icons.replay_rounded
-                      : Icons.hourglass_empty_rounded,
-                  color: failed
-                      ? scheme.onErrorContainer
-                      : scheme.onPrimaryContainer,
-                  size: 28,
+      icon: counted
+          ? Stack(
+              fit: StackFit.expand,
+              clipBehavior: Clip.none,
+              children: [
+                face,
+                PositionedDirectional(
+                  top: -7,
+                  end: -9,
+                  child: ClaxBadge.label('${count.done}/${count.total}'),
                 ),
-        ),
-      ),
+              ],
+            )
+          : face,
       label: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          _label(session.request, style, lines: said ? 1 : 2),
-          if (said)
-            _label(
-              status,
-              style.copyWith(
-                color: failed ? scheme.error : scheme.onSurfaceVariant,
-              ),
-              lines: 1,
+          TileLabel(session.request, maxLines: 1),
+          Text(
+            status,
+            key: const ValueKey('making-status'),
+            maxLines: 1,
+            softWrap: false,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.center,
+            style: TileLabel.styleOf(context).copyWith(
+              color: failed
+                  ? p.danger
+                  : said
+                  ? p.muted
+                  : p.agentInk,
             ),
+          ),
         ],
       ),
     );
   }
 }
 
-/// A make's ring before its plan has features.
-class _MakingRing extends StatelessWidget {
-  const _MakingRing();
-
-  @override
-  Widget build(BuildContext context) => SizedBox.square(
-    key: const ValueKey('tile-making'),
-    dimension: 36,
-    child: Padding(
-      padding: const EdgeInsets.all(4),
-      child: CircularProgressIndicator(
-        strokeWidth: 3,
-        strokeCap: StrokeCap.round,
-        backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-      ),
-    ),
-  );
-}
-
-/// A tile's building state: a ring filled to the features done, with
-/// "3/7" in it.
-class _BuildRing extends StatelessWidget {
-  const _BuildRing({required this.done, required this.total});
+/// A make's progress: the breathing mark in a ring of `agent` on `border`
+/// filled to the features done.
+class _MakeRing extends StatelessWidget {
+  const _MakeRing({required this.done, required this.total});
 
   final int done;
   final int total;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
+    final p = claxPalette(context);
     return SizedBox.square(
-      key: const ValueKey('tile-building'),
+      key: const ValueKey('tile-making'),
       dimension: 36,
       child: Stack(
         fit: StackFit.expand,
         children: [
           CircularProgressIndicator(
-            value: total == 0 ? null : (done / total).clamp(0.04, 1.0),
+            value: (done / total).clamp(0.04, 1.0),
             strokeWidth: 3,
             strokeCap: StrokeCap.round,
-            backgroundColor: scheme.surfaceContainerHighest,
+            color: p.agent,
+            backgroundColor: p.border,
           ),
-          Center(
-            child: Text(
-              '$done/$total',
-              style: theme.textTheme.labelSmall?.copyWith(
-                fontWeight: FontWeight.w600,
-                fontFeatures: const [FontFeature.tabularFigures()],
-              ),
-            ),
+          const Center(
+            child: ClaxMark(size: 20, state: ClaxMarkState.working),
           ),
         ],
       ),

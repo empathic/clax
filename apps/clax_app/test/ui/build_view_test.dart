@@ -682,8 +682,29 @@ void main() {
 
       control.emit(BuildState(aid, BuildPhase.running, featureId: 'f2'));
       await frames(tester);
-      expect(find.byKey(const ValueKey('tile-building')), findsOneWidget);
-      expect(find.text('1/4'), findsOneWidget);
+      final building = find.byKey(const ValueKey('tile-building'));
+      expect(building, findsOneWidget);
+      // The icon at full strength, ringed, with "1/4" in a badge: no scrim.
+      expect(
+        find.descendant(of: building, matching: find.byType(ClaxBadge)),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: building, matching: find.text('1/4')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: building,
+          matching: find.byWidgetPredicate(
+            (w) =>
+                w is DecoratedBox &&
+                w.decoration is BoxDecoration &&
+                ((w.decoration as BoxDecoration).color?.a ?? 1) < 1,
+          ),
+        ),
+        findsNothing,
+      );
 
       control.emit(BuildState(aid, BuildPhase.done));
       await frames(tester);

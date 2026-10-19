@@ -53,9 +53,15 @@ test('making tiles come first, each saying how it stands', async () => {
   expect(labels().slice(0, 7)).toEqual(['A packing list', 'A step counter', 'A water reminder', 'A sleep log', 'A chore chart', 'A tide table', 'Run tracker']);
   const status = (id) => ui.text(`[data-make="${id}"] .h-status`);
   expect(document.querySelector('[data-make="m1"]').getAttribute('aria-label')).toBe('A packing list, Making…');
-  expect(ui.exists('[data-make="m1"] .h-status')).toBe(false);
-  expect(ui.exists('[data-make="m1"] .h-spinner')).toBeTruthy();
-  expect(ui.text('[data-make="m2"] .h-ring')).toBe('3/7');
+  expect(status('m1')).toBe('Making…');
+  expect(document.querySelector('[data-make="m1"] .h-status').dataset.state).toBe('making');
+  // A make breathes the working mark, never a spinner.
+  expect(ui.exists('[data-make="m1"] .h-face .clax-mark.is-working')).toBeTruthy();
+  expect(ui.exists('.h-spinner')).toBe(false);
+  expect(ui.exists('[data-make="m2"] .h-ring .clax-mark.is-working')).toBeTruthy();
+  expect(ui.text('[data-make="m2"] .h-tile-badge')).toBe('3/7');
+  // Its request is one line, its state the second.
+  expect(document.querySelectorAll('[data-make="m2"] .h-label .h-line').length).toBe(1);
   expect(status('m3')).toBe('Offline');
   expect(document.querySelector('[data-make="m3"]').getAttribute('aria-label')).toBe('A water reminder, Waiting for connection');
   expect(status('m4')).toBe('Waiting…');
@@ -66,8 +72,33 @@ test('making tiles come first, each saying how it stands', async () => {
 test('an app whose build goes shows the 3/7 ring', async () => {
   const apps = SAMPLE.apps.map((a) => (a.id === 'app-notes' ? { ...a, build: { done: 3, total: 7 } } : a));
   await show({ makes: [], apps });
-  expect(ui.text('[data-id="app-notes"] .h-ring')).toBe('3/7');
+  // Its icon at full strength, ringed, with a 3/7 badge: no scrim over it.
+  expect(ui.text('[data-id="app-notes"] .h-tile-badge')).toBe('3/7');
+  expect(ui.exists('[data-id="app-notes"] .h-build-ring')).toBeTruthy();
+  expect(ui.exists('.h-over')).toBe(false);
+  expect(getComputedStyle(document.querySelector('[data-id="app-notes"] .h-face')).opacity).toBe('1');
   expect(document.querySelector('[data-id="app-notes"]').getAttribute('aria-label')).toBe('Notes, building, 3 of 7 done');
+});
+
+test('labels break only between words, two lines at most, and a word wider than the cell is one cut line', async () => {
+  const long = 'Donaudampfschifffahrtsgesellschaftskapitän';
+  const titles = ['Kindergarten pickup rota and swaps', 'A tide table for the harbour mouth', long, 'Notes'];
+  await show({ makes: [], apps: titles.map((title, i) => ({ id: `t${i}`, title, updatedAt: SAMPLE.apps[0].updatedAt, build: null, icon: { monogram: 'T', hue: 10 } })) });
+  await wait(() => document.querySelector('[data-id="t0"] .h-line'));
+  titles.forEach((title, i) => {
+    const label = document.querySelector(`[data-id="t${i}"] .h-label`);
+    const lines = [...label.querySelectorAll('.h-line')].map((l) => l.textContent);
+    expect(lines.length > 0 && lines.length <= 2).toBe(true);
+    const words = new Set(title.split(' '));
+    for (const line of lines) for (const w of line.split(' ')) expect(words.has(w)).toBe(true);
+    expect(label.textContent).toBe(lines.join(' '));
+    // Each line is drawn on one line of its own.
+    for (const l of label.querySelectorAll('.h-line')) expect(l.getBoundingClientRect().height <= 20).toBe(true);
+  });
+  expect([...document.querySelectorAll('[data-id="t2"] .h-line')].map((l) => l.textContent)).toEqual([long]);
+  expect(document.querySelector('[data-id="t2"] .h-label').dataset.cut).toBe('');
+  expect([...document.querySelectorAll('[data-id="t3"] .h-line')].map((l) => l.textContent)).toEqual(['Notes']);
+  expect(document.documentElement.lang).toBe('en');
 });
 
 test('a tap opens the app, and a making tile its make', async () => {

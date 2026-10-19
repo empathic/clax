@@ -133,7 +133,13 @@ class Installer {
   /// counts every app as from a bundle while one is kept, and
   /// [recoverInstalls] deletes what an install that a crash cut short
   /// made.
-  Future<String> install(OpenedBundle opened) async {
+  ///
+  /// [made] hears the new app's ID as soon as the daemon made it, before
+  /// it is filled.
+  Future<String> install(
+    OpenedBundle opened, {
+    void Function(String aid)? made,
+  }) async {
     const separate = {
       TrustAnswer.install,
       TrustAnswer.foreign,
@@ -151,9 +157,9 @@ class Installer {
     final who = opened.who;
     final marker = installMarker(store, m.lineage);
     _writeMarker(marker, {'content_sha256': m.contentSha256, 'aid': null});
-    final PublishResult made;
+    final PublishResult created;
     try {
-      made = await api.createArtifact(
+      created = await api.createArtifact(
         PublishRequest(
           title: m.title,
           icon: m.icon.word,
@@ -184,7 +190,8 @@ class Installer {
       _dropMarker(marker);
       rethrow;
     }
-    final aid = made.artifact.id;
+    final aid = created.artifact.id;
+    made?.call(aid);
     final mine =
         opened.decision.mine && opened.decision.answer == TrustAnswer.install;
     try {
@@ -203,7 +210,7 @@ class Installer {
           fromBundle: !mine,
         ),
       );
-      final got = made.version.contentSha256;
+      final got = created.version.contentSha256;
       if (got != m.contentSha256) {
         throw BundleFailure(
           'bad_file',

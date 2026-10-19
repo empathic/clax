@@ -124,6 +124,24 @@ const ARRANGED: Record<string, unknown> = {
   "home-hover": { v: 1, starred: [], order: IDS, seen: IDS },
 };
 
+/** Makes in each state (one with its plan's progress), a build on an
+ * existing app, and long titles: a German compound, a sentence. */
+const MAKES = [
+  { id: "m-plan", request: "A step counter for the dog", state: "making", progress: { done: 2, total: 5 } },
+  { id: "m-new", request: "A tide table for the harbour mouth", state: "making", progress: null },
+  { id: "m-wait", request: "A packing list for a weekend away", state: "waiting", progress: null },
+  { id: "m-off", request: "A water reminder", state: "offline", progress: null },
+  { id: "m-fail", request: "A chore chart", state: "failed", progress: null },
+];
+const at = (h: number) => new Date(Date.UTC(2026, 9, 16, 12) - h * 3600_000).toISOString();
+const MAKING_APPS = [
+  { id: "app-build", title: "Weekly budget", updatedAt: at(1), build: { done: 2, total: 5 }, icon: { word: "money" } },
+  { id: "app-long", title: "Donaudampfschifffahrtsgesellschaftskapitän", updatedAt: at(2), build: null, icon: { monogram: "D", hue: 200 } },
+  { id: "app-kinder", title: "Kindergarten pickup rota and swaps", updatedAt: at(3), build: null, icon: { monogram: "KP", hue: 40 } },
+  { id: "app-tide", title: "A tide table for the harbour", updatedAt: at(4), build: null, icon: { monogram: "TT", hue: 180 } },
+  { id: "app-notes", title: "Notes", updatedAt: at(5), build: null, icon: { monogram: "N", hue: 320 } },
+];
+
 for (const form of Object.keys(FORMS) as Form[]) {
   for (const theme of ["light", "dark"] as const) {
     test.describe(`${form} ${theme}`, () => {
@@ -133,6 +151,13 @@ for (const form of Object.keys(FORMS) as Form[]) {
         await serve(page, homeFiles(), {});
         await expect(page.locator(".h-tile")).toHaveCount(11);
         await take(page, "home", form, theme);
+      });
+
+      test(`home-making ${form} ${theme}`, async ({ page }) => {
+        await serve(page, homeFiles(), { makes: MAKES, apps: MAKING_APPS });
+        await expect(page.locator(".h-tile")).toHaveCount(MAKES.length + MAKING_APPS.length);
+        await expect(page.locator('[data-id="app-long"] .h-line').first()).toBeVisible();
+        await take(page, "home-making", form, theme);
       });
 
       test(`home-empty ${form} ${theme}`, async ({ page }) => {

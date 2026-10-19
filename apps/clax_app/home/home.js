@@ -40,7 +40,7 @@ import {
 } from './arrange.js';
 import { layoutStore } from './store.js';
 import { realClock, velocityOf, tossRest, TOSS_MIN } from './physics.js';
-import { pack, geometry, cellBox, slotAt, centreUnder, iconCentre, tiltOf } from './grid.js';
+import { pack, geometry, cellBox, slotAt, centreUnder, iconCentre, tiltOf, tileLabel } from './grid.js';
 import { createPress } from './drag.js';
 import { createMotion } from './motion.js';
 import { search } from './search.js';
@@ -141,24 +141,83 @@ function faceOf(app) {
 // ---------------------------------------------------------------------------
 // Pieces.
 
-/** A ring filled to `done` of `total`, with "3/7" in it. */
-function Ring({ done, total }) {
+/** The breathing mark of a make going on, in a ring filled to `done` of
+ * `total` once its plan has features. */
+function MakeRing({ done, total }) {
   const r = 16.5;
   const c = 2 * Math.PI * r;
-  const f = total > 0 ? Math.min(1, Math.max(0.04, done / total)) : 0;
+  const f = Math.min(1, Math.max(0.04, done / total));
   return html`<span class="h-ring">
     <svg width="36" height="36" viewBox="0 0 36 36" aria-hidden="true">
       <circle class="h-ring-track" cx="18" cy="18" r=${r} />
       <circle class="h-ring-arc" cx="18" cy="18" r=${r} stroke-dasharray=${`${f * c} ${c}`} transform="rotate(-90 18 18)" />
     </svg>
-    <span class="h-ring-text">${done}/${total}</span>
+    <${Mark} size=${20} working />
   </span>`;
 }
 
-/** A make's ring before its plan has features. */
-const Spinner = () => html`<span class="h-spinner" aria-hidden="true">
-  <svg width="28" height="28" viewBox="0 0 28 28"><circle class="h-ring-track" cx="14" cy="14" r="12.5" /><circle class="h-spin-arc" cx="14" cy="14" r="12.5" /></svg>
-</span>`;
+/** A tile's count, as the app's ClaxBadge draws it, at its icon's corner. */
+const TileBadge = ({ done, total }) => html`<span class="h-badge h-tile-badge" aria-hidden="true">${done}/${total}</span>`;
+
+/** A 2D context to measure labels with; null where the page has none. */
+let measurer;
+function measureContext() {
+  if (measurer === undefined) {
+    try {
+      measurer = document.createElement('canvas').getContext('2d') ?? null;
+    } catch {
+      measurer = null;
+    }
+  }
+  return measurer;
+}
+
+/** Calls each watched element's function when its size changes. */
+const sizeWatch = typeof ResizeObserver === 'function'
+  ? (() => {
+      const fns = new Map();
+      const o = new ResizeObserver((entries) => { for (const e of entries) fns.get(e.target)?.(); });
+      return (el, fn) => { fns.set(el, fn); o.observe(el); return () => { fns.delete(el); o.unobserve(el); }; };
+    })()
+  : (el, fn) => { addEventListener('resize', fn); return () => removeEventListener('resize', fn); };
+
+/** The width inside `el`'s padding. */
+function contentWidth(el) {
+  const cs = getComputedStyle(el);
+  return el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+}
+
+/** A tile's label: `text` in at most `lines` lines (2 or 1) of whole
+ * words, laid out by grid.js's tileLabel in the label's own font across
+ * its tile's width, the last line cut with an ellipsis (`data-cut`) when
+ * it is too wide. Until it is measured, or where the page cannot measure,
+ * CSS wraps it between words. */
+function Label({ text, lines = 2 }) {
+  const ref = useRef(null);
+  const [laid, setLaid] = useState(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    const box = el?.parentElement;
+    const ctx = measureContext();
+    if (!box || !ctx) return undefined;
+    let live = true;
+    const lay = () => {
+      if (!live) return;
+      const width = contentWidth(box);
+      if (!(width > 0)) return;
+      const cs = getComputedStyle(el);
+      ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+      const next = tileLabel(text, { measure: (t) => ctx.measureText(t).width, width, lines });
+      setLaid((was) => (was && was.ellipsis === next.ellipsis && was.lines.join('\n') === next.lines.join('\n') ? was : next));
+    };
+    lay();
+    document.fonts?.ready.then(lay);
+    const stop = sizeWatch(box, lay);
+    return () => { live = false; stop(); };
+  }, [text, lines]);
+  if (!laid) return html`<span ref=${ref} class=${`h-label ${lines < 2 ? 'h-one' : 'h-two'}`}>${text}</span>`;
+  return html`<span ref=${ref} class="h-label" data-cut=${laid.ellipsis ? '' : undefined}>${laid.lines.map((l, i) => html`${i > 0 ? ' ' : ''}<span class="h-line">${l}</span>`)}</span>`;
+}
 
 function AppFace({ app }) {
   const [broken, setBroken] = useState(false);
@@ -196,7 +255,7 @@ function AppTile({ app, fresh, cell, dragging, group, ctl, onOpen, onMenu, tkey 
   const built = b ? `${app.title}, building, ${b.done} of ${b.total} done` : app.title;
   const said = group ? `${built}, in ${group}` : built;
   const label = fresh ? `${said}, new` : said;
-  return html`<button type="button" class="h-tile" data-id=${app.id} data-key=${tkey} data-new=${fresh ? '' : undefined}
+  return html`<button type="button" class="h-tile" data-id=${app.id} data-key=${tkey} data-new=${fresh ? '' : undefined} data-building=${b ? '' : undefined}
     data-dragging=${dragging ? '' : undefined} data-big=${cell?.span === 2 ? '' : undefined} aria-label=${label} style=${cellStyle(cell)}
     onPointerDown=${(e) => ctl.down(e, app.id)}
     onContextMenu=${(e) => { e.preventDefault(); if (!press.contextMenu()) onMenu(app, faceRect(e.currentTarget)); }}
@@ -204,11 +263,11 @@ function AppTile({ app, fresh, cell, dragging, group, ctl, onOpen, onMenu, tkey 
     onKeyDown=${(e) => ctl.key(app.id, e)}>
     <span class="h-icon">
       <${AppFace} app=${app} />
-      ${b && html`<span class="h-over"><${Ring} done=${b.done} total=${b.total} /></span>`}
+      ${b && html`<span class="h-build-ring" aria-hidden="true" /><${TileBadge} done=${b.done} total=${b.total} />`}
       ${fresh && html`<span class="h-new" aria-hidden="true">New</span>`}
       <span class="h-group-outline" aria-hidden="true" />
     </span>
-    <span class=${`h-label ${group ? 'h-one' : 'h-two'}`}>${app.title}</span>
+    <${Label} text=${app.title} lines=${group ? 1 : 2} />
     ${group && html`<span class="h-status h-in-group">${group}</span>`}
   </button>`;
 }
@@ -251,33 +310,39 @@ function GroupTile({ entry, cell, dragging, fanned, ctl, onOpenGroup, onFanGroup
         : html`<span class="h-face h-folder-face" data-kind="folder">${apps.slice(0, 4).map((a) => html`<${AppFace} key=${a.id} app=${a} />`)}</span>`}
       <span class="h-group-outline" aria-hidden="true" />
     </span>
-    <span class="h-label h-two">${group.name}</span>
+    <${Label} text=${group.name} />
   </button>`;
 }
 
 const MAKE_STATUS = { making: 'Making…', offline: 'Offline', waiting: 'Waiting…', interrupted: 'Interrupted', failed: 'Couldn’t make it' };
 const MAKE_GLYPH = { offline: 'cloud_off_fill', waiting: 'hourglass_empty', interrupted: 'replay', failed: 'error' };
 
+/** Make `make`'s tile: its request on one line and how it stands on the
+ * second, in that state's colour; its face the breathing mark on
+ * `accent-tint` while it is made (in a ring with a "3/7" badge once its
+ * plan has features), else the state's glyph. */
 function MakeTile({ make, cell, act }) {
   const state = MAKE_STATUS[make.state] ? make.state : 'making';
   const status = MAKE_STATUS[state];
-  const said = state !== 'making';
   const p = make.progress;
+  const counted = state === 'making' && p && p.total > 0;
   const spoken = state === 'offline' ? 'Waiting for connection' : status;
   return html`<button type="button" class="h-tile" data-make=${make.id} data-key=${`m:${make.id}`} style=${cellStyle(cell)} aria-label=${`${make.request}, ${spoken}`} onClick=${() => act('openMake', [make.id], `open ${make.request}`)}>
     <span class="h-icon">
       <span class=${`h-face h-make${state === 'failed' ? ' h-failed' : ''}`} data-kind="make">
-        ${!said && (p && p.total > 0 ? html`<${Ring} done=${p.done} total=${p.total} />` : html`<${Spinner} />`)}
-        ${said && html`<${Glyph} name=${MAKE_GLYPH[state]} size=${28} />`}
+        ${state === 'making' && (counted ? html`<${MakeRing} done=${p.done} total=${p.total} />` : html`<${Mark} size=${28} working />`)}
+        ${state !== 'making' && html`<${Glyph} name=${MAKE_GLYPH[state]} size=${28} />`}
       </span>
+      ${counted && html`<${TileBadge} done=${p.done} total=${p.total} />`}
     </span>
-    <span class=${`h-label ${said ? 'h-one' : 'h-two'}`}>${make.request}</span>
-    ${said && html`<span class=${`h-status${state === 'failed' ? ' h-error' : ''}`}>${status}</span>`}
+    <${Label} text=${make.request} lines=${1} />
+    <span class="h-status" data-state=${state}>${status}</span>
   </button>`;
 }
 
-/** The Clax mark at rest, ) · (, drawn as mark.css describes. */
-const Mark = ({ size = 24 }) => html`<svg class="clax-mark h-mark" viewBox="0 0 22 16" style=${`width: ${size}px`} aria-hidden="true">
+/** The Clax mark, ) · (, drawn as mark.css describes: at rest, or
+ * breathing toward Clax while `working`. */
+const Mark = ({ size = 24, working = false }) => html`<svg class=${`clax-mark h-mark${working ? ' is-working' : ''}`} viewBox="0 0 22 16" style=${`width: ${size}px`} aria-hidden="true">
   <path class="clax-mark-you" d="M1.5 2.5a5.5 5.5 0 0 1 0 11"/>
   <circle class="clax-mark-dot" cx="11" cy="8" r="1.7"/>
   <path class="clax-mark-agent" d="M20.5 2.5a5.5 5.5 0 0 0 0 11"/>

@@ -5,12 +5,20 @@ import '../tokens.g.dart';
 
 /// A count in `you` with `on-you` text in the caption role, on [child]'s
 /// top end corner, or alone when [child] is null. Hidden at 0; "99+" above
-/// 99. Both families draw it alike.
+/// 99. [ClaxBadge.label] draws a short text instead, such as a build's
+/// "2/5". Both families draw it alike.
 class ClaxBadge extends StatelessWidget {
-  const ClaxBadge({super.key, required this.count, this.child});
+  const ClaxBadge({super.key, required this.count, this.child}) : label = null;
+
+  /// A badge reading [label], never hidden.
+  const ClaxBadge.label(String this.label, {super.key, this.child})
+    : count = 1;
 
   final int count;
   final Widget? child;
+
+  /// What the badge reads in place of [count].
+  final String? label;
 
   /// The badge's text for [count]: '' at 0 (and below), the count to 99,
   /// then '99+'.
@@ -26,10 +34,13 @@ class ClaxBadge extends StatelessWidget {
     final p = claxPalette(context);
     final platform = Theme.of(context).platform;
     return Badge(
-      label: Text(text(count)),
+      label: Text(label ?? text(count)),
       backgroundColor: p.you,
       textColor: p.onYou,
-      textStyle: ClaxType.of(ClaxRole.caption, platform),
+      // The theme's caption carries its family; the bare role does not.
+      textStyle:
+          Theme.of(context).textTheme.labelSmall ??
+          ClaxType.of(ClaxRole.caption, platform),
       largeSize: 16,
       padding: const EdgeInsets.symmetric(horizontal: 5),
       child: child,

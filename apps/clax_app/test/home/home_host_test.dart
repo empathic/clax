@@ -5,14 +5,20 @@ import 'dart:ui' show Rect;
 
 import 'package:clax_app/agent/plan.dart';
 import 'package:clax_app/agent/worker.dart';
+import 'package:clax_app/bundle/installer.dart';
+import 'package:clax_app/bundle/lineage_store.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/home/home_host.dart';
+import 'package:clax_app/home/home_install.dart';
 import 'package:clax_app/home/home_settings.dart';
 import 'package:clax_app/ui/app_icon.dart';
 import 'package:clax_app/ui/build_plan.dart';
 import 'package:clax_app/ui/make_service.dart';
+import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../support/paths.dart';
 
 const _page = {'index.html': '<!doctype html><title>x</title>'};
 
@@ -36,6 +42,48 @@ class _GatedApi extends FakeClaxApi {
     await gate.future;
     return listed;
   }
+}
+
+/// A fake whose created apps are announced, and fetched by whoever
+/// follows the gallery, before the create answers: the daemon's event can
+/// overtake its response.
+class _EventFirstApi extends FakeClaxApi {
+  _EventFirstApi() : super(clock: _api().clock);
+
+  @override
+  Future<PublishResult> createArtifact(PublishRequest r) async {
+    final made = await super.createArtifact(r);
+    emit(
+      ClaxEvent(
+        type: 'version',
+        data: {'artifact_id': made.artifact.id, 'n': 1},
+      ),
+    );
+    await pumpEventQueue();
+    return made;
+  }
+}
+
+/// Home settings that run [onSave] in place of writing a file.
+class _SavedSettings extends HomeSettings {
+  _SavedSettings(this.onSave);
+
+  final void Function() onSave;
+
+  @override
+  Future<void> save() async => onSave();
+}
+
+/// The shipped home bundle and its release record, from the asset files.
+class _Shipped implements ShippedHome {
+  @override
+  Future<Uint8List> bundle() async =>
+      File(appPath(AssetShippedHome.bundlePath)).readAsBytesSync();
+
+  @override
+  Future<HomeRelease> release() async => HomeRelease.parse(
+    File(appPath(AssetShippedHome.releasePath)).readAsStringSync(),
+  );
 }
 
 class _Actions implements HomeActions {
@@ -277,6 +325,59 @@ void main() {
         (a as Map)['id']],
       [fresh, plain, runs],
     );
+  });
+
+  test('an app a home install makes is never listed, even before '
+      'homeAppId is saved', () async {
+    final first = _EventFirstApi();
+    await first.registerAppSession(installId: 'i-home', pid: 1);
+    final runs = first.seedArtifact('Runs', _page);
+    final tmp = Directory.systemTemp.createTempSync('home-first-run');
+    addTearDown(() => tmp.deleteSync(recursive: true));
+    List<String>? atSave;
+    late HomeHost fresh;
+    final s = _SavedSettings(
+      () => atSave = [for (final a in fresh.summaries ?? const []) a.id],
+    );
+    fresh = HomeHost(
+      api: first,
+      stream: first.stream(),
+      closeStream: true,
+      makes: makes,
+      builds: null,
+      settings: s,
+      actions: actions,
+    );
+    addTearDown(fresh.dispose);
+    await pumpEventQueue();
+    expect(fresh.summaries?.map((a) => a.id), [runs]);
+    final heard = <List<String>>[];
+    fresh.addListener(
+      () => heard.add([for (final a in fresh.summaries ?? const []) a.id]),
+    );
+
+    final installer = Installer(
+      api: first,
+      store: LineageStore(Directory('${tmp.path}/support')),
+      key: homeInstallKey(),
+    );
+    final aid = await ensureHomeApp(
+      s,
+      installer,
+      first,
+      shipped: _Shipped(),
+      installing: fresh.installing,
+    );
+    await pumpEventQueue();
+
+    expect(atSave, [runs], reason: 'left out before homeAppId was saved');
+    for (final ids in heard) {
+      expect(ids, isNot(contains(aid)));
+    }
+    expect(s.homeAppId, aid);
+    expect(fresh.summaries?.map((a) => a.id), [runs]);
+    await fresh.load();
+    expect(fresh.summaries?.map((a) => a.id), [runs]);
   });
 
   test('a make that changes while nobody listens reads as it stands', () async {

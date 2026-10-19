@@ -87,3 +87,26 @@ export function tiltOf(gid, i) {
   for (let k = 0; k < s.length; k++) h = Math.imul(h ^ s.charCodeAt(k), 0x01000193) >>> 0;
   return (h % 1601) / 100 - 8;
 }
+
+/** How a tile's label of `text` lays out in `width` px, at most `lines`
+ * lines (2 by default), where `measure(s)` is the drawn width of `s`:
+ * `{lines, ellipsis}`, `ellipsis` when the last line is cut. Lines break
+ * only between words: line 1 takes the words that fit, and line 2 the
+ * rest, cut at its end. A first word wider than `width` is the label
+ * alone, on one line, cut. With `lines: 1` the whole text is one line. */
+export function tileLabel(text, { measure, width, lines = 2 }) {
+  const words = String(text).trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return { lines: [], ellipsis: false };
+  const fits = (s) => measure(s) <= width;
+  if (lines < 2) {
+    const all = words.join(' ');
+    return { lines: [all], ellipsis: !fits(all) };
+  }
+  if (!fits(words[0])) return { lines: [words[0]], ellipsis: true };
+  let first = words[0];
+  let i = 1;
+  while (i < words.length && fits(`${first} ${words[i]}`)) first += ` ${words[i++]}`;
+  if (i === words.length) return { lines: [first], ellipsis: false };
+  const rest = words.slice(i).join(' ');
+  return { lines: [first, rest], ellipsis: !fits(rest) };
+}

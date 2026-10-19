@@ -191,22 +191,30 @@ body {
   :root:not([data-theme="light"]) .h-face.h-make { background: var(--h-pc); color: var(--h-on-pc); }
   :root:not([data-theme="light"]) .h-face.h-make.h-failed { background: var(--h-ec); color: var(--h-on-ec); }
 }
-.h-over {
-  position: absolute; inset: 0; border-radius: calc(var(--face, 60px) / 4); display: grid; place-items: center;
-  background: var(--h-surface);
-}
-@supports (color: color-mix(in srgb, red, red)) { .h-over { background: color-mix(in srgb, var(--h-surface) 82%, transparent); } }
 .h-label {
   margin-top: 8px; max-width: 100%; text-align: center; overflow: hidden;
-  display: -webkit-box; -webkit-box-orient: vertical; overflow-wrap: anywhere;
+  font: var(--type-caption);
+  overflow-wrap: normal; word-break: normal; hyphens: auto;
 }
-.h-two { -webkit-line-clamp: 2; line-clamp: 2; }
+/* Before a label is measured into lines (or where it cannot be), CSS
+ * wraps it between words. */
+.h-two { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
 .h-one { display: block; white-space: nowrap; text-overflow: ellipsis; }
+/* A measured line: whole words, cut with an ellipsis when too wide. */
+.h-line { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .h-status {
-  max-width: 100%; color: var(--h-on-variant); text-align: center;
+  max-width: 100%; color: var(--muted); text-align: center; font: var(--type-caption);
   overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
 }
-.h-status.h-error { color: var(--h-error); }
+.h-status[data-state="making"] { color: var(--agent-ink); }
+.h-status[data-state="failed"], .h-status.h-error { color: var(--danger); }
+/* An app whose build goes: its icon at full strength in a 3 px ring of
+ * `agent`, with how far it is in a badge at the corner. */
+.h-build-ring {
+  position: absolute; inset: -5px; pointer-events: none;
+  border: 3px solid var(--agent); border-radius: calc(var(--face, 60px) / 4 + 5px);
+}
+.h-badge.h-tile-badge { top: -7px; left: auto; right: -9px; z-index: 1; font-variant-numeric: tabular-nums; }
 /* A big tile: an app opened most lately, over a 2×2 cell, its icon twice
  * the size, its top in line with the icons of its first row and its name
  * under it; the name keeps its size. */
@@ -215,25 +223,11 @@ body {
 .h-tile[data-big] .h-mono { font-size: 44px; }
 .h-tile[data-big] .h-face[data-kind="word"] svg { width: 56px; height: 56px; stroke-width: 2; }
 
-/* Rings. */
-.h-ring { position: relative; width: 36px; height: 36px; display: block; }
-.h-ring svg, .h-spinner svg { display: block; fill: none; }
-.h-ring-track { stroke: var(--h-track); stroke-width: 3; }
-.h-ring-arc, .h-spin-arc { stroke: var(--h-primary); stroke-width: 3; stroke-linecap: round; }
-.h-ring-text {
-  position: absolute; inset: 0; display: grid; place-items: center;
-  color: var(--h-on-surface); font: 600 11px/16px var(--k-font);
-  font-variant-numeric: tabular-nums;
-}
-.h-spinner { width: 36px; height: 36px; padding: 4px; display: block; }
-.h-spinner svg { animation: h-spin 1.4s linear infinite; }
-.h-spin-arc { stroke-dasharray: 22 100; animation: h-arc 1.4s ease-in-out infinite; }
-@keyframes h-spin { to { transform: rotate(360deg); } }
-@keyframes h-arc {
-  0% { stroke-dasharray: 2 100; stroke-dashoffset: 0; }
-  50% { stroke-dasharray: 50 100; stroke-dashoffset: -12; }
-  100% { stroke-dasharray: 2 100; stroke-dashoffset: -77; }
-}
+/* A make's ring, `agent` on `border`, round the breathing mark. */
+.h-ring { position: relative; width: 36px; height: 36px; display: grid; place-items: center; }
+.h-ring svg:not(.clax-mark) { position: absolute; inset: 0; display: block; fill: none; }
+.h-ring-track { stroke: var(--border); stroke-width: 3; }
+.h-ring-arc { stroke: var(--agent); stroke-width: 3; stroke-linecap: round; }
 
 /* Messages: empty, load error, elsewhere. The app's ClaxEmpty: a centred
  * column at most 360 wide, the mark or a muted glyph, title-2, the body

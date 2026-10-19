@@ -2,6 +2,7 @@
 /// run, and finding it again on later ones.
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -110,11 +111,17 @@ class _NoSeed implements BundleSeedStorage {
 /// [Installer.open] verifies against the key the bundle carries; else
 /// [HomeInstallError]. Needs only the local daemon. Throws what
 /// [ClaxApi] and [Installer] throw, with [settings] unchanged.
+///
+/// A new install first tells [installing] (`HomeHost.installing`) of the
+/// app it makes: a future of its ID, which completes as soon as the
+/// daemon made it (null when no app was made), so the home screen never
+/// lists the home app before [settings] names it.
 Future<String> ensureHomeApp(
   HomeSettings settings,
   Installer installer,
   ClaxApi api, {
   ShippedHome? shipped,
+  void Function(Future<String?> made)? installing,
 }) async {
   if (settings.homeAppId case final aid? when await _exists(api, aid)) {
     return aid;
@@ -132,7 +139,7 @@ Future<String> ensureHomeApp(
     TrustAnswer.older => d.aid!,
     TrustAnswer.install ||
     TrustAnswer.foreign ||
-    TrustAnswer.forked => await installer.install(opened),
+    TrustAnswer.forked => await _install(installer, opened, installing),
   };
   final was = settings.homeAppId;
   settings.homeAppId = aid;
@@ -143,6 +150,22 @@ Future<String> ensureHomeApp(
     rethrow;
   }
   return aid;
+}
+
+/// [Installer.install] of [opened], telling [installing] of the app's ID
+/// once it is made (null when the install failed first).
+Future<String> _install(
+  Installer installer,
+  OpenedBundle opened,
+  void Function(Future<String?> made)? installing,
+) async {
+  final made = Completer<String?>();
+  installing?.call(made.future);
+  try {
+    return await installer.install(opened, made: made.complete);
+  } finally {
+    if (!made.isCompleted) made.complete(null);
+  }
 }
 
 /// Throws [HomeInstallError] unless [m] is the bundle [release] names:

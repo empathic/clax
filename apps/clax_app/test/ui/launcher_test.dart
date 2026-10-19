@@ -12,6 +12,7 @@ import 'package:clax_app/ui/kit/kit.dart';
 import 'package:clax_app/ui/launcher.dart';
 import 'package:clax_app/ui/making_screen.dart';
 import 'package:clax_app/ui/theme.dart';
+import 'package:clax_app/ui/tile_label.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -22,6 +23,10 @@ import 'package:flutter_test/flutter_test.dart';
 import '../support/fake_voice.dart';
 
 const _page = {'index.html': '<!doctype html><title>x</title>'};
+
+/// An app's tile label reading [title], whatever lines it breaks into.
+Finder _tile(String title) =>
+    find.byWidgetPredicate((w) => w is TileLabel && w.text == title);
 
 /// A fake whose stamps increase, so later artifacts are newer.
 FakeClaxApi _api() {
@@ -68,8 +73,8 @@ void main() {
     api.seedArtifact('Old runs', _page);
     api.seedArtifact('Groceries', _page);
     await pumpLauncher(tester, api);
-    final older = tester.getTopLeft(find.text('Old runs'));
-    final newer = tester.getTopLeft(find.text('Groceries'));
+    final older = tester.getTopLeft(_tile('Old runs'));
+    final newer = tester.getTopLeft(_tile('Groceries'));
     expect(
       newer.dy < older.dy || (newer.dy == older.dy && newer.dx < older.dx),
       isTrue,
@@ -106,7 +111,7 @@ void main() {
     api.seedArtifact('Back again', _page);
     await tester.tap(find.text('Try again'));
     await tester.pumpAndSettle();
-    expect(find.text('Back again'), findsOneWidget);
+    expect(_tile('Back again'), findsOneWidget);
     expect(find.byType(FloatingActionButton), findsOneWidget);
   });
 
@@ -117,10 +122,10 @@ void main() {
     api.seedArtifact('Old runs', _page);
     await pumpLauncher(tester, api);
     final aid = api.seedArtifact('Fresh app', _page);
-    expect(find.text('Fresh app'), findsNothing);
+    expect(_tile('Fresh app'), findsNothing);
     api.emit(ClaxEvent(type: 'version', data: {'artifact_id': aid, 'n': 1}));
     await tester.pumpAndSettle();
-    expect(find.text('Fresh app'), findsOneWidget);
+    expect(_tile('Fresh app'), findsOneWidget);
     expect(api.callNames, isNot(contains('events')));
     final names = api.callNames;
     expect(
@@ -430,7 +435,7 @@ void main() {
     proceed.complete();
     await frames(tester);
     expect(find.byKey(const ValueKey('making-tile')), findsNothing);
-    expect(find.text('a stopwatch'), findsOneWidget, reason: 'its app tile');
+    expect(_tile('a stopwatch'), findsOneWidget, reason: 'its app tile');
     expect(opened, isEmpty, reason: 'nothing opens by itself');
   });
 
@@ -570,7 +575,7 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect((loads(), counts()), (lists, sums + 1));
-    expect(find.text('Made while away'), findsNothing);
+    expect(_tile('Made while away'), findsNothing);
     api.emitStream(
       const StreamEvent(
         topic: 'gallery',
@@ -580,7 +585,7 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(loads(), lists + 1);
-    expect(find.text('Made while away'), findsOneWidget);
+    expect(_tile('Made while away'), findsOneWidget);
   });
 
   testWidgets('a shared stream is used for the launcher and its inbox, and '
@@ -783,13 +788,37 @@ void main() {
   });
 
   group('tile layout at 412 dp', () {
-    for (final scale in [1.0, 1.3]) {
-      testWidgets('two-line titles fit at text scale $scale', (tester) async {
+    /// The lines [title]'s tile label draws.
+    List<RenderParagraph> lines(WidgetTester tester, String title) => tester
+        .renderObjectList<RenderParagraph>(
+          find.descendant(of: _tile(title), matching: find.byType(RichText)),
+        )
+        .toList();
+
+    /// Expects each line to be whole words of [title].
+    void wholeWords(List<RenderParagraph> ps, String title) {
+      final words = title.split(' ').toSet();
+      for (final p in ps) {
+        for (final w in p.text.toPlainText().split(' ')) {
+          expect(words, contains(w), reason: title);
+        }
+      }
+    }
+
+    for (final scale in [1.0, 1.3, 2.0]) {
+      testWidgets('two-line titles fit at text scale $scale, breaking '
+          'between words only', (tester) async {
         tester.view.physicalSize = const Size(412, 892);
         tester.view.devicePixelRatio = 1;
         addTearDown(tester.view.reset);
         final api = _api();
-        for (final t in ['Mood journal', 'Weekly run tracker', 'Water']) {
+        const titles = [
+          'Mood journal',
+          'Weekly run tracker',
+          'Water',
+          'Kindergarten pickup rota',
+        ];
+        for (final t in titles) {
           api.seedArtifact(t, _page);
         }
         await tester.pumpWidget(
@@ -809,10 +838,16 @@ void main() {
         );
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);
-        final title = tester.renderObject<RenderParagraph>(
-          find.text('Weekly run tracker'),
-        );
-        expect(title.size.height, greaterThan(title.text.style!.fontSize!));
+        for (final t in titles) {
+          final ps = lines(tester, t);
+          expect(ps.length, inInclusiveRange(1, 2), reason: t);
+          wholeWords(ps, t);
+        }
+        // The test font is 1 em a character: larger, "Weekly" alone is
+        // wider than the cell.
+        if (scale == 1) {
+          expect(lines(tester, 'Weekly run tracker'), hasLength(2));
+        }
       });
     }
 
@@ -826,10 +861,29 @@ void main() {
       api.seedArtifact(long, _page);
       await pumpLauncher(tester, api);
       expect(tester.takeException(), isNull);
-      final p = tester.renderObject<RenderParagraph>(find.text(long));
-      expect(p.maxLines, 2);
-      expect(p.didExceedMaxLines, isTrue);
+      final ps = lines(tester, long);
+      expect(ps, hasLength(2));
+      expect(ps.first.didExceedMaxLines, isFalse);
+      expect(ps.last.didExceedMaxLines, isTrue);
+      wholeWords(ps, long);
     });
+
+    testWidgets('a word wider than the cell is one ellipsized line', (
+      tester,
+    ) async {
+      tester.view.physicalSize = const Size(412, 892);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final api = _api();
+      const long = 'Donaudampfschifffahrtsgesellschaftskapitän';
+      api.seedArtifact(long, _page);
+      await pumpLauncher(tester, api);
+      final ps = lines(tester, long);
+      expect(ps, hasLength(1));
+      expect(ps.single.text.toPlainText(), long);
+      expect(ps.single.didExceedMaxLines, isTrue);
+    });
+
   });
 
   group('inbox', () {

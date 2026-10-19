@@ -265,15 +265,40 @@ class HomeHost extends ChangeNotifier {
   );
 
   /// The apps as the daemon lists them, newest first, the home app left
-  /// out; null until the first load answered.
+  /// out (and every app a home install made, [installing]); null until
+  /// the first load answered.
   List<ArtifactSummary>? get summaries {
     final home = settings.homeAppId;
     final all = _summaries;
-    if (all == null || home == null) return all;
+    if (all == null || (home == null && _installed.isEmpty)) return all;
     return [
       for (final a in all)
-        if (a.id != home) a,
+        if (a.id != home && !_installed.contains(a.id)) a,
     ];
+  }
+
+  /// The apps the home app's installs made.
+  final _installed = <String>{};
+
+  /// The app a home install is making, until the daemon made it.
+  Future<String?>? _making;
+
+  /// A home install is making the home app ([ensureHomeApp]'s
+  /// `installing`): [made] completes with its ID once the daemon made it,
+  /// or null. Until then the list's answers and the apps heard of wait
+  /// for it; from then on [summaries] leaves that app out, before
+  /// [HomeSettings.homeAppId] is saved.
+  void installing(Future<String?> made) {
+    final f = made.then<String?>((aid) => aid, onError: (Object _) => null);
+    _making = f;
+    unawaited(
+      f.then((aid) {
+        if (identical(_making, f)) _making = null;
+        if (aid == null || _dead) return;
+        _installed.add(aid);
+        _changed();
+      }),
+    );
   }
 
   /// Why the last load of the list failed, while it stands.
@@ -692,6 +717,7 @@ class HomeHost extends ChangeNotifier {
     final n = ++_loads;
     try {
       final apps = await api.listArtifacts();
+      if (_making case final made?) await made;
       if (_dead || n != _loads) return;
       _summaries = _newestFirst(_withEarly(apps));
       _loadError = null;
@@ -778,6 +804,7 @@ class HomeHost extends ChangeNotifier {
     }
     try {
       final summary = (await api.getArtifact(aid)).artifact;
+      if (_making case final made?) await made;
       if (_dead) return;
       final listed = _summaries;
       if (listed == null) {

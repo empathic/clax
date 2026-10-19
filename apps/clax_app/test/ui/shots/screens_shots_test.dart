@@ -5,11 +5,14 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:clax_app/agent/plan.dart';
+import 'package:clax_app/agent/worker.dart';
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/home/home_route.dart' show HomeBanner;
 import 'package:clax_app/platform/secure_key.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/app_icon.dart';
+import 'package:clax_app/ui/build_plan.dart';
 import 'package:clax_app/ui/launcher.dart';
 import 'package:clax_app/ui/make_service.dart';
 import 'package:clax_app/ui/settings_screen.dart';
@@ -42,6 +45,37 @@ const _icons = {
   'Run tracker': 'runs',
 };
 
+/// Builds as the worker reports them, pushed by the test.
+class _Builds implements BuildControl {
+  final _c = StreamController<BuildState>.broadcast(sync: true);
+  final _states = <String, BuildState>{};
+
+  void emit(BuildState b) {
+    _states[b.appId] = b;
+    _c.add(b);
+  }
+
+  @override
+  Stream<BuildState> get builds => _c.stream;
+
+  @override
+  BuildState? buildOf(String appId) => _states[appId];
+
+  @override
+  Future<void> stopBuild(String appId) async {}
+
+  @override
+  Future<void> resumeBuild(String appId) async {}
+}
+
+const _features = [
+  PlanFeature(id: 'f1', title: 'Log a spend', status: FeatureStatus.done),
+  PlanFeature(id: 'f2', title: 'Weekly chart', status: FeatureStatus.done),
+  PlanFeature(id: 'f3', title: 'Export CSV', status: FeatureStatus.doing),
+  PlanFeature(id: 'f4', title: 'Goals'),
+  PlanFeature(id: 'f5', title: 'Reminders'),
+];
+
 void main() {
   shots('settings', (s) async {
     final dir = Directory.systemTemp.createTempSync('clax-shots-settings-');
@@ -66,10 +100,14 @@ void main() {
 
   shots('launcher', (s) async {
     final makes = MakeService(
-      (r, cancelled, stage) => Completer<String>().future,
+      (r, cancelled, stage) => r.startsWith('A tide')
+          ? Future<String>.error(StateError('no key'))
+          : Completer<String>().future,
       maxRunning: 1,
     );
     addTearDown(makes.dispose);
+    makes.start('A tide table for the harbour');
+    await s.tester.runAsync(() => Future<void>.delayed(Duration.zero));
     makes.lost('A water reminder every two hours');
     makes.add('A reading log');
     makes.start('A packing list for trips');
@@ -79,14 +117,23 @@ void main() {
     );
     api.seedArtifact('Notes', {'index.html': '<p>n</p>'});
     api.seedArtifact('Mood journal', {'index.html': '<p>m</p>'});
+    api.seedArtifact('Kindergarten pickup rota', {'index.html': '<p>k</p>'});
+    api.seedArtifact('Donaudampfschifffahrtsgesellschaftskapitän', {
+      'index.html': '<p>d</p>',
+    });
+    String? building;
     for (final e in _icons.entries) {
-      api.seedArtifact(e.key, {
+      final aid = api.seedArtifact(e.key, {
         'index.html': '<p>x</p>',
         'icon.svg': File(
           appPath('test/fixtures/icons/${e.value}.svg'),
         ).readAsStringSync(),
       });
+      if (e.key == 'Weekly budget') building = aid;
     }
+    final plans = PlanStore();
+    await s.tester.runAsync(() => plans.set(building!, _features));
+    final control = _Builds();
     await s.tester.pumpWidget(
       s.app(
         Launcher(
@@ -96,10 +143,12 @@ void main() {
           voice: FakeVoice.unsupported('No speech here'),
           icons: AppIcons(api),
           makes: makes,
+          build: BuildLink(plans: plans, control: control),
         ),
       ),
     );
-    // The making ring spins, so pump a while rather than settle.
+    control.emit(BuildState(building!, BuildPhase.running, featureId: 'f3'));
+    // The making mark breathes, so pump a while rather than settle.
     await s.settle(10);
     await s.take('launcher');
   });

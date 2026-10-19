@@ -1033,8 +1033,13 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       events: stream?.events.map(
         (e) => ClaxEvent(type: e.type, data: e.data, id: e.id),
       ),
-      install: () =>
-          ensureHomeApp(host.settings, installer, _api, shipped: shipped),
+      install: () => ensureHomeApp(
+        host.settings,
+        installer,
+        _api,
+        shipped: shipped,
+        installing: host.installing,
+      ),
       changed: () {
         if (mounted) host.settingsChanged();
       },
