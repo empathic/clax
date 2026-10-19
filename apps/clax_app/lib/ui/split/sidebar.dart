@@ -293,7 +293,7 @@ class _ClaxSidebarState extends State<ClaxSidebar> {
           onSecondaryTap: widget.onMenu == null
               ? null
               : (rect) => widget.onMenu!(app.id, rect),
-          leading: _AppIcon(app: app, host: model.host),
+          leading: SidebarAppIcon(app: app, host: model.host),
           title: app.title,
           trailing: unread > 0 ? ClaxBadge(count: unread) : null,
         );
@@ -310,7 +310,7 @@ class _ClaxSidebarState extends State<ClaxSidebar> {
                 child: _SidebarTile(
                   selected: false,
                   focused: false,
-                  leading: _AppIcon(app: app, host: model.host),
+                  leading: SidebarAppIcon(app: app, host: model.host),
                   title: Text(
                     app.title,
                     style: body.copyWith(color: p.fg),
@@ -522,12 +522,18 @@ class _SidebarTileState extends State<_SidebarTile> {
   }
 }
 
-/// App [app]'s icon at 20 points, from [host]'s list.
-class _AppIcon extends StatelessWidget {
-  const _AppIcon({required this.app, required this.host});
+/// App [app]'s icon, [size] across (`tile` radius), from [host]'s list.
+class SidebarAppIcon extends StatelessWidget {
+  const SidebarAppIcon({
+    super.key,
+    required this.app,
+    required this.host,
+    this.size = 20,
+  });
 
   final HomeApp app;
   final HomeHost host;
+  final double size;
 
   @override
   Widget build(BuildContext context) {
@@ -542,8 +548,8 @@ class _AppIcon extends StatelessWidget {
     return AppBadge(
       app: summary,
       svg: host.icons?.svgOf(app.id),
-      size: 20,
-      radius: ClaxRadius.tile(20),
+      size: size,
+      radius: ClaxRadius.tile(size),
     );
   }
 }

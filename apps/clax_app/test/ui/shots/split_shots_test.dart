@@ -12,13 +12,16 @@
 // macos/Runner/WindowBridge.swift measures it on macOS 26), with stand-ins
 // for what flutter_test cannot draw: the sidebar material behind the clear
 // sidebar, the window buttons, and the native toolbar's items. The wide
-// form is an Android tablet's, with the Material list pane.
+// form is an Android tablet's, with the navigation rail (three unread in
+// the inbox) and the Material list pane; `split-home-medium-<theme>` and
+// `split-app-medium-<theme>` are a 720 dp window's rail and one pane.
 //
 //   SHOTS="$PWD/target/flutter-app/shots"; mkdir -p "$SHOTS"
 //   bazelisk test //apps/clax_app:ui_shots_split_shots_test \
 //     --nocache_test_results --test_env=CLAX_SHOTS_DIR="$SHOTS" \
 //     --sandbox_writable_path="$SHOTS"
 import 'package:clax_app/agent/progress.dart';
+import 'package:clax_app/clax/api.dart' show StreamEvent;
 import 'package:clax_app/ui/kit/kit.dart';
 import 'package:clax_app/ui/making_preview.dart';
 import 'package:clax_app/ui/making_screen.dart';
@@ -35,6 +38,17 @@ import '../../support/split_fixture.dart';
 import 'rig.dart';
 
 const _bar = WindowTitlebar(top: 52, leading: 79);
+
+/// An Android window at the medium size class: a large foldable opened,
+/// or a small tablet upright.
+const _medium = ShotForm(
+  'medium',
+  Size(720, 1024),
+  2,
+  TargetPlatform.android,
+  top: 24,
+  bottom: 16,
+);
 
 /// macOS's default accent (Multicolor), light and dark.
 final accent = ValueNotifier<SystemAccent?>((
@@ -486,6 +500,14 @@ void main() {
   for (final scene in ['home', 'app', 'make']) {
     shots('split-$scene', (s) async {
       final (f, model) = await fixture(s.tester);
+      f.api.emitStream(
+        const StreamEvent(
+          topic: 'inbox',
+          type: 'inbox_read',
+          data: {'topic': 'inbox', 'ids': null, 'read': true, 'unread': 3},
+        ),
+      );
+      await s.tester.runAsync(() => Future<void>.delayed(Duration.zero));
       if (scene == 'app') model.select(AppSelected(f.ids['Groceries']!));
       if (scene == 'make') _making(f, model);
       await s.tester.pumpWidget(
@@ -505,6 +527,6 @@ void main() {
       await s.take('split-$scene');
       model.dispose();
       f.dispose();
-    }, forms: const [wide]);
+    }, forms: [wide, if (scene != 'make') _medium]);
   }
 }

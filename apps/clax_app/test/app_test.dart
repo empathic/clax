@@ -34,6 +34,7 @@ import 'package:clax_app/ui/shortcuts.dart';
 import 'package:clax_app/ui/split/sidebar.dart';
 import 'package:clax_app/ui/split/split_shell.dart';
 import 'package:clax_app/ui/thread_detail.dart' show ThreadDetail;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -173,11 +174,23 @@ class _Rig {
 void main() {
   late _Rig rig;
 
+  /// Pumps the app over [r] in a window of [size]: an Android phone's by
+  /// default on Android, where a wider window lays out as a split one, and
+  /// the test's own window elsewhere.
   Future<void> pumpApp(
     WidgetTester tester,
     _Rig r, {
     WindowContents? windows,
+    Size? size,
   }) async {
+    size ??= defaultTargetPlatform == TargetPlatform.android
+        ? const Size(412, 915)
+        : null;
+    if (size != null) {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+    }
     rig = r;
     addTearDown(r.dispose);
     await tester.pumpWidget(AppRoot(services: r.services(), windows: windows));
@@ -513,10 +526,11 @@ void main() {
       () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(SystemChannels.menu, null),
     );
-    tester.view.physicalSize = const Size(1200, 800);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.reset);
-    await pumpApp(tester, _Rig(key: 'sk-ant-x'));
+    await pumpApp(
+      tester,
+      _Rig(key: 'sk-ant-x'),
+      size: const Size(1200, 800),
+    );
     final aid = rig.api.seedArtifact('Runs', {'index.html': _page});
     await up(tester);
     rig.api.emit(ClaxEvent(type: 'version', data: {'artifact_id': aid}));
@@ -545,12 +559,13 @@ void main() {
       () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(SystemChannels.menu, null),
     );
-    tester.view.physicalSize = const Size(1200, 800);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.reset);
     NavigatorState nav() =>
         tester.state<NavigatorState>(find.byType(Navigator).first);
-    await pumpApp(tester, _Rig(key: 'sk-ant-x'));
+    await pumpApp(
+      tester,
+      _Rig(key: 'sk-ant-x'),
+      size: const Size(1200, 800),
+    );
     await up(tester);
     expect(find.byType(SplitShell), findsOneWidget);
     rig.backend.gate = Completer<void>();
@@ -599,11 +614,41 @@ void main() {
     expect(nav().canPop(), isFalse);
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
+  testWidgets('a wide Android window shows Settings and Inbox beside its '
+      'rail, not over it, and Back goes Home', (tester) async {
+    NavigatorState nav() =>
+        tester.state<NavigatorState>(find.byType(Navigator).first);
+    Finder rail(String label) => find.descendant(
+      of: find.byKey(const ValueKey('split-rail')),
+      matching: find.text(label),
+    );
+    await pumpApp(
+      tester,
+      _Rig(key: 'sk-ant-x'),
+      size: const Size(1280, 800),
+    );
+    await up(tester);
+    expect(find.byType(SplitShell), findsOneWidget);
+    await tester.tap(rail('Settings'));
+    await pumpRoute(tester);
+    expect(find.byType(SettingsScreen), findsOneWidget);
+    expect(nav().canPop(), isFalse, reason: 'beside the rail, not a route');
+    await tester.binding.handlePopRoute();
+    await pumpRoute(tester);
+    expect(find.byType(SettingsScreen), findsNothing);
+    expect(find.byType(SplitShell), findsOneWidget);
+
+    await tester.tap(rail('Inbox'));
+    await pumpRoute(tester);
+    expect(find.byType(InboxSplit), findsOneWidget);
+    expect(nav().canPop(), isFalse);
+    await tester.tap(rail('Home'));
+    await pumpRoute(tester);
+    expect(find.byType(InboxSplit), findsNothing);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
   testWidgets('an Android phone has no split window, and an app opens over '
       'the home screen', (tester) async {
-    tester.view.physicalSize = const Size(412, 915);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.reset);
     await pumpApp(tester, _Rig(key: 'sk-ant-x'));
     final aid = rig.api.seedArtifact('Runs', {'index.html': _page});
     await up(tester);

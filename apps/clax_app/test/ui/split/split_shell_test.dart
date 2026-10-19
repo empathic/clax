@@ -2,6 +2,8 @@ import 'package:clax_app/ui/kit/kit.dart';
 import 'package:clax_app/ui/kit/native_dialogs.dart';
 import 'package:clax_app/ui/mac/mac_toolbar.dart';
 import 'package:clax_app/ui/mac/window_channel.dart';
+import 'package:clax_app/clax/api.dart' show StreamEvent;
+import 'package:clax_app/ui/split/list_pane.dart';
 import 'package:clax_app/ui/split/sidebar.dart';
 import 'package:clax_app/ui/split/sidebar_model.dart';
 import 'package:clax_app/ui/split/split_shell.dart';
@@ -16,6 +18,7 @@ import '../../support/split_fixture.dart';
 
 final _mac = TargetPlatformVariant.only(TargetPlatform.macOS);
 final _ipad = TargetPlatformVariant.only(TargetPlatform.iOS);
+final _android = TargetPlatformVariant.only(TargetPlatform.android);
 
 void main() {
   late SplitFixture f;
@@ -84,6 +87,8 @@ void main() {
           onMenu: (id, _) => menus.add(id),
           onDelete: (id) async => deleted.add(id),
           now: () => now,
+          inbox: (_) => const Center(child: Text('inbox pane')),
+          settings: (_) => const Center(child: Text('settings pane')),
         ),
       ),
     );
@@ -485,14 +490,217 @@ void main() {
     expect(f.host.chrome.toolbar, isFalse);
   }, variant: _mac);
 
-  testWidgets('without Mac window chrome the split leaves the home app its '
-      'own bar: an iPad, and Android at 1280', (tester) async {
+  testWidgets('an iPad\'s split leaves the home app its own bar', (
+    tester,
+  ) async {
     await pumpShell(tester, size: const Size(1280, 800));
     expect(find.byType(SplitShell), findsOneWidget);
     expect(f.host.chrome.toolbar, isFalse);
-  }, variant: TargetPlatformVariant(
-    const {TargetPlatform.iOS, TargetPlatform.android},
-  ));
+  }, variant: _ipad);
+
+  /// The rail's destination labelled [label].
+  Finder railItem(String label) => find.descendant(
+    of: find.byKey(const ValueKey('split-rail')),
+    matching: find.text(label),
+  );
+
+  testWidgets('on Android at 1280 by 800 a rail of 80, a list pane of 360 '
+      'and the detail beside them', (tester) async {
+    await pumpShell(tester, size: const Size(1280, 800));
+    expect(tester.getSize(find.byKey(const ValueKey('split-rail'))).width, 80);
+    expect(find.byType(ClaxListPane), findsOneWidget);
+    expect(find.byType(ClaxSidebar), findsNothing);
+    expect(
+      tester.getSize(find.byKey(const ValueKey('split-sidebar'))).width,
+      360,
+    );
+    expect(
+      tester.getTopLeft(find.byKey(const ValueKey('split-sidebar'))).dx,
+      80,
+    );
+    // The rail, the list and a hairline, then the detail to the edge.
+    final detail = find.byKey(const ValueKey('split-detail'));
+    expect(tester.getTopLeft(detail).dx, 441);
+    expect(tester.getTopRight(detail).dx, 1280);
+    expect(find.text('home grid'), findsOneWidget);
+    // Home is the rail's; the list has Starred, Apps and Making.
+    for (final label in ['New', 'Home', 'Inbox', 'Settings']) {
+      expect(railItem(label), findsOneWidget, reason: label);
+    }
+    final pane = find.byType(ClaxListPane);
+    for (final title in ['Starred', 'Apps', 'Making', 'Tools', 'Groceries']) {
+      expect(
+        find.descendant(of: pane, matching: find.text(title)),
+        findsOneWidget,
+        reason: title,
+      );
+    }
+    expect(find.descendant(of: pane, matching: find.text('Home')), findsNothing);
+    await tester.tap(find.descendant(of: pane, matching: find.text('Groceries')));
+    await tester.pump();
+    expect(
+      find.text('detail of AppSelected(${f.ids['Groceries']})'),
+      findsOneWidget,
+    );
+  }, variant: _android);
+
+  testWidgets('on Android at 700 the rail and one pane: the grid, and an app '
+      'in its place until Home', (tester) async {
+    await pumpShell(tester, size: const Size(700, 900));
+    expect(tester.getSize(find.byKey(const ValueKey('split-rail'))).width, 80);
+    expect(find.byType(ClaxListPane), findsNothing);
+    expect(find.text('home grid'), findsOneWidget);
+    expect(tester.getTopLeft(find.byKey(const ValueKey('split-detail'))).dx, 80);
+    model.select(AppSelected(f.ids['Budget']!));
+    await tester.pump();
+    expect(find.text('detail of AppSelected(${f.ids['Budget']})'), findsOneWidget);
+    await tester.tap(railItem('Home'));
+    await tester.pump();
+    expect(find.text('home grid'), findsOneWidget);
+    expect(model.selection, const HomeSelected());
+  }, variant: _android);
+
+  testWidgets('the rail\'s Inbox shows the unread count, and no badge at 0', (
+    tester,
+  ) async {
+    await pumpShell(tester, size: const Size(1280, 800));
+    Finder count(String n) => find.descendant(
+      of: find.byKey(const ValueKey('split-rail')),
+      matching: find.text(n),
+    );
+    Future<void> unread(int n) async {
+      f.api.emitStream(
+        StreamEvent(
+          topic: 'inbox',
+          type: 'inbox_read',
+          data: {'topic': 'inbox', 'ids': null, 'read': true, 'unread': n},
+        ),
+      );
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await tester.pump();
+      expect(f.host.unread, n);
+    }
+
+    await unread(3);
+    expect(count('3'), findsOneWidget);
+    await unread(0);
+    expect(count('3'), findsNothing);
+    expect(count('0'), findsNothing);
+  }, variant: _android);
+
+  testWidgets('New app on the rail opens the New app sheet', (tester) async {
+    await pumpShell(tester, size: const Size(1280, 800));
+    await tester.tap(find.byKey(const ValueKey('rail-new')));
+    await tester.pump();
+    expect(f.actions.calls.last.$1, 'newApp');
+    f.actions.calls.clear();
+    await tester.tap(railItem('New'));
+    await tester.pump();
+    expect(f.actions.calls.single.$1, 'newApp');
+  }, variant: _android);
+
+  testWidgets('Inbox and Settings are rail destinations in place of the '
+      'panes; Home, Back or an app chosen elsewhere brings the panes back', (
+    tester,
+  ) async {
+    await pumpShell(tester, size: const Size(1280, 800));
+    final shell = tester.state<SplitShellState>(find.byType(SplitShell));
+    await tester.tap(railItem('Inbox'));
+    await tester.pump();
+    expect(find.text('inbox pane'), findsOneWidget);
+    expect(find.byType(ClaxListPane), findsNothing);
+    expect(shell.place, SplitPlace.inbox);
+    await tester.tap(railItem('Settings'));
+    await tester.pump();
+    expect(find.text('settings pane'), findsOneWidget);
+    expect(find.text('inbox pane'), findsNothing);
+    await tester.tap(railItem('Home'));
+    await tester.pump();
+    expect(find.text('home grid'), findsOneWidget);
+    expect(find.byType(ClaxListPane), findsOneWidget);
+
+    // The platform's Back from a destination goes Home.
+    expect(shell.go(SplitPlace.inbox), isTrue);
+    await tester.pump();
+    expect(find.text('inbox pane'), findsOneWidget);
+    await tester.binding.handlePopRoute();
+    await tester.pump();
+    expect(shell.place, SplitPlace.home);
+    expect(find.text('home grid'), findsOneWidget);
+
+    // An app opened from the inbox shows in the panes.
+    shell.go(SplitPlace.inbox);
+    await tester.pump();
+    model.select(AppSelected(f.ids['Weather']!));
+    await tester.pump();
+    expect(shell.place, SplitPlace.home);
+    expect(find.text('detail of AppSelected(${f.ids['Weather']})'), findsOneWidget);
+  }, variant: _android);
+
+  testWidgets('the home app\'s grid stays built under Inbox and Settings', (
+    tester,
+  ) async {
+    await pumpShell(tester, size: const Size(1280, 800));
+    final shell = tester.state<SplitShellState>(find.byType(SplitShell));
+    final grid = tester.element(find.text('home grid'));
+    shell.go(SplitPlace.settings);
+    await tester.pump();
+    expect(find.text('home grid'), findsNothing);
+    shell.go(SplitPlace.home);
+    await tester.pump();
+    expect(tester.element(find.text('home grid')), same(grid));
+  }, variant: _android);
+
+  testWidgets('without a rail no destination is taken: the Mac', (
+    tester,
+  ) async {
+    await pumpShell(tester, size: const Size(1200, 800));
+    final shell = tester.state<SplitShellState>(find.byType(SplitShell));
+    expect(find.byKey(const ValueKey('split-rail')), findsNothing);
+    expect(shell.go(SplitPlace.inbox), isFalse);
+    expect(shell.place, SplitPlace.home);
+  }, variant: _mac);
+
+  testWidgets('the list pane\'s search narrows the list and the grid; '
+      'Control-F puts the keyboard in it', (tester) async {
+    await pumpShell(tester, size: const Size(1280, 800));
+    final search = find.byKey(const ValueKey('list-pane-search'));
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyF);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pump();
+    await tester.pump();
+    final field = find.descendant(of: search, matching: find.byType(EditableText));
+    expect(tester.widget<EditableText>(field).focusNode.hasFocus, isTrue);
+    await tester.enterText(search, 'gro');
+    await tester.pump();
+    expect(model.filter, 'gro');
+    expect(f.host.query, 'gro');
+    final pane = find.byType(ClaxListPane);
+    expect(find.descendant(of: pane, matching: find.text('Groceries')), findsOneWidget);
+    expect(find.descendant(of: pane, matching: find.text('Budget')), findsNothing);
+  }, variant: _android);
+
+  testWidgets('wide Android holds the toolbar for the home app while the list '
+      'pane carries Search and the rail New app, Inbox and Settings; at 700, '
+      'with no Search beside the grid, the home app keeps its bar', (
+    tester,
+  ) async {
+    await pumpShell(tester, size: const Size(1280, 800));
+    expect(f.host.chrome.toolbar, isTrue);
+    expect(f.host.chrome.form, 'wide');
+    tester.view.physicalSize = const Size(700, 900);
+    await tester.pump();
+    await tester.pump();
+    expect(f.host.chrome.toolbar, isFalse);
+    tester.view.physicalSize = const Size(1280, 800);
+    await tester.pump();
+    await tester.pump();
+    expect(f.host.chrome.toolbar, isTrue);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+    expect(f.host.chrome.toolbar, isFalse);
+  }, variant: _android);
 
   testWidgets('the split fits by size class and family, never by platform', (
     tester,
@@ -519,7 +727,8 @@ void main() {
 
     addTearDown(tester.view.reset);
     expect(await fits(const Size(412, 915), TargetPlatform.android), isFalse);
-    expect(await fits(const Size(700, 900), TargetPlatform.android), isFalse);
+    expect(await fits(const Size(599, 900), TargetPlatform.android), isFalse);
+    expect(await fits(const Size(700, 900), TargetPlatform.android), isTrue);
     expect(await fits(const Size(1280, 800), TargetPlatform.android), isTrue);
     expect(await fits(const Size(700, 900), TargetPlatform.macOS), isTrue);
     expect(await fits(const Size(700, 900), TargetPlatform.iOS), isTrue);

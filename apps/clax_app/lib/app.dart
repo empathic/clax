@@ -789,7 +789,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     openApp: _open,
     voice: _s.voice,
     showSettings: () => unawaited(_openSettings()),
-    showInbox: widget.windows == null ? null : () => MacWindows.open('inbox'),
+    showInbox: _showInbox,
     onOpenTarget: _openTarget,
     onOpenQuestion: _openQuestion,
     timings: _s.timings,
@@ -813,8 +813,26 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     final host = _homeHost;
     if (!_split || sidebar == null || host == null) return false;
     _nav.currentState?.popUntil((r) => r.isFirst);
+    _splitKey.currentState?.go(SplitPlace.home);
     sidebar.select(MakeSelected(host.makeIdOf(s)));
     return true;
+  }
+
+  /// Shows [place] as a split window's rail destination, over every
+  /// screen pushed over the window; false when no split window with a
+  /// rail shows.
+  bool _showInShell(SplitPlace place) {
+    final shell = _splitKey.currentState;
+    if (!_split || shell == null || !shell.go(place)) return false;
+    _nav.currentState?.popUntil((r) => r.isFirst);
+    return true;
+  }
+
+  /// Shows the inbox as a split window's rail destination, or in the
+  /// Mac's Inbox window, answering whether either did.
+  Future<bool> _showInbox() async {
+    if (_showInShell(SplitPlace.inbox)) return true;
+    return widget.windows != null && await MacWindows.open('inbox');
   }
 
   /// Shows make [s]'s build view as the home screen's flows do: in a split
@@ -1610,9 +1628,11 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// second one.
   var _settingsUp = false;
 
-  /// Shows Settings, unless it is already up: on the Mac its own window.
+  /// Shows Settings, unless it is already up: on the Mac its own window, in
+  /// a split window with a rail its destination.
   Future<void> _openSettings() async {
     if (widget.windows != null && await MacWindows.open('settings')) return;
+    if (_showInShell(SplitPlace.settings)) return;
     if (_settingsUp) return;
     _settingsUp = true;
     try {
@@ -2367,6 +2387,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       final isHome = s != null && !s.builtin && s.homeAppId == aid;
       if (isHome || action == null) {
         nav.popUntil((r) => r.isFirst);
+        _splitKey.currentState?.go(SplitPlace.home);
         sidebar.select(isHome ? const HomeSelected() : AppSelected(aid));
         if (isHome && action != null) _homeActions.add(action);
         return;
@@ -2733,8 +2754,23 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       // The gallery's artifact_deleted takes it off the sidebar and the
       // grid.
       onDelete: _api.deleteArtifact,
+      inbox: (_) => _railInbox(host),
+      settings: (_) => _settingsScreen(),
     );
   }
+
+  /// The inbox as a split window's rail destination: its list and the
+  /// item beside it; the unread count is read again when it goes.
+  Widget _railInbox(HomeHost host) => InboxSplit(
+    api: _api,
+    stream: host.stream,
+    voice: _s.voice,
+    icons: host.icons,
+    autoDictate: _settings.dictateComments,
+    onOpenApp: _openTarget,
+    onOpenQuestion: _openQuestion,
+    onClosed: () => unawaited(host.loadUnread()),
+  );
 
   /// What a split window shows beside its sidebar for [s]: the app's
   /// screen, or the make's state with a way to its build view.

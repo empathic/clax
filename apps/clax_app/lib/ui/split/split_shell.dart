@@ -31,6 +31,17 @@ import 'sidebar_model.dart';
 /// - At [ClaxWidth.medium] the Apple family shows only the detail; the
 ///   sidebar comes over it when toggled, and goes once a row is chosen.
 ///
+/// The Material family (§3.2) puts a [NavigationRail] of [ClaxLayout.rail]
+/// at the leading edge: New app at its top (a mic and "New" on
+/// `accent-tint`, [HomeActions.newApp]), then Home, Inbox with the unread
+/// count, and Settings. Home is the list pane and the detail at
+/// [ClaxWidth.expanded], the detail alone at [ClaxWidth.medium] (the grid
+/// with Home selected, an app in its place otherwise); Inbox and Settings
+/// show [inbox] and [settings] in place of both ([place]; the home grid
+/// stays built under them), and the platform's Back goes Home from them.
+/// Without [inbox] or [settings] the rail asks [HomeActions.openInbox] or
+/// [HomeActions.openSettings]. Selecting an app or a make goes Home.
+///
 /// [toggleSidebar] hides and shows it, as ⌃⌘S (Control-S on Material)
 /// does. ⌘F (Control-F) shows it and puts the keyboard in its filter;
 /// with Home selected in a Mac window whose toolbar has the home app's
@@ -46,7 +57,11 @@ import 'sidebar_model.dart';
 /// sidebar covers of it. There the shell also holds the window's toolbar
 /// for the home app ([HomeHost.holdToolbar]) while it is built, so the
 /// home app leaves its top bar, search and New app to the sidebar, the
-/// toolbar and the menu bar.
+/// toolbar and the menu bar. The Material family holds it at
+/// [ClaxWidth.expanded], where the list pane's search is the grid's
+/// ([HomeHost.setQuery]) and the rail carries New app, Inbox and Settings;
+/// at [ClaxWidth.medium], with no search beside the grid, the home app
+/// keeps its own bar.
 ///
 /// Keys beyond the menus ([claxShortcuts]'s, Command on the Apple family
 /// and Control on Material), none of them while a text field has the
@@ -69,6 +84,8 @@ class SplitShell extends StatefulWidget {
     this.onSidebarShown,
     this.onDelete,
     this.now = DateTime.now,
+    this.inbox,
+    this.settings,
   });
 
   final SidebarModel model;
@@ -90,19 +107,22 @@ class SplitShell extends StatefulWidget {
   /// The clock type-select reads.
   final DateTime Function() now;
 
-  /// Whether the window at [context] lays out as a split: the Apple
-  /// family from [ClaxWidth.medium], the Material family from
-  /// [ClaxWidth.expanded] (its medium form, a rail and one pane, is not
-  /// built yet).
+  /// What the Material family's rail shows for Inbox and for Settings
+  /// ([SplitPlace]); null asks the home screen's actions instead.
+  final WidgetBuilder? inbox, settings;
+
+  /// Whether the window at [context] lays out as a split: from
+  /// [ClaxWidth.medium] in either family.
   static bool fits(BuildContext context) =>
-      ClaxWidth.of(context) >=
-      (ClaxFamily.of(context) == ClaxFamily.apple
-          ? ClaxWidth.medium
-          : ClaxWidth.expanded);
+      ClaxWidth.of(context) >= ClaxWidth.medium;
 
   @override
   State<SplitShell> createState() => SplitShellState();
 }
+
+/// What the Material family's rail shows beside it: Home's panes, the
+/// inbox or Settings.
+enum SplitPlace { home, inbox, settings }
 
 class SplitShellState extends State<SplitShell> {
   final _filterFocus = FocusNode(debugLabel: 'sidebar filter');
@@ -126,6 +146,43 @@ class SplitShellState extends State<SplitShell> {
 
   bool get _wide =>
       ClaxWidth.of(context) >= ClaxWidth.expanded;
+
+  var _place = SplitPlace.home;
+
+  /// The rail's destination; always [SplitPlace.home] without a rail.
+  SplitPlace get place => _place;
+
+  bool get _rail => ClaxFamily.of(context) == ClaxFamily.material;
+
+  /// What the rail shows for [at]; null for Home's panes.
+  WidgetBuilder? _builderOf(SplitPlace at) => switch (at) {
+    SplitPlace.home => null,
+    SplitPlace.inbox => widget.inbox,
+    SplitPlace.settings => widget.settings,
+  };
+
+  /// Shows [to] beside the rail, answering whether it could: not without a
+  /// rail (the Apple family), nor for a destination with no builder.
+  bool go(SplitPlace to) {
+    if (!mounted || !_rail) return false;
+    if (to != SplitPlace.home && _builderOf(to) == null) return false;
+    if (_place != to) setState(() => _place = to);
+    return true;
+  }
+
+  /// A rail destination chosen: Home selects the grid as well.
+  void _chose(SplitPlace to) {
+    final actions = widget.model.host.actions;
+    switch (to) {
+      case SplitPlace.home:
+        go(to);
+        widget.model.select(const HomeSelected());
+      case SplitPlace.inbox:
+        if (!go(to)) actions.openInbox();
+      case SplitPlace.settings:
+        if (!go(to)) actions.openSettings();
+    }
+  }
 
   /// Whether the sidebar shows, beside or over the detail.
   bool get sidebarShown => _wasWide ?? true ? !_hidden : _over;
@@ -276,7 +333,7 @@ class SplitShellState extends State<SplitShell> {
 
   void _onSelected() {
     if (!mounted) return;
-    setState(() {});
+    setState(() => _place = SplitPlace.home);
     // After the frame, so a detail going away has said its last.
     WidgetsBinding.instance.addPostFrameCallback((_) => _sendTitle());
   }
@@ -296,14 +353,20 @@ class SplitShellState extends State<SplitShell> {
   }
 
   /// Tells the window what the sidebar takes of it: the material's width
-  /// behind a beside-the-detail sidebar, and the toolbar's toggle.
+  /// behind a beside-the-detail sidebar, and the toolbar's toggle; and
+  /// the home app whether the window holds its toolbar.
   void _report(double materialWidth) {
     final shown = sidebarShown;
     final changed = _sentShown != shown;
     _sentShown = shown;
     if (changed) widget.onSidebarShown?.call(shown);
+    final host = widget.model.host;
+    final rail = _rail;
+    final holds = hasDesktopWindowChrome || (rail && _wide);
+    host.holdToolbar(this, holds);
+    // The list pane's search is the grid's.
+    if (holds && rail) host.setQuery(widget.model.filter);
     if (!hasDesktopWindowChrome) return;
-    widget.model.host.holdToolbar(this, true);
     final view = View.of(context).viewId;
     final moved = _view != view;
     _view = view;
@@ -392,7 +455,11 @@ class SplitShellState extends State<SplitShell> {
                 ? Colors.transparent
                 : _sidebarFill(context),
           )
-        : ClaxListPane(model: widget.model),
+        : ClaxListPane(
+            model: widget.model,
+            searchFocus: _filterFocus,
+            onSelected: over ? () => setState(() => _over = false) : null,
+          ),
     );
 
     Widget body;
@@ -463,6 +530,7 @@ class SplitShellState extends State<SplitShell> {
       );
     }
 
+    if (!apple) body = _railed(context, body);
     body = Shortcuts(
       shortcuts: only(
         (c) => c == ClaxCommand.deleteApp || _starred.contains(c),
@@ -485,7 +553,55 @@ class SplitShellState extends State<SplitShell> {
           control: !apple,
         ): () => unawaited(_find()),
       },
-      child: body,
+      // The Material family's list pane takes no focus of its own (the
+      // Apple family's sidebar does), so the shell starts with the
+      // keyboard for these keys to be heard.
+      child: apple ? body : Focus(autofocus: true, child: body),
+    );
+  }
+
+  /// [home] (the list pane and the detail) or the rail's destination in
+  /// its place, beside the rail.
+  Widget _railed(BuildContext context, Widget home) {
+    final builder = _builderOf(_place);
+    final shown = builder == null ? SplitPlace.home : _place;
+    return PopScope(
+      canPop: shown == SplitPlace.home,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) go(SplitPlace.home);
+      },
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _ClaxRail(
+            host: widget.model.host,
+            place: shown,
+            onChosen: _chose,
+          ),
+          Expanded(
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                Offstage(
+                  offstage: shown != SplitPlace.home,
+                  child: TickerMode(
+                    enabled: shown == SplitPlace.home,
+                    child: home,
+                  ),
+                ),
+                if (builder != null)
+                  KeyedSubtree(
+                    key: ValueKey(shown),
+                    child: ColoredBox(
+                      color: claxPalette(context).bg,
+                      child: Builder(builder: builder),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -513,7 +629,11 @@ class SplitShellState extends State<SplitShell> {
           ),
       ],
     );
-    out = ColoredBox(color: claxPalette(context).bg, child: out);
+    out = ColoredBox(
+      key: const ValueKey('split-detail'),
+      color: claxPalette(context).bg,
+      child: out,
+    );
     out = FocusScope(node: _detailScope, child: out);
     final bar = WindowTitlebar.of(context);
     if (bar != null) {
@@ -544,5 +664,118 @@ class _ShellCommand extends Action<ClaxCommandIntent> {
   Object? invoke(ClaxCommandIntent intent) {
     shell._run(intent.command);
     return null;
+  }
+}
+
+/// The Material family's navigation rail, [ClaxLayout.rail] wide: New app
+/// at the top, then Home, Inbox with [host]'s unread count, and Settings,
+/// [place] selected.
+class _ClaxRail extends StatelessWidget {
+  const _ClaxRail({
+    required this.host,
+    required this.place,
+    required this.onChosen,
+  });
+
+  final HomeHost host;
+  final SplitPlace place;
+  final ValueChanged<SplitPlace> onChosen;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = claxPalette(context);
+    return SizedBox(
+      key: const ValueKey('split-rail'),
+      width: ClaxLayout.rail,
+      child: ListenableBuilder(
+        listenable: host,
+        builder: (context, _) => NavigationRail(
+          backgroundColor: p.bg,
+          minWidth: ClaxLayout.rail,
+          labelType: NavigationRailLabelType.all,
+          groupAlignment: -1,
+          selectedIndex: place.index,
+          onDestinationSelected: (i) => onChosen(SplitPlace.values[i]),
+          leading: Padding(
+            padding: const EdgeInsets.only(
+              top: ClaxSpace.s4,
+              bottom: ClaxSpace.s16,
+            ),
+            child: _NewApp(onPressed: host.actions.newApp),
+          ),
+          destinations: [
+            const NavigationRailDestination(
+              icon: Icon(Icons.home_outlined),
+              selectedIcon: Icon(Icons.home),
+              label: Text('Home'),
+            ),
+            NavigationRailDestination(
+              icon: ClaxBadge(
+                count: host.unread,
+                child: const Icon(Icons.inbox_outlined),
+              ),
+              selectedIcon: ClaxBadge(
+                count: host.unread,
+                child: const Icon(Icons.inbox),
+              ),
+              label: const Text('Inbox'),
+            ),
+            const NavigationRailDestination(
+              icon: Icon(Icons.settings_outlined),
+              selectedIcon: Icon(Icons.settings),
+              label: Text('Settings'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The rail's New app: a mic over "New", on `accent-tint`.
+class _NewApp extends StatelessWidget {
+  const _NewApp({required this.onPressed});
+
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = claxPalette(context);
+    return Semantics(
+      button: true,
+      label: 'New app',
+      excludeSemantics: true,
+      onTap: onPressed,
+      child: Tooltip(
+        message: 'New app',
+        child: Material(
+          key: const ValueKey('rail-new'),
+          color: p.accentTint,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(ClaxSpace.s16),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: onPressed,
+            child: SizedBox(
+              width: 56,
+              height: 56,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.mic_none, color: p.agentInk),
+                  Text(
+                    'New',
+                    style: Theme.of(
+                      context,
+                    ).textTheme.labelMedium?.copyWith(color: p.agentInk),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
