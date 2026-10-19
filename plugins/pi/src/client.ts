@@ -782,8 +782,6 @@ export class DaemonClient {
   }
 
   /** Thread `tid`'s clip on artifact `aid`
-   * (`GET /api/artifacts/<aid>/threads/<tid>/clip`), as bytes. */
-  /** Thread `tid`'s clip on artifact `aid`
    * (`GET /api/artifacts/<aid>/threads/<tid>/clip`): its `Content-Type` and
    * bytes, at most `maxBytes` of them; `signal` cancels it. */
   async clipBytes(aid: string, tid: string, maxBytes: number, signal?: AbortSignal): Promise<{ contentType: string | undefined; bytes: Buffer }> {
