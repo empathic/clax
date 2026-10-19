@@ -1459,6 +1459,45 @@ mod tests {
     }
 
     #[test]
+    fn a_fold_that_leaves_a_row_naming_the_folded_viewer_is_refused_whole() {
+        let (_d, st) = store();
+        let cli = st.set_owner_name("Alex", false).unwrap();
+        st.with_write(|c| {
+            c.execute_batch(&format!(
+                "CREATE TABLE extra (viewer_id TEXT);
+                 INSERT INTO extra (viewer_id) VALUES ('{}');",
+                cli.id
+            ))?;
+            Ok(())
+        })
+        .unwrap();
+        let cookie = new_ulid();
+        let chrome = st.mint_viewer(&cookie, true).unwrap();
+        match st.claim_for_owner(Via::Shell, &cookie) {
+            Err(CoreError::Invalid { code, .. }) => assert_eq!(code, "fold_incomplete"),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            st.owner().unwrap().map(|o| o.public_id),
+            Some(cli.public_id.clone()),
+            "the owner row and its flag are unchanged"
+        );
+        let still = st.get_viewer(&cookie).unwrap().expect("the cookie still names its viewer");
+        assert_eq!(still.public_id, chrome.public_id);
+        let owner_flag: bool = st
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT owner FROM viewers WHERE public_id = ?1",
+                    rusqlite::params![chrome.public_id],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert!(!owner_flag, "the browser's viewer did not become the owner");
+        assert!(claims(&st).is_empty(), "no claim is recorded");
+    }
+
+    #[test]
     fn the_owner_rows_credentials_follow_it_when_a_browser_adopts_it() {
         let (_d, st) = store();
         let cli = st.set_owner_name("Alex", false).unwrap();
