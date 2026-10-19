@@ -217,6 +217,19 @@ fn scope_row(tx: &Connection, sid: &str, aid: &str, armed: bool, now: &str) -> R
     Ok(wrote)
 }
 
+/// Removes `sid`'s scope-made watch of `aid`, a direct watch staying;
+/// returns the removed watch's arming, `None` when there was none.
+fn remove_scope_row(tx: &Connection, sid: &str, aid: &str) -> Result<Option<bool>> {
+    Ok(tx
+        .query_row(
+            "DELETE FROM watches WHERE session_id = ?1 AND artifact_id = ?2 AND source = 'scope'
+             RETURNING replies_armed",
+            params![sid, aid],
+            |r| Ok(r.get::<_, i64>(0)? != 0),
+        )
+        .optional()?)
+}
+
 /// The live pages of the site of origin `?1` whose artifact is not deleted
 /// (the pages its site's key holds: spec §7.2).
 pub(crate) const PAGES_OF_ORIGIN: &str =
@@ -1104,15 +1117,7 @@ impl Store {
                         )?;
                     }
                     None => {
-                        let gone: Option<bool> = tx
-                            .query_row(
-                                "DELETE FROM watches WHERE session_id = ?1 AND artifact_id = ?2 AND source = 'scope'
-                                 RETURNING replies_armed",
-                                params![sid, p.artifact_id],
-                                |r| Ok(r.get::<_, i64>(0)? != 0),
-                            )
-                            .optional()?;
-                        if let Some(armed) = gone {
+                        if let Some(armed) = remove_scope_row(tx, sid, &p.artifact_id)? {
                             let rec = super::watches::artifact_watch_record(
                                 tx,
                                 AuditKind::WatchStop,
@@ -1143,11 +1148,19 @@ impl Store {
             };
             for p in others {
                 let keys = page_keys(tx, &p)?;
-                if scope_arming(tx, sid, &keys)?.is_none() {
-                    tx.execute(
-                        "DELETE FROM watches WHERE session_id = ?1 AND artifact_id = ?2 AND source = 'scope'",
-                        params![sid, p.artifact_id],
+                if scope_arming(tx, sid, &keys)?.is_none()
+                    && let Some(armed) = remove_scope_row(tx, sid, &p.artifact_id)?
+                {
+                    let rec = super::watches::artifact_watch_record(
+                        tx,
+                        AuditKind::WatchStop,
+                        &self.now(),
+                        sid,
+                        &p.artifact_id,
+                        armed,
+                        "scope",
                     )?;
+                    self.record_audit(tx, ctx, rec)?;
                     removed.push(p.artifact_id);
                 }
             }

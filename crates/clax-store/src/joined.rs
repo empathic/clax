@@ -1356,8 +1356,30 @@ mod tests {
         // A, the key, is split off: the site's pages go with the key to B.
         st.split_origin(DAEMON, A).unwrap().unwrap();
         assert_eq!(st.live_page_of(&a).unwrap().unwrap().origin, B);
+        let seq = st.newest_seq().unwrap();
         let removed = st.live_unwatch(DAEMON, &sid, &key(A, "/")).unwrap();
         assert_eq!(removed, vec![a.as_str().to_string()]);
+        // The removed page watch records its stop, as the scope's does.
+        let stops: Vec<(String, String)> = st
+            .events_after(seq, 100)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == "watch.stop")
+            .map(|e| {
+                let b: serde_json::Value = serde_json::from_str(&e.body).unwrap();
+                (
+                    b["target"].as_str().unwrap().to_string(),
+                    b["source"].as_str().unwrap_or("").to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            stops,
+            [
+                ("scope".to_string(), "direct".to_string()),
+                ("page".to_string(), "scope".to_string())
+            ]
+        );
     }
 
     #[test]
