@@ -277,6 +277,31 @@ fn classify(f: &RemoteFail) -> Option<String> {
     }
 }
 
+/// What a heartbeat after an outage makes of the sync's session there.
+#[derive(Debug, PartialEq, Eq)]
+enum Heartbeat {
+    /// The session is live: kept.
+    Keep,
+    /// The remote is still out of reach (no answer, a 5xx or a 429): the
+    /// session is kept and the cycle backs off.
+    Out(String),
+    /// The remote ended the session, no longer knows it, or refuses the
+    /// token: a new one is registered.
+    Replace,
+}
+
+/// What heartbeat `answer` makes of the session ([`Heartbeat`]).
+fn heartbeat(answer: &Result<Value, RemoteFail>) -> Heartbeat {
+    match answer {
+        Ok(v) if v["session"]["ended_at"].is_null() => Heartbeat::Keep,
+        Err(f) if f.status != Some(401) => match classify(f) {
+            Some(why) => Heartbeat::Out(why),
+            None => Heartbeat::Replace,
+        },
+        _ => Heartbeat::Replace,
+    }
+}
+
 /// One remote's task.
 async fn run(s: AppState, rid: String, kick: Arc<Notify>, retry: Arc<Notify>) {
     let mut sync = Sync {
@@ -569,18 +594,16 @@ impl Sync {
             // live, and replaced only when the remote no longer knows it
             // (or refuses the token, which may have been replaced here).
             let sid = c.session().map(|s| s.0.clone()).unwrap_or_default();
-            match clax_rt::sendable(c.call(
+            let answer = clax_rt::sendable(c.call(
                 reqwest::Method::PATCH,
                 &format!("/api/sessions/{sid}"),
                 Some(&json!({"heartbeat": true})),
             ))
-            .await
-            {
-                Ok(v) if v["session"]["ended_at"].is_null() => {}
-                Err(f) if f.status != Some(401) && classify(&f).is_some() => {
-                    return Err(Stop::Unreachable(classify(&f).unwrap_or_default()));
-                }
-                _ => {
+            .await;
+            match heartbeat(&answer) {
+                Heartbeat::Keep => {}
+                Heartbeat::Out(why) => return Err(Stop::Unreachable(why)),
+                Heartbeat::Replace => {
                     self.client = None;
                     self.watched.clear();
                 }
@@ -1598,7 +1621,15 @@ impl Sync {
                             Ok(t) => t,
                             // The artifact or the link is gone since this
                             // cycle read it: nothing to write here.
-                            Err(clax_core::CoreError::NotFound) => return Ok(None),
+                            Err(clax_core::CoreError::NotFound) => {
+                                tracing::debug!(
+                                    artifact = %link.artifact_id,
+                                    remote = %rid,
+                                    remote_thread = %rtid,
+                                    "linked threads: not mirrored, its artifact or link is gone"
+                                );
+                                return Ok(None);
+                            }
                             Err(e) => return Err(e),
                         };
                         fresh_thread = true;
@@ -1798,6 +1829,39 @@ mod tests {
             out.not_sent("clax.example"),
             "Not sent: clax.example unreachable"
         );
+    }
+
+    #[test]
+    fn a_heartbeat_keeps_the_session_through_an_outage_and_replaces_one_gone() {
+        let fail = |status: Option<u16>| {
+            Err(RemoteFail {
+                origin: "https://clax.example".into(),
+                status,
+                code: "x".into(),
+                message: "x".into(),
+                body: Value::Null,
+            })
+        };
+        assert_eq!(
+            heartbeat(&Ok(json!({"session": {"ended_at": null}}))),
+            Heartbeat::Keep
+        );
+        assert_eq!(
+            heartbeat(&fail(Some(503))),
+            Heartbeat::Out("https://clax.example answered 503".into())
+        );
+        assert_eq!(
+            heartbeat(&fail(Some(429))),
+            Heartbeat::Out("https://clax.example answered 429".into())
+        );
+        assert!(matches!(heartbeat(&fail(None)), Heartbeat::Out(_)));
+        for gone in [
+            Ok(json!({"session": {"ended_at": "2026-10-15T10:00:00.000Z"}})),
+            fail(Some(401)),
+            fail(Some(404)),
+        ] {
+            assert_eq!(heartbeat(&gone), Heartbeat::Replace, "{gone:?}");
+        }
     }
 
     #[test]
