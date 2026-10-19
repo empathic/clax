@@ -1037,15 +1037,15 @@ class HomeFlows implements HomeActions {
   }
 
   /// Says interrupted make [s] wasn't finished, and offers **Make it
-  /// again** (which shows it) or Cancel (which forgets it); closing the
-  /// question leaves it as it is.
+  /// again** (which shows it) or **Discard** (which forgets it); closing
+  /// the question (Escape, a tap outside, Back) leaves it as it is.
   Future<void> _offerAgain(MakeSession s) async {
     final choice = await ClaxDialog.show(
       context,
       title: 'This wasn’t finished.',
       body: '“${s.request}”',
       actions: const [
-        ClaxDialogAction('Cancel'),
+        ClaxDialogAction('Discard', kind: ClaxButtonKind.destructive),
         ClaxDialogAction('Make it again', kind: ClaxButtonKind.primary),
       ],
       defaultIndex: 1,

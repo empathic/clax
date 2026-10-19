@@ -866,7 +866,7 @@ void main() {
     expect(File('${dir.path}/pending-make.json').existsSync(), isFalse);
   });
 
-  testWidgets('Cancel forgets the lost make; closing the question keeps it', (
+  testWidgets('Discard forgets the lost make; closing the question keeps it', (
     tester,
   ) async {
     File('${dir.path}/pending-make.json')
@@ -874,13 +874,19 @@ void main() {
     await pumpApp(tester);
     await pumpUntilShown(tester, 'Interrupted');
     await tester.tap(find.text('laps'));
-    await pumpUntilShown(tester, 'Cancel');
+    await pumpUntilShown(tester, 'Discard');
     await tester.tapAt(const Offset(4, 4));
     await pumpRoute(tester);
     expect(find.text('Interrupted'), findsOneWidget);
     await tester.tap(find.text('laps'));
-    await pumpUntilShown(tester, 'Cancel');
-    await tester.tap(find.text('Cancel'));
+    await pumpUntilShown(tester, 'Discard');
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await pumpRoute(tester);
+    expect(find.text('This wasn’t finished.'), findsNothing);
+    expect(find.text('Interrupted'), findsOneWidget);
+    await tester.tap(find.text('laps'));
+    await pumpUntilShown(tester, 'Discard');
+    await tester.tap(find.text('Discard'));
     await pumpRoute(tester);
     expect(find.text('Interrupted'), findsNothing);
     expect(agent.runs, 0);
