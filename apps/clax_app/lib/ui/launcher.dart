@@ -609,9 +609,12 @@ class MakingTile extends StatelessWidget {
   Widget _tile(BuildContext context, ({int done, int total})? count) {
     final p = claxPalette(context);
     final failed = session.failure != null && !session.running;
+    final stopped = session.stopped != null && !session.running;
     final offline = session.running && session.waitingForConnection;
     final status = failed
         ? 'Couldn’t make it'
+        : stopped
+        ? 'Made a start'
         : offline
         ? 'Offline'
         : session.interrupted
@@ -621,7 +624,8 @@ class MakingTile extends StatelessWidget {
         : 'Making…';
     // Making shows the breathing mark; the others say where they stand
     // with a glyph.
-    final said = failed || offline || session.interrupted || session.queued;
+    final said =
+        failed || stopped || offline || session.interrupted || session.queued;
     final counted = !said && count != null && count.total > 0;
     final face = DecoratedBox(
       decoration: BoxDecoration(
@@ -641,6 +645,8 @@ class MakingTile extends StatelessWidget {
                 key: offline ? const ValueKey('tile-offline') : null,
                 failed
                     ? Icons.error_outline_rounded
+                    : stopped
+                    ? Icons.pause_circle_outline_rounded
                     : offline
                     ? Icons.cloud_off_rounded
                     : session.interrupted

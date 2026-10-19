@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:clax_app/agent/loop.dart' show MakeStopped;
 import 'package:clax_app/platform/pending_make.dart';
 import 'package:clax_app/ui/make_service.dart';
 import 'package:clax_app/ui/making_screen.dart';
@@ -118,5 +119,124 @@ void main() {
     await Future<void>.delayed(Duration.zero);
     expect(s.failure, 'Claude is busy right now. Try again in a minute.');
     expect(s.failureDetail, 'Bad state: The Claude API said: overloaded (529)');
+  });
+
+  group('a make stopped at a limit', () {
+    MakeStopped stop({int stops = 1, bool planned = false, double spent = 1}) =>
+        MakeStopped(
+          key: 'new:k1',
+          limit: '14 turns',
+          stops: stops,
+          spentUsd: spent,
+          html: '<p>normal mode</p>',
+          planned: planned,
+        );
+
+    test('ends stopped, not failed, holds no slot, and is told away '
+        'without a build view', () async {
+      final told = <MakeSession>[];
+      final makes = MakeService(
+        (_, _, _) async => throw stop(),
+        maxRunning: 1,
+        onFailed: (_) => fail('a stop is no failure'),
+        onStopped: told.add,
+      );
+      final s = makes.start('a vim editor');
+      await pumpEventQueue();
+      expect(s.failure, isNull);
+      expect(s.stopped?.key, 'new:k1');
+      expect(s.running, isFalse);
+      expect(told, [s]);
+      expect(makes.makes, [s], reason: 'kept for its Keep going');
+      expect(makes.add('b').queued, isFalse);
+    });
+
+    test('Keep going runs on from the kept key, the page shown from the '
+        'draft; Retry starts over and forgets the kept draft', () async {
+      final forgot = <String>[];
+      final kept = <String>[];
+      var made = 0;
+      final makes = MakeService(
+        (_, _, _) async {
+          made++;
+          throw stop();
+        },
+        keepGoing: (_, key, _, _) {
+          kept.add(key);
+          return Completer<String>().future;
+        },
+        forget: forgot.add,
+      );
+      final s = makes.start('a vim editor');
+      await pumpEventQueue();
+      s.keepGoing();
+      expect(kept, ['new:k1']);
+      expect(s.running, isTrue);
+      expect(s.stopped, isNull);
+      expect(s.log.html, '<p>normal mode</p>');
+      expect(forgot, isEmpty);
+      unawaited(s.start());
+      expect(made, 2);
+      // The Keep going's kept draft is forgotten once the make starts over.
+      await pumpEventQueue();
+      expect(forgot, ['new:k1']);
+      makes.dismiss(s);
+    });
+
+    test('Cancel forgets the kept draft', () async {
+      final forgot = <String>[];
+      final makes = MakeService(
+        (_, _, _) async => throw stop(),
+        keepGoing: (_, _, _, _) => Completer<String>().future,
+        forget: forgot.add,
+      );
+      final s = makes.start('a');
+      await pumpEventQueue();
+      makes.dismiss(s);
+      expect(forgot, ['new:k1']);
+    });
+
+    test('after the second stop it goes on by itself to plan the rest, '
+        'once', () async {
+      final kept = <String>[];
+      final runs = <Completer<String>>[];
+      final makes = MakeService(
+        (_, _, _) async => throw stop(),
+        keepGoing: (_, key, _, _) {
+          kept.add(key);
+          return (runs..add(Completer<String>())).last.future;
+        },
+      );
+      final s = makes.start('a');
+      await pumpEventQueue();
+      expect(kept, isEmpty, reason: 'the first stop waits for the person');
+      s.keepGoing();
+      runs.last.completeError(stop(stops: 2));
+      await pumpEventQueue();
+      expect(kept, hasLength(2), reason: 'the second stop goes on by itself');
+      expect(s.running, isTrue);
+      expect(s.autoKeptGoing, 1);
+      runs.last.completeError(stop(stops: 3, planned: true));
+      await pumpEventQueue();
+      expect(kept, hasLength(2), reason: 'a planning run that stops waits');
+      expect(s.stopped?.stops, 3);
+      makes.dismiss(s);
+    });
+
+    test('a stop with nothing left of the budget does not go on by itself',
+        () async {
+      final kept = <String>[];
+      final makes = MakeService(
+        (_, _, _) async => throw stop(stops: 2, spent: 5.99),
+        keepGoing: (_, key, _, _) {
+          kept.add(key);
+          return Completer<String>().future;
+        },
+      );
+      final s = makes.start('a');
+      await pumpEventQueue();
+      expect(kept, isEmpty);
+      expect(s.stopped?.canKeepGoing, isFalse);
+    });
   });
 }

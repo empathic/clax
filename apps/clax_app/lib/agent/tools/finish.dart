@@ -286,7 +286,9 @@ class FinishTool implements Tool {
   /// A change in answer to comments ([RunContext.changeSpentUsd] set)
   /// replies in Clax's words naming the limit instead ([limitLandedReply],
   /// [limitFailureReply]; [narration], a step in progress, is left out), and
-  /// its outcome carries [cap] (`limit`) so the change can Keep going.
+  /// its outcome carries [cap] (`limit`) so the change can Keep going. A new
+  /// app with nothing to publish also carries [cap], so its make can keep
+  /// its draft for Keep going.
   Future<RunOutcome> capStop(String cap, {String? narration}) async {
     final s = _state ?? (throw StateError('capStop before attach'));
     if (s.outcome case final o?) return o;
@@ -302,7 +304,15 @@ class FinishTool implements Tool {
     final spent = s.ctx.changeSpentUsd;
     if (!usable(clean)) {
       if (spent == null) {
-        return _set(s, await _fail(s, 'it ran out of time ($cap).'));
+        // A new app keeps its draft for Keep going (AgentLoop.newApp).
+        return _set(
+          s,
+          await _fail(
+            s,
+            'it ran out of time ($cap).',
+            limit: s.ctx.kind == RequestKind.newApp ? cap : null,
+          ),
+        );
       }
       if (s.planned) {
         // The build builds what is left: no Keep going.
@@ -764,12 +774,25 @@ class FinishTool implements Tool {
 /// reason as the agent's ([limitFailureReply]), and the outcome carries
 /// the limit, so the change can Keep going. Any other `give_up` replies
 /// "Couldn't make that change: `<reason>`" and offers no Keep going.
+///
+/// A new app's `give_up` out of room ends as the stop at the cap most
+/// nearly spent does ([finish]'s [FinishTool.capStop], the reason as its
+/// narration): the app is made from the last clean render when there is
+/// one, else the run gives up at that limit, so its make keeps the draft
+/// for Keep going.
 class GiveUpTool implements Tool {
-  GiveUpTool(this.api, {required this.render, void Function(String)? log})
-    : _log = log ?? ((_) {});
+  GiveUpTool(
+    this.api, {
+    required this.render,
+    this.finish,
+    void Function(String)? log,
+  }) : _log = log ?? ((_) {});
 
   final ClaxApi api;
   final RenderTool render;
+
+  /// The run's `finish`, whose cap stop a new app's out of room ends with.
+  final FinishTool? finish;
   final void Function(String) _log;
 
   /// The agent's reason, once it called `give_up`.
@@ -816,6 +839,17 @@ class GiveUpTool implements Tool {
       await _endRun(api, render, _log, s);
       s.outcome ??= const RunCancelled();
       return const ToolOk({'replied': <String>[]});
+    }
+    if (outOfRoom && s.ctx.kind == RequestKind.newApp) {
+      if (finish case final f?) {
+        final o = await f.capStop(s.budget.mostSpent, narration: reason);
+        return ToolOk({
+          'outcome': switch (o) {
+            RunFinished(:final artifactId) => 'made $artifactId',
+            _ => 'stopped',
+          },
+        });
+      }
     }
     // A change's give_up out of room is the limit's doing: Clax names the
     // limit nearest spent, with the agent's reason as its words.

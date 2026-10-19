@@ -510,4 +510,23 @@ void main() {
     await idle();
     expect(await unfinished.get(item.threadId), isNull);
   });
+
+  test('recovery keeps a stopped make\'s draft, which has no thread',
+      () async {
+    await unfinished.put(
+      UnfinishedChange(
+        artifactId: 'new:k1',
+        threadIds: const ['new:k1'],
+        commentIds: const [],
+        limit: '14 turns',
+        spentUsd: 1,
+        at: DateTime.utc(2026, 10, 19),
+        edits: const {'index.html': '<p>x</p>'},
+        before: const {'index.html': null},
+      ),
+    );
+    workerWith([]).start();
+    await idle();
+    expect(await unfinished.get('new:k1'), isNotNull);
+  });
 }

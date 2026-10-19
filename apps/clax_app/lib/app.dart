@@ -671,6 +671,10 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     tryNow: _s.connection.nudge,
     onMade: _madeAway,
     onFailed: _failedAway,
+    onStopped: _stoppedAway,
+    keepGoing: (request, key, cancelled, stage) =>
+        _make(request, cancelled, stage, keepGoing: key),
+    forget: (key) => unawaited(_forgetMake(key)),
   );
 
   /// The apps' icons, kept under the support directory between launches.
@@ -1507,11 +1511,15 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     await _loadSettings();
   }
 
+  /// Makes an app from [request]; with [keepGoing], goes on with the make
+  /// that stopped at a limit with its draft kept under that key
+  /// ([AgentLoop.newApp]'s `keepGoing`).
   Future<String> _make(
     String request,
     Future<void> cancelled,
-    void Function(MakeUpdate update) stage,
-  ) async {
+    void Function(MakeUpdate update) stage, {
+    String? keepGoing,
+  }) async {
     // Asked first, so nothing (the notification prompt included) comes
     // before the person's answer; Not now ends the make as Cancel does.
     if (!await _mayRun()) throw const AgentError.cancelled();
@@ -1553,7 +1561,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     // under this key until the app exists.
     String? planKey;
     if (usesToolLoop(backend, inspector: _s.inspector, runner: _s.runner)) {
-      planKey = '$pendingPlanPrefix${_s.clock.now().microsecondsSinceEpoch}';
+      planKey =
+          keepGoing ??
+          '$pendingPlanPrefix${_s.clock.now().microsecondsSinceEpoch}';
       stage(MakePlanKey(planKey));
     }
     _s.timings.start(sayUsable);
@@ -1571,7 +1581,17 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
             onProgress: progress,
             session: _runtime.worker.sessionId,
             planKey: planKey,
+            keepGoing: keepGoing != null && planKey == keepGoing,
           );
+    } on MakeStopped {
+      _runs.end(
+        run,
+        const RunFailed(
+          'Made a start on your app',
+          'It’s bigger than one go. Open Clax to keep going.',
+        ),
+      );
+      rethrow;
     } on AgentError catch (e) {
       _runs.end(
         run,
@@ -1623,7 +1643,18 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// Takes up each make the app's last run ended before finishing: one
   /// that waited for the connection starts again by itself; the others
   /// show as interrupted tiles, for the person to make again or discard.
+  /// A stopped make is not kept across launches: the drafts the last run's
+  /// stopped makes kept are forgotten.
   Future<void> _offerLostMake() async {
+    try {
+      final kept = await _unfinished.all();
+      await _unfinished.remove([
+        for (final k in kept.keys)
+          if (k.startsWith(pendingPlanPrefix)) k,
+      ]);
+    } on Object catch (e) {
+      debugPrint('clax make: forgetting the stopped makes failed: $e');
+    }
     final left = await _s.pendingMake.takeEach();
     if (!mounted) return;
     _makes.recover(left);
@@ -1650,6 +1681,26 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       '$title is ready',
       SnackBarAction(label: 'Open', onPressed: () => _open(aid)),
     );
+  }
+
+  /// Make [s] stopped at a limit while no build view showed it; its build
+  /// view offers Keep going.
+  void _stoppedAway(MakeSession s) => _toast(
+    'Made a start on “${s.request}”',
+    SnackBarAction(
+      label: 'Show',
+      onPressed: () => unawaited(_nav.currentState?.push(_makingRoute(s))),
+    ),
+  );
+
+  /// Forgets the draft and the plan a stopped make kept under [key].
+  Future<void> _forgetMake(String key) async {
+    try {
+      await _unfinished.remove([key]);
+      await _plans.remove(key);
+    } on Object catch (e) {
+      debugPrint('clax make: forgetting the stopped make $key failed: $e');
+    }
   }
 
   /// Make [s] failed while no build view showed it; its tile shows why.

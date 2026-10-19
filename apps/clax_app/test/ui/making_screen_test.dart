@@ -4,6 +4,7 @@ import 'dart:convert';
 
 import 'package:clax_app/agent/backend.dart';
 import 'package:clax_app/agent/edit_result.dart';
+import 'package:clax_app/agent/loop.dart' show MakeStopped;
 import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/agent/request.dart';
 import 'package:clax_app/agent/scripted_backend.dart';
@@ -191,6 +192,42 @@ class _Timings implements Timings {
   @override
   List<TimingRecord> recent(int n) => const [];
 }
+
+/// A Keep going held open by the test.
+class _KeepGoing {
+  final keys = <String>[];
+  void Function(MakeUpdate)? report;
+  Completer<String> result = Completer<String>();
+
+  Future<String> call(
+    String request,
+    String key,
+    Future<void> cancelled,
+    void Function(MakeUpdate) report,
+  ) {
+    keys.add(key);
+    this.report = report;
+    result = Completer<String>();
+    return result.future;
+  }
+}
+
+/// A make that stopped at the turn limit once, with [spent] of its $6.
+MakeStopped _stop({double spent = 1.2, int stops = 1}) => MakeStopped(
+  key: 'new:k1',
+  limit: '14 turns',
+  stops: stops,
+  spentUsd: spent,
+  notes: const [
+    'Writing the modal editor',
+    'I wrote the file list and a modal editor, but ran out of room before '
+        'I could get a clean render.',
+  ],
+  changed: const [(path: 'index.html', added: 40, removed: 0)],
+  reason: 'I wrote the file list and a modal editor, but ran out of room '
+      'before I could get a clean render.',
+  html: '<p>normal mode</p>',
+);
 
 /// A make held open by the test, which reports through [report].
 class _Make {
@@ -393,6 +430,7 @@ Future<void> _settle(WidgetTester tester) async {
 
 class _Rig {
   final make = _Make();
+  final keep = _KeepGoing();
   final preview = _FakePreview();
   final timings = _Timings();
   final clock = _Clock();
@@ -437,6 +475,7 @@ class _Rig {
                     builder: (_) => MakingScreen(
                       request: 'a timer',
                       make: make.call,
+                      keepGoing: keep.call,
                       preview: webView
                           ? null
                           : () {
@@ -656,6 +695,97 @@ void _screen() {
     rig.progress(const PartialFile('index.html', '<p>second'));
     await tester.pump();
     expect(rig.timings.stopped, hasLength(2));
+    await tester.tap(find.text('Cancel'));
+    await _settle(tester);
+  });
+
+  testWidgets('a make that stops at a limit says it made a start and offers '
+      'Keep going first, the agent\'s own words only under Details', (
+    tester,
+  ) async {
+    final rig = _Rig();
+    await rig.pump(tester);
+    rig.make.result.completeError(_stop());
+    await _settle(tester);
+    expect(find.text('This one’s bigger than one go'), findsOneWidget);
+    expect(find.text('Couldn’t make it'), findsNothing);
+    expect(find.textContaining('ran out of room'), findsNothing);
+    expect(find.text('Stopped once · \$1.20 of \$6 used'), findsOneWidget);
+    final keep = tester.widget<ClaxButton>(
+      find.widgetWithText(ClaxButton, 'Keep going'),
+    );
+    expect(keep.kind, ClaxButtonKind.primary);
+    expect(keep.isDefault, isTrue);
+    final over = tester.widget<ClaxButton>(
+      find.widgetWithText(ClaxButton, 'Start over'),
+    );
+    expect(over.kind, isNot(ClaxButtonKind.primary));
+    expect(find.widgetWithText(ClaxButton, 'Edit'), findsOneWidget);
+
+    await tester.ensureVisible(find.byKey(const ValueKey('make-stop-details')));
+    await tester.tap(find.byKey(const ValueKey('make-stop-details')));
+    await tester.pump();
+    expect(find.text('index.html'), findsOneWidget);
+    expect(find.text('+40'), findsOneWidget);
+    expect(find.textContaining('ran out of room'), findsOneWidget);
+    expect(find.text('Writing the modal editor'), findsOneWidget);
+    await tester.ensureVisible(find.text('Cancel'));
+    await tester.tap(find.text('Cancel'));
+    await _settle(tester);
+  });
+
+  testWidgets('Keep going goes on from the kept draft, its page in the '
+      'preview, and the app it makes is handed over', (tester) async {
+    final rig = _Rig();
+    await rig.pump(tester);
+    rig.make.result.completeError(_stop());
+    await _settle(tester);
+    await tester.tap(find.text('Keep going'));
+    await _settle(tester);
+    expect(rig.keep.keys, ['new:k1']);
+    expect(rig.make.calls, 1);
+    expect(find.text('This one’s bigger than one go'), findsNothing);
+    expect(find.byKey(const ValueKey('making-title')), findsOneWidget);
+    rig.clock.advance(const Duration(seconds: 1));
+    await tester.pump();
+    expect(rig.preview.loads, ['<p>normal mode</p>']);
+    rig.keep.result.complete('a1');
+    await _settle(tester);
+    expect(rig.results.single, isA<Made>().having((m) => m.aid, 'aid', 'a1'));
+  });
+
+  testWidgets('Start over makes the app again from the request, and Edit '
+      'goes back to it', (tester) async {
+    final rig = _Rig();
+    await rig.pump(tester);
+    rig.make.result.completeError(_stop());
+    await _settle(tester);
+    await tester.tap(find.text('Start over'));
+    await _settle(tester);
+    expect(rig.make.calls, 2);
+    expect(rig.keep.keys, isEmpty);
+    rig.make.result.completeError(_stop());
+    await _settle(tester);
+    await tester.ensureVisible(find.text('Edit'));
+    await tester.tap(find.text('Edit'));
+    await _settle(tester);
+    expect(rig.results.single, isA<EditRequest>());
+  });
+
+  testWidgets('a make that has used its \$6 offers no Keep going', (
+    tester,
+  ) async {
+    final rig = _Rig();
+    await rig.pump(tester);
+    rig.make.result.completeError(_stop(spent: 5.99, stops: 2));
+    await _settle(tester);
+    expect(find.text('This one’s bigger than one go'), findsOneWidget);
+    expect(find.text('Keep going'), findsNothing);
+    final over = tester.widget<ClaxButton>(
+      find.widgetWithText(ClaxButton, 'Start over'),
+    );
+    expect(over.kind, ClaxButtonKind.primary);
+    await tester.ensureVisible(find.text('Cancel'));
     await tester.tap(find.text('Cancel'));
     await _settle(tester);
   });

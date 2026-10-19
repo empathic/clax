@@ -1,9 +1,11 @@
 // The making screen rendered in every form and theme into CLAX_SHOTS_DIR
 // (skipped without it): starting, the page streaming into the live
 // preview, waiting long enough for the haiku, a failure with Developer
-// tools' Details open, and a new app whose starting data was refused.
+// tools' Details open, a new app whose starting data was refused, and a
+// make stopped at a limit, with its Details open.
 import 'dart:async';
 
+import 'package:clax_app/agent/loop.dart' show MakeStopped;
 import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/daemon/clock.dart';
 import 'package:clax_app/ui/developer.dart';
@@ -109,6 +111,7 @@ Future<void Function(MakeUpdate)> _pump(
             report = r;
             return result.future;
           },
+          keepGoing: (_, _, _, _) => Completer<String>().future,
           preview: _Page.new,
           clock: _TestClock(s.tester),
           haikus: () async => const [
@@ -184,5 +187,36 @@ void main() {
     done.complete('a1');
     await s.settle();
     await s.take('making-refused');
+  });
+
+  shots('making-stopped', (s) async {
+    final done = Completer<String>();
+    await _pump(s, done);
+    done.completeError(
+      const MakeStopped(
+        key: 'new:k1',
+        limit: '14 turns',
+        stops: 1,
+        spentUsd: 1.18,
+        notes: [
+          'Planning the tide table',
+          'Writing the day view',
+          'I wrote the day view and the tide list, but ran out of room '
+              'before I could get a clean render.',
+        ],
+        changed: [
+          (path: 'app.js', added: 212, removed: 0),
+          (path: 'index.html', added: 48, removed: 0),
+        ],
+        html: '<h1>Harbour tides</h1>',
+      ),
+    );
+    await s.settle();
+    await s.take('making-stopped');
+    final details = find.byKey(const ValueKey('make-stop-details'));
+    await s.tester.ensureVisible(details);
+    await s.tester.tap(details);
+    await s.settle();
+    await s.take('making-stopped-details');
   });
 }

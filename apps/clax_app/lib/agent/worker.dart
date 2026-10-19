@@ -1392,13 +1392,17 @@ class FeedbackWorker {
 
   /// Forgets the kept unfinished changes ([AgentLoop.unfinished]) whose
   /// threads are no longer among the [open] threads: the thread was
-  /// resolved, or its app deleted.
+  /// resolved, or its app deleted. A build's draft and a stopped make's
+  /// (kept under its plan key, [MakeStopped]) have no thread and stay.
   Future<void> _pruneUnfinished(Set<String> open) async {
     try {
       final kept = await _loop.unfinished.all();
       final gone = [
         for (final MapEntry(key: t, value: c) in kept.entries)
-          if (t == buildDraftKey(c.artifactId) ? false : !open.contains(t)) t,
+          if (t != buildDraftKey(c.artifactId) &&
+              !t.startsWith(pendingPlanPrefix) &&
+              !open.contains(t))
+            t,
       ];
       if (gone.isNotEmpty) await _loop.unfinished.remove(gone);
     } on Object catch (e) {

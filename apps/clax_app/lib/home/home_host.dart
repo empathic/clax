@@ -683,8 +683,12 @@ class HomeHost extends ChangeNotifier {
     return HomeMake(
       id: makeIdOf(s),
       request: s.request,
+      // A make stopped at a limit waits for the person, as an interrupted
+      // one does: the contract has no state of its own for it.
       state: failed
           ? 'failed'
+          : s.stopped != null && !s.running
+          ? 'interrupted'
           : s.running && s.waitingForConnection
           ? 'offline'
           : s.interrupted

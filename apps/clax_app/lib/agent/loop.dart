@@ -118,6 +118,57 @@ final class ChangeInterrupted extends ChangeOutcome {
   bool get answered => false;
 }
 
+/// A new app's run stopped at a limit with work done and no app made
+/// ([AgentLoop.newApp]): its draft is kept under [key] (the run's plan
+/// key) in [AgentLoop.unfinished], for a Keep going
+/// (`newApp(…, planKey: key, keepGoing: true)`) to run on from.
+///
+/// [stops] counts the make's runs that stopped, this one included;
+/// [spentUsd] is what they cost together, of [capUsd] (the build's
+/// [buildCapUsd], which the make's runs and its build share). [notes] are
+/// the agent's words over those runs, oldest first, the last run's reason
+/// for stopping among them ([reason], its own words); [changed] the files
+/// the draft holds, with their lines; [html] the draft's `index.html`.
+/// [planned]: the run that stopped had been told to plan the rest
+/// ([planAfterStops]).
+final class MakeStopped implements Exception {
+  const MakeStopped({
+    required this.key,
+    required this.limit,
+    required this.stops,
+    required this.spentUsd,
+    this.capUsd = buildCapUsd,
+    this.notes = const [],
+    this.changed = const [],
+    this.reason,
+    this.html,
+    this.planned = false,
+  });
+
+  final String key;
+
+  /// The cap the run stopped at, or gave up out of room near, as
+  /// [RunBudget.hardStop] names it.
+  final String limit;
+  final int stops;
+  final double spentUsd;
+  final double capUsd;
+  final List<String> notes;
+  final List<FileChange> changed;
+  final String? reason;
+  final String? html;
+  final bool planned;
+
+  /// Whether enough of [capUsd] is left for another run.
+  bool get canKeepGoing => capUsd - spentUsd >= minKeepGoingUsd;
+
+  /// Whether the next Keep going is told to plan the rest.
+  bool get plansNext => stops >= planAfterStops;
+
+  @override
+  String toString() => 'MakeStopped($key, $limit, stops: $stops)';
+}
+
 typedef _Snapshot = ({
   ArtifactSummary artifact,
   Map<String, String> files,
@@ -310,12 +361,31 @@ class AgentLoop {
   /// [planKey] it was given, so a retry with the same key starts from it
   /// (the first message shows it), and forgets one it made up. The run's
   /// cost is the build's first spend.
+  ///
+  /// Limits (the tool loop): a run that stops at a cap, or gives up out of
+  /// room, with a draft that holds work and no app made throws
+  /// [MakeStopped], keeping the draft in [unfinished] under the plan key
+  /// (the plan stays there too): its files, title and capabilities, the
+  /// agent's notes, what the person answered, how many times the make
+  /// stopped and what its runs cost. [keepGoing] (with that [planKey]) runs
+  /// on from it: the draft starts from the kept files, and the first
+  /// message carries them, the notes and the count; from [planAfterStops]
+  /// stops the run is told to plan what is left and finish what works, for
+  /// the build to build the rest. The make's runs and its build share
+  /// [buildCapUsd]: each run's cost cap is what is left of it, at most
+  /// [RunCaps.first]'s, and a Keep going with too little left
+  /// ([minKeepGoingUsd]) runs nothing and throws the kept [MakeStopped]
+  /// again. A stop with a clean render makes the app from that render
+  /// instead (as [FinishTool.capStop] does), and the rest of the draft is
+  /// kept for the build's next run ([buildDraftKey]) when the plan has
+  /// features to build. Once an app is made, the kept draft is forgotten.
   Future<String> newApp(
     String request, {
     Future<void>? cancelled,
     ProgressSink? onProgress,
     String? session,
     String? planKey,
+    bool keepGoing = false,
   }) async {
     final single = _singleCall?.call();
     if (single != null) {
@@ -324,14 +394,26 @@ class AgentLoop {
     final key =
         planKey ?? '$pendingPlanPrefix${_clock.now().microsecondsSinceEpoch}';
     String? made;
+    var stopped = false;
     try {
-      made = await _newAppTools(request, cancelled, onProgress, session, key);
+      made = await _newAppTools(
+        request,
+        cancelled,
+        onProgress,
+        session,
+        key,
+        keepGoing: keepGoing,
+      );
       return made;
+    } on MakeStopped {
+      stopped = true;
+      rethrow;
     } finally {
       try {
         if (made != null) {
           await plans.move(key, made);
-        } else if (planKey == null) {
+          await unfinished.remove([key]);
+        } else if (planKey == null && !stopped) {
           await plans.remove(key);
         }
       } on Object catch (e) {
@@ -340,14 +422,46 @@ class AgentLoop {
     }
   }
 
+  /// The [MakeStopped] of the make kept under [key].
+  static MakeStopped _stoppedOf(
+    String key,
+    UnfinishedChange k, {
+    String? reason,
+    bool planned = false,
+  }) => MakeStopped(
+    key: key,
+    limit: k.limit,
+    stops: k.stops,
+    spentUsd: k.spentUsd,
+    notes: k.notes,
+    changed: changedFiles(k.edits, const {}),
+    reason: reason,
+    html: k.edits['index.html'],
+    planned: planned,
+  );
+
   Future<String> _newAppTools(
     String request,
     Future<void>? cancelled,
     ProgressSink? onProgress,
     String? session,
-    String planKey,
-  ) async {
+    String planKey, {
+    bool keepGoing = false,
+  }) async {
     final cancel = CancelWatch(cancelled);
+    UnfinishedChange? kept;
+    if (keepGoing) {
+      try {
+        kept = await unfinished.get(planKey);
+      } on Object catch (e) {
+        _log('the stopped make $planKey is unavailable: $e');
+      }
+    }
+    final spentBefore = kept?.spentUsd ?? 0;
+    final stopsBefore = kept?.stops ?? 0;
+    final left = buildCapUsd - spentBefore;
+    if (kept != null && left < minKeepGoingUsd) throw _stoppedOf(planKey, kept);
+    final start = kept?.edits ?? const <String, String?>{};
     final runner = _requireRunner();
     final Uri base;
     try {
@@ -374,6 +488,8 @@ class AgentLoop {
     final earlier = reads[3] as Plan?;
     cancel.check();
     final scope = _RunCancel(cancelled);
+    const caps = RunCaps.first;
+    final planning = kept != null && stopsBefore >= planAfterStops;
     final ran = await _runTools(
       runner,
       base,
@@ -386,21 +502,93 @@ class AgentLoop {
         clock: _clock,
         request: request,
       ),
-      RunCaps.first,
+      left >= caps.costUsd
+          ? caps
+          : RunCaps(
+              turns: caps.turns,
+              renders: caps.renders,
+              outputTokens: caps.outputTokens,
+              costUsd: left,
+              wallClock: caps.wallClock,
+            ),
       RunInput(
         system: system,
-        first: _prompts.firstNew(request, others, plan: earlier),
+        first: _prompts.firstNew(
+          request,
+          others,
+          plan: earlier,
+          keepGoing: kept == null
+              ? (keepGoing
+                    ? const KeepGoingNote(
+                        limit: '',
+                        stops: 0,
+                        notes: [],
+                        why: 'what that run left is no longer kept',
+                      )
+                    : null)
+              : KeepGoingNote(
+                  limit: kept.limit,
+                  stops: kept.stops,
+                  notes: kept.notes,
+                  lastRender: kept.lastRender,
+                  edited: kept.edits.keys.toList()..sort(),
+                ),
+          files: {for (final e in start.entries) e.key: ?e.value},
+          answers: kept?.answers,
+        ),
       ),
       onProgress,
       agentNewTiming,
       const {},
       kind: RunKind.first,
       plan: RunPlan(plans, planKey, request: request, seen: earlier?.revision),
+      start: start,
+      startTitle: kept?.title,
+      startCapabilities: kept?.capabilities,
     );
     // A new app's question is about nothing that outlives the run.
     await ran.ask.withdrawOpen();
+    if (ran.outcome case RunGaveUp(:final limit?, :final reason)) {
+      final d = ran.state.draft;
+      final edits = keptEdits(d.files, const {});
+      if (edits.isNotEmpty) {
+        final k = UnfinishedChange(
+          artifactId: planKey,
+          threadIds: [planKey],
+          commentIds: const [],
+          limit: limit,
+          spentUsd: spentBefore + ran.state.budget.costUsd,
+          at: _clock.now(),
+          stops: stopsBefore + 1,
+          notes: _newest([
+            ...?kept?.notes,
+            ...ran.narrations,
+            ?ran.giveUp.givenReason,
+          ], maxUnfinishedNotes),
+          answers: _joined([
+            ?kept?.answers,
+            for (final q in ran.ask.answered) answerText(q),
+          ]),
+          lastRender: _lastRender(d),
+          edits: edits,
+          before: {for (final p in edits.keys) p: null},
+          title: d.title,
+          capabilities: d.capabilities,
+        );
+        await _quiet('keep the stopped make', () => unfinished.put(k));
+        throw _stoppedOf(
+          planKey,
+          k,
+          reason: ran.giveUp.givenReason ?? reason,
+          planned: planning,
+        );
+      }
+    }
     switch (ran.outcome) {
       case RunFinished(:final artifactId?, :final docsRefused):
+        if (ran.finish.capPublished case final clean?) {
+          await _keepForBuild(artifactId, planKey, clean.files, ran.state);
+        }
         if (docsRefused != null) {
           _log('new app $artifactId: made without its documents: $docsRefused');
           try {
@@ -415,7 +603,7 @@ class AgentLoop {
       case RunCancelled():
         throw const AgentError.cancelled();
       case RunGaveUp(:final reason):
-        throw ran.error ?? AgentError(reason);
+        throw ran.error ?? AgentError(ran.giveUp.givenReason ?? reason);
       case RunDropped():
         throw const AgentError('The app was deleted before it was finished.');
       case RunInterrupted():
@@ -425,6 +613,39 @@ class AgentLoop {
           'been made. Look for it in your apps before you try again.',
         );
     }
+  }
+
+  /// After a stop that made app [aid] from a clean render of [published]
+  /// files: keeps what the draft holds beyond them for the build's next
+  /// continue run ([buildDraftKey]), when the plan under [planKey] has
+  /// features to build.
+  Future<void> _keepForBuild(
+    String aid,
+    String planKey,
+    Map<String, String> published,
+    RunState state,
+  ) async {
+    final d = state.draft;
+    final edits = keptEdits(d.files, published);
+    if (edits.isEmpty) return;
+    final p = await _plan(planKey);
+    if (p == null || p.todo.isEmpty) return;
+    await _quiet(
+      'keep the draft for the build',
+      () => unfinished.put(
+        UnfinishedChange(
+          artifactId: aid,
+          threadIds: [buildDraftKey(aid)],
+          commentIds: const [],
+          limit: '',
+          spentUsd: 0,
+          at: _clock.now(),
+          edits: edits,
+          before: {for (final p in edits.keys) p: fingerprint(published[p])},
+          lastRender: _lastRender(d),
+        ),
+      ),
+    );
   }
 
   /// The artifact the app session made during an interrupted create: one
@@ -1348,7 +1569,12 @@ class AgentLoop {
 
     final render = RenderTool(_api, inspector, baseUrl: base);
     final finish = FinishTool(_api, ledger, render: render, log: _log);
-    final giveUp = GiveUpTool(_api, render: render, log: _log);
+    final giveUp = GiveUpTool(
+      _api,
+      render: render,
+      finish: finish,
+      log: _log,
+    );
     final ask = AskTool(
       _api,
       asked,

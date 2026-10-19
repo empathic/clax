@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 
 import '../agent/backend.dart';
 import '../agent/edit_result.dart';
+import '../agent/failure.dart' show timesWords;
+import '../agent/loop.dart' show MakeStopped;
 import '../agent/progress.dart';
 import '../agent/request.dart';
 import '../agent/timings.dart';
@@ -31,7 +33,9 @@ import 'tokens.g.dart';
 /// preview and narration. Throws `AgentError`; an `AgentError.cancelled`
 /// after [cancelled] fired is not shown, and one before it (the run
 /// stopped itself, as when the person said Not now to sending it) ends the
-/// make as Cancel does, closing its build view.
+/// make as Cancel does, closing its build view. A run that stops at a
+/// limit with work done throws `MakeStopped` (lib/agent/loop.dart), which
+/// the screen offers to Keep going ([KeepGoingApp]).
 typedef MakeApp = Future<String> Function(
   String request,
   Future<void> cancelled,
@@ -347,6 +351,14 @@ class MakingLog {
 ///   Developer tools on, Details shows the failure's raw text. Each
 ///   attempt gets its own cancel signal, completed when the attempt is
 ///   abandoned: Cancel, Edit, Open Settings or a Retry.
+/// - **Stopped at a limit** (`MakeStopped`): not a failure. The screen
+///   says in Clax's words that it made a start, with the request, how
+///   often the make stopped and what it has spent of its \$6; Keep going
+///   ([keepGoing], through the session) leads, then Start over (the Retry,
+///   from the request), Edit and Cancel. Details holds the files the draft
+///   holds and the agent's notes, its own words for why it stopped among
+///   them. Keep going shows the kept page in the preview at once; from the
+///   second stop the session goes on by itself, and the screen follows.
 /// - **Build view.** With [build], the screen is the build's view (a
 ///   Retry starts from the plan the failed run left, the person's edits
 ///   included): once
@@ -374,12 +386,17 @@ class MakingScreen extends StatefulWidget {
     this.build,
     this.clock = const SystemClock(),
     this.haikus,
+    this.keepGoing,
   });
 
   final String request;
 
   /// Runs the screen's own make, when there is no [session].
   final MakeApp? make;
+
+  /// Goes on with the screen's own make after it stopped at a limit, when
+  /// there is no [session].
+  final KeepGoingApp? keepGoing;
 
   /// The make to show, which goes on when the screen goes.
   final MakeSession? session;
@@ -458,8 +475,14 @@ class _MakingScreenState extends State<MakingScreen> {
   String? _haiku;
   var _haikusAsked = false;
 
-  /// Whether the failure's Details are open.
+  /// Whether the failure's (or the stop's) Details are open.
   var _details = false;
+
+  /// How the make stopped at a limit, while the screen shows it.
+  MakeStopped? _stop;
+
+  /// The session's [MakeSession.autoKeptGoing] the screen has followed.
+  var _autoSeen = 0;
 
   @override
   void initState() {
@@ -471,7 +494,9 @@ class _MakingScreenState extends State<MakingScreen> {
           widget.request,
           widget.make ?? (throw ArgumentError('a make or a session')),
           clock: widget.clock,
+          keepGoing: widget.keepGoing,
         );
+    _autoSeen = _session.autoKeptGoing;
     _session.attach();
     _session.addListener(_onSession);
     _updates = _session.updates.listen(_onUpdate);
@@ -600,6 +625,15 @@ class _MakingScreenState extends State<MakingScreen> {
       _attempt(() {});
       return;
     }
+    if (_session.autoKeptGoing != _autoSeen) {
+      // The session went on by itself after a stop.
+      _autoSeen = _session.autoKeptGoing;
+      if (_session.running) {
+        _attempt(() {}, carry: false);
+        _showKept();
+        return;
+      }
+    }
     if (_session.aid case final aid? when !_tookMade) {
       _tookMade = true;
       unawaited(_onMade(aid));
@@ -608,6 +642,11 @@ class _MakingScreenState extends State<MakingScreen> {
       _tick?.cancel();
       _throttle?.clear();
       setState(() => _failure = f);
+    } else if (_session.stopped case final st? when !_session.running) {
+      if (identical(_stop, st)) return;
+      _tick?.cancel();
+      _throttle?.clear();
+      setState(() => _stop = st);
     }
   }
 
@@ -643,15 +682,18 @@ class _MakingScreenState extends State<MakingScreen> {
   }
 
   /// Starts an attempt with [start]: a fresh preview, seconds and plan.
-  void _attempt(void Function() start) {
+  /// With [carry], a Retry, it starts from the plan the run left; a Keep
+  /// going goes on with the plan where it is kept.
+  void _attempt(void Function() start, {bool carry = true}) {
     _fresh();
     widget.timings?.start(sayFirstOutput);
     unawaited(_planSub?.cancel());
     _planSub = null;
     // A Retry starts from the plan the failed run left, edits included.
-    final carry = _plan;
-    _carry = carry != null && carry.features.isNotEmpty ? carry : null;
+    final plan = _plan;
+    _carry = carry && plan != null && plan.features.isNotEmpty ? plan : null;
     _failure = null;
+    _stop = null;
     _details = false;
     _seconds = 0;
     _planKey = null;
@@ -661,8 +703,19 @@ class _MakingScreenState extends State<MakingScreen> {
     if (mounted) setState(() {});
   }
 
-  /// Retry after a failure.
+  /// Retry after a failure; Start over after a stop.
   void _run() => _attempt(() => unawaited(_session.start()));
+
+  /// Keep going after a stop, from the kept draft.
+  void _keepGoing() {
+    _attempt(() => unawaited(_session.keepGoing()), carry: false);
+    _showKept();
+  }
+
+  /// Shows the kept draft's page, which a Keep going starts from.
+  void _showKept() {
+    if (_log.html case final html?) _throttle?.offer(html);
+  }
 
   /// The made app [aid]: its build goes on here, it waits here under the
   /// banner of its refused starting data, or it is handed over.
@@ -781,14 +834,17 @@ class _MakingScreenState extends State<MakingScreen> {
               constraints: const BoxConstraints(maxWidth: 480),
               child: AnimatedSwitcher(
                 duration: const Duration(milliseconds: 200),
-                child: _failure == null
+                child: _failure == null && _stop == null
                     ? _buildView(context)
                     // Scrolls, so its buttons stay reachable with
                     // large text on a small screen.
                     : SingleChildScrollView(
-                        key: const ValueKey('failed'),
+                        key: ValueKey(_stop != null ? 'stopped' : 'failed'),
                         padding: const EdgeInsets.all(24),
-                        child: _failed(context),
+                        child: switch (_stop) {
+                          final st? => _stopped(context, st),
+                          null => _failed(context),
+                        },
                       ),
               ),
             ),
@@ -1160,6 +1216,195 @@ class _MakingScreenState extends State<MakingScreen> {
       ),
     );
   }
+
+  /// A make that stopped at a limit with work done: what it made so far,
+  /// with Keep going first.
+  Widget _stopped(BuildContext context, MakeStopped st) {
+    final theme = Theme.of(context);
+    final p = claxPalette(context);
+    final go = _session.canKeepGoing;
+    final line = !go
+        ? 'I’ve made a start, but it has used the \$${_usd(st.capUsd)} a new '
+              'app may cost. Start over, or edit what you asked for.'
+        : st.plansNext
+        ? 'I’ve made a start. Keep going plans the rest and builds it in '
+              'steps.'
+        : 'I’ve made a start. Keep going picks up where I stopped.';
+    final spent =
+        'Stopped ${timesWords(st.stops)} · '
+        '\$${st.spentUsd.toStringAsFixed(2)} of \$${_usd(st.capUsd)} used';
+    final body = theme.textTheme.bodyMedium?.copyWith(color: p.fg);
+    final muted = theme.textTheme.bodyMedium?.copyWith(color: p.muted);
+    Widget heading(String s) => Padding(
+      padding: const EdgeInsets.only(top: 12, bottom: 4),
+      child: Text(
+        s,
+        style: theme.textTheme.labelMedium?.copyWith(color: p.muted),
+      ),
+    );
+    // A note the agent repeated turn after turn shows once.
+    final notes = <String>[];
+    for (final n in st.notes.map((n) => n.trim())) {
+      if (n.isNotEmpty && (notes.isEmpty || notes.last != n)) notes.add(n);
+    }
+    final shown = notes.length <= _stopNotes
+        ? notes
+        : notes.sublist(notes.length - _stopNotes);
+    final details = st.changed.isNotEmpty || shown.isNotEmpty;
+    return Column(
+      key: const ValueKey('make-stopped'),
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Center(
+          child: ClaxMark(size: 44, state: ClaxMarkState.resting),
+        ),
+        const SizedBox(height: 16),
+        Text(
+          'This one’s bigger than one go',
+          textAlign: TextAlign.center,
+          style: ClaxType.of(
+            ClaxRole.title1,
+            theme.platform,
+          ).copyWith(color: p.fg),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          line,
+          textAlign: TextAlign.center,
+          style: theme.textTheme.bodyLarge?.copyWith(color: p.muted),
+        ),
+        const SizedBox(height: 24),
+        DecoratedBox(
+          decoration: BoxDecoration(
+            color: p.card,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: p.border),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Text(widget.request, style: theme.textTheme.bodyLarge),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          spent,
+          key: const ValueKey('make-stop-spend'),
+          textAlign: TextAlign.center,
+          style: muted?.copyWith(
+            fontFeatures: const [FontFeature.tabularFigures()],
+          ),
+        ),
+        if (details && _details) ...[
+          const SizedBox(height: 12),
+          DecoratedBox(
+            key: const ValueKey('make-stop-details-open'),
+            decoration: BoxDecoration(
+              color: p.card,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: p.border),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (st.changed.isNotEmpty) ...[
+                    heading('Made so far'),
+                    for (final f in st.changed)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 1),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                f.path,
+                                overflow: TextOverflow.ellipsis,
+                                style: ClaxType.mono(
+                                  theme.platform,
+                                ).copyWith(color: p.fg),
+                              ),
+                            ),
+                            if (f.added > 0 || f.removed > 0) ...[
+                              const SizedBox(width: 8),
+                              Text(
+                                [
+                                  if (f.added > 0) '+${f.added}',
+                                  if (f.removed > 0) '−${f.removed}',
+                                ].join(' '),
+                                style: muted?.copyWith(
+                                  fontFeatures: const [
+                                    FontFeature.tabularFigures(),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                  ],
+                  if (shown.isNotEmpty) ...[
+                    heading('Notes'),
+                    for (final n in shown)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: Text(n, style: body),
+                      ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ],
+        const SizedBox(height: 24),
+        Wrap(
+          alignment: WrapAlignment.center,
+          spacing: 12,
+          runSpacing: 12,
+          children: [
+            if (go)
+              ClaxButton(
+                key: const ValueKey('make-keep-going'),
+                label: 'Keep going',
+                icon: Icons.play_arrow_rounded,
+                kind: ClaxButtonKind.primary,
+                isDefault: true,
+                onPressed: _keepGoing,
+              ),
+            ClaxButton(
+              key: const ValueKey('make-start-over'),
+              label: 'Start over',
+              kind: go ? ClaxButtonKind.plain : ClaxButtonKind.primary,
+              isDefault: !go,
+              onPressed: _run,
+            ),
+            ClaxButton(
+              label: 'Edit',
+              onPressed: () => _leave(const EditRequest()),
+            ),
+            ClaxButton(label: 'Cancel', onPressed: _leave),
+            if (details)
+              Semantics(
+                expanded: _details,
+                child: ClaxButton(
+                  key: const ValueKey('make-stop-details'),
+                  label: 'Details',
+                  icon: _details ? Icons.expand_less : Icons.expand_more,
+                  onPressed: () => setState(() => _details = !_details),
+                ),
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  /// At most this many of a stopped make's notes show under Details: the
+  /// latest.
+  static const _stopNotes = 6;
+
+  static String _usd(double v) =>
+      v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(2);
 
   Widget _failed(BuildContext context) {
     final theme = Theme.of(context);
