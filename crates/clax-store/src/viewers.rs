@@ -322,6 +322,26 @@ fn owner_row(c: &rusqlite::Connection) -> rusqlite::Result<Option<(Viewer, bool)
     .optional()
 }
 
+/// Names the owner's row `owner_id` `name` (a [`checked_name`]; `None`
+/// clears it) in `tx`, and returns the row.
+///
+/// # Errors
+/// `name_taken` as [`check_viewer_name`].
+pub(super) fn name_owner_in(
+    tx: &rusqlite::Transaction<'_>,
+    owner_id: &str,
+    name: Option<&str>,
+) -> Result<Viewer> {
+    if let Some(n) = name {
+        check_viewer_name(tx, owner_id, n)?;
+    }
+    tx.execute(
+        "UPDATE viewers SET display_name = ?2 WHERE id = ?1",
+        params![owner_id, name],
+    )?;
+    Ok(owner_row(tx)?.expect("the owner row exists").0)
+}
+
 /// Moves `from`'s history to `into` and deletes `from`: its comments'
 /// author, its mentions, the threads it resolved, its seen marks (the higher
 /// of the two, pruned to [`clax_core::changelog::MAX_SEEN_PER_VIEWER`]), its
@@ -700,16 +720,7 @@ impl Store {
     pub fn set_owner_name(&self, name: &str, browser: bool) -> Result<Viewer> {
         let name = checked_name(name)?;
         let v = self.owner_viewer(browser)?;
-        self.with_tx(|tx| {
-            if let Some(n) = name {
-                check_viewer_name(tx, &v.id, n)?;
-            }
-            tx.execute(
-                "UPDATE viewers SET display_name = ?2 WHERE id = ?1",
-                params![v.id, name],
-            )?;
-            Ok(owner_row(tx)?.expect("the owner row exists").0)
-        })
+        self.with_tx(|tx| name_owner_in(tx, &v.id, name))
     }
 
     /// Claims the viewer behind `cookie` for the owner, on the shell's token
