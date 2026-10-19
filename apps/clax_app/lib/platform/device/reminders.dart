@@ -60,11 +60,26 @@ DateTime nextAt(DateTime now, int hour, int minute, {int? weekday}) {
   return t;
 }
 
+/// The most notifications [Reminders] keeps pending on iOS, which keeps
+/// only the 64 nearest an app schedules and drops the rest silently; the
+/// four left over are the app's own notices' room.
+const iosPendingCap = 60;
+
 class Reminders {
-  Reminders(this.port, {this.file, DateTime Function()? now})
-    : _now = now ?? DateTime.now;
+  Reminders(
+    this.port, {
+    this.file,
+    DateTime Function()? now,
+    int? pendingCap,
+  }) : _now = now ?? DateTime.now,
+       pendingCap = pendingCap ?? (Platform.isIOS ? iosPendingCap : null);
 
   final NotifierPort port;
+
+  /// The most native notifications pending at once ([iosPendingCap] on
+  /// iOS); none when null. With a cap, the nearest next times are pending
+  /// and [topUp] schedules the rest as those fire.
+  final int? pendingCap;
 
   /// Where the reminders are kept (`<support>/device-reminders.json`); in
   /// memory when null.
@@ -128,42 +143,91 @@ class Reminders {
     items.removeWhere((i) => i['aid'] == aid && i['id'] == spec['id']);
     var next = book['next'] as int;
     final natives = <int>[];
-    final payload = ReminderTap(aid, spec['route'] as String?).toPayload();
-    final title = spec['title'] as String;
-    final body = spec['body'] as String? ?? '';
     final now = _now();
-    if (spec['at'] case final String at) {
-      final id = next++;
-      await port.schedule(
-        id: id,
-        title: title,
-        body: body,
-        at: DateTime.parse(at).toLocal(),
-        payload: payload,
-      );
-      natives.add(id);
-    } else {
-      final every = spec['every'] as Map<String, Object?>;
-      final hour = every['hour'] as int;
-      final minute = every['minute'] as int;
-      final weekdays = every['weekdays'] as List<int>?;
-      for (final w in weekdays ?? const <int?>[null]) {
-        final id = next++;
-        await port.schedule(
-          id: id,
-          title: title,
-          body: body,
-          at: nextAt(now, hour, minute, weekday: w),
-          repeat: w == null ? Repeat.daily : Repeat.weekly,
-          payload: payload,
-        );
-        natives.add(id);
+    final kept = {...spec, 'aid': aid, 'native': natives};
+    final count = spec['at'] is String
+        ? 1
+        : ((spec['every'] as Map)['weekdays'] as List?)?.length ?? 1;
+    for (var i = 0; i < count; i++) {
+      natives.add(next++);
+    }
+    if (pendingCap == null) {
+      for (final n in _natives(kept, now)) {
+        await _post(n);
       }
     }
-    items.add({...spec, 'aid': aid, 'native': natives});
+    items.add(kept);
     _save({'next': next, 'items': items});
+    await topUp();
     return {'id': spec['id']};
   }
+
+  /// With [pendingCap], makes the port's pending reminders the nearest
+  /// [pendingCap] next times of every app's: cancels pending ones past the
+  /// cap and schedules those now within it. Called at launch, after each
+  /// schedule and cancel, and when a reminder is tapped. Without a cap it
+  /// does nothing.
+  Future<void> topUp() async {
+    final cap = pendingCap;
+    if (cap == null) return;
+    final now = _now();
+    final all = [
+      for (final i in _items(_load())) ..._natives(i, now),
+    ]..sort((a, b) => a.at.compareTo(b.at));
+    final wanted = all.take(cap).toList();
+    final wantedIds = {for (final n in wanted) n.id};
+    final pending = await port.pendingIds();
+    for (final n in all) {
+      if (!wantedIds.contains(n.id) && pending.contains(n.id)) {
+        await port.cancel(n.id);
+      }
+    }
+    for (final n in wanted) {
+      if (!pending.contains(n.id)) await _post(n);
+    }
+  }
+
+  /// Item [i]'s native notifications still to come after [now], each at
+  /// its next time.
+  static List<_Native> _natives(Map<String, Object?> i, DateTime now) {
+    final ids = (i['native'] as List).cast<int>();
+    final payload = ReminderTap(
+      i['aid'] as String,
+      i['route'] as String?,
+    ).toPayload();
+    final title = i['title'] as String;
+    final body = i['body'] as String? ?? '';
+    if (i['at'] case final String at) {
+      final t = DateTime.parse(at).toLocal();
+      if (!t.isAfter(now)) return const [];
+      return [_Native(ids.single, title, body, t, null, payload)];
+    }
+    final every = (i['every'] as Map).cast<String, Object?>();
+    final hour = every['hour'] as int;
+    final minute = every['minute'] as int;
+    final weekdays = (every['weekdays'] as List?)?.cast<int>();
+    final days = weekdays ?? const <int?>[null];
+    return [
+      for (var k = 0; k < days.length; k++)
+        _Native(
+          ids[k],
+          title,
+          body,
+          nextAt(now, hour, minute, weekday: days[k]),
+          days[k] == null ? Repeat.daily : Repeat.weekly,
+          payload,
+        ),
+    ];
+  }
+
+  Future<void> _post(_Native n) => port.schedule(
+    id: n.id,
+    title: n.title,
+    body: n.body,
+    at: n.at,
+    repeat: n.repeat,
+    payload: n.payload,
+  );
 
   /// Cancels app [aid]'s reminder [id].
   Future<Map<String, Object?>> cancel(String aid, Object? id) async {
@@ -179,7 +243,10 @@ class Reminders {
       }
     }
     items.removeWhere(gone.contains);
-    if (gone.isNotEmpty) _save({...book, 'items': items});
+    if (gone.isNotEmpty) {
+      _save({...book, 'items': items});
+      await topUp();
+    }
     return {'cancelled': gone.isNotEmpty};
   }
 
@@ -276,4 +343,15 @@ class Reminders {
     final double d when d == d.roundToDouble() => d.toInt(),
     _ => null,
   };
+}
+
+/// One native notification of a reminder, at its next time.
+class _Native {
+  const _Native(this.id, this.title, this.body, this.at, this.repeat, this.payload);
+  final int id;
+  final String title;
+  final String body;
+  final DateTime at;
+  final Repeat? repeat;
+  final String payload;
 }

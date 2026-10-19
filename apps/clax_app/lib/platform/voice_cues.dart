@@ -43,7 +43,10 @@ class ChannelVoiceCues implements VoiceCues {
     required this.enabled,
     this.channel = defaultChannel,
     bool? platformHaptics,
-  }) : platformHaptics = platformHaptics ?? Platform.isAndroid;
+    bool Function() isAndroid = _isAndroid,
+  }) : platformHaptics = platformHaptics ?? isAndroid();
+
+  static bool _isAndroid() => Platform.isAndroid;
 
   static const defaultChannel = MethodChannel('dev.empathic.clax/cues');
 
@@ -52,7 +55,10 @@ class ChannelVoiceCues implements VoiceCues {
 
   /// Whether `play` vibrates too, so `HapticFeedback` is not used. True on
   /// Android, whose `HapticFeedback` effects are faint, alike, and dropped
-  /// when the person turned touch feedback off.
+  /// when the person turned touch feedback off. False on iOS, where
+  /// `HapticFeedback` plays UIKit's impact generator and no channel serves
+  /// `play`, and on macOS. [isAndroid] (`Platform.isAndroid` by default)
+  /// gives the default; tests set it.
   final bool platformHaptics;
 
   @override

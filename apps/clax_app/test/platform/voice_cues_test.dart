@@ -76,6 +76,21 @@ void main() {
       },
     );
 
+    test('by default the platform vibrates on Android only: an iOS host '
+        'plays HapticFeedback (UIKit\'s impact generator), then the tone', () async {
+      final ios = ChannelVoiceCues(enabled: () => true, isAndroid: () => false);
+      final android = ChannelVoiceCues(enabled: () => true, isAndroid: () => true);
+      expect(ios.platformHaptics, isFalse);
+      expect(android.platformHaptics, isTrue);
+      await ios.started();
+      await android.started();
+      expect(log, [
+        'haptic HapticFeedbackType.mediumImpact',
+        'play {cue: start}',
+        'play {cue: start}',
+      ]);
+    });
+
     test('turned off, neither vibrates nor sounds', () async {
       final cues = ChannelVoiceCues(enabled: () => false);
       await cues.started();

@@ -56,6 +56,9 @@ abstract interface class NotifierPort {
   });
 
   Future<void> cancel(int id);
+
+  /// The IDs of the notifications scheduled and not yet shown.
+  Future<Set<int>> pendingIds();
 }
 
 abstract interface class SharePort {

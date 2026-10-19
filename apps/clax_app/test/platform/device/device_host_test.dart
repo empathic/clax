@@ -54,6 +54,9 @@ class FakeNotifier implements NotifierPort {
     cancelled.add(id);
     scheduled.remove(id);
   }
+
+  @override
+  Future<Set<int>> pendingIds() async => scheduled.keys.toSet();
 }
 
 class FakeShare implements SharePort {

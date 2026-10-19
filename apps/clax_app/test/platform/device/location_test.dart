@@ -6,10 +6,12 @@ import 'dart:math' as math;
 import 'package:clax_app/daemon/clock.dart';
 import 'package:clax_app/platform/device/device_grants.dart';
 import 'package:clax_app/platform/device/device_host.dart';
+import 'package:clax_app/platform/device/device_plugins.dart';
 import 'package:clax_app/platform/device/location_coarsen.dart';
 import 'package:clax_app/platform/device/reminders.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:geolocator/geolocator.dart' show LocationAccuracyStatus;
 
 import 'device_host_test.dart'
     show
@@ -527,6 +529,61 @@ void main() {
         ).decision('zzzzzzzzzzzz', 'location'))!.precision,
         Precision.approximate,
       );
+    });
+  });
+
+  group('PluginLocation.preciseFix', () {
+    late List<String> asked;
+    setUp(() => asked = []);
+
+    Future<bool> fix(
+      Precision p, {
+      required bool iOS,
+      required LocationAccuracyStatus now,
+      LocationAccuracyStatus answer = LocationAccuracyStatus.precise,
+    }) => PluginLocation.preciseFix(
+      p,
+      iOS: iOS,
+      accuracy: () async => now,
+      askTemporary: (key) async {
+        asked.add(key);
+        return answer;
+      },
+    );
+
+    test('on iOS a precise request on reduced accuracy asks for precise '
+        'location once, by the "precise" purpose', () async {
+      expect(
+        await fix(Precision.precise, iOS: true, now: LocationAccuracyStatus.reduced),
+        isTrue,
+      );
+      expect(asked, ['precise']);
+      expect(
+        await fix(
+          Precision.precise,
+          iOS: true,
+          now: LocationAccuracyStatus.reduced,
+          answer: LocationAccuracyStatus.reduced,
+        ),
+        isFalse,
+      );
+    });
+
+    test('nothing is asked when precise is had, approximate was asked, or '
+        'off iOS', () async {
+      expect(
+        await fix(Precision.precise, iOS: true, now: LocationAccuracyStatus.precise),
+        isTrue,
+      );
+      expect(
+        await fix(Precision.approximate, iOS: true, now: LocationAccuracyStatus.reduced),
+        isFalse,
+      );
+      expect(
+        await fix(Precision.precise, iOS: false, now: LocationAccuracyStatus.reduced),
+        isFalse,
+      );
+      expect(asked, isEmpty);
     });
   });
 }

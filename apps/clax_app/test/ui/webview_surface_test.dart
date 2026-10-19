@@ -75,6 +75,15 @@ void main() {
     expect(opened, isEmpty);
   });
 
+  test('on iOS the WebView is inspectable outside release builds, and '
+      'WebKit\'s swipe back and forward stay off', () {
+    expect(iosWebKitSettings(), (inspectable: true, backForwardGestures: false));
+    expect(
+      iosWebKitSettings(release: true),
+      (inspectable: false, backForwardGestures: false),
+    );
+  });
+
   test('frames inside the page navigate freely', () {
     expect(
       WebViewAppSurface.decide(

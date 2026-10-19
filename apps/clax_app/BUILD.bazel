@@ -79,6 +79,7 @@ flutter_library(
         "@clax_app_pub//:speech_to_text",
         "@clax_app_pub//:timezone",
         "@clax_app_pub//:webview_flutter",
+        "@clax_app_pub//:webview_flutter_wkwebview",
         "@clax_app_pub//:xml",
     ],
 )

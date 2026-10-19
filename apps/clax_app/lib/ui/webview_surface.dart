@@ -5,6 +5,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
 
 import '../daemon/clock.dart';
 import 'app_surface.dart';
@@ -69,6 +70,7 @@ class WebViewAppSurface implements AppSurface, CapturableSurface {
       c.setBackgroundColor(background).catchError((Object _) {});
     }
     noPinchZoom(c);
+    iosWebKit(c);
   }
 
   /// The daemon's base URL (`http://127.0.0.1:<port>`).
@@ -254,6 +256,28 @@ class WebViewAppSurface implements AppSurface, CapturableSurface {
     _faults.close();
     _elsewhere.close();
   }
+}
+
+/// What the app view asks of WebKit on iOS: Safari's Web Inspector may
+/// attach in debug and profile builds, never in [release] ones; WebKit's
+/// own edge swipes back and forward stay off, since the top level never
+/// has a page to go back to and the app's own swipe back owns the edge.
+@visibleForTesting
+({bool inspectable, bool backForwardGestures}) iosWebKitSettings({
+  bool release = kReleaseMode,
+}) => (inspectable: !release, backForwardGestures: false);
+
+/// Applies [iosWebKitSettings] to [c] on iOS; elsewhere, and for a
+/// controller that is not WebKit's, it does nothing.
+void iosWebKit(WebViewController c) {
+  if (defaultTargetPlatform != TargetPlatform.iOS) return;
+  final p = c.platform;
+  if (p is! WebKitWebViewController) return;
+  final s = iosWebKitSettings();
+  p.setInspectable(s.inspectable).catchError((Object _) {});
+  p
+      .setAllowsBackForwardNavigationGestures(s.backForwardGestures)
+      .catchError((Object _) {});
 }
 
 /// Turns off the WebView's own pinch and double-tap zoom, so an app page

@@ -13,6 +13,7 @@ import '../agent/icon_svg.dart';
 import '../bundle/lineage_store.dart';
 import '../clax/api.dart';
 import '../platform/bundle_key.dart' show keyFingerprint;
+import '../platform/share_anchor.dart';
 import 'app_icon.dart';
 import 'app_inspector_code.dart';
 import 'app_inspector_permissions.dart';
@@ -139,8 +140,8 @@ class _AppInspectorState extends State<AppInspector> {
     if (mounted) setState(() => _lineage = e);
   }
 
-  Future<void> _share(String? svg) async {
-    await widget.bundles?.share(context, widget.aid, svg: svg);
+  Future<void> _share(String? svg, Rect origin) async {
+    await widget.bundles?.share(context, widget.aid, svg: svg, origin: origin);
     await _loadLineage();
   }
 
@@ -256,7 +257,7 @@ class _AppInspectorState extends State<AppInspector> {
           shareLabel: widget.bundles?.shareLabel,
           onShare: widget.bundles == null
               ? null
-              : () => unawaited(_share(_icon)),
+              : (origin) => unawaited(_share(_icon, origin)),
           sharing: sharingLine(_lineage),
         ),
       ),
@@ -488,7 +489,8 @@ class _Overview extends StatelessWidget {
 
   /// The share button's label and action; no button when null.
   final String? shareLabel;
-  final VoidCallback? onShare;
+  /// Shares the app, the share sheet pointing from the button's rect.
+  final void Function(Rect origin)? onShare;
 
   /// [sharingLine]'s line.
   final String? sharing;
@@ -555,16 +557,18 @@ class _Overview extends StatelessWidget {
                 ),
               ),
               if (onShare case final share?)
-                OutlinedButton.icon(
-                  key: const ValueKey('inspector-share'),
-                  onPressed: share,
-                  icon: Icon(
-                    shareLabel == 'Export…'
-                        ? Icons.save_alt_rounded
-                        : Icons.ios_share_rounded,
-                    size: 18,
+                Builder(
+                  builder: (button) => OutlinedButton.icon(
+                    key: const ValueKey('inspector-share'),
+                    onPressed: () => share(shareAnchorOf(button)),
+                    icon: Icon(
+                      shareLabel == 'Export…'
+                          ? Icons.save_alt_rounded
+                          : Icons.ios_share_rounded,
+                      size: 18,
+                    ),
+                    label: Text(shareLabel ?? 'Share app'),
                   ),
-                  label: Text(shareLabel ?? 'Share app'),
                 ),
             ],
           ),

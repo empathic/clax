@@ -24,6 +24,7 @@ import '../clax/models.dart';
 import '../platform/bundle_key.dart' show keyFingerprint;
 import '../platform/device/device_grants.dart';
 import '../platform/settings_store.dart';
+import '../platform/share_anchor.dart';
 import 'app_icon.dart';
 import 'developer.dart';
 import 'kit/kit.dart';
@@ -1020,9 +1021,10 @@ class KeptUpdateSheet extends StatelessWidget {
 /// Where a built bundle goes and where one to import comes from: the share
 /// sheet on a phone, a save panel on the Mac, and a file picker on both.
 abstract interface class BundleFiles {
-  /// Hands [bytes] on as [name]: the share sheet, or a save panel. False
-  /// when the person dismissed it.
-  Future<bool> send(String name, Uint8List bytes);
+  /// Hands [bytes] on as [name]: the share sheet, pointing from [origin]
+  /// (a rect in the window; an iPad's share popover needs one), or a save
+  /// panel. False when the person dismissed it.
+  Future<bool> send(String name, Uint8List bytes, {required Rect origin});
 
   /// A `.clax` file the person picks (Import app…), or null.
   Future<Uint8List?> pick();
@@ -1036,7 +1038,11 @@ class PluginBundleFiles implements BundleFiles {
   final bool toFile;
 
   @override
-  Future<bool> send(String name, Uint8List bytes) async {
+  Future<bool> send(
+    String name,
+    Uint8List bytes, {
+    required Rect origin,
+  }) async {
     if (toFile) {
       return await FilePicker.saveFile(
             fileName: name,
@@ -1050,6 +1056,7 @@ class PluginBundleFiles implements BundleFiles {
       ShareParams(
         files: [XFile.fromData(bytes, mimeType: bundleMime, name: name)],
         fileNameOverrides: [name],
+        sharePositionOrigin: origin,
       ),
     );
     return r.status != ShareResultStatus.dismissed;
@@ -1105,8 +1112,16 @@ class BundleFlows {
   String get shareLabel => toFile ? 'Export…' : 'Share app';
 
   /// Shares (or exports) app [aid]: the export sheet, the build, then the
-  /// share sheet or the save panel.
-  Future<void> share(BuildContext context, String aid, {String? svg}) async {
+  /// share sheet or the save panel. The share sheet points from [origin],
+  /// the tapped button's rect ([shareAnchorOf]); without one, from the
+  /// screen's centre.
+  Future<void> share(
+    BuildContext context,
+    String aid, {
+    String? svg,
+    Rect? origin,
+  }) async {
+    final anchor = origin ?? screenCentreAnchor(View.maybeOf(context));
     final ExportPlan plan;
     try {
       plan = await exporter.plan(aid);
@@ -1152,7 +1167,11 @@ class BundleFlows {
     );
     if (built == null) return;
     try {
-      await files.send(built.fileName, built.bytes);
+      await files.send(
+        built.fileName,
+        built.bytes,
+        origin: anchor,
+      );
     } on Object catch (e) {
       if (!context.mounted) return;
       await _fail(

@@ -154,17 +154,23 @@ class DeviceHost {
   Stream<ReminderTap> get taps => _taps.stream;
 
   /// Sets up the notifications; the tap that launched the app, if any, is
-  /// the first of [taps]. Once.
+  /// the first of [taps]. Once. Tops the pending reminders up
+  /// ([Reminders.topUp]) now and after each tap, since a reminder shown is
+  /// no longer pending.
   Future<void> start() async {
     if (_started) return;
     _started = true;
     try {
       await _notifier.init((p) {
-        if (ReminderTap.parse(p) case final t?) _taps.add(t);
+        if (ReminderTap.parse(p) case final t?) {
+          _taps.add(t);
+          unawaited(reminders.topUp().catchError((Object _) {}));
+        }
       });
       if (ReminderTap.parse(await _notifier.launchPayload()) case final t?) {
         _taps.add(t);
       }
+      await reminders.topUp();
     } on Object {
       // No notifications here: notify answers unavailable.
     }

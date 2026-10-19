@@ -6,6 +6,7 @@ import 'package:clax_app/bundle/lineage_store.dart';
 import 'package:clax_app/bundle/updater.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/platform/settings_store.dart';
+import 'package:clax_app/platform/share_anchor.dart';
 import 'package:clax_app/ui/bundle_sheets.dart';
 import 'package:clax_app/ui/developer.dart';
 import 'package:flutter/material.dart';
@@ -16,11 +17,13 @@ import '../bundle/services_support.dart';
 /// [BundleFiles] that keeps what it is sent and hands over [picked].
 class FakeBundleFiles implements BundleFiles {
   final sent = <(String, Uint8List)>[];
+  final origins = <Rect>[];
   Uint8List? picked;
 
   @override
-  Future<bool> send(String name, Uint8List bytes) async {
+  Future<bool> send(String name, Uint8List bytes, {required Rect origin}) async {
     sent.add((name, bytes));
+    origins.add(origin);
     return true;
   }
 
@@ -108,6 +111,52 @@ void main() {
       expect((await me.store.entry(aid))?.role, LineageRole.author);
     });
     expect(find.byType(BundleProgressSheet), findsNothing);
+  });
+
+  testWidgets('Share app anchors the share sheet to the tapped button, or '
+      'the screen\'s centre without one', (tester) async {
+    late String aid;
+    await tester.runAsync(() async {
+      await me.ready();
+      aid = (await me.api.createArtifact(
+        PublishRequest(title: 'Plant log', files: {'index.html': '<p>hi</p>'}),
+      )).artifact.id;
+    });
+    const button = ValueKey('share-button');
+    await tester.pumpWidget(
+      MaterialApp(
+        builder: (_, child) =>
+            DeveloperScope(notifier: ValueNotifier(false), child: child!),
+        home: Scaffold(
+          body: Align(
+            alignment: Alignment.topRight,
+            child: Builder(
+              builder: (b) => TextButton(
+                key: button,
+                onPressed: () => flows.share(b, aid, origin: shareAnchorOf(b)),
+                child: const Text('go'),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    final rect = tester.getRect(find.byKey(button));
+    await tester.tap(find.byKey(button));
+    await settle(tester);
+    await tester.enterText(find.byKey(const ValueKey('export-name')), 'Alex');
+    await tester.tap(find.text('Share'));
+    await settle(tester);
+    expect(files.origins, [rect]);
+
+    await run(tester, (c) => flows.share(c, aid));
+    await tester.tap(find.text('Share'));
+    await settle(tester);
+    expect(files.origins.last, Rect.fromCenter(
+      center: const Offset(400, 300),
+      width: 2,
+      height: 2,
+    ));
   });
 
   testWidgets('a bundle opened: the install sheet, then the app opens', (

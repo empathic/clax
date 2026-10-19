@@ -17,6 +17,7 @@ import 'package:timezone/data/latest.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
 
 import '../local_notifications.dart';
+import '../share_anchor.dart';
 import 'device_ports.dart';
 
 bool get _android => defaultTargetPlatform == TargetPlatform.android;
@@ -93,14 +94,28 @@ class PluginNotifier implements NotifierPort {
 
   @override
   Future<void> cancel(int id) => _hub.cancel(id);
+
+  @override
+  Future<Set<int>> pendingIds() async {
+    await _hub.ready;
+    return {
+      for (final r in await _hub.plugin.pendingNotificationRequests()) r.id,
+    };
+  }
 }
 
+/// Shares through share_plus, anchored at the screen's centre: a page's
+/// share names no button of the app's to point from, and an iPad's share
+/// popover needs a rect ([screenCentreAnchor]).
 class PluginShare implements SharePort {
   static bool _done(ShareResult r) => r.status != ShareResultStatus.dismissed;
 
   @override
-  Future<bool> text(String text) async =>
-      _done(await SharePlus.instance.share(ShareParams(text: text)));
+  Future<bool> text(String text) async => _done(
+    await SharePlus.instance.share(
+      ShareParams(text: text, sharePositionOrigin: screenCentreAnchor()),
+    ),
+  );
 
   @override
   Future<bool> file(String name, String mime, Uint8List data) async => _done(
@@ -108,6 +123,7 @@ class PluginShare implements SharePort {
       ShareParams(
         files: [XFile.fromData(data, mimeType: mime, name: name)],
         fileNameOverrides: [name],
+        sharePositionOrigin: screenCentreAnchor(),
       ),
     ),
   );
@@ -185,19 +201,21 @@ class PluginCamera implements CameraPort {
   Future<Photo?> pick() => _get(ImageSource.gallery);
 }
 
-/// Location through geolocator, on Android only. On macOS every call is
+/// Location through geolocator, on Android and iOS. On macOS every call is
 /// `unavailable`: Mac location needs a usage description, the location
 /// entitlement and a signed build, which Clax does not have yet.
 ///
 /// Precise asks for high accuracy, Approximate for low power (Android's
-/// coarse location). A fix is precise only when it was asked precise and
-/// Android lets Clax have a precise location (the person may grant
-/// approximate only).
+/// coarse location, iOS's reduced accuracy). A fix is precise only when it
+/// was asked precise and the system lets Clax have a precise location (the
+/// person may grant approximate only); on iOS a precise request while
+/// Clax has only reduced accuracy first asks for precise location this
+/// once ([preciseFix]).
 class PluginLocation implements LocationPort {
   /// Checks the platform, the device's location and Clax's permission,
-  /// asking for it when Android still may.
+  /// asking for it when the system still may.
   Future<void> _ready() async {
-    if (!_android) {
+    if (!_android && !_iOS) {
       throw DeviceError.unavailable(
         _macOS
             ? 'location is not available in Clax on macOS yet; it works in '
@@ -216,10 +234,10 @@ class PluginLocation implements LocationPort {
       p = await Geolocator.requestPermission();
     }
     if (p == LocationPermission.deniedForever) {
-      throw const DeviceError(
+      throw DeviceError(
         'system_denied',
-        'location is off for Clax in system settings, and Android will not '
-            'ask again',
+        'location is off for Clax in system settings, and '
+            '${_iOS ? 'iOS' : 'Android'} will not ask again',
       );
     }
     if (p == LocationPermission.denied ||
@@ -229,9 +247,34 @@ class PluginLocation implements LocationPort {
   }
 
   /// Whether a fix asked at [precision] is precise.
-  static Future<bool> _precise(Precision precision) async =>
-      precision == Precision.precise &&
-      await Geolocator.getLocationAccuracy() == LocationAccuracyStatus.precise;
+  static Future<bool> _precise(Precision precision) => preciseFix(
+    precision,
+    iOS: _iOS,
+    accuracy: Geolocator.getLocationAccuracy,
+    askTemporary: (key) =>
+        Geolocator.requestTemporaryFullAccuracy(purposeKey: key),
+  );
+
+  /// Whether a fix asked at [precision] is precise, given the system's
+  /// [accuracy]. On [iOS], a precise request on reduced accuracy first
+  /// [askTemporary] for full accuracy, by the purpose `precise` of the
+  /// app's `NSLocationTemporaryUsageDescriptionDictionary`; iOS asks the
+  /// person, and the answer holds until Clax is no longer in use.
+  @visibleForTesting
+  static Future<bool> preciseFix(
+    Precision precision, {
+    required bool iOS,
+    required Future<LocationAccuracyStatus> Function() accuracy,
+    required Future<LocationAccuracyStatus> Function(String purposeKey)
+    askTemporary,
+  }) async {
+    if (precision != Precision.precise) return false;
+    var now = await accuracy();
+    if (iOS && now == LocationAccuracyStatus.reduced) {
+      now = await askTemporary('precise');
+    }
+    return now == LocationAccuracyStatus.precise;
+  }
 
   static LocationAccuracy _accuracy(Precision p) =>
       p == Precision.precise ? LocationAccuracy.high : LocationAccuracy.low;
@@ -268,11 +311,17 @@ class PluginLocation implements LocationPort {
     await _ready();
     final precise = await _precise(precision);
     return Geolocator.getPositionStream(
-      locationSettings: AndroidSettings(
-        accuracy: _accuracy(precision),
-        distanceFilter: minDistance.round(),
-        intervalDuration: const Duration(seconds: 1),
-      ),
+      locationSettings: _iOS
+          ? AppleSettings(
+              accuracy: _accuracy(precision),
+              distanceFilter: minDistance.round(),
+              allowBackgroundLocationUpdates: false,
+            )
+          : AndroidSettings(
+              accuracy: _accuracy(precision),
+              distanceFilter: minDistance.round(),
+              intervalDuration: const Duration(seconds: 1),
+            ),
     ).transform(
       StreamTransformer.fromHandlers(
         handleData: (pos, sink) => sink.add(
@@ -299,7 +348,7 @@ class PluginLocation implements LocationPort {
 
   @override
   Future<void> openSettings(LocationSettingsPage page) async {
-    if (!_android) return;
+    if (!_android && !_iOS) return;
     switch (page) {
       case LocationSettingsPage.app:
         await Geolocator.openAppSettings();
