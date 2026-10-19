@@ -19,6 +19,12 @@ import 'support.dart';
 
 const page = '<main><button>Save</button></main>';
 
+const icon =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">'
+    '<rect width="1024" height="1024" fill="#2a6"/></svg>';
+
+const iconAsk = 'Write icon.svg (see The app icon), then call finish.';
+
 /// A change's caps with room for more renders.
 const roomy = RunCaps(
   turns: 6,
@@ -122,6 +128,7 @@ class Rig {
     TestApi? api,
     bool session = true,
     String? request,
+    bool asksIcon = false,
   }) async {
     final r = Rig._(api ?? TestApi(), kind);
     if (session) {
@@ -150,6 +157,7 @@ class Rig {
       cancelled: cancelled,
       clock: r.clock,
       request: request,
+      asksIcon: asksIcon,
     );
     r.state = RunState(
       ctx: ctx,
@@ -1452,6 +1460,103 @@ void main() {
       final o = await r.toolbox.stopAtCap('8 turns');
       expect(o, isA<RunGaveUp>());
       expect(r.api.callNames, isNot(contains('createArtifact')));
+    });
+  });
+
+  group('icon ask', () {
+    /// A new app's draft with index.html and a title, rendered clean.
+    Future<Rig> rendered({bool asksIcon = true}) async {
+      final r = await Rig.make(kind: RequestKind.newApp, asksIcon: asksIcon);
+      await r.ok('write_file', {'path': 'index.html', 'content': page});
+      await r.ok('set_meta', {'title': 'Runs', 'capabilities_json': null});
+      await r.renderNow();
+      return r;
+    }
+
+    test('a new app without icon.svg is refused once, then made without '
+        'one', () async {
+      final r = await rendered();
+      expect(await r.finish('Made it.'), refused(iconAsk));
+      expect(r.state.ended, isFalse);
+      expect(r.api.callNames, isNot(contains('createArtifact')));
+      expect(await r.finish('Made it.'), isA<ToolOk>());
+      expect(r.state.outcome, isA<RunFinished>());
+      final req =
+          r.named('createArtifact').single.args['request']! as PublishRequest;
+      expect(req.files.keys, isNot(contains('icon.svg')));
+    });
+
+    test('an icon written after the ask is made with the app, without '
+        'another render', () async {
+      final r = await rendered();
+      expect(await r.finish('Made it.'), refused(iconAsk));
+      await r.ok('write_file', {'path': 'icon.svg', 'content': icon});
+      expect(await r.finish('Made it.'), isA<ToolOk>());
+      final req =
+          r.named('createArtifact').single.args['request']! as PublishRequest;
+      expect(req.files['icon.svg'], icon);
+    });
+
+    test('a draft that has icon.svg is not asked', () async {
+      final r = await Rig.make(kind: RequestKind.newApp, asksIcon: true);
+      await r.ok('write_file', {'path': 'index.html', 'content': page});
+      await r.ok('write_file', {'path': 'icon.svg', 'content': icon});
+      await r.ok('set_meta', {'title': 'Runs', 'capabilities_json': null});
+      await r.renderNow();
+      expect(await r.finish('Made it.'), isA<ToolOk>());
+    });
+
+    test('the render gate answers before the ask', () async {
+      final r = await Rig.make(kind: RequestKind.newApp, asksIcon: true);
+      await r.ok('write_file', {'path': 'index.html', 'content': page});
+      await r.ok('set_meta', {'title': 'Runs', 'capabilities_json': null});
+      expect(await r.finish('Made it.'), refused(contains('Render the draft')));
+      await r.renderBroken();
+      expect(await r.finish('Made it.'), refused(contains('uncaught errors')));
+      await r.renderNow();
+      expect(await r.finish('Made it.'), refused(iconAsk));
+    });
+
+    test('an edit to the page after the icon still needs a render', () async {
+      final r = await rendered();
+      await r.ok('write_file', {'path': 'icon.svg', 'content': icon});
+      await r.ok('write_file', {'path': 'index.html', 'content': '<p>x</p>'});
+      expect(
+        await r.finish('Made it.'),
+        refused(contains('changed after its last render')),
+      );
+    });
+
+    test('a cap stop is not asked and makes the app', () async {
+      final r = await rendered();
+      final o = await r.toolbox.stopAtCap('90 seconds');
+      expect(o, isA<RunFinished>());
+      expect(r.named('createArtifact'), hasLength(1));
+    });
+
+    test('give_up is not asked', () async {
+      final r = await rendered();
+      final out = await r.call('give_up', {'reason': 'no data'});
+      expect(out, isA<ToolOk>());
+      expect(r.state.outcome, isA<RunGaveUp>());
+    });
+
+    test('a continue run on an app without icon.svg is asked once', () async {
+      final r = await Rig.make(asksIcon: true);
+      await r.edit('Save', 'Keep');
+      await r.renderNow();
+      expect(await r.finish('Added it.'), refused(iconAsk));
+      await r.ok('write_file', {'path': 'icon.svg', 'content': icon});
+      expect(await r.finish('Added it.'), isA<ToolOk>());
+      expect(r.state.outcome, isA<RunFinished>());
+    });
+
+    test('a change run is not asked', () async {
+      final r = await Rig.make();
+      await r.edit('Save', 'Keep');
+      await r.renderNow();
+      expect(await r.finish('The button says Keep.'), isA<ToolOk>());
+      expect(r.state.outcome, isA<RunFinished>());
     });
   });
 

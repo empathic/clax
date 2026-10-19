@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/services.dart';
 
 import 'failure.dart' show planAfterStops, timesWords;
+import 'icon_svg.dart' show appIconPath;
 import 'plan.dart';
 import 'request.dart';
 import 'tools/kit_tool.dart' show kitApiSection;
@@ -291,7 +292,8 @@ class PromptBuilder {
   /// app [title]: the [plan] (the person may have edited it since the last
   /// run), the files as [firstChange] shows them, the app's own
   /// [documents] and the [others] by ID and title ([others] are left out
-  /// when [fromBundle]).
+  /// when [fromBundle]). When [files] have no `icon.svg`, it asks the run
+  /// to write one.
   List<Map<String, Object?>> firstContinue({
     required String title,
     required Plan plan,
@@ -353,6 +355,12 @@ class PromptBuilder {
         'that the file list lacks. Then finish, naming what you added. '
         'Nobody is waiting on this run: do not ask.',
       );
+    if (!files.containsKey(appIconPath)) {
+      b.writeln(
+        'The app has no icon yet (no $appIconPath): write one this run (see '
+        'The app icon).',
+      );
+    }
     return [_text(b)];
   }
 

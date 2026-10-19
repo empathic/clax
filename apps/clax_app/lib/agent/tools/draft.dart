@@ -6,6 +6,7 @@ import 'dart:collection';
 import 'dart:convert';
 
 import '../edit_result.dart' show DbOp;
+import '../icon_svg.dart' show appIconPath;
 
 /// The draft at one [revision]: what a render uploads and inspects, kept
 /// as [Draft.lastClean] so a run stopped at a cap can publish exactly what
@@ -18,8 +19,10 @@ class DraftSnapshot {
     required List<DbOp> stagedDb,
     required Map<String, int?> pins,
     required this.revision,
+    int? pageRevision,
     required this.baseVersion,
-  }) : files = Map.unmodifiable(files),
+  }) : pageRevision = pageRevision ?? revision,
+       files = Map.unmodifiable(files),
        capabilities = capabilities == null
            ? null
            : _copyJson(capabilities) as Map<String, Object?>,
@@ -35,6 +38,9 @@ class DraftSnapshot {
   /// The [Draft.revision] it was taken at.
   final int revision;
 
+  /// The [Draft.pageRevision] it was taken at.
+  final int pageRevision;
+
   /// The version its files are built on: a publish of it is pinned to this
   /// version, never to a later base.
   final int baseVersion;
@@ -49,7 +55,8 @@ class DraftSnapshot {
 }
 
 /// The draft of one run. Every write, delete, meta change and staged
-/// document write bumps [revision]; a render records the revision it saw,
+/// document write bumps [revision], and all but a write or delete of
+/// `icon.svg` bump [pageRevision]; a render records the revisions it saw,
 /// so a gate can tell whether the latest draft was rendered.
 class Draft {
   Draft({
@@ -68,6 +75,7 @@ class Draft {
   Map<String, Object?>? _capabilities;
   final _stagedDb = <DbOp>[];
   var _revision = 0;
+  var _pageRevision = 0;
 
   /// The version the draft started from (0 for a new app); a conflict
   /// reset moves it to the latest version.
@@ -94,9 +102,18 @@ class Draft {
   /// Bumped by every change to the draft.
   int get revision => _revision;
 
+  /// Bumped by every change but a write or delete of `icon.svg`: the
+  /// launcher shows the icon and the page does not, and `write_file`
+  /// checks it, so a render of the page has nothing to say about it.
+  int get pageRevision => _pageRevision;
+
   /// The [revision] the latest render saw, or null before any render.
   int? get renderedRevision => _renderedRevision;
   int? _renderedRevision;
+
+  /// The [pageRevision] the latest render saw, or null before any render.
+  int? get renderedPageRevision => _renderedPageRevision;
+  int? _renderedPageRevision;
 
   /// Whether the latest render had uncaught errors.
   bool get lastRenderHadErrors => _lastRenderHadErrors;
@@ -142,10 +159,11 @@ class Draft {
     _ => null,
   };
 
-  /// Whether the current draft, at its latest revision, rendered without
-  /// uncaught errors or failing tests: the gate for publishing it.
+  /// Whether the current draft, at its latest [pageRevision], rendered
+  /// without uncaught errors or failing tests: the gate for publishing it.
+  /// An `icon.svg` written since the render needs no other.
   bool get renderedClean =>
-      _renderedRevision == _revision &&
+      _renderedPageRevision == _pageRevision &&
       !_lastRenderHadErrors &&
       !_lastRenderFailedTests;
 
@@ -153,14 +171,14 @@ class Draft {
   bool writeFile(String path, String content) {
     final created = !_files.containsKey(path);
     _files[path] = content;
-    _revision++;
+    _bump(path);
     return created;
   }
 
   /// Removes [path]; returns whether it was there.
   bool deleteFile(String path) {
     final had = _files.remove(path) != null;
-    if (had) _revision++;
+    if (had) _bump(path);
     return had;
   }
 
@@ -171,13 +189,13 @@ class Draft {
     if (capabilities != null) {
       _capabilities = _copyJson(capabilities) as Map<String, Object?>;
     }
-    _revision++;
+    _bump();
   }
 
   /// Stages [ops] after the ones already staged.
   void stage(Iterable<DbOp> ops) {
     _stagedDb.addAll(ops);
-    _revision++;
+    _bump();
   }
 
   /// Replaces the draft's files, meta and staged writes, as a conflict
@@ -203,7 +221,13 @@ class Draft {
     this.baseVersion = baseVersion;
     _lastClean = null;
     _lastPageClean = null;
+    _bump();
+  }
+
+  /// Bumps [revision], and [pageRevision] unless [path] is `icon.svg`.
+  void _bump([String? path]) {
     _revision++;
+    if (path != appIconPath) _pageRevision++;
   }
 
   /// The draft as it is now.
@@ -214,12 +238,13 @@ class Draft {
     stagedDb: _stagedDb,
     pins: pins,
     revision: _revision,
+    pageRevision: _pageRevision,
     baseVersion: baseVersion,
   );
 
   /// Records a render of [rendered], the [snapshot] the render took before
   /// it uploaded the draft. The current draft counts as rendered only when
-  /// nothing changed since ([renderedClean]). A render without uncaught
+  /// nothing but `icon.svg` changed since ([renderedClean]). A render without uncaught
   /// [errors] and without [testsFailed] keeps [rendered] as [lastClean],
   /// unless it is built on a base other than the current one. [problems]
   /// are what it found wrong ([lastRenderProblems]).
@@ -231,6 +256,7 @@ class Draft {
   }) {
     _problems = List.of(problems);
     _renderedRevision = rendered.revision;
+    _renderedPageRevision = rendered.pageRevision;
     _lastRenderHadErrors = errors;
     _lastRenderFailedTests = testsFailed;
     if (!errors && rendered.baseVersion == baseVersion) {

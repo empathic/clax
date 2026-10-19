@@ -184,9 +184,10 @@ The app's launcher tile shows `icon.svg`, a file of the app like any other.
 
 - **When.** In a first run, write it once the shell has rendered clean, in
   the same turn as other work (never before the first clean render, never
-  on its own turn); a first run that ends without one leaves it to the
-  next continue run. Change it when the person asks ("make the icon a
-  rocket"), and otherwise leave it alone.
+  on its own turn); `finish` asks for it once if it is missing. A continue
+  run on an app without one is told so, and writes it. Writing it needs no
+  new render. Change it when the person asks ("make the icon a rocket"),
+  and otherwise leave it alone.
 - **What makes a good one.** One bold, simple motif that says what the app
   does (a shoe, a basket, a coin stack), not a scene. Full bleed: the first
   element is a `rect` filling the whole square in the app's accent colour

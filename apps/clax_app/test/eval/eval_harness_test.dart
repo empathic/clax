@@ -66,6 +66,12 @@ List<ScriptedCall> _first(List<String> features) => [
     'new_str': '</p><p>Streaks</p>',
   }),
   const ScriptedCall('render', {'file': null}),
+  const ScriptedCall('write_file', {
+    'path': 'icon.svg',
+    'content':
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">'
+        '<rect width="1024" height="1024" fill="#2a6"/></svg>',
+  }),
   ScriptedCall('plan_mark', {'id': features.first, 'status': 'done'}),
   const ScriptedCall('finish', {'reply': 'Made it.', 'resolve': false}),
 ];
@@ -301,7 +307,7 @@ void main() {
       expect(habits.firstUsable, isNotNull);
       expect(habits.featuresDone, 2);
       expect(habits.featuresTotal, 2);
-      expect(habits.turns, 12 + 5);
+      expect(habits.turns, 13 + 5);
       expect(habits.renderErrors, 1);
       expect(habits.finalErrors, 1);
       expect(habits.granted, ['net (api.example.com)']);

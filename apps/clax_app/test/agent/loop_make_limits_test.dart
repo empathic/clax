@@ -156,6 +156,10 @@ void main() {
       outOfRoom(),
       [
         const ScriptedCall('render', {'file': null}),
+        const ScriptedCall('write_file', {
+          'path': 'icon.svg',
+          'content': iconSvg,
+        }),
         const ScriptedCall('finish', {'reply': 'Made it.', 'resolve': false}),
       ],
     ]);

@@ -188,6 +188,8 @@ void main() {
           'partial index.html',
           'tool render',
           'inspected 0',
+          'tool write_file',
+          'partial icon.svg',
           'tool finish',
         ],
       );
@@ -388,7 +390,7 @@ void main() {
       expect(r.extra, {
         'model': 'claude-haiku-5-5',
         'backend': 'scripted',
-        'turns': 4,
+        'turns': 5,
         'renders': 1,
         'input_tokens': 0,
         'cache_read_tokens': 0,
@@ -996,10 +998,37 @@ void main() {
       },
     );
 
+    test('finish asks for icon.svg in a make and in a continue run on an app '
+        'without one, never in a continue run on an app with one', () async {
+      final loop = loopWith([
+        newAppCalls(),
+        [const ScriptedCall('finish', {'reply': 'Nothing yet.', 'resolve': true})],
+        [const ScriptedCall('finish', {'reply': 'Nothing yet.', 'resolve': true})],
+      ]);
+      await loop.newApp('x', session: sid);
+      expect(runner.states[0].ctx.asksIcon, isTrue);
+      for (final withIcon in [false, true]) {
+        final aid = api.seedArtifact('Runs', {
+          'index.html': page,
+          if (withIcon) 'icon.svg': iconSvg,
+        });
+        await plans.set(aid, const [
+          PlanFeature(id: 'f1', title: 'Weekly chart'),
+        ], request: 'a run tracker');
+        await loop.continueBuild(aid);
+        expect(runner.states.last.ctx.asksIcon, !withIcon, reason: '$withIcon');
+        expect(
+          runner.text(runner.states.length - 1),
+          withIcon ? isNot(contains('no icon yet')) : contains('no icon yet'),
+        );
+      }
+    });
+
     test('a continue run reads the plan with the person\'s edits, builds the '
         'next feature and publishes a version', () async {
       final aid = api.seedArtifact('Runs', {
         'index.html': page,
+        'icon.svg': iconSvg,
         'kit/preact.js': 'export const h = 1;',
       });
       await plans.set(aid, const [

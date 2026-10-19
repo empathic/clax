@@ -9,6 +9,7 @@ import 'asked.dart';
 import 'backend.dart';
 import 'edit_result.dart';
 import 'failure.dart';
+import 'icon_svg.dart' show appIconPath;
 import 'inspector.dart';
 import 'ledger.dart';
 import 'line_diff.dart';
@@ -501,6 +502,7 @@ class AgentLoop {
         cancelled: scope.future,
         clock: _clock,
         request: request,
+        asksIcon: true,
       ),
       left >= caps.costUsd
           ? caps
@@ -1140,6 +1142,7 @@ class AgentLoop {
           },
           cancelled: scope.future,
           clock: _clock,
+          asksIcon: !draftFiles.containsKey(appIconPath),
         ),
         RunCaps(
           turns: caps.turns,

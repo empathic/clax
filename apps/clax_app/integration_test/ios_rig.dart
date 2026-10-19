@@ -96,7 +96,13 @@ body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 
 </html>
 ''';
 
-/// The new app: write the page, name it and declare `db`, render, finish.
+/// A launcher icon `write_file` takes.
+const _icon =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">'
+    '<rect width="1024" height="1024" fill="#2a6"/></svg>';
+
+/// The new app: write the page, name it and declare `db`, render, write
+/// its icon, finish.
 final makeRun = [
   ScriptedCall('write_file', {'path': 'index.html', 'content': pageHtml(1)}),
   const ScriptedCall('set_meta', {
@@ -104,6 +110,7 @@ final makeRun = [
     'capabilities_json': '{"db": {}}',
   }),
   const ScriptedCall('render'),
+  const ScriptedCall('write_file', {'path': 'icon.svg', 'content': _icon}),
   const ScriptedCall('finish', {'reply': 'Made a tally.', 'resolve': true}),
 ];
 

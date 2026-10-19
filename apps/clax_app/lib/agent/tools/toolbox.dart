@@ -83,6 +83,7 @@ class RunContext {
     this.changeNotes = const [],
     this.startedOver = false,
     this.request,
+    this.asksIcon = false,
   });
 
   final RequestKind kind;
@@ -135,6 +136,10 @@ class RunContext {
   /// A Keep going that could not go on from the stopped run's draft and
   /// started again from the app: its replies open with [startedOverLine].
   final bool startedOver;
+
+  /// Whether `finish` asks once for an `icon.svg` the draft lacks: a new
+  /// app's make, and a build's continue run on an app without one.
+  final bool asksIcon;
 }
 
 /// How a run ended.

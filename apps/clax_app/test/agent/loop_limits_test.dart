@@ -71,7 +71,7 @@ void main() {
     clock = StepClock();
     inspector = FakeInspector();
     sid = (await api.registerAppSession(installId: 'install', pid: 1)).id;
-    aid = api.seedArtifact('Runs', {'index.html': page});
+    aid = api.seedArtifact('Runs', {'index.html': page, 'icon.svg': iconSvg});
   });
 
   test(

@@ -43,7 +43,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
 import 'rig.dart';
-import 'tool_script.dart' show RecordingRunner;
+import 'tool_script.dart' show RecordingRunner, scriptIcon;
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -488,7 +488,8 @@ const _probe = '''export default async function probe(db) {
 }
 ''';
 
-/// The make: the page and its test, named with `db` declared, rendered.
+/// The make: the page and its test, named with `db` declared, rendered,
+/// with an icon.
 final _makeRun = [
   ScriptedCall('write_file', {
     'path': 'index.html',
@@ -503,6 +504,7 @@ final _makeRun = [
     'capabilities_json': '{"db": {}, "user": {}}',
   }),
   const ScriptedCall('render'),
+  const ScriptedCall('write_file', {'path': 'icon.svg', 'content': scriptIcon}),
   const ScriptedCall('finish', {'reply': 'Made a notes app.', 'resolve': true}),
 ];
 

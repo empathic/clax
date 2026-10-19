@@ -317,6 +317,11 @@ void main() {
       );
       expect(section, contains('`$appIconPath`'));
       expect(section, contains('once the shell has rendered clean'));
+      final flat = section.replaceAll(RegExp(r'\s+'), ' ');
+      expect(flat, contains('`finish` asks for it once if it is missing'));
+      expect(flat, contains('A continue run on an app without one is told so'));
+      expect(flat, contains('Writing it needs no new render'));
+      expect(flat, contains('otherwise leave it alone'));
       expect(section, contains('48 px'));
       expect(section, contains('32 KB'));
       expect(section, contains('viewBox="0 0 1024 1024"'));
@@ -581,6 +586,31 @@ void main() {
       final image = t.indexOf('The attached image');
       expect(image, greaterThan(t.indexOf('"first"')));
       expect(image, lessThan(t.indexOf('"second"')));
+    });
+
+    test('a continue run on an app without icon.svg is asked to write one; '
+        'one with an icon is not', () {
+      String continued(Map<String, String> files) => text(
+        p.firstContinue(
+          title: 'Runs',
+          plan: Plan(
+            request: 'r',
+            features: const [],
+            updatedAt: DateTime.utc(2026),
+          ),
+          files: files,
+          others: const [],
+          documents: const [],
+        ),
+      );
+      const ask =
+          'The app has no icon yet (no icon.svg): write one this run (see '
+          'The app icon).';
+      expect(continued(const {'index.html': '<h1>Runs</h1>'}), contains(ask));
+      expect(
+        continued(const {'index.html': '<h1>Runs</h1>', 'icon.svg': '<svg/>'}),
+        isNot(contains('no icon yet')),
+      );
     });
 
     test('an app from a bundle gets no other apps in any first message or '

@@ -103,6 +103,7 @@ void toolLoopTest() {
         '1:write_file',
         '1:set_meta',
         '1:render',
+        '1:write_file',
         '1:finish',
         '2:str_replace',
         '2:render',

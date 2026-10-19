@@ -66,7 +66,7 @@ void main() {
     api = FakeClaxApi();
     plans = PlanStore();
     unfinished = MemoryUnfinishedChanges();
-    aid = api.seedArtifact('Runs', {'index.html': page});
+    aid = api.seedArtifact('Runs', {'index.html': page, 'icon.svg': iconSvg});
   });
 
   tearDown(() async {

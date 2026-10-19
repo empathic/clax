@@ -8,6 +8,7 @@ import '../../clax/api.dart';
 import '../backend.dart' show CancelWatch;
 import '../edit_result.dart' show DbOp, maxDbOps;
 import '../failure.dart';
+import '../icon_svg.dart' show appIconPath;
 import '../ledger.dart';
 import '../request.dart';
 import '../unfinished.dart' show changedFiles, keptEdits;
@@ -29,6 +30,10 @@ String stoppedEarlyReply(String? narration, String cap) {
   return '${head}I stopped early ($cap), so this may not be everything you '
       'asked.';
 }
+
+/// What `finish` answers, once a run, a draft without `icon.svg` in a run
+/// that asks for one ([RunContext.asksIcon]).
+const iconAsk = 'Write icon.svg (see The app icon), then call finish.';
 
 /// The longest title [titleFromRequest] makes.
 const requestTitleMax = 40;
@@ -88,9 +93,16 @@ final class _Ended extends _Step {
 /// The gate: a draft that differs from the app (files, title,
 /// capabilities or a staged document write) is published only when its
 /// latest revision rendered without uncaught errors and without failing
-/// tests ([Draft.renderedClean]); a cap stop publishes the last such
-/// render ([Draft.cleanOnBase]), else the last without uncaught errors;
-/// a new app also needs a title and `index.html`. A refused gate answers the model and the run goes on.
+/// tests ([Draft.renderedClean]; an `icon.svg` written since needs no
+/// other render); a cap stop publishes the last such render
+/// ([Draft.cleanOnBase]), else the last without uncaught errors; a new app
+/// also needs a title and `index.html`. A refused gate answers the model
+/// and the run goes on.
+///
+/// When the run asks for an icon ([RunContext.asksIcon]), the first
+/// `finish` that passes the gate on a draft without `icon.svg` is refused
+/// with [iconAsk]; the next publishes with or without one, so a model that
+/// cannot draw one never loops. A cap stop and `give_up` are not asked.
 ///
 /// For a change, in order:
 ///
@@ -174,6 +186,9 @@ class FinishTool implements Tool {
   Map<String, Object?>? _baseCaps;
   var _conflicts = 0;
 
+  /// Whether this run's `finish` has asked for the icon.
+  var _askedIcon = false;
+
   /// Makes [capStop] [toolbox]'s cap handler, for its run.
   void attach(Toolbox toolbox) {
     _bind(toolbox.state);
@@ -231,13 +246,13 @@ class FinishTool implements Tool {
         s.ctx.kind == RequestKind.newApp ||
         d.changedFrom(_baseFiles!, title: _baseTitle, caps: _baseCaps);
     if (changed) {
-      if (d.renderedRevision == null) {
+      if (d.renderedPageRevision == null) {
         throw const ToolInputError(
           'Render the draft before finish: every change is checked before '
           'it is published.',
         );
       }
-      if (d.renderedRevision != d.revision) {
+      if (d.renderedPageRevision != d.pageRevision) {
         throw const ToolInputError(
           'The draft changed after its last render; render it again before '
           'finish.',
@@ -255,6 +270,13 @@ class FinishTool implements Tool {
           'is wrong) and render again, or call give_up.',
         );
       }
+    }
+
+    if (s.ctx.asksIcon &&
+        !_askedIcon &&
+        !d.files.containsKey(appIconPath)) {
+      _askedIcon = true;
+      throw const ToolInputError(iconAsk);
     }
 
     final src = _sourceOf(d);

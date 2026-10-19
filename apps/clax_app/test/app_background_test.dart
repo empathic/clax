@@ -891,6 +891,15 @@ void main() {
       ('render', <String, Object?>{'file': null}),
     ];
     const done = [
+      (
+        'write_file',
+        <String, Object?>{
+          'path': 'icon.svg',
+          'content':
+              '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">'
+              '<rect width="1024" height="1024" fill="#2a6"/></svg>',
+        },
+      ),
       ('finish', <String, Object?>{'reply': 'Made it.', 'resolve': false}),
     ];
 
@@ -915,6 +924,7 @@ void main() {
         'update($title, Naming the app)',
         'update($title, Writing the page)',
         'update($title, Checking it works)',
+        'update($title, Writing the page)',
         'update($title, Publishing)',
         'stop',
       ]);

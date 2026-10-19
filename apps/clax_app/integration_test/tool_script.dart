@@ -81,8 +81,13 @@ const counterTest = '''test("Add one counts up", async () => {
 });
 ''';
 
+/// A launcher icon `write_file` takes.
+const scriptIcon =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">'
+    '<rect width="1024" height="1024" fill="#2a6"/></svg>';
+
 /// The new app: write the page and its test, name it and declare `db`,
-/// render, finish.
+/// render, write its icon, finish.
 const makeRun = [
   ScriptedCall('write_file', {'path': 'index.html', 'content': counterHtml}),
   ScriptedCall('write_file', {
@@ -94,6 +99,7 @@ const makeRun = [
     'capabilities_json': '{"db": {}}',
   }),
   ScriptedCall('render'),
+  ScriptedCall('write_file', {'path': 'icon.svg', 'content': scriptIcon}),
   ScriptedCall('finish', {'reply': 'Made a counter.', 'resolve': true}),
 ];
 

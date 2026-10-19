@@ -198,8 +198,14 @@ List<ScriptedCall> changeCalls({
   ScriptedCall('finish', {'reply': reply, 'resolve': resolve}),
 ];
 
+/// An app icon `write_file` takes.
+const iconSvg =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">'
+    '<rect width="1024" height="1024" fill="#2a6"/></svg>';
+
 /// A new app's tool calls: `set_meta` with [title] (and [capabilities]),
-/// `write_file` of index.html with [page], a render, then `finish`.
+/// `write_file` of index.html with [page], a render, `write_file` of
+/// icon.svg ([iconSvg]), then `finish`.
 List<ScriptedCall> newAppCalls({
   String title = 'Runs',
   String page = '<!doctype html><title>Runs</title><h1>Runs</h1>',
@@ -213,5 +219,6 @@ List<ScriptedCall> newAppCalls({
   }, narration),
   ScriptedCall('write_file', {'path': 'index.html', 'content': page}),
   const ScriptedCall('render', {'file': null}),
+  const ScriptedCall('write_file', {'path': 'icon.svg', 'content': iconSvg}),
   ScriptedCall('finish', {'reply': reply, 'resolve': false}),
 ];
