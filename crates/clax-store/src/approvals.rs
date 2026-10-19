@@ -553,7 +553,7 @@ impl Store {
     /// [`Store::approve_touched`] in `tx`, made for request `request` when
     /// it decides one.
     #[allow(clippy::too_many_arguments)]
-    fn approve_in(
+    pub(super) fn approve_in(
         &self,
         tx: &Transaction<'_>,
         ctx: &AuditCtx,
