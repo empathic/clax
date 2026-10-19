@@ -835,7 +835,8 @@ export interface ClaxOptions {
    * [`END_TIMEOUT_MS`] when absent. */
   endTimeoutMs?: number;
   /** The clock, in milliseconds, by which the injection loop judges whether
-   * a long-poll came back within [`INJECT_EARLY_MS`]; `Date.now` when absent. */
+   * a long-poll came back within [`INJECT_EARLY_MS`], and `publish_public`
+   * keeps within its wait; `Date.now` when absent. */
   now?: () => number;
   /** How long one remote clip fetch may take; [`CLIP_FETCH_MS`] when absent. */
   clipFetchMs?: number;
@@ -1200,7 +1201,8 @@ class Tools {
     const c = this.clientFor(ctx);
     const { id } = await this.resolveRef(c, a.url_or_id);
     const wait = Math.min(Math.max(a.timeout_s ?? DEFAULT_ASK_WAIT_S, MIN_WAIT_S), MAX_ASK_WAIT_S);
-    const started = Date.now();
+    const now = this.opts.now ?? (() => Date.now());
+    const started = now();
     const body: Record<string, unknown> = { remote: a.remote ?? null, mode: a.mode ?? null, question_id: a.question_id ?? null };
     for (;;) {
       const res = await this.call(() => c.push(id, body));
@@ -1215,7 +1217,7 @@ class Tools {
         };
       }
       const qid = String(res.question_id ?? "");
-      const left = () => Math.max(0, wait - Math.floor((Date.now() - started) / 1000));
+      const left = () => Math.max(0, wait - Math.floor((now() - started) / 1000));
       const pending = {
         status: "approval_pending",
         question_id: qid,

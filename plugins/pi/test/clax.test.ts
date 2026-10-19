@@ -8,7 +8,7 @@ import { join } from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { artifactRef, claxExtension, handedOver, handoverOf, htmlTitle, INJECT_RETRY_MS, isText, RENEW_EVERY_MS, START_BUDGET_MS, target, textPrefix, ToolError } from "../src/clax.ts";
-import { DaemonClient, END_TIMEOUT_MS, MAX_ACK_IDS } from "../src/client.ts";
+import { ClientError, DaemonClient, END_TIMEOUT_MS, MAX_ACK_IDS } from "../src/client.ts";
 import { discover, endpointOf, ensure } from "../src/daemon.ts";
 import { api, claxBin, startDaemon, type TestDaemon } from "./daemon-fixture.ts";
 import { FakePi, fakeContext, json } from "./fake-api.ts";
@@ -1726,5 +1726,96 @@ describe("helpers match the shared contract fixture", () => {
 
   it("htmlTitle", () => {
     for (const c of FIXTURE.html_title) expect(htmlTitle(c.html) ?? null, c.html).toBe(c.title);
+  });
+});
+
+/** The JSON error object of an error result. */
+function errorOf(o: { content: { type: string; text?: string }[]; isError: boolean }): any {
+  expect(o.isError).toBe(true);
+  return JSON.parse(o.content[0].text!).error;
+}
+
+// The daemon calls these tests make are stubbed on DaemonClient, as the Rust
+// tests stub them with a fake daemon (crates/clax-mcp/tests).
+describe("publishing failures", () => {
+  /** An extension on a fake daemon home that answers feedback polls empty,
+   * reading the time from `now` when given. */
+  async function setup(name: string, now?: () => number) {
+    const fake = await fakeDaemonHome((req, reply) => {
+      if (req.url?.startsWith("/api/sessions/s1/feedback")) return reply({ feedback: [], text: null, waited_s: 0 });
+      return false;
+    });
+    const pi = new FakePi();
+    claxExtension({ home: fake.home, env: withBin(join(scratch, "no-such-clax")), now })(pi.api);
+    const { ctx } = fakeContext(scratch, name);
+    loaded.push({ pi, ctx });
+    return { pi, ctx, fake };
+  }
+
+  it("a create that times out says to look for the artifact with list", async () => {
+    const { pi, ctx, fake } = await setup("pi-create-timeout");
+    try {
+      vi.spyOn(DaemonClient.prototype, "create").mockRejectedValue(new ClientError("timeout", "deadline passed"));
+      const e = errorOf(await pi.callToolAsPi("clax_publish", { html: "<p>x", title: "T" }, ctx));
+      expect(e.code).toBe("timeout");
+      expect(e.message).toContain("call list");
+      expect(e.message).not.toContain("read the artifact");
+    } finally {
+      fake.close();
+    }
+  });
+
+  it("an update without a known current version is bad_response, and nothing is published", async () => {
+    const { pi, ctx, fake } = await setup("pi-no-current");
+    try {
+      vi.spyOn(DaemonClient.prototype, "get").mockResolvedValue({ artifact: { id: "7q3k9mzx2b4t" } });
+      const publish = vi.spyOn(DaemonClient.prototype, "publishVersion").mockResolvedValue({});
+      const e = errorOf(await pi.callToolAsPi("clax_publish", { html: "<p>x", id: "7q3k9mzx2b4t" }, ctx));
+      expect(e.code).toBe("bad_response");
+      expect(publish).not.toHaveBeenCalled();
+    } finally {
+      fake.close();
+    }
+  });
+
+  it("publish_public leaves the push to the next call when the answer comes as the wait runs out", async () => {
+    let t = 0;
+    const { pi, ctx, fake } = await setup("pi-push-answered", () => t);
+    try {
+      const qid = "01J0000000000000000000000A";
+      const push = vi.spyOn(DaemonClient.prototype, "push").mockResolvedValue({ status: "approval_pending", question_id: qid, inbox_url: "http://x/inbox" });
+      vi.spyOn(DaemonClient.prototype, "askWait").mockImplementation(async () => {
+        t += 31_000;
+        return { question: { status: "answered" } };
+      });
+      const { json } = parts(await pi.callToolAsPi("clax_publish_public", { url_or_id: "7q3k9mzx2b4t", timeout_s: 30 }, ctx));
+      expect(json.status).toBe("answered");
+      expect(json.question_id).toBe(qid);
+      expect(json.call_again).toBe(true);
+      expect(push).toHaveBeenCalledTimes(1);
+    } finally {
+      fake.close();
+    }
+  });
+
+  it("asset_upload failing part way names the file and the assets already uploaded", async () => {
+    const { pi, ctx, fake } = await setup("pi-asset-partial");
+    try {
+      const a = join(scratch, "pi-partial-a.png");
+      const b = join(scratch, "pi-partial-b.png");
+      writeFileSync(a, Buffer.from([1, 2, 3]));
+      writeFileSync(b, Buffer.from([4, 5, 6]));
+      vi.spyOn(DaemonClient.prototype, "uploadAsset")
+        .mockResolvedValueOnce({ asset: { id: "01K6AB7D2E3F4G5H6J7K8M9N0P", content_type: "image/png", size: 3 }, url: "/_blob/01K6AB7D2E3F4G5H6J7K8M9N0P" })
+        .mockRejectedValueOnce(new ClientError("api", "no room", 507, { code: "storage_full", message: "no room" }));
+      const e = errorOf(await pi.callToolAsPi("clax_asset_upload", { url_or_id: "7q3k9mzx2b4t", file_paths: [a, b] }, ctx));
+      expect(e.code).toBe("storage_full");
+      expect(e.path).toBe(b);
+      expect(e.uploaded).toHaveLength(1);
+      expect(e.uploaded[0].id).toBe("01K6AB7D2E3F4G5H6J7K8M9N0P");
+      expect(e.uploaded[0].url).toMatch(/\/_blob\/01K6AB7D2E3F4G5H6J7K8M9N0P$/);
+    } finally {
+      fake.close();
+    }
   });
 });
