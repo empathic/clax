@@ -4051,13 +4051,18 @@ mod tests {
         assert_numbered_app_database_upgrades(app, INBOX_MIGRATION, earlier_app_numbering);
     }
 
+    /// Makes a database at a version of an earlier numbering in `home`,
+    /// with the first `app` of the app's migrations, returning each table's
+    /// rows.
+    type MakeNumbered = fn(&Home, usize) -> Vec<(String, Vec<String>)>;
+
     /// As [`assert_earlier_app_numbering_upgrades`], for the database
     /// `make` leaves at version `base + app` with the first `app` of the
     /// app's migrations, returning its rows.
     fn assert_numbered_app_database_upgrades(
         app: usize,
         base: u32,
-        make: fn(&Home, usize) -> Vec<(String, Vec<String>)>,
+        make: MakeNumbered,
     ) {
         let fresh = fresh_shape();
         let dir = tempfile::tempdir().unwrap();
