@@ -231,13 +231,36 @@ enum Stop {
     /// The remote could not be reached, or answered as a remote down does:
     /// try again after the backoff.
     Unreachable(String),
+    /// This daemon's own store failed: try again after the backoff, the
+    /// store's error named as the reason, never the remote.
+    Local(String),
     /// The remote is gone here, or not signed in: the task ends.
     Gone,
 }
 
+/// A store call's error.
 impl From<ApiError> for Stop {
     fn from(e: ApiError) -> Stop {
-        Stop::Unreachable(format!("{}: {}", e.code, e.message))
+        Stop::Local(format!("{}: {}", e.code, e.message))
+    }
+}
+
+impl Stop {
+    /// Why the cycle stopped, as the sync's status shows it.
+    fn reason(&self) -> &str {
+        match self {
+            Stop::Unreachable(why) | Stop::Local(why) => why,
+            Stop::Gone => "the remote is gone",
+        }
+    }
+
+    /// What the writes left unsent at the backoff cap say, the remote
+    /// named `name`.
+    fn not_sent(&self, name: &str) -> String {
+        match self {
+            Stop::Local(why) => format!("Not sent: {why}"),
+            _ => format!("Not sent: {name} unreachable"),
+        }
     }
 }
 
@@ -280,9 +303,13 @@ async fn run(s: AppState, rid: String, kick: Arc<Notify>, retry: Arc<Notify>) {
                 sync.end().await;
                 return;
             }
-            Err(Stop::Unreachable(why)) => {
-                sync.client = None;
-                sync.watched.clear();
+            Err(stop @ (Stop::Unreachable(_) | Stop::Local(_))) => {
+                let local = matches!(stop, Stop::Local(_));
+                let why = stop.reason().to_string();
+                if !local {
+                    sync.client = None;
+                    sync.watched.clear();
+                }
                 backoff = if backoff.is_zero() {
                     BACKOFF_FIRST
                 } else {
@@ -290,14 +317,16 @@ async fn run(s: AppState, rid: String, kick: Arc<Notify>, retry: Arc<Notify>) {
                 };
                 let now = s.store.now();
                 s.linked.set_status(&rid, |st| {
-                    st.unreachable_since.get_or_insert(now);
+                    if !local {
+                        st.unreachable_since.get_or_insert(now);
+                    }
                     st.last_error = Some(why.clone());
                 });
                 if backoff >= BACKOFF_CAP {
                     let (r2, name) = (rid.clone(), remote_label(&s, &rid).await);
+                    let why = stop.not_sent(&name);
                     let _ = s
                         .store_call(move |st| {
-                            let why = format!("Not sent: {name} unreachable");
                             st.outbox_failed_all(&r2, &why)?;
                             st.linked_questions_failed_all(&r2, &why)
                         })
@@ -699,12 +728,16 @@ impl Sync {
                         .store_call(move |st| st.outbox_failed(seq, &why))
                         .await?;
                 }
-                Err(why) => {
+                Err(Stop::Unreachable(why)) => {
                     let (seq, w2) = (row.seq, why.clone());
                     self.s
                         .store_call(move |st| st.outbox_attempted(seq, &w2))
                         .await?;
                     out = Err(Stop::Unreachable(why));
+                    break;
+                }
+                Err(stop) => {
+                    out = Err(stop);
                     break;
                 }
             }
@@ -818,11 +851,8 @@ impl Sync {
 
     /// Records that row `seq` is about to be sent: from now until its
     /// answer is read, the remote may have made it.
-    async fn trying(&self, seq: i64) -> Result<(), String> {
-        self.s
-            .store_call(move |st| st.outbox_trying(seq))
-            .await
-            .map_err(|e| e.message)
+    async fn trying(&self, seq: i64) -> Result<(), Stop> {
+        Ok(self.s.store_call(move |st| st.outbox_trying(seq)).await?)
     }
 
     /// Whether the answer to an up-send is lost (tests).
@@ -841,27 +871,25 @@ impl Sync {
         row: &OutboxRow,
         link: &RemoteLink,
         agents: &mut HashMap<String, (Client, String)>,
-    ) -> Result<Sent, String> {
+    ) -> Result<Sent, Stop> {
         let tid = row.thread_id.clone();
         let (t, lt) = self
             .s
             .store_call(move |st| Ok((st.get_thread(&tid)?, st.linked_thread(&tid)?)))
-            .await
-            .map_err(|e| e.message)?;
+            .await?;
         let (Some(t), Some(lt)) = (t, lt) else {
             // The thread is gone here: nothing to send.
             let seq = row.seq;
             self.s
                 .store_call(move |st| st.ack_outbox(seq, None, None, None))
-                .await
-                .map_err(|e| e.message)?;
+                .await?;
             return Ok(Sent::Acked);
         };
         let c = self.client.as_ref().expect("connected");
         let raid = &link.remote_artifact_id;
-        let fail = |f: RemoteFail| -> Result<Sent, String> {
+        let fail = |f: RemoteFail| -> Result<Sent, Stop> {
             match classify(&f) {
-                Some(why) => Err(why),
+                Some(why) => Err(Stop::Unreachable(why)),
                 None => Ok(Sent::Refused(format!("{}: {}", f.code, f.message))),
             }
         };
@@ -876,8 +904,7 @@ impl Sync {
                 let twin = self
                     .s
                     .store_call(move |st| st.remote_twin(&rid, &aid, &raid2, n))
-                    .await
-                    .map_err(|e| e.message)?;
+                    .await?;
                 let version = match twin {
                     Some(v) => v,
                     None if t.anchor.is_whole() => link.remote_n,
@@ -894,15 +921,15 @@ impl Sync {
                 };
                 let clip = if t.has_clip {
                     let (id, tid) = (
-                        clax_core::ArtifactId::parse(&t.artifact_id).map_err(|e| e.to_string())?,
+                        clax_core::ArtifactId::parse(&t.artifact_id)
+                            .map_err(|e| Stop::Local(e.to_string()))?,
                         t.id.clone(),
                     );
                     self.s
                         .store_call_async(
                             move |st| async move { st.read_clip_async(&id, &tid).await },
                         )
-                        .await
-                        .map_err(|e| e.message)?
+                        .await?
                 } else {
                     None
                 };
@@ -932,7 +959,7 @@ impl Sync {
                     Err(f) => return fail(f),
                 };
                 if self.lose_answer() {
-                    return Err("the answer was lost".into());
+                    return Err(Stop::Unreachable("the answer was lost".into()));
                 }
                 let rtid = v["thread"]["id"].as_str().map(str::to_string);
                 let rcid = v["thread"]["comments"][0]["id"]
@@ -946,8 +973,7 @@ impl Sync {
                     .store_call(move |st| {
                         st.ack_outbox(seq, Some(&rtid), rcid.as_deref(), Some(version))
                     })
-                    .await
-                    .map_err(|e| e.message)?;
+                    .await?;
                 Ok(Sent::Acked)
             }
             "comment" => {
@@ -959,8 +985,7 @@ impl Sync {
                     let seq = row.seq;
                     self.s
                         .store_call(move |st| st.ack_outbox(seq, None, None, None))
-                        .await
-                        .map_err(|e| e.message)?;
+                        .await?;
                     return Ok(Sent::Acked);
                 };
                 let path = format!("/api/artifacts/{raid}/threads/{rtid}/comments");
@@ -996,14 +1021,13 @@ impl Sync {
                     },
                 };
                 if self.lose_answer() {
-                    return Err("the answer was lost".into());
+                    return Err(Stop::Unreachable("the answer was lost".into()));
                 }
                 let rcid = v["comment"]["id"].as_str().map(str::to_string);
                 let seq = row.seq;
                 self.s
                     .store_call(move |st| st.ack_outbox(seq, None, rcid.as_deref(), None))
-                    .await
-                    .map_err(|e| e.message)?;
+                    .await?;
                 Ok(Sent::Acked)
             }
             kind => {
@@ -1034,13 +1058,12 @@ impl Sync {
                     return fail(f);
                 }
                 if self.lose_answer() {
-                    return Err("the answer was lost".into());
+                    return Err(Stop::Unreachable("the answer was lost".into()));
                 }
                 let seq = row.seq;
                 self.s
                     .store_call(move |st| st.ack_outbox(seq, None, None, None))
-                    .await
-                    .map_err(|e| e.message)?;
+                    .await?;
                 Ok(Sent::Acked)
             }
         }
@@ -1682,6 +1705,26 @@ fn urlencode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_store_error_stops_a_cycle_as_local_and_names_itself_not_the_remote() {
+        let stop = Stop::from(ApiError::new(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "store",
+            "database is locked",
+        ));
+        assert!(matches!(stop, Stop::Local(_)), "{stop:?}");
+        assert_eq!(stop.reason(), "store: database is locked");
+        assert_eq!(
+            stop.not_sent("clax.example"),
+            "Not sent: store: database is locked"
+        );
+        let out = Stop::Unreachable("clax.example answered 503".into());
+        assert_eq!(
+            out.not_sent("clax.example"),
+            "Not sent: clax.example unreachable"
+        );
+    }
 
     #[test]
     fn activity_is_the_newest_time_and_ids_are_checked() {
