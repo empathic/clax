@@ -24,7 +24,7 @@ _fail() {
 }
 
 mkdir -p "$tmp/sys"
-for tool in bash env sh sed awk grep head tr cat rm mktemp dirname uname find cp chmod mkdir stat; do
+for tool in bash env sh sed awk grep head tr cat rm mktemp dirname uname find cp chmod mkdir; do
     ln -s "$(command -v "$tool")" "$tmp/sys/$tool"
 done
 
@@ -225,8 +225,10 @@ chmod -R a-w "$tmp/bazel-bin"
 _try -- web
 ok=1
 for f in "$repo/web/dist/_clax/bridge.js" "$repo/web/dist-extension/manifest.json"; do
-    links="$(stat -f %l "$f" 2>/dev/null || stat -c %h "$f")"
-    { [ -f "$f" ] && [ ! -L "$f" ] && [ -w "$f" ] && [ "$links" = 1 ]; } || ok=0
+    # find's -links reads the same on GNU and BSD; stat's flags do not (GNU
+    # stat takes BSD's `-f %l` as a file-system query and prints 255).
+    single="$(find "$f" -links 1)"
+    { [ -f "$f" ] && [ ! -L "$f" ] && [ -w "$f" ] && [ "$single" = "$f" ]; } || ok=0
 done
 [ -f "$repo/web/dist/.gitkeep" ] || ok=0
 chmod -R u+w "$tmp/bazel-bin"
