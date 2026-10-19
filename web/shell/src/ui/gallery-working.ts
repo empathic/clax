@@ -13,7 +13,7 @@ import { pageStream } from "../stream";
 
 export { groups } from "../view/attention-model";
 export { default as HaikuLine } from "./HaikuLine.svelte";
-export { default as PeopleLink } from "../people/PeopleLink.svelte";
+export { default as Links } from "./HeaderLinks.svelte";
 export { default as Markers } from "./Markers.svelte";
 export { default as NeedsGroup } from "./NeedsGroup.svelte";
 export { default as Roster } from "./Roster.svelte";

@@ -512,3 +512,47 @@ test("the bundled Terms of Service and Privacy Policy: notices, pages, links and
     await d.stop();
   }
 });
+
+test("a member starts an artifact from a brief in their browser, and a reader is offered no New", async ({ browser }) => {
+  const { d, origin } = await hostedDaemon();
+  try {
+    const owner = await page(browser);
+    await owner.goto(`${origin}/setup?secret=${encodeURIComponent(SECRET)}`);
+    await owner.getByLabel("Your name").fill("Ada");
+    await owner.getByRole("button", { name: "Create the first person" }).click();
+    await owner.waitForURL(`${origin}/`);
+    await expect(owner.getByRole("button", { name: "New artifact" })).toBeVisible();
+    const invite = (name: string, rights?: unknown) => owner.evaluate(async ([n, r]) => {
+      const res = await fetch("/api/people/invites", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(r ? { name: n, rights: r } : { name: n }) });
+      return (await res.json()).invite.url as string;
+    }, [name, rights] as const);
+    // Mia holds the default rights: her own space, where she creates.
+    const mia = await page(browser);
+    await mia.goto(await invite("Mia"));
+    await mia.getByRole("button", { name: "Join as Mia" }).click();
+    await mia.waitForURL(`${origin}/`);
+    await mia.getByRole("button", { name: "New artifact" }).click();
+    const form = mia.getByRole("dialog", { name: "New artifact" });
+    await form.getByLabel("Title").fill("Mia's plan");
+    await form.getByLabel("Brief").fill("A one-page plan for the launch week");
+    await form.getByRole("button", { name: "Create" }).click();
+    const who = mia.getByRole("dialog", { name: "Who builds it?" });
+    await expect(who).toContainText("No agent is connected.");
+    await expect(who.getByLabel("Prompt", { exact: true })).toContainText(`${origin}/a/`);
+    await who.getByRole("button", { name: "Open the artifact" }).click();
+    await expect(mia).toHaveURL(new RegExp(`${origin}/a/[a-z0-9]+$`));
+    await expect(mia.frameLocator("iframe.frame").locator("h1")).toHaveText("Mia's plan");
+    // The owner sees it, Mia's.
+    await owner.goto(`${origin}/`);
+    await expect(owner.locator("a.card")).toContainText("Mia's plan");
+    // Sam may read, and create nothing.
+    const sam = await page(browser);
+    await sam.goto(await invite("Sam", ["clax:reader"]));
+    await sam.getByRole("button", { name: "Join as Sam" }).click();
+    await sam.waitForURL(`${origin}/`);
+    await expect(sam.locator("a.card")).toContainText("Mia's plan");
+    await expect(sam.getByRole("button", { name: "New artifact" })).toHaveCount(0);
+  } finally {
+    await d.stop();
+  }
+});

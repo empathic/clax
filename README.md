@@ -89,6 +89,9 @@ and arm64).
 4. **Watch it change.** The agent picks up the comment, publishes a new
    version and replies in the thread. Earlier versions stay one click away.
 
+You can also start in the browser: press **New** in the gallery, give the
+page a title and a brief, and pick a connected agent to build it.
+
 Pages can do more than display: they can keep shared data, react live while
 others view them, and ask you questions you answer in the browser.
 
