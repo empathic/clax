@@ -33,7 +33,7 @@ import type { FrameHost } from "./frame-host";
 import { type KeyAction, holdKeysAcrossLoad, keyAction, keysHeldAtLoad, pageKeyAction } from "./keys";
 import { keyboardTrail } from "./trail";
 import { type Ask, promptQueue } from "./prompt-queue";
-import { defaultTarget, rememberTarget } from "./send-target";
+import { autoSendOn, defaultTarget, rememberAutoSend, rememberTarget } from "./send-target";
 import { Store } from "./store";
 import { type ThreadChange, ThreadSync } from "./thread-sync";
 import { setUrl, validHash } from "./url";
@@ -133,6 +133,9 @@ export type ViewState = {
   /** The agent handle every Send goes to (`defaultTarget`, or the viewer's
    * pick); null when no agent is live, and a Send then goes without `to`. */
   sendTo: string | null;
+  /** Auto-send is on: a thread this viewer creates is sent at once to the
+   * agent a Send would name (`autoSendOn`, `threadCreated`). */
+  autoSend: boolean;
   /** This artifact's calls to Claude today and the cap, once the owner's
    * browser has asked the daemon (null until then, and on a LAN view). */
   sampleCalls: { n: number; cap: number | null } | null;
@@ -419,7 +422,7 @@ export class ArtifactController {
       threads: [], resolved: {}, draft: null, selected: null, hovered: null, busy: 0,
       notice: null, hint: null, me: null, ask: null, file: startFile, sheet: null, working: [], attention: null,
       decided: null, rally: false, menu: null, askName: null, looked: {}, presence: [], shareWhere: readShareWhere(),
-      agents: [], selection: EMPTY_SELECTION, batchNote: "", batchBusy: false, sendTo: null, sampleCalls: null,
+      agents: [], selection: EMPTY_SELECTION, batchNote: "", batchBusy: false, sendTo: null, autoSend: autoSendOn(id), sampleCalls: null,
       spectator: null, viewing: null,
       drafts: [], showDraft: null, draftChanged: null, tags: null,
     });
@@ -1942,6 +1945,23 @@ export class ArtifactController {
   sendUnsent(claimed: readonly string[] = []): Promise<void> { return this.sendIds(unsent(this.s.threads, claimed).map(t => t.id)); }
   /** The agent picker: every Send goes to `handle` from now on, remembered for this artifact. */
   chooseTarget(handle: string): void { rememberTarget(this.id, handle); this.set({ sendTo: handle }); }
+  /** Turns auto-send on or off for this artifact, remembered for it. */
+  setAutoSend(on: boolean): void { rememberAutoSend(this.id, on); this.set({ autoSend: on }); }
+  /** A thread this viewer just created (a spot's composer, or the whole
+   * artifact's box): with auto-send on, it is sent at once to the agent a
+   * Send would name, the chosen target else this viewer's own most recent
+   * live agent (`ownTarget`, as the sidebar's Send takes it), which becomes
+   * the target. With no agent to name it stays plain: an auto-send never
+   * goes out without `to`. The menu's module loads only for this. */
+  threadCreated(t: Thread): void {
+    if (!this.s.autoSend || this.s.spectator || t.sent_to_agent || t.status !== "open") return;
+    void import("./send-menu").then(({ ownTarget, sendsFor }) => {
+      const to = this.s.sendTo ?? ownTarget(this.s.agents, sendsFor(this.s.agents, this.s.me));
+      if (!to || this.disposed) return;
+      if (to !== this.s.sendTo) this.chooseTarget(to);
+      this.sendThread(t);
+    });
+  }
   /** Resolves an open thread; reopens a resolved one, as the daemon lets
    * the owner shell (its token) or a named viewer. A viewer with neither is
    * asked for its name (the people menu, `askName`), and the thread reopens
@@ -1972,6 +1992,7 @@ export class ArtifactController {
       this.changeThreads(ts => upsert(ts, thread));
       this.set({ selected: thread.id, draft: null, panel: true });
       this.app?.posted(thread);
+      this.threadCreated(thread);
     } catch (e) {
       void report(Promise.reject(e), POST_FAILED, this.noticeFor(POST_FAILED));
       // A hosted daemon's visitor comments once named (a guest): the people
