@@ -15,11 +15,15 @@ abstract final class NativeDialogs {
   static var _next = 0;
 
   /// Pops up an `NSMenu` of [items] with its top left at [at], in the
-  /// window's Flutter coordinates (logical pixels from the top left), and
-  /// answers the chosen item's ID, or null when the menu closed without a
-  /// choice.
-  static Future<String?> menu(List<ClaxMenuItem> items, Offset at) =>
-      channel.invokeMethod<String>('menu', {
+  /// Flutter coordinates (logical pixels from the top left) of [view]'s
+  /// window (the main window's when null), and answers the chosen item's
+  /// ID, or null when the menu closed without a choice.
+  static Future<String?> menu(
+    List<ClaxMenuItem> items,
+    Offset at, {
+    int? view,
+  }) => channel.invokeMethod<String>('menu', {
+        'view': ?view,
         'items': [
           for (final i in items)
             if (i.separator)
@@ -39,7 +43,8 @@ abstract final class NativeDialogs {
         'at': {'x': at.dx, 'y': at.dy},
       });
 
-  /// Runs an `NSAlert` as a sheet on the key window and answers the
+  /// Runs an `NSAlert` as a sheet on [view]'s window (the main window's
+  /// when null) and answers the
   /// [index] into [buttons] of the one pressed, and whether its
   /// [suppression] checkbox was checked.
   ///
@@ -67,6 +72,7 @@ abstract final class NativeDialogs {
     int? armMs,
     String? suppression,
     Future<void>? dismissed,
+    int? view,
   }) async {
     assert(const {'informational', 'warning', 'critical'}.contains(style));
     assert(
@@ -86,6 +92,7 @@ abstract final class NativeDialogs {
     );
     try {
       final got = await channel.invokeMapMethod<String, Object?>('alert', {
+        'view': ?view,
         'id': id,
         'style': style,
         'title': title,

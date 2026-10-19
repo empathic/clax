@@ -2,7 +2,9 @@ import AppKit
 
 /// The Mac's own menus and alerts for the Dart side's `NativeDialogs`
 /// (`lib/ui/kit/native_dialogs.dart`), which `MainFlutterWindow` hands the
-/// `dev.empathic.clax/dialogs` channel's calls to:
+/// `dev.empathic.clax/dialogs` channel's calls to. A call may name the
+/// Flutter view whose window it is for (`view`); without one it is for the
+/// main window.
 ///
 /// - `menu` {items: [{id, title, key?, symbol?, detail?, checked?,
 ///   destructive?, enabled?} | {separator: true}], at: {x, y}} pops up an
@@ -16,18 +18,20 @@ import AppKit
 /// Uses AppKit only, so `//apps/clax_app:macos_dialogs_test` compiles it on
 /// its own.
 final class NativeDialogs: NSObject {
-  /// The window alerts are sheets on; nil runs them as modal windows.
-  private let window: () -> NSWindow?
-  /// The view menus pop up in.
-  private let view: () -> NSView?
+  /// The window showing a Flutter view (the main window for nil), which
+  /// alerts are sheets on; nil runs them as modal windows.
+  private let window: (Int64?) -> NSWindow?
+  /// The Flutter view of a view ID (the main window's for nil), which
+  /// menus pop up in.
+  private let view: (Int64?) -> NSView?
   /// Runs a block after a delay: `DispatchQueue.main` in the app.
   private let schedule: (TimeInterval, @escaping () -> Void) -> Void
 
   private var alerts: [Int: AlertRun] = [:]
 
   init(
-    window: @escaping () -> NSWindow?,
-    view: @escaping () -> NSView?,
+    window: @escaping (Int64?) -> NSWindow?,
+    view: @escaping (Int64?) -> NSView?,
     schedule: @escaping (TimeInterval, @escaping () -> Void) -> Void = { delay, run in
       DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: run)
     }
@@ -45,6 +49,7 @@ final class NativeDialogs: NSObject {
     fail: @escaping (String) -> Void
   ) -> Bool {
     let args = args as? [String: Any] ?? [:]
+    let target = (args["view"] as? NSNumber)?.int64Value
     switch method {
     case "menu":
       guard let items = args["items"] as? [[String: Any]],
@@ -55,13 +60,13 @@ final class NativeDialogs: NSObject {
         fail("menu takes items and at {x, y}")
         return true
       }
-      popUp(items, x: x, y: y, reply: reply)
+      popUp(items, in: view(target), x: x, y: y, reply: reply)
     case "alert":
       guard let spec = AlertSpec(args) else {
         fail("alert takes id, style, title and buttons, with indices into buttons")
         return true
       }
-      show(spec, reply: reply)
+      show(spec, on: window(target), reply: reply)
     case "dismissAlert":
       guard let id = (args["id"] as? NSNumber)?.intValue else {
         fail("dismissAlert takes id")
@@ -83,8 +88,11 @@ final class NativeDialogs: NSObject {
     @objc func choose(_ item: NSMenuItem) { id = item.representedObject as? String }
   }
 
-  private func popUp(_ items: [[String: Any]], x: Double, y: Double, reply: @escaping (Any?) -> Void) {
-    guard let view = view() else {
+  private func popUp(
+    _ items: [[String: Any]], in view: NSView?, x: Double, y: Double,
+    reply: @escaping (Any?) -> Void
+  ) {
+    guard let view else {
       reply(nil)
       return
     }
@@ -153,11 +161,11 @@ final class NativeDialogs: NSObject {
 
   // MARK: Alerts
 
-  private func show(_ spec: AlertSpec, reply: @escaping (Any?) -> Void) {
+  private func show(_ spec: AlertSpec, on window: NSWindow?, reply: @escaping (Any?) -> Void) {
     alerts[spec.id]?.dismiss()
     let run = AlertRun(spec, schedule: schedule)
     alerts[spec.id] = run
-    run.begin(on: window()) { [weak self] index, suppressed in
+    run.begin(on: window) { [weak self] index, suppressed in
       self?.alerts[spec.id] = nil
       reply(["index": index.map { $0 as Any } ?? NSNull(), "suppressed": suppressed])
     }

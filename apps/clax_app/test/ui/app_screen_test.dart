@@ -17,6 +17,7 @@ import 'package:clax_app/ui/change_sheet.dart';
 import 'package:clax_app/ui/developer.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/kit/kit.dart';
+import 'package:clax_app/ui/mac/window_channel.dart';
 import 'package:clax_app/ui/shortcuts.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/tokens.g.dart';
@@ -2381,6 +2382,67 @@ void main() {
       expect(find.byKey(const ValueKey('comment-bar')), findsOneWidget);
       await select(ClaxCommand.comment);
       expect(find.byKey(const ValueKey('comment-bar')), findsNothing);
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+  );
+  testWidgets(
+    'on macOS the window is told Escape is wanted while comment mode or the '
+    'panel is up, and an Escape it catches from the page closes them',
+    (tester) async {
+      final wanted = <bool>[];
+      final m = tester.binding.defaultBinaryMessenger;
+      m.setMockMethodCallHandler(MacWindow.channel, (call) async {
+        if (call.method == 'setEscapeWanted') {
+          final args = call.arguments as Map<Object?, Object?>;
+          expect(args['view'], tester.view.viewId);
+          wanted.add(args['on']! as bool);
+        }
+        return null;
+      });
+      addTearDown(() => m.setMockMethodCallHandler(MacWindow.channel, null));
+      final rig = await pumpScreen(tester, size: const Size(1200, 800));
+      rig.surface.push(rig.ready());
+      await tester.pumpAndSettle();
+      expect(wanted, isEmpty);
+
+      Future<void> command(ClaxCommand c) async {
+        await m.handlePlatformMessage(
+          MacMenu.channel.name,
+          MacMenu.channel.codec.encodeMethodCall(MethodCall('command', c.tag)),
+          (_) {},
+        );
+        await tester.pumpAndSettle();
+      }
+
+      Future<Object?> escape() async {
+        Object? reply;
+        await m.handlePlatformMessage(
+          MacWindow.channel.name,
+          MacWindow.channel.codec.encodeMethodCall(
+            MethodCall('escape', {'view': tester.view.viewId}),
+          ),
+          (data) => reply = data == null
+              ? null
+              : MacWindow.channel.codec.decodeEnvelope(data),
+        );
+        await tester.pumpAndSettle();
+        return reply;
+      }
+
+      await command(ClaxCommand.comment);
+      expect(find.byKey(const ValueKey('comment-bar')), findsOneWidget);
+      expect(wanted, [true]);
+      await command(ClaxCommand.comment);
+      expect(wanted, [true, false]);
+
+      await command(ClaxCommand.toggleThreads);
+      expect(find.byKey(const ValueKey('app-panel')), findsOneWidget);
+      expect(wanted, [true, false, true]);
+      expect(await escape(), isTrue);
+      expect(find.byKey(const ValueKey('app-panel')), findsNothing);
+      expect(wanted, [true, false, true, false]);
+      expect(await escape(), isFalse);
+      expect(find.byType(AppScreen), findsOneWidget);
     },
     variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );

@@ -9,7 +9,8 @@ import WebKit
 ///   responder chain as the item's own would, so the page gets it natively;
 /// - anywhere else in a Flutter window, it goes to Dart through [send] as
 ///   `cut`, `copy`, `paste`, `pasteAsPlainText`, `delete`, `selectAll`,
-///   `undo` or `redo`, where the focused field takes it (`MacEdit` in
+///   `undo` or `redo`, with the window's Flutter view, where the focused
+///   field takes it when it is in that view (`MacEdit` in
 ///   `lib/ui/app_menu.dart`).
 final class EditBridge: NSObject, NSMenuItemValidation {
   /// Each action the bridge takes, by the name Dart knows it by.
@@ -24,14 +25,14 @@ final class EditBridge: NSObject, NSMenuItemValidation {
     Selector(("redo:")): "redo",
   ]
 
-  /// Sends a method to Dart.
-  private let send: (String) -> Void
-  /// Whether [window] shows Flutter content, so its edits go to Dart.
-  private let isFlutter: (NSWindow) -> Bool
+  /// Sends a method to Dart, for a Flutter view.
+  private let send: (String, Int64) -> Void
+  /// The Flutter view [window] shows, if it shows one; its edits go to Dart.
+  private let flutterView: (NSWindow) -> Int64?
 
-  init(send: @escaping (String) -> Void, isFlutter: @escaping (NSWindow) -> Bool) {
+  init(send: @escaping (String, Int64) -> Void, flutterView: @escaping (NSWindow) -> Int64?) {
     self.send = send
-    self.isFlutter = isFlutter
+    self.flutterView = flutterView
   }
 
   /// Becomes the target of every item under [menu] whose action is one of
@@ -55,8 +56,8 @@ final class EditBridge: NSObject, NSMenuItemValidation {
   @objc func redo(_ sender: Any?) { perform(Selector(("redo:")), sender) }
 
   private func perform(_ action: Selector, _ sender: Any?) {
-    if flutterHasFocus, let name = Self.actions[action] {
-      send(name)
+    if let view = flutterFocus, let name = Self.actions[action] {
+      send(name, view)
     } else {
       NSApp.sendAction(action, to: nil, from: sender)
     }
@@ -64,7 +65,7 @@ final class EditBridge: NSObject, NSMenuItemValidation {
 
   func validateMenuItem(_ item: NSMenuItem) -> Bool {
     guard let action = item.action else { return false }
-    if flutterHasFocus { return true }
+    if flutterFocus != nil { return true }
     // What the item's own action would reach, and what it says.
     guard let target = NSApp.target(forAction: action, to: nil, from: item) else {
       return false
@@ -74,15 +75,15 @@ final class EditBridge: NSObject, NSMenuItemValidation {
     return true
   }
 
-  /// Whether the key window is a Flutter window whose first responder is
-  /// not inside a `WKWebView`.
-  private var flutterHasFocus: Bool {
-    guard let window = NSApp.keyWindow, isFlutter(window) else { return false }
+  /// The Flutter view of the key window, when it is a Flutter window whose
+  /// first responder is not inside a `WKWebView`.
+  private var flutterFocus: Int64? {
+    guard let window = NSApp.keyWindow, let id = flutterView(window) else { return nil }
     var view = window.firstResponder as? NSView
     while let v = view {
-      if v is WKWebView { return false }
+      if v is WKWebView { return nil }
       view = v.superview
     }
-    return true
+    return id
   }
 }

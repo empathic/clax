@@ -30,6 +30,7 @@ import 'developer.dart';
 import 'host_protocol.dart';
 import 'kit/kit.dart';
 import 'layout.dart';
+import 'mac/window_channel.dart';
 import 'overlay_gate.dart';
 import 'questions/questions_sheet.dart';
 import 'swipe.dart';
@@ -641,6 +642,13 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       ..add(widget.surface.faults.listen(_onFault))
       ..add(widget.worker.listen(_onWorker));
     if (widget.actions case final actions?) _subs.add(actions.listen(_act));
+    if (hasDesktopWindowChrome) {
+      _subs.add(
+        MacWindow.escapes.listen((view) {
+          if (mounted && view == _escapeView && _escapeCloses) _closeTop();
+        }),
+      );
+    }
     _subs.add(
       widget.surface.elsewhere.listen((aid) {
         if (mounted) widget.openApp?.call(aid);
@@ -860,6 +868,34 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     }
   }
 
+  /// Whether Escape closes something over the page now: what [_back]
+  /// closes before the page's own history.
+  bool get _escapeCloses =>
+      !widget.covered &&
+      !_gone &&
+      (_wantComment || _questionsShowing || _draft != null);
+
+  /// The view whose window was last told whether this screen wants Escape
+  /// from the page, and what it was told.
+  int? _escapeView;
+  var _escapeSent = false;
+
+  /// On the Mac, tells the window whether Escape pressed while the page's
+  /// WebView has the keyboard is this screen's ([_escapeCloses]): it goes
+  /// to the page otherwise, since Flutter does not see it.
+  void _reportEscape() {
+    if (!mounted) return;
+    final view = View.of(context).viewId;
+    final on = _escapeCloses;
+    if (view == _escapeView && on == _escapeSent) return;
+    if (_escapeView case final old? when old != view) {
+      MacWindow.setEscapeWanted(this, false, view: old);
+    }
+    MacWindow.setEscapeWanted(this, on, view: view);
+    _escapeView = view;
+    _escapeSent = on;
+  }
+
   /// Back: what is over the page closes first, then the app's page goes
   /// back in its own history.
   void _back() {
@@ -879,6 +915,9 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     _waitingThreads.dispose();
     WidgetsBinding.instance.removeObserver(this);
     widget.notice?.clear(this);
+    if (_escapeView case final view?) {
+      MacWindow.setEscapeWanted(this, false, view: view);
+    }
     _comments.unregister(_toggleOpen);
     _ownComments?.dispose();
     _ownIcons?.dispose();
@@ -2082,6 +2121,9 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     final macOS = defaultTargetPlatform == TargetPlatform.macOS;
+    if (hasDesktopWindowChrome) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _reportEscape());
+    }
     final composing = _draft != null;
     Widget screen = Scaffold(
       // While the app's composer is open the keyboard comes up over the

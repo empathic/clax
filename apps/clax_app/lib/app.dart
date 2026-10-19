@@ -83,9 +83,11 @@ import 'ui/host_protocol.dart'
         StateMsg,
         ThreadsMsg;
 import 'ui/inspector_surface.dart';
+import 'ui/kit/family.dart';
 import 'ui/kit/mark.dart';
 import 'ui/kit/verbs.dart';
 import 'ui/launcher.dart';
+import 'ui/mac/windows.dart';
 import 'ui/licences.dart';
 import 'ui/make_service.dart';
 import 'ui/making_screen.dart';
@@ -276,10 +278,17 @@ class AppServices {
 }
 
 /// Runs the app with [services], with Clax's own licence on the licences
-/// page ([registerClaxLicence]).
+/// page ([registerClaxLicence]). On the Mac the engine draws a view for
+/// each window ([ClaxViews]), and the main window's is the app.
 Future<void> runClaxApp(AppServices services) async {
   registerClaxLicence();
-  runApp(AppRoot(services: services));
+  final app = AppRoot(services: services);
+  if (hasDesktopWindowChrome) {
+    MacWindows.install();
+    runWidget(ClaxViews(main: app));
+  } else {
+    runApp(app);
+  }
 }
 
 /// The backend for [settings]: `claude -p` when the settings choose it and

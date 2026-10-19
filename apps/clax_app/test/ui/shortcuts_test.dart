@@ -195,6 +195,39 @@ void main() {
       ]);
     }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
+    testWidgets('an enabled state for one window names its view', (
+      tester,
+    ) async {
+      MacMenu.setEnabled(ClaxCommand.settings, true, view: 2);
+      await tester.pump();
+      expect(calls.single.arguments, {'tag': 19, 'enabled': true, 'view': 2});
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+    testWidgets('a chosen item arrives with the view of the window it was '
+        'chosen in', (tester) async {
+      final got = <MenuChoice>[];
+      final sub = MacMenu.choices.listen(got.add);
+      addTearDown(sub.cancel);
+      for (final args in <Object?>[
+        {'tag': 13, 'view': 2},
+        {'tag': 13, 'view': null},
+        13,
+        {'tag': 99, 'view': 2},
+      ]) {
+        await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+          MacMenu.channel.name,
+          MacMenu.channel.codec.encodeMethodCall(MethodCall('command', args)),
+          (_) {},
+        );
+      }
+      await tester.pump();
+      expect(got, [
+        (command: ClaxCommand.home, view: 2),
+        (command: ClaxCommand.home, view: null),
+        (command: ClaxCommand.home, view: null),
+      ]);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
     testWidgets('sends nothing off the Mac', (tester) async {
       MacMenu.setEnabled(ClaxCommand.settings, true);
       await tester.pump();

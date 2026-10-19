@@ -34,6 +34,7 @@ import 'platform/bundle_key.dart';
 import 'platform/device/device_grants.dart';
 import 'platform/device/device_host.dart';
 import 'platform/device/device_plugins.dart';
+import 'platform/device/mac_share.dart';
 import 'platform/device/reminders.dart';
 import 'platform/external_links.dart';
 import 'platform/install_id.dart';
@@ -246,7 +247,11 @@ Future<AppServices> platformServices({DateTime? launched}) async {
       ),
       // On iOS the shell makes these through WebKit, asking only the
       // grant (`web/shell/src/caps/webkit.ts`).
-      share: Platform.isIOS ? null : PluginShare(),
+      share: Platform.isIOS
+          ? null
+          : Platform.isMacOS
+          ? const MacShare()
+          : PluginShare(),
       files: Platform.isIOS ? null : PluginFiles(),
       camera: Platform.isIOS ? null : PluginCamera(),
       location: Platform.isIOS ? null : PluginLocation(),

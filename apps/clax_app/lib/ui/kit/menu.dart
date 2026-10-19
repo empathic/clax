@@ -63,7 +63,11 @@ abstract final class ClaxMenu {
   }) async {
     if (hasDesktopWindowChrome) {
       try {
-        return await NativeDialogs.menu(items, anchor.bottomLeft);
+        return await NativeDialogs.menu(
+          items,
+          anchor.bottomLeft,
+          view: View.maybeOf(context)?.viewId,
+        );
       } on MissingPluginException {
         // No Mac on the other end (a test): Flutter draws it.
       }

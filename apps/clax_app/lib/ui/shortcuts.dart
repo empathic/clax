@@ -148,36 +148,55 @@ Map<ShortcutActivator, Intent> claxShortcuts(ClaxFamily family) {
   };
 }
 
+/// A menu bar item the person chose: its command, and the view whose
+/// window was the main window then (null when none of Clax's was).
+typedef MenuChoice = ({ClaxCommand command, int? view});
+
 /// The Mac's menu bar (`MainMenu.xib`, `macos/Runner/MenuBridge.swift`)
 /// over the method channel `dev.empathic.clax/menu`: Clax's items arrive
-/// as [commands], and their enabled state and titles are set from here.
+/// as [choices], and their enabled state and titles are set from here.
 /// Each call is a no-op unless [hasDesktopWindowChrome].
+///
+/// The menu bar acts on the main window: an item is enabled by what the
+/// Flutter view of that window set ([setEnabled] with its `view`; a state
+/// set without one holds for any window that set none), and a choice
+/// names that view.
 abstract final class MacMenu {
   static const channel = MethodChannel('dev.empathic.clax/menu');
 
-  static final _commands = StreamController<ClaxCommand>.broadcast(
+  static final _choices = StreamController<MenuChoice>.broadcast(
     onListen: _listen,
   );
 
-  /// The items the person chose, from the first listener on.
-  static Stream<ClaxCommand> get commands => _commands.stream;
+  /// The items the person chose, with the main window's view, from the
+  /// first listener on.
+  static Stream<MenuChoice> get choices => _choices.stream;
 
-  /// Takes the native side's `command` {tag}, answering whether the tag
-  /// names a command.
+  /// The commands of [choices], whatever the window.
+  static Stream<ClaxCommand> get commands => choices.map((c) => c.command);
+
+  /// Takes the native side's `command` {tag, view} (or a bare tag),
+  /// answering whether the tag names a command.
   static void _listen() => channel.setMethodCallHandler((call) async {
     if (call.method != 'command') return false;
-    final c = switch (call.arguments) {
-      final int tag => ClaxCommand.ofTag(tag),
-      _ => null,
+    final (tag, view) = switch (call.arguments) {
+      final int tag => (tag, null),
+      {'tag': final int tag, 'view': final int? view} => (tag, view),
+      {'tag': final int tag} => (tag, null),
+      _ => (null, null),
     };
+    final c = tag == null ? null : ClaxCommand.ofTag(tag);
     if (c == null) return false;
-    _commands.add(c);
+    _choices.add((command: c, view: view));
     return true;
   });
 
-  /// Enables or disables [c]'s menu item; items start disabled.
-  static void setEnabled(ClaxCommand c, bool on) =>
-      _send('setEnabled', {'tag': c.tag, 'enabled': on});
+  /// Enables or disables [c]'s menu item while [view]'s window is the main
+  /// window (any window, when null); items start disabled.
+  static void setEnabled(ClaxCommand c, bool on, {int? view}) => _send(
+    'setEnabled',
+    {'tag': c.tag, 'enabled': on, 'view': ?view},
+  );
 
   /// Gives [c]'s menu item [title] in place of `MainMenu.xib`'s.
   static void setTitle(ClaxCommand c, String title) =>

@@ -146,7 +146,7 @@ final class NativeDialogsTests: XCTestCase {
   }
 
   func testTheChannelAnswersUnknownMethodsAndBadArguments() {
-    let dialogs = NativeDialogs(window: { nil }, view: { nil })
+    let dialogs = NativeDialogs(window: { _ in nil }, view: { _ in nil })
     var failed: String?
     XCTAssertFalse(dialogs.handle("nope", nil, reply: { _ in }, fail: { _ in }))
     XCTAssertTrue(dialogs.handle("alert", ["id": 1], reply: { _ in }, fail: { failed = $0 }))

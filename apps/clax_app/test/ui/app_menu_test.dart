@@ -150,6 +150,38 @@ void main() {
     expect(settings, 1);
   }, variant: _mac);
 
+  testWidgets('enabled states name the bar\'s view, and a command chosen '
+      'in another window\'s menu bar is not run here', (tester) async {
+    var settings = 0;
+    await pumpPushed(tester, settings: () => settings++);
+    final view = tester.view.viewId;
+    final sent = menuCalls.where((c) => c.method == 'setEnabled').toList();
+    expect(sent, isNotEmpty);
+    for (final c in sent) {
+      expect((c.arguments as Map)['view'], view);
+    }
+    Future<void> chooseIn(int? inView) async {
+      await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+        MacMenu.channel.name,
+        MacMenu.channel.codec.encodeMethodCall(
+          MethodCall('command', {
+            'tag': ClaxCommand.settings.tag,
+            'view': inView,
+          }),
+        ),
+        (_) {},
+      );
+      await tester.pumpAndSettle();
+    }
+
+    await chooseIn(view + 1);
+    expect(settings, 0);
+    await chooseIn(view);
+    expect(settings, 1);
+    await chooseIn(null);
+    expect(settings, 2);
+  }, variant: _mac);
+
   testWidgets('a state already sent is not sent again', (tester) async {
     final s = await pumpPushed(tester);
     final before = menuCalls.length;
@@ -314,6 +346,30 @@ void main() {
       expect(field.controller, isNull, reason: 'the field owns its text');
       expect(await edit(tester, 'undo'), isTrue);
       expect(await edit(tester, 'redo'), isTrue);
+    }, variant: _mac);
+
+    testWidgets('an action for another window\'s view is not taken by '
+        'this one\'s field', (tester) async {
+      await pumpPushed(tester);
+      await tester.enterText(find.byType(TextField), 'groceries');
+      await tester.pump();
+      Future<Object?> editIn(int view) async {
+        Object? reply;
+        await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+          MacEdit.channel.name,
+          MacEdit.channel.codec.encodeMethodCall(
+            MethodCall('selectAll', {'view': view}),
+          ),
+          (data) => reply = data == null
+              ? null
+              : MacEdit.channel.codec.decodeEnvelope(data),
+        );
+        await tester.pumpAndSettle();
+        return reply;
+      }
+
+      expect(await editIn(tester.view.viewId + 1), isFalse);
+      expect(await editIn(tester.view.viewId), isTrue);
     }, variant: _mac);
 
     testWidgets('with nothing focused the action is not taken', (

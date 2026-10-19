@@ -190,6 +190,7 @@ void main() {
       expect(got?.suppressed, isTrue);
       final args = fake.calls.single.arguments as Map;
       expect(args['style'], 'informational');
+      expect(args['view'], tester.view.viewId);
       expect(args['buttons'], ['Don’t allow', 'Allow once']);
       expect(args['suppressedButtons'], [null, 'Always allow']);
       expect(args['suppression'], 'Always for this app');
@@ -309,6 +310,7 @@ void main() {
       expect(got, 'b');
       final args = fake.calls.single.arguments as Map;
       expect(args['at'], {'x': 10.0, 'y': 60.0});
+      expect(args['view'], tester.view.viewId);
       expect(find.byType(MenuItemButton), findsNothing);
     }, variant: _mac);
   });

@@ -698,6 +698,28 @@ macos_unit_test(
     deps = [":macos_dialogs_test_lib"],
 )
 
+# The windows, sidebar material and Escape of macos/Runner/WindowBridge.swift,
+# on their own.
+swift_library(
+    name = "macos_window_bridge_test_lib",
+    testonly = True,
+    srcs = [
+        "macos/Runner/WindowBridge.swift",
+        "macos/RunnerTests/WindowBridgeTests.swift",
+    ],
+    module_name = "WindowBridgeTests",
+    tags = ["manual"],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+macos_unit_test(
+    name = "macos_window_bridge_test",
+    minimum_os_version = "12.0",
+    tags = ["no-remote"],
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [":macos_window_bridge_test_lib"],
+)
+
 # The home app's bundle, assets/home/home.clax, and its release record,
 # assets/home/release.json, packed from home/ and the kit files its manifest
 # names by tool/pack_home.dart (which needs only the bundle format and no

@@ -44,13 +44,18 @@ class AppDelegate: FlutterAppDelegate {
   /// `lib/ui/shortcuts.dart`), and Edit's items for Flutter fields over
   /// `dev.empathic.clax/edit` (`EditBridge`, `MacEdit` in
   /// `lib/ui/app_menu.dart`).
+  ///
+  /// Both act on a window by its Flutter view: the menu bar on the main
+  /// window's (the first window's while no window of Clax's is main),
+  /// Edit on the key window's.
   private func installMenus() {
-    guard menuBridge == nil, let menu = NSApp.mainMenu,
-      let controller = mainFlutterWindow?.contentViewController as? FlutterViewController
-    else { return }
-    let messenger = controller.engine.binaryMessenger
+    guard menuBridge == nil, let menu = NSApp.mainMenu else { return }
+    let messenger = ClaxEngine.shared.binaryMessenger
+    let windows = ClaxEngine.windows
     let menuChannel = FlutterMethodChannel(name: "dev.empathic.clax/menu", binaryMessenger: messenger)
-    let menus = MenuBridge(send: { menuChannel.invokeMethod($0, arguments: $1) })
+    let menus = MenuBridge(
+      send: { menuChannel.invokeMethod($0, arguments: $1) },
+      currentView: { windows.view(of: NSApp.mainWindow) ?? windows.mainView })
     menuChannel.setMethodCallHandler { call, result in
       let known = menus.handle(
         call.method, call.arguments, reply: result,
@@ -62,8 +67,8 @@ class AppDelegate: FlutterAppDelegate {
 
     let editChannel = FlutterMethodChannel(name: "dev.empathic.clax/edit", binaryMessenger: messenger)
     let edits = EditBridge(
-      send: { editChannel.invokeMethod($0, arguments: nil) },
-      isFlutter: { $0.contentViewController is FlutterViewController })
+      send: { editChannel.invokeMethod($0, arguments: ["view": $1]) },
+      flutterView: { windows.view(of: $0) })
     edits.install(in: menu)
     editBridge = edits
   }
@@ -83,12 +88,10 @@ class AppDelegate: FlutterAppDelegate {
   /// `opened` {path}. The paths are the person's own files, which the
   /// sandbox lets Clax read because the person opened them.
   private func installBundles() {
-    guard bundles == nil,
-      let controller = mainFlutterWindow?.contentViewController as? FlutterViewController
-    else { return }
+    guard bundles == nil else { return }
     let channel = FlutterMethodChannel(
       name: "dev.empathic.clax/bundles",
-      binaryMessenger: controller.engine.binaryMessenger)
+      binaryMessenger: ClaxEngine.shared.binaryMessenger)
     channel.setMethodCallHandler { [weak self] call, result in
       guard let self, call.method == "initial" else {
         result(FlutterMethodNotImplemented)

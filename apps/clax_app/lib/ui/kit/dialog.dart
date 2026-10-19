@@ -140,6 +140,7 @@ abstract final class ClaxDialog {
         cancelIndex: cancelIndex,
         armMs: arming?.delay.inMilliseconds,
         dismissed: dismissed,
+        view: View.maybeOf(context)?.viewId,
       );
       if (got != null) return got;
     }
@@ -299,6 +300,7 @@ abstract final class ClaxDialog {
     int? cancelIndex,
     int? armMs,
     Future<void>? dismissed,
+    int? view,
   }) async {
     final destructive = [
       for (final (i, a) in actions.indexed)
@@ -319,6 +321,7 @@ abstract final class ClaxDialog {
         armMs: armMs,
         suppression: suppression,
         dismissed: dismissed,
+        view: view,
       );
       return ClaxDialogAnswer(got.index, suppressed: got.suppressed);
     } on MissingPluginException {

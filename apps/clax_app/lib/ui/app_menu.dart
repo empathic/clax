@@ -163,7 +163,7 @@ class ClaxMenuBar extends StatefulWidget {
 }
 
 class _ClaxMenuBarState extends State<ClaxMenuBar> {
-  StreamSubscription<ClaxCommand>? _chosen;
+  StreamSubscription<MenuChoice>? _chosen;
 
   /// What was last sent, so a state is sent only when it changes.
   final _enabled = <ClaxCommand, bool>{};
@@ -174,7 +174,10 @@ class _ClaxMenuBarState extends State<ClaxMenuBar> {
     super.initState();
     widget.comments.addListener(_sync);
     if (hasDesktopWindowChrome) {
-      _chosen = MacMenu.commands.listen(_run);
+      _chosen = MacMenu.choices.listen((c) {
+        // A choice made with another window main is that window's.
+        if (c.view == null || c.view == _view) _run(c.command);
+      });
       MacEdit.install();
     }
     WidgetsBinding.instance.addPostFrameCallback((_) => _sync());
@@ -218,6 +221,9 @@ class _ClaxMenuBarState extends State<ClaxMenuBar> {
     _ => null,
   };
 
+  /// The view this menu bar's window shows, once built.
+  int? get _view => mounted ? View.maybeOf(context)?.viewId : null;
+
   void _back() => unawaited(_navigator?.maybePop());
 
   void _home() => _navigator?.popUntil((r) => r.isFirst);
@@ -230,7 +236,7 @@ class _ClaxMenuBarState extends State<ClaxMenuBar> {
     if (!mounted || !hasDesktopWindowChrome) return;
     for (final c in ClaxMenuBar.menuCommands) {
       final on = _handler(c) != null;
-      if (_enabled[c] != on) MacMenu.setEnabled(c, on);
+      if (_enabled[c] != on) MacMenu.setEnabled(c, on, view: _view);
       _enabled[c] = on;
     }
     for (final MapEntry(key: c, value: title) in widget.titles.entries) {
@@ -255,20 +261,28 @@ class _ClaxMenuBarState extends State<ClaxMenuBar> {
 
 /// Edit's items on the Mac while the Flutter view has the keyboard focus:
 /// `macos/Runner/EditBridge.swift` sends `cut`, `copy`, `paste`,
-/// `pasteAsPlainText`, `delete`, `selectAll`, `undo` or `redo` over the
-/// method channel `dev.empathic.clax/edit`, and the focused field (or
-/// selectable text) takes it as the matching text intent. Each answers
-/// whether something took it. A page's WebView gets them natively.
+/// `pasteAsPlainText`, `delete`, `selectAll`, `undo` or `redo` {view} over
+/// the method channel `dev.empathic.clax/edit`, with the view of the key
+/// window, and the focused field (or selectable text) takes it as the
+/// matching text intent when it is in that view. Each answers whether
+/// something took it. A page's WebView gets them natively.
 abstract final class MacEdit {
   static const channel = MethodChannel('dev.empathic.clax/edit');
 
   /// Takes the channel's calls; called again, it changes nothing.
   static void install() => channel.setMethodCallHandler(
-    (call) async => perform(call.method),
+    (call) async => perform(
+      call.method,
+      view: switch (call.arguments) {
+        {'view': final int v} => v,
+        _ => null,
+      },
+    ),
   );
 
-  /// Runs Edit's [action] on the primary focus; whether it was taken.
-  static bool perform(String action) {
+  /// Runs Edit's [action] on the primary focus, when it is in [view] (any
+  /// view, when null); whether it was taken.
+  static bool perform(String action, {int? view}) {
     const cause = SelectionChangedCause.keyboard;
     final Intent? intent = switch (action) {
       'cut' => const CopySelectionTextIntent.cut(cause),
@@ -282,6 +296,7 @@ abstract final class MacEdit {
     };
     final context = FocusManager.instance.primaryFocus?.context;
     if (intent == null || context == null) return false;
+    if (view != null && View.maybeOf(context)?.viewId != view) return false;
     final found = Actions.maybeFind<Intent>(context, intent: intent);
     if (found == null || !found.isEnabled(intent)) return false;
     Actions.invoke(context, intent);
