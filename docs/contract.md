@@ -1516,7 +1516,8 @@ or no live agent, 400 `unknown_agent`; none of them gives a watch. `GET
 /api/agents?artifact=<aid>` lists the live agents a send of the caller's
 there may name: those that own or watch it and, from the owner or a
 connected person, any that may read and watch it; none when the caller
-may not send there (`clax-comments` `send`). From
+may not send there (`clax-comments` `send`); a live page is 404 to a
+caller `GET /api/agents` lists no live pages to. From
 anyone else (a guest, a LAN viewer, an agent, whose agents hand threads off
 instead) and in a batch send, `to` names only a live owner or watcher of the
 artifact, by handle, as before.

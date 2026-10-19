@@ -128,7 +128,8 @@ fn project(cwd: &str) -> &str {
 /// ([`super::threads::named_agent_reaches`]); none when the caller may not
 /// send there (`clax-comments` `send`). An artifact the caller may not read
 /// is as one that does not exist: 404 (a connected person on a local
-/// daemon gets an empty list).
+/// daemon gets an empty list), as is a live page to a caller this listing
+/// leaves live pages out for.
 pub async fn list_agents(
     State(s): State<AppState>,
     a: clax_http::agent::Agent<clax_http::agent::AgentsList>,
@@ -152,10 +153,20 @@ pub async fn list_agents(
         Some(raw) => Some(a.named_artifact(&s, raw).await?),
         None => None,
     };
-    let reach = target.map(|id| {
-        let live = s.live_ids.contains(id.as_str());
-        (id, live)
-    });
+    let local = !matches!(a.caller, Caller::Person { .. })
+        && clax_http::live_access::sees_live_pages(&headers, &extensions, &s.token);
+    let reach = match target {
+        Some(id) => {
+            let live = s.live_ids.contains(id.as_str());
+            // A live page is one only a caller this listing shows live
+            // pages to may name (L10): to anyone else it does not exist.
+            if live && !local {
+                return Err(ApiError::not_found());
+            }
+            Some((id, live))
+        }
+        None => None,
+    };
     let sender = a.caller.clone();
     let send_right = match (&reach, a.member()) {
         (Some((id, _)), Some(m)) => {
@@ -177,8 +188,6 @@ pub async fn list_agents(
         Caller::Person { viewer } => Some(viewer.public_id.clone()),
         _ => None,
     };
-    let local = !matches!(a.caller, Caller::Person { .. })
-        && clax_http::live_access::sees_live_pages(&headers, &extensions, &s.token);
     let reads = a.read_rights();
     let vf = clax_http::views::thread::VisFor::of(&a.caller, &s);
     let working = s.working.clone();

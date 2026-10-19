@@ -540,6 +540,29 @@ async fn no_persons_agent_reaches_a_live_page_by_a_send() {
     let (s2, v2) = json_of(res).await;
     assert_eq!((s2, code(&v2)), (400, "unknown_agent"), "{v2}");
     assert!(!watches(&ts, &sam_sid, &hid));
+    // The dialog's listing names the live page to the owner alone: to a
+    // connected person it does not exist.
+    let (s3, v3) = call(
+        &ts,
+        Some(&ts.owner_cookie()),
+        "GET",
+        &format!("/api/agents?artifact={hid}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s3, 200, "{v3}");
+    let mia = ts.connect_person("Mia", "clax:collaborator").await;
+    let mia_viewer = ts.store.viewer_of_grant(&mia.grant_id()).unwrap();
+    let cookie = viewer_cookie(&ts.browser_cookie(&mia_viewer.id));
+    let (s4, v4) = call(
+        &ts,
+        Some(&cookie),
+        "GET",
+        &format!("/api/agents?artifact={hid}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!((s4, code(&v4)), (404, "not_found"), "{v4}");
 }
 
 #[tokio::test]
