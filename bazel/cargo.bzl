@@ -11,7 +11,7 @@ and Bazel must be told: which files outside `src/` a target reads.
 
 load("@crates//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//cargo:defs.bzl", "cargo_build_script")
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_static_library", "rust_test")
 load(":workspace.bzl", "CRATES", "WORKSPACE_RUSTC_FLAGS")
 
 _CLAX = "//crates/clax-cli:clax"
@@ -28,6 +28,7 @@ def cargo_package(
         split_tests = {},
         build_script_env = {},
         build_script_data = [],
+        staticlib = False,
         visibility = ["//visibility:public"]):
     """Declares the library, binaries, build script and tests of the Cargo
     package here.
@@ -40,6 +41,9 @@ def cargo_package(
       <bin>_bin_test        each binary's unit tests
       <test>                each [[test]] target, under its name
       build_script          the build script, when there is one
+      <lib>_static          with `staticlib`: the library as a C static
+                            library (lib<lib>.a: the crate and every
+                            dependency in one archive)
 
     Args:
       compile_data: files outside `src/` that the library and binaries read
@@ -64,6 +68,9 @@ def cargo_package(
         dependencies' generics, and a link.
       build_script_env: environment for the build script ($(execpath) works).
       build_script_data: files the build script reads.
+      staticlib: also declare `<lib>_static`, a rust_static_library of the
+        library's sources and dependencies, for a host app to link
+        (crates/clax-ios).
       visibility: the library's and binaries' visibility.
     """
     package = native.package_name()
@@ -201,6 +208,19 @@ def cargo_package(
             deps = normal_deps,
             **common
         )
+        if staticlib:
+            rust_static_library(
+                name = lib + "_static",
+                srcs = srcs,
+                compile_data = src_data,
+                crate_features = features,
+                crate_name = lib,
+                crate_root = crate["lib_root"],
+                proc_macro_deps = macros,
+                visibility = visibility,
+                deps = normal_deps,
+                **common
+            )
         _test(
             name = lib + "_lib_test",
             crate = ":" + lib,

@@ -227,6 +227,7 @@ macOS) and the two keys below.
 | `integration_<name>` (manual) | `integration_test/<name>_test.dart` in the debug app, run in the logged-in session | `flutter test <file> -d macos` |
 | `home_bundle`, `home_version_test` | the home app's bundle, `assets/home/home.clax` and `release.json`, packed from `home/` by `pack_home` (compiled by rules_dart) and signed: an asset of `app`, so of the APK and the macOS app; and a check of how its version is chosen | `scripts/build-home-bundle.sh` |
 | `//crates/clax-cli:clax_android_arm64`, `:clax_android_x86_64` | `clax` optimized and stripped for each Android CPU with the NDK, as `<abi>/libclax.so` (`bazel/android/clax.bzl`) | `scripts/build-app-clax.sh android` |
+| `//crates/clax-ios:clax_ios_c`, `:ios_build_test` | the in-process daemon as a static library for iOS (`libclax_ios.a`, optimized in the app's configuration) with its C header, and a check that it builds for iPhone and the simulator with every object for an iOS no newer than `--ios_minimum_os` (`bazel/apple/ios_rust.bzl`); macOS only | none |
 
 Everything but the integration tests is in `just ci` (`tests(//...)`).
 The integration tests open the app's window and take minutes each, so
@@ -245,6 +246,12 @@ The integration tests open the app's window and take minutes each, so
   would otherwise link), and the Rust standard library for
   `aarch64-linux-android` and `x86_64-linux-android`; crate_universe
   resolves the crates for those triples too.
+- The Rust standard library for `aarch64-apple-ios` and
+  `aarch64-apple-ios-sim`, and `apple_support`'s platforms and C toolchain
+  (Xcode's). `.bazelrc`'s `--ios_minimum_os=17.0` is the one minimum: the
+  C toolchain compiles for it, and `bazel/apple/ios_rust.bzl` passes it to
+  rustc as `IPHONEOS_DEPLOYMENT_TARGET`. The web builds a library for iOS
+  embeds are built for the host, as for Android (`bazel/dirs.bzl`).
 - The Android SDK's build tools 36.0.0, platform android-36 and platform
   tools (`rules_android`, patched by `bazel/android/rules_android.patch` to
   fetch pinned archives instead of reading `ANDROID_HOME`).

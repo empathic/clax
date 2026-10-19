@@ -26,6 +26,16 @@ common --java_runtime_version=remotejdk_21
 # that extracts them (android:extractNativeLibs="true").
 build --experimental_android_compress_java_resources
 
+# rules_apple's iOS CPU: the simulator on Apple silicon. A device build
+# passes --ios_multi_cpus=arm64.
+build --ios_multi_cpus=sim_arm64
+# The oldest iOS the Clax app runs on. Every iOS configuration, the app's
+# and //crates/clax-ios:clax_ios_builds' alike, compiles for it, the C of
+# ring and the bundled SQLite included (bazel/apple/ios_rust.bzl passes it
+# to rustc); //crates/clax-ios:ios_build_test fails on an object built for
+# a newer iOS.
+build --ios_minimum_os=17.0
+
 # Actions see a fixed environment, so their results can be shared.
 build --incompatible_strict_action_env
 

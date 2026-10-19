@@ -25,6 +25,8 @@ rust.toolchain(
         "llvm-tools-1.94.0-x86_64-unknown-linux-gnu.tar.xz": "cf6b8e1d3e48ffa4db37aa59f55382b991f0d347d9b62eebc9ef1d80dffabef4",
         "rust-std-1.94.0-aarch64-linux-android.tar.xz": "402c80df672a4b9fc948b6dc8bde21a63e1093eb1c8a2c2bd42221c309d9eba2",
         "rust-std-1.94.0-x86_64-linux-android.tar.xz": "488c8a581612ac4779a05f05967b76a96e0ff0bdd1ab8d99c13a859c19056b01",
+        "rust-std-1.94.0-aarch64-apple-ios.tar.xz": "41ec1d18f4762f85231a19cf8aba3385da78fece2ff900a435c62881a3a3b44b",
+        "rust-std-1.94.0-aarch64-apple-ios-sim.tar.xz": "b4d16842b8f98ff2f431d6ab4aced298f4028ca00f0f5d588bc6efc94faa0680",
         "rust-std-1.94.0-aarch64-apple-darwin.tar.xz": "d3293668128b0a7838ef2544ae341eadd4437460ca22098af723349885a10ba2",
         "rust-std-1.94.0-aarch64-unknown-linux-gnu.tar.xz": "c781b3ef4fefa5508fbe05820eddc95e46351d905a30921cc020febd9c596a2e",
         "rust-std-1.94.0-x86_64-apple-darwin.tar.xz": "cf716b5a5fab007398ce76536a85a3449df074b66e7c762c0f5de1d6c56a1342",
@@ -39,8 +41,11 @@ rust.toolchain(
         "rustfmt-1.94.0-x86_64-unknown-linux-gnu.tar.xz": "903e768f7626f78ed2d6cb82c1820b93bd339afec8575102e847fd3a379d33e5",
     },
     # The Clax app's embedded clax, for its two Android CPUs
-    # (bazel/android/BUILD.bazel).
+    # (bazel/android/BUILD.bazel), and its in-process daemon for iPhone and
+    # the simulator on Apple silicon (crates/clax-ios).
     extra_target_triples = [
+        "aarch64-apple-ios",
+        "aarch64-apple-ios-sim",
         "aarch64-linux-android",
         "x86_64-linux-android",
     ],
@@ -62,6 +67,8 @@ crate.from_cargo(
     manifests = ["//:Cargo.toml"],
     supported_platform_triples = [
         "aarch64-apple-darwin",
+        "aarch64-apple-ios",
+        "aarch64-apple-ios-sim",
         "aarch64-linux-android",
         "aarch64-unknown-linux-gnu",
         "x86_64-apple-darwin",
@@ -187,6 +194,10 @@ register_toolchains("@flutter_toolchains//:all")
 # The Swift package speech_to_text's Apple code needs
 # (bazel/flutter/plugin_overlays/speech_to_text).
 bazel_dep(name = "rules_apple", version = "5.2.0")
+# Apple's platforms (@apple_support//platforms:ios_arm64, :ios_sim_arm64)
+# and the C toolchain that compiles ring's and SQLite's C for iOS at
+# --ios_minimum_os (crates/clax-ios); the version rules_flutter asks for.
+bazel_dep(name = "apple_support", version = "2.9.1")
 bazel_dep(name = "rules_cc", version = "0.2.26")
 bazel_dep(name = "rules_swift", version = "4.1.2")
 

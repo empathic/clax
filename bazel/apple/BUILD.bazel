@@ -1,0 +1,27 @@
+# Rust static libraries for the iOS app, and their checks (ios_rust.bzl).
+
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load(":ios_rust.bzl", "ios_platform_probe")
+
+# Every Mach-O object of an archive built for one platform and minimum OS.
+sh_binary(
+    name = "check_build_version",
+    srcs = ["check-build-version.sh"],
+    visibility = ["//visibility:public"],
+)
+
+# The check against objects compiled for iOS, the simulator and macOS at
+# chosen minimums (Xcode's clang).
+sh_test(
+    name = "check_build_version_test",
+    srcs = ["check-build-version.test.sh"],
+    args = ["$(rootpath :check-build-version.sh)"],
+    data = ["check-build-version.sh"],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+ios_platform_probe(
+    name = "ios_platform_probe",
+    visibility = ["//visibility:public"],
+)

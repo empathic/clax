@@ -1,3 +1,61 @@
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_swift//swift:swift_interop_hint.bzl", "swift_interop_hint")
 load("//bazel:cargo.bzl", "cargo_package")
+load("//bazel/apple:ios_rust.bzl", "ios_builds", "ios_opt_library")
 
-cargo_package()
+cargo_package(staticlib = True)
+
+# The static library in the app's configuration, always optimized. Only
+# for iOS, so a build of //... on the host does not build it optimized.
+ios_opt_library(
+    name = "clax_ios_opt",
+    lib = ":clax_ios_static",
+    target_compatible_with = ["@platforms//os:ios"],
+)
+
+swift_interop_hint(
+    name = "clax_ios_module",
+    module_name = "ClaxIOS",
+)
+
+# The C header Swift imports as `ClaxIOS`, linked with the library and
+# the system libraries the daemon's dependencies need (the spike, iOS
+# spec §11: Security, SystemConfiguration, resolv, c++).
+cc_library(
+    name = "clax_ios_c",
+    hdrs = ["include/clax_ios.h"],
+    aspect_hints = [":clax_ios_module"],
+    includes = ["include"],
+    linkopts = [
+        "-framework",
+        "Security",
+        "-framework",
+        "SystemConfiguration",
+        "-lresolv",
+        "-lc++",
+    ],
+    target_compatible_with = ["@platforms//os:ios"],
+    visibility = ["//apps/clax_app:__pkg__"],
+    deps = [":clax_ios_opt"],
+)
+
+# The library for iPhone and for the simulator on Apple silicon, each
+# archive's objects checked for that platform and for an iOS no newer than
+# --ios_minimum_os (bazel/apple/check-build-version.sh).
+ios_builds(
+    name = "clax_ios_builds",
+    lib = ":clax_ios_static",
+    platforms = [
+        "@apple_support//platforms:ios_arm64",
+        "@apple_support//platforms:ios_sim_arm64",
+    ],
+    tags = ["manual"],
+)
+
+# The daemon keeps building for iPhone and its simulator (iOS spec §3).
+build_test(
+    name = "ios_build_test",
+    target_compatible_with = ["@platforms//os:macos"],
+    targets = [":clax_ios_builds"],
+)

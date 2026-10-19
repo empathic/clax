@@ -3,4 +3,6 @@ channel = "1.94.0"
 components = ["rustfmt", "clippy"]
 # crates/clax-worker builds the Worker for wasm32, and scripts/check-wasm.sh
 # checks the crates a hosted Worker runs there.
-targets = ["wasm32-unknown-unknown"]
+# The Clax app's in-process daemon on iOS (crates/clax-ios) builds for
+# aarch64-apple-ios and aarch64-apple-ios-sim.
+targets = ["wasm32-unknown-unknown", "aarch64-apple-ios", "aarch64-apple-ios-sim"]

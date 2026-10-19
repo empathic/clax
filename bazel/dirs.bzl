@@ -2,12 +2,17 @@
 
 _PLATFORMS = "//command_line_option:platforms"
 
+def _without_node(platform):
+    """Whether rules_nodejs has no runtime for `platform`: Android, iOS."""
+    return "android" in platform or "//platforms:ios_" in platform
+
 def _built_on_host_impl(settings, _attr):
     # The web builds are the same files for any target, and need a Node
     # runtime for the platform they are built for: a binary built for
-    # Android (bazel/android/clax.bzl) takes them as built for the host. On
-    # the host the configuration is left as it is, so nothing is built twice.
-    if any(["android" in str(p) for p in settings[_PLATFORMS]]):
+    # Android (bazel/android/clax.bzl) or a library built for iOS
+    # (bazel/apple/ios_rust.bzl) takes them as built for the host. On the
+    # host the configuration is left as it is, so nothing is built twice.
+    if any([_without_node(str(p)) for p in settings[_PLATFORMS]]):
         return {_PLATFORMS: ["@bazel_tools//tools:host_platform"]}
     return {_PLATFORMS: settings[_PLATFORMS]}
 
