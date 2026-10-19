@@ -990,7 +990,7 @@ impl Sync {
                 if self.lose_answer() {
                     return Err(Stop::Unreachable("the answer was lost".into()));
                 }
-                let rtid = v["thread"]["id"].as_str().map(str::to_string);
+                let rtid = answered_thread(&v);
                 let rcid = v["thread"]["comments"][0]["id"]
                     .as_str()
                     .map(str::to_string);
@@ -1700,6 +1700,15 @@ fn safe_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric())
 }
 
+/// The thread there that the answer `v` to an up-sent thread names, when
+/// its ID is one to put in a path ([`safe_id`]).
+fn answered_thread(v: &Value) -> Option<String> {
+    v["thread"]["id"]
+        .as_str()
+        .filter(|x| safe_id(x))
+        .map(str::to_string)
+}
+
 /// The newest time a public thread view was made, commented on or resolved.
 fn activity(rt: &Value) -> Option<String> {
     let mut at = rt["created_at"].as_str()?.to_string();
@@ -1764,6 +1773,14 @@ mod tests {
         assert!(safe_id("01JABCDEF"));
         assert!(!safe_id("../../etc"));
         assert!(!safe_id(""));
+        let thread = |id: &str| json!({"thread": {"id": id}});
+        assert_eq!(
+            answered_thread(&thread("01JABCDEF")).as_deref(),
+            Some("01JABCDEF")
+        );
+        for bad in ["../x", "a/b", "a?b", "a#b", ""] {
+            assert_eq!(answered_thread(&thread(bad)), None, "{bad}");
+        }
         assert_eq!(
             urlencode("2026-10-15T10:05:00.000Z"),
             "2026-10-15T10%3A05%3A00.000Z"
