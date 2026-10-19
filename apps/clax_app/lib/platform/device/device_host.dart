@@ -12,6 +12,13 @@
 /// app screen's [DeviceView] while the screen shows the app: the screen
 /// stops it ([DeviceHost.stopWatches]) when it leaves, and it does not
 /// start again by itself.
+///
+/// `grant` (any capability but `notify`) asks the person as a call would
+/// and answers only the grant, `{allowed}`, with `precise` and the grid's
+/// `shift` for location: on iOS the shell makes camera, files, share and
+/// location calls through WebKit itself (`web/shell/src/caps/webkit.ts`),
+/// so a host there has no [share], [files], [camera] or [location] port,
+/// and a call that would need one answers `unavailable`.
 library;
 
 import 'dart:async';
@@ -97,10 +104,10 @@ class DeviceHost {
     required this.grants,
     required this.consent,
     required this.reminders,
-    required this.share,
-    required this.files,
-    required this.camera,
-    required this.location,
+    this.share,
+    this.files,
+    this.camera,
+    this.location,
     math.Random? random,
     Clock? clock,
   }) : _random = random ?? math.Random.secure(),
@@ -109,10 +116,18 @@ class DeviceHost {
   final DeviceGrants grants;
   final DeviceConsent consent;
   final Reminders reminders;
-  final SharePort share;
-  final FilesPort files;
-  final CameraPort camera;
-  final LocationPort location;
+
+  /// The native ports; null where WebKit serves the capability (iOS).
+  final SharePort? share;
+  final FilesPort? files;
+  final CameraPort? camera;
+  final LocationPort? location;
+
+  static T _port<T>(T? p, String cap) =>
+      p ??
+      (throw DeviceError.unavailable(
+        '$cap runs through the web view here; the app has no native $cap',
+      ));
 
   /// Draws the install's grid shift, the first time it is needed.
   final math.Random _random;
@@ -220,6 +235,8 @@ class DeviceHost {
     switch ((r.cap, r.method)) {
       case ('location', 'watch'):
         return _watch(aid, arg, view);
+      case (_, 'grant'):
+        return _grant(aid, r.cap);
       case ('location', 'unwatch'):
         return {'stopped': view != null && _unwatch(view, arg)};
     }
@@ -240,12 +257,14 @@ class DeviceHost {
         if (arg is! String || arg.isEmpty) {
           throw const DeviceError.badRequest('text takes a non-empty string');
         }
-        return {'shared': await share.text(arg)};
+        return {'shared': await _port(share, 'share').text(arg)};
       case ('share', 'file'):
         final f = _file(arg);
-        return {'shared': await share.file(f.name, f.mime, f.data)};
+        return {
+          'shared': await _port(share, 'share').file(f.name, f.mime, f.data),
+        };
       case ('file', 'pick'):
-        final picked = await files.pick(_extensions(arg));
+        final picked = await _port(files, 'file').pick(_extensions(arg));
         if (picked == null) {
           throw const DeviceError.cancelled('no file was picked');
         }
@@ -259,11 +278,12 @@ class DeviceHost {
         };
       case ('file', 'save'):
         final f = _file(arg);
-        return {'saved': await files.save(f.name, f.mime, f.data)};
+        return {
+          'saved': await _port(files, 'file').save(f.name, f.mime, f.data),
+        };
       case ('camera', 'take' || 'pick'):
-        final p = r.method == 'take'
-            ? await camera.take()
-            : await camera.pick();
+        final c = _port(camera, 'camera');
+        final p = r.method == 'take' ? await c.take() : await c.pick();
         if (p == null) {
           throw const DeviceError.cancelled('no photo was taken or picked');
         }
@@ -276,7 +296,8 @@ class DeviceHost {
       case ('location', 'current'):
         final p = decision.precision ?? Precision.precise;
         final grid = await _grid();
-        return _fixJson(_shown(await location.current(p), p, grid));
+        final fix = await _port(location, 'location').current(p);
+        return _fixJson(_shown(fix, p, grid));
     }
     throw DeviceError(
       'capability_removed',
@@ -286,11 +307,32 @@ class DeviceHost {
 
   static const _methods = {
     'notify': ['schedule', 'cancel', 'list'],
-    'share': ['text', 'file'],
-    'file': ['pick', 'save'],
-    'camera': ['take', 'pick'],
-    'location': ['current', 'watch', 'unwatch'],
+    'share': ['text', 'file', 'grant'],
+    'file': ['pick', 'save', 'grant'],
+    'camera': ['take', 'pick', 'grant'],
+    'location': ['current', 'watch', 'unwatch', 'grant'],
   };
+
+  /// `cap.grant()`: the person's answer for app [aid], asked as a call of
+  /// [cap] would ask it, and nothing made. `{allowed: false}` for Don't
+  /// allow; for location `precise` and the install's grid `shift`
+  /// (`[lat, lon]`), which the shell snaps an approximate fix on.
+  Future<Object?> _grant(String aid, String cap) async {
+    final DeviceDecision d;
+    try {
+      d = await _allow(aid, cap);
+    } on DeviceError catch (e) {
+      if (e.code == 'not_granted') return {'allowed': false};
+      rethrow;
+    }
+    if (cap != 'location') return {'allowed': true};
+    final grid = await _grid();
+    return {
+      'allowed': true,
+      'precise': (d.precision ?? Precision.precise) == Precision.precise,
+      'shift': [grid.offsetLat, grid.offsetLon],
+    };
+  }
 
   static void _checkMethod(DeviceRequest r) {
     if (!(_methods[r.cap]?.contains(r.method) ?? false)) {
@@ -405,6 +447,7 @@ class DeviceHost {
         'at most $maxWatches location watches at once',
       );
     }
+    final port = _port(location, 'location');
     final w = _Watch(id, aid);
     view._watches[id] = w;
     (_views[aid] ??= {}).add(view);
@@ -415,7 +458,7 @@ class DeviceHost {
         ..phase = _Phase.starting
         ..precision = d.precision ?? Precision.precise
         ..grid = await _grid();
-      final stream = await location.watch(w.precision, minDistance: distance);
+      final stream = await port.watch(w.precision, minDistance: distance);
       if (w.cancelled || !await view.shown() || w.cancelled) {
         throw const DeviceError('stopped', _stoppedMessage);
       }
@@ -606,7 +649,8 @@ class DeviceHost {
   /// Opens the system settings that clear a location error [code]: the
   /// device's location switch for `location_off`, Clax's own permissions
   /// otherwise.
-  Future<void> openLocationSettings(String code) => location.openSettings(
+  Future<void> openLocationSettings(String code) async =>
+      location?.openSettings(
     code == 'location_off'
         ? LocationSettingsPage.location
         : LocationSettingsPage.app,

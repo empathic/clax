@@ -27,4 +27,22 @@ export const deviceLink: {
   call: ((cap: LinkedCap, method: string, args: unknown[]) => Promise<unknown>) | null;
   home?: (() => Promise<boolean>) | undefined;
   events: Set<(e: unknown) => void>;
-} = { call: null, events: new Set() };
+  platform: Platform | null;
+  hidden: Set<() => void>;
+} = { call: null, events: new Set(), platform: null, hidden: new Set() };
+
+/** The app's platform, as its `init` names it; set with `call`, null when
+ * the app names none. On `"ios"` the shell makes `camera`, `file`, `share`
+ * and `location` calls through WebKit itself (caps/webkit.ts), asking the
+ * app only for the grant. */
+export type Platform = "ios" | "android" | "macos";
+export const PLATFORMS: readonly Platform[] = ["ios", "android", "macos"];
+
+/** The app's answer to `call(cap, "grant", [])` (a device capability but
+ * `notify`): whether the person allows app `cap`, asking them the first
+ * time as any call would (a dismissed question rejects `dismissed`). For
+ * `location`, `precise` says Precise or Approximate, and `shift` is the
+ * install's grid shift (`[lat, lon]`, fractions of a cell) that an
+ * approximate fix is snapped on (caps/coarsen.ts). `hidden` hears the app
+ * stop showing the view (`setVisible(false)`). */
+export type Grant = { allowed: boolean; precise?: boolean; shift?: [number, number] };

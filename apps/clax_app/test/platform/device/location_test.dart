@@ -236,6 +236,25 @@ void main() {
       final b = Coarsener(offsetLat: 0.6, offsetLon: 0.6).coarsen(f);
       expect((a.lat, a.lon), isNot((b.lat, b.lon)));
     });
+
+    // The same three points, shifts and answers as the shell's port
+    // (web/shell/src/caps/device.test.ts, "coarsens as the app does"): the
+    // two must agree cell for cell.
+    test('coarsens the shared fixture as the shell does', () {
+      final fixture = [
+        (51.5007, -0.1246, 12.0, 0.3, 0.7, (51.504, -0.134948, 2000.0)),
+        (-33.8568, 151.2153, 3500.4, 0.9, 0.1, (-33.848, 151.216445, 3500.0)),
+        (-16.5, 179.999, 40.0, 0.25, 0.75, (-16.495, -179.996885, 2000.0)),
+      ];
+      for (final (lat, lon, acc, sLat, sLon, want) in fixture) {
+        final f = Coarsener(
+          offsetLat: sLat,
+          offsetLon: sLon,
+        ).coarsen(LocationFix(lat, lon, acc, precise: true));
+        expect((f.lat, f.lon, f.accuracy), want, reason: '($lat, $lon)');
+        expect(f.precise, false);
+      }
+    });
   });
 
   group('watch', () {

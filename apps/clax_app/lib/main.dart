@@ -224,10 +224,12 @@ Future<AppServices> platformServices({DateTime? launched}) async {
         PluginNotifier(notifications),
         file: File('${support.path}/device-reminders.json'),
       ),
-      share: PluginShare(),
-      files: PluginFiles(),
-      camera: PluginCamera(),
-      location: PluginLocation(),
+      // On iOS the shell makes these through WebKit, asking only the
+      // grant (`web/shell/src/caps/webkit.ts`).
+      share: Platform.isIOS ? null : PluginShare(),
+      files: Platform.isIOS ? null : PluginFiles(),
+      camera: Platform.isIOS ? null : PluginCamera(),
+      location: Platform.isIOS ? null : PluginLocation(),
     ),
     pendingMake: PendingMake(File('${support.path}/pending-make.json')),
     bundleKey: BundleKey(FlutterBundleSeedStorage()),

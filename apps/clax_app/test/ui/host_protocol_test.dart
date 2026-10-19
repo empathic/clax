@@ -214,6 +214,11 @@ void main() {
         const Init('n', visible: false).toJs(),
         contains('("n",false,200)'),
       );
+      // The app's platform rides on init, when it names one.
+      expect(
+        const Init('n', visible: true, platform: 'ios').toJs(),
+        contains('h.init({nonce:n,platform:"ios"});'),
+      );
       expect(
         const SetVisible(false).toJs(),
         '(function(v){window.__claxHostVisible=v;var h=window.claxHost;'
@@ -348,6 +353,14 @@ void main() {
         );
       },
     );
+
+    test('the session hands its platform to every init', () {
+      final s = ShellSession(base, platform: 'ios');
+      s.documentStarted(shell);
+      expect(s.documentLoaded(shell)!.platform, 'ios');
+      final none = ShellSession(base)..documentStarted(shell);
+      expect(none.documentLoaded(shell)!.platform, isNull);
+    });
 
     test('each document gets its own nonce, once', () {
       final s = ShellSession(base);

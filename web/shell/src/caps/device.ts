@@ -20,11 +20,18 @@
 // `hostArrival.presses`) newer than the one the last of them used, and newer
 // than the end of a watch (the person stopping it with the app's pill, or
 // leaving the app), so one tap starts at most one.
+//
+// On iOS (the app's `init` names `platform: "ios"`) `share`, `file`,
+// `camera` and `location` go through WebKit in the shell instead
+// (caps/webkit.ts): the app is asked only for the grant (`grant`), and
+// the shell runs the watches itself, ending them with `stopped` when the
+// app stops showing the view. `notify` stays the app's everywhere.
 import { type DeviceCap, type LinkedCap, deviceLink } from "./device-link";
 import { CapError } from "./errors";
 import { frameGesture, hostArrival } from "./gesture";
 import { homeHandler } from "./home";
 import type { HandlerFactory } from "./host";
+import { WEBKIT_CAPS, Watches, webkitCall } from "./webkit";
 
 export const DEVICE_METHODS: Record<DeviceCap, readonly string[]> = {
   notify: ["schedule", "cancel", "list"],
@@ -72,10 +79,23 @@ export function deviceHandler(cap: LinkedCap): HandlerFactory {
       }
     };
     if (cap === "location") deviceLink.events.add(onEvent);
+    // The watches WebKit runs, on iOS.
+    let local: Watches | null = null;
+    const webkitWatches = (call: NonNullable<typeof deviceLink.call>) => local ??= new Watches(
+      call,
+      (page, value) => env.post({ type: "clax:event", ns: "location", topic: "update", data: { watch: page, value } }),
+      (page, code, message) => {
+        spent = hostArrival.presses;
+        env.post({ type: "clax:event", ns: "location", topic: "end", data: { watch: page, code, message } });
+      },
+    );
+    const onHidden = () => { local?.stopAll(true); };
+    if (cap === "location") deviceLink.hidden.add(onHidden);
     /** Stops every watch this document started; the page hears nothing. */
     const stopAll = () => {
       for (const id of watches.keys()) void deviceLink.call?.("location", "unwatch", [{ watch: id }]).catch(() => {});
       watches.clear();
+      local?.stopAll(false);
     };
     return {
       call(method, args) {
@@ -91,6 +111,11 @@ export function deviceHandler(cap: LinkedCap): HandlerFactory {
         if (cap === "location" && method !== "unwatch") {
           if (hostArrival.presses <= spent) return Promise.reject(new CapError("no_gesture", `location.${method} needs a new tap: one tap starts one location call`));
           spent = hostArrival.presses;
+        }
+        if (deviceLink.platform === "ios" && WEBKIT_CAPS.has(cap)) {
+          if (method === "watch") return webkitWatches(call).watch(args[0]);
+          if (method === "unwatch") return Promise.resolve(webkitWatches(call).unwatch((args[0] as { watch?: unknown } | undefined)?.watch));
+          return webkitCall(call, cap, method, args);
         }
         if (method !== "watch" && method !== "unwatch") return call(cap, method, args);
         const a = args[0] as { watch?: unknown; minDistance?: unknown } | undefined;
@@ -114,6 +139,7 @@ export function deviceHandler(cap: LinkedCap): HandlerFactory {
       dispose() {
         stopAll();
         deviceLink.events.delete(onEvent);
+        deviceLink.hidden.delete(onHidden);
       },
     };
   };

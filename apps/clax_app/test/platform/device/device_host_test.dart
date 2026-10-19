@@ -635,6 +635,96 @@ void main() {
     });
   });
 
+  // On iOS the shell makes camera, files, share and location calls through
+  // WebKit; it asks the app only for the grant.
+  group('grant', () {
+    test('asks consent once per app and capability, answers Approximate '
+        'with the grid, and touches no port', () async {
+      final s = setup()..consent.answer = DeviceAnswer.approximate;
+      final r = await s.host.handle(aid, req('location', 'grant'));
+      expect(r.code, isNull);
+      final v = r.value! as Map;
+      expect((v['allowed'], v['precise']), (true, false));
+      final shift = (v['shift'] as List).cast<double>();
+      expect(shift, hasLength(2));
+      expect(shift.every((d) => d >= 0 && d < 1), isTrue);
+      final again = await s.host.handle(aid, req('location', 'grant'));
+      expect(again.value, v);
+      s.consent.answer = DeviceAnswer.allow;
+      expect((await s.host.handle(aid, req('camera', 'grant'))).value, {
+        'allowed': true,
+      });
+      await s.host.handle(aid, req('camera', 'grant'));
+      expect(s.consent.asked, [(aid, 'location'), (aid, 'camera')]);
+      expect(s.location.asked, isEmpty);
+      expect(s.files.asked, isNull);
+      expect(s.share.shared, isEmpty);
+      expect((await s.grants.list(aid))['location']?.precision,
+          Precision.approximate);
+    });
+
+    test('Precise answers precise: true; a refusal answers allowed: false and '
+        'is kept; a dismissal asks again', () async {
+      final s = setup();
+      expect((await s.host.handle(aid, req('location', 'grant'))).value, {
+        'allowed': true,
+        'precise': true,
+        'shift': isA<List<Object?>>(),
+      });
+      s.consent.answer = DeviceAnswer.dismissed;
+      final d = await s.host.handle(aid, req('file', 'grant'));
+      expect(d.code, 'dismissed');
+      s.consent.answer = DeviceAnswer.deny;
+      expect((await s.host.handle(aid, req('file', 'grant'))).value, {
+        'allowed': false,
+      });
+      expect((await s.host.handle(aid, req('file', 'grant'))).value, {
+        'allowed': false,
+      });
+      expect(s.consent.asked, [
+        (aid, 'location'),
+        (aid, 'file'),
+        (aid, 'file'),
+      ]);
+    });
+
+    test('a host with only reminders (iOS) grants, and answers unavailable '
+        'to a call that would need a port', () async {
+      final notifier = FakeNotifier();
+      final host = DeviceHost(
+        grants: MemoryDeviceGrants(),
+        consent: FakeConsent(),
+        reminders: Reminders(notifier, now: () => now),
+      );
+      expect((await host.handle(aid, req('share', 'grant'))).value, {
+        'allowed': true,
+      });
+      for (final (cap, method, args) in [
+        ('share', 'text', <Object?>['hi']),
+        ('file', 'pick', <Object?>[]),
+        ('camera', 'take', <Object?>[]),
+        ('location', 'current', <Object?>[]),
+      ]) {
+        final r = await host.handle(aid, req(cap, method, args));
+        expect(r.code, 'unavailable', reason: '$cap.$method');
+      }
+      final watch = await host.handle(
+        aid,
+        req('location', 'watch', [
+          {'watch': 'w'},
+        ]),
+        view: DeviceView(send: (_) {}, shown: () async => true),
+      );
+      expect(watch.code, 'unavailable');
+    });
+
+    test('notify has no grant method: its calls stay the app\'s', () async {
+      final s = setup();
+      final r = await s.host.handle(aid, req('notify', 'grant'));
+      expect(r.code, 'capability_removed');
+    });
+  });
+
   group('FileDeviceGrants', () {
     late Directory dir;
     setUp(() => dir = Directory.systemTemp.createTempSync('grants'));

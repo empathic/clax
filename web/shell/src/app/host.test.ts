@@ -1847,6 +1847,31 @@ describe("app mode's device link", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(deviceLink.call).toBeNull();
   });
 
+  it("init's platform reaches the device link, and the app hiding the view tells its listeners", async () => {
+    const { deviceLink } = await import("../caps/device-link");
+    const { host, uninstall } = await appView({ init: false });
+    expect(deviceLink.platform).toBeNull();
+    host.init({ nonce: NONCE, platform: "ios" });
+    expect(deviceLink.platform).toBe("ios");
+    let hidden = 0;
+    const f = () => { hidden++; };
+    deviceLink.hidden.add(f);
+    try {
+      host.setVisible(false);
+      host.setVisible(false);
+      host.setVisible(true);
+      expect(hidden).toBe(1);
+    } finally {
+      deviceLink.hidden.delete(f);
+    }
+    uninstall();
+    expect(deviceLink.platform).toBeNull();
+    // An unknown platform, or none, is no platform.
+    const other = await appView({ init: false });
+    other.host.init({ nonce: NONCE, platform: 7 as unknown as string });
+    expect(deviceLink.platform).toBeNull();
+  });
+
   it("openRoute moves the shell's fragment, refusing anything but a short #fragment", async () => {
     const { host } = await appView();
     host.openRoute("#/plants/3");

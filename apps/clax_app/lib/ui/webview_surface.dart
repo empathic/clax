@@ -42,7 +42,7 @@ class WebViewAppSurface implements AppSurface, CapturableSurface {
     Color? background,
     WebViewController? controller,
   }) : controller = controller ?? WebViewController(),
-       _session = ShellSession(base) {
+       _session = ShellSession(base, platform: shellPlatform()) {
     final c = this.controller;
     _loads = CookieLoads(
       keyCookie,
@@ -257,6 +257,12 @@ class WebViewAppSurface implements AppSurface, CapturableSurface {
     _elsewhere.close();
   }
 }
+
+/// The platform the shell is told at `init`: `ios` on iOS, where the
+/// shell makes camera, files, share and location calls through WebKit;
+/// null elsewhere, where the app makes them.
+String? shellPlatform() =>
+    defaultTargetPlatform == TargetPlatform.iOS ? 'ios' : null;
 
 /// What the app view asks of WebKit on iOS: Safari's Web Inspector may
 /// attach in debug and profile builds, never in [release] ones; WebKit's

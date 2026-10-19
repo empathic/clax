@@ -122,7 +122,12 @@
 //   error: {code, message}})`. `home` takes the same way (`device {cap:
 //   "home"}`); the app pushes its changes by `deviceEvent({cap: "home",
 //   name, data})`. The inspect view links nothing, so
-//   there `use()` resolves null for them.
+//   there `use()` resolves null for them. `init({nonce, platform})` names
+//   the app's platform (`"ios"`, `"android"`, `"macos"`; anything else is
+//   none): on iOS `camera`, `file`, `share` and `location` go through
+//   WebKit in the shell, the app asked only for the grant
+//   (`device {method: "grant"}`), and the app hiding the view
+//   (`setVisible(false)`) ends their watches.
 // - `openRoute(hash)` moves the page to a fragment (`#route`), as a
 //   notification's tap asks.
 // Its styles go in with it: the shell links no stylesheet a lazy chunk
@@ -131,7 +136,7 @@ import appCss from "./app.css?inline";
 import { getArtifact, getToken } from "../api";
 import { replayJournal } from "../caps/db";
 import { acceptFromFrame } from "../bridge-link";
-import { type DeviceCall, deviceLink } from "../caps/device-link";
+import { type DeviceCall, deviceLink, PLATFORMS } from "../caps/device-link";
 import { CapError } from "../caps/errors";
 import type { DbJournal } from "../caps/host";
 import { hostArrival } from "../caps/gesture";
@@ -211,7 +216,7 @@ export type Posted = HostMessage & { nonce: string };
 export type ClaxHost = {
   /** Starts the channel with this load's `nonce` (16 to 128 characters of
    * `A-Z a-z 0-9 _ -`); see the protocol above. Only the first valid call counts. */
-  init(p: { nonce: string }): void;
+  init(p: { nonce: string; platform?: string }): void;
   /** Whether the app shows this view (see the protocol above): visible from
    * `init` on unless told otherwise, before or after it. */
   setVisible(visible: boolean): void;
@@ -920,6 +925,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     hostHidden = hidden;
     stream?.pageStream().visibilityChanged();
     visibility.changed();
+    if (hidden) for (const f of [...deviceLink.hidden]) f();
   };
   const host: ClaxHost = {
     setVisible: v => {
@@ -931,6 +937,8 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       const n = p?.nonce;
       if (nonce !== null || typeof n !== "string" || !NONCE.test(n)) return;
       nonce = n;
+      const platform = PLATFORMS.find(x => x === p.platform);
+      if (!inspecting && platform) deviceLink.platform = platform;
       visibleNow(!wanted);
       lastState = "";
       lastClip = null;
@@ -1112,6 +1120,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     if (deviceLink.call === deviceCall) {
       deviceLink.call = null;
       deviceLink.home = undefined;
+      deviceLink.platform = null;
     }
     for (const p of devicePending.values()) p.reject(new CapError("unavailable", "the app closed this view"));
     devicePending.clear();

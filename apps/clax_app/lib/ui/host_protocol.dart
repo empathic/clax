@@ -596,15 +596,27 @@ const _visibleGlobal = 'window.__claxHostVisible';
 /// init: a change made while the host was loading is not lost, and only
 /// the latest applies.
 final class Init extends HostCall {
-  const Init(this.nonce, {required this.visible, this.waitMs = 10000});
+  const Init(
+    this.nonce, {
+    required this.visible,
+    this.waitMs = 10000,
+    this.platform,
+  });
   final String nonce;
   final bool visible;
   final int waitMs;
+
+  /// The app's platform (`ios`, `android`, `macos`), passed to `init` when
+  /// given: on `ios` the shell makes camera, files, share and location
+  /// calls through WebKit, asking the app only for the grant.
+  final String? platform;
+
   @override
   String toJs() =>
       '(function(n,v,t){$_visibleGlobal=v;'
       'function f(){var h=window.claxHost;'
-      'if(h&&typeof h.init==="function"){h.init({nonce:n});'
+      'if(h&&typeof h.init==="function"){h.init({nonce:n'
+      '${platform == null ? '' : ',platform:${jsString(platform!)}'}});'
       'if(typeof h.setVisible==="function")'
       'h.setVisible($_visibleGlobal);return}'
       'if(t-->0)setTimeout(f,50)}f()})'
@@ -874,11 +886,14 @@ final class AttestPointer extends HostCall {
 /// - `claxHost` is called only in a shell document that was handed its
 ///   nonce ([canCall]).
 class ShellSession {
-  ShellSession(this.base, {Random? random})
+  ShellSession(this.base, {Random? random, this.platform})
     : _random = random ?? Random.secure();
 
   /// The daemon's base URL (`http://127.0.0.1:<port>`).
   final Uri base;
+
+  /// The platform each [Init] names ([Init.platform]).
+  final String? platform;
   final Random _random;
   String? _nonce;
   var _shell = false;
@@ -955,7 +970,7 @@ class ShellSession {
     final n = [for (final b in bytes) b.toRadixString(16).padLeft(2, '0')]
         .join();
     _nonce = n;
-    return Init(n, visible: _visible);
+    return Init(n, visible: _visible, platform: platform);
   }
 
   /// The app shows the page ([visible]) or not: the call telling the
