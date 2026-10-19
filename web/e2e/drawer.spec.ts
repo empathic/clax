@@ -266,7 +266,8 @@ test("floating, the window leaves the pins clear by default, and the composer ke
   await page.getByRole("button", { name: "Float threads over the page" }).click();
   const pin = page.locator("button.thread-pin").first();
   await expect(pin).toBeVisible();
-  expect(overlaps(await box(pin), await box(drawer(page)))).toBe(false);
+  // The pin is placed again once the stage has its floating width.
+  await expect.poll(async () => overlaps(await box(pin), await box(drawer(page)))).toBe(false);
   // Comment on the second heading: the composer opens beside the window, which stays above it.
   await page.getByRole("button", { name: "Comment", exact: true }).click();
   await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
