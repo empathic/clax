@@ -50,7 +50,7 @@
     .md li + li { margin-top: .15em; }
     .md li > :is(ul, ol) { margin: .15em 0 0; }
     .md li.task { list-style: none; }
-    .md li.task > input { width: 13px; height: 13px; margin: 0 6px 0 -1.25em; vertical-align: -1px; accent-color: var(--accent); }
+    .md li.task > input { width: 13px; height: 13px; min-height: 0; padding: 0; margin: 0 6px 0 -1.25em; vertical-align: -2px; accent-color: var(--accent); }
     .md blockquote { margin: .5em 0; padding: 0 0 0 10px; border-left: 2px solid var(--border-strong); color: var(--muted); }
     .md hr { margin: .7em 0; border: 0; border-top: 1px solid var(--border); }
     .md a { color: var(--accent-ink); text-decoration: underline; text-underline-offset: 2px; }
