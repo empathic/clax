@@ -1049,6 +1049,46 @@ installed** (the app in `target/ios-spike/app` runs as is):
 - the time to first page on a simulator.
 Phase 2 starts by running these.
 
+**Run on the simulator, 2026-10-19:** "Clax iPhone" (iPhone 17, iOS 26.5
+(23F77)). The as-built app (`target/ios-spike/app/build-sim`) ran first; the
+harness then gained a scene delegate, a `localhost` and a `spike.localhost`
+load, a framed-picker page and a reload on `sceneWillEnterForeground`, and
+was relinked with `swiftc` against the same `libclaxffi.a`. Logs and
+screenshots are under `target/ios/spike-run/` and `target/ios/shots/`.
+1. **ATS loopback: yes.** With only `NSAllowsLocalNetworking`,
+   `http://127.0.0.1:<port>/healthz` and `http://localhost:<port>/healthz`
+   answered 200 with the app's own PID.
+2. **Local network prompt: none** in the screenshots of the first launch
+   (`spike-healthz.png`) or of the framed page, with no
+   `NSLocalNetworkUsageDescription`. The simulator is not known to enforce
+   local network privacy, so the release device build still checks it
+   (Group B).
+3. **`*.localhost`: WebKit resolves it, but ATS blocks it under
+   `NSAllowsLocalNetworking` alone.** `http://spike.localhost:<port>/
+   healthz` failed with `NSURLErrorDomain -1022` ("App Transport Security
+   policy requires the use of a secure connection"), contrary to §2.9. With
+   `NSExceptionDomains` › `localhost` › `NSIncludesSubdomains` and
+   `NSExceptionAllowsInsecureHTTPLoads` added, the same URL answered 200
+   from the daemon, and a frame at `http://spike.localhost:<other port>/`
+   loaded (its server logged `Host: spike.localhost:<port>`). Which ATS key
+   the app ships is the owner's call (record on §2.9).
+4. **A gesture in a cross-origin frame opens a picker in the top document:
+   yes.** An XCUITest tap on a button in the `spike.localhost` frame posted
+   a message to the `127.0.0.1` parent, which logged
+   `navigator.userActivation.isActive` true and called `input.click()` on
+   an `<input type=file>`; iOS showed its file menu (Photo Library, Take
+   Photo or Video, Choose File) at once (`spike-picker.png`).
+5. **The listener after a background cycle: answered.** With Settings in
+   front, `curl` to the daemon timed out (the app suspended). Brought back
+   after 72 s, the same process (same PID and port, `clax_state` 2) reloaded
+   `/healthz` with 200 in 0.4 s. The simulator suspends but did not reclaim
+   the socket; a reclaimed listener is still for a device (§2.4).
+6. **Time to first page:** `clax_start(0)` returned the port in 12–71 ms
+   (157 ms, measured from launch, on the first launch after install).
+   `/healthz` finished loading 2.13 s after launch on that first launch
+   (WebKit's processes starting cold) and 1.10–1.79 s on the five launches
+   after.
+
 ## 12. Phases
 
 Each phase ends with something to see or run. The iOS UI phases follow the
