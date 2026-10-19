@@ -12,6 +12,9 @@ import UserNotifications
     // the app delegate, which forwards to the plugins: every notification
     // the app posts goes through that one plugin.
     UNUserNotificationCenter.current().delegate = self as? UNUserNotificationCenterDelegate
+    #if DEBUG
+    PromptProbe.askIfLaunchedTo()
+    #endif
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 

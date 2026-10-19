@@ -64,6 +64,25 @@
             </dict>
         </dict>
     </dict>
+    <!-- The words under each permission prompt. Camera, photos and
+         location are asked for by an app made in Clax (through Clax's own
+         grant first); the microphone and speech recognition by Clax's
+         dictation, for a request or a comment. -->
+    <key>NSCameraUsageDescription</key>
+    <string>An app you made in Clax can take a photo when you let it.</string>
+    <key>NSLocationTemporaryUsageDescriptionDictionary</key>
+    <dict>
+        <key>precise</key>
+        <string>This app asked for your precise location.</string>
+    </dict>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>An app you made in Clax can use your location when you let it.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Clax listens while you speak a request or a comment.</string>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>An app you made in Clax can use a photo you pick.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Clax turns what you say into text for your request or comment.</string>
     <key>UIApplicationSceneManifest</key>
     <dict>
         <key>UIApplicationSupportsMultipleScenes</key>

@@ -10,11 +10,15 @@
 # App Transport Security's loopback keys (NSAllowsLocalNetworking, and
 # localhost with its subdomains as an exception domain) and no arbitrary
 # loads, no full-screen requirement and no background modes, and the .clax
-# document type (dev.empathic.clax.bundle, exported, copied in). The bundle
-# must hold Flutter's two frameworks and the home bundle HOME_BUNDLE (the
-# one //apps/clax_app:home_bundle built) in Flutter's assets. The main
-# binary must be built for the iOS simulator (platform 7) at minos
-# $IOS_MINIMUM_OS, export the daemon's four C functions and hold the
+# document type (dev.empathic.clax.bundle, exported, copied in), and the
+# words of each permission prompt the plugins can raise (camera, photos,
+# microphone, speech recognition, location and precise location). The
+# bundle must hold Flutter's two frameworks, objective_c's (path_provider's
+# FFI), the privacy manifest of each plugin that ships one, and the home
+# bundle HOME_BUNDLE (the one //apps/clax_app:home_bundle built) in
+# Flutter's assets. The main binary must be built for the iOS simulator
+# (platform 7) at minos $IOS_MINIMUM_OS, export the daemon's four C
+# functions, register every plugin with a native iOS half, and hold the
 # background channel's name and its tasks' names, and the bundles
 # channel's. Every object of each STATIC_LIB that names an iOS must name one
 # no newer than $IOS_MINIMUM_OS, so a mismatch fails here rather than
@@ -67,8 +71,23 @@ for t in '"public.filename-extension":["clax"]' '"public.mime-type":["applicatio
     if grep -qF "$t" <<<"$tags"; then ok "dev.empathic.clax.bundle's tag $t"; else bad "dev.empathic.clax.bundle's tag $t: UTTypeTagSpecification is '$tags'"; fi
 done
 want LSSupportsOpeningDocumentsInPlace false "a .clax is copied in, not opened in place"
-for f in Frameworks/App.framework Frameworks/Flutter.framework; do
+# The permission prompts: iOS shows each string under its question, and
+# ends the app on a request whose key is missing.
+want NSCameraUsageDescription "An app you made in Clax can take a photo when you let it." "the camera prompt's words"
+want NSPhotoLibraryUsageDescription "An app you made in Clax can use a photo you pick." "the photos prompt's words"
+want NSMicrophoneUsageDescription "Clax listens while you speak a request or a comment." "the microphone prompt's words"
+want NSSpeechRecognitionUsageDescription "Clax turns what you say into text for your request or comment." "the speech recognition prompt's words"
+want NSLocationWhenInUseUsageDescription "An app you made in Clax can use your location when you let it." "the location prompt's words"
+want NSLocationTemporaryUsageDescriptionDictionary.precise "This app asked for your precise location." "the precise location prompt's words"
+for f in Frameworks/App.framework Frameworks/Flutter.framework Frameworks/objective_c.framework; do
     if [ -d "$app/$f" ]; then ok "$f"; else bad "$f"; fi
+done
+# Each plugin's privacy manifest, at the bundle's root under a name that
+# keeps its package (rules_flutter's flutter_ios_privacy_manifests).
+for p in file_picker flutter_local_notifications flutter_secure_storage flutter_timezone \
+    geolocator image_picker package_info_plus share_plus webview_flutter; do
+    m="$(find "$app" -maxdepth 1 -name "*_pub__${p}_*PrivacyInfo.xcprivacy" | head -1)"
+    if [ -n "$m" ] && plutil -lint -s "$m"; then ok "$p's privacy manifest"; else bad "$p's privacy manifest"; fi
 done
 assets="$app/Frameworks/App.framework/flutter_assets/assets/home"
 if cmp -s "$assets/home.clax" "$home"; then ok "the home bundle built from the sources"; else bad "the home bundle built from the sources ($assets/home.clax and $home)"; fi
@@ -81,8 +100,15 @@ if [ -f "$bin" ]; then
     for s in _clax_start _clax_stop _clax_state _clax_trim_memory; do
         if grep -qx "$s" <<<"$exported"; then ok "the binary has $s"; else bad "the binary has $s"; fi
     done
-    # ios/Runner/Background.swift: its channel and its two background tasks.
     texts="$(strings -a "$bin")"
+    # The registrant rules_flutter generates: one registrar per plugin with
+    # a native iOS half (path_provider's is FFI, through objective_c).
+    for p in FilePickerPlugin FlutterLocalNotificationsPlugin FlutterSecureStorageDarwinPlugin \
+        FlutterTimezonePlugin GeolocatorPlugin FPPPackageInfoPlusPlugin FLTImagePickerPlugin \
+        FPPSharePlusPlugin SpeechToTextPlugin WebViewFlutterPlugin; do
+        if grep -qxF "$p" <<<"$texts"; then ok "the plugin $p is registered"; else bad "the plugin $p is registered"; fi
+    done
+    # ios/Runner/Background.swift: its channel and its two background tasks.
     # ios/Runner/BundleIntake.swift: the bundles channel.
     for t in dev.empathic.clax/background "Clax trim" "Clax run" dev.empathic.clax/bundles; do
         if grep -qxF "$t" <<<"$texts"; then ok "the binary holds \"$t\""; else bad "the binary holds \"$t\""; fi
