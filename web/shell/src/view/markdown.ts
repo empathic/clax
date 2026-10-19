@@ -111,7 +111,8 @@ function inline(ns: Node[], inLink = false): Inline[] {
       case "link_open": {
         const kids = inline(c, true);
         const href = inLink ? null : safeHref(attr(t, "href"));
-        if (href) out.push({ t: "link", href, c: kids });
+        // A link with no text (`[](…)`) is named by its address, never hidden.
+        if (href) out.push({ t: "link", href, c: inlineText(kids).trim() ? kids : [{ t: "text", v: href }] });
         else put(kids);
         break;
       }

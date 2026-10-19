@@ -123,6 +123,12 @@ describe("parse: untrusted text stays text", () => {
     expect(plain(make(8000)).trim()).not.toBe("");
   });
 
+  it("names a link with no text by its address", () => {
+    for (const src of ["[](https://example.com/x)", "[ ](https://example.com/x)", "[![](https://example.com/x)](https://example.com/x)"]) {
+      expect(render(src).querySelector("a")?.textContent, src).toBe("https://example.com/x");
+    }
+  });
+
   it("shows a link reference definition as its text, hiding none of it", () => {
     expect(render("[//]: # (only the agent reads this)\n\nHello").textContent).toBe("[//]: # (only the agent reads this)Hello");
     expect(plain("[x]: https://example.com \"t\"\n\nsee [x]")).toBe("[x]: https://example.com \"t\"\nsee [x]");
