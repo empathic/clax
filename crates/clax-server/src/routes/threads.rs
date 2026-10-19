@@ -32,6 +32,7 @@ use clax_http::viewer::{SameOrigin, acting_viewer, author};
 use clax_http::views::thread::{VisFor, thread_event_views};
 use clax_realtime::feedback::apply;
 use clax_store::batches::SendBatch;
+use clax_store::linked::{CommentKey, Keyed};
 use clax_store::threads::{
     AUTHOR_AGENT, AUTHOR_VIEWER, DEFAULT_THREAD_PAGE, NewComment, NewThread, clip_problem,
 };
@@ -621,8 +622,12 @@ pub(crate) fn resolve_named(
 /// Creates the thread `t` on `id`, sends it when its body mentions
 /// `@agent` or a live agent's `@name` (unless the page wrote it), publishes
 /// the `thread` event, and returns the thread and the `@name`s that reached
-/// no agent. Both are recorded under `audit`.
-pub(crate) async fn create_thread_now(
+/// no agent. Both are recorded under `audit`. An agent token's write keyed
+/// `key` ([`clax_store::Store::create_thread_keyed_async`]) whose key is
+/// recorded already answers what it made, and nothing is written, sent or
+/// announced.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_thread_keyed_now(
     st: &Store,
     ctx: &clax_realtime::feedback::FeedbackCtx,
     audit: &AuditCtx,
@@ -630,11 +635,27 @@ pub(crate) async fn create_thread_now(
     t: NewThread,
     live_page: bool,
     hidden: &[String],
-) -> clax_core::Result<(Thread, Vec<String>)> {
+    key: Option<CommentKey<'_>>,
+) -> clax_core::Result<Keyed<(Thread, Vec<String>)>> {
     let mention = !t.via_page && mentions_agent(&t.body);
     let named = (!t.via_page).then(|| t.body.clone());
-    let thread = st.create_thread_hiding_async(audit, id, t, hidden).await?;
+    let thread = match st
+        .create_thread_keyed_async(audit, id, t, hidden, key)
+        .await?
+    {
+        Keyed::Made(t) => t,
+        Keyed::Before {
+            thread_id,
+            comment_id,
+        } => {
+            return Ok(Keyed::Before {
+                thread_id,
+                comment_id,
+            });
+        }
+    };
     announce_new_thread(st, ctx, audit, thread, mention, named.as_deref(), live_page)
+        .map(Keyed::Made)
 }
 
 /// What follows writing a new thread: sends it to the agent when its first
@@ -873,7 +894,10 @@ pub async fn create(
             if !via_page {
                 check_named_reads(st, &id, text.as_deref().unwrap_or_default(), live_page)?;
             }
-            let (thread, unresolved) = create_thread_now(
+            // The key is checked again, and recorded, in the thread's own
+            // transaction: a resend that raced the check above answers the
+            // thread the first made.
+            let made = create_thread_keyed_now(
                 st,
                 &ctx,
                 &audit,
@@ -889,11 +913,13 @@ pub async fn create(
                 },
                 live_page,
                 &hidden,
+                key.as_ref().map(|(g, k)| (g.as_str(), k.as_str())),
             )
             .await?;
-            if let (Some((grant, k)), Some(first)) = (&key, thread.comments.first()) {
-                st.record_comment_key(grant, k, &thread.id, &first.id)?;
-            }
+            let (thread, unresolved) = match made {
+                Keyed::Made(made) => made,
+                Keyed::Before { thread_id, .. } => (thread_of(st, &id, &thread_id)?, Vec::new()),
+            };
             let view = vis.filter_thread(st, &thread, ctx.codex_push(), with_path)?;
             Ok((view, unresolved))
         })
@@ -1066,6 +1092,28 @@ pub async fn comment(
             let was_resolved = t.status == "resolved";
             let mut touched = Touched::default();
             let mut unresolved = Vec::new();
+            // The key is checked again, and recorded, in the comment's own
+            // transaction: a resend that raced the check above answers the
+            // comment the first made, and nothing else is done.
+            let key = key.as_ref().map(|(g, k)| (g.as_str(), k.as_str()));
+            let before = |ktid: String, cid: String| -> clax_core::Result<Outcome> {
+                if ktid != tid {
+                    return Err(CoreError::invalid(
+                        "invalid_args",
+                        "this Idempotency-Key made a comment on another thread",
+                    ));
+                }
+                let t = thread_of(st, &id, &tid)?;
+                let c = t
+                    .comments
+                    .iter()
+                    .find(|c| c.id == cid)
+                    .ok_or(CoreError::NotFound)?;
+                Ok(Outcome::Done(json!({
+                    "comment": vis.filter_comment(&aid, c),
+                    "thread": vis.filter_thread(st, &t, ctx.codex_push(), with_path)?,
+                })))
+            };
             let c = if agent {
                 let sess = agent_session(st, &session, grant.as_deref())?;
                 if !t.sent_to_agent {
@@ -1082,12 +1130,20 @@ pub async fn comment(
                 };
                 // Another live agent's thread refuses the reply (409
                 // `thread_taken`); an unowned one becomes this agent's.
-                let (c, took) = st.add_agent_reply(
+                let (c, took) = st.add_agent_reply_keyed(
                     &audit,
                     &tid,
                     reply,
                     addressed.then_some((&id, sess.harness.as_str())),
+                    key,
                 )?;
+                let c = match c {
+                    Keyed::Made(c) => c,
+                    Keyed::Before {
+                        thread_id,
+                        comment_id,
+                    } => return before(thread_id, comment_id),
+                };
                 touched.merge(took);
                 let seen = clax_store::visibility::Visibility::for_session(st, &sess.id)?;
                 let may = |x: &clax_core::model::Artifact| reads.allows(x);
@@ -1111,7 +1167,7 @@ pub async fn comment(
                 }
                 let audit = audit.resolve(st)?;
                 let (name, author_public_id) = author(st, &who)?;
-                let c = st.add_comment(
+                let c = match st.add_comment_keyed(
                     &audit,
                     &tid,
                     NewComment {
@@ -1122,7 +1178,14 @@ pub async fn comment(
                         body: b.body,
                         via_page: b.via_page,
                     },
-                )?;
+                    key,
+                )? {
+                    Keyed::Made(c) => c,
+                    Keyed::Before {
+                        thread_id,
+                        comment_id,
+                    } => return before(thread_id, comment_id),
+                };
                 let (named, u) = if c.via_page {
                     (Vec::new(), Vec::new())
                 } else {
@@ -1149,9 +1212,6 @@ pub async fn comment(
                 }
                 c
             };
-            if let Some((grant, k)) = &key {
-                st.record_comment_key(grant, k, &tid, &c.id)?;
-            }
             ctx.events.publish(Event::Comment {
                 artifact_id: aid.clone(),
                 thread_id: tid.clone(),

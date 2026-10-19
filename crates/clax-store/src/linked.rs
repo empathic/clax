@@ -1410,35 +1410,64 @@ impl Store {
     /// On a hosted daemon: the thread and comment that agent token
     /// `grant_id`'s comment or new thread keyed `key` made, if one did.
     pub fn comment_key(&self, grant_id: &str, key: &str) -> Result<Option<(String, String)>> {
-        self.with_read(|c| {
-            Ok(c.query_row(
-                "SELECT thread_id, comment_id FROM comment_keys WHERE grant_id = ?1 AND key = ?2",
-                params![grant_id, key],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?)
-        })
+        self.with_read(|c| comment_key_in(c, (grant_id, key)))
     }
+}
 
-    /// On a hosted daemon: records that agent token `grant_id`'s write
-    /// keyed `key` made comment `cid` on thread `tid`. A key recorded
-    /// already keeps what it made.
-    pub fn record_comment_key(
-        &self,
-        grant_id: &str,
-        key: &str,
-        tid: &str,
-        cid: &str,
-    ) -> Result<()> {
-        self.with_tx(|tx| {
-            tx.execute(
-                "INSERT OR IGNORE INTO comment_keys (grant_id, key, thread_id, comment_id, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![grant_id, key, tid, cid, self.now()],
-            )?;
-            Ok(())
-        })
+/// An agent token's idempotency key for a comment or new thread on a
+/// hosted daemon: its grant ID and the key.
+pub type CommentKey<'a> = (&'a str, &'a str);
+
+/// What a keyed write did: made `T` now, or found the thread and comment
+/// an earlier write under the same key made, and wrote nothing.
+#[derive(Debug)]
+pub enum Keyed<T> {
+    Made(T),
+    Before {
+        thread_id: String,
+        comment_id: String,
+    },
+}
+
+impl<T> Keyed<T> {
+    /// What an unkeyed write made (it has no earlier write to find).
+    pub(crate) fn made(self) -> T {
+        match self {
+            Keyed::Made(t) => t,
+            Keyed::Before { .. } => unreachable!("only a keyed write finds an earlier one"),
+        }
     }
+}
+
+/// The thread and comment that write keyed `key` made, if one did.
+pub(crate) fn comment_key_in(
+    c: &Connection,
+    key: CommentKey<'_>,
+) -> Result<Option<(String, String)>> {
+    Ok(c.query_row(
+        "SELECT thread_id, comment_id FROM comment_keys WHERE grant_id = ?1 AND key = ?2",
+        params![key.0, key.1],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .optional()?)
+}
+
+/// Records, in the transaction that made them, that the write keyed `key`
+/// made comment `cid` on thread `tid` (checked absent first with
+/// [`comment_key_in`] in the same transaction).
+pub(crate) fn record_comment_key_in(
+    tx: &Connection,
+    key: CommentKey<'_>,
+    tid: &str,
+    cid: &str,
+    now: &str,
+) -> Result<()> {
+    tx.execute(
+        "INSERT INTO comment_keys (grant_id, key, thread_id, comment_id, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![key.0, key.1, tid, cid, now],
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1908,15 +1937,90 @@ mod tests {
     }
 
     #[test]
-    fn a_comment_key_keeps_what_it_made() {
+    fn a_keyed_thread_or_comment_is_made_once_with_its_key() {
         let w = world();
+        let id = ArtifactId::parse(&w.aid).unwrap();
+        let new_thread = |version_n| NewThread {
+            author_public_id: None,
+            version_n,
+            anchor: whole(),
+            author_name: "Ada".into(),
+            body: "hi".into(),
+            clip: None,
+            via_page: false,
+        };
+        let key = Some(("g1", "k"));
+        // A write refused records no key: a resend may still make it.
+        assert!(
+            w.st.block_on(w.st.create_thread_keyed_async(
+                &AuditCtx::DAEMON,
+                &id,
+                new_thread(9),
+                &[],
+                key
+            ))
+            .is_err()
+        );
         assert!(w.st.comment_key("g1", "k").unwrap().is_none());
-        w.st.record_comment_key("g1", "k", "t1", "c1").unwrap();
-        w.st.record_comment_key("g1", "k", "t2", "c2").unwrap();
+        let Keyed::Made(t) =
+            w.st.block_on(w.st.create_thread_keyed_async(
+                &AuditCtx::DAEMON,
+                &id,
+                new_thread(1),
+                &[],
+                key,
+            ))
+            .unwrap()
+        else {
+            panic!("made")
+        };
+        let first = t.comments[0].id.clone();
         assert_eq!(
             w.st.comment_key("g1", "k").unwrap(),
-            Some(("t1".into(), "c1".into()))
+            Some((t.id.clone(), first.clone())),
+            "recorded with the thread"
         );
+        // A second write under the key, however late its own check ran,
+        // finds the first and writes nothing.
+        match w
+            .st
+            .block_on(w.st.create_thread_keyed_async(
+                &AuditCtx::DAEMON,
+                &id,
+                new_thread(1),
+                &[],
+                key,
+            ))
+            .unwrap()
+        {
+            Keyed::Before {
+                thread_id,
+                comment_id,
+            } => assert_eq!((thread_id, comment_id), (t.id.clone(), first)),
+            Keyed::Made(_) => panic!("made twice"),
+        }
+        assert_eq!(w.st.list_threads(&id, true, None, 10).unwrap().0.len(), 1);
+        // A comment the same way.
+        let reply = || NewComment {
+            author_kind: AUTHOR_VIEWER,
+            author_name: "Ada".into(),
+            author_public_id: None,
+            via_session_id: None,
+            body: "again".into(),
+            via_page: false,
+        };
+        let Keyed::Made(c) =
+            w.st.add_comment_keyed(&AuditCtx::DAEMON, &t.id, reply(), Some(("g1", "c")))
+                .unwrap()
+        else {
+            panic!("made")
+        };
+        assert!(matches!(
+            w.st.add_comment_keyed(&AuditCtx::DAEMON, &t.id, reply(), Some(("g1", "c")))
+                .unwrap(),
+            Keyed::Before { comment_id, .. } if comment_id == c.id
+        ));
+        assert_eq!(w.st.get_thread(&t.id).unwrap().unwrap().comments.len(), 2);
         assert!(w.st.comment_key("g2", "k").unwrap().is_none());
     }
 
