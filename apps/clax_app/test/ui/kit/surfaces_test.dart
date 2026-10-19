@@ -325,6 +325,54 @@ void main() {
       expect(cancel.right, lessThan(share.left));
       expect(share.right, closeTo(sheet.right - 20, 8));
     });
+
+    testWidgets('in a Mac window it slides from under the 52 pt toolbar '
+        'band, never over it, its default rightmost and on Return', (
+      tester,
+    ) async {
+      window(tester, const Size(1200, 800), top: 52);
+      var shared = 0;
+      await tester.pumpWidget(
+        page(
+          platform: TargetPlatform.macOS,
+          (c) => ClaxSheet.show<void>(
+            c,
+            title: 'Share',
+            builder: (_) => const Text('content'),
+            actions: [
+              ClaxButton(label: 'Cancel', onPressed: () {}),
+              ClaxButton(
+                label: 'Share',
+                kind: ClaxButtonKind.primary,
+                isDefault: true,
+                onPressed: () => shared++,
+              ),
+            ],
+          ),
+        ),
+      );
+      await tester.tap(find.text('Go'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      // Mid-slide: the panel is partly above the band's edge, and what is
+      // drawn of it is clipped there.
+      final sliding = tester.getRect(find.byKey(ClaxSheet.appleSheetKey));
+      expect(sliding.top, lessThan(52));
+      final clip = find.ancestor(
+        of: find.byKey(ClaxSheet.appleSheetKey),
+        matching: find.byType(ClipRect),
+      );
+      expect(tester.getRect(clip.first).top, 52);
+      await tester.pumpAndSettle();
+      final sheet = tester.getRect(find.byKey(ClaxSheet.appleSheetKey));
+      expect(sheet.top, 52);
+      final cancel = tester.getRect(find.text('Cancel'));
+      final share = tester.getRect(find.text('Share').last);
+      expect(cancel.right, lessThan(share.left));
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pumpAndSettle();
+      expect(shared, 1);
+    });
   });
 
   group('ClaxSheet keys and insets', () {

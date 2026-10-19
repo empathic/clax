@@ -26,8 +26,11 @@ abstract final class ClaxSheet {
   /// At compact width it is a modal bottom sheet with top corners
   /// `radius-xl` and a drag handle, never a close button. From medium, the
   /// Material family centres it as a dialog at most 560 wide, and the Apple
-  /// family hangs it from the top of the window, under the toolbar, 560
-  /// wide (within Apple's 480 to 640), sliding down; Escape closes it.
+  /// family hangs it from the top of the window under the toolbar band
+  /// (the top padding, which a Mac window's title bar and toolbar take),
+  /// 560 wide (within Apple's 480 to 640), sliding down from under the
+  /// band over [ClaxMotion.enter] and clipped at its edge; Escape closes
+  /// it.
   ///
   /// The content is laid out in the space left: one that can grow taller
   /// than the window scrolls itself.
@@ -98,16 +101,26 @@ abstract final class ClaxSheet {
           curve: ClaxMotion.decelerate,
           reverseCurve: ClaxMotion.accelerate,
         );
-        if (MediaQuery.disableAnimationsOf(context)) {
-          return FadeTransition(opacity: eased, child: child);
-        }
-        return ClipRect(
-          child: SlideTransition(
-            position: Tween(
-              begin: const Offset(0, -1),
-              end: Offset.zero,
-            ).animate(eased),
-            child: child,
+        // Below the top padding (a Mac window's toolbar band), clipped
+        // there, so the sheet comes out from under the band.
+        final band = MediaQuery.paddingOf(context).top;
+        final below = MediaQuery.removePadding(
+          context: context,
+          removeTop: true,
+          child: child,
+        );
+        return Padding(
+          padding: EdgeInsets.only(top: band),
+          child: ClipRect(
+            child: MediaQuery.disableAnimationsOf(context)
+                ? FadeTransition(opacity: eased, child: below)
+                : SlideTransition(
+                    position: Tween(
+                      begin: const Offset(0, -1),
+                      end: Offset.zero,
+                    ).animate(eased),
+                    child: below,
+                  ),
           ),
         );
       },
@@ -211,49 +224,46 @@ class _AppleSheet extends StatelessWidget {
     );
     return Align(
       alignment: Alignment.topCenter,
-      child: Padding(
-        padding: EdgeInsets.only(top: MediaQuery.paddingOf(context).top),
-        child: ConstrainedBox(
-          key: ClaxSheet.appleSheetKey,
-          constraints: BoxConstraints(
-            minWidth: width,
-            maxWidth: width,
-            maxHeight: size.height * 0.85,
-          ),
-          child: DecoratedBox(
-            decoration: ClaxElevation.of(
-              3,
-              theme.brightness,
-              p,
-              radius: const BorderRadius.vertical(
-                bottom: Radius.circular(ClaxRadius.md),
-              ),
+      child: ConstrainedBox(
+        key: ClaxSheet.appleSheetKey,
+        constraints: BoxConstraints(
+          minWidth: width,
+          maxWidth: width,
+          maxHeight: size.height * 0.85,
+        ),
+        child: DecoratedBox(
+          decoration: ClaxElevation.of(
+            3,
+            theme.brightness,
+            p,
+            radius: const BorderRadius.vertical(
+              bottom: Radius.circular(ClaxRadius.md),
             ),
-            child: Material(
-              type: MaterialType.transparency,
-              child: Padding(
-                padding: const EdgeInsets.all(ClaxSpace.s20),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    if (title != null) ...[
-                      Text(
-                        title!,
-                        style: ClaxType.of(
-                          ClaxRole.headline,
-                          theme.platform,
-                        ).copyWith(color: p.fg),
-                      ),
-                      const SizedBox(height: ClaxSpace.s12),
-                    ],
-                    Flexible(child: child),
-                    if (actions.isNotEmpty) ...[
-                      const SizedBox(height: ClaxSpace.s20),
-                      ClaxActionBar(children: actions),
-                    ],
+          ),
+          child: Material(
+            type: MaterialType.transparency,
+            child: Padding(
+              padding: const EdgeInsets.all(ClaxSpace.s20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (title != null) ...[
+                    Text(
+                      title!,
+                      style: ClaxType.of(
+                        ClaxRole.headline,
+                        theme.platform,
+                      ).copyWith(color: p.fg),
+                    ),
+                    const SizedBox(height: ClaxSpace.s12),
                   ],
-                ),
+                  Flexible(child: child),
+                  if (actions.isNotEmpty) ...[
+                    const SizedBox(height: ClaxSpace.s20),
+                    ClaxActionBar(children: actions),
+                  ],
+                ],
               ),
             ),
           ),
