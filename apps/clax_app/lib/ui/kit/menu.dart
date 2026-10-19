@@ -6,10 +6,11 @@ import '../tokens.g.dart';
 import 'family.dart';
 
 /// One row of a [ClaxMenu]: its [id] (what the menu answers), its [title],
-/// an [icon] where Flutter draws the menu and an SF Symbol name ([symbol])
+/// a [detail] after it in `muted` (such as a choice's model name), an
+/// [icon] where Flutter draws the menu and an SF Symbol name ([symbol])
 /// where the Mac does, a shortcut's label ([key], such as "⌘C", shown in the
-/// Apple family), whether it
-/// is [destructive] (drawn in `danger`) or [enabled]; or a separator.
+/// Apple family), whether it is the current choice ([checked], marked with
+/// a tick), [destructive] (drawn in `danger`) or [enabled]; or a separator.
 class ClaxMenuItem {
   const ClaxMenuItem(
     this.id,
@@ -17,6 +18,8 @@ class ClaxMenuItem {
     this.icon,
     this.symbol,
     this.key,
+    this.detail,
+    this.checked = false,
     this.destructive = false,
     this.enabled = true,
   }) : separator = false;
@@ -27,6 +30,8 @@ class ClaxMenuItem {
       icon = null,
       symbol = null,
       key = null,
+      detail = null,
+      checked = false,
       destructive = false,
       enabled = false,
       separator = true;
@@ -37,7 +42,8 @@ class ClaxMenuItem {
   /// An SF Symbol name.
   final String? symbol;
   final String? key;
-  final bool destructive, enabled, separator;
+  final String? detail;
+  final bool checked, destructive, enabled, separator;
 }
 
 /// A menu of actions on one thing, popped up at it.
@@ -165,6 +171,24 @@ class _AnchoredMenuState extends State<_AnchoredMenu> {
             )
           : null,
     );
+    final iconSize = apple ? 16.0 : 24.0;
+    final ticks = widget.items.any((i) => i.checked);
+    Widget? leading(ClaxMenuItem item) {
+      if (item.checked) return Icon(Icons.check_rounded, size: iconSize);
+      if (item.icon case final icon?) return Icon(icon, size: iconSize);
+      // Rows beside a ticked one keep their titles in its column.
+      return ticks ? SizedBox(width: iconSize) : null;
+    }
+
+    Widget? trailing(ClaxMenuItem item) {
+      final label = (apple ? item.key : null) ?? item.detail;
+      if (label == null) return null;
+      return Padding(
+        padding: const EdgeInsetsDirectional.only(start: ClaxSpace.s16),
+        child: Text(label, style: text.copyWith(color: p.muted)),
+      );
+    }
+
     return Stack(
       children: [
         Positioned.fromRect(
@@ -186,15 +210,8 @@ class _AnchoredMenuState extends State<_AnchoredMenu> {
                   MenuItemButton(
                     closeOnActivate: false,
                     style: style(item),
-                    leadingIcon: item.icon == null
-                        ? null
-                        : Icon(item.icon, size: apple ? 16 : 24),
-                    trailingIcon: item.key == null || !apple
-                        ? null
-                        : Text(
-                            item.key!,
-                            style: text.copyWith(color: p.muted),
-                          ),
+                    leadingIcon: leading(item),
+                    trailingIcon: trailing(item),
                     onPressed: item.enabled ? () => _finish(item.id) : null,
                     child: Text(item.title),
                   ),

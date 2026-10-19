@@ -1,6 +1,9 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../layout.dart';
 import '../theme.dart';
 import '../tokens.g.dart';
 import 'family.dart';
@@ -25,14 +28,17 @@ SystemUiOverlayStyle statusStyleFor(Color under) {
 }
 
 /// A screen: its [title] (with an optional [subtitle] under it), [leading]
-/// and [actions] in the bar, and its [body].
+/// and [actions] in the bar, and its [body], or [slivers] scrolling in one
+/// `CustomScrollView`.
 ///
 /// In the Material family it is a `Scaffold` with an app bar in the page's
 /// colour, the status bar's icons chosen by [statusStyleFor]; with
 /// [largeTitle] the title starts large over the body and collapses into
-/// the bar as the body scrolls. In the Apple family where the window has
-/// its own toolbar ([hasDesktopWindowChrome]), the toolbar carries the
-/// title and the actions once [toolbarCarriesTitle] is set, and the
+/// the bar as the body scrolls, and a 1 px `border` line shows under the
+/// bar while the body is scrolled under it ([slivers] scroll in the same
+/// view as the bar, so none of them starts under it). In the Apple family
+/// where the window has its own toolbar ([hasDesktopWindowChrome]), the
+/// toolbar carries the title and the actions once [toolbarCarriesTitle] is set, and the
 /// scaffold is the content of the window or pane alone; until then a
 /// header at the top of the content shows them, with Back when the route
 /// can be left. On iOS it keeps a bar with the title centred.
@@ -43,18 +49,28 @@ class ClaxScaffold extends StatelessWidget {
     this.subtitle,
     this.actions = const [],
     this.leading,
-    required this.body,
+    this.body,
+    this.slivers,
     this.floatingActionButton,
     this.largeTitle = false,
-  });
+    this.contentWidth,
+  }) : assert(
+         (body == null) != (slivers == null),
+         'a ClaxScaffold takes a body or slivers',
+       );
 
   final String? title;
   final String? subtitle;
   final List<Widget> actions;
   final Widget? leading;
-  final Widget body;
+  final Widget? body;
+  final List<Widget>? slivers;
   final Widget? floatingActionButton;
   final bool largeTitle;
+
+  /// From medium width, [slivers] (with a large title, the title too) keep
+  /// to a centred column at most this wide; null spans the window.
+  final double? contentWidth;
 
   /// Whether the Mac window's toolbar shows each screen's title, Back and
   /// actions; set once it does. Until then a Mac screen draws them in a
@@ -96,21 +112,33 @@ class ClaxScaffold extends StatelessWidget {
 
     final Widget content;
     final PreferredSizeWidget? appBar;
+    final body =
+        this.body ??
+        CustomScrollView(slivers: [for (final s in slivers!) _column(s)]);
+    SliverAppBar large(bool scrolled) => SliverAppBar.large(
+      title: titleWidget,
+      leading: leading,
+      actions: [...actions, const SizedBox(width: 4)],
+      systemOverlayStyle: style,
+      backgroundColor: barColor,
+      surfaceTintColor: Colors.transparent,
+      scrolledUnderElevation: 0,
+      forceElevated: scrolled,
+      bottom: const _ScrolledUnderLine(),
+    );
     if (hasBar && largeTitle && subtitle == null) {
       appBar = null;
-      content = NestedScrollView(
-        headerSliverBuilder: (context, _) => [
-          SliverAppBar.large(
-            title: titleWidget,
-            leading: leading,
-            actions: [...actions, const SizedBox(width: 4)],
-            systemOverlayStyle: style,
-            backgroundColor: barColor,
-            surfaceTintColor: Colors.transparent,
-          ),
-        ],
-        body: body,
-      );
+      content = switch (slivers) {
+        final slivers? => CustomScrollView(
+          slivers: [
+            for (final sliver in [large(false), ...slivers]) _column(sliver),
+          ],
+        ),
+        null => NestedScrollView(
+          headerSliverBuilder: (context, scrolled) => [large(scrolled)],
+          body: body,
+        ),
+      };
     } else {
       appBar = hasBar
           ? AppBar(
@@ -145,6 +173,48 @@ class ClaxScaffold extends StatelessWidget {
         body: content,
         floatingActionButton: floatingActionButton,
       ),
+    );
+  }
+}
+
+extension on ClaxScaffold {
+  /// [sliver] in the centred column [contentWidth] asks for.
+  Widget _column(Widget sliver) {
+    final width = contentWidth;
+    if (width == null) return sliver;
+    return SliverLayoutBuilder(
+      builder: (context, box) {
+        final side = ClaxWidth.of(context) >= ClaxWidth.medium
+            ? max(0.0, (box.crossAxisExtent - width) / 2)
+            : 0.0;
+        return SliverPadding(
+          padding: EdgeInsets.symmetric(horizontal: side),
+          sliver: sliver,
+        );
+      },
+    );
+  }
+}
+
+/// A 1 px line along the bottom of a large-title bar: `border` while
+/// content is under the bar, clear otherwise.
+class _ScrolledUnderLine extends StatelessWidget
+    implements PreferredSizeWidget {
+  const _ScrolledUnderLine();
+
+  @override
+  Size get preferredSize => const Size.fromHeight(1);
+
+  @override
+  Widget build(BuildContext context) {
+    final under =
+        context
+            .dependOnInheritedWidgetOfExactType<FlexibleSpaceBarSettings>()
+            ?.isScrolledUnder ?? false;
+    return ColoredBox(
+      key: const Key('clax-scrolled-under-line'),
+      color: under ? claxPalette(context).border : const Color(0x00000000),
+      child: const SizedBox(height: 1, width: double.infinity),
     );
   }
 }

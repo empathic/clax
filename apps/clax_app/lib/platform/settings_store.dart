@@ -1,18 +1,23 @@
 import 'dart:convert';
 import 'dart:io';
 
-/// A model the person can choose, with the label Settings shows.
+/// A model the person can choose: its [id], the [word] Settings names it
+/// by (Fast, Balanced or Best) and the model's [name].
 class ModelChoice {
-  const ModelChoice(this.id, this.label);
+  const ModelChoice(this.id, this.word, this.name);
   final String id;
-  final String label;
+  final String word;
+  final String name;
+
+  /// [word] with [name], as "Fast (Haiku 5.5)".
+  String get label => '$word ($name)';
 }
 
 /// The models Settings offers, fastest first.
 const modelChoices = [
-  ModelChoice('claude-haiku-5-5', 'Fast (Haiku 5.5)'),
-  ModelChoice('claude-sonnet-5-5', 'Balanced (Sonnet 5.5)'),
-  ModelChoice('claude-opus-5-5', 'Best (Opus 5.5)'),
+  ModelChoice('claude-haiku-5-5', 'Fast', 'Haiku 5.5'),
+  ModelChoice('claude-sonnet-5-5', 'Balanced', 'Sonnet 5.5'),
+  ModelChoice('claude-opus-5-5', 'Best', 'Opus 5.5'),
 ];
 
 /// The model a new install uses until the person picks another. A saved

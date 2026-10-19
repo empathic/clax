@@ -13,6 +13,9 @@ import 'family.dart';
 ///
 /// Apple: [label] above a bordered field, `radius-control-mac`, 13 pt type,
 /// with a ring in the accent while focused.
+///
+/// In both, [helper] (or [error], in `danger`, in its place) sits under the
+/// field and [suffix] at its trailing end.
 class ClaxTextField extends StatelessWidget {
   const ClaxTextField({
     super.key,
@@ -24,6 +27,14 @@ class ClaxTextField extends StatelessWidget {
     this.onSubmitted,
     this.autofocus = false,
     this.focusNode,
+    this.helper,
+    this.error,
+    this.suffix,
+    this.onChanged,
+    this.maxLength,
+    this.keyboardType,
+    this.textCapitalization = TextCapitalization.none,
+    this.autocorrect = true,
   });
 
   final TextEditingController? controller;
@@ -45,6 +56,24 @@ class ClaxTextField extends StatelessWidget {
   final bool autofocus;
   final FocusNode? focusNode;
 
+  /// A line under the field saying what goes in it.
+  final String? helper;
+
+  /// Why the text is refused; shown in place of [helper].
+  final String? error;
+
+  /// Buttons at the field's trailing end, such as Paste.
+  final Widget? suffix;
+  final ValueChanged<String>? onChanged;
+
+  /// The most characters the field takes; no counter is shown.
+  final int? maxLength;
+  final TextInputType? keyboardType;
+  final TextCapitalization textCapitalization;
+
+  /// Whether the keyboard corrects and suggests; off for keys and paths.
+  final bool autocorrect;
+
   @override
   Widget build(BuildContext context) {
     final lines = obscure ? 1 : maxLines;
@@ -61,7 +90,22 @@ class ClaxTextField extends StatelessWidget {
         maxLines: lines,
         minLines: lines == 1 ? null : 1,
         onSubmitted: submit,
-        decoration: InputDecoration(labelText: label, hintText: hint),
+        onChanged: onChanged,
+        maxLength: maxLength,
+        keyboardType: keyboardType,
+        textCapitalization: textCapitalization,
+        autocorrect: autocorrect,
+        enableSuggestions: autocorrect,
+        decoration: InputDecoration(
+          labelText: label,
+          hintText: hint,
+          helperText: helper,
+          helperMaxLines: 3,
+          errorText: error,
+          errorMaxLines: 3,
+          suffixIcon: suffix,
+          counterText: maxLength == null ? null : '',
+        ),
       );
     }
     final p = claxPalette(context);
@@ -92,11 +136,20 @@ class ClaxTextField extends StatelessWidget {
             maxLines: lines,
             minLines: lines == 1 ? null : 1,
             onSubmitted: submit,
+            onChanged: onChanged,
+            maxLength: maxLength,
+            keyboardType: keyboardType,
+            textCapitalization: textCapitalization,
+            autocorrect: autocorrect,
+            enableSuggestions: autocorrect,
             style: text.copyWith(color: p.fg),
             cursorHeight: text.fontSize! + 2,
             decoration: InputDecoration(
               hintText: hint,
               hintStyle: text.copyWith(color: p.muted),
+              counterText: maxLength == null ? null : '',
+              suffixIcon: suffix,
+              suffixIconConstraints: const BoxConstraints(minHeight: 22),
               isDense: true,
               filled: true,
               fillColor: p.card,
@@ -111,6 +164,17 @@ class ClaxTextField extends StatelessWidget {
             ),
           ),
         ),
+        if (error ?? helper case final note?)
+          Padding(
+            padding: const EdgeInsets.only(top: ClaxSpace.s4),
+            child: Text(
+              note,
+              style: ClaxType.of(
+                ClaxRole.callout,
+                theme.platform,
+              ).copyWith(color: error != null ? p.danger : p.muted),
+            ),
+          ),
       ],
     );
   }

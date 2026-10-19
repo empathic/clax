@@ -1351,6 +1351,10 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           fingerprint: _s.bundleKey == null
               ? null
               : () async => (await _s.bundleKey!.existing())?.fingerprint,
+          homeVersion: switch (_s.shippedHome) {
+            final shipped? => () async => (await shipped.release()).release,
+            null => null,
+          },
           home: switch (_homeHost) {
             final host? => HomeScreenControls(
               settings: host.settings,

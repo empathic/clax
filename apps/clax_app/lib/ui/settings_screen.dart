@@ -1,3 +1,5 @@
+import 'dart:math' show Random;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -6,17 +8,28 @@ import '../home/home_recovery.dart';
 import '../home/home_settings.dart';
 import '../platform/secure_key.dart';
 import '../platform/settings_store.dart';
+import '../version.dart';
 import 'developer.dart';
-import 'kit/kit.dart' show ClaxSwitch;
+import 'haiku.dart';
+import 'kit/kit.dart';
 import 'licences.dart';
+import 'theme.dart';
+import 'tokens.g.dart';
 
-/// Settings: the Claude API key, the agent (where `claude -p` can run), the
-/// model, dictation (whether it starts on its own, and its sounds and
-/// vibration), the Claude Code path, sharing (the name bundles carry and
-/// the sharing key's fingerprint), the home screen ([home]), Developer:
-/// the "Developer tools" switch ([AppSettings.developer], which also sets
-/// the [DeveloperScope] above), with the last ten measured timings while
-/// it is on, and About (the licences page, [showClaxLicences]).
+/// Settings, one column of rows at one 16 dp inset under a large title
+/// that collapses as it scrolls, at most `form` wide and centred from
+/// medium width. Its sections, in order:
+/// - Claude: the API key, the agent (where `claude -p` can run, with the
+///   Claude Code path), and the model, a menu of Fast, Balanced and Best;
+/// - Dictation: whether it starts on its own, and its sounds and vibration;
+/// - Sharing: the name bundles carry and the sharing key's fingerprint;
+/// - Home screen ([home]);
+/// - About: Clax's [version], the home screen's ([homeVersion]), the
+///   licences page ([showClaxLicences]) and a haiku, a different one each
+///   visit; a long-press (Option-click on the Mac) shows another;
+/// - Developer: the "Developer tools" switch ([AppSettings.developer],
+///   which also sets the [DeveloperScope] above), with the last ten
+///   measured timings while it is on.
 ///
 /// Every choice is saved to [store] as it is made. The key is saved only
 /// through [secureKey], on Save key, and is never shown back: a saved key
@@ -30,6 +43,10 @@ class SettingsScreen extends StatefulWidget {
     required this.timings,
     this.fingerprint,
     this.home,
+    this.version = claxVersion,
+    this.homeVersion,
+    this.haikus,
+    this.random,
   });
 
   final SettingsStore store;
@@ -49,6 +66,19 @@ class SettingsScreen extends StatefulWidget {
   /// The home screen's section; null shows none.
   final HomeScreenControls? home;
 
+  /// Clax's version, as About shows it.
+  final String version;
+
+  /// The home screen's version (its release), or null to show none.
+  final Future<String?> Function()? homeVersion;
+
+  /// The haikus About picks from; null reads the app's list
+  /// ([loadHaikus]).
+  final Future<List<String>> Function()? haikus;
+
+  /// How About picks its haiku; null is a fresh [Random].
+  final Random? random;
+
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
@@ -62,11 +92,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late final TextEditingController _path = TextEditingController();
   final _name = TextEditingController();
   String? _fingerprint;
+  String? _homeVersion;
+  List<String> _haikus = const [];
+  String? _haiku;
+
+  /// The haiku About showed last, which the next visit does not repeat.
+  static String? _lastHaiku;
 
   @override
   void initState() {
     super.initState();
     _init();
+    _loadHaikus();
   }
 
   Future<void> _init() async {
@@ -83,6 +120,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } catch (_) {
       fingerprint = null;
     }
+    String? homeVersion;
+    try {
+      homeVersion = await widget.homeVersion?.call();
+    } catch (_) {
+      homeVersion = null;
+    }
     if (!mounted) return;
     setState(() {
       _s = s;
@@ -90,8 +133,42 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _path.text = s.claudePath ?? '';
       _name.text = s.authorName ?? '';
       _fingerprint = fingerprint;
+      _homeVersion = homeVersion;
     });
   }
+
+  /// Reads the haikus apart from the settings, so a slow list never holds
+  /// Settings back; About shows its haiku once they are in.
+  Future<void> _loadHaikus() async {
+    // After initState, where the asset bundle can be looked up.
+    await Future<void>.value();
+    if (!mounted) return;
+    final bundle = DefaultAssetBundle.of(context);
+    final List<String> haikus;
+    try {
+      haikus = await (widget.haikus?.call() ?? loadHaikus(bundle));
+    } on Object {
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _haikus = haikus;
+      _haiku = _pick(_lastHaiku);
+      _lastHaiku = _haiku;
+    });
+  }
+
+  /// A haiku other than [not] where there is another; null with none.
+  String? _pick(String? not) {
+    if (_haikus.isEmpty) return null;
+    final others = [for (final h in _haikus) if (h != not) h];
+    return pickHaiku(
+      others.isEmpty ? _haikus : others,
+      random: widget.random,
+    );
+  }
+
+  void _anotherHaiku() => setState(() => _lastHaiku = _haiku = _pick(_haiku));
 
   @override
   void dispose() {
@@ -157,232 +234,253 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final s = _s;
-    return Scaffold(
-      appBar: AppBar(title: const Text('Settings')),
-      body: s == null
-          ? const SizedBox.shrink()
-          : ListView(
-              padding: const EdgeInsets.only(bottom: 32),
-              children: [
-                const _Header('Agent'),
-                _keyTile(context),
-                if (widget.cliSupported) ...[
-                  RadioGroup<String>(
-                    groupValue: s.backend == backendClaudeCli
-                        ? backendClaudeCli
-                        : backendMessagesApi,
-                    onChanged: (v) {
-                      if (v != null) _change((s) => s.backend = v);
-                    },
-                    child: const Column(
-                      children: [
-                        RadioListTile(
-                          value: backendMessagesApi,
-                          title: Text('Claude API'),
-                          subtitle: Text('Uses your API key'),
-                        ),
-                        RadioListTile(
-                          value: backendClaudeCli,
-                          title: Text('Claude Code on this Mac'),
-                          subtitle: Text('Uses your Claude Code login'),
-                        ),
-                      ],
-                    ),
-                  ),
-                  if (s.backend == backendClaudeCli)
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-                      child: TextField(
-                        controller: _path,
-                        autocorrect: false,
-                        decoration: const InputDecoration(
-                          labelText: 'Claude Code path',
-                          hintText: 'Found on PATH when empty',
-                        ),
-                        onChanged: (v) => _change(
-                          (s) =>
-                              s.claudePath = v.trim().isEmpty ? null : v.trim(),
-                        ),
-                      ),
-                    ),
-                ],
-                const _Header('Model'),
-                RadioGroup<String>(
-                  groupValue: s.model,
-                  onChanged: (v) {
-                    if (v != null) _change((s) => s.model = v);
-                  },
-                  child: Column(
-                    children: [
-                      for (final m in modelChoices)
-                        RadioListTile(value: m.id, title: Text(m.label)),
-                    ],
-                  ),
-                ),
-                const _Header('Dictation'),
-                SwitchListTile(
-                  title: const Text('Start dictation automatically'),
-                  subtitle: const Text(
-                    'Listen as soon as you start a new app or a comment',
-                  ),
-                  value: s.dictateComments,
-                  onChanged: (v) => _change((s) => s.dictateComments = v),
-                ),
-                SwitchListTile(
-                  title: const Text('Dictation sounds and vibration'),
-                  subtitle: const Text(
-                    'A tone and a buzz as listening starts and stops',
-                  ),
-                  value: s.dictationCues,
-                  onChanged: (v) => _change((s) => s.dictationCues = v),
-                ),
-                const _Header('Sharing'),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                  child: TextField(
-                    key: const Key('author-name-field'),
-                    controller: _name,
-                    maxLength: maxAuthorName,
-                    textCapitalization: TextCapitalization.words,
-                    decoration: const InputDecoration(
-                      labelText: 'Your name',
-                      helperText: 'Shown to people you share apps with',
-                      counterText: '',
-                    ),
-                    onChanged: (v) =>
-                        _change((s) => s.authorName = cleanAuthorName(v)),
-                  ),
-                ),
-                if (_fingerprint case final f?)
-                  ListTile(
-                    leading: const Icon(Icons.fingerprint_rounded),
-                    title: const Text('Your sharing key'),
-                    subtitle: SelectableText(
-                      f,
-                      style: const TextStyle(
-                        fontFeatures: [FontFeature.tabularFigures()],
-                      ),
-                    ),
-                  )
-                else
-                  ListTile(
-                    leading: const Icon(Icons.fingerprint_rounded),
-                    subtitle: const Text(
-                      'A sharing key is made the first time you share an app',
-                    ),
-                  ),
-                if (widget.home case final h?) ...[
-                  const _Header('Home screen'),
-                  _HomeSection(controls: h),
-                ],
-                const _Header('Developer'),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: ClaxSwitch(
-                    label: 'Developer tools',
-                    value: s.developer,
-                    onChanged: (v) {
-                      DeveloperScope.set(context, v);
-                      _change((s) => s.developer = v);
-                    },
-                  ),
-                ),
-                if (s.developer) ...[
-                  const _Header('Recent timings'),
-                  ..._timings(context),
-                ],
-                const _Header('About'),
-                ListTile(
-                  key: const Key('licences'),
-                  title: const Text('Licences'),
-                  subtitle: const Text(
-                    'Clax is free software under the GPL, version 2',
-                  ),
-                  onTap: () => showClaxLicences(context),
-                ),
-              ],
-            ),
+    return ClaxScaffold(
+      title: 'Settings',
+      largeTitle: true,
+      contentWidth: ClaxLayout.form,
+      slivers: [
+        if (s != null)
+          SliverPadding(
+            padding: const EdgeInsets.only(bottom: ClaxSpace.s32),
+            sliver: SliverList.list(children: _rows(context, s)),
+          ),
+      ],
     );
+  }
+
+  List<Widget> _rows(BuildContext context, AppSettings s) {
+    final model = modelChoices.firstWhere(
+      (m) => m.id == s.model,
+      orElse: () => modelChoices.firstWhere((m) => m.id == defaultModel),
+    );
+    final cli = s.backend == backendClaudeCli;
+    return [
+      const _Header('Claude'),
+      _keyTile(context),
+      if (widget.cliSupported) ...[
+        _MenuRow(
+          title: 'Agent',
+          value: cli ? 'Claude Code on this Mac' : 'Claude API',
+          items: [
+            ClaxMenuItem(
+              backendMessagesApi,
+              'Claude API',
+              detail: 'Your API key',
+              checked: !cli,
+            ),
+            ClaxMenuItem(
+              backendClaudeCli,
+              'Claude Code on this Mac',
+              detail: 'Your Claude Code login',
+              checked: cli,
+            ),
+          ],
+          onChosen: (v) => _change((s) => s.backend = v),
+        ),
+        if (cli)
+          _Inset(
+            child: ClaxTextField(
+              controller: _path,
+              label: 'Claude Code path',
+              hint: 'Found on PATH when empty',
+              autocorrect: false,
+              onChanged: (v) => _change(
+                (s) => s.claudePath = v.trim().isEmpty ? null : v.trim(),
+              ),
+            ),
+          ),
+      ],
+      _MenuRow(
+        title: 'Model',
+        value: model.word,
+        items: [
+          for (final m in modelChoices)
+            ClaxMenuItem(m.id, m.word, detail: m.name, checked: m == model),
+        ],
+        onChosen: (v) => _change((s) => s.model = v),
+      ),
+      const _Header('Dictation'),
+      _SwitchRow(
+        title: 'Start dictation automatically',
+        subtitle: 'Listen as soon as you start a new app or a comment',
+        value: s.dictateComments,
+        onChanged: (v) => _change((s) => s.dictateComments = v),
+      ),
+      _SwitchRow(
+        title: 'Dictation sounds and vibration',
+        subtitle: 'A tone and a buzz as listening starts and stops',
+        value: s.dictationCues,
+        onChanged: (v) => _change((s) => s.dictationCues = v),
+      ),
+      const _Header('Sharing'),
+      _Inset(
+        child: ClaxTextField(
+          key: const Key('author-name-field'),
+          controller: _name,
+          label: 'Your name',
+          helper: 'Shown to people you share apps with',
+          maxLength: maxAuthorName,
+          textCapitalization: TextCapitalization.words,
+          onChanged: (v) => _change((s) => s.authorName = cleanAuthorName(v)),
+        ),
+      ),
+      if (_fingerprint case final f?)
+        ListTile(
+          title: const Text('Your sharing key'),
+          subtitle: Row(
+            children: [
+              const Icon(Icons.fingerprint_rounded, size: 18),
+              const SizedBox(width: ClaxSpace.s8),
+              Flexible(
+                child: SelectableText(
+                  f,
+                  style: const TextStyle(
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        )
+      else
+        const ListTile(
+          subtitle: Text(
+            'A sharing key is made the first time you share an app',
+          ),
+        ),
+      if (widget.home case final h?) ...[
+        const _Header('Home screen'),
+        _HomeSection(controls: h),
+      ],
+      const _Header('About'),
+      ListTile(
+        title: const Text('Clax'),
+        trailing: _Value('Version ${widget.version}'),
+      ),
+      if (_homeVersion case final v?)
+        ListTile(
+          title: const Text('Home screen'),
+          trailing: _Value('Version $v'),
+        ),
+      ListTile(
+        key: const Key('licences'),
+        title: const Text('Licences'),
+        subtitle: const Text('Clax is free software under the GPL, version 2'),
+        onTap: () => showClaxLicences(context),
+      ),
+      if (_haiku case final h?)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(
+            ClaxSpace.s16,
+            ClaxSpace.s12,
+            ClaxSpace.s16,
+            ClaxSpace.s8,
+          ),
+          child: Align(
+            alignment: AlignmentDirectional.centerStart,
+            child: HaikuLine(text: h, onAnother: _anotherHaiku),
+          ),
+        ),
+      const _Header('Developer'),
+      _SwitchRow(
+        title: 'Developer tools',
+        value: s.developer,
+        onChanged: (v) {
+          DeveloperScope.set(context, v);
+          _change((s) => s.developer = v);
+        },
+      ),
+      if (s.developer) ...[
+        const _Header('Recent timings'),
+        ..._timings(context),
+      ],
+    ];
   }
 
   Widget _keyTile(BuildContext context) {
     if (_hasKey && !_editingKey) {
-      return ListTile(
-        leading: const Icon(Icons.key_rounded),
-        title: const Text('Claude API key'),
-        subtitle: const Text('A key is saved'),
-        trailing: Wrap(
-          spacing: 4,
-          children: [
-            TextButton(
-              onPressed: () => setState(() => _editingKey = true),
-              child: const Text('Replace'),
+      // The actions sit under the row, so the title keeps its width at
+      // large text sizes.
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const ListTile(
+            title: Text('Claude API key'),
+            subtitle: Text('A key is saved'),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: ClaxSpace.s16),
+            child: Wrap(
+              alignment: WrapAlignment.end,
+              spacing: ClaxSpace.s8,
+              children: [
+                ClaxButton(
+                  label: 'Replace',
+                  onPressed: () => setState(() => _editingKey = true),
+                ),
+                ClaxButton(
+                  label: 'Remove',
+                  kind: ClaxButtonKind.destructive,
+                  onPressed: () => _writeKey(null),
+                ),
+              ],
             ),
-            TextButton(
-              onPressed: () => _writeKey(null),
-              child: const Text('Remove'),
-            ),
-          ],
-        ),
+          ),
+        ],
       );
     }
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+    return _Inset(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          TextField(
+          ClaxTextField(
             key: const Key('api-key-field'),
             controller: _key,
-            obscureText: !_showKey,
+            label: 'Claude API key',
+            obscure: !_showKey,
             autocorrect: false,
-            enableSuggestions: false,
             keyboardType: TextInputType.visiblePassword,
-            decoration: InputDecoration(
-              labelText: 'Claude API key',
-              helperText:
-                  'Create one at console.anthropic.com, then paste it here',
-              helperMaxLines: 2,
-              errorText: _keyError,
-              suffixIcon: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton(
-                    tooltip: 'Paste',
-                    onPressed: _paste,
-                    icon: const Icon(Icons.content_paste_rounded),
+            helper: 'Create one at console.anthropic.com, then paste it here',
+            error: _keyError,
+            suffix: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  tooltip: 'Paste',
+                  onPressed: _paste,
+                  icon: const Icon(Icons.content_paste_rounded),
+                ),
+                IconButton(
+                  tooltip: _showKey ? 'Hide' : 'Show',
+                  onPressed: () => setState(() => _showKey = !_showKey),
+                  icon: Icon(
+                    _showKey
+                        ? Icons.visibility_off_outlined
+                        : Icons.visibility_outlined,
                   ),
-                  IconButton(
-                    tooltip: _showKey ? 'Hide' : 'Show',
-                    onPressed: () => setState(() => _showKey = !_showKey),
-                    icon: Icon(
-                      _showKey
-                          ? Icons.visibility_off_outlined
-                          : Icons.visibility_outlined,
-                    ),
-                  ),
-                ],
-              ),
+                ),
+              ],
             ),
             onChanged: (_) => setState(() => _keyError = null),
             onSubmitted: (_) => _saveKey(),
           ),
-          const SizedBox(height: 8),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.end,
+          const SizedBox(height: ClaxSpace.s8),
+          Wrap(
+            alignment: WrapAlignment.end,
+            spacing: ClaxSpace.s8,
             children: [
               if (_editingKey)
-                TextButton(
+                ClaxButton(
+                  label: 'Keep the saved key',
                   onPressed: () => setState(() {
                     _editingKey = false;
                     _key.clear();
                   }),
-                  child: const Text('Keep the saved key'),
                 ),
-              const SizedBox(width: 8),
-              FilledButton.tonal(
+              ClaxButton(
+                label: 'Save key',
+                kind: ClaxButtonKind.tonal,
                 onPressed: _key.text.trim().isEmpty ? null : _saveKey,
-                child: const Text('Save key'),
               ),
             ],
           ),
@@ -439,9 +537,9 @@ class HomeScreenControls {
   final VoidCallback changed;
 }
 
-/// Open, Undo last change, Reset to Clax's home screen (each needs a home
-/// app; Undo and Reset a [HomeRecovery] too), and Use the built-in home
-/// screen, saved as [HomeSettings.builtin].
+/// Open in comment mode, Undo last change, Reset to Clax's home screen
+/// (each needs a home app; Undo and Reset a [HomeRecovery] too), and Use
+/// the built-in home screen, saved as [HomeSettings.builtin].
 class _HomeSection extends StatefulWidget {
   const _HomeSection({required this.controls});
   final HomeScreenControls controls;
@@ -488,30 +586,26 @@ class _HomeSectionState extends State<_HomeSection> {
     return Column(
       children: [
         ListTile(
-          leading: const Icon(Icons.home_outlined),
-          title: const Text('Open'),
+          title: const Text('Open in comment mode'),
           subtitle: const Text('Comment on your home screen to change it'),
           enabled: has,
           onTap: _c.open,
         ),
         ListTile(
-          leading: const Icon(Icons.undo_rounded),
           title: const Text('Undo last change'),
           subtitle: const Text('Go back to the version before the latest'),
           enabled: can,
           onTap: () => _run((r) => r.undoLast(), 'Undid the last change'),
         ),
         ListTile(
-          leading: const Icon(Icons.restart_alt_rounded),
           title: const Text("Reset to Clax's home screen"),
           subtitle: const Text('Your data and comments stay'),
           enabled: can,
           onTap: () => _run((r) => r.reset(), "Reset to Clax's home screen"),
         ),
-        SwitchListTile(
-          secondary: const Icon(Icons.grid_view_rounded),
-          title: const Text('Use the built-in home screen'),
-          subtitle: const Text('Until you switch this off'),
+        _SwitchRow(
+          title: 'Use the built-in home screen',
+          subtitle: 'Until you switch this off',
           value: _c.settings.builtin,
           onChanged: _builtin,
         ),
@@ -533,6 +627,109 @@ String timingLabel(String name) => switch (name) {
 /// [d] in seconds with one decimal, as `8.4 s`.
 String seconds(Duration d) =>
     '${(d.inMilliseconds / 1000).toStringAsFixed(1)} s';
+
+/// A settings row with a switch in its family's form ([ClaxSwitch]) at its
+/// trailing end: [title], [subtitle] under it in `muted`, and a press
+/// anywhere on the row toggles it. It is read as one toggle.
+class _SwitchRow extends StatelessWidget {
+  const _SwitchRow({
+    required this.title,
+    this.subtitle,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final String title;
+  final String? subtitle;
+  final bool value;
+
+  /// Called with the new value; null disables the row.
+  final ValueChanged<bool>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final change = onChanged;
+    return MergeSemantics(
+      child: ListTile(
+        title: Text(title),
+        subtitle: subtitle == null ? null : Text(subtitle!),
+        enabled: change != null,
+        trailing: ClaxSwitch(value: value, onChanged: change),
+        onTap: change == null ? null : () => change(!value),
+      ),
+    );
+  }
+}
+
+/// A row in the column's 16 dp inset, for a field.
+class _Inset extends StatelessWidget {
+  const _Inset({required this.child});
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(
+      ClaxSpace.s16,
+      ClaxSpace.s4,
+      ClaxSpace.s16,
+      ClaxSpace.s8,
+    ),
+    child: child,
+  );
+}
+
+/// A row's value at its trailing end, in `muted`.
+class _Value extends StatelessWidget {
+  const _Value(this.text);
+  final String text;
+
+  @override
+  Widget build(BuildContext context) => Text(
+    text,
+    style: Theme.of(
+      context,
+    ).textTheme.bodyMedium!.copyWith(color: claxPalette(context).muted),
+  );
+}
+
+/// A row naming one choice of several: [title], the chosen [value] at its
+/// trailing end, and a press opens [items] as a menu under it; the chosen
+/// item's ID goes to [onChosen].
+class _MenuRow extends StatelessWidget {
+  const _MenuRow({
+    required this.title,
+    required this.value,
+    required this.items,
+    required this.onChosen,
+  });
+
+  final String title, value;
+  final List<ClaxMenuItem> items;
+  final ValueChanged<String> onChosen;
+
+  Future<void> _open(BuildContext context) async {
+    final box = context.findRenderObject()! as RenderBox;
+    final at = box.localToGlobal(Offset.zero) & box.size;
+    final id = await ClaxMenu.show(context, items: items, anchor: at);
+    if (id != null) onChosen(id);
+  }
+
+  @override
+  Widget build(BuildContext context) => Builder(
+    builder: (context) => ListTile(
+      title: Text(title),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Flexible(child: _Value(value)),
+          const SizedBox(width: ClaxSpace.s4),
+          Icon(Icons.unfold_more_rounded, color: claxPalette(context).muted),
+        ],
+      ),
+      onTap: () => _open(context),
+    ),
+  );
+}
 
 class _Header extends StatelessWidget {
   const _Header(this.text);

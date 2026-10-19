@@ -10,11 +10,17 @@ import 'package:clax_app/home/home_recovery.dart';
 import 'package:clax_app/home/home_settings.dart';
 import 'package:clax_app/platform/secure_key.dart';
 import 'package:clax_app/platform/settings_store.dart';
+import 'package:clax_app/ui/haiku.dart';
+import 'package:clax_app/ui/kit/kit.dart';
 import 'package:clax_app/ui/settings_screen.dart';
+import 'package:clax_app/ui/theme.dart';
+import 'package:clax_app/version.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../support/paths.dart';
 
 class FakeKey implements SecureKey {
   FakeKey([this.value]);
@@ -33,7 +39,7 @@ class FakeKey implements SecureKey {
 
 /// The settings list's own scrollable, not a text field's.
 final _list = find
-    .descendant(of: find.byType(ListView), matching: find.byType(Scrollable))
+    .descendant(of: find.byType(CustomScrollView), matching: find.byType(Scrollable))
     .first;
 
 void main() {
@@ -164,9 +170,13 @@ void main() {
     List<TimingRecord> timings = const [],
     Future<String?> Function()? fingerprint,
     HomeScreenControls? home,
+    Future<String?> Function()? homeVersion,
+    List<String> haikus = const ['One haiku', 'Two haiku', 'Three haiku'],
+    TargetPlatform platform = TargetPlatform.android,
   }) async {
     await tester.pumpWidget(
       MaterialApp(
+        theme: claxTheme(Brightness.light, platform),
         home: SettingsScreen(
           store: store,
           secureKey: key,
@@ -174,12 +184,296 @@ void main() {
           timings: timings,
           fingerprint: fingerprint,
           home: home,
+          homeVersion: homeVersion,
+          haikus: () async => haikus,
         ),
       ),
     );
     await tester.runAsync(() => Future<void>.delayed(Duration.zero));
     await tester.pumpAndSettle();
   }
+
+  Future<void> chooseModel(WidgetTester tester, String word) async {
+    await tester.tap(find.text('Model'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(word).last);
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pumpAndSettle();
+  }
+
+  /// A view tall enough that every row of Settings is built at once.
+  void tall(WidgetTester tester, [double width = 412]) {
+    tester.view.physicalSize = Size(width, 4000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+  }
+
+  HomeScreenControls homeControls() => HomeScreenControls(
+    settings: HomeSettings.loadSync(dir),
+    open: () {},
+    changed: () {},
+  );
+
+  group('Layout', () {
+    testWidgets('sections run Claude, Dictation, Sharing, Home screen, '
+        'About, Developer', (tester) async {
+      tall(tester);
+      await pumpSettings(
+        tester,
+        store: SettingsStore(file),
+        key: FakeKey(),
+        home: homeControls(),
+      );
+      final order = [
+        'Claude',
+        'Dictation',
+        'Sharing',
+        'Home screen',
+        'About',
+        'Developer',
+      ];
+      final tops = [
+        for (final h in order) tester.getTopLeft(find.text(h).first).dy,
+      ];
+      for (var i = 1; i < tops.length; i++) {
+        expect(tops[i], greaterThan(tops[i - 1]), reason: order[i]);
+      }
+      expect(find.text('Agent'), findsNothing);
+    });
+
+    testWidgets('every row starts at one 16 dp inset, with no leading icons', (
+      tester,
+    ) async {
+      tall(tester);
+      final store = SettingsStore(file);
+      await tester.runAsync(() => store.save(AppSettings(developer: true)));
+      await pumpSettings(
+        tester,
+        store: store,
+        key: FakeKey('sk-ant-old'),
+        home: homeControls(),
+        homeVersion: () async => '1.6',
+      );
+      final tiles = find.byType(ListTile);
+      expect(tiles, findsWidgets);
+      for (final e in tiles.evaluate()) {
+        final tile = e.widget as ListTile;
+        expect(tile.leading, isNull);
+        final left = tester.getTopLeft(find.byWidget(tile)).dx;
+        final title = find.descendant(
+          of: find.byWidget(tile),
+          matching: find.byType(Text),
+        );
+        expect(
+          tester.getTopLeft(title.first).dx - left,
+          16,
+          reason: '${(tester.widget<Text>(title.first)).data}',
+        );
+        expect(left, 0);
+      }
+      for (final label in [
+        'Claude',
+        'About',
+        'Developer tools',
+        'Your name',
+      ]) {
+        expect(
+          tester.getTopLeft(find.text(label).first).dx,
+          greaterThanOrEqualTo(16),
+          reason: label,
+        );
+      }
+      expect(tester.getTopLeft(find.text('Claude')).dx, 16);
+      expect(tester.getTopLeft(find.text('Developer tools')).dx, 16);
+      expect(
+        tester.getTopLeft(find.byKey(const Key('author-name-field'))).dx,
+        16,
+      );
+    });
+
+    testWidgets('on a wide screen the column is at most 640, centred', (
+      tester,
+    ) async {
+      tall(tester, 1280);
+      await pumpSettings(tester, store: SettingsStore(file), key: FakeKey());
+      final field = find.byKey(const Key('api-key-field'));
+      final r = tester.getRect(field);
+      expect(r.left, (1280 - 640) / 2 + 16);
+      expect(r.right, (1280 + 640) / 2 - 16);
+    });
+
+    testWidgets('the large title collapses, with a line under it once '
+        'content is under it', (tester) async {
+      await pumpSettings(tester, store: SettingsStore(file), key: FakeKey());
+      Color line() =>
+          tester
+                  .widget<ColoredBox>(
+                    find.byKey(const Key('clax-scrolled-under-line')),
+                  )
+                  .color;
+      expect(line().a, 0);
+      await tester.drag(find.text('Model'), const Offset(0, -600));
+      await tester.pumpAndSettle();
+      final p = claxPalette(tester.element(find.byType(SettingsScreen)));
+      expect(line(), p.border);
+    });
+  });
+
+  group('Claude', () {
+    testWidgets('the key field is a ClaxTextField', (tester) async {
+      await pumpSettings(tester, store: SettingsStore(file), key: FakeKey());
+      expect(
+        tester.widget(find.byKey(const Key('api-key-field'))),
+        isA<ClaxTextField>(),
+      );
+      final save = tester.widget<ClaxButton>(
+        find.widgetWithText(ClaxButton, 'Save key'),
+      );
+      expect(save.kind, ClaxButtonKind.tonal);
+    });
+
+    testWidgets('a saved key offers Replace, and Remove as a danger action', (
+      tester,
+    ) async {
+      await pumpSettings(
+        tester,
+        store: SettingsStore(file),
+        key: FakeKey('sk-ant-old'),
+      );
+      final remove = tester.widget<ClaxButton>(
+        find.widgetWithText(ClaxButton, 'Remove'),
+      );
+      expect(remove.kind, ClaxButtonKind.destructive);
+      final p = claxPalette(tester.element(find.text('Remove')));
+      final style = DefaultTextStyle.of(tester.element(find.text('Remove')));
+      expect(style.style.color, p.danger);
+      expect(
+        tester.widget<ClaxButton>(find.widgetWithText(ClaxButton, 'Replace')).kind,
+        ClaxButtonKind.plain,
+      );
+    });
+
+    testWidgets('Model is one row opening Fast, Balanced and Best, each with '
+        'its model', (tester) async {
+      final store = SettingsStore(file);
+      await pumpSettings(tester, store: store, key: FakeKey());
+      expect(find.text('Balanced'), findsOneWidget);
+      expect(find.text('Fast'), findsNothing);
+      await tester.tap(find.text('Model'));
+      await tester.pumpAndSettle();
+      for (final (word, name) in [
+        ('Fast', 'Haiku 5.5'),
+        ('Balanced', 'Sonnet 5.5'),
+        ('Best', 'Opus 5.5'),
+      ]) {
+        final item = find.ancestor(
+          of: find.text(word).last,
+          matching: find.byType(MenuItemButton),
+        );
+        expect(
+          find.descendant(of: item, matching: find.text(name)),
+          findsOneWidget,
+          reason: word,
+        );
+      }
+      await tester.tap(find.text('Fast').last);
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await tester.pumpAndSettle();
+      expect(find.text('Fast'), findsOneWidget);
+      expect(find.byType(MenuItemButton), findsNothing);
+      await tester.runAsync(() async {
+        expect((await store.load()).model, 'claude-haiku-5-5');
+      });
+    });
+
+    test('the words name modelChoices fastest first', () {
+      expect([for (final m in modelChoices) m.word], [
+        'Fast',
+        'Balanced',
+        'Best',
+      ]);
+      expect([for (final m in modelChoices) m.name], [
+        'Haiku 5.5',
+        'Sonnet 5.5',
+        'Opus 5.5',
+      ]);
+    });
+  });
+
+  group('About', () {
+    Future<void> showAbout(WidgetTester tester) async {
+      await tester.scrollUntilVisible(
+        find.byType(HaikuLine),
+        200,
+        scrollable: _list,
+      );
+      await tester.pumpAndSettle();
+    }
+
+    String haiku(WidgetTester tester) =>
+        tester.widget<HaikuLine>(find.byType(HaikuLine)).text;
+
+    testWidgets("shows Clax's version and the home screen's", (tester) async {
+      await pumpSettings(
+        tester,
+        store: SettingsStore(file),
+        key: FakeKey(),
+        homeVersion: () async => '1.6',
+      );
+      await showAbout(tester);
+      expect(find.text('Version $claxVersion'), findsOneWidget);
+      expect(find.text('Version 1.6'), findsOneWidget);
+    });
+
+    testWidgets('a haiku shows, a new one each visit', (tester) async {
+      const list = ['One haiku', 'Two haiku', 'Three haiku'];
+      final seen = <String>[];
+      for (var visit = 0; visit < 4; visit++) {
+        await tester.pumpWidget(const SizedBox());
+        await pumpSettings(
+          tester,
+          store: SettingsStore(file),
+          key: FakeKey(),
+          haikus: list,
+        );
+        await showAbout(tester);
+        seen.add(haiku(tester));
+        expect(list, contains(seen.last));
+        if (visit > 0) expect(seen[visit], isNot(seen[visit - 1]));
+      }
+    });
+
+    testWidgets('a long-press on the haiku shows another', (tester) async {
+      await pumpSettings(tester, store: SettingsStore(file), key: FakeKey());
+      await showAbout(tester);
+      final before = haiku(tester);
+      await tester.longPress(find.byType(HaikuLine));
+      await tester.pumpAndSettle();
+      expect(haiku(tester), isNot(before));
+    });
+
+    testWidgets('with no haikus About keeps its versions', (tester) async {
+      await pumpSettings(
+        tester,
+        store: SettingsStore(file),
+        key: FakeKey(),
+        haikus: const [],
+      );
+      await tester.scrollUntilVisible(
+        find.text('Version $claxVersion'),
+        200,
+        scrollable: _list,
+      );
+      expect(find.byType(HaikuLine), findsNothing);
+    });
+
+    test("Clax's version is pubspec.yaml's", () {
+      final pubspec = File(appPath('pubspec.yaml')).readAsStringSync();
+      final m = RegExp(r'^version: ([^+\s]+)', multiLine: true)
+          .firstMatch(pubspec)!;
+      expect(claxVersion, m.group(1));
+    });
+  });
 
   testWidgets('the CLI agent option is absent when it is not supported', (
     tester,
@@ -188,9 +482,8 @@ void main() {
     expect(find.text('Claude API key'), findsOneWidget);
     expect(find.text('Claude Code on this Mac'), findsNothing);
     expect(find.text('Claude Code path'), findsNothing);
-    expect(find.text('Fast (Haiku 5.5)'), findsOneWidget);
-    expect(find.text('Balanced (Sonnet 5.5)'), findsOneWidget);
-    expect(find.text('Best (Opus 5.5)'), findsOneWidget);
+    expect(find.text('Agent'), findsNothing);
+    expect(find.text('Model'), findsOneWidget);
     await tester.scrollUntilVisible(
       find.text('Dictation sounds and vibration'),
       100,
@@ -211,7 +504,9 @@ void main() {
       cliSupported: true,
     );
     expect(find.text('Claude API'), findsOneWidget);
-    await tester.tap(find.text('Claude Code on this Mac'));
+    await tester.tap(find.text('Agent'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Claude Code on this Mac').last);
     await tester.runAsync(() => Future<void>.delayed(Duration.zero));
     await tester.pumpAndSettle();
     expect(find.text('Claude Code path'), findsOneWidget);
@@ -223,8 +518,7 @@ void main() {
   testWidgets('choosing a model and dictation saves them', (tester) async {
     final store = SettingsStore(file);
     await pumpSettings(tester, store: store, key: FakeKey());
-    await tester.tap(find.text('Best (Opus 5.5)'));
-    await tester.pumpAndSettle();
+    await chooseModel(tester, 'Best');
     for (final label in [
       'Start dictation automatically',
       'Dictation sounds and vibration',
@@ -263,9 +557,7 @@ void main() {
     expect(key.writes, [secret]);
     expect(find.text('A key is saved'), findsOneWidget);
     // Any later settings write still leaves the key out of the file.
-    await tester.tap(find.text('Fast (Haiku 5.5)'));
-    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
-    await tester.pumpAndSettle();
+    await chooseModel(tester, 'Fast');
     expect(file.existsSync(), isTrue);
     expect(file.readAsStringSync(), isNot(contains(secret)));
   });
@@ -505,7 +797,13 @@ void main() {
 
     Future<void> show(WidgetTester tester, String text) async {
       await tester.scrollUntilVisible(find.text(text), 100, scrollable: _list);
-      await tester.ensureVisible(find.text(text));
+      // Mid-screen, clear of the pinned bar.
+      await tester.runAsync(
+        () => Scrollable.ensureVisible(
+          tester.element(find.text(text)),
+          alignment: 0.5,
+        ),
+      );
       await tester.pumpAndSettle();
     }
 
@@ -513,10 +811,9 @@ void main() {
       tester,
     ) async {
       await pump(tester);
-      // The section's header at the top of the list, its rows under it.
-      await show(tester, 'Home screen');
-      expect(find.text('Use the built-in home screen'), findsOneWidget);
-      expect(find.text('Open'), findsOneWidget);
+      await show(tester, 'Use the built-in home screen');
+      expect(find.text('Home screen'), findsOneWidget);
+      expect(find.text('Open in comment mode'), findsOneWidget);
       expect(find.text('Undo last change'), findsOneWidget);
       expect(find.text("Reset to Clax's home screen"), findsOneWidget);
     });
@@ -525,8 +822,8 @@ void main() {
       tester,
     ) async {
       await pump(tester);
-      await show(tester, 'Open');
-      await tester.tap(find.text('Open'));
+      await show(tester, 'Open in comment mode');
+      await tester.tap(find.text('Open in comment mode'));
       expect(opened, 1);
     });
 
@@ -575,8 +872,8 @@ void main() {
     testWidgets('without a home app, only the switch acts', (tester) async {
       home.homeAppId = null;
       await pump(tester);
-      await show(tester, 'Open');
-      await tester.tap(find.text('Open'));
+      await show(tester, 'Open in comment mode');
+      await tester.tap(find.text('Open in comment mode'));
       await show(tester, 'Undo last change');
       await tester.tap(find.text('Undo last change'));
       await tester.pump();

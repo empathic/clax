@@ -24,7 +24,7 @@ class _Key implements SecureKey {
 
 /// The settings list's own scrollable, not a text field's.
 final _list = find
-    .descendant(of: find.byType(ListView), matching: find.byType(Scrollable))
+    .descendant(of: find.byType(CustomScrollView), matching: find.byType(Scrollable))
     .first;
 
 Future<void> _tab(WidgetTester tester, String name) async {
