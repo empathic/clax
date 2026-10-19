@@ -831,6 +831,25 @@ impl Store {
         route: Route,
         page: bool,
     ) -> Result<(Thread, Touched, Vec<String>)> {
+        self.send_routed_watching(ctx, thread_id, target, route, page, None)
+    }
+
+    /// [`Store::send_routed`], first giving live session `watch` a watch on
+    /// the thread's artifact when it neither owns nor watches it, in the
+    /// send's transaction: a send that is refused (a resolved thread, say)
+    /// gives no watch. The watch is recorded under `ctx`.
+    ///
+    /// # Errors
+    /// As [`Store::send_routed`].
+    pub fn send_routed_watching(
+        &self,
+        ctx: &AuditCtx,
+        thread_id: &str,
+        target: SendTarget<'_>,
+        route: Route,
+        page: bool,
+        watch: Option<&str>,
+    ) -> Result<(Thread, Touched, Vec<String>)> {
         let mut touched = Touched::default();
         // Only a send naming an agent asks its person (§9.2); any other
         // send counts into the requests open there.
@@ -839,6 +858,19 @@ impl Store {
             SendTarget::Everyone | SendTarget::Thread => Route::Join,
         };
         let requests = self.with_tx(|tx| {
+            if let Some(sid) = watch {
+                let aid: String = tx
+                    .query_row(
+                        "SELECT artifact_id FROM threads WHERE id = ?1",
+                        params![thread_id],
+                        |r| r.get(0),
+                    )
+                    .optional()?
+                    .ok_or(CoreError::NotFound)?;
+                if !live_targets_of(tx, &aid)?.iter().any(|s| s == sid) {
+                    super::watches::ensure_watch_in(self, tx, ctx, sid, &ArtifactId::parse(&aid)?)?;
+                }
+            }
             let now = self.now();
             let sent = send_in(tx, thread_id, None, target, &mut touched, &now)?;
             if let Some(old) = &sent.took_from {

@@ -485,7 +485,7 @@ pub async fn clip(
 
 /// Whether a send or `@name` reaches live session `sid` on artifact `id`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Reach {
+pub(crate) enum Reach {
     /// It may read and watch the artifact.
     Yes,
     /// Its rights do not let it read the artifact (spec §10: 400
@@ -502,7 +502,7 @@ enum Reach {
 /// only off live pages (`live_page`) and where its rights allow reading
 /// and watching the artifact. Reaching another person's agent makes a
 /// routing request (M18), which the store's send does.
-fn named_agent_reaches(
+pub(crate) fn named_agent_reaches(
     st: &Store,
     sid: &str,
     id: &ArtifactId,
@@ -1195,22 +1195,22 @@ struct SendBody {
     to: Option<String>,
 }
 
-/// The live session a send's `to` names on artifact `id`, if any: a live
-/// owner or watcher by its handle; 400 `unknown_agent` when it names none,
-/// and 400 `agent_cannot_read` when it names an agent that may not read the
-/// artifact (spec §10). For a person (`person`: the owner, or a connected
-/// person, in a browser or by hand) `to` may also name, by handle or name,
-/// any live agent that may read and watch the artifact, as an `@name` in
-/// their comment may ([`handoff_target`]); that agent is given a watch
-/// (recorded under `audit`, the sender's) when it has none.
+/// The live session a send's `to` names on artifact `id`, if any, and
+/// whether it needs a watch there: a live owner or watcher by its handle;
+/// 400 `unknown_agent` when it names none, and 400 `agent_cannot_read` when
+/// it names an agent that may not read the artifact (spec §10). For a
+/// person (`person`: the owner, or a connected person, in a browser or by
+/// hand) `to` may also name, by handle or name, any live agent that may
+/// read and watch the artifact, as an `@name` in their comment may
+/// ([`handoff_target`]); the send gives it its watch, in the send's own
+/// transaction ([`Store::send_routed_watching`]).
 fn send_target(
     st: &Store,
-    audit: &AuditCtx,
     id: &ArtifactId,
     to: Option<&str>,
     live_page: bool,
     person: bool,
-) -> clax_core::Result<Option<String>> {
+) -> clax_core::Result<Option<(String, bool)>> {
     let Some(h) = to else {
         return Ok(None);
     };
@@ -1227,12 +1227,10 @@ fn send_target(
                 .unwrap_or_default();
             return Err(cannot_read(&name));
         }
-        return Ok(Some(sid));
+        return Ok(Some((sid, false)));
     }
     if person {
-        let sid = handoff_target(st, id, h, live_page)?;
-        st.ensure_watch(audit, &sid, id)?;
-        return Ok(Some(sid));
+        return Ok(Some((handoff_target(st, id, h, live_page)?, true)));
     }
     Err(if clax_core::is_agent_handle(h) {
         CoreError::invalid(
@@ -1286,25 +1284,30 @@ pub async fn send(
     let view = s
         .store_call(move |st| {
             let vis = vf.build(st)?;
-            let t = thread_of(st, &id, &tid)?;
+            if thread_of(st, &id, &tid)?.status == "resolved" {
+                return Err(CoreError::invalid(
+                    "thread_resolved",
+                    "a resolved thread cannot be sent; add a comment to reopen it",
+                ));
+            }
             let audit = audit.resolve(st)?;
-            // A resolved thread is refused by the send below; it gives no watch.
-            let person = person && t.status != "resolved";
-            let to = send_target(st, &audit, &id, b.to.as_deref(), live_page, person)?;
-            if person && to.is_some() {
-                // The Send menu and roster show a watcher it may have gained.
+            let to = send_target(st, &id, b.to.as_deref(), live_page, person)?;
+            let watch = to.as_ref().filter(|(_, w)| *w).map(|(sid, _)| sid.as_str());
+            let (t, touched, _) = st.send_routed_watching(
+                &audit,
+                &tid,
+                to.as_ref()
+                    .map_or(SendTarget::Everyone, |(sid, _)| SendTarget::Agent(sid)),
+                clax_store::approvals::Route::Send,
+                page,
+                watch,
+            )?;
+            if watch.is_some() {
+                // The Send menu and roster show the watcher it gained.
                 ctx.events.publish(Event::Agents {
                     artifacts: vec![id.as_str().to_string()],
                 });
             }
-            let (t, touched, _) = st.send_routed(
-                &audit,
-                &tid,
-                to.as_deref()
-                    .map_or(SendTarget::Everyone, SendTarget::Agent),
-                clax_store::approvals::Route::Send,
-                page,
-            )?;
             apply(&ctx, st, &touched);
             publish_thread(&ctx, st, &t)?;
             vis.filter_thread(st, &t, ctx.codex_push(), with_path)
@@ -1473,7 +1476,7 @@ pub async fn send_batch(
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
             let audit = audit.resolve(st)?;
             // A batch names only an agent that owns or watches the artifact.
-            let to = send_target(st, &audit, &id, b.to.as_deref(), live_page, false)?;
+            let to = send_target(st, &id, b.to.as_deref(), live_page, false)?.map(|(sid, _)| sid);
             let (sent_by, viewer) = author(st, &who)?;
             // The sender as an author of the note (spec §8.2).
             let sender = match agent_person {
