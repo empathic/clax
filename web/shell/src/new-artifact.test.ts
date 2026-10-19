@@ -16,6 +16,10 @@ describe("formProblem", () => {
     expect(formProblem(" ", "x")).toBe("Give it a title.");
     expect(formProblem("a\nb", "x")).toBe("A title is one line of plain text.");
     expect(formProblem("a‮b", "x")).toBe("A title is one line of plain text.");
+    expect(formProblem("a\u200bb", "x")).toBe("A title is one line of plain text.");
+    // Joiners and direction marks are text, as in any artifact title.
+    expect(formProblem("Team \u{1f468}\u200d\u{1f469}", "x")).toBeNull();
+    expect(formProblem("\u05e9\u05dc\u05d5\u05dd \u200fQ3", "x")).toBeNull();
     expect(formProblem("é".repeat(MAX_TITLE + 1), "x")).toMatch(/at most 200/);
     expect(formProblem("é".repeat(MAX_TITLE), "x")).toBeNull();
     expect(formProblem("Plan", " \n")).toBe("Say what you want built.");

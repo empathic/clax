@@ -1532,10 +1532,10 @@ has not built it yet; the brief becomes the artifact's first thread, on
 the whole artifact (`anchor.kind` `artifact`), the person's own comment,
 sent to no agent (an `@` in it sends nothing). The artifact is the
 person's (the owner's has no `person`), and no session's: none owns or
-watches it. `title` is trimmed, 1 to 200 characters of one line (no
-control or format character, but for the zero-width non-joiner and joiner,
-U+200C and U+200D, which Persian and Indic words and emoji sequences
-need), else 400 `invalid_title`; `brief` is trimmed and non-blank, at most
+watches it. `title` is trimmed and checked as any artifact title is: 1
+to 200 characters with no control character and no hidden format
+character (the joiners U+200C and U+200D and the direction marks U+200E,
+U+200F and U+061C are allowed), else 400 `invalid_title`; `brief` is trimmed and non-blank, at most
 the 10,000 characters a person's comment may hold (`invalid_comment`
 elsewhere; the 4096 bytes of the `comments` capability are a page's own
 writes' limit), else 400 `invalid_brief`.

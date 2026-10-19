@@ -33,8 +33,10 @@ export function formProblem(title: string, brief: string): string | null {
   const t = title.trim();
   if (!t) return "Give it a title.";
   if ([...t].length > MAX_TITLE) return `A title is at most ${MAX_TITLE} characters.`;
-  // Zero-width non-joiner and joiner (Persian and Indic words, emoji) are text.
-  if (/(?![\u200c\u200d])[\p{Cc}\p{Cf}]/u.test(t)) return "A title is one line of plain text.";
+  // As any artifact title (clax_core::text::is_hidden_char): the joiners
+  // (Persian and Indic words, emoji) and the direction marks (right-to-left
+  // text) are text; other format characters and controls are not.
+  if (/(?![\u200c-\u200f\u061c])[\p{Cc}\p{Cf}]/u.test(t)) return "A title is one line of plain text.";
   if (!brief.trim()) return "Say what you want built.";
   if ([...brief.trim()].length > MAX_BRIEF) return `A brief is at most ${MAX_BRIEF.toLocaleString("en-US")} characters.`;
   return null;

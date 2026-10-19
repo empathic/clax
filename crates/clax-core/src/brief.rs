@@ -4,17 +4,18 @@
 
 use crate::{CoreError, Result};
 
-/// Longest title a brief's artifact may take, in characters (as long as a
-/// title read from a page's `<title>`,
-/// [`crate::publish::MAX_DERIVED_TITLE_CHARS`]).
-pub const MAX_TITLE_CHARS: usize = crate::publish::MAX_DERIVED_TITLE_CHARS;
+/// Longest title a brief's artifact may take, in characters: any
+/// artifact's ([`crate::publish::MAX_TITLE_CHARS`]).
+pub const MAX_TITLE_CHARS: usize = crate::publish::MAX_TITLE_CHARS;
 
-/// The title, trimmed: `invalid_title` when it is blank, longer than
-/// [`MAX_TITLE_CHARS`], or holds a control or invisible format character
-/// (a line break, a bidi control), which would make one-line views read
-/// differently from what was typed. The zero-width non-joiner and joiner
-/// (U+200C, U+200D), which Persian and Indic words and emoji sequences
-/// need, are allowed.
+/// The title, trimmed, checked as any artifact title is
+/// ([`crate::publish::check_meta_text`]): `invalid_title` when it is blank,
+/// longer than [`MAX_TITLE_CHARS`], or holds a control character (a line
+/// break) or a hidden format character ([`crate::text::is_hidden_char`]: a
+/// bidi control, a zero-width space), which would make one-line views read
+/// differently from what was typed. The joiners (U+200C, U+200D), which
+/// Persian and Indic words and emoji sequences need, and the direction
+/// marks (U+200E, U+200F, U+061C) are allowed.
 ///
 /// # Errors
 /// As above.
@@ -23,21 +24,17 @@ pub fn check_title(title: &str) -> Result<String> {
     if t.is_empty() {
         return Err(CoreError::invalid("invalid_title", "a title is required"));
     }
-    if t.chars().count() > MAX_TITLE_CHARS {
-        return Err(CoreError::invalid(
+    crate::publish::check_meta_text(Some(t), None, None).map_err(|e| match e {
+        CoreError::Invalid { code, .. } if code == "title_too_long" => CoreError::invalid(
             "invalid_title",
             format!("a title is at most {MAX_TITLE_CHARS} characters"),
-        ));
-    }
-    let joiner = |c: char| c == '\u{200C}' || c == '\u{200D}';
-    if t.chars()
-        .any(|c| c.is_control() || (crate::text::is_format_char(c) && !joiner(c)))
-    {
-        return Err(CoreError::invalid(
+        ),
+        CoreError::Invalid { .. } => CoreError::invalid(
             "invalid_title",
-            "the title holds a control or format character",
-        ));
-    }
+            "the title holds a control or hidden format character",
+        ),
+        other => other,
+    })?;
     Ok(t.to_string())
 }
 
@@ -124,6 +121,8 @@ mod tests {
         // Persian 'mi‌xaham' needs ZWNJ; a family emoji is joined with ZWJ.
         assert!(check_title("می\u{200c}خواهم").is_ok());
         assert!(check_title("Team \u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}").is_ok());
+        // Direction marks, which right-to-left text needs, as in any title.
+        assert!(check_title("\u{5e9}\u{5dc}\u{5d5}\u{5dd} \u{200f}Q3").is_ok());
         assert_eq!(
             code(check_title(&"é".repeat(MAX_TITLE_CHARS + 1))),
             "invalid_title"
