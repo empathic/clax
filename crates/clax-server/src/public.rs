@@ -50,19 +50,6 @@ use clax_store::remotes::{PendingSignIn, Remote, RemoteLink, SignedInAs};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-/// `f`, made `Send` where a route's future must be: on wasm32 the remote's
-/// client (`fetch`) is not, which is sound to wrap because a Worker has one
-/// thread (the wrapper panics if polled on another).
-#[cfg(not(target_arch = "wasm32"))]
-pub fn sendable<F: std::future::Future>(f: F) -> F {
-    f
-}
-/// See the native [`sendable`].
-#[cfg(target_arch = "wasm32")]
-pub fn sendable<F: std::future::Future>(f: F) -> send_wrapper::SendWrapper<F> {
-    send_wrapper::SendWrapper::new(f)
-}
-
 /// The by-hand harness ([`crate::routes::sessions::BY_HAND_HARNESS`]).
 const BY_HAND: &str = crate::routes::sessions::BY_HAND_HARNESS;
 

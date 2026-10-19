@@ -134,7 +134,7 @@ pub async fn callback(
             "This sign-in expired or was started in another browser.",
         );
     };
-    let user = match crate::public::sendable(fetch_user(&g, &h, &code, &verifier)).await {
+    let user = match clax_rt::sendable(fetch_user(&g, &h, &code, &verifier)).await {
         Ok(u) => u,
         Err(why) => {
             tracing::warn!(error = %why, "GitHub sign-in failed");

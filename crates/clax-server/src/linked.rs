@@ -461,10 +461,10 @@ impl Sync {
     /// Ends the sync's sessions there.
     async fn end(&mut self) {
         if let Some(mut c) = self.client.take() {
-            crate::public::sendable(c.end_session()).await;
+            clax_rt::sendable(c.end_session()).await;
         }
         for (_, (mut c, _)) in std::mem::take(&mut self.agents) {
-            crate::public::sendable(c.end_session()).await;
+            clax_rt::sendable(c.end_session()).await;
         }
         self.asked_in.clear();
         for (_, w) in self.copy_waits.drain() {
@@ -509,7 +509,7 @@ impl Sync {
             let path = format!("/api/sessions/{sid}/questions/{q}?wait={WAIT_S}");
             let w = clax_rt::spawn(async move {
                 loop {
-                    match crate::public::sendable(c.get(&path)).await {
+                    match clax_rt::sendable(c.get(&path)).await {
                         Ok(v) if v["question"]["status"] == "open" => {}
                         _ => break,
                     }
@@ -536,7 +536,7 @@ impl Sync {
                 return Err(Stop::Gone);
             };
             let mut c = Client::new(&remote.origin, Some(token));
-            crate::public::sendable(c.session_for(SYNC_HARNESS, SYNC_NAME))
+            clax_rt::sendable(c.session_for(SYNC_HARNESS, SYNC_NAME))
                 .await
                 .map_err(|f| {
                     Stop::Unreachable(classify(&f).unwrap_or_else(|| f.message.clone()))
@@ -562,21 +562,15 @@ impl Sync {
             }
             let path = format!("/api/sessions/{sid}/watches/{}", l.remote_artifact_id);
             let body = json!({"as": relay.as_ref().map(|(name, harness)| json!({"name": name, "harness": harness}))});
-            let watched =
-                match crate::public::sendable(c.call(reqwest::Method::PUT, &path, Some(&body)))
-                    .await
-                {
-                    // A public Clax older than the relay label watches without it.
-                    Err(f) if f.status == Some(400) => {
-                        crate::public::sendable(c.call(
-                            reqwest::Method::PUT,
-                            &path,
-                            Some(&json!({})),
-                        ))
-                        .await
-                    }
-                    r => r,
-                };
+            let watched = match clax_rt::sendable(c.call(reqwest::Method::PUT, &path, Some(&body)))
+                .await
+            {
+                // A public Clax older than the relay label watches without it.
+                Err(f) if f.status == Some(400) => {
+                    clax_rt::sendable(c.call(reqwest::Method::PUT, &path, Some(&json!({})))).await
+                }
+                r => r,
+            };
             match watched {
                 Ok(_) => {
                     self.watched.insert(l.remote_artifact_id.clone(), relay);
@@ -615,7 +609,7 @@ impl Sync {
         // own, which starts a cycle once the copy is no longer open there.
         self.wait_on_copies().await;
         let c = self.client.as_ref().expect("connected");
-        let v = crate::public::sendable(c.get(&format!(
+        let v = clax_rt::sendable(c.get(&format!(
             "/api/sessions/{sid}/feedback?tier=wait&wait={WAIT_S}"
         )))
         .await
@@ -653,7 +647,7 @@ impl Sync {
             let sid = c.session().map(|s| s.0.clone()).unwrap_or_default();
             let ids = std::mem::take(&mut self.acks);
             for chunk in ids.chunks(clax_core::feedback::MAX_ACK_IDS) {
-                let _ = crate::public::sendable(c.post(
+                let _ = clax_rt::sendable(c.post(
                     &format!("/api/sessions/{sid}/feedback/ack"),
                     &json!({"thread_ids": chunk}),
                 ))
@@ -750,11 +744,11 @@ impl Sync {
                 return Err("the remote is gone".into());
             };
             let mut c = Client::new(&remote.origin, Some(token));
-            crate::public::sendable(c.session_for(harness, name))
+            clax_rt::sendable(c.session_for(harness, name))
                 .await
                 .map_err(|f| classify(&f).unwrap_or(f.message))?;
             let sid = c.session().map(|s| s.0.clone()).unwrap_or_default();
-            let v = crate::public::sendable(c.get(&format!("/api/sessions/{sid}")))
+            let v = clax_rt::sendable(c.get(&format!("/api/sessions/{sid}")))
                 .await
                 .map_err(|f| classify(&f).unwrap_or(f.message))?;
             let handle = v["session"]["agent_handle"]
@@ -796,8 +790,8 @@ impl Sync {
         let mut handed = false;
         loop {
             let wrote = match key {
-                Some(k) => crate::public::sendable(ac.post_keyed(path, body, k)).await,
-                None => crate::public::sendable(ac.post(path, body)).await,
+                Some(k) => clax_rt::sendable(ac.post_keyed(path, body, k)).await,
+                None => clax_rt::sendable(ac.post(path, body)).await,
             };
             match wrote {
                 Ok(v) if v.get("guidance").is_none() => return Ok(Some(v)),
@@ -806,7 +800,7 @@ impl Sync {
                     handed = true;
                     let c = self.client.as_ref().expect("connected");
                     let sid = c.session().map(|s| s.0.clone()).unwrap_or_default();
-                    if crate::public::sendable(c.post(
+                    if clax_rt::sendable(c.post(
                         &format!("/api/sessions/{sid}/threads/{rtid}/handoff"),
                         &json!({"to": handle}),
                     ))
@@ -927,7 +921,7 @@ impl Sync {
                     form = form.part("clip", part);
                 }
                 self.trying(row.seq).await?;
-                let v = match crate::public::sendable(c.post_form_keyed(
+                let v = match clax_rt::sendable(c.post_form_keyed(
                     &format!("/api/artifacts/{raid}/threads"),
                     form,
                     &row.idem_key,
@@ -990,7 +984,7 @@ impl Sync {
                 }
                 let v = match answer {
                     Some(v) => v,
-                    None => match crate::public::sendable(c.post_keyed(
+                    None => match clax_rt::sendable(c.post_keyed(
                         &path,
                         &json!({"body": body}),
                         &row.idem_key,
@@ -1036,7 +1030,7 @@ impl Sync {
                         Err(f) => return fail(f),
                     }
                 }
-                if !done && let Err(f) = crate::public::sendable(c.post(&path, &json!({}))).await {
+                if !done && let Err(f) = clax_rt::sendable(c.post(&path, &json!({}))).await {
                     return fail(f);
                 }
                 if self.lose_answer() {
@@ -1116,12 +1110,12 @@ impl Sync {
                 continue;
             }
             if let Some((mut c, _)) = agents.remove(&name) {
-                crate::public::sendable(c.end_session()).await;
+                clax_rt::sendable(c.end_session()).await;
             }
         }
         for (c, _) in agents.values() {
             if let Some((sid, _)) = c.session() {
-                let _ = crate::public::sendable(c.call(
+                let _ = clax_rt::sendable(c.call(
                     reqwest::Method::PATCH,
                     &format!("/api/sessions/{sid}"),
                     Some(&json!({"heartbeat": true})),
@@ -1178,7 +1172,7 @@ impl Sync {
             // Closed here first: the copy there is withdrawn (or was
             // closed there already).
             let path = format!("/api/sessions/{sid}/questions/{rqid}/withdraw");
-            match crate::public::sendable(c.post(&path, &json!({}))).await {
+            match clax_rt::sendable(c.post(&path, &json!({}))).await {
                 Ok(_) => {}
                 Err(f) => {
                     if let Some(why) = classify(&f) {
@@ -1189,21 +1183,20 @@ impl Sync {
             self.question_done(&qid, false).await?;
             return Ok(false);
         }
-        let v = match crate::public::sendable(
-            c.get(&format!("/api/sessions/{sid}/questions/{rqid}?wait=0")),
-        )
-        .await
-        {
-            Ok(v) => v,
-            Err(f) => {
-                if let Some(why) = classify(&f) {
-                    return Err(why);
+        let v =
+            match clax_rt::sendable(c.get(&format!("/api/sessions/{sid}/questions/{rqid}?wait=0")))
+                .await
+            {
+                Ok(v) => v,
+                Err(f) => {
+                    if let Some(why) = classify(&f) {
+                        return Err(why);
+                    }
+                    // No longer this token's to read there: asked again.
+                    self.reask(&qid).await?;
+                    return Ok(true);
                 }
-                // No longer this token's to read there: asked again.
-                self.reask(&qid).await?;
-                return Ok(true);
-            }
-        };
+            };
         let q = &v["question"];
         match q["status"].as_str().unwrap_or("open") {
             "answered" => {
@@ -1333,7 +1326,7 @@ impl Sync {
             .store_call(move |st| st.linked_question_trying(&q2))
             .await
             .map_err(|e| e.message)?;
-        let v = match crate::public::sendable(c.post_keyed(
+        let v = match clax_rt::sendable(c.post_keyed(
             &format!("/api/sessions/{sid}/questions"),
             &body,
             &row.idem_key,
@@ -1400,7 +1393,7 @@ impl Sync {
             if let Some(cu) = &cursor {
                 q.push_str(&format!("&cursor={}", urlencode(cu)));
             }
-            let v = match crate::public::sendable(c.get(&q)).await {
+            let v = match clax_rt::sendable(c.get(&q)).await {
                 Ok(v) => v,
                 Err(f) => match classify(&f) {
                     Some(why) => return Err(Stop::Unreachable(why)),
@@ -1620,7 +1613,7 @@ impl Sync {
             l.remote_artifact_id
         );
         let max = clax_store::threads::MAX_CLIP_BYTES;
-        match crate::public::sendable(c.get_bytes(&path, max)).await {
+        match clax_rt::sendable(c.get_bytes(&path, max)).await {
             Ok((bytes, _)) => {
                 let (t2, ctx) = (tid.to_string(), self.store().feedback_ctx());
                 let r = self

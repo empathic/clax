@@ -151,7 +151,7 @@ pub async fn add(
             ),
         ));
     }
-    let sign_in = public::sendable(public::start_sign_in(&origin, &machine)).await?;
+    let sign_in = clax_rt::sendable(public::start_sign_in(&origin, &machine)).await?;
     let r = s
         .store_call(move |st| st.add_pending_remote(&origin, &name, &sign_in))
         .await?;
@@ -190,7 +190,7 @@ pub async fn poll(
     who.require_owner("publishes to a public Clax")?;
     asker(&s, &d).await?;
     let r = remote_named(&s, path(id)?).await?;
-    let (status, shown) = match public::sendable(public::poll_sign_in(&s, &r)).await? {
+    let (status, shown) = match clax_rt::sendable(public::poll_sign_in(&s, &r)).await? {
         SignIn::Waiting => ("pending", r),
         SignIn::Refused("access_denied") => ("denied", r),
         SignIn::Refused(_) => ("expired", r),
@@ -251,7 +251,7 @@ pub async fn remove(
     let id = r.id.clone();
     let token = s.store_call(move |st| st.remote_token(&id)).await?;
     let revoked = match token {
-        Some(t) => match public::sendable(public::revoke(&r, t)).await {
+        Some(t) => match clax_rt::sendable(public::revoke(&r, t)).await {
             Ok(()) => true,
             Err(e) => {
                 tracing::warn!(remote = r.name.as_str(), code = e.code, "token not revoked");
@@ -614,7 +614,7 @@ pub async fn push(
             }
         }
     };
-    let pushed = public::sendable(public::push(&s, &id, &remote, mode, auto, upto)).await?;
+    let pushed = clax_rt::sendable(public::push(&s, &id, &remote, mode, auto, upto)).await?;
     Ok(Json(json!({
         "status": "pushed",
         "url": pushed.link.url,
