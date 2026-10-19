@@ -143,6 +143,16 @@ describe("comments in the shell", () => {
     await expect(h.call("create", [{ anchor: T("x").anchor, text: "hi" }])).rejects.toMatchObject({ code: "unavailable", message: expect.stringContaining("Lots of people are here") });
   });
 
+  it("a reply the daemon refuses a spectator is unavailable, not forbidden", async () => {
+    daemon();
+    const { h } = setup({ comments: {} });
+    const { threadId } = (await h.call("create", [{ anchor: T("x").anchor, text: "hi" }])) as { threadId: string };
+    // The seat is lost between the create and the reply.
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: { code: "spectator", message: "Lots of people are here" } }), { status: 403 })));
+    gesture(true);
+    await expect(h.call("reply", [threadId, "more"])).rejects.toMatchObject({ code: "unavailable", message: expect.stringContaining("Lots of people are here") });
+  });
+
   it("activation the viewer gave the shell is no gesture, and polling without one is cut off", async () => {
     const { h, ui, prompt } = setup({ comments: {} });
     const d = { anchor: T("x").anchor, version: 1 };

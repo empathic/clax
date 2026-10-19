@@ -28,7 +28,7 @@ import { type Anchor, type AnchorRect, type Box, INDEX_FILE } from "../../../bri
 import { nameProblem, textProblem } from "../../../bridge/src/text-rule";
 import { ApiError, getArtifact } from "../api";
 import type { ArtifactEvent } from "../events";
-import { type Thread, createThread, deleteThread, reopenThread, resolveThread, sendToAgent } from "../threads";
+import { type Thread, addComment, createThread, deleteThread, reopenThread, resolveThread, sendToAgent } from "../threads";
 import { declaredConfig } from "./availability";
 import { seconds, takeSlot } from "./budget";
 import { CapError, SPECTATING } from "./errors";
@@ -352,7 +352,7 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
   async function post(target: { anchor?: Anchor; threadId?: string; text: string }): Promise<{ handle: string; commentId: string; thread: Thread }> {
     if (target.threadId !== undefined) {
       const tid = target.threadId;
-      const thread = await request(() => addPageComment(env.aid, tid, target.text));
+      const thread = await request(() => addComment(env.aid, tid, target.text, true));
       env.comments?.upsert(thread);
       const handle = [...created].find(([, id]) => id === tid)?.[0] ?? opaque("t_");
       return { handle, commentId: opaque("c_"), thread };
@@ -593,18 +593,3 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
     },
   };
 };
-
-/** Adds a viewer comment the page wrote (`via_page`); answers the thread. */
-async function addPageComment(aid: string, tid: string, body: string): Promise<Thread> {
-  const res = await fetch(`/api/artifacts/${encodeURIComponent(aid)}/threads/${encodeURIComponent(tid)}/comments`, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-clax-via": "page" },
-    body: JSON.stringify({ body, via_page: true }),
-  });
-  if (!res.ok) {
-    let msg = res.statusText;
-    try { msg = (await res.json()).error?.message ?? msg; } catch { /* not JSON */ }
-    throw new ApiError(res.status, msg);
-  }
-  return ((await res.json()) as { thread: Thread }).thread;
-}
