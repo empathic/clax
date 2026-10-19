@@ -74,6 +74,7 @@ class MainFlutterWindow: NSWindow {
     }
 
     installCues(flutterViewController)
+    installDialogs(flutterViewController)
 
     #if DEBUG
       installTestInput(flutterViewController)
@@ -117,6 +118,27 @@ class MainFlutterWindow: NSWindow {
   }
 
   private var cueSounds: [NSSound.Name: NSSound] = [:]
+
+  /// The `dev.empathic.clax/dialogs` channel for `NativeDialogs` in
+  /// `lib/ui/kit/native_dialogs.dart`: menus pop up in the Flutter view and
+  /// alerts are sheets on this window (`NativeDialogs.swift`).
+  private func installDialogs(_ controller: FlutterViewController) {
+    let dialogs = NativeDialogs(
+      window: { [weak self] in self },
+      view: { [weak controller] in controller?.view })
+    self.dialogs = dialogs
+    let channel = FlutterMethodChannel(
+      name: "dev.empathic.clax/dialogs",
+      binaryMessenger: controller.engine.binaryMessenger)
+    channel.setMethodCallHandler { call, result in
+      let known = dialogs.handle(
+        call.method, call.arguments, reply: result,
+        fail: { result(FlutterError(code: "bad_arguments", message: $0, details: nil)) })
+      if !known { result(FlutterMethodNotImplemented) }
+    }
+  }
+
+  private var dialogs: NativeDialogs?
 
   /// [image] drawn at [width] by [height] pixels, as PNG; nil when it
   /// cannot be drawn or encoded.

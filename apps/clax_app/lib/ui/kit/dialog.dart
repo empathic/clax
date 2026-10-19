@@ -10,6 +10,7 @@ import '../theme.dart';
 import '../tokens.g.dart';
 import 'button.dart';
 import 'family.dart';
+import 'native_dialogs.dart';
 import 'toggles.dart';
 
 /// One button of a [ClaxDialog]: its [label] (at most three words) and
@@ -75,6 +76,8 @@ abstract final class ClaxDialog {
   /// at first (the Mac alert's suppression button); answers the action's
   /// index with whether the checkbox was checked. When [dismissed]
   /// completes first, the dialog is taken down and answers [cancelIndex].
+  /// On the Mac, without [content], it is an `NSAlert` sheet
+  /// ([NativeDialogs.alert]), its suppression button the checkbox.
   static Future<ClaxDialogAnswer> ask(
     BuildContext context, {
     required String title,
@@ -93,9 +96,24 @@ abstract final class ClaxDialog {
         actions[defaultIndex].kind == ClaxButtonKind.destructive) {
       defaultIndex = null;
     }
+    final navigator = Navigator.of(context, rootNavigator: true);
+    if (hasDesktopWindowChrome && content == null) {
+      final got = await _alert(
+        title: title,
+        body: body,
+        suppression: suppression,
+        actions: actions,
+        defaultIndex: defaultIndex,
+        cancelIndex: cancelIndex,
+        dismissed: dismissed,
+      );
+      if (got != null) return got;
+    }
+    if (!context.mounted || !navigator.mounted) {
+      return ClaxDialogAnswer(cancelIndex);
+    }
     final apple = ClaxFamily.of(context) == ClaxFamily.apple;
     final suppressed = ValueNotifier(false);
-    final navigator = Navigator.of(context, rootNavigator: true);
     final themes = InheritedTheme.capture(
       from: context,
       to: navigator.context,
@@ -218,6 +236,45 @@ abstract final class ClaxDialog {
 
   /// The suppression checkbox of [ask], for tests.
   static const suppressionKey = ValueKey('clax-dialog-suppression');
+
+  /// [ask] as the Mac's `NSAlert`; null when nothing answers on the
+  /// channel, for Flutter to draw it. A destructive action makes it a
+  /// warning.
+  static Future<ClaxDialogAnswer?> _alert({
+    required String title,
+    String? body,
+    String? suppression,
+    required List<ClaxDialogAction> actions,
+    int? defaultIndex,
+    int? cancelIndex,
+    int? armMs,
+    Future<void>? dismissed,
+  }) async {
+    final destructive = [
+      for (final (i, a) in actions.indexed)
+        if (a.kind == ClaxButtonKind.destructive) i,
+    ];
+    try {
+      final got = await NativeDialogs.alert(
+        style: destructive.isEmpty ? 'informational' : 'warning',
+        title: title,
+        body: body,
+        buttons: [for (final a in actions) a.label],
+        suppressedButtons: actions.any((a) => a.suppressedLabel != null)
+            ? [for (final a in actions) a.suppressedLabel]
+            : null,
+        destructive: destructive,
+        defaultIndex: defaultIndex,
+        cancelIndex: cancelIndex,
+        armMs: armMs,
+        suppression: suppression,
+        dismissed: dismissed,
+      );
+      return ClaxDialogAnswer(got.index, suppressed: got.suppressed);
+    } on MissingPluginException {
+      return null;
+    }
+  }
 
   static Widget _button(
     BuildContext context,

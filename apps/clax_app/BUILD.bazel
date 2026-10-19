@@ -677,6 +677,27 @@ macos_unit_test(
     deps = [":macos_about_test_lib"],
 )
 
+# The menus and alerts of macos/Runner/NativeDialogs.swift, on their own.
+swift_library(
+    name = "macos_dialogs_test_lib",
+    testonly = True,
+    srcs = [
+        "macos/Runner/NativeDialogs.swift",
+        "macos/RunnerTests/NativeDialogsTests.swift",
+    ],
+    module_name = "NativeDialogsTests",
+    tags = ["manual"],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+macos_unit_test(
+    name = "macos_dialogs_test",
+    minimum_os_version = "12.0",
+    tags = ["no-remote"],
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [":macos_dialogs_test_lib"],
+)
+
 # The home app's bundle, assets/home/home.clax, and its release record,
 # assets/home/release.json, packed from home/ and the kit files its manifest
 # names by tool/pack_home.dart (which needs only the bundle format and no

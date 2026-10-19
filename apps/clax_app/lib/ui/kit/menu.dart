@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../theme.dart';
 import '../tokens.g.dart';
 import 'family.dart';
+import 'native_dialogs.dart';
 
 /// One row of a [ClaxMenu]: its [id] (what the menu answers, and the row's
 /// `ValueKey`), its [title], a [detail] after it in `muted` (such as a
@@ -53,11 +54,21 @@ abstract final class ClaxMenu {
   /// coordinates): below it, starting at its leading edge, or above it when
   /// there is no room below. Completes with the chosen item's ID, or null
   /// on Escape, Back or a tap outside, which reaches nothing underneath.
+  /// On the Mac it is an `NSMenu` popped up at [anchor]'s bottom left
+  /// ([NativeDialogs.menu]).
   static Future<String?> show(
     BuildContext context, {
     required List<ClaxMenuItem> items,
     required Rect anchor,
-  }) {
+  }) async {
+    if (hasDesktopWindowChrome) {
+      try {
+        return await NativeDialogs.menu(items, anchor.bottomLeft);
+      } on MissingPluginException {
+        // No Mac on the other end (a test): Flutter draws it.
+      }
+      if (!context.mounted) return null;
+    }
     final navigator = Navigator.of(context);
     final box = navigator.context.findRenderObject() as RenderBox?;
     final origin = box?.localToGlobal(Offset.zero) ?? Offset.zero;
