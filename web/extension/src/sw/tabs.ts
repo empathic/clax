@@ -92,11 +92,12 @@ type PanelEntry = {
 };
 
 type Area = { get(k: string): Promise<Record<string, unknown>>; set(v: Record<string, unknown>): Promise<void> };
+/** A tab's essentials: `url` is "" for a tab Clax is on in whose address is over MAX_URL. */
 type Saved = { url: string; overlay: boolean; commentMode: boolean; active: boolean; on: string | null };
 const STORE_KEY = "tabs";
 const saved = (v: unknown): v is Saved => {
   const o = v as Partial<Saved> | null;
-  return typeof o === "object" && o !== null && typeof o.url === "string" && /^https?:\/\//.test(o.url)
+  return typeof o === "object" && o !== null && typeof o.url === "string" && (/^https?:\/\//.test(o.url) || (o.url === "" && typeof o.on === "string"))
     && typeof o.overlay === "boolean" && typeof o.commentMode === "boolean" && typeof o.active === "boolean"
     && (o.on === null || (typeof o.on === "string" && /^https?:\/\/[^/?#]+$/.test(o.on)));
 };
@@ -232,7 +233,7 @@ export class Tabs {
     queueMicrotask(() => {
       this.saving = false;
       const out: Record<string, Saved> = {};
-      for (const [id, s] of this.tabs) if (s.url) out[id] = { url: s.url, overlay: s.overlay, commentMode: s.commentMode, active: s.active, on: s.on };
+      for (const [id, s] of this.tabs) if (s.url || s.on) out[id] = { url: s.url, overlay: s.overlay, commentMode: s.commentMode, active: s.active, on: s.on };
       void this.d.store!.set({ [STORE_KEY]: out }).catch(() => {});
     });
   }
@@ -475,7 +476,8 @@ export class Tabs {
 
   /** The tab shows a page whose address is over MAX_URL, which the daemon
    * refuses (spec §7): no live page, and the panel says why. The record
-   * keeps no URL, so nothing looks it up again. */
+   * keeps no URL, so nothing looks it up again; it is still kept across
+   * worker restarts while Clax is on in the tab. */
   private tooLong(tabId: number): TabState {
     this.stale.delete(tabId);
     this.syncs.delete(tabId);
