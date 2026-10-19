@@ -127,8 +127,10 @@ command.
   page contract and the security model, for anyone building an integration.
 - [Clax on Cloudflare](docs/hosted/writeup.md): the same server as a hosted,
   multi-person service.
-- [Developing Clax](docs/usage.md#developing-clax): building from source,
-  tests and checks.
+- [Contributing](CONTRIBUTING.md): reporting problems, sending changes,
+  and the contributor license agreement. [Developing
+  Clax](docs/usage.md#developing-clax) covers building from source, tests
+  and checks.
 
 ## License
 
