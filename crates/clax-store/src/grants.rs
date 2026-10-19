@@ -1,5 +1,5 @@
 //! Cross-app read consent (spec 2026-10-12-flutter-app-design §3.8): the
-//! owner's grants (`db_read_grants`, migration 38) and the check that joins
+//! owner's grants (`db_read_grants`, migration 39) and the check that joins
 //! them with both artifacts' current declarations.
 //!
 //! A grant row says only that the owner let `reader_id` read `source_id`.

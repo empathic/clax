@@ -1179,14 +1179,14 @@ pub const MIGRATIONS: &[&str] = &[
     BEGIN
         DELETE FROM db_read_grants WHERE reader_id = NEW.id OR source_id = NEW.id;
     END;",
-    // 39: draft artifacts (spec 2026-10-12-flutter-app-round2-design §5.1):
+    // 40: draft artifacts (spec 2026-10-12-flutter-app-round2-design §5.1):
     // an agent's work in progress, rendered but never listed. `hidden` keeps
     // a row out of every listing; `draft_of` names the app a draft changes
     // (NULL for a new app's draft), whose documents it copies.
     "ALTER TABLE artifacts ADD COLUMN draft_of TEXT;
     ALTER TABLE artifacts ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
     CREATE INDEX artifacts_hidden ON artifacts(hidden, created_at) WHERE hidden = 1;",
-    // 40: network grants (spec 2026-10-12-flutter-real-apps-design C6): the
+    // 41: network grants (spec 2026-10-12-flutter-real-apps-design C6): the
     // owner let `artifact_id` fetch from `host`, one of the hosts its
     // `capabilities.net.hosts` declared when the owner allowed it. Deleting
     // the artifact removes its rows (the foreign key on a row delete, the
@@ -1202,7 +1202,7 @@ pub const MIGRATIONS: &[&str] = &[
     BEGIN
         DELETE FROM net_grants WHERE artifact_id = NEW.id;
     END;",
-    // 41: model use by apps (spec 2026-10-12-flutter-real-apps-design C7):
+    // 42: model use by apps (spec 2026-10-12-flutter-real-apps-design C7):
     // the owner let `artifact_id` call `sample()` (kept until revoked), and
     // what its calls cost each local day, in millionths of a US dollar, for
     // the daily cost cap. Deleting the artifact removes its rows (the
@@ -1223,7 +1223,7 @@ pub const MIGRATIONS: &[&str] = &[
         DELETE FROM sample_grants WHERE artifact_id = NEW.id;
         DELETE FROM sample_spend WHERE artifact_id = NEW.id;
     END;",
-    // 42: whether a draft fetches under its live app's network grants
+    // 43: whether a draft fetches under its live app's network grants
     // (spec 2026-10-12-flutter-real-apps-design C6): 1 for the agent's
     // drafts, 0 for a bundle update's check draft, which stays offline.
     // Meaningless for an artifact that is no draft.
@@ -1256,9 +1256,14 @@ pub const HOSTED_MIGRATION: u32 = 27;
 /// version.
 pub const REPAIR_MIGRATION: u32 = 37;
 
+/// The migration that records where an agent's person is paying attention
+/// (`questions.thread_id`, `in_terminal`, `pulled_at` and the sessions'
+/// engagement columns), as a schema version.
+pub const WHERE_TO_ASK_MIGRATION: u32 = 38;
+
 /// The first of the Clax app's migrations (cross-app read grants), as a
 /// schema version; the app's follow it in [`APP_MIGRATION_MARKS`]'s order.
-pub const APP_MIGRATION: u32 = 38;
+pub const APP_MIGRATION: u32 = 39;
 
 /// What each of the Clax app's migrations ([`APP_MIGRATION`] onwards, in
 /// order) leaves in the schema: a table, or a column of `artifacts`.
@@ -1277,37 +1282,45 @@ const APP_MIGRATION_MARKS: [(&str, &str); 5] = [
 ///
 /// Those builds numbered the app's migrations (see [`APP_MIGRATION_MARKS`])
 /// from 24, before the multi-person migrations ([`PEOPLE_MIGRATION`] to
-/// [`INBOX_MIGRATION`]) were under them, and later from 27, right after
-/// them, where this list has hosted mode's sign-in
-/// ([`HOSTED_MIGRATION`]) to the repair ([`REPAIR_MIGRATION`]) and the
-/// app's from [`APP_MIGRATION`]. Such a database is recognised by its
-/// schema, not its `user_version` alone: the `db_read_grants` table and no
-/// `hosted_setup` table (which [`HOSTED_MIGRATION`] makes); with the
-/// `invites` table (which [`PEOPLE_MIGRATION`] makes) its app migrations
-/// start at 27, without it at 24, and its version must name one of them.
-/// Each app migration's mark must be present exactly up to the one its
-/// version names, or the database is refused
+/// [`INBOX_MIGRATION`]) were under them; later from 27, right after them,
+/// before hosted mode's sign-in ([`HOSTED_MIGRATION`]) to the repair
+/// ([`REPAIR_MIGRATION`]); and later from 38, right after the repair, where
+/// this list has the where-to-ask migration ([`WHERE_TO_ASK_MIGRATION`])
+/// and the app's from [`APP_MIGRATION`]. Such a database is recognised by
+/// its schema, not its `user_version` alone: the `db_read_grants` table and
+/// no `questions.thread_id` column (which [`WHERE_TO_ASK_MIGRATION`]
+/// adds). With the `hosted_setup` table (which [`HOSTED_MIGRATION`] makes)
+/// its app migrations start at 38; else with the `invites` table (which
+/// [`PEOPLE_MIGRATION`] makes) at 27, without it at 24; its version must
+/// name one of them. Each app migration's mark must be present exactly up
+/// to the one its version names, or the database is refused
 /// ([`clax_core::CoreError::MigrationFailed`]) and left as it was.
 ///
 /// The migrations it lacks below [`APP_MIGRATION`] run on it, SQL and Rust
 /// step each: the multi-person ones when it has no `invites`, then
-/// [`HOSTED_MIGRATION`] to [`REPAIR_MIGRATION`], none of which touches the
-/// app's tables or adds a column the app's migrations add; the repair
-/// gives a database of an earlier revision of the multi-person migrations
-/// their final schema. `user_version` then becomes the app migration it
-/// already holds in this numbering.
+/// [`HOSTED_MIGRATION`] to [`REPAIR_MIGRATION`] when it has no
+/// `hosted_setup`, then [`WHERE_TO_ASK_MIGRATION`]; none of them touches
+/// the app's tables or adds a column the app's migrations add, and the
+/// repair gives a database of an earlier revision of the multi-person
+/// migrations their final schema. `user_version` then becomes the app
+/// migration it already holds in this numbering.
 pub(super) fn adopt_earlier_flutter_app(
     tx: &rusqlite::Transaction<'_>,
 ) -> clax_core::Result<Option<(u32, u32)>> {
     let version: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if !has_mark(tx, "table", "db_read_grants")? || has_mark(tx, "table", "hosted_setup")? {
+    if !has_mark(tx, "table", "db_read_grants")? || has_column(tx, "questions", "thread_id")? {
         return Ok(None);
     }
+    let hosted = has_mark(tx, "table", "hosted_setup")?;
     let people = has_mark(tx, "table", "invites")?;
-    let first = if people {
-        INBOX_MIGRATION + 1
+    // The first app migration in the database's numbering, and the first
+    // migration of this list's it lacks below the app's.
+    let (first, below) = if hosted {
+        (REPAIR_MIGRATION + 1, WHERE_TO_ASK_MIGRATION)
+    } else if people {
+        (INBOX_MIGRATION + 1, HOSTED_MIGRATION)
     } else {
-        PEOPLE_MIGRATION
+        (PEOPLE_MIGRATION, PEOPLE_MIGRATION)
     };
     let last = first + APP_MIGRATION_MARKS.len() as u32 - 1;
     let refuse = |why: String| clax_core::CoreError::MigrationFailed {
@@ -1330,16 +1343,11 @@ pub(super) fn adopt_earlier_flutter_app(
             )));
         }
     }
-    let below = if people {
-        HOSTED_MIGRATION
-    } else {
-        PEOPLE_MIGRATION
-    };
-    for v in below..=REPAIR_MIGRATION {
+    for v in below..APP_MIGRATION {
         tx.execute_batch(MIGRATIONS[v as usize - 1])?;
         rust_step(tx, v)?;
     }
-    let now = REPAIR_MIGRATION + held as u32;
+    let now = APP_MIGRATION - 1 + held as u32;
     tx.pragma_update(None, "user_version", now)?;
     Ok(Some((version, now)))
 }
@@ -1347,12 +1355,11 @@ pub(super) fn adopt_earlier_flutter_app(
 /// Whether the schema has the table `name` (`kind` "table") or the
 /// `artifacts` column `name` (`kind` "column").
 fn has_mark(tx: &rusqlite::Transaction<'_>, kind: &str, name: &str) -> clax_core::Result<bool> {
-    let sql = if kind == "table" {
-        "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1)"
+    if kind == "table" {
+        has_table(tx, name)
     } else {
-        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('artifacts') WHERE name = ?1)"
-    };
-    Ok(tx.query_row(sql, [name], |r| r.get(0))?)
+        has_column(tx, "artifacts", name)
+    }
 }
 
 /// Runs the Rust part of the migration that brings the schema to
@@ -1771,7 +1778,7 @@ fn install_id(tx: &rusqlite::Transaction<'_>) -> clax_core::Result<()> {
 mod tests {
     use super::{
         APP_MIGRATION, AUDIT_MIGRATION, INBOX_MIGRATION, MIGRATIONS, PEOPLE_MIGRATION,
-        REPAIR_MIGRATION, VISIBILITY_MIGRATION,
+        REPAIR_MIGRATION, VISIBILITY_MIGRATION, WHERE_TO_ASK_MIGRATION,
     };
     use crate::Store;
     use crate::test_util::DAEMON;
@@ -2470,10 +2477,10 @@ mod tests {
         }
     }
 
-    /// Migration 39 adds the draft columns: every artifact it finds stays
+    /// Migration 40 adds the draft columns: every artifact it finds stays
     /// listed (`hidden = 0`) and is a draft of nothing.
     #[test]
-    fn migration_39_keeps_every_artifact_listed() {
+    fn migration_40_keeps_every_artifact_listed() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         home.ensure_dirs().unwrap();
@@ -3538,6 +3545,30 @@ mod tests {
         c
     }
 
+    /// A database as this branch's builds before the where-to-ask
+    /// migration ([`WHERE_TO_ASK_MIGRATION`]) left it: migrations 1 to 37
+    /// with their Rust steps, then the first `app` of the app's migrations
+    /// ([`APP_MIGRATION`] onwards here), numbered from 38, with the rows of
+    /// [`app_rows`]. Returns its rows.
+    fn app_numbered_from_38(home: &Home, app: usize) -> Vec<(String, Vec<String>)> {
+        home.ensure_dirs().unwrap();
+        let mut c = Connection::open(home.db_path()).unwrap();
+        c.pragma_update(None, "journal_mode", "wal").unwrap();
+        let tx = c.transaction().unwrap();
+        for v in 1..=REPAIR_MIGRATION {
+            tx.execute_batch(MIGRATIONS[v as usize - 1]).unwrap();
+            super::rust_step(&tx, v).unwrap();
+        }
+        let first = APP_MIGRATION as usize - 1;
+        for sql in &MIGRATIONS[first..first + app] {
+            tx.execute_batch(sql).unwrap();
+        }
+        tx.pragma_update(None, "user_version", REPAIR_MIGRATION + app as u32)
+            .unwrap();
+        tx.commit().unwrap();
+        app_rows(&c, app)
+    }
+
     /// Apps, versions, documents, a comment, an inbox item and the grants
     /// and drafts the first `app` of the app's migrations hold, written to
     /// `c`; returns its rows ([`kept_rows`]).
@@ -3665,8 +3696,10 @@ mod tests {
     }
 
     #[test]
-    fn the_app_migrations_follow_the_repair_migration_in_this_order() {
-        assert_eq!(APP_MIGRATION, REPAIR_MIGRATION + 1);
+    fn the_app_migrations_follow_the_where_to_ask_migration_in_this_order() {
+        assert_eq!(WHERE_TO_ASK_MIGRATION, REPAIR_MIGRATION + 1);
+        assert_eq!(APP_MIGRATION, WHERE_TO_ASK_MIGRATION + 1);
+        assert!(MIGRATIONS[WHERE_TO_ASK_MIGRATION as usize - 1].contains("ADD COLUMN thread_id"));
         assert_eq!(MIGRATIONS.len() as u32, APP_MIGRATION + 4);
         let first = APP_MIGRATION as usize - 1;
         assert!(MIGRATIONS[first].contains("CREATE TABLE db_read_grants"));
@@ -3723,7 +3756,7 @@ mod tests {
                 ["0".repeat(32)],
             )
             .unwrap();
-            // Migration 39 adds this column: it fails.
+            // Migration 40 adds this column: it fails.
             c.execute_batch("ALTER TABLE artifacts ADD COLUMN draft_of TEXT;")
                 .unwrap();
             c.pragma_update(None, "user_version", at as u32).unwrap();
@@ -3733,7 +3766,7 @@ mod tests {
             Err(e) => e,
         };
         assert!(
-            matches!(&err, clax_core::CoreError::MigrationFailed { at: 38, detail }
+            matches!(&err, clax_core::CoreError::MigrationFailed { at: 39, detail }
                 if detail.contains("draft_of")),
             "{err:?}"
         );
@@ -3741,7 +3774,7 @@ mod tests {
         let v: u32 = c
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 38, "migration 38 committed, 39 rolled back");
+        assert_eq!(v, 39, "migrations 38 and 39 committed, 40 rolled back");
     }
 
     #[test]
@@ -4015,11 +4048,22 @@ mod tests {
     /// multi-person migrations' Rust steps not run again, and a copy of it
     /// as it was taken first; opening it again changes nothing.
     fn assert_earlier_app_numbering_upgrades(app: usize) {
+        assert_numbered_app_database_upgrades(app, INBOX_MIGRATION, earlier_app_numbering);
+    }
+
+    /// As [`assert_earlier_app_numbering_upgrades`], for the database
+    /// `make` leaves at version `base + app` with the first `app` of the
+    /// app's migrations, returning its rows.
+    fn assert_numbered_app_database_upgrades(
+        app: usize,
+        base: u32,
+        make: fn(&Home, usize) -> Vec<(String, Vec<String>)>,
+    ) {
         let fresh = fresh_shape();
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
-        let before = earlier_app_numbering(&home, app);
-        let old = INBOX_MIGRATION + app as u32;
+        let before = make(&home, app);
+        let old = base + app as u32;
         let st = Store::open(&home).unwrap();
         let (version, after, shape, approvals, ok) = st
             .with_read(|c| {
@@ -4069,6 +4113,45 @@ mod tests {
         for app in 1..=4 {
             assert_earlier_app_numbering_upgrades(app);
         }
+    }
+
+    #[test]
+    fn databases_at_the_app_numbering_from_38_upgrade_with_every_row_and_a_copy_first() {
+        for app in 1..=5 {
+            assert_numbered_app_database_upgrades(app, REPAIR_MIGRATION, app_numbered_from_38);
+        }
+    }
+
+    #[test]
+    fn an_app_numbering_from_38_database_whose_schema_disagrees_with_its_version_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        // Version 42 names a draft's network inheritance, which this
+        // database lacks.
+        app_numbered_from_38(&home, 4);
+        {
+            let c = Connection::open(home.db_path()).unwrap();
+            c.pragma_update(None, "user_version", 42).unwrap();
+        }
+        let err = match Store::open(&home) {
+            Ok(_) => panic!("an inconsistent database must be refused"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(&err, clax_core::CoreError::MigrationFailed { at: 42, detail }
+                if detail.contains("draft_inherit_net")),
+            "{err:?}"
+        );
+        let c = Connection::open(home.db_path()).unwrap();
+        let (v, asked): (u32, i64) = c
+            .query_row(
+                "SELECT (SELECT user_version FROM pragma_user_version),
+                        (SELECT COUNT(*) FROM pragma_table_info('questions') WHERE name = 'thread_id')",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((v, asked), (42, 0));
     }
 
     #[test]

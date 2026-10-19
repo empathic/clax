@@ -1,6 +1,6 @@
 //! Model use by apps (spec 2026-10-12-flutter-real-apps-design C7): the
 //! owner's grant letting an app call `sample()` (`sample_grants`, migration
-//! 41), kept until revoked, and what the app's calls cost each local day
+//! 42), kept until revoked, and what the app's calls cost each local day
 //! (`sample_spend`), for the daily cost cap. Amounts are millionths of a US
 //! dollar. Deleting the artifact removes its rows (a trigger on the soft
 //! delete, the foreign keys on a row delete).
