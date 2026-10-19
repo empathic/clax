@@ -13,6 +13,7 @@ import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/app_surface.dart';
 import 'package:clax_app/ui/comment_bar.dart';
 import 'package:clax_app/ui/host_protocol.dart';
+import 'package:clax_app/ui/kit/toggles.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -180,8 +181,8 @@ void main() {
     await _finish(tester);
   });
 
-  testWidgets("Settings › Open takes the home screen's own page into "
-      'comment mode', (tester) async {
+  testWidgets("Settings › Open in comment mode takes the home screen's own "
+      'page into comment mode', (tester) async {
     final page = await start(tester);
     page.push(
       const DeviceRequest(
@@ -199,7 +200,7 @@ void main() {
       scrollable: find.byType(Scrollable).first,
     );
     expect(find.text('Home screen'), findsOneWidget);
-    await tester.tap(find.text('Open'));
+    await tester.tap(find.text('Open in comment mode'));
     await _settle(tester);
     expect(find.text('Home screen'), findsNothing, reason: 'Settings closed');
     expect(surfaces, hasLength(1), reason: 'no second home page');
@@ -338,7 +339,7 @@ void main() {
       scrollable: find.byType(Scrollable).first,
     );
     final toggle = find.widgetWithText(
-      SwitchListTile,
+      ListTile,
       'Use the built-in home screen',
     );
     await tester.ensureVisible(toggle);
@@ -347,8 +348,8 @@ void main() {
     await _settle(tester);
     expect(
       tester
-          .widget<SwitchListTile>(
-            find.widgetWithText(SwitchListTile, 'Use the built-in home screen'),
+          .widget<ClaxSwitch>(
+            find.descendant(of: toggle, matching: find.byType(ClaxSwitch)),
           )
           .value,
       isTrue,

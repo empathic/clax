@@ -230,7 +230,7 @@ void main() {
     );
     final header = find.text('Resolved (2)');
     expect(header, findsOneWidget);
-    final top = (Finder f) => tester.getTopLeft(f).dy;
+    double top(Finder f) => tester.getTopLeft(f).dy;
     expect(top(find.text('newer open')), lessThan(top(find.text('older open'))));
     expect(top(find.text('older open')), lessThan(top(header)));
     expect(find.text('done one'), findsNothing, reason: 'collapsed');

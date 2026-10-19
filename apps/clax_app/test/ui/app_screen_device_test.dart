@@ -129,6 +129,9 @@ void main() {
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      // Hidden and paused disable frames, so only a forced frame (the one
+      // the system's app-switcher snapshot asks for) draws the screen now.
+      tester.binding.scheduleForcedFrame();
       await tester.pump();
       final end = surface.hostCalls.whereType<DeviceEvent>().last;
       expect((end.watch, end.code), ('w', 'stopped'));
