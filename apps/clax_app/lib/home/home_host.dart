@@ -18,6 +18,7 @@ import '../ui/inbox_screen.dart' show resubscribe;
 import '../ui/launcher.dart'
     show EmojiFace, IconFace, MonogramFace, tileFace, tileHue;
 import '../ui/make_service.dart';
+import 'home_layout.dart';
 import 'home_settings.dart';
 import 'home_snapshot.dart' show HomeTile;
 
@@ -255,6 +256,36 @@ class HomeHost extends ChangeNotifier {
   final _told = <String, String>{};
 
   HomeState? _state;
+
+  HomeLayout? _layout;
+
+  /// The list [_layout] last loaded with.
+  List<ArtifactSummary>? _layoutFrom;
+
+  /// The home app's arrangement, made the first time it is asked for once
+  /// [HomeSettings.homeAppId] is known, and made again for another home
+  /// app; null while there is none. It loads with [state]'s apps, and
+  /// again each time the list changes.
+  HomeLayout? get layout {
+    final home = settings.homeAppId;
+    if (home == null || _dead) return null;
+    if (_layout?.homeAid != home) {
+      _layout?.dispose();
+      _layout = HomeLayout(api: api, homeAid: home);
+      _layoutFrom = null;
+      _loadLayout();
+    }
+    return _layout;
+  }
+
+  /// Loads [_layout] with the apps listed, when the list changed since.
+  void _loadLayout() {
+    final l = _layout;
+    final listed = _summaries;
+    if (l == null || listed == null || identical(_layoutFrom, listed)) return;
+    _layoutFrom = listed;
+    unawaited(l.load(state.apps));
+  }
 
   /// The latest of everything the home screen shows.
   HomeState get state => _state ??= HomeState(
@@ -670,6 +701,7 @@ class HomeHost extends ChangeNotifier {
   void _changed() {
     if (_dead) return;
     _state = null;
+    _loadLayout();
     notifyListeners();
     if (!_out.hasListener) return;
     for (final (topic, name) in _names) {
@@ -894,6 +926,7 @@ class HomeHost extends ChangeNotifier {
   @override
   void dispose() {
     _dead = true;
+    _layout?.dispose();
     makes.removeListener(_onMakes);
     icons?.removeListener(_onIcons);
     unawaited(_events?.cancel());

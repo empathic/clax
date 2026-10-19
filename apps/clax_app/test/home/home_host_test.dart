@@ -185,6 +185,37 @@ void main() {
     expect(host.state.apps.map((a) => a.id), [fresh, old]);
   });
 
+  test('layout is the home app\'s arrangement, loaded again as the list changes', () async {
+    final a = api.seedArtifact('A', _page);
+    final b = api.seedArtifact('B', _page);
+    await api.batchDocs(home, [
+      DocWrite(
+        op: 'set',
+        collection: 'layout',
+        docId: 'main',
+        data: {
+          'starred': [a],
+          'order': [b],
+        },
+      ),
+    ]);
+    await host.load();
+    final layout = host.layout!;
+    expect(identical(host.layout, layout), isTrue);
+    await pumpEventQueue();
+    expect(layout.readable, isTrue);
+    expect(layout.sections.starred, [a]);
+    expect(layout.sections.order, [b]);
+
+    final c = api.seedArtifact('C', _page);
+    await host.load();
+    await pumpEventQueue();
+    expect(layout.sections.order, [c, b]);
+
+    settings.homeAppId = null;
+    expect(host.layout, isNull);
+  });
+
   test(
     'another app is refused every call and never sees it available',
     () async {
