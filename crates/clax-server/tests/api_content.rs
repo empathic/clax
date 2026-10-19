@@ -51,6 +51,37 @@ async fn serves_wrapped_index_and_files_with_caching_headers() {
 }
 
 #[tokio::test]
+async fn a_deleted_artifacts_files_are_not_served_while_its_content_remains() {
+    let ts = TestServer::spawn().await;
+    let created = ts
+        .publish(
+            "R",
+            &[("index.html", "<p>hi</p>"), ("css/a.css", "p{color:red}")],
+        )
+        .await;
+    let id = created["artifact"]["id"].as_str().unwrap();
+    let paths = [
+        format!("/c/{id}/v/1/css/a.css"),
+        format!("/api/artifacts/{id}/versions/1/files/css/a.css"),
+    ];
+    for p in &paths {
+        assert_eq!(ts.get(p).await.status(), 200, "{p}");
+    }
+    // What a delete whose content removal failed leaves: the row marked
+    // deleted, the versions and the files in place.
+    rusqlite::Connection::open(ts.home.db_path())
+        .unwrap()
+        .execute(
+            "UPDATE artifacts SET deleted_at = '2026-10-19T00:00:00Z' WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+    for p in &paths {
+        assert_eq!(ts.get(p).await.status(), 404, "{p}");
+    }
+}
+
+#[tokio::test]
 async fn artifact_host_routes_to_content_and_nothing_else() {
     let ts = TestServer::spawn().await;
     let created = ts.publish("R", &[("index.html", "<p>hi</p>")]).await;
