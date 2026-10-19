@@ -37,6 +37,7 @@ import 'platform/device/device_plugins.dart';
 import 'platform/device/reminders.dart';
 import 'platform/external_links.dart';
 import 'platform/install_id.dart';
+import 'platform/intents.dart';
 import 'platform/local_notifications.dart';
 import 'platform/pending_make.dart';
 import 'platform/secure_key.dart';
@@ -256,6 +257,7 @@ Future<AppServices> platformServices({DateTime? launched}) async {
     pendingMake: PendingMake(File('${support.path}/pending-make.json')),
     bundleKey: BundleKey(FlutterBundleSeedStorage()),
     bundleIntake: ChannelBundleIntake(),
+    intents: Platform.isIOS ? ChannelIntents() : null,
     shippedHome: AssetShippedHome(),
     homeSnapshots: snapshots,
     homeSnapshot: await snapshots.load(),

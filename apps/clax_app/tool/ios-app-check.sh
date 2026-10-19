@@ -19,11 +19,13 @@
 # other user content, and a reason for exactly the required-reason API
 # categories the main binary imports), and the home
 # bundle HOME_BUNDLE (the one //apps/clax_app:home_bundle built) in
-# Flutter's assets. The main binary must be built for the iOS simulator
+# Flutter's assets, and the App Intents metadata that lists "Comment in
+# Clax" (its title and the intent's type) for Shortcuts, Siri and the Action
+# Button. The main binary must be built for the iOS simulator
 # (platform 7) at minos $IOS_MINIMUM_OS, export the daemon's four C
 # functions, register every plugin with a native iOS half, and hold the
-# background channel's name and its tasks' names, and the bundles
-# channel's. Every object of each STATIC_LIB that names an iOS must name one
+# background channel's name and its tasks' names, and the bundles and
+# intents channels'. Every object of each STATIC_LIB that names an iOS must name one
 # no newer than $IOS_MINIMUM_OS, so a mismatch fails here rather than
 # warning at link.
 set -euo pipefail
@@ -94,6 +96,17 @@ for p in file_picker flutter_local_notifications flutter_secure_storage flutter_
 done
 assets="$app/Frameworks/App.framework/flutter_assets/assets/home"
 if cmp -s "$assets/home.clax" "$home"; then ok "the home bundle built from the sources"; else bad "the home bundle built from the sources ($assets/home.clax and $home)"; fi
+# Metadata.appintents (rules_apple's app_intents, from ios/Intents): the
+# system reads the app's intents from it without running the app.
+actions="$app/Metadata.appintents/extract.actionsdata"
+if [ -f "$actions" ]; then
+    ok "Metadata.appintents"
+    for t in CommentInClax "Comment in Clax"; do
+        if grep -qF "\"$t\"" "$actions"; then ok "Metadata.appintents names \"$t\""; else bad "Metadata.appintents names \"$t\""; fi
+    done
+else
+    bad "Metadata.appintents"
+fi
 bin="$app/$(raw CFBundleExecutable)"
 if [ -f "$bin" ]; then
     ok "executable"
@@ -113,7 +126,9 @@ if [ -f "$bin" ]; then
     done
     # ios/Runner/Background.swift: its channel and its two background tasks.
     # ios/Runner/BundleIntake.swift: the bundles channel.
-    for t in dev.empathic.clax/background "Clax trim" "Clax run" dev.empathic.clax/bundles; do
+    # ios/Runner/IntentsChannel.swift: the intents channel.
+    for t in dev.empathic.clax/background "Clax trim" "Clax run" dev.empathic.clax/bundles \
+        dev.empathic.clax/intents; do
         if grep -qxF "$t" <<<"$texts"; then ok "the binary holds \"$t\""; else bad "the binary holds \"$t\""; fi
     done
 else

@@ -54,6 +54,7 @@ import 'platform/bundle_key.dart';
 import 'platform/connection.dart';
 import 'platform/device/device_consent_dialog.dart';
 import 'platform/device/device_host.dart';
+import 'platform/intents.dart';
 import 'platform/network_pause.dart';
 import 'platform/pending_make.dart';
 import 'platform/secure_key.dart';
@@ -127,6 +128,7 @@ class AppServices {
     this.device,
     this.bundleKey,
     this.bundleIntake,
+    this.intents,
     this.bundleFiles,
     this.shippedHome,
     this.homeSnapshots,
@@ -256,6 +258,10 @@ class AppServices {
   /// The `.clax` files the person opens in Clax from outside it; none
   /// when null.
   final BundleIntake? bundleIntake;
+
+  /// The App Intents the person runs in Clax from outside it ("Comment in
+  /// Clax"); none when null.
+  final Intents? intents;
 
   /// Where a shared bundle goes and an imported one comes from; the share
   /// sheet (the save panel on the Mac) and the file picker when null.
@@ -563,6 +569,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// Whether the paused notice is up, until Clax is back in front.
   var _pausedNotice = false;
   StreamSubscription<AppNoticeTap>? _taps;
+  StreamSubscription<String>? _intents;
   StreamSubscription<ReminderTap>? _reminderTaps;
   StreamSubscription<StreamEvent>? _deletions;
   StreamSubscription<StreamEvent>? _questionEvents;
@@ -628,6 +635,12 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// An app a notification asked to open (and what to do there) before
   /// the daemon was up.
   ({String aid, AppAction? action})? _pendingOpen;
+
+  /// A "Comment in Clax" run before the daemon was up.
+  var _pendingComment = false;
+
+  /// The app whose page was opened last in this launch.
+  String? _lastOpened;
 
   DaemonState _daemon = const Starting();
 
@@ -829,6 +842,15 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         }),
       );
     }
+    if (_s.intents case final intents?) {
+      _intents = intents.intents.listen(_onIntent);
+      unawaited(
+        intents.initial().then((names) {
+          if (!mounted) return;
+          names.forEach(_onIntent);
+        }),
+      );
+    }
     if (_device case final d?) {
       _reminderTaps = d.taps.listen(_onReminderTap);
       unawaited(d.start());
@@ -848,6 +870,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     unawaited(_opened?.cancel());
     unawaited(_pauses?.cancel());
     unawaited(_taps?.cancel());
+    unawaited(_intents?.cancel());
     unawaited(_reminderTaps?.cancel());
     unawaited(_deletions?.cancel());
     unawaited(_questionEvents?.cancel());
@@ -1303,6 +1326,10 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           _pendingOpen = null;
           scheduleMicrotask(() => _openFromNotice(aid, action: action));
         }
+        if (_pendingComment) {
+          _pendingComment = false;
+          scheduleMicrotask(() => unawaited(_commentIntent()));
+        }
         _startBundles();
         _homeKeeper?.daemonUp();
         if (!_offeredLostMake) {
@@ -1755,6 +1782,48 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     _open(aid, action: action);
   }
 
+  /// An App Intent the person ran ([Intents]); only [Intents.comment] is
+  /// known.
+  void _onIntent(String name) {
+    if (name != Intents.comment) return;
+    if (!_wasUp || _endpoint.value == null) {
+      _pendingComment = true;
+      return;
+    }
+    unawaited(_commentIntent());
+  }
+
+  /// "Comment in Clax": comment mode on the app on top; with none, on the
+  /// app opened last in this launch, else on the newest app but the home
+  /// app.
+  Future<void> _commentIntent() async {
+    if (_openApps.lastOrNull case final top?) {
+      _openFromNotice(top.aid, action: AppAction.comment);
+      return;
+    }
+    var aid = _lastOpened;
+    if (aid == null) {
+      final home = _homeHost?.settings.homeAppId;
+      try {
+        final apps = List.of(await _api.listArtifacts())
+          ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+        aid = apps.where((a) => a.id != home).firstOrNull?.id;
+      } on Object {
+        // The daemon is unreachable: nothing to open.
+      }
+      if (!mounted) return;
+    }
+    if (aid == null) {
+      if (_nav.currentContext case final context? when context.mounted) {
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+          const SnackBar(content: Text('No app to comment on yet')),
+        );
+      }
+      return;
+    }
+    _openFromNotice(aid, action: AppAction.comment);
+  }
+
   /// What a tapped news notification names: [questionNews] and a question
   /// ID for a question, else an app's artifact ID.
   void _onNews(String target) {
@@ -2122,6 +2191,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       ),
     );
     _openApps.add(open = _OpenApp(aid, route, actions));
+    _lastOpened = aid;
     unawaited(
       route.popped.whenComplete(() {
         _openApps.remove(open);

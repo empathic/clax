@@ -60,6 +60,10 @@ def clax_ios_app(name, version_name, version_code):
       <name>        flutter_ios_app (iPhone and iPad, iOS 17.0) with the
                     in-process daemon (`:ios_daemon`); manual
       ios_daemon    swift_library ClaxDaemon importing ClaxIOS
+      ios_intents   swift_library ClaxIntents: the App Intent "Comment in
+                    Clax" and the inbox the runner's IntentsChannel takes
+                    it from; linked into the runner and its metadata
+                    extracted into the bundle's Metadata.appintents
       ios_plugin_frameworks
                     the system frameworks the plugins' Objective-C needs
                     and rules_flutter's generated libraries do not link
@@ -89,6 +93,20 @@ def clax_ios_app(name, version_name, version_code):
         deps = ["//crates/clax-ios:clax_ios_c"],
     )
 
+    swift_library(
+        name = "ios_intents",
+        srcs = ["ios/Intents/CommentInClax.swift"],
+        # rules_apple's app_intents reads the linked SDK frameworks to find
+        # the intents library: it must name AppIntents.
+        linkopts = [
+            "-framework",
+            "AppIntents",
+        ],
+        module_name = "ClaxIntents",
+        tags = ["manual"],
+        target_compatible_with = ["@platforms//os:ios"],
+    )
+
     # share_plus's podspec links LinkPresentation and image_picker_ios's
     # kUTType constants are MobileCoreServices', but the libraries
     # rules_flutter generates for them link neither: the app fails to link
@@ -112,6 +130,7 @@ def clax_ios_app(name, version_name, version_code):
     )
 
     app = dict(
+        app_intents = [":ios_intents"],
         app_name = "Clax",
         application = ":app",
         bundle_id = IOS_BUNDLE_ID,
@@ -123,8 +142,12 @@ def clax_ios_app(name, version_name, version_code):
         # The app's own privacy manifest, at the bundle's root beside the
         # plugins' (rules_flutter adds those).
         resources = ["ios/Runner/PrivacyInfo.xcprivacy"],
+        # ios_intents is linked here, and its metadata extracted through
+        # app_intents (ios_application's, through flutter_ios_app's
+        # **kwargs): app_intents does not link.
         runner_deps = [
             ":ios_daemon",
+            ":ios_intents",
             ":ios_plugin_frameworks",
         ],
         version = ":ios_version",
@@ -234,6 +257,7 @@ def clax_ios_integration_tests(assets, deps):
             minimum_os_version = IOS_MINIMUM_OS,
             runner_deps = [
                 ":ios_daemon",
+                ":ios_intents",
                 ":ios_plugin_frameworks",
             ],
             tags = ["manual"],

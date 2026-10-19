@@ -14,6 +14,7 @@ import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/daemon/supervisor.dart';
 import 'package:clax_app/platform/app_notice.dart';
+import 'package:clax_app/platform/intents.dart';
 import 'package:clax_app/platform/secure_key.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/ai_consent_sheet.dart';
@@ -71,6 +72,7 @@ class _Rig {
     this.webInspector = false,
     this.notice,
     this.aiConsent = false,
+    this.intents,
   }) : dir = Directory.systemTemp.createTempSync('app-test-'),
        key = _Key(key) {
     if (settings != null) {
@@ -89,6 +91,9 @@ class _Rig {
 
   /// The open app's notice; none (as on macOS) when null.
   final FakeAppNotice? notice;
+
+  /// The App Intents run in Clax; none (as off iOS) when null.
+  final FakeIntents? intents;
 
   /// Whether the app gets a [WebViewInspector] over fake surfaces
   /// ([inspectorSurfaces]).
@@ -153,6 +158,7 @@ class _Rig {
     prompts: PromptBuilder(rootBundle),
     cliSupported: cliSupported,
     notice: notice,
+    intents: intents,
     inspector: webInspector
         ? WebViewInspector(
             surface: (_) {
@@ -978,6 +984,79 @@ void main() {
     final screen = tester.widget<AppScreen>(find.byType(AppScreen));
     expect(screen.aid, aid);
     expect(screen.initialAction, AppAction.threads);
+  });
+
+  group('the comment intent', () {
+    testWidgets('enters comment mode on the app on top', (tester) async {
+      final intents = FakeIntents();
+      await pumpApp(tester, _Rig(key: 'sk-ant-x', intents: intents));
+      await up(tester);
+      final runs = rig.api.seedArtifact('Runs', {'index.html': _page});
+      await openApp(tester, runs);
+      expect(find.byKey(const ValueKey('comment-bar')), findsNothing);
+
+      intents.run('comment');
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('comment-bar')), findsOneWidget);
+      expect(
+        tester.widgetList(find.byType(AppScreen, skipOffstage: false)),
+        hasLength(1),
+        reason: 'not opened again',
+      );
+    });
+
+    testWidgets('with Home on top opens the app used last, then enters its '
+        'comment mode', (tester) async {
+      final intents = FakeIntents();
+      await pumpApp(tester, _Rig(key: 'sk-ant-x', intents: intents));
+      await up(tester);
+      final runs = rig.api.seedArtifact('Runs', {'index.html': _page});
+      await openApp(tester, runs);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.byType(AppScreen), findsNothing);
+      // A newer app than the one used last.
+      rig.api.seedArtifact('Notes', {'index.html': _page});
+
+      intents.run('comment');
+      await pumpRoute(tester);
+      final screen = tester.widget<AppScreen>(find.byType(AppScreen));
+      expect(screen.aid, runs);
+      expect(screen.initialAction, AppAction.comment);
+      rig.surfaces.last.push(
+        Ready(artifact: runs, version: 1, latest: 1, file: 'index.html'),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('comment-bar')), findsOneWidget);
+    });
+
+    testWidgets('that launched Clax opens the newest app once the daemon is '
+        'up', (tester) async {
+      final intents = FakeIntents()..launch = ['comment'];
+      final r = _Rig(key: 'sk-ant-x', intents: intents);
+      final aid = r.api.seedArtifact('Runs', {'index.html': _page});
+      await pumpApp(tester, r);
+      expect(find.byType(AppScreen), findsNothing);
+      rig.supervisor.set(Up(endpoint(port: 7999, pid: 100)));
+      await pumpRoute(tester);
+      final screen = tester.widget<AppScreen>(find.byType(AppScreen));
+      expect(screen.aid, aid);
+      expect(screen.initialAction, AppAction.comment);
+    });
+
+    testWidgets('with no app yet says so, and an unknown intent does '
+        'nothing', (tester) async {
+      final intents = FakeIntents();
+      await pumpApp(tester, _Rig(key: 'sk-ant-x', intents: intents));
+      await up(tester);
+      intents.run('unknown');
+      await tester.pumpAndSettle();
+      expect(find.byType(SnackBar), findsNothing);
+      intents.run('comment');
+      await tester.pumpAndSettle();
+      expect(find.byType(AppScreen), findsNothing);
+      expect(find.text('No app to comment on yet'), findsOneWidget);
+    });
   });
 
   testWidgets('a WebViewInspector is kept in the root, under the app, and '
