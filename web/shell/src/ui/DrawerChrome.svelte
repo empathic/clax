@@ -105,6 +105,12 @@
   }
 
   const choose = (layout: DrawerLayout) => drawer.set({ ...p, layout });
+  // Hiding takes the focused button away with the drawer: focus goes to the
+  // top bar's Threads toggle, which opens it again.
+  const hide = () => {
+    onClose();
+    void tick().then(() => document.querySelector<HTMLElement>(".topbar button.threads")?.focus());
+  };
   const barDown = (e: PointerEvent) => {
     if (p.layout === "float" && !(e.target as Element).closest("button")) drag(e, "move");
   };
@@ -139,7 +145,7 @@
         </button>
       {/each}
     </div>
-    <button type="button" class="icon ghost" aria-label="Hide threads" title="Hide threads" onclick={onClose}>
+    <button type="button" class="icon ghost" aria-label="Hide threads" title="Hide threads" onclick={hide}>
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/></svg>
     </button>
   </div>
