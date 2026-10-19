@@ -1583,8 +1583,6 @@ fn repair(tx: &rusqlite::Transaction<'_>) -> clax_core::Result<()> {
     Ok(())
 }
 
-/// Mints the install ID once: 128 random bits in lowercase hex. It holds
-/// no timestamp, so an exported reference does not date the install.
 /// Keeps every existing viewer's cookie, its row ID, working (spec
 /// 2026-10-08 §21.4): its SHA-256 as a `legacy` cookie of that viewer. The
 /// owner's row is skipped: no browser holds its ID as a cookie.
@@ -1604,6 +1602,8 @@ fn legacy_viewer_cookies(tx: &rusqlite::Transaction<'_>) -> clax_core::Result<()
     Ok(())
 }
 
+/// Mints the install ID once: 128 random bits in lowercase hex. It holds
+/// no timestamp, so an exported reference does not date the install.
 fn install_id(tx: &rusqlite::Transaction<'_>) -> clax_core::Result<()> {
     let id: String = rand::random::<[u8; 16]>()
         .iter()
