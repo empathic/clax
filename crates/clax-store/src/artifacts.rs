@@ -598,7 +598,7 @@ impl Store {
                     return Ok(0);
                 }
                 // A raise naming it goes with it (spec §14).
-                super::elevations::drop_artifact_in(self, tx, &AuditCtx::DAEMON, &id)?;
+                super::elevations::drop_artifact_in(self, tx, &AuditCtx::DAEMON, id)?;
                 // Every row naming it: a live page's creation writes its
                 // scope watches before its first version.
                 for sql in [
