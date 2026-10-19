@@ -5179,3 +5179,23 @@ async fn signing_in_under_the_notice_agrees_and_the_prompt_records_the_rest() {
         .await;
     assert_ne!(s, 204);
 }
+
+#[tokio::test]
+async fn an_artifacts_answer_with_a_signed_in_viewers_attention_is_private() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let aid = site.artifact().await;
+    let mia = site.person(&owner, "Mia").await;
+    for b in [&owner, &mia] {
+        let res = site
+            .req(b, reqwest::Method::GET, &format!("/api/artifacts/{aid}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        assert_eq!(res.headers()["cache-control"], "private, no-cache");
+        assert_eq!(res.headers()["vary"], "Cookie");
+        let v: Value = res.json().await.unwrap();
+        assert!(v.get("attention").is_some(), "{v}");
+    }
+}

@@ -462,9 +462,9 @@ fn publisher(caller: &clax_http::auth::Caller) -> Option<String> {
 /// The artifact (with the owner fields of [`with_owner`]) and its versions,
 /// filtered for an agent channel's reader. Without the token, no session ID
 /// is included. From a browser with a viewer
-/// (the owner for the owner cookie, else the viewer cookie's; see
-/// [`clax_http::identity`]), also that viewer's `attention`, and the response is
-/// private to the cookie.
+/// (the owner for the owner cookie, else the viewer cookie's or a hosted
+/// session's; see [`clax_http::identity`]), also that viewer's `attention`,
+/// and the response is private to the cookie.
 pub async fn get(
     State(s): State<AppState>,
     a: Agent<clax_http::agent::ArtifactsGet>,
@@ -475,7 +475,7 @@ pub async fn get(
     let id = parse_id(&path(aid)?)?;
     let who = clax_http::identity::Identity::from_parts(&headers, &extensions, &s.token);
     let working = s.working.for_artifact(id.as_str());
-    let has_viewer = who.owner_browser() || who.cookie.is_some();
+    let has_viewer = who.owner_browser() || who.names_viewer();
     let vf = VisFor::of(&a.caller, &s);
     let reader = SourceReader::new(a.caller.clone(), a.member().cloned(), s.hosted.is_some());
     let (caller, member) = (a.caller.clone(), a.member_rights());
