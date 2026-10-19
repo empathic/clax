@@ -100,7 +100,6 @@ import 'ui/settings/settings_tabs.dart';
 import 'ui/settings_screen.dart';
 import 'ui/shortcuts.dart' show ClaxCommand;
 import 'ui/splash.dart';
-import 'ui/split/sidebar.dart' show makeStateLine;
 import 'ui/split/sidebar_model.dart';
 import 'ui/split/split_shell.dart';
 import 'ui/theme.dart';
@@ -713,6 +712,11 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   SidebarModel? _sidebar;
   final _selection = ValueNotifier<SidebarSelection>(const HomeSelected());
 
+  /// The make whose build view the split window's detail shows, by its
+  /// ID: once made, a make leaves the host's list, and its view stays
+  /// selected while it follows the new app's build.
+  ({String id, MakeSession session})? _paneMake;
+
   /// The home screen's route, kept when the window becomes a split one or
   /// stops being one.
   final _homeRouteKey = GlobalKey();
@@ -799,7 +803,29 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     build: _build,
     bundles: _bundles,
     lineage: _lineages.entry,
+    showMakeInPane: _showMakeInPane,
   );
+
+  /// Selects make [s] in a split window, whose detail then shows its
+  /// build view; false when no split window shows.
+  bool _showMakeInPane(MakeSession s) {
+    final sidebar = _sidebar;
+    final host = _homeHost;
+    if (!_split || sidebar == null || host == null) return false;
+    _nav.currentState?.popUntil((r) => r.isFirst);
+    sidebar.select(MakeSelected(host.makeIdOf(s)));
+    return true;
+  }
+
+  /// Shows make [s]'s build view as the home screen's flows do: in a split
+  /// window's detail, else as a route, Edit reopening the New sheet.
+  void _showMaking(MakeSession s) {
+    if (_homeHost == null) {
+      unawaited(_nav.currentState?.push(_makingRoute(s)));
+    } else {
+      unawaited(_homeFlows.showMake(s));
+    }
+  }
 
   /// The actions of the home app's screen.
   final _homeActions = StreamController<AppAction>.broadcast();
@@ -1432,7 +1458,11 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
             needsKey: _needsKey,
           );
           _homeFlows.host = _homeHost!..setChrome(_chrome);
-          _sidebar = SidebarModel(host: _homeHost!, selected: _selection);
+          _sidebar = SidebarModel(
+            host: _homeHost!,
+            selected: _selection,
+            keeps: (s) => s is MakeSelected && s.id == _paneMake?.id,
+          );
           _watchHome(_homeHost!);
           _homeRecovery = HomeRecovery(
             api: _api,
@@ -1814,10 +1844,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// view offers Keep going.
   void _stoppedAway(MakeSession s) => _toast(
     'Made a start on “${s.request}”',
-    SnackBarAction(
-      label: 'Show',
-      onPressed: () => unawaited(_nav.currentState?.push(_makingRoute(s))),
-    ),
+    SnackBarAction(label: 'Show', onPressed: () => _showMaking(s)),
   );
 
   /// Forgets the draft and the plan a stopped make kept under [key].
@@ -1833,10 +1860,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// Make [s] failed while no build view showed it; its tile shows why.
   void _failedAway(MakeSession s) => _toast(
     'Couldn’t make “${s.request}”',
-    SnackBarAction(
-      label: 'Show',
-      onPressed: () => unawaited(_nav.currentState?.push(_makingRoute(s))),
-    ),
+    SnackBarAction(label: 'Show', onPressed: () => _showMaking(s)),
   );
 
   void _toast(String text, SnackBarAction action) {
@@ -2729,12 +2753,49 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         leave: () => _sidebar?.select(const HomeSelected()),
       ),
     ),
-    MakeSelected(:final id) => _MakeDetail(
-      make: _homeHost?.state.makes.where((m) => m.id == id).firstOrNull,
-      open: () => _homeHost?.actions.openMake(id),
-    ),
+    MakeSelected(:final id) => _makeDetail(id),
     HomeSelected() => const SizedBox.shrink(),
   };
+
+  /// The detail of make [id]: its build view, or what is left to do with
+  /// an interrupted make.
+  Widget _makeDetail(String id) {
+    final host = _homeHost;
+    final kept = _paneMake;
+    final s =
+        host?.sessionOf(id) ?? (kept?.id == id ? kept?.session : null);
+    if (host == null || s == null) return const _MakeDetail();
+    _paneMake = (id: id, session: s);
+    return ListenableBuilder(
+      listenable: s,
+      builder: (context, _) => s.interrupted
+          ? _MakeDetail(
+              request: s.request,
+              discard: () => host.makes.dismiss(s),
+              again: () => host.makes.resume(s),
+            )
+          : MakingScreen(
+              key: ObjectKey(s),
+              request: s.request,
+              session: s,
+              openSettings: () => unawaited(_openSettings()),
+              timings: _s.timings,
+              build: _build,
+              onExit: (result) => _leftPane(id, s, result),
+            ),
+    );
+  }
+
+  /// Make [s]'s build view in the detail closed with [result]: Home is
+  /// selected while the make goes on, or once it stopped, and a made app
+  /// is selected ([HomeFlows.makingLeft]).
+  void _leftPane(String id, MakeSession s, MakingResult? result) {
+    if (_paneMake?.id == id) _paneMake = null;
+    if (_selection.value == MakeSelected(id)) {
+      _sidebar?.select(const HomeSelected());
+    }
+    unawaited(_homeFlows.makingLeft(s, result));
+  }
 
   /// The home screen's route over [host]: the home app, or the built-in
   /// home screen, under the launch's [cover] while it shows.
@@ -3039,37 +3100,39 @@ class _UpdatingCover extends StatelessWidget {
   }
 }
 
-/// A make in a split window's detail: its request and state, and Show
-/// progress, which opens its build view; [make] is null once it is gone.
+/// A make in a split window's detail that has no build view to show: an
+/// interrupted one, with Discard and Make it again, or one that has ended.
 class _MakeDetail extends StatelessWidget {
-  const _MakeDetail({required this.make, required this.open});
+  const _MakeDetail({this.request, this.discard, this.again});
 
-  final HomeMake? make;
-  final VoidCallback open;
+  /// The interrupted make's request; null for a make that has ended.
+  final String? request;
+  final VoidCallback? discard;
+  final VoidCallback? again;
 
   @override
   Widget build(BuildContext context) {
-    final m = make;
-    final progress = m?.progress;
+    final r = request;
     return Scaffold(
       body: Center(
         child: ClaxEmpty(
           icon: Icons.hourglass_top_rounded,
-          title: m?.request ?? 'This make has ended.',
-          body: m == null
-              ? null
-              : makeStateLine(m.state) ??
-                    (progress == null
-                        ? 'Making…'
-                        : 'Making: ${progress.done} of ${progress.total} done'),
+          title: r == null ? 'This make has ended.' : 'This wasn’t finished.',
+          body: r == null ? null : '“$r”',
           actions: [
-            if (m != null)
+            if (r != null) ...[
               ClaxButton(
-                label: 'Show progress',
+                label: 'Discard',
+                kind: ClaxButtonKind.destructive,
+                onPressed: discard,
+              ),
+              ClaxButton(
+                label: 'Make it again',
                 kind: ClaxButtonKind.primary,
                 isDefault: true,
-                onPressed: open,
+                onPressed: again,
               ),
+            ],
           ],
         ),
       ),

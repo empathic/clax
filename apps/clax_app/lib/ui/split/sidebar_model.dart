@@ -127,13 +127,15 @@ final class MakeRow extends SidebarRow {
 /// listed.
 ///
 /// [selection] lives in [selected] (made here when not given), so whoever
-/// lays the window out can follow it. A selected app no longer listed
-/// gives way to Home.
+/// lays the window out can follow it. A selected app or make no longer
+/// listed gives way to Home, unless [keeps] keeps it (a make's build view
+/// that stays to follow its new app's build).
 class SidebarModel extends ChangeNotifier {
   SidebarModel({
     required this.host,
     ValueNotifier<SidebarSelection>? selected,
     this.unreadOf,
+    this.keeps,
   }) : selected = selected ?? ValueNotifier(const HomeSelected()),
        _ownsSelected = selected == null {
     host.addListener(_onHost);
@@ -149,6 +151,10 @@ class SidebarModel extends ChangeNotifier {
 
   /// The unread threads of app [id]; none when null.
   final int Function(String id)? unreadOf;
+
+  /// Whether [selection], no longer listed, stays selected; none does
+  /// when null.
+  final bool Function(SidebarSelection selection)? keeps;
 
   HomeLayout? _layout;
   final _open = <String>{};
@@ -272,7 +278,9 @@ class SidebarModel extends ChangeNotifier {
         MakeSelected(:final id) => !host.state.makes.any((m) => m.id == id),
         HomeSelected() => false,
       };
-      if (gone) selected.value = const HomeSelected();
+      if (gone && !(keeps?.call(s) ?? false)) {
+        selected.value = const HomeSelected();
+      }
     }
     notifyListeners();
   }

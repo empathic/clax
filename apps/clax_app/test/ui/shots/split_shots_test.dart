@@ -3,7 +3,9 @@
 // make, light and dark, as `split-home-<form>-<theme>.png` and
 // `split-app-<form>-<theme>.png`; and on the Mac, `split-hover-mac-<theme>`:
 // the app's row selected while the sidebar has the keyboard, in the
-// system's accent (macOS's default blue), with the mouse over another row.
+// system's accent (macOS's default blue), with the mouse over another row;
+// and `split-make-<form>-<theme>`: the make selected, its build view in the
+// detail with the page streaming into the preview.
 //
 // The Mac form is drawn under the main window's real toolbar row (52
 // points, the window buttons' corner 79 points across, as
@@ -16,7 +18,10 @@
 //   bazelisk test //apps/clax_app:ui_shots_split_shots_test \
 //     --nocache_test_results --test_env=CLAX_SHOTS_DIR="$SHOTS" \
 //     --sandbox_writable_path="$SHOTS"
+import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/ui/kit/kit.dart';
+import 'package:clax_app/ui/making_preview.dart';
+import 'package:clax_app/ui/making_screen.dart';
 import 'package:clax_app/ui/split/sidebar_model.dart';
 import 'package:clax_app/ui/split/split_shell.dart';
 import 'package:clax_app/ui/theme.dart';
@@ -147,6 +152,89 @@ class _Page extends StatelessWidget {
 
 Widget _detail(SidebarSelection s) => const Material(child: _Page());
 
+/// A tide table as the make's live preview shows it.
+class _Preview implements PreviewView {
+  final _loaded = ValueNotifier(false);
+
+  @override
+  Future<void> loadHtml(String html) async => _loaded.value = true;
+
+  @override
+  Widget build(BuildContext context) => ValueListenableBuilder(
+    valueListenable: _loaded,
+    builder: (context, loaded, _) => loaded
+        ? ColoredBox(
+            color: const Color(0xFFFFFFFF),
+            child: Padding(
+              padding: const EdgeInsets.all(28),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Harbour tides',
+                    style: TextStyle(
+                      fontFamily: '.AppleSystemUIFont',
+                      fontSize: 28,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF1D1D1F),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  for (final t in const [
+                    '04:12  High  4.1 m',
+                    '10:31  Low  0.6 m',
+                    '16:40  High  4.3 m',
+                  ])
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Text(
+                        t,
+                        style: const TextStyle(
+                          fontFamily: '.AppleSystemUIFont',
+                          fontSize: 17,
+                          color: Color(0xFF1D1D1F),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          )
+        : const SizedBox(),
+  );
+
+  @override
+  void dispose() {}
+}
+
+/// The detail with the make's build view for a make, [f]'s make streaming
+/// its page.
+Widget Function(SidebarSelection) _makeDetail(SplitFixture f) =>
+    (s) => switch (s) {
+      MakeSelected(:final id) => MakingScreen(
+        request: f.host.sessionOf(id)!.request,
+        session: f.host.sessionOf(id),
+        preview: _Preview.new,
+        haikus: () async => const [],
+        onExit: (_) {},
+      ),
+      _ => _detail(s),
+    };
+
+/// Selects [f]'s make in [model].
+void _making(SplitFixture f, SidebarModel model) =>
+    model.select(MakeSelected(f.host.makeIdOf(f.makes.makes.single)));
+
+/// Streams the page into the selected make's preview.
+Future<void> _stream(WidgetTester tester, SplitFixture f) async {
+  f.report!(const MakeProgress(Narration('Laying out the day’s tides.')));
+  f.report!(MakeProgress(toolStarted('write_file', {'path': 'index.html'})));
+  f.report!(
+    const MakeProgress(PartialFile('index.html', '<h1>Harbour tides</h1>')),
+  );
+  await tester.pump();
+}
+
 /// The window's sidebar material behind the clear sidebar, [width] wide.
 class _Material extends StatelessWidget {
   const _Material({required this.width, required this.dark});
@@ -270,8 +358,9 @@ void main() {
     return (f, model);
   }
 
-  for (final scene in ['home', 'app', 'hover']) {
-    final app = scene != 'home';
+  for (final scene in ['home', 'app', 'hover', 'make']) {
+    final app = scene == 'app' || scene == 'hover';
+    final make = scene == 'make';
     for (final dark in [false, true]) {
       final name = 'split-$scene-mac-${dark ? 'dark' : 'light'}';
       testWidgets(name, skip: dir == null, (tester) async {
@@ -291,6 +380,7 @@ void main() {
             model.toggleGroup('tools');
             model.select(AppSelected(f.ids['Groceries']!));
           }
+          if (make) _making(f, model);
           await tester.pumpWidget(
             Builder(
               builder: (context) {
@@ -319,12 +409,16 @@ void main() {
                             home: SplitShell(
                               model: model,
                               home: const Material(child: _Grid()),
-                              detailFor: _detail,
+                              detailFor: make ? _makeDetail(f) : _detail,
                             ),
                           ),
                         ),
                         _Toolbar(
-                          title: app ? 'Groceries' : 'Clax',
+                          title: app
+                              ? 'Groceries'
+                              : make
+                              ? 'A tide table'
+                              : 'Clax',
                           subtitle: app ? 'Version 4' : null,
                           dark: dark,
                           share: app,
@@ -345,6 +439,12 @@ void main() {
           );
           for (var i = 0; i < 6; i++) {
             await tester.pump(const Duration(milliseconds: 100));
+          }
+          if (make) {
+            await _stream(tester, f);
+            for (var i = 0; i < 4; i++) {
+              await tester.pump(const Duration(milliseconds: 100));
+            }
           }
           if (scene == 'hover') {
             // The keyboard in the sidebar, and the mouse over Budget.
@@ -383,17 +483,26 @@ void main() {
     }
   }
 
-  for (final app in [false, true]) {
-    shots('split-${app ? 'app' : 'home'}', (s) async {
+  for (final scene in ['home', 'app', 'make']) {
+    shots('split-$scene', (s) async {
       final (f, model) = await fixture(s.tester);
-      if (app) model.select(AppSelected(f.ids['Groceries']!));
+      if (scene == 'app') model.select(AppSelected(f.ids['Groceries']!));
+      if (scene == 'make') _making(f, model);
       await s.tester.pumpWidget(
         s.app(
-          SplitShell(model: model, home: const Material(child: _Grid()), detailFor: _detail),
+          SplitShell(
+            model: model,
+            home: const Material(child: _Grid()),
+            detailFor: scene == 'make' ? _makeDetail(f) : _detail,
+          ),
         ),
       );
       await s.settle(4);
-      await s.take('split-${app ? 'app' : 'home'}');
+      if (scene == 'make') {
+        await _stream(s.tester, f);
+        await s.settle(4);
+      }
+      await s.take('split-$scene');
       model.dispose();
       f.dispose();
     }, forms: const [wide]);

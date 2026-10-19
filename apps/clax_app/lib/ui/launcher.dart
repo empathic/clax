@@ -1033,8 +1033,9 @@ IconData? iconFor(String? word) => switch (word?.trim().toLowerCase()) {
 /// built-in home screen ([Launcher]) and the home app alike.
 ///
 /// New app shows the New sheet; a submitted request starts a make on the
-/// host's makes and shows it in the build view; the artifact ID it returns
-/// goes to [handOver] (which puts the app's route in the build view's
+/// host's makes and shows it in the build view, in a split window's detail
+/// when [showMakeInPane] puts it there; the artifact ID it returns goes to
+/// [handOver] (which puts the app's route in the build view's route's
 /// place), else to [open] once the build view has closed. A request the
 /// person has not made yet (the sheet closed, Cancel, or Edit after a
 /// failure) is kept for the next New. A make's tile shows its build view
@@ -1065,7 +1066,14 @@ class HomeFlows implements HomeActions {
     this.build,
     this.bundles,
     this.lineage,
+    this.showMakeInPane,
   });
+
+  /// Shows make [s]'s build view in a split window's detail, answering
+  /// whether it did; when it did not (no split window shows, or null), the
+  /// build view is pushed. The pane hands what the view left with to
+  /// [makingLeft].
+  final bool Function(MakeSession s)? showMakeInPane;
 
   /// The context the screens are pushed from; null once there is none.
   final BuildContext? Function() contextOf;
@@ -1182,8 +1190,12 @@ class HomeFlows implements HomeActions {
     await _showMake(s);
   }
 
-  /// Shows make [s] in the build view, caught up with what it did.
+  /// Shows make [s] in the build view, caught up with what it did: in a
+  /// split window's detail ([showMakeInPane]), else as a route.
+  Future<void> showMake(MakeSession s) => _showMake(s);
+
   Future<void> _showMake(MakeSession s) async {
+    if (showMakeInPane?.call(s) ?? false) return;
     final result = await Navigator.of(context).push<MakingResult>(
       MaterialPageRoute(
         fullscreenDialog: true,
@@ -1198,15 +1210,27 @@ class HomeFlows implements HomeActions {
       ),
     );
     if (!mounted) return;
+    await makingLeft(s, result, handedOver: handOver != null);
+  }
+
+  /// Make [s]'s build view closed with [result] (null: Cancel): a made
+  /// app opens unless [handedOver] (the view put it in its place), Edit
+  /// shows the New sheet holding the request, and a request not made yet
+  /// is kept for the next New.
+  Future<void> makingLeft(
+    MakeSession s,
+    MakingResult? result, {
+    bool handedOver = false,
+  }) async {
     switch (result) {
       case Made(:final aid):
         if (_draft == s.request) _draft = '';
-        if (handOver == null) openApp(aid);
+        if (!handedOver) openApp(aid);
       case MakingLeft():
         if (_draft == s.request) _draft = '';
       case EditRequest():
         _draft = s.request;
-        await _newApp();
+        if (mounted) await _newApp();
       case null:
         _draft = s.request;
     }

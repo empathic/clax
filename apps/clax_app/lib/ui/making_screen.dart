@@ -17,6 +17,7 @@ import 'build_plan.dart';
 import 'developer.dart';
 import 'haiku.dart';
 import 'kit/kit.dart';
+import 'layout.dart';
 import 'make_service.dart';
 import 'making_preview.dart';
 import 'theme.dart';
@@ -387,9 +388,17 @@ class MakingScreen extends StatefulWidget {
     this.clock = const SystemClock(),
     this.haikus,
     this.keepGoing,
+    this.onExit,
   });
 
   final String request;
+
+  /// Where the screen is a pane's content (a split window's detail) rather
+  /// than a route of its own: what it leaves with goes here in place of
+  /// its route's pop, the same [MakingResult]s ([MakingLeft] from Back,
+  /// null from Cancel, [Made] once made without [onMade]). Back, and the
+  /// navigator's back (⌘[, Escape), still come to the screen.
+  final ValueChanged<MakingResult?>? onExit;
 
   /// Runs the screen's own make, when there is no [session].
   final MakeApp? make;
@@ -613,7 +622,7 @@ class _MakingScreenState extends State<MakingScreen> {
         // After the frame: the session may be told during a build.
         WidgetsBinding.instance
           ..addPostFrameCallback((_) {
-            if (mounted) Navigator.of(context).pop();
+            if (mounted) _pop(null);
           })
           ..ensureVisualUpdate();
       }
@@ -734,7 +743,7 @@ class _MakingScreenState extends State<MakingScreen> {
     if (widget.onMade case final onMade?) {
       onMade(context, aid, _log.png);
     } else {
-      Navigator.of(context).pop(Made(aid));
+      _pop(Made(aid));
     }
   }
 
@@ -804,7 +813,7 @@ class _MakingScreenState extends State<MakingScreen> {
     if (widget.onMade case final onMade?) {
       onMade(context, aid, _log.png);
     } else {
-      Navigator.of(context).pop(Made(aid));
+      _pop(Made(aid));
     }
   }
 
@@ -812,14 +821,30 @@ class _MakingScreenState extends State<MakingScreen> {
   void _leave([MakingResult? result]) {
     _left = true;
     _session.cancel();
-    Navigator.of(context).pop(result);
+    _pop(result);
   }
 
   /// Back to the apps; the make or the build goes on.
-  void _back() => Navigator.of(context).pop(const MakingLeft());
+  void _back() => _pop(const MakingLeft());
+
+  /// Leaves with [result]: the route's pop, or [MakingScreen.onExit].
+  void _pop(MakingResult? result) {
+    if (widget.onExit case final exit?) {
+      exit(result);
+    } else {
+      Navigator.of(context).pop(result);
+    }
+  }
+
+  /// The width of the making view on a phone, and of the failure and the
+  /// stop's text everywhere.
+  static const double _column = 480;
 
   @override
   Widget build(BuildContext context) {
+    // From medium width the preview is the page at the window's (or the
+    // pane's) width, up to a grid's.
+    final wide = ClaxWidth.of(context) >= ClaxWidth.medium;
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
@@ -830,23 +855,29 @@ class _MakingScreenState extends State<MakingScreen> {
         body: SafeArea(
           top: false,
           child: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 480),
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 200),
-                child: _failure == null && _stop == null
-                    ? _buildView(context)
-                    // Scrolls, so its buttons stay reachable with
-                    // large text on a small screen.
-                    : SingleChildScrollView(
-                        key: ValueKey(_stop != null ? 'stopped' : 'failed'),
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 200),
+              child: _failure == null && _stop == null
+                  ? ConstrainedBox(
+                      key: const ValueKey('making-column'),
+                      constraints: BoxConstraints(
+                        maxWidth: wide ? ClaxLayout.grid : _column,
+                      ),
+                      child: _buildView(context),
+                    )
+                  : ConstrainedBox(
+                      key: ValueKey(_stop != null ? 'stopped' : 'failed'),
+                      constraints: const BoxConstraints(maxWidth: _column),
+                      // Scrolls, so its buttons stay reachable with large
+                      // text on a small screen.
+                      child: SingleChildScrollView(
                         padding: const EdgeInsets.all(24),
                         child: switch (_stop) {
                           final st? => _stopped(context, st),
                           null => _failed(context),
                         },
                       ),
-              ),
+                    ),
             ),
           ),
         ),

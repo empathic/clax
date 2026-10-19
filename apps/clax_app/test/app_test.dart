@@ -21,6 +21,7 @@ import 'package:clax_app/ui/ai_consent_sheet.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/inspector_surface.dart';
+import 'package:clax_app/ui/new_sheet.dart' show NewSheet;
 import 'package:clax_app/ui/inbox/inbox_split.dart';
 import 'package:clax_app/ui/launcher.dart';
 import 'package:clax_app/ui/mac/windows.dart';
@@ -533,6 +534,69 @@ void main() {
     await pumpRoute(tester);
     expect(find.byType(AppScreen), findsNothing);
     expect(find.text('New app'), findsOneWidget);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  testWidgets('a wide Mac window makes a new app in its detail: Back leaves '
+      'the make going, its row shows it again, and once made the app opens '
+      'beside the sidebar', (tester) async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.menu, (_) async => null);
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.menu, null),
+    );
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    NavigatorState nav() =>
+        tester.state<NavigatorState>(find.byType(Navigator).first);
+    await pumpApp(tester, _Rig(key: 'sk-ant-x'));
+    await up(tester);
+    expect(find.byType(SplitShell), findsOneWidget);
+    rig.backend.gate = Completer<void>();
+    await tester.tap(find.text('New app'));
+    await tester.pumpAndSettle();
+    // The sheet's field, not the sidebar's filter.
+    await tester.enterText(
+      find.descendant(
+        of: find.byType(NewSheet),
+        matching: find.byType(TextField),
+      ),
+      'a tracker for my runs',
+    );
+    await tester.pump();
+    await tester.tap(find.text('Make it'));
+    await tester.pump();
+    await rig.backend.arrived.future;
+    await pumpRoute(tester);
+    expect(find.byType(MakingScreen), findsOneWidget);
+    expect(find.byType(ClaxSidebar), findsOneWidget);
+    expect(nav().canPop(), isFalse, reason: 'in the detail, not a route');
+    final cancelled = rig.backend.seen.single.cancelled!;
+    var fired = false;
+    unawaited(cancelled.then((_) => fired = true));
+
+    await tester.binding.handlePopRoute();
+    await pumpRoute(tester);
+    expect(find.byType(MakingScreen), findsNothing);
+    expect(find.text('New app'), findsOneWidget);
+    expect(fired, isFalse);
+
+    await tester.tap(
+      find.descendant(
+        of: find.byType(ClaxSidebar),
+        matching: find.text('a tracker for my runs'),
+      ),
+    );
+    await pumpRoute(tester);
+    expect(find.byType(MakingScreen), findsOneWidget);
+
+    rig.backend.gate!.complete();
+    await pumpRoute(tester);
+    expect(find.byType(MakingScreen), findsNothing);
+    expect(find.byType(AppScreen), findsOneWidget);
+    expect(find.byType(ClaxSidebar), findsOneWidget);
+    expect(nav().canPop(), isFalse);
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('an Android phone has no split window, and an app opens over '

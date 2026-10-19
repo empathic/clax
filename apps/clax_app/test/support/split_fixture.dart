@@ -9,6 +9,7 @@ import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/home/home_host.dart';
 import 'package:clax_app/home/home_settings.dart';
 import 'package:clax_app/ui/make_service.dart';
+import 'package:clax_app/ui/making_screen.dart' show MakeUpdate;
 
 const _page = {'index.html': '<!doctype html><title>x</title>'};
 
@@ -62,9 +63,13 @@ class SplitFixture {
   late final String home;
   final ids = <String, String>{};
   final actions = RecordedActions();
-  late final MakeService makes = MakeService(
-    (r, cancel, report) => Completer<String>().future,
-  );
+  late final MakeService makes = MakeService((r, cancel, report) {
+    this.report = report;
+    return Completer<String>().future;
+  });
+
+  /// What the make reports to its build view, once it started.
+  void Function(MakeUpdate update)? report;
   late final HomeHost host;
 
   /// Arranges the apps (Runs and Notes starred; Groceries, the Tools group

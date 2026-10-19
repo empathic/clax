@@ -165,6 +165,25 @@ void main() {
     expect(rows[2], 'Saw');
   });
 
+  test('a selected make no longer listed gives way to Home, unless the '
+      'model keeps it', () async {
+    final make = MakeSelected(host.state.makes.single.id);
+    model.select(make);
+    makes.dismiss(makes.makes.single);
+    await settle();
+    expect(model.selection, const HomeSelected());
+
+    makes.start('A tide table');
+    await settle();
+    final again = MakeSelected(host.state.makes.single.id);
+    final kept = SidebarModel(host: host, keeps: (s) => s == again);
+    addTearDown(kept.dispose);
+    kept.select(again);
+    makes.dismiss(makes.makes.single);
+    await settle();
+    expect(kept.selection, again);
+  });
+
   test('typeSelect selects by title; an app in a closed group opens it', () {
     expect(model.typeSelect('gr'), isTrue);
     expect(model.selection, AppSelected(ids['Groceries']!));

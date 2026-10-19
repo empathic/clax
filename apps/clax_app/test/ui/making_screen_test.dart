@@ -850,6 +850,92 @@ void _screen() {
 }
 
 void _plain() {
+  group('in a wide window', () {
+    /// The make's screen as a pane's content (no route of its own) on
+    /// [platform] in a [size] window; what it leaves with goes to
+    /// [exits].
+    Future<_Rig> pane(
+      WidgetTester tester,
+      List<MakingResult?> exits, {
+      Size size = const Size(1200, 800),
+      TargetPlatform platform = TargetPlatform.macOS,
+    }) async {
+      final rig = _Rig();
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData(platform: platform),
+          home: MakingScreen(
+            request: 'a timer',
+            make: rig.make.call,
+            preview: () => rig.preview,
+            clock: rig.clock,
+            haikus: () async => const [],
+            onExit: exits.add,
+          ),
+        ),
+      );
+      await _settle(tester);
+      rig.progress(const PartialFile('index.html', '<p>hi'));
+      await tester.pump();
+      return rig;
+    }
+
+    testWidgets('at 1200 the preview is the page at the pane’s width, wider '
+        'than a phone column and at most 960', (tester) async {
+      await pane(tester, []);
+      final card = tester.getSize(find.byKey(const ValueKey('fake-preview')));
+      expect(card.width, greaterThan(448));
+      expect(card.width, lessThanOrEqualTo(960));
+    });
+
+    testWidgets('on a phone the preview keeps to the phone’s width', (
+      tester,
+    ) async {
+      final rig = _Rig();
+      rig.size = const Size(412, 800);
+      await rig.pump(tester);
+      rig.progress(const PartialFile('index.html', '<p>hi'));
+      await tester.pump();
+      final card = tester.getSize(find.byKey(const ValueKey('fake-preview')));
+      expect(card.width, lessThanOrEqualTo(448));
+    });
+
+    testWidgets('in a pane Back (and ⌘[, the navigator’s back) leaves the '
+        'make going, through onExit, popping nothing', (tester) async {
+      final exits = <MakingResult?>[];
+      final rig = await pane(tester, exits);
+      var cancelled = false;
+      unawaited(rig.make.cancelled!.then((_) => cancelled = true));
+      await tester.tap(find.byKey(const ValueKey('build-back')));
+      await _settle(tester);
+      expect(exits.single, isA<MakingLeft>());
+      await tester.binding.handlePopRoute();
+      await _settle(tester);
+      expect(exits, hasLength(2));
+      expect(exits.last, isA<MakingLeft>());
+      expect(find.byType(MakingScreen), findsOneWidget);
+      expect(cancelled, isFalse);
+    });
+
+    testWidgets('in a pane Cancel stops the make and exits with null; a made '
+        'app exits with Made', (tester) async {
+      final exits = <MakingResult?>[];
+      var rig = await pane(tester, exits);
+      await tester.tap(find.text('Cancel'));
+      await _settle(tester);
+      expect(exits, [null]);
+      await tester.pumpWidget(const SizedBox());
+      exits.clear();
+      rig = await pane(tester, exits);
+      rig.make.result.complete('a1');
+      await _settle(tester);
+      expect(exits.single, isA<Made>().having((m) => m.aid, 'aid', 'a1'));
+    });
+  });
+
   testWidgets('the title is the quoted request, left-aligned in title-1 on '
       'at most two lines', (tester) async {
     final rig = _Rig();
