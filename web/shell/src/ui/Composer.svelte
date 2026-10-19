@@ -111,6 +111,7 @@
       }
     }}></textarea>
   <div class="actions">
+    <span class="muted small" style="margin-right: auto; align-self: center">Markdown supported</span>
     <button type="button" onclick={onCancel}>Cancel</button>
     <!-- While the screenshot is taken, Post stays focusable (Tab order does
          not change) and waits: pressing it queues the post, which the status
