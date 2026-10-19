@@ -331,9 +331,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             axum::routing::put(people::elevate_agent).delete(people::unelevate_agent),
         );
     #[cfg(debug_assertions)]
-    let api_fast = api_fast
-        .route("/api/_test/sleep/{ms}", get(test_sleep))
-        .route("/api/_test/slow_publish/{ms}", post(test_slow_publish));
+    let api_fast = api_fast.route("/api/_test/sleep/{ms}", get(test_sleep));
+    // It sleeps a store call's thread, which a Worker has none of.
+    #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+    let api_fast = api_fast.route("/api/_test/slow_publish/{ms}", post(test_slow_publish));
     // The audit context answers every caller, cookie and LAN viewer
     // included (what it reports is the point), so it takes no token and is
     // served by the testkit's daemon alone.
@@ -577,7 +578,7 @@ async fn test_delay(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<u64>().ok());
     if let Some(ms) = ms {
-        tokio::time::sleep(Duration::from_millis(ms)).await;
+        clax_rt::time::sleep(Duration::from_millis(ms)).await;
     }
     next.run(req).await
 }
@@ -619,14 +620,14 @@ async fn test_sleep(
     _t: RequireToken,
     axum::extract::Path(ms): axum::extract::Path<u64>,
 ) -> Result<StatusCode, ApiError> {
-    tokio::time::sleep(test_sleep_ms(ms)?).await;
+    clax_rt::time::sleep(test_sleep_ms(ms)?).await;
     Ok(StatusCode::OK)
 }
 
 /// Creates an artifact after sleeping inside the blocking closure, publishing the event from the
 /// same closure, so tests can observe write side effects surviving a handler timeout. The
-/// owner's token only.
-#[cfg(debug_assertions)]
+/// owner's token only. Native builds only: the sleep holds a store worker's thread.
+#[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
 async fn test_slow_publish(
     axum::extract::State(s): axum::extract::State<AppState>,
     _d: DeniedToGrants,
@@ -708,4 +709,16 @@ fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
         r.layer(axum::middleware::from_fn(auth::require_api_host))
     };
     r.layer(axum::middleware::from_fn(host::rewrite_artifact_host))
+}
+
+#[cfg(test)]
+mod tests {
+    /// A Worker builds this router too, debug test routes included, and has
+    /// no tokio timer: the routes sleep on `clax_rt::time` (crate docs).
+    #[test]
+    fn the_routes_sleep_on_clax_rt() {
+        let src = include_str!("router.rs");
+        let src = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        assert!(!src.contains(concat!("tokio", "::time::")));
+    }
 }
