@@ -13,10 +13,10 @@ import WebKit
 ///   primary focus moves into its view.
 /// - `dev.empathic.clax/window`: `setTitle` {view, title, subtitle},
 ///   `setSidebarWidth` {view, width}, `setEscapeWanted` {view, on} and
-///   `titlebar` {view}, which answers the height in points of the window's
-///   title bar and toolbar. The bridge sends `titlebar` {view, top} when
-///   that height changes, and `escape` {view} for an Escape it took from a
-///   page ([escape]).
+///   `titlebar` {view}, which answers the window's title bar ([Titlebar]:
+///   {top, leading}). The bridge sends `titlebar` {view, top, leading} when
+///   it changes, and `escape` {view} for an Escape it took from a page
+///   ([escape]).
 ///
 /// Uses AppKit and WebKit only, so `//apps/clax_app:macos_window_bridge_test`
 /// compiles it on its own.
@@ -27,7 +27,7 @@ final class WindowBridge: NSObject {
     let sidebar: SidebarView?
     let onClose: (() -> Void)?
     var escapeWanted = false
-    var titlebar: Double
+    var titlebar: Titlebar
     var observers: [NSObjectProtocol] = []
 
     init(window: NSWindow, kind: String, sidebar: SidebarView?, onClose: (() -> Void)?) {
@@ -35,7 +35,7 @@ final class WindowBridge: NSObject {
       self.kind = kind
       self.sidebar = sidebar
       self.onClose = onClose
-      self.titlebar = WindowBridge.titlebarHeight(of: window)
+      self.titlebar = Titlebar(of: window)
     }
   }
 
@@ -141,7 +141,7 @@ final class WindowBridge: NSObject {
         fail("titlebar takes {view}")
         return true
       }
-      reply(entries[view].map { $0.titlebar })
+      reply(entries[view].map { $0.titlebar.map })
     default:
       return false
     }
@@ -175,18 +175,43 @@ final class WindowBridge: NSObject {
 
   private func titlebarMayHaveChanged(_ view: Int64) {
     guard let entry = entries[view], let window = entry.window else { return }
-    let top = Self.titlebarHeight(of: window)
-    guard top != entry.titlebar else { return }
-    entry.titlebar = top
-    chrome("titlebar", ["view": view, "top": top])
+    let bar = Titlebar(of: window)
+    guard bar != entry.titlebar else { return }
+    entry.titlebar = bar
+    chrome("titlebar", bar.map.merging(["view": view]) { a, _ in a })
+  }
+}
+
+/// A window's title bar over its full-size content, in points from the
+/// content's top left: [top] is the height of the title bar and toolbar,
+/// [leading] the right edge of the window buttons (close, minimise, zoom)
+/// in it, 0 where none shows (in full screen they are in a window of
+/// their own). Content keeps out of the rectangle from the top left to
+/// ([leading], [top]).
+struct Titlebar: Equatable {
+  let top: Double
+  let leading: Double
+
+  init(top: Double, leading: Double) {
+    self.top = top
+    self.leading = leading
   }
 
-  /// The height in points of [window]'s title bar and toolbar over its
-  /// full-size content.
-  static func titlebarHeight(of window: NSWindow) -> Double {
-    guard let content = window.contentView else { return 0 }
-    return Double(max(0, content.bounds.height - window.contentLayoutRect.maxY))
+  init(of window: NSWindow) {
+    guard let content = window.contentView else {
+      self.init(top: 0, leading: 0)
+      return
+    }
+    let top = Double(max(0, content.bounds.height - window.contentLayoutRect.maxY))
+    let buttons = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
+      .compactMap { window.standardWindowButton($0) }
+      .filter { !$0.isHidden && $0.window === window }
+    let edge = buttons.map { content.convert($0.bounds, from: $0).maxX }.max() ?? 0
+    self.init(top: top, leading: top > 0 ? Double(max(0, edge)) : 0)
   }
+
+  /// As sent to Dart.
+  var map: [String: Any] { ["top": top, "leading": leading] }
 }
 
 /// The sidebar material: an `NSVisualEffectView` (`.sidebar`) behind the

@@ -1,3 +1,4 @@
+import 'package:clax_app/ui/kit/window_titlebar.dart';
 import 'package:clax_app/ui/mac/window_channel.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -90,29 +91,41 @@ void main() {
     expect(got, [1, 2]);
   }, variant: _mac);
 
-  testWidgets('the title bar height arrives per view', (tester) async {
-    final inset = MacWindow.titlebarHeight(5);
-    expect(inset.value, 0);
-    expect(await fromNative(tester, 'titlebar', {'view': 5, 'top': 28.0}),
-        isTrue);
-    expect(inset.value, 28);
-    expect(MacWindow.titlebarHeight(6).value, 0);
+  testWidgets('the title bar arrives per view', (tester) async {
+    final inset = MacWindow.titlebar(5);
+    expect(inset.value, WindowTitlebar.none);
+    expect(
+      await fromNative(tester, 'titlebar', {
+        'view': 5,
+        'top': 52.0,
+        'leading': 74.0,
+      }),
+      isTrue,
+    );
+    expect(inset.value, const WindowTitlebar(top: 52, leading: 74));
+    expect(inset.value.buttons, const Rect.fromLTWH(0, 0, 74, 52));
+    expect(MacWindow.titlebar(6).value, WindowTitlebar.none);
+    expect(
+      await fromNative(tester, 'titlebar', {'view': 5, 'top': 28.0}),
+      isFalse,
+      reason: 'without leading',
+    );
   }, variant: _mac);
 
-  testWidgets('the title bar height is asked for on first use', (
-    tester,
-  ) async {
+  testWidgets('the title bar is asked for on first use', (tester) async {
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
       MacWindow.channel,
       (call) async {
         calls.add(call);
-        return call.method == 'titlebar' ? 52.0 : null;
+        return call.method == 'titlebar'
+            ? {'top': 52.0, 'leading': 74.0}
+            : null;
       },
     );
-    final inset = MacWindow.titlebarHeight(9);
+    final inset = MacWindow.titlebar(9);
     await tester.pump();
-    expect(inset.value, 52);
-    expect(MacWindow.titlebarHeight(9), same(inset));
+    expect(inset.value, const WindowTitlebar(top: 52, leading: 74));
+    expect(MacWindow.titlebar(9), same(inset));
     expect(calls.where((c) => c.method == 'titlebar').map((c) => c.arguments), [
       {'view': 9},
     ]);
@@ -126,9 +139,7 @@ void main() {
     expect(calls, isEmpty);
   }, variant: TargetPlatformVariant.only(TargetPlatform.android));
 
-  testWidgets('a native side that does not answer is no error', (
-    tester,
-  ) async {
+  testWidgets('a native side that does not answer is no error', (tester) async {
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
       MacWindow.channel,
       (call) async => throw MissingPluginException(),

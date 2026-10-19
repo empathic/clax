@@ -1,3 +1,4 @@
+import 'package:clax_app/ui/kit/window_titlebar.dart';
 import 'package:clax_app/ui/mac/window_channel.dart';
 import 'package:clax_app/ui/mac/windows.dart';
 import 'package:flutter/material.dart';
@@ -30,7 +31,7 @@ void main() {
       const ClaxViews(
         main: Directionality(
           textDirection: TextDirection.ltr,
-          child: Text('main window'),
+          child: _Counter(child: Text('main window')),
         ),
       ),
       wrapWithView: false,
@@ -67,21 +68,35 @@ void main() {
       'reports', (tester) async {
     kinds[tester.view.viewId] = 'main';
     await pumpViews(tester);
+    final counter = tester.state(find.byType(_Counter));
     double top() =>
         MediaQuery.paddingOf(tester.element(find.text('main window'))).top;
     expect(top(), 0);
     await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
       MacWindow.channel.name,
       MacWindow.channel.codec.encodeMethodCall(
-        MethodCall('titlebar', {'view': tester.view.viewId, 'top': 28.0}),
+        MethodCall('titlebar', {
+          'view': tester.view.viewId,
+          'top': 52.0,
+          'leading': 74.0,
+        }),
       ),
       (_) {},
     );
     await tester.pump();
-    expect(top(), 28);
+    expect(top(), 52);
     expect(
       MediaQuery.viewPaddingOf(tester.element(find.text('main window'))).top,
-      28,
+      52,
+    );
+    expect(
+      WindowTitlebar.of(tester.element(find.text('main window'))),
+      const WindowTitlebar(top: 52, leading: 74),
+    );
+    expect(
+      tester.state(find.byType(_Counter)),
+      same(counter),
+      reason: 'the content keeps its state as the title bar arrives',
     );
   });
 
@@ -103,4 +118,19 @@ void main() {
     );
     expect(reply, isTrue);
   });
+}
+
+/// A widget with state, to see that it is kept.
+class _Counter extends StatefulWidget {
+  const _Counter({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_Counter> createState() => _CounterState();
+}
+
+class _CounterState extends State<_Counter> {
+  @override
+  Widget build(BuildContext context) => widget.child;
 }

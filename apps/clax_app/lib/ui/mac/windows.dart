@@ -5,6 +5,7 @@ import 'dart:ui'
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
+import '../kit/window_titlebar.dart';
 import 'window_channel.dart';
 
 /// The Mac app's windows (`macos/Runner/WindowBridge.swift`) over the
@@ -52,8 +53,10 @@ abstract final class MacWindows {
 /// The root of the Mac app, given to `runWidget`: one [View] for each
 /// window, by the kind [MacWindows.kind] names. The main window shows
 /// [main]. A view no window shows is not drawn. Content runs under the
-/// window's transparent title bar and is padded below it
-/// ([MacWindow.titlebarHeight]), as a phone's is below its status bar.
+/// window's transparent toolbar row and is padded below it
+/// ([MacWindow.titlebar]), as a phone's is below its status bar; a screen
+/// that draws its bar in that row, beside the window buttons, finds it
+/// with [WindowTitlebar.of].
 class ClaxViews extends StatefulWidget {
   const ClaxViews({super.key, required this.main});
 
@@ -115,7 +118,8 @@ class _ClaxViewsState extends State<ClaxViews> with WidgetsBindingObserver {
   );
 }
 
-/// [child] with the window's title bar height added to its top padding.
+/// [child] with the window's title bar height added to its top padding,
+/// and the title bar in a [WindowTitlebarScope].
 class _BelowTitlebar extends StatelessWidget {
   const _BelowTitlebar({required this.view, required this.child});
 
@@ -123,19 +127,24 @@ class _BelowTitlebar extends StatelessWidget {
   final Widget child;
 
   @override
-  Widget build(BuildContext context) => ValueListenableBuilder<double>(
-    valueListenable: MacWindow.titlebarHeight(view.viewId),
-    builder: (context, top, child) {
-      if (top <= 0) return child!;
+  Widget build(BuildContext context) => ValueListenableBuilder<WindowTitlebar>(
+    valueListenable: MacWindow.titlebar(view.viewId),
+    // The same widgets whatever the title bar, so the app's state
+    // stays when it arrives or changes.
+    builder: (context, bar, child) {
+      final top = bar.top;
       final data = MediaQuery.of(context);
       EdgeInsets below(EdgeInsets e) =>
           e.copyWith(top: e.top > top ? e.top : top);
-      return MediaQuery(
-        data: data.copyWith(
-          padding: below(data.padding),
-          viewPadding: below(data.viewPadding),
+      return WindowTitlebarScope(
+        titlebar: bar,
+        child: MediaQuery(
+          data: data.copyWith(
+            padding: below(data.padding),
+            viewPadding: below(data.viewPadding),
+          ),
+          child: child!,
         ),
-        child: child!,
       );
     },
     child: child,

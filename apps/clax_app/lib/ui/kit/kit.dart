@@ -16,3 +16,4 @@ export 'text_field.dart';
 export 'toast.dart';
 export 'toggles.dart';
 export 'verbs.dart';
+export 'window_titlebar.dart';

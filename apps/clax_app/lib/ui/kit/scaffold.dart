@@ -7,6 +7,7 @@ import '../layout.dart';
 import '../theme.dart';
 import '../tokens.g.dart';
 import 'family.dart';
+import 'window_titlebar.dart';
 
 /// The system bars' style over a surface of colour [under]: both bars
 /// transparent, so the page draws edge to edge, with light icons when
@@ -38,10 +39,14 @@ SystemUiOverlayStyle statusStyleFor(Color under) {
 /// bar while the body is scrolled under it ([slivers] scroll in the same
 /// view as the bar, so none of them starts under it). In the Apple family
 /// where the window has its own toolbar ([hasDesktopWindowChrome]), the
-/// toolbar carries the title and the actions once [toolbarCarriesTitle] is set, and the
-/// scaffold is the content of the window or pane alone; until then a
-/// header at the top of the content shows them, with Back when the route
-/// can be left. On iOS it keeps a bar with the title centred.
+/// toolbar carries the title and the actions once [toolbarCarriesTitle] is
+/// set, and the scaffold is the content of the window or pane alone; until
+/// then a header shows them, with Back when the route can be left. At the
+/// top of a window whose content runs under its title bar
+/// ([WindowTitlebar.of]) the header is the toolbar row, its items after
+/// the window buttons and centred with them; elsewhere it is below the top
+/// padding. Nothing is drawn in the window buttons' corner. On iOS it
+/// keeps a bar with the title centred.
 class ClaxScaffold extends StatelessWidget {
   const ClaxScaffold({
     super.key,
@@ -150,6 +155,17 @@ class ClaxScaffold extends StatelessWidget {
               backgroundColor: barColor,
             )
           : null;
+      final top = MediaQuery.paddingOf(context).top;
+      final bar = WindowTitlebar.of(context);
+      // The screen is at the top of a window, under its title bar.
+      final row = macWindow && bar != null && bar.top > 0 && top >= bar.top
+          ? bar
+          : null;
+      final below = MediaQuery.removePadding(
+        context: context,
+        removeTop: true,
+        child: body,
+      );
       content = header
           ? Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -158,9 +174,16 @@ class ClaxScaffold extends StatelessWidget {
                   title: titleWidget,
                   leading: leading,
                   actions: actions,
+                  row: row,
+                  top: row == null ? top : 0,
                 ),
-                Expanded(child: body),
+                Expanded(child: below),
               ],
+            )
+          : macWindow
+          ? Padding(
+              padding: EdgeInsets.only(top: top),
+              child: below,
             )
           : body;
     }
@@ -210,7 +233,8 @@ class _ScrolledUnderLine extends StatelessWidget
     final under =
         context
             .dependOnInheritedWidgetOfExactType<FlexibleSpaceBarSettings>()
-            ?.isScrolledUnder ?? false;
+            ?.isScrolledUnder ??
+        false;
     return ColoredBox(
       key: const Key('clax-scrolled-under-line'),
       color: under ? claxPalette(context).border : const Color(0x00000000),
@@ -220,17 +244,23 @@ class _ScrolledUnderLine extends StatelessWidget
 }
 
 /// The title, Back (or [leading]) and the actions over a Mac screen's
-/// content, while the window's toolbar does not carry them.
+/// content, while the window's toolbar does not carry them: in the
+/// toolbar [row] when the screen is at the top of a window under it, after
+/// its window buttons, else [top] below the top.
 class _MacHeader extends StatelessWidget {
   const _MacHeader({
     required this.title,
     required this.leading,
     required this.actions,
+    required this.row,
+    required this.top,
   });
 
   final Widget? title;
   final Widget? leading;
   final List<Widget> actions;
+  final WindowTitlebar? row;
+  final double top;
 
   @override
   Widget build(BuildContext context) {
@@ -247,10 +277,16 @@ class _MacHeader extends StatelessWidget {
         border: Border(bottom: BorderSide(color: p.border)),
       ),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(minHeight: 44),
+        constraints: BoxConstraints(minHeight: max(44, row?.top ?? 0) + top),
         child: Padding(
           padding: EdgeInsets.only(
-            left: back == null ? ClaxSpace.s16 : ClaxSpace.s4,
+            top: top,
+            left: switch ((row, back)) {
+              (final row?, null) => row.leading + ClaxSpace.s12,
+              (final row?, _) => row.leading + ClaxSpace.s4,
+              (null, null) => ClaxSpace.s16,
+              (null, _) => ClaxSpace.s4,
+            },
             right: ClaxSpace.s8,
           ),
           child: Row(

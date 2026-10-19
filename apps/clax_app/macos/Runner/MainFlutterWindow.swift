@@ -63,7 +63,8 @@ enum ClaxEngine {
 
 /// The main window: 1200×800 at first, centred, its frame kept as
 /// "ClaxMain"; no smaller than 720×480. Its content runs under a
-/// transparent, unified title bar, over the sidebar material.
+/// transparent, unified toolbar row with no title of its own, over the
+/// sidebar material.
 class MainFlutterWindow: NSWindow {
   override func awakeFromNib() {
     let engine = ClaxEngine.shared
@@ -78,6 +79,12 @@ class MainFlutterWindow: NSWindow {
     styleMask.insert(.fullSizeContentView)
     titlebarAppearsTransparent = true
     toolbarStyle = .unified
+    // An empty toolbar makes the title bar a toolbar row, with the window
+    // buttons centred in it; each screen draws its title, Back and actions
+    // in that row after the buttons (`ClaxScaffold`), so the window's own
+    // title is not shown. It stays the window's name in the Window menu.
+    toolbar = NSToolbar(identifier: "ClaxMain")
+    titleVisibility = .hidden
     contentMinSize = NSSize(width: 720, height: 480)
     if !setFrameUsingName("ClaxMain") { center() }
     setFrameAutosaveName("ClaxMain")

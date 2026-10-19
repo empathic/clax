@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../kit/family.dart';
+import '../kit/window_titlebar.dart';
 
 /// A Mac window's chrome (`macos/Runner/WindowBridge.swift`) over the
 /// method channel `dev.empathic.clax/window`. Every window shows one
@@ -16,13 +17,14 @@ import '../kit/family.dart';
 /// - `escape` {view}: Escape was pressed while a page's WebView had the
 ///   keyboard in that window, which wanted it ([setEscapeWanted]); the
 ///   event went no further. Arrives on [escapes].
-/// - `titlebar` {view, top}: the height in points of the window's title
-///   bar and toolbar, which its content runs under; [titlebarHeight].
+/// - `titlebar` {view, top, leading}: the window's title bar and toolbar
+///   row, which its content runs under, and the right edge of its window
+///   buttons; [titlebar].
 abstract final class MacWindow {
   static const channel = MethodChannel('dev.empathic.clax/window');
 
   static final _escapes = StreamController<int>.broadcast();
-  static final _titlebars = <int, ValueNotifier<double>>{};
+  static final _titlebars = <int, ValueNotifier<WindowTitlebar>>{};
   static final _wanting = <int, Set<Object>>{};
   static final _wantedSent = <int, bool>{};
   static var _listening = false;
@@ -33,25 +35,34 @@ abstract final class MacWindow {
     return _escapes.stream;
   }
 
-  /// The height in points of [view]'s title bar and toolbar; 0 until the
-  /// native side says. The first use asks it.
-  static ValueListenable<double> titlebarHeight(int view) {
+  /// [view]'s window's title bar; [WindowTitlebar.none] until the native
+  /// side says. The first use asks it.
+  static ValueListenable<WindowTitlebar> titlebar(int view) {
     _listen();
     return _titlebars.putIfAbsent(view, () {
-      final height = ValueNotifier<double>(0);
+      final bar = ValueNotifier(WindowTitlebar.none);
       if (hasDesktopWindowChrome) {
         unawaited(
           channel
-              .invokeMethod<num>('titlebar', {'view': view})
-              .then((top) {
-                if (top != null) height.value = top.toDouble();
+              .invokeMethod<Object?>('titlebar', {'view': view})
+              .then((answer) {
+                if (_read(answer) case final b?) bar.value = b;
               })
               .catchError((Object _) {}),
         );
       }
-      return height;
+      return bar;
     });
   }
+
+  /// A title bar as the native side sends it: {top, leading}.
+  static WindowTitlebar? _read(Object? map) => switch (map) {
+    {'top': final num top, 'leading': final num leading} => WindowTitlebar(
+      top: top.toDouble(),
+      leading: leading.toDouble(),
+    ),
+    _ => null,
+  };
 
   static void _listen() {
     if (_listening) return;
@@ -65,10 +76,12 @@ abstract final class MacWindow {
           _escapes.add(view);
           return _wanting[view]?.isNotEmpty ?? false;
         case 'titlebar':
-          final top = args['top'];
-          if (top is! num) return false;
-          _titlebars.putIfAbsent(view, () => ValueNotifier(0)).value = top
-              .toDouble();
+          final bar = _read(args);
+          if (bar == null) return false;
+          _titlebars
+                  .putIfAbsent(view, () => ValueNotifier(WindowTitlebar.none))
+                  .value =
+              bar;
           return true;
       }
       return false;

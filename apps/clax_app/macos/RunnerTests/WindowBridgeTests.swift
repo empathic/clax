@@ -131,10 +131,17 @@ final class WindowBridgeTests: XCTestCase {
     XCTAssertEqual(sent.last?.2["view"] as? Int64, 1)
   }
 
-  func testTheTitlebarHeightIsAnsweredAndSentWhenItChanges() {
-    let top = call("titlebar", ["view": 1]).reply as? Double
+  func testTheTitlebarIsAnsweredAndSentWhenItChanges() {
+    let bar = call("titlebar", ["view": 1]).reply as? [String: Any]
+    let top = bar?["top"] as? Double
     XCTAssertNotNil(top)
     XCTAssertGreaterThan(top ?? 0, 0)
+    // Past the zoom button, which is right of the close button.
+    let zoom = window.standardWindowButton(.zoomButton)!
+    let content = window.contentView!
+    XCTAssertEqual(
+      bar?["leading"] as? Double, Double(content.convert(zoom.bounds, from: zoom).maxX))
+    XCTAssertGreaterThan(bar?["leading"] as? Double ?? 0, 40)
     sent = []
     NotificationCenter.default.post(name: NSWindow.didResizeNotification, object: window)
     XCTAssertTrue(sent.isEmpty, "unchanged")
@@ -142,7 +149,9 @@ final class WindowBridgeTests: XCTestCase {
     window.styleMask.remove(.titled)
     NotificationCenter.default.post(name: NSWindow.didResizeNotification, object: window)
     XCTAssertEqual(sent.last?.1, "titlebar")
+    XCTAssertEqual(sent.last?.2["view"] as? Int64, 1)
     XCTAssertEqual(sent.last?.2["top"] as? Double, 0)
+    XCTAssertEqual(sent.last?.2["leading"] as? Double, 0)
   }
 
   func testAClosedWindowIsForgottenAndItsCloseRuns() {
