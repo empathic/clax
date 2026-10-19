@@ -1,8 +1,10 @@
 import 'package:clax_app/agent/failure.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
+import 'package:clax_app/ui/developer.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/thread_detail.dart';
+import 'package:clax_app/ui/tokens.g.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -52,10 +54,16 @@ void main() {
     VoidCallback? onCancel,
     VoidCallback? onTryNow,
     bool Function(String tid)? isStopped,
+    bool developer = false,
+    TargetPlatform? platform,
   }) async {
+    final dev = ValueNotifier(developer);
+    addTearDown(dev.dispose);
     await tester.pumpWidget(
       MaterialApp(
-        theme: claxTheme(Brightness.light, defaultTargetPlatform),
+        theme: claxTheme(Brightness.light, platform ?? defaultTargetPlatform),
+        builder: (context, child) =>
+            DeveloperScope(notifier: dev, child: child!),
         home: ThreadDetail(
           key: ValueKey(tid),
           api: rig.api,
@@ -296,7 +304,7 @@ void main() {
         "Couldn't make that change: the network dropped",
       );
       await pumpDetail(tester, rig, tid);
-      expect(find.text('Couldn’t make that change'), findsOneWidget);
+      expect(find.text('The network dropped'), findsOneWidget);
       await tester.tap(find.byKey(const ValueKey('thread-retry')));
       await tester.pump();
       expect(rig.retries, [tid]);
@@ -316,7 +324,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(rig.retries, [tid]);
       expect(find.text('Trying again'), findsNothing);
-      expect(find.text('Couldn’t make that change'), findsOneWidget);
+      expect(find.text('X'), findsOneWidget);
       expect(find.byKey(const ValueKey('thread-retry')), findsOneWidget);
       expect(
         find.text('There was nothing to run again. Reply to ask once more.'),
@@ -395,7 +403,152 @@ void main() {
       final (rig, tid) = await failed("Couldn't make that change: x");
       await pumpDetail(tester, rig, tid, retry: false);
       expect(find.byKey(const ValueKey('thread-retry')), findsNothing);
-      expect(find.text('Couldn’t make that change'), findsOneWidget);
+      expect(find.text('X'), findsOneWidget);
+    });
+  });
+
+  group('A failed change', () {
+    const progress = LimitProgress(
+      stops: 2,
+      spentUsd: 2.1,
+      notes: [
+        'Adding the chart canvas to the stats screen.',
+        'Wiring the run-type filter to the chart.',
+        'Fixing the failing week-boundary test.',
+      ],
+      changed: [
+        (path: 'index.html', added: 42, removed: 10),
+        (path: 'app.js', added: 8, removed: 0),
+      ],
+    );
+
+    Future<(_Rig, String)> failed(String reply) async {
+      final rig = await _seeded();
+      final item = rig.api.sendComment(rig.aid, 'add a weekly chart');
+      await rig.api.replyAsAgent(rig.aid, item.threadId, reply);
+      return (rig, item.threadId);
+    }
+
+    /// Every fill drawn in the thread.
+    Iterable<Color?> fills(WidgetTester tester) sync* {
+      for (final e in find
+          .descendant(
+            of: find.byKey(const ValueKey('thread-list')),
+            matching: find.byWidgetPredicate((_) => true),
+          )
+          .evaluate()) {
+        final w = e.widget;
+        if (w is Material) yield w.color;
+        if (w is ColoredBox) yield w.color;
+        if (w is DecoratedBox && w.decoration is BoxDecoration) {
+          yield (w.decoration as BoxDecoration).color;
+        }
+        if (w is Container) yield w.color;
+      }
+    }
+
+    testWidgets('shows once, as Clax’s reply, with no banner above it and no '
+        'error fill', (tester) async {
+      final (rig, tid) = await failed(
+        "Couldn't make that change: this app may only reach "
+        "api.weather.example, so it can't reach strava.com.",
+      );
+      await pumpDetail(tester, rig, tid);
+      expect(find.byKey(const ValueKey('thread-status-failed')), findsNothing);
+      expect(find.text('Couldn’t make that change'), findsNothing);
+      expect(find.textContaining('strava.com'), findsOneWidget);
+      expect(find.byKey(const ValueKey('failure-reply')), findsOneWidget);
+      expect(find.byKey(const ValueKey('thread-retry')), findsOneWidget);
+      expect(fills(tester), isNot(contains(ClaxTokens.light.dangerTint)));
+    });
+
+    testWidgets('keeps the cost, files and notes under Details, closed until '
+        'opened', (tester) async {
+      final (rig, tid) = await failed(
+        limitFailureReply('10 turns', leftUsd: 6 - 2.1, progress: progress),
+      );
+      await pumpDetail(tester, rig, tid);
+      expect(find.byKey(const ValueKey('thread-keep-going')), findsOneWidget);
+      expect(find.textContaining(r'$2.10 of $6'), findsNothing);
+      expect(find.text('Wiring the run-type filter to the chart.'), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('failure-details')));
+      await tester.pumpAndSettle();
+      expect(find.textContaining(r'$2.10 of $6'), findsOneWidget);
+      expect(find.text('Stopped twice · \$2.10 of \$6 used'), findsOneWidget);
+      expect(find.text('index.html'), findsOneWidget);
+      expect(find.text('+42 −10'), findsOneWidget);
+      // The notes are a bulleted list, with no Markdown dash left.
+      expect(find.text('•'), findsNWidgets(3));
+      expect(find.text('Wiring the run-type filter to the chart.'), findsOneWidget);
+      expect(find.textContaining('- '), findsNothing);
+      expect(fills(tester), isNot(contains(ClaxTokens.light.dangerTint)));
+      await tester.tap(find.byKey(const ValueKey('failure-details')));
+      await tester.pumpAndSettle();
+      expect(find.textContaining(r'$2.10 of $6'), findsNothing);
+    });
+
+    testWidgets('offers no Retry once the change has spent its limit', (
+      tester,
+    ) async {
+      final (rig, tid) = await failed(
+        limitFailureReply(
+          '10 turns',
+          leftUsd: 0,
+          progress: const LimitProgress(stops: 4, spentUsd: 6),
+        ),
+      );
+      await pumpDetail(tester, rig, tid);
+      expect(find.byKey(const ValueKey('failure-reply')), findsOneWidget);
+      expect(find.byKey(const ValueKey('thread-retry')), findsNothing);
+      expect(find.byKey(const ValueKey('thread-keep-going')), findsNothing);
+      expect(find.byKey(const ValueKey('failure-details')), findsOneWidget);
+    });
+
+    testWidgets('shows a raw error as one plain line, the raw text only with '
+        'Developer tools on, last in Details', (tester) async {
+      const raw = 'The Claude API said: overloaded (529)';
+      final (rig, tid) = await failed("Couldn't make that change: $raw");
+      await pumpDetail(tester, rig, tid);
+      expect(
+        find.text('Claude is busy right now. Try again in a minute.'),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('failure-details')), findsNothing);
+      expect(find.textContaining('529'), findsNothing);
+
+      await pumpDetail(tester, rig, tid, developer: true);
+      await tester.tap(find.byKey(const ValueKey('failure-details')));
+      await tester.pumpAndSettle();
+      expect(find.text(raw), findsOneWidget);
+    });
+
+    testWidgets('says Click Keep going on a Mac, for a reply stored with Tap', (
+      tester,
+    ) async {
+      final (rig, tid) = await failed(
+        limitFailureReply('10 turns', leftUsd: 5, progress: progress),
+      );
+      expect(
+        rig.api.threadOf(rig.aid, tid).comments.last.body,
+        contains('Tap Keep going'),
+      );
+      await pumpDetail(tester, rig, tid, platform: TargetPlatform.macOS);
+      expect(find.textContaining('Click Keep going'), findsOneWidget);
+      expect(find.textContaining('Tap Keep going'), findsNothing);
+      expect(find.byKey(const ValueKey('thread-keep-going')), findsOneWidget);
+    });
+
+    testWidgets('a limit stop that published part of the change keeps its '
+        'progress under Details too', (tester) async {
+      final (rig, tid) = await failed(
+        limitLandedReply('10 turns', leftUsd: 5, progress: progress),
+      );
+      await pumpDetail(tester, rig, tid);
+      expect(find.byKey(const ValueKey('failure-reply')), findsNothing);
+      expect(find.textContaining(r'$2.10 of $6'), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('failure-details')));
+      await tester.pumpAndSettle();
+      expect(find.textContaining(r'$2.10 of $6'), findsOneWidget);
     });
   });
 
@@ -537,7 +690,7 @@ void main() {
     );
     expect(agent.label, contains('Clax'));
     expect(agent.label, contains('failed'));
-    expect(agent.label, contains('timeout'));
+    expect(agent.label, contains('Timeout'));
     handle.dispose();
   });
 

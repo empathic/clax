@@ -991,7 +991,7 @@ void main() {
     await tester.pump();
     await tester.tap(find.text('make it blue'));
     await tester.pumpAndSettle();
-    expect(find.text('Couldn’t make that change'), findsOneWidget);
+    expect(find.byKey(const ValueKey('failure-reply')), findsOneWidget);
     expect(find.byKey(const ValueKey('thread-retry')), findsNothing);
   });
 

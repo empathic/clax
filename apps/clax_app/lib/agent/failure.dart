@@ -7,6 +7,9 @@
 library;
 
 import '../clax/models.dart' show ThreadComment;
+import '../ui/kit/verbs.dart' show ClaxVerbs;
+import '../ui/user_message.dart' show userMessage;
+import 'backend.dart' show AgentError;
 
 /// How a failure reply opens.
 const failurePrefix = "Couldn't make that change:";
@@ -57,10 +60,32 @@ String timesWords(int n) => switch (n) {
   _ => '$n times',
 };
 
-/// The line a limit stop's reply carries while Keep going can run it on;
-/// the thread page and the Working chip offer Keep going on a reply that
-/// has it ([offersKeepGoing]).
+/// The line a limit stop's reply carries while Keep going can run it on,
+/// as replies are stored: [keepGoingHintFor] by touch. The thread page and
+/// the Working chip offer Keep going on a reply that has it
+/// ([offersKeepGoing]); the thread page shows it in the reader's words
+/// ([keepGoingIn]). Stored replies keep these words, so they never change.
 const keepGoingHint = 'Tap Keep going to pick up where it stopped.';
+
+/// The Keep going line in [v]'s words: "Tap Keep going to pick up where
+/// it stopped." by touch, "Click …" with a mouse.
+String keepGoingHintFor(ClaxVerbs v) =>
+    '${v.tap} Keep going to pick up where it stopped.';
+
+/// The Keep going line in any pointer's words: a stored reply carries the
+/// "Tap" one, and a reply shown with a mouse the "Click" one.
+final _keepGoingAny = RegExp(
+  '(?:${ClaxVerbs.touch.tap}|${ClaxVerbs.mouse.tap}) Keep going to pick up '
+  r'where it stopped\.',
+);
+
+/// [text] with its Keep going line in [v]'s words.
+String keepGoingIn(String text, ClaxVerbs v) =>
+    text.replaceAll(_keepGoingAny, keepGoingHintFor(v));
+
+/// What a limit stop's reply says once the change has spent
+/// [changeCapUsd] ([keepGoingLine]).
+const _spentWords = "so it can't keep going";
 
 /// A hard cap as [RunBudget.hardStop] names it ("10 turns", "120 seconds",
 /// "32000 output tokens", r"$1.50", or "3 renders") in the person's words:
@@ -90,7 +115,7 @@ String limitWords(String cap) {
 String keepGoingLine(double leftUsd) {
   if (leftUsd < minKeepGoingUsd) {
     return "It has used the \$${changeCapUsd.toStringAsFixed(0)} a change "
-        "may cost, so it can't keep going: reply with a smaller step.";
+        'may cost, $_spentWords: reply with a smaller step.';
   }
   if (leftUsd < changeCapUsd / 2) {
     return '$keepGoingHint About \$${leftUsd.toStringAsFixed(2)} of its '
@@ -261,12 +286,155 @@ String plannedStopReply(
 }
 
 /// Whether [text] (a reply, or the Working chip's failure text) offers
-/// Keep going.
-bool offersKeepGoing(String text) => text.contains(keepGoingHint);
+/// Keep going: it carries the Keep going line in either pointer's words,
+/// the stored "Tap" sentence or [keepGoingHintFor]'s.
+bool offersKeepGoing(String text) => _keepGoingAny.hasMatch(text);
 
 /// Whether [c] is a limit stop's reply of this app's agent that offers
 /// Keep going: an agent comment posted by the app session that carries
-/// [keepGoingHint]. The change it ended may have published part of
+/// the Keep going line ([offersKeepGoing]). The change it ended may have published part of
 /// itself (then it is not a failure reply) or nothing.
 bool isKeepGoingReply(ThreadComment c) =>
     c.byAgent && c.viaHarness == appHarness && offersKeepGoing(c.body);
+
+/// An app agent's reply read back for the thread page: one [line] to
+/// show, and what goes under Details.
+final class FailureReply {
+  const FailureReply({
+    required this.line,
+    this.stops,
+    this.costUsd,
+    this.capUsd,
+    this.files = const [],
+    this.moreFiles = 0,
+    this.notes = const [],
+    this.raw,
+    this.saysSpent = false,
+  });
+
+  /// The reply's first paragraph without the failure prefix, as a
+  /// sentence; a raw error's [userMessage].
+  final String line;
+
+  /// How often the change stopped at a limit, this stop included.
+  final int? stops;
+
+  /// What the change's runs cost together, of its [capUsd].
+  final double? costUsd, capUsd;
+
+  /// The files the change's draft changed, with their lines.
+  final List<FileChange> files;
+
+  /// How many more files changed than [files] names.
+  final int moreFiles;
+
+  /// The agent's notes and anything else the reply says, oldest first;
+  /// each may be Markdown.
+  final List<String> notes;
+
+  /// The reason as written when [line] is its [userMessage] instead, for
+  /// Developer tools.
+  final String? raw;
+
+  /// The reply says the change has spent [changeCapUsd].
+  final bool saysSpent;
+
+  /// The change has spent its limit: under [minKeepGoingUsd] of [capUsd]
+  /// is left, or the reply says so. Retry would run nothing.
+  bool get spentLimit =>
+      saysSpent ||
+      (costUsd != null && capUsd != null && capUsd! - costUsd! < minKeepGoingUsd);
+
+  /// Whether Details has anything to hold besides [raw].
+  bool get hasDetails =>
+      costUsd != null || files.isNotEmpty || notes.isNotEmpty;
+}
+
+final _stoppedLine = RegExp(
+  r'^Stopped (once|twice|(\d+) times) · \$(\d+\.\d\d) of \$(\d+) used$',
+);
+final _fileItem = RegExp(r'^(.+?)(?: \((?:\+(\d+))? ?(?:−(\d+))?\))?$');
+final _moreItem = RegExp(r'^and (\d+) more$');
+const _notesHeading = "The agent's latest notes:";
+const _agentSaidLead = 'The agent said: ';
+
+/// [body], a reply of this app's agent, read back: what
+/// [limitFailureReply], [limitLandedReply], [plannedStopReply] and a
+/// [failureReply] write. The first paragraph is the [FailureReply.line]
+/// (a failure's reason as a sentence, through [userMessage]); the
+/// progress paragraph gives the stops, the cost and the files; the notes,
+/// the agent's words and any other paragraph are notes.
+FailureReply parseFailureReply(String body) {
+  var text = body.trim();
+  final failed = isFailureText(text);
+  if (failed) text = text.substring(failurePrefix.length).trim();
+  final paras = text.split(RegExp(r'\n[ \t]*\n'));
+  final head = paras.first.trim();
+  var line = head;
+  String? raw;
+  if (failed) {
+    line = userMessage(AgentError(head));
+    if (line != head) raw = head;
+    line = line.isEmpty ? line : '${line[0].toUpperCase()}${line.substring(1)}';
+  }
+  int? stops;
+  double? cost, cap;
+  final files = <FileChange>[];
+  var more = 0;
+  final notes = <String>[];
+  for (final p in paras.skip(1)) {
+    final lines = p.trim().split('\n');
+    if (lines.first.trim() == _notesHeading) {
+      for (final l in lines.skip(1)) {
+        final n = l.trim();
+        notes.add(n.startsWith('- ') ? n.substring(2).trim() : n);
+      }
+      continue;
+    }
+    if (p.trim().startsWith(_agentSaidLead)) {
+      notes.add(p.trim().substring(_agentSaidLead.length).trim());
+      continue;
+    }
+    final other = <String>[];
+    for (final l in lines.map((l) => l.trim())) {
+      final m = _stoppedLine.firstMatch(l);
+      if (m != null) {
+        stops = switch (m[1]) {
+          'once' => 1,
+          'twice' => 2,
+          _ => int.parse(m[2]!),
+        };
+        cost = double.parse(m[3]!);
+        cap = double.parse(m[4]!);
+      } else if (l.startsWith('Changed so far: ')) {
+        for (final item in l.substring('Changed so far: '.length).split(', ')) {
+          final rest = _moreItem.firstMatch(item);
+          if (rest != null) {
+            more = int.parse(rest[1]!);
+            continue;
+          }
+          final f = _fileItem.firstMatch(item)!;
+          files.add((
+            path: f[1]!,
+            added: int.tryParse(f[2] ?? '') ?? 0,
+            removed: int.tryParse(f[3] ?? '') ?? 0,
+          ));
+        }
+      } else if (l.isNotEmpty) {
+        other.add(l);
+      }
+    }
+    if (other.isNotEmpty) notes.add(other.join('\n'));
+  }
+  return FailureReply(
+    line: line,
+    stops: stops,
+    costUsd: cost,
+    capUsd: cap,
+    files: files,
+    moreFiles: more,
+    notes: notes,
+    raw: raw,
+    saysSpent: head.contains(_spentWords),
+  );
+}

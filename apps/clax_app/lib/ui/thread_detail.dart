@@ -6,6 +6,9 @@ import 'package:flutter/material.dart';
 import '../agent/failure.dart';
 import '../clax/api.dart';
 import '../platform/voice.dart';
+import 'developer.dart';
+import 'kit/kit.dart';
+import 'theme.dart';
 import 'user_message.dart';
 
 /// Where a thread stands, as the thread page shows it.
@@ -223,6 +226,9 @@ class _ThreadDetailState extends State<ThreadDetail> {
   final _focus = FocusNode();
   _Action? _busy;
   String? _actionError;
+
+  /// The comments whose Details are open.
+  final _openDetails = <String>{};
 
   /// The comment count when Retry was tapped; the page reads the thread as
   /// working until the count moves on.
@@ -658,14 +664,15 @@ class _ThreadDetailState extends State<ThreadDetail> {
                 if (widget.waitingForConnection case final w?)
                   ValueListenableBuilder(
                     valueListenable: w,
-                    builder: (context, waiting, _) => _statusCard(
-                      context,
-                      t,
-                      offline: waiting.contains(widget.tid),
-                    ),
+                    builder: (context, waiting, _) =>
+                        _statusCard(
+                          context,
+                          t,
+                          offline: waiting.contains(widget.tid),
+                        ) ??
+                        const SizedBox.shrink(),
                   )
-                else
-                  _statusCard(context, t),
+                else ?_statusCard(context, t),
                 if (_clip != null) ...[
                   const SizedBox(height: 12),
                   _clipView(context, _clip!),
@@ -690,7 +697,7 @@ class _ThreadDetailState extends State<ThreadDetail> {
                   ),
                 ],
                 const SizedBox(height: 16),
-                for (final c in t.comments) _comment(context, c, now),
+                for (final c in t.comments) _comment(context, t, c, now),
               ],
             ),
           ),
@@ -727,7 +734,16 @@ class _ThreadDetailState extends State<ThreadDetail> {
     );
   }
 
-  Widget _statusCard(
+  /// Whether [t]'s failed change offers Keep going: its last comment is a
+  /// limit stop's reply with the Keep going line ([isKeepGoingReply]).
+  bool _keepGoing(ThreadView t) =>
+      widget.onRetry != null &&
+      t.comments.isNotEmpty &&
+      isKeepGoingReply(t.comments.last);
+
+  /// The card above the conversation saying where [t] stands; null for a
+  /// failed change, which its reply shows ([_comment]).
+  Widget? _statusCard(
     BuildContext context,
     ThreadView t, {
     bool offline = false,
@@ -742,33 +758,12 @@ class _ThreadDetailState extends State<ThreadDetail> {
     // A change that stopped at a limit offers Keep going, whether it
     // published part of itself (replied) or nothing (failed).
     final keepGoing =
-        widget.onRetry != null &&
-        t.comments.isNotEmpty &&
-        isKeepGoingReply(t.comments.last) &&
+        _keepGoing(t) &&
         (status == ThreadStatus.failed || status == ThreadStatus.replied);
     final retrying =
         _retriedAt != null && (status == ThreadStatus.failed || keepGoing);
     if (retrying) status = ThreadStatus.working;
-    // The reason's first paragraph: a limit stop's reply has the agent's
-    // own words after it, which the thread shows.
-    final failedReason = status == ThreadStatus.failed
-        ? _sentence(
-            t.comments.last.body
-                .split('\n\n')
-                .first
-                .split(':')
-                .skip(1)
-                .join(':')
-                .trim(),
-          )
-        : '';
-    final (
-      IconData icon,
-      Color bg,
-      Color fg,
-      String title,
-      String line,
-    ) = switch (status) {
+    final look = switch (status) {
       _ when stopped => (
         Icons.cancel_outlined,
         scheme.surfaceContainerHighest,
@@ -815,13 +810,7 @@ class _ThreadDetailState extends State<ThreadDetail> {
             ? 'Only part of the change landed: Keep going builds the rest.'
             : 'Reply to ask for more, or resolve it.',
       ),
-      ThreadStatus.failed => (
-        Icons.error_outline,
-        scheme.errorContainer,
-        scheme.onErrorContainer,
-        'Couldn’t make that change',
-        failedReason,
-      ),
+      ThreadStatus.failed => null,
       ThreadStatus.resolved => (
         Icons.check_circle_outline,
         scheme.surfaceContainerHighest,
@@ -830,6 +819,8 @@ class _ThreadDetailState extends State<ThreadDetail> {
         'Reopen it to ask for more.',
       ),
     };
+    if (look == null) return null;
+    final (icon, bg, fg, title, line) = look;
     final Widget? action = switch (status) {
       _ when stopped =>
         widget.onRetry == null
@@ -873,22 +864,11 @@ class _ThreadDetailState extends State<ThreadDetail> {
         icon: const Icon(Icons.send, size: 18),
         label: const Text('Send to Clax'),
       ),
-      ThreadStatus.failed ||
       ThreadStatus.replied when keepGoing => FilledButton.icon(
         key: const ValueKey('thread-keep-going'),
         onPressed: () => unawaited(_retry()),
         icon: const Icon(Icons.play_arrow, size: 18),
         label: const Text('Keep going'),
-      ),
-      ThreadStatus.failed when widget.onRetry != null => FilledButton.icon(
-        key: const ValueKey('thread-retry'),
-        style: FilledButton.styleFrom(
-          backgroundColor: scheme.error,
-          foregroundColor: scheme.onError,
-        ),
-        onPressed: () => unawaited(_retry()),
-        icon: const Icon(Icons.refresh, size: 18),
-        label: const Text('Retry'),
       ),
       _ => null,
     };
@@ -967,9 +947,15 @@ class _ThreadDetailState extends State<ThreadDetail> {
     );
   }
 
-  Widget _comment(BuildContext context, ThreadComment c, DateTime now) {
+  Widget _comment(
+    BuildContext context,
+    ThreadView t,
+    ThreadComment c,
+    DateTime now,
+  ) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
+    final p = claxPalette(context);
     final agent = c.byAgent;
     final owner = _owner;
     final name = agent
@@ -978,16 +964,159 @@ class _ThreadDetailState extends State<ThreadDetail> {
         ? 'You'
         : c.authorName;
     final failed = isAppFailureReply(c);
-    final bubble = agent
-        ? (failed ? scheme.errorContainer : scheme.secondaryContainer)
+    // A failure, or a limit stop's progress, reads as one line, with the
+    // rest under Details.
+    final reply =
+        failed ||
+            (agent &&
+                c.viaHarness == appHarness &&
+                parseLimitProgress(c.body) != null)
+        ? parseFailureReply(c.body)
+        : null;
+    final raw = reply != null && DeveloperScope.of(context) ? reply.raw : null;
+    final hasDetails = reply != null && (reply.hasDetails || raw != null);
+    final open = hasDetails && _openDetails.contains(c.id);
+    final verbs = ClaxVerbs.of(context);
+    final text = agent ? keepGoingIn(reply?.line ?? c.body, verbs) : c.body;
+    final bubble = failed
+        ? p.card
+        : agent
+        ? scheme.secondaryContainer
         : scheme.surfaceContainerHigh;
-    final onBubble = agent
-        ? (failed ? scheme.onErrorContainer : scheme.onSecondaryContainer)
+    final onBubble = failed
+        ? p.fg
+        : agent
+        ? scheme.onSecondaryContainer
         : scheme.onSurface;
     final time = relativeTime(c.createdAt, now);
     final lit = _glow && _highlighted == c.id;
-    return MergeSemantics(
+
+    // Retry or Keep going, on the failure that ends the thread.
+    final acts =
+        failed &&
+        t.comments.last.id == c.id &&
+        threadStatus(t) == ThreadStatus.failed &&
+        widget.onRetry != null &&
+        _retriedAt == null;
+    final Widget? action = !acts
+        ? null
+        : _keepGoing(t)
+        ? ClaxButton(
+            key: const ValueKey('thread-keep-going'),
+            label: 'Keep going',
+            icon: Icons.play_arrow,
+            kind: ClaxButtonKind.primary,
+            isDefault: true,
+            onPressed: () => unawaited(_retry()),
+          )
+        : reply!.spentLimit
+        ? null
+        : ClaxButton(
+            key: const ValueKey('thread-retry'),
+            label: 'Retry',
+            icon: Icons.refresh,
+            kind: ClaxButtonKind.tonal,
+            onPressed: () => unawaited(_retry()),
+          );
+    final Widget? toggle = !hasDetails
+        ? null
+        : Semantics(
+            expanded: open,
+            child: ClaxButton(
+              key: const ValueKey('failure-details'),
+              label: 'Details',
+              icon: open ? Icons.expand_less : Icons.expand_more,
+              onPressed: () => setState(
+                () => open
+                    ? _openDetails.remove(c.id)
+                    : _openDetails.add(c.id),
+              ),
+            ),
+          );
+
+    final body = Text(
+      text,
+      style: theme.textTheme.bodyMedium?.copyWith(color: onBubble),
+    );
+    final content = Padding(
+      padding: const EdgeInsets.fromLTRB(12, 9, 12, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ExcludeSemantics(
+            child: failed
+                ? Row(
+                    key: const ValueKey('failure-reply'),
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.only(top: 1),
+                        child: Icon(
+                          Icons.error_outline,
+                          size: 18,
+                          color: p.danger,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(child: body),
+                    ],
+                  )
+                : body,
+          ),
+          if (action != null || toggle != null) ...[
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 4,
+              runSpacing: 4,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [?action, ?toggle],
+            ),
+          ],
+          if (open)
+            _details(context, reply, raw, onBubble),
+        ],
+      ),
+    );
+    const shape = BorderRadius.only(
+      topRight: Radius.circular(14),
+      bottomLeft: Radius.circular(14),
+      bottomRight: Radius.circular(14),
+      topLeft: Radius.circular(4),
+    );
+    final Widget box = failed
+        // A neutral card with a danger rule down its left edge.
+        ? DecoratedBox(
+            decoration: BoxDecoration(
+              color: bubble,
+              borderRadius: shape,
+              border: Border.all(color: p.border),
+            ),
+            child: ClipRRect(
+              borderRadius: shape,
+              child: IntrinsicHeight(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    SizedBox(width: 3, child: ColoredBox(color: p.danger)),
+                    Expanded(child: content),
+                  ],
+                ),
+              ),
+            ),
+          )
+        : DecoratedBox(
+            decoration: BoxDecoration(color: bubble, borderRadius: shape),
+            child: content,
+          );
+    return Semantics(
       key: ValueKey('comment-${agent ? 'agent' : 'person'}-${c.id}'),
+      container: true,
+      label: [
+        name,
+        if (time.isNotEmpty) time,
+        if (failed) 'failed',
+        text,
+      ].join(', '),
       child: AnimatedContainer(
         key: _commentKeys.putIfAbsent(c.id, GlobalKey.new),
         duration: const Duration(milliseconds: 700),
@@ -1025,59 +1154,122 @@ class _ThreadDetailState extends State<ThreadDetail> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Wrap(
-                    spacing: 8,
-                    crossAxisAlignment: WrapCrossAlignment.end,
-                    children: [
-                      Text(
-                        name,
-                        style: theme.textTheme.labelLarge?.copyWith(
-                          color: agent ? scheme.primary : null,
-                        ),
-                      ),
-                      if (time.isNotEmpty)
+                  ExcludeSemantics(
+                    child: Wrap(
+                      spacing: 8,
+                      crossAxisAlignment: WrapCrossAlignment.end,
+                      children: [
                         Text(
-                          time,
-                          style: theme.textTheme.labelSmall?.copyWith(
-                            color: scheme.onSurfaceVariant,
+                          name,
+                          style: theme.textTheme.labelLarge?.copyWith(
+                            color: agent ? scheme.primary : null,
                           ),
                         ),
-                      if (failed)
-                        Text(
-                          'failed',
-                          style: theme.textTheme.labelSmall?.copyWith(
-                            color: scheme.error,
-                            fontWeight: FontWeight.w700,
+                        if (time.isNotEmpty)
+                          Text(
+                            time,
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: scheme.onSurfaceVariant,
+                            ),
                           ),
-                        ),
-                    ],
+                        if (failed)
+                          Text(
+                            'failed',
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: p.danger,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                      ],
+                    ),
                   ),
                   const SizedBox(height: 4),
-                  DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: bubble,
-                      borderRadius: const BorderRadius.only(
-                        topRight: Radius.circular(14),
-                        bottomLeft: Radius.circular(14),
-                        bottomRight: Radius.circular(14),
-                        topLeft: Radius.circular(4),
-                      ),
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(12, 9, 12, 10),
-                      child: Text(
-                        c.body,
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          color: onBubble,
-                        ),
-                      ),
-                    ),
-                  ),
+                  box,
                 ],
               ),
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  /// What a failure or a limit stop's reply keeps under Details: the
+  /// stops and the cost ("Stopped twice · $2.10 of $6 used"), the files
+  /// changed with their lines, the notes as Markdown, and last [raw].
+  Widget _details(
+    BuildContext context,
+    FailureReply r,
+    String? raw,
+    Color fg,
+  ) {
+    final theme = Theme.of(context);
+    final p = claxPalette(context);
+    final small = theme.textTheme.bodySmall?.copyWith(color: fg);
+    final muted = theme.textTheme.bodySmall?.copyWith(color: p.muted);
+    Widget heading(String s) => Padding(
+      padding: const EdgeInsets.only(top: 10, bottom: 4),
+      child: Text(
+        s,
+        style: theme.textTheme.labelMedium?.copyWith(color: p.muted),
+      ),
+    );
+    String usd(double v) =>
+        v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(2);
+    final cost = r.costUsd == null || r.capUsd == null
+        ? null
+        : '${r.stops == null ? '' : 'Stopped ${timesWords(r.stops!)} · '}'
+              '\$${r.costUsd!.toStringAsFixed(2)} of \$${usd(r.capUsd!)} used';
+    return Padding(
+      key: const ValueKey('failure-details-open'),
+      padding: const EdgeInsets.only(top: 2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (cost != null) ...[const SizedBox(height: 6), Text(cost, style: small)],
+          if (r.files.isNotEmpty) ...[
+            heading('Changed'),
+            for (final f in r.files)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 1),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        f.path,
+                        style: small?.copyWith(fontFamily: 'monospace'),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    if (f.added > 0 || f.removed > 0) ...[
+                      const SizedBox(width: 8),
+                      Text(
+                        [
+                          if (f.added > 0) '+${f.added}',
+                          if (f.removed > 0) '−${f.removed}',
+                        ].join(' '),
+                        style: muted?.copyWith(
+                          fontFeatures: const [FontFeature.tabularFigures()],
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            if (r.moreFiles > 0) Text('and ${r.moreFiles} more', style: muted),
+          ],
+          if (r.notes.isNotEmpty) ...[
+            heading('Notes'),
+            for (final n in r.notes) ..._markdown(n, small, bullet: true),
+          ],
+          if (raw != null) ...[
+            heading('Error'),
+            SelectableText(
+              raw,
+              style: small?.copyWith(fontFamily: 'monospace'),
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -1169,4 +1361,59 @@ class _ThreadDetailState extends State<ThreadDetail> {
       ),
     );
   }
+}
+
+/// [md] as widgets: each line opening "- " or "* " a bullet, other lines
+/// paragraphs, `**bold**` and `` `code` `` inline. With [bullet], a
+/// paragraph line is a bullet too (one note of a list).
+List<Widget> _markdown(String md, TextStyle? style, {bool bullet = false}) {
+  Widget item(String s, {required bool dot}) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 1),
+    child: dot
+        ? Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(width: 14, child: Text('•', style: style)),
+              Expanded(child: Text.rich(_inline(s, style))),
+            ],
+          )
+        : Text.rich(_inline(s, style)),
+  );
+  final lines = md
+      .split('\n')
+      .map((l) => l.trimRight())
+      .where((l) => l.trim().isNotEmpty)
+      .toList();
+  final listed = lines.any((l) => RegExp(r'^\s*[-*] ').hasMatch(l));
+  return [
+    for (final l in lines)
+      switch (RegExp(r'^\s*[-*] (.*)$').firstMatch(l)) {
+        final m? => item(m[1]!, dot: true),
+        // A note that is its own list keeps its lead line plain.
+        _ => item(l.trim(), dot: bullet && !listed),
+      },
+  ];
+}
+
+/// [s]'s `**bold**` and `` `code` `` spans in [style].
+TextSpan _inline(String s, TextStyle? style) {
+  final spans = <TextSpan>[];
+  var at = 0;
+  for (final m in RegExp(r'\*\*(.+?)\*\*|`([^`]+)`').allMatches(s)) {
+    if (m.start > at) spans.add(TextSpan(text: s.substring(at, m.start)));
+    spans.add(
+      m[1] != null
+          ? TextSpan(
+              text: m[1],
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            )
+          : TextSpan(
+              text: m[2],
+              style: const TextStyle(fontFamily: 'monospace'),
+            ),
+    );
+    at = m.end;
+  }
+  if (at < s.length) spans.add(TextSpan(text: s.substring(at)));
+  return TextSpan(style: style, children: spans);
 }
