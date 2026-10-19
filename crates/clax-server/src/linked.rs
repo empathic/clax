@@ -1561,7 +1561,7 @@ impl Sync {
                                 Some(n) => (n, true),
                                 None => (link.pushed_n, false),
                             };
-                        let t = st.mirror_thread(
+                        let t = match st.mirror_thread(
                             &audit,
                             &link,
                             (&remote.name, &remote.origin),
@@ -1573,7 +1573,13 @@ impl Sync {
                                 anchor,
                                 first: first.clone(),
                             },
-                        )?;
+                        ) {
+                            Ok(t) => t,
+                            // The artifact or the link is gone since this
+                            // cycle read it: nothing to write here.
+                            Err(clax_core::CoreError::NotFound) => return Ok(None),
+                            Err(e) => return Err(e),
+                        };
                         fresh_thread = true;
                         st.linked_thread(&t.id)?
                             .ok_or(clax_core::CoreError::NotFound)?

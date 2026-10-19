@@ -281,6 +281,19 @@ pub fn remote_label(name: &str, remote: &str) -> String {
     format!("{name} (on {remote})")
 }
 
+/// Whether link `l`, read before the transaction `c` is in, still holds:
+/// not ended, nor moved to another public artifact since.
+fn link_holds_in(c: &Connection, l: &RemoteLink) -> Result<bool> {
+    let raid: Option<String> = c
+        .query_row(
+            "SELECT remote_artifact_id FROM remote_links WHERE artifact_id = ?1 AND remote_id = ?2",
+            params![l.artifact_id, l.remote_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(raid.as_deref() == Some(l.remote_artifact_id.as_str()))
+}
+
 /// The idempotency key of a local write's up-send: made here, once.
 fn new_key(kind: &str) -> String {
     format!("clax-linked:{kind}:{}", new_ulid().to_lowercase())
@@ -528,7 +541,8 @@ impl Store {
     /// written already for it.
     ///
     /// # Errors
-    /// `NotFound` for an artifact gone; `invalid_comment` for an empty body.
+    /// `NotFound` for an artifact gone, or `link` ended or moved since it
+    /// was read; `invalid_comment` for an empty body.
     #[allow(clippy::too_many_arguments)]
     pub fn mirror_thread(
         &self,
@@ -554,7 +568,7 @@ impl Store {
             {
                 return Ok(tid);
             }
-            if !super::threads::artifact_live(tx, &link.artifact_id)? {
+            if !super::threads::artifact_live(tx, &link.artifact_id)? || !link_holds_in(tx, link)? {
                 return Err(CoreError::NotFound);
             }
             let now = self.now();
@@ -758,6 +772,11 @@ impl Store {
             let now = self.now();
             let mut queued = 0;
             for l in &links {
+                // Read before this transaction: a link ended (or moved)
+                // since queues nothing.
+                if !link_holds_in(tx, l)? {
+                    continue;
+                }
                 if !l.download_only {
                     let mut stmt = tx.prepare(&format!(
                         "SELECT t.id FROM threads t WHERE t.artifact_id = ?1
@@ -1188,6 +1207,9 @@ impl Store {
             let now = self.now();
             let mut paired = 0;
             for l in links.iter().filter(|l| !l.download_only) {
+                if !link_holds_in(tx, l)? {
+                    continue;
+                }
                 let mut stmt = tx.prepare_cached(
                     "SELECT q.id FROM questions q
                      WHERE q.artifact_id = ?1 AND q.status = 'open' AND q.source = 'ask'
@@ -1572,6 +1594,36 @@ mod tests {
         assert_eq!(v.comments[&made.id].author_name.as_deref(), Some("Sam"));
         // Nothing mirrored goes back up.
         assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_link_ended_after_it_was_read_mirrors_nothing() {
+        let w = world();
+        let l = link(&w, (1, 1));
+        w.st.unlink_remote(&w.aid, &w.rid).unwrap();
+        let err =
+            w.st.mirror_thread(
+                &AuditCtx::DAEMON,
+                &l,
+                ("clax.example", "https://clax.example"),
+                1,
+                true,
+                MirrorThread {
+                    remote_thread_id: "rt1".into(),
+                    remote_version: 1,
+                    anchor: whole(),
+                    first: mirror("hi", "rc1"),
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(err, CoreError::NotFound), "{err:?}");
+        assert!(
+            w.st.linked_thread_by_remote(&w.rid, "rt1")
+                .unwrap()
+                .is_none()
+        );
+        let id = ArtifactId::parse(&w.aid).unwrap();
+        assert!(w.st.list_threads(&id, true, None, 10).unwrap().0.is_empty());
     }
 
     #[test]
