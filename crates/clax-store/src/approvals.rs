@@ -1933,8 +1933,9 @@ impl Store {
     /// `approval.decide`, and bumps the visibility generation; declining
     /// marks it declined (`approval.decide` with scope `decline`), keeps
     /// its rows held and bumps the generation too. Either way its item is
-    /// read. Once the approver holds fewer than [`MAX_OPEN_REQUESTS`],
-    /// the overflow marker is cleared.
+    /// read. Then each place the approver's overflow marker holds is
+    /// dropped once its content is no longer held without a request
+    /// (`held_without_request`), and the marker goes when none is left.
     ///
     /// # Errors
     /// `NotFound` unless `rid` is a request of `approver`;
