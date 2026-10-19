@@ -249,6 +249,7 @@ Performance gates nothing in either (`just perf` measures on demand).
 | tool hook gate | `//scripts:tool_hook` |
 | extension signing | `scripts/test-extension-signing.sh`, outside Bazel |
 | stable bin | `//scripts:stable_bin` |
+| checkout lock | `//scripts:checkout_lock` |
 | fake exe | `//scripts:fake_exe` |
 | release installer | `//scripts:installer` |
 | dev scripts | `scripts/test-dev.sh`, outside Bazel |

@@ -5559,9 +5559,9 @@ ID>`. An artifact URL whose `#` fragment is neither is the artifact.
   count. The quality gates run it with `--quick` (shorter idle and load
   windows, the same budgets); `just perf` runs it in full.
 - `scripts/quality_gates.sh` takes a lock per checkout
-  (`<git dir>/quality-gates.lock`): a second run in the same checkout waits,
-  a lock whose process has gone is taken over, and separate worktrees run in
-  parallel.
+  (a flock(2) on `<git dir>/quality-gates.flock`): a second run in the same
+  checkout waits, the lock goes with the run that holds it however that run
+  ends, and separate worktrees run in parallel.
 
 ## The event stream
 

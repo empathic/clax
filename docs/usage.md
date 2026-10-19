@@ -482,10 +482,10 @@ built on unix only: the tool-call journal's real file system
 private files. The gates run this check in a lane of their own (`wasm32`),
 so a machine running them needs that LLVM and the target.
 
-One run of the gates at a time per checkout: a run holds
-`quality-gates.lock` in the checkout's git directory, a second run in the
-same checkout waits for it, and a lock whose process has gone is taken over.
-Separate worktrees still run in parallel.
+One run of the gates at a time per checkout: a run holds a flock(2) on
+`quality-gates.flock` in the checkout's git directory, a second run in the
+same checkout waits for it, and the lock goes with its run however that run
+ends, a kill -9 included. Separate worktrees still run in parallel.
 
 `scripts/verify-harnesses.sh` (manual) checks `clax init` and `clax uninit`
 against the real `claude`, `codex` and `pi` CLIs, entirely inside a scratch

@@ -18,17 +18,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 # One run at a time per checkout: parallel runs corrupt each other (an
 # `pnpm install` replaces node_modules under the other's tests). The lock lives in
-# this checkout's git dir, so separate worktrees still run in parallel.
-LOCK="$(git rev-parse --git-dir)/quality-gates.lock"
-while ! mkdir "$LOCK" 2>/dev/null; do
-    holder="$(cat "$LOCK/pid" 2>/dev/null || true)"
-    if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
-        rm -rf "$LOCK"; continue
-    fi
-    echo "quality gates: waiting for the run holding $LOCK (pid ${holder:-unknown})" >&2
-    sleep 10
-done
-echo $$ > "$LOCK/pid"
+# this checkout's git dir, so separate worktrees still run in parallel; it
+# goes with its run, however that run ends (scripts/lib/checkout-lock.sh).
+# shellcheck source=scripts/lib/checkout-lock.sh
+. scripts/lib/checkout-lock.sh
+checkout_lock "$(git rev-parse --git-dir)/quality-gates.flock" "the quality gates running in this checkout"
 GATES_TMP="$(mktemp -d "${TMPDIR:-/tmp}/clax-gates.XXXXXX")"
 GATES_TMP="$(cd "$GATES_TMP" && pwd -P)"
 LANES=""
@@ -70,6 +64,7 @@ lane_scripts() {
     run "tool hook gate"        scripts/test-tool-hook.sh &&
     run "extension signing"     scripts/test-extension-signing.sh &&
     run "stable bin"            scripts/test-stable-bin.sh &&
+    run "checkout lock"         scripts/test-checkout-lock.sh &&
     run "fake exe"              scripts/test-fake-exe.sh
 }
 lane_installer() {
@@ -271,7 +266,7 @@ descendants() {
     done
 }
 
-# The timing table, the lanes stopped, the scratch directory and the lock removed.
+# The timing table, the lanes stopped and the scratch directory removed.
 finish() {
     local rc=$? entry pids
     for entry in $LANES; do
@@ -284,7 +279,7 @@ finish() {
         awk -F'\t' '{ printf "  %-30s %7ss%s\n", $1, $2, ($3 == 0 ? "" : "  (failed)") }' "$GATES_TMP/times"
         perl -e 'printf "  %-30s %7.1fs\n", "total (wall clock)", $ARGV[1] - $ARGV[0]' "$START" "$(now)"
     fi
-    rm -rf "$GATES_TMP" "$LOCK"
+    rm -rf "$GATES_TMP"
     exit "$rc"
 }
 
