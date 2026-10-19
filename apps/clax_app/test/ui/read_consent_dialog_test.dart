@@ -64,10 +64,7 @@ void main() {
     expect(find.textContaining('agent'), findsNothing);
     expect(find.text('Allow once'), findsOneWidget);
     expect(find.byType(ClaxCheckbox), findsOneWidget);
-    expect(
-      find.widgetWithText(ClaxButton, 'Always for this app'),
-      findsNothing,
-    );
+    expect(find.widgetWithText(ClaxButton, 'Always for this app'), findsNothing);
     expect(find.byType(ClaxButton), findsNWidgets(2));
     expect(find.text('Don’t allow'), findsOneWidget);
     await tester.tap(find.text('Allow once'));

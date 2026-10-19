@@ -96,7 +96,10 @@ abstract final class ClaxDialog {
     final apple = ClaxFamily.of(context) == ClaxFamily.apple;
     final suppressed = ValueNotifier(false);
     final navigator = Navigator.of(context, rootNavigator: true);
-    final themes = InheritedTheme.capture(from: context, to: navigator.context);
+    final themes = InheritedTheme.capture(
+      from: context,
+      to: navigator.context,
+    );
     final extra = [
       ?content,
       if (suppression != null)
@@ -115,8 +118,7 @@ abstract final class ClaxDialog {
       final p = claxPalette(context);
       route = RawDialogRoute<int>(
         barrierDismissible: true,
-        barrierLabel: MaterialLocalizations.of(context)
-            .modalBarrierDismissLabel,
+        barrierLabel: MaterialLocalizations.of(context).modalBarrierDismissLabel,
         barrierColor: p.scrim.withValues(alpha: p.scrim.a * 0.5),
         transitionDuration: ClaxMotion.base,
         transitionBuilder: (context, animation, _, child) {
@@ -153,8 +155,7 @@ abstract final class ClaxDialog {
       route = DialogRoute<int>(
         context: context,
         themes: themes,
-        barrierLabel: MaterialLocalizations.of(context)
-            .modalBarrierDismissLabel,
+        barrierLabel: MaterialLocalizations.of(context).modalBarrierDismissLabel,
         builder: (context) => _Keys(
           defaultIndex: defaultIndex,
           child: AlertDialog(
@@ -373,20 +374,16 @@ class _AppleAlert extends StatelessWidget {
                     Text(
                       title,
                       textAlign: TextAlign.center,
-                      style: ClaxType.of(
-                        ClaxRole.headline,
-                        platform,
-                      ).copyWith(color: p.fg),
+                      style: ClaxType.of(ClaxRole.headline, platform)
+                          .copyWith(color: p.fg),
                     ),
                     if (body != null) ...[
                       const SizedBox(height: ClaxSpace.s8),
                       Text(
                         body!,
                         textAlign: TextAlign.center,
-                        style: ClaxType.of(
-                          ClaxRole.caption,
-                          platform,
-                        ).copyWith(color: p.fg),
+                        style: ClaxType.of(ClaxRole.caption, platform)
+                            .copyWith(color: p.fg),
                       ),
                     ],
                     for (final w in extra) ...[
@@ -441,9 +438,9 @@ class ClaxActionBar extends MultiChildRenderObjectWidget {
   @override
   void updateRenderObject(BuildContext context, RenderObject renderObject) =>
       (renderObject as _RenderActionBar)
-        ..spacing = spacing
-        ..fill = fill
-        ..textDirection = Directionality.of(context);
+    ..spacing = spacing
+    ..fill = fill
+    ..textDirection = Directionality.of(context);
 }
 
 class _ActionBarData extends ContainerBoxParentData<RenderBox> {}
@@ -477,8 +474,7 @@ class _RenderActionBar extends RenderBox
 
   @override
   void setupParentData(RenderBox child) {
-    if (child.parentData is! _ActionBarData)
-      child.parentData = _ActionBarData();
+    if (child.parentData is! _ActionBarData) child.parentData = _ActionBarData();
   }
 
   List<RenderBox> get _children => getChildrenAsList();
@@ -506,15 +502,14 @@ class _RenderActionBar extends RenderBox
 
   @override
   double computeMaxIntrinsicWidth(double height) =>
-      _children.fold(0.0, (a, c) => a + c.getMaxIntrinsicWidth(height)) + _gaps;
+      _children.fold(0.0, (a, c) => a + c.getMaxIntrinsicWidth(height)) +
+      _gaps;
 
   @override
-  double computeMinIntrinsicHeight(double width) =>
-      _height(width, (c, w) => c.getMinIntrinsicHeight(w));
+  double computeMinIntrinsicHeight(double width) => _height(width, (c, w) => c.getMinIntrinsicHeight(w));
 
   @override
-  double computeMaxIntrinsicHeight(double width) =>
-      _height(width, (c, w) => c.getMaxIntrinsicHeight(w));
+  double computeMaxIntrinsicHeight(double width) => _height(width, (c, w) => c.getMaxIntrinsicHeight(w));
 
   double _height(double width, double Function(RenderBox, double) of) {
     if (_fits(width)) {
