@@ -359,3 +359,341 @@ async fn sending_the_brief_to_another_persons_agent_asks_that_person_first() {
     .await;
     assert_eq!((s, code(&v)), (400, "unknown_agent"), "{v}");
 }
+
+/// `call` with extra request headers.
+async fn call_with(
+    ts: &TestServer,
+    cookie: Option<&str>,
+    method: &str,
+    path: &str,
+    body: Value,
+    headers: &[(&str, &str)],
+) -> (u16, Value) {
+    let mut r = ts
+        .client
+        .request(method.parse().unwrap(), format!("{}{path}", ts.base))
+        .json(&body);
+    if let Some(c) = cookie {
+        r = r.header("cookie", c);
+    }
+    for (k, v) in headers {
+        r = r.header(*k, *v);
+    }
+    json_of(r.send().await.unwrap()).await
+}
+
+/// The names `GET /api/agents?artifact=<aid>` lists to the browser holding
+/// `cookie`.
+async fn attachable(ts: &TestServer, cookie: &str, aid: &str) -> Vec<String> {
+    let (s, v) = call(
+        ts,
+        Some(cookie),
+        "GET",
+        &format!("/api/agents?artifact={aid}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let mut names: Vec<String> = v["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["name"].as_str().unwrap_or_default().to_string())
+        .collect();
+    names.sort();
+    names
+}
+
+/// A person connected with `preset`, whose rights are then `rights`, with a
+/// live agent: their machine and the agent's session.
+async fn narrowed(
+    ts: &TestServer,
+    name: &str,
+    rights: Value,
+) -> (clax_testkit::TestClient, String) {
+    let c = ts.connect_person(name, "clax:collaborator").await;
+    let sid = c.register("claude", &format!("{name}-brief")).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let pid = ts.store.viewer_of_grant(&c.grant_id()).unwrap().public_id;
+    set_rights(ts, &pid, Rights::parse(&rights).unwrap()).await;
+    (c, sid)
+}
+
+#[tokio::test]
+async fn the_dialog_lists_and_a_send_reaches_only_agents_that_may_read_and_watch() {
+    let (ts, _sam, sam_sid, owner_sid, aid, tid) = briefed().await;
+    let owner = ts.owner_cookie();
+    // Lee's agent may read only another artifact; Kim's may read this one
+    // but not watch it.
+    let other = ts.publish("Other", &[("index.html", "<p>x")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_lee, lee_sid) = narrowed(
+        &ts,
+        "Lee",
+        json!([{"type": "clax-artifacts", "actions": ["read"], "locations": [other]}]),
+    )
+    .await;
+    let (_kim, kim_sid) = narrowed(
+        &ts,
+        "Kim",
+        json!([
+            {"type": "clax-artifacts", "actions": ["read"], "locations": ["*"]},
+            {"type": "clax-comments", "actions": ["read"], "locations": ["*"]},
+        ]),
+    )
+    .await;
+    let mut want = vec![name_of(&ts, &owner_sid), name_of(&ts, &sam_sid)];
+    want.sort();
+    assert_eq!(attachable(&ts, &owner, &aid).await, want);
+    let send = format!("/api/artifacts/{aid}/threads/{tid}/send");
+    // The send refuses each left out, and gives it no watch.
+    for (sid, want) in [(&lee_sid, "agent_cannot_read"), (&kim_sid, "unknown_agent")] {
+        let (s, v) = call(
+            &ts,
+            Some(&owner),
+            "POST",
+            &send,
+            json!({"to": name_of(&ts, sid)}),
+        )
+        .await;
+        assert_eq!((s, code(&v)), (400, want), "{v}");
+        assert!(!watches(&ts, sid, &aid), "{want}: no watch");
+    }
+    // A guest lists no agents; a reader, who may not send, may name none.
+    let gil = ts.viewer(Some("Gil")).await;
+    let (s, v) = call(
+        &ts,
+        Some(&viewer_cookie(&gil.cookie)),
+        "GET",
+        &format!("/api/agents?artifact={aid}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!((s, code(&v)), (403, "forbidden"), "{v}");
+    let rae = ts.person("Rae").await;
+    set_rights(&ts, &rae.public_id, Rights::preset("clax:reader").unwrap()).await;
+    assert_eq!(
+        attachable(&ts, &viewer_cookie(&rae.cookie), &aid).await,
+        Vec::<String>::new()
+    );
+    // A resolved thread is refused first, and gives no watch.
+    let res = ts
+        .post_json(
+            &format!("/api/artifacts/{aid}/threads/{tid}/resolve"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(res.status(), 200, "{}", res.text().await.unwrap());
+    let (s, v) = call(
+        &ts,
+        Some(&owner),
+        "POST",
+        &send,
+        json!({"to": name_of(&ts, &owner_sid)}),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (400, "thread_resolved"), "{v}");
+    assert!(!watches(&ts, &owner_sid, &aid));
+}
+
+#[tokio::test]
+async fn no_persons_agent_reaches_a_live_page_by_a_send() {
+    let (ts, _sam, sam_sid, _owner_sid, _aid, _tid) = briefed().await;
+    let v = ts.viewer(Some("Alex")).await;
+    let form = reqwest::multipart::Form::new()
+        .text("url", "http://localhost:5173/")
+        .text("title", "Settings")
+        .text(
+            "anchor",
+            json!({"kind": "element", "selector": "main", "quote": "Save", "file": "index.html"})
+                .to_string(),
+        )
+        .text("body", "The button overflows")
+        .text("pending", "[]")
+        .text("snapshot", "<p>a live page</p>");
+    let r = ts
+        .client
+        .post(format!("{}/api/live/threads", ts.base))
+        .header("cookie", format!("clax_viewer={}", v.cookie))
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    let (s, made) = json_of(r).await;
+    assert_eq!(s, 201, "{made}");
+    let hid = made["page"]["artifact_id"].as_str().unwrap().to_string();
+    let htid = made["thread"]["id"].as_str().unwrap().to_string();
+    // The owner names Sam's agent, which a send there never reaches.
+    let res = ts
+        .authed(ts.client.post(format!(
+            "{}/api/artifacts/{hid}/threads/{htid}/send",
+            ts.base
+        )))
+        .json(&json!({"to": name_of(&ts, &sam_sid)}))
+        .send()
+        .await
+        .unwrap();
+    let (s2, v2) = json_of(res).await;
+    assert_eq!((s2, code(&v2)), (400, "unknown_agent"), "{v2}");
+    assert!(!watches(&ts, &sam_sid, &hid));
+}
+
+#[tokio::test]
+async fn a_connected_person_attaches_another_persons_agent_who_approves_first() {
+    let (ts, sam, sam_sid, _owner_sid, _aid, _tid) = briefed().await;
+    let mia = ts.connect_person("Mia", "clax:collaborator").await;
+    let mia_viewer = ts.store.viewer_of_grant(&mia.grant_id()).unwrap();
+    let cookie = viewer_cookie(&ts.browser_cookie(&mia_viewer.id));
+    let (s, v) = call(&ts, Some(&cookie), "POST", NEW, brief("Mia's plan")).await;
+    assert_eq!(s, 201, "{v}");
+    let (aid, tid) = (
+        v["artifact"]["id"].as_str().unwrap().to_string(),
+        v["thread"]["id"].as_str().unwrap().to_string(),
+    );
+    assert!(
+        attachable(&ts, &cookie, &aid)
+            .await
+            .contains(&name_of(&ts, &sam_sid))
+    );
+    let (s, v) = call(
+        &ts,
+        Some(&cookie),
+        "POST",
+        &format!("/api/artifacts/{aid}/threads/{tid}/send"),
+        json!({"to": name_of(&ts, &sam_sid)}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert!(watches(&ts, &sam_sid, &aid));
+    assert!(
+        v["thread"]["feedback_state"]
+            .to_string()
+            .contains("withheld"),
+        "Sam approves first: {v}"
+    );
+    // An agent of another machine starts nothing from a brief.
+    let r = sam
+        .agent("POST", NEW, Some(&sam_sid), Some(brief("By Sam's agent")))
+        .await;
+    let (s, v) = json_of(r).await;
+    assert_eq!((s, code(&v)), (403, "forbidden"), "{v}");
+}
+
+#[tokio::test]
+async fn a_repeat_with_its_key_answers_the_first_artifact() {
+    let ts = TestServer::spawn().await;
+    let owner = ts.owner_cookie();
+    let key = [("idempotency-key", "k-0001")];
+    let (s, first) = call_with(&ts, Some(&owner), "POST", NEW, brief("Once"), &key).await;
+    assert_eq!(s, 201, "{first}");
+    let (s, again) = call_with(&ts, Some(&owner), "POST", NEW, brief("Once"), &key).await;
+    assert_eq!(s, 200, "{again}");
+    assert_eq!(again["artifact"]["id"], first["artifact"]["id"]);
+    assert_eq!(again["thread"]["id"], first["thread"]["id"]);
+    assert_eq!(again["url"], first["url"]);
+    // Another key, or another person's same key, makes another.
+    let (s, other) = call_with(
+        &ts,
+        Some(&owner),
+        "POST",
+        NEW,
+        brief("Twice"),
+        &[("idempotency-key", "k-0002")],
+    )
+    .await;
+    assert_eq!(s, 201, "{other}");
+    assert_ne!(other["artifact"]["id"], first["artifact"]["id"]);
+    let rae = ts.person("Rae").await;
+    let (s, hers) = call_with(
+        &ts,
+        Some(&viewer_cookie(&rae.cookie)),
+        "POST",
+        NEW,
+        brief("Rae's"),
+        &key,
+    )
+    .await;
+    assert_eq!(s, 201, "{hers}");
+    assert_ne!(hers["artifact"]["id"], first["artifact"]["id"]);
+    let long = "k".repeat(129);
+    let (s, v) = call_with(
+        &ts,
+        Some(&owner),
+        "POST",
+        NEW,
+        brief("Bad"),
+        &[("idempotency-key", long.as_str())],
+    )
+    .await;
+    assert_eq!((s, code(&v)), (400, "invalid_args"), "{v}");
+    let (_, list) = json_of(ts.get_authed("/api/artifacts").await).await;
+    assert_eq!(list["artifacts"].as_array().unwrap().len(), 3, "{list}");
+}
+
+#[tokio::test]
+async fn an_artifact_started_from_a_brief_names_who_started_it_to_people() {
+    let ts = TestServer::spawn().await;
+    let rae = ts.person("Rae").await;
+    let cookie = viewer_cookie(&rae.cookie);
+    // A title may join letters and emoji (ZWNJ, ZWJ).
+    let (s, v) = call(&ts, Some(&cookie), "POST", NEW, brief("می\u{200c}خواهم")).await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["artifact"]["brief"], json!({"by": "Rae"}));
+    let aid = v["artifact"]["id"].as_str().unwrap().to_string();
+    let (_, got) = call(
+        &ts,
+        Some(&cookie),
+        "GET",
+        &format!("/api/artifacts/{aid}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(got["artifact"]["brief"], json!({"by": "Rae"}), "{got}");
+    let (_, list) = call(
+        &ts,
+        Some(&ts.owner_cookie()),
+        "GET",
+        "/api/artifacts",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        list["artifacts"][0]["brief"],
+        json!({"by": "Rae"}),
+        "{list}"
+    );
+    let page = ts.get(&format!("/a/{aid}")).await.text().await.unwrap();
+    assert!(
+        page.contains("\"brief\":{\"by\":\"Rae\"}"),
+        "the page's bootstrap"
+    );
+    // Agents are not told.
+    let sid = ts.register_session("claude", "brief-by").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = ts
+        .authed(ts.client.get(format!("{}/api/artifacts/{aid}", ts.base)))
+        .header("x-clax-session", &sid)
+        .send()
+        .await
+        .unwrap();
+    let (_, got) = json_of(res).await;
+    assert!(got["artifact"].get("brief").is_none(), "{got}");
+    // An artifact an agent published names none.
+    let p = ts.publish("Plain", &[("index.html", "<p>x")]).await;
+    let pid = p["artifact"]["id"].as_str().unwrap();
+    let (_, got) = call(
+        &ts,
+        Some(&cookie),
+        "GET",
+        &format!("/api/artifacts/{pid}"),
+        Value::Null,
+    )
+    .await;
+    assert!(got["artifact"].get("brief").is_none(), "{got}");
+}

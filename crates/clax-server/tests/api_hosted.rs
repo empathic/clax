@@ -5356,6 +5356,78 @@ async fn people_start_artifacts_from_briefs_and_guests_may_not() {
 }
 
 #[tokio::test]
+async fn a_member_who_may_not_send_attaches_no_agent_and_agent_tokens_start_nothing() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let new = "/api/artifacts:new";
+    let brief = json!({"title": "Nia's notes", "brief": "Notes from the launch review"});
+    // Nia creates in her own space and comments there, but sends nothing.
+    let (nia, _) = site
+        .person_with(
+            &owner,
+            "Nia",
+            json!([
+                {"type": "clax-artifacts", "actions": ["create"], "locations": ["*"]},
+                {"type": "clax-artifacts", "actions": ["read"], "locations": ["own"]},
+                {"type": "clax-comments", "actions": ["read", "write"], "locations": ["own"]},
+            ]),
+        )
+        .await;
+    let (s, v) = site.post(&nia, new, brief.clone()).await;
+    assert_eq!(s, 201, "{v}");
+    let (aid, tid) = (
+        v["artifact"]["id"].as_str().unwrap().to_string(),
+        v["thread"]["id"].as_str().unwrap().to_string(),
+    );
+    let agent = site.ts.register_session("claude", "hosted-nia").await;
+    let sid = agent["id"].as_str().unwrap().to_string();
+    let (s, v) = site.get(&nia, &format!("/api/agents?artifact={aid}")).await;
+    assert_eq!((s, v["agents"].clone()), (200, json!([])), "{v}");
+    let (s, v) = site
+        .post(
+            &nia,
+            &format!("/api/artifacts/{aid}/threads/{tid}/send"),
+            json!({"to": agent["name"]}),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (403, "not_permitted"), "{v}");
+    let watching = site.ts.store.list_watches(&sid).unwrap();
+    assert!(
+        watching.iter().all(|w| w.artifact_id != aid),
+        "{watching:?}"
+    );
+    // The owner, who may send anywhere, may name it there.
+    let (s, v) = site
+        .get(&owner, &format!("/api/agents?artifact={aid}"))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["agents"].as_array().unwrap().len(), 1, "{v}");
+    // An agent token of a member who creates starts nothing from a brief.
+    let mia = site.member(&owner, "Mia").await;
+    let (s, t) = site
+        .post(
+            &mia,
+            "/api/hosted/agent-tokens",
+            json!({"label": "mia-laptop"}),
+        )
+        .await;
+    assert_eq!(s, 201, "{t}");
+    let token = t["token"].as_str().unwrap();
+    let res = site
+        .ts
+        .client
+        .post(site.url(new))
+        .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+        .bearer_auth(token)
+        .json(&brief)
+        .send()
+        .await
+        .unwrap();
+    let (s, v) = json_of(res).await;
+    assert_eq!((s, code(&v)), (403, "forbidden"), "{v}");
+}
+
+#[tokio::test]
 async fn an_artifacts_answer_with_a_signed_in_viewers_attention_is_private() {
     let site = Site::new().await;
     let owner = site.owner().await;
