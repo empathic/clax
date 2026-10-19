@@ -1889,7 +1889,8 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
     const startInject = (c: DaemonClient) => {
       if (!live || stopInject) return;
       const abort = new AbortController();
-      stopInject = () => abort.abort();
+      const stop = () => abort.abort();
+      stopInject = stop;
       // Waits `ms` (with none, until woken), or less when the loop is stopped
       // or a wait starts or ends.
       const pause = (ms?: number) => new Promise<void>(r => {
@@ -1917,12 +1918,20 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
           }
           if (abort.signal.aborted) return;
           if (typeof res.text === "string" && res.text) {
-            pi.sendUserMessage(await tools.agentText(c, res.text), { deliverAs: "followUp" });
+            const text = await tools.agentText(c, res.text);
+            // A session that ended meanwhile (/new, /resume, /fork, quit) takes no message.
+            if (abort.signal.aborted) return;
+            pi.sendUserMessage(text, { deliverAs: "followUp" });
           } else if (waits === 0 && waitEpoch === epoch && now() - started < INJECT_EARLY_MS) {
             await pause(retryMs);
           }
         }
-      })();
+      })().catch(() => {
+        // Pi refused the message (its runtime went stale as the session
+        // ended): the loop ends, and a later start may begin another.
+        abort.abort();
+        if (stopInject === stop) stopInject = undefined;
+      });
     };
 
     // Pi awaits this handler before it continues, so registration gets at most

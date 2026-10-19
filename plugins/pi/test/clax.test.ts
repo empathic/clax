@@ -1266,6 +1266,36 @@ describe("comments", () => {
     }
   });
 
+  it("ends the injection loop quietly when Pi refuses the message it hands over", async () => {
+    let polls = 0;
+    const fake = await fakeDaemonHome((req, reply) => {
+      // The first poll hands over feedback; any later one is parked for good.
+      if (req.url?.startsWith("/api/sessions/s1/feedback")) { if (++polls === 1) reply({ feedback: [], text: "[clax] 1 comment sent to you", waited_s: 0 }); return; }
+      return false;
+    });
+    const rejections: unknown[] = [];
+    const heard = (e: unknown) => { rejections.push(e); };
+    process.on("unhandledRejection", heard);
+    try {
+      const pi = new FakePi();
+      let refused = 0;
+      // Pi's sendUserMessage throws once the extension's runtime is stale.
+      const api = { ...pi.api, on: pi.api.on, sendUserMessage: () => { refused++; throw new Error("This extension instance is stale"); } } as typeof pi.api;
+      claxExtension({ home: fake.home, env: withBin(join(scratch, "no-such-clax")) })(api);
+      const { ctx } = fakeContext(scratch, "pi-inject-refused");
+      loaded.push({ pi, ctx });
+      await pi.emit("session_start", {}, ctx);
+      await expect.poll(() => refused, { timeout: 10_000 }).toBe(1);
+      await new Promise(r => setImmediate(r));
+      await new Promise(r => setImmediate(r));
+      expect(rejections).toEqual([]);
+      expect(polls).toBe(1);
+    } finally {
+      process.off("unhandledRejection", heard);
+      fake.close();
+    }
+  });
+
   it("status passes the push object through, including a codex queue failure", async () => {
     const push = { tier: "queue", available: true, last_error: "codex queue exited with code 1", last_error_at: "2026-09-29T10:00:00Z" };
     const fake = await fakeDaemonHome((req, reply) => {
