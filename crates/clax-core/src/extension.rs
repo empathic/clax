@@ -189,7 +189,7 @@ mod tests {
         assert!(is_credential(c), "{c}");
         assert_eq!(c.len(), 4 + 43);
         assert_ne!(new_credential().expose(), c);
-        let h = credential_hash(&c);
+        let h = credential_hash(c);
         assert_eq!(h.len(), 64);
         assert!(
             h.bytes()
