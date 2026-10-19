@@ -92,6 +92,33 @@ test("docked right by default, its edge drags and keys resize it, a double click
   await edge.dblclick();
   expect((await box(drawer(page))).width).toBe(392);
   expect(await stored(page)).toMatchObject({ w: 392 });
+  // Escape cancels a drag: the drawer goes back, the page takes the pointer again, and nothing is remembered.
+  const e = await box(edge);
+  await page.mouse.move(e.x + e.width / 2, e.y + e.height / 2, { steps: 2 });
+  await page.mouse.down();
+  await page.mouse.move(e.x + e.width / 2 - 150, e.y + e.height / 2, { steps: 4 });
+  expect((await box(drawer(page))).width).toBe(542);
+  await expect(page.locator(".viewer.drawer-drag")).toHaveCount(1);
+  await page.keyboard.press("Escape");
+  expect((await box(drawer(page))).width).toBe(392);
+  await expect(page.locator(".viewer.drawer-drag")).toHaveCount(0);
+  await page.mouse.move(e.x - 250, e.y + e.height / 2, { steps: 2 });
+  await page.mouse.up();
+  expect((await box(drawer(page))).width).toBe(392);
+  expect(await stored(page)).toMatchObject({ w: 392 });
+  // A handle that leaves the page mid-drag loses the pointer's capture at the
+  // document, which ends the drag where it was: the page takes the pointer again.
+  await page.mouse.move(e.x + e.width / 2, e.y + e.height / 2, { steps: 2 });
+  await page.mouse.down();
+  await page.mouse.move(e.x + e.width / 2 - 50, e.y + e.height / 2, { steps: 2 });
+  await expect(page.locator(".viewer.drawer-drag")).toHaveCount(1);
+  await edge.evaluate(el => el.remove());
+  await expect(page.locator(".viewer.drawer-drag")).toHaveCount(0);
+  await page.mouse.up();
+  expect(await stored(page)).toMatchObject({ w: 442 });
+  await page.reload();
+  await expect(page.locator(".drawer .drawer-bar")).toBeVisible();
+  expect((await box(drawer(page))).width).toBe(442);
   // Hide threads, from the keyboard, closes the drawer and leaves focus on
   // the top bar's Threads, which opens it again.
   await page.getByRole("button", { name: "Hide threads" }).focus();
@@ -102,7 +129,7 @@ test("docked right by default, its edge drags and keys resize it, a double click
   await expect(toggle).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
-  expect((await box(drawer(page))).width).toBe(392);
+  expect((await box(drawer(page))).width).toBe(442);
 });
 
 test("docked left, then at the bottom, each resized by its edge and kept across a reload, holding its place before its code loads", async ({ page }) => {

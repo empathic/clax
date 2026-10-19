@@ -76,24 +76,40 @@
     m.viewer.classList.add("drawer-drag");
     const from = p;
     const [x0, y0] = [e.clientX, e.clientY];
-    const move = (ev: PointerEvent) => drawer.set(moved(from, grip, m.box, ev.clientX - x0, ev.clientY - y0, m.view), false);
-    // Release fires pointerup, then lostpointercapture: the drag ends once.
-    let ended = false;
-    const end = () => {
-      if (ended) return;
-      ended = true;
-      t.removeEventListener("pointermove", move);
-      t.removeEventListener("pointerup", end);
-      t.removeEventListener("pointercancel", end);
-      t.removeEventListener("lostpointercapture", end);
-      m.viewer.classList.remove("drawer-drag");
-      drawer.set(p);
+    const id = e.pointerId;
+    const move = (ev: PointerEvent) => { if (ev.pointerId === id) drawer.set(moved(from, grip, m.box, ev.clientX - x0, ev.clientY - y0, m.view), false); };
+    // The drag ends at the pointer's release, cancel or lost capture, heard
+    // on the document (where lostpointercapture goes once the handle has
+    // left the page), or at Escape, which puts the drawer back where it was;
+    // and when the drawer unmounts. Release fires pointerup, then
+    // lostpointercapture: it ends once.
+    const up = (ev: PointerEvent) => { if (ev.pointerId === id) end(false); };
+    const esc = (ev: KeyboardEvent) => {
+      if (ev.key !== "Escape") return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      end(true);
     };
-    t.addEventListener("pointermove", move);
-    t.addEventListener("pointerup", end);
-    t.addEventListener("pointercancel", end);
-    t.addEventListener("lostpointercapture", end);
+    const on = (add: boolean) => {
+      const f = add ? document.addEventListener.bind(document) : document.removeEventListener.bind(document);
+      f("pointermove", move as EventListener, true);
+      for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) f(type, up as EventListener, true);
+      f("keydown", esc as EventListener, true);
+    };
+    const end = (cancel: boolean) => {
+      if (stopDrag !== end) return;
+      stopDrag = null;
+      on(false);
+      try { if (t.hasPointerCapture(id)) t.releasePointerCapture(id); } catch { /* the pointer is gone */ }
+      m.viewer.classList.remove("drawer-drag");
+      drawer.set(cancel ? from : p);
+    };
+    stopDrag?.(false);
+    stopDrag = end;
+    on(true);
   }
+  let stopDrag: ((cancel: boolean) => void) | null = null;
+  $effect(() => () => stopDrag?.(false));
 
   function key(e: KeyboardEvent, grip: Grip) {
     const d = keyMove(e.key, e.shiftKey, grip, p.layout);
