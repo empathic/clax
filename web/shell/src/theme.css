@@ -186,8 +186,9 @@ input, select { line-height: 1.2; }
 .banner.notice { top: 56px; background: var(--danger-tint); border-color: var(--danger); }
 .muted { color: var(--muted); }
 .stage { position: relative; flex: 1; min-width: 0; min-height: 0; }
-/* The sidebar's box, which holds its width from the first paint; the rest of
-   its rules travel with its lazy chunk (Sidebar.svelte). */
+/* The sidebar's box, which holds its width from the first paint (in the
+   drawer wider than a phone: SidebarIsland.svelte); the rest of its rules
+   travel with its lazy chunk (Sidebar.svelte). */
 .sidebar { width: 392px; flex: none; overflow: auto; border-left: 1px solid var(--border); background: var(--bg); padding: 12px 14px 18px; display: flex; flex-direction: column; gap: 10px; }
 @media (max-width: 700px) { .sidebar { position: absolute; inset: 0; width: auto; z-index: 10; border-left: 0; } }
 /* A thread's number, on a pin over the frame and on its card. */
