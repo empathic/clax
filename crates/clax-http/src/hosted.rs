@@ -1400,6 +1400,46 @@ fn forbidden_origin(h: &Hosted) -> Response {
     .into_response()
 }
 
+/// The prefix of hosted mode's own API (`clax_server::hosted::router`).
+pub const OWN_API: &str = "/api/hosted/";
+
+/// Where an agent token revokes itself (`DELETE`): the one route of
+/// [`OWN_API`] an agent token reaches, which takes its
+/// [`crate::agent::BearerGrant`] ([`crate::agent::verify_layer`]).
+pub const SELF_REVOKE_PATH: &str = "/api/hosted/agent-token";
+
+/// Hosted mode's own pages outside [`OWN_API`]
+/// (`clax_server::hosted::router` mounts each): a path, or a prefix when it
+/// ends in `/`. [`LEGAL_PAGES`] are its own only while it serves them.
+pub const OWN_PAGES: &[&str] = &[
+    "/setup",
+    "/signin",
+    "/signin/",
+    "/join/",
+    "/device",
+    "/auth/github",
+    crate::github::CALLBACK_PATH,
+];
+
+/// The bundled legal documents' pages ([`Hosted::serves_legal`]).
+pub const LEGAL_PAGES: &[&str] = &["/terms", "/privacy"];
+
+/// Whether `path` is one of hosted mode's own routes ([`OWN_API`],
+/// [`OWN_PAGES`], and [`LEGAL_PAGES`] when `serves_legal`), which [`gate`]
+/// hands on past a person's rights and a guest's needs: each handler checks
+/// its own caller.
+pub fn own_route(path: &str, serves_legal: bool) -> bool {
+    path.starts_with(OWN_API)
+        || OWN_PAGES.iter().any(|p| {
+            if p.ends_with('/') {
+                path.starts_with(p)
+            } else {
+                path == *p
+            }
+        })
+        || (serves_legal && LEGAL_PAGES.contains(&path))
+}
+
 /// The gate of a hosted daemon, before every route (see the module docs).
 pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Response {
     let Some(h) = s.hosted.clone() else {
@@ -1549,15 +1589,7 @@ pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Re
             .and(cookie.as_deref())
             .map(clax_core::secret::sha256_hex),
     });
-    let own = path.starts_with("/api/hosted/")
-        || path == "/setup"
-        || path == "/signin"
-        || path == "/device"
-        || path.starts_with("/signin/")
-        || path.starts_with("/join/")
-        || path == "/auth/github"
-        || path == crate::github::CALLBACK_PATH
-        || (h.serves_legal() && (path == "/terms" || path == "/privacy"));
+    let own = own_route(&path, h.serves_legal());
     if let Some(m) = member.as_ref().filter(|_| !open && !own) {
         return member_gate(&s, m, req, next).await;
     }
@@ -1714,6 +1746,33 @@ pub fn signed_in_response(h: &Hosted, signed: SignedIn, mut shape: Value, key: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hosted_modes_own_routes() {
+        for p in [
+            "/api/hosted/me",
+            "/setup",
+            "/signin",
+            "/signin/abc",
+            "/join/abc",
+            "/device",
+            "/auth/github",
+            "/auth/github/callback",
+        ] {
+            assert!(own_route(p, false), "{p}");
+        }
+        for p in [
+            "/setupx",
+            "/signinx",
+            "/join",
+            "/api/hostedx",
+            "/api/artifacts",
+        ] {
+            assert!(!own_route(p, true), "{p}");
+        }
+        assert!(own_route("/terms", true) && own_route("/privacy", true));
+        assert!(!own_route("/terms", false) && !own_route("/privacy", false));
+    }
 
     #[test]
     fn the_cookie_is_http_only_lax_and_secure_on_https() {

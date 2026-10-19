@@ -1189,8 +1189,11 @@ async fn deny_device(
     Ok(no_store(StatusCode::NO_CONTENT.into_response()))
 }
 
-/// The hosted routes, merged into the daemon's router in hosted mode.
-pub fn router(state: AppState) -> Router {
+/// The hosted routes, merged into the daemon's router in hosted mode
+/// (`crate::router`), under its agent verification, live-page filter and
+/// extension gateway. Each is under [`OWN_API`] or one of [`OWN_PAGES`] or
+/// [`LEGAL_PAGES`], which the gate hands on to their handlers.
+pub fn router() -> Router<AppState> {
     Router::new()
         .route("/setup", get(setup_page))
         .route("/signin", get(signin_page))
@@ -1237,11 +1240,45 @@ pub fn router(state: AppState) -> Router {
             clax_http::github::CALLBACK_PATH,
             get(crate::github::callback),
         )
-        .route("/api/hosted/agent-token", delete(revoke_own_token))
+        .route(SELF_REVOKE_PATH, delete(revoke_own_token))
         .route("/api/hosted/device/code", post(device_code))
         .route("/api/hosted/device/token", post(device_token))
         .route("/api/hosted/device/{code}", get(peek_device))
         .route("/api/hosted/device/{code}/approve", post(approve_device))
         .route("/api/hosted/device/{code}/deny", post(deny_device))
-        .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    /// Every route [`super::router`] mounts is one the gate takes as hosted
+    /// mode's own (`clax_http::hosted::own_route`), so none is sent through
+    /// a person's rights or a guest's needs. The routes are read from this
+    /// file's source.
+    #[test]
+    fn the_gate_takes_every_hosted_route_as_its_own() {
+        let src = include_str!("hosted.rs");
+        let body = &src[src.find("pub fn router()").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let mut seen = 0;
+        for call in body.split(".route(").skip(1) {
+            let arg = call.split(',').next().unwrap().trim();
+            let path = match arg.strip_prefix('"') {
+                Some(p) => p.trim_end_matches('"'),
+                None if arg.ends_with("CALLBACK_PATH") => clax_http::github::CALLBACK_PATH,
+                None if arg.ends_with("SELF_REVOKE_PATH") => clax_http::hosted::SELF_REVOKE_PATH,
+                None => panic!("a route at an unknown constant: {arg}"),
+            };
+            let concrete = path
+                .split('/')
+                .map(|s| if s.starts_with('{') { "x" } else { s })
+                .collect::<Vec<_>>()
+                .join("/");
+            assert!(
+                clax_http::hosted::own_route(&concrete, true),
+                "{path} is not one of the gate's own routes"
+            );
+            seen += 1;
+        }
+        assert!(seen > 30, "read {seen} routes");
+    }
 }

@@ -525,7 +525,13 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
     // The tool set's JSON-RPC adapter: `/mcp` on a Durable Object, beside
     // rmcp's `/mcp` in the daemon.
     let r = r.merge(mcp_http::router(&state));
-    let mut r = r;
+    // A hosted daemon's sign-in, sharing and agent-token routes, under the
+    // layers below as every route is.
+    let mut r = if state.hosted.is_some() {
+        r.merge(crate::hosted::router())
+    } else {
+        r
+    };
     if let Some(tx) = shutdown {
         let tx = std::sync::Arc::new(tx);
         r = r.route(
@@ -678,16 +684,11 @@ pub fn build_router_with_shutdown(
 // whole inner router (mounted as the outer fallback) to influence routing. The
 // `/api` host check runs after the rewrite (the later `layer` is outermost),
 // and the header checks of agent credentials after both, before any route.
-// A hosted daemon ([`clax_http::hosted`]) serves its sign-in routes too, and
-// its gate stands in for the `/api` host check, which admits only this
-// machine's names.
+// On a hosted daemon ([`clax_http::hosted`]), whose own routes `routes`
+// mounts, its gate stands in for the `/api` host check, which admits only
+// this machine's names.
 fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
     let hosted = state.hosted.is_some();
-    let inner = if hosted {
-        inner.merge(crate::hosted::router(state.clone()))
-    } else {
-        inner
-    };
     // Innermost: a request's git token revocations are done before it
     // answers (`git_remotes::settle_layer`).
     let r = axum::Router::new()

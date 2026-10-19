@@ -1911,15 +1911,24 @@ fn bearer_key(grant_id: &str) -> [u8; 32] {
 /// grant), within the route's limit. The remote MCP endpoint
 /// (`clax_server::routes::mcp_http`), which serves agent tokens, is handed the
 /// [`BearerGrant`] instead, its body read the same way within the publish
-/// limit.
+/// limit. `DELETE` [`crate::hosted::SELF_REVOKE_PATH`], where the token
+/// revokes itself, is handed the [`BearerGrant`] too, its body unread (the
+/// handler reads none).
 async fn verify_bearer(s: &AppState, b: BearerGrant, mut req: Request, next: Next) -> Response {
     let matched = req.extensions().get::<MatchedPath>().map(|m| m.as_str());
+    let self_revoke =
+        matched == Some(crate::hosted::SELF_REVOKE_PATH) && req.method() == Method::DELETE;
     if matched == Some(crate::headers::MCP_JSON_PATH) {
         let limit = crate::limits::PUBLISH_BODY_LIMIT;
         let mut req = match gated(s, &b, req, limit).await {
             Ok(r) => r,
             Err(e) => return e.into_response(),
         };
+        req.extensions_mut().insert(b);
+        return next.run(req).await;
+    }
+    if self_revoke {
+        // The handler reads no body.
         req.extensions_mut().insert(b);
         return next.run(req).await;
     }

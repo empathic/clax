@@ -2561,6 +2561,11 @@ async fn an_agent_token_on_the_api_reaches_only_a_grants_routes() {
             json!({"access": "comment"}),
         ),
         (M::POST, "/api/hosted/signout".to_string(), json!({})),
+        // Hosted mode's own routes are an agent's no more than any other
+        // route outside a grant's: refused before their handlers run, even
+        // the ones open to anyone.
+        (M::GET, "/api/hosted/me".to_string(), json!(null)),
+        (M::GET, "/api/hosted/public".to_string(), json!(null)),
     ];
     for (m, path, body) in refused {
         let mut r = api(m.clone(), &path);
@@ -2594,6 +2599,14 @@ async fn an_agent_token_on_the_api_reaches_only_a_grants_routes() {
         .await;
         assert_eq!((s, code(&v)), (403, "forbidden_origin"), "{k}: {v}");
     }
+    // The one hosted route an agent token reaches: it revokes itself.
+    let r = api(M::DELETE, "/api/hosted/agent-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 204);
+    let (s, v) = json_of(api(M::GET, "/api/artifacts").send().await.unwrap()).await;
+    assert_eq!(s, 401, "{v}");
 }
 
 /// A POST written by hand on its own connection with agent token `token`,
