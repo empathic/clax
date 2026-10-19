@@ -193,20 +193,20 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         .to_string();
     let url = res["url"].as_str().unwrap_or_default().to_string();
     // The session comments go to: the one this version is attributed to, else
-    // the artifact's owner. The CLI attributes none of its own.
-    let got = c.get(&format!("/api/artifacts/{id}"))?;
-    let session = got["versions"]
-        .as_array()
-        .and_then(|vs| vs.iter().find(|v| v["n"] == res["version"]))
-        .and_then(|v| v["session_id"].as_str())
-        .or(got["artifact"]["owner_session_id"].as_str());
+    // the artifact's owner. The CLI attributes none of its own. The publish
+    // has landed: when this read fails, the session is unknown (`None`),
+    // and the command still succeeds.
+    let session: Option<Option<String>> = c
+        .get(&format!("/api/artifacts/{id}"))
+        .ok()
+        .map(|got| session_of(&got, &res["version"]));
     super::print(
         cli,
         serde_json::json!({
             "id": id,
             "url": url,
             "version": res["version"],
-            "session": session,
+            "session": session.clone().flatten(),
             "note": res["note"],
             "addressed": res["addressed"],
         }),
@@ -221,7 +221,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
                 let s = if addressed == 1 { "" } else { "s" };
                 text.push_str(&format!("\naddresses {addressed} comment{s}"));
             }
-            if j["session"].is_null() {
+            if matches!(session, Some(None)) {
                 text.push('\n');
                 text.push_str(NO_SESSION_NOTE);
             }
@@ -229,6 +229,18 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         },
     );
     Ok(())
+}
+
+/// The session version `n` of the artifact `got` (`GET
+/// /api/artifacts/<id>`) sends comments to: the one the version is
+/// attributed to, else the artifact's owner; `None` for neither.
+fn session_of(got: &serde_json::Value, n: &serde_json::Value) -> Option<String> {
+    got["versions"]
+        .as_array()
+        .and_then(|vs| vs.iter().find(|v| &v["n"] == n))
+        .and_then(|v| v["session_id"].as_str())
+        .or(got["artifact"]["owner_session_id"].as_str())
+        .map(str::to_string)
 }
 
 #[cfg(test)]
