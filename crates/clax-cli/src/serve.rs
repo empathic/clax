@@ -38,7 +38,12 @@ pub fn run(home: &Home, a: ServeArgs) -> anyhow::Result<()> {
         web,
         hosted: hosted(home)?,
     };
-    rt.block_on(serve(cfg, None))
+    let r = rt.block_on(serve(cfg, None));
+    // Dropping the runtime would wait without limit for its blocking tasks:
+    // a store call `serve` stopped waiting for would hold the exit, past
+    // every signal. Leave them to the process exit instead.
+    rt.shutdown_background();
+    r
 }
 
 /// Hosted mode as the home's `[hosted]` sets it, or `None` without one. A

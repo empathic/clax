@@ -35,10 +35,12 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const JOURNAL_STOP_TIMEOUT: Duration = Duration::from_millis(1500);
 /// How long shutdown then waits for the store's queued calls to finish and
 /// its threads to stop ([`stop_store`]); calls still running are left on
-/// their threads, which the process exit ends, and a write cut short rolls
-/// back. A stop signal once shutdown has begun ends the process at once
-/// ([`on_signals`]), so the SIGTERM a replacing client sends after 7 s
-/// stops the daemon whatever is left.
+/// their threads, which the process exit ends (the caller must not wait
+/// for them: `clax serve` shuts its runtime down in the background as
+/// [`serve`] returns), and a write cut short rolls back. A stop signal
+/// once shutdown has begun ends the process at once ([`on_signals`]), so
+/// the SIGTERM a replacing client sends after 7 s stops the daemon
+/// whatever is left; once [`serve`] returns, nothing is left to wait for.
 const STORE_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 /// How often grants due to expire are expired and the nonce caches swept.
 const GRANT_SWEEP_INTERVAL: Duration = Duration::from_secs(60);

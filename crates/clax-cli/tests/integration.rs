@@ -49,6 +49,8 @@ mod native_host;
 mod people;
 #[cfg(any(not(clax_split), clax_split = "remote_push"))]
 mod remote_push;
+#[cfg(any(not(clax_split), clax_split = "shutdown"))]
+mod shutdown;
 #[cfg(any(not(clax_split), clax_split = "standdown"))]
 mod standdown;
 #[cfg(any(not(clax_split), clax_split = "switch"))]
