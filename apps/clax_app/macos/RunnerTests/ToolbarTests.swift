@@ -169,6 +169,42 @@ final class ToolbarTests: XCTestCase {
     XCTAssertTrue(sent.isEmpty, "Forward is disabled")
   }
 
+  func testASearchItemIsASearchFieldThatSendsItsTextAsItChanges() {
+    let search: [String: Any] = [
+      "id": "search", "symbol": "magnifyingglass", "label": "Search Apps", "search": true,
+    ]
+    XCTAssertNil(call("setItems", ["view": 1, "items": items + [search]]).failed)
+    XCTAssertEqual(bar.identifiers.last?.rawValue, "search")
+    let item = bar.item("search") as! NSSearchToolbarItem
+    XCTAssertEqual(item.label, "Search Apps")
+    XCTAssertEqual(item.searchField.placeholderString, "Search Apps")
+    XCTAssertTrue(item.searchField.sendsSearchStringImmediately)
+    item.searchField.stringValue = "gro"
+    bar.searchChanged(item.searchField)
+    XCTAssertEqual(sent.last?.0, "search")
+    XCTAssertEqual(sent.last?.1["view"] as? Int64, 1)
+    XCTAssertEqual(sent.last?.1["id"] as? String, "search")
+    XCTAssertEqual(sent.last?.1["text"] as? String, "gro")
+    // A state change updates it in place and keeps what was typed.
+    var off = search
+    off["label"] = "Search"
+    call("setItems", ["view": 1, "items": items + [off]])
+    XCTAssertTrue(bar.item("search") === item)
+    XCTAssertEqual(item.searchField.stringValue, "gro")
+    XCTAssertEqual(item.searchField.placeholderString, "Search")
+  }
+
+  func testFocusSearchAnswersWhetherTheWindowHasThatSearchItem() {
+    let search: [String: Any] = [
+      "id": "search", "symbol": "magnifyingglass", "label": "Search Apps", "search": true,
+    ]
+    call("setItems", ["view": 1, "items": items + [search]])
+    XCTAssertEqual(call("focusSearch", ["view": 1, "id": "search"]).reply as? Bool, true)
+    XCTAssertEqual(call("focusSearch", ["view": 1, "id": "comment"]).reply as? Bool, false)
+    XCTAssertEqual(call("focusSearch", ["view": 9, "id": "search"]).reply as? Bool, false)
+    XCTAssertNotNil(call("focusSearch", ["view": 1]).failed)
+  }
+
   func testBadItemsAreRefused() {
     XCTAssertNotNil(call("setItems", ["view": 1]).failed)
     XCTAssertNotNil(call("setItems", ["view": 1, "items": [["id": "x"]]]).failed)

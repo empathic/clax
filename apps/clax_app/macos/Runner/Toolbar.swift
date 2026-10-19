@@ -2,7 +2,8 @@ import AppKit
 
 /// One toolbar item as Dart declares it (`ToolbarItemSpec` in
 /// `lib/ui/mac/mac_toolbar.dart`): {id, symbol, label, enabled, on, badge?,
-/// tint?, group?}.
+/// tint?, group?, search?}. A [search] item is a search field whose
+/// placeholder is its label.
 struct ToolbarSpec: Equatable {
   let id: String
   let symbol: String
@@ -13,10 +14,11 @@ struct ToolbarSpec: Equatable {
   /// "#rrggbb", for the symbol while [on].
   let tint: String?
   let group: String?
+  let search: Bool
 
   init(
     id: String, symbol: String, label: String, enabled: Bool = true, on: Bool = false,
-    badge: Int? = nil, tint: String? = nil, group: String? = nil
+    badge: Int? = nil, tint: String? = nil, group: String? = nil, search: Bool = false
   ) {
     self.id = id
     self.symbol = symbol
@@ -26,6 +28,7 @@ struct ToolbarSpec: Equatable {
     self.badge = badge
     self.tint = tint
     self.group = group
+    self.search = search
   }
 
   init?(_ any: Any) {
@@ -35,7 +38,8 @@ struct ToolbarSpec: Equatable {
     self.init(
       id: id, symbol: symbol, label: label, enabled: map["enabled"] as? Bool ?? true,
       on: map["on"] as? Bool ?? false, badge: (map["badge"] as? NSNumber)?.intValue,
-      tint: map["tint"] as? String, group: map["group"] as? String)
+      tint: map["tint"] as? String, group: map["group"] as? String,
+      search: map["search"] as? Bool ?? false)
   }
 }
 
@@ -54,7 +58,10 @@ struct ToolbarSpec: Equatable {
 ///   spacer ([SidebarEdgeView]) after them starts the rest past its edge.
 /// - `share` {view, item, path}: `NSSharingServicePicker` for the file at
 ///   `path`, shown from item `item`; answers whether a target was chosen.
-/// - It sends `clicked` {view, id} through [send] for an item clicked.
+/// - `focusSearch` {view, id}: puts the keyboard in search item `id`'s
+///   field; answers whether that window has such an item.
+/// - It sends `clicked` {view, id} through [send] for an item clicked, and
+///   `search` {view, id, text} as a search item's text changes.
 ///
 /// Uses AppKit only, so `//apps/clax_app:macos_toolbar_test` compiles it on
 /// its own.
@@ -73,9 +80,10 @@ final class MacToolbar: NSObject {
 
   /// Gives [window], which shows [view], its toolbar.
   func attach(_ window: NSWindow, view: Int64) {
-    let bar = WindowToolbar(view: view, window: window) { [weak self] in
-      self?.send("clicked", ["view": view, "id": $0])
-    }
+    let bar = WindowToolbar(
+      view: view, window: window,
+      clicked: { [weak self] in self?.send("clicked", ["view": view, "id": $0]) },
+      searched: { [weak self] in self?.send("search", ["view": view, "id": $0, "text": $1]) })
     bar.onLayout = { [weak self, weak window] in
       if let window { self?.changed(window) }
     }
@@ -131,6 +139,12 @@ final class MacToolbar: NSObject {
       }
       sharing = picker
       picker.show(relativeTo: anchor.1, of: anchor.0)
+    case "focusSearch":
+      guard let view, let id = map?["id"] as? String else {
+        fail("focusSearch takes {view, id}")
+        return true
+      }
+      reply(bars[view]?.focusSearch(id) ?? false)
     default:
       return false
     }
@@ -144,6 +158,7 @@ final class WindowToolbar: NSObject, NSToolbarDelegate {
   private let view: Int64
   private weak var window: NSWindow?
   private let clicked: (String) -> Void
+  private let searched: (String, String) -> Void
   private var specs: [ToolbarSpec] = []
   /// How many leading items sit over the sidebar, and its width.
   private var edge: (leading: Int, width: CGFloat)?
@@ -157,10 +172,14 @@ final class WindowToolbar: NSObject, NSToolbarDelegate {
   static let sidebarEdge = NSToolbarItem.Identifier("clax.sidebarEdge")
   private static let groupPrefix = "group:"
 
-  init(view: Int64, window: NSWindow, clicked: @escaping (String) -> Void) {
+  init(
+    view: Int64, window: NSWindow, clicked: @escaping (String) -> Void,
+    searched: @escaping (String, String) -> Void = { _, _ in }
+  ) {
     self.view = view
     self.window = window
     self.clicked = clicked
+    self.searched = searched
     // Toolbars that share an identifier mirror each other's items: each
     // window's is its own.
     toolbar = NSToolbar(identifier: "Clax.\(view).\(UUID().uuidString)")
@@ -269,6 +288,13 @@ final class WindowToolbar: NSObject, NSToolbarDelegate {
         g.isNavigational = id == Self.groupIdentifier(Self.navigation)
       }
       item = g
+    } else if specs.first(where: { $0.id == id.rawValue })?.search == true {
+      let search = NSSearchToolbarItem(itemIdentifier: id)
+      search.searchField.identifier = NSUserInterfaceItemIdentifier(id.rawValue)
+      search.searchField.sendsSearchStringImmediately = true
+      search.searchField.target = self
+      search.searchField.action = #selector(searchChanged(_:))
+      item = search
     } else {
       guard specs.contains(where: { $0.id == id.rawValue }) else { return nil }
       item = NSToolbarItem(itemIdentifier: id)
@@ -309,6 +335,12 @@ final class WindowToolbar: NSObject, NSToolbarDelegate {
     item.paletteLabel = spec.label
     item.isEnabled = spec.enabled
     item.toolTip = spec.label
+    if let search = item as? NSSearchToolbarItem {
+      // The text is the person's: only what Dart declares changes here.
+      search.searchField.placeholderString = spec.label
+      search.searchField.isEnabled = spec.enabled
+      return
+    }
     let count = spec.badge.flatMap { $0 > 0 ? $0 : nil }
     if #available(macOS 26.0, *) {
       item.image = Self.image(spec)
@@ -371,6 +403,24 @@ final class WindowToolbar: NSObject, NSToolbarDelegate {
     let id = sender.itemIdentifier.rawValue
     guard specs.first(where: { $0.id == id })?.enabled == true else { return }
     clicked(id)
+  }
+
+  /// A search item's text changed (each key, its clear button, Escape).
+  @objc func searchChanged(_ sender: NSSearchField) {
+    guard let id = sender.identifier?.rawValue,
+      specs.first(where: { $0.id == id })?.search == true
+    else { return }
+    searched(id, sender.stringValue)
+  }
+
+  /// Puts the keyboard in search item [id]'s field; false when there is
+  /// none.
+  func focusSearch(_ id: String) -> Bool {
+    guard let search = made[NSToolbarItem.Identifier(id)] as? NSSearchToolbarItem else {
+      return false
+    }
+    search.beginSearchInteraction()
+    return true
   }
 
   @objc func segmentClicked(_ sender: NSToolbarItemGroup) {

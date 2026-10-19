@@ -203,6 +203,53 @@ void main() {
     expect(reply, isFalse);
   });
 
+  test('a search item is sent as one, and its text and focus go both ways',
+      () async {
+    MacToolbar.setItems(owner, const [
+      back,
+      ToolbarItemSpec(
+        'search',
+        symbol: 'magnifyingglass',
+        label: 'Search Apps',
+        search: true,
+      ),
+    ], view: 1);
+    await pumpEventQueue();
+    final items = (calls.single.arguments as Map)['items'] as List;
+    expect(items.last, {
+      'id': 'search',
+      'symbol': 'magnifyingglass',
+      'label': 'Search Apps',
+      'enabled': true,
+      'on': false,
+      'search': true,
+    });
+
+    final searches = <ToolbarSearch>[];
+    final sub = MacToolbar.searches.listen(searches.add);
+    addTearDown(sub.cancel);
+    Object? reply;
+    await messenger.handlePlatformMessage(
+      MacToolbar.channel.name,
+      MacToolbar.channel.codec.encodeMethodCall(
+        const MethodCall('search', {'view': 1, 'id': 'search', 'text': 'gro'}),
+      ),
+      (data) => reply = MacToolbar.channel.codec.decodeEnvelope(data!),
+    );
+    expect(searches, [const ToolbarSearch(1, 'search', 'gro')]);
+    expect(reply, isTrue);
+
+    messenger.setMockMethodCallHandler(MacToolbar.channel, (call) async {
+      calls.add(call);
+      return call.method == 'focusSearch' &&
+          (call.arguments as Map)['id'] == 'search';
+    });
+    expect(await MacToolbar.focusSearch('search', view: 1), isTrue);
+    expect(calls.last.method, 'focusSearch');
+    expect(calls.last.arguments, {'view': 1, 'id': 'search'});
+    expect(await MacToolbar.focusSearch('other', view: 1), isFalse);
+  });
+
   test('ToolbarShareFiles writes the bundle and shares its path from the '
       'Share item', () async {
     final files = ToolbarShareFiles(view: 1);
@@ -228,6 +275,7 @@ void main() {
     debugDefaultTargetPlatformOverride = TargetPlatform.android;
     MacToolbar.setItems(owner, const [back], view: 1);
     expect(await MacToolbar.share('/x.clax', item: 'share', view: 1), isFalse);
+    expect(await MacToolbar.focusSearch('search', view: 1), isFalse);
     await pumpEventQueue();
     expect(calls, isEmpty);
   });

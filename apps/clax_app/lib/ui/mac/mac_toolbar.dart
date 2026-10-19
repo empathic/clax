@@ -13,7 +13,9 @@ import '../kit/family.dart';
 /// (its `.fill` form), tinted [tint] when given; [badge] is a count on
 /// it, none when null or 0. Consecutive items with the same [group] are
 /// one segmented control (Back and Forward); a group named `navigation`
-/// sits before the window's title.
+/// sits before the window's title. A [search] item is a search field
+/// (`NSSearchToolbarItem`) whose placeholder is [label]; its text arrives
+/// on [MacToolbar.searches], and what was typed stays while the item does.
 @immutable
 final class ToolbarItemSpec {
   const ToolbarItemSpec(
@@ -25,10 +27,11 @@ final class ToolbarItemSpec {
     this.badge,
     this.tint,
     this.group,
+    this.search = false,
   });
 
   final String id, symbol, label;
-  final bool enabled, on;
+  final bool enabled, on, search;
   final int? badge;
   final Color? tint;
   final String? group;
@@ -43,6 +46,7 @@ final class ToolbarItemSpec {
     if (badge case final b? when b > 0) 'badge': b,
     if (tint case final t?) 'tint': _hex(t),
     'group': ?group,
+    if (search) 'search': true,
   };
 
   static String _hex(Color c) {
@@ -61,11 +65,12 @@ final class ToolbarItemSpec {
       other.on == on &&
       other.badge == badge &&
       other.tint == tint &&
-      other.group == group;
+      other.group == group &&
+      other.search == search;
 
   @override
   int get hashCode =>
-      Object.hash(id, symbol, label, enabled, on, badge, tint, group);
+      Object.hash(id, symbol, label, enabled, on, badge, tint, group, search);
 
   @override
   String toString() => 'ToolbarItemSpec($id)';
@@ -88,6 +93,29 @@ final class ToolbarClick {
 
   @override
   String toString() => 'ToolbarClick($view, $id)';
+}
+
+/// The text of search item [id] of [view]'s window's toolbar changed to
+/// [text].
+@immutable
+final class ToolbarSearch {
+  const ToolbarSearch(this.view, this.id, this.text);
+
+  final int view;
+  final String id, text;
+
+  @override
+  bool operator ==(Object other) =>
+      other is ToolbarSearch &&
+      other.view == view &&
+      other.id == id &&
+      other.text == text;
+
+  @override
+  int get hashCode => Object.hash(view, id, text);
+
+  @override
+  String toString() => 'ToolbarSearch($view, $id, $text)';
 }
 
 /// A Mac window's native toolbar (`macos/Runner/Toolbar.swift`) over the
@@ -113,11 +141,16 @@ final class ToolbarClick {
 ///   past it.
 /// - `share` {view, item, path}: the share picker for the file at [path],
 ///   from item [item]; answers whether a target was chosen.
-/// - From the native side, `clicked` {view, id}: arrives on [clicks].
+/// - `focusSearch` {view, id}: the keyboard goes to search item `id`;
+///   answers whether the window has it.
+/// - From the native side, `clicked` {view, id}: arrives on [clicks]; and
+///   `search` {view, id, text}, a search item's text as it changes: on
+///   [searches].
 abstract final class MacToolbar {
   static const channel = MethodChannel('dev.empathic.clax/toolbar');
 
   static final _clicks = StreamController<ToolbarClick>.broadcast();
+  static final _searches = StreamController<ToolbarSearch>.broadcast();
   static final _owners = <int, Object>{};
   static final _declared = <int, List<ToolbarItemSpec>>{};
   static final _leading = <int, List<ToolbarItemSpec>>{};
@@ -129,6 +162,12 @@ abstract final class MacToolbar {
   static Stream<ToolbarClick> get clicks {
     _listen();
     return _clicks.stream;
+  }
+
+  /// The text of search items as people type, in any window.
+  static Stream<ToolbarSearch> get searches {
+    _listen();
+    return _searches.stream;
   }
 
   /// Whether [owner] declares [view]'s window's items now.
@@ -208,6 +247,14 @@ abstract final class MacToolbar {
         false;
   }
 
+  /// Puts the keyboard in search item [id] of [view]'s window's toolbar;
+  /// whether the window has that item.
+  static Future<bool> focusSearch(String id, {required int view}) async {
+    if (!hasDesktopWindowChrome) return false;
+    return await _invoke<bool>('focusSearch', {'view': view, 'id': id}) ??
+        false;
+  }
+
   static Future<T?> _invoke<T>(String method, Map<String, Object> args) async {
     try {
       return await channel.invokeMethod<T>(method, args);
@@ -221,6 +268,20 @@ abstract final class MacToolbar {
     if (_listening) return;
     _listening = true;
     channel.setMethodCallHandler((call) async {
+      if (call.method == 'search') {
+        final search = switch (call.arguments) {
+          {
+            'view': final int view,
+            'id': final String id,
+            'text': final String text,
+          } =>
+            ToolbarSearch(view, id, text),
+          _ => null,
+        };
+        if (search == null) return false;
+        _searches.add(search);
+        return true;
+      }
       if (call.method != 'clicked') return false;
       final click = switch (call.arguments) {
         {'view': final int view, 'id': final String id} => ToolbarClick(
