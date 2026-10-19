@@ -355,7 +355,9 @@ class _ExportSheetState extends State<ExportSheet> {
         face: face,
         title: p.title,
         subtitle: 'v$original',
-        body: [_Para('Shares $author’s v$original as you received it.')],
+        body: [
+          _Para('Shares $author’s version $original as you received it.'),
+        ],
         actions: [
           cancel,
           ClaxButton(
@@ -371,21 +373,23 @@ class _ExportSheetState extends State<ExportSheet> {
     final fork = p.modes.contains(ExportMode.fork);
     final data = p.dataAllowed && p.docCount > 0;
     final mine = fork ? '$_verb mine' : _verb;
-    final mineData = fork
-        ? '$_verb mine with my data'
-        : '$_verb a copy with my data';
-    final theirs = '$_verb $author’s v$original';
+    // A changed copy's labels name whose app goes; the body names the
+    // author and version.
+    final mineData = fork ? 'With my data' : '$_verb a copy with my data';
+    final theirs = '$_verb theirs';
     final mode = fork ? ExportMode.fork : ExportMode.own;
     return _Frame(
       face: face,
       title: p.title,
-      subtitle: fork ? 'Yours goes as v${p.version} · $what' : 'v${p.version} · $what',
+      subtitle: fork
+          ? '${widget.toFile ? 'Exported' : 'Shared'} as a new app · $what'
+          : 'v${p.version} · $what',
       body: [
         if (fork)
           _Para(
-            'You changed ${p.title} since $author’s v$original. “$theirs” '
-            'sends theirs as you received it; “$mine” sends yours as a new '
-            'app.',
+            'You changed ${p.title} since $author’s version $original. '
+            '“$theirs” sends $author’s version $original as you received '
+            'it; “$mine” sends yours as a new app.',
           ),
         if (data)
           _Para(

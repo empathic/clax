@@ -246,7 +246,10 @@ void main() {
           askName: true,
         ),
       );
-      expect(find.text('Shares Alex’s v2 as you received it.'), findsOneWidget);
+      expect(
+        find.text('Shares Alex’s version 2 as you received it.'),
+        findsOneWidget,
+      );
       expect(find.textContaining('with my data'), findsNothing);
       await tester.tap(find.text('Share'));
       await tester.pumpAndSettle();
@@ -256,7 +259,7 @@ void main() {
     });
 
     testWidgets('a modified copy: the original, or mine as a new app, with '
-        'or without my data, its version shown', (tester) async {
+        'or without my data, in labels of three words at most', (tester) async {
       final sheet = ExportSheet(
         plan: _plan(
           modes: const [ExportMode.reshare, ExportMode.fork],
@@ -265,21 +268,36 @@ void main() {
         ),
       );
       var answers = await _show(tester, sheet);
-      expect(find.text('Yours goes as v1 · 4 files, 12 KB'), findsOneWidget);
-      expect(find.text('Share Alex’s v2'), findsOneWidget);
+      expect(find.text('Shared as a new app · 4 files, 12 KB'), findsOneWidget);
+      expect(
+        find.text(
+          'You changed Plant log since Alex’s version 2. “Share theirs” sends '
+          'Alex’s version 2 as you received it; “Share mine” sends yours as '
+          'a new app.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.textContaining(RegExp(r'\bv\d')), findsNothing);
+      for (final b in tester.widgetList<ClaxButton>(find.byType(ClaxButton))) {
+        expect(
+          b.label.split(' ').length,
+          lessThanOrEqualTo(3),
+          reason: b.label,
+        );
+      }
       await tester.tap(find.text('Share mine'));
       await tester.pumpAndSettle();
       var c = answers.single! as ExportChoice;
       expect((c.mode, c.includeData), (ExportMode.fork, false));
 
       answers = await _show(tester, sheet);
-      await tester.tap(find.text('Share mine with my data'));
+      await tester.tap(find.text('With my data'));
       await tester.pumpAndSettle();
       c = answers.single! as ExportChoice;
       expect((c.mode, c.includeData), (ExportMode.fork, true));
 
       answers = await _show(tester, sheet);
-      await tester.tap(find.text('Share Alex’s v2'));
+      await tester.tap(find.text('Share theirs'));
       await tester.pumpAndSettle();
       c = answers.single! as ExportChoice;
       expect(c.mode, ExportMode.reshare);
