@@ -416,6 +416,37 @@ class _InboxScreenState extends State<InboxScreen> implements InboxMarking {
     widget.api.markInboxRead(item.id).ignore();
   }
 
+  /// [item]'s menu at [at] (global coordinates): Open, and Mark as read
+  /// while it is unread.
+  Future<void> _menu(InboxItem item, Offset at) async {
+    final choice = await ClaxMenu.show(
+      context,
+      anchor: at & Size.zero,
+      items: [
+        const ClaxMenuItem(
+          'open',
+          'Open',
+          icon: Icons.open_in_new_rounded,
+          symbol: 'arrow.up.forward',
+        ),
+        if (!item.read)
+          const ClaxMenuItem(
+            'mark-read',
+            'Mark as read',
+            icon: Icons.mark_email_read_outlined,
+            symbol: 'envelope.open',
+          ),
+      ],
+    );
+    if (!mounted) return;
+    switch (choice) {
+      case 'open':
+        _tap(item);
+      case 'mark-read':
+        _markRead(item);
+    }
+  }
+
   void _tap(InboxItem item) {
     _markRead(item);
     if (item.gone) {
@@ -592,6 +623,7 @@ class _InboxScreenState extends State<InboxScreen> implements InboxMarking {
               icons: widget.icons,
               selected: item.id == widget.selected,
               onTap: () => _tap(item),
+              onMenu: (at) => unawaited(_menu(item, at)),
             );
           },
         ),
@@ -860,7 +892,7 @@ String inboxTime(String createdAt, DateTime now) {
 /// title and an 8 dp dot in `you`; no row is tinted for it. The row shown
 /// beside a list pane ([selected]) is filled in a raised surface. A row
 /// under the mouse fills with `hover` and shows the arrow (an [InkWell]'s
-/// cursor off the web).
+/// cursor off the web); a secondary click opens its menu ([onMenu]).
 class InboxRow extends StatelessWidget {
   const InboxRow({
     super.key,
@@ -869,11 +901,16 @@ class InboxRow extends StatelessWidget {
     required this.onTap,
     this.icons,
     this.selected = false,
+    this.onMenu,
   });
 
   final InboxItem item;
   final DateTime now;
   final VoidCallback onTap;
+
+  /// Opens the row's menu at the pointer of a secondary click (global
+  /// coordinates).
+  final ValueChanged<Offset>? onMenu;
 
   /// Whether the item is the one shown beside the list.
   final bool selected;
@@ -906,6 +943,10 @@ class InboxRow extends StatelessWidget {
         color: selected ? p.surfaceContainers[3] : Colors.transparent,
         child: InkWell(
         onTap: onTap,
+        onSecondaryTapUp: switch (onMenu) {
+          final f? => (d) => f(d.globalPosition),
+          null => null,
+        },
         hoverColor: p.hover,
         child: ConstrainedBox(
           constraints: const BoxConstraints(minHeight: 72),

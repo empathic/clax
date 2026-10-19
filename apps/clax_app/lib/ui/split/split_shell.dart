@@ -101,7 +101,8 @@ class SplitShell extends StatefulWidget {
   final double sidebarWidth;
   final ValueChanged<double>? onSidebarWidth;
 
-  /// A secondary click on app [appId]'s row, at [anchor].
+  /// A secondary click on app [appId]'s row, at [anchor]; in the list
+  /// pane also a long press on it.
   final void Function(String appId, Rect anchor)? onMenu;
 
   /// Told whether the sidebar shows, after each frame in which that
@@ -526,6 +527,7 @@ class SplitShellState extends State<SplitShell> {
             model: widget.model,
             searchFocus: _filterFocus,
             onSelected: over ? () => setState(() => _over = false) : null,
+            onMenu: widget.onMenu,
           ),
     );
 

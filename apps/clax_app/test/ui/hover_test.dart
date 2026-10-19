@@ -4,6 +4,7 @@ import 'package:clax_app/ui/inbox_screen.dart';
 import 'package:clax_app/ui/kit/kit.dart';
 import 'package:clax_app/ui/launcher.dart';
 import 'package:clax_app/ui/mac/window_channel.dart';
+import 'package:clax_app/ui/split/list_pane.dart';
 import 'package:clax_app/ui/split/sidebar.dart';
 import 'package:clax_app/ui/split/sidebar_model.dart';
 import 'package:clax_app/ui/theme.dart';
@@ -58,7 +59,126 @@ Future<void> _pumpMac(WidgetTester tester, Widget child) async {
   await tester.pump();
 }
 
+/// A secondary (right) click with the mouse at [at].
+Future<void> _rightClick(WidgetTester tester, Offset at) async {
+  final mouse = await tester.startGesture(
+    at,
+    kind: PointerDeviceKind.mouse,
+    buttons: kSecondaryMouseButton,
+  );
+  await mouse.up();
+  await tester.pumpAndSettle();
+}
+
+/// [child] on Android's theme in a 1280 by 800 window (a Chromebook's).
+Future<void> _pumpChromebook(WidgetTester tester, Widget child) async {
+  tester.view.physicalSize = const Size(1280, 800);
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.reset);
+  await tester.pumpWidget(
+    MaterialApp(
+      theme: claxTheme(Brightness.light, TargetPlatform.android),
+      home: Scaffold(body: child),
+    ),
+  );
+  await tester.pumpAndSettle();
+}
+
+/// Expects a [ClaxMenu] open with item [id] where the pointer was, [at].
+void _expectMenuAt(WidgetTester tester, String id, Offset at) {
+  final item = find.byKey(ValueKey(id));
+  expect(item, findsOneWidget);
+  final from = tester.getTopLeft(item) - at;
+  expect(from.dx, inInclusiveRange(0, 16), reason: 'beside the pointer');
+  expect(from.dy, inInclusiveRange(0, 16), reason: 'below the pointer');
+}
+
 void main() {
+  group('a secondary click on a Chromebook opens the menu at the pointer', () {
+    testWidgets('on a launcher tile', (tester) async {
+      final api = FakeClaxApi(clock: () => '2026-10-12T00:00:00Z');
+      api.seedArtifact('Groceries', _page);
+      await _pumpChromebook(
+        tester,
+        Launcher(
+          api: api,
+          open: (_) {},
+          make: (r, cancelled, stage) async => throw StateError('unused'),
+          voice: FakeVoice.unsupported('No speech here'),
+        ),
+      );
+      final at = tester.getCenter(find.text('Groceries')) + const Offset(9, 3);
+      await _rightClick(tester, at);
+      _expectMenuAt(tester, 'open', at);
+      expect(find.byKey(const ValueKey('inspect')), findsOneWidget);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
+    testWidgets('on an app in the list pane', (tester) async {
+      final f = SplitFixture();
+      await tester.runAsync(() => f.start(making: false));
+      final model = SidebarModel(host: f.host);
+      addTearDown(() {
+        model.dispose();
+        f.dispose();
+      });
+      for (var i = 0; i < 5; i++) {
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      }
+      final menus = <(String, Rect)>[];
+      await _pumpChromebook(
+        tester,
+        SizedBox(
+          width: 360,
+          child: ClaxListPane(
+            model: model,
+            onMenu: (id, anchor) => menus.add((id, anchor)),
+          ),
+        ),
+      );
+      final at = tester.getCenter(find.text('Groceries'));
+      await _rightClick(tester, at);
+      expect(menus, [(f.ids['Groceries']!, Rect.fromLTWH(at.dx, at.dy, 0, 0))]);
+      // A long press opens it too, at the row.
+      await tester.longPress(find.text('Budget'));
+      await tester.pumpAndSettle();
+      expect(menus.last.$1, f.ids['Budget']);
+      expect(
+        menus.last.$2,
+        tester.getRect(find.byKey(ValueKey('pane-app-${f.ids['Budget']}'))),
+      );
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
+    testWidgets('on an inbox row: Open and Mark as read', (tester) async {
+      final api = FakeClaxApi(clock: () => '2026-10-12T09:00:00Z');
+      final aid = api.seedArtifact('Run log', _page);
+      final item = api.pushInbox('reply', artifactId: aid, body: 'Done');
+      final opened = <InboxItem>[];
+      await _pumpChromebook(
+        tester,
+        InboxScreen(
+          api: api,
+          onOpen: opened.add,
+          now: () => DateTime.utc(2026, 10, 12, 9, 30),
+        ),
+      );
+      expect(find.byKey(const ValueKey('inbox-unread-dot')), findsOneWidget);
+      final at = tester.getCenter(find.text('Run log'));
+      await _rightClick(tester, at);
+      _expectMenuAt(tester, 'open', at);
+      await tester.tap(find.byKey(const ValueKey('mark-read')));
+      await tester.pumpAndSettle();
+      expect(api.callNames, contains('markInboxRead'));
+      expect(find.byKey(const ValueKey('inbox-unread-dot')), findsNothing);
+      expect(opened, isEmpty);
+
+      await _rightClick(tester, at);
+      expect(find.byKey(const ValueKey('mark-read')), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('open')));
+      await tester.pumpAndSettle();
+      expect(opened.single.id, item.id);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+  });
+
   group('on the Mac', () {
     testWidgets('a push button and a list row show the arrow, a link the '
         'pointing hand', (

@@ -425,7 +425,7 @@ class _LauncherState extends State<Launcher> {
                           icons: _icons,
                           building: _host.buildOf(apps[i].id),
                           onTap: () => widget.open(apps[i].id),
-                          onLongPress: (at) => unawaited(
+                          onMenu: (at) => unawaited(
                             _actions.menu(apps[i].id, at, const []),
                           ),
                         );
@@ -445,7 +445,8 @@ class _LauncherState extends State<Launcher> {
 /// rounded square of [_AppTile.iconSize], with [label] centred below it,
 /// on no card of its own. Under a mouse the cell fills with `hover` and its
 /// icon lifts (1.03 and elevation level 1), as the home app's tiles do,
-/// and shows the arrow (an [InkWell]'s cursor off the web).
+/// and shows the arrow (an [InkWell]'s cursor off the web). A long press,
+/// or a secondary click at the pointer, opens its menu ([onMenu]).
 class _HomeCell extends StatefulWidget {
   const _HomeCell({
     super.key,
@@ -453,7 +454,7 @@ class _HomeCell extends StatefulWidget {
     required this.icon,
     required this.label,
     required this.onTap,
-    this.onLongPress,
+    this.onMenu,
   });
 
   final String semantics;
@@ -461,9 +462,9 @@ class _HomeCell extends StatefulWidget {
   final Widget label;
   final VoidCallback onTap;
 
-  /// Called with the cell's rect in global coordinates, where a menu
-  /// opens.
-  final ValueChanged<Rect>? onLongPress;
+  /// Opens the cell's menu at a rect in global coordinates: the cell's
+  /// for a long press, the pointer's for a secondary click.
+  final ValueChanged<Rect>? onMenu;
 
   @override
   State<_HomeCell> createState() => _HomeCellState();
@@ -486,11 +487,15 @@ class _HomeCellState extends State<_HomeCell> {
         onTap: widget.onTap,
         onHover: (h) => setState(() => _hovered = h),
         hoverColor: p.hover,
-        onLongPress: switch (widget.onLongPress) {
+        onLongPress: switch (widget.onMenu) {
           final f? => () {
             final box = context.findRenderObject()! as RenderBox;
             f(box.localToGlobal(Offset.zero) & box.size);
           },
+          null => null,
+        },
+        onSecondaryTapUp: switch (widget.onMenu) {
+          final f? => (d) => f(d.globalPosition & Size.zero),
           null => null,
         },
         borderRadius: BorderRadius.circular(20),
@@ -532,7 +537,7 @@ class _AppTile extends StatelessWidget {
     super.key,
     required this.app,
     required this.onTap,
-    required this.onLongPress,
+    required this.onMenu,
     required this.icons,
     this.building,
   });
@@ -562,7 +567,7 @@ class _AppTile extends StatelessWidget {
 
   final ArtifactSummary app;
   final VoidCallback onTap;
-  final ValueChanged<Rect> onLongPress;
+  final ValueChanged<Rect> onMenu;
   final AppIcons icons;
 
   /// How far the app's build is, while it goes.
@@ -582,7 +587,7 @@ class _AppTile extends StatelessWidget {
           ? app.title
           : '${app.title}, building, ${b.done} of ${b.total} done',
       onTap: onTap,
-      onLongPress: onLongPress,
+      onMenu: onMenu,
       icon: b == null
           ? badge
           : _Building(

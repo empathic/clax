@@ -21,18 +21,24 @@ import 'sidebar_model.dart';
 /// The search narrows the rows ([SidebarModel.filter]) and gives the
 /// window's search to the home app's grid ([HomeHost.setQuery], heard
 /// while the shell holds its toolbar); [searchFocus] is its keyboard
-/// focus. [onSelected] runs after a row is chosen.
+/// focus. [onSelected] runs after a row is chosen. A long press on an
+/// app, or a secondary click at the pointer, opens its menu ([onMenu]).
 class ClaxListPane extends StatefulWidget {
   const ClaxListPane({
     super.key,
     required this.model,
     this.searchFocus,
     this.onSelected,
+    this.onMenu,
   });
 
   final SidebarModel model;
   final FocusNode? searchFocus;
   final VoidCallback? onSelected;
+
+  /// Opens app [appId]'s menu at [anchor] (global coordinates): the
+  /// pointer for a secondary click, the row for a long press.
+  final void Function(String appId, Rect anchor)? onMenu;
 
   @override
   State<ClaxListPane> createState() => _ClaxListPaneState();
@@ -207,6 +213,10 @@ class _ClaxListPaneState extends State<ClaxListPane> {
             selected: selected,
             indent: group == null ? 0 : ClaxSpace.s24,
             onTap: () => _choose(AppSelected(app.id)),
+            onMenu: switch (widget.onMenu) {
+              final f? => (anchor) => f(app.id, anchor),
+              null => null,
+            },
             leading: SidebarAppIcon(app: app, host: model.host, size: 32),
             title: app.title,
             trailing: unread > 0 ? ClaxBadge(count: unread) : null,
@@ -267,10 +277,15 @@ class _PaneTile extends StatelessWidget {
     this.trailing,
     this.indent = 0,
     this.height = 56,
+    this.onMenu,
   });
 
   final bool selected;
   final VoidCallback onTap;
+
+  /// Opens the row's menu at a rect in global coordinates: the row's for
+  /// a long press, the pointer's for a secondary click.
+  final ValueChanged<Rect>? onMenu;
   final Widget leading;
   final String title;
   final String? subtitle;
@@ -291,6 +306,17 @@ class _PaneTile extends StatelessWidget {
         clipBehavior: Clip.antiAlias,
         child: InkWell(
           onTap: onTap,
+          onLongPress: switch (onMenu) {
+            final f? => () {
+              final box = context.findRenderObject()! as RenderBox;
+              f(box.localToGlobal(Offset.zero) & box.size);
+            },
+            null => null,
+          },
+          onSecondaryTapUp: switch (onMenu) {
+            final f? => (d) => f(d.globalPosition & Size.zero),
+            null => null,
+          },
           child: Padding(
             padding: EdgeInsets.only(
               left: ClaxSpace.s16 + indent,
