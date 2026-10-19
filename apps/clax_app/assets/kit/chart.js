@@ -13,6 +13,10 @@
 //
 // A data object may give `values` instead of `series` for one series.
 
+// Line and bar charts draw their plot in a W-wide box stretched to the
+// chart's width (lines keep their stroke width), with the labels drawn over
+// it at their own size: a chart stays its height and its text 11 px however
+// wide it is.
 const W = 340;
 const PALETTE = [1, 2, 3, 4, 5, 6].map((i) => `var(--k-chart-${i})`);
 
@@ -87,19 +91,31 @@ function frame(labels, lo, hi, height, format, padLeft) {
   const max = ts[ts.length - 1];
   const y = (v) => bottom - ((v - min) / (max - min || 1)) * (bottom - top);
   let g = '';
+  let text = '';
   for (const t of ts) {
-    g += `<line class="k-grid-line" x1="${padLeft}" x2="${W}" y1="${r1(y(t))}" y2="${r1(y(t))}"/>`;
-    g += `<text x="${padLeft - 6}" y="${r1(y(t)) + 3.5}" text-anchor="end">${esc(format(t))}</text>`;
+    g += `<line class="k-grid-line" x1="${padLeft}" x2="${W}" y1="${r1(y(t))}" y2="${r1(y(t))}" vector-effect="non-scaling-stroke"/>`;
+    text += `<text x="${pct(padLeft - 6)}" y="${r1(y(t)) + 3.5}" text-anchor="end">${esc(format(t))}</text>`;
   }
   const n = labels.length;
   const every = Math.max(1, Math.ceil(n / 6));
-  return { y, top, bottom, min, max, grid: g, every };
+  return { y, top, bottom, min, max, grid: g, text, every };
 }
+
+/** An x in the plot's W-wide box as a share of the chart's width. */
+const pct = (x) => `${r1((x / W) * 100)}%`;
 
 function xLabels(labels, x, every, height) {
   return labels
-    .map((l, i) => (i % every === 0 ? `<text x="${r1(x(i))}" y="${height - 6}" text-anchor="middle">${esc(l)}</text>` : ''))
+    .map((l, i) => (i % every === 0 ? `<text x="${pct(x(i))}" y="${height - 6}" text-anchor="middle">${esc(l)}</text>` : ''))
     .join('');
+}
+
+/** A line or bar chart: `plot` in the stretched box, `over` (labels,
+ * dots) drawn at the chart's own scale. */
+function xyChart(label, height, defs, plot, over) {
+  return `<svg class="k-chart k-chart-xy" width="100%" height="${height}" style="height:${height}px" role="img" aria-label="${esc(label)}">`
+    + `<svg width="100%" height="${height}" viewBox="0 0 ${W} ${height}" preserveAspectRatio="none" overflow="visible"><defs>${defs}</defs>${plot}</svg>`
+    + `${over}</svg>`;
 }
 
 function lineLike(data, opts, filled) {
@@ -117,6 +133,7 @@ function lineLike(data, opts, filled) {
   const x = (i) => (n === 1 ? (padLeft + W) / 2 : padLeft + 8 + (i * (W - padLeft - 16)) / (n - 1));
   let body = '';
   let defs = '';
+  let over = '';
   series.forEach((s, si) => {
     const pts = s.values.map((v, i) => [x(i), f.y(v)]);
     const d = smooth ? curve(pts) : pts.map((p, i) => `${i ? 'L' : 'M'}${r1(p[0])},${r1(p[1])}`).join('');
@@ -125,14 +142,18 @@ function lineLike(data, opts, filled) {
       defs += `<linearGradient id="${id}" x1="0" x2="0" y1="0" y2="1"><stop offset="0" style="stop-color:${s.color};stop-opacity:.32"/><stop offset="1" style="stop-color:${s.color};stop-opacity:0"/></linearGradient>`;
       body += `<path d="${d}L${r1(pts[pts.length - 1][0])},${f.bottom}L${r1(pts[0][0])},${f.bottom}Z" style="fill:url(#${id})" class="k-chart-fade"/>`;
     }
-    body += `<path d="${d}" pathLength="1" class="k-chart-draw" style="fill:none;stroke:${s.color};stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round"/>`;
+    // Drawn left to right by a clip that grows: a dash animation measures
+    // the path after the stretch, so on a wide chart it stops short.
+    const clip = `kc${Math.random().toString(36).slice(2, 8)}${si}`;
+    defs += `<clipPath id="${clip}"><rect class="k-chart-reveal" x="0" y="-8" width="${W}" height="${height + 16}"/></clipPath>`;
+    body += `<path d="${d}" clip-path="url(#${clip})" vector-effect="non-scaling-stroke" style="fill:none;stroke:${s.color};stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round"/>`;
     if (dots || n <= 12) {
       const last = pts.length - 1;
-      body += pts.map((p, i) => (dots || i === last)
-        ? `<circle cx="${r1(p[0])}" cy="${r1(p[1])}" r="${i === last ? 4 : 3}" style="fill:var(--k-surface);stroke:${s.color};stroke-width:2.5"/>` : '').join('');
+      over += pts.map((p, i) => (dots || i === last)
+        ? `<circle cx="${pct(p[0])}" cy="${r1(p[1])}" r="${i === last ? 4 : 3}" style="fill:var(--k-surface);stroke:${s.color};stroke-width:2.5"/>` : '').join('');
     }
   });
-  const svg = `<svg class="k-chart" viewBox="0 0 ${W} ${height}" role="img" aria-label="${esc(series.map((s) => s.name).filter(Boolean).join(', ') || 'chart')}"><defs>${defs}</defs>${f.grid}${xLabels(labels, x, f.every, height)}${body}</svg>`;
+  const svg = xyChart(series.map((s) => s.name).filter(Boolean).join(', ') || 'chart', height, defs, f.grid + body, f.text + xLabels(labels, x, f.every, height) + over);
   return `<div class="k-chart-wrap">${svg}${legend ?? series.length > 1 ? legendOf(series) : ''}</div>`;
 }
 
@@ -184,7 +205,7 @@ export function bar(data, opts) {
       });
     }
   });
-  const svg = `<svg class="k-chart" viewBox="0 0 ${W} ${height}" role="img" aria-label="bar chart">${f.grid}${xLabels(labels, x, f.every, height)}${body}</svg>`;
+  const svg = xyChart('bar chart', height, '', f.grid + body, f.text + xLabels(labels, x, f.every, height));
   return `<div class="k-chart-wrap">${svg}${legend ?? series.length > 1 ? legendOf(series) : ''}</div>`;
 }
 

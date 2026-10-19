@@ -620,6 +620,7 @@ select.k-input {
 
 /* Charts (chart.js). */
 .k-chart { width: 100%; height: auto; overflow: visible; }
+.k-chart.k-chart-xy { display: block; }
 .k-chart text { fill: var(--k-fg-3); font: 500 11px/1 var(--k-font); }
 .k-chart .k-grid-line { stroke: var(--k-line); stroke-width: 1; }
 .k-chart-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: var(--k-s2); font: var(--k-text-footnote); color: var(--k-fg-2); }
@@ -627,9 +628,9 @@ select.k-input {
 .k-chart-legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
 .k-chart-center { fill: var(--k-fg) !important; font: 700 22px/1 var(--k-font-display) !important; }
 .k-chart-center-sub { fill: var(--k-fg-2) !important; font: 500 11px/1 var(--k-font) !important; }
-.k-chart-draw { stroke-dasharray: 1; stroke-dashoffset: 1; animation: k-draw 900ms var(--k-ease) 80ms forwards; }
+.k-chart-reveal { transform-box: fill-box; transform-origin: left; animation: k-reveal 900ms var(--k-ease) 80ms both; }
 .k-chart-fade { animation: k-fade-in 700ms linear 200ms both; }
 .k-chart-grow { transform-box: fill-box; transform-origin: bottom; animation: k-grow-y 520ms var(--k-ease) both; }
 .k-chart-pop { animation: k-pop-in 520ms var(--k-ease-spring) both; }
-@keyframes k-draw { to { stroke-dashoffset: 0; } }
+@keyframes k-reveal { from { transform: scaleX(0); } }
 @keyframes k-grow-y { from { transform: scaleY(0); } }

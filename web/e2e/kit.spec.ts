@@ -1,6 +1,6 @@
 // The kit's stylesheet and charts (apps/clax_app/assets/kit) in a plain
 // browser: text on the kit's fills and its faint text meet 4.5:1 in both
-// themes.
+// themes, and a chart's labels keep their size however wide the chart is.
 import { readFileSync } from "node:fs";
 import type { Page } from "@playwright/test";
 import { test, expect } from "./fixtures";
@@ -65,3 +65,17 @@ for (const scheme of ["light", "dark"] as const) {
   });
 }
 
+test.describe("kit charts", () => {
+  test.use({ viewport: { width: 1280, height: 800 } });
+
+  test("a wide chart's labels keep their 11 px", async ({ page }) => {
+    await serve(page);
+    await expect(page.locator(".k-chart text").first()).toBeVisible();
+    const heights = await page.locator(".k-chart text").evaluateAll(els => els.map(e => e.getBoundingClientRect().height));
+    expect(heights.length).toBeGreaterThan(4);
+    for (const h of heights) expect(h).toBeLessThan(16);
+    const chart = await page.locator(".k-chart").first().boundingBox();
+    expect(chart!.width).toBeGreaterThan(1000);
+    expect(chart!.height).toBeLessThan(200);
+  });
+});
