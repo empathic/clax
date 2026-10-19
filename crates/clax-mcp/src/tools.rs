@@ -584,6 +584,9 @@ pub struct DbBatchArgs {
 /// A tool's outcome before rendering: the success object, or a finished error result.
 type Outcome = Result<Value, CallToolResult>;
 
+/// The `timeout` message of a publish that creates an artifact.
+const CREATE_TIMEOUT: &str = "the daemon did not respond in time, and the artifact may have been created: call list (newest first, after pinned artifacts) and look for it by title before publishing it again";
+
 fn invalid(message: impl Into<String>) -> CallToolResult {
     render::error("invalid_args", message, json!({}))
 }
@@ -1385,13 +1388,32 @@ impl ClaxTools {
             body["addresses"] = json!(t);
         }
         let res = match target {
-            None => self.client.create(&body).await,
+            // A create past its deadline may have made the artifact, whose
+            // ID the agent never saw: it is told to look for it before
+            // creating another.
+            None => match self.client.create(&body).await {
+                Err(e @ ClientError::Timeout(_)) => {
+                    return Err(render::client_error_with(
+                        e,
+                        self.daemon_log(),
+                        json!({"message": CREATE_TIMEOUT}),
+                    ));
+                }
+                r => r,
+            },
             Some(id) => {
                 let current = match a.if_version {
                     Some(v) => v,
                     None => {
                         let got = self.client.get(&id).await.map_err(|e| self.fail(e))?;
-                        got["artifact"]["current_version"].as_u64().unwrap_or(0) as u32
+                        got["artifact"]["current_version"]
+                            .as_u64()
+                            .and_then(|n| u32::try_from(n).ok())
+                            .ok_or_else(|| {
+                                self.fail(ClientError::BadResponse(
+                                    "the artifact has no current_version".into(),
+                                ))
+                            })?
                     }
                 };
                 body["if_version"] = json!(current);

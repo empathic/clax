@@ -403,6 +403,77 @@ async fn asset_upload_refuses_an_unsupported_file_before_uploading_any() {
     );
 }
 
+/// A create past its deadline may have made the artifact, whose ID the
+/// agent never saw: the timeout says to look for it with `list` before
+/// publishing again, not to read an artifact it cannot name.
+#[tokio::test]
+async fn a_create_that_times_out_says_to_look_for_the_artifact_with_list() {
+    // A server that takes every request and never answers.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((sock, _)) = listener.accept().await {
+            held.push(sock);
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let t = ClaxTools::new(
+        DaemonClient::new(format!("http://127.0.0.1:{port}"), "t".into(), None)
+            .with_publish_timeout(std::time::Duration::from_millis(200)),
+        format!("http://localhost:{port}"),
+        None,
+        dir.path().join("daemon.log"),
+    );
+    let e = err(t.publish(Parameters(html("A", "<p>"))).await);
+    assert_eq!(e["error"]["code"], "timeout", "{e}");
+    let m = e["error"]["message"].as_str().unwrap();
+    assert!(m.contains("call list"), "{m}");
+    assert!(!m.contains("read the artifact"), "{m}");
+}
+
+/// An update without `if_version` on an artifact the daemon reports no
+/// current version for is `bad_response`, and nothing is published (no
+/// version 0 is sent to conflict on).
+#[tokio::test]
+async fn an_update_without_a_known_current_version_is_bad_response() {
+    use axum::routing::{get, post};
+    let publishes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let app = axum::Router::new()
+        .route(
+            "/api/artifacts/{id}",
+            get(|| async { axum::Json(serde_json::json!({"artifact": {"id": "7q3k9mzx2b4t"}})) }),
+        )
+        .route(
+            "/api/artifacts/{id}/versions",
+            post({
+                let publishes = publishes.clone();
+                move || async move {
+                    publishes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    axum::http::StatusCode::CREATED
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    let dir = tempfile::tempdir().unwrap();
+    let t = ClaxTools::new(
+        DaemonClient::new(format!("http://127.0.0.1:{port}"), "t".into(), None),
+        format!("http://localhost:{port}"),
+        None,
+        dir.path().join("daemon.log"),
+    );
+    let e = err(t
+        .publish(Parameters(PublishArgs {
+            id: Some("7q3k9mzx2b4t".into()),
+            ..html("A", "<p>")
+        }))
+        .await);
+    assert_eq!(e["error"]["code"], "bad_response", "{e}");
+    assert_eq!(publishes.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
 /// A daemon refusal part way through names the file it refused and the
 /// assets already uploaded, so a retry sends only the rest.
 #[tokio::test]

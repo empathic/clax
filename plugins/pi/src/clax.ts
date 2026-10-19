@@ -367,6 +367,10 @@ function toolError(code: string, message: string, extra: Json = {}): ToolError {
 
 const invalid = (message: string) => toolError("invalid_args", message);
 
+/** The `timeout` message of a publish that creates an artifact. */
+const CREATE_TIMEOUT =
+  "the daemon did not respond in time, and the artifact may have been created: call list (newest first, after pinned artifacts) and look for it by title before publishing it again";
+
 /** An error result for an unexpected exception, so every error stays JSON. */
 function internal(e: unknown): ToolError {
   return e instanceof ToolError ? e : toolError("internal", e instanceof Error ? e.message : String(e));
@@ -1055,8 +1059,26 @@ class Tools {
       body.addresses = a.addresses;
     }
     const res = await this.call(async () => {
-      if (targetId === undefined) return c.create(body);
-      body.if_version = a.if_version ?? Number((await c.get(targetId)).artifact?.current_version ?? 0);
+      if (targetId === undefined) {
+        try {
+          return await c.create(body);
+        } catch (e) {
+          // A create past its deadline may have made the artifact, whose ID
+          // the agent never saw: it is told to look for it before creating
+          // another.
+          if (e instanceof ClientError && e.kind === "timeout") {
+            throw toolError("timeout", CREATE_TIMEOUT, { detail: e.message, log: this.log });
+          }
+          throw e;
+        }
+      }
+      if (a.if_version === undefined) {
+        const current = (await c.get(targetId)).artifact?.current_version;
+        if (typeof current !== "number") throw new ClientError("bad_response", "the artifact has no current_version");
+        body.if_version = current;
+      } else {
+        body.if_version = a.if_version;
+      }
       try {
         return await c.publishVersion(targetId, body);
       } catch (e) {

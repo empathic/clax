@@ -133,6 +133,8 @@ pub struct DaemonClient {
     via: Option<&'static str>,
     /// The longest one remote clip fetch may take ([`CLIP_FETCH_TIME`]).
     clip_fetch_time: Duration,
+    /// The deadline of a publish or an asset upload ([`PUBLISH_TIMEOUT`]).
+    publish_timeout: Duration,
     auth: Auth,
 }
 
@@ -410,6 +412,7 @@ impl DaemonClient {
             call: None,
             via: None,
             clip_fetch_time: CLIP_FETCH_TIME,
+            publish_timeout: PUBLISH_TIMEOUT,
             auth: Auth::Token,
         }
     }
@@ -457,6 +460,13 @@ impl DaemonClient {
     /// [`CLIP_FETCH_TIME`].
     pub fn with_clip_fetch_time(mut self, t: Duration) -> DaemonClient {
         self.clip_fetch_time = t;
+        self
+    }
+
+    /// This client giving each publish and asset upload at most `t`,
+    /// instead of [`PUBLISH_TIMEOUT`].
+    pub fn with_publish_timeout(mut self, t: Duration) -> DaemonClient {
+        self.publish_timeout = t;
         self
     }
 
@@ -508,6 +518,7 @@ impl DaemonClient {
             call: None,
             via: Some(VIA),
             clip_fetch_time: CLIP_FETCH_TIME,
+            publish_timeout: PUBLISH_TIMEOUT,
             auth: Auth::Token,
         }
     }
@@ -533,6 +544,7 @@ impl DaemonClient {
             call: Some(call),
             via: self.via,
             clip_fetch_time: self.clip_fetch_time,
+            publish_timeout: self.publish_timeout,
             auth: self.auth.clone(),
         }
     }
@@ -584,6 +596,7 @@ impl DaemonClient {
             call: self.call.clone(),
             via: self.via,
             clip_fetch_time: self.clip_fetch_time,
+            publish_timeout: self.publish_timeout,
             auth: self.auth.clone(),
         }
     }
@@ -985,7 +998,7 @@ impl DaemonClient {
     pub async fn create(&self, body: &Value) -> Result<Value> {
         self.json(|c| {
             c.request(reqwest::Method::POST, "/api/artifacts")
-                .timeout(PUBLISH_TIMEOUT)
+                .timeout(self.publish_timeout)
                 .json(body)
         })
         .await
@@ -998,7 +1011,7 @@ impl DaemonClient {
                 reqwest::Method::POST,
                 &format!("/api/artifacts/{id}/versions"),
             )
-            .timeout(PUBLISH_TIMEOUT)
+            .timeout(self.publish_timeout)
             .json(body)
         })
         .await
@@ -1018,7 +1031,7 @@ impl DaemonClient {
     pub async fn fork(&self, id: &str, body: &Value) -> Result<Value> {
         self.json(|c| {
             c.request(reqwest::Method::POST, &format!("/api/artifacts/{id}/fork"))
-                .timeout(PUBLISH_TIMEOUT)
+                .timeout(self.publish_timeout)
                 .json(body)
         })
         .await
@@ -1031,7 +1044,7 @@ impl DaemonClient {
     pub async fn push(&self, id: &str, body: &Value) -> Result<Value> {
         self.json(|c| {
             c.request(reqwest::Method::POST, &format!("/api/artifacts/{id}/push"))
-                .timeout(PUBLISH_TIMEOUT)
+                .timeout(self.publish_timeout)
                 .json(body)
         })
         .await
@@ -1086,7 +1099,7 @@ impl DaemonClient {
                     reqwest::Method::POST,
                     &format!("/api/artifacts/{id}/assets"),
                 )
-                .timeout(PUBLISH_TIMEOUT);
+                .timeout(self.publish_timeout);
             match &whole {
                 Some((ct, body)) => req
                     .header(reqwest::header::CONTENT_TYPE, ct)

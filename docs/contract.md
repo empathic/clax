@@ -150,7 +150,9 @@ These come from the tool layer itself, not the daemon:
   says the daemon and its log are on the owner's machine.
 - `timeout`: a request to the daemon passed its client-side deadline. Extra
   fields `detail` and `log` (no `log` in remote mode). For a publish, the
-  outcome is unknown; read the artifact before retrying.
+  outcome is unknown: read the artifact before retrying an update, and
+  before retrying a create (whose artifact ID you never saw) call `list`
+  and look for it by title, as the create's message says.
 - `bad_response`: the daemon answered with a success status but a body that
   could not be read.
 - `internal` (Pi only): an unexpected exception inside the extension.
