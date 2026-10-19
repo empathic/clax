@@ -1,0 +1,29 @@
+[package]
+name = "clax-ios"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The workspace forbids unsafe_code; this crate denies it and allows it
+# only on the #[unsafe(no_mangle)] of its four exported C functions
+# (AGENTS.md; scripts/check-no-unsafe.sh checks it).
+[lints.rust]
+unsafe_code = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(clax_embedded)', 'cfg(clax_split)', 'cfg(clax_split, values(any()))'] }
+
+[dependencies]
+clax-core = { path = "../clax-core" }
+clax-server = { path = "../clax-server" }
+clax-sample = { path = "../clax-sample" }
+clax-realtime = { path = "../clax-realtime" }
+clax-http = { path = "../clax-http" }
+clax-embedded = { path = "../clax-embedded" }
+clax-store = { path = "../clax-store" }
+anyhow.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+reqwest.workspace = true

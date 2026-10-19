@@ -57,6 +57,9 @@ ALLOWED = {
     "clax-server": HTTP | MCP,
     "clax-commands": STORE | MCP | HOOKS,
     "clax-cli": SERVER | COMMANDS | {"clax-embedded"},
+    # The daemon inside an iOS app's process: what `clax serve` runs, and
+    # no command (they start processes iOS refuses).
+    "clax-ios": SERVER | {"clax-embedded"},
     "clax-testkit": SERVER | {"clax-fake-exe"},
 }
 
