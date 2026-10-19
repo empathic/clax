@@ -1,9 +1,13 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 
 import '../clax/api.dart';
+import 'haiku.dart';
+import 'kit/kit.dart';
 import 'launcher.dart' show tileScheme;
+import 'user_message.dart';
 
 /// The owner's inbox across apps: the agents' replies, new versions, new
 /// apps, questions and finished work, newest first, live.
@@ -25,6 +29,9 @@ import 'launcher.dart' show tileScheme;
 /// A tap marks the item read and passes it to [onOpen]; an item whose
 /// source is gone is only marked read. **Mark all read** marks every unread
 /// item matching the current filter up to the newest one shown.
+///
+/// With nothing left to read it says "All caught up." over a haiku, a new
+/// one each visit; a long-press (Option-click on the Mac) shows another.
 class InboxScreen extends StatefulWidget {
   const InboxScreen({
     super.key,
@@ -35,9 +42,18 @@ class InboxScreen extends StatefulWidget {
     this.searchDelay = const Duration(milliseconds: 300),
     this.stream,
     this.retryDelay,
+    this.haikus,
+    this.random,
   });
 
   final ClaxApi api;
+
+  /// The haikus "All caught up." picks from; null reads the app's list
+  /// ([loadHaikus]).
+  final Future<List<String>> Function()? haikus;
+
+  /// How the haiku is picked; null is a fresh [Random].
+  final Random? random;
 
   /// Opens what [InboxItem] points at: its thread, version, app or
   /// question.
@@ -100,11 +116,48 @@ class _InboxScreenState extends State<InboxScreen> {
   /// The topics being subscribed again after an `unsubscribed`.
   final Set<String> _resubscribing = {};
 
+  List<String> _haikus = const [];
+  String? _haiku;
+
+  /// The haiku the inbox showed last, which the next visit does not
+  /// repeat.
+  static String? _lastHaiku;
+
   @override
   void initState() {
     super.initState();
     unawaited(_start());
+    unawaited(_loadHaikus());
   }
+
+  /// Reads the haikus apart from the list, so a slow one never holds the
+  /// inbox back.
+  Future<void> _loadHaikus() async {
+    // After initState, where the asset bundle can be looked up.
+    await Future<void>.value();
+    if (!mounted) return;
+    final bundle = DefaultAssetBundle.of(context);
+    final List<String> haikus;
+    try {
+      haikus = await (widget.haikus?.call() ?? loadHaikus(bundle));
+    } on Object {
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _haikus = haikus;
+      _lastHaiku = _haiku = _pick(_lastHaiku);
+    });
+  }
+
+  /// A haiku other than [not] where there is another; null with none.
+  String? _pick(String? not) {
+    if (_haikus.isEmpty) return null;
+    final others = [for (final h in _haikus) if (h != not) h];
+    return pickHaiku(others.isEmpty ? _haikus : others, random: widget.random);
+  }
+
+  void _anotherHaiku() => setState(() => _lastHaiku = _haiku = _pick(_haiku));
 
   Future<void> _start() async {
     final stream = _stream = widget.stream ?? widget.api.stream();
@@ -342,16 +395,22 @@ class _InboxScreenState extends State<InboxScreen> {
               ],
             ),
             SliverToBoxAdapter(child: _filters(context)),
-            if (items == null && _loadError != null)
+            if ((items, _loadError) case (null, final e?))
               SliverFillRemaining(
-                hasScrollBody: false,
-                child: _Empty(
-                  icon: Icons.cloud_off_rounded,
-                  text: "Couldn't load the inbox",
-                  action: TextButton(
-                    onPressed: _refresh,
-                    child: const Text('Try again'),
-                  ),
+                hasScrollBody: true,
+                child: ClaxEmpty(
+                  key: const ValueKey('inbox-error'),
+                  icon: Icons.inbox_outlined,
+                  title: 'Couldn’t show your inbox',
+                  body: logUserMessage('inbox', e),
+                  actions: [
+                    ClaxButton(
+                      label: 'Try again',
+                      kind: ClaxButtonKind.primary,
+                      icon: Icons.refresh_rounded,
+                      onPressed: () => unawaited(_refresh()),
+                    ),
+                  ],
                 ),
               )
             else if (items == null)
@@ -360,7 +419,7 @@ class _InboxScreenState extends State<InboxScreen> {
                 child: Center(child: CircularProgressIndicator()),
               )
             else if (items.isEmpty)
-              SliverFillRemaining(hasScrollBody: false, child: _empty())
+              SliverFillRemaining(hasScrollBody: true, child: _empty())
             else
               SliverPadding(
                 padding: const EdgeInsets.only(bottom: 24),
@@ -468,18 +527,29 @@ class _InboxScreenState extends State<InboxScreen> {
 
   Widget _empty() {
     if (_query.isNotEmpty || _kinds.isNotEmpty) {
-      return const _Empty(icon: Icons.search_off_rounded, text: 'No matches');
-    }
-    if (_unreadOnly) {
-      return const _Empty(
-        icon: Icons.mark_email_read_outlined,
-        text: "You're all caught up",
+      return const ClaxEmpty(
+        key: ValueKey('inbox-no-matches'),
+        icon: Icons.search_off_rounded,
+        title: 'No matches',
+        body: 'Try other words, or fewer filters.',
       );
     }
-    return const _Empty(
-      icon: Icons.inbox_outlined,
-      text: 'Nothing here yet',
-      hint: "Replies, new versions and the agent's questions show up here.",
+    final haiku = _haiku;
+    return ClaxEmpty(
+      key: const ValueKey('inbox-caught-up'),
+      icon: Icons.mark_email_read_outlined,
+      title: 'All caught up.',
+      // Unread only: there may be more under All.
+      body: _unreadOnly
+          ? null
+          : 'Replies, new versions and Clax’s questions show up here.',
+      extra: haiku == null
+          ? null
+          : HaikuLine(
+              key: const ValueKey('inbox-haiku'),
+              text: haiku,
+              onAnother: _haikus.length > 1 ? _anotherHaiku : null,
+            ),
     );
   }
 }
@@ -822,48 +892,3 @@ class _PageEnd extends StatelessWidget {
   }
 }
 
-class _Empty extends StatelessWidget {
-  const _Empty({
-    required this.icon,
-    required this.text,
-    this.hint,
-    this.action,
-  });
-
-  final IconData icon;
-  final String text;
-  final String? hint;
-  final Widget? action;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(32, 0, 32, 96),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(icon, size: 48, color: scheme.primary),
-          const SizedBox(height: 16),
-          Text(
-            text,
-            textAlign: TextAlign.center,
-            style: theme.textTheme.titleLarge,
-          ),
-          if (hint != null) ...[
-            const SizedBox(height: 8),
-            Text(
-              hint!,
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodyLarge?.copyWith(
-                color: scheme.onSurfaceVariant,
-              ),
-            ),
-          ],
-          if (action != null) ...[const SizedBox(height: 16), action!],
-        ],
-      ),
-    );
-  }
-}

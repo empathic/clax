@@ -54,6 +54,10 @@ final class Restarting extends DaemonState {
 /// its runs.
 final class Failed extends DaemonState {
   const Failed(this.reason, this.stderrTail);
+
+  /// Why, in the supervisor's words ("clax stopped 5 times within a
+  /// minute; last: …"): for the log and a report's copied details, never
+  /// for the screen.
   final String reason;
   final List<String> stderrTail;
   @override

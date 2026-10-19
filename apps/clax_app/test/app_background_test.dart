@@ -767,7 +767,7 @@ void main() {
     agent.steps.add((_) async => _made);
     await pumpApp(tester);
     await pumpUntilShown(tester, 'Interrupted');
-    expect(find.text('Make it again?'), findsNothing, reason: 'no dialog');
+    expect(find.text('This wasn’t finished.'), findsNothing, reason: 'no dialog');
     await settleFiles(tester);
     expect(
       File('${dir.path}/pending-make.json').existsSync(),
@@ -776,10 +776,8 @@ void main() {
     );
     await tester.tap(find.text('a tracker for my runs'));
     await pumpUntilShown(tester, 'Make it again');
-    expect(
-      find.text('Clax closed before it finished “a tracker for my runs”.'),
-      findsOneWidget,
-    );
+    expect(find.text('This wasn’t finished.'), findsOneWidget);
+    expect(find.text('“a tracker for my runs”'), findsOneWidget);
     await tester.tap(find.text('Make it again'));
     await pumpRoute(tester);
     await pumpRoute(tester);
@@ -789,7 +787,7 @@ void main() {
     expect(File('${dir.path}/pending-make.json').existsSync(), isFalse);
   });
 
-  testWidgets('Discard forgets the lost make; closing the question keeps it', (
+  testWidgets('Cancel forgets the lost make; closing the question keeps it', (
     tester,
   ) async {
     File('${dir.path}/pending-make.json')
@@ -797,13 +795,13 @@ void main() {
     await pumpApp(tester);
     await pumpUntilShown(tester, 'Interrupted');
     await tester.tap(find.text('laps'));
-    await pumpUntilShown(tester, 'Discard');
+    await pumpUntilShown(tester, 'Cancel');
     await tester.tapAt(const Offset(4, 4));
     await pumpRoute(tester);
     expect(find.text('Interrupted'), findsOneWidget);
     await tester.tap(find.text('laps'));
-    await pumpUntilShown(tester, 'Discard');
-    await tester.tap(find.text('Discard'));
+    await pumpUntilShown(tester, 'Cancel');
+    await tester.tap(find.text('Cancel'));
     await pumpRoute(tester);
     expect(find.text('Interrupted'), findsNothing);
     expect(agent.runs, 0);

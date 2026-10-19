@@ -114,6 +114,12 @@ for (const form of Object.keys(FORMS) as Form[]) {
         await take(page, "home", form, theme);
       });
 
+      test(`home-empty ${form} ${theme}`, async ({ page }) => {
+        await serve(page, homeFiles(), { apps: [], makes: [] });
+        await expect(page.locator(".h-message .clax-mark")).toBeVisible();
+        await take(page, "home-empty", form, theme);
+      });
+
       test(`kit ${form} ${theme}`, async ({ page }) => {
         await serve(page, exampleFiles());
         await expect(page.locator(".k-stat").first()).toBeVisible();

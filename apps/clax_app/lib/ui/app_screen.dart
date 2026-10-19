@@ -15,6 +15,8 @@ import '../platform/app_notice.dart';
 import '../platform/device/device_host.dart';
 import '../platform/settings_store.dart';
 import '../platform/voice.dart';
+import 'app_cover.dart';
+import 'app_icon.dart';
 import 'app_menu.dart';
 import 'app_surface.dart';
 import 'build_plan.dart';
@@ -219,7 +221,12 @@ class AppScreen extends StatefulWidget {
     this.openApp,
     this.mode = AppMode.app,
     this.covered = false,
+    this.icons,
   });
+
+  /// The apps' icons, for the cover while the page loads; null reads this
+  /// app's own.
+  final AppIcons? icons;
 
   /// Whether something in the same route covers the screen (the built-in
   /// home screen over the home app while its page loads or after it
@@ -251,8 +258,8 @@ class AppScreen extends StatefulWidget {
   /// first).
   final ValueChanged<Ready>? onReady;
 
-  /// The page gave up loading: the screen shows "This app stopped
-  /// loading" with Reload.
+  /// The page gave up loading: the screen shows "This app didn’t load"
+  /// with Try again.
   final VoidCallback? onStoppedLoading;
 
   /// The app's App › Comment and App › Threads commands, which the screen
@@ -358,6 +365,14 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
 
   /// The raw text of the fault [_gaveUp] says plainly, for Developer tools.
   String? _gaveUpDetail;
+
+  /// The app as last read, for the cover's icon and title.
+  ArtifactSummary? _app;
+  Future<ArtifactSummary?>? _reading;
+
+  /// The icons the cover reads when the screen was given none.
+  AppIcons? _ownIcons;
+  AppIcons get _icons => widget.icons ?? (_ownIcons ??= AppIcons(widget.api));
   Ready? _ready;
 
   // The shell's state.
@@ -559,6 +574,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       now: widget.clock.now,
     );
     _text.addListener(_onText);
+    unawaited(_readApp());
     _comments = widget.comments ?? (_ownComments = CommentsCommand());
     if (!widget.covered) {
       _comments.register(_toggleOpen, comment: _toggleComment);
@@ -710,14 +726,22 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   }
 
   Future<String> _loadTitle() async {
-    try {
-      final t = (await widget.api.getArtifact(widget.aid)).artifact.title;
-      if (t.trim().isNotEmpty) return t;
-    } on Object {
-      // The notice names it generically.
-    }
-    return 'Your app';
+    final t = (await _readApp())?.title ?? '';
+    // Without one, the notice names it generically.
+    return t.trim().isNotEmpty ? t : 'Your app';
   }
+
+  /// Reads the app once, for the cover and the notice; null when it cannot
+  /// be read.
+  Future<ArtifactSummary?> _readApp() => _reading ??= () async {
+    try {
+      final app = (await widget.api.getArtifact(widget.aid)).artifact;
+      if (mounted) setState(() => _app = app);
+      return app;
+    } on Object {
+      return null;
+    }
+  }();
 
   late final CommentsCommand _comments;
 
@@ -796,6 +820,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     widget.notice?.clear(this);
     _comments.unregister(_toggleOpen);
     _ownComments?.dispose();
+    _ownIcons?.dispose();
     _screenFocus.dispose();
     for (final s in _subs) {
       s.cancel();
@@ -2065,62 +2090,17 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   }
 
   Widget _cover(BuildContext context) {
-    final theme = Theme.of(context);
-    final gaveUp = _gaveUp;
-    return ColoredBox(
-      key: const ValueKey('app-cover'),
-      color: theme.colorScheme.surface,
-      child: Center(
-        child: gaveUp == null
-            ? const SizedBox.square(
-                dimension: 28,
-                child: CircularProgressIndicator(strokeWidth: 3),
-              )
-            : Padding(
-                padding: const EdgeInsets.all(32),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.cloud_off_outlined,
-                      size: 40,
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      'This app stopped loading',
-                      style: theme.textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      gaveUp,
-                      textAlign: TextAlign.center,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                    if (_gaveUpDetail case final d?
-                        when DeveloperScope.of(context)) ...[
-                      const SizedBox(height: 8),
-                      SelectableText(
-                        d,
-                        key: const ValueKey('app-cover-detail'),
-                        textAlign: TextAlign.center,
-                        style: theme.textTheme.labelSmall?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                    const SizedBox(height: 20),
-                    FilledButton.icon(
-                      onPressed: _reload,
-                      icon: const Icon(Icons.refresh),
-                      label: const Text('Reload'),
-                    ),
-                  ],
-                ),
-              ),
-      ),
+    final nav = Navigator.of(context);
+    return AppCover(
+      app: _app,
+      icons: _app == null ? null : _icons,
+      failure: _gaveUp,
+      detail: DeveloperScope.of(context) ? _gaveUpDetail : null,
+      onTryAgain: _reload,
+      onBack: widget.mode == AppMode.app && nav.canPop()
+          ? () => nav.pop()
+          : null,
+      clock: widget.clock,
     );
   }
 

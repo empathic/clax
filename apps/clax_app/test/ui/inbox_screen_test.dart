@@ -2,7 +2,9 @@ import 'dart:async';
 
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
+import 'package:clax_app/ui/haiku.dart';
 import 'package:clax_app/ui/inbox_screen.dart';
+import 'package:clax_app/ui/kit/kit.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -53,7 +55,11 @@ void main() {
     delays = [];
   });
 
-  Future<void> pumpInbox(WidgetTester tester, {Brightness? brightness}) async {
+  Future<void> pumpInbox(
+    WidgetTester tester, {
+    Brightness? brightness,
+    List<String>? haikus,
+  }) async {
     await tester.pumpWidget(
       MaterialApp(
         theme: claxTheme(brightness ?? Brightness.light, defaultTargetPlatform),
@@ -63,6 +69,7 @@ void main() {
           timer: timers.call,
           now: () => DateTime.utc(2026, 10, 12, 9, 30),
           retryDelay: (d) async => delays.add(d),
+          haikus: haikus == null ? null : () async => haikus,
         ),
       ),
     );
@@ -294,18 +301,58 @@ void main() {
     expect(api.callNames.where((n) => n == 'inbox').length, before + 1);
   });
 
-  testWidgets('an empty inbox says so', (tester) async {
-    await pumpInbox(tester);
-    expect(find.text('Nothing here yet'), findsOneWidget);
+  testWidgets('an empty inbox is all caught up, with one haiku', (
+    tester,
+  ) async {
+    await pumpInbox(tester, haikus: ['Quiet inbox\nnothing left to read']);
+    expect(find.byType(ClaxEmpty), findsOneWidget);
+    expect(
+      tester.widget<Text>(find.text('All caught up.')).textAlign,
+      TextAlign.center,
+    );
+    expect(find.byType(HaikuLine), findsOneWidget);
+    expect(
+      find.bySemanticsLabel('Haiku: Quiet inbox\nnothing left to read'),
+      findsOneWidget,
+    );
     await tester.tap(find.widgetWithText(FilterChip, 'Unread'));
     await tester.pumpAndSettle();
-    expect(find.text("You're all caught up"), findsOneWidget);
+    expect(find.text('All caught up.'), findsOneWidget);
+    expect(find.byType(HaikuLine), findsOneWidget);
   });
 
-  testWidgets('a failed load offers Try again', (tester) async {
+  testWidgets('the empty inbox shows a new haiku each visit, and another on '
+      'a long-press', (tester) async {
+    final list = ['one', 'two', 'three'];
+    await pumpInbox(tester, haikus: list);
+    String shown() => tester.widget<HaikuLine>(find.byType(HaikuLine)).text;
+    final first = shown();
+    await tester.pumpWidget(const SizedBox());
+    await pumpInbox(tester, haikus: list);
+    final second = shown();
+    expect(second, isNot(first));
+    await tester.longPress(find.byType(HaikuLine));
+    await tester.pumpAndSettle();
+    expect(shown(), isNot(second));
+  });
+
+  testWidgets('no matches is plain, with no haiku', (tester) async {
+    await pumpInbox(tester, haikus: ['a haiku']);
+    await tester.tap(find.widgetWithText(FilterChip, 'Replies'));
+    await tester.pumpAndSettle();
+    expect(find.text('No matches'), findsOneWidget);
+    expect(find.byType(HaikuLine), findsNothing);
+  });
+
+  testWidgets('a failed load says so plainly and offers Try again', (
+    tester,
+  ) async {
     api.failNext('inbox', StateError('down'));
-    await pumpInbox(tester);
-    expect(find.text("Couldn't load the inbox"), findsOneWidget);
+    await pumpInbox(tester, haikus: ['a haiku']);
+    expect(find.text('Couldn’t show your inbox'), findsOneWidget);
+    expect(find.text('Something went wrong. Try again.'), findsOneWidget);
+    expect(find.textContaining('Bad state'), findsNothing);
+    expect(find.byType(HaikuLine), findsNothing);
     api.pushInbox('reply', artifactId: aid, body: 'Back');
     await tester.tap(find.text('Try again'));
     await tester.pumpAndSettle();

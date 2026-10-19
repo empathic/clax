@@ -17,6 +17,7 @@ import 'app_inspector.dart';
 import 'build_plan.dart';
 import 'bundle_sheets.dart';
 import 'inbox_screen.dart';
+import 'kit/kit.dart';
 import 'make_service.dart';
 import 'making_screen.dart';
 import 'new_sheet.dart';
@@ -235,12 +236,18 @@ class _LauncherState extends State<Launcher> {
   Widget build(BuildContext context) {
     final apps = _host.summaries;
     final unread = _host.unread;
+    final failed = apps == null && _host.loadError != null;
+    final empty = apps != null && apps.isEmpty && _makes.makes.isEmpty;
     return Scaffold(
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _actions.newApp,
-        icon: const Icon(Icons.mic_rounded),
-        label: const Text('New app'),
-      ),
+      // A failed list offers no New app, and an empty one offers it in its
+      // invitation.
+      floatingActionButton: failed || empty
+          ? null
+          : FloatingActionButton.extended(
+              onPressed: _actions.newApp,
+              icon: const Icon(Icons.mic_rounded),
+              label: const Text('New app'),
+            ),
       body: RefreshIndicator(
         onRefresh: _host.load,
         child: CustomScrollView(
@@ -284,16 +291,23 @@ class _LauncherState extends State<Launcher> {
               SliverToBoxAdapter(child: _RecoveryBanner(actions: b)),
             if (_host.needsKey)
               SliverToBoxAdapter(child: _KeyBanner(onAdd: widget.openSettings)),
-            if (apps == null && _host.loadError != null)
+            if (failed)
               SliverFillRemaining(
-                hasScrollBody: false,
-                child: _Message(
-                  icon: Icons.cloud_off_rounded,
-                  text: "Couldn't load your apps",
-                  action: TextButton(
-                    onPressed: _host.load,
-                    child: const Text('Try again'),
-                  ),
+                hasScrollBody: true,
+                child: ClaxEmpty(
+                  key: const ValueKey('launcher-error'),
+                  icon: Icons.apps_rounded,
+                  title: 'Couldn’t show your apps',
+                  // Every app is on this device, from Clax's own service.
+                  body: 'Clax’s service didn’t answer.',
+                  actions: [
+                    ClaxButton(
+                      label: 'Try again',
+                      kind: ClaxButtonKind.primary,
+                      icon: Icons.refresh_rounded,
+                      onPressed: () => unawaited(_host.load()),
+                    ),
+                  ],
                 ),
               )
             else if (apps == null)
@@ -301,13 +315,24 @@ class _LauncherState extends State<Launcher> {
                 hasScrollBody: false,
                 child: SizedBox.shrink(),
               )
-            else if (apps.isEmpty && _makes.makes.isEmpty)
-              const SliverFillRemaining(
-                hasScrollBody: false,
-                child: _Message(
-                  icon: Icons.auto_awesome_rounded,
-                  text: 'Say what you want, and Clax makes it.',
-                  hint: '“A tracker for my runs with a weekly total”',
+            else if (empty)
+              SliverFillRemaining(
+                hasScrollBody: true,
+                child: ClaxEmpty(
+                  key: const ValueKey('launcher-empty'),
+                  art: const ClaxMark(size: 64),
+                  title: 'Say what you need, and Clax makes it.',
+                  body: 'Like “a tracker for my runs, with a weekly total.”',
+                  actions: [
+                    ClaxButton(
+                      key: const ValueKey('launcher-empty-new'),
+                      label: 'New app',
+                      kind: ClaxButtonKind.primary,
+                      isDefault: true,
+                      icon: Icons.mic_rounded,
+                      onPressed: _actions.newApp,
+                    ),
+                  ],
                 ),
               )
             else
@@ -646,52 +671,6 @@ class _BuildRing extends StatelessWidget {
   }
 }
 
-class _Message extends StatelessWidget {
-  const _Message({
-    required this.icon,
-    required this.text,
-    this.hint,
-    this.action,
-  });
-
-  final IconData icon;
-  final String text;
-  final String? hint;
-  final Widget? action;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(32, 0, 32, 96),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(icon, size: 48, color: scheme.primary),
-          const SizedBox(height: 16),
-          Text(
-            text,
-            textAlign: TextAlign.center,
-            style: theme.textTheme.titleLarge,
-          ),
-          if (hint != null) ...[
-            const SizedBox(height: 8),
-            Text(
-              hint!,
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodyLarge?.copyWith(
-                color: scheme.onSurfaceVariant,
-              ),
-            ),
-          ],
-          if (action != null) ...[const SizedBox(height: 16), action!],
-        ],
-      ),
-    );
-  }
-}
-
 /// What an app's tile shows in its badge.
 sealed class TileFace {
   const TileFace();
@@ -996,7 +975,8 @@ IconData? iconFor(String? word) => switch (word?.trim().toLowerCase()) {
 /// place), else to [open] once the build view has closed. A request the
 /// person has not made yet (the sheet closed, Cancel, or Edit after a
 /// failure) is kept for the next New. A make's tile shows its build view
-/// again, caught up, or asks "Make it again?" for an interrupted one.
+/// again, caught up, or offers an interrupted one again ("This wasn’t
+/// finished.").
 ///
 /// The menu of an app: the home app's items, above a divider, then Open;
 /// Inspect, which pushes the [AppInspector] with
@@ -1106,27 +1086,22 @@ class HomeFlows implements HomeActions {
     await _showMake(host.makes.add(request));
   }
 
-  /// Asks whether to make interrupted make [s] again (then shows it) or to
-  /// discard it; closing the question leaves it as it is.
+  /// Says interrupted make [s] wasn't finished, and offers **Make it
+  /// again** (which shows it) or Cancel (which forgets it); closing the
+  /// question leaves it as it is.
   Future<void> _offerAgain(MakeSession s) async {
-    final again = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Make it again?'),
-        content: Text('Clax closed before it finished “${s.request}”.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Discard'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Make it again'),
-          ),
-        ],
-      ),
+    final choice = await ClaxDialog.show(
+      context,
+      title: 'This wasn’t finished.',
+      body: '“${s.request}”',
+      actions: const [
+        ClaxDialogAction('Cancel'),
+        ClaxDialogAction('Make it again', kind: ClaxButtonKind.primary),
+      ],
+      defaultIndex: 1,
     );
-    if (!mounted || again == null) return;
+    if (!mounted || choice == null) return;
+    final again = choice == 1;
     if (!again) {
       host.makes.dismiss(s);
       return;
@@ -1282,10 +1257,10 @@ class HomeFlows implements HomeActions {
                   link: b,
                   appId: aid,
                   builder: (context, plan, state) => plan == null
-                      ? const _Message(
+                      ? const ClaxEmpty(
                           icon: Icons.checklist_rounded,
-                          text: 'No plan',
-                          hint:
+                          title: 'No plan',
+                          body:
                               'Apps built from a plan show their features '
                               'here.',
                         )

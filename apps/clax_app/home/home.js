@@ -290,9 +290,19 @@ function MakeTile({ make, cell, act }) {
   </button>`;
 }
 
+/** The Clax mark at rest, ) · (, drawn as mark.css describes. */
+const Mark = ({ size = 24 }) => html`<svg class="clax-mark h-message-mark" viewBox="0 0 22 16" style=${`width: ${size}px`} aria-hidden="true">
+  <path class="clax-mark-you" d="M1.5 2.5a5.5 5.5 0 0 1 0 11"/>
+  <circle class="clax-mark-dot" cx="11" cy="8" r="1.7"/>
+  <path class="clax-mark-agent" d="M20.5 2.5a5.5 5.5 0 0 0 0 11"/>
+</svg>`;
+
+/** An empty or error state, as the app's ClaxEmpty draws it: centred, the
+ * mark (`glyph` "mark") or a glyph, the title, a muted hint, then the
+ * action. */
 function Message({ glyph, title, hint, action }) {
   return html`<div class="h-message">
-    <${Glyph} name=${glyph} size=${48} class="h-message-glyph" />
+    ${glyph === 'mark' ? html`<${Mark} size=${64} />` : html`<${Glyph} name=${glyph} size=${48} class="h-message-glyph" />`}
     <p class="h-message-title">${title}</p>
     ${hint && html`<p class="h-message-hint">${hint}</p>`}
     ${action}
@@ -2255,9 +2265,14 @@ function Home({ home, db, clock }) {
   const going = Array.isArray(makes) ? makes : [];
   goFirst.current = () => {};
   let body;
+  // A failed list offers no New app, and an empty one offers it in its
+  // invitation.
+  let fab = true;
   if (!list && appsError) {
-    body = html`<${Message} glyph="cloudOff" title="Couldn't load your apps"
-      action=${html`<button type="button" class="h-text-button" onClick=${reloadApps}>Try again</button>`} />`;
+    fab = false;
+    // Every app is on this device, from Clax's own service: no cloud.
+    body = html`<${Message} glyph="grid" title="Couldn’t show your apps" hint="Clax’s service didn’t answer."
+      action=${html`<button type="button" class="h-filled-button" onClick=${reloadApps}>Try again</button>`} />`;
   } else if (!list) {
     body = null;
   } else if (searching && query.trim()) {
@@ -2265,7 +2280,11 @@ function Home({ home, db, clock }) {
     goFirst.current = () => { if (found[0]) openApp(found[0].app); };
     body = html`<${Results} query=${query} found=${found} layout=${layout} apps=${list} clock=${clock} onOpen=${openApp} onMenu=${menuOf} />`;
   } else if (!list.length && !going.length) {
-    body = html`<${Message} glyph="sparkles" title="Say what you want, and Clax makes it." hint="“A tracker for my runs with a weekly total”" />`;
+    fab = false;
+    body = html`<${Message} glyph="mark" title="Say what you need, and Clax makes it." hint="Like “a tracker for my runs, with a weekly total.”"
+      action=${html`<button type="button" class="h-filled-button h-message-new" onClick=${() => act('newApp', [], 'make a new app')}>
+        <${Glyph} name="mic" size=${18} /><span>New app</span>
+      </button>`} />`;
   } else {
     body = html`<${Grid} layout=${layout} apps=${list} makes=${going} motion=${motion} reduced=${reduced} clock=${clock} change=${change} fan=${fan}
       onOpen=${openApp} onMenu=${menuOf} onOpenGroup=${openGroup} onFanGroup=${fanGroup} onGroupMenu=${showGroupMenu} act=${act} onDragging=${setDragging}
@@ -2290,10 +2309,10 @@ function Home({ home, db, clock }) {
       change=${change} onOpen=${openApp} onMenu=${menuOf} close=${closeGroup} editing=${folder.editing} />`}
     ${menuFor && html`<${GroupMenu} group=${menuFor.group} rect=${groupMenu.rect} pick=${pickGroup} close=${closeGroupMenu} />`}
     ${notice && html`<button type="button" class="h-notice" role="status">${notice.text}</button>`}
-    <button type="button" class="h-fab" aria-label="New app" onClick=${() => act('newApp', [], 'make a new app')}>
+    ${fab && html`<button type="button" class="h-fab" aria-label="New app" onClick=${() => act('newApp', [], 'make a new app')}>
       <${Glyph} name="mic" />
       <span>New app</span>
-    </button>
+    </button>`}
   </main>`;
 }
 

@@ -9,12 +9,14 @@ import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/daemon/clock.dart';
 import 'package:clax_app/platform/app_notice.dart';
 import 'package:clax_app/platform/settings_store.dart';
+import 'package:clax_app/ui/app_icon.dart';
 import 'package:clax_app/ui/app_menu.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/app_surface.dart';
 import 'package:clax_app/ui/change_sheet.dart';
 import 'package:clax_app/ui/developer.dart';
 import 'package:clax_app/ui/host_protocol.dart';
+import 'package:clax_app/ui/kit/kit.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/thread_detail.dart';
 import 'package:flutter/gestures.dart';
@@ -1004,7 +1006,7 @@ void main() {
   });
 
   testWidgets(
-    'a reloading page is covered again; one that gave up offers Reload',
+    'a reloading page is covered again; one that gave up offers Try again',
     (tester) async {
       final rig = await pumpScreen(tester);
       rig.surface.push(rig.ready());
@@ -1012,36 +1014,90 @@ void main() {
       rig.surface.fault(const SurfaceFault('gone', reloading: true));
       await tester.pump();
       expect(find.byKey(const ValueKey('app-cover')), findsOneWidget);
-      expect(find.text('Reload'), findsNothing);
+      expect(find.text('Try again'), findsNothing);
       rig.surface.fault(const SurfaceFault('gone again', reloading: false));
       await tester.pump();
-      expect(find.text('Reload'), findsOneWidget);
-      await tester.tap(find.text('Reload'));
+      expect(find.text('Try again'), findsOneWidget);
+      await tester.tap(find.text('Try again'));
       await tester.pump();
       expect(rig.surface.reloads, 1);
-      expect(find.text('Reload'), findsNothing);
+      expect(find.text('Try again'), findsNothing);
       rig.surface.push(rig.ready());
       await tester.pump();
       expect(find.byKey(const ValueKey('app-cover')), findsNothing);
     },
   );
 
-  testWidgets('a page that gave up says so plainly; its raw text shows only '
-      'with Developer tools on', (tester) async {
+  testWidgets('loading shows the app’s icon and title, and the working mark '
+      'only once 400 ms have passed', (tester) async {
+    await pumpScreen(tester, clock: const SystemClock());
+    await tester.pump();
+    final cover = find.byKey(const ValueKey('app-cover'));
+    expect(
+      find.descendant(of: cover, matching: find.byType(AppBadge)),
+      findsOneWidget,
+    );
+    expect(find.descendant(of: cover, matching: find.text('Runs')), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    await tester.pump(const Duration(milliseconds: 390));
+    expect(find.byKey(const ValueKey('app-cover-mark')), findsNothing);
+    await tester.pump(const Duration(milliseconds: 20));
+    final mark = find.byKey(const ValueKey('app-cover-mark'));
+    expect(mark, findsOneWidget);
+    expect(tester.widget<ClaxMark>(mark).state, ClaxMarkState.working);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('a page that gave up says so plainly with the app’s icon, Try '
+      'again and Back to Home; its raw text is under Details only with '
+      'Developer tools on', (tester) async {
     for (final developer in [false, true]) {
-      final rig = await pumpScreen(tester, developer: developer);
+      final rig = await pumpScreen(tester, developer: developer, pushed: true);
       rig.surface.push(rig.ready());
       await tester.pump();
       rig.surface.fault(
         const SurfaceFault('net::ERR_CONNECTION_REFUSED', reloading: false),
       );
       await tester.pump();
-      expect(find.text('Clax’s service didn’t answer.'), findsOneWidget);
-      expect(
-        find.text('net::ERR_CONNECTION_REFUSED'),
-        developer ? findsOneWidget : findsNothing,
-      );
+      final cover = find.byKey(const ValueKey('app-cover'));
+      expect(find.descendant(of: cover, matching: find.byType(ClaxEmpty)),
+          findsOneWidget);
+      expect(find.descendant(of: cover, matching: find.byType(AppBadge)),
+          findsOneWidget);
+      for (final t in [
+        'This app didn’t load',
+        'Clax’s service didn’t answer.',
+        'Try again',
+        'Back to Home',
+      ]) {
+        expect(find.text(t), findsOneWidget, reason: t);
+      }
+      for (final t in ['This app didn’t load', 'Clax’s service didn’t answer.']) {
+        expect(tester.widget<Text>(find.text(t)).textAlign, TextAlign.center);
+      }
+      expect(find.textContaining('net::ERR'), findsNothing);
+      expect(find.text('Details'), developer ? findsOneWidget : findsNothing);
+      if (developer) {
+        await tester.tap(find.text('Details'));
+        await tester.pump();
+        expect(find.text('net::ERR_CONNECTION_REFUSED'), findsOneWidget);
+      }
+      await tester.tap(find.text('Back to Home'));
+      await tester.pumpAndSettle();
+      expect(find.text('Launcher'), findsOneWidget);
     }
+  });
+
+  testWidgets('the cover offers no Back to Home with nothing to go back to', (
+    tester,
+  ) async {
+    final rig = await pumpScreen(tester);
+    rig.surface.push(rig.ready());
+    await tester.pump();
+    rig.surface.fault(const SurfaceFault('gone', reloading: false));
+    await tester.pump();
+    expect(find.text('Try again'), findsOneWidget);
+    expect(find.text('Back to Home'), findsNothing);
   });
 
   testWidgets(

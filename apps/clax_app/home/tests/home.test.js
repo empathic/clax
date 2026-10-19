@@ -245,10 +245,14 @@ test('a missing key shows the banner, and Add key opens Settings', async () => {
   await wait(() => !ui.exists('.h-key'));
 });
 
-test('with no apps and no makes it says what to do', async () => {
-  await show({ apps: [], makes: [] });
-  expect(ui.text()).toContain('Say what you want, and Clax makes it.');
+test('with no apps and no makes it says what to do over the mark, with one New app', async () => {
+  const home = await show({ apps: [], makes: [] });
+  expect(ui.text()).toContain('Say what you need, and Clax makes it.');
+  expect(ui.exists('.h-message .clax-mark')).toBe(true);
   expect(ui.exists('.h-grid')).toBe(false);
+  expect(ui.exists('.h-fab')).toBe(false);
+  await ui.click('New app');
+  expect(home.calls).toEqual([{ method: 'newApp', args: [] }]);
 });
 
 test('follows the app list, the makes and the unread count as they change', async () => {
@@ -280,7 +284,10 @@ test('a refused capability reads as unavailable; another failure offers Try agai
   const apps = flaky.apps;
   flaky.apps = () => (fail ? Promise.reject(new Error('offline')) : apps());
   mount(root(), flaky, { db: fakeDb() });
-  await wait(() => ui.text().includes("Couldn't load your apps"));
+  await wait(() => ui.text().includes('Couldn’t show your apps'));
+  expect(ui.text()).toContain('Clax’s service didn’t answer.');
+  expect(ui.exists('.h-fab')).toBe(false);
+  expect(ui.text().includes('New app')).toBe(false);
   fail = false;
   await ui.click('Try again');
   await wait(() => labels().includes('Run tracker'));

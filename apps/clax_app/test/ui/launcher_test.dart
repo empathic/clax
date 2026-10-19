@@ -7,6 +7,7 @@ import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/ui/app_icon.dart';
 import 'package:clax_app/ui/app_menu.dart';
 import 'package:clax_app/ui/inbox_screen.dart';
+import 'package:clax_app/ui/kit/kit.dart';
 import 'package:clax_app/ui/launcher.dart';
 import 'package:clax_app/ui/making_screen.dart';
 import 'package:clax_app/ui/theme.dart';
@@ -75,10 +76,37 @@ void main() {
     );
   });
 
-  testWidgets('an empty launcher invites the first app', (tester) async {
+  testWidgets('an empty launcher invites the first app with the mark and '
+      'one New app', (tester) async {
     await pumpLauncher(tester, _api());
-    expect(find.text('Say what you want, and Clax makes it.'), findsOneWidget);
+    final empty = find.byKey(const ValueKey('launcher-empty'));
+    expect(
+      find.descendant(of: empty, matching: find.byType(ClaxMark)),
+      findsOneWidget,
+    );
+    const title = 'Say what you need, and Clax makes it.';
+    expect(tester.widget<Text>(find.text(title)).textAlign, TextAlign.center);
     expect(find.text('New app'), findsOneWidget);
+    expect(find.byType(FloatingActionButton), findsNothing);
+  });
+
+  testWidgets('a list that fails to load says so plainly, with Try again and '
+      'no New app or cloud', (tester) async {
+    final api = _api();
+    api.failNext('listArtifacts', StateError('down'));
+    await pumpLauncher(tester, api);
+    for (final t in ['Couldn’t show your apps', 'Clax’s service didn’t answer.']) {
+      expect(tester.widget<Text>(find.text(t)).textAlign, TextAlign.center);
+    }
+    expect(find.text('New app'), findsNothing);
+    expect(find.byType(FloatingActionButton), findsNothing);
+    expect(find.byIcon(Icons.cloud_off_rounded), findsNothing);
+    expect(find.byIcon(Icons.cloud_off_outlined), findsNothing);
+    api.seedArtifact('Back again', _page);
+    await tester.tap(find.text('Try again'));
+    await tester.pumpAndSettle();
+    expect(find.text('Back again'), findsOneWidget);
+    expect(find.byType(FloatingActionButton), findsOneWidget);
   });
 
   testWidgets('a version event for a new artifact adds its tile', (

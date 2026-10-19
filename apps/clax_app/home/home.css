@@ -205,16 +205,29 @@ body {
   100% { stroke-dasharray: 2 100; stroke-dashoffset: -77; }
 }
 
-/* Messages: empty, load error, elsewhere. */
+/* Messages: empty, load error, elsewhere. The app's ClaxEmpty: a centred
+ * column at most 360 wide, the mark or a muted glyph, title-2, the body
+ * muted with balanced lines, then the action. */
 .h-message {
-  min-height: calc(100vh - 56px); padding: 0 32px 96px;
+  min-height: calc(100vh - 56px); padding: 0 24px 96px;
   display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;
 }
 .h-away .h-message { min-height: 100vh; }
-.h-message-glyph { color: var(--h-primary); }
-.h-message-title { margin: 16px 0 0; font: 400 22px/28px var(--k-font); letter-spacing: 0; }
-.h-message-hint { margin: 8px 0 0; color: var(--h-on-variant); font: 400 16px/24px var(--k-font); letter-spacing: 0.5px; }
-.h-message .h-text-button { margin-top: 16px; }
+.h-message > * { max-width: 360px; }
+.h-message-glyph { color: var(--muted); }
+.h-message-mark { display: block; height: auto; }
+.h-message-title { margin: 16px 0 0; font: var(--type-title-2); color: var(--fg); text-wrap: balance; }
+.h-message-hint { margin: 8px 0 0; color: var(--muted); font: var(--type-body); text-wrap: balance; }
+.h-message .h-text-button, .h-message .h-filled-button { margin-top: 20px; }
+.h-filled-button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 40px; padding: 0 20px; border: 0; border-radius: 20px;
+  background: var(--fg); color: var(--bg);
+  font: 500 14px/20px var(--k-font); letter-spacing: 0.1px; cursor: pointer;
+}
+.h-filled-button.h-message-new { padding-left: 16px; }
+.h-filled-button:active { transform: scale(0.97); }
+@media (prefers-reduced-motion: reduce) { .h-filled-button:active { transform: none; } }
 
 /* New app. */
 .h-fab {

@@ -218,7 +218,9 @@ void main() {
   });
 
   testWidgets('a restart keeps the launcher; a failure shows the error screen '
-      'with the tail, and Restart starts the daemon again', (tester) async {
+      'with the tail under Details, and Try again starts the daemon again', (
+    tester,
+  ) async {
     await pumpApp(tester, _Rig(key: 'sk-ant-x'));
     await up(tester);
     rig.supervisor.set(const Restarting(1, Duration(milliseconds: 200)));
@@ -234,17 +236,19 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.text('New app'), findsNothing);
-    expect(find.text("Clax couldn't start"), findsOneWidget);
+    expect(find.text('Clax couldn’t start'), findsOneWidget);
     expect(
       find.textContaining('clax stopped 5 times within a minute'),
-      findsOneWidget,
+      findsNothing,
     );
+    await tester.tap(find.text('Details'));
+    await tester.pumpAndSettle();
     expect(
       find.textContaining('error: database is locked\nclax exiting'),
       findsOneWidget,
     );
 
-    await tester.tap(find.text('Restart'));
+    await tester.tap(find.text('Try again'));
     await tester.pump();
     expect(rig.supervisor.ensureUpCalls, 2);
     rig.supervisor.set(const Starting());
@@ -266,8 +270,10 @@ void main() {
     rig.supervisor.set(const Failed('clax did not come up', []));
     await tester.pumpAndSettle();
     expect(find.byType(AppScreen), findsNothing);
-    expect(find.text("Clax couldn't start"), findsOneWidget);
-    expect(find.text('clax wrote nothing.'), findsOneWidget);
+    expect(find.text('Clax couldn’t start'), findsOneWidget);
+    await tester.tap(find.text('Details'));
+    await tester.pumpAndSettle();
+    expect(find.text('Clax wrote nothing.'), findsOneWidget);
   });
 
   testWidgets('resuming probes the daemon; detaching stops it', (tester) async {
