@@ -7,6 +7,7 @@ import 'dart:ui' show AppExitResponse;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import 'agent/ai_consent.dart';
 import 'agent/asked.dart';
 import 'agent/stops.dart';
 import 'agent/backend.dart';
@@ -116,6 +117,7 @@ class AppServices {
     this.plans,
     this.inspector,
     this.readConsent,
+    AiConsent? aiConsent,
     this.consentMemory,
     this.runner,
     this.clock = const SystemClock(),
@@ -135,6 +137,8 @@ class AppServices {
   }) : questionPage =
            questionPage ?? ((base) => WebViewQuestionPage(base: base)),
        pid = pid ?? io.pid,
+       aiConsent =
+           aiConsent ?? AiConsent(required: false, settings: settings),
        pendingMake = pendingMake ?? PendingMake(),
        connection =
            connection ??
@@ -202,6 +206,10 @@ class AppServices {
   /// null, the app asks in a dialog ([DialogReadConsent]) and keeps the
   /// "always" answers in [consentMemory].
   final AgentReadConsent? readConsent;
+
+  /// Asks once before a make, a change or a build first sends anything to
+  /// the Claude API, where it is required (iOS); by default never.
+  final AiConsent aiConsent;
 
   /// The pairs of apps the owner let the agent read always; in memory
   /// when null.
@@ -748,6 +756,28 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   late final ConsentMemory _consentMemory =
       _s.consentMemory ?? MemoryConsentMemory();
 
+  /// Whether a run may send its requests ([AiConsent.ensure]), asked over
+  /// the app's navigator; without one, only where nothing is asked.
+  Future<bool> _mayRun() async {
+    if (!_s.aiConsent.required) return true;
+    final context = _nav.currentContext;
+    if (context == null || !context.mounted) return false;
+    return _s.aiConsent.ensure(context);
+  }
+
+  /// [RunGate] for the worker's runs: [_mayRun], and a refused one stops
+  /// its change or build as Stop does, so no recovery runs it again
+  /// before the person asks.
+  Future<bool> _gateRun(String aid, {required bool build}) async {
+    if (await _mayRun()) return true;
+    if (build) {
+      unawaited(_runtime.worker.stopBuild(aid));
+    } else {
+      unawaited(_runtime.worker.cancelChange(aid));
+    }
+    return false;
+  }
+
   late final AgentReadConsent _consent =
       _s.readConsent ??
       DialogReadConsent(
@@ -1174,6 +1204,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       readConsent: _consent,
       clock: _s.clock,
       fromBundle: fromBundleOf(_lineages),
+      gate: _gateRun,
       singleCall: () {
         final b = backend();
         if (tools(b)) return null;
@@ -1394,6 +1425,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           store: _s.settings,
           secureKey: _s.key,
           cliSupported: _s.cliSupported,
+          asksAiConsent: _s.aiConsent.required,
           timings: _s.timings.recent(10),
           fingerprint: _s.bundleKey == null
               ? null
@@ -1426,6 +1458,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     Future<void> cancelled,
     void Function(MakeUpdate update) stage,
   ) async {
+    // Asked first, so nothing (the notification prompt included) comes
+    // before the person's answer; Not now ends the make as Cancel does.
+    if (!await _mayRun()) throw const AgentError.cancelled();
     final settings = _settings;
     final backend = _s.backend(settings, _s.key);
     unawaited(_s.background.requestPermission());

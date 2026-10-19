@@ -29,7 +29,9 @@ import 'tokens.g.dart';
 /// (see [StagedBackend]) and, wrapped in [MakeProgress], each event of
 /// `AgentLoop.newApp`'s `onProgress`, which the screen shows as the live
 /// preview and narration. Throws `AgentError`; an `AgentError.cancelled`
-/// after [cancelled] fired is not shown.
+/// after [cancelled] fired is not shown, and one before it (the run
+/// stopped itself, as when the person said Not now to sending it) ends the
+/// make as Cancel does, closing its build view.
 typedef MakeApp = Future<String> Function(
   String request,
   Future<void> cancelled,
@@ -561,9 +563,26 @@ class _MakingScreenState extends State<MakingScreen> {
     setState(() {});
   }
 
+  /// Whether this screen is closing ([_leave], or its make cancelled).
+  var _left = false;
+
   /// The session made its app, failed or was cancelled.
   void _onSession() {
     if (!mounted) return;
+    if (_session.cancelled) {
+      // Cancelled elsewhere (the make stopped itself): close as Cancel.
+      if (!_left) {
+        _left = true;
+        _tick?.cancel();
+        // After the frame: the session may be told during a build.
+        WidgetsBinding.instance
+          ..addPostFrameCallback((_) {
+            if (mounted) Navigator.of(context).pop();
+          })
+          ..ensureVisualUpdate();
+      }
+      return;
+    }
     if (_waiting && _session.running) {
       // The service started the make this screen waited on.
       _waiting = false;
@@ -727,6 +746,7 @@ class _MakingScreenState extends State<MakingScreen> {
 
   /// Stops the make and pops [result] (null: Cancel).
   void _leave([MakingResult? result]) {
+    _left = true;
     _session.cancel();
     Navigator.of(context).pop(result);
   }

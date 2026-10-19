@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' show AppExitResponse;
 
+import 'package:clax_app/agent/ai_consent.dart';
 import 'package:clax_app/agent/backend.dart';
 import 'package:clax_app/agent/edit_result.dart';
 import 'package:clax_app/agent/loop.dart';
@@ -15,6 +16,7 @@ import 'package:clax_app/daemon/supervisor.dart';
 import 'package:clax_app/platform/app_notice.dart';
 import 'package:clax_app/platform/secure_key.dart';
 import 'package:clax_app/platform/settings_store.dart';
+import 'package:clax_app/ui/ai_consent_sheet.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/inspector_surface.dart';
@@ -68,6 +70,7 @@ class _Rig {
     this.cliSupported = false,
     this.webInspector = false,
     this.notice,
+    this.aiConsent = false,
   }) : dir = Directory.systemTemp.createTempSync('app-test-'),
        key = _Key(key) {
     if (settings != null) {
@@ -80,6 +83,9 @@ class _Rig {
   final Directory dir;
   final _Key key;
   final bool cliSupported;
+
+  /// Whether a run asks before anything goes to the Claude API, as on iOS.
+  final bool aiConsent;
 
   /// The open app's notice; none (as on macOS) when null.
   final FakeAppNotice? notice;
@@ -111,7 +117,12 @@ class _Rig {
     ),
   ], name: backendMessagesApi);
 
-  AppServices services() => AppServices(
+  AppServices services() {
+    final settings = SettingsStore(File('${dir.path}/settings.json'));
+    return _services(settings);
+  }
+
+  AppServices _services(SettingsStore settings) => AppServices(
     supervisor: supervisor,
     api: (endpoint) => api,
     backend: (s, k) {
@@ -121,7 +132,8 @@ class _Rig {
           : backend;
     },
     voice: FakeVoice.unsupported('No speech here'),
-    settings: SettingsStore(File('${dir.path}/settings.json')),
+    settings: settings,
+    aiConsent: AiConsent(required: aiConsent, settings: settings),
     key: key,
     timings: timings,
     agentTimings: agentTimings,
@@ -375,6 +387,57 @@ void main() {
     expect(fired, isTrue);
     expect(rig.api.callNames, isNot(contains('createArtifact')));
     expect(find.byType(AppScreen), findsNothing);
+  });
+
+  group('on iOS a make asks before anything goes to the Claude API', () {
+    testWidgets('nothing is sent until Allow, which is kept; the make then '
+        'runs', (tester) async {
+      await pumpApp(tester, _Rig(key: 'sk-ant-x', aiConsent: true));
+      await up(tester);
+      await submit(tester, 'a tracker for my runs');
+      await pumpRoute(tester);
+      expect(find.text(aiConsentTitle), findsOneWidget);
+      expect(rig.backend.seen, isEmpty);
+      expect(rig.api.callNames, isNot(contains('createArtifact')));
+
+      await tester.tap(find.text('Allow'));
+      await pumpRoute(tester);
+      expect(find.text(aiConsentTitle), findsNothing);
+      expect(rig.backend.seen, hasLength(1));
+      expect(find.byType(AppScreen), findsOneWidget);
+      final kept = SettingsStore(File('${rig.dir.path}/settings.json'));
+      expect((await kept.load()).aiConsent, isTrue);
+    });
+
+    testWidgets('Not now ends the make as Cancel does: the build view '
+        'closes, nothing is made and nothing is sent', (tester) async {
+      await pumpApp(tester, _Rig(key: 'sk-ant-x', aiConsent: true));
+      await up(tester);
+      await submit(tester, 'a tracker for my runs');
+      await pumpRoute(tester);
+      await tester.tap(find.text('Not now'));
+      await pumpRoute(tester);
+      expect(find.text(aiConsentTitle), findsNothing);
+      expect(find.byType(MakingScreen), findsNothing);
+      expect(find.byKey(const ValueKey('making-tile')), findsNothing);
+      expect(rig.backend.seen, isEmpty);
+      expect(rig.api.callNames, isNot(contains('createArtifact')));
+      expect(find.text('New app'), findsOneWidget);
+    });
+
+    testWidgets('where it is not required (Android, macOS) no sheet shows', (
+      tester,
+    ) async {
+      await pumpApp(tester, _Rig(key: 'sk-ant-x'));
+      await up(tester);
+      rig.backend.gate = Completer<void>();
+      await submit(tester, 'a tracker for my runs');
+      await rig.backend.arrived.future;
+      await pumpRoute(tester);
+      expect(find.text(aiConsentTitle), findsNothing);
+      rig.backend.gate!.complete();
+      await pumpRoute(tester);
+    });
   });
 
   testWidgets('back leaves the make running; once made a toast offers to '

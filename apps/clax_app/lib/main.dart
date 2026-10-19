@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'agent/ai_consent.dart';
 import 'agent/claude_cli_backend.dart';
 import 'agent/asked.dart';
 import 'agent/ledger.dart';
@@ -202,6 +203,9 @@ Future<AppServices> platformServices({DateTime? launched}) async {
         ),
     voice: DictationVoice.forSettings(SpeechToTextVoice(), settings),
     settings: settings,
+    // App Review asks for a clear permission before anything goes to a
+    // third-party AI (guideline 5.1.2(i)).
+    aiConsent: AiConsent(required: Platform.isIOS, settings: settings),
     key: DaemonKey(secureKey, onChanged: supervisor.keyChanged),
     timings: FileTimings(
       File('${support.path}/timings.jsonl'),

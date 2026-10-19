@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../agent/backend.dart' show AgentError, AgentErrorKind;
 import '../agent/progress.dart';
 import '../daemon/clock.dart';
 import '../platform/pending_make.dart';
@@ -146,6 +147,12 @@ class MakeSession extends ChangeNotifier {
       aid = made;
     } catch (e) {
       if (!current()) return;
+      if (e is AgentError && e.kind == AgentErrorKind.cancelled) {
+        // The make stopped itself before sending anything (the person
+        // said Not now to sending it): it ends as Cancel ends it.
+        this.cancel();
+        return;
+      }
       _running = false;
       waitingForConnection = false;
       failure = logUserMessage('make', e);

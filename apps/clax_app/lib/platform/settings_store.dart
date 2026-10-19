@@ -43,6 +43,7 @@ class AppSettings {
     this.appHintSeen = false,
     String? authorName,
     this.developer = false,
+    this.aiConsent,
   }) : model = model ?? defaultModel,
        authorName = cleanAuthorName(authorName);
 
@@ -77,6 +78,12 @@ class AppSettings {
   /// permission kinds. Shown as "Developer tools"; off by default.
   bool developer;
 
+  /// The person's answer to whether Clax may send their requests to the
+  /// Claude API (`AiConsent`): true once allowed, false once taken back in
+  /// Settings, null before they were asked. Only where `AiConsent` is
+  /// required (iOS) does a run wait for it.
+  bool? aiConsent;
+
   AppSettings copy() => AppSettings(
     backend: backend,
     model: model,
@@ -86,6 +93,7 @@ class AppSettings {
     appHintSeen: appHintSeen,
     authorName: authorName,
     developer: developer,
+    aiConsent: aiConsent,
   );
 
   Map<String, Object?> toJson() => {
@@ -97,6 +105,7 @@ class AppSettings {
     'app_hint_seen': appHintSeen,
     'author_name': authorName,
     'developer': developer,
+    'ai_consent': aiConsent,
   };
 
   /// Reads [j], keeping the default for any value that is missing, of the
@@ -123,6 +132,8 @@ class AppSettings {
     }
     final developer = j['developer'];
     if (developer is bool) s.developer = developer;
+    final consent = j['ai_consent'];
+    if (consent is bool) s.aiConsent = consent;
     return s;
   }
 }

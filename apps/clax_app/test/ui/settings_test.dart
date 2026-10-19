@@ -10,6 +10,7 @@ import 'package:clax_app/home/home_recovery.dart';
 import 'package:clax_app/home/home_settings.dart';
 import 'package:clax_app/platform/secure_key.dart';
 import 'package:clax_app/platform/settings_store.dart';
+import 'package:clax_app/ui/ai_consent_sheet.dart';
 import 'package:clax_app/ui/haiku.dart';
 import 'package:clax_app/ui/kit/kit.dart';
 import 'package:clax_app/ui/settings_screen.dart';
@@ -53,6 +54,24 @@ void main() {
   tearDown(() => dir.deleteSync(recursive: true));
 
   group('SettingsStore', () {
+    test('the AI consent round trips; a missing or bad value is none', () async {
+      final store = SettingsStore(file);
+      expect((await store.load()).aiConsent, isNull);
+      await store.save(AppSettings()..aiConsent = true);
+      expect(
+        jsonDecode(file.readAsStringSync()),
+        containsPair('ai_consent', true),
+      );
+      expect((await store.load()).aiConsent, isTrue);
+      await store.save(AppSettings()..aiConsent = false);
+      expect((await store.load()).aiConsent, isFalse);
+      expect(AppSettings(aiConsent: true).copy().aiConsent, isTrue);
+      for (final bad in [1, 'yes']) {
+        file.writeAsStringSync(jsonEncode({'ai_consent': bad}));
+        expect((await store.load()).aiConsent, isNull);
+      }
+    });
+
     test('a missing file loads the defaults', () async {
       final s = await SettingsStore(file).load();
       expect(s.backend, 'messages-api');
@@ -173,6 +192,7 @@ void main() {
     Future<String?> Function()? homeVersion,
     List<String> haikus = const ['One haiku', 'Two haiku', 'Three haiku'],
     TargetPlatform platform = TargetPlatform.android,
+    bool asksAiConsent = false,
   }) async {
     await tester.pumpWidget(
       MaterialApp(
@@ -186,6 +206,7 @@ void main() {
           home: home,
           homeVersion: homeVersion,
           haikus: () async => haikus,
+          asksAiConsent: asksAiConsent,
         ),
       ),
     );
@@ -320,6 +341,50 @@ void main() {
   });
 
   group('Claude', () {
+    testWidgets('where Clax asks first, an allowed consent shows with Turn '
+        'off, which takes it back so the next run asks again', (tester) async {
+      tall(tester);
+      final store = SettingsStore(file);
+      await store.save(AppSettings(aiConsent: true));
+      await pumpSettings(
+        tester,
+        store: store,
+        key: FakeKey(),
+        asksAiConsent: true,
+      );
+      expect(find.text('Requests to Anthropic'), findsOneWidget);
+      expect(find.text(aiConsentAllowed), findsOneWidget);
+      await tester.tap(find.text('Turn off'));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await tester.pumpAndSettle();
+      expect((await store.load()).aiConsent, isFalse);
+      expect(find.text(aiConsentAsks), findsOneWidget);
+      expect(find.text('Turn off'), findsNothing);
+    });
+
+    testWidgets('where Clax asks first and nothing is allowed yet, the row '
+        'says so, with nothing to turn off', (tester) async {
+      tall(tester);
+      await pumpSettings(
+        tester,
+        store: SettingsStore(file),
+        key: FakeKey(),
+        asksAiConsent: true,
+      );
+      expect(find.text(aiConsentAsks), findsOneWidget);
+      expect(find.text('Turn off'), findsNothing);
+    });
+
+    testWidgets('where Clax does not ask (Android, macOS) there is no row', (
+      tester,
+    ) async {
+      tall(tester);
+      final store = SettingsStore(file);
+      await store.save(AppSettings(aiConsent: true));
+      await pumpSettings(tester, store: store, key: FakeKey());
+      expect(find.text('Requests to Anthropic'), findsNothing);
+    });
+
     testWidgets('the key field is a ClaxTextField', (tester) async {
       await pumpSettings(tester, store: SettingsStore(file), key: FakeKey());
       expect(

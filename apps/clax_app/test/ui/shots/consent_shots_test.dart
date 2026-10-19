@@ -1,9 +1,11 @@
 // The consent dialogs rendered in every form and theme into CLAX_SHOTS_DIR
-// (skipped without it): Clax asking to read another app, and an app asking
-// for the device's location.
+// (skipped without it): Clax asking to read another app, an app asking
+// for the device's location, and, on phones, Clax asking before it sends
+// anything to the Claude API.
 import 'package:clax_app/agent/read_consent.dart';
 import 'package:clax_app/platform/device/device_consent_dialog.dart';
 import 'package:clax_app/platform/device/device_host.dart';
+import 'package:clax_app/ui/ai_consent_sheet.dart';
 import 'package:clax_app/ui/read_consent_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -74,5 +76,12 @@ void main() {
         title: (_) async => 'Plant care',
       ).ask('abcdefghjkmn', 'location');
     }),
+  );
+  shots(
+    'consent-ai',
+    (s) => _over(s, 'consent-ai', (nav) {
+      Future<bool?> _ = showAiConsentSheet(nav.context);
+    }),
+    forms: const [iphone, phone],
   );
 }

@@ -147,6 +147,11 @@ const maxKeepGoingDiff = 8 * 1024;
 /// the app changed under it, over from the app.
 enum _Resume { draft, changed }
 
+/// Asked before a run on app [aid] sends anything to the model: a change's
+/// ([build] false) or a build's continue run ([build] true). False ends the
+/// run cancelled.
+typedef RunGate = Future<bool> Function(String aid, {required bool build});
+
 /// Makes new apps and changes them in answer to comments, over the
 /// daemon's API.
 ///
@@ -193,6 +198,11 @@ enum _Resume { draft, changed }
 /// Other apps go into a first message by ID and title only: their
 /// documents are read through the data tools, after the owner's own
 /// consent ([readConsent]; without one such reads are refused).
+///
+/// A change and a build's continue run first ask [gate] (when given)
+/// whether they may send anything to the model; one it refuses ends
+/// [ChangeCancelled] having sent, marked and replied nothing. A new app's
+/// caller asks before [newApp].
 class AgentLoop {
   AgentLoop({
     required this._api,
@@ -212,6 +222,7 @@ class AgentLoop {
     bool Function(AgentBackend backend)? sendsImage,
     this._onAsked,
     this._fromBundle,
+    this._gate,
     void Function(String line)? log,
   }) : assert(
          runner != null || singleCall != null,
@@ -253,7 +264,12 @@ class AgentLoop {
   final void Function(QuestionView q)? _onAsked;
   final bool Function(AgentBackend) _sendsImage;
   final FutureOr<bool> Function(String aid)? _fromBundle;
+  final RunGate? _gate;
   final void Function(String) _log;
+
+  /// Whether a run on app [aid] may start: [_gate]'s answer, or true.
+  Future<bool> _mayRun(String aid, {required bool build}) async =>
+      await _gate?.call(aid, build: build) ?? true;
 
   /// Whether app [aid]'s code came from someone else's bundle (threat T2
   /// of the bundles spec): its runs see no other apps and their data
@@ -570,6 +586,7 @@ class AgentLoop {
     bool keepGoing = false,
   }) async {
     if (items.isEmpty) return const ChangeAnswered();
+    if (!await _mayRun(aid, build: false)) return const ChangeCancelled();
     final threadIds = [
       ...{for (final i in items) i.threadId},
     ];
@@ -813,6 +830,7 @@ class AgentLoop {
     Future<void>? cancelled,
     ProgressSink? onProgress,
   }) async {
+    if (!await _mayRun(aid, build: true)) return const ChangeCancelled();
     final cancel = CancelWatch(cancelled);
     final Plan? plan;
     try {

@@ -9,6 +9,7 @@ import '../home/home_settings.dart';
 import '../platform/secure_key.dart';
 import '../platform/settings_store.dart';
 import '../version.dart';
+import 'ai_consent_sheet.dart';
 import 'developer.dart';
 import 'haiku.dart';
 import 'kit/kit.dart';
@@ -20,7 +21,9 @@ import 'tokens.g.dart';
 /// that collapses as it scrolls, at most `form` wide and centred from
 /// medium width. Its sections, in order:
 /// - Claude: the API key, the agent (where `claude -p` can run, with the
-///   Claude Code path), and the model, a menu of Fast, Balanced and Best;
+///   Claude Code path), the model, a menu of Fast, Balanced and Best, and,
+///   where runs ask first ([asksAiConsent]), whether requests may go to
+///   Anthropic, with Turn off once they may;
 /// - Dictation: whether it starts on its own, and its sounds and vibration;
 /// - Sharing: the name bundles carry and the sharing key's fingerprint;
 /// - Home screen ([home]);
@@ -47,6 +50,7 @@ class SettingsScreen extends StatefulWidget {
     this.homeVersion,
     this.haikus,
     this.random,
+    this.asksAiConsent = false,
   });
 
   final SettingsStore store;
@@ -78,6 +82,11 @@ class SettingsScreen extends StatefulWidget {
 
   /// How About picks its haiku; null is a fresh [Random].
   final Random? random;
+
+  /// Whether runs ask before anything goes to the Claude API (`AiConsent`,
+  /// iOS): Settings then shows [AppSettings.aiConsent], and Turn off sets it
+  /// false, so the next run asks again.
+  final bool asksAiConsent;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -299,6 +308,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ],
         onChosen: (v) => _change((s) => s.model = v),
       ),
+      if (widget.asksAiConsent) _aiConsentTile(s),
       const _Header('Dictation'),
       _SwitchRow(
         title: 'Start dictation automatically',
@@ -395,6 +405,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ..._timings(context),
       ],
     ];
+  }
+
+  /// Whether requests may go to Anthropic; Turn off takes an Allow back.
+  Widget _aiConsentTile(AppSettings s) {
+    final allowed = s.aiConsent == true;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        ListTile(
+          title: const Text('Requests to Anthropic'),
+          subtitle: Text(allowed ? aiConsentAllowed : aiConsentAsks),
+        ),
+        if (allowed)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: ClaxSpace.s16),
+            child: Wrap(
+              alignment: WrapAlignment.end,
+              children: [
+                ClaxButton(
+                  key: const ValueKey('ai-consent-turn-off'),
+                  label: 'Turn off',
+                  onPressed: () => _change((s) => s.aiConsent = false),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
   }
 
   Widget _keyTile(BuildContext context) {
