@@ -43,6 +43,7 @@ test("the owner starts an artifact from a brief, picks a live agent and lands on
   await expect(frame.locator("h1")).toHaveText("Q3 revenue");
   await expect(frame.locator("body")).toContainText("An agent hasn't built this page yet.");
   await expect(page.locator(".topbar h1")).toHaveText("Q3 revenue");
+  await expect(page.locator(".ttl .by")).toHaveText("started from a brief by Viewer");
   // The agent watches the artifact and its session holds the brief.
   const watches = await api(d.base, d.token, `/api/sessions/${s.id}/watches`) as { watches: { artifact_id: string }[] };
   expect(watches.watches.map(w => w.artifact_id)).toContain(aid);

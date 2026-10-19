@@ -2,13 +2,16 @@
 // and the artifact view's first-paint bundles share none of the gallery's model.
 import type { Artifact } from "../api";
 
-/** Who published the artifact: its owner session's agent name, else its harness, else the command
- * line; a live page by its URL without the scheme (`Live page · localhost:5173/settings`).
- * A fork without an owner session (made in a browser) names no publisher:
- * its line says where it came from ([`setBy`]). */
+/** Who published the artifact: its owner session's agent name, else its harness, else the person
+ * who started it from a brief, else the command line; a live page by its URL without the scheme
+ * (`Live page · localhost:5173/settings`). A fork without an owner session (made in a browser)
+ * names no publisher: its line says where it came from ([`setBy`]). */
 export function publisherText(a: Artifact): string {
   const by = a.owner_name || a.owner_harness;
-  return a.live ? `Live page · ${a.live.page_url.replace(/^\w+:\/\//, "")}` : by ? `published by ${by}` : a.forked_from ? "" : "published from the command line";
+  if (a.live) return `Live page · ${a.live.page_url.replace(/^\w+:\/\//, "")}`;
+  if (by) return `published by ${by}`;
+  if (a.brief) return `started from a brief by ${a.brief.by}`;
+  return a.forked_from ? "" : "published from the command line";
 }
 
 /** Where a fork came from, as its line says it. */

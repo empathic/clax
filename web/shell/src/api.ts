@@ -27,6 +27,8 @@ export type Artifact = {
   forked_from?: ForkedFrom;
   /** From `GET /api/artifacts/<id>`: the viewer may fork it. */
   may_fork?: boolean;
+  /** Started from a brief in a person's browser: who, by display name. */
+  brief?: { by: string };
 };
 export type ForkedFrom = { artifact_id: string; version: number; title: string | null };
 /** An artifact's people and agents. `agents` is ordered live first, then
