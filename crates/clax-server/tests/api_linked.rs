@@ -1209,6 +1209,96 @@ async fn a_mirrored_thread_deleted_here_stays_gone_and_the_link_keeps_syncing() 
 }
 
 #[tokio::test]
+async fn threads_after_a_run_of_large_ones_all_come_down() {
+    use clax_store::threads::{AUTHOR_VIEWER, NewComment, NewThread};
+    let p = Pair::new().await;
+    let st = &p.public.ts.store;
+    let audit = &clax_core::audit::AuditCtx::DAEMON;
+    let aid = clax_core::ArtifactId::parse(&p.raid).unwrap();
+    // Three threads of about 1.5 MB in a row, each within the 4 MiB a
+    // remote's answer may be but not together, then 60 small ones; then
+    // the first small one, read early, is the newest.
+    let first = p.hosted_thread("large 0", whole(), None).await;
+    let owner = first["comments"][0]["author_public_id"]
+        .as_str()
+        .map(str::to_string);
+    let thread = |body: String| NewThread {
+        version_n: 1,
+        anchor: serde_json::from_value(whole()).unwrap(),
+        author_name: "Ada".into(),
+        author_public_id: owner.clone(),
+        body,
+        clip: None,
+        via_page: false,
+    };
+    let comment = |body: String| NewComment {
+        author_kind: AUTHOR_VIEWER,
+        author_name: "Ada".into(),
+        author_public_id: owner.clone(),
+        via_session_id: None,
+        body,
+        via_page: false,
+    };
+    let made = |k: clax_store::linked::Keyed<clax_core::model::Thread>| match k {
+        clax_store::linked::Keyed::Made(t) => t.id,
+        clax_store::linked::Keyed::Before { .. } => panic!("an unkeyed thread is made"),
+    };
+    let mut large = vec![first["id"].as_str().unwrap().to_string()];
+    for i in 1..3 {
+        let t = st
+            .create_thread_keyed_async(audit, &aid, thread(format!("large {i}")), &[], None)
+            .await
+            .unwrap();
+        large.push(made(t));
+    }
+    let body = "x".repeat(9_000);
+    for tid in &large {
+        for _ in 0..170 {
+            st.add_comment(audit, tid, comment(body.clone())).unwrap();
+        }
+    }
+    let mut small = Vec::new();
+    for i in 0..60 {
+        let t = st
+            .create_thread_keyed_async(audit, &aid, thread(format!("small {i}")), &[], None)
+            .await
+            .unwrap();
+        small.push(made(t));
+    }
+    st.add_comment(audit, &small[0], comment("newest".into()))
+        .unwrap();
+    p.backstop_settled().await;
+    p.settled().await;
+    let v: Value = p
+        .local
+        .get_authed(&format!(
+            "/api/artifacts/{}/threads?include_resolved=true&limit=200",
+            p.aid
+        ))
+        .await
+        .json()
+        .await
+        .unwrap();
+    let ts = v["threads"].as_array().cloned().unwrap_or_default();
+    assert_eq!(ts.len(), 63, "{} threads came down", ts.len());
+    let newest = ts
+        .iter()
+        .find(|t| t["comments"][0]["body"] == "small 0")
+        .unwrap();
+    assert_eq!(bodies(newest), ["small 0", "newest"]);
+    for t in &ts {
+        let n = t["comments"].as_array().unwrap().len();
+        if t["comments"][0]["body"]
+            .as_str()
+            .is_some_and(|b| b.starts_with("large"))
+        {
+            assert_eq!(n, 171);
+        }
+    }
+    assert_eq!(p.local.state.linked.status(&p.remote).last_error, None);
+}
+
+#[tokio::test]
 async fn a_thread_past_the_answer_cap_stops_its_links_read_not_the_remotes() {
     use clax_store::threads::{AUTHOR_VIEWER, NewComment};
     let p = Pair::new().await;

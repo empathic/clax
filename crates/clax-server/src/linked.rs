@@ -81,7 +81,8 @@ pub const BACKOFF_CAP: Duration = Duration::from_secs(300);
 /// How many threads a page of one read asks for, at most: fewer when a
 /// page's answer passes the client's cap.
 const PAGE: usize = 200;
-/// The most pages one read of an artifact takes.
+/// The most pages one cycle's read of an artifact takes; a read with more
+/// goes on in the next cycle ([`Resume`]).
 const MAX_PAGES: usize = 50;
 /// How long one feedback long-poll waits there, in seconds.
 pub const WAIT_S: u64 = 25;
@@ -314,6 +315,8 @@ async fn run(s: AppState, rid: String, kick: Arc<Notify>, retry: Arc<Notify>) {
         agents: HashMap::new(),
         asked_in: HashMap::new(),
         copy_waits: HashMap::new(),
+        reading: HashMap::new(),
+        more: false,
     };
     let mut full = true;
     let mut backoff = Duration::ZERO;
@@ -379,6 +382,11 @@ async fn run(s: AppState, rid: String, kick: Arc<Notify>, retry: Arc<Notify>) {
                 full = true;
                 continue;
             }
+        }
+        if std::mem::take(&mut sync.more) {
+            // A read ran out of pages: it goes on before anything waits.
+            full = false;
+            continue;
         }
         let poll = sync.poll();
         tokio::select! {
@@ -483,6 +491,21 @@ struct Sync {
     /// request each at a time (a remote holds few polls of one question),
     /// kept across feedback polls.
     copy_waits: HashMap<String, clax_rt::JoinHandle<()>>,
+    /// The reads that ran out of pages, by local artifact ID: the next
+    /// cycle goes on from where each stopped.
+    reading: HashMap<String, Resume>,
+    /// A read ran out of pages this cycle: the next starts at once.
+    more: bool,
+}
+
+/// Where a read that ran out of pages goes on: its `since`, the page
+/// cursor it stopped at, and the newest activity it has read, which
+/// becomes the link's sync cursor once the read reaches the end.
+#[derive(Clone, Debug)]
+struct Resume {
+    since: Option<String>,
+    cursor: Option<String>,
+    newest: String,
 }
 
 /// The local agent the sync names as the one it relays for on local
@@ -1456,6 +1479,13 @@ impl Sync {
     /// Reads link `l`'s public threads (those changed since its cursor,
     /// or all when `full`) and writes here what changed.
     ///
+    /// Pages come in the remote's creation order and `since` only filters
+    /// each, so the link's sync cursor moves only once a read reaches the
+    /// last page. A page past the answer cap is asked again smaller, and
+    /// the next page at full size. A read that runs out of pages
+    /// ([`MAX_PAGES`]) writes what it read and goes on in the next cycle
+    /// from its page cursor ([`Resume`]).
+    ///
     /// A thread whose page of one is past the answer cap stops this
     /// link's read for the cycle: what was read before it is written
     /// here, the cursor stays, and the link's read error says why
@@ -1463,11 +1493,17 @@ impl Sync {
     /// other links go on. A read to the end clears it.
     async fn read(&mut self, l: &RemoteLink, full: bool) -> Result<(), Stop> {
         let c = self.client.as_ref().expect("connected");
-        let since = if full { None } else { l.sync_cursor.clone() };
+        let resume = self.reading.get(&l.artifact_id).cloned();
+        let since = match &resume {
+            Some(r) => r.since.clone(),
+            None if full => None,
+            None => l.sync_cursor.clone(),
+        };
         let mut threads: Vec<Value> = Vec::new();
-        let mut cursor: Option<String> = None;
+        let mut cursor: Option<String> = resume.as_ref().and_then(|r| r.cursor.clone());
         let mut limit = PAGE;
         let mut cut_off = None;
+        let mut done = false;
         for _ in 0..MAX_PAGES {
             let mut q = format!(
                 "/api/artifacts/{}/threads?include_resolved=true&limit={limit}",
@@ -1499,13 +1535,20 @@ impl Sync {
                     None => return Err(Stop::Unreachable(f.message)),
                 },
             };
+            limit = PAGE;
             threads.extend(v["threads"].as_array().cloned().unwrap_or_default());
             match v["next_cursor"].as_str() {
                 Some(n) if Some(n) != cursor.as_deref() => cursor = Some(n.to_string()),
-                _ => break,
+                _ => {
+                    done = true;
+                    break;
+                }
             }
         }
-        let mut newest = l.sync_cursor.clone().unwrap_or_default();
+        let mut newest = match &resume {
+            Some(r) => r.newest.clone(),
+            None => l.sync_cursor.clone().unwrap_or_default(),
+        };
         for rt in &threads {
             if let Some(a) = activity(rt)
                 && a > newest
@@ -1521,6 +1564,19 @@ impl Sync {
         if stopped {
             return Ok(());
         }
+        if !done {
+            self.reading.insert(
+                l.artifact_id.clone(),
+                Resume {
+                    since,
+                    cursor,
+                    newest,
+                },
+            );
+            self.more = true;
+            return Ok(());
+        }
+        self.reading.remove(&l.artifact_id);
         if !newest.is_empty() && Some(&newest) != l.sync_cursor.as_ref() {
             let (aid, rid) = (l.artifact_id.clone(), self.rid.clone());
             self.s
