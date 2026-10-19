@@ -2,7 +2,8 @@
 
 `clax_ios_app` wires rules_flutter's `flutter_ios_app` to the runner in
 `apps/clax_app/ios/Runner` (every `*.swift` there, `Info.plist`, the
-storyboards) and to `ClaxDaemon`, a Swift library over the C functions of
+storyboards, `PrivacyInfo.xcprivacy`) and to `ClaxDaemon`, a Swift
+library over the C functions of
 `//crates/clax-ios:clax_ios_c`. There is no Xcode project: Bazel is the
 only iOS build.
 """
@@ -83,6 +84,9 @@ def clax_ios_app(name, version_name, version_code):
             "ipad",
         ],
         minimum_os_version = IOS_MINIMUM_OS,
+        # The app's own privacy manifest, at the bundle's root beside the
+        # plugins' (rules_flutter adds those).
+        resources = ["ios/Runner/PrivacyInfo.xcprivacy"],
         runner_deps = [
             ":ios_daemon",
             ":ios_plugin_frameworks",

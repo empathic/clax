@@ -14,7 +14,10 @@
 # words of each permission prompt the plugins can raise (camera, photos,
 # microphone, speech recognition, location and precise location). The
 # bundle must hold Flutter's two frameworks, objective_c's (path_provider's
-# FFI), the privacy manifest of each plugin that ships one, and the home
+# FFI), the privacy manifest of each plugin that ships one, the app's own
+# privacy manifest (no tracking, the person's requests and app code as
+# other user content, and a reason for exactly the required-reason API
+# categories the main binary imports), and the home
 # bundle HOME_BUNDLE (the one //apps/clax_app:home_bundle built) in
 # Flutter's assets. The main binary must be built for the iOS simulator
 # (platform 7) at minos $IOS_MINIMUM_OS, export the daemon's four C
@@ -115,6 +118,58 @@ if [ -f "$bin" ]; then
     done
 else
     bad "executable"
+fi
+# The app's own privacy manifest (ios/Runner/PrivacyInfo.xcprivacy): it
+# tracks no one, declares what goes to Anthropic, and gives a reason for
+# exactly the required-reason API categories the main binary links (the
+# plugins and Flutter.framework declare their own).
+privacy="$app/PrivacyInfo.xcprivacy"
+if [ -f "$privacy" ] && plutil -lint -s "$privacy"; then
+    ok "the app's privacy manifest"
+    praw() { plutil -extract "$1" raw -o - "$privacy" 2>/dev/null || true; }
+    pwant() { # pwant KEY VALUE NAME
+        if [ "$(praw "$1")" = "$2" ]; then ok "$3"; else bad "$3: $1 is '$(praw "$1")', not '$2'"; fi
+    }
+    pwant NSPrivacyTracking false "the app tracks no one"
+    pwant NSPrivacyTrackingDomains 0 "no tracking domains"
+    # One collected type: the person's requests and app code, which go to
+    # Anthropic under the person's own key.
+    pwant NSPrivacyCollectedDataTypes 1 "one collected data type"
+    pwant NSPrivacyCollectedDataTypes.0.NSPrivacyCollectedDataType NSPrivacyCollectedDataTypeOtherUserContent "requests and app code are other user content"
+    pwant NSPrivacyCollectedDataTypes.0.NSPrivacyCollectedDataTypeLinked false "other user content is not linked to the person"
+    pwant NSPrivacyCollectedDataTypes.0.NSPrivacyCollectedDataTypeTracking false "other user content is not used to track"
+    pwant NSPrivacyCollectedDataTypes.0.NSPrivacyCollectedDataTypePurposes 1 "other user content has one purpose"
+    pwant NSPrivacyCollectedDataTypes.0.NSPrivacyCollectedDataTypePurposes.0 NSPrivacyCollectedDataTypePurposeAppFunctionality "other user content is for the app's function"
+    if [ -f "$bin" ]; then
+        # Each required-reason symbol the binary imports, by category and the
+        # one reason Clax gives for it: file timestamps inside the container
+        # (SQLite, the store, package_info_plus's install date), elapsed time,
+        # free space before a write (SQLite), the app's own defaults.
+        linked="$(nm -u "$bin" | awk '
+            $1 ~ /^_(stat|fstat|fstatat|lstat|getattrlist|getattrlistbulk|fgetattrlist|getattrlistat|NSFileCreationDate|NSFileModificationDate|NSURLContentModificationDateKey|NSURLCreationDateKey)$/ { print "FileTimestamp C617.1" }
+            $1 ~ /^_(mach_absolute_time)$/ { print "SystemBootTime 35F9.1" }
+            $1 ~ /^_(statfs|fstatfs|statvfs|fstatvfs|NSFileSystemFreeSize|NSFileSystemSize|NSURLVolumeAvailableCapacityKey|NSURLVolumeAvailableCapacityForImportantUsageKey|NSURLVolumeAvailableCapacityForOpportunisticUsageKey|NSURLVolumeTotalCapacityKey)$/ { print "DiskSpace E174.1" }
+            $1 == "_OBJC_CLASS_$_NSUserDefaults" { print "UserDefaults CA92.1" }
+        ' | sort -u | paste -sd ' ' -)"
+        declared="$(
+            i=0
+            while t="$(plutil -extract "NSPrivacyAccessedAPITypes.$i.NSPrivacyAccessedAPIType" raw -o - "$privacy" 2>/dev/null)"; do
+                j=0
+                while r="$(plutil -extract "NSPrivacyAccessedAPITypes.$i.NSPrivacyAccessedAPITypeReasons.$j" raw -o - "$privacy" 2>/dev/null)"; do
+                    echo "${t#NSPrivacyAccessedAPICategory} $r"
+                    j=$((j + 1))
+                done
+                i=$((i + 1))
+            done | sort -u | paste -sd ' ' -
+        )"
+        if [ -n "$linked" ] && [ "$declared" = "$linked" ]; then
+            ok "the privacy manifest declares the required-reason APIs the binary links: $linked"
+        else
+            bad "the privacy manifest declares the required-reason APIs the binary links: it declares '$declared', the binary links '$linked'"
+        fi
+    fi
+else
+    bad "the app's privacy manifest"
 fi
 # The objects of an archive with an iOS newer than the minimum: one
 # "<member> <minos>" line each.
