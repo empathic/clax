@@ -171,6 +171,17 @@ impl Topic {
         }
     }
 
+    /// The other variant of an `artifact:<id>` topic ([`Topic::Artifact`]
+    /// for [`Topic::ArtifactQuiet`] and back), which has the same name: a
+    /// stream holds at most one of the two.
+    fn twin(&self) -> Option<Topic> {
+        match self {
+            Topic::Artifact(a) => Some(Topic::ArtifactQuiet(a.clone())),
+            Topic::ArtifactQuiet(a) => Some(Topic::Artifact(a.clone())),
+            _ => None,
+        }
+    }
+
     /// This topic as a subscriber who may not read its artifact's comments
     /// holds it: `artifact:<id>` becomes [`Topic::ArtifactQuiet`]; the
     /// others are unchanged (none of them carries comments).
@@ -1263,11 +1274,14 @@ impl Hub {
             .get_mut(id)
             .filter(|s| s.caller == *caller && s.credential.as_deref() == credential)
             .ok_or(SubError::UnknownStream)?;
+        // By name: an `artifact:<id>` topic added in its other variant
+        // replaces the one held.
         let after = s
             .topics
             .keys()
             .filter(|t| !remove.contains(t))
-            .chain(add.iter().filter(|t| !s.topics.contains_key(t)))
+            .chain(add.iter())
+            .map(Topic::name)
             .collect::<std::collections::BTreeSet<_>>()
             .len();
         if after > MAX_TOPICS {
@@ -1305,6 +1319,17 @@ impl Hub {
         for t in add {
             if s.topics.contains_key(t) {
                 continue;
+            }
+            // The newer variant of an `artifact:<id>` topic is held alone:
+            // it reflects whether the comments are the caller's to read now.
+            if let Some(twin) = t.twin()
+                && s.topics.remove(&twin).is_some()
+            {
+                leave(
+                    chans,
+                    s.key,
+                    &twin.chans(&s.caller, s.person.as_deref(), s.drafts),
+                );
             }
             s.topics.insert(t.clone(), seq);
             for c in t.chans(&s.caller, s.person.as_deref(), s.drafts) {
@@ -2180,6 +2205,39 @@ mod tests {
             !got[1].1.contains("secret words"),
             "gallery threads carry no bodies"
         );
+    }
+
+    #[test]
+    fn an_artifact_topic_is_held_loud_or_quiet_never_both() {
+        let hub = Hub::new(Default::default());
+        let c = viewer(Level::View, None);
+        let mut o = hub.open(c.clone(), true, None, None);
+        let thread = || Event::Thread {
+            artifact_id: A.into(),
+            thread: json!({"id": "t1", "status": "open", "sent_to_agent": false,
+                "comments": [{"id": "c1", "body": "words", "created_at": "x"}]}),
+        };
+        hub.update(&o.id, &c, &[Topic::Artifact(A.into())], &[])
+            .unwrap();
+        let (_, names) = hub
+            .update(&o.id, &c, &[Topic::ArtifactQuiet(A.into())], &[])
+            .unwrap();
+        assert_eq!(names, vec!["artifact:7q3k9mzx2b4t".to_string()]);
+        hub.dispatch(&version(2));
+        hub.dispatch(&thread());
+        let got = drain(&mut o);
+        assert_eq!(got.len(), 1, "one version frame and no thread: {got:?}");
+        assert!(got[0].1.starts_with("event: version
+"), "{}", got[0].1);
+        // Back to loud: thread events reach it again, still once each.
+        hub.update(&o.id, &c, &[Topic::Artifact(A.into())], &[])
+            .unwrap();
+        hub.dispatch(&version(3));
+        hub.dispatch(&thread());
+        let got = drain(&mut o);
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(got[1].1.starts_with("event: thread
+"), "{}", got[1].1);
     }
 
     #[test]
