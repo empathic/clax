@@ -20,6 +20,7 @@ import 'app_icon.dart';
 import 'app_menu.dart';
 import 'app_surface.dart';
 import 'ask_prompt.dart';
+import 'bundle_sheets.dart';
 import 'build_plan.dart';
 import 'change_sheet.dart';
 import 'change_tracker.dart';
@@ -30,6 +31,7 @@ import 'developer.dart';
 import 'host_protocol.dart';
 import 'kit/kit.dart';
 import 'layout.dart';
+import 'mac/mac_toolbar.dart';
 import 'mac/window_channel.dart';
 import 'overlay_gate.dart';
 import 'questions/questions_sheet.dart';
@@ -272,7 +274,13 @@ class AppScreen extends StatefulWidget {
     this.mode = AppMode.app,
     this.covered = false,
     this.icons,
+    this.share,
   });
+
+  /// Shares the app as a `.clax` file sent through the files it is given;
+  /// null offers no Share. The Mac's toolbar Share item passes
+  /// [ToolbarShareFiles], so the share picker shows from the item.
+  final Future<void> Function(BuildContext context, BundleFiles files)? share;
 
   /// The apps' icons, for the cover while the page loads; null reads this
   /// app's own.
@@ -643,11 +651,21 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       ..add(widget.worker.listen(_onWorker));
     if (widget.actions case final actions?) _subs.add(actions.listen(_act));
     if (hasDesktopWindowChrome) {
-      _subs.add(
-        MacWindow.escapes.listen((view) {
-          if (mounted && view == _escapeView && _escapeCloses) _closeTop();
-        }),
-      );
+      _subs
+        ..add(
+          MacWindow.escapes.listen((view) {
+            if (mounted && view == _escapeView && _escapeCloses) _closeTop();
+          }),
+        )
+        ..add(
+          MacToolbar.clicks.listen((c) {
+            if (mounted &&
+                c.view == _toolbarView &&
+                MacToolbar.owns(this, view: c.view)) {
+              _toolbarClicked(c.id);
+            }
+          }),
+        );
     }
     _subs.add(
       widget.surface.elsewhere.listen((aid) {
@@ -896,6 +914,113 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     _escapeSent = on;
   }
 
+  /// The view whose window's toolbar this screen last declared, and the
+  /// title it gave that window.
+  int? _toolbarView;
+  (String, String?)? _titleSent;
+
+  /// On the Mac, the window's toolbar carries this screen while it is the
+  /// top screen and not covered (whether Clax is in front or not): Back
+  /// and Forward, the app's title and version as the window's title,
+  /// Comment, Threads with the open threads' count, and Share. Otherwise
+  /// it gives the toolbar back, empty, for the screen in front to draw its
+  /// own bar in the row.
+  void _reportToolbar() {
+    if (!mounted) return;
+    final view = View.of(context).viewId;
+    if (_toolbarView case final old? when old != view) _leaveToolbar(old);
+    if (!_routeCurrent || widget.covered || _gone) {
+      if (_toolbarView == view) _leaveToolbar(view);
+      return;
+    }
+    _toolbarView = view;
+    final home = widget.mode == AppMode.home;
+    final title = home ? 'Clax' : (_app?.title ?? '');
+    final version = _ready?.version;
+    final subtitle = home || version == null ? null : 'Version $version';
+    if (_titleSent != (title, subtitle) || !MacToolbar.owns(this, view: view)) {
+      _titleSent = (title, subtitle);
+      unawaited(MacWindow.setTitle(title, subtitle: subtitle, view: view));
+    }
+    MacToolbar.setItems(this, _toolbarItems(context), view: view);
+  }
+
+  /// Gives [view]'s window's toolbar back, if this screen still declares
+  /// it, with the window named Clax.
+  void _leaveToolbar(int view) {
+    if (_toolbarView == view) _toolbarView = null;
+    _titleSent = null;
+    if (!MacToolbar.owns(this, view: view)) return;
+    MacToolbar.clear(this, view: view);
+    unawaited(MacWindow.setTitle('Clax', view: view));
+  }
+
+  List<ToolbarItemSpec> _toolbarItems(BuildContext context) {
+    final closes = _wantComment || _questionsShowing || _draft != null;
+    final leaves =
+        widget.mode == AppMode.app && (Navigator.maybeOf(context)?.canPop() ?? false);
+    return [
+      ToolbarItemSpec(
+        'back',
+        symbol: 'chevron.left',
+        label: 'Back',
+        enabled: closes || _canGoBack || leaves,
+        group: 'navigation',
+      ),
+      // The shell reports no forward history yet.
+      const ToolbarItemSpec(
+        'forward',
+        symbol: 'chevron.right',
+        label: 'Forward',
+        enabled: false,
+        group: 'navigation',
+      ),
+      ToolbarItemSpec(
+        'comment',
+        symbol: 'text.bubble',
+        label: 'Comment',
+        on: _wantComment,
+        tint: claxPalette(context).you,
+      ),
+      ToolbarItemSpec(
+        'threads',
+        symbol: 'list.bullet.rectangle',
+        label: 'Threads',
+        on: _open,
+        badge: _openThreads,
+      ),
+      if (widget.share != null && widget.mode == AppMode.app)
+        const ToolbarItemSpec(
+          'share',
+          symbol: 'square.and.arrow.up',
+          label: 'Share',
+        ),
+    ];
+  }
+
+  /// A click on the toolbar item [id] of this screen's window.
+  void _toolbarClicked(String id) {
+    switch (id) {
+      case 'back':
+        // Through the PopScope: what is over the page, then the page's
+        // history, then the screen.
+        unawaited(Navigator.maybePop(context));
+      case 'comment':
+        _toggleComment();
+      case 'threads':
+        if (_open) {
+          _setOpen(false);
+        } else {
+          setState(() => _tab = PanelTab.threads);
+          _setOpen(true);
+        }
+      case 'share':
+        if (_toolbarView case final view?) {
+          unawaited(widget.share?.call(context, ToolbarShareFiles(view: view)));
+        }
+    }
+  }
+
   /// Back: what is over the page closes first, then the app's page goes
   /// back in its own history.
   void _back() {
@@ -918,6 +1043,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     if (_escapeView case final view?) {
       MacWindow.setEscapeWanted(this, false, view: view);
     }
+    if (_toolbarView case final view?) _leaveToolbar(view);
     _comments.unregister(_toggleOpen);
     _ownComments?.dispose();
     _ownIcons?.dispose();
@@ -2122,7 +2248,10 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     final macOS = defaultTargetPlatform == TargetPlatform.macOS;
     if (hasDesktopWindowChrome) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _reportEscape());
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _reportEscape();
+        _reportToolbar();
+      });
     }
     final composing = _draft != null;
     Widget screen = Scaffold(

@@ -13,10 +13,12 @@ import 'package:clax_app/ui/app_icon.dart';
 import 'package:clax_app/ui/app_menu.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/app_surface.dart';
+import 'package:clax_app/ui/bundle_sheets.dart';
 import 'package:clax_app/ui/change_sheet.dart';
 import 'package:clax_app/ui/developer.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/kit/kit.dart';
+import 'package:clax_app/ui/mac/mac_toolbar.dart';
 import 'package:clax_app/ui/mac/window_channel.dart';
 import 'package:clax_app/ui/shortcuts.dart';
 import 'package:clax_app/ui/theme.dart';
@@ -189,6 +191,7 @@ void main() {
     Future<(FakeClaxApi, String)> Function()? seed,
     bool pushed = false,
     bool developer = false,
+    Future<void> Function(BuildContext, BundleFiles)? share,
   }) async {
     phone(tester, size: size);
     final (api, aid) = await (seed ?? _seeded)();
@@ -225,6 +228,7 @@ void main() {
       isStopped: isStopped,
       initialThread: initialThread,
       initialComment: initialComment,
+      share: share,
     );
     await tester.pumpWidget(
       MaterialApp(
@@ -2446,6 +2450,161 @@ void main() {
     },
     variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );
+  group('on macOS the toolbar', () {
+    late List<List<Map<Object?, Object?>>> items;
+    late List<Map<Object?, Object?>> titles;
+
+    /// The last items' IDs, with what is off-normal about each.
+    List<String> shown() => [
+      for (final i in items.last)
+        [
+          i['id'],
+          if (i['enabled'] == false) 'disabled',
+          if (i['on'] == true) 'on',
+          if (i['badge'] case final b?) '$b',
+        ].join(' '),
+    ];
+
+    void mockChannels(WidgetTester tester) {
+      MacToolbar.reset();
+      items = [];
+      titles = [];
+      final m = tester.binding.defaultBinaryMessenger;
+      m.setMockMethodCallHandler(MacToolbar.channel, (call) async {
+        if (call.method == 'setItems') {
+          final args = call.arguments as Map<Object?, Object?>;
+          expect(args['view'], tester.view.viewId);
+          items.add([
+            for (final i in args['items']! as List) i as Map<Object?, Object?>,
+          ]);
+        }
+        return null;
+      });
+      m.setMockMethodCallHandler(MacWindow.channel, (call) async {
+        if (call.method == 'setTitle') {
+          titles.add(call.arguments as Map<Object?, Object?>);
+        }
+        return null;
+      });
+      addTearDown(() {
+        m.setMockMethodCallHandler(MacToolbar.channel, null);
+        m.setMockMethodCallHandler(MacWindow.channel, null);
+      });
+    }
+
+    Future<void> click(WidgetTester tester, String id, {int? view}) async {
+      final m = tester.binding.defaultBinaryMessenger;
+      await m.handlePlatformMessage(
+        MacToolbar.channel.name,
+        MacToolbar.channel.codec.encodeMethodCall(
+          MethodCall('clicked', {'view': view ?? tester.view.viewId, 'id': id}),
+        ),
+        (_) {},
+      );
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets(
+      'carries Back, Forward, the title, Comment, Threads and Share over the '
+      'open app, and its clicks act on it',
+      (tester) async {
+        mockChannels(tester);
+        final shared = <BundleFiles>[];
+        final rig = await pumpScreen(
+          tester,
+          size: const Size(1200, 800),
+          pushed: true,
+          share: (_, files) async => shared.add(files),
+        );
+        rig.surface.push(rig.ready(version: 2, latest: 2));
+        await tester.pumpAndSettle();
+        // Back closes the app, which was opened over the launcher.
+        expect(shown(), [
+          'back',
+          'forward disabled',
+          'comment',
+          'threads',
+          'share',
+        ]);
+        expect(items.last.first['group'], 'navigation');
+        expect(items.last[1]['group'], 'navigation');
+        expect(titles.last, {
+          'view': tester.view.viewId,
+          'title': 'Runs',
+          'subtitle': 'Version 2',
+        });
+
+        await click(tester, 'comment');
+        expect(find.byKey(const ValueKey('comment-bar')), findsOneWidget);
+        expect(shown()[2], 'comment on');
+        expect(items.last[2]['tint'], isNotNull);
+        await click(tester, 'comment');
+        expect(find.byKey(const ValueKey('comment-bar')), findsNothing);
+
+        await click(tester, 'threads');
+        expect(find.byKey(const ValueKey('app-panel')), findsOneWidget);
+        expect(shown()[3], 'threads on');
+        await click(tester, 'threads');
+        expect(find.byKey(const ValueKey('app-panel')), findsNothing);
+
+        // Another window's click is that window's.
+        await click(tester, 'threads', view: tester.view.viewId + 1);
+        expect(find.byKey(const ValueKey('app-panel')), findsNothing);
+
+        // Back steps back in the page's own history first.
+        rig.surface.push(const HistoryMsg(back: true));
+        await tester.pump();
+        await click(tester, 'back');
+        expect(rig.surface.hostCalls.whereType<GoBack>(), hasLength(1));
+        expect(find.byType(AppScreen), findsOneWidget);
+
+        await click(tester, 'share');
+        expect(shared, hasLength(1));
+        expect(shared.single, isA<ToolbarShareFiles>());
+        expect((shared.single as ToolbarShareFiles).view, tester.view.viewId);
+
+        rig.surface.push(const HistoryMsg(back: false));
+        await tester.pump();
+        await click(tester, 'back');
+        expect(find.byType(AppScreen), findsNothing);
+        expect(items.last, isEmpty, reason: 'the app screen took its items');
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+    );
+
+    testWidgets(
+      'is empty while another screen covers the app, and comes back with it',
+      (tester) async {
+        mockChannels(tester);
+        await pumpScreen(tester, size: const Size(1200, 800));
+        _current.surface.push(_current.ready());
+        await tester.pumpAndSettle();
+        // At the root Back has nothing to do, and with no share there is no
+        // Share.
+        expect(shown(), ['back disabled', 'forward disabled', 'comment', 'threads']);
+        final nav = tester.state<NavigatorState>(find.byType(Navigator));
+        unawaited(
+          nav.push(
+            MaterialPageRoute<void>(builder: (_) => const Text('Inbox')),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(items.last, isEmpty);
+        nav.pop();
+        await tester.pumpAndSettle();
+        expect(shown(), ['back disabled', 'forward disabled', 'comment', 'threads']);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+    );
+
+    testWidgets('is never declared off the Mac', (tester) async {
+      mockChannels(tester);
+      final rig = await pumpScreen(tester);
+      rig.surface.push(rig.ready());
+      await tester.pumpAndSettle();
+      expect(items, isEmpty);
+    });
+  });
   group('the change in progress', () {
     /// Bytes standing for a render; they do not decode, so the frame is
     /// what is checked.

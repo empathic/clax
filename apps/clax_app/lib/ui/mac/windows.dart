@@ -7,6 +7,7 @@ import 'package:flutter/widgets.dart';
 
 import '../kit/window_titlebar.dart';
 import 'window_channel.dart';
+import 'window_drag.dart';
 
 /// The Mac app's windows (`macos/Runner/WindowBridge.swift`) over the
 /// method channel `dev.empathic.clax/windows`. Each window shows one view
@@ -56,7 +57,8 @@ abstract final class MacWindows {
 /// window's transparent toolbar row and is padded below it
 /// ([MacWindow.titlebar]), as a phone's is below its status bar; a screen
 /// that draws its bar in that row, beside the window buttons, finds it
-/// with [WindowTitlebar.of].
+/// with [WindowTitlebar.of]. A press in the row that no control takes
+/// moves the window ([WindowRowDrag]).
 class ClaxViews extends StatefulWidget {
   const ClaxViews({super.key, required this.main});
 
@@ -119,7 +121,8 @@ class _ClaxViewsState extends State<ClaxViews> with WidgetsBindingObserver {
 }
 
 /// [child] with the window's title bar height added to its top padding,
-/// and the title bar in a [WindowTitlebarScope].
+/// the title bar in a [WindowTitlebarScope], and the row moving the
+/// window.
 class _BelowTitlebar extends StatelessWidget {
   const _BelowTitlebar({required this.view, required this.child});
 
@@ -143,7 +146,11 @@ class _BelowTitlebar extends StatelessWidget {
             padding: below(data.padding),
             viewPadding: below(data.viewPadding),
           ),
-          child: child!,
+          child: WindowRowDrag(
+            titlebar: bar,
+            onDrag: () => MacWindow.dragWindow(view: view.viewId),
+            child: child!,
+          ),
         ),
       );
     },

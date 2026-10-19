@@ -2347,6 +2347,10 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       onDictateChanged: (on) => unawaited(_keep((s) => s.dictateComments = on)),
       onCommentTabMoved: (at) => unawaited(_keep((s) => s.commentTabAt = at)),
       icons: _icons,
+      share: switch (_bundles) {
+        final b? => (context, files) => b.share(context, aid, via: files),
+        null => null,
+      },
     ),
   );
 

@@ -159,6 +159,35 @@ void main() {
     ));
   });
 
+  testWidgets('Share through other files (the Mac toolbar\'s Share item) '
+      'shares rather than exports, there and not to the save panel', (
+    tester,
+  ) async {
+    late String aid;
+    await tester.runAsync(() async {
+      await me.ready();
+      aid = (await me.api.createArtifact(
+        PublishRequest(title: 'Plant log', files: {'index.html': '<p>hi</p>'}),
+      )).artifact.id;
+    });
+    final mac = BundleFlows(
+      exporter: me.exporter,
+      installer: me.installer,
+      updater: me.updater,
+      files: files,
+      settings: settings,
+      open: opened.add,
+      toFile: true,
+    );
+    final toolbar = FakeBundleFiles();
+    await run(tester, (c) => mac.share(c, aid, via: toolbar));
+    await tester.enterText(find.byKey(const ValueKey('export-name')), 'Alex');
+    await tester.tap(find.text('Share'));
+    await settle(tester);
+    expect(toolbar.sent.single.$1, 'plant-log.clax');
+    expect(files.sent, isEmpty);
+  });
+
   testWidgets('a bundle opened: the install sheet, then the app opens', (
     tester,
   ) async {

@@ -242,6 +242,24 @@ class _LauncherState extends State<Launcher> {
     final unread = _host.unread;
     final failed = apps == null && _host.loadError != null;
     final empty = apps != null && apps.isEmpty && _makes.makes.isEmpty;
+    // At the top of a Mac window the bar is its toolbar row, after the
+    // window buttons and centred with them, as ClaxScaffold's header is.
+    final bar = WindowTitlebar.of(context);
+    final row =
+        hasDesktopWindowChrome &&
+            bar != null &&
+            bar.top > 0 &&
+            MediaQuery.paddingOf(context).top >= bar.top
+        ? bar
+        : null;
+    // Back, where the launcher was pushed, after the window buttons.
+    final back =
+        row != null && (ModalRoute.of(context)?.impliesAppBarDismissal ?? false)
+        ? Padding(
+            padding: EdgeInsets.only(left: row.leading + ClaxSpace.s4),
+            child: const BackButton(),
+          )
+        : null;
     return Scaffold(
       // A failed list offers no New app, and an empty one offers it in its
       // invitation.
@@ -259,6 +277,19 @@ class _LauncherState extends State<Launcher> {
           slivers: [
             SliverAppBar(
               pinned: true,
+              primary: row == null,
+              toolbarHeight: row?.top ?? kToolbarHeight,
+              centerTitle: row == null ? null : false,
+              automaticallyImplyLeading: row == null,
+              leading: back,
+              leadingWidth: back == null
+                  ? null
+                  : row!.leading + ClaxSpace.s4 + kMinInteractiveDimension,
+              titleSpacing: row == null
+                  ? null
+                  : back == null
+                  ? row.leading + ClaxSpace.s12
+                  : ClaxSpace.s4,
               title: const Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [

@@ -16,7 +16,11 @@ import WebKit
 ///   `titlebar` {view}, which answers the window's title bar ([Titlebar]:
 ///   {top, leading}). The bridge sends `titlebar` {view, top, leading} when
 ///   it changes, and `escape` {view} for an Escape it took from a page
-///   ([escape]).
+///   ([escape]). `dragWindow` {view}: the left button went down on nothing
+///   Flutter draws as a control in the window's toolbar row, so the window
+///   follows the mouse from that press ([mouseDown]) while the button is
+///   held; the second press of a double click does the title bar's double
+///   click action (zoom, unless System Settings says minimise or nothing).
 ///
 /// Uses AppKit and WebKit only, so `//apps/clax_app:macos_window_bridge_test`
 /// compiles it on its own.
@@ -44,10 +48,62 @@ final class WindowBridge: NSObject {
   /// Sends a method and its arguments to Dart over `dev.empathic.clax/windows`.
   private let windows: (String, Any?) -> Void
   private var entries: [Int64: Entry] = [:]
+  /// Moves a window with the mouse from a press.
+  private let drag: (NSWindow, NSEvent) -> Void
+  /// A title bar's double click on a window.
+  private let doubleClick: (NSWindow) -> Void
+  /// Whether the left mouse button is down now.
+  private let buttonDown: () -> Bool
+  /// The last left press in a window's toolbar row, until a drag takes it.
+  private var press: (event: NSEvent, window: NSWindow)?
 
-  init(chrome: @escaping (String, Any?) -> Void, windows: @escaping (String, Any?) -> Void) {
+  init(
+    chrome: @escaping (String, Any?) -> Void, windows: @escaping (String, Any?) -> Void,
+    drag: @escaping (NSWindow, NSEvent) -> Void = { $0.performDrag(with: $1) },
+    doubleClick: @escaping (NSWindow) -> Void = WindowBridge.titlebarDoubleClick,
+    buttonDown: @escaping () -> Bool = { NSEvent.pressedMouseButtons & 1 != 0 }
+  ) {
     self.chrome = chrome
     self.windows = windows
+    self.drag = drag
+    self.doubleClick = doubleClick
+    self.buttonDown = buttonDown
+  }
+
+  /// Keeps a left press in the toolbar row of [window], one of Clax's, for
+  /// `dragWindow`.
+  func mouseDown(_ event: NSEvent, in window: NSWindow?) {
+    guard event.type == .leftMouseDown else { return }
+    press = nil
+    guard let window,
+      let view = view(of: window), let bar = entries[view]?.titlebar, bar.top > 0,
+      let content = window.contentView
+    else { return }
+    let p = content.convert(event.locationInWindow, from: nil)
+    let fromTop = content.isFlipped ? p.y : content.bounds.height - p.y
+    guard fromTop >= 0, fromTop < bar.top, p.x >= bar.leading else { return }
+    press = (event, window)
+  }
+
+  /// The title bar's double click on [window], as System Settings ›
+  /// Desktop & Dock sets it: minimise, nothing, or (the default) zoom.
+  static func titlebarDoubleClick(_ window: NSWindow) {
+    switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") {
+    case "Minimize": window.performMiniaturize(nil)
+    case "None": break
+    default: window.performZoom(nil)
+    }
+  }
+
+  private func dragWindow(_ view: Int64) {
+    guard let p = press, let window = entries[view]?.window, p.window === window else { return }
+    let event = p.event
+    press = nil
+    if event.clickCount >= 2 && event.clickCount % 2 == 0 {
+      doubleClick(window)
+    } else if buttonDown() {
+      drag(window, event)
+    }
   }
 
   /// Makes [window] the one showing [view], a window of [kind]. [sidebar]
@@ -142,6 +198,13 @@ final class WindowBridge: NSObject {
         return true
       }
       reply(entries[view].map { $0.titlebar.map })
+    case "dragWindow":
+      guard let view else {
+        fail("dragWindow takes {view}")
+        return true
+      }
+      dragWindow(view)
+      reply(nil)
     default:
       return false
     }
@@ -171,6 +234,12 @@ final class WindowBridge: NSObject {
       v = cur.superview
     }
     return false
+  }
+
+  /// Sends [window]'s title bar to Dart if it changed (its toolbar's items
+  /// or display mode can change the row's height).
+  func titlebarMayHaveChanged(of window: NSWindow) {
+    if let view = view(of: window) { titlebarMayHaveChanged(view) }
   }
 
   private func titlebarMayHaveChanged(_ view: Int64) {

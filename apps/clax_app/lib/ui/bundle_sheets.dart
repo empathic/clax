@@ -1123,13 +1123,17 @@ class BundleFlows {
   /// Shares (or exports) app [aid]: the export sheet, the build, then the
   /// share sheet or the save panel. The share sheet points from [origin],
   /// the tapped button's rect ([shareAnchorOf]); without one, from the
-  /// screen's centre.
+  /// screen's centre. With [via] the file goes to it instead, as a share
+  /// (the Mac toolbar's Share item, whose picker shows from the item).
   Future<void> share(
     BuildContext context,
     String aid, {
     String? svg,
     Rect? origin,
+    BundleFiles? via,
   }) async {
+    final toFile = via == null && this.toFile;
+    final files = via ?? this.files;
     final anchor = origin ?? screenCentreAnchor(View.maybeOf(context));
     final ExportPlan plan;
     try {

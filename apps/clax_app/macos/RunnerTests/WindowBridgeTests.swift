@@ -172,3 +172,98 @@ final class WindowBridgeTests: XCTestCase {
     XCTAssertFalse(call("nonsense", nil).known)
   }
 }
+
+/// `WindowBridge`'s `dragWindow`: the toolbar row moves the window from a
+/// press in it.
+final class WindowDragTests: XCTestCase {
+  private var window: NSWindow!
+  private var bridge: WindowBridge!
+  private var drags: [NSEvent] = []
+  private var doubleClicks = 0
+  private var buttonDown = true
+
+  override func setUp() {
+    super.setUp()
+    drags = []
+    doubleClicks = 0
+    buttonDown = true
+    window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+      styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+      backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.titlebarAppearsTransparent = true
+    bridge = WindowBridge(
+      chrome: { _, _ in }, windows: { _, _ in },
+      drag: { [unowned self] _, event in self.drags.append(event) },
+      doubleClick: { [unowned self] _ in self.doubleClicks += 1 },
+      buttonDown: { [unowned self] in self.buttonDown })
+    bridge.register(window, view: 1, kind: "main", sidebar: nil)
+  }
+
+  override func tearDown() {
+    window.close()
+    super.tearDown()
+  }
+
+  private var bar: Titlebar { Titlebar(of: window) }
+
+  /// A left press [fromTop] points below the window's top, [x] in.
+  private func press(x: CGFloat, fromTop: CGFloat, clicks: Int = 1) -> NSEvent {
+    let height = window.contentView!.bounds.height
+    let event = NSEvent.mouseEvent(
+      with: .leftMouseDown, location: NSPoint(x: x, y: height - fromTop), modifierFlags: [],
+      timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+      clickCount: clicks, pressure: 1)!
+    bridge.mouseDown(event, in: window)
+    return event
+  }
+
+  private func dragWindow(_ view: Any = 1) -> String? {
+    var failed: String?
+    _ = bridge.handle("dragWindow", ["view": view], reply: { _ in }, fail: { failed = $0 })
+    return failed
+  }
+
+  func testAPressInTheRowMovesTheWindowOnce() {
+    XCTAssertGreaterThan(bar.top, 0)
+    let e = press(x: 400, fromTop: bar.top / 2)
+    XCTAssertNil(dragWindow())
+    XCTAssertEqual(drags, [e])
+    _ = dragWindow()
+    XCTAssertEqual(drags.count, 1, "the press is taken by the first drag")
+  }
+
+  func testPressesOutsideTheRowOrAfterTheButtonCameUpMoveNothing() {
+    _ = press(x: 400, fromTop: bar.top + 10)
+    _ = dragWindow()
+    _ = press(x: bar.leading - 5, fromTop: bar.top / 2)
+    _ = dragWindow()
+    XCTAssertTrue(drags.isEmpty, "below the row, and in the window buttons' corner")
+    _ = press(x: 400, fromTop: bar.top / 2)
+    _ = press(x: 400, fromTop: bar.top + 10)
+    _ = dragWindow()
+    XCTAssertTrue(drags.isEmpty, "a later press elsewhere replaces it")
+    _ = press(x: 400, fromTop: bar.top / 2)
+    _ = dragWindow(2)
+    XCTAssertTrue(drags.isEmpty, "another view's window")
+    buttonDown = false
+    _ = dragWindow()
+    XCTAssertTrue(drags.isEmpty, "the button came up first")
+    XCTAssertEqual(doubleClicks, 0)
+  }
+
+  func testTheSecondPressOfADoubleClickIsTheTitleBarsDoubleClick() {
+    _ = press(x: 400, fromTop: bar.top / 2, clicks: 2)
+    buttonDown = false
+    _ = dragWindow()
+    XCTAssertEqual(doubleClicks, 1)
+    XCTAssertTrue(drags.isEmpty)
+  }
+
+  func testDragWindowNeedsAView() {
+    var failed: String?
+    _ = bridge.handle("dragWindow", [:], reply: { _ in }, fail: { failed = $0 })
+    XCTAssertNotNil(failed)
+  }
+}

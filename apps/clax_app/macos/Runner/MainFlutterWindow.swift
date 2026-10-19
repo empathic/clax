@@ -48,10 +48,33 @@ enum ClaxEngine {
     escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
       bridge.escape(event, in: event.window ?? NSApp.keyWindow) ? nil : event
     }
+    // A press in a toolbar row is kept for Dart's `dragWindow`, and goes on.
+    pressMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
+      bridge.mouseDown(event, in: event.window)
+      return event
+    }
     return bridge
   }()
 
   private static var escapeMonitor: Any?
+  private static var pressMonitor: Any?
+
+  /// The windows' toolbars (`Toolbar.swift`) over
+  /// `dev.empathic.clax/toolbar`.
+  static let toolbars: MacToolbar = {
+    let channel = FlutterMethodChannel(
+      name: "dev.empathic.clax/toolbar", binaryMessenger: shared.binaryMessenger)
+    let toolbars = MacToolbar(
+      send: { channel.invokeMethod($0, arguments: $1) },
+      changed: { windows.titlebarMayHaveChanged(of: $0) })
+    channel.setMethodCallHandler { call, result in
+      let known = toolbars.handle(
+        call.method, call.arguments, reply: result,
+        fail: { result(FlutterError(code: "bad_arguments", message: $0, details: nil)) })
+      if !known { result(FlutterMethodNotImplemented) }
+    }
+    return toolbars
+  }()
 
   /// The Flutter view controller showing [window]'s content.
   static func controller(of window: NSWindow?) -> FlutterViewController? {
@@ -63,8 +86,8 @@ enum ClaxEngine {
 
 /// The main window: 1200×800 at first, centred, its frame kept as
 /// "ClaxMain"; no smaller than 720×480. Its content runs under a
-/// transparent, unified toolbar row with no title of its own, over the
-/// sidebar material.
+/// transparent, unified toolbar row, over the sidebar material. The
+/// toolbar's items and whether the title shows are Dart's (`MacToolbar`).
 class MainFlutterWindow: NSWindow {
   override func awakeFromNib() {
     let engine = ClaxEngine.shared
@@ -78,13 +101,13 @@ class MainFlutterWindow: NSWindow {
 
     styleMask.insert(.fullSizeContentView)
     titlebarAppearsTransparent = true
-    toolbarStyle = .unified
-    // An empty toolbar makes the title bar a toolbar row, with the window
-    // buttons centred in it; each screen draws its title, Back and actions
-    // in that row after the buttons (`ClaxScaffold`), so the window's own
-    // title is not shown. It stays the window's name in the Window menu.
-    toolbar = NSToolbar(identifier: "ClaxMain")
-    titleVisibility = .hidden
+    // The toolbar makes the title bar a toolbar row, with the window
+    // buttons centred in it. While it has no items the window's title is
+    // hidden and a screen draws its title, Back and actions in that row
+    // after the buttons (`ClaxScaffold`); an open app declares its items
+    // and the title shows. The title stays the window's name in the Window
+    // menu either way.
+    ClaxEngine.toolbars.attach(self, view: flutterViewController.viewIdentifier)
     contentMinSize = NSSize(width: 720, height: 480)
     if !setFrameUsingName("ClaxMain") { center() }
     setFrameAutosaveName("ClaxMain")

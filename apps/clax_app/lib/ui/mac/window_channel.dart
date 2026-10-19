@@ -20,6 +20,8 @@ import '../kit/window_titlebar.dart';
 /// - `titlebar` {view, top, leading}: the window's title bar and toolbar
 ///   row, which its content runs under, and the right edge of its window
 ///   buttons; [titlebar].
+///
+/// To it, besides the setters: `dragWindow` {view} ([dragWindow]).
 abstract final class MacWindow {
   static const channel = MethodChannel('dev.empathic.clax/window');
 
@@ -99,6 +101,12 @@ abstract final class MacWindow {
     'title': title,
     'subtitle': subtitle ?? '',
   });
+
+  /// The mouse went down on no control in [view]'s window's toolbar row:
+  /// the window follows the mouse while the button is held (its title
+  /// bar's double click action, on the second press of a double click).
+  static Future<void> dragWindow({required int view}) =>
+      _send('dragWindow', {'view': view});
 
   /// Shows the sidebar material behind the leftmost [width] points of
   /// [view]'s window, where the Flutter view draws nothing; 0 hides it.
