@@ -373,10 +373,12 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     // The pin is placed too: the viewer's Tabs walk it.
     await expect(page.locator("button.thread-pin")).toHaveCount(1);
     await frame.locator("#a").click();
-    // What looks like an eight-field form: Smith, Jones, Main, Lot, Apt, Zip,
-    // Ward, New York. Its Tabs walk the pin, New comment, Send N unsent, the
-    // card's box, its head and Resolve, so the Space in "New York" lands on Send.
-    await typeOn(page, [..."Smith", "Tab", ..."Jones", "Tab", ..."Main", "Tab", ..."Lot", "Tab", ..."Apt", "Tab", ..."Zip", "Tab", ..."Ward", "Tab", ..."New", "Space", ..."York"], 0);
+    // What looks like a fourteen-field form: Smith, Jones, Unit, City, Zone,
+    // Box, Code, Main, Lot, Apt, Zip, Ward, Ref, New York. Its Tabs walk the
+    // pin, the drawer's four layouts, Hide threads and its edge, New comment,
+    // Send N unsent, the card's box, its head and Resolve, so the Space in
+    // "New York" lands on Send.
+    await typeOn(page, [..."Smith", "Tab", ..."Jones", "Tab", ..."Unit", "Tab", ..."City", "Tab", ..."Zone", "Tab", ..."Box", "Tab", ..."Code", "Tab", ..."Main", "Tab", ..."Lot", "Tab", ..."Apt", "Tab", ..."Zip", "Tab", ..."Ward", "Tab", ..."Ref", "Tab", ..."New", "Space", ..."York"], 0);
     await expect(page.locator(".act-hint").filter({ hasText: /^Click to send$/ })).toHaveCount(1);
     expect(await threadState(artifact.id, t.id)).toMatchObject({ status: "open", sent_to_agent: false });
   });
@@ -390,9 +392,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     // The pin is placed too: the viewer's Tabs walk it.
     await expect(page.locator("button.thread-pin")).toHaveCount(1);
     await frame.locator("#a").click();
-    // The pin, New comment, the card's box, its head, Resolve, then the Reply
-    // field: the Escape a page can coax ("Esc to close") clears nothing.
-    await typeOn(page, [..."Smith", "Tab", ..."Jones", "Escape", "Tab", ..."Ward", "Tab", ..."Main", "Tab", ..."Apt", "Tab", ..."Town", "Tab", ..."pwd", "Space", ..."hunter2", "Enter"], 0);
+    // The pin, the drawer's four layouts, Hide threads and its edge, New
+    // comment, the card's box, its head, Resolve, then the Reply field: the
+    // Escape a page can coax ("Esc to close") clears nothing.
+    await typeOn(page, [..."Smith", "Tab", ..."Jones", "Escape", "Tab", ..."Unit", "Tab", ..."City", "Tab", ..."Zone", "Tab", ..."Box", "Tab", ..."Code", "Tab", ..."Ref", "Tab", ..."Ward", "Tab", ..."Main", "Tab", ..."Apt", "Tab", ..."Town", "Tab", ..."pwd", "Space", ..."hunter2", "Enter"], 0);
     await settle(page);
     const { threads: list } = await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads`) as { threads: { id: string; status: string; comments: unknown[] }[] };
     expect(list.find(x => x.id === t.id)).toMatchObject({ status: "open", comments: [expect.anything()] });
@@ -424,8 +427,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.keyboard.press("Tab");
     await expect(page.locator("button.thread-pin")).toBeFocused();
     const send = page.getByRole("button", { name: /^Send to / });
-    // New comment, Send N unsent, the card's box, its head, Resolve, then Send.
-    for (let i = 0; i < 6; i++) await page.keyboard.press("Tab");
+    // The drawer's four layouts, Hide threads and its edge, New comment, Send
+    // N unsent, the card's box, its head, Resolve, then Send.
+    for (let i = 0; i < 12; i++) await page.keyboard.press("Tab");
     await expect(send).toBeFocused();
     await page.keyboard.press("Space");
     await expect(page.locator(".thread-card .act-hint")).toHaveText("Click to send");
