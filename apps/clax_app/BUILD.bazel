@@ -839,7 +839,22 @@ sh_test(
 # //apps/clax_app:integration_<name>: the
 # debug app with the test as its entry point and the embedded clax, run in
 # the logged-in session. They open the app's window and take minutes, so
-# they are `manual`: `just app-integration` runs them.
+# they are `manual`: `just app-integration` runs them. A test's entry in
+# INTEGRATION_EXTRA adds launch arguments, data and environment.
+INTEGRATION_EXTRA = {
+    # The window chrome test: its menu golden, and a purple system accent
+    # (System Settings › Appearance's, for this launch only), so its renders
+    # show whether the Apple family follows the accent.
+    "mac_chrome": {
+        "args": [
+            "-AppleAccentColor",
+            "5",
+        ],
+        "data": ["integration_test/goldens/main_menu.txt"],
+        "env": {"CLAX_MENU_GOLDEN": "$(rootpath integration_test/goldens/main_menu.txt)"},
+    },
+}
+
 [
     (
         integration_main(
@@ -881,8 +896,11 @@ sh_test(
             name = "integration_%s" % test[len("integration_test/"):-len("_test.dart")],
             timeout = "long",
             srcs = ["tool/integration-run.sh"],
-            args = ["$(rootpath :_integration_%s_debug)" % test[len("integration_test/"):-len("_test.dart")]],
-            data = [":_integration_%s_debug" % test[len("integration_test/"):-len("_test.dart")]],
+            args = ["$(rootpath :_integration_%s_debug)" % test[len("integration_test/"):-len("_test.dart")]] +
+                   INTEGRATION_EXTRA.get(test[len("integration_test/"):-len("_test.dart")], {}).get("args", []),
+            data = [":_integration_%s_debug" % test[len("integration_test/"):-len("_test.dart")]] +
+                   INTEGRATION_EXTRA.get(test[len("integration_test/"):-len("_test.dart")], {}).get("data", []),
+            env = INTEGRATION_EXTRA.get(test[len("integration_test/"):-len("_test.dart")], {}).get("env", {}),
             tags = [
                 "exclusive",
                 "manual",

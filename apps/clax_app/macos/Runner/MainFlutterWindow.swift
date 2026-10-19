@@ -208,9 +208,17 @@ class MainFlutterWindow: NSWindow {
       installTestInput(engine, flutterViewController)
       quitWithFlutterTool()
     #endif
+    #if DEBUG || PROFILE
+      testChannel = TestChannel.install(engine, windows: ClaxEngine.windows)
+    #endif
 
     super.awakeFromNib()
   }
+
+  #if DEBUG || PROFILE
+    /// The macOS chrome test's channel (`TestChannel.swift`).
+    private var testChannel: TestChannel?
+  #endif
 
   /// A share picker in flight, held until it closes.
   private var sharing: SharePicker?

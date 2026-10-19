@@ -556,9 +556,21 @@ run.
 - `just app-integration` runs the integration tests on macOS, one app per
   file of `integration_test/` (`//apps/clax_app:integration_<name>`): the
   full loop (a scripted agent making and changing an app on the real daemon
-  and inspector), app bundles end to end, and the credential-gated daemon.
-  Each opens the app's window and takes up to a few minutes, so they are
-  not in `just ci`; run it in the background. `just app-integration-native`
+  and inspector), app bundles end to end, the credential-gated daemon, and
+  the Mac's window chrome (`mac_chrome_test.dart`: the toolbar, menus,
+  Settings and Inbox windows, alert and sheets captured in light and dark,
+  its menu text against `integration_test/goldens/main_menu.txt`, and
+  clicks, drags and keys sent as AppKit events). Each opens the app's
+  window and takes up to a few minutes, so they are not in `just ci`; run
+  it in the background. The chrome test writes its PNGs to
+  `$CLAX_MAC_SHOTS_DIR` (`--test_env=CLAX_MAC_SHOTS_DIR=$PWD/target/flutter-app/mac`)
+  or the test's outputs. It needs no Screen Recording permission: it reads
+  only Clax's own windows. On an unlocked, awake display with Clax able to
+  come to the front, its captures come from the screen and its keys and
+  clicks go through AppKit's event queue, and every check runs; on a locked
+  or sleeping display (an agent's session) the windows are drawn from their
+  layers instead (no materials or Liquid Glass, menus blank), events go to
+  the views directly, and the key checks are skipped, as its log says. `just app-integration-native`
   runs `flutter test <file> -d macos` for each file, into
   `apps/clax_app/build/macos`.
 - `just app-integration --ios` runs the simulator ones instead, the files

@@ -203,6 +203,11 @@ final class WindowBridge: NSObject {
   /// The view of the main window, whose kind is `main`.
   var mainView: Int64? { entries.first { $0.value.kind == "main" }?.key }
 
+  /// The open window of [kind] (`main`, `settings`, `inbox`).
+  func window(kind: String) -> NSWindow? {
+    entries.values.first { $0.kind == kind }?.window
+  }
+
   /// The window showing [view]; the main window when [view] is nil.
   func window(of view: Int64?) -> NSWindow? {
     guard let view = view ?? mainView else { return nil }

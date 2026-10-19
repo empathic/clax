@@ -26,6 +26,7 @@ import 'package:clax_app/daemon/health.dart';
 import 'package:clax_app/daemon/ports.dart';
 import 'package:clax_app/daemon/process.dart';
 import 'package:clax_app/daemon/supervisor.dart';
+import 'package:clax_app/home/home_install.dart';
 import 'package:clax_app/platform/secure_key.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/platform/timings.dart';
@@ -93,18 +94,21 @@ class Rig {
     this.runner,
     this.inspector,
     this.keyCookie,
+    this.homeApp = false,
   });
 
   /// A rig whose runs take [backend]; with [runner] and [inspector], the
   /// tool loop on that runner, rendering in that inspector. With
   /// [keyCookie] the daemon is locked as the app runs it
   /// (`--require-credential`) and the app's pages load with that cookie;
-  /// an [inspector] given then needs it too.
+  /// an [inspector] given then needs it too. With [homeApp] the app installs
+  /// the home app it ships and shows it at Home, as the released app does.
   static Future<Rig> create({
     required AgentBackend backend,
     AgentRunner Function()? runner,
     Inspector? inspector,
     DaemonKeyCookie? keyCookie,
+    bool homeApp = false,
   }) async {
     final Directory dir;
     if (_scratchParent.isEmpty) {
@@ -136,6 +140,7 @@ class Rig {
       runner: runner,
       inspector: inspector,
       keyCookie: keyCookie,
+      homeApp: homeApp,
     );
     rig._lifecycleListener;
     return rig;
@@ -147,6 +152,7 @@ class Rig {
   final AgentRunner Function()? runner;
   final Inspector? inspector;
   final DaemonKeyCookie? keyCookie;
+  final bool homeApp;
   final File timingsFile;
 
   /// Every message the shell posted, on every app surface, in order.
@@ -199,6 +205,7 @@ class Rig {
     ledger: FileChangeLedger(File('${dir.path}/change-ledger.json')),
     inspector: inspector,
     runner: runner,
+    shippedHome: homeApp ? AssetShippedHome() : null,
   );
 
   /// The records of the defended number [name], oldest first, as the
@@ -492,4 +499,170 @@ class Rig {
       }
     }
   }
+}
+
+/// The debug Runner's test channel (`macos/Runner/TestChannel.swift`): the
+/// app's windows and menus captured and described, and a person's mouse
+/// and keys queued as AppKit events. A window is named by its kind
+/// (`main`, `settings`, `inbox`); points are in that window's Flutter view,
+/// as `tester.getRect` gives them there.
+abstract final class MacChrome {
+  static const _test = MethodChannel('dev.empathic.clax/test');
+
+  /// Writes a PNG of [window] (the main one by default), with its title
+  /// bar, toolbar and what lies over it, to [path]; its size in pixels.
+  static Future<Size?> captureWindow(String path, {String? window}) async {
+    final r = await _test.invokeMapMethod<String, Object?>('captureWindow', {
+      'path': path,
+      'window': window,
+    });
+    return _size(r);
+  }
+
+  /// Writes [window] to [path] once two captures in a row are the same,
+  /// so animations have ended; its size in pixels.
+  static Future<Size> captureSettled(
+    WidgetTester tester,
+    String path, {
+    String? window,
+  }) async {
+    final scratch = '$path.next';
+    List<int>? last;
+    for (var i = 0; i < 60; i++) {
+      await tester.pump();
+      final size = await captureWindow(scratch, window: window);
+      if (size == null) fail('no capture of the ${window ?? 'main'} window');
+      final bytes = File(scratch).readAsBytesSync();
+      if (last != null && _same(last, bytes)) {
+        File(scratch).renameSync(path);
+        return size;
+      }
+      last = bytes;
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+    }
+    File(scratch).renameSync(path);
+    fail('the ${window ?? 'main'} window never held still for $path');
+  }
+
+  static bool _same(List<int> a, List<int> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
+  /// Sets the app's appearance: `aqua`, `darkAqua`, or null for the
+  /// system's.
+  static Future<void> setAppearance(String? name) =>
+      _test.invokeMethod('setAppearance', {'name': name});
+
+  /// The main menu as text: titles, key equivalents, and whether Clax's
+  /// own items are enabled.
+  static Future<String> describeMenu() async =>
+      (await _test.invokeMethod<String>('describeMenu'))!;
+
+  /// Opens the top-level menu [title], writes it to [path] and closes it:
+  /// {width, height, blank}, `blank` when the display gave back one flat
+  /// colour (a locked or sleeping display); null when it never showed.
+  static Future<Map<String, Object?>?> openMenu(String title, String path) =>
+      _test.invokeMapMethod<String, Object?>('openMenu', {
+        'title': title,
+        'path': path,
+      });
+
+  /// Chooses [item] in the top-level menu [menu] as a click on it does;
+  /// whether it was enabled.
+  static Future<bool> chooseMenuItem(String menu, String item) async =>
+      await _test.invokeMethod<bool>('chooseMenuItem', {
+        'menu': menu,
+        'item': item,
+      }) ??
+      false;
+
+  /// The next menu to open is written to [path] and closed.
+  static Future<void> armMenuCapture(String path) =>
+      _test.invokeMethod('armMenuCapture', {'path': path});
+
+  /// The armed menu capture, as [openMenu] answers, once it was taken;
+  /// null before.
+  static Future<Map<String, Object?>?> menuCaptured() =>
+      _test.invokeMapMethod<String, Object?>('menuCaptured');
+
+  /// Sends mouse [events] ({type, x, y, window?, clickCount?}; type
+  /// `down`, `drag`, `up`, `move`, `rightDown`, `rightUp`) as a person's:
+  /// through AppKit's queue while the app is active (`queued`), else to the
+  /// views they are for (`direct`); answers which.
+  static Future<String> post(List<Map<String, Object?>> events) async {
+    final how = await _test.invokeMethod<String>('post', {'events': events});
+    expect(how, isNotNull, reason: 'mouse events not sent: $events');
+    return how!;
+  }
+
+  /// A left click at [p] in [window].
+  static Future<String> click(Offset p, {String? window}) => post([
+    for (final t in ['move', 'down', 'up'])
+      {'type': t, 'x': p.dx, 'y': p.dy, 'window': window},
+  ]);
+
+  /// Sends a key down and up, as [post] sends mouse events: [chars] with
+  /// [keyCode], and [modifiers] (`cmd`, `shift`, `option`, `control`).
+  static Future<String> key(
+    String chars,
+    int keyCode, {
+    List<String> modifiers = const [],
+    String? window,
+    bool isRepeat = false,
+  }) async {
+    final how = await _test.invokeMethod<String>('key', {
+      'chars': chars,
+      'keyCode': keyCode,
+      'modifiers': modifiers,
+      'window': window,
+      'isRepeat': isRepeat,
+    });
+    expect(how, isNotNull, reason: 'key $chars not sent');
+    return how!;
+  }
+
+  /// Clicks [window]'s toolbar item, or a group's segment, labelled
+  /// [label]; whether it was there and enabled.
+  static Future<bool> pressToolbarItem(String label, {String? window}) async =>
+      await _test.invokeMethod<bool>('pressToolbarItem', {
+        'label': label,
+        'window': window,
+      }) ??
+      false;
+
+  /// [window]'s window buttons and toolbar items, in order: {kind, id,
+  /// label, enabled, on}, with x, y, width and height where AppKit gives
+  /// the item a view of its own.
+  static Future<List<Map<String, Object?>>> toolbar({String? window}) async {
+    final list = await _test.invokeListMethod<Object?>('toolbar', {
+      'window': window,
+    });
+    return [for (final e in list ?? const []) (e! as Map).cast()];
+  }
+
+  /// [window]'s state: {open, key, main, active, locked, appearance,
+  /// firstResponder, x, y, width, height, sheet}.
+  static Future<Map<String, Object?>> window({String? window}) async =>
+      (await _test.invokeMapMethod<String, Object?>('window', {
+        'window': window,
+      }))!;
+
+  /// The general pasteboard's text, after writing [text] when given.
+  static Future<String?> pasteboard([String? text]) =>
+      _test.invokeMethod<String>('pasteboard', {'text': text});
+
+  /// Posts `NSColor.systemColorsDidChangeNotification`.
+  static Future<void> colorsChanged() => _test.invokeMethod('colorsChanged');
+
+  static Size? _size(Map<String, Object?>? r) => switch (r) {
+    {'width': final num w, 'height': final num h} => Size(
+      w.toDouble(),
+      h.toDouble(),
+    ),
+    _ => null,
+  };
 }
