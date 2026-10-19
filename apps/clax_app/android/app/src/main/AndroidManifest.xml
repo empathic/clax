@@ -21,8 +21,14 @@
          image_picker, which needs none (declaring it would require it). -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <!-- enableOnBackInvokedCallback: predictive back. Android 13+ shows
+         the back-to-home animation, and Flutter's routes follow the back
+         gesture (PredictiveBackPageTransitionsBuilder in lib/ui/theme.dart);
+         an app screen keeps a back for its page's own history (AppScreen's
+         PopScope). -->
     <application
         android:label="Clax"
+        android:enableOnBackInvokedCallback="true"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"

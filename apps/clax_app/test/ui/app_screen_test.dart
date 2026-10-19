@@ -2731,6 +2731,60 @@ void main() {
       expect(rig.surface.hostCalls.whereType<GoBack>(), hasLength(1));
     });
 
+    /// Sends one predictive back gesture's [method] as Android's
+    /// OnBackInvokedCallback does, from the left edge.
+    Future<void> gesture(
+      WidgetTester tester,
+      String method, [
+      double progress = 0,
+    ]) async {
+      final args = method == 'commitBackGesture'
+          ? null
+          : <String, Object?>{
+              'touchOffset': <double>[5 + 300 * progress, 300],
+              'progress': progress,
+              'swipeEdge': 0,
+            };
+      await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+        'flutter/backgesture',
+        const StandardMethodCodec().encodeMethodCall(MethodCall(method, args)),
+        (_) {},
+      );
+      await tester.pump();
+    }
+
+    testWidgets('a predictive back gesture inside the page’s history leaves '
+        'the app in place and goes back in the page', (tester) async {
+      final rig = await pushed(tester);
+      rig.surface.push(const HistoryMsg(back: true));
+      await tester.pump();
+      final full = tester.getRect(find.byType(AppScreen));
+      await gesture(tester, 'startBackGesture');
+      await gesture(tester, 'updateBackGestureProgress', 0.5);
+      // The route does not follow the finger: the back stays in the page.
+      expect(tester.getRect(find.byType(AppScreen)), full);
+      await gesture(tester, 'commitBackGesture');
+      await tester.pumpAndSettle();
+      expect(find.byType(AppScreen), findsOneWidget);
+      expect(tester.getRect(find.byType(AppScreen)), full);
+      expect(rig.surface.hostCalls.whereType<GoBack>(), hasLength(1));
+    });
+
+    testWidgets('a predictive back gesture at the page’s first entry draws '
+        'the app back with the finger and leaves it', (tester) async {
+      final rig = await pushed(tester);
+      final full = tester.getRect(find.byType(AppScreen));
+      await gesture(tester, 'startBackGesture');
+      await gesture(tester, 'updateBackGestureProgress', 0.5);
+      // The predictive transition shrinks the app toward the launcher.
+      expect(tester.getRect(find.byType(AppScreen)), isNot(full));
+      await gesture(tester, 'commitBackGesture');
+      await tester.pumpAndSettle();
+      expect(find.byType(AppScreen), findsNothing);
+      expect(find.text('Launcher'), findsOneWidget);
+      expect(rig.surface.hostCalls.whereType<GoBack>(), isEmpty);
+    });
+
     testWidgets('back with a composer open and the panel closed cancels the '
         'draft, before the page\'s history or leaving', (tester) async {
       final rig = await pushed(tester);

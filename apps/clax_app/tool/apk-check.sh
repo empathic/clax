@@ -2,7 +2,8 @@
 # apk-check.sh APK AAPT2 APKSIGNER HOME: checks the Bazel-built APK against what
 # the app's Gradle build makes (apps/clax_app/android/app/build.gradle.kts):
 # its package and version, SDK levels, launcher activity, the adaptive
-# launcher icon with its monochrome layer, the splash theme, a release build
+# launcher icon with its monochrome layer, the splash theme, predictive back
+# (the application's enableOnBackInvokedCallback), a release build
 # (not debuggable, shrunk by R8) that extracts its native libraries, the engine, the app's
 # AOT code and the embedded clax for both CPUs, the home bundle HOME (the
 # one //apps/clax_app:home_bundle built), the third-party notices, and a
@@ -44,7 +45,10 @@ done
 # The splash screen (res/values/styles.xml): MainActivity opens on
 # LaunchTheme, Theme.Clax.Starting's alias, the mark on the brand's `bg`.
 resources="$("$aapt2" dump resources "$apk")"
-activity_theme="$("$aapt2" dump xmltree --file AndroidManifest.xml "$apk" | awk '/E: activity/ { t = "" } /android:theme/ { t = $0 } /android:name.*"dev.empathic.clax_app.MainActivity"/ { sub(/.*=@/, "", t); print t; exit }')"
+# The manifest is read whole first: awk leaving early would break aapt2's
+# pipe, and pipefail would end the script.
+manifest="$("$aapt2" dump xmltree --file AndroidManifest.xml "$apk")"
+activity_theme="$(awk '/E: activity/ { t = "" } /android:theme/ { t = $0 } /android:name.*"dev.empathic.clax_app.MainActivity"/ { sub(/.*=@/, "", t); print t; exit }' <<<"$manifest")"
 launch_id="$(sed -n 's/^ *resource \(0x[0-9a-f]*\) style\/LaunchTheme$/\1/p' <<<"$resources")"
 if [ -n "$launch_id" ] && [ "$activity_theme" = "$launch_id" ]; then ok "MainActivity opens on LaunchTheme"; else bad "MainActivity opens on LaunchTheme (theme $activity_theme, LaunchTheme ${launch_id:-missing})"; fi
 if sed -n '/ style\/LaunchTheme$/{n;p;}' <<<"$resources" | grep -q 'parent=style/Theme.Clax.Starting '; then
@@ -59,8 +63,10 @@ done
 check "the embedded daemon's network permission" "$badging" "uses-permission: name='android.permission.INTERNET'"
 check "both native ABIs" "$badging" "native-code: 'arm64-v8a' 'x86_64'"
 if grep -q '^application-debuggable' <<<"$badging"; then bad "a release build is not debuggable"; else ok "a release build is not debuggable"; fi
-manifest="$("$aapt2" dump xmltree --file AndroidManifest.xml "$apk")"
 if grep -q 'extractNativeLibs.*=true' <<<"$manifest"; then ok "native libraries are extracted"; else bad "native libraries are extracted"; fi
+# Predictive back: Android 13+ shows the back-to-home and in-app back
+# animations only for an application that opts in.
+if grep -q 'enableOnBackInvokedCallback.*=true' <<<"$manifest"; then ok "predictive back is on"; else bad "predictive back is on (no android:enableOnBackInvokedCallback=\"true\")"; fi
 files="$(unzip -l "$apk" | awk '{print $4}')"
 for abi in arm64-v8a x86_64; do
     for lib in libapp.so libflutter.so libclax.so; do
