@@ -428,8 +428,10 @@ class _LauncherState extends State<Launcher> {
 
 /// One cell of the launcher's home-screen grid: [icon] centred in a
 /// rounded square of [_AppTile.iconSize], with [label] centred below it,
-/// on no card of its own.
-class _HomeCell extends StatelessWidget {
+/// on no card of its own. Under a mouse the cell fills with `hover` and its
+/// icon lifts (1.03 and elevation level 1), as the home app's tiles do,
+/// and shows the arrow (an [InkWell]'s cursor off the web).
+class _HomeCell extends StatefulWidget {
   const _HomeCell({
     super.key,
     required this.semantics,
@@ -449,32 +451,65 @@ class _HomeCell extends StatelessWidget {
   final ValueChanged<Rect>? onLongPress;
 
   @override
-  Widget build(BuildContext context) => Semantics(
-    button: true,
-    label: semantics,
-    excludeSemantics: true,
-    child: InkWell(
-      onTap: onTap,
-      onLongPress: switch (onLongPress) {
-        final f? => () {
-          final box = context.findRenderObject()! as RenderBox;
-          f(box.localToGlobal(Offset.zero) & box.size);
+  State<_HomeCell> createState() => _HomeCellState();
+}
+
+class _HomeCellState extends State<_HomeCell> {
+  var _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = claxPalette(context);
+    final brightness = Theme.of(context).brightness;
+    final lift = ClaxMotion.of(context, ClaxMotion.fast);
+    final side = _AppTile.iconSize(context);
+    return Semantics(
+      button: true,
+      label: widget.semantics,
+      excludeSemantics: true,
+      child: InkWell(
+        onTap: widget.onTap,
+        onHover: (h) => setState(() => _hovered = h),
+        hoverColor: p.hover,
+        onLongPress: switch (widget.onLongPress) {
+          final f? => () {
+            final box = context.findRenderObject()! as RenderBox;
+            f(box.localToGlobal(Offset.zero) & box.size);
+          },
+          null => null,
         },
-        null => null,
-      },
-      borderRadius: BorderRadius.circular(20),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(4, _AppTile._top, 4, 4),
-        child: Column(
-          children: [
-            SizedBox.square(dimension: _AppTile.iconSize(context), child: icon),
-            const SizedBox(height: _AppTile._gap),
-            label,
-          ],
+        borderRadius: BorderRadius.circular(20),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(4, _AppTile._top, 4, 4),
+          child: Column(
+            children: [
+              AnimatedScale(
+                scale: _hovered ? 1.03 : 1,
+                duration: lift,
+                curve: ClaxMotion.standard,
+                child: AnimatedContainer(
+                  duration: lift,
+                  width: side,
+                  height: side,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(
+                      _AppTile.iconRadius(context),
+                    ),
+                    boxShadow: _hovered
+                        ? ClaxElevation.shadows(1, brightness)
+                        : const [],
+                  ),
+                  child: widget.icon,
+                ),
+              ),
+              const SizedBox(height: _AppTile._gap),
+              widget.label,
+            ],
+          ),
         ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class _AppTile extends StatelessWidget {

@@ -147,6 +147,12 @@ ThemeData _buildTheme(
   };
   final apple = ClaxFamily.forPlatform(platform) == ClaxFamily.apple;
   final scheme = _scheme(brightness, p);
+  // The Mac shows the arrow over controls. Flutter's buttons, ink and
+  // checkboxes already do off the web; its list tiles and switches show
+  // the pointing hand unless told.
+  final WidgetStateProperty<MouseCursor?>? cursor = apple
+      ? const WidgetStatePropertyAll(SystemMouseCursors.basic)
+      : null;
   // The roles over the platform's typography, so every style a theme below
   // hands out carries the platform's family as well as the brand's sizes.
   final typography = Typography.material2021(platform: platform);
@@ -324,6 +330,7 @@ ThemeData _buildTheme(
       ),
     ),
     listTileTheme: ListTileThemeData(
+      mouseCursor: cursor,
       contentPadding: const EdgeInsets.symmetric(horizontal: ClaxSpace.s16),
       iconColor: p.muted,
       titleTextStyle: text.bodyLarge,
@@ -380,6 +387,7 @@ ThemeData _buildTheme(
       circularTrackColor: Colors.transparent,
     ),
     switchTheme: SwitchThemeData(
+      mouseCursor: cursor,
       trackColor: onGreen(null),
       thumbColor: WidgetStateProperty.resolveWith(
         (s) => s.contains(WidgetState.disabled)

@@ -5,6 +5,7 @@ import 'dart:ui'
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
+import '../kit/family.dart';
 import '../kit/window_titlebar.dart';
 import 'window_channel.dart';
 import 'window_drag.dart';
@@ -94,7 +95,8 @@ class WindowContents extends ChangeNotifier {
 /// ([MacWindow.titlebar]), as a phone's is below its status bar; a screen
 /// that draws its bar in that row, beside the window buttons, finds it
 /// with [WindowTitlebar.of]. A press in the row that no control takes
-/// moves the window ([WindowRowDrag]).
+/// moves the window ([WindowRowDrag]). Every window has the system's
+/// accent ([SystemAccentScope] over [MacWindow.accent]).
 class ClaxViews extends StatefulWidget {
   const ClaxViews({super.key, required this.main, this.further});
 
@@ -162,7 +164,10 @@ class _ClaxViewsState extends State<ClaxViews> with WidgetsBindingObserver {
           View(
             key: ValueKey(v.viewId),
             view: v,
-            child: _BelowTitlebar(view: v, child: content),
+            child: SystemAccentScope(
+              notifier: MacWindow.accent,
+              child: _BelowTitlebar(view: v, child: content),
+            ),
           ),
     ],
   );

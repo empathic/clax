@@ -19,8 +19,10 @@ const typeSelectPause = Duration(seconds: 1);
 /// Rows are 28 high: a 20-point app icon (`tile` radius), the title in
 /// `body` and the unread count as a trailing [ClaxBadge]; a make has its
 /// ring and "3/7", and a second line while it is offline, waiting,
-/// interrupted or failed. The selected row is filled with the accent while
-/// the sidebar has the keyboard focus, grey without it. ↑ and ↓ move the
+/// interrupted or failed. The selected row is filled with the system's
+/// accent ([appleAccent]) while the sidebar has the keyboard focus, grey
+/// without it; another row under the mouse is filled with `hover`, and the
+/// mouse shows the arrow over every row. ↑ and ↓ move the
 /// selection and typing selects by title ([typeSelectPause] apart starts a
 /// new prefix, by [now]). An app dragged onto Starred or a place in Apps
 /// is put there through `layout/main` ([SidebarModel.drop]); a secondary
@@ -356,9 +358,7 @@ class _ClaxSidebarState extends State<ClaxSidebar> {
 
   /// [fallback], or the accent's ink on a selected row that has the focus.
   Color _ink(BuildContext context, bool selected, Color fallback) =>
-      selected && _focus.hasFocus
-      ? Theme.of(context).colorScheme.onPrimary
-      : fallback;
+      selected && _focus.hasFocus ? appleOnAccent(context) : fallback;
 
   Widget _selectable(
     BuildContext context, {
@@ -444,7 +444,7 @@ BoxDecoration? _dropLine(BuildContext context, bool on) => on
       )
     : null;
 
-class _SidebarTile extends StatelessWidget {
+class _SidebarTile extends StatefulWidget {
   const _SidebarTile({
     super.key,
     required this.selected,
@@ -467,40 +467,54 @@ class _SidebarTile extends StatelessWidget {
   final double height, indent;
 
   @override
+  State<_SidebarTile> createState() => _SidebarTileState();
+}
+
+class _SidebarTileState extends State<_SidebarTile> {
+  var _hovered = false;
+
+  @override
   Widget build(BuildContext context) {
     final p = claxPalette(context);
-    final fill = !selected
-        ? null
-        : focused
-        ? Theme.of(context).colorScheme.primary
-        : p.fg.withValues(alpha: 0.1);
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: onTap,
-      onSecondaryTapUp: onSecondaryTap == null
-          ? null
-          : (_) {
-              final box = context.findRenderObject() as RenderBox?;
-              if (box == null) return;
-              onSecondaryTap!(box.localToGlobal(Offset.zero) & box.size);
-            },
-      child: Container(
-        height: height,
-        decoration: _dropLine(context, dropOver),
+    final w = widget;
+    final fill = w.selected
+        ? (w.focused ? appleAccent(context) : p.fg.withValues(alpha: 0.1))
+        : _hovered && w.onTap != null
+        ? p.hover
+        : null;
+    return MouseRegion(
+      cursor: SystemMouseCursors.basic,
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: w.onTap,
+        onSecondaryTapUp: w.onSecondaryTap == null
+            ? null
+            : (_) {
+                final box = context.findRenderObject() as RenderBox?;
+                if (box == null) return;
+                w.onSecondaryTap!(box.localToGlobal(Offset.zero) & box.size);
+              },
         child: Container(
-          margin: const EdgeInsets.symmetric(vertical: 1),
-          padding: EdgeInsets.only(left: ClaxSpace.s8 + indent, right: 6),
-          decoration: BoxDecoration(
-            color: fill,
-            borderRadius: BorderRadius.circular(ClaxRadius.controlApple),
-          ),
-          child: Row(
-            children: [
-              SizedBox(width: 20, child: Center(child: leading)),
-              const SizedBox(width: 6),
-              Expanded(child: title),
-              ?trailing,
-            ],
+          height: w.height,
+          decoration: _dropLine(context, w.dropOver),
+          child: Container(
+            key: const ValueKey('sidebar-row-fill'),
+            margin: const EdgeInsets.symmetric(vertical: 1),
+            padding: EdgeInsets.only(left: ClaxSpace.s8 + w.indent, right: 6),
+            decoration: BoxDecoration(
+              color: fill,
+              borderRadius: BorderRadius.circular(ClaxRadius.controlApple),
+            ),
+            child: Row(
+              children: [
+                SizedBox(width: 20, child: Center(child: w.leading)),
+                const SizedBox(width: 6),
+                Expanded(child: w.title),
+                ?w.trailing,
+              ],
+            ),
           ),
         ),
       ),

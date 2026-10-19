@@ -212,6 +212,27 @@ final class WindowBridgeTests: XCTestCase {
   func testUnknownMethodsAreNotHandled() {
     XCTAssertFalse(call("nonsense", nil).known)
   }
+
+  func testTheAccentIsAnsweredInEachAppearanceAndSentWhenItChanges() {
+    var colour = NSColor(srgbRed: 1, green: 45 / 255, blue: 85 / 255, alpha: 1)
+    let bridge = WindowBridge(
+      chrome: { [unowned self] in self.sent.append(("window", $0, $1 as? [String: Any] ?? [:])) },
+      windows: { _, _ in }, accent: { colour })
+    var reply: Any?
+    XCTAssertTrue(bridge.handle("accentColor", nil, reply: { reply = $0 }, fail: { _ in }))
+    XCTAssertEqual(reply as? [String: String], ["light": "#ff2d55", "dark": "#ff2d55"])
+    colour = NSColor(srgbRed: 0, green: 122 / 255, blue: 1, alpha: 1)
+    NotificationCenter.default.post(name: NSColor.systemColorsDidChangeNotification, object: nil)
+    XCTAssertTrue(
+      sent.contains {
+        $0.1 == "accentColor"
+          && $0.2 as? [String: String] == ["light": "#007aff", "dark": "#007aff"]
+      })
+    // The system's own accent differs by appearance, each a colour.
+    let system = WindowBridge(chrome: { _, _ in }, windows: { _, _ in }).accentMap
+    XCTAssertEqual(system["light"]?.count, 7)
+    XCTAssertEqual(system["dark"]?.count, 7)
+  }
 }
 
 /// `WindowBridge`'s `dragWindow`: the toolbar row moves the window from a

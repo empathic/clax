@@ -25,6 +25,9 @@ import WebKit
 ///   follows the mouse from that press ([mouseDown]) while the button is
 ///   held; the second press of a double click does the title bar's double
 ///   click action (zoom, unless System Settings says minimise or nothing).
+///   `accentColor` answers the system's accent ([accentMap]: {light,
+///   dark}, each `#rrggbb`), and the bridge sends `accentColor` {light,
+///   dark} when System Settings changes it; it names no view.
 ///
 /// Uses AppKit and WebKit only, so `//apps/clax_app:macos_window_bridge_test`
 /// compiles it on its own.
@@ -58,6 +61,10 @@ final class WindowBridge: NSObject {
   private let doubleClick: (NSWindow) -> Void
   /// Whether the left mouse button is down now.
   private let buttonDown: () -> Bool
+  /// The system's accent colour, resolved in the appearance current when
+  /// it is read.
+  private let accent: () -> NSColor
+  private var accentObserver: NSObjectProtocol?
   /// The last left press in a window's toolbar row, until a drag takes it.
   private var press: (event: NSEvent, window: NSWindow)?
   /// Makes and shows a window of a kind (`settings`, `inbox`) that has
@@ -68,13 +75,52 @@ final class WindowBridge: NSObject {
     chrome: @escaping (String, Any?) -> Void, windows: @escaping (String, Any?) -> Void,
     drag: @escaping (NSWindow, NSEvent) -> Void = { $0.performDrag(with: $1) },
     doubleClick: @escaping (NSWindow) -> Void = WindowBridge.titlebarDoubleClick,
-    buttonDown: @escaping () -> Bool = { NSEvent.pressedMouseButtons & 1 != 0 }
+    buttonDown: @escaping () -> Bool = { NSEvent.pressedMouseButtons & 1 != 0 },
+    accent: @escaping () -> NSColor = { NSColor.controlAccentColor }
   ) {
     self.chrome = chrome
     self.windows = windows
     self.drag = drag
     self.doubleClick = doubleClick
     self.buttonDown = buttonDown
+    self.accent = accent
+    super.init()
+    // Posted when the accent (or the highlight colour) changes.
+    accentObserver = NotificationCenter.default.addObserver(
+      forName: NSColor.systemColorsDidChangeNotification, object: nil, queue: nil
+    ) { [weak self] _ in
+      let send = { [weak self] in
+        guard let self else { return }
+        self.chrome("accentColor", self.accentMap)
+      }
+      if Thread.isMainThread { send() } else { DispatchQueue.main.async(execute: send) }
+    }
+  }
+
+  deinit {
+    if let accentObserver { NotificationCenter.default.removeObserver(accentObserver) }
+  }
+
+  /// The accent in the light (`aqua`) and the dark (`darkAqua`)
+  /// appearance, each `#rrggbb` in sRGB.
+  var accentMap: [String: String] {
+    func hex(_ name: NSAppearance.Name) -> String {
+      var out = "#000000"
+      NSAppearance(named: name)?.performAsCurrentDrawingAppearance {
+        out = Self.hex(self.accent())
+      }
+      return out
+    }
+    return ["light": hex(.aqua), "dark": hex(.darkAqua)]
+  }
+
+  /// [color] as `#rrggbb` in sRGB; black for one with no sRGB form.
+  static func hex(_ color: NSColor) -> String {
+    guard let c = color.usingColorSpace(.sRGB) else { return "#000000" }
+    func byte(_ v: CGFloat) -> Int { Int((min(max(v, 0), 1) * 255).rounded()) }
+    return String(
+      format: "#%02x%02x%02x", byte(c.redComponent), byte(c.greenComponent),
+      byte(c.blueComponent))
   }
 
   /// Keeps a left press in the toolbar row of [window], one of Clax's, for
@@ -172,6 +218,8 @@ final class WindowBridge: NSObject {
     let map = args as? [String: Any]
     let view = (map?["view"] as? NSNumber)?.int64Value
     switch method {
+    case "accentColor":
+      reply(accentMap)
     case "kind":
       let id = (args as? NSNumber)?.int64Value ?? view
       reply(id.flatMap { entries[$0]?.kind })

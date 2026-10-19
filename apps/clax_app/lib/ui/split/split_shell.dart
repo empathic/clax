@@ -9,8 +9,10 @@ import '../kit/kit.dart';
 import '../layout.dart';
 import '../mac/mac_toolbar.dart';
 import '../mac/window_channel.dart';
+import '../shortcuts.dart';
 import '../theme.dart';
 import '../tokens.g.dart';
+import '../user_message.dart';
 import 'list_pane.dart';
 import 'sidebar.dart';
 import 'sidebar_model.dart';
@@ -45,6 +47,16 @@ import 'sidebar_model.dart';
 /// for the home app ([HomeHost.holdToolbar]) while it is built, so the
 /// home app leaves its top bar, search and New app to the sidebar, the
 /// toolbar and the menu bar.
+///
+/// Keys beyond the menus ([claxShortcuts]'s, Command on the Apple family
+/// and Control on Material), none of them while a text field has the
+/// keyboard:
+/// - Space in the sidebar opens what is selected: the keyboard goes into
+///   the detail (its first control), and a make shows its build view
+///   ([HomeActions.openMake]); a sidebar over the detail goes.
+/// - ⌘⌫ asks whether to delete the selected app ([ClaxDialog], Cancel the
+///   default) and, on Delete, runs [onDelete]; a failure is a toast.
+/// - ⌘1…⌘9 select the first nine starred apps ([SidebarModel.starred]).
 class SplitShell extends StatefulWidget {
   const SplitShell({
     super.key,
@@ -55,6 +67,7 @@ class SplitShell extends StatefulWidget {
     this.onSidebarWidth,
     this.onMenu,
     this.onSidebarShown,
+    this.onDelete,
     this.now = DateTime.now,
   });
 
@@ -70,6 +83,9 @@ class SplitShell extends StatefulWidget {
   /// Told whether the sidebar shows, after each frame in which that
   /// changed (for View › Show Sidebar or Hide Sidebar).
   final ValueChanged<bool>? onSidebarShown;
+
+  /// Deletes app [appId], once the person said to; null leaves ⌘⌫ alone.
+  final Future<void> Function(String appId)? onDelete;
 
   /// The clock type-select reads.
   final DateTime Function() now;
@@ -90,6 +106,7 @@ class SplitShell extends StatefulWidget {
 
 class SplitShellState extends State<SplitShell> {
   final _filterFocus = FocusNode(debugLabel: 'sidebar filter');
+  final _detailScope = FocusScopeNode(debugLabel: 'split detail');
   late double _width = _clamp(widget.sidebarWidth);
   StreamSubscription<ToolbarClick>? _clicks;
 
@@ -163,7 +180,98 @@ class SplitShellState extends State<SplitShell> {
       unawaited(MacWindow.setSidebarWidth(0, view: view));
     }
     _filterFocus.dispose();
+    _detailScope.dispose();
     super.dispose();
+  }
+
+  /// Whether a text field has the keyboard, where these keys are its own.
+  static bool get _typing {
+    final context = FocusManager.instance.primaryFocus?.context;
+    return context != null &&
+        (context.widget is EditableText ||
+            context.findAncestorWidgetOfExactType<EditableText>() != null);
+  }
+
+  static const _starred = [
+    ClaxCommand.starred1,
+    ClaxCommand.starred2,
+    ClaxCommand.starred3,
+    ClaxCommand.starred4,
+    ClaxCommand.starred5,
+    ClaxCommand.starred6,
+    ClaxCommand.starred7,
+    ClaxCommand.starred8,
+    ClaxCommand.starred9,
+  ];
+
+  /// Whether the shell runs [c] now.
+  bool _takes(ClaxCommand c) {
+    if (_typing) return false;
+    if (c == ClaxCommand.openSelected) return true;
+    if (c == ClaxCommand.deleteApp) {
+      return widget.onDelete != null &&
+          widget.model.selection is AppSelected;
+    }
+    final n = _starred.indexOf(c);
+    return n >= 0 && n < widget.model.starred.length;
+  }
+
+  void _run(ClaxCommand c) {
+    if (c == ClaxCommand.openSelected) return _openSelected();
+    if (c == ClaxCommand.deleteApp) {
+      if (widget.model.selection case AppSelected(:final id)) {
+        unawaited(_delete(id));
+      }
+      return;
+    }
+    final n = _starred.indexOf(c);
+    final starred = widget.model.starred;
+    if (n >= 0 && n < starred.length) {
+      widget.model.select(AppSelected(starred[n]));
+    }
+  }
+
+  /// Space: the keyboard into the detail, and a make's build view.
+  void _openSelected() {
+    if (_over) setState(() => _over = false);
+    if (widget.model.selection case MakeSelected(:final id)) {
+      widget.model.host.actions.openMake(id);
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final at = _detailScope.context;
+      if (!mounted || at == null) return;
+      final policy =
+          FocusTraversalGroup.maybeOf(at) ?? ReadingOrderTraversalPolicy();
+      (policy.findFirstFocus(_detailScope) ?? _detailScope).requestFocus();
+    });
+  }
+
+  /// ⌘⌫: asks whether to delete app [id], then deletes it.
+  Future<void> _delete(String id) async {
+    final title =
+        widget.model.host.state.apps
+            .where((a) => a.id == id)
+            .firstOrNull
+            ?.title ??
+        'this app';
+    final choice = await ClaxDialog.show(
+      context,
+      title: 'Delete “$title”?',
+      body: 'Its versions, threads and saved data go with it. You can’t undo '
+          'this.',
+      actions: const [
+        ClaxDialogAction('Delete', kind: ClaxButtonKind.destructive),
+        ClaxDialogAction('Cancel'),
+      ],
+      defaultIndex: 1,
+      cancelIndex: 1,
+    );
+    if (choice != 0 || !mounted) return;
+    try {
+      await widget.onDelete?.call(id);
+    } on Object catch (e) {
+      if (mounted) ClaxToast.show(context, userMessage(e), error: true);
+    }
   }
 
   void _onSelected() {
@@ -266,7 +374,14 @@ class SplitShellState extends State<SplitShell> {
     });
 
     final detail = _detail(context, left: beside ? sideWidth : 0);
-    Widget sidebar() => apple
+    final keys = claxShortcuts(family);
+    Map<ShortcutActivator, Intent> only(bool Function(ClaxCommand) which) => {
+      for (final MapEntry(:key, :value) in keys.entries)
+        if (value is ClaxCommandIntent && which(value.command)) key: value,
+    };
+    Widget sidebar() => Shortcuts(
+      shortcuts: only((c) => c == ClaxCommand.openSelected),
+      child: apple
         ? ClaxSidebar(
             model: widget.model,
             filterFocus: _filterFocus,
@@ -277,7 +392,8 @@ class SplitShellState extends State<SplitShell> {
                 ? Colors.transparent
                 : _sidebarFill(context),
           )
-        : ClaxListPane(model: widget.model);
+        : ClaxListPane(model: widget.model),
+    );
 
     Widget body;
     if (beside) {
@@ -347,6 +463,15 @@ class SplitShellState extends State<SplitShell> {
       );
     }
 
+    body = Shortcuts(
+      shortcuts: only(
+        (c) => c == ClaxCommand.deleteApp || _starred.contains(c),
+      ),
+      child: Actions(
+        actions: {ClaxCommandIntent: _ShellCommand(this)},
+        child: body,
+      ),
+    );
     return CallbackShortcuts(
       bindings: {
         SingleActivator(
@@ -389,6 +514,7 @@ class SplitShellState extends State<SplitShell> {
       ],
     );
     out = ColoredBox(color: claxPalette(context).bg, child: out);
+    out = FocusScope(node: _detailScope, child: out);
     final bar = WindowTitlebar.of(context);
     if (bar != null) {
       out = WindowTitlebarScope(
@@ -400,5 +526,23 @@ class SplitShellState extends State<SplitShell> {
       );
     }
     return out;
+  }
+}
+
+/// The commands a [SplitShell] runs ([SplitShellState._takes]); any other
+/// goes on to the actions above it.
+class _ShellCommand extends Action<ClaxCommandIntent> {
+  _ShellCommand(this.shell);
+
+  final SplitShellState shell;
+
+  @override
+  bool isEnabled(ClaxCommandIntent intent) =>
+      shell.mounted && shell._takes(intent.command);
+
+  @override
+  Object? invoke(ClaxCommandIntent intent) {
+    shell._run(intent.command);
+    return null;
   }
 }

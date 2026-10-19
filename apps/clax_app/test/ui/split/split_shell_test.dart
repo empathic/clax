@@ -1,4 +1,5 @@
 import 'package:clax_app/ui/kit/kit.dart';
+import 'package:clax_app/ui/kit/native_dialogs.dart';
 import 'package:clax_app/ui/mac/mac_toolbar.dart';
 import 'package:clax_app/ui/mac/window_channel.dart';
 import 'package:clax_app/ui/split/sidebar.dart';
@@ -25,6 +26,7 @@ void main() {
   // Whether the window's toolbar has a search item (focusSearch's answer).
   var searchItem = false;
   final menus = <String>[];
+  final deleted = <String>[];
   var now = DateTime.utc(2026, 10, 19, 9);
 
   /// The shell in a window of [size], on the platform the test's variant
@@ -39,6 +41,7 @@ void main() {
     toolbar = [];
     keptWidth = null;
     menus.clear();
+    deleted.clear();
     final m = tester.binding.defaultBinaryMessenger;
     m.setMockMethodCallHandler(MacWindow.channel, (c) async {
       window.add(c);
@@ -68,9 +71,18 @@ void main() {
         home: SplitShell(
           model: model,
           home: const Center(child: Text('home grid')),
-          detailFor: (s) => Center(child: Text('detail of $s')),
+          detailFor: (s) => Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('detail of $s'),
+                TextButton(onPressed: () {}, child: const Text('in detail')),
+              ],
+            ),
+          ),
           onSidebarWidth: (w) => keptWidth = w,
           onMenu: (id, _) => menus.add(id),
+          onDelete: (id) async => deleted.add(id),
           now: () => now,
         ),
       ),
@@ -290,6 +302,136 @@ void main() {
     await tester.pump();
     expect(menus, [f.ids['Saw']]);
     semantics.dispose();
+  }, variant: _mac);
+
+  testWidgets('Command-Backspace asks before deleting the selected app, in '
+      'the window\'s alert, and Delete deletes it', (tester) async {
+    await pumpShell(
+      tester,
+      size: const Size(1200, 800),
+    );
+    final alerts = <Map<Object?, Object?>>[];
+    var answer = 1;
+    final m = tester.binding.defaultBinaryMessenger;
+    m.setMockMethodCallHandler(NativeDialogs.channel, (c) async {
+      if (c.method != 'alert') return null;
+      alerts.add(c.arguments as Map<Object?, Object?>);
+      return {'index': answer, 'suppressed': false};
+    });
+    addTearDown(() => m.setMockMethodCallHandler(NativeDialogs.channel, null));
+    Future<void> commandBackspace() async {
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+      await tester.pumpAndSettle();
+    }
+
+    await tester.tap(find.text('Groceries'));
+    await tester.pump();
+    await commandBackspace();
+    expect(alerts, hasLength(1));
+    expect(alerts.single['title'], 'Delete “Groceries”?');
+    expect(alerts.single['buttons'], ['Delete', 'Cancel']);
+    expect(alerts.single['destructive'], [0]);
+    expect(alerts.single['defaultIndex'], 1);
+    expect(alerts.single['cancelIndex'], 1);
+    expect(deleted, isEmpty);
+
+    answer = 0;
+    await commandBackspace();
+    expect(alerts, hasLength(2));
+    expect(deleted, [f.ids['Groceries']]);
+  }, variant: _mac);
+
+  testWidgets('Command-Backspace asks nothing with Home selected or while '
+      'a field has the keyboard', (tester) async {
+    await pumpShell(
+      tester,
+      size: const Size(1200, 800),
+    );
+    final alerts = <MethodCall>[];
+    final m = tester.binding.defaultBinaryMessenger;
+    m.setMockMethodCallHandler(NativeDialogs.channel, (c) async {
+      alerts.add(c);
+      return {'index': 0, 'suppressed': false};
+    });
+    addTearDown(() => m.setMockMethodCallHandler(NativeDialogs.channel, null));
+    Future<void> commandBackspace() async {
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+      await tester.pumpAndSettle();
+    }
+
+    await commandBackspace();
+    expect(alerts, isEmpty);
+
+    await tester.tap(find.text('Groceries'));
+    await tester.pump();
+    await tester.enterText(find.byKey(const ValueKey('sidebar-filter')), 'gro');
+    await commandBackspace();
+    expect(alerts, isEmpty);
+    expect(deleted, isEmpty);
+  }, variant: _mac);
+
+  testWidgets('Command-1 to Command-9 select the starred apps in order', (
+    tester,
+  ) async {
+    await pumpShell(
+      tester,
+      size: const Size(1200, 800),
+    );
+    Future<void> command(LogicalKeyboardKey key) async {
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+      await tester.sendKeyEvent(key);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+      await tester.pump();
+    }
+
+    await tester.tap(find.text('Home'));
+    await command(LogicalKeyboardKey.digit2);
+    expect(model.selection, AppSelected(f.ids['Notes']!));
+    await command(LogicalKeyboardKey.digit1);
+    expect(model.selection, AppSelected(f.ids['Runs']!));
+    // Two are starred: a third selects nothing new.
+    await command(LogicalKeyboardKey.digit3);
+    expect(model.selection, AppSelected(f.ids['Runs']!));
+  }, variant: _mac);
+
+  testWidgets('Space in the sidebar opens the selected app: the keyboard '
+      'goes into its detail', (tester) async {
+    await pumpShell(
+      tester,
+      size: const Size(1200, 800),
+    );
+    await tester.tap(find.text('Groceries'));
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.space);
+    await tester.pump();
+    final focused = FocusManager.instance.primaryFocus!.context!;
+    expect(
+      find.ancestor(
+        of: find.byElementPredicate((e) => e == focused),
+        matching: find.widgetWithText(TextButton, 'in detail'),
+      ),
+      findsOneWidget,
+    );
+  }, variant: _mac);
+
+  testWidgets('Space on a make in the sidebar shows its build view', (
+    tester,
+  ) async {
+    await pumpShell(
+      tester,
+      size: const Size(1200, 800),
+    );
+    await tester.tap(find.text('A tide table'));
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.space);
+    await tester.pump();
+    final id = (model.selection as MakeSelected).id;
+    expect(f.actions.calls.last.$1, 'openMake');
+    expect(f.actions.calls.last.$2, [id]);
   }, variant: _mac);
 
   testWidgets('an app dragged onto Starred is starred there', (tester) async {

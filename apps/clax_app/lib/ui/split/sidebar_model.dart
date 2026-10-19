@@ -168,6 +168,10 @@ class SidebarModel extends ChangeNotifier {
   /// The rows, top to bottom.
   List<SidebarRow> get rows => _rows ??= _build();
 
+  /// The starred apps listed now, in the person's order, whatever
+  /// [filter] holds (⌘1…⌘9 select the first nine).
+  List<String> get starred => _sections().starred;
+
   /// Shows [s] in the detail; an app in a closed group opens the group.
   void select(SidebarSelection s) {
     if (s case AppSelected(:final id)) {

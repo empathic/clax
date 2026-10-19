@@ -825,7 +825,9 @@ String inboxTime(String createdAt, DateTime now) {
 /// One row of the inbox: the app's 40 dp icon, its title in `headline`,
 /// the kind's line ([inboxLine]) and the time trailing. Unread is a bold
 /// title and an 8 dp dot in `you`; no row is tinted for it. The row shown
-/// beside a list pane ([selected]) is filled in a raised surface.
+/// beside a list pane ([selected]) is filled in a raised surface. A row
+/// under the mouse fills with `hover` and shows the arrow (an [InkWell]'s
+/// cursor off the web).
 class InboxRow extends StatelessWidget {
   const InboxRow({
     super.key,
@@ -871,6 +873,7 @@ class InboxRow extends StatelessWidget {
         color: selected ? p.surfaceContainers[3] : Colors.transparent,
         child: InkWell(
         onTap: onTap,
+        hoverColor: p.hover,
         child: ConstrainedBox(
           constraints: const BoxConstraints(minHeight: 72),
           child: Padding(

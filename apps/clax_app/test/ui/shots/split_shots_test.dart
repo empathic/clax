@@ -1,7 +1,9 @@
 // Renders of the split layout: the sidebar beside the home grid (Home
 // selected) and beside an open app, with two starred apps, a group and a
 // make, light and dark, as `split-home-<form>-<theme>.png` and
-// `split-app-<form>-<theme>.png`.
+// `split-app-<form>-<theme>.png`; and on the Mac, `split-hover-mac-<theme>`:
+// the app's row selected while the sidebar has the keyboard, in the
+// system's accent (macOS's default blue), with the mouse over another row.
 //
 // The Mac form is drawn under the main window's real toolbar row (52
 // points, the window buttons' corner 79 points across, as
@@ -20,6 +22,7 @@ import 'package:clax_app/ui/split/split_shell.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/tokens.g.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -27,6 +30,12 @@ import '../../support/split_fixture.dart';
 import 'rig.dart';
 
 const _bar = WindowTitlebar(top: 52, leading: 79);
+
+/// macOS's default accent (Multicolor), light and dark.
+final accent = ValueNotifier<SystemAccent?>((
+  light: const Color(0xFF007AFF),
+  dark: const Color(0xFF0A84FF),
+));
 
 /// The sidebar's width in the Mac renders.
 const double _sidebar = 220;
@@ -261,10 +270,10 @@ void main() {
     return (f, model);
   }
 
-  for (final app in [false, true]) {
+  for (final scene in ['home', 'app', 'hover']) {
+    final app = scene != 'home';
     for (final dark in [false, true]) {
-      final name =
-          'split-${app ? 'app' : 'home'}-mac-${dark ? 'dark' : 'light'}';
+      final name = 'split-$scene-mac-${dark ? 'dark' : 'light'}';
       testWidgets(name, skip: dir == null, (tester) async {
         await tester.runAsync(loadFonts);
         final comparator = goldenFileComparator;
@@ -299,16 +308,19 @@ void main() {
                       key: const ValueKey('mac-window'),
                       children: [
                         _Material(width: 220, dark: dark),
-                        MaterialApp(
-                          debugShowCheckedModeBanner: false,
-                          theme: claxTheme(
-                            dark ? Brightness.dark : Brightness.light,
-                            TargetPlatform.macOS,
-                          ),
-                          home: SplitShell(
-                            model: model,
-                            home: const Material(child: _Grid()),
-                            detailFor: _detail,
+                        SystemAccentScope(
+                          notifier: accent,
+                          child: MaterialApp(
+                            debugShowCheckedModeBanner: false,
+                            theme: claxTheme(
+                              dark ? Brightness.dark : Brightness.light,
+                              TargetPlatform.macOS,
+                            ),
+                            home: SplitShell(
+                              model: model,
+                              home: const Material(child: _Grid()),
+                              detailFor: _detail,
+                            ),
                           ),
                         ),
                         _Toolbar(
@@ -333,6 +345,22 @@ void main() {
           );
           for (var i = 0; i < 6; i++) {
             await tester.pump(const Duration(milliseconds: 100));
+          }
+          if (scene == 'hover') {
+            // The keyboard in the sidebar, and the mouse over Budget.
+            await tester.tap(
+              find.byKey(ValueKey('sidebar-app-${f.ids['Groceries']}')),
+            );
+            final mouse = await tester.createGesture(
+              kind: PointerDeviceKind.mouse,
+            );
+            await mouse.addPointer(
+              location: tester.getCenter(
+                find.byKey(ValueKey('sidebar-app-${f.ids['Budget']}')),
+              ),
+            );
+            addTearDown(mouse.removePointer);
+            await tester.pump();
           }
           // Nothing of the sidebar under the window buttons.
           expect(

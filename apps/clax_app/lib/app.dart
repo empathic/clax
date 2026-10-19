@@ -2706,6 +2706,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       onMenu: (id, anchor) =>
           unawaited(host.actions.menu(id, anchor, const [])),
       onSidebarShown: (shown) => _sidebarShown.value = shown,
+      // The gallery's artifact_deleted takes it off the sidebar and the
+      // grid.
+      onDelete: _api.deleteArtifact,
     );
   }
 

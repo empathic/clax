@@ -30,6 +30,11 @@ enum ClaxButtonKind {
 /// as the text grows, with a `radius-control-mac` bezel in 13 pt type:
 /// plain is borderless, destructive a bezel with its label in `danger`,
 /// and the rest a regular bezel, filled in the accent when [isDefault]. The surface holding a default button binds Return to it.
+/// Plain fills with `hover` under the mouse, and the keyboard's focus rings
+/// it in the system's accent ([appleAccent]).
+///
+/// The mouse shows the arrow over either family's button, as Flutter's
+/// buttons do off the web; only a [ClaxLink] shows the pointing hand.
 class ClaxButton extends StatelessWidget {
   const ClaxButton({
     super.key,
@@ -176,6 +181,7 @@ class ClaxButton extends StatelessWidget {
         ? p.agentInk
         : p.fg;
     final bezel = dark ? p.overlay : p.card;
+    final ring = appleAccent(context);
     final style = ButtonStyle(
       // The Apple family's theme is compact; the push button keeps its own
       // 24 pt, and grows with the label at larger text sizes.
@@ -214,7 +220,7 @@ class ClaxButton extends StatelessWidget {
       overlayColor: const WidgetStatePropertyAll(Colors.transparent),
       side: WidgetStateProperty.resolveWith(
         (s) => s.contains(WidgetState.focused)
-            ? BorderSide(color: p.agent, width: 2)
+            ? BorderSide(color: ring, width: 2)
             : borderless || filled
             ? BorderSide.none
             : BorderSide(color: dark ? p.borderHover : p.border),
@@ -258,6 +264,67 @@ class ClaxButton extends StatelessWidget {
         ],
       ),
       child: button,
+    );
+  }
+}
+
+/// A link: [label] in `agent-ink`, underlined while the mouse is over it,
+/// running [onPressed] on a tap, a click, Return or Space. The pointing
+/// hand shows over it in both families, the one control that shows it on
+/// the Mac; screen readers hear a link.
+class ClaxLink extends StatefulWidget {
+  const ClaxLink({super.key, required this.label, required this.onPressed});
+
+  final String label;
+
+  /// Called on a press; null disables the link.
+  final VoidCallback? onPressed;
+
+  @override
+  State<ClaxLink> createState() => _ClaxLinkState();
+}
+
+class _ClaxLinkState extends State<ClaxLink> {
+  var _hovered = false;
+  var _focused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = claxPalette(context);
+    final theme = Theme.of(context);
+    final on = widget.onPressed != null;
+    final style = ClaxType.of(ClaxRole.body, theme.platform).copyWith(
+      color: on ? p.agentInk : p.muted,
+      decoration: on && (_hovered || _focused)
+          ? TextDecoration.underline
+          : TextDecoration.none,
+      decorationColor: p.agentInk,
+    );
+    return Semantics(
+      link: true,
+      enabled: on,
+      label: widget.label,
+      excludeSemantics: true,
+      onTap: widget.onPressed,
+      child: FocusableActionDetector(
+        enabled: on,
+        mouseCursor: on ? SystemMouseCursors.click : SystemMouseCursors.basic,
+        onShowHoverHighlight: (h) => setState(() => _hovered = h),
+        onShowFocusHighlight: (f) => setState(() => _focused = f),
+        actions: {
+          ActivateIntent: CallbackAction<ActivateIntent>(
+            onInvoke: (_) {
+              widget.onPressed?.call();
+              return null;
+            },
+          ),
+        },
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: widget.onPressed,
+          child: Text(widget.label, style: style),
+        ),
+      ),
     );
   }
 }

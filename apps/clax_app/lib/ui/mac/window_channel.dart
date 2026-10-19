@@ -20,8 +20,12 @@ import '../kit/window_titlebar.dart';
 /// - `titlebar` {view, top, leading}: the window's title bar and toolbar
 ///   row, which its content runs under, and the right edge of its window
 ///   buttons; [titlebar].
+/// - `accentColor` {light, dark}: the system's accent changed, each
+///   `#rrggbb` in that appearance; [accent]. It names no view: the accent
+///   is every window's.
 ///
-/// To it, besides the setters: `dragWindow` {view} ([dragWindow]).
+/// To it, besides the setters: `dragWindow` {view} ([dragWindow]), and
+/// `accentColor`, which answers the accent as the native side sends it.
 abstract final class MacWindow {
   static const channel = MethodChannel('dev.empathic.clax/window');
 
@@ -29,7 +33,54 @@ abstract final class MacWindow {
   static final _titlebars = <int, ValueNotifier<WindowTitlebar>>{};
   static final _wanting = <int, Set<Object>>{};
   static final _wantedSent = <int, bool>{};
+  static final _accent = ValueNotifier<SystemAccent?>(null);
+  static var _accentAsked = false;
   static var _listening = false;
+
+  /// The system's accent (`NSColor.controlAccentColor`) in the light and
+  /// the dark appearance; null until the native side says, and wherever
+  /// it does not ([hasDesktopWindowChrome] false, or no bridge). The first
+  /// use asks it; later changes arrive from the native side.
+  static ValueListenable<SystemAccent?> get accent {
+    _listen();
+    if (!_accentAsked && hasDesktopWindowChrome) {
+      _accentAsked = true;
+      unawaited(
+        channel
+            .invokeMethod<Object?>('accentColor')
+            .then((answer) {
+              if (_readAccent(answer) case final a?) _accent.value = a;
+            })
+            .catchError((Object _) {}),
+      );
+    }
+    return _accent;
+  }
+
+  /// Forgets the accent, so the next [accent] asks again.
+  @visibleForTesting
+  static void resetAccent() {
+    _accentAsked = false;
+    _accent.value = null;
+  }
+
+  /// An accent as the native side sends it: {light, dark}, each `#rrggbb`.
+  static SystemAccent? _readAccent(Object? map) => switch (map) {
+    {'light': final String light, 'dark': final String dark} => switch ((
+      _hex(light),
+      _hex(dark),
+    )) {
+      (final l?, final d?) => (light: l, dark: d),
+      _ => null,
+    },
+    _ => null,
+  };
+
+  static Color? _hex(String s) {
+    if (s.length != 7 || !s.startsWith('#')) return null;
+    final v = int.tryParse(s.substring(1), radix: 16);
+    return v == null ? null : Color(0xFF000000 | v);
+  }
 
   /// The views whose window caught an Escape from a page.
   static Stream<int> get escapes {
@@ -71,6 +122,12 @@ abstract final class MacWindow {
     _listening = true;
     channel.setMethodCallHandler((call) async {
       final args = call.arguments;
+      if (call.method == 'accentColor') {
+        final a = _readAccent(args);
+        if (a == null) return false;
+        _accent.value = a;
+        return true;
+      }
       if (args is! Map || args['view'] is! int) return false;
       final view = args['view'] as int;
       switch (call.method) {
