@@ -17,7 +17,7 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::audit::AuditCtx;
 use clax_core::feedback::Touched;
-use clax_core::model::{Session, Thread};
+use clax_core::model::{Comment, Session, Thread};
 use clax_core::visibility::{OWNER, UNCONNECTED};
 use clax_core::working::StopReason;
 use clax_core::{Anchor, ArtifactId, CoreError, Event};
@@ -622,10 +622,14 @@ pub(crate) fn resolve_named(
 /// Creates the thread `t` on `id`, sends it when its body mentions
 /// `@agent` or a live agent's `@name` (unless the page wrote it), publishes
 /// the `thread` event, and returns the thread and the `@name`s that reached
-/// no agent. Both are recorded under `audit`. An agent token's write keyed
-/// `key` ([`clax_store::Store::create_thread_keyed_async`]) whose key is
-/// recorded already answers what it made, and nothing is written, sent or
-/// announced.
+/// no agent. Both are recorded under `audit`.
+///
+/// An agent token's write keyed `key`
+/// ([`clax_store::Store::create_thread_keyed_async`]) whose key is recorded
+/// already writes nothing and answers the thread it made. Its sends and
+/// announcement come after the thread's transaction, so the first write
+/// may have ended before them: a thread still open and sent to no agent is
+/// sent and announced now, and any other announced again.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn create_thread_keyed_now(
     st: &Store,
@@ -636,7 +640,7 @@ pub(crate) async fn create_thread_keyed_now(
     live_page: bool,
     hidden: &[String],
     key: Option<CommentKey<'_>>,
-) -> clax_core::Result<Keyed<(Thread, Vec<String>)>> {
+) -> clax_core::Result<(Thread, Vec<String>)> {
     let mention = !t.via_page && mentions_agent(&t.body);
     let named = (!t.via_page).then(|| t.body.clone());
     let thread = match st
@@ -644,18 +648,16 @@ pub(crate) async fn create_thread_keyed_now(
         .await?
     {
         Keyed::Made(t) => t,
-        Keyed::Before {
-            thread_id,
-            comment_id,
-        } => {
-            return Ok(Keyed::Before {
-                thread_id,
-                comment_id,
-            });
+        Keyed::Before { thread_id, .. } => {
+            let t = thread_of(st, id, &thread_id)?;
+            if t.status != "open" || t.sent_to_agent {
+                publish_thread(ctx, st, &t)?;
+                return Ok((t, Vec::new()));
+            }
+            t
         }
     };
     announce_new_thread(st, ctx, audit, thread, mention, named.as_deref(), live_page)
-        .map(Keyed::Made)
 }
 
 /// What follows writing a new thread: sends it to the agent when its first
@@ -757,29 +759,6 @@ pub async fn create(
     refuse_merged_away(&s, id.as_str()).await?;
     clax_http::seats::require_seat(&s, &a.caller, &id).await?;
     let key = comment_key(&a.caller, &headers)?;
-    if let Some((grant, k)) = key.clone() {
-        // A resend of a keyed thread answers the thread it made.
-        let vf = VisFor::of(&a.caller, &s);
-        let codex = s.feedback_ctx().codex_push();
-        let id2 = id.clone();
-        let made = s
-            .store_call(move |st| match st.comment_key(&grant, &k)? {
-                Some((tid, _)) => {
-                    let vis = vf.build(st)?;
-                    Ok(Some(vis.filter_thread(
-                        st,
-                        &thread_of(st, &id2, &tid)?,
-                        codex,
-                        false,
-                    )?))
-                }
-                None => Ok(None),
-            })
-            .await?;
-        if let Some(view) = made {
-            return Ok((StatusCode::CREATED, Json(json!({"thread": view}))));
-        }
-    }
     let mut mp = mp.map_err(|e| multipart_error(e.status(), e.body_text()))?;
     let (mut anchor, mut text, mut version, mut clip) = (None, None, None, None);
     let mut via_page = false;
@@ -897,7 +876,7 @@ pub async fn create(
             // The key is checked again, and recorded, in the thread's own
             // transaction: a resend that raced the check above answers the
             // thread the first made.
-            let made = create_thread_keyed_now(
+            let (thread, unresolved) = create_thread_keyed_now(
                 st,
                 &ctx,
                 &audit,
@@ -916,10 +895,6 @@ pub async fn create(
                 key.as_ref().map(|(g, k)| (g.as_str(), k.as_str())),
             )
             .await?;
-            let (thread, unresolved) = match made {
-                Keyed::Made(made) => made,
-                Keyed::Before { thread_id, .. } => (thread_of(st, &id, &thread_id)?, Vec::new()),
-            };
             let view = vis.filter_thread(st, &thread, ctx.codex_push(), with_path)?;
             Ok((view, unresolved))
         })
@@ -1012,34 +987,6 @@ pub async fn comment(
     refuse_unlinked(&s, &tid).await?;
     let b = body(req)?;
     let key = comment_key(&a.caller, &headers)?;
-    if let Some((grant, k)) = key.clone() {
-        // A resend of a keyed comment answers the comment it made.
-        let vf = VisFor::of(&a.caller, &s);
-        let codex = s.feedback_ctx().codex_push();
-        let (id2, tid2, aid2) = (id.clone(), tid.clone(), aid.clone());
-        let made = s
-            .store_call(move |st| match st.comment_key(&grant, &k)? {
-                Some((ktid, cid)) if ktid == tid2 => {
-                    let vis = vf.build(st)?;
-                    let t = thread_of(st, &id2, &tid2)?;
-                    let Some(c) = t.comments.iter().find(|c| c.id == cid) else {
-                        return Ok(None);
-                    };
-                    let comment = vis.filter_comment(&aid2, c);
-                    Ok(Some(json!({"comment": comment,
-                        "thread": vis.filter_thread(st, &t, codex, false)?})))
-                }
-                Some(_) => Err(CoreError::invalid(
-                    "invalid_args",
-                    "this Idempotency-Key made a comment on another thread",
-                )),
-                None => Ok(None),
-            })
-            .await?;
-        if let Some(v) = made {
-            return Ok((StatusCode::CREATED, Json(v)).into_response());
-        }
-    }
     let agent = match b.author_kind.as_deref() {
         None | Some("viewer") => false,
         Some("agent") => true,
@@ -1092,27 +1039,24 @@ pub async fn comment(
             let was_resolved = t.status == "resolved";
             let mut touched = Touched::default();
             let mut unresolved = Vec::new();
-            // The key is checked again, and recorded, in the comment's own
-            // transaction: a resend that raced the check above answers the
-            // comment the first made, and nothing else is done.
+            // The key is checked, and recorded, in the comment's own
+            // transaction. A resend finds the comment the first write made
+            // and does again what follows it, which that write may not have
+            // reached: an agent reply's acknowledgement, a viewer comment's
+            // sends while it reached no agent.
             let key = key.as_ref().map(|(g, k)| (g.as_str(), k.as_str()));
-            let before = |ktid: String, cid: String| -> clax_core::Result<Outcome> {
+            let replayed = |ktid: String, cid: String| -> clax_core::Result<Comment> {
                 if ktid != tid {
                     return Err(CoreError::invalid(
                         "invalid_args",
                         "this Idempotency-Key made a comment on another thread",
                     ));
                 }
-                let t = thread_of(st, &id, &tid)?;
-                let c = t
+                thread_of(st, &id, &tid)?
                     .comments
-                    .iter()
+                    .into_iter()
                     .find(|c| c.id == cid)
-                    .ok_or(CoreError::NotFound)?;
-                Ok(Outcome::Done(json!({
-                    "comment": vis.filter_comment(&aid, c),
-                    "thread": vis.filter_thread(st, &t, ctx.codex_push(), with_path)?,
-                })))
+                    .ok_or(CoreError::NotFound)
             };
             let c = if agent {
                 let sess = agent_session(st, &session, grant.as_deref())?;
@@ -1142,7 +1086,7 @@ pub async fn comment(
                     Keyed::Before {
                         thread_id,
                         comment_id,
-                    } => return before(thread_id, comment_id),
+                    } => replayed(thread_id, comment_id)?,
                 };
                 touched.merge(took);
                 let seen = clax_store::visibility::Visibility::for_session(st, &sess.id)?;
@@ -1167,7 +1111,7 @@ pub async fn comment(
                 }
                 let audit = audit.resolve(st)?;
                 let (name, author_public_id) = author(st, &who)?;
-                let c = match st.add_comment_keyed(
+                let (c, follow) = match st.add_comment_keyed(
                     &audit,
                     &tid,
                     NewComment {
@@ -1180,35 +1124,41 @@ pub async fn comment(
                     },
                     key,
                 )? {
-                    Keyed::Made(c) => c,
+                    Keyed::Made(c) => (c, true),
                     Keyed::Before {
                         thread_id,
                         comment_id,
-                    } => return before(thread_id, comment_id),
+                    } => {
+                        let c = replayed(thread_id, comment_id)?;
+                        let unsent = !st.comment_has_feedback(&c.id)?;
+                        (c, unsent)
+                    }
                 };
-                let (named, u) = if c.via_page {
-                    (Vec::new(), Vec::new())
-                } else {
-                    resolve_named(st, &audit, &id, &c.body, live_page)?
-                };
-                unresolved = u;
-                // A comment naming agents goes to them, not to the thread's
-                // target; `@agent` keeps its meaning beside them.
-                let at_agent = !c.via_page && mentions_agent(&c.body);
-                if at_agent || (t.sent_to_agent && named.is_empty()) {
-                    // `@agent` routes (M18); a later comment on a sent
-                    // thread counts into the requests open there.
-                    let route = if at_agent {
-                        clax_store::approvals::Route::Send
+                if follow {
+                    let (named, u) = if c.via_page {
+                        (Vec::new(), Vec::new())
                     } else {
-                        clax_store::approvals::Route::Join
+                        resolve_named(st, &audit, &id, &c.body, live_page)?
                     };
-                    let (_, t, _) =
-                        st.send_routed(&audit, &tid, SendTarget::Thread, route, false)?;
-                    touched.merge(t);
-                }
-                if !named.is_empty() {
-                    touched.merge(st.send_to_named(&audit, &tid, &named)?.1);
+                    unresolved = u;
+                    // A comment naming agents goes to them, not to the thread's
+                    // target; `@agent` keeps its meaning beside them.
+                    let at_agent = !c.via_page && mentions_agent(&c.body);
+                    if at_agent || (t.sent_to_agent && named.is_empty()) {
+                        // `@agent` routes (M18); a later comment on a sent
+                        // thread counts into the requests open there.
+                        let route = if at_agent {
+                            clax_store::approvals::Route::Send
+                        } else {
+                            clax_store::approvals::Route::Join
+                        };
+                        let (_, t, _) =
+                            st.send_routed(&audit, &tid, SendTarget::Thread, route, false)?;
+                        touched.merge(t);
+                    }
+                    if !named.is_empty() {
+                        touched.merge(st.send_to_named(&audit, &tid, &named)?.1);
+                    }
                 }
                 c
             };

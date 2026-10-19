@@ -576,6 +576,137 @@ async fn since_is_an_agent_tokens_and_a_keyed_comment_is_written_once() {
 }
 
 #[tokio::test]
+async fn a_resent_keyed_write_does_the_sends_its_first_write_did_not_reach() {
+    use clax_store::threads::{AUTHOR_VIEWER, NewComment, NewThread};
+    let p = Pair::new().await;
+    let token = p.local.store.remote_token(&p.remote).unwrap().unwrap();
+    let grant = p
+        .local
+        .store
+        .find_remote(&p.remote)
+        .unwrap()
+        .unwrap()
+        .grant_id
+        .unwrap();
+    let ts = &p.public.ts;
+    let st = &ts.store;
+    let req = |m: reqwest::Method, path: &str| {
+        ts.client
+            .request(m, format!("{}{path}", ts.base))
+            .header(HOST, format!("localhost:{}", ts.addr.port()))
+            .bearer_auth(token.expose())
+    };
+    let (s, v) = json_of(
+        req(reqwest::Method::POST, "/api/sessions")
+            .json(&json!({"harness": "claude", "cwd": ""}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    let (sid, secret) = (
+        v["session"]["id"].as_str().unwrap().to_string(),
+        v["session_secret"].as_str().unwrap().to_string(),
+    );
+    // Each first write ended after its transaction, before its sends.
+    let aid = clax_core::ArtifactId::parse(&p.raid).unwrap();
+    let made = st
+        .create_thread_keyed_async(
+            &clax_core::audit::AuditCtx::DAEMON,
+            &aid,
+            NewThread {
+                version_n: 1,
+                anchor: serde_json::from_value(whole()).unwrap(),
+                author_name: "Ada".into(),
+                author_public_id: None,
+                body: "@agent look".into(),
+                clip: None,
+                via_page: false,
+            },
+            &[],
+            Some((&grant, "clax-linked:thread:k1")),
+        )
+        .await
+        .unwrap();
+    let clax_store::linked::Keyed::Made(t) = made else {
+        panic!("the thread is made");
+    };
+    let other = p.hosted_thread("plain", whole(), None).await;
+    let otid = other["id"].as_str().unwrap();
+    let made = st
+        .add_comment_keyed(
+            &clax_core::audit::AuditCtx::DAEMON,
+            otid,
+            NewComment {
+                author_kind: AUTHOR_VIEWER,
+                author_name: "Ada".into(),
+                author_public_id: None,
+                via_session_id: None,
+                body: "@agent this too".into(),
+                via_page: false,
+            },
+            Some((&grant, "clax-linked:comment:k2")),
+        )
+        .unwrap();
+    let clax_store::linked::Keyed::Made(c) = made else {
+        panic!("the comment is made");
+    };
+    let sent = |tid: &str| st.get_thread(tid).unwrap().unwrap().sent_to_agent;
+    assert!(!sent(&t.id) && !sent(otid));
+    // Their resends answer what was made, and send it.
+    let form = reqwest::multipart::Form::new()
+        .text("anchor", whole().to_string())
+        .text("body", "@agent look")
+        .text("version", "1");
+    let (s, v) = json_of(
+        req(
+            reqwest::Method::POST,
+            &format!("/api/artifacts/{}/threads", p.raid),
+        )
+        .header("x-clax-session", &sid)
+        .header(clax_core::remote::SESSION_SECRET_HEADER, &secret)
+        .header("idempotency-key", "clax-linked:thread:k1")
+        .multipart(form)
+        .send()
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        (s, v["thread"]["id"].as_str()),
+        (201, Some(t.id.as_str())),
+        "{v}"
+    );
+    assert!(sent(&t.id));
+    let (s, v) = json_of(
+        req(
+            reqwest::Method::POST,
+            &format!("/api/artifacts/{}/threads/{otid}/comments", p.raid),
+        )
+        .header("x-clax-session", &sid)
+        .header(clax_core::remote::SESSION_SECRET_HEADER, &secret)
+        .header("idempotency-key", "clax-linked:comment:k2")
+        .json(&json!({"body": "@agent this too"}))
+        .send()
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        (s, v["comment"]["id"].as_str()),
+        (201, Some(c.id.as_str())),
+        "{v}"
+    );
+    assert!(sent(otid));
+    assert!(st.comment_has_feedback(&c.id).unwrap());
+    assert_eq!(
+        bodies(&p.hosted_thread_by(otid).await),
+        ["plain", "@agent this too"]
+    );
+}
+
+#[tokio::test]
 async fn an_outage_queues_marks_rows_not_sent_at_the_cap_then_drains_in_order() {
     let p = Pair::new().await;
     let t = p.owner_thread(1, "before", whole()).await;

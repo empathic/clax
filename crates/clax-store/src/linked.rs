@@ -1412,6 +1412,18 @@ impl Store {
     pub fn comment_key(&self, grant_id: &str, key: &str) -> Result<Option<(String, String)>> {
         self.with_read(|c| comment_key_in(c, (grant_id, key)))
     }
+
+    /// Whether comment `cid` was sent to any agent (has a feedback row):
+    /// what a replayed keyed comment checks before sending it again.
+    pub fn comment_has_feedback(&self, cid: &str) -> Result<bool> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM feedback WHERE comment_id = ?1)",
+                params![cid],
+                |r| r.get(0),
+            )?)
+        })
+    }
 }
 
 /// An agent token's idempotency key for a comment or new thread on a
