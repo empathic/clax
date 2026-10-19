@@ -278,7 +278,14 @@ ThemeData _buildTheme(
     ),
     snackBarTheme: SnackBarThemeData(
       behavior: SnackBarBehavior.floating,
-      width: ClaxLayout.sheet,
+      // No width: a floating bar with one drops its side margins, so on a
+      // phone it would run edge to edge. ClaxToast caps its own at 560.
+      insetPadding: const EdgeInsets.fromLTRB(
+        ClaxSpace.s16,
+        ClaxSpace.s4,
+        ClaxSpace.s16,
+        ClaxSpace.s12,
+      ),
       backgroundColor: p.fg,
       contentTextStyle: text.bodyMedium!.copyWith(color: p.bg),
       actionTextColor: p.inversePrimary,

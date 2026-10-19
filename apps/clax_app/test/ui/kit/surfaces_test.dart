@@ -528,6 +528,26 @@ void main() {
       expect(undone, isTrue);
     });
 
+    testWidgets('a plain snack bar on a phone keeps 16 from the sides', (
+      tester,
+    ) async {
+      window(tester, const Size(412, 915));
+      await tester.pumpWidget(
+        page(
+          (c) => ScaffoldMessenger.of(
+            c,
+          ).showSnackBar(const SnackBar(content: Text('Saved'))),
+        ),
+      );
+      await tester.tap(find.text('Go'));
+      await tester.pumpAndSettle();
+      final rect = tester.getRect(
+        find.descendant(of: find.byType(SnackBar), matching: find.byType(Material)).first,
+      );
+      expect(rect.left, closeTo(16, 0.5));
+      expect(rect.right, closeTo(412 - 16, 0.5));
+    });
+
     testWidgets('inline it dismisses itself after 4 s on the clock', (
       tester,
     ) async {
