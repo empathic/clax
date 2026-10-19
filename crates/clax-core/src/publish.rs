@@ -98,6 +98,18 @@ pub struct ValidatedPublish {
     /// collision with any other path is refused. So a publish never
     /// confirms a withheld name by refusing it.
     pub hidden: Vec<String>,
+    /// The idempotency key an agent token named for this publish (the
+    /// caller fills it): recorded in the transaction that records the
+    /// version, so the version and its key are written together.
+    pub publish_key: Option<PublishKey>,
+}
+
+/// An agent token's idempotency key for a publish.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublishKey {
+    /// The agent token's grant.
+    pub grant_id: String,
+    pub key: String,
 }
 
 /// Accepts a relative path of one or more non-empty segments, with no `.` or
@@ -380,6 +392,7 @@ pub fn validate(req: PublishRequest) -> Result<ValidatedPublish> {
         person: None,
         by_page: false,
         hidden: Vec::new(),
+        publish_key: None,
     })
 }
 

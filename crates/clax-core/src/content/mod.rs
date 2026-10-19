@@ -692,25 +692,32 @@ pub struct ArtifactLock<'a> {
 impl ArtifactLocks {
     /// Waits for, then holds, the lock of `id`.
     pub async fn lock(&self, id: &ArtifactId) -> ArtifactLock<'_> {
+        self.lock_key(id.as_str()).await
+    }
+
+    /// Waits for, then holds, the lock named `key`: for a set of locks
+    /// over something other than artifacts (kept in its own
+    /// `ArtifactLocks`), named by any string.
+    pub async fn lock_key(&self, key: &str) -> ArtifactLock<'_> {
         let m = {
             let mut map = self.map.lock().unwrap_or_else(|e| e.into_inner());
-            map.entry(id.as_str().to_string()).or_default().clone()
+            map.entry(key.to_string()).or_default().clone()
         };
         let guard = m.lock_owned().await;
-        self.held(id);
+        self.held(key);
         ArtifactLock {
             locks: self,
-            key: id.as_str().to_string(),
+            key: key.to_string(),
             guard: Some(guard),
         }
     }
 
-    /// Notes that this thread now holds the lock of `id`.
-    fn held(&self, id: &ArtifactId) {
+    /// Notes that this thread now holds the lock named `key`.
+    fn held(&self, key: &str) {
         self.holders
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(id.as_str().to_string(), std::thread::current().id());
+            .insert(key.to_string(), std::thread::current().id());
     }
 
     /// Whether the lock of `id` is held, and was taken on this thread.
@@ -733,7 +740,7 @@ impl ArtifactLocks {
             return None;
         };
         drop(map);
-        self.held(id);
+        self.held(id.as_str());
         Some(ArtifactLock {
             locks: self,
             key: id.as_str().to_string(),

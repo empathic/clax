@@ -1052,9 +1052,28 @@ impl Store {
             )?;
             Ok(())
         })?;
-        self.write_version_then_async(ctx, &id, 0, &p, &BTreeMap::new(), session_id, |_, _| Ok(()))
-            .await
-            .map(|(a, v, ())| (a, v))
+        self.write_version_then_async(ctx, &id, 0, &p, &BTreeMap::new(), session_id, |tx, n| {
+            self.record_key_in(tx, &p, &id, n)
+        })
+        .await
+        .map(|(a, v, ())| (a, v))
+    }
+
+    /// Records `p`'s idempotency key, when it names one, as having made
+    /// version `n` of `id`, in `tx`: the version's transaction.
+    fn record_key_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        p: &ValidatedPublish,
+        id: &ArtifactId,
+        n: u32,
+    ) -> Result<()> {
+        match &p.publish_key {
+            Some(key) => {
+                super::remotes::record_publish_key_in(tx, key, id.as_str(), n, &self.now())
+            }
+            None => Ok(()),
+        }
     }
 
     /// Publishes the next version of an existing artifact. `p.if_version` must
@@ -1105,7 +1124,7 @@ impl Store {
             &p,
             &prev,
             session_id,
-            |_, _| Ok(()),
+            |tx, n| self.record_key_in(tx, &p, id, n),
         )
         .await
         .map(|(a, v, ())| (a, v))

@@ -23,10 +23,16 @@
 //!
 //! None of these is touched until a remote is added. A hosted daemon keeps
 //! **publish keys** instead: the idempotency key an agent token's publish
-//! named and the version it made ([`Store::publish_key`]), so a push whose
-//! answer was lost and is sent again is answered that version.
+//! named and the version it made ([`Store::publish_key`]), recorded in the
+//! transaction that records the version
+//! ([`ValidatedPublish::publish_key`](clax_core::publish::ValidatedPublish::publish_key)),
+//! so a push whose answer was lost and is sent again is answered that
+//! version. The same push sent while the first is still running waits for
+//! it ([`Store::lock_publish_key`]).
 
 use super::Store;
+use clax_core::content::ArtifactLock;
+use clax_core::publish::PublishKey;
 use clax_core::secret::Secret;
 use clax_core::{CoreError, Result, new_ulid};
 use rusqlite::{OptionalExtension, Row, params};
@@ -593,19 +599,45 @@ impl Store {
         })
     }
 
-    /// On a hosted daemon: records that agent token `grant_id`'s publish
-    /// keyed `key` made version `n` of `aid`. A key recorded already keeps
-    /// its version.
-    pub fn record_publish_key(&self, grant_id: &str, key: &str, aid: &str, n: u32) -> Result<()> {
-        self.with_tx(|tx| {
-            tx.execute(
-                "INSERT OR IGNORE INTO publish_keys (grant_id, key, artifact_id, n, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![grant_id, key, aid, n, self.now()],
-            )?;
-            Ok(())
-        })
+    /// On a hosted daemon: waits for, then holds, the lock of agent token
+    /// `grant_id`'s idempotency key `key`. A keyed publish holds it from
+    /// its look-up of the key ([`Store::publish_key`]) to the end of the
+    /// transaction that records its version with the key, so the same
+    /// publish sent again meanwhile waits, then answers the version the
+    /// first made.
+    pub async fn lock_publish_key(&self, grant_id: &str, key: &str) -> ArtifactLock<'_> {
+        let _lane = super::exec::WriteLane::waiting();
+        self.publish_key_locks
+            .lock_key(&format!("{grant_id}\n{key}"))
+            .await
     }
+}
+
+/// Records, in `tx` (the transaction recording the version), that the
+/// publish keyed `key` made version `n` of `aid`.
+///
+/// # Errors
+/// `publish_key_used` when the key is recorded already (another process's
+/// publish with the key made a version first).
+pub(super) fn record_publish_key_in(
+    tx: &rusqlite::Connection,
+    key: &PublishKey,
+    aid: &str,
+    n: u32,
+    now: &str,
+) -> Result<()> {
+    let made = tx.execute(
+        "INSERT OR IGNORE INTO publish_keys (grant_id, key, artifact_id, n, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![key.grant_id, key.key, aid, n, now],
+    )?;
+    if made == 0 {
+        return Err(CoreError::invalid(
+            "publish_key_used",
+            "this Idempotency-Key named another publish, which made a version first",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -747,16 +779,50 @@ mod tests {
         assert_eq!(code_of(st.remove_remote(&r.id)), "not_found");
     }
 
+    /// A publish naming `key` of grant `g1`, at `if_version`.
+    fn keyed(key: &str, if_version: Option<u32>) -> clax_core::publish::ValidatedPublish {
+        let req: clax_core::publish::PublishRequest = serde_json::from_value(serde_json::json!({
+            "title": "Notes",
+            "if_version": if_version,
+            "files": {"index.html": {"content": key, "encoding": "utf8"}}
+        }))
+        .unwrap();
+        let mut p = clax_core::publish::validate(req).unwrap();
+        p.publish_key = Some(PublishKey {
+            grant_id: "g1".into(),
+            key: key.into(),
+        });
+        p
+    }
+
     #[test]
-    fn a_publish_key_keeps_the_version_it_made() {
+    fn a_publish_key_is_recorded_with_the_version_it_made() {
         let (_d, st) = store();
-        assert!(st.publish_key("g1", "k").unwrap().is_none());
-        st.record_publish_key("g1", "k", "a1", 2).unwrap();
-        st.record_publish_key("g1", "k", "a1", 3).unwrap();
+        let ctx = &clax_core::audit::AuditCtx::DAEMON;
+        assert!(st.publish_key("g1", "k1").unwrap().is_none());
+        let (a, _) = st.create_artifact(ctx, keyed("k1", None), None).unwrap();
+        assert_eq!(st.publish_key("g1", "k1").unwrap(), Some((a.id.clone(), 1)));
+        let id = clax_core::ArtifactId::parse(&a.id).unwrap();
+        st.publish_version(ctx, &id, keyed("k2", Some(1)), None)
+            .unwrap();
+        assert_eq!(st.publish_key("g1", "k2").unwrap(), Some((a.id.clone(), 2)));
+        assert!(st.publish_key("g2", "k1").unwrap().is_none());
+        // A key that made a version makes no other.
         assert_eq!(
-            st.publish_key("g1", "k").unwrap(),
-            Some(("a1".to_string(), 2))
+            code_of(st.publish_version(ctx, &id, keyed("k1", Some(2)), None)),
+            "publish_key_used"
         );
-        assert!(st.publish_key("g2", "k").unwrap().is_none());
+        assert_eq!(st.get_artifact(&id).unwrap().unwrap().current_version, 2);
+        assert_eq!(st.publish_key("g1", "k1").unwrap(), Some((a.id, 1)));
+    }
+
+    #[test]
+    fn a_publish_key_is_held_by_one_publish_at_a_time() {
+        let (_d, st) = store();
+        let held = clax_core::content::ready(st.lock_publish_key("g1", "k")).unwrap();
+        assert!(clax_core::content::ready(st.lock_publish_key("g1", "k")).is_none());
+        assert!(clax_core::content::ready(st.lock_publish_key("g2", "k")).is_some());
+        drop(held);
+        assert!(clax_core::content::ready(st.lock_publish_key("g1", "k")).is_some());
     }
 }

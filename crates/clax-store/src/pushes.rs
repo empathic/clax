@@ -415,6 +415,7 @@ impl Store {
             person,
             by_page: false,
             hidden: Vec::new(),
+            publish_key: None,
         };
         self.record_version_locked(
             ctx,

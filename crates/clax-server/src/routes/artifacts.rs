@@ -191,6 +191,35 @@ pub(crate) fn publish_key(
     }
 }
 
+/// Holds the lock of agent token `grant`'s idempotency key `key`, when the
+/// publish names one, until the publish's version is recorded with it: the
+/// same publish sent again meanwhile waits, then replays.
+async fn lock_key<'a>(
+    st: &'a Store,
+    grant: &Option<String>,
+    key: &Option<String>,
+) -> Option<clax_core::content::ArtifactLock<'a>> {
+    match (grant, key) {
+        (Some(g), Some(k)) => Some(st.lock_publish_key(g, k).await),
+        _ => None,
+    }
+}
+
+/// The idempotency key agent token `grant` named, for the store to record
+/// with the version.
+fn publish_key_of(
+    grant: &Option<String>,
+    key: &Option<String>,
+) -> Option<clax_core::publish::PublishKey> {
+    match (grant, key) {
+        (Some(g), Some(k)) => Some(clax_core::publish::PublishKey {
+            grant_id: g.clone(),
+            key: k.clone(),
+        }),
+        _ => None,
+    }
+}
+
 /// The version agent token `grant`'s publish keyed `key` made, as `vis`
 /// shows it, when it made one (of artifact `of`, when given).
 ///
@@ -411,17 +440,16 @@ pub async fn create(
         .store_call_async(move |st| async move {
             let st = &*st;
             let session = publishing_session(st, &session, grant.as_deref())?;
+            let _keyed = lock_key(st, &grant, &key).await;
             if let Some(done) =
                 replayed(st, grant.as_deref(), key.as_deref(), None, &vf.build(st)?)?
             {
                 return Ok(done);
             }
+            p.publish_key = publish_key_of(&grant, &key);
             let (artifact, version) = st
                 .create_artifact_async(&audit, p, session.as_deref())
                 .await?;
-            if let (Some(g), Some(k)) = (&grant, &key) {
-                st.record_publish_key(g, k, &artifact.id, version.n)?;
-            }
             if let Some(sid) = &session {
                 let aid = ArtifactId::parse(&artifact.id)?;
                 st.ensure_watch(&audit, sid, &aid)?;
@@ -768,6 +796,7 @@ pub async fn publish(
         .store_call_async(move |st| async move {
             let st = &*st;
             let session = publishing_session(st, &session, grant.as_deref())?;
+            let _keyed = lock_key(st, &grant, &key).await;
             // A publish sent again whose first answer was lost: what it made.
             if let Some(done) = replayed(
                 st,
@@ -792,12 +821,10 @@ pub async fn publish(
             {
                 p.hidden = vis.filter_hidden_files(&prev);
             }
+            p.publish_key = publish_key_of(&grant, &key);
             let (artifact, version) = st
                 .publish_version_async(&audit, &id, p, session.as_deref())
                 .await?;
-            if let (Some(g), Some(k)) = (&grant, &key) {
-                st.record_publish_key(g, k, &artifact.id, version.n)?;
-            }
             if let Some(sid) = &session {
                 let aid = ArtifactId::parse(&artifact.id)?;
                 st.ensure_watch(&audit, sid, &aid)?;
