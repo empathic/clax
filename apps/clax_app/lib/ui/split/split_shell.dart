@@ -38,7 +38,8 @@ import 'sidebar_model.dart';
 /// [ClaxWidth.expanded], the detail alone at [ClaxWidth.medium] (the grid
 /// with Home selected, an app in its place otherwise); Inbox and Settings
 /// show [inbox] and [settings] in place of both ([place]; the home grid
-/// stays built under them), and the platform's Back goes Home from them.
+/// stays built under them), and the platform's Back goes Home from them,
+/// unless the destination takes it first ([SplitShellState.takeBack]).
 /// Without [inbox] or [settings] the rail asks [HomeActions.openInbox] or
 /// [HomeActions.openSettings]. Selecting an app or a make goes Home.
 ///
@@ -116,6 +117,10 @@ class SplitShell extends StatefulWidget {
   static bool fits(BuildContext context) =>
       ClaxWidth.of(context) >= ClaxWidth.medium;
 
+  /// The shell [context] is in, if any.
+  static SplitShellState? maybeOf(BuildContext context) =>
+      context.findAncestorStateOfType<SplitShellState>();
+
   @override
   State<SplitShell> createState() => SplitShellState();
 }
@@ -168,6 +173,28 @@ class SplitShellState extends State<SplitShell> {
     if (to != SplitPlace.home && _builderOf(to) == null) return false;
     if (_place != to) setState(() => _place = to);
     return true;
+  }
+
+  final _backs = <Object, bool Function()>{};
+
+  /// Lets [owner] (a rail destination showing something in the place of
+  /// its own list) take the platform's Back before the rail goes Home:
+  /// [back] answers whether it took it. Null lets go.
+  void takeBack(Object owner, bool Function()? back) {
+    if (back == null) {
+      _backs.remove(owner);
+    } else {
+      _backs[owner] = back;
+    }
+  }
+
+  /// The platform's Back over a rail destination: the latest taker's, else
+  /// Home.
+  void _railBack() {
+    for (final back in _backs.values.toList().reversed) {
+      if (back()) return;
+    }
+    go(SplitPlace.home);
   }
 
   /// A rail destination chosen: Home selects the grid as well.
@@ -568,7 +595,7 @@ class SplitShellState extends State<SplitShell> {
     return PopScope(
       canPop: shown == SplitPlace.home,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) go(SplitPlace.home);
+        if (!didPop) _railBack();
       },
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,

@@ -254,7 +254,12 @@ class ThreadDetail extends StatefulWidget {
     this.isStopped,
     this.appTitle,
     this.onOpenApp,
+    this.leading,
   });
+
+  /// The bar's leading control in place of the route's own Back: Back to
+  /// a list the page is shown in the place of.
+  final Widget? leading;
 
   /// Opens the app at this thread; null offers no Open app (the page is
   /// over the app already).
@@ -675,6 +680,7 @@ class _ThreadDetailState extends State<ThreadDetail> {
     return ClaxScaffold(
       title: widget.appTitle ?? _appTitle ?? '',
       subtitle: t == null ? null : threadSubtitle(label!, t.versionN),
+      leading: widget.leading,
       actions: [
         if (widget.onOpenApp case final open?)
           TextButton(

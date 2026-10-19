@@ -3,6 +3,8 @@ import 'package:clax_app/ui/developer.dart';
 import 'package:clax_app/ui/inbox/inbox_split.dart';
 import 'package:clax_app/ui/inbox_screen.dart';
 import 'package:clax_app/ui/mac/mac_toolbar.dart';
+import 'package:clax_app/ui/split/sidebar_model.dart';
+import 'package:clax_app/ui/split/split_shell.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/thread_detail.dart';
 import 'package:flutter/foundation.dart';
@@ -11,8 +13,11 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/fake_voice.dart';
+import '../support/split_fixture.dart';
 
 const _page = {'index.html': '<!doctype html><title>x</title>'};
+
+final _android = TargetPlatformVariant.only(TargetPlatform.android);
 
 typedef _Opened = ({String aid, String? thread, int? version});
 
@@ -76,6 +81,110 @@ void main() {
     );
     await tester.pumpAndSettle();
   }
+
+  /// The inbox as the Android rail's Inbox, in a window [width] wide.
+  Future<SplitShellState> pumpRail(WidgetTester tester, double width) async {
+    tester.view.physicalSize = Size(width, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final f = SplitFixture();
+    await tester.runAsync(() => f.start(making: false));
+    final model = SidebarModel(host: f.host);
+    addTearDown(() {
+      model.dispose();
+      f.dispose();
+    });
+    final dev = ValueNotifier(false);
+    addTearDown(dev.dispose);
+    await tester.pumpWidget(
+      DeveloperScope(
+        notifier: dev,
+        child: MaterialApp(
+          theme: claxTheme(Brightness.light, defaultTargetPlatform),
+          home: SplitShell(
+            model: model,
+            home: const Center(child: Text('home grid')),
+            detailFor: (s) => Text('detail of $s'),
+            inbox: (_) => InboxSplit(
+              api: api,
+              stream: api.stream(),
+              voice: FakeVoice(),
+              now: () => DateTime.utc(2026, 10, 12, 9, 30),
+              onOpenApp: (aid, {thread, version, comment}) =>
+                  opened.add((aid: aid, thread: thread, version: version)),
+            ),
+          ),
+        ),
+      ),
+    );
+    final shell = tester.state<SplitShellState>(find.byType(SplitShell));
+    expect(shell.go(SplitPlace.inbox), isTrue);
+    await tester.pumpAndSettle();
+    return shell;
+  }
+
+  NavigatorState nav(WidgetTester tester) =>
+      tester.state<NavigatorState>(find.byType(Navigator).first);
+
+  testWidgets('beside the rail at 1280 the inbox is a 360 list under an Inbox '
+      'bar with Mark all read, and the thread beside it', (tester) async {
+    await pumpRail(tester, 1280);
+    final list = find.byKey(const ValueKey('inbox-list-pane'));
+    expect(tester.getRect(list).left, 80, reason: 'after the rail');
+    expect(tester.getSize(list).width, 360);
+    expect(
+      find.descendant(of: list, matching: find.text('Inbox')),
+      findsOneWidget,
+    );
+    final markAll = find.descendant(
+      of: list,
+      matching: find.byTooltip('Mark all read'),
+    );
+    expect(markAll, findsOneWidget);
+    await tester.tap(find.text('Clax replied: Fixed it'));
+    await tester.pumpAndSettle();
+    final thread = find.byType(ThreadDetail);
+    expect(tester.getTopLeft(thread).dx, greaterThanOrEqualTo(80 + 360));
+    expect(nav(tester).canPop(), isFalse);
+
+    await tester.tap(markAll);
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pumpAndSettle();
+    final button = tester.widget<IconButton>(
+      find.ancestor(of: markAll, matching: find.byType(IconButton)).first,
+    );
+    expect(button.onPressed, isNull, reason: 'nothing left unread');
+  }, variant: _android);
+
+  testWidgets('beside the rail at 720 the inbox is one pane: a row shows its '
+      'thread in the list\'s place with Back, and the platform\'s Back goes '
+      'to the list, then Home', (tester) async {
+    final shell = await pumpRail(tester, 720);
+    expect(find.byKey(const ValueKey('inbox-list-pane')), findsNothing);
+    await tester.tap(find.text('Clax replied: Fixed it'));
+    await tester.pumpAndSettle();
+    final thread = find.byType(ThreadDetail);
+    expect(thread, findsOneWidget);
+    expect(tester.getTopLeft(thread).dx, 80, reason: 'in the pane');
+    expect(find.text('Clax replied: Fixed it'), findsNothing);
+    expect(nav(tester).canPop(), isFalse, reason: 'not over the rail');
+
+    await tester.tap(find.byTooltip('Back'));
+    await tester.pumpAndSettle();
+    expect(find.text('Clax replied: Fixed it'), findsOneWidget);
+    expect(shell.place, SplitPlace.inbox);
+
+    await tester.tap(find.text('Version 5 is ready: Weekly sum'));
+    await tester.pumpAndSettle();
+    expect(find.text('Open app'), findsOneWidget);
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.text('Version 5 is ready: Weekly sum'), findsOneWidget);
+    expect(shell.place, SplitPlace.inbox);
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(shell.place, SplitPlace.home);
+  }, variant: _android);
 
   testWidgets('at 900 the list is 360 wide and a row shows its thread '
       'beside it', (tester) async {

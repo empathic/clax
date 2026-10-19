@@ -10,6 +10,7 @@ import '../kit/kit.dart';
 import '../layout.dart';
 import '../mac/mac_toolbar.dart';
 import '../mac/window_channel.dart';
+import '../split/split_shell.dart';
 import '../theme.dart';
 import '../thread_detail.dart';
 import '../tokens.g.dart';
@@ -19,12 +20,17 @@ import '../tokens.g.dart';
 typedef OpenAppAt =
     void Function(String aid, {String? thread, int? version, String? comment});
 
-/// The inbox as a list and the item beside it, by size class: from
-/// medium width a 360 point list pane ([InboxScreen] as a pane) with the
-/// selected item shown beside it, a reply as its thread ([ThreadDetail]),
-/// anything else as what it is with Open app; below that the list alone,
-/// a row pushing its item over it. A question goes to [onOpenQuestion],
-/// when given, as on the phone.
+/// The inbox as a list and the item beside it, by size class: a 360 point
+/// list pane ([InboxScreen] as a pane, under a bar of its own unless the
+/// window's toolbar carries it) with the selected item shown beside it, a
+/// reply as its thread ([ThreadDetail]), anything else as what it is with
+/// Open app; below that the list alone. The split starts at
+/// [ClaxWidth.medium], or, as a [SplitShell]'s rail destination, at
+/// [ClaxWidth.expanded], as the shell's own list pane does. Below it a row
+/// pushes its item over the list, or, beside the rail, shows it in the
+/// list's place with Back to the list, which the platform's Back also
+/// goes to ([SplitShellState.takeBack]). A question goes to
+/// [onOpenQuestion], when given, as on the phone.
 ///
 /// With [toolbar] (the Mac's Inbox window) the window's toolbar carries
 /// All, Unread and Questions as one segmented control, the search field
@@ -89,6 +95,20 @@ class _InboxSplitState extends State<InboxSplit> {
 
   bool get _toolbar => widget.toolbar && hasDesktopWindowChrome;
 
+  /// The shell whose rail shows this inbox, if any.
+  SplitShellState? _shell;
+
+  /// Whether the item and the list show side by side, as last built.
+  var _split = false;
+
+  /// The platform's Back beside the rail: from an item shown in the list's
+  /// place to the list.
+  bool _back() {
+    if (_split || _shown == null || !mounted) return false;
+    setState(() => _shown = null);
+    return true;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -101,6 +121,11 @@ class _InboxSplitState extends State<InboxSplit> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    final shell = SplitShell.maybeOf(context);
+    if (shell != _shell) {
+      _shell?.takeBack(this, null);
+      _shell = shell?..takeBack(this, _back);
+    }
     if (!_toolbar) return;
     final view = View.of(context).viewId;
     if (view == _view) return;
@@ -111,6 +136,7 @@ class _InboxSplitState extends State<InboxSplit> {
 
   @override
   void dispose() {
+    _shell?.takeBack(this, null);
     unawaited(_clicks?.cancel());
     unawaited(_searches?.cancel());
     if (_view case final view?) MacToolbar.clear(this, view: view);
@@ -178,7 +204,7 @@ class _InboxSplitState extends State<InboxSplit> {
       widget.onOpenQuestion!(question.id);
       return;
     }
-    if (split) {
+    if (split || _shell != null) {
       setState(() => _shown = item);
       return;
     }
@@ -201,7 +227,11 @@ class _InboxSplitState extends State<InboxSplit> {
     );
   }
 
-  Widget _detail(InboxItem item) {
+  /// [item]'s page; with [back], headed by Back to the list.
+  Widget _detail(InboxItem item, {VoidCallback? back}) {
+    final leading = back == null
+        ? null
+        : BackButton(key: const ValueKey('inbox-back'), onPressed: back);
     final aid = item.artifactId;
     final thread = item.thread;
     if (item.kind == 'reply' && aid != null && thread != null) {
@@ -219,6 +249,7 @@ class _InboxSplitState extends State<InboxSplit> {
         onPreview: (n) => widget.onOpenApp(aid, version: n),
         onRetry: null,
         onOpenApp: () => _openApp(item),
+        leading: leading,
       );
     }
     return _ItemDetail(
@@ -227,6 +258,7 @@ class _InboxSplitState extends State<InboxSplit> {
       now: (widget.now ?? DateTime.now)(),
       icons: widget.icons,
       onOpenApp: aid == null ? null : () => _openApp(item),
+      leading: leading,
     );
   }
 
@@ -247,11 +279,28 @@ class _InboxSplitState extends State<InboxSplit> {
 
   @override
   Widget build(BuildContext context) {
-    final split = ClaxWidth.of(context) >= ClaxWidth.medium;
+    final split = _split =
+        ClaxWidth.of(context) >=
+        (_shell == null ? ClaxWidth.medium : ClaxWidth.expanded);
     final p = claxPalette(context);
     Widget body;
     if (!split) {
-      body = _listPane(split: false);
+      final shown = _shell == null ? null : _shown;
+      body = Stack(
+        fit: StackFit.expand,
+        children: [
+          // Kept built, so the list keeps its place, search and chip.
+          Offstage(
+            offstage: shown != null,
+            child: TickerMode(
+              enabled: shown == null,
+              child: _listPane(split: false),
+            ),
+          ),
+          if (shown != null)
+            _detail(shown, back: () => setState(() => _shown = null)),
+        ],
+      );
     } else {
       final shown = _shown;
       body = Row(
@@ -304,9 +353,11 @@ class _ItemDetail extends StatelessWidget {
     required this.now,
     required this.onOpenApp,
     this.icons,
+    this.leading,
   });
 
   final InboxItem item;
+  final Widget? leading;
   final DateTime now;
   final VoidCallback? onOpenApp;
   final AppIcons? icons;
@@ -320,6 +371,7 @@ class _ItemDetail extends StatelessWidget {
         : 'Clax';
     return ClaxScaffold(
       title: title,
+      leading: leading,
       body: Align(
         alignment: Alignment.topCenter,
         child: ConstrainedBox(

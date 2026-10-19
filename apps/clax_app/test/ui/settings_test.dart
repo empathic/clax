@@ -259,11 +259,21 @@ void main() {
     TargetPlatform platform = TargetPlatform.android,
     bool asksAiConsent = false,
     Future<bool> Function()? notificationsAllowed,
+    double rail = 0,
   }) async {
+    Widget beside(Widget settings) => rail == 0
+        ? settings
+        : Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SizedBox(width: rail),
+              Expanded(child: settings),
+            ],
+          );
     await tester.pumpWidget(
       MaterialApp(
         theme: claxTheme(Brightness.light, platform),
-        home: SettingsScreen(
+        home: beside(SettingsScreen(
           store: store,
           secureKey: key,
           cliSupported: cliSupported,
@@ -274,7 +284,7 @@ void main() {
           haikus: () async => haikus,
           asksAiConsent: asksAiConsent,
           notificationsAllowed: notificationsAllowed,
-        ),
+        )),
       ),
     );
     await tester.runAsync(() => Future<void>.delayed(Duration.zero));
@@ -388,6 +398,27 @@ void main() {
       final r = tester.getRect(field);
       expect(r.left, (1280 - 640) / 2 + 16);
       expect(r.right, (1280 + 640) / 2 - 16);
+    });
+
+    testWidgets('beside an 80 dp rail the column is at most 640, centred in '
+        'what the rail leaves, title and all', (tester) async {
+      for (final (width, side) in [(1280.0, (1200 - 640) / 2), (720.0, 0.0)]) {
+        tall(tester, width);
+        await pumpSettings(
+          tester,
+          store: SettingsStore(file),
+          key: FakeKey(),
+          rail: 80,
+        );
+        final field = tester.getRect(find.byKey(const Key('api-key-field')));
+        expect(field.left, 80 + side + 16, reason: 'at $width');
+        expect(field.right, width - side - 16, reason: 'at $width');
+        expect(
+          tester.getTopLeft(find.text('Settings').first).dx,
+          80 + side + 16,
+          reason: 'the large title at $width',
+        );
+      }
     });
 
     testWidgets('the large title collapses, with a line under it once '

@@ -37,11 +37,12 @@ import 'user_message.dart';
 /// With nothing left to read it says "All caught up." over a haiku, a new
 /// one each visit; a long-press (Option-click on the Mac) shows another.
 ///
-/// As a [pane] (the list of an `InboxSplit`) it is the list alone, under
-/// its search and chips, with the [selected] item's row highlighted; with
-/// a [query] from elsewhere (the Mac Inbox window's toolbar) it draws no
-/// search or chips and follows that query instead, the text after the
-/// same pause in typing.
+/// As a [pane] (the list of an `InboxSplit`) it is the list under a top
+/// app bar ("Inbox" and Mark all read, as tall as the item's bar beside
+/// it), its search and chips, with the [selected] item's row highlighted;
+/// with a [query] from elsewhere (the Mac Inbox window's toolbar) it draws
+/// no bar, search or chips and follows that query instead, the text after
+/// the same pause in typing.
 class InboxScreen extends StatefulWidget {
   const InboxScreen({
     super.key,
@@ -472,13 +473,10 @@ class _InboxScreenState extends State<InboxScreen> implements InboxMarking {
               SliverToBoxAdapter(
                 child: SizedBox(height: MediaQuery.paddingOf(context).top),
               ),
-              if (widget.query == null)
-                SliverToBoxAdapter(
-                  child: Padding(
-                    padding: const EdgeInsets.only(top: ClaxSpace.s12),
-                    child: _filters(context),
-                  ),
-                ),
+              if (widget.query == null) ...[
+                SliverToBoxAdapter(child: _paneBar(context, anyUnread)),
+                SliverToBoxAdapter(child: _filters(context)),
+              ],
               ..._content(items, now),
             ],
           ),
@@ -503,6 +501,41 @@ class _InboxScreenState extends State<InboxScreen> implements InboxMarking {
           SliverToBoxAdapter(child: _filters(context)),
           ..._content(items, now),
         ],
+      ),
+    );
+  }
+
+  /// A list pane's top app bar, as tall as the item's beside it: "Inbox"
+  /// and Mark all read.
+  Widget _paneBar(BuildContext context, bool anyUnread) {
+    final theme = Theme.of(context);
+    return SizedBox(
+      key: const ValueKey('inbox-pane-bar'),
+      // Material 3's small top app bar.
+      height: 64,
+      child: Padding(
+        padding: EdgeInsetsDirectional.only(
+          start: ClaxBreakpoints.gutter(context),
+          end: ClaxSpace.s4,
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Inbox',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.appBarTheme.titleTextStyle ??
+                    theme.textTheme.titleLarge,
+              ),
+            ),
+            IconButton(
+              tooltip: 'Mark all read',
+              onPressed: anyUnread ? _markAllRead : null,
+              icon: const Icon(Icons.done_all_rounded),
+            ),
+          ],
+        ),
       ),
     );
   }

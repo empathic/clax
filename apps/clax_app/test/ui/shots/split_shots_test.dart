@@ -7,6 +7,12 @@
 // and `split-make-<form>-<theme>`: the make selected, its build view in the
 // detail with the page streaming into the preview.
 //
+// Beside the Android rail, `split-inbox-<form>-<theme>` is the Inbox
+// destination with a reply's thread selected (`split-inbox-list-<form>-
+// <theme>` before anything is), and
+// `split-settings-<form>-<theme>` the Settings destination, at the medium
+// (720 dp), expanded (1000 dp) and large (`wide`, 1280 dp) size classes.
+//
 // The Mac form is drawn under the main window's real toolbar row (52
 // points, the window buttons' corner 79 points across, as
 // macos/Runner/WindowBridge.swift measures it on macOS 26), with stand-ins
@@ -20,11 +26,19 @@
 //   bazelisk test //apps/clax_app:ui_shots_split_shots_test \
 //     --nocache_test_results --test_env=CLAX_SHOTS_DIR="$SHOTS" \
 //     --sandbox_writable_path="$SHOTS"
+import 'dart:io';
+import 'dart:math';
+
 import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/clax/api.dart' show StreamEvent;
+import 'package:clax_app/home/home_settings.dart';
+import 'package:clax_app/platform/secure_key.dart';
+import 'package:clax_app/platform/settings_store.dart';
+import 'package:clax_app/ui/inbox/inbox_split.dart';
 import 'package:clax_app/ui/kit/kit.dart';
 import 'package:clax_app/ui/making_preview.dart';
 import 'package:clax_app/ui/making_screen.dart';
+import 'package:clax_app/ui/settings_screen.dart';
 import 'package:clax_app/ui/split/sidebar_model.dart';
 import 'package:clax_app/ui/split/split_shell.dart';
 import 'package:clax_app/ui/theme.dart';
@@ -34,6 +48,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/fake_voice.dart';
 import '../../support/split_fixture.dart';
 import 'rig.dart';
 
@@ -49,6 +64,85 @@ const _medium = ShotForm(
   top: 24,
   bottom: 16,
 );
+
+/// An Android window at the expanded size class: a small tablet on its
+/// side, or a Chromebook window not maximised.
+const _expanded = ShotForm(
+  'expanded',
+  Size(1000, 720),
+  2,
+  TargetPlatform.android,
+  top: 24,
+  bottom: 16,
+);
+
+/// A key store holding nothing.
+class _NoKey implements SecureKey {
+  @override
+  Future<String?> read() async => null;
+
+  @override
+  Future<void> write(String? key) async {}
+}
+
+/// Seeds [f]'s inbox: Clax's reply on Runs, a new version of Budget and a
+/// published Weather.
+Future<void> _seedInbox(SplitFixture f) async {
+  final api = f.api;
+  final runs = f.ids['Runs']!;
+  await api.registerAppSession(installId: 'i', pid: 1);
+  final asked = api.sendComment(
+    runs,
+    'Show distances in km',
+    anchor: const {
+      'kind': 'element',
+      'file': 'index.html',
+      'name': 'Table under ‘This week’',
+    },
+  );
+  await api.replyAsAgent(
+    runs,
+    asked.threadId,
+    'Done. Distances now read in km, and the weekly total sits under the '
+    'list.',
+  );
+  api.pushInbox(
+    'version',
+    artifactId: f.ids['Budget'],
+    versionN: 4,
+    note: 'Totals',
+  );
+  api.pushInbox(
+    'reply',
+    artifactId: runs,
+    threadId: asked.threadId,
+    body: 'Done. Distances now read in km, and the weekly total sits under '
+        'the list.',
+  );
+  api.pushInbox('published', artifactId: f.ids['Weather']);
+}
+
+/// Settings over a store in a fresh directory, with no key.
+SettingsScreen _settingsScreen() {
+  final dir = Directory.systemTemp.createTempSync('clax-shots-split-');
+  addTearDown(() => dir.deleteSync(recursive: true));
+  final store = SettingsStore(File('${dir.path}/settings.json'));
+  return SettingsScreen(
+    store: store,
+    secureKey: _NoKey(),
+    cliSupported: false,
+    timings: const [],
+    fingerprint: () async => '7KQ2-M9XD-4FTA-QW3B',
+    home: HomeScreenControls(
+      settings: HomeSettings.loadSync(dir)..homeAppId = 'home',
+      open: () {},
+      changed: () {},
+    ),
+    homeVersion: () async => '1.6',
+    haikus: () async => const [],
+    random: Random(4),
+  );
+}
 
 /// macOS's default accent (Multicolor), light and dark.
 final accent = ValueNotifier<SystemAccent?>((
@@ -528,5 +622,43 @@ void main() {
       model.dispose();
       f.dispose();
     }, forms: [wide, if (scene != 'make') _medium]);
+  }
+
+  for (final place in [SplitPlace.inbox, SplitPlace.settings]) {
+    shots('split-${place.name}', (s) async {
+      final (f, model) = await fixture(s.tester);
+      if (place == SplitPlace.inbox) await s.tester.runAsync(() => _seedInbox(f));
+      final shell = GlobalKey<SplitShellState>();
+      await s.tester.pumpWidget(
+        s.app(
+          SplitShell(
+            key: shell,
+            model: model,
+            home: const Material(child: _Grid()),
+            detailFor: _detail,
+            inbox: (_) => InboxSplit(
+              api: f.api,
+              stream: f.host.stream,
+              voice: FakeVoice(),
+              now: () => DateTime.utc(2026, 10, 12, 9, 30),
+              onOpenApp: (aid, {thread, version, comment}) {},
+            ),
+            settings: (_) => _settingsScreen(),
+          ),
+        ),
+      );
+      shell.currentState!.go(place);
+      await s.tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await s.settle(4);
+      if (place == SplitPlace.inbox) {
+        await s.take('split-inbox-list');
+        await s.tester.tap(find.textContaining('Clax replied').first);
+        await s.tester.runAsync(() => Future<void>.delayed(Duration.zero));
+        await s.settle();
+      }
+      await s.take('split-${place.name}');
+      model.dispose();
+      f.dispose();
+    }, forms: [_medium, _expanded, wide]);
   }
 }
