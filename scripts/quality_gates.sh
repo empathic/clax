@@ -243,16 +243,14 @@ lane() {
 mark() { touch "$GATES_TMP/$1.ready"; }
 
 # await NAME LANE: waits until NAME is marked; fails when LANE ended without
-# marking it (one of its gates failed), or after 30 minutes.
+# marking it (one of its gates failed). No time limit: LANE always ends,
+# and its EXIT trap marks that end.
 await() {
-    local i=0
     while [ ! -e "$GATES_TMP/$1.ready" ]; do
         if [ -e "$GATES_TMP/$2.done" ] && [ ! -e "$GATES_TMP/$1.ready" ]; then
             printf '%-30s skipped: the %s lane failed\n' "(waiting for $1)" "$2" | flush
             return 1
         fi
-        i=$((i + 1))
-        if [ "$i" -gt 9000 ]; then echo "quality gates: gave up waiting for $1" | flush; return 1; fi
         sleep 0.2
     done
 }
