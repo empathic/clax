@@ -281,6 +281,14 @@ export type RosterAgent = {
 };
 /** One page of `GET /api/inbox`; `total` is present when the query filters. */
 export type InboxPage = { items: InboxItem[]; next_cursor: string | null; unread: number; total?: number | "10000+" };
+/** One group of `GET /api/inbox?group=artifact`: the artifact its items
+ * are about (null for the group of items about none), how many match and
+ * how many of those are unread, its newest match's time, its newest
+ * matches, and the `before` of the rest (listed with `artifact=<ID>`, or
+ * `artifact=none`). */
+export type InboxGroup = { artifact: InboxItem["artifact"]; total: number; unread: number; newest_at: string; items: InboxItem[]; next_cursor: string | null };
+/** One page of `GET /api/inbox?group=artifact`, newest group first. */
+export type InboxGroupPage = { groups: InboxGroup[]; next_cursor: string | null; unread: number; total?: number | "10000+" };
 /** `GET /api/inbox/summary`: open questions oldest first, the five newest unread other items. */
 export type InboxSummary = { unread: number; questions: QuestionView[]; latest: InboxItem[] };
 /** The inbox page's search: text (`q`), kinds, an artifact ID, an agent

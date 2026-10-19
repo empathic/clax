@@ -45,19 +45,21 @@ function named(a: QAgent | null, others: InboxItem[]): string {
 }
 
 /** An item's title: who did what, on which page ("claude replied on
- * Quarterly Review"). `others` are the items listed beside it, which
- * decide whether an agent is named by its harness alone. */
-export function itemTitle(i: InboxItem, others: InboxItem[] = []): string {
+ * Quarterly Review"), or without the page under its page's heading
+ * (`page: false`: "claude replied"). `others` are the items listed beside
+ * it, which decide whether an agent is named by its harness alone. */
+export function itemTitle(i: InboxItem, others: InboxItem[] = [], { page = true } = {}): string {
+  const on = (pre: string) => (page ? `${pre}${pageOf(i)}` : "");
   // A reply that came from a remote is named by its author there.
   const who = i.kind === "reply" && !i.agent && i.linked?.author ? i.linked.author : named(i.agent, others);
   switch (i.kind) {
-    case "reply": return `${who} replied on ${pageOf(i)}`;
+    case "reply": return `${who} replied${on(" on ")}`;
     case "version": {
       const n = i.version?.addressed.length ?? 0;
       const addressed = n ? ` · addressed ${n === 1 ? "1 of your threads" : `${n} of your threads`}` : "";
-      return `${who} published v${i.version?.n ?? "?"} of ${pageOf(i)}${addressed}`;
+      return `${who} published v${i.version?.n ?? "?"}${on(" of ")}${addressed}`;
     }
-    case "published": return `${who} published ${pageOf(i)}`;
+    case "published": return `${who} published ${page ? pageOf(i) : "the page"}`;
     case "question": {
       const headers = i.question?.questions.map(s => cutHeader(s.header)).join(", ");
       // A withdrawn question stays unread (its person did not answer it),
@@ -65,7 +67,7 @@ export function itemTitle(i: InboxItem, others: InboxItem[] = []): string {
       if (i.question?.status === "withdrawn") return headers ? `${who} withdrew its question: ${headers}` : `${who} withdrew a question`;
       return headers ? `${who} asks: ${headers}` : `${who} asked a question`;
     }
-    case "finished": return `${who} finished on ${pageOf(i)}`;
+    case "finished": return `${who} finished${on(" on ")}`;
     case "connection": {
       const c = i.connection;
       if (!c) return "A connection request";
@@ -79,7 +81,7 @@ export function itemTitle(i: InboxItem, others: InboxItem[] = []): string {
       return `${personName(a.author)} wants to reach your ${a.agent ? `agent ${a.agent.name}` : "agents"}`;
     }
     case "ended": return `${who} ended`;
-    case "push": return `${i.push?.origin ?? "A public Clax"} refused v${i.push?.n ?? "?"} of ${pageOf(i)}`;
+    case "push": return `${i.push?.origin ?? "A public Clax"} refused v${i.push?.n ?? "?"}${on(" of ")}`;
   }
 }
 

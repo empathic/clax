@@ -3,7 +3,8 @@
 <script lang="ts">
   // One inbox item as a row (spec 2026-10-06-agent-questions-and-inbox
   // §9.2): its kind's icon, who did what on which page, its text on one line
-  // ("(deleted)" when its source is gone), its age, and the read dot. The row
+  // ("(deleted)" when its source is gone), its age, and the read dot; under
+  // its page's heading (`grouped`) its title leaves the page out. The row
   // is a button that opens the item; the dot is its own button, which marks
   // the item read or unread without opening it. An ended agent's row lists
   // the threads its end released as links below it, to send them again;
@@ -23,9 +24,11 @@
     onToggle(i: InboxItem): void;
     /** Where opening it leads, below its text (the extension's panel: an approval request is decided in the shell's inbox). */
     hint?: string;
+    /** Listed under its page's heading: its title leaves the page out. */
+    grouped?: boolean;
   };
   const p: Props = $props();
-  const title = $derived(itemTitle(p.item, p.others ?? []));
+  const title = $derived(itemTitle(p.item, p.others ?? [], { page: !p.grouped }));
   const text = $derived(p.item.gone ? "(deleted)" : itemText(p.item));
   // An approval request stays unread until it is decided (spec 2026-10-08 §9.5).
   const undecided = $derived(!p.item.read && approvalOf(p.item)?.status === "open");

@@ -10,7 +10,7 @@
 import { ApiError, type AnswerBody, type InboxFilter, type InboxItem, type QuestionView } from "../api";
 import { after } from "../clock";
 import type { EventStream, StreamEvent } from "../stream";
-import { type Closing, type Forbidden, answerQuestion, declineQuestion, inboxSummary, listInbox, listQuestions, markInbox, markInboxMany, pullQuestion, releaseQuestion } from "./api";
+import { type Closing, type Forbidden, answerQuestion, declineQuestion, inboxSummary, listInbox, listInboxGroups, listQuestions, markInbox, markInboxMany, pullQuestion, releaseQuestion } from "./api";
 
 /** How long a closed question's card stays, showing what closed it. */
 export const LEAVE_MS = 4000;
@@ -242,6 +242,15 @@ export class InboxFeed {
   /** One page of items matching `filter`, newest first, after cursor `before`. */
   async page(filter: InboxFilter, before?: string | null, limit?: number) {
     const r = await listInbox(filter, before, limit);
+    if (r === "forbidden") throw forbidden();
+    this.unread = r.unread;
+    return r;
+  }
+
+  /** One page of the groups of items matching `filter` by artifact, newest
+   * group first, after cursor `before`, each with its `rows` newest items. */
+  async groups(filter: InboxFilter, before?: string | null, rows?: number) {
+    const r = await listInboxGroups(filter, before, rows);
     if (r === "forbidden") throw forbidden();
     this.unread = r.unread;
     return r;
