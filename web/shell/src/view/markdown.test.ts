@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import Markdown from "../ui/Markdown.svelte";
 import { flush, mount } from "../test/svelte";
-import { type Block, MAX_CELLS, MAX_COLUMNS, parse, plain, safeHref } from "./markdown";
+import { type Block, MAX_CELLS, MAX_COLUMNS, bodyWords, parse, plain, safeHref } from "./markdown";
 import { loadMarkdown, md, plainText } from "./md-load.svelte";
 import { itemText } from "../q/inbox-model";
 import type { InboxItem } from "../api";
@@ -290,11 +290,10 @@ describe("before the module loads", () => {
 });
 
 // Nothing in a comment is hidden from the people reading it: every word of
-// the body, but what Markdown spends (character references, list and task
-// markers), is in its rendered text (or a link's address, shown on hover)
+// the body (`bodyWords`: references and escapes read, list and task markers
+// left out) is in its rendered text (or a link's address, shown on hover)
 // and in plain().
-const MARKUP = /&(?:#\d+|#[xX][\da-fA-F]+|[A-Za-z][A-Za-z\d]*);|^[ \t>]*(?:\d+[.)]|[-*+])[ \t]+(?:\[[ xX]\][ \t]+)?/gm;
-const wordsOf = (s: string) => new Set(s.replace(MARKUP, " ").match(/[\p{L}\p{N}]+/gu) ?? []);
+const wordsOf = (s: string) => new Set(bodyWords(s));
 const texts = (el: Node): string[] => [...el.childNodes].flatMap(n => (n.nodeType === Node.TEXT_NODE ? [n.textContent!] : texts(n)));
 const shownWords = (el: HTMLElement) => new Set(`${texts(el).join(" ")} ${[...el.querySelectorAll("a")].map(a => decodeURI(a.getAttribute("href")!)).join(" ")}`.match(/[\p{L}\p{N}]+/gu) ?? []);
 function hidden(src: string, el?: HTMLElement): string[] {
@@ -316,6 +315,7 @@ describe("hiding nothing", () => {
     "<!-- a comment --> <span hidden>text</span>",
     "<https://example.com/x> and <mailto:a@example.com>",
     "- [x] done\n- [ ] open\n\n10. ten\n11. eleven",
+    "[also bad](&#106;avascript:x) and &lt;b&gt;bold&lt;/b&gt; \\*not\\*",
   ];
 
   it.each(CASES)("shows every word of %j", src => {

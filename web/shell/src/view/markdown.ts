@@ -242,9 +242,13 @@ function blocks(ns: Node[]): Block[] {
   return out;
 }
 
-// What Markdown spends of a body's words, and only that: character
-// references, list markers and task markers.
-const MARKUP = /&(?:#\d+|#[xX][\da-fA-F]+|[A-Za-z][A-Za-z\d]*);|^[ \t>]*(?:\d+[.)]|[-*+])[ \t]+(?:\[[ xX]\][ \t]+)?/gm;
+// List and task markers: what Markdown spends of a body's words.
+const MARKERS = /^[ \t>]*(?:\d+[.)]|[-*+])[ \t]+(?:\[[ xX]\][ \t]+)?/gm;
+
+/** The words `src` says, as its readers must see them: its character
+ * references and backslash escapes read, its list and task markers left
+ * out. */
+export const bodyWords = (src: string): string[] => words(md.utils.unescapeAll(src).replace(MARKERS, " "));
 
 /** `src` as Markdown blocks. A body the parser cannot read, nested as deep
  * as `NESTING` (`TooDeep`), or whose reading would leave out any of its
@@ -271,7 +275,8 @@ function read(src: string): Block[] {
     if (ts.filter(t => t.type === "th_open" || t.type === "td_open").length > MAX_CELLS) ts = plainMd.parse(src, {});
     if (ts.some(t => t.level >= NESTING - 1)) return asText();
     const bs = blocks(nest(ts));
-    return said(src.replace(MARKUP, " "), bs.map(blockText).join("\n")) ? bs : asText();
+    const shown = new Set(words(bs.map(blockText).join("\n")));
+    return bodyWords(src).every(w => shown.has(w)) ? bs : asText();
   } catch {
     return asText();
   }
