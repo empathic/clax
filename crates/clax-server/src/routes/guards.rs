@@ -1811,9 +1811,19 @@ mod agents {
             assert!(n > 0, "{p}");
         }
         // Pi: it resolves the binary through the wrapper (no arguments: the
-        // path), then runs it directly only for `--version`, `status --json`
-        // and `serve --json`, the last two with CLAX_CHANNEL=agent.
+        // path; `which`: the path, never installing), then runs it directly
+        // only for `--version`, `status --json` and `serve --json`, the last
+        // two with CLAX_CHANNEL=agent.
         let daemon = read("plugins/pi/src/daemon.ts");
+        for (i, _) in daemon.match_indices("runWrapper(") {
+            let call = line_at(&daemon, i);
+            assert!(
+                call.starts_with("runWrapper([], ")
+                    || call.starts_with("runWrapper([\"which\"], ")
+                    || call.starts_with("runWrapper(args: string[]"),
+                "plugins/pi/src/daemon.ts: {call}"
+            );
+        }
         let clax = read("plugins/pi/src/clax.ts");
         let client = read("plugins/pi/src/client.ts");
         for (file, text) in [
@@ -1830,6 +1840,7 @@ mod agents {
                     continue; // the browser opener, not clax
                 }
                 let ok = call.contains("[wrapper]")
+                    || call.contains("[wrapper, ...args]")
                     || call.contains("[\"--version\"]")
                     || (call.contains("[\"status\", \"--json\"]")
                         && call.contains("CLAX_CHANNEL: \"agent\""))
