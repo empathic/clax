@@ -32,7 +32,7 @@ check_notices() { # check_notices NOTICES.Z
 plist() { /usr/libexec/PlistBuddy -c "Print :$1" "$app/Contents/Info.plist" 2>/dev/null || true; }
 if [ "$(plist CFBundleIdentifier)" = dev.empathic.clax ]; then ok "bundle ID"; else bad "bundle ID: $(plist CFBundleIdentifier)"; fi
 if [ "$(plist CFBundleName)" = Clax ]; then ok "bundle name"; else bad "bundle name: $(plist CFBundleName)"; fi
-copyright="Copyright (C) 2026 Empathic, Inc."
+copyright="Copyright © 2026 Empathic, Inc."
 if [ "$(plist NSHumanReadableCopyright)" = "$copyright" ]; then ok "copyright"; else bad "copyright: $(plist NSHumanReadableCopyright)"; fi
 if [ "$(plist CFBundleShortVersionString)" = "$VERSION_NAME" ]; then ok "version name"; else bad "version name: $(plist CFBundleShortVersionString)"; fi
 if [ "$(plist CFBundleVersion)" = "$VERSION_CODE" ]; then ok "build number"; else bad "build number: $(plist CFBundleVersion)"; fi

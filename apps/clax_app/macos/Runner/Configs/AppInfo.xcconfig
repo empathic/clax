@@ -13,7 +13,7 @@ PRODUCT_BUNDLE_IDENTIFIER = dev.empathic.clax
 
 // The copyright displayed in application information, as LICENSE states it.
 // The Bazel build reads it from here (tool/macos-info-plist.sh).
-PRODUCT_COPYRIGHT = Copyright (C) 2026 Empathic, Inc.
+PRODUCT_COPYRIGHT = Copyright © 2026 Empathic, Inc.
 
 // Signing. With no `macos/Signing.xcconfig` the app and its embedded
 // `clax` are signed ad hoc (the project's CODE_SIGN_IDENTITY "-"), a new
