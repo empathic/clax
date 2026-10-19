@@ -1,7 +1,8 @@
 // The kit's components rendered in every form and theme into
 // CLAX_SHOTS_DIR (skipped without it): `kit-controls` is one page with
 // every control in each of its states; `kit-surfaces-*` show a sheet, a
-// dialog, a menu and each place of toast over one screen.
+// dialog, a menu and each place of toast over one screen; `kit-mark` shows
+// the mark in each state at 16, 24, 48 and 132, each caught at its widest.
 import 'package:clax_app/ui/kit/kit.dart';
 import 'package:clax_app/ui/layout.dart';
 import 'package:clax_app/ui/theme.dart';
@@ -208,6 +209,92 @@ class _Controls extends StatelessWidget {
   }
 }
 
+/// When each state is caught at its widest, in ms after it begins: the
+/// breaths at their lean, sent as the dot reaches Clax's arc, landed at the
+/// top of its nod, the rally as the dot leaves Clax's arc on its third hit.
+const _peak = {
+  ClaxMarkState.resting: 0,
+  ClaxMarkState.working: 800,
+  ClaxMarkState.sent: 150,
+  ClaxMarkState.landed: 120,
+  ClaxMarkState.asking: 800,
+  ClaxMarkState.rally: 610,
+};
+
+/// The longest of [_peak]: every state is started this long before the render
+/// less its own peak.
+const _render = 800;
+
+/// The mark's states, a row each at four sizes, then the mark in one colour
+/// on `fg` and on `you`; each state starts when [started] lists it.
+class _Marks extends StatelessWidget {
+  const _Marks(this.started);
+  final Set<ClaxMarkState> started;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final p = claxPalette(context);
+    Widget row(String name, Widget Function(double size) mark) => Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          SizedBox(
+            width: 60,
+            child: Text(
+              name,
+              style: theme.textTheme.bodySmall!.copyWith(color: p.muted),
+            ),
+          ),
+          for (final (i, size) in const [16.0, 24.0, 48.0, 132.0].indexed) ...[
+            if (i > 0) const SizedBox(width: 12),
+            mark(size),
+          ],
+        ],
+      ),
+    );
+    return Scaffold(
+      body: SafeArea(
+        child: ListView(
+          padding: EdgeInsets.symmetric(
+            horizontal: ClaxBreakpoints.gutter(context),
+            vertical: 16,
+          ),
+          children: [
+            for (final state in ClaxMarkState.values)
+              row(
+                state.name,
+                (size) => ClaxMark(
+                  size: size,
+                  state: started.contains(state) ? state : ClaxMarkState.resting,
+                ),
+              ),
+            row(
+              'on fg',
+              (size) => Container(
+                padding: EdgeInsets.all(size / 8),
+                decoration: BoxDecoration(
+                  color: p.fg,
+                  borderRadius: BorderRadius.circular(size),
+                ),
+                child: ClaxMark(size: size, monochrome: p.bg),
+              ),
+            ),
+            row(
+              'quiet',
+              (size) => ClaxQuiet(
+                quiet: true,
+                child: ClaxMark(size: size, state: ClaxMarkState.asking),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 final _page = GlobalKey();
 final _more = GlobalKey();
 
@@ -273,6 +360,31 @@ void main() {
     await s.tester.pumpWidget(s.app(const _Controls(), title: 'Controls'));
     await s.settle();
     await s.take('kit-controls');
+  });
+
+  shots('kit-mark', (s) async {
+    final started = <ClaxMarkState>{};
+    Widget page() => s.app(_Marks({...started}), title: 'Mark');
+    await s.tester.pumpWidget(page());
+    await s.settle(2);
+    // Start each state so that, at the render, it is at its widest.
+    final starts = {
+      for (final MapEntry(:key, :value) in _peak.entries) key: _render - value,
+    };
+    for (var t = 0; t <= _render; t += 10) {
+      final now = [
+        for (final MapEntry(:key, :value) in starts.entries)
+          if (value == t) key,
+      ];
+      if (now.isNotEmpty) {
+        started.addAll(now);
+        await s.tester.pumpWidget(page());
+      }
+      if (t < _render) await s.tester.pump(const Duration(milliseconds: 10));
+    }
+    await s.take('kit-mark');
+    // Let the rally and the breaths run out of the test's way.
+    await s.tester.pumpWidget(s.app(const SizedBox(), title: 'Mark'));
   });
 
   _surface(

@@ -1,0 +1,100 @@
+/* The Clax mark, drawn by the home app as an inline SVG of the three shapes
+   in design/mark.json:
+
+     <svg class="clax-mark is-working" viewBox="0 0 22 16" role="img"
+          aria-label="Clax is working">
+       <path class="clax-mark-you" d="M1.5 2.5a5.5 5.5 0 0 1 0 11"/>
+       <circle class="clax-mark-dot" cx="11" cy="8" r="1.7"/>
+       <path class="clax-mark-agent" d="M20.5 2.5a5.5 5.5 0 0 0 0 11"/>
+     </svg>
+
+   The person's arc, the dot between, Clax's arc: ) · (. The dot is the
+   conversation. A state class moves it as ClaxMark does in the app
+   (apps/clax_app/lib/ui/kit/mark.dart): .is-working breathes toward Clax and
+   .is-asking toward the person, every --mark-breath; .is-sent hands the dot
+   to Clax's arc, which takes it, and a new one grows in its place (300 ms);
+   .is-landed nods Clax's arc and nudges the dot toward the person (300 ms).
+   A step of the dot's travel is 1 user unit: at translateX(1px) it touches an
+   arc. .is-mono draws all three shapes in currentColor. With reduced motion
+   nothing moves, and a mark that waits leans the way it would breathe. */
+
+.clax-mark {
+  display: inline-block;
+  width: 24px;
+  height: auto;
+  aspect-ratio: 22 / 16;
+  vertical-align: middle;
+  overflow: visible;
+}
+.clax-mark-you,
+.clax-mark-agent {
+  fill: none;
+  stroke-width: 2.6;
+  stroke-linecap: round;
+}
+.clax-mark-you { stroke: var(--you); }
+.clax-mark-agent { stroke: var(--agent); }
+.clax-mark-dot { fill: var(--fg); }
+.clax-mark.is-mono .clax-mark-you,
+.clax-mark.is-mono .clax-mark-agent { stroke: currentColor; }
+.clax-mark.is-mono .clax-mark-dot { fill: currentColor; }
+.clax-mark-you,
+.clax-mark-agent,
+.clax-mark-dot {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+/* Working and asking: the breath, a drift of .35 and a swell of the dot. */
+.clax-mark.is-working .clax-mark-dot {
+  animation: clax-mark-toward-agent var(--mark-breath, 1600ms ease-in-out) infinite;
+}
+.clax-mark.is-asking .clax-mark-dot {
+  animation: clax-mark-toward-you var(--mark-breath, 1600ms ease-in-out) infinite;
+}
+@keyframes clax-mark-toward-agent {
+  0%, 100% { transform: none; }
+  50% { transform: translateX(.35px) scale(1.12); }
+}
+@keyframes clax-mark-toward-you {
+  0%, 100% { transform: none; }
+  50% { transform: translateX(-.35px) scale(1.12); }
+}
+
+/* Sent: the dot slides into Clax's arc, which takes it; a new dot grows. */
+.clax-mark.is-sent .clax-mark-dot { animation: clax-mark-sent-dot 300ms both; }
+.clax-mark.is-sent .clax-mark-agent { animation: clax-mark-sent-agent 300ms both; }
+@keyframes clax-mark-sent-dot {
+  0% { transform: none; animation-timing-function: cubic-bezier(.05, .7, .1, 1); }
+  40% { transform: translateX(.9px); animation-timing-function: cubic-bezier(.3, 0, .8, .15); }
+  60% { transform: translateX(1px) scale(0); animation-timing-function: step-end; }
+  60.1% { transform: scale(0); animation-timing-function: cubic-bezier(.34, 1.56, .64, 1); }
+  100% { transform: none; }
+}
+@keyframes clax-mark-sent-agent {
+  0%, 53.3% { transform: none; animation-timing-function: cubic-bezier(.05, .7, .1, 1); }
+  73.3% { transform: scale(1.05); animation-timing-function: cubic-bezier(.4, 0, .2, 1); }
+  100% { transform: none; }
+}
+
+/* Landed: Clax's arc nods, and the dot steps toward the person and back. */
+.clax-mark.is-landed .clax-mark-agent { animation: clax-mark-nod 300ms both; }
+.clax-mark.is-landed .clax-mark-dot { animation: clax-mark-hand-over 300ms both; }
+@keyframes clax-mark-nod {
+  0% { transform: none; animation-timing-function: cubic-bezier(.05, .7, .1, 1); }
+  40% { transform: scale(1.08); animation-timing-function: cubic-bezier(.4, 0, .2, 1); }
+  100% { transform: none; }
+}
+@keyframes clax-mark-hand-over {
+  0%, 30% { transform: none; animation-timing-function: cubic-bezier(.05, .7, .1, 1); }
+  60% { transform: translateX(-.2px); animation-timing-function: cubic-bezier(.4, 0, .2, 1); }
+  100% { transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .clax-mark .clax-mark-you,
+  .clax-mark .clax-mark-agent,
+  .clax-mark .clax-mark-dot { animation: none; }
+  .clax-mark.is-working .clax-mark-dot { transform: translateX(.35px); }
+  .clax-mark.is-asking .clax-mark-dot { transform: translateX(-.35px); }
+}

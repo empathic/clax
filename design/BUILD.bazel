@@ -1,9 +1,14 @@
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
-# The brand's one token source (docs/superpowers/specs/2026-10-18-professional-ui-design.md §1).
+# The brand's one token source (docs/superpowers/specs/2026-10-18-professional-ui-design.md §1),
+# and the mark's: its shapes and the home app's CSS for its states (§5.11, §7.4).
 filegroup(
     name = "tokens",
-    srcs = ["tokens.json"],
+    srcs = [
+        "mark.css",
+        "mark.json",
+        "tokens.json",
+    ],
     visibility = ["//scripts:__pkg__"],
 )
 

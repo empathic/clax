@@ -75,6 +75,7 @@
   --t: 200ms cubic-bezier(0.4,0,0.2,1);
   --t-enter: 300ms cubic-bezier(0.05,0.7,0.1,1);
   --t-exit: 200ms cubic-bezier(0.3,0,0.8,0.15);
+  --mark-breath: 1600ms ease-in-out;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {

@@ -250,6 +250,7 @@ filegroup(
     srcs = [
         "assets/haiku.json",
         "assets/kit/kit.css",
+        "home/mark.css",
         "home/tokens.css",
         "lib/ui/tokens.g.dart",
     ],

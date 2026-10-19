@@ -5,8 +5,10 @@
 # copy is stale; an app-mode colour in web/shell/src/theme.css that differs
 # from the source fails; a plain run is stable (a second run changes no
 # byte); an edited value in kit.css's generated region is stale; a kit.css
-# without its end marker fails; and a color-mix() in kit.css outside an
-# @supports block fails.
+# without its end marker fails; a color-mix() in kit.css outside an
+# @supports block fails; an edited design/mark.css makes the home app's
+# mark.css stale, an edited design/mark.json the Dart geometry; and a mark
+# path with a command other than M or A fails.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 d="$(mktemp -d)"
@@ -15,6 +17,8 @@ fails=0
 _fail() { echo "FAIL: $1" >&2; fails=$((fails + 1)); }
 
 INPUTS=(
+    design/mark.css
+    design/mark.json
     design/tokens.json
     scripts/sync-tokens.py
     web/shell/src/view/haiku.json
@@ -24,6 +28,7 @@ OUTPUTS=(
     apps/clax_app/home/tokens.css
     apps/clax_app/lib/ui/tokens.g.dart
     apps/clax_app/assets/haiku.json
+    apps/clax_app/home/mark.css
 )
 # The kit's stylesheet: only the text between its markers is generated.
 KIT=apps/clax_app/assets/kit/kit.css
@@ -98,7 +103,7 @@ _run --check
 
 # 6. A plain run writes what --check accepts, and a second run changes no byte.
 _copy
-rm -f "$d/w/${OUTPUTS[0]}" "$d/w/${OUTPUTS[1]}" "$d/w/${OUTPUTS[2]}"
+for f in "${OUTPUTS[@]}"; do rm -f "$d/w/$f"; done
 _run
 [ "$st" = 0 ] || _fail "a plain run succeeds: $out"
 _run --check
@@ -138,5 +143,29 @@ _sub "$d/w/$KIT" '/* Base. */' '.k-x { background: color-mix(in srgb, var(--k-ac
 /* Base. */'
 _run --check
 { [ "$st" = 1 ] && _has "kit.css: color-mix() outside @supports at line"; } || _fail "a bare color-mix fails: $out"
+
+# 10. An edited design/mark.css makes the home app's copy stale, and a plain
+# run copies it.
+_copy
+_sub "$d/w/design/mark.css" 'stroke-width: 2.6;' 'stroke-width: 2.4;'
+_run --check
+{ [ "$st" = 1 ] && _has "apps/clax_app/home/mark.css is stale"; } || _fail "an edited mark.css is stale: $out"
+_run
+{ [ "$st" = 0 ] && grep -qF 'stroke-width: 2.4;' "$d/w/apps/clax_app/home/mark.css"; } ||
+    _fail "a plain run copies mark.css: $out"
+
+# 11. An edited mark path makes the Dart geometry stale.
+_copy
+_sub "$d/w/design/mark.json" '0 0 1 0 11' '0 0 1 0 10'
+_run --check
+{ [ "$st" = 1 ] && _has "apps/clax_app/lib/ui/tokens.g.dart is stale" && _has "Offset(1.5, 12.5)"; } ||
+    _fail "an edited mark path is stale: $out"
+
+# 12. A mark path with a command other than M or A fails, naming it.
+_copy
+_sub "$d/w/design/mark.json" 'M1.5 2.5a5.5' 'M1.5 2.5l0 1a5.5'
+_run --check
+{ [ "$st" = 1 ] && _has "design/mark.json: you.d has a command other than M or A"; } ||
+    _fail "a mark path with another command fails: $out"
 
 if [ "$fails" = 0 ]; then echo "sync tokens tests: all passed"; else echo "sync tokens tests: $fails failed"; exit 1; fi
