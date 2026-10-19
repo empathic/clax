@@ -969,6 +969,26 @@ What does not:
 - the repository context of sessions (no git runs, so a session's
   capture is `unavailable`).
 
+**On the iOS simulator.** With Xcode and its iOS simulator runtime
+installed (`xcodebuild -downloadPlatform iOS`, about 8.5 GB), from the
+checkout run:
+
+```
+just app-ios                      # "Clax iPhone"
+APP_IOS_DEVICE=ipad just app-ios  # "Clax iPad"
+scripts/app-ios.sh                # a dry run: prints each step's command
+```
+
+It builds the app for the simulator with Bazel (`//apps/clax_app:ios_app`
+in debug, the only build the simulator runs; uncommitted changes
+included), creates the simulator from the newest iOS runtime when it is
+missing, boots it, installs the app keeping its data, launches it, and
+waits for its daemon: a `daemon.json` in the app's data container naming
+the launched PID, then `/healthz` on its port. It ends "Clax is up on
+Clax iPhone" and leaves the simulator running; `scripts/app-ios.sh
+--udid` prints its UDID (for `xcrun simctl io <udid> screenshot`). It
+touches no other simulator.
+
 ## Releasing
 
 A release is what the plugins download, and what `install.sh` installs.

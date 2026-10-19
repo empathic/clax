@@ -127,6 +127,10 @@ app-phone:
 app-phone-native:
     CLAX_BUILD=native ./scripts/app-phone.sh --i-know-what-i-am-doing
 
+# Build the Clax app for the iOS simulator and run it on "Clax iPhone" (APP_IOS_DEVICE=ipad for "Clax iPad"), keeping its data
+app-ios:
+    ./scripts/app-ios.sh --i-know-what-i-am-doing
+
 # Build the home app's bundle (apps/clax_app/home), as every app build does, and print its path
 home-bundle:
     ./scripts/run.sh home-bundle

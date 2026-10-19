@@ -295,6 +295,14 @@ PERF_ENV = {"CLAX_PERF_BIN": "$(rootpath //crates/clax-cli:clax_opt)"}
     ("perf_clients", "perf-clients.sh"),
 ]]
 
+# scripts/app-ios.sh (just app-ios) on a PATH of stub xcrun and bazelisk:
+# its dry run, its steps in order and its wait for the launched daemon.
+sh_test(
+    name = "app_ios",
+    srcs = ["test-app-ios.sh"],
+    data = ["app-ios.sh"],
+)
+
 # scripts/run.sh's choice of build system, on a PATH of stub tools.
 sh_test(
     name = "run_choice",
