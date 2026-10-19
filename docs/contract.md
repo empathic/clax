@@ -1318,6 +1318,19 @@ viewer comment on it is sent too, to the agent the thread was last sent to
 while that agent's session is live (see below). A viewer comment on a
 resolved thread reopens it.
 
+Comment text, a person's and an agent's reply alike, is Markdown: CommonMark
+with GitHub's extensions (tables, strikethrough, task lists, shown with
+read-only boxes, and bare URLs and email addresses made links), stored and
+returned as typed. The shell and the extension show it rendered, with no
+images and no raw HTML: HTML in a comment shows as its text, an image
+(`![alt](url)`) shows as a link to its address named by its alt text, and
+nothing in a comment is fetched. A link is kept only for an absolute
+`http:`, `https:` or `mailto:` address and opens in a new tab with
+`rel="noopener noreferrer nofollow"`; a link to any other address shows as
+its text alone. Headings are set a step above the comment's text. Previews
+on one line (a folded thread, a pin's title, an inbox row, a notification,
+an approval request) show the text with the Markdown syntax taken away.
+
 A drag in comment mode that starts where no text is under the pointer (empty
 space, padding, an image, a canvas, an inline SVG), or any drag with Shift
 held, draws a rectangle instead of selecting text; a drag that starts over
