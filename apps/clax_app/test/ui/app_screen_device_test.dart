@@ -29,7 +29,16 @@ import '../support/fake_surface.dart';
 import '../support/fake_voice.dart';
 
 void main() {
+  /// A phone's window: from medium width an app shows in a pane, with
+  /// Location in its top app bar rather than the pill.
+  void phone(WidgetTester tester) {
+    tester.view.physicalSize = const Size(400, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+  }
+
   Future<FakeAppSurface> pump(WidgetTester tester, DeviceHost? device) async {
+    phone(tester);
     final api = FakeClaxApi();
     final aid = api.seedArtifact('Plants', {'index.html': '<h1>Plants</h1>'});
     final surface = FakeAppSurface();
@@ -229,7 +238,7 @@ void main() {
   ]) {
     testWidgets('the location pill sits under the top inset and inside the '
         'side insets: $name', (tester) async {
-      tester.view.physicalSize = const Size(780, 780);
+      tester.view.physicalSize = const Size(560, 780);
       tester.view.devicePixelRatio = 1;
       tester.view.padding = FakeViewPadding(top: pad.top, left: pad.left);
       addTearDown(tester.view.reset);
@@ -444,5 +453,24 @@ void main() {
       const OpenRoute('#/plants').toJs(),
       'window.claxHost?.openRoute("#/plants")',
     );
+  });
+
+  testWidgets('in a pane on wide Android, Location is in the top app bar, '
+      'and a tap on it tells what uses it', (tester) async {
+    final surface = await pump(tester, host(FakeLocation()));
+    tester.view.physicalSize = const Size(1280, 800);
+    await tester.pump();
+    surface.push(watch('w'));
+    for (var i = 0; i < 4; i++) {
+      await tester.pump();
+    }
+    expect(locationPill, findsNothing);
+    final item = find.byKey(const ValueKey('pane-location'));
+    expect(item, findsOneWidget);
+    await tester.tap(item);
+    await settle(tester);
+    expect(find.text('Stop location'), findsOneWidget);
+    // Past the toast's time.
+    await tester.pump(const Duration(seconds: 10));
   });
 }

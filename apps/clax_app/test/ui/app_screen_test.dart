@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:clax_app/agent/plan.dart';
 import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/agent/timings.dart';
 import 'package:clax_app/agent/worker.dart';
@@ -13,6 +14,8 @@ import 'package:clax_app/ui/app_icon.dart';
 import 'package:clax_app/ui/app_menu.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/app_surface.dart';
+import 'package:clax_app/ui/build_plan.dart';
+import 'package:clax_app/ui/comment_bar.dart';
 import 'package:clax_app/ui/bundle_sheets.dart';
 import 'package:clax_app/ui/change_sheet.dart';
 import 'package:clax_app/ui/developer.dart';
@@ -25,6 +28,7 @@ import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/tokens.g.dart';
 import 'package:clax_app/ui/working_chip.dart';
 import 'package:clax_app/ui/thread_detail.dart';
+import 'package:clax_app/ui/threads_panel.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -148,6 +152,26 @@ Future<(FakeClaxApi, String)> _seeded() async {
   return (api, aid);
 }
 
+/// A build that runs, as the worker reports it.
+class _Builds implements BuildControl {
+  final _c = StreamController<BuildState>.broadcast(sync: true);
+  final states = <String, BuildState>{};
+
+  void emit(BuildState s) {
+    states[s.appId] = s;
+    _c.add(s);
+  }
+
+  @override
+  Stream<BuildState> get builds => _c.stream;
+  @override
+  BuildState? buildOf(String appId) => states[appId];
+  @override
+  Future<void> stopBuild(String appId) async {}
+  @override
+  Future<void> resumeBuild(String appId) async {}
+}
+
 /// The rig [pumpScreen] made last.
 late _Rig _current;
 
@@ -194,6 +218,8 @@ void main() {
     Future<void> Function(BuildContext, BundleFiles)? share,
     VoidCallback? leave,
     ValueChanged<double>? onThreadsWidth,
+    BuildLink? build,
+    VoidCallback? onInspect,
   }) async {
     phone(tester, size: size);
     final (api, aid) = await (seed ?? _seeded)();
@@ -233,6 +259,8 @@ void main() {
       share: share,
       leave: leave,
       onThreadsWidth: onThreadsWidth,
+      build: build,
+      onInspect: onInspect,
     );
     await tester.pumpWidget(
       MaterialApp(
@@ -426,8 +454,8 @@ void main() {
   );
 
   testWidgets(
-    'at expanded widths the panel is a 320 pane beside the page, which its '
-    'edge resizes within 280 to 420 and keeps',
+    'on the Mac at expanded widths the panel is a 320 pane beside the page, '
+    'which its edge resizes within 280 to 420 and keeps',
     (tester) async {
       final kept = <double>[];
       final rig = await pumpScreen(
@@ -457,19 +485,28 @@ void main() {
       await tester.pumpAndSettle();
       expect(pane, findsNothing);
     },
-    variant: TargetPlatformVariant({TargetPlatform.android, TargetPlatform.macOS}),
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );
 
-  testWidgets('the pane opens at the width the settings keep', (tester) async {
-    final rig = await pumpScreen(
-      tester,
-      size: const Size(1280, 800),
-      settings: AppSettings(threadsWidth: 400),
-    );
-    rig.surface.push(rig.ready());
-    await openPanel(tester);
-    expect(tester.getRect(find.byKey(const ValueKey('app-panel'))).width, 400);
-  });
+  testWidgets(
+    'on the Mac the pane opens at the width the settings keep',
+    (tester) async {
+      final rig = await pumpScreen(
+        tester,
+        size: const Size(1280, 800),
+        settings: AppSettings(threadsWidth: 400),
+      );
+      rig.surface.push(rig.ready());
+      await openPanel(tester);
+      expect(
+        tester.getRect(find.byKey(const ValueKey('app-panel'))).width,
+        400,
+      );
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+  );
 
   testWidgets(
     'on the Mac at 1200 the composer is a 360 popover under the pick, over '
@@ -3661,7 +3698,9 @@ void main() {
         final rig = await pumpScreen(
           tester,
           clock: clock,
-          size: landscape ? const Size(780, 360) : const Size(360, 780),
+          // A landscape phone narrower than medium: wider, it lays out
+          // as a pane under a top app bar, with no pill.
+          size: landscape ? const Size(568, 320) : const Size(360, 780),
         );
         tester.view.padding = FakeViewPadding(
           top: pad.top * 3,
@@ -3672,7 +3711,7 @@ void main() {
         rig.surface.push(rig.ready());
         rig.surface.push(Sent(tid));
         await tester.pump();
-        final width = landscape ? 780.0 : 360.0;
+        final width = landscape ? 568.0 : 360.0;
         for (final folded in [false, true]) {
           if (folded) {
             clock.lapse();
@@ -3777,5 +3816,234 @@ void main() {
       );
     });
   });
-}
 
+  group('on wide Android an app shows in a pane', () {
+    Finder key(String k) => find.byKey(ValueKey(k));
+    const open = ThreadsMsg([
+      ThreadSummary(
+        id: 't1',
+        status: 'open',
+        summary: 'Bigger title',
+        sent: true,
+        comments: 1,
+        version: 3,
+      ),
+    ]);
+
+    testWidgets(
+      'at 1280 a 64 dp top app bar carries Back, the title, Comment, Threads '
+      'with its count, Share and More, and there is no Clax pill',
+      (tester) async {
+        final shared = <BundleFiles>[];
+        final rig = await pumpScreen(
+          tester,
+          size: const Size(1280, 800),
+          pushed: true,
+          share: (_, files) async => shared.add(files),
+        );
+        rig.surface.push(rig.ready());
+        rig.surface.push(open);
+        rig.surface.push(const Sent('thread-1'));
+        await frames(tester);
+        final bar = tester.getRect(key('pane-bar'));
+        expect(bar.top, 0);
+        expect(bar.width, 1280);
+        // Under the 24 dp status bar.
+        expect(bar.height, 24 + 64);
+        for (final k in [
+          'pane-back',
+          'pane-comment',
+          'pane-threads',
+          'pane-share',
+          'pane-more',
+        ]) {
+          expect(key(k), findsOneWidget, reason: k);
+          final r = tester.getRect(key(k));
+          expect(r.top, greaterThanOrEqualTo(24), reason: k);
+          expect(r.bottom, lessThanOrEqualTo(24 + 64), reason: k);
+        }
+        expect(
+          find.descendant(of: key('pane-bar'), matching: find.text('Runs')),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(of: key('pane-threads'), matching: find.text('1')),
+          findsOneWidget,
+        );
+        expect(find.byType(ClaxPill), findsNothing);
+        expect(key('pane-status'), findsOneWidget);
+        expect(tester.getRect(key('fake-surface')).top, 24 + 64);
+
+        await tester.tap(key('pane-share'));
+        await tester.pump();
+        expect(shared, hasLength(1));
+        await tester.tap(key('pane-comment'));
+        await frames(tester);
+        expect(find.byType(CommentBar), findsOneWidget);
+        await tester.tap(key('pane-comment'));
+        await frames(tester);
+        expect(find.byType(CommentBar), findsNothing);
+        // Back leaves the app, opened over the launcher.
+        await tester.tap(key('pane-back'));
+        await frames(tester);
+        expect(find.text('Launcher'), findsOneWidget);
+      },
+    );
+
+    testWidgets('at 700 the bar is there too; on a phone it is not', (
+      tester,
+    ) async {
+      var rig = await pumpScreen(tester, size: const Size(700, 900));
+      rig.surface.push(rig.ready());
+      await frames(tester);
+      expect(key('pane-bar'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+      rig = await pumpScreen(tester);
+      rig.surface.push(rig.ready());
+      await frames(tester);
+      expect(key('pane-bar'), findsNothing);
+    });
+
+    testWidgets("More offers Inspect, Versions and Star; Versions opens the "
+        "panel's versions", (tester) async {
+      var inspected = 0;
+      final rig = await pumpScreen(
+        tester,
+        size: const Size(1280, 800),
+        onInspect: () => inspected++,
+      );
+      rig.surface.push(rig.ready());
+      await frames(tester);
+      await tester.tap(key('pane-more'));
+      await tester.pumpAndSettle();
+      expect(find.text('Inspect'), findsOneWidget);
+      expect(find.text('Versions'), findsOneWidget);
+      await tester.tap(find.text('Inspect'));
+      await tester.pumpAndSettle();
+      expect(inspected, 1);
+      await tester.tap(key('pane-more'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Versions'));
+      await tester.pumpAndSettle();
+      expect(key('app-panel'), findsOneWidget);
+      expect(
+        tester.widget<AppPanel>(find.byType(AppPanel)).tab,
+        PanelTab.versions,
+      );
+    });
+
+    testWidgets('a notice and the New version toast are inline bars under '
+        'the app bar, the width of the pane', (tester) async {
+      final rig = await pumpScreen(tester, size: const Size(1280, 800));
+      rig.surface.push(rig.ready());
+      await frames(tester);
+      rig.surface.push(const NewerMsg(4));
+      await tester.pumpAndSettle();
+      var toast = tester.getRect(key('newer-toast'));
+      expect(toast.top, 24 + 64);
+      expect(toast.left, 0);
+      expect(toast.width, 1280);
+      rig.surface.push(const Notice('Saved'));
+      await tester.pumpAndSettle();
+      toast = tester.getRect(key('app-notice'));
+      expect(toast.top, 24 + 64);
+      expect(toast.width, 1280);
+    });
+
+    testWidgets(
+      'the change opens in a side sheet, and how it ended pushes the page '
+      'down rather than cover its top 64 dp',
+      (tester) async {
+        final rig = await pumpScreen(tester, size: const Size(1280, 800));
+        rig.surface.push(rig.ready());
+        rig.surface.push(const Sent('thread-1'));
+        await frames(tester);
+        expect(key('chip-working'), findsNothing);
+        await tester.tap(key('pane-status'));
+        await frames(tester);
+        final sheet = tester.getRect(key('change-sheet'));
+        expect(sheet.right, 1280);
+        expect(sheet.left, greaterThan(1280 - 420));
+        await tester.tapAt(const Offset(200, 400));
+        await frames(tester);
+        expect(key('change-sheet'), findsNothing);
+
+        rig.worker.add(WorkerFailed(rig.aid, 'The API key was refused'));
+        await frames(tester);
+        final page = tester.getRect(key('fake-surface'));
+        final chip = tester.getRect(key('chip-failed'));
+        expect(chip.top, greaterThanOrEqualTo(24 + 64));
+        expect(chip.bottom, lessThanOrEqualTo(page.top));
+        await tester.tap(key('chip-dismiss'));
+        await frames(tester);
+        expect(key('pane-outcome'), findsNothing);
+        expect(tester.getRect(key('fake-surface')).top, 24 + 64);
+      },
+    );
+
+    testWidgets('the build is the bar\'s status, and its plan a side sheet', (
+      tester,
+    ) async {
+      final plans = PlanStore();
+      final builds = _Builds();
+      final rig = await pumpScreen(
+        tester,
+        size: const Size(1280, 800),
+        build: BuildLink(plans: plans, control: builds),
+        seed: () async {
+          final seeded = await _seeded();
+          await plans.set(seeded.$2, const [
+            PlanFeature(id: 'f1', title: 'Log a run', status: FeatureStatus.done),
+            PlanFeature(id: 'f2', title: 'Weekly chart'),
+          ]);
+          builds.emit(BuildState(seeded.$2, BuildPhase.running, featureId: 'f2'));
+          return seeded;
+        },
+      );
+      rig.surface.push(rig.ready());
+      await frames(tester);
+      expect(key('chip-building'), findsNothing);
+      expect(
+        find.descendant(of: key('pane-status'), matching: find.textContaining('1/2')),
+        findsOneWidget,
+      );
+      await tester.tap(key('pane-status'));
+      await frames(tester);
+      final sheet = tester.getRect(key('build-side-sheet'));
+      expect(sheet.right, 1280);
+      expect(sheet.width, 360);
+      expect(key('build-sheet'), findsOneWidget);
+    });
+
+    testWidgets(
+      'at 1300 the threads side sheet pushes the page by 360; at 1000 it '
+      'lies over the page, and a tap beside it closes it',
+      (tester) async {
+        var rig = await pumpScreen(tester, size: const Size(1300, 800));
+        rig.surface.push(rig.ready());
+        await tester.tap(key('pane-threads'));
+        await tester.pumpAndSettle();
+        var panel = tester.getRect(key('app-panel'));
+        expect(panel.width, 360);
+        expect(panel.right, 1300);
+        expect(tester.getRect(key('fake-surface')).width, 1300 - 360);
+        expect(key('threads-scrim'), findsNothing);
+        expect(key('threads-pane-edge'), findsNothing);
+
+        await tester.pumpWidget(const SizedBox());
+        rig = await pumpScreen(tester, size: const Size(1000, 800));
+        rig.surface.push(rig.ready());
+        await tester.tap(key('pane-threads'));
+        await tester.pumpAndSettle();
+        panel = tester.getRect(key('app-panel'));
+        expect(panel.width, 360);
+        expect(panel.right, 1000);
+        expect(tester.getRect(key('fake-surface')).width, 1000);
+        await tester.tap(key('threads-scrim'), warnIfMissed: false);
+        await tester.tapAt(const Offset(200, 400));
+        await tester.pumpAndSettle();
+        expect(key('app-panel'), findsNothing);
+      },
+    );
+  });
+}

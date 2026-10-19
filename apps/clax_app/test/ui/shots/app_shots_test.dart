@@ -21,7 +21,14 @@
 // (`app-composer-page`). In wide windows, Android's and the Mac's, the
 // threads pane beside the page (`app-threads-pane`), and with a pick's
 // composer too (`app-threads-composer`: heading the pane on Android, a
-// popover over the page on the Mac). The status and gesture bar stand-ins draw
+// popover over the page on the Mac). An app in a pane on wide Android,
+// at medium (720 dp), expanded (1024 dp) and large (`wide`, 1280 dp):
+// under its top app bar (`app-pane`), a change under way in the bar
+// (`app-pane-working`, also at 200%), with the threads side sheet over the
+// page below large and beside it at large (`app-pane-threads`), a change
+// under way opened in its side sheet (`app-pane-change`), the New version
+// toast inline under the bar (`app-pane-toast`), and a failed change's
+// chip between the bar and the page (`app-pane-failed`). The status and gesture bar stand-ins draw
 // their icons in the brightness the screen's bands ask the system for
 // (`SystemChrome.latestStyle`), not the theme's.
 import 'dart:async';
@@ -38,6 +45,7 @@ import 'package:clax_app/platform/device/reminders.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/build_plan.dart';
+import 'package:clax_app/ui/bundle_sheets.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -246,6 +254,8 @@ Future<void> _open(
   FutureOr<void> Function()? after,
   Stream<AppAction>? actions,
   bool bands = true,
+  Stream<WorkerEvent> worker = const Stream.empty(),
+  Future<void> Function(BuildContext, BundleFiles)? share,
 }) async {
     final api = FakeClaxApi();
     final aid = api.seedArtifact('Runs', {'index.html': '<h1>Runs</h1>'});
@@ -265,7 +275,8 @@ Future<void> _open(
               voice: FakeVoice(),
               settings: AppSettings(),
               timings: const NoTimings(),
-              worker: const Stream.empty(),
+              worker: worker,
+              share: share,
               clock: clock ?? _Clock(),
               notice: notice == null ? null : AppNoticeSlot(notice),
               firstRunHint: hint,
@@ -692,5 +703,96 @@ void main() {
       ],
     ),
     forms: const [phone, mac],
+  );
+
+  // An app in a pane on wide Android.
+  const medium = ShotForm(
+    'medium',
+    Size(720, 1024),
+    2,
+    TargetPlatform.android,
+    top: 24,
+    bottom: 16,
+  );
+  const expanded = ShotForm(
+    'expanded',
+    Size(1024, 768),
+    2,
+    TargetPlatform.android,
+    top: 24,
+    bottom: 16,
+  );
+  const panes = [medium, expanded, wide];
+  Future<void> inPane(
+    Shot s,
+    String name, {
+    List<HostMessage> then = const [],
+    FutureOr<void> Function(StreamController<WorkerEvent> worker, String aid)?
+    after,
+    _Clock? clock,
+  }) async {
+    var aid = '';
+    final worker = StreamController<WorkerEvent>.broadcast(sync: true);
+    addTearDown(worker.close);
+    final surface = _PageSurface();
+    await _open(
+      s,
+      name,
+      surface,
+      const ChromeMsg(_blue, Colors.white),
+      status: Brightness.light,
+      navigation: Brightness.dark,
+      bands: false,
+      clock: clock,
+      worker: worker.stream,
+      share: (_, _) async {},
+      then: [const ThreadsMsg(_paneThreads), ...then],
+      before: (a) async => aid = a,
+      after: after == null ? null : () => after(worker, aid),
+    );
+  }
+
+  shots('app-pane', (s) => inPane(s, 'app-pane'), forms: panes);
+  shots(
+    'app-pane-threads',
+    (s) => inPane(
+      s,
+      'app-pane-threads',
+      after: (_, _) => s.tester.tap(find.byKey(const ValueKey('pane-threads'))),
+    ),
+    forms: panes,
+  );
+  shots(
+    'app-pane-working',
+    (s) => inPane(s, 'app-pane-working', then: const [Sent('thread-1')]),
+    forms: panes,
+    textScales: _both,
+  );
+  shots(
+    'app-pane-change',
+    (s) => inPane(
+      s,
+      'app-pane-change',
+      then: const [Sent('thread-1')],
+      after: (_, _) => s.tester.tap(find.byKey(const ValueKey('pane-status'))),
+    ),
+    forms: panes,
+  );
+  shots(
+    'app-pane-toast',
+    (s) => inPane(s, 'app-pane-toast', then: const [NewerMsg(2)]),
+    forms: panes,
+  );
+  shots(
+    'app-pane-failed',
+    (s) => inPane(
+      s,
+      'app-pane-failed',
+      then: const [Sent('thread-1')],
+      after: (worker, aid) => worker.add(
+        WorkerFailed(aid, 'Clax couldn’t finish this change.'),
+      ),
+    ),
+    forms: panes,
   );
 }

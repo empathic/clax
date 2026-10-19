@@ -1328,45 +1328,52 @@ class HomeFlows implements HomeActions {
           origin: anchor.isEmpty ? null : anchor,
         );
       case 'inspect':
-        final target = onOpenTarget;
-        await Navigator.of(c).push<void>(
-          MaterialPageRoute(
-            builder: (_) => AppInspector(
-              api: api,
-              aid: app.id,
-              permissions: inspectorPermissions,
-              bundles: bundles,
-              lineage: lineage,
-              plan: switch (build) {
-                final b? => (context, aid) => BuildWatch(
-                  link: b,
-                  appId: aid,
-                  builder: (context, plan, state) => plan == null
-                      ? const ClaxEmpty(
-                          icon: Icons.checklist_rounded,
-                          title: 'No plan',
-                          body:
-                              'Apps built from a plan show their features '
-                              'here.',
-                        )
-                      : BuildPlanPanel(
-                          plan: plan,
-                          state: state,
-                          handle: false,
-                          onResume: plan.todo.isEmpty
-                              ? null
-                              : () => unawaited(b.control.resumeBuild(aid)),
-                        ),
-                ),
-                null => null,
-              },
-              onOpenVersion: target == null
-                  ? null
-                  : (aid, n) => target(aid, version: n),
-            ),
-          ),
-        );
+        await inspect(app.id);
     }
+  }
+
+  /// Opens app [aid]'s inspector over the screen.
+  Future<void> inspect(String aid) async {
+    final c = contextOf();
+    if (c == null || !c.mounted) return;
+    final target = onOpenTarget;
+    await Navigator.of(c).push<void>(
+      MaterialPageRoute(
+        builder: (_) => AppInspector(
+          api: api,
+          aid: aid,
+          permissions: inspectorPermissions,
+          bundles: bundles,
+          lineage: lineage,
+          plan: switch (build) {
+            final b? => (context, aid) => BuildWatch(
+              link: b,
+              appId: aid,
+              builder: (context, plan, state) => plan == null
+                  ? const ClaxEmpty(
+                      icon: Icons.checklist_rounded,
+                      title: 'No plan',
+                      body:
+                          'Apps built from a plan show their features '
+                          'here.',
+                    )
+                  : BuildPlanPanel(
+                      plan: plan,
+                      state: state,
+                      handle: false,
+                      onResume: plan.todo.isEmpty
+                          ? null
+                          : () => unawaited(b.control.resumeBuild(aid)),
+                    ),
+            ),
+            null => null,
+          },
+          onOpenVersion: target == null
+              ? null
+              : (aid, n) => target(aid, version: n),
+        ),
+      ),
+    );
   }
 
   @override

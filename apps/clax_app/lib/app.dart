@@ -2543,6 +2543,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         null => null,
       },
       leave: leave,
+      onInspect: () => unawaited(_homeFlows.inspect(aid)),
     ),
   );
 

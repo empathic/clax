@@ -219,6 +219,22 @@ import 'working_chip.dart';
 ///   the comment bar), then goes back in the app's own history (its pages
 ///   and `#route`s, which the shell keeps: `history`, `back()`), and only
 ///   from the app's first page leaves the app.
+/// - **In a pane** (the Material family's app, not the home app, from
+///   [ClaxWidth.medium]: a tablet, a foldable or a Chromebook, in a split
+///   window's detail or pushed over it). A 64 dp top app bar heads the
+///   page: Back (as Android's back), the app's title, what goes on
+///   ([BarStatus]: Working or Building, a tap opening the change or the
+///   plan in a side sheet), New version while one is offered, Location
+///   while a watch runs, Comment (comment mode with its bar), Threads with
+///   the open threads' count, Share, and More: Inspect
+///   ([AppScreen.onInspect]), Versions (the panel's) and Star or Unstar
+///   (the home app's arrangement, [HomeHost.layout]). There is no Clax
+///   pill, first-run hint or Comment tab; toasts and notices are inline
+///   bars under the app bar ([ClaxToastPlace.inline]); how a change ended
+///   ([WorkingChip]) is a strip between the bar and the page, pushing the
+///   page down. The panel is a 360 dp side sheet: a standard one beside
+///   the page, which it narrows, at [ClaxWidth.large], and a modal one
+///   over the page below it, a tap beside it closing it.
 /// - **Edge to edge.** The page has the screen's whole height; the status
 ///   bar's band over it is painted in the page's own top colour and the
 ///   navigation bar's in its bottom colour, with the system's icons light
@@ -280,7 +296,12 @@ class AppScreen extends StatefulWidget {
     this.icons,
     this.share,
     this.leave,
+    this.onInspect,
   });
+
+  /// Opens the app's inspector, from the More menu of the app in a pane;
+  /// null offers no Inspect.
+  final VoidCallback? onInspect;
 
   /// What leaving the screen does where it is not a route of its own (a
   /// split window's detail, `SplitShell`): Back with nothing over the page
@@ -1907,13 +1928,19 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     bool stays = false,
   }) {
     if (!mounted || _toldVisible != true) return null;
+    var at = context;
+    var where = place;
+    if (_inPane) {
+      where = ClaxToastPlace.inline;
+      if (_underBar case final under? when under.mounted) at = under;
+    }
     final toast = ClaxToast.show(
-      context,
+      at,
       text,
       key: key,
       actionLabel: action,
       onAction: onAction,
-      place: place,
+      place: where,
       clock: widget.clock,
       duration: duration,
       leading: leading,
@@ -2335,15 +2362,21 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       });
     }
     final composing = _draft != null;
+    final inPane = _inPane;
+    // In a pane the panel is a side sheet: beside the page at large, over
+    // it below that.
+    final besidePage = !inPane || ClaxWidth.of(context) >= ClaxWidth.large;
     Widget screen = Scaffold(
       // While the app's composer is open the keyboard comes up over the
       // page, which keeps its size, and the composer rides above it.
       resizeToAvoidBottomInset: !composing,
+      appBar: inPane ? _paneBar(context) : null,
       body: LayoutBuilder(
         builder: (context, box) {
+          _underBar = context;
           _width = box.maxWidth;
           final size = ClaxWidth.fromWidth(box.maxWidth);
-          final wide = size >= ClaxWidth.expanded;
+          final wide = inPane || size >= ClaxWidth.expanded;
           // The Apple family's composer is a popover at the pick, over the
           // page, from medium up.
           final pop = composing && _popsOver;
@@ -2352,12 +2385,14 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
           final shown = _open || (composing && !pop);
           final double extent = !shown
               ? 0
+              : inPane
+              ? _sideSheet
               : wide
               ? _paneWidth
               : composing && !pop
               ? AppPanel.peekHeight + bottomInset
               : box.maxHeight * 0.45;
-          Widget flex = Flex(
+          Widget besideFlex() => Flex(
             direction: wide ? Axis.horizontal : Axis.vertical,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -2377,11 +2412,51 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
               ),
             ],
           );
-          if (wide && shown) {
+          Widget flex;
+          if (!besidePage) {
+            // The modal side sheet over the page, which keeps its width.
             flex = Stack(
               fit: StackFit.expand,
               children: [
-                flex,
+                _page(context, wide),
+                if (shown) ...[
+                  GestureDetector(
+                    key: const ValueKey('threads-scrim'),
+                    behavior: HitTestBehavior.opaque,
+                    // A draft in the sheet's composer stays: Cancel or
+                    // Back puts it away.
+                    onTap: () {
+                      if (_draft == null) _setOpen(false);
+                    },
+                    child: ColoredBox(
+                      color: claxPalette(context).scrim.withValues(alpha: 0.32),
+                    ),
+                  ),
+                  PositionedDirectional(
+                    top: 0,
+                    bottom: 0,
+                    end: 0,
+                    width: extent,
+                    child: Material(
+                      elevation: 1,
+                      color: Theme.of(context).colorScheme.surfaceContainerLow,
+                      shape: const RoundedRectangleBorder(
+                        borderRadius: BorderRadiusDirectional.horizontal(
+                          start: Radius.circular(ClaxRadius.lg),
+                        ),
+                      ),
+                      clipBehavior: Clip.antiAlias,
+                      child: _panel(wide),
+                    ),
+                  ),
+                ],
+              ],
+            );
+          } else if (wide && shown && !inPane) {
+            flex = Stack(
+              fit: StackFit.expand,
+              children: [
+                besideFlex(),
                 // The pane's edge resizes it.
                 Positioned(
                   right: extent - 3,
@@ -2403,6 +2478,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
                 ),
               ],
             );
+          } else {
+            flex = besideFlex();
           }
           if (!composing || wide || pop) return flex;
           // On a narrow screen the composer is docked at the bottom, over
@@ -2494,6 +2571,20 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            // In a pane, how a change ended sits under the app bar, above
+            // the page, never over its top.
+            if (_inPane && _changes.outcome != null)
+              ColoredBox(
+                key: const ValueKey('pane-outcome'),
+                color: claxPalette(context).bg,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: ClaxSpace.s16,
+                    vertical: ClaxSpace.s8,
+                  ),
+                  child: Center(child: _outcomeChip()),
+                ),
+              ),
             Expanded(
               child: ValueListenableBuilder<int>(
                 valueListenable: widget.device != null
@@ -2516,7 +2607,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
                             right: !shown || !wide,
                             child: _pageStack(context, pop: pop),
                           ),
-                          _top(context, watches),
+                          if (!_inPane) _top(context, watches),
                         ],
                       ),
                     ),
@@ -2678,27 +2769,12 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         ),
       ),
       if (_covered) _cover(context),
-      if (_changes.outcome != null)
+      if (_changes.outcome != null && !_inPane)
         Positioned(
           top: 8,
           left: 24,
           right: 24,
-          child: Center(
-            child: WorkingChip(
-              changes: _changes,
-              clock: widget.clock,
-              onDismiss: () => setState(_changes.dismiss),
-              onReplied: () {
-                setState(_changes.dismiss);
-                _openReplied();
-              },
-              onResend: () => _resend(_changes.retryThread),
-              onRetry: widget.onRetry == null
-                  ? null
-                  : () => unawaited(_retryChange()),
-              onOpen: () => unawaited(_showChange()),
-            ),
-          ),
+          child: Center(child: _outcomeChip()),
         ),
       // Where the notice cannot be seen, or when asked for: the way in.
       if (_showsTab)
@@ -2724,8 +2800,36 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     ],
   );
 
+  /// How the last change ended, with what can be done about it.
+  Widget _outcomeChip() => WorkingChip(
+    changes: _changes,
+    clock: widget.clock,
+    onDismiss: () => setState(_changes.dismiss),
+    onReplied: () {
+      setState(_changes.dismiss);
+      _openReplied();
+    },
+    onResend: () => _resend(_changes.retryThread),
+    onRetry: widget.onRetry == null ? null : () => unawaited(_retryChange()),
+    onOpen: () => unawaited(_showChange()),
+  );
+
   /// The screen's width at its last layout.
   double _width = 0;
+
+  /// Whether the app shows in a pane under its own top app bar: the
+  /// Material family's app (not the home app) from [ClaxWidth.medium].
+  bool get _inPane =>
+      widget.mode == AppMode.app &&
+      ClaxFamily.of(context) == ClaxFamily.material &&
+      ClaxWidth.of(context) >= ClaxWidth.medium;
+
+  /// The width of the panel's side sheet in a pane.
+  static const _sideSheet = ClaxLayout.listPane;
+
+  /// A context under the screen's scaffold, for toasts laid inline under
+  /// its app bar.
+  BuildContext? _underBar;
 
   /// Whether a composer pops over the page at the pick (the Apple family
   /// from [ClaxWidth.medium]) rather than heading the panel or docking at
@@ -2762,6 +2866,186 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         ),
       ),
     );
+  }
+
+  /// The top app bar of the app in a pane ([_inPane]), 64 dp under the
+  /// status bar: Back, the title, what goes on, New version, Location,
+  /// Comment, Threads with its count, Share and More.
+  PreferredSizeWidget _paneBar(BuildContext context) {
+    final p = claxPalette(context);
+    final closes = _wantComment || _questionsShowing || _draft != null;
+    final leaves =
+        widget.leave != null || (Navigator.maybeOf(context)?.canPop() ?? false);
+    final ClaxPillState? status = _changes.outcome != null
+        ? null
+        : _changes.working
+        ? ClaxPillState.working
+        : _building
+        ? ClaxPillState.building
+        : null;
+    final count = _plan == null ? null : planCount(_plan!);
+    final share = widget.share;
+    return AppBar(
+      key: const ValueKey('pane-bar'),
+      toolbarHeight: 64,
+      automaticallyImplyLeading: false,
+      backgroundColor: p.bg,
+      surfaceTintColor: Colors.transparent,
+      scrolledUnderElevation: 0,
+      shape: Border(bottom: BorderSide(color: p.border)),
+      leading: IconButton(
+        key: const ValueKey('pane-back'),
+        tooltip: 'Back',
+        icon: const Icon(Icons.arrow_back),
+        // Through the PopScope: what is over the page, then the page's
+        // history, then the screen.
+        onPressed: closes || _canGoBack || leaves
+            ? () => unawaited(Navigator.maybePop(context))
+            : null,
+      ),
+      titleSpacing: 0,
+      title: Text(
+        _app?.title ?? '',
+        key: const ValueKey('pane-title'),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      actions: [
+        if (status != null)
+          Padding(
+            padding: const EdgeInsetsDirectional.only(end: ClaxSpace.s8),
+            child: BarStatus(
+              key: const ValueKey('pane-status'),
+              state: status,
+              progress: count == null
+                  ? null
+                  : (done: count.done, total: count.total),
+              onTap: status == ClaxPillState.working
+                  ? () => unawaited(_showChange())
+                  : () => unawaited(
+                      showBuildSheet(
+                        context,
+                        widget.build!,
+                        widget.aid,
+                        side: true,
+                      ),
+                    ),
+            ),
+          ),
+        if (_newer != null && !_reloading && _draft == null)
+          TextButton(
+            key: const ValueKey('pane-new-version'),
+            onPressed: () => _call(const ReloadLatest()),
+            child: const Text('New version'),
+          ),
+        ValueListenableBuilder<int>(
+          valueListenable: widget.device != null
+              ? _deviceView.watching
+              : _noWatches,
+          builder: (context, watches, _) => watches == 0
+              ? const SizedBox.shrink()
+              : IconButton(
+                  key: const ValueKey('pane-location'),
+                  tooltip: 'Location in use',
+                  isSelected: true,
+                  icon: const Icon(Icons.location_on_outlined),
+                  onPressed: _locationDetails,
+                ),
+        ),
+        IconButton(
+          key: const ValueKey('pane-comment'),
+          tooltip: 'Comment',
+          isSelected: _bar,
+          icon: const Icon(Icons.add_comment_outlined),
+          selectedIcon: Icon(Icons.add_comment, color: p.you),
+          onPressed: _toggleComment,
+        ),
+        IconButton(
+          key: const ValueKey('pane-threads'),
+          tooltip: 'Threads',
+          isSelected: _open,
+          icon: ClaxBadge(
+            count: _openThreads,
+            child: const Icon(Icons.forum_outlined),
+          ),
+          selectedIcon: ClaxBadge(
+            count: _openThreads,
+            child: const Icon(Icons.forum),
+          ),
+          onPressed: () {
+            if (_open) {
+              _setOpen(false);
+            } else {
+              setState(() => _tab = PanelTab.threads);
+              _setOpen(true);
+            }
+          },
+        ),
+        if (share != null)
+          IconButton(
+            key: const ValueKey('pane-share'),
+            tooltip: 'Share app',
+            icon: const Icon(Icons.share_outlined),
+            onPressed: () => unawaited(
+              share(context, const PluginBundleFiles(toFile: false)),
+            ),
+          ),
+        Builder(
+          builder: (button) => IconButton(
+            key: const ValueKey('pane-more'),
+            tooltip: 'More',
+            icon: const Icon(Icons.more_vert),
+            onPressed: () => unawaited(_more(button)),
+          ),
+        ),
+        const SizedBox(width: ClaxSpace.s4),
+      ],
+    );
+  }
+
+  /// The pane's More menu, under [button]: Inspect, Versions, and Star or
+  /// Unstar.
+  Future<void> _more(BuildContext button) async {
+    final box = button.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return;
+    final anchor = box.localToGlobal(Offset.zero) & box.size;
+    final layout = widget.home?.layout;
+    final arranged = layout != null && layout.readable;
+    final starred =
+        arranged && layout.sections.starred.contains(widget.aid);
+    final choice = await ClaxMenu.show(
+      context,
+      anchor: anchor,
+      items: [
+        if (widget.onInspect != null)
+          const ClaxMenuItem(
+            'inspect',
+            'Inspect',
+            icon: Icons.manage_search_rounded,
+          ),
+        const ClaxMenuItem('versions', 'Versions', icon: Icons.history),
+        if (arranged)
+          ClaxMenuItem(
+            'star',
+            starred ? 'Unstar' : 'Star',
+            icon: starred ? Icons.star : Icons.star_outline,
+          ),
+      ],
+    );
+    if (!mounted) return;
+    switch (choice) {
+      case 'inspect':
+        widget.onInspect?.call();
+      case 'versions':
+        setState(() => _tab = PanelTab.versions);
+        _setOpen(true);
+      case 'star' when layout != null:
+        try {
+          await (starred ? layout.unstar(widget.aid) : layout.star(widget.aid));
+        } on Object catch (e) {
+          if (mounted) _showToast(userMessage(e), error: true);
+        }
+    }
   }
 
   /// Over the page's top, 8 dp under the status bar and inside the side
@@ -2897,6 +3181,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   /// Whether the Comment tab shows: on Android (with a notice), outside
   /// comment mode, while the notice cannot be seen or when asked for.
   bool get _showsTab =>
+      !_inPane &&
       widget.notice != null &&
       !_wantComment &&
       !_covered &&

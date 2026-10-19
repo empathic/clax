@@ -694,3 +694,68 @@ class BuildChip extends StatelessWidget {
     );
   }
 }
+
+/// What goes on with an app shown in a pane (Android wide), in its top app
+/// bar where the [ClaxPill] would be over a phone's page: the breathing
+/// mark and the pill's words for [state] ("Working", "Building 2/5") on
+/// `accent-tint`. It stays as long as that goes on (nothing folds or
+/// covers the page), and a tap calls [onTap], which opens the change or
+/// the plan in a side sheet. A screen reader hears the state as a live
+/// region.
+class BarStatus extends StatelessWidget {
+  const BarStatus({
+    super.key,
+    required this.state,
+    required this.onTap,
+    this.progress,
+  });
+
+  /// [ClaxPillState.working] or [ClaxPillState.building].
+  final ClaxPillState state;
+  final ({int done, int total})? progress;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = claxPalette(context);
+    final theme = Theme.of(context);
+    return Semantics(
+      container: true,
+      button: onTap != null,
+      liveRegion: true,
+      label: ClaxPill.spoken(state, progress),
+      excludeSemantics: true,
+      child: Material(
+        color: p.accentTint,
+        shape: const StadiumBorder(),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: ClaxLayout.target),
+            child: Padding(
+              padding: const EdgeInsetsDirectional.only(
+                start: ClaxSpace.s12,
+                end: ClaxSpace.s16,
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const ClaxMark(size: 18, state: ClaxMarkState.working),
+                  const SizedBox(width: ClaxSpace.s8),
+                  Text(
+                    ClaxPill.label(state, progress),
+                    maxLines: 1,
+                    style: theme.textTheme.labelLarge?.copyWith(
+                      color: p.agentInk,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

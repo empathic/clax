@@ -272,3 +272,64 @@ class _AppleSheet extends StatelessWidget {
     );
   }
 }
+
+/// Material's modal side sheet: [builder]'s content in a panel [width]
+/// wide at the window's trailing edge, the full height, its leading
+/// corners `radius-lg`, over a scrim that closes it when tapped (as Back
+/// does). It slides in over [ClaxMotion.enter] (fades under reduced
+/// motion). [key] names the panel. The content pops it
+/// (`Navigator.pop(context, value)`), and the sheet completes with what it
+/// popped with.
+abstract final class ClaxSideSheet {
+  static Future<T?> show<T>(
+    BuildContext context, {
+    required WidgetBuilder builder,
+    Key? key,
+    double width = ClaxLayout.listPane,
+  }) {
+    final p = claxPalette(context);
+    return showGeneralDialog<T>(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'Close',
+      barrierColor: p.scrim.withValues(alpha: p.scrim.a * 0.32),
+      transitionDuration: ClaxMotion.of(context, ClaxMotion.enter),
+      pageBuilder: (context, _, _) => Align(
+        alignment: AlignmentDirectional.centerEnd,
+        child: SizedBox(
+          width: width,
+          height: double.infinity,
+          child: Material(
+            key: key,
+            elevation: 1,
+            color: Theme.of(context).colorScheme.surfaceContainerLow,
+            shape: const RoundedRectangleBorder(
+              borderRadius: BorderRadiusDirectional.horizontal(
+                start: Radius.circular(ClaxRadius.lg),
+              ),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: SafeArea(left: false, child: Builder(builder: builder)),
+          ),
+        ),
+      ),
+      transitionBuilder: (context, a, _, child) {
+        final eased = CurvedAnimation(
+          parent: a,
+          curve: ClaxMotion.decelerate,
+          reverseCurve: ClaxMotion.accelerate,
+        );
+        if (MediaQuery.disableAnimationsOf(context)) {
+          return FadeTransition(opacity: eased, child: child);
+        }
+        return SlideTransition(
+          position: Tween(
+            begin: const Offset(1, 0),
+            end: Offset.zero,
+          ).animate(eased),
+          child: child,
+        );
+      },
+    );
+  }
+}

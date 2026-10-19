@@ -980,9 +980,54 @@ class _EditFeatureDialogState extends State<_EditFeatureDialog> {
 }
 
 /// Shows app [aid]'s build over the app in a [ClaxSheet] (a bottom sheet
-/// on a phone, a window sheet on the Mac): the plan panel, with Stop and
-/// Resume, and Done where the sheet has no handle to drag it away.
-Future<void> showBuildSheet(BuildContext context, BuildLink link, String aid) {
+/// on a phone, a window sheet on the Mac), or with [side] in a
+/// [ClaxSideSheet] at the window's edge (an app in a pane on wide
+/// Android): the plan panel, with Stop and Resume, and Done where the
+/// sheet has no handle to drag it away.
+Future<void> showBuildSheet(
+  BuildContext context,
+  BuildLink link,
+  String aid, {
+  bool side = false,
+}) {
+  Widget watch() => BuildWatch(
+    key: const ValueKey('build-sheet'),
+    link: link,
+    appId: aid,
+    builder: (context, plan, state) => BuildPlanPanel(
+      plan: plan,
+      state: state,
+      plans: link.plans,
+      planKey: aid,
+      handle: false,
+      onStop: () => unawaited(link.control.stopBuild(aid)),
+      onResume: () => unawaited(link.control.resumeBuild(aid)),
+    ),
+  );
+  if (side) {
+    return ClaxSideSheet.show<void>(
+      context,
+      key: const ValueKey('build-side-sheet'),
+      builder: (context) => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(child: watch()),
+          Padding(
+            padding: const EdgeInsets.all(ClaxSpace.s16),
+            child: Align(
+              alignment: AlignmentDirectional.centerEnd,
+              child: ClaxButton(
+                key: const ValueKey('build-side-done'),
+                label: 'Done',
+                kind: ClaxButtonKind.primary,
+                onPressed: () => Navigator.of(context).pop(),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
   final compact = ClaxWidth.of(context) == ClaxWidth.compact;
   final height = MediaQuery.sizeOf(context).height * (compact ? 0.6 : 0.5);
   return ClaxSheet.show<void>(
@@ -997,22 +1042,6 @@ Future<void> showBuildSheet(BuildContext context, BuildLink link, String aid) {
           onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
         ),
     ],
-    builder: (context) => SizedBox(
-      height: height,
-      child: BuildWatch(
-        key: const ValueKey('build-sheet'),
-        link: link,
-        appId: aid,
-        builder: (context, plan, state) => BuildPlanPanel(
-          plan: plan,
-          state: state,
-          plans: link.plans,
-          planKey: aid,
-          handle: false,
-          onStop: () => unawaited(link.control.stopBuild(aid)),
-          onResume: () => unawaited(link.control.resumeBuild(aid)),
-        ),
-      ),
-    ),
+    builder: (context) => SizedBox(height: height, child: watch()),
   );
 }
