@@ -138,6 +138,19 @@ fn approval_record(kind: AuditKind, at: &str, a: &Approval) -> AuditRecord {
     rec
 }
 
+/// That a declined row of `approval_requests` (approver `?1`, artifact
+/// `?3`, thread `?4`) still stands: no approval of its approver and author
+/// covering that place was made or revoked after it was decided. The rule
+/// a thread's delivery state reads declines by
+/// (`crate::feedback::declines_in`).
+const DECLINE_STANDS: &str = "NOT EXISTS (SELECT 1 FROM approvals a
+    WHERE COALESCE(a.approver, '') = COALESCE(?1, '')
+      AND a.author = approval_requests.author
+      AND (a.scope = 'everywhere' OR (a.scope = 'artifact' AND a.artifact_id = ?3)
+           OR (a.scope = 'thread' AND a.thread_id = ?4))
+      AND (a.created_at > approval_requests.decided_at
+           OR a.revoked_at > approval_requests.decided_at))";
+
 /// Whether `?4`'s authors (a JSON array of keys) have an open or a
 /// declined request of approver `?1` (`NULL`: the owner) at artifact `?2`,
 /// for thread `?3` or the whole artifact: through the index
@@ -987,9 +1000,12 @@ fn held_without_request(
         return Ok(false);
     };
     let answered: bool = tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM approval_requests
-           WHERE COALESCE(approver, '') = COALESCE(?1, '') AND author = ?2
-             AND artifact_id = ?3 AND thread_id = ?4 AND status IN ('open', 'declined'))",
+        &format!(
+            "SELECT EXISTS (SELECT 1 FROM approval_requests
+               WHERE COALESCE(approver, '') = COALESCE(?1, '') AND author = ?2
+                 AND artifact_id = ?3 AND thread_id = ?4
+                 AND (status = 'open' OR (status = 'declined' AND {DECLINE_STANDS})))"
+        ),
         params![approver, author, aid, tid],
         |r| r.get(0),
     )?;
@@ -1135,10 +1151,12 @@ fn request_in(
     let quiet =
         clax_core::time::stamp(st.now_utc() - chrono::Duration::seconds(DECLINE_QUIET_SECS));
     let declined: bool = tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM approval_requests
-           WHERE COALESCE(approver, '') = COALESCE(?1, '') AND author = ?2
-             AND artifact_id = ?3 AND COALESCE(thread_id, '') = COALESCE(?4, '')
-             AND status = 'declined' AND decided_at > ?5)",
+        &format!(
+            "SELECT EXISTS (SELECT 1 FROM approval_requests
+               WHERE COALESCE(approver, '') = COALESCE(?1, '') AND author = ?2
+                 AND artifact_id = ?3 AND COALESCE(thread_id, '') = COALESCE(?4, '')
+                 AND status = 'declined' AND decided_at > ?5 AND {DECLINE_STANDS})"
+        ),
         params![approver, author, aid, tid, quiet],
         |r| r.get(0),
     )?;
@@ -2892,6 +2910,38 @@ mod tests {
             (asked[0].cause, asked[0].status),
             (Cause::Ask, RequestStatus::Open)
         );
+        assert_ne!(asked[0].id, rid);
+    }
+
+    #[test]
+    fn an_approval_and_revocation_after_a_decline_end_its_quiet_window() {
+        let w = req_world();
+        let tid = w.thread_by(&w.mia, "please");
+        w.send_to_sam(&tid);
+        let rid = w.open(Some(&w.sam))[0].id.clone();
+        w.st.decide_request(DAEMON, &rid, Some(&w.sam), Decision::Decline, Via::Shell)
+            .unwrap();
+        w.clock.advance(1);
+        let a =
+            w.st.approve(
+                DAEMON,
+                Some(&w.sam),
+                &w.mia,
+                Scope::Thread(tid.clone()),
+                Via::Shell,
+            )
+            .unwrap();
+        w.clock.advance(1);
+        w.st.revoke_approval(DAEMON, &a.id, Some(&w.sam)).unwrap();
+        // Well inside the quiet window, the decline no longer stands.
+        let ask = AskApproval {
+            session_id: w.sid.clone(),
+            thread_id: Some(tid.clone()),
+            ..Default::default()
+        };
+        let asked = w.st.ask_approval(DAEMON, &ask).unwrap();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].status, RequestStatus::Open);
         assert_ne!(asked[0].id, rid);
     }
 
