@@ -441,6 +441,26 @@ void main() {
       expect(find.text('Your sharing key'), findsNothing);
     });
   });
+  testWidgets("About's Licences opens the licences page under Clax's copyright", (
+    tester,
+  ) async {
+    await pumpSettings(tester, store: SettingsStore(file), key: FakeKey());
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('licences')),
+      100,
+      scrollable: _list,
+    );
+    expect(find.text('About'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('licences')));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.byType(LicensePage), findsOneWidget);
+    expect(
+      find.textContaining('Copyright (C) 2026 Empathic, Inc.'),
+      findsOneWidget,
+    );
+  });
+
   group('Home screen', () {
     late FakeClaxApi api;
     late String aid;
@@ -489,8 +509,9 @@ void main() {
       tester,
     ) async {
       await pump(tester);
-      await show(tester, 'Use the built-in home screen');
-      expect(find.text('Home screen'), findsOneWidget);
+      // The section's header at the top of the list, its rows under it.
+      await show(tester, 'Home screen');
+      expect(find.text('Use the built-in home screen'), findsOneWidget);
       expect(find.text('Open'), findsOneWidget);
       expect(find.text('Undo last change'), findsOneWidget);
       expect(find.text("Reset to Clax's home screen"), findsOneWidget);

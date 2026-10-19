@@ -10,6 +10,8 @@ exports_files([
     "install.sh",
     ".bazelversion",
     "README.md",
+    # Read by apps/clax_app's :licence_check.
+    "LICENSES/GPL-2.0-only.txt",
     ".claude-plugin/marketplace.json",
     # Read by scripts/test-release.sh: crates/clax-worker has no BUILD file.
     "crates/clax-worker/Cargo.lock",

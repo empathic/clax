@@ -39,3 +39,4 @@ flutter:
     - assets/kit/
     - assets/home/
     - assets/haiku.json
+    - LICENSE

@@ -79,6 +79,7 @@ import 'ui/host_protocol.dart'
         ThreadsMsg;
 import 'ui/inspector_surface.dart';
 import 'ui/launcher.dart';
+import 'ui/licences.dart';
 import 'ui/make_service.dart';
 import 'ui/making_screen.dart';
 import 'ui/question_sheet.dart';
@@ -259,9 +260,12 @@ class AppServices {
   final int pid;
 }
 
-/// Runs the app with [services].
-Future<void> runClaxApp(AppServices services) async =>
-    runApp(AppRoot(services: services));
+/// Runs the app with [services], with Clax's own licence on the licences
+/// page ([registerClaxLicence]).
+Future<void> runClaxApp(AppServices services) async {
+  registerClaxLicence();
+  runApp(AppRoot(services: services));
+}
 
 /// The backend for [settings]: `claude -p` when the settings choose it and
 /// [cliSupported], else the Messages API with the key from [key]. The CLI

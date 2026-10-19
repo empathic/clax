@@ -6,12 +6,13 @@ import '../home/home_recovery.dart';
 import '../home/home_settings.dart';
 import '../platform/secure_key.dart';
 import '../platform/settings_store.dart';
+import 'licences.dart';
 
 /// Settings: the Claude API key, the agent (where `claude -p` can run), the
 /// model, dictation (whether it starts on its own, and its sounds and
 /// vibration), the Claude Code path, sharing (the name bundles carry and
-/// the sharing key's fingerprint), the home screen ([home]), and the last
-/// ten measured timings.
+/// the sharing key's fingerprint), the home screen ([home]), the last ten
+/// measured timings, and About (the licences page, [showClaxLicences]).
 ///
 /// Every choice is saved to [store] as it is made. The key is saved only
 /// through [secureKey], on Save key, and is never shown back: a saved key
@@ -272,6 +273,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ],
                 const _Header('Recent timings'),
                 ..._timings(context),
+                const _Header('About'),
+                ListTile(
+                  key: const Key('licences'),
+                  title: const Text('Licences'),
+                  subtitle: const Text(
+                    'Clax is free software under the GPL, version 2',
+                  ),
+                  onTap: () => showClaxLicences(context),
+                ),
               ],
             ),
     );
