@@ -108,6 +108,19 @@ abstract final class MacWindow {
   static Future<void> dragWindow({required int view}) =>
       _send('dragWindow', {'view': view});
 
+  /// Makes [view]'s window's content [height] points tall, its top edge
+  /// where it was, animated unless [animate] is false: a Settings window
+  /// fits the tab it shows. No taller than the screen allows.
+  static Future<void> setContentHeight(
+    double height, {
+    required int view,
+    bool animate = true,
+  }) => _send('setContentHeight', {
+    'view': view,
+    'height': height,
+    'animate': animate,
+  });
+
   /// Shows the sidebar material behind the leftmost [width] points of
   /// [view]'s window, where the Flutter view draws nothing; 0 hides it.
   static Future<void> setSidebarWidth(double width, {required int view}) =>

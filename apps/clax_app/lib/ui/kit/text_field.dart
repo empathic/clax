@@ -12,7 +12,9 @@ import 'family.dart';
 /// outline's gap.
 ///
 /// Apple: [label] above a bordered field, `radius-control-mac`, 13 pt type,
-/// with a ring in the accent while focused.
+/// with a ring in the accent while focused; without [showLabel] the label
+/// is only what VoiceOver reads, for a form that shows it in a column of
+/// its own beside the field.
 ///
 /// In both, [helper] (or [error], in `danger`, in its place) sits under the
 /// field and [suffix] at its trailing end.
@@ -36,6 +38,7 @@ class ClaxTextField extends StatelessWidget {
     this.textCapitalization = TextCapitalization.none,
     this.autocorrect = true,
     this.enabled = true,
+    this.showLabel = true,
   });
 
   final TextEditingController? controller;
@@ -77,6 +80,9 @@ class ClaxTextField extends StatelessWidget {
 
   /// Whether the field takes input; a disabled field waits, greyed.
   final bool enabled;
+
+  /// Whether the Apple form draws [label] above the field.
+  final bool showLabel;
 
   @override
   Widget build(BuildContext context) {
@@ -125,12 +131,13 @@ class ClaxTextField extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        ExcludeSemantics(
-          child: Padding(
-            padding: const EdgeInsets.only(bottom: ClaxSpace.s4),
-            child: Text(label, style: text.copyWith(color: p.fg)),
+        if (showLabel)
+          ExcludeSemantics(
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: ClaxSpace.s4),
+              child: Text(label, style: text.copyWith(color: p.fg)),
+            ),
           ),
-        ),
         Semantics(
           label: label,
           child: TextField(

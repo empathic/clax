@@ -15,6 +15,7 @@ import 'developer.dart';
 import 'haiku.dart';
 import 'kit/kit.dart';
 import 'licences.dart';
+import 'settings/settings_tabs.dart';
 import 'theme.dart';
 import 'tokens.g.dart';
 
@@ -41,9 +42,16 @@ import 'tokens.g.dart';
 ///   which also sets the [DeveloperScope] above), with the last ten
 ///   measured timings while it is on.
 ///
-/// Every choice is saved to [store] as it is made. The key is saved only
-/// through [secureKey], on Save key, and is never shown back: a saved key
-/// reads "A key is saved", with Replace and Remove.
+/// With a [tab] it shows only that tab's section, as the Mac's Settings
+/// window does (`SettingsTabs`): in the Apple family a grouped form, each
+/// row's label right-aligned in a 180 point column and its controls beside
+/// it; in the Material family the section's rows. About is the General
+/// tab, Developer the Advanced one, and the Comment tab's switch is the
+/// phone's alone.
+///
+/// Every choice is saved to [store] as it is made, and [onSaved] told. The
+/// key is saved only through [secureKey], on Save key, and is never shown
+/// back: a saved key reads "A key is saved", with Replace and Remove.
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({
     super.key,
@@ -59,7 +67,16 @@ class SettingsScreen extends StatefulWidget {
     this.random,
     this.asksAiConsent = false,
     this.notificationsAllowed,
+    this.tab,
+    this.onSaved,
   });
+
+  /// The one section to show, as a Settings window's tab; null shows them
+  /// all in one column.
+  final SettingsTab? tab;
+
+  /// Told after each choice or key is saved.
+  final VoidCallback? onSaved;
 
   final SettingsStore store;
   final SecureKey secureKey;
@@ -96,12 +113,14 @@ class SettingsScreen extends StatefulWidget {
   /// false, so the next run asks again.
   final bool asksAiConsent;
 
-  /// Whether notifications are on for Clax (`AppNotice.allowed`); null
-  /// where Clax shows no notice (macOS), and then there is no
-  /// Notifications section.
+  /// Whether notifications are on for Clax (`AppNotice.allowed` on
+  /// Android, the system setting on the Mac); null where Clax cannot tell,
+  /// and then there is no Notifications section.
   final Future<bool> Function()? notificationsAllowed;
 
-  /// The channel Open settings goes through.
+  /// The channel Open settings goes through: `openAppSettings` opens
+  /// Clax's page of the system settings (Android's app page, the Mac's
+  /// Notifications pane).
   static const native = MethodChannel('dev.empathic.clax/native');
 
   @override
@@ -240,6 +259,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     f(s);
     setState(() => _s = s);
     await widget.store.save(s);
+    widget.onSaved?.call();
   }
 
   /// Why the typed key is refused, shown under the field.
@@ -279,6 +299,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
       return;
     }
+    widget.onSaved?.call();
     if (!mounted) return;
     _key.clear();
     setState(() {
@@ -291,6 +312,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final s = _s;
+    if (widget.tab case final tab?) return _tabBody(context, s, tab);
     return ClaxScaffold(
       title: 'Settings',
       largeTitle: true,
@@ -305,185 +327,437 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  List<Widget> _rows(BuildContext context, AppSettings s) {
-    final model = modelChoices.firstWhere(
-      (m) => m.id == s.model,
-      orElse: () => modelChoices.firstWhere((m) => m.id == defaultModel),
+  /// The phone's sections, in order.
+  static const _phoneOrder = [
+    SettingsTab.claude,
+    SettingsTab.dictation,
+    SettingsTab.sharing,
+    SettingsTab.notifications,
+    SettingsTab.homeScreen,
+    SettingsTab.general,
+    SettingsTab.advanced,
+  ];
+
+  /// [tab]'s header on the phone.
+  static String _phoneHeader(SettingsTab tab) => switch (tab) {
+    SettingsTab.general => 'About',
+    SettingsTab.homeScreen => 'Home screen',
+    SettingsTab.advanced => 'Developer',
+    _ => tab.title,
+  };
+
+  List<Widget> _rows(BuildContext context, AppSettings s) => [
+    for (final t in _phoneOrder)
+      if (_section(context, s, t, phone: true) case final rows
+          when rows.isNotEmpty) ...[_Header(_phoneHeader(t)), ...rows],
+  ];
+
+  /// One tab's section: the phone's rows of it in the Material family, the
+  /// grouped form in the Apple family.
+  Widget _tabBody(BuildContext context, AppSettings? s, SettingsTab tab) =>
+      Material(
+        type: MaterialType.transparency,
+        child: s == null
+            ? const SizedBox(height: 160)
+            : _tabContent(context, s, tab),
+      );
+
+  Widget _tabContent(BuildContext context, AppSettings s, SettingsTab tab) {
+    if (ClaxFamily.of(context) != ClaxFamily.apple) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: ClaxSpace.s16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: _section(context, s, tab, phone: false),
+        ),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        ClaxSpace.s20,
+        ClaxSpace.s20,
+        ClaxSpace.s32,
+        ClaxSpace.s24,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: _form(context, s, tab),
+      ),
     );
-    final cli = s.backend == backendClaudeCli;
-    return [
-      const _Header('Claude'),
-      _keyTile(context),
-      if (widget.cliSupported) ...[
-        _MenuRow(
-          title: 'Agent',
-          value: cli ? 'Claude Code on this Mac' : 'Claude API',
-          items: [
-            ClaxMenuItem(
-              backendMessagesApi,
-              'Claude API',
-              detail: 'Your API key',
-              checked: !cli,
-            ),
-            ClaxMenuItem(
-              backendClaudeCli,
-              'Claude Code on this Mac',
-              detail: 'Your Claude Code login',
-              checked: cli,
-            ),
-          ],
-          onChosen: (v) => _change((s) => s.backend = v),
-        ),
-        if (cli)
-          _Inset(
-            child: ClaxTextField(
-              controller: _path,
-              label: 'Claude Code path',
-              hint: 'Found on PATH when empty',
-              autocorrect: false,
-              onChanged: (v) => _change(
-                (s) => s.claudePath = v.trim().isEmpty ? null : v.trim(),
-              ),
-            ),
-          ),
-      ],
-      _MenuRow(
-        title: 'Model',
-        value: model.word,
-        items: [
-          for (final m in modelChoices)
-            ClaxMenuItem(m.id, m.word, detail: m.name, checked: m == model),
-        ],
-        onChosen: (v) => _change((s) => s.model = v),
-      ),
-      if (widget.asksAiConsent) _aiConsentTile(s),
-      const _Header('Dictation'),
-      _SwitchRow(
-        title: 'Start dictation automatically',
-        subtitle: 'Listen as soon as you start a new app or a comment',
-        value: s.dictateComments,
-        onChanged: (v) => _change((s) => s.dictateComments = v),
-      ),
-      _SwitchRow(
-        title: 'Dictation sounds and vibration',
-        subtitle: 'A tone and a buzz as listening starts and stops',
-        value: s.dictationCues,
-        onChanged: (v) => _change((s) => s.dictationCues = v),
-      ),
-      const _Header('Sharing'),
-      _Inset(
-        child: ClaxTextField(
-          key: const Key('author-name-field'),
-          controller: _name,
-          label: 'Your name',
-          helper: 'Shown to people you share apps with',
-          maxLength: maxAuthorName,
-          textCapitalization: TextCapitalization.words,
-          onChanged: (v) => _change((s) => s.authorName = cleanAuthorName(v)),
-        ),
-      ),
-      if (_fingerprint case final f?)
-        ListTile(
-          title: const Text('Your sharing key'),
-          subtitle: Row(
-            children: [
-              const Icon(Icons.fingerprint_rounded, size: 18),
-              const SizedBox(width: ClaxSpace.s8),
-              Flexible(
-                child: SelectableText(
-                  f,
-                  style: const TextStyle(
-                    fontFeatures: [FontFeature.tabularFigures()],
-                  ),
-                ),
-              ),
-            ],
-          ),
-        )
-      else
-        const ListTile(
-          subtitle: Text(
-            'A sharing key is made the first time you share an app',
-          ),
-        ),
-      if (widget.notificationsAllowed != null) ...[
-        const _Header('Notifications'),
-        ListTile(
-          title: const Text('Notifications for Clax'),
-          subtitle: Text(
-            _notifications == false
-                ? 'Turn them on to comment from the shade'
-                : 'Comment and Threads are in the shade',
-          ),
-          trailing: _Value(
-            switch (_notifications) {
-              true => 'On',
-              false => 'Off',
-              null => '',
-            },
-            key: const ValueKey('notifications-state'),
-          ),
-        ),
-        ListTile(
-          title: const Text('Open settings'),
-          subtitle: const Text('Clax’s page in Android settings'),
-          onTap: () => unawaited(_openAppSettings()),
-        ),
-        _SwitchRow(
-          title: 'Show the Comment tab',
-          subtitle: 'Also while notifications are on',
-          value: s.showCommentTab,
-          onChanged: (v) => _change((s) => s.showCommentTab = v),
-        ),
-      ],
-      if (widget.home case final h?) ...[
-        const _Header('Home screen'),
-        _HomeSection(controls: h),
-      ],
-      const _Header('About'),
-      ListTile(
-        title: const Text('Clax'),
-        trailing: _Value('Version ${widget.version}'),
-      ),
-      if (_homeVersion case final v?)
-        ListTile(
-          title: const Text('Home screen'),
-          trailing: _Value('Version $v'),
-        ),
-      ListTile(
-        key: const Key('licences'),
-        title: const Text('Licences'),
-        subtitle: const Text('Clax is free software under the GPL, version 2'),
-        onTap: () => showClaxLicences(context),
-      ),
-      if (_haiku case final h?)
-        Padding(
-          padding: const EdgeInsets.fromLTRB(
-            ClaxSpace.s16,
-            ClaxSpace.s12,
-            ClaxSpace.s16,
-            ClaxSpace.s8,
-          ),
-          child: Align(
-            alignment: AlignmentDirectional.centerStart,
-            child: HaikuLine(text: h, onAnother: _anotherHaiku),
-          ),
-        ),
-      const _Header('Developer'),
-      _SwitchRow(
-        title: 'Developer tools',
-        value: s.developer,
-        onChanged: (v) {
-          DeveloperScope.set(context, v);
-          _change((s) => s.developer = v);
-        },
-      ),
-      if (s.developer) ...[
-        const _Header('Recent timings'),
-        ..._timings(context),
-      ],
-    ];
   }
+
+  /// [tab]'s rows in one column; [phone] adds the rows only the phone has
+  /// (the Comment tab's switch).
+  List<Widget> _section(
+    BuildContext context,
+    AppSettings s,
+    SettingsTab tab, {
+    required bool phone,
+  }) {
+    switch (tab) {
+      case SettingsTab.claude:
+        final model = _model(s);
+        final cli = s.backend == backendClaudeCli;
+        return [
+          _keyTile(context),
+          if (widget.cliSupported) ...[
+            _MenuRow(
+              title: 'Agent',
+              value: _agentWord(cli),
+              items: _agentItems(cli),
+              onChosen: (v) => _change((s) => s.backend = v),
+            ),
+            if (cli) _Inset(child: _pathField()),
+          ],
+          _MenuRow(
+            title: 'Model',
+            value: model.word,
+            items: _modelItems(model),
+            onChosen: (v) => _change((s) => s.model = v),
+          ),
+          if (widget.asksAiConsent) _aiConsentTile(s),
+        ];
+      case SettingsTab.dictation:
+        return [
+          _SwitchRow(
+            title: 'Start dictation automatically',
+            subtitle: _autoDictateDetail,
+            value: s.dictateComments,
+            onChanged: (v) => _change((s) => s.dictateComments = v),
+          ),
+          _SwitchRow(
+            title: 'Dictation sounds and vibration',
+            subtitle: 'A tone and a buzz as listening starts and stops',
+            value: s.dictationCues,
+            onChanged: (v) => _change((s) => s.dictationCues = v),
+          ),
+        ];
+      case SettingsTab.sharing:
+        return [
+          _Inset(child: _nameField(showLabel: true)),
+          if (_fingerprint case final f?)
+            ListTile(
+              title: const Text('Your sharing key'),
+              subtitle: _fingerprintLine(f),
+            )
+          else
+            const ListTile(subtitle: Text(_noSharingKey)),
+        ];
+      case SettingsTab.notifications:
+        if (widget.notificationsAllowed == null) return const [];
+        return [
+          ListTile(
+            title: const Text('Notifications for Clax'),
+            subtitle: Text(
+              _notifications == false
+                  ? 'Turn them on to comment from the shade'
+                  : 'Comment and Threads are in the shade',
+            ),
+            trailing: _Value(
+              _notificationsWord,
+              key: const ValueKey('notifications-state'),
+            ),
+          ),
+          ListTile(
+            title: const Text('Open settings'),
+            subtitle: const Text('Clax’s page in Android settings'),
+            onTap: () => unawaited(_openAppSettings()),
+          ),
+          if (phone)
+            _SwitchRow(
+              title: 'Show the Comment tab',
+              subtitle: 'Also while notifications are on',
+              value: s.showCommentTab,
+              onChanged: (v) => _change((s) => s.showCommentTab = v),
+            ),
+        ];
+      case SettingsTab.homeScreen:
+        return [
+          if (widget.home case final h?) _HomeSection(controls: h),
+        ];
+      case SettingsTab.general:
+        return [
+          ListTile(
+            title: const Text('Clax'),
+            trailing: _Value('Version ${widget.version}'),
+          ),
+          if (_homeVersion case final v?)
+            ListTile(
+              title: const Text('Home screen'),
+              trailing: _Value('Version $v'),
+            ),
+          ListTile(
+            key: const Key('licences'),
+            title: const Text('Licences'),
+            subtitle: const Text(_licenceLine),
+            onTap: () => showClaxLicences(context),
+          ),
+          if (_haiku case final h?)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
+                ClaxSpace.s16,
+                ClaxSpace.s12,
+                ClaxSpace.s16,
+                ClaxSpace.s8,
+              ),
+              child: Align(
+                alignment: AlignmentDirectional.centerStart,
+                child: HaikuLine(text: h, onAnother: _anotherHaiku),
+              ),
+            ),
+        ];
+      case SettingsTab.advanced:
+        return [
+          _SwitchRow(
+            title: 'Developer tools',
+            value: s.developer,
+            onChanged: (v) => _setDeveloper(context, v),
+          ),
+          if (s.developer) ...[
+            const _Header('Recent timings'),
+            ..._timings(context),
+          ],
+        ];
+    }
+  }
+
+  /// [tab]'s grouped form, for the Apple family.
+  List<Widget> _form(BuildContext context, AppSettings s, SettingsTab tab) {
+    final muted = _muted(context);
+    switch (tab) {
+      case SettingsTab.general:
+        return [
+          _FormRow(label: 'Clax', child: _FormText('Version ${widget.version}')),
+          if (_homeVersion case final v?)
+            _FormRow(label: 'Home screen', child: _FormText('Version $v')),
+          _FormRow(
+            label: 'Licences',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                ClaxButton(
+                  key: const Key('licences'),
+                  label: 'Show licences',
+                  kind: ClaxButtonKind.tonal,
+                  onPressed: () => showClaxLicences(context),
+                ),
+                const SizedBox(height: ClaxSpace.s4),
+                Text(_licenceLine, style: muted),
+              ],
+            ),
+          ),
+          if (_haiku case final h?)
+            _FormRow(
+              child: Padding(
+                padding: const EdgeInsets.only(top: ClaxSpace.s8),
+                child: HaikuLine(text: h, onAnother: _anotherHaiku),
+              ),
+            ),
+        ];
+      case SettingsTab.claude:
+        final model = _model(s);
+        final cli = s.backend == backendClaudeCli;
+        return [
+          _FormRow(label: 'API key', child: _keyForm(context)),
+          if (widget.cliSupported) ...[
+            _FormRow(
+              label: 'Agent',
+              child: _PopUp(
+                value: _agentWord(cli),
+                items: _agentItems(cli),
+                onChosen: (v) => _change((s) => s.backend = v),
+              ),
+            ),
+            if (cli)
+              _FormRow(label: 'Claude Code path', child: _pathField(showLabel: false)),
+          ],
+          _FormRow(
+            label: 'Model',
+            child: _PopUp(
+              value: model.word,
+              items: _modelItems(model),
+              onChosen: (v) => _change((s) => s.model = v),
+            ),
+          ),
+          if (widget.asksAiConsent)
+            _FormRow(
+              label: 'Requests to Anthropic',
+              child: _aiConsentForm(context, s),
+            ),
+        ];
+      case SettingsTab.dictation:
+        return [
+          _FormRow(
+            label: 'Dictation',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                ClaxCheckbox(
+                  value: s.dictateComments,
+                  label: 'Start dictation automatically',
+                  detail: _autoDictateDetail,
+                  onChanged: (v) => _change((s) => s.dictateComments = v),
+                ),
+                const SizedBox(height: ClaxSpace.s8),
+                ClaxCheckbox(
+                  value: s.dictationCues,
+                  label: 'Play sounds',
+                  detail: 'A tone as listening starts and stops',
+                  onChanged: (v) => _change((s) => s.dictationCues = v),
+                ),
+              ],
+            ),
+          ),
+        ];
+      case SettingsTab.sharing:
+        return [
+          _FormRow(label: 'Your name', child: _nameField(showLabel: false)),
+          _FormRow(
+            label: 'Sharing key',
+            child: switch (_fingerprint) {
+              final f? => _fingerprintLine(f),
+              null => Text(_noSharingKey, style: muted),
+            },
+          ),
+        ];
+      case SettingsTab.notifications:
+        return [
+          _FormRow(
+            label: 'Notifications',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _FormText(
+                  _notificationsWord,
+                  key: const ValueKey('notifications-state'),
+                ),
+                const SizedBox(height: ClaxSpace.s4),
+                Text(
+                  _notifications == false
+                      ? 'Turn them on for the reminders apps set'
+                      : 'Apps you allow can remind you',
+                  style: muted,
+                ),
+                const SizedBox(height: ClaxSpace.s8),
+                ClaxButton(
+                  label: 'Open System Settings',
+                  kind: ClaxButtonKind.tonal,
+                  onPressed: () => unawaited(_openAppSettings()),
+                ),
+              ],
+            ),
+          ),
+        ];
+      case SettingsTab.homeScreen:
+        return [
+          if (widget.home case final h?) _HomeSection(controls: h, form: true),
+        ];
+      case SettingsTab.advanced:
+        return [
+          _FormRow(
+            label: 'Developer',
+            child: ClaxCheckbox(
+              value: s.developer,
+              label: 'Developer tools',
+              detail: 'Timings, the inspector’s code and data, and raw errors',
+              onChanged: (v) => _setDeveloper(context, v),
+            ),
+          ),
+          if (s.developer)
+            _FormRow(
+              label: 'Recent timings',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: _formTimings(context),
+              ),
+            ),
+        ];
+    }
+  }
+
+  static const _autoDictateDetail =
+      'Listen as soon as you start a new app or a comment';
+  static const _noSharingKey =
+      'A sharing key is made the first time you share an app';
+  static const _licenceLine = 'Clax is free software under the GPL, version 2';
+
+  String get _notificationsWord => switch (_notifications) {
+    true => 'On',
+    false => 'Off',
+    null => '',
+  };
+
+  TextStyle _muted(BuildContext context) => Theme.of(
+    context,
+  ).textTheme.bodySmall!.copyWith(color: claxPalette(context).muted);
+
+  void _setDeveloper(BuildContext context, bool v) {
+    DeveloperScope.set(context, v);
+    _change((s) => s.developer = v);
+  }
+
+  ModelChoice _model(AppSettings s) =>
+      modelChoices.firstWhere(
+        (m) => m.id == s.model,
+        orElse: () => modelChoices.firstWhere((m) => m.id == defaultModel),
+      );
+
+  List<ClaxMenuItem> _modelItems(ModelChoice model) => [
+    for (final m in modelChoices)
+      ClaxMenuItem(m.id, m.word, detail: m.name, checked: m == model),
+  ];
+
+  static String _agentWord(bool cli) =>
+      cli ? 'Claude Code on this Mac' : 'Claude API';
+
+  static List<ClaxMenuItem> _agentItems(bool cli) => [
+    ClaxMenuItem(
+      backendMessagesApi,
+      'Claude API',
+      detail: 'Your API key',
+      checked: !cli,
+    ),
+    ClaxMenuItem(
+      backendClaudeCli,
+      'Claude Code on this Mac',
+      detail: 'Your Claude Code login',
+      checked: cli,
+    ),
+  ];
+
+  Widget _pathField({bool showLabel = true}) => ClaxTextField(
+    controller: _path,
+    label: 'Claude Code path',
+    hint: 'Found on PATH when empty',
+    autocorrect: false,
+    showLabel: showLabel,
+    onChanged: (v) =>
+        _change((s) => s.claudePath = v.trim().isEmpty ? null : v.trim()),
+  );
+
+  Widget _nameField({required bool showLabel}) => ClaxTextField(
+    key: const Key('author-name-field'),
+    controller: _name,
+    label: 'Your name',
+    helper: 'Shown to people you share apps with',
+    maxLength: maxAuthorName,
+    textCapitalization: TextCapitalization.words,
+    showLabel: showLabel,
+    onChanged: (v) => _change((s) => s.authorName = cleanAuthorName(v)),
+  );
+
+  Widget _fingerprintLine(String f) => Row(
+    children: [
+      const Icon(Icons.fingerprint_rounded, size: 18),
+      const SizedBox(width: ClaxSpace.s8),
+      Flexible(
+        child: SelectableText(
+          f,
+          style: const TextStyle(fontFeatures: [FontFeature.tabularFigures()]),
+        ),
+      ),
+    ],
+  );
 
   /// Whether requests may go to Anthropic; Turn off takes an Allow back.
   Widget _aiConsentTile(AppSettings s) {
@@ -549,10 +823,56 @@ class _SettingsScreenState extends State<SettingsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          ClaxTextField(
+          _keyField(showLabel: true),
+          const SizedBox(height: ClaxSpace.s8),
+          _keyButtons(),
+        ],
+      ),
+    );
+  }
+
+  /// The API key in the Apple family's form: the saved key's state with
+  /// Replace and Remove, or the field with Save key.
+  Widget _keyForm(BuildContext context) {
+    if (_hasKey && !_editingKey) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const _FormText('A key is saved'),
+          const SizedBox(height: ClaxSpace.s8),
+          Wrap(
+            spacing: ClaxSpace.s8,
+            children: [
+              ClaxButton(
+                label: 'Replace',
+                kind: ClaxButtonKind.tonal,
+                onPressed: () => setState(() => _editingKey = true),
+              ),
+              ClaxButton(
+                label: 'Remove',
+                kind: ClaxButtonKind.destructive,
+                onPressed: () => _writeKey(null),
+              ),
+            ],
+          ),
+        ],
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _keyField(showLabel: false),
+        const SizedBox(height: ClaxSpace.s8),
+        _keyButtons(),
+      ],
+    );
+  }
+
+  Widget _keyField({required bool showLabel}) => ClaxTextField(
             key: const Key('api-key-field'),
             controller: _key,
             label: 'Claude API key',
+            showLabel: showLabel,
             obscure: !_showKey,
             autocorrect: false,
             keyboardType: TextInputType.visiblePassword,
@@ -579,9 +899,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             onChanged: (_) => setState(() => _keyError = null),
             onSubmitted: (_) => _saveKey(),
-          ),
-          const SizedBox(height: ClaxSpace.s8),
-          Wrap(
+          );
+
+  Widget _keyButtons() => Wrap(
             alignment: WrapAlignment.end,
             spacing: ClaxSpace.s8,
             children: [
@@ -599,10 +919,48 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 onPressed: _key.text.trim().isEmpty ? null : _saveKey,
               ),
             ],
+          );
+
+  /// Whether requests may go to Anthropic, in the Apple family's form.
+  Widget _aiConsentForm(BuildContext context, AppSettings s) {
+    final allowed = s.aiConsent == true;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _FormText(allowed ? aiConsentAllowed : aiConsentAsks),
+        if (allowed) ...[
+          const SizedBox(height: ClaxSpace.s8),
+          ClaxButton(
+            key: const ValueKey('ai-consent-turn-off'),
+            label: 'Turn off',
+            kind: ClaxButtonKind.tonal,
+            onPressed: () => _change((s) => s.aiConsent = false),
           ),
         ],
-      ),
+      ],
     );
+  }
+
+  /// The last ten timings as the Apple family's form lists them: each
+  /// name, when, and its seconds.
+  List<Widget> _formTimings(BuildContext context) {
+    final recent = widget.timings.take(10).toList();
+    final muted = _muted(context);
+    if (recent.isEmpty) return [Text('Nothing measured yet', style: muted)];
+    return [
+      for (final t in recent)
+        Padding(
+          padding: const EdgeInsets.only(bottom: ClaxSpace.s4),
+          child: Row(
+            children: [
+              Expanded(child: _FormText(timingLabel(t.name))),
+              Text(_when(t.at.toLocal()), style: muted),
+              const SizedBox(width: ClaxSpace.s12),
+              _FormText(seconds(t.elapsed), tabular: true),
+            ],
+          ),
+        ),
+    ];
   }
 
   List<Widget> _timings(BuildContext context) {
@@ -657,8 +1015,11 @@ class HomeScreenControls {
 /// (each needs a home app; Undo and Reset a [HomeRecovery] too), and Use
 /// the built-in home screen, saved as [HomeSettings.builtin].
 class _HomeSection extends StatefulWidget {
-  const _HomeSection({required this.controls});
+  const _HomeSection({required this.controls, this.form = false});
   final HomeScreenControls controls;
+
+  /// Whether it is drawn as the Apple family's grouped form.
+  final bool form;
 
   @override
   State<_HomeSection> createState() => _HomeSectionState();
@@ -699,6 +1060,7 @@ class _HomeSectionState extends State<_HomeSection> {
   Widget build(BuildContext context) {
     final has = _c.settings.homeAppId != null;
     final can = has && _c.recovery != null && !_busy;
+    if (widget.form) return _form(context, has: has, can: can);
     return Column(
       children: [
         ListTile(
@@ -729,6 +1091,190 @@ class _HomeSectionState extends State<_HomeSection> {
           onChanged: _builtin,
         ),
       ],
+    );
+  }
+}
+
+extension on _HomeSectionState {
+  Widget _form(BuildContext context, {required bool has, required bool can}) {
+    final muted = Theme.of(
+      context,
+    ).textTheme.bodySmall!.copyWith(color: claxPalette(context).muted);
+    Widget action(String label, String detail, VoidCallback? run) => Padding(
+      padding: const EdgeInsets.only(bottom: ClaxSpace.s12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ClaxButton(label: label, kind: ClaxButtonKind.tonal, onPressed: run),
+          const SizedBox(height: ClaxSpace.s4),
+          Text(detail, style: muted),
+        ],
+      ),
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _FormRow(
+          label: 'Home screen',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              action(
+                'Open in comment mode',
+                'Comment on your home screen to change it',
+                has ? _c.open : null,
+              ),
+              action(
+                'Undo last change',
+                'Go back to the version before the latest',
+                can
+                    ? () => _run((r) => r.undoLast(), 'Undid the last change')
+                    : null,
+              ),
+              action(
+                'Reset to Clax’s home screen',
+                'Undoes your changes to the home screen. Your apps, stars '
+                    'and folders stay.',
+                can
+                    ? () => _run(
+                        (r) => r.reset(),
+                        'Reset to Clax’s home screen',
+                      )
+                    : null,
+              ),
+            ],
+          ),
+        ),
+        _FormRow(
+          child: ClaxCheckbox(
+            value: _c.settings.builtin,
+            label: 'Use the built-in home screen',
+            detail: 'Until you switch this off',
+            onChanged: _builtin,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// A row of the Apple family's grouped form: [label] right-aligned in a
+/// 180 point column, [child] beside it; without a label the column is
+/// left empty, so the row's controls line up under the ones above.
+class _FormRow extends StatelessWidget {
+  const _FormRow({this.label, required this.child});
+
+  final String? label;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = label;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: ClaxSpace.s8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            key: const ValueKey('settings-form-label'),
+            width: 180,
+            child: text == null
+                ? null
+                : Padding(
+                    // On the first line of the control beside it.
+                    padding: const EdgeInsets.only(top: 3),
+                    child: Text(
+                      text,
+                      textAlign: TextAlign.end,
+                      style: ClaxType.of(
+                        ClaxRole.body,
+                        Theme.of(context).platform,
+                      ).copyWith(color: claxPalette(context).fg),
+                    ),
+                  ),
+          ),
+          const SizedBox(width: ClaxSpace.s12),
+          Expanded(
+            child: Align(alignment: AlignmentDirectional.topStart, child: child),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A value in the Apple family's form, in `body`.
+class _FormText extends StatelessWidget {
+  const _FormText(this.text, {super.key, this.tabular = false});
+
+  final String text;
+  final bool tabular;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(top: 3),
+    child: Text(
+      text,
+      style: ClaxType.of(ClaxRole.body, Theme.of(context).platform).copyWith(
+        color: claxPalette(context).fg,
+        fontFeatures: tabular ? const [FontFeature.tabularFigures()] : null,
+      ),
+    ),
+  );
+}
+
+/// A pop-up button in the Apple family's form: the chosen [value] with
+/// the up-and-down chevrons, opening [items] as a menu under it; the
+/// chosen item's ID goes to [onChosen].
+class _PopUp extends StatelessWidget {
+  const _PopUp({
+    required this.value,
+    required this.items,
+    required this.onChosen,
+  });
+
+  final String value;
+  final List<ClaxMenuItem> items;
+  final ValueChanged<String> onChosen;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = claxPalette(context);
+    final type = ClaxType.of(ClaxRole.body, Theme.of(context).platform);
+    return Builder(
+      builder: (context) => Semantics(
+        button: true,
+        value: value,
+        child: Material(
+          color: p.card,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(ClaxRadius.controlApple),
+            side: BorderSide(color: p.borderStrong),
+          ),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(ClaxRadius.controlApple),
+            onTap: () async {
+              final box = context.findRenderObject()! as RenderBox;
+              final at = box.localToGlobal(Offset.zero) & box.size;
+              final id = await ClaxMenu.show(context, items: items, anchor: at);
+              if (id != null) onChosen(id);
+            },
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(8, 3, 4, 3),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Flexible(
+                    child: Text(value, style: type.copyWith(color: p.fg)),
+                  ),
+                  const SizedBox(width: ClaxSpace.s8),
+                  Icon(Icons.unfold_more_rounded, size: 14, color: p.muted),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

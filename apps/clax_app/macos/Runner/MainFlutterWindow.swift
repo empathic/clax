@@ -1,5 +1,6 @@
 import Cocoa
 import FlutterMacOS
+import UserNotifications
 import WebKit
 import webview_flutter_wkwebview
 
@@ -125,7 +126,10 @@ class MainFlutterWindow: NSWindow {
     // nil without one. "share" {text} or {name, data} shows the share
     // picker at the centre of the main window and answers whether the
     // person chose a target (`MacShare` in
-    // `lib/platform/device/mac_share.dart`).
+    // `lib/platform/device/mac_share.dart`). "notificationsAllowed" answers
+    // whether the system lets Clax show notifications, and
+    // "openAppSettings" opens System Settings at Notifications for Clax
+    // (Settings › Notifications, `SettingsScreen`).
     let native = FlutterMethodChannel(
       name: "dev.empathic.clax/native",
       binaryMessenger: engine.binaryMessenger)
@@ -175,6 +179,16 @@ class MainFlutterWindow: NSWindow {
           return
         }
         result(NSWorkspace.shared.open(url))
+      case "notificationsAllowed":
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+          let on = [.authorized, .provisional].contains(settings.authorizationStatus)
+          DispatchQueue.main.async { result(on) }
+        }
+      case "openAppSettings":
+        let id = Bundle.main.bundleIdentifier ?? ""
+        let url = URL(
+          string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(id)")
+        result(url.map { NSWorkspace.shared.open($0) } ?? false)
       case "share":
         guard let self else {
           result(false)
