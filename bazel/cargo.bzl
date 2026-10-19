@@ -97,9 +97,11 @@ def cargo_package(
         "CARGO_PKG_NAME": crate["name"],
         "CARGO_PKG_VERSION": crate["version"],
         # No cargo runs under Bazel; a test's fallback that would run it
-        # fails loudly (spec §5.3).
+        # fails loudly (docs/bazel.md, "Differences from Cargo").
         "CARGO": "/nonexistent/cargo-under-bazel",
-        # Every Bazel build names no commit (spec B13).
+        # Every Bazel build names no commit: Bazel builds are not stamped,
+        # so one commit's outputs stay cached for the next
+        # (docs/bazel.md, "Differences from Cargo").
         "CLAX_BUILD_COMMIT": "unknown",
     }
     # The cfg names and features Cargo declares to rustc's check-cfg.
