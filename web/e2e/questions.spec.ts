@@ -55,7 +55,10 @@ test("/inbox lists the unread items, opens one and marks it read, and keeps its 
   const s = await registerSession(d.base, d.token);
   const { artifact } = await publishAs(d.base, d.token, s.id, "Sales dashboard", PAGE);
   await page.goto(`${d.base}/inbox`);
-  const row = page.locator(".inbox .irow", { hasText: "published Sales dashboard" });
+  // Its row, under the page's heading.
+  const group = page.locator(`.inbox .igroup[data-group="${artifact.id}"]`);
+  await expect(group.locator(".gtitle")).toHaveText("Sales dashboard");
+  const row = group.locator(".irow", { hasText: "published the page" });
   await expect(row).toHaveAttribute("data-unread", "");
   await expect(page.locator(".gbar .inbox-link .count")).toHaveText("1");
   await expect(page).toHaveTitle(/^\(1\) /);

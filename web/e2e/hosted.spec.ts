@@ -427,9 +427,17 @@ test("another machine's Clax signs in by device code: the page names it, warns w
     await shots(owner, "device-approved");
     // A refused automatic push, as the owner's inbox lists it.
     const item = { id: "01JA00000000000000000000PU", seq: 9, kind: "push", read: false, created_at: new Date().toISOString(), agent: null, artifact: { id: "7q3k9mzx2b4t", title: "Tide tables", kind: "html", page_url: null }, thread: null, reply: null, version: null, published: null, question: null, work: null, gone: false, url: "/a/7q3k9mzx2b4t", push: { n: 4, origin: "https://clax.example", code: "remote_moved", message: "the public copy is at version 5, past version 4 this Clax pushed last: someone published there since", url: "https://clax.example/a/k3m9q2w8x1ab" } };
-    await owner.route(/\/api\/inbox(\?.*)?$/, r => (r.request().url().includes("group=agent") ? r.continue() : r.fulfill({ json: { items: [item], next_cursor: null, unread: 1 } })));
+    // Unread lists it under its page's heading; the cards and Read are empty.
+    await owner.route(/\/api\/inbox(\?.*)?$/, r => {
+      const q = new URL(r.request().url()).searchParams;
+      if (q.get("group") === "agent") return r.continue();
+      const none = q.get("read") === "read" || q.has("kind");
+      if (q.get("group") === "artifact") return r.fulfill({ json: { groups: none ? [] : [{ artifact_id: item.artifact.id, artifact: item.artifact, total: 1, unread: 1, newest_at: item.created_at, items: [item], next_cursor: null }], next_cursor: null, unread: 1 } });
+      return r.fulfill({ json: { items: none ? [] : [item], next_cursor: null, unread: 1 } });
+    });
     await owner.goto(`${origin}/inbox`);
-    await expect(owner.locator(`[data-item="${item.id}"]`)).toContainText("https://clax.example refused v4 of Tide tables");
+    await expect(owner.locator(`.igroup[data-group="${item.artifact.id}"] .gtitle`)).toHaveText("Tide tables");
+    await expect(owner.locator(`[data-item="${item.id}"]`)).toContainText("https://clax.example refused v4");
     await expect(owner.locator(`[data-item="${item.id}"]`)).toContainText("someone published there since");
     await expect(owner.getByRole("button", { name: "Pushes" })).toBeVisible();
     await shots(owner, "inbox-push");
