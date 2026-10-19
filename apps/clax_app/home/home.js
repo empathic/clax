@@ -6,9 +6,7 @@
 //
 // The arrangement (Starred, the order of All apps, which apps are new, how
 // often each is opened) is the `layout/main` document in the page's own
-// `db` (arrange.js, store.js). The apps under All apps opened most lately
-// (arrange.js's `bigApps`) take a 2×2 cell with a 120 px icon, unless Big
-// tiles for apps you use, in the ⋮ menu, is off.
+// `db` (arrange.js, store.js). Every tile takes one cell.
 //
 // Each tile is placed in its cell (grid.js's `pack`) and moved by
 // motion.js's springs on the page's clock: a held tile lifts and can be
@@ -39,7 +37,6 @@ import { symbol } from './symbols.js';
 import {
   reconcile, normalize, sections, star, unstar, opened, isNew, moveTo, isGroupKey, groupOf,
   groupNameOf, makeGroup, addToGroup, removeFromGroup, moveInGroup, renameGroup, setLook, ungroup,
-  bigApps, keepBig, setBigTiles,
 } from './arrange.js';
 import { layoutStore } from './store.js';
 import { realClock, velocityOf, tossRest, TOSS_MIN } from './physics.js';
@@ -250,8 +247,7 @@ const cellStyle = (c) => (c ? { gridColumn: `${c.col + 1} / span ${c.span}`, gri
  * press: a tap opens, a hold then a release asks for the menu, a hold then
  * a move drags); a context menu outside a press asks for the menu at once;
  * Alt+arrows move it. `fresh` marks it "New"; `group`, the name of the
- * group it is in, shows under its name (in search's results). A tile whose
- * cell spans 2 is big (`data-big`): its icon draws at 120 px. */
+ * group it is in, shows under its name (in search's results). */
 function AppTile({ app, fresh, cell, dragging, group, ctl, onOpen, onMenu, tkey = tileKeyOf(app.id) }) {
   const b = app.build;
   const press = ctl.pressOf(app.id);
@@ -259,7 +255,7 @@ function AppTile({ app, fresh, cell, dragging, group, ctl, onOpen, onMenu, tkey 
   const said = group ? `${built}, in ${group}` : built;
   const label = fresh ? `${said}, new` : said;
   return html`<button type="button" class="h-tile" data-id=${app.id} data-key=${tkey} data-new=${fresh ? '' : undefined} data-building=${b ? '' : undefined}
-    data-dragging=${dragging ? '' : undefined} data-big=${cell?.span === 2 ? '' : undefined} aria-label=${label} style=${cellStyle(cell)}
+    data-dragging=${dragging ? '' : undefined} aria-label=${label} style=${cellStyle(cell)}
     onPointerDown=${(e) => ctl.down(e, app.id)}
     onContextMenu=${(e) => { e.preventDefault(); if (!press.contextMenu()) onMenu(app, faceRect(e.currentTarget)); }}
     onClick=${() => { if (press.takeClick()) onOpen(app); }}
@@ -378,9 +374,8 @@ function Banner({ class: cls, glyph, danger, title, body, actions }) {
   </div>`;
 }
 
-/** The ⋮ menu: Import app…, Refresh, and, once the arrangement is read
- * (`bigOn` not null), the Big tiles for apps you use switch (`onBigTiles(on)`). */
-function More({ act, refresh, bigOn, onBigTiles }) {
+/** The ⋮ menu: Import app… and Refresh. */
+function More({ act, refresh }) {
   const [open, setOpen] = useState(false);
   useEffect(() => {
     if (!open) return undefined;
@@ -396,10 +391,6 @@ function More({ act, refresh, bigOn, onBigTiles }) {
       <div class="h-menu" role="menu">
         <button type="button" role="menuitem" class="h-menu-item" onClick=${() => { setOpen(false); act('importApp', [], 'import an app'); }}>Import app…</button>
         <button type="button" role="menuitem" class="h-menu-item" onClick=${() => { setOpen(false); refresh(); }}>Refresh</button>
-        ${bigOn !== null && html`<button type="button" role="menuitemcheckbox" aria-checked=${bigOn ? 'true' : 'false'} class="h-menu-item h-menu-check"
-          onClick=${() => { setOpen(false); onBigTiles(!bigOn); }}>
-          <span>Big tiles for apps you use</span>${bigOn && html`<${Glyph} name="check" size=${20} />`}
-        </button>`}
       </div>`}
   </span>`;
 }
@@ -410,7 +401,7 @@ export const badgeText = (n) => (n > 99 ? '99+' : String(n));
 
 /** The top bar: the mark and "Clax", then Search, Inbox (with the unread
  * count), Settings and the ⋮ menu. */
-function Bar({ act, refresh, unread, onSearch, bigOn, onBigTiles }) {
+function Bar({ act, refresh, unread, onSearch }) {
   return html`<header class="h-bar">
     <h1 class="h-title"><${Mark} size=${24} /><span>Clax</span></h1>
     <div class="h-actions">
@@ -422,7 +413,7 @@ function Bar({ act, refresh, unread, onSearch, bigOn, onBigTiles }) {
         </span>
       </button>
       <button type="button" class="h-action" aria-label="Settings" onClick=${() => act('openSettings', [], 'open Settings')}><${Glyph} name="settings" /></button>
-      <${More} act=${act} refresh=${refresh} bigOn=${bigOn} onBigTiles=${onBigTiles} />
+      <${More} act=${act} refresh=${refresh} />
     </div>
   </header>`;
 }
@@ -464,42 +455,30 @@ const isFanKey = (key) => key.startsWith('p:');
 /** The tile key of a press ID of the grid's arranger. */
 const pressTileKey = (id) => (isFanKey(id) ? id : entryTileKey(id));
 
-/** The last row of the band of `cells` holding row `row`: the first row
- * from `row` on that no 2×2 cell runs past. */
-function bandEnd(cells, row) {
-  let end = row;
-  while (cells.some((c) => c.row <= end && c.row + c.span - 1 > end)) end++;
-  return end;
-}
-
 /** Each tile's cell by its key, with its section: Starred's apps, then
- * All apps' makes, apps and groups, each packed in `cols` columns. Under
- * All apps the apps `bigApps` picks at `now` take a 2×2 cell, every other
- * entry a cell. With group `fan` fanned out, the rows of All apps after its
- * pile's band (its row, and the second row of a 2×2 beside it) move down
- * one, leaving that row to its fan. */
-function placement(layout, apps, makes, cols, fan, now) {
+ * All apps' makes, apps and groups, each packed in `cols` columns, a cell
+ * each. With group `fan` fanned out, the rows of All apps after its pile's
+ * row move down one, leaving that row to its fan. */
+function placement(layout, apps, makes, cols, fan) {
   const s = sections(layout, apps);
-  const big = bigApps(layout, now);
   const lists = {
     starred: s.starred.map((e) => ({ key: tileKeyOf(e.app.id), span: 1 })),
-    all: [...makes.map((m) => ({ key: `m:${m.id}`, span: 1 })), ...s.all.map((e) => ({ key: entryTileKey(e.key), span: e.app && big.has(e.key) ? 2 : 1 }))],
+    all: [...makes.map((m) => ({ key: `m:${m.id}`, span: 1 })), ...s.all.map((e) => ({ key: entryTileKey(e.key), span: 1 }))],
   };
   const out = new Map();
   for (const [section, items] of Object.entries(lists)) {
     const { cells } = pack(items, cols);
     const pile = section === 'all' && fan ? cells.find((c) => c.key === `g:${fan}`) : null;
-    const end = pile ? bandEnd(cells, pile.row) : null;
-    for (const c of cells) out.set(c.key, { ...c, row: pile && c.row > end ? c.row + 1 : c.row, section });
+    for (const c of cells) out.set(c.key, { ...c, row: pile && c.row > pile.row ? c.row + 1 : c.row, section });
   }
   return out;
 }
 
-/** The 1-based grid row of group `fan`'s fan, under its pile's band in
+/** The 1-based grid row of group `fan`'s fan, under its pile's row in
  * `cells` (placement's), or null. */
 const fanRowOf = (cells, fan) => {
   const c = fan ? cells.get(`g:${fan}`) : null;
-  return c ? bandEnd([...cells.values()].filter((x) => x.section === 'all'), c.row) + 2 : null;
+  return c ? c.row + 2 : null;
 };
 
 /** Pile `entry`'s apps fanned out in grid row `row`, across the grid, in
@@ -515,16 +494,15 @@ function Fan({ entry, row, layout, ctl, onOpen, onMenu }) {
 }
 
 /** Starred (only when something is starred, headed) above All apps (headed
- * then), each a grid of `cols` columns; the makes go first under All apps,
- * and its apps opened most at `now` take 2×2 cells.
+ * then), each a grid of `cols` columns; the makes go first under All apps.
  * A group takes a cell as its folder or pile tile; the pile `fan.gid`
  * fanned out has its row of apps under it. While app `drag` is dragged,
  * All apps is headed, and an empty Starred is a zone to drop on (a group
  * is never starred: dragging one opens no zone). */
-function Sections({ layout, apps, makes, cols, now, drag, fan, ctl, onOpen, onMenu, onOpenGroup, onFanGroup, onGroupMenu, act }) {
+function Sections({ layout, apps, makes, cols, drag, fan, ctl, onOpen, onMenu, onOpenGroup, onFanGroup, onGroupMenu, act }) {
   const s = sections(layout, apps);
   const fanned = fan ? s.all.find((e) => e.group?.id === fan.gid && e.group.look === 'pile') ?? null : null;
-  const cells = placement(layout, apps, makes, cols, fanned ? fan.gid : null, now);
+  const cells = placement(layout, apps, makes, cols, fanned ? fan.gid : null);
   const tile = (app) => html`<${AppTile} key=${tileKeyOf(app.id)} app=${app} fresh=${isNew(layout, app.id)} cell=${cells.get(tileKeyOf(app.id))}
     dragging=${drag === app.id} ctl=${ctl} onOpen=${onOpen} onMenu=${onMenu} />`;
   const starred = s.starred.length > 0;
@@ -581,8 +559,8 @@ function toSegment(c, a, b) {
 }
 
 /** How long a dragged app's pointer rests within CENTRE_PX of another
- * tile's icon's centre (grid.js iconCentre, on a 2×2 tile's large icon
- * too), moving at most STILL_PX, before a drop there groups. */
+ * tile's icon's centre (grid.js iconCentre), moving at most STILL_PX,
+ * before a drop there groups. */
 const HOVER_MS = 600;
 const CENTRE_PX = 24;
 const STILL_PX = 8;
@@ -643,7 +621,7 @@ function arranger(st, clock) {
    * tiles stay under the finger. */
   function relayout(steady = false) {
     if (!st.wrap) return;
-    const cells = placement(drag?.prov ?? st.shown, st.apps, st.makes, st.cols, st.fanGid, clock.date());
+    const cells = placement(drag?.prov ?? st.shown, st.apps, st.makes, st.cols, st.fanGid);
     const animate = lastCols === st.cols;
     lastCols = st.cols;
     const els = [...st.wrap.querySelectorAll('.h-tile[data-key]')];
@@ -654,9 +632,6 @@ function arranger(st, clock) {
       const s = cellStyle(c);
       if (el.style.gridColumn !== s.gridColumn) el.style.gridColumn = s.gridColumn;
       if (el.style.gridRow !== s.gridRow) el.style.gridRow = s.gridRow;
-      // A tile that grows or shrinks while no render runs (mid-drag) takes
-      // its size at once; the spring below carries it from where it was.
-      if (el.dataset.id && ('big' in el.dataset) !== (c.span === 2)) el.toggleAttribute('data-big', c.span === 2);
     }
     // The fanned pile's row follows its pile; while one of its apps is
     // dragged along it, the app the drag would go before makes room.
@@ -721,45 +696,35 @@ function arranger(st, clock) {
 
   /** The slot at viewport point `p` in `section`'s grid: the index among
    * its entries (the dragged one left out) the dragged entry would take
-   * there, the one whose cell, packed after the entries before it (a big
-   * app's 2×2 included, the dragged one's as it would be there), has its
-   * centre nearest the point; a 1×1 drag's
-   * point is the pointer, a 2×2's the centre of the tile held under it.
-   * Nearest a make's cell, the first slot. With a pile fanned out, the
-   * cells past its band are a row lower, as placement draws them. */
+   * there, the one whose cell, packed after the entries before it, has its
+   * centre nearest the pointer. Nearest a make's cell, the first slot.
+   * With a pile fanned out, the cells past its row are a row lower, as
+   * placement draws them. */
   function slotIn(section, p) {
     const grid = gridOf(section);
     const entries = sections(st.shown, st.apps)[section].filter((e) => e.key !== drag.id);
     if (!grid) return { section, index: 0 };
-    // Sized as they would be with the dragged entry in this section: a
-    // starred app brought into All apps may grow there (and another shrink).
-    const big = section === 'all' ? bigApps(moveTo(st.shown, drag.id, 'all', 0), clock.date()) : new Set();
-    const spanOf = (key) => (big.has(key) ? 2 : 1);
     const lead = Array.from({ length: section === 'all' ? st.makes.length : 0 }, () => ({ key: null, span: 1 }));
     const r = grid.getBoundingClientRect();
     const g = geometry(r.width, st.cols);
-    const n = spanOf(drag.id);
-    const el = tileEl(drag.key);
-    const q = n === 2 && el
-      ? { x: p.x - drag.grab.x + el.offsetWidth / 2 - r.left, y: p.y - drag.grab.y + el.offsetHeight / 2 - r.top }
-      : { x: p.x - r.left, y: p.y - r.top };
+    const q = { x: p.x - r.left, y: p.y - r.top };
     const far = (cell) => {
       const b = cellBox(cell, g);
       return Math.hypot(b.x + b.w / 2 - q.x, b.y + b.h / 2 - q.y);
     };
-    const items = entries.map((e) => ({ key: e.key, span: spanOf(e.key) }));
+    const items = entries.map((e) => ({ key: e.key, span: 1 }));
     const pile = section === 'all' && st.fanGid ? `g:${st.fanGid}` : null;
     let index = 0;
     let dist = Math.min(Infinity, ...pack(lead, st.cols).cells.map(far));
     for (let i = 0; i <= entries.length; i++) {
       // The dragged entry's cell at slot `i`: packing the entries before it
-      // is enough, unless a fanned pile's band may take in later ones.
-      const list = [...lead, ...items.slice(0, i), { key: null, span: n }, ...(pile ? items.slice(i) : [])];
+      // is enough, unless a fanned pile after it moves the rows past its own.
+      const list = [...lead, ...items.slice(0, i), { key: null, span: 1 }, ...(pile ? items.slice(i) : [])];
       const { cells } = pack(list, st.cols);
       let c = cells[lead.length + i];
       if (pile) {
         const pc = cells.find((x) => x.key === pile);
-        if (pc && c.row > bandEnd(cells, pc.row)) c = { ...c, row: c.row + 1 };
+        if (pc && c.row > pc.row) c = { ...c, row: c.row + 1 };
       }
       const d = far(c);
       if (d < dist) { dist = d; index = i; }
@@ -1307,7 +1272,7 @@ function Grid({ layout, apps, makes, motion, reduced, clock, change, fan, onOpen
     };
   }, [ctl]);
   return html`<div class="h-grid-wrap" ref=${ref}>
-    <${Sections} layout=${shown} apps=${apps} makes=${makes} cols=${cols} now=${clock.date()} drag=${drag} fan=${fanGid ? fan : null} ctl=${ctl} onOpen=${onOpen} onMenu=${onMenu}
+    <${Sections} layout=${shown} apps=${apps} makes=${makes} cols=${cols} drag=${drag} fan=${fanGid ? fan : null} ctl=${ctl} onOpen=${onOpen} onMenu=${onMenu}
       onOpenGroup=${onOpenGroup} onFanGroup=${onFanGroup} onGroupMenu=${onGroupMenu} act=${act} />
   </div>`;
 }
@@ -2048,8 +2013,7 @@ const UNSAVED_TEXT = 'Couldn’t save your arrangement';
  * (or LAYOUT_MS without an answer) are in. `change(op)` applies `op` to
  * the stored layout made to match the apps and writes the result, which
  * shows once it is written; a write that fails changes nothing on screen
- * and calls `failed()`. Each write keeps the apps on big tiles then as
- * `big` (arrange.js keepBig), ranked from those shown before it. With no layout stored yet the first load writes
+ * and calls `failed()`. With no layout stored yet the first load writes
  * one with every listed app seen. With an empty app list the stored layout
  * is changed as it is, so a list that is briefly empty never drops an ID. */
 function useLayout(store, apps, clock, failed) {
@@ -2069,11 +2033,9 @@ function useLayout(store, apps, clock, failed) {
   }, [listed, body === undefined]);
   const fit = useCallback((b, first) => (apps.length ? reconcile(b ?? {}, apps, { first }) : normalize(b)), [apps]);
   const change = useCallback((op) => store.change((b) => {
-    // Ranked from the big tiles shown before it, a layout written without `big` included.
-    const now = clock.date();
-    const next = op(keepBig(fit(b, b == null), now));
-    return keepBig(apps.length ? reconcile(next, apps) : next, now);
-  }).then((b) => { setBody(b); return b; }, () => { failed(); return undefined; }), [store, fit, apps, clock]);
+    const next = op(fit(b, b == null));
+    return apps.length ? reconcile(next, apps) : next;
+  }).then((b) => { setBody(b); return b; }, () => { failed(); return undefined; }), [store, fit, apps]);
   useEffect(() => {
     if (!listed || body !== null || wrote.current || !apps.length) return;
     wrote.current = true;
@@ -2176,7 +2138,6 @@ function Home({ home, db, clock }) {
   const [act, notice, say] = useActions(home, verbsOf(chrome));
   const store = useMemo(() => layoutStore(db, { clock }), [db, clock]);
   const [layout, change] = useLayout(store, apps, clock, useCallback(() => say(UNSAVED_TEXT), []));
-  const onBigTiles = useCallback((on) => change((l) => setBigTiles(l, on)), [change]);
   const openApp = useCallback((app) => act('open', [app.id], `open ${app.title}`).then((v) => {
     if (v !== undefined) change((l) => opened(l, app.id, clock.date()));
   }), [act, change, clock]);
@@ -2380,9 +2341,7 @@ function Home({ home, db, clock }) {
         <${Glyph} name="mic_fill" size=${18} /><span>New app</span>
       </button>`} />`;
   } else {
-    // Big tiles are drawn on a phone only; the stored switch is kept.
-    const drawnLayout = chrome?.form === 'phone' ? layout : { ...layout, bigTiles: false };
-    body = html`<${Grid} layout=${drawnLayout} apps=${list} makes=${going} motion=${motion} reduced=${reduced} clock=${clock} change=${change} fan=${fan}
+    body = html`<${Grid} layout=${layout} apps=${list} makes=${going} motion=${motion} reduced=${reduced} clock=${clock} change=${change} fan=${fan}
       onOpen=${openApp} onMenu=${menuOf} onOpenGroup=${openGroup} onFanGroup=${fanGroup} onGroupMenu=${showGroupMenu} act=${act} onDragging=${setDragging}
       gatherNow=${gatherNow} />`;
   }
@@ -2390,8 +2349,7 @@ function Home({ home, db, clock }) {
   const open = folder && entryOf(folder.gid);
   const menuFor = groupMenu && entryOf(groupMenu.gid);
   return html`<main class="h-page" data-dragging=${dragging ? '' : undefined} data-toolbar=${ownBar ? undefined : ''}>
-    ${ownBar && html`<${Bar} act=${act} refresh=${refresh} unread=${typeof unread === 'number' ? unread : 0} onSearch=${openSearch}
-      bigOn=${layout ? layout.bigTiles !== false : null} onBigTiles=${onBigTiles} />`}
+    ${ownBar && html`<${Bar} act=${act} refresh=${refresh} unread=${typeof unread === 'number' ? unread : 0} onSearch=${openSearch} />`}
     ${ownBar && (searching
       ? html`<${SearchField} query=${query} setQuery=${setQuery} onGo=${() => goFirst.current()} onClose=${closeSearch} />`
       : list && html`<${SearchGhost} />`)}

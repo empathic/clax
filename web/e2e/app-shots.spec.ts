@@ -105,22 +105,20 @@ async function take(page: Page, scene: string, form: Form, theme: string, frame?
   }
 }
 
-/** The sample's apps by ID, and opens today, for the arranged scenes. */
+/** The sample's apps by ID, for the arranged scenes. */
 const IDS = ["app-run", "app-groceries", "app-habits", "app-recipes", "app-budget", "app-plants", "app-mood", "app-notes"];
-const opens = (n: number) => ({ n, last: new Date().toISOString(), days: { [new Date().toISOString().slice(0, 10)]: n } });
 const GROUPED = {
   v: 1, starred: ["app-run", "app-notes"], order: ["g:g1", "g:g2"], seen: IDS,
   groups: { g1: { name: "Lists", look: "folder", apps: ["app-groceries", "app-budget", "app-plants"] }, g2: { name: "Fun", look: "pile", apps: ["app-habits", "app-recipes", "app-mood"] } },
 };
 /** Home scenes over a stored arrangement: two starred apps, a folder and a
- * pile (then the folder open, the ⋮ menu open, a search for "re"); the
- * three apps opened most on big tiles; and a tile under the mouse. */
+ * pile (then the folder open, the ⋮ menu open, a search for "re"); and a
+ * tile under the mouse. */
 const ARRANGED: Record<string, unknown> = {
   "home-groups": GROUPED,
   "home-folder": GROUPED,
   "home-menu": GROUPED,
   "home-search": GROUPED,
-  "home-big": { v: 1, starred: [], order: IDS, seen: IDS, opens: { "app-run": opens(9), "app-habits": opens(7), "app-plants": opens(6) } },
   "home-hover": { v: 1, starred: [], order: IDS, seen: IDS },
 };
 

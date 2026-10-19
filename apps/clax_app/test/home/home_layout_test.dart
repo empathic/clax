@@ -425,8 +425,9 @@ void main() {
           },
           'gone': {'n': 1, 'last': null, 'days': <String, Object?>{}},
         },
-        'big': ['a'],
-        'bigTiles': false,
+        // Written by releases that drew big tiles: kept, read by nothing.
+        'big': ['a', 'a', 7],
+        'bigTiles': true,
         'future': 1,
       });
       await layout.load(apps);
@@ -441,8 +442,8 @@ void main() {
       expect(now['order'], ['c', 'd', 'e']);
       expect(now['opens'], read.data['opens']);
       expect(now['seen'], ['a', 'b']);
-      expect(now['big'], ['a']);
-      expect(now['bigTiles'], false);
+      expect(now['big'], ['a', 'a', 7]);
+      expect(now['bigTiles'], true);
       expect(now['future'], 1);
       expect(now['v'], 1);
       expect(layout.sections.starred, ['b', 'a']);

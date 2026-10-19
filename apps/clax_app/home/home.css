@@ -118,8 +118,6 @@ body {
 /* On the menu's own fill: in dark the page's hover is the menu's colour. */
 .h-menu-item:hover { background: var(--h-menu-hover); }
 .h-menu-item:active { background: var(--h-menu-press); }
-.h-menu-check { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.h-menu-check .h-glyph { color: var(--h-primary); }
 
 /* Banners (the key banner): the app's ClaxBanner, a radius-lg card on
  * `card` within the reading width, the glyph leading, its actions under the
@@ -218,13 +216,6 @@ body {
   border: 3px solid var(--agent); border-radius: calc(var(--face, 60px) / 4 + 5px);
 }
 .h-badge.h-tile-badge { top: -7px; left: auto; right: -9px; z-index: 1; font-variant-numeric: tabular-nums; }
-/* A big tile: an app opened most lately, over a 2×2 cell, its icon twice
- * the size, its top in line with the icons of its first row and its name
- * under it; the name keeps its size. */
-.h-tile[data-big] { --face: 120px; height: auto; justify-content: flex-start; }
-.h-tile[data-big] .h-emoji { font-size: 56px; }
-.h-tile[data-big] .h-mono { font-size: 44px; }
-.h-tile[data-big] .h-face[data-kind="word"] svg { width: 56px; height: 56px; stroke-width: 2; }
 
 /* A make's ring, `agent` on `border`, round the breathing mark. */
 .h-ring { position: relative; width: 36px; height: 36px; display: grid; place-items: center; }

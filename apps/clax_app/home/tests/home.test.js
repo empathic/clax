@@ -193,23 +193,18 @@ test('chrome() unavailable keeps the phone layout and says Tap', async () => {
   await wait(() => ui.text('.h-notice') === 'Tap again to open Groceries');
 });
 
-test('with the window\'s toolbar the page draws no bar, search or New app, and no big tiles while wide; back to a phone they return', async () => {
+test('with the window\'s toolbar the page draws no bar, search or New app; back to a phone they return', async () => {
   const toolbar = { platform: 'macos', form: 'wide', toolbar: true, pointer: 'mouse' };
-  const home = await show({ makes: [], chrome: toolbar }, { clock: busyClock(), layout: busy() });
+  const home = await show({ makes: [], chrome: toolbar });
   await wait(() => ui.exists('.h-tile[data-id]') && !ui.exists('.h-bar'));
   expect(ui.exists('.h-fab')).toBe(false);
   expect(ui.exists('.h-search-ghost')).toBe(false);
-  expect(document.querySelectorAll('[data-big]').length).toBe(0);
   home.set({ chrome: { platform: 'android', form: 'phone', toolbar: false, pointer: 'touch' } });
-  await wait(() => ui.exists('.h-bar') && ui.exists('.h-fab') && document.querySelectorAll('[data-big]').length === 3);
+  await wait(() => ui.exists('.h-bar') && ui.exists('.h-fab'));
   expect(ui.exists('.h-search-ghost')).toBe(true);
-  // Wide without the toolbar keeps the bar and New app, but no big tiles.
+  // Wide without the toolbar keeps the bar and New app.
   home.set({ chrome: { platform: 'android', form: 'wide', toolbar: false, pointer: 'touch' } });
-  await wait(() => document.querySelectorAll('[data-big]').length === 0);
-  expect(ui.exists('.h-bar')).toBe(true);
-  expect(ui.exists('.h-fab')).toBe(true);
-  // The stored arrangement keeps Big tiles on.
-  expect((await stored()).bigTiles === false).toBe(false);
+  await wait(() => ui.exists('.h-bar') && ui.exists('.h-fab'));
 });
 
 test('an open or a menu retried from the notice keeps its change: the open counts, the picked Star stars', async () => {
@@ -1468,152 +1463,24 @@ test('while search shows results, tiles() gives them', async () => {
   await wait(() => !ui.exists('.h-search'));
 });
 
-// Big tiles: the apps opened most under All apps take a 2×2 cell.
-const busy = () => {
+// Releases before this one wrote `bigTiles` and `big` and drew the apps
+// opened most on 2×2 tiles; such a layout loads with every tile one cell.
+test('a layout with bigTiles: true and big loads with every tile in one cell, and keeps both fields through a write', async () => {
   const ids = SAMPLE.apps.map((a) => a.id);
   const o = (n) => ({ n, last: '2026-10-16T10:00:00.000Z', days: { '2026-10-16': n } });
-  return { v: 1, starred: [], order: ids, seen: ids, opens: { 'app-budget': o(9), 'app-mood': o(6), 'app-plants': o(5), 'app-notes': o(4) } };
-};
-const busyClock = () => manualClock(0, Date.UTC(2026, 9, 16, 12));
-const bigs = () => [...document.querySelectorAll('[data-big]')].map((t) => t.dataset.id).sort();
-
-test('the three apps opened most take 2×2 tiles with a larger icon; the order is kept as cells allow', async () => {
-  await show({ makes: [] }, { clock: busyClock(), layout: busy() });
-  await wait(() => document.querySelectorAll('[data-big]').length === 3);
-  expect(bigs()).toEqual(['app-budget', 'app-mood', 'app-plants']);
-  const big = document.querySelector('[data-id="app-budget"]').getBoundingClientRect();
-  const small = document.querySelector('[data-id="app-run"]').getBoundingClientRect();
-  expect(big.width).toBeGreaterThan(small.width * 2);
-  expect(big.height).toBeGreaterThan(small.height * 2);
-  expect(document.querySelector('[data-id="app-budget"] .h-face').getBoundingClientRect().width).toBe(120);
-  expect(document.querySelector('[data-id="app-run"] .h-face').getBoundingClientRect().width).toBe(60);
-  expect(section('all')).toEqual(SAMPLE.apps.map((a) => a.id));
-});
-
-test('opening an app that ties the third big tile leaves the big tiles as they are, and keeps them as `big`', async () => {
-  await show({ makes: [] }, { clock: busyClock(), layout: busy() });
-  await wait(() => document.querySelectorAll('[data-big]').length === 3);
-  // Notes's fifth open ties Plants at 5, and is the later one.
-  await ui.click('[data-id="app-notes"]');
-  await wait(async () => (await stored()).opens['app-notes'].n === 5);
-  expect([...(await stored()).big].sort()).toEqual(['app-budget', 'app-mood', 'app-plants']);
-  await wait(() => bigs().join() === 'app-budget,app-mood,app-plants');
-});
-
-test("a big tile's icon lines up with its first row's icons, its name right under it", async () => {
-  await show({ makes: [] }, { clock: busyClock(), layout: busy() });
-  await wait(() => document.querySelectorAll('[data-big]').length === 3);
-  // Mood journal's 2×2 starts in the row Notes is in.
-  const mood = document.querySelector('[data-id="app-mood"]');
-  const face = mood.querySelector('.h-face').getBoundingClientRect();
-  const notes = document.querySelector('[data-id="app-notes"] .h-face').getBoundingClientRect();
-  expect(Math.round(face.top)).toBe(Math.round(notes.top));
-  const label = mood.querySelector('.h-label').getBoundingClientRect();
-  expect(Math.round(label.top - face.bottom)).toBe(8);
-});
-
-test('Big tiles for apps you use, in More, turns them off and on, and is kept', async () => {
-  await show({ makes: [] }, { clock: busyClock(), layout: busy() });
-  await wait(() => document.querySelectorAll('[data-big]').length === 3);
-  await ui.click('[aria-label="More"]');
-  const item = () => document.querySelector('[role="menuitemcheckbox"]');
-  expect(item().textContent).toContain('Big tiles for apps you use');
-  expect(item().getAttribute('aria-checked')).toBe('true');
-  item().click();
-  await wait(() => document.querySelectorAll('[data-big]').length === 0);
-  expect((await stored()).bigTiles).toBe(false);
-  await ui.click('[aria-label="More"]');
-  expect(item().getAttribute('aria-checked')).toBe('false');
-  item().click();
-  await wait(() => document.querySelectorAll('[data-big]').length === 3);
-  expect((await stored()).bigTiles).toBe(true);
-});
-
-test("tiles() gives a big tile's whole rect", async () => {
-  const home = fakeHome({ makes: [] });
-  const reports = [];
-  home.tiles = async (list) => { reports.push(list); };
-  db = fakeDb({ [LAYOUT]: busy() });
-  mount(root(), home, { db, clock: busyClock() });
-  await wait(() => reports.at(-1)?.length === SAMPLE.apps.length && document.querySelectorAll('[data-big]').length === 3);
-  await wait(() => {
-    const r = document.querySelector('[data-id="app-budget"]').getBoundingClientRect();
-    const t = reports.at(-1).find((x) => x.id === 'app-budget');
-    return t.rect.w === r.width && t.rect.h === r.height;
-  });
-});
-
-test('a starred app stays 1×1 however often it is opened', async () => {
-  const l = busy();
-  await show({ makes: [] }, { clock: busyClock(), layout: { ...l, starred: ['app-budget'], order: l.order.filter((id) => id !== 'app-budget') } });
-  await wait(() => section('starred').length === 1);
-  expect(ui.exists('[data-id="app-budget"][data-big]')).toBe(false);
-  // Notes, with 4 opens, has too few to grow in its place.
-  expect(bigs()).toEqual(['app-mood', 'app-plants']);
-});
-
-test('a starred app dragged into All apps, where it grows, takes the slot its 2×2 shows at', async () => {
-  const clock = busyClock();
-  const l = busy();
-  await show({ makes: [] }, { clock, layout: { ...l, starred: ['app-budget'], order: l.order.filter((id) => id !== 'app-budget') } });
-  await wait(() => section('starred').length === 1 && document.querySelectorAll('[data-big]').length === 2);
-  const r = document.querySelector('.h-section[data-section="all"] .h-grid').getBoundingClientRect();
-  const cellW = (r.width - 12) / 4;
-  // The centre of the 2×2 block at column 1, row 2: a 1×1 sized there
-  // would land a slot later.
-  await drag(clock, 'app-budget', { x: r.left + cellW + 2, y: r.top + 124 + 120 });
-  await wait(async () => (await stored()).order.includes('app-budget'));
-  expect((await stored()).order.indexOf('app-budget')).toBe(3);
-});
-
-test("a big tile drags to a new place and stays 2×2; an app held on its icon's centre groups with it", async () => {
-  const clock = busyClock();
-  await show({ makes: [] }, { clock, layout: busy() });
-  await wait(() => document.querySelectorAll('[data-big]').length === 3);
-  await drag(clock, 'app-budget', centre('app-run'));
-  await wait(async () => (await stored()).order.indexOf('app-budget') === 0);
-  await wait(() => section('all')[0] === 'app-budget');
-  const el = document.querySelector('[data-id="app-budget"]');
-  expect('big' in el.dataset).toBe(true);
-  expect(el.style.gridColumn).toBe('1 / span 2');
-  expect(el.style.gridRow).toBe('1 / span 2');
-  await drag(clock, 'app-notes', faceCentre('app-budget'), { pause: 700 });
-  await wait(async () => Object.keys((await stored()).groups ?? {}).length === 1);
-  const [g] = Object.values((await stored()).groups);
-  expect(g.apps.sort()).toEqual(['app-budget', 'app-notes']);
-  await wait(() => !ui.exists('[data-id="app-budget"]'));
-});
-
-test("a pile fanned out beside a big tile opens its row under the big tile's rows, over nothing", async () => {
-  const clock = busyClock();
-  const l = { ...groupLayout('pile'), opens: busy().opens };
-  l.order = ['g:g1', 'app-budget', ...l.order.filter((k) => k !== 'g:g1' && k !== 'app-budget')];
-  await show({ makes: [] }, { clock, layout: l });
-  await wait(() => ui.exists('[data-id="app-budget"][data-big]'));
-  await ui.click('.h-group');
-  clock.advance(1000);
-  await wait(() => ui.exists('.h-fan[data-group="g1"]'));
-  clock.advance(1000);
-  const fan = document.querySelector('.h-fan').getBoundingClientRect();
-  const budget = document.querySelector('[data-id="app-budget"]').getBoundingClientRect();
-  expect(fan.top >= budget.bottom).toBe(true);
-  for (const t of document.querySelectorAll('.h-grid > .h-tile')) {
-    const r = t.getBoundingClientRect();
-    expect(r.bottom <= fan.top || r.top >= fan.bottom).toBe(true);
+  const old = { v: 1, starred: [], order: ids, seen: ids, opens: { 'app-budget': o(9), 'app-mood': o(6), 'app-plants': o(5) }, bigTiles: true, big: ['app-budget', 'app-mood', 'app-plants'] };
+  await show({ makes: [] }, { clock: manualClock(0, Date.UTC(2026, 9, 16, 12)), layout: old });
+  await wait(() => section('all').length === ids.length);
+  expect(section('all')).toEqual(ids);
+  for (const t of document.querySelectorAll('.h-grid > .h-tile[data-id]')) {
+    expect(t.style.gridColumn.endsWith('span 1')).toBe(true);
+    expect(t.querySelector('.h-face').getBoundingClientRect().width).toBe(60);
   }
-});
-
-test('search shows a big app as a 1×1 result', async () => {
-  await show({ makes: [] }, { clock: busyClock(), layout: busy() });
-  await wait(() => document.querySelectorAll('[data-big]').length === 3);
-  const input = await searchField();
-  typeIn(input, 'budget');
-  await wait(() => ui.exists('.h-results [data-id="app-budget"]'));
-  expect(ui.exists('.h-results [data-big]')).toBe(false);
-  expect(document.querySelector('.h-results [data-id="app-budget"] .h-face').getBoundingClientRect().width).toBe(60);
-  press(input, 'Escape');
-  await wait(() => !ui.exists('.h-search'));
-  await wait(() => document.querySelectorAll('[data-big]').length === 3);
+  await ui.click('[data-id="app-notes"]');
+  await wait(async () => (await stored()).opens['app-notes']?.n === 1);
+  const l = await stored();
+  expect(l.bigTiles).toBe(true);
+  expect(l.big).toEqual(['app-budget', 'app-mood', 'app-plants']);
 });
 
 test("the home screen takes the brand's colours", async () => {

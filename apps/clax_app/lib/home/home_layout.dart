@@ -10,9 +10,11 @@
 /// ```text
 /// {v: 1, starred: [appId], order: [appId | "g:<groupId>"],
 ///  groups: {groupId: {name, look: "folder" | "pile", apps: [appId]}},
-///  seen: [appId], opens: {appId: {n, last, days}},
-///  bigTiles: boolean, big: [appId]}
+///  seen: [appId], opens: {appId: {n, last, days}}}
 /// ```
+///
+/// `bigTiles` and `big`, which earlier releases wrote, are unknown fields
+/// here: kept as they are and read by nothing.
 ///
 /// Every function keeps what it does not know: unknown fields, at the top
 /// and in a group or an open count; a group's unknown look; an order entry
@@ -108,7 +110,6 @@ LayoutJson normalizeLayout(Object? body) {
     'groups': groups,
     'seen': _ids(b['seen']),
     'opens': opens,
-    if (b.containsKey('big')) 'big': _ids(b['big']),
   };
 }
 
@@ -119,8 +120,6 @@ final _reads = <String, bool Function(Object?)>{
   'seen': (v) => v is List,
   'groups': (v) => _obj(v) != null,
   'opens': (v) => _obj(v) != null,
-  'bigTiles': (v) => v is bool,
-  'big': (v) => v is List,
 };
 
 /// The body to write when [next] replaces [stored]: when [stored] is a
@@ -366,8 +365,8 @@ bool _readable(LayoutJson data) => [
 ///
 /// [star], [unstar] and [moveTo] each write the whole document, pinned to
 /// the version read: the read document with its `starred`, `order` and
-/// `groups` changed and every other field (`v`, `seen`, `opens`, `big`,
-/// `bigTiles` and anything later) as it was. A write refused as a
+/// `groups` changed and every other field (`v`, `seen`, `opens` and
+/// anything later) as it was. A write refused as a
 /// conflict reads the document again and makes the change again over it
 /// once; a second conflict reads it again and rethrows. Loads and writes
 /// run one at a time, in the order asked.

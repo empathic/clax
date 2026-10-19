@@ -11,9 +11,10 @@
 //
 //   {v: 1, starred: [appId], order: [appId | "g:<groupId>"],
 //    groups: {groupId: {name, look: "folder" | "pile", apps: [appId]}},
-//    seen: [appId], opens: {appId: {n, last, days: {"YYYY-MM-DD": n}}},
-//    bigTiles: boolean (absent means true),
-//    big: [appId] (the apps on 2×2 tiles when it was last written)}
+//    seen: [appId], opens: {appId: {n, last, days: {"YYYY-MM-DD": n}}}}
+//
+// `bigTiles` and `big`, which earlier releases wrote, are unknown
+// fields here: kept as they are and read by nothing.
 
 export const LAYOUT_PATH = 'layout/main';
 /** The days `opens[id].days` keeps, today included. */
@@ -59,8 +60,7 @@ export function normalize(body) {
     opens[id] = { ...o, n: Number.isInteger(o.n) && o.n > 0 ? o.n : 0, last: typeof o.last === 'string' ? o.last : null, days };
   }
   const order = Array.isArray(b.order) ? b.order.filter((k, i) => isKey(k) && (typeof k !== 'string' || b.order.indexOf(k) === i)) : [];
-  const big = b.big === undefined ? {} : { big: ids(b.big) };
-  return { ...b, v: Number.isFinite(b.v) && b.v >= 1 ? b.v : 1, starred: ids(b.starred), order, groups, seen: ids(b.seen), opens, ...big };
+  return { ...b, v: Number.isFinite(b.v) && b.v >= 1 ? b.v : 1, starred: ids(b.starred), order, groups, seen: ids(b.seen), opens };
 }
 
 /** Whether a stored known field's value is one this release reads. */
@@ -70,8 +70,6 @@ const READS = {
   seen: Array.isArray,
   groups: (v) => obj(v) !== null,
   opens: (v) => obj(v) !== null,
-  bigTiles: (v) => typeof v === 'boolean',
-  big: Array.isArray,
 };
 
 /** The body to write when `next` replaces `stored`: when `stored` is a
@@ -196,49 +194,6 @@ export function opened(layout, id, now) {
 
 /** Whether app `id` has not been opened from the home screen yet. */
 export const isNew = (layout, id) => !layout.seen.includes(id);
-
-/** How many apps under All apps grow to a 2×2 tile, and the opens in the
- * last OPEN_DAYS days each needs. */
-export const BIG_TOP = 3;
-export const BIG_MIN = 5;
-/** An app already big (in the layout's `big`) keeps its tile until its
- * opens fall BIG_KEEP below BIG_MIN, or another app has BIG_KEEP opens
- * more than it. */
-export const BIG_KEEP = 2;
-
-/** The apps under All apps (not in Starred or a group) that take a 2×2
- * cell at `now`: the BIG_TOP opened most from the home screen in the last
- * OPEN_DAYS UTC days, with at least BIG_MIN opens each, most first. An app
- * already big counts as having just under BIG_KEEP opens more than it has,
- * so it wins a tie and keeps its tile at BIG_MIN − BIG_KEEP + 1 opens and
- * against an app with one open more; past that, ties go to the one opened
- * later, then by ID. None when `bigTiles` is false. */
-export function bigApps(layout, now) {
-  const l = normalize(layout);
-  if (l.bigTiles === false) return new Set();
-  const since = daysBefore(now, OPEN_DAYS - 1);
-  const loose = new Set(l.order.filter((k) => !isGroupKey(k)));
-  const was = new Set(l.big ?? []);
-  const ranked = Object.entries(l.opens)
-    .filter(([id]) => loose.has(id))
-    .map(([id, o]) => {
-      const n = Object.entries(o.days).reduce((sum, [d, c]) => (d >= since ? sum + c : sum), 0);
-      return { id, score: was.has(id) ? n + BIG_KEEP - 0.5 : n, last: o.last ?? '' };
-    })
-    .filter((r) => r.score >= BIG_MIN)
-    .sort((a, b) => b.score - a.score || b.last.localeCompare(a.last) || a.id.localeCompare(b.id));
-  return new Set(ranked.slice(0, BIG_TOP).map((r) => r.id));
-}
-
-/** `layout` with `big`, the apps `bigApps` puts on 2×2 tiles at `now`, so
- * the next ranking starts from them. */
-export const keepBig = (layout, now) => {
-  const l = normalize(layout);
-  return { ...l, big: [...bigApps(l, now)] };
-};
-
-/** Big tiles on or off (`bigTiles`, true when absent). */
-export const setBigTiles = (layout, on) => ({ ...normalize(layout), bigTiles: !!on });
 
 /** The longest a group's name may be, in characters. */
 const NAME_MAX = 40;

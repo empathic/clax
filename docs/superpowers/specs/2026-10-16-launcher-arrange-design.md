@@ -142,6 +142,9 @@ Alt+arrows move it one cell.
 
 ## 6. Grow with use
 
+> Removed by the owner on 2026-10-19: there are no big tiles; every tile is
+> one cell, and `bigTiles` and `big` in a stored `layout/main` are ignored.
+
 - Under All apps, the three apps opened most in the last 14 days, with at
   least 5 opens each, take a 2×2 cell with a larger icon; the rest stay
   1×1. Starred apps keep 1×1 (Starred is already their place).
