@@ -14,6 +14,12 @@ exports_files(
     visibility = ["//apps/clax_app:__pkg__"],
 )
 
+# The brand's token generator, which //design:tokens_sync runs with --check.
+exports_files(
+    ["sync-tokens.py"],
+    visibility = ["//design:__pkg__"],
+)
+
 # clax-embedded's compile inputs include generated directories (the web
 # builds), so rules_rust places its sources in bazel-bin, and its
 # include_str!s of files outside the crate resolve there: these are those
@@ -186,6 +192,19 @@ sh_test(
     ],
     # The check reads the workspace through `cargo metadata`.
     env = {"CARGO": "$(rootpath @rules_rust//rust/toolchain:current_cargo_files)"},
+)
+
+# scripts/sync-tokens.py on a copy of its inputs: in step, stale, low
+# contrast, drifted app-mode colours.
+sh_test(
+    name = "sync_tokens",
+    srcs = ["test-sync-tokens.sh"],
+    data = [
+        ":all",
+        "//apps/clax_app:token_outputs",
+        "//design:tokens",
+        "//web:token_inputs",
+    ],
 )
 
 sh_test(

@@ -137,6 +137,20 @@ npm_script_build(
     visibility = ["//visibility:public"],
 )
 
+# What scripts/sync-tokens.py reads from the shell: the haikus it copies
+# into the app, and the app-mode colours it checks against design/tokens.json.
+filegroup(
+    name = "token_inputs",
+    srcs = [
+        "shell/src/theme.css",
+        "shell/src/view/haiku.json",
+    ],
+    visibility = [
+        "//design:__pkg__",
+        "//scripts:__pkg__",
+    ],
+)
+
 # The extension's key directory, which clax-core's build script reads
 # (crates/clax-core/build.rs).
 filegroup(

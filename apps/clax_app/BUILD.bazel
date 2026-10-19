@@ -157,7 +157,10 @@ SUITES = {
             "assets/prompt/**",
         ],
         exclude = ["**/.qual"],
-    ) + [":home_bundle"],
+    ) + [
+        "assets/haiku.json",
+        ":home_bundle",
+    ],
     data = TEST_DATA + ([
         "//crates/clax-cli:clax",
         "//crates/clax-cli:clax_warm",
@@ -231,7 +234,26 @@ APP_ASSETS = glob(
         "assets/prompt/*",
     ],
     exclude = ["**/.qual"],
-) + [":home_bundle"]
+) + [
+    "assets/haiku.json",
+    ":home_bundle",
+]
+
+# What scripts/sync-tokens.py writes into the app (design/tokens.json), for
+# its checks (//design:tokens_sync, //scripts:sync_tokens).
+filegroup(
+    name = "token_outputs",
+    srcs = [
+        "assets/haiku.json",
+        "assets/kit/kit.css",
+        "home/tokens.css",
+        "lib/ui/tokens.g.dart",
+    ],
+    visibility = [
+        "//design:__pkg__",
+        "//scripts:__pkg__",
+    ],
+)
 
 flutter_application(
     name = "app",

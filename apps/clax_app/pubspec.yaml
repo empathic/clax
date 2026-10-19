@@ -38,3 +38,4 @@ flutter:
     - assets/prompt/
     - assets/kit/
     - assets/home/
+    - assets/haiku.json

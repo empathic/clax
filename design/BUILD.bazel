@@ -1,0 +1,22 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+# The brand's one token source (docs/superpowers/specs/2026-10-18-professional-ui-design.md §1).
+filegroup(
+    name = "tokens",
+    srcs = ["tokens.json"],
+    visibility = ["//scripts:__pkg__"],
+)
+
+# The generated token files and the haiku copy are what design/tokens.json
+# writes, app mode's colours match it, and every listed pair meets its
+# contrast (scripts/sync-tokens.py --check).
+sh_test(
+    name = "tokens_sync",
+    srcs = ["tokens-sync.sh"],
+    data = [
+        ":tokens",
+        "//apps/clax_app:token_outputs",
+        "//scripts:sync-tokens.py",
+        "//web:token_inputs",
+    ],
+)
