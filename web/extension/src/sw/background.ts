@@ -69,7 +69,7 @@ export function startBackground(c: typeof chrome) {
     present: tabId => origins.overlayPresent(originsEnv, tabId),
     store: c.storage.session,
     capture: (windowId, rect, dpr) => captureClip(chromeCapture, windowId, rect, dpr),
-    tabActive: async tabId => (await c.tabs.get(tabId)).active,
+    tabActive: async (tabId, windowId) => { const t = await c.tabs.get(tabId); return t.active && t.windowId === windowId; },
     windowOf: async tabId => (await c.tabs.get(tabId)).windowId,
   });
 

@@ -61,8 +61,8 @@ export type PicksDeps = {
   posted?(tabId: number, page: PageView): void;
   /** Chrome refused the tab's capture for want of activeTab. */
   revoked?(tabId: number): void;
-  /** Whether the tab is still its window's active tab (what `captureVisibleTab` captures). */
-  tabActive?(tabId: number): Promise<boolean>;
+  /** Whether the tab is window `windowId`'s active tab (what `captureVisibleTab` captures). */
+  tabActive?(tabId: number, windowId: number): Promise<boolean>;
   now(): number;
   /** Runs `fn` after `ms`. */
   after?(ms: number, fn: () => void): void;
@@ -128,8 +128,9 @@ export class Picks {
   }
 
   /** Takes the overlay's pick for the tab, replacing any earlier one, and
-   * captures its screenshot (nothing when the tab is no longer its window's
-   * active tab); then tells the overlay to open its composer. Answers
+   * captures its screenshot (nothing unless the tab is its window's active
+   * tab both before and after the capture, which is of whatever tab is
+   * active when Chrome takes it); then tells the overlay to open its composer. Answers
    * `captured`, or null for a pick ID the tab already has. */
   async capture(tabId: number, windowId: number, m: Capture): Promise<Captured | null> {
     const prev = this.byTab.get(tabId);
@@ -140,8 +141,9 @@ export class Picks {
       url: null, title: "", snapshot: null, tooLong: false, posts: 0, body: null, port: null, connected: false, posting: false,
     };
     this.byTab.set(tabId, p);
-    const active = this.d.tabActive ? await this.d.tabActive(tabId).catch(() => false) : true;
-    const shot = active ? await this.d.capture(windowId, m.rect, m.dpr) : { error: "capture_failed" };
+    const active = () => this.d.tabActive ? this.d.tabActive(tabId, windowId).catch(() => false) : Promise.resolve(true);
+    let shot: { png: Blob } | { error: string } = await active() ? await this.d.capture(windowId, m.rect, m.dpr) : { error: "capture_failed" };
+    if ("png" in shot && !await active()) shot = { error: "capture_failed" };
     if (this.byTab.get(tabId) !== p) return null;
     if ("png" in shot) p.clip = shot.png;
     else {

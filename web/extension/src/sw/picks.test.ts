@@ -43,7 +43,7 @@ const capture = (pickId: string, rect = RECT) => ({ t: "capture", pickId, anchor
 const pick = (pickId: string, extra: Record<string, unknown> = {}) =>
   ({ t: "pick", pickId, url: "http://localhost:5173/", title: "Home", snapshot: "<p>", snapshotError: null, ...extra }) as never;
 
-function setup(opts: { clip?: { png: Blob } | { error: string }; fail?: unknown; pending?: string[]; inactive?: boolean; captureMs?: number } = {}) {
+function setup(opts: { clip?: { png: Blob } | { error: string }; fail?: unknown; pending?: string[]; inactive?: boolean; captureMs?: number; switchDuringCapture?: boolean } = {}) {
   const posted: { form: FormData; pending: string[] }[] = [];
   const snapshots: { form: FormData; pending: string[] }[] = [];
   const overlay: { tabId: number; m: WorkerToOverlay }[] = [];
@@ -51,6 +51,7 @@ function setup(opts: { clip?: { png: Blob } | { error: string }; fail?: unknown;
   const captures: unknown[][] = [];
   const revoked: number[] = [];
   let now = 0;
+  let active = !opts.inactive;
   let pending = opts.pending ?? [];
   let fail = opts.fail;
   let snapshotFail: unknown = null;
@@ -68,12 +69,12 @@ function setup(opts: { clip?: { png: Blob } | { error: string }; fail?: unknown;
         return { page, version: 3, linked: p };
       },
     } as never,
-    capture: async (...a) => { captures.push(a); now += opts.captureMs ?? 0; return opts.clip ?? { png: new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" }) }; },
+    capture: async (...a) => { captures.push(a); if (opts.switchDuringCapture) active = false; now += opts.captureMs ?? 0; return opts.clip ?? { png: new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" }) }; },
     toOverlay: (tabId, m) => overlay.push({ tabId, m }),
     pendingIds: () => pending,
     posted: (tabId, p) => told.push({ tabId, page: p }),
     revoked: tabId => revoked.push(tabId),
-    tabActive: async () => !opts.inactive,
+    tabActive: async (_tabId, windowId) => active && windowId === 9,
     now: () => now,
     after: (ms, fn) => { timers.push({ at: now + ms, fn }); },
   });
@@ -226,6 +227,19 @@ describe("Picks", () => {
     expect(await picks.capture(5, 9, capture(ID(1)))).toEqual({ t: "captured", pickId: ID(1), ok: false, error: "capture_failed" });
     expect(captures).toHaveLength(0);
     expect(overlay.at(-1)?.m.t).toBe("open-composer");
+  });
+
+  it("drops a screenshot taken after the pick's tab stopped being the window's active tab", async () => {
+    const { picks, captures, overlay } = setup({ switchDuringCapture: true });
+    expect(await picks.capture(5, 9, capture(ID(1)))).toEqual({ t: "captured", pickId: ID(1), ok: false, error: "capture_failed" });
+    expect(captures).toHaveLength(1);
+    expect(overlay.at(-1)?.m.t).toBe("open-composer");
+  });
+
+  it("captures nothing when the pick's tab is in another window than the one named", async () => {
+    const { picks, captures } = setup();
+    expect(await picks.capture(5, 8, capture(ID(1)))).toEqual({ t: "captured", pickId: ID(1), ok: false, error: "capture_failed" });
+    expect(captures).toHaveLength(0);
   });
 
   it("finishes a post whose composer went before it could be told", async () => {
