@@ -798,7 +798,8 @@ impl SessionKey<'_> {
 /// zone: on macOS and Linux through the `sysinfo` crate (`proc_pidinfo`;
 /// `/proc/<pid>/stat` and the boot time). On another Unix, `ps -o lstart=`
 /// run with `LC_ALL=C` and `TZ=UTC0`, parsed; off Unix (a hosted Worker,
-/// which has no processes), never. `None` when it cannot be told
+/// which has no processes) and on iOS (whose sandbox refuses `posix_spawn`,
+/// and where no other app's process can be read), never. `None` when it cannot be told
 /// (no such process): a parent-PID credential file is then neither written
 /// nor taken. A parent-PID credential file records it, and is taken only
 /// while the PID still names that process.
@@ -817,12 +818,15 @@ pub fn process_started(pid: u32) -> Option<u64> {
             .map(sysinfo::Process::start_time)
             .filter(|t| *t > 0)
     }
-    #[cfg(not(unix))]
+    #[cfg(any(not(unix), target_os = "ios"))]
     {
         let _ = pid;
         None
     }
-    #[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
+    #[cfg(all(
+        unix,
+        not(any(target_os = "macos", target_os = "linux", target_os = "ios"))
+    ))]
     {
         let out = std::process::Command::new("ps")
             .args(["-o", "lstart=", "-p", &pid.to_string()])
@@ -842,7 +846,10 @@ pub fn process_started(pid: u32) -> Option<u64> {
 /// `ps -o lstart=` output in the C locale and UTC (`Tue Oct 13 07:40:38
 /// 2026`), in seconds since the Unix epoch.
 #[cfg_attr(
-    not(all(unix, not(any(target_os = "macos", target_os = "linux")))),
+    not(all(
+        unix,
+        not(any(target_os = "macos", target_os = "linux", target_os = "ios"))
+    )),
     allow(dead_code)
 )]
 fn ps_lstart_utc(s: &str) -> Option<u64> {

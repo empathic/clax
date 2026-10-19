@@ -451,6 +451,7 @@ Performance gates nothing in either (`just perf` measures on demand).
 | worker npm ci, worker cargo fmt, worker cargo test, worker cargo clippy, worker wasm, worker e2e | CI's `worker` job, natively (`just worker-test`, then `e2e.mjs`): `crates/clax-worker` is a workspace of its own, outside Bazel |
 | wasm32 check | CI's `worker` job, natively (`scripts/check-wasm.sh`, `just check-wasm`) |
 | no unsafe code | `//scripts:no_unsafe` |
+| no process launch on iOS | `//scripts:ios_spawns` (`scripts/check-ios-spawns.sh` against `scripts/ios-spawns.allow`), and the check's own test `//scripts:ios_spawns_test` |
 | crate layers | `//scripts:crate_layers` |
 | no hard links | `//scripts:no_hard_links` (the check's own test), and `scripts/check-no-hard-links.sh` over the tracked files outside Bazel |
 | pipefail pipes | `//scripts:pipefail_pipes`, and `scripts/check-pipefail-pipes.sh` over the tracked files outside Bazel |

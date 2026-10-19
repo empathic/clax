@@ -2857,8 +2857,13 @@ fn open_wait() -> std::time::Duration {
 /// with stdio detached and waits up to [`OPEN_WAIT`] for it. True when it
 /// exits successfully in time, or is still running then (best effort: some
 /// openers hand off and linger; it is reaped in the background); false when it
-/// cannot start or exits unsuccessfully. Blocks the calling thread.
+/// cannot start or exits unsuccessfully. Blocks the calling thread. Always
+/// false on iOS, which lets an app start no other program: the app opens
+/// links itself.
 pub fn open_in_browser(url: &str) -> bool {
+    if cfg!(target_os = "ios") {
+        return false;
+    }
     // A value the opener would read as one of its options is never handed
     // to it.
     if url.starts_with('-') {

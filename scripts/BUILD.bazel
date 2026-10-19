@@ -227,6 +227,21 @@ sh_test(
     data = [":all"],
 )
 
+# No process launch in the crates the iOS daemon links unless
+# scripts/ios-spawns.allow names it (iOS lets an app start no other
+# program), and the check's own test.
+sh_test(
+    name = "ios_spawns",
+    srcs = ["check-ios-spawns.sh"],
+    data = RUST_SOURCES + ["ios-spawns.allow"],
+)
+
+sh_test(
+    name = "ios_spawns_test",
+    srcs = ["test-check-ios-spawns.sh"],
+    data = [":all"],
+)
+
 # The perf benchmarks, on demand only (`just perf`): on the optimized clax,
 # alone and one at a time (exclusive), outside the sandbox. They print each
 # measure beside its budget and fail no check; no check runs them (`manual`).

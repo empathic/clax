@@ -944,6 +944,31 @@ in the environment of the app's executable
 (`clax_app.app/Contents/MacOS/clax_app`) gives it a scratch support and
 cache directory, so a measured build leaves your own apps alone.
 
+### Clax on iPhone and iPad
+
+On iPhone and iPad the daemon runs inside the app's own process
+(`docs/superpowers/specs/2026-10-18-ios-release-design.md`), and iOS lets
+an app start no other program, so everything in Clax that runs one is
+left out there. The daemon's code keeps each of those paths off on iOS
+when it is compiled (`//scripts:ios_spawns` checks that no new one
+appears unlisted).
+
+What runs on iOS: the app's own agent over the Messages API with your
+key, every artifact, version, thread and question route, `sample()`,
+rooms, MCP over HTTP (the daemon's `/mcp` endpoint), and app bundles
+(`.clax` files).
+
+What does not:
+
+- local agents (Claude Code, Codex, Pi) and their hooks: there is
+  nothing to run them;
+- Codex tier-5 push;
+- "Claude Code on this Mac" as the app's agent;
+- the `clax` CLI and plugin installs;
+- parent-PID credential files;
+- the repository context of sessions (no git runs, so a session's
+  capture is `unavailable`).
+
 ## Releasing
 
 A release is what the plugins download, and what `install.sh` installs.
