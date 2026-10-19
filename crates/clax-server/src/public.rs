@@ -306,10 +306,22 @@ impl Client {
             .await
             .map_err(|e| fail(None, "unreachable", e.to_string(), Value::Null))?;
         let status = res.status().as_u16();
+        let ok = (200..300).contains(&status);
+        let too_large = || {
+            fail(
+                Some(status),
+                "too_large",
+                "the answer is too large".into(),
+                Value::Null,
+            )
+        };
         if res
             .content_length()
             .is_some_and(|n| n > MAX_ANSWER_BYTES as u64)
         {
+            if ok {
+                return Err(too_large());
+            }
             return Err(fail(
                 None,
                 "unreachable",
@@ -317,11 +329,29 @@ impl Client {
                 Value::Null,
             ));
         }
+        // A success is its whole body, JSON (or empty): one cut off or not
+        // JSON is refused rather than read as empty.
         let v: Value = match read_capped(res, MAX_ANSWER_BYTES).await {
-            Ok(Some(bytes)) => serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+            Ok(Some(bytes)) if bytes.iter().all(u8::is_ascii_whitespace) => Value::Null,
+            Ok(Some(bytes)) => match serde_json::from_slice(&bytes) {
+                Ok(v) => v,
+                Err(_) if ok => {
+                    return Err(fail(
+                        Some(status),
+                        "bad_answer",
+                        "the answer is not JSON".into(),
+                        Value::Null,
+                    ));
+                }
+                Err(_) => Value::Null,
+            },
+            Ok(None) if ok => return Err(too_large()),
+            Err(e) if ok => {
+                return Err(fail(None, "unreachable", e.to_string(), Value::Null));
+            }
             Ok(None) | Err(_) => Value::Null,
         };
-        if (200..300).contains(&status) {
+        if ok {
             return Ok(v);
         }
         let code = v["error"]["code"].as_str().unwrap_or("error").to_string();
@@ -1411,8 +1441,46 @@ mod tests {
         let c = Client::new(&endless(b'x', 8 * 1024).await, None);
         let f = c.get_bytes("/clip", 4 * 1024).await.unwrap_err();
         assert_eq!(f.code, "too_large", "{}", f.message);
+        // A success cut off at the cap is refused, never read as empty.
         let c = Client::new(&endless(b' ', MAX_ANSWER_BYTES + 1024).await, None);
+        let f = c.get("/api/x").await.unwrap_err();
+        assert_eq!((f.status, f.code.as_str()), (Some(200), "too_large"));
+    }
+
+    /// A remote at a local port that answers every request 200 with `body`.
+    async fn answering(body: &'static str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut c, _)) = l.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    let mut req = [0u8; 4096];
+                    let _ = c.read(&mut req).await;
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = c.write_all(head.as_bytes()).await;
+                    let _ = c.write_all(body.as_bytes()).await;
+                });
+            }
+        });
+        origin
+    }
+
+    #[tokio::test]
+    async fn a_success_that_is_not_json_is_refused_and_an_empty_one_is_null() {
+        let c = Client::new(&answering("<html>gateway</html>").await, None);
+        let f = c.get("/api/x").await.unwrap_err();
+        assert_eq!((f.status, f.code.as_str()), (Some(200), "bad_answer"));
+        let c = Client::new(&answering("").await, None);
         assert_eq!(c.get("/api/x").await.unwrap(), Value::Null);
+        let c = Client::new(&answering("{\"a\": 1}").await, None);
+        assert_eq!(c.get("/api/x").await.unwrap(), json!({"a": 1}));
     }
 
     const A: &str = "01K6AB7D2E3F4G5H6J7K8M9N0P";

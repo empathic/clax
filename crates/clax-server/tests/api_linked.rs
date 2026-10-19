@@ -1062,6 +1062,44 @@ async fn a_mirrored_thread_deleted_here_stays_gone_and_the_link_keeps_syncing() 
     assert_eq!(bodies(&ts[0]), ["second"]);
 }
 
+#[tokio::test]
+async fn a_page_of_threads_past_the_answer_cap_is_read_in_smaller_pages() {
+    use clax_store::threads::{AUTHOR_VIEWER, NewComment};
+    let p = Pair::new().await;
+    // Five threads of about 900 KB each: one page of them passes the
+    // 4 MiB a remote's answer may be.
+    let body = "x".repeat(9_000);
+    for i in 0..5 {
+        let t = p.hosted_thread(&format!("big {i}"), whole(), None).await;
+        let tid = t["id"].as_str().unwrap();
+        for _ in 0..100 {
+            p.public
+                .ts
+                .store
+                .add_comment(
+                    &clax_core::audit::AuditCtx::DAEMON,
+                    tid,
+                    NewComment {
+                        author_kind: AUTHOR_VIEWER,
+                        author_name: "Ada".into(),
+                        author_public_id: None,
+                        via_session_id: None,
+                        body: body.clone(),
+                        via_page: false,
+                    },
+                )
+                .unwrap();
+        }
+    }
+    p.backstop().await;
+    until("every thread comes down", || async {
+        (p.local_threads().await.len() == 5).then_some(())
+    })
+    .await;
+    p.sleeper.wait_for(BACKSTOP, 1).await;
+    assert_eq!(p.local.state.linked.status(&p.remote).last_error, None);
+}
+
 /// An `ask` of one choice question.
 fn ask_body(artifact: Option<&str>, text: &str) -> Value {
     let mut b = json!({"source": "ask", "questions": [{"question": text, "header": "Pick",

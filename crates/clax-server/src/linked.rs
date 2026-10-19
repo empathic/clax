@@ -78,7 +78,10 @@ pub const BACKSTOP: Duration = Duration::from_secs(60);
 pub const BACKOFF_FIRST: Duration = Duration::from_secs(1);
 /// The longest wait between tries; reaching it marks waiting rows not sent.
 pub const BACKOFF_CAP: Duration = Duration::from_secs(300);
-/// The most pages of 200 threads one read of an artifact takes.
+/// How many threads a page of one read asks for, at most: fewer when a
+/// page's answer passes the client's cap.
+const PAGE: usize = 200;
+/// The most pages one read of an artifact takes.
 const MAX_PAGES: usize = 50;
 /// How long one feedback long-poll waits there, in seconds.
 pub const WAIT_S: u64 = 25;
@@ -1434,9 +1437,10 @@ impl Sync {
         let since = if full { None } else { l.sync_cursor.clone() };
         let mut threads: Vec<Value> = Vec::new();
         let mut cursor: Option<String> = None;
+        let mut limit = PAGE;
         for _ in 0..MAX_PAGES {
             let mut q = format!(
-                "/api/artifacts/{}/threads?include_resolved=true&limit=200",
+                "/api/artifacts/{}/threads?include_resolved=true&limit={limit}",
                 l.remote_artifact_id
             );
             if let Some(s) = &since {
@@ -1450,6 +1454,11 @@ impl Sync {
                 Err(f) => match classify(&f) {
                     Some(why) => return Err(Stop::Unreachable(why)),
                     None if f.status == Some(404) => return Ok(()),
+                    // A page past the answer cap is asked again smaller.
+                    None if f.code == "too_large" && limit > 1 => {
+                        limit = (limit / 4).max(1);
+                        continue;
+                    }
                     None => return Err(Stop::Unreachable(f.message)),
                 },
             };
