@@ -15,12 +15,12 @@ const T = (over: Partial<Thread>): Thread => ({
 const names = (by: string) => (by === "viewer:u_1" ? "alex" : by.startsWith("agent:") ? by.slice(6) : "someone");
 
 describe("history-model", () => {
-  it("names the Clax app's agent \"Clax app\", another agent by its harness, and an unknown one \"agent\"", () => {
-    expect(agentName("app")).toBe("Clax app");
+  it("names the Clax app's agent \"Clax\", another agent by its harness, and an unknown one \"agent\"", () => {
+    expect(agentName("app")).toBe("Clax");
     expect(agentName("claude")).toBe("claude");
     expect(agentName(null)).toBe("agent");
     const t = { ...T({ comments: [C("1", "viewer", "alex", "2026-10-05T10:00:00.000Z")] }), addressed_pending: { harness: "app", at: "2026-10-05T10:05:00.000Z" } };
-    expect(historyOf(t, [], by => by).at(-1)?.who).toBe("Clax app");
+    expect(historyOf(t, [], by => by).at(-1)?.who).toBe("Clax");
   });
 
   it("tags an event with the version current when it happened", () => {

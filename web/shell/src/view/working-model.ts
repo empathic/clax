@@ -9,25 +9,27 @@ export type AgentView = Participants["agents"][number];
 export type SummaryInput = { working: Working[]; names: Map<string, string>; mine: Set<string>; open: number; idle: string[]; addressed: string | null; published: number | null; rally: boolean; now: Date; live?: boolean };
 export type Summary = { line1: string; agent: boolean; line2: string; elapsed: string | null };
 
-const LABELS: Record<string, string> = { claude: "Claude Code", codex: "Codex", pi: "Pi", app: "Clax app" };
+const LABELS: Record<string, string> = { claude: "Claude Code", codex: "Codex", pi: "Pi", app: "Clax" };
 /** The harness as a product name ("Claude Code"), for the page capability. */
 export const harnessLabel = (h: string): string => LABELS[h] ?? h;
 
 /** The name the shell shows for an agent of harness `h`: the harness itself
- * ("claude"), except the Clax app's agent (harness `app`), shown "Clax app". */
+ * ("claude"), except the Clax app's agent (harness `app`), shown "Clax". */
 export const harnessName = (h: string): string => (h === "app" ? LABELS.app : h);
 
 export function newestFirst(list: Working[]): Working[] {
   return [...list].sort((a, b) => b.started_at.localeCompare(a.started_at) || b.key.localeCompare(a.key));
 }
 
-/** Handle → name: its agent name (spec 2026-10-08 §11), else the harness, with the handle's first four hex digits when two agents share it. */
+/** Handle → name: its agent name (spec 2026-10-08 §11), else the harness, with the handle's first four hex digits when two agents share it. The Clax app's agent (harness `app`) is "Clax" whatever its session's name, and never takes the digits. */
 export function agentNames(list: Working[], agents: AgentView[]): Map<string, string> {
-  const all = new Map<string, string>(agents.map(a => [a.handle, shownName(a.name || harnessName(a.harness), a.via)]));
-  for (const w of list) if (!all.has(w.agent)) all.set(w.agent, w.name || harnessName(w.harness));
+  const named = (name: string | null | undefined, h: string) => (h === "app" ? harnessName(h) : name || harnessName(h));
+  const all = new Map<string, string>(agents.map(a => [a.handle, shownName(named(a.name, a.harness), a.via)]));
+  for (const w of list) if (!all.has(w.agent)) all.set(w.agent, named(w.name, w.harness));
+  const apps = new Set([...agents.filter(a => a.harness === "app").map(a => a.handle), ...list.filter(w => w.harness === "app").map(w => w.agent)]);
   const count = new Map<string, number>();
   for (const h of all.values()) count.set(h, (count.get(h) ?? 0) + 1);
-  return new Map([...all].map(([handle, h]) => [handle, (count.get(h) ?? 0) > 1 ? `${h} ${handle.slice(2, 6)}` : h]));
+  return new Map([...all].map(([handle, h]) => [handle, !apps.has(handle) && (count.get(h) ?? 0) > 1 ? `${h} ${handle.slice(2, 6)}` : h]));
 }
 
 export function clock(since: string, now: Date): string {

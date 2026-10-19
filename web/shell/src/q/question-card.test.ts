@@ -43,6 +43,17 @@ describe("QuestionCard", () => {
     one.unmount();
   });
 
+  it("names the Clax app's agent Clax, with no project folder, and reads \"Answer\"", () => {
+    const app = { handle: "a_4444dd", harness: "app", project: "tmp", name: "app-2" };
+    const m = mount(QuestionCard, { q: view({ agent: app, questions: [view().questions[2]] }), onAnswer: vi.fn(), onDecline: vi.fn() });
+    expect(m.root.querySelector(".asker")!.textContent).toBe("Clax");
+    expect(m.root.querySelector(".proj")).toBeNull();
+    expect(m.root.textContent).not.toContain("in tmp");
+    expect(m.root.textContent).not.toContain("app-2");
+    expect(m.root.querySelector("button.primary")!.textContent).toBe("Answer");
+    m.unmount();
+  });
+
   it("tags a question asked on a remote too, and says how its copy stands", () => {
     const link = { remote_id: "r1", remote: "clax.dev", remote_origin: "https://clax.dev", url: "https://clax.dev/a/p1",
       sent: false, state: "pending" as const, error: null, answered_there: false, unlinked: false };

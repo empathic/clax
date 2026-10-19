@@ -8,23 +8,28 @@ const now = new Date("2026-09-30T10:00:42.000Z");
 const agents = [{ handle: "a_1111aaaa", harness: "claude", live: true }, { handle: "a_2222bbbb", harness: "codex", live: true }];
 
 describe("working-model", () => {
-  it("names the Clax app's agent \"Clax app\", and other harnesses by their own name", () => {
-    expect(harnessName("app")).toBe("Clax app");
+  it("names the Clax app's agent \"Clax\", and other harnesses by their own name", () => {
+    expect(harnessName("app")).toBe("Clax");
     expect(harnessName("claude")).toBe("claude");
-    expect(harnessLabel("app")).toBe("Clax app");
+    expect(harnessLabel("app")).toBe("Clax");
     expect(harnessLabel("claude")).toBe("Claude Code");
   });
 
-  it("reads \"Clax app\" for the app's agent in its name, the summary, the chips and the strip", () => {
+  it("reads \"Clax\" for the app's agent in its name, the summary, the chips and the strip", () => {
     const app = w({ agent: "a_4444dddd", harness: "app", thread_ids: ["t1"] });
     const names = agentNames([app], [{ handle: "a_4444dddd", harness: "app", live: true }]);
-    expect(names.get("a_4444dddd")).toBe("Clax app");
-    expect(summary({ working: [app], names, mine: new Set(), open: 1, idle: [], addressed: null, published: null, rally: false, now }).line1).toBe("Clax app working on 1");
-    expect(chips([app], names)).toEqual(["Clax app working on 1"]);
-    expect(threadMarker([app], "t1", new Map())?.text).toBe("Clax app is working on it");
-    expect(stripText(app, new Map(), new Map(), new Set())).toBe("Clax app is working on 1 thread");
-    const two = agentNames([app, w({ agent: "a_5555eeee", harness: "app" })], [{ handle: "a_4444dddd", harness: "app", live: true }]);
-    expect(two.get("a_5555eeee")).toBe("Clax app 5555");
+    expect(names.get("a_4444dddd")).toBe("Clax");
+    expect(summary({ working: [app], names, mine: new Set(), open: 1, idle: [], addressed: null, published: null, rally: false, now }).line1).toBe("Clax working on 1");
+    expect(chips([app], names)).toEqual(["Clax working on 1"]);
+    expect(threadMarker([app], "t1", new Map())?.text).toBe("Clax is working on it");
+    expect(stripText(app, new Map(), new Map(), new Set())).toBe("Clax is working on 1 thread");
+  });
+
+  it("names the app's agent \"Clax\" whatever its session name, and never with a counter or a handle", () => {
+    const named = agentNames([w({ agent: "a_4444dddd", harness: "app", name: "app-2" })], [{ handle: "a_4444dddd", harness: "app", name: "app-2", live: true }]);
+    expect(named.get("a_4444dddd")).toBe("Clax");
+    const two = agentNames([w({ agent: "a_4444dddd", harness: "app" }), w({ agent: "a_5555eeee", harness: "app" })], [{ handle: "a_4444dddd", harness: "app", live: true }]);
+    expect([two.get("a_4444dddd"), two.get("a_5555eeee")]).toEqual(["Clax", "Clax"]);
   });
 
   it("names agents by harness, and tells two of one harness apart", () => {

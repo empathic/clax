@@ -4,6 +4,7 @@
 // names for agents and closed states. Pure: no DOM.
 import type { AnswerBody, QAgent, QOption, QuestionSpec, QuestionView } from "../api";
 import { shownName } from "../view/agent-display";
+import { harnessName } from "../view/working-model";
 
 /** One entry per question: the picked labels (in option order) and the
  * "Other" or free text as typed. */
@@ -67,9 +68,11 @@ export function previewOf(s: QuestionSpec, focused: string | null, a: Draft[numb
 
 /** An agent's name: its agent name, else its harness, with the first four
  * hex digits of its handle when another agent of the same harness is
- * among `others`. */
+ * among `others`. The Clax app's agent (harness `app`) is "Clax" whatever
+ * its session's name. */
 export function agentLabel(agent: QAgent | null, others: (QAgent | null)[]): string {
   if (!agent) return "an agent";
+  if (agent.harness === "app") return harnessName(agent.harness);
   if (agent.name) return shownName(agent.name, agent.via);
   const twin = others.some(o => o && o.harness === agent.harness && o.handle !== agent.handle);
   return twin ? `${agent.harness} ${agent.handle.replace(/^a_/, "").slice(0, 4)}` : agent.harness;

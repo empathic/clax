@@ -48,6 +48,10 @@ test("a question asked before load is counted, shown by openQuestions with its I
   await expect(sheet).toBeVisible();
   await expect(card).toBeFocused();
   await expect.poll(() => questions(page)).toEqual({ open: 1, showing: true });
+  // The app's agent is Clax: no session name, no project folder, and the button reads "Answer".
+  await expect(card.locator(".asker")).toHaveText("Clax");
+  await expect(card.locator(".proj")).toHaveCount(0);
+  await expect(card.locator("button.primary")).toHaveText("Answer");
 
   // The app's dictation goes to the card's focused Other field, not to a composer.
   const otherField = card.locator(".opt.other input");

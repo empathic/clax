@@ -73,6 +73,8 @@
   let wasOpen = untrack(() => p.q.status === "open");
   $effect(() => trail().keyboardTrail.onClear(() => { hint = null; }));
   const who = $derived(agentLabel(p.q.agent, (p.others ?? [p.q]).map(o => o.agent)));
+  // The Clax app's agent: its card names Clax, never its project folder, and its button reads "Answer".
+  const app = $derived(p.q.agent?.harness === "app");
   const done = $derived(complete(p.q, draft));
   const ready = $derived(done.every(Boolean));
   const n = $derived(p.q.questions.length);
@@ -220,7 +222,7 @@
   <header class="qhead">
     <strong class="asker">{who}</strong>
     {#if link}<span class="link-tag" data-unlinked={p.q.linked?.unlinked ? "" : undefined} title={link.title}>{link.label}</span>{/if}
-    {#if p.q.agent?.project}<span class="proj">in {p.q.agent.project}</span>{/if}
+    {#if p.q.agent?.project && !app}<span class="proj">in {p.q.agent.project}</span>{/if}
     {#if about}<a class="about" href={about.href}>{about.text}</a>{/if}
     <time datetime={p.q.created_at}>{relativeTime(p.q.created_at, p.now ?? new Date())}</time>
   </header>
@@ -291,7 +293,7 @@
         </div>
       {/if}
       <button type="button" class="primary" disabled={busy || (!ready && n < 2)} data-left={ready ? undefined : ""}
-        title={ready || n < 2 ? undefined : "Go to the first unanswered question"} onclick={answer}>{ready || n < 2 ? `Answer ${who}` : `Answer ${left} more`}</button>
+        title={ready || n < 2 ? undefined : "Go to the first unanswered question"} onclick={answer}>{ready || n < 2 ? (app ? "Answer" : `Answer ${who}`) : `Answer ${left} more`}</button>
       <button type="button" disabled={busy} onclick={e => run(e, "skip", "declined", p.onDecline)}>Skip</button>
       {#if p.q.source === "hook" && p.onRelease}
         <button type="button" disabled={busy} onclick={e => run(e, "move it to the terminal", "released", p.onRelease!)}>Answer in the terminal</button>
