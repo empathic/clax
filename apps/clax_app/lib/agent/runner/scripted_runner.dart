@@ -111,7 +111,7 @@ class ScriptedRunner implements AgentRunner {
           narration = n;
           state.progress?.call(Narration(n));
         }
-        state.progress?.call(ToolStarted(c.tool, toolLabel(c.tool, c.input)));
+        state.progress?.call(toolStarted(c.tool, c.input));
         if (c.tool == 'write_file') {
           if (c.input case {
             'path': final String path,

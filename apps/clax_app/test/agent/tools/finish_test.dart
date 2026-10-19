@@ -121,6 +121,7 @@ class Rig {
     Future<void>? cancelled,
     TestApi? api,
     bool session = true,
+    String? request,
   }) async {
     final r = Rig._(api ?? TestApi(), kind);
     if (session) {
@@ -148,6 +149,7 @@ class Rig {
       sessionId: r.sid,
       cancelled: cancelled,
       clock: r.clock,
+      request: request,
     );
     r.state = RunState(
       ctx: ctx,
@@ -1374,6 +1376,35 @@ void main() {
         'Styling the list. I stopped early (90 seconds), so this may not be '
         'everything you asked.',
       );
+    });
+
+    test('a cap stop before set_meta titles the app from the request', () async {
+      final r = await Rig.make(
+        kind: RequestKind.newApp,
+        request: 'a tide table for the harbour',
+      );
+      await r.ok('write_file', {'path': 'index.html', 'content': page});
+      await r.renderNow();
+      await r.toolbox.stopAtCap('90 seconds', narration: 'Styling it.');
+      final req =
+          r.named('createArtifact').single.args['request']! as PublishRequest;
+      expect(req.title, 'A tide table for the harbour');
+    });
+
+    test('titleFromRequest takes the first words, at most 40 characters', () {
+      expect(
+        titleFromRequest('a tide table for the harbour'),
+        'A tide table for the harbour',
+      );
+      expect(
+        titleFromRequest(
+          'a tracker for my runs with a weekly total and a monthly chart',
+        ),
+        'A tracker for my runs with a weekly',
+      );
+      expect(titleFromRequest('make a timer.\nwith a bell'), 'Make a timer');
+      expect(titleFromRequest('   '), isNull);
+      expect(titleFromRequest(null), isNull);
     });
 
     test('starting documents that are refused are reported with the '

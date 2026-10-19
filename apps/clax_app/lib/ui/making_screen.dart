@@ -12,8 +12,13 @@ import '../agent/plan.dart';
 import '../agent/worker.dart';
 import '../daemon/clock.dart';
 import 'build_plan.dart';
+import 'developer.dart';
+import 'haiku.dart';
+import 'kit/kit.dart';
 import 'make_service.dart';
 import 'making_preview.dart';
+import 'theme.dart';
+import 'tokens.g.dart';
 
 /// Makes a new app from [request] and returns its artifact ID.
 ///
@@ -61,7 +66,7 @@ final class MakePlanKey implements MakeUpdate {
 /// What a making run is doing, as the making screen says it.
 enum MakeStage implements MakeUpdate {
   /// Before the model is asked: reading the other apps, building the prompt.
-  starting('Starting the agent'),
+  starting('Getting started'),
 
   /// The model is writing the app.
   writing('Writing your app'),
@@ -136,28 +141,27 @@ class MakingLeft extends MakingResult {
 }
 
 /// The longest part of a request the making title quotes.
-const makingTitleMax = 48;
+const makingTitleMax = 24;
 
-const _joiners = {
-  'a', 'an', 'and', 'as', 'at', 'by', 'for', 'from', 'in', 'into', 'my', //
-  'of', 'on', 'or', 'that', 'the', 'to', 'with', 'your',
-};
+const _articles = {'a', 'an', 'the'};
 
-/// The making screen's title: "Making", the request in quotes, and "…".
-/// A request longer than [makingTitleMax] characters is cut at its last
-/// word boundary within them, short joining words ("and", "a", …) at the
-/// cut are dropped, and the "…" moves inside the quotes.
+/// The making screen's title: the request in curly quotes with "…" inside
+/// them, “A tide table for…”. A request longer than [makingTitleMax]
+/// characters is cut at its last word boundary within them, with an
+/// article ("a", "the") at the cut dropped; a closing stop goes, so the
+/// ellipsis follows the words.
 String makingTitle(String request) {
   final r = request.trim().replaceAll(RegExp(r'\s+'), ' ');
-  if (r.length <= makingTitleMax) return 'Making “$r”…';
+  String quoted(String words) =>
+      '“${words.replaceFirst(RegExp(r'[\s.,;:!?…]+$'), '')}…”';
+  if (r.length <= makingTitleMax) return quoted(r);
   var cut = r.lastIndexOf(' ', makingTitleMax);
   if (cut <= 0) cut = makingTitleMax;
   final words = r.substring(0, cut).trimRight().split(' ');
-  // "…with a weekly total and a…" reads better as "…weekly total…".
-  while (words.length > 1 && _joiners.contains(words.last.toLowerCase())) {
+  while (words.length > 1 && _articles.contains(words.last.toLowerCase())) {
     words.removeLast();
   }
-  return 'Making “${words.join(' ')}…”';
+  return quoted(words.join(' '));
 }
 
 /// The say→first-output timing: from Make to the first frame of the new
@@ -169,12 +173,15 @@ const sayFirstOutput = 'say-first-output';
 ///
 /// - [line]: the latest step (a [Narration] or a [ToolStarted] label), or
 ///   the [stage] before any, or while the run waits out a network cut or
-///   for the connection;
-/// - [earlier]: up to two steps before it, oldest first;
+///   for the connection; [lineFor] with `developer` names the files a tool
+///   touches ([ToolStarted.detail]);
+/// - [earlier]: up to two steps before it, oldest first ([earlierFor]);
 /// - [html]: `index.html` as written so far, for the live preview;
 /// - [png] and [errors]: the last render's screenshot and its uncaught
 ///   errors, shown while [inspected] (until `index.html` is written again);
-/// - [asking]: the agent waits on a question to the person.
+/// - [asking]: the agent waits on a question to the person;
+/// - [startingDataRefused]: the made app's starting documents were not
+///   written ([StartingDataRefused]), the service's reason.
 ///
 /// The preview never shrinks within a step: text shorter than [html] (a
 /// rewrite of the page, or a resend after [AttemptStarted], starting over)
@@ -182,23 +189,43 @@ const sayFirstOutput = 'say-first-output';
 /// the next step begins, so neither blanks what is shown.
 class MakingLog {
   MakeStage stage = MakeStage.starting;
-  final List<String> _steps = [];
+  final List<({String text, String detail})> _steps = [];
   String? html;
   Uint8List? png;
   int errors = 0;
   bool inspected = false;
   bool asking = false;
+  String? startingDataRefused;
 
   /// `index.html` text shorter than [html], held until the next step.
   String? _held;
 
-  String get line => switch (stage) {
+  String get line => lineFor(developer: false);
+
+  /// [line], naming the files a tool touches when [developer].
+  String lineFor({required bool developer}) => switch (stage) {
     MakeStage.paused || MakeStage.offline || MakeStage.resuming => stage.label,
-    _ => _steps.isEmpty ? stage.label : _steps.last,
+    _ => _shown(developer).lastOrNull ?? stage.label,
   };
 
-  List<String> get earlier =>
-      _steps.isEmpty ? const [] : _steps.sublist(0, _steps.length - 1);
+  List<String> get earlier => earlierFor(developer: false);
+
+  /// [earlier], naming the files a tool touches when [developer].
+  List<String> earlierFor({required bool developer}) {
+    final shown = _shown(developer);
+    return shown.isEmpty ? const [] : shown.sublist(0, shown.length - 1);
+  }
+
+  /// The last three steps' words, a step that reads as the one before it
+  /// left out.
+  List<String> _shown(bool developer) {
+    final out = <String>[];
+    for (final s in _steps) {
+      final t = developer ? s.detail : s.text;
+      if (out.isEmpty || out.last != t) out.add(t);
+    }
+    return out.length > 3 ? out.sublist(out.length - 3) : out;
+  }
 
   /// Takes [u]; returns whether [html] changed.
   bool apply(MakeUpdate u) {
@@ -219,11 +246,11 @@ class MakingLog {
         asking = false;
         return false;
       case Narration(:final text):
-        _step(text);
+        _step(text, text);
         asking = false;
         return _release();
-      case ToolStarted(:final name, :final label):
-        _step(label);
+      case ToolStarted(:final name, :final label, :final detail):
+        _step(label, detail);
         asking = name == 'ask';
         if (stage == MakeStage.starting) stage = MakeStage.writing;
         return _release();
@@ -242,6 +269,9 @@ class MakingLog {
         errors = n;
         inspected = true;
         asking = false;
+        return false;
+      case StartingDataRefused(:final reason):
+        startingDataRefused = reason;
         return false;
       case PartialFile() ||
           PartialEdit() ||
@@ -262,11 +292,12 @@ class MakingLog {
     return true;
   }
 
-  void _step(String text) {
+  void _step(String text, String detail) {
     final t = text.trim();
-    if (t.isEmpty || (_steps.isNotEmpty && _steps.last == t)) return;
-    _steps.add(t);
-    if (_steps.length > 3) _steps.removeAt(0);
+    final d = detail.trim();
+    if (t.isEmpty || (_steps.isNotEmpty && _steps.last.detail == d)) return;
+    _steps.add((text: t, detail: d.isEmpty ? t : d));
+    if (_steps.length > 6) _steps.removeAt(0);
   }
 }
 
@@ -277,8 +308,9 @@ class MakingLog {
 /// artifact's ID, or, with [onMade], hands the new app to it instead (which
 /// replaces this route, completing it with [Made]).
 ///
-/// - **Leaving.** The top bar's "Back to apps" (and the platform's back)
-///   pops [MakingLeft] and leaves a [session]'s make running; attached
+/// - **Leaving.** The top bar's close (Back in the Apple family, and the
+///   platform's back) pops [MakingLeft] and leaves a [session]'s make
+///   running; attached
 ///   again later, the screen catches up from the session (the preview, the
 ///   plan, the narration, a failure). Cancel stops the make and pops null.
 ///   A make of the screen's own (no [session]) stops as the screen goes.
@@ -292,8 +324,14 @@ class MakingLog {
 ///   its placeholder.
 /// - **Questions.** While the agent waits on a question, the elapsed
 ///   seconds stop.
+/// - **Waiting.** After [haikuAfter] seconds of an attempt, a haiku from
+///   [haikus] shows under the step line, picked by the request; none while
+///   a question waits, and none under a quiet [ClaxQuiet] (comment mode).
+/// - **Steps** read in plain words; with Developer tools on
+///   ([DeveloperScope]) they name the files the tools touch.
 /// - **Failure** stays on the screen with its reason, the request, Retry
-///   and Edit, and a link to Settings when the reason names them. Each
+///   and Edit, and a link to Settings when the reason names them; with
+///   Developer tools on, Details shows the failure's raw text. Each
 ///   attempt gets its own cancel signal, completed when the attempt is
 ///   abandoned: Cancel, Edit, Open Settings or a Retry.
 /// - **Build view.** With [build], the screen is the build's view (a
@@ -307,6 +345,9 @@ class MakingLog {
 ///   runs go on, their progress shown in the preview, the narration and
 ///   the checklist, with Stop and Resume. Without a plan to go on with, the
 ///   app is handed over at once, as without [build].
+/// - **Starting data refused.** A made app whose starting documents were
+///   not written ([MakingLog.startingDataRefused]) is not handed over at
+///   once either: a banner says so, with Details, over "Open app".
 class MakingScreen extends StatefulWidget {
   const MakingScreen({
     super.key,
@@ -319,6 +360,7 @@ class MakingScreen extends StatefulWidget {
     this.onMade,
     this.build,
     this.clock = const SystemClock(),
+    this.haikus,
   });
 
   final String request;
@@ -350,8 +392,15 @@ class MakingScreen extends StatefulWidget {
   /// Spaces the preview's loads.
   final Clock clock;
 
+  /// The haikus to pick from while waiting; null reads the app's list
+  /// ([loadHaikus]).
+  final Future<List<String>> Function()? haikus;
+
   /// When the "Usually under a minute" hint appears.
   static const slowAfter = 20;
+
+  /// How many seconds of waiting before a haiku shows.
+  static const haikuAfter = 8;
 
   @override
   State<MakingScreen> createState() => _MakingScreenState();
@@ -392,6 +441,13 @@ class _MakingScreenState extends State<MakingScreen> {
   /// Whether the screen shows a make waiting for a slot.
   var _waiting = false;
 
+  /// The haiku shown while waiting, once the list is read.
+  String? _haiku;
+  var _haikusAsked = false;
+
+  /// Whether the failure's Details are open.
+  var _details = false;
+
   @override
   void initState() {
     super.initState();
@@ -419,6 +475,26 @@ class _MakingScreenState extends State<MakingScreen> {
     } else {
       _catchUp();
     }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_haikusAsked) return;
+    _haikusAsked = true;
+    unawaited(_loadHaiku(DefaultAssetBundle.of(context)));
+  }
+
+  /// Reads the haikus and picks the one for this request.
+  Future<void> _loadHaiku(AssetBundle bundle) async {
+    List<String> list;
+    try {
+      list = await (widget.haikus?.call() ?? loadHaikus(bundle));
+    } on Object {
+      list = const [];
+    }
+    if (!mounted || list.isEmpty) return;
+    setState(() => _haiku = pickHaiku(list, seed: widget.request));
   }
 
   @override
@@ -546,6 +622,7 @@ class _MakingScreenState extends State<MakingScreen> {
     final carry = _plan;
     _carry = carry != null && carry.features.isNotEmpty ? carry : null;
     _failure = null;
+    _details = false;
     _seconds = 0;
     _planKey = null;
     _plan = null;
@@ -557,7 +634,8 @@ class _MakingScreenState extends State<MakingScreen> {
   /// Retry after a failure.
   void _run() => _attempt(() => unawaited(_session.start()));
 
-  /// The made app [aid]: its build goes on here, or it is handed over.
+  /// The made app [aid]: its build goes on here, it waits here under the
+  /// banner of its refused starting data, or it is handed over.
   Future<void> _onMade(String aid) async {
     final throttle = _throttle!;
     if (await _goesOn(aid)) {
@@ -566,6 +644,10 @@ class _MakingScreenState extends State<MakingScreen> {
     }
     _tick?.cancel();
     if (!mounted) return;
+    if (_log.startingDataRefused != null) {
+      setState(() => _made = aid);
+      return;
+    }
     if (widget.onMade case final onMade?) {
       onMade(context, aid, _log.png);
     } else {
@@ -659,62 +741,63 @@ class _MakingScreenState extends State<MakingScreen> {
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) _back();
       },
-      child: Scaffold(
+      child: ClaxScaffold(
+        leading: _close(context),
         body: SafeArea(
-          child: Column(
-            children: [
-              _topBar(context),
-              Expanded(
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 480),
-                    child: AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 200),
-                      child: _failure == null
-                          ? _buildView(context)
-                          // Scrolls, so its buttons stay reachable with
-                          // large text on a small screen.
-                          : SingleChildScrollView(
-                              key: const ValueKey('failed'),
-                              padding: const EdgeInsets.all(24),
-                              child: _failed(context),
-                            ),
-                    ),
-                  ),
-                ),
+          top: false,
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 480),
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 200),
+                child: _failure == null
+                    ? _buildView(context)
+                    // Scrolls, so its buttons stay reachable with
+                    // large text on a small screen.
+                    : SingleChildScrollView(
+                        key: const ValueKey('failed'),
+                        padding: const EdgeInsets.all(24),
+                        child: _failed(context),
+                      ),
               ),
-            ],
+            ),
           ),
         ),
       ),
     );
   }
 
-  /// "Back to apps", which leaves the make running.
-  Widget _topBar(BuildContext context) => Padding(
-    padding: const EdgeInsets.fromLTRB(4, 4, 16, 0),
-    child: Align(
-      alignment: Alignment.centerLeft,
-      child: TextButton.icon(
-        key: const ValueKey('build-back'),
-        onPressed: _back,
-        icon: const Icon(Icons.arrow_back_rounded),
-        label: const Text('Back to apps'),
-      ),
-    ),
-  );
+  /// Close (Back in the Apple family), which leaves the make running.
+  Widget _close(BuildContext context) {
+    final apple = ClaxFamily.of(context) == ClaxFamily.apple;
+    return IconButton(
+      key: const ValueKey('build-back'),
+      tooltip: apple ? 'Back' : 'Close',
+      onPressed: _back,
+      icon: Icon(apple ? Icons.chevron_left_rounded : Icons.close_rounded),
+    );
+  }
 
   Widget _making(BuildContext context) {
     final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
+    final p = claxPalette(context);
     final log = _log;
-    final dim = theme.textTheme.bodyMedium?.copyWith(
-      color: scheme.onSurfaceVariant,
-    );
+    final developer = DeveloperScope.of(context);
+    // Made, with nothing left to build here: it waits to be opened.
+    final ready = _made != null && !buildGoing(_buildState);
+    final line = ready ? 'Ready to open' : log.lineFor(developer: developer);
+    final dim = theme.textTheme.bodyMedium?.copyWith(color: p.muted);
+    final haiku = _haiku;
+    final showHaiku =
+        haiku != null &&
+        !ready &&
+        _seconds >= MakingScreen.haikuAfter &&
+        !log.asking &&
+        !ClaxQuiet.of(context);
     // With large text the card takes half the height and
     // the whole view scrolls, so Cancel stays reachable.
     Widget layout(BoxConstraints c, List<Widget> Function(Widget card) kids) {
-      const pad = EdgeInsets.fromLTRB(16, 12, 16, 16);
+      const pad = EdgeInsets.fromLTRB(16, 4, 16, 16);
       final scaled = MediaQuery.textScalerOf(context).scale(16) > 20;
       if (!scaled) {
         return Padding(
@@ -740,30 +823,40 @@ class _MakingScreenState extends State<MakingScreen> {
       builder: (context, c) => layout(
         c,
         (card) => [
+          if (_made != null && log.startingDataRefused != null) ...[
+            _refused(context, log.startingDataRefused!),
+            const SizedBox(height: 12),
+          ],
           Text(
             makingTitle(widget.request),
-            textAlign: TextAlign.center,
+            key: const ValueKey('making-title'),
+            textAlign: TextAlign.start,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
-            style: theme.textTheme.titleLarge,
+            style: ClaxType.of(
+              ClaxRole.title1,
+              theme.platform,
+            ).copyWith(color: p.fg),
           ),
           const SizedBox(height: 12),
           card,
           const SizedBox(height: 12),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(4),
-            child: const LinearProgressIndicator(minHeight: 4),
-          ),
-          const SizedBox(height: 12),
-          for (final step in log.earlier)
+          if (!ready) ...[
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: const LinearProgressIndicator(minHeight: 4),
+            ),
+            const SizedBox(height: 12),
+          ],
+          for (final step in ready
+              ? const <String>[]
+              : log.earlierFor(developer: developer))
             Text(
               step,
               key: ValueKey('earlier:$step'),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: dim?.copyWith(
-                color: scheme.onSurfaceVariant.withValues(alpha: 0.7),
-              ),
+              style: dim?.copyWith(color: p.muted.withValues(alpha: 0.7)),
             ),
           Row(
             crossAxisAlignment: CrossAxisAlignment.baseline,
@@ -777,8 +870,8 @@ class _MakingScreenState extends State<MakingScreen> {
                     children: [...previous, ?current],
                   ),
                   child: Text(
-                    _waiting ? 'Waiting for another make to finish' : log.line,
-                    key: ValueKey(_waiting ? 'waiting' : log.line),
+                    _waiting ? 'Waiting for another make to finish' : line,
+                    key: ValueKey(_waiting ? 'waiting' : line),
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: theme.textTheme.titleMedium,
@@ -786,47 +879,90 @@ class _MakingScreenState extends State<MakingScreen> {
                 ),
               ),
               const SizedBox(width: 12),
-              Text(
-                log.asking ? 'waiting for you' : '$_seconds s',
-                style: dim?.copyWith(
-                  fontFeatures: const [FontFeature.tabularFigures()],
+              if (!ready)
+                Text(
+                  log.asking ? 'Waiting for you' : '$_seconds s',
+                  style: dim?.copyWith(
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
                 ),
-              ),
             ],
           ),
-          SizedBox(
-            height: 24,
+          if (showHaiku)
+            Padding(
+              key: const ValueKey('making-haiku'),
+              padding: const EdgeInsets.only(top: 8),
+              child: HaikuLine(text: haiku),
+            ),
+          ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 24),
             child: switch (_session.tryNow) {
               final tryNow? when log.stage == MakeStage.offline => Align(
                 alignment: Alignment.centerLeft,
-                child: TextButton(
+                child: ClaxButton(
                   key: const ValueKey('make-try-now'),
-                  style: TextButton.styleFrom(
-                    padding: EdgeInsets.zero,
-                    minimumSize: Size.zero,
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  ),
+                  label: 'Try now',
                   onPressed: tryNow,
-                  child: const Text('Try now'),
                 ),
               ),
               _ when _made == null && _seconds >= MakingScreen.slowAfter =>
-                Text('Usually under a minute', style: dim),
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text('Usually under a minute', style: dim),
+                ),
               _ => null,
             },
           ),
           Center(
             child: _made == null
-                ? OutlinedButton(onPressed: _leave, child: const Text('Cancel'))
-                : FilledButton.icon(
+                ? ClaxButton(label: 'Cancel', onPressed: _leave)
+                : ClaxButton(
                     key: const ValueKey('open-app'),
+                    label: 'Open app',
+                    icon: Icons.open_in_new_rounded,
+                    kind: ClaxButtonKind.primary,
+                    isDefault: true,
                     onPressed: _openApp,
-                    icon: const Icon(Icons.open_in_new_rounded, size: 18),
-                    label: const Text('Open app'),
                   ),
           ),
         ],
       ),
+    );
+  }
+
+  /// The banner over a made app whose starting documents were refused,
+  /// with the service's [reason] under Details for Developer tools.
+  Widget _refused(BuildContext context, String reason) {
+    final developer = DeveloperScope.of(context);
+    const title = 'Some of its starting data couldn’t be added.';
+    return ClaxBanner(
+      key: const ValueKey('starting-data-refused'),
+      icon: Icons.info_outline_rounded,
+      iconColor: claxPalette(context).danger,
+      title: title,
+      actions: [
+        ClaxButton(
+          key: const ValueKey('starting-data-details'),
+          label: 'Details',
+          onPressed: () => unawaited(
+            ClaxDialog.show(
+              context,
+              title: title,
+              body: [
+                'Clax made the app, but Clax’s service didn’t take the data '
+                    'it was to start with. Open the app and ask Clax to add '
+                    'it.',
+                if (developer) reason,
+              ].join('\n\n'),
+              actions: const [
+                ClaxDialogAction('OK', kind: ClaxButtonKind.primary),
+              ],
+              defaultIndex: 0,
+              cancelIndex: 0,
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -960,7 +1096,11 @@ class _MakingScreenState extends State<MakingScreen> {
               Positioned(
                 top: 8,
                 right: 8,
-                child: _Badge(text: badge, error: shot && log.errors > 0),
+                child: _Badge(
+                  text: badge,
+                  error: shot && log.errors > 0,
+                  live: !shot,
+                ),
               ),
           ],
         ),
@@ -969,7 +1109,7 @@ class _MakingScreenState extends State<MakingScreen> {
   }
 
   Widget _placeholder(ThemeData theme) {
-    final scheme = theme.colorScheme;
+    final p = claxPalette(context);
     // Large text on a small phone may not fit the card: the hint is cut
     // rather than overflowing.
     return Center(
@@ -980,14 +1120,12 @@ class _MakingScreenState extends State<MakingScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.auto_awesome_rounded, size: 40, color: scheme.primary),
+            const ClaxMark(size: 44, state: ClaxMarkState.working),
             const SizedBox(height: 16),
             Text(
               'Your app appears here as it is written',
               textAlign: TextAlign.center,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: scheme.onSurfaceVariant,
-              ),
+              style: theme.textTheme.bodyMedium?.copyWith(color: p.muted),
             ),
           ],
         ),
@@ -997,40 +1135,62 @@ class _MakingScreenState extends State<MakingScreen> {
 
   Widget _failed(BuildContext context) {
     final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
+    final p = claxPalette(context);
     final reason = _failure!;
     final settings = widget.openSettings != null && reason.contains('Settings');
+    final raw = DeveloperScope.of(context) ? _session.failureDetail : null;
+    final details = raw != null && raw.isNotEmpty && raw != reason;
     return Column(
       key: const ValueKey('failed'),
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Icon(Icons.error_outline_rounded, size: 40, color: scheme.error),
+        Icon(Icons.error_outline_rounded, size: 40, color: p.danger),
         const SizedBox(height: 16),
         Text(
-          "Couldn't make it",
+          'Couldn’t make it',
           textAlign: TextAlign.center,
-          style: theme.textTheme.headlineSmall,
+          style: ClaxType.of(
+            ClaxRole.title1,
+            theme.platform,
+          ).copyWith(color: p.fg),
         ),
         const SizedBox(height: 8),
         Text(
           reason,
           textAlign: TextAlign.center,
-          style: theme.textTheme.bodyLarge?.copyWith(
-            color: scheme.onSurfaceVariant,
-          ),
+          style: theme.textTheme.bodyLarge?.copyWith(color: p.muted),
         ),
         const SizedBox(height: 24),
         DecoratedBox(
           decoration: BoxDecoration(
-            color: scheme.surfaceContainerHighest,
+            color: p.card,
             borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: p.border),
           ),
           child: Padding(
             padding: const EdgeInsets.all(16),
             child: Text(widget.request, style: theme.textTheme.bodyLarge),
           ),
         ),
+        if (details && _details) ...[
+          const SizedBox(height: 12),
+          DecoratedBox(
+            key: const ValueKey('make-failure-detail'),
+            decoration: BoxDecoration(
+              color: p.card,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: p.border),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: SelectableText(
+                raw,
+                style: ClaxType.mono(theme.platform).copyWith(color: p.muted),
+              ),
+            ),
+          ),
+        ],
         const SizedBox(height: 24),
         Wrap(
           alignment: WrapAlignment.center,
@@ -1038,21 +1198,36 @@ class _MakingScreenState extends State<MakingScreen> {
           runSpacing: 12,
           children: [
             if (settings)
-              FilledButton(
+              ClaxButton(
+                label: 'Open Settings',
+                kind: ClaxButtonKind.primary,
+                isDefault: true,
                 onPressed: () {
                   _leave();
                   widget.openSettings!();
                 },
-                child: const Text('Open Settings'),
               ),
-            settings
-                ? OutlinedButton(onPressed: _run, child: const Text('Retry'))
-                : FilledButton(onPressed: _run, child: const Text('Retry')),
-            TextButton(
-              onPressed: () => _leave(const EditRequest()),
-              child: const Text('Edit'),
+            ClaxButton(
+              label: 'Retry',
+              kind: settings ? ClaxButtonKind.tonal : ClaxButtonKind.primary,
+              isDefault: !settings,
+              onPressed: _run,
             ),
-            TextButton(onPressed: _leave, child: const Text('Cancel')),
+            ClaxButton(
+              label: 'Edit',
+              onPressed: () => _leave(const EditRequest()),
+            ),
+            ClaxButton(label: 'Cancel', onPressed: _leave),
+            if (details)
+              Semantics(
+                expanded: _details,
+                child: ClaxButton(
+                  key: const ValueKey('make-failure-details'),
+                  label: 'Details',
+                  icon: _details ? Icons.expand_less : Icons.expand_more,
+                  onPressed: () => setState(() => _details = !_details),
+                ),
+              ),
           ],
         ),
       ],
@@ -1060,30 +1235,48 @@ class _MakingScreenState extends State<MakingScreen> {
   }
 }
 
-/// A small label over the preview's corner: "Live", "Checked", or the
-/// errors a render found.
+/// A small label over the preview's corner: "Live" (with its dot inside
+/// it), "Checked", or the errors a render found.
 class _Badge extends StatelessWidget {
-  const _Badge({required this.text, required this.error});
+  const _Badge({required this.text, required this.error, required this.live});
 
   final String text;
   final bool error;
+  final bool live;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final bg = error ? scheme.errorContainer : scheme.secondaryContainer;
-    final fg = error ? scheme.onErrorContainer : scheme.onSecondaryContainer;
+    final p = claxPalette(context);
+    final bg = error ? p.dangerTint : p.raised;
+    final fg = error ? p.danger : p.fg;
     return DecoratedBox(
       decoration: BoxDecoration(
         color: bg,
         borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: p.border),
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        child: Text(
-          text,
-          style: theme.textTheme.labelMedium?.copyWith(color: fg),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (live) ...[
+              DecoratedBox(
+                key: const ValueKey('live-dot'),
+                decoration: BoxDecoration(
+                  color: p.agent,
+                  shape: BoxShape.circle,
+                ),
+                child: const SizedBox.square(dimension: 6),
+              ),
+              const SizedBox(width: 6),
+            ],
+            Text(
+              text,
+              style: theme.textTheme.labelMedium?.copyWith(color: fg),
+            ),
+          ],
         ),
       ),
     );

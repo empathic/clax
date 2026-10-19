@@ -82,9 +82,14 @@ class RunContext {
     this.changeStops = 0,
     this.changeNotes = const [],
     this.startedOver = false,
+    this.request,
   });
 
   final RequestKind kind;
+
+  /// What the person asked for, for a new app: a new app stopped at a cap
+  /// before it was named is titled from its first words ([titleFromRequest]).
+  final String? request;
 
   /// The app a change is on; null for a new app.
   final String? artifactId;

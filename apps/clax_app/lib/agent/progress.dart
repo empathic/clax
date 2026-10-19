@@ -76,15 +76,38 @@ final class Narration extends AgentProgress {
 }
 
 /// A tool call of a tool-loop run began; [label] says what it does, for the
-/// person ("Writing index.html"), from [toolLabel].
+/// person ("Writing the page"), and [detail] the same naming the file or
+/// collection it touches ("Writing index.html"), for Developer tools; both
+/// from [toolLabel] ([toolStarted]).
 final class ToolStarted extends AgentProgress {
-  const ToolStarted(this.name, this.label);
+  const ToolStarted(this.name, this.label, {this.developerLabel});
 
   final String name;
   final String label;
 
+  /// [label] naming the file it touches; null when it names none.
+  final String? developerLabel;
+
+  /// [developerLabel], or [label] when there is none.
+  String get detail => developerLabel ?? label;
+
+  /// [detail] when [developer], else [label].
+  String labelFor({required bool developer}) => developer ? detail : label;
+
   @override
-  String toString() => 'ToolStarted($name, $label)';
+  String toString() => 'ToolStarted($name, $detail)';
+}
+
+/// The [ToolStarted] of a call of the tool [name] with [partialInput] so
+/// far: its plain [toolLabel] and its developer one.
+ToolStarted toolStarted(String name, Map<String, Object?> partialInput) {
+  final label = toolLabel(name, partialInput);
+  final detail = toolLabel(name, partialInput, developer: true);
+  return ToolStarted(
+    name,
+    label,
+    developerLabel: detail == label ? null : detail,
+  );
 }
 
 /// A render of the draft finished: [png] is its screenshot, [errors] the
@@ -97,6 +120,19 @@ final class Inspected extends AgentProgress {
 
   @override
   String toString() => 'Inspected(${png.length} bytes, $errors errors)';
+}
+
+/// A new app [artifactId] was made, but its starting documents were not
+/// written: [reason] is the service's answer, for the log and Developer
+/// tools. Sent once, just before the run returns the app.
+final class StartingDataRefused extends AgentProgress {
+  const StartingDataRefused(this.artifactId, this.reason);
+
+  final String artifactId;
+  final String reason;
+
+  @override
+  String toString() => 'StartingDataRefused($artifactId)';
 }
 
 /// The run waits for the Claude API to be reachable again: its connection
@@ -119,8 +155,14 @@ final class ConnectionBack extends AgentProgress {
 }
 
 /// What a call of the tool [name] does, for the person, from its input so
-/// far ([partialInput] may lack fields while the call streams).
-String toolLabel(String name, Map<String, Object?> partialInput) {
+/// far ([partialInput] may lack fields while the call streams): plain words
+/// ("Writing the page", "Checking it works"), naming the file it touches
+/// ("Writing index.html") only when [developer].
+String toolLabel(
+  String name,
+  Map<String, Object?> partialInput, {
+  bool developer = false,
+}) {
   String? field(String key) => switch (partialInput[key]) {
     final String v when v.isNotEmpty => v,
     _ => null,
@@ -130,21 +172,33 @@ String toolLabel(String name, Map<String, Object?> partialInput) {
     final c? => c.split('/').last,
     null => null,
   };
+  if (developer) {
+    switch (name) {
+      case 'read_file':
+        return path == null ? 'Reading a file' : 'Reading $path';
+      case 'write_file':
+        return path == null ? 'Writing a file' : 'Writing $path';
+      case 'str_replace':
+        return path == null ? 'Changing a file' : 'Changing $path';
+      case 'delete_file':
+        return path == null ? 'Removing a file' : 'Removing $path';
+    }
+  }
   return switch (name) {
     'plan_set' => 'Planning the app',
     'plan_mark' => 'Updating the plan',
     'list_files' => 'Looking at the files',
-    'read_file' => path == null ? 'Reading a file' : 'Reading $path',
-    'write_file' => path == null ? 'Writing a file' : 'Writing $path',
-    'str_replace' => path == null ? 'Changing a file' : 'Changing $path',
-    'delete_file' => path == null ? 'Removing a file' : 'Removing $path',
+    'read_file' => 'Reading the page',
+    'write_file' => 'Writing the page',
+    'str_replace' => 'Changing the page',
+    'delete_file' => 'Removing a file',
     'set_meta' => 'Naming the app',
     'db_collections' => 'Looking at your data',
     'db_list' || 'db_query' =>
       collection == null ? 'Reading your data' : 'Reading your $collection',
     'db_get' => 'Reading your data',
     'db_write' => 'Updating your data',
-    'render' => 'Checking how it looks',
+    'render' => 'Checking it works',
     'ask' => 'Asking you a question',
     'finish' => 'Publishing',
     'give_up' => 'Stopping',

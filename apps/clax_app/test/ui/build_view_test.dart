@@ -8,6 +8,8 @@ import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/build_plan.dart';
+import 'package:clax_app/ui/developer.dart';
+import 'package:clax_app/ui/kit/kit.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/launcher.dart';
 import 'package:clax_app/ui/make_service.dart';
@@ -123,11 +125,19 @@ void main() {
   });
 
   group('the checklist', () {
-    Future<void> pumpList(WidgetTester tester, String key) async {
+    Future<void> pumpList(
+      WidgetTester tester,
+      String key, {
+      bool developer = false,
+    }) async {
       phone(tester);
       await tester.pumpWidget(
         MaterialApp(
           theme: claxTheme(Brightness.light, defaultTargetPlatform),
+          builder: (context, child) => DeveloperScope(
+            notifier: ValueNotifier(developer),
+            child: child!,
+          ),
           home: Scaffold(
             body: BuildWatch(
               link: link,
@@ -159,11 +169,86 @@ void main() {
       );
       await pumpList(tester, 'a1');
       expect(find.text('Plan · 1 of 4 done'), findsOneWidget);
-      expect(find.text('Building Weekly chart'), findsOneWidget);
+      expect(find.text('Building: Weekly chart'), findsOneWidget);
       expect(find.byKey(const ValueKey('feature-narration')), findsOneWidget);
       expect(find.text('Drawing the bars'), findsOneWidget);
       expect(find.text('Share the runs'), findsOneWidget);
     });
+
+    test('the headline says what is building after a colon', () {
+      final plan = Plan(
+        request: 'a run tracker',
+        features: _features,
+        updatedAt: DateTime.utc(2026, 10, 19),
+      );
+      expect(
+        buildHeadline(
+          plan,
+          const BuildState('a1', BuildPhase.running, featureId: 'f2'),
+        ),
+        'Building: Weekly chart',
+      );
+      expect(buildHeadline(plan, null), 'Building: Weekly chart');
+    });
+
+    for (final developer in [false, true]) {
+      testWidgets('the feature being built names its file only with '
+          'Developer tools on (developer: $developer)', (tester) async {
+        await plans.set('a1', _features);
+        control.emit(
+          BuildState(
+            'a1',
+            BuildPhase.running,
+            featureId: 'f2',
+            progress: toolStarted('str_replace', {'path': 'chart.js'}),
+          ),
+        );
+        await pumpList(tester, 'a1', developer: developer);
+        expect(
+          find.text(developer ? 'Changing chart.js' : 'Changing the page'),
+          findsOneWidget,
+        );
+        expect(
+          find.byWidgetPredicate(
+            (w) => w is ClaxMark && w.state == ClaxMarkState.working,
+          ),
+          findsOneWidget,
+          reason: 'the working mark, not a spinner',
+        );
+        expect(find.byType(CircularProgressIndicator), findsNothing);
+      });
+
+      testWidgets('a feature that cannot be added says so in a toast with '
+          'Details (developer: $developer)', (tester) async {
+        plans = _BrokenPlans();
+        link = BuildLink(plans: plans, control: control);
+        await pumpList(tester, 'a1', developer: developer);
+        await tester.enterText(
+          find.byKey(const ValueKey('add-feature-field')),
+          'Dark mode',
+        );
+        await tester.tap(find.byKey(const ValueKey('add-feature-submit')));
+        await frames(tester);
+        expect(find.text('Couldn’t add it to the plan.'), findsOneWidget);
+        expect(find.textContaining('disk full'), findsNothing);
+        await tester.tap(find.text('Details'));
+        await frames(tester);
+        expect(find.textContaining('Something went wrong'), findsOneWidget);
+        expect(
+          find.textContaining('disk full'),
+          developer ? findsOneWidget : findsNothing,
+        );
+        expect(
+          tester
+              .widget<TextField>(
+                find.byKey(const ValueKey('add-feature-field')),
+              )
+              .controller
+              ?.text,
+          'Dark mode',
+        );
+      });
+    }
 
     testWidgets('adds, edits, drops, takes a drop back and reorders', (
       tester,
@@ -180,7 +265,9 @@ void main() {
       var p = (await plans.get('a1'))!;
       expect(p.features.last.title, 'Dark mode');
       expect(p.features.last.by, FeatureBy.person);
-      expect(find.text('Dark mode  you', findRichText: true), findsOneWidget);
+      expect(find.text('Dark mode'), findsOneWidget);
+      expect(find.text('Added by you'), findsOneWidget);
+      expect(find.textContaining('you', findRichText: true), findsOneWidget);
 
       await tester.tap(find.text('Export CSV', findRichText: true));
       await frames(tester);
@@ -283,7 +370,7 @@ void main() {
         ),
       );
       await frames(tester);
-      expect(find.text('Building Weekly chart'), findsOneWidget);
+      expect(find.text('Building: Weekly chart'), findsOneWidget);
       expect(find.text('Drawing the bars'), findsWidgets);
       expect(find.byKey(const ValueKey('build-stop')), findsOneWidget);
 

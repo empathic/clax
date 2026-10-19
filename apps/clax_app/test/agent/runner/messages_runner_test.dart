@@ -1019,6 +1019,13 @@ void main() {
         for (final e in events)
           if (e is ToolStarted) e.label,
       ],
+      ['Writing the page', 'Changing the page', 'Publishing'],
+    );
+    expect(
+      [
+        for (final e in events)
+          if (e is ToolStarted) e.detail,
+      ],
       ['Writing index.html', 'Changing index.html', 'Publishing'],
     );
     final narrations = events.whereType<Narration>().map((n) => n.text);

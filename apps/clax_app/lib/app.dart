@@ -1384,7 +1384,10 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     final backend = _s.backend(settings, _s.key);
     unawaited(_s.background.requestPermission());
     unawaited(_s.pendingMake.save(request));
-    final run = _runs.begin(makingTitle(request), MakeStage.starting.label);
+    final run = _runs.begin(
+      'Making ${makingTitle(request)}',
+      MakeStage.starting.label,
+    );
     // Progress hook: anything that knows the run's step (these stages, or
     // streamed steps) shows it with `_runs.step(run, text)`.
     void staged(MakeStage s) {

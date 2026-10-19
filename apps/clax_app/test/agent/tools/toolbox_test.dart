@@ -301,21 +301,39 @@ void main() {
   });
 
   group('toolLabel', () {
-    test('names the tool and its first input', () {
-      expect(
-        toolLabel('write_file', {'path': 'index.html'}),
-        'Writing index.html',
-      );
-      expect(toolLabel('write_file', {}), 'Writing a file');
-      expect(toolLabel('str_replace', {'path': 'app.js'}), 'Changing app.js');
+    test('says what the tool does in plain words', () {
+      expect(toolLabel('write_file', {'path': 'index.html'}), 'Writing the page');
+      expect(toolLabel('write_file', {}), 'Writing the page');
+      expect(toolLabel('str_replace', {'path': 'app.js'}), 'Changing the page');
       expect(
         toolLabel('db_list', {'collection': 'data/runs'}),
         'Reading your runs',
       );
-      expect(toolLabel('render', {}), 'Checking how it looks');
+      expect(toolLabel('render', {}), 'Checking it works');
       expect(toolLabel('ask', {}), 'Asking you a question');
       expect(toolLabel('finish', {}), 'Publishing');
       expect(toolLabel('mystery', {}), 'Working');
+    });
+
+    test('names the file only for developer labels', () {
+      expect(
+        toolLabel('write_file', {'path': 'index.html'}, developer: true),
+        'Writing index.html',
+      );
+      expect(toolLabel('write_file', {}, developer: true), 'Writing a file');
+      expect(
+        toolLabel('str_replace', {'path': 'app.js'}, developer: true),
+        'Changing app.js',
+      );
+    });
+
+    test('toolStarted carries both labels', () {
+      final t = toolStarted('write_file', {'path': 'index.html'});
+      expect(t.label, 'Writing the page');
+      expect(t.detail, 'Writing index.html');
+      expect(t.labelFor(developer: false), 'Writing the page');
+      expect(t.labelFor(developer: true), 'Writing index.html');
+      expect(toolStarted('render', {}).detail, 'Checking it works');
     });
   });
 

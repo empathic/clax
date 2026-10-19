@@ -98,7 +98,7 @@ class _Turns implements AgentBackend, TurnBackend {
         'name': final String name,
         'input': final Map<String, Object?> input,
       }) {
-        r.onProgress?.call(ToolStarted(name, toolLabel(name, input)));
+        r.onProgress?.call(toolStarted(name, input));
       }
     }
     return t;
@@ -333,7 +333,7 @@ void main() {
     await tester.pump();
   }
 
-  const title = 'Making “a tracker for my runs”…';
+  const title = 'Making “a tracker for my runs…”';
 
   testWidgets('a make in the foreground runs the service with its stages '
       'and posts nothing; permission is asked at the make', (tester) async {
@@ -346,7 +346,7 @@ void main() {
     await pumpUntil(tester, () => work.calls.contains('stop'));
     expect(work.calls, [
       'requestPermission',
-      'start($title, Starting the agent)',
+      'start($title, Getting started)',
       'update($title, Writing your app)',
       'update($title, Checking and publishing)',
       'stop',
@@ -374,7 +374,7 @@ void main() {
     comeBack(tester);
     await tester.pump();
     expect(find.text('Picking up where it left off'), findsOneWidget);
-    expect(find.text("Couldn't make it"), findsNothing);
+    expect(find.text('Couldn’t make it'), findsNothing);
     await pumpUntil(tester, () => agent.runs == 2);
 
     leave(tester);
@@ -385,7 +385,7 @@ void main() {
     );
     expect(work.calls, [
       'requestPermission',
-      'start($title, Starting the agent)',
+      'start($title, Getting started)',
       'update($title, Writing your app)',
       'update($title, Waiting for Clax to come back…)',
       'update($title, Picking up where it left off)',
@@ -410,7 +410,7 @@ void main() {
     await submit(tester, 'a tracker for my runs');
     await pumpRoute(tester);
     expect(find.text('Waiting for connection'), findsOneWidget);
-    expect(find.text("Couldn't make it"), findsNothing);
+    expect(find.text('Couldn’t make it'), findsNothing);
     expect(agent.runs, 1);
     expect(work.calls.last, 'update($title, Waiting for connection)');
     await settleFiles(tester);
@@ -451,7 +451,7 @@ void main() {
     );
     await submit(tester, 'a tracker for my runs');
     await pumpRoute(tester);
-    expect(find.text("Couldn't make it"), findsOneWidget);
+    expect(find.text('Couldn’t make it'), findsOneWidget);
     expect(work.calls.last, 'stop');
     expect(work.calls.where((c) => c.startsWith('failed')), isEmpty);
 
@@ -706,7 +706,7 @@ void main() {
     agent.steps.add((_) async => throw const AgentError('Claude refused'));
     await submit(tester, 'a tracker for my runs');
     await pumpRoute(tester);
-    expect(find.text("Couldn't make it"), findsOneWidget);
+    expect(find.text('Couldn’t make it'), findsOneWidget);
     expect(work.calls.last, 'stop');
     await settleFiles(tester);
     expect(File('${dir.path}/pending-make.json').existsSync(), isFalse);
@@ -841,11 +841,11 @@ void main() {
       expect(find.byType(AppScreen), findsOneWidget);
       expect(work.calls, [
         'requestPermission',
-        'start($title, Starting the agent)',
+        'start($title, Getting started)',
         'update($title, Writing the tracker)',
         'update($title, Naming the app)',
-        'update($title, Writing index.html)',
-        'update($title, Checking how it looks)',
+        'update($title, Writing the page)',
+        'update($title, Checking it works)',
         'update($title, Publishing)',
         'stop',
       ]);

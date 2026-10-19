@@ -9,6 +9,9 @@ import 'package:clax_app/agent/request.dart';
 import 'package:clax_app/agent/scripted_backend.dart';
 import 'package:clax_app/agent/timings.dart';
 import 'package:clax_app/daemon/clock.dart';
+import 'package:clax_app/ui/developer.dart';
+import 'package:clax_app/ui/haiku.dart';
+import 'package:clax_app/ui/kit/kit.dart';
 import 'package:clax_app/ui/make_service.dart';
 import 'package:clax_app/ui/making_preview.dart';
 import 'package:clax_app/ui/making_screen.dart';
@@ -104,8 +107,32 @@ void main() {
     },
   );
 
+  group('makingTitle', () {
+    test('quotes the request with the ellipsis inside the quotes', () {
+      expect(
+        makingTitle('A tide table for the harbour and the bay at dawn'),
+        '“A tide table for…”',
+      );
+      expect(makingTitle('a timer'), '“a timer…”');
+      expect(makingTitle('  a   timer.  '), '“a timer…”');
+    });
+
+    test('cuts a long request at a word boundary', () {
+      const long =
+          'a tracker for my runs with a weekly total and a monthly chart';
+      final t = makingTitle(long);
+      expect(t, startsWith('“'));
+      expect(t, endsWith('…”'));
+      final quoted = t.substring(1, t.length - 2);
+      expect(quoted.length, lessThanOrEqualTo(makingTitleMax));
+      expect(long.startsWith(quoted), isTrue);
+      expect(long[quoted.length], ' ', reason: 'cut at a word boundary');
+    });
+  });
+
   _more();
   _screen();
+  _plain();
 }
 
 /// A clock moved only by the test; each delay completes once the clock
@@ -214,6 +241,27 @@ void _more() {
       // A network cut shows over the steps.
       l.apply(MakeStage.paused);
       expect(l.line, MakeStage.paused.label);
+    });
+
+    test("a tool's step names its file only for developer labels", () {
+      final l = log0();
+      l.apply(MakeProgress(toolStarted('write_file', {'path': 'index.html'})));
+      l.apply(MakeProgress(toolStarted('write_file', {'path': 'app.js'})));
+      l.apply(MakeProgress(toolStarted('render', {})));
+      expect(l.line, 'Checking it works');
+      expect(l.earlier, ['Writing the page'], reason: 'one step, not two');
+      expect(l.lineFor(developer: true), 'Checking it works');
+      expect(l.earlierFor(developer: true), [
+        'Writing index.html',
+        'Writing app.js',
+      ]);
+    });
+
+    test('a refusal of the starting data is kept', () {
+      final l = log0();
+      expect(l.startingDataRefused, isNull);
+      l.apply(const MakeProgress(StartingDataRefused('a1', 'quota full')));
+      expect(l.startingDataRefused, 'quota full');
     });
 
     test('only index.html feeds the preview; a render shows over it', () {
@@ -359,6 +407,11 @@ class _Rig {
   var size = const Size(400, 800);
   double textScale = 1;
 
+  /// Developer tools, and comment mode's quiet.
+  var developer = false;
+  var quiet = false;
+  List<String> haikus = const ['Old pond, a frog jumps'];
+
   /// Given to the screen as its onMade.
   void Function(BuildContext context, String aid, Uint8List? lastFrame)? onMade;
 
@@ -370,7 +423,10 @@ class _Rig {
         builder: (context, child) => MediaQuery(
           data: MediaQuery.of(context)
               .copyWith(textScaler: TextScaler.linear(textScale)),
-          child: child!,
+          child: DeveloperScope(
+            notifier: ValueNotifier(developer),
+            child: ClaxQuiet(quiet: quiet, child: child!),
+          ),
         ),
         home: Builder(
           builder: (context) => TextButton(
@@ -393,6 +449,7 @@ class _Rig {
                       timings: timings,
                       clock: clock,
                       onMade: onMade,
+                      haikus: () async => haikus,
                     ),
                   ),
                 ),
@@ -504,7 +561,7 @@ void _screen() {
   ) async {
     final rig = _Rig();
     await rig.pump(tester);
-    expect(find.text('Starting the agent'), findsOneWidget);
+    expect(find.text('Getting started'), findsOneWidget);
     rig.progress(const Narration('Planning a timer.'));
     rig.progress(const ToolStarted('write_file', 'Writing index.html'));
     rig.progress(const ToolStarted('render', 'Checking how it looks'));
@@ -525,7 +582,7 @@ void _screen() {
     expect(find.text('3 s'), findsOneWidget);
     rig.progress(const ToolStarted('ask', 'Asking you a question'));
     await tester.pump(const Duration(seconds: 5));
-    expect(find.text('waiting for you'), findsOneWidget);
+    expect(find.text('Waiting for you'), findsOneWidget);
     rig.progress(const Narration('Got it.'));
     await tester.pump(const Duration(seconds: 1));
     expect(find.text('4 s'), findsOneWidget);
@@ -586,7 +643,7 @@ void _screen() {
     final old = rig.make.report!;
     rig.make.result.completeError(const AgentError('busy'));
     await _settle(tester);
-    expect(find.text("Couldn't make it"), findsOneWidget);
+    expect(find.text('Couldn’t make it'), findsOneWidget);
     await tester.tap(find.text('Retry'));
     await _settle(tester);
     expect(rig.make.calls, 2);
@@ -660,4 +717,189 @@ void _screen() {
     await tester.tap(find.text('Cancel'));
     await _settle(tester);
   });
+}
+
+void _plain() {
+  testWidgets('the title is the quoted request, left-aligned in title-1 on '
+      'at most two lines', (tester) async {
+    final rig = _Rig();
+    await rig.pump(tester);
+    final title = tester.widget<Text>(find.byKey(const ValueKey('making-title')));
+    expect(title.data, '“a timer…”');
+    expect(title.textAlign, TextAlign.start);
+    expect(title.maxLines, 2);
+    expect(title.style?.fontSize, 22);
+    await tester.tap(find.text('Cancel'));
+    await _settle(tester);
+  });
+
+  testWidgets('the phone closes with an X in the app bar, leaving the make', (
+    tester,
+  ) async {
+    final rig = _Rig();
+    await rig.pump(tester);
+    expect(find.text('Back to apps'), findsNothing);
+    final close = find.byKey(const ValueKey('build-back'));
+    expect(
+      find.descendant(of: find.byType(AppBar), matching: close),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: close, matching: find.byIcon(Icons.close_rounded)),
+      findsOneWidget,
+    );
+    await tester.tap(close);
+    await _settle(tester);
+    expect(rig.results.single, isA<MakingLeft>());
+  });
+
+  testWidgets('no button under the making screen shrinks its tap target', (
+    tester,
+  ) async {
+    final session = MakeSession('a timer', (r, cancelled, stage) {
+      stage(MakeStage.offline);
+      return Completer<String>().future;
+    }, tryNow: () {});
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MakingScreen(
+          request: 'a timer',
+          session: session,
+          preview: _FakePreview.new,
+          haikus: () async => const [],
+        ),
+      ),
+    );
+    await _settle(tester);
+    final buttons = find.descendant(
+      of: find.byType(MakingScreen),
+      matching: find.byWidgetPredicate((w) => w is ButtonStyleButton),
+    );
+    expect(buttons, findsWidgets);
+    for (final e in buttons.evaluate()) {
+      final b = e.widget as ButtonStyleButton;
+      expect(
+        b.style?.tapTargetSize,
+        isNot(MaterialTapTargetSize.shrinkWrap),
+        reason: '$b',
+      );
+    }
+    expect(
+      tester.getSize(find.byKey(const ValueKey('make-try-now'))).height,
+      greaterThanOrEqualTo(48),
+    );
+    session.cancel();
+    await _settle(tester);
+  });
+
+  testWidgets('the Live badge carries its dot inside it', (tester) async {
+    final rig = _Rig();
+    await rig.pump(tester);
+    rig.progress(const PartialFile('index.html', '<p>hi'));
+    await tester.pump();
+    final dot = tester.getRect(find.byKey(const ValueKey('live-dot')));
+    final badge = tester.getRect(
+      find
+          .ancestor(of: find.text('Live'), matching: find.byType(DecoratedBox))
+          .first,
+    );
+    expect(badge.contains(dot.topLeft) && badge.contains(dot.bottomRight), true);
+    await tester.tap(find.text('Cancel'));
+    await _settle(tester);
+  });
+
+  testWidgets('a haiku shows under the step after 8 s of waiting', (
+    tester,
+  ) async {
+    final rig = _Rig();
+    await rig.pump(tester);
+    await tester.pump(const Duration(seconds: 6));
+    expect(find.byType(HaikuLine), findsNothing);
+    await tester.pump(const Duration(seconds: 8));
+    expect(find.byType(HaikuLine), findsOneWidget);
+    expect(find.text('Old pond, a frog jumps'), findsOneWidget);
+    // Not while Clax asks something.
+    rig.progress(const ToolStarted('ask', 'Asking you a question'));
+    await tester.pump();
+    expect(find.byType(HaikuLine), findsNothing);
+    await tester.tap(find.text('Cancel'));
+    await _settle(tester);
+  });
+
+  testWidgets('no haiku in comment mode', (tester) async {
+    final rig = _Rig()..quiet = true;
+    await rig.pump(tester);
+    await tester.pump(const Duration(seconds: 10));
+    expect(find.byType(HaikuLine), findsNothing);
+    await tester.tap(find.text('Cancel'));
+    await _settle(tester);
+  });
+
+  for (final developer in [false, true]) {
+    testWidgets('a step names its file only with Developer tools on '
+        '(developer: $developer)', (tester) async {
+      final rig = _Rig()..developer = developer;
+      await rig.pump(tester);
+      rig.progress(toolStarted('write_file', {'path': 'index.html'}));
+      await tester.pump();
+      expect(
+        find.text(developer ? 'Writing index.html' : 'Writing the page'),
+        findsOneWidget,
+      );
+      await tester.tap(find.text('Cancel'));
+      await _settle(tester);
+    });
+
+    testWidgets('a failure shows its raw text under Details only with '
+        'Developer tools on (developer: $developer)', (tester) async {
+      final rig = _Rig()..developer = developer;
+      await rig.pump(tester);
+      rig.make.result.completeError(StateError('disk on fire'));
+      await _settle(tester);
+      expect(find.text('Couldn’t make it'), findsOneWidget);
+      expect(find.text('Something went wrong. Try again.'), findsOneWidget);
+      expect(find.textContaining('disk on fire'), findsNothing);
+      final details = find.byKey(const ValueKey('make-failure-details'));
+      if (!developer) {
+        expect(details, findsNothing);
+      } else {
+        await tester.ensureVisible(details);
+        await tester.tap(details);
+        await tester.pump();
+        expect(find.textContaining('disk on fire'), findsOneWidget);
+      }
+      await tester.ensureVisible(find.text('Cancel'));
+      await tester.tap(find.text('Cancel'));
+      await _settle(tester);
+    });
+
+    testWidgets('a new app whose starting data was refused opens under a '
+        'banner with Details (developer: $developer)', (tester) async {
+      final rig = _Rig()..developer = developer;
+      await rig.pump(tester);
+      rig.progress(const StartingDataRefused('a1', 'quota full'));
+      rig.make.result.complete('a1');
+      await _settle(tester);
+      expect(rig.results, isEmpty, reason: 'the screen stays for the banner');
+      expect(
+        find.text('Some of its starting data couldn’t be added.'),
+        findsOneWidget,
+      );
+      await tester.tap(find.byKey(const ValueKey('starting-data-details')));
+      await _settle(tester);
+      expect(
+        find.textContaining('ask Clax to add it'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('quota full'),
+        developer ? findsOneWidget : findsNothing,
+      );
+      await tester.tap(find.text('OK'));
+      await _settle(tester);
+      await tester.tap(find.byKey(const ValueKey('open-app')));
+      await _settle(tester);
+      expect(rig.results.single, isA<Made>().having((m) => m.aid, 'aid', 'a1'));
+    });
+  }
 }

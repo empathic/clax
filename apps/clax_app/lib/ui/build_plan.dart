@@ -11,6 +11,11 @@ import 'package:flutter/material.dart';
 import '../agent/plan.dart';
 import '../agent/progress.dart';
 import '../agent/worker.dart';
+import 'developer.dart';
+import 'kit/kit.dart';
+import 'layout.dart';
+import 'theme.dart';
+import 'tokens.g.dart';
 import 'user_message.dart';
 
 /// What the build UI needs of the worker's builds ([FeedbackWorker]).
@@ -104,10 +109,11 @@ bool buildGoing(BuildState? s) =>
     (s.phase == BuildPhase.queued || s.phase == BuildPhase.running);
 
 /// What a progress event says the run is doing: the agent's narration or
-/// the label of the tool it started; null for the others.
-String? buildStep(AgentProgress? p) => switch (p) {
+/// the label of the tool it started, naming the files it touches when
+/// [developer]; null for the others.
+String? buildStep(AgentProgress? p, {bool developer = false}) => switch (p) {
   Narration(:final text) => text,
-  ToolStarted(:final label) => label,
+  final ToolStarted t => t.labelFor(developer: developer),
   _ => null,
 };
 
@@ -193,12 +199,12 @@ class _BuildWatchState extends State<BuildWatch> {
   Widget build(BuildContext context) => widget.builder(context, _plan, _state);
 }
 
-/// What the build is doing, in a line: "Building Export", "Stopped", …
+/// What the build is doing, in a line: "Building: Export", "Stopped", …
 String buildHeadline(Plan? plan, BuildState? s) {
   if (plan == null) return 'Planning the features…';
   final feature = buildFeature(plan, s);
   return switch (s?.phase) {
-    BuildPhase.running when feature != null => 'Building ${feature.title}',
+    BuildPhase.running when feature != null => 'Building: ${feature.title}',
     BuildPhase.queued when plan.todo.isNotEmpty =>
       'Up next: ${plan.todo.first.title}',
     BuildPhase.stopped => 'Build stopped',
@@ -206,7 +212,7 @@ String buildHeadline(Plan? plan, BuildState? s) {
     BuildPhase.capped => 'Build paused at its spending cap',
     BuildPhase.done => 'Every feature is built',
     _ when plan.stopped => 'Build stopped',
-    _ when feature != null => 'Building ${feature.title}',
+    _ when feature != null => 'Building: ${feature.title}',
     _ when plan.features.isEmpty => 'Planning the features…',
     _ when plan.todo.isEmpty => 'Every feature is built',
     _ => 'Planned ${planCount(plan).total} features',
@@ -270,17 +276,18 @@ class BuildPlanPanel extends StatelessWidget {
         s?.phase == BuildPhase.capped ||
         (s == null && (p?.stopped ?? false));
     final Widget? action = switch ((going, stopped)) {
-      (true, _) when onStop != null => TextButton.icon(
+      (true, _) when onStop != null => ClaxButton(
         key: const ValueKey('build-stop'),
+        label: 'Stop',
+        icon: Icons.stop_rounded,
         onPressed: onStop,
-        icon: const Icon(Icons.stop_rounded, size: 18),
-        label: const Text('Stop'),
       ),
-      (_, true) when onResume != null => FilledButton.tonalIcon(
+      (_, true) when onResume != null => ClaxButton(
         key: const ValueKey('build-resume'),
+        label: 'Resume',
+        icon: Icons.play_arrow_rounded,
+        kind: ClaxButtonKind.tonal,
         onPressed: onResume,
-        icon: const Icon(Icons.play_arrow_rounded, size: 18),
-        label: const Text('Resume'),
       ),
       _ => null,
     };
@@ -322,7 +329,7 @@ class BuildPlanPanel extends StatelessWidget {
                     Text(
                       buildHeadline(p, s),
                       key: const ValueKey('plan-headline'),
-                      maxLines: 1,
+                      maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: theme.textTheme.titleMedium,
                     ),
@@ -350,15 +357,16 @@ class BuildPlanPanel extends StatelessWidget {
   }
 }
 
-/// [plan]'s features in build order: done (checked), doing (a spinner and
-/// what the agent is doing now, from [state]), todo, dropped (struck
+/// [plan]'s features in build order: done (checked), doing (the working
+/// mark and what Clax is doing now, from [state]), todo, dropped (struck
 /// through), under [header].
 ///
 /// With [plans] and [planKey] the person edits the plan as it builds: a tap
 /// on a feature still to build edits its title and detail, a swipe drops
 /// it (a tap on a dropped one takes the drop back), its handle reorders
-/// it, and the field at the end adds one. Features the person added are
-/// marked "you".
+/// it, and the field at the end adds one. Features the person added say
+/// "Added by you" under their title. A feature that could not be added
+/// says so in a toast, with Details.
 class PlanChecklist extends StatefulWidget {
   const PlanChecklist({
     super.key,
@@ -438,12 +446,23 @@ class _PlanChecklistState extends State<PlanChecklist> {
       );
     } on Object catch (e) {
       // The field keeps the text, to add again.
+      final why = logUserMessage('plan', e);
       if (mounted) {
-        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-          SnackBar(
-            content: Text(
-              'Couldn’t add it to the plan. '
-              '${logUserMessage('plan', e)}',
+        final raw = DeveloperScope.of(context) ? rawError(e) : null;
+        ClaxToast.show(
+          context,
+          _couldNotAdd,
+          actionLabel: 'Details',
+          onAction: () => unawaited(
+            ClaxDialog.show(
+              context,
+              title: _couldNotAdd,
+              body: [why, ?raw].join('\n\n'),
+              actions: const [
+                ClaxDialogAction('OK', kind: ClaxButtonKind.primary),
+              ],
+              defaultIndex: 0,
+              cancelIndex: 0,
             ),
           ),
         );
@@ -548,11 +567,17 @@ class _PlanChecklistState extends State<PlanChecklist> {
   Widget _row(BuildContext context, PlanFeature f, int index) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
+    final p = claxPalette(context);
     final doing = f.status == FeatureStatus.doing;
     final todo = f.status == FeatureStatus.todo;
     final muted =
         f.status == FeatureStatus.done || f.status == FeatureStatus.dropped;
-    final narration = doing ? buildStep(widget.state?.progress) : null;
+    final narration = doing
+        ? buildStep(
+            widget.state?.progress,
+            developer: DeveloperScope.of(context),
+          )
+        : null;
     final subtitle = narration ?? (todo || doing ? f.detail : '');
     final leading = switch (f.status) {
       FeatureStatus.done => Icon(
@@ -560,14 +585,10 @@ class _PlanChecklistState extends State<PlanChecklist> {
         color: scheme.primary,
         size: 22,
       ),
-      FeatureStatus.doing => SizedBox.square(
+      FeatureStatus.doing => const SizedBox.square(
         dimension: 22,
-        child: Padding(
-          padding: const EdgeInsets.all(2),
-          child: CircularProgressIndicator(
-            strokeWidth: 2.5,
-            color: scheme.primary,
-          ),
+        child: Center(
+          child: ClaxMark(size: 22, state: ClaxMarkState.working),
         ),
       ),
       FeatureStatus.todo => Icon(
@@ -586,30 +607,32 @@ class _PlanChecklistState extends State<PlanChecklist> {
       minLeadingWidth: 22,
       horizontalTitleGap: 14,
       leading: leading,
-      title: Text.rich(
-        TextSpan(
-          children: [
-            TextSpan(text: f.title),
-            if (f.by == FeatureBy.person)
-              TextSpan(
-                text: '  you',
-                style: theme.textTheme.labelSmall?.copyWith(
-                  color: scheme.tertiary,
-                  decoration: TextDecoration.none,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-          ],
-        ),
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
-        style: theme.textTheme.bodyLarge?.copyWith(
-          color: muted ? scheme.onSurfaceVariant : null,
-          fontWeight: doing ? FontWeight.w600 : null,
-          decoration: f.status == FeatureStatus.dropped
-              ? TextDecoration.lineThrough
-              : null,
-        ),
+      title: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            f.title,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodyLarge?.copyWith(
+              color: muted ? p.muted : null,
+              fontWeight: doing ? FontWeight.w600 : null,
+              decoration: f.status == FeatureStatus.dropped
+                  ? TextDecoration.lineThrough
+                  : null,
+            ),
+          ),
+          if (f.by == FeatureBy.person)
+            Text(
+              'Added by you',
+              key: ValueKey('added-by-you-${f.id}'),
+              style: ClaxType.of(
+                ClaxRole.caption,
+                theme.platform,
+              ).copyWith(color: p.muted),
+            ),
+        ],
       ),
       subtitle: subtitle.isEmpty
           ? null
@@ -710,6 +733,8 @@ class _PlanChecklistState extends State<PlanChecklist> {
   );
 }
 
+const _couldNotAdd = 'Couldn’t add it to the plan.';
+
 class _EditFeatureDialog extends StatefulWidget {
   const _EditFeatureDialog({required this.feature});
 
@@ -772,32 +797,40 @@ class _EditFeatureDialogState extends State<_EditFeatureDialog> {
   );
 }
 
-/// Shows app [aid]'s build over the app: the plan panel in a draggable
-/// sheet, with Stop and Resume.
-Future<void> showBuildSheet(BuildContext context, BuildLink link, String aid) =>
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      showDragHandle: false,
-      builder: (_) => DraggableScrollableSheet(
-        expand: false,
-        initialChildSize: 0.6,
-        minChildSize: 0.3,
-        maxChildSize: 0.92,
-        builder: (context, controller) => BuildWatch(
-          key: const ValueKey('build-sheet'),
-          link: link,
-          appId: aid,
-          builder: (context, plan, state) => BuildPlanPanel(
-            plan: plan,
-            state: state,
-            plans: link.plans,
-            planKey: aid,
-            controller: controller,
-            onStop: () => unawaited(link.control.stopBuild(aid)),
-            onResume: () => unawaited(link.control.resumeBuild(aid)),
-          ),
+/// Shows app [aid]'s build over the app in a [ClaxSheet] (a bottom sheet
+/// on a phone, a window sheet on the Mac): the plan panel, with Stop and
+/// Resume, and Done where the sheet has no handle to drag it away.
+Future<void> showBuildSheet(BuildContext context, BuildLink link, String aid) {
+  final compact = ClaxWidth.of(context) == ClaxWidth.compact;
+  final height = MediaQuery.sizeOf(context).height * (compact ? 0.6 : 0.5);
+  return ClaxSheet.show<void>(
+    context,
+    actions: [
+      // A wide sheet is a dialog on the root navigator.
+      if (!compact)
+        ClaxButton(
+          label: 'Done',
+          kind: ClaxButtonKind.primary,
+          isDefault: true,
+          onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
+        ),
+    ],
+    builder: (context) => SizedBox(
+      height: height,
+      child: BuildWatch(
+        key: const ValueKey('build-sheet'),
+        link: link,
+        appId: aid,
+        builder: (context, plan, state) => BuildPlanPanel(
+          plan: plan,
+          state: state,
+          plans: link.plans,
+          planKey: aid,
+          handle: false,
+          onStop: () => unawaited(link.control.stopBuild(aid)),
+          onResume: () => unawaited(link.control.resumeBuild(aid)),
         ),
       ),
-    );
+    ),
+  );
+}

@@ -276,7 +276,9 @@ class AgentLoop {
   /// [AgentError.cancelled] when [cancelled] fires before the create.
   ///
   /// [onProgress] receives the run's [AgentProgress] events, from an
-  /// [AttemptStarted]. Without it the single call does not stream.
+  /// [AttemptStarted]. Without it the single call does not stream. A
+  /// tool-loop app made without its starting documents (the service
+  /// refused their batch) is still returned, after a [StartingDataRefused].
   ///
   /// A tool-loop create that got no answer (the daemon went away) looks
   /// for the app among the artifacts that were not there before the run,
@@ -366,6 +368,7 @@ class AgentLoop {
         sessionId: session,
         cancelled: scope.future,
         clock: _clock,
+        request: request,
       ),
       RunCaps.first,
       RunInput(
@@ -384,6 +387,11 @@ class AgentLoop {
       case RunFinished(:final artifactId?, :final docsRefused):
         if (docsRefused != null) {
           _log('new app $artifactId: made without its documents: $docsRefused');
+          try {
+            onProgress?.call(StartingDataRefused(artifactId, docsRefused));
+          } on Object catch (e) {
+            _log('a progress listener failed: $e');
+          }
         }
         return artifactId;
       case RunFinished():

@@ -47,6 +47,31 @@ const pick = {
   'cancel': null,
 };
 
+/// A daemon that refuses document writes to an app once one is created,
+/// as for a new app's starting documents; a draft's writes still land.
+class _RefusesAppDocs extends FakeClaxApi {
+  var _created = false;
+
+  @override
+  Future<PublishResult> createArtifact(PublishRequest r) async {
+    final made = await super.createArtifact(r);
+    _created = true;
+    return made;
+  }
+
+  @override
+  Future<void> batchDocs(String aid, List<DocWrite> writes) async {
+    if (_created) {
+      throw const ClaxApiError(
+        status: 400,
+        code: 'quota_exceeded',
+        message: 'full',
+      );
+    }
+    return super.batchDocs(aid, writes);
+  }
+}
+
 /// The tool loop's [AgentLoop] (the single call is in
 /// loop_single_call_test.dart): a [HeldRunner] over the real Toolbox, the
 /// fake daemon and a fake inspector.
@@ -165,6 +190,41 @@ void main() {
           'inspected 0',
           'tool finish',
         ],
+      );
+    });
+
+    test('an app made without its starting documents is returned after a '
+        'StartingDataRefused', () async {
+      api = _RefusesAppDocs();
+      sid = (await api.registerAppSession(installId: 'install', pid: 1)).id;
+      final loop = loopWith([
+        [
+          ...newAppCalls(capabilities: const {'db': {}}).take(2),
+          const ScriptedCall('db_write', {
+            'app': null,
+            'ops': [
+              {
+                'op': 'set',
+                'collection': 'runs',
+                'doc_id': 'a',
+                'data_json': '{"km":1}',
+              },
+            ],
+          }),
+          ...newAppCalls(capabilities: const {'db': {}}).skip(2),
+        ],
+      ]);
+      final events = <AgentProgress>[];
+      final aid = await loop.newApp(
+        'a run tracker',
+        session: sid,
+        onProgress: events.add,
+      );
+      expect(
+        events.last,
+        isA<StartingDataRefused>()
+            .having((e) => e.artifactId, 'artifactId', aid)
+            .having((e) => e.reason, 'reason', 'full'),
       );
     });
 

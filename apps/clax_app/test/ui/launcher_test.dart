@@ -207,10 +207,10 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
     expect(
-      find.text('Making “a tracker for my runs with a weekly total”…'),
+      find.text(makingTitle('a tracker for my runs with a weekly total')),
       findsOneWidget,
     );
-    expect(find.text('Starting the agent'), findsOneWidget);
+    expect(find.text('Getting started'), findsOneWidget);
     expect(find.text('0 s'), findsOneWidget);
     await tester.pump(const Duration(seconds: 3));
     expect(find.text('3 s'), findsOneWidget);
@@ -386,14 +386,14 @@ void main() {
     unawaited(signals.single.then((_) => fired = true));
     await tester.binding.handlePopRoute();
     await frames(tester);
-    expect(find.text('Making “a stopwatch”…'), findsNothing);
+    expect(find.text('“a stopwatch…”'), findsNothing);
     expect(fired, isFalse, reason: 'leaving never cancels');
     expect(find.byKey(const ValueKey('making-tile')), findsOneWidget);
     expect(find.byKey(const ValueKey('tile-making')), findsOneWidget);
 
     await tester.tap(find.text('a stopwatch'));
     await frames(tester);
-    expect(find.text('Making “a stopwatch”…'), findsOneWidget);
+    expect(find.text('“a stopwatch…”'), findsOneWidget);
     expect(signals, hasLength(1), reason: 'it attaches to the running make');
 
     await tester.tap(find.byKey(const ValueKey('build-back')));
@@ -607,20 +607,6 @@ void main() {
     expect(settings, 1);
     await pumpLauncher(tester, _api(), openSettings: () {});
     expect(find.text('Add key'), findsNothing);
-  });
-
-  test('the making title ellipsizes a long request at a word boundary', () {
-    const long =
-        'a tracker for my runs with a weekly total and a monthly chart of pace';
-    final t = makingTitle(long);
-    expect(t, startsWith('Making “'));
-    expect(t, endsWith('…”'));
-    final quoted = t.substring('Making “'.length, t.length - 2);
-    expect(quoted.length, lessThanOrEqualTo(48));
-    expect(long.startsWith(quoted), isTrue);
-    expect(long[quoted.length], ' ', reason: 'cut at a word boundary');
-    expect(makingTitle('a timer'), 'Making “a timer”…');
-    expect(t, 'Making “a tracker for my runs with a weekly total…”');
   });
 
   group('tiles', () {

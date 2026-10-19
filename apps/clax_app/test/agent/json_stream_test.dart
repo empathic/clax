@@ -265,7 +265,8 @@ void main() {
       ToolStarted() ||
       Inspected() ||
       WaitingForConnection() ||
-      ConnectionBack() => '$e',
+      ConnectionBack() ||
+      StartingDataRefused() => '$e',
     };
 
     test('reports each file content prefix under its path', () {

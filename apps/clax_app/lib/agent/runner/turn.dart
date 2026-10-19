@@ -379,7 +379,7 @@ class _ToolCall extends _Block {
   void _started() {
     if (_announced) return;
     _announced = true;
-    sink(ToolStarted(name, toolLabel(name, _fields)));
+    sink(toolStarted(name, _fields));
   }
 
   void _report({required bool force}) {

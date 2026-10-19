@@ -30,6 +30,28 @@ String stoppedEarlyReply(String? narration, String cap) {
       'asked.';
 }
 
+/// The longest title [titleFromRequest] makes.
+const requestTitleMax = 40;
+
+/// A new app's title from the person's [request], for an app stopped at a
+/// cap before it was named: its first line's first words, cut at the last
+/// word boundary within [requestTitleMax] characters, a closing stop
+/// dropped and the first letter capitalised ("a tide table for the
+/// harbour" is "A tide table for the harbour"). Null when [request] has no
+/// words.
+String? titleFromRequest(String? request) {
+  final line = (request ?? '').trim().split('\n').first.trim();
+  var t = line.replaceAll(RegExp(r'\s+'), ' ');
+  if (t.isEmpty) return null;
+  if (t.length > requestTitleMax) {
+    final cut = t.lastIndexOf(' ', requestTitleMax);
+    t = t.substring(0, cut <= 0 ? requestTitleMax : cut);
+  }
+  t = t.replaceFirst(RegExp(r'[\s.,;:!?…]+$'), '');
+  if (t.isEmpty) return null;
+  return t[0].toUpperCase() + t.substring(1);
+}
+
 /// What a version is made of: the part of a draft or of a [DraftSnapshot]
 /// that `finish` publishes.
 typedef _Source = ({
@@ -106,7 +128,10 @@ final class _Ended extends _Step {
 ///
 /// A new app is created (as the app session, with its title,
 /// capabilities, files and the reply as its note), then its staged
-/// documents are written in one batch; a refused batch is logged.
+/// documents are written in one batch; a refused batch is logged and
+/// reported as [RunFinished.docsRefused]. A new app stopped at a cap
+/// before it was named takes its title from the request
+/// ([titleFromRequest]).
 ///
 /// One instance serves one run. It never calls the [Toolbox]: it runs
 /// inside the Toolbox's call queue, which is not re-entrant.
@@ -416,7 +441,7 @@ class FinishTool implements Tool {
   }) async {
     final title = switch (src.title?.trim()) {
       final t? when t.isNotEmpty => t,
-      _ when fallbackTitle => 'New app',
+      _ when fallbackTitle => titleFromRequest(s.ctx.request) ?? 'New app',
       _ => throw StateError('a new app without a title'),
     };
     if (_cancel!.isCancelled) return _cancelled(s);
