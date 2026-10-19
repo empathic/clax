@@ -119,6 +119,24 @@ async fn patch_and_delete() {
     let a: serde_json::Value = res.json().await.unwrap();
     assert_eq!(a["artifact"]["pinned"], true);
     assert_eq!(a["artifact"]["title"], "New");
+    for (body, code) in [
+        (json!({"title": "t".repeat(201)}), "title_too_long"),
+        (json!({"description": "a\u{202E}b"}), "invalid_args"),
+        (json!({"icon": "chart\nmap"}), "invalid_args"),
+    ] {
+        let res = ts
+            .authed(
+                ts.client
+                    .patch(format!("{}/api/artifacts/{id}", ts.base))
+                    .json(&body),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 400, "{body}");
+        let err: serde_json::Value = res.json().await.unwrap();
+        assert_eq!(err["error"]["code"], code, "{body}");
+    }
     let res = ts
         .authed(ts.client.delete(format!("{}/api/artifacts/{id}", ts.base)))
         .send()

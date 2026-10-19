@@ -466,6 +466,18 @@
     {
       "html": "<script><title>only in script</title>",
       "title": null
+    },
+    {
+      "html": "<title>a\u200bb \u202ec\u0007d\u00ad</title>",
+      "title": "ab cd"
+    },
+    {
+      "html": "<title>\u200f\u05e9 \ud83d\udc69\u200d\ud83d\udcbb</title>",
+      "title": "\u200f\u05e9 \ud83d\udc69\u200d\ud83d\udcbb"
+    },
+    {
+      "html": "<title>\u202e\u2066</title>",
+      "title": null
     }
   ],
   "tools": [

@@ -213,9 +213,9 @@ Arguments:
 | `id` | string | no; at most one of `id`, `url` | Artifact to update. |
 | `url` | string | no; at most one of `id`, `url` | Artifact to update, as any artifact URL. |
 | `if_version` | integer ≥ 0 | no | The version the update is based on. Defaults to the artifact's current version. Ignored when creating. |
-| `title` | string | on create, unless the page has a `<title>` | Artifact title. Creating without it takes the page's `<title>` (below). Updates never need it. |
-| `description` | string | no | One-line description. |
-| `icon` | string | no | One generic word, such as `chart` or `map`. |
+| `title` | string | on create, unless the page has a `<title>` | Artifact title, at most 200 characters. Creating without it takes the page's `<title>` (below). Updates never need it. |
+| `description` | string | no | One-line description, at most 1000 characters. |
+| `icon` | string | no | One generic word, such as `chart` or `map`, at most 40 characters. |
 | `label` | string | no | Short name for this version, at most 60 characters. |
 | `note` | string | no | This version's change note for the person, at most 280 characters (longer is cut, with `note_truncated: true`). |
 | `addresses` | array of thread IDs | no | Threads of this artifact this version addresses (at most 50). Linking does not resolve them. |
@@ -322,6 +322,13 @@ Errors:
 - `body_too_large`: the files together exceed 64 MiB decoded, or the request
   body exceeds 96 MiB.
 - `label_too_long`: `label` exceeds 60 characters.
+- `title_too_long`, `description_too_long`, `icon_too_long`: `title` exceeds
+  200 characters, `description` 1000 or `icon` 40. `invalid_args` when one
+  of them holds a control character (a line break or tab among them) or a
+  hidden format character (a bidi embedding, override or isolate, a
+  zero-width space, a tag character); the joiners ZWJ and ZWNJ and the
+  direction marks LRM, RLM and ALM are allowed. `PATCH /api/artifacts/<id>`
+  checks its `title`, `description` and `icon` the same way.
 - `unknown_session`: the session the tools registered has ended (for example
   through a `SessionEnd` hook) or no longer exists. The shim and the Pi
   extension register a new session with the same harness session ID and retry

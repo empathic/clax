@@ -720,6 +720,12 @@ export const MAX_DERIVED_TITLE_CHARS = 200;
 const WHITESPACE = /[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/;
 const WHITESPACE_RUN = new RegExp(WHITESPACE.source, "g");
 const TRAILING_WHITESPACE = new RegExp(`${WHITESPACE.source}$`);
+/** What [`htmlTitle`] drops: control characters other than whitespace (as
+ * Rust's `char::is_control` and `char::is_whitespace`), and the hidden
+ * format characters of `clax_core::text::is_hidden_char` (bidi embeddings,
+ * overrides and isolates, zero-width spaces, tags; not the joiners or the
+ * direction marks). */
+const HIDDEN = /[\u0000-\u0008\u000e-\u001f\u007f-\u0084\u0086-\u009f\u00ad\u0600-\u0605\u06dd\u070f\u0890\u0891\u08e2\u180e\u200b\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb\u{110bd}\u{110cd}\u{13430}-\u{1343f}\u{1bca0}-\u{1bca3}\u{1d173}-\u{1d17a}\u{e0001}\u{e0020}-\u{e007f}]/gu;
 const BASIC_ENTITIES: Record<string, string> = { "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": "\"", "&apos;": "'" };
 
 /** Tags [`htmlTitle`] looks for: the title, and elements whose contents it skips. */
@@ -738,8 +744,10 @@ function tagStarts(lower: string, at: number, name: string): boolean {
  * `<svg>` elements are skipped (an unclosed one hides the rest of the page).
  * Tag names match in any case and may carry attributes; the five
  * entities `&amp;` `&lt;` `&gt;` `&quot;` `&apos;` are decoded once (any other
- * entity is kept as written); runs of whitespace become one space; the result
- * is trimmed and cut to [`MAX_DERIVED_TITLE_CHARS`] characters. `undefined`
+ * entity is kept as written); control characters other than whitespace and
+ * hidden format characters ([`HIDDEN`]) are dropped; runs of whitespace
+ * become one space; the result is trimmed and cut to
+ * [`MAX_DERIVED_TITLE_CHARS`] characters. `undefined`
  * when there is no closed `<title>` element or its text is empty. The same
  * rule as `clax_core::html_title`. */
 export function htmlTitle(html: string): string | undefined {
@@ -778,7 +786,7 @@ export function htmlTitle(html: string): string | undefined {
   }
   const bodyEnd = lower.indexOf("</title", bodyStart);
   if (bodyEnd < 0) return undefined;
-  const text = html.slice(bodyStart, bodyEnd).replace(/&(?:amp|lt|gt|quot|apos);/g, e => BASIC_ENTITIES[e] ?? e);
+  const text = html.slice(bodyStart, bodyEnd).replace(/&(?:amp|lt|gt|quot|apos);/g, e => BASIC_ENTITIES[e] ?? e).replace(HIDDEN, "");
   const joined = text.split(WHITESPACE).filter(w => w !== "").join(" ");
   const title = Array.from(joined).slice(0, MAX_DERIVED_TITLE_CHARS).join("").replace(TRAILING_WHITESPACE, "");
   return title === "" ? undefined : title;

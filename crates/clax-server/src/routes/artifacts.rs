@@ -600,7 +600,8 @@ async fn admin_change(
 }
 
 /// Metadata edits. `capabilities` replaces the whole declaration (omitted
-/// keeps, `{}` clears) and is validated like a publish's.
+/// keeps, `{}` clears); it and the text fields are validated like a
+/// publish's.
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct PatchBody {
@@ -664,6 +665,11 @@ pub async fn patch(
     if let Some(c) = &b.capabilities {
         clax_core::capabilities::validate(c)?;
     }
+    clax_core::publish::check_meta_text(
+        b.title.as_deref(),
+        b.description.as_deref(),
+        b.icon.as_deref(),
+    )?;
     admin_change(&s, &a.0.caller, &id, b.pinned, b.capabilities.clone()).await?;
     let vf = VisFor::of(&a.0.caller, &s);
     let artifact = s
