@@ -135,6 +135,36 @@ void main() {
     }
   });
 
+  test('two builds of one theme are equal', () {
+    for (final b in Brightness.values) {
+      expect(
+        claxTheme(b, TargetPlatform.android),
+        claxTheme(b, TargetPlatform.android),
+      );
+      expect(
+        claxTheme(b, TargetPlatform.macOS, highContrast: true),
+        claxTheme(b, TargetPlatform.macOS, highContrast: true),
+      );
+    }
+    expect(
+      claxTheme(Brightness.light, TargetPlatform.android),
+      isNot(claxTheme(Brightness.dark, TargetPlatform.android)),
+    );
+  });
+
+  testWidgets('rebuilding with a fresh, equal theme starts no animation', (
+    tester,
+  ) async {
+    Widget app() => MaterialApp(
+      theme: claxTheme(Brightness.light, TargetPlatform.android),
+      home: const SizedBox(),
+    );
+    await tester.pumpWidget(app());
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(app());
+    expect(tester.hasRunningAnimations, isFalse);
+  });
+
   testWidgets('claxPalette reads the theme\'s palette', (tester) async {
     late ClaxPalette got;
     await tester.pumpWidget(

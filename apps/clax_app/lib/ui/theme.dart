@@ -18,6 +18,16 @@ final class ClaxColors extends ThemeExtension<ClaxColors> {
   @override
   ClaxColors lerp(ClaxColors? other, double t) =>
       other == null || t < 0.5 ? this : other;
+
+  /// Equal when they carry the same palette: the palettes are the constants
+  /// of [ClaxTokens], so a theme built again equals the one before it and an
+  /// `AnimatedTheme` has nothing to animate.
+  @override
+  bool operator ==(Object other) =>
+      other is ClaxColors && identical(other.palette, palette);
+
+  @override
+  int get hashCode => identityHashCode(palette);
 }
 
 /// The palette of the theme at [context]; the light palette under a theme
@@ -107,10 +117,26 @@ ColorScheme _scheme(Brightness b, ClaxPalette p) => ColorScheme(
 /// more contrast. The Material
 /// family is standard density with predictive back on Android; the Apple
 /// family (macOS, iOS) is compact with Apple's type sizes.
+///
+/// Each combination is built once and the same object returned after: its
+/// state-dependent styles are closures, which no two builds share, so two
+/// builds would never be equal and an `AnimatedTheme` given a new build on
+/// every rebuild would animate (and repaint) each time.
 ThemeData claxTheme(
   Brightness brightness,
   TargetPlatform platform, {
   bool highContrast = false,
+}) => _themes.putIfAbsent(
+  (brightness, platform, highContrast),
+  () => _buildTheme(brightness, platform, highContrast: highContrast),
+);
+
+final _themes = <(Brightness, TargetPlatform, bool), ThemeData>{};
+
+ThemeData _buildTheme(
+  Brightness brightness,
+  TargetPlatform platform, {
+  required bool highContrast,
 }) {
   final dark = brightness == Brightness.dark;
   final p = switch ((dark, highContrast)) {
