@@ -1,7 +1,7 @@
 //! Artifact content: the files of every version and the assets of every
 //! artifact, behind [`ContentStore`].
 //!
-//! The store ([`crate::Store`]) keeps what Clax knows about content in its
+//! The store (`clax_store::Store`) keeps what Clax knows about content in its
 //! database: each version's row lists its files with their sizes, content
 //! types and hashes, and each asset's row its type, size and extension. A
 //! [`ContentStore`] keeps only the bytes. Every read goes through a row first,
@@ -75,7 +75,7 @@
 //!
 //! A backend over git lets a person, or their agent, push to an artifact's
 //! `main` with git or jj. A pushed commit is a version once the store
-//! records it ([`crate::Store::reconcile_pushes_async`]), which it does
+//! records it (`clax_store::Store::reconcile_pushes_async`), which it does
 //! under the artifact's content lock and before every new version:
 //! [`ContentStore::pushed_commits`] lists `main`'s first-parent commits
 //! above the commit of the version pushed past, oldest first, without the
@@ -420,7 +420,7 @@ pub trait ContentStore: Send + Sync {
     /// (`false`, the default). Then the store's synchronous methods fail at
     /// once with [`crate::CoreError::WouldBlock`], before any I/O or write,
     /// rather than start work they could not finish, and
-    /// [`crate::Store::call_async`] awaits its jobs on the caller's task.
+    /// `clax_store::Store::call_async` awaits its jobs on the caller's task.
     fn needs_executor(&self) -> bool {
         false
     }
@@ -604,7 +604,7 @@ impl std::task::Wake for Unpark {
 }
 
 std::thread_local! {
-    /// How many synchronous store methods ([`crate::Store`]'s `block_on`)
+    /// How many synchronous store methods (`clax_store::Store`'s `block_on`)
     /// this thread is inside.
     static SYNC_DRIVEN: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }

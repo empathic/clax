@@ -66,7 +66,7 @@ pub enum Event {
     },
     /// Thread `thread_id`'s delivery state changed for each reader in
     /// `views`, which holds each one's state as it reads it
-    /// ([`crate::Delivery::view`]), by recipient key (empty: the owner; a
+    /// (`clax_store::Delivery::view`), by recipient key (empty: the owner; a
     /// connected person's public ID); `None` once the thread has no
     /// delivery rows left, for those who read one. Only the `artifact`
     /// stream topic carries it, each view to its reader's streams alone

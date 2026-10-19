@@ -1,6 +1,6 @@
 //! The `db` capability's document paths, access levels, and declared access
-//! rules (spec §9 "db"; db.d.ts 0.2.61 (shipped under web/contract/ from
-//! Task 5), "PATH GRAMMAR" and "ACCESS RULES"). Evaluation is pure: the store loads the artifact's
+//! rules (spec §9 "db"; `web/contract/0.2.61/db.d.ts`, "PATH GRAMMAR" and
+//! "ACCESS RULES"). Evaluation is pure: the store loads the artifact's
 //! declaration on every call and asks [`Rules::allows`].
 
 use crate::visibility::Author;

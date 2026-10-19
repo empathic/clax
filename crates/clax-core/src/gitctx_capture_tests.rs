@@ -336,7 +336,7 @@ fn header_has_no_paths_or_contents() {
     assert_eq!(decode_header(&header), field);
 }
 
-/// Measures `capture` on this repository (plan Task 12, step 3): 50 runs,
+/// Measures `capture` on this repository: 50 runs,
 /// p50 and p95. Run by hand: `cargo test -p clax-core --release --lib --
 /// --ignored capture_latency_on_this_repo --nocapture`.
 #[test]

@@ -13,8 +13,9 @@
 //!   `"write"` for a write, `"read"` for a read.
 //!
 //! Limits: a client's array holds at most [`MAX_ACCESS`] access objects,
-//! counted before merging, with a preset name counting as all of its
-//! objects (`clax:collaborator` alone is nine); each object holds at most
+//! counted before merging, with a preset name counting as its merged
+//! objects (`clax:reader` and `clax:full` are four, `clax:collaborator`
+//! seven); each object holds at most
 //! [`MAX_LOCATIONS`] locations. Merged rights hold at most one object per
 //! type, `clax-db` level and action set: 86 in all (15 artifact action sets,
 //! 63 comment, 7 db, 1 ask).
@@ -1464,5 +1465,24 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A preset counts toward [`MAX_ACCESS`] as its merged objects.
+    #[test]
+    fn a_preset_counts_as_its_merged_objects() {
+        for (name, n) in [
+            (PRESET_READER, 4),
+            (PRESET_COLLABORATOR, 7),
+            (PRESET_FULL, 4),
+        ] {
+            assert_eq!(Rights::preset(name).unwrap().iter().count(), n, "{name}");
+        }
+        let with = |extra: usize| {
+            let mut items = vec![json!(PRESET_COLLABORATOR)];
+            items.extend((0..extra).map(|_| json!({"type": "clax-ask", "actions": ["ask"]})));
+            Rights::parse(&Value::Array(items))
+        };
+        assert!(with(MAX_ACCESS - 7).is_ok());
+        assert!(with(MAX_ACCESS - 6).is_err());
     }
 }
