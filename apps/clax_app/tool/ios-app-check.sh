@@ -9,14 +9,16 @@
 # form of :version_sync), the minimum iOS $IOS_MINIMUM_OS, iPhone and iPad,
 # App Transport Security's loopback keys (NSAllowsLocalNetworking, and
 # localhost with its subdomains as an exception domain) and no arbitrary
-# loads, no full-screen requirement and no background modes. The bundle
+# loads, no full-screen requirement and no background modes, and the .clax
+# document type (dev.empathic.clax.bundle, exported, copied in). The bundle
 # must hold Flutter's two frameworks and the home bundle HOME_BUNDLE (the
 # one //apps/clax_app:home_bundle built) in Flutter's assets. The main
 # binary must be built for the iOS simulator (platform 7) at minos
 # $IOS_MINIMUM_OS, export the daemon's four C functions and hold the
-# background channel's name and its tasks' names. Every object of
-# each STATIC_LIB that names an iOS must name one no newer than
-# $IOS_MINIMUM_OS, so a mismatch fails here rather than warning at link.
+# background channel's name and its tasks' names, and the bundles
+# channel's. Every object of each STATIC_LIB that names an iOS must name one
+# no newer than $IOS_MINIMUM_OS, so a mismatch fails here rather than
+# warning at link.
 set -euo pipefail
 zip="$1" home="$2"
 shift 2
@@ -53,6 +55,18 @@ if plutil -convert xml1 -o - "$info" | grep -q '\$('; then
 else
     ok "no Xcode variable left in Info.plist"
 fi
+# .clax bundles: the exported type, Clax as its owner, and a copy handed
+# over rather than the file opened in place.
+want CFBundleDocumentTypes.0.LSItemContentTypes.0 dev.empathic.clax.bundle "Clax opens dev.empathic.clax.bundle"
+want CFBundleDocumentTypes.0.LSHandlerRank Owner "Clax owns .clax files"
+want UTExportedTypeDeclarations.0.UTTypeIdentifier dev.empathic.clax.bundle "dev.empathic.clax.bundle is exported"
+conforms="$(plutil -extract UTExportedTypeDeclarations.0.UTTypeConformsTo json -o - "$info" 2>/dev/null | tr -d ' \n' || true)"
+if [ "$conforms" = '["public.data"]' ]; then ok "dev.empathic.clax.bundle is data, not a zip Files would expand"; else bad "dev.empathic.clax.bundle is data, not a zip Files would expand: UTTypeConformsTo is '$conforms'"; fi
+tags="$(plutil -extract UTExportedTypeDeclarations.0.UTTypeTagSpecification json -o - "$info" 2>/dev/null | tr -d ' \n' || true)"
+for t in '"public.filename-extension":["clax"]' '"public.mime-type":["application\/vnd.empathic.clax+zip"]'; do
+    if grep -qF "$t" <<<"$tags"; then ok "dev.empathic.clax.bundle's tag $t"; else bad "dev.empathic.clax.bundle's tag $t: UTTypeTagSpecification is '$tags'"; fi
+done
+want LSSupportsOpeningDocumentsInPlace false "a .clax is copied in, not opened in place"
 for f in Frameworks/App.framework Frameworks/Flutter.framework; do
     if [ -d "$app/$f" ]; then ok "$f"; else bad "$f"; fi
 done
@@ -69,7 +83,8 @@ if [ -f "$bin" ]; then
     done
     # ios/Runner/Background.swift: its channel and its two background tasks.
     texts="$(strings -a "$bin")"
-    for t in dev.empathic.clax/background "Clax trim" "Clax run"; do
+    # ios/Runner/BundleIntake.swift: the bundles channel.
+    for t in dev.empathic.clax/background "Clax trim" "Clax run" dev.empathic.clax/bundles; do
         if grep -qxF "$t" <<<"$texts"; then ok "the binary holds \"$t\""; else bad "the binary holds \"$t\""; fi
     done
 else

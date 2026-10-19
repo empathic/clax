@@ -20,6 +20,7 @@ import UserNotifications
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "ClaxNative") {
       NativeChannel.install(registrar)
       Background.install(registrar)
+      BundleIntake.install(registrar)
     }
   }
 }

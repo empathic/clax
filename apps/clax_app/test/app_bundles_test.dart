@@ -13,6 +13,7 @@ import 'package:clax_app/platform/bundle_key.dart';
 import 'package:clax_app/platform/secure_key.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/bundle_sheets.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -102,6 +103,32 @@ void main() {
     expect(find.byType(InstallSheet), findsNothing);
     expect(surfaces, isNotEmpty, reason: 'the installed app opened');
   });
+
+  for (final (platform, ownCopy) in [
+    (TargetPlatform.iOS, true),
+    (TargetPlatform.macOS, false),
+  ]) {
+    testWidgets('on ${platform.name} the opened file is '
+        '${ownCopy ? 'Clax’s own copy, deleted once read' : 'the person’s, kept'}', (
+      tester,
+    ) async {
+      debugDefaultTargetPlatformOverride = platform;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      late String path;
+      await tester.runAsync(() async {
+        await api.registerAppSession(installId: 'install', pid: 42);
+        path = '${dir.path}/in.clax';
+        File(path).writeAsBytesSync((await makeBundle(lineage: lineageA)).bytes);
+      });
+      intake.open(path);
+      await tester.pumpWidget(AppRoot(services: services()));
+      supervisor.set(Up(endpoint()));
+      await settle(tester);
+      expect(find.byType(InstallSheet), findsOneWidget);
+      expect(File(path).existsSync(), !ownCopy);
+      debugDefaultTargetPlatformOverride = null;
+    });
+  }
 
   testWidgets('a platform refusal shows its sentence', (tester) async {
     await tester.pumpWidget(AppRoot(services: services()));

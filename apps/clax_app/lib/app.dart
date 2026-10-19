@@ -982,16 +982,18 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     final bundles = _bundles;
     final intake = _s.bundleIntake;
     if (bundles != null && intake != null) {
-      final android = defaultTargetPlatform == TargetPlatform.android;
+      final ownCopy =
+          defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS;
       _intake = intake.opened.listen(
         (o) => _bundleSheet(
           (context) => bundles.openFile(
             context,
             path: o.path,
             refused: o.refused,
-            // Android hands over Clax's own cache copy; a Mac file is
+            // Android and iOS hand over Clax's own copy; a Mac file is
             // the person's.
-            delete: android,
+            delete: ownCopy,
           ),
         ),
       );

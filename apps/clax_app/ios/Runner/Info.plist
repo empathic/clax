@@ -8,6 +8,23 @@
     <string>en</string>
     <key>CFBundleDisplayName</key>
     <string>Clax</string>
+    <!-- A .clax is an app someone made in Clax (docs/contract.md, "bundle"):
+         Files, Mail, Messages and the share sheet hand it to Clax. -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Clax App</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>dev.empathic.clax.bundle</string>
+            </array>
+        </dict>
+    </array>
     <key>CFBundleExecutable</key>
     <string>$(EXECUTABLE_NAME)</string>
     <key>CFBundleIdentifier</key>
@@ -22,6 +39,10 @@
     <string>1</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
+    <!-- iOS copies an opened .clax into Clax's Documents/Inbox; Clax reads
+         that copy (ios/Runner/BundleIntake.swift), never the original. -->
+    <key>LSSupportsOpeningDocumentsInPlace</key>
+    <false/>
     <!-- The daemon serves the shell and every app over plain HTTP on
          loopback: 127.0.0.1, localhost and each app's own origin,
          http://<ID>.localhost:<port>/. NSAllowsLocalNetworking covers the
@@ -86,6 +107,33 @@
         <string>UIInterfaceOrientationPortraitUpsideDown</string>
         <string>UIInterfaceOrientationLandscapeLeft</string>
         <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+    <!-- The Mac's declaration of the same type (macos/Runner/Info.plist),
+         except that it conforms to public.data alone, so Files offers Clax
+         for a .clax rather than treating it as an archive to expand. -->
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+            </array>
+            <key>UTTypeDescription</key>
+            <string>Clax App</string>
+            <key>UTTypeIdentifier</key>
+            <string>dev.empathic.clax.bundle</string>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>clax</string>
+                </array>
+                <key>public.mime-type</key>
+                <array>
+                    <string>application/vnd.empathic.clax+zip</string>
+                </array>
+            </dict>
+        </dict>
     </array>
 </dict>
 </plist>
